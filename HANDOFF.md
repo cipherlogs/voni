@@ -13,7 +13,7 @@ context/usage. Don't hand-edit the **Activity Log** — it's auto-generated.
 ### Resume here (2026-09-08, repo created + pushed)
 
 **Now:** Local repo initialized (`main`) and pushed to `git@github.com:cipherlogs/voni.git` (commit `6a2aea0f`, 685 files, clean). Remote tree verified: 0 hits for `.env`/`dev.vars`/`node_modules`/`.next`/`.venv`/`mcp.json`/`last-token`/`memory.db`. `.gitignore` expanded (deps, builds, venvs, env files, `.superpowers/`, swarm dumps, claude-flow metrics/daemon-state). Working tree is now a git repo — future SDD runs get real BASE/HEAD tracking.
-**Next:** Normal feature work with git history. Consider adding README/license as a second commit.
+**Next:** Normal feature work with git history. README added (`caabe320`); no license file per owner (private repo, personal SaaS — all rights reserved).
 **Why:** First push had to exclude 4.2G `.next`, 754M `.venv`, and live keys (root `.env` ASSEMBLY_AI, `voni/.dev.vars`, `.env.local`, brainstorm `.last-token`) — all gated via `check-ignore` before `add`.
 
 ### Resume here (2026-09-08, Agent UX seven-fixes SHIPPED)
