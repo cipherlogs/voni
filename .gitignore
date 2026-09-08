@@ -1,0 +1,31 @@
+# Ruflo local secrets and runtime data
+.env
+.env.local
+.env.*.local
+.dev.vars
+.claude-flow/data/
+.claude-flow/logs/
+.claude-flow/sessions/
+.mcp.json
+
+# Dependencies & build outputs
+node_modules/
+.next/
+.open-next/
+dist/
+build/
+*.tsbuildinfo
+.wrangler/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Local indexes & scratch
+ruvector.db
+.superpowers/
+.swarm/memory.db*
+.swarm/backups/
+.claude-flow/metrics/
+.claude-flow/daemon-state.json

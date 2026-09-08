@@ -1,0 +1,44 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "main": "./worker.ts",
+  "name": "voni",
+  "compatibility_date": "2026-09-01",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "assets": {
+    "directory": ".open-next/assets",
+    "binding": "ASSETS"
+  },
+  "services": [
+    {
+      "binding": "WORKER_SELF_REFERENCE",
+      "service": "voni"
+    }
+  ],
+  "queues": {
+    "producers": [
+      {
+        "binding": "JOB_QUEUE",
+        "queue": "voni-background-jobs"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "voni-background-jobs",
+        "max_batch_size": 1,
+        "max_retries": 3,
+        "retry_delay": 60,
+        "dead_letter_queue": "voni-background-jobs-dlq",
+        "max_concurrency": 5
+      }
+    ]
+  },
+  "r2_buckets": [
+    {
+      "binding": "CSV_STAGING",
+      "bucket_name": "voni-csv-staging"
+    }
+  ],
+  "triggers": {
+    "crons": ["*/5 * * * *"]
+  }
+}

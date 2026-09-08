@@ -1,0 +1,238 @@
+"""Voni telephony spike: Telnyx Call Control <-> Pipecat (AssemblyAI STT + AssemblyAI LLM Gateway + Cartesia TTS)."""
+
+import os
+
+import aiohttp
+import uvicorn
+from fastapi import FastAPI, Request, WebSocket
+from loguru import logger
+
+from pipecat.audio.vad.silero import SileroVADAnalyzer
+from pipecat.frames.frames import LLMRunFrame
+from pipecat.pipeline.pipeline import Pipeline
+from pipecat.pipeline.runner import PipelineRunner
+from pipecat.pipeline.task import PipelineParams, PipelineTask
+from pipecat.processors.aggregators.llm_context import LLMContext
+from pipecat.processors.aggregators.llm_response_universal import (
+    LLMContextAggregatorPair,
+    LLMUserAggregatorParams,
+)
+from pipecat.runner.utils import parse_telephony_websocket
+from pipecat.serializers.telnyx import TelnyxFrameSerializer
+from pipecat.services.assemblyai.models import AssemblyAIConnectionParams
+from pipecat.services.assemblyai.stt import AssemblyAISTTService
+from pipecat.services.cartesia.tts import CartesiaTTSService
+from pipecat.services.openai.llm import OpenAILLMService
+from openai import AsyncOpenAI
+from openai import DefaultAsyncHttpxClient
+import httpx
+from pipecat.transports.websocket.fastapi import (
+    FastAPIWebsocketParams,
+    FastAPIWebsocketTransport,
+)
+
+TELNYX_API_KEY = os.environ["TELNYX_API_KEY"]
+ASSEMBLYAI_API_KEY = os.environ["ASSEMBLYAI_API_KEY"]
+CARTESIA_API_KEY = os.environ["CARTESIA_API_KEY"]
+CARTESIA_VOICE_ID = "db6b0ed5-d5d3-463d-ae85-518a07d3c2b4"  # "Skylar"
+PUBLIC_HOST = os.environ["PUBLIC_HOST"]  # e.g. "abc-123.trycloudflare.com" (no scheme)
+
+app = FastAPI()
+
+
+class NoRetryOpenAILLMService(OpenAILLMService):
+    """OpenAILLMService that surfaces HTTP errors instead of hiding them.
+
+    Pipecat's BaseOpenAILLMService.create_client() accepts **kwargs but drops
+    them on the floor rather than forwarding to AsyncOpenAI, so max_retries
+    cannot be configured through the normal constructor. That leaves the SDK
+    default of 2 retries, which backs off *silently* on a 429 — the whole
+    reason a rate-limited turn presented as dead air with nothing logged.
+
+    max_retries=0 makes the 429 raise immediately so it shows up as a logged
+    error frame, turning an indistinguishable hang into a diagnosable failure.
+    """
+
+    def create_client(
+        self,
+        api_key=None,
+        base_url=None,
+        organization=None,
+        project=None,
+        default_headers=None,
+        **kwargs,
+    ):
+        return AsyncOpenAI(
+            api_key=api_key,
+            base_url=base_url,
+            organization=organization,
+            project=project,
+            max_retries=0,
+            http_client=DefaultAsyncHttpxClient(
+                limits=httpx.Limits(
+                    max_keepalive_connections=100,
+                    max_connections=1000,
+                    keepalive_expiry=None,
+                )
+            ),
+            default_headers=default_headers,
+        )
+
+
+@app.post("/webhook")
+async def webhook(request: Request):
+    body = await request.json()
+    event = body.get("data", {})
+    event_type = event.get("event_type")
+    payload = event.get("payload", {})
+    call_control_id = payload.get("call_control_id")
+
+    logger.info(f"webhook event: {event_type} call_control_id={call_control_id}")
+
+    if event_type == "call.initiated" and payload.get("direction") == "incoming":
+        # Inbound calls must be explicitly answered; outbound calls are
+        # auto-answered by Telnyx when the far end picks up, and streaming is
+        # requested directly on the original dial command instead (see
+        # place_call()) — issuing `answer` on an outbound leg is rejected
+        # with error 90102.
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"https://api.telnyx.com/v2/calls/{call_control_id}/actions/answer",
+                headers={
+                    "Authorization": f"Bearer {TELNYX_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "stream_url": f"wss://{PUBLIC_HOST}/media-stream",
+                    "stream_track": "both_tracks",
+                },
+            ) as resp:
+                text = await resp.text()
+                logger.info(f"answer+stream request -> {resp.status}: {text}")
+
+    return {"ok": True}
+
+
+@app.websocket("/media-stream")
+async def media_stream(websocket: WebSocket):
+    await websocket.accept()
+
+    transport_type, call_data = await parse_telephony_websocket(websocket)
+    logger.info(f"media-stream connected: transport_type={transport_type} call_data={call_data}")
+
+    if transport_type != "telnyx" or not call_data.get("call_id"):
+        # The call never completed the Telnyx "connected"+"start" handshake —
+        # most commonly because the far end hung up / was never answered
+        # before streaming tore down. Nothing to build a pipeline against.
+        logger.warning("Incomplete Telnyx stream handshake, closing without building a pipeline")
+        await websocket.close()
+        return
+
+    stream_id = call_data["stream_id"]
+    call_id = call_data["call_id"]
+    encoding = call_data.get("outbound_encoding", "PCMU")
+
+    serializer = TelnyxFrameSerializer(
+        stream_id=stream_id,
+        outbound_encoding=encoding,
+        inbound_encoding=encoding,
+        call_control_id=call_id,
+        api_key=TELNYX_API_KEY,
+    )
+
+    transport = FastAPIWebsocketTransport(
+        websocket=websocket,
+        params=FastAPIWebsocketParams(
+            audio_in_enabled=True,
+            audio_out_enabled=True,
+            add_wav_header=False,
+            vad_analyzer=SileroVADAnalyzer(),
+            serializer=serializer,
+        ),
+    )
+
+    stt = AssemblyAISTTService(
+        api_key=ASSEMBLYAI_API_KEY,
+        connection_params=AssemblyAIConnectionParams(sample_rate=8000),
+    )
+
+    llm = NoRetryOpenAILLMService(
+        api_key=ASSEMBLYAI_API_KEY,
+        base_url="https://llm-gateway.assemblyai.com/v1",
+        model="qwen3.5-4b-32k-fast",
+        # Silent-hang bug is handled by NoRetryOpenAILLMService above, which
+        # forces max_retries=0 so a 429 raises instead of backing off quietly.
+        # retry_on_timeout stays as a second net for a genuinely slow (not
+        # rate-limited) response.
+        #
+        # NOTE: this account's gateway limit is 2 requests/minute per model
+        # (confirmed via the x-ratelimit-limit response header; paid accounts
+        # get 30). A voice agent spends one request per conversational turn, so
+        # the greeting plus a single reply exhausts the window and every later
+        # turn 429s. The limit — not the client config — is the real blocker.
+        retry_on_timeout=True,
+        retry_timeout_secs=6.0,
+    )
+
+    tts = CartesiaTTSService(
+        api_key=CARTESIA_API_KEY,
+        voice_id=CARTESIA_VOICE_ID,
+        sample_rate=8000,
+    )
+
+    context = LLMContext(
+        [
+            {
+                "role": "system",
+                "content": (
+                    "You are a quick voice-agent connectivity test for a product "
+                    "called Voni. Greet the caller, confirm you can hear them, "
+                    "and keep every reply to one short sentence."
+                ),
+            }
+        ]
+    )
+    user_aggregator, assistant_aggregator = LLMContextAggregatorPair(
+        context, user_params=LLMUserAggregatorParams(vad_analyzer=SileroVADAnalyzer())
+    )
+
+    pipeline = Pipeline(
+        [
+            transport.input(),
+            stt,
+            user_aggregator,
+            llm,
+            tts,
+            transport.output(),
+            assistant_aggregator,
+        ]
+    )
+
+    task = PipelineTask(
+        pipeline,
+        params=PipelineParams(
+            allow_interruptions=True,
+            audio_in_sample_rate=8000,
+            audio_out_sample_rate=8000,
+        ),
+    )
+
+    @transport.event_handler("on_client_connected")
+    async def on_client_connected(transport, client):
+        logger.info("Telnyx media stream client connected — kicking off greeting")
+        context.add_message(
+            {"role": "developer", "content": "Start by concisely introducing yourself."}
+        )
+        await task.queue_frames([LLMRunFrame()])
+
+    @transport.event_handler("on_client_disconnected")
+    async def on_client_disconnected(transport, client):
+        logger.info("Telnyx media stream client disconnected")
+        await task.cancel()
+
+    runner = PipelineRunner()
+    await runner.run(task)
+
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8765)

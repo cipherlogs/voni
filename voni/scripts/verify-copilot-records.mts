@@ -1,0 +1,53 @@
+/** Real DB verification, isolated accounts/workspaces; always cleans up its rows. */
+import assert from 'node:assert/strict';
+import { and, eq, inArray } from 'drizzle-orm';
+import { db } from '../src/lib/db';
+import { agents, backgroundJobs } from '../src/lib/db/schema';
+import { member, organization, user } from '../src/lib/db/auth-schema';
+import { queryRecords, recordRepository } from '../src/lib/copilot/record-repository';
+import { continueRecordSearch, openRecordReference } from '../src/lib/copilot/record-discovery';
+import { publicRecordResult, recordSearchResultSchema } from '../src/lib/copilot/record-contracts';
+import { claimJob, createJob, failJob, getJob, requestCancel, retryJob } from '../src/lib/jobs/store';
+import { runJob } from '../src/lib/jobs/processor';
+const run = crypto.randomUUID();
+const orgs = [`coverage-org-${run}`, `coverage-other-${run}`];
+const users = [`coverage-user-${run}`, `coverage-peer-${run}`];
+const scope = { userId: users[0], organizationId: orgs[0] };
+const key = (suffix: string) => `${run}:${suffix}`;
+try {
+  await db.insert(user).values(users.map((id) => ({ id, name: 'Copilot test', email: `${id}@example.invalid` })));
+  await db.insert(organization).values(orgs.map((id) => ({ id, name: 'Copilot test workspace', slug: id, createdAt: new Date() })));
+  await db.insert(member).values([{ id: key('member'), userId: users[0], organizationId: orgs[0], role: 'member', createdAt: new Date() }, { id: key('other-member'), userId: users[0], organizationId: orgs[1], role: 'member', createdAt: new Date() }, { id: key('peer-member'), userId: users[1], organizationId: orgs[0], role: 'member', createdAt: new Date() }]);
+  await db.insert(agents).values([...Array.from({ length: 22 }, () => ({ organizationId: orgs[0], name: 'Same name', config: {} })), { organizationId: orgs[1], name: 'Same name', config: {} }]);
+  assert.equal((await queryRecords(scope, { kind: 'agents', query: 'Same name' })).length, 21);
+  assert.equal((await queryRecords(scope, { kind: 'agents', query: '%' })).length, 0, 'SQL wildcard input is literal');
+  const input = { kind: 'agents', query: 'Same name' };
+  const create = (suffix: string) => createJob({ organizationId: orgs[0], creatorId: users[0], kind: 'record_search', title: 'Coverage search', idempotencyKey: key(suffix), input });
+  const first = await create('first'); const duplicate = await create('first'); assert.equal(first.job.id, duplicate.job.id); assert.equal(duplicate.created, false);
+  await Promise.all([runJob(first.job.id), runJob(first.job.id)]);
+  const completed = await getJob(scope.organizationId, scope.userId, first.job.id); assert.equal(completed?.status, 'succeeded'); assert.equal(completed?.attemptCount, 1);
+  const result = recordSearchResultSchema.parse(completed!.result); assert.equal(result.matches.length, 20); assert.ok(result.next);
+  const secondInput = await continueRecordSearch(recordRepository, scope, result.next.ref);
+  const second = await createJob({ organizationId: orgs[0], creatorId: users[0], kind: 'record_search', title: 'Second page', idempotencyKey: key('second'), input: secondInput });
+  await runJob(second.job.id); const secondJob = await getJob(scope.organizationId, scope.userId, second.job.id); const more = recordSearchResultSchema.parse(secondJob!.result); assert.equal(more.matches.length, 2); assert.equal(more.next, null);
+  assert.equal(new Set([...result.matches, ...more.matches].map((m) => m.id)).size, 22);
+  assert.ok(!JSON.stringify(publicRecordResult(result)).includes(result.matches[0].id));
+  await openRecordReference(recordRepository, scope, result.matches[0].ref);
+  await assert.rejects(openRecordReference(recordRepository, { ...scope, userId: users[1] }, result.matches[0].ref));
+  await assert.rejects(openRecordReference(recordRepository, { ...scope, organizationId: orgs[1] }, result.matches[0].ref));
+  await assert.rejects(openRecordReference(recordRepository, scope, `${first.job.id}.${crypto.randomUUID()}`));
+  await db.delete(agents).where(and(eq(agents.organizationId, orgs[0]), eq(agents.id, result.matches[0].id)));
+  await assert.rejects(openRecordReference(recordRepository, scope, result.matches[0].ref), /deleted|available/);
+  const cancel = await create('cancel'); await requestCancel(scope.organizationId, scope.userId, cancel.job.id); await runJob(cancel.job.id); assert.equal((await getJob(scope.organizationId, scope.userId, cancel.job.id))?.status, 'cancelled');
+  const retry = await create('retry'); await claimJob(retry.job.id, 60000); await failJob(retry.job.id, 'transport', 'Simulated connection failure.'); await retryJob(scope.organizationId, scope.userId, retry.job.id); await runJob(retry.job.id); assert.equal((await getJob(scope.organizationId, scope.userId, retry.job.id))?.status, 'succeeded');
+  await db.delete(member).where(eq(member.id, key('member')));
+  await assert.rejects(openRecordReference(recordRepository, scope, result.matches[1].ref));
+  await assert.rejects(continueRecordSearch(recordRepository, scope, result.next.ref));
+  const revoked = await create('revoked'); await runJob(revoked.job.id); const denied = await getJob(scope.organizationId, scope.userId, revoked.job.id); assert.equal(denied?.status, 'failed'); assert.equal(denied?.errorCode, 'auth');
+  console.log('verify-copilot-records: ambiguity, pagination, duplicate delivery, deleted/fabricated refs, cross-workspace/user isolation, revoked membership, cancellation and retry passed.');
+} finally {
+  await db.delete(backgroundJobs).where(inArray(backgroundJobs.organizationId, orgs));
+  await db.delete(agents).where(inArray(agents.organizationId, orgs));
+  await db.delete(organization).where(inArray(organization.id, orgs));
+  await db.delete(user).where(inArray(user.id, users));
+}

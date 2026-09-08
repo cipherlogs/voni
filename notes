@@ -1,0 +1,22 @@
+Phase 1 — LLM multi-account rotation (done, migration applied to Neon)
+- New llm_provider_accounts table + src/lib/platform/llm-accounts.ts: sticky failover with exponential-backoff cooldown per account.
+- lib/llm/index.ts/providers.ts rewired to a nested provider→account fallback loop.
+- Settings → Platform now has an "LLM provider accounts" card to add/test/enable/remove accounts per provider (Groq/Cerebras/Gemini/OpenRouter), admin-gated like everything else there.
+
+Phase 2 — API configuration (manual checklist, documented in ENVIRONMENT.md and HANDOFF.md)
+I can't fetch or paste in real API keys myself. What's left for you: add real account keys via the new Settings UI, confirm the existing Telnyx/AssemblyAI/Cartesia "Test" buttons still pass, and set VONI_API_URL/VONI_TOOL_SECRET/PUBLIC_HOST by hand in .dev.vars before a real Telnyx call.
+
+Phase 3 — Visual feedback standardization
+- Shared LoadingButton component, migrated into ~10 call sites.
+- loading.tsx/error.tsx added to every dashboard route that awaits data, plus a root global-error.tsx (using Next 16's retry callback).
+- Fixed: deleted dead-code sign-in button, per-row pending bug in phone numbers, unhandled-rejection risk in agent save.
+- voice-call.tsx: rate-limit now shows a live countdown, running out the demo clock says so distinctly from a hang-up, and in-call tool calls show "Looking that up…"; added a shadcn Progress bar for the final-30-seconds countdown (also fixed that CLI-generated file's cn import to match the rest of the project and removed the extraneous cn package it pulled in).
+
+Phase 4 — voni/AGENTS.md now has a "Visual feedback protocol" section so new features default to this pattern.
+
+Verified throughout: tsc --noEmit, eslint, all 45 tests, Next's get_compilation_issues, and a live next dev + browser smoke test all pass clean.
+
+One thing I noticed but didn't touch: hitting /agents, /campaigns etc. unauthenticated returned 200 instead of the 307-to-login redirect an earlier HANDOFF entry recorded — worth a quick look since it's unrelated to this session's changes.
+
+
+Also, unrelated to these: the earlier "unauthenticated dashboard routes return 200" observation from last session turned out to be a local dev auto-login ("Dev User" / dev@localhost), not a real auth bug — no action needed there.

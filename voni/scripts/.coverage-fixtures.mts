@@ -1,0 +1,12 @@
+import { writeFileSync } from 'node:fs';
+import { db } from '../src/lib/db';
+import { agents, campaigns, leads, calls } from '../src/lib/db/schema';
+import { agentConfigSchema } from '../src/lib/agents/config';
+const prefix = `Coverage QA ${Date.now()}`;
+const config = agentConfigSchema.parse({ greeting:'Hello', mission:'Internal coverage fixture', identity:{name:'QA',role:'Tester',company:'Voni'}, successCondition:'Verification complete', fallback:'Stop', channels:['phone'] });
+const agentRows = await db.insert(agents).values([0,1].map(()=>({ organizationId:'dev-bypass-org',name:`${prefix} Sara`, config }))).returning({id:agents.id});
+const [campaign] = await db.insert(campaigns).values({ organizationId:'dev-bypass-org',agentId:agentRows[0].id,name:`${prefix} Viewings`,status:'draft' }).returning({id:campaigns.id});
+const leadRows = await db.insert(leads).values(Array.from({length:22},(_,i)=>({ organizationId:'dev-bypass-org',name:`${prefix} Alex ${i}`,phone:`+1999555${String(i).padStart(4,'0')}`,consentStatus:'unknown' }))).returning({id:leads.id});
+const [call] = await db.insert(calls).values({ leadId:leadRows[0].id,direction:'inbound',startedAt:new Date(),endedAt:new Date() }).returning({id:calls.id});
+writeFileSync('/tmp/voni-coverage-fixtures.json',JSON.stringify({prefix,agents:agentRows.map(a=>a.id),campaign:campaign.id,leads:leadRows.map(l=>l.id),call:call.id,jobs:[]}));
+console.log('Created isolated draft records for coverage verification. No provider calls.');

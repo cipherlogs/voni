@@ -1,0 +1,188 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import Link from "next/link";
+import { usePathname } from "next/navigation";
+import { CircleCheck, History, LoaderCircle, Mic } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Progress } from "@/components/ui/progress";
+import { Separator } from "@/components/ui/separator";
+import { SidebarTrigger } from "@/components/ui/sidebar";
+import { useCopilot } from "@/components/copilot/copilot-provider";
+import { VoiceBars, type VoiceBarsMood } from "@/components/copilot/voice-bars";
+import { getJobProgressPercent } from "@/lib/jobs/ui-helpers";
+import { useJobs } from "@/components/jobs/jobs-provider";
+
+/**
+ * The shell header. It exists to name where you are — without a title the bar
+ * was a trigger followed by a separator with nothing after it, which reads as
+ * a broken component rather than a deliberate empty state.
+ *
+ * The title is derived from the path rather than passed down, so a new route
+ * gets a correct header by adding one line here instead of threading a prop
+ * through every page.
+ *
+ * Background work is ambient: a text status link (never an ambiguous icon)
+ * plus a slim progress strip for the most recent active job. Detail lives in
+ * the floating pill and on /jobs.
+ */
+/** Single source for section titles — also feeds the voice copilot's app manifest. */
+export const SECTION_TITLES: Array<[string, string]> = [
+  ["/dashboard", "Dashboard"],
+  ["/agents", "Agents"],
+  ["/campaigns", "Campaigns"],
+  ["/leads", "Leads"],
+  ["/numbers", "Phone numbers"],
+  ["/calls", "Calls"],
+  ["/jobs", "Background jobs"],
+  ["/settings", "Settings"],
+];
+
+function formatElapsed(totalSeconds: number): string {
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
+/**
+ * Voice copilot entry point. Same start/stop as the old floating button —
+ * tapping Voice IS consent, the way a phone call works; tap again to end.
+ * The live call controls and reading panel live in CopilotShell, anchored
+ * as a dropdown below the header.
+ */
+function CopilotHeaderButton() {
+  const { status, live, proposals, start, stop, noteInteraction, agentPartial } =
+    useCopilot();
+  // Call timer, local to the button — the provider only learns durations at
+  // hang-up. Reset happens in the start tap (an event); the effect only ticks.
+  const [elapsed, setElapsed] = useState(0);
+
+  useEffect(() => {
+    if (!live) return;
+    const startedAt = Date.now();
+    const id = setInterval(() => {
+      setElapsed(Math.floor((Date.now() - startedAt) / 1000));
+    }, 1000);
+    return () => clearInterval(id);
+  }, [live]);
+
+  const starting = status === "starting";
+  const label =
+    status === "idle" || status === "error"
+      ? "Start voice copilot"
+      : starting
+        ? "Connecting voice copilot"
+        : "End voice call";
+
+  const mood: VoiceBarsMood =
+    status === "live"
+      ? agentPartial
+        ? "speaking"
+        : "listening"
+      : starting || status === "reconnecting"
+        ? "connecting"
+        : "idle";
+
+  const text = starting
+    ? "…"
+    : proposals.length > 0
+      ? `${proposals.length} ready`
+      : live
+        ? formatElapsed(elapsed)
+        : "Voice";
+
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="sm"
+      className="cursor-pointer"
+      disabled={starting}
+      aria-label={label}
+      onClick={() => {
+        noteInteraction();
+        if (status === "idle" || status === "error") {
+          setElapsed(0);
+          start();
+        } else if (status === "live" || status === "reconnecting") stop();
+      }}
+    >
+      {starting ? (
+        <LoaderCircle className="animate-spin" aria-hidden />
+      ) : live ? (
+        <VoiceBars mood={mood} className="size-3.5" />
+      ) : (
+        <Mic aria-hidden />
+      )}
+      <span aria-live="polite" className="tabular-nums">
+        {text}
+      </span>
+    </Button>
+  );
+}
+
+export function AppHeader() {
+  const pathname = usePathname();
+  const { activeJobs, unreadJobs, optimisticJobs } = useJobs();
+  const match = SECTION_TITLES.find(
+    ([prefix]) => pathname === prefix || pathname.startsWith(`${prefix}/`),
+  );
+
+  const activeCount = activeJobs.length + optimisticJobs.length;
+  const firstActive = activeJobs[0];
+  const firstPercent = firstActive
+    ? getJobProgressPercent(firstActive)
+    : null;
+
+  return (
+    <header className="app-shell-header bg-background/80 sticky top-0 z-30 flex h-14 shrink-0 flex-col justify-center border-b px-4 backdrop-blur-md">
+      <div className="flex items-center gap-2">
+        <SidebarTrigger className="-ml-1 md:hidden" />
+        <Separator orientation="vertical" className="mr-1 h-4 md:hidden" />
+        <span className="text-sm font-medium">{match ? match[1] : "Voni"}</span>
+        <div className="ml-auto flex items-center gap-1">
+          <CopilotHeaderButton />
+          <Button
+            variant="ghost"
+            size="sm"
+            nativeButton={false}
+            render={
+              <Link
+                href="/jobs"
+                aria-label={
+                  activeCount > 0
+                    ? `${activeCount} background jobs running. View jobs.`
+                    : unreadJobs.length > 0
+                      ? `${unreadJobs.length} unread job results. View jobs.`
+                      : "View background jobs"
+                }
+              />
+            }
+          >
+            {activeCount > 0 ? (
+              <LoaderCircle className="animate-spin" aria-hidden />
+            ) : unreadJobs.length > 0 ? (
+              <CircleCheck aria-hidden />
+            ) : (
+              <History aria-hidden />
+            )}
+            <span aria-live="polite">
+              {activeCount > 0
+                ? `${activeCount} running`
+                : unreadJobs.length > 0
+                  ? `${unreadJobs.length} ready`
+                  : "Jobs"}
+            </span>
+          </Button>
+        </div>
+      </div>
+      {firstPercent != null ? (
+        <Progress
+          value={firstPercent}
+          aria-label="Latest background job progress"
+          className="absolute inset-x-0 bottom-0"
+        />
+      ) : null}
+    </header>
+  );
+}

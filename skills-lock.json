@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "skills": {
+    "assemblyai": {
+      "source": "AssemblyAI/assemblyai-skill",
+      "sourceType": "github",
+      "skillPath": "skills/assemblyai/SKILL.md",
+      "computedHash": "283d0a44d11a6ae226c4bed91315c119a73bf9e8ef09c1dcb1fcaa20f67679c6"
+    },
+    "next-dev-loop": {
+      "source": "vercel/next.js",
+      "sourceType": "github",
+      "skillPath": "skills/next-dev-loop/SKILL.md",
+      "computedHash": "d2a697a0a0429cad0bb7264644115457f588d4ed1007eeb0bb7f965b1185fa6e"
+    }
+  }
+}

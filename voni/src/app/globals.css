@@ -1,0 +1,374 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, -apple-system,
+    "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif,
+    "Apple Color Emoji", "Segoe UI Emoji";
+  --font-mono: var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo,
+    Consolas, "Liberation Mono", monospace;
+  --font-heading: var(--font-sans);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-brand-foreground: var(--brand-foreground);
+  --color-brand: var(--brand);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+:root {
+  --motion-fast: 120ms;
+  --motion-standard: 180ms;
+  --motion-slow: 220ms;
+  --motion-loop: 6500ms;
+  --ease-draw: cubic-bezier(0.65, 0, 0.35, 1);
+  --ease-out-soft: cubic-bezier(0.16, 1, 0.3, 1);
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.145 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.145 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.145 0 0);
+  --primary: oklch(0.205 0 0);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.97 0 0);
+  --secondary-foreground: oklch(0.205 0 0);
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.52 0 0);
+  --accent: oklch(0.97 0 0);
+  --accent-foreground: oklch(0.205 0 0);
+  /* Brand accent: the green already used by the call button (Jakob's Law —
+     phone-app convention), now the product's one signature color rather than
+     a hardcoded Tailwind shade living only in voice-call.tsx. Same value in
+     light and dark: green-600 already has enough contrast on both. */
+  --brand: var(--color-green-600);
+  --brand-foreground: oklch(1 0 0);
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: oklch(0.922 0 0);
+  --input: oklch(0.922 0 0);
+  --ring: oklch(0.708 0 0);
+  --chart-1: oklch(0.87 0 0);
+  --chart-2: oklch(0.556 0 0);
+  --chart-3: oklch(0.439 0 0);
+  --chart-4: oklch(0.371 0 0);
+  --chart-5: oklch(0.269 0 0);
+  --radius: 0.5rem;
+  --sidebar: oklch(0.985 0 0);
+  --sidebar-foreground: oklch(0.145 0 0);
+  --sidebar-primary: oklch(0.205 0 0);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.97 0 0);
+  --sidebar-accent-foreground: oklch(0.205 0 0);
+  --sidebar-border: oklch(0.922 0 0);
+  --sidebar-ring: oklch(0.708 0 0);
+}
+
+::view-transition {
+  pointer-events: none;
+}
+
+::view-transition-group(dashboard-content) {
+  animation-duration: var(--motion-slow);
+}
+
+::view-transition-old(dashboard-content) {
+  animation: var(--motion-fast) ease-in both dashboard-out;
+}
+
+::view-transition-new(dashboard-content) {
+  animation: var(--motion-slow) ease-out both dashboard-in;
+}
+
+.app-shell-header,
+.app-shell-sidebar {
+  view-transition-name: none;
+}
+
+.auth-enter {
+  animation: auth-enter var(--motion-slow) ease-out both;
+}
+
+.status-enter,
+.list-enter {
+  animation: content-enter var(--motion-standard) ease-out both;
+}
+
+/* The chip settles once on mount — arrival still reads as arrival. The mark
+   itself then loops for as long as it stays mounted: the resting arc
+   (`voni-arc`) folds into a V and back — both are the same kind of curve
+   (one quadratic bezier, control point mirrored across y=12), so animating
+   the `d` property directly morphs one into the other with no separate
+   drawings. A second copy of the same path in the brand green
+   (`voni-arc-accent`) tracks the identical shape and only fades in for the V
+   phase, landing the color change on the moment of recognition. */
+.voni-chip-in {
+  animation: voni-chip-in var(--motion-slow) var(--ease-out-soft) both;
+}
+
+.voni-arc {
+  /* Set here, not as a `stroke="currentColor"` presentation attribute —
+     Chromium can strand that attribute at its initial paint color when the
+     same element's `d` is being animated via CSS, leaving the stroke black
+     regardless of theme. A real CSS declaration doesn't have that problem. */
+  stroke: currentColor;
+  animation: voni-arc-morph var(--motion-loop) ease-in-out infinite;
+}
+
+.voni-arc-accent {
+  stroke: var(--color-brand);
+  opacity: 0;
+  animation:
+    voni-arc-morph var(--motion-loop) ease-in-out infinite,
+    voni-arc-fade var(--motion-loop) ease-in-out infinite;
+}
+
+@keyframes voni-chip-in {
+  from {
+    opacity: 0;
+    transform: scale(0.92);
+  }
+}
+
+@keyframes voni-arc-morph {
+  0%,
+  35% {
+    d: path("M5 15Q12 5 19 15");
+  }
+  50%,
+  70% {
+    d: path("M5 9Q12 24 19 9");
+  }
+  85%,
+  100% {
+    d: path("M5 15Q12 5 19 15");
+  }
+}
+
+@keyframes voni-arc-fade {
+  0%,
+  35%,
+  85%,
+  100% {
+    opacity: 0;
+  }
+  50%,
+  70% {
+    opacity: 1;
+  }
+}
+
+.interactive-card {
+  transition:
+    border-color var(--motion-fast) ease,
+    background-color var(--motion-fast) ease,
+    transform var(--motion-fast) ease;
+}
+
+.interactive-card:hover {
+  transform: translateY(-1px);
+}
+
+/* Wizard demos: agent-applied field flash (one-shot, slow token) and the
+   active timeline node's pulse (slow token, alternate). No new library —
+   tw-animate-css + these two keyframes only. */
+.field-flash {
+  animation: field-flash var(--motion-slow) var(--ease-out-soft) 3;
+}
+
+@keyframes field-flash {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+  50% {
+    box-shadow: 0 0 0 3px var(--ring);
+  }
+}
+
+.wizard-active-dot {
+  animation: wizard-pulse var(--motion-slow) ease-in-out infinite alternate;
+}
+
+/* Copilot mark: bars dance while it speaks. A waveform loop needs its own
+   cadence — none of the transition tokens fit — so 900ms is deliberate.
+   The global reduced-motion rule squashes this to a static frame. */
+.copilot-bars-live rect {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: copilot-bars 900ms ease-in-out infinite;
+}
+
+.copilot-bars-live rect:nth-child(2) {
+  animation-delay: 120ms;
+}
+
+.copilot-bars-live rect:nth-child(3) {
+  animation-delay: 240ms;
+}
+
+.copilot-bars-live rect:nth-child(4) {
+  animation-delay: 360ms;
+}
+
+@keyframes copilot-bars {
+  0%,
+  100% {
+    transform: scaleY(0.45);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+@keyframes wizard-pulse {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0.35;
+  }
+}
+
+@keyframes dashboard-out {
+  to {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+@keyframes dashboard-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+@keyframes auth-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+@keyframes content-enter {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 1ms !important;
+    animation-delay: 0ms !important;
+    transition-duration: 1ms !important;
+  }
+
+  ::view-transition-old(*),
+  ::view-transition-new(*),
+  ::view-transition-group(*) {
+    animation-duration: 0s !important;
+    animation-delay: 0s !important;
+    transform: none !important;
+  }
+
+  .interactive-card:hover {
+    transform: none;
+  }
+
+  /* The blanket 1ms override above still leaves `infinite` iterating forever,
+     just too fast to see cleanly — for a looping mark that reads as flicker,
+     not stillness. Stop it outright and let each class's own base styles
+     (resting arc, no accent) stand as the resting frame. */
+  .voni-arc,
+  .voni-arc-accent,
+  .wizard-active-dot {
+    animation: none !important;
+  }
+}
+
+.dark {
+  --background: oklch(0.145 0 0);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.205 0 0);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.205 0 0);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: oklch(0.922 0 0);
+  --primary-foreground: oklch(0.205 0 0);
+  --secondary: oklch(0.269 0 0);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.269 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  --accent: oklch(0.269 0 0);
+  --accent-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.704 0.191 22.216);
+  --border: oklch(1 0 0 / 14%);
+  --input: oklch(1 0 0 / 18%);
+  --ring: oklch(0.556 0 0);
+  --chart-1: oklch(0.87 0 0);
+  --chart-2: oklch(0.556 0 0);
+  --chart-3: oklch(0.439 0 0);
+  --chart-4: oklch(0.371 0 0);
+  --chart-5: oklch(0.269 0 0);
+  --sidebar: oklch(0.205 0 0);
+  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar-primary: oklch(0.488 0.243 264.376);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.269 0 0);
+  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-ring: oklch(0.556 0 0);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+  html {
+    @apply font-sans;
+  }
+}
