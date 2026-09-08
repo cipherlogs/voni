@@ -10,6 +10,12 @@ context/usage. Don't hand-edit the **Activity Log** — it's auto-generated.
 
 ## Status
 
+### Resume here (2026-09-08, repo created + pushed)
+
+**Now:** Local repo initialized (`main`) and pushed to `git@github.com:cipherlogs/voni.git` (commit `6a2aea0f`, 685 files, clean). Remote tree verified: 0 hits for `.env`/`dev.vars`/`node_modules`/`.next`/`.venv`/`mcp.json`/`last-token`/`memory.db`. `.gitignore` expanded (deps, builds, venvs, env files, `.superpowers/`, swarm dumps, claude-flow metrics/daemon-state). Working tree is now a git repo — future SDD runs get real BASE/HEAD tracking.
+**Next:** Normal feature work with git history. Consider adding README/license as a second commit.
+**Why:** First push had to exclude 4.2G `.next`, 754M `.venv`, and live keys (root `.env` ASSEMBLY_AI, `voni/.dev.vars`, `.env.local`, brainstorm `.last-token`) — all gated via `check-ignore` before `add`.
+
 ### Resume here (2026-09-08, Agent UX seven-fixes SHIPPED)
 
 **Now:** All 7 fixes implemented subagent-driven (9 tasks + final review), gates green. Pointer: button base + tabs/switch + 12 link/button sites show pointer + focus rings. Preview deleted; review owns Edit/Progress/Undo. Import aligned (`items-end` + spacer). BackLink on leads/agents/calls/agents-new (campaigns kept legacy link). Copilot in header (Voice+Jobs side-by-side), FAB gone. Goal chips compact; tasks custom add/remove (12-cap). Personality voice/langs + Play approximation (browser synthesis, captioned — no standalone AssemblyAI TTS; byte-identical needs live session per tap). Proof: 28/28 screenshots PASS (`/tmp/ux-seven-*.png`), tsc clean, eslint clean (incl. F1 refs fix), 207/207 tests, no LivePreview/FAB/`asChild`. Reports: `.superpowers/sdd/2026-09-08-agent-ux-seven-fixes/` (9 reports + reviews + final-review).
