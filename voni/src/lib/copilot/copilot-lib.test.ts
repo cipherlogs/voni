@@ -56,8 +56,8 @@ test("system prompt carries the app guide when provided", () => {
 });
 
 test("wizard summaries and phrases share one source", () => {
-  assert.equal(wizardSummary("outcomes", "book viewings"), "Set outcomes to book viewings");
-  assert.deepEqual(wizardKeyPhrases("outcomes", "book viewings"), ["outcomes", "book viewings"]);
+  assert.equal(wizardSummary("goals", "book viewings"), "Set goals to book viewings");
+  assert.deepEqual(wizardKeyPhrases("goals", "book viewings"), ["goals", "book viewings"]);
   assert.deepEqual(wizardKeyPhrases("styleTraits", ["a", "b", "c", "d"]), ["conversational style", "a", "b", "c"]);
 });
 
@@ -67,7 +67,7 @@ test("wizard executor applies through the store and versions the result", async 
     applied.push({ patch, label });
   });
   const ran = await executor(
-    { field: "outcomes", value: "book viewings" },
+    { field: "goals", value: "book viewings" },
     {
       userId: "u",
       organizationId: "o",
@@ -77,31 +77,33 @@ test("wizard executor applies through the store and versions the result", async 
       readTarget: () => null,
     },
   );
-  assert.deepEqual(applied, [{ patch: { outcomes: ["book viewings"] }, label: "voice: outcomes" }]);
+  assert.deepEqual(applied, [{ patch: { goals: ["book viewings"] }, label: "voice: goals" }]);
   assert.equal(ran.resultingVersion, JSON.stringify(["book viewings"]));
 });
 
 test("wizard target readers snapshot live draft values", () => {
   let draft: WizardDraft = {
-    outcomes: ["old"],
+    goals: ["old"],
+    tasks: [],
     agentName: "",
     styleTraits: [],
     conversationLanguage: "en",
     voiceId: "anna",
   };
   const readers = createWizardTargetReader(() => draft);
-  assert.deepEqual(readers.get("wizard:outcomes")?.(), {
+  assert.deepEqual(readers.get("wizard:goals")?.(), {
     value: ["old"],
     version: JSON.stringify(["old"]),
   });
-  draft = { ...draft, outcomes: ["typed"] };
-  assert.equal(readers.get("wizard:outcomes")?.()?.version, JSON.stringify(["typed"]));
+  draft = { ...draft, goals: ["typed"] };
+  assert.equal(readers.get("wizard:goals")?.()?.version, JSON.stringify(["typed"]));
 });
 
 test("language changes resolve the voice pair together", async () => {
   const { resolveWizardValue } = await import("./wizard-tools");
   const draft: WizardDraft = {
-    outcomes: ["book viewings"],
+    goals: ["book viewings"],
+    tasks: [],
     agentName: "Sara",
     styleTraits: [],
     conversationLanguage: "en",

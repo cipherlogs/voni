@@ -7,9 +7,10 @@
  * key phrases derived from the same source.
  *
  * Transport bounds here are intentionally loose; the shared field limits
- * (outcomes 12×140, style 5×60, name 120, voice∈language) are enforced in
- * `resolveWizardValue` (propose time, against the live draft) and re-checked
- * in the executor — so voice can never create values the UI cannot represent.
+ * (goals 3×140, tasks 12×140, style 5×60, name 120, voice∈language) are
+ * enforced in `resolveWizardValue` (propose time, against the live draft) and
+ * re-checked in the executor — so voice can never create values the UI cannot
+ * represent.
  */
 
 import { z } from "zod";
@@ -19,17 +20,19 @@ import { getVoice, voiceLabel } from "@/lib/agents/voices";
 import { INPUT_LANGUAGES } from "@/lib/agents/voices";
 import {
   MAX_AGENT_NAME_LENGTH,
-  MAX_OUTCOME_LENGTH,
-  MAX_OUTCOMES,
+  MAX_GOAL_LENGTH,
+  MAX_GOALS,
   MAX_STYLE_LENGTH,
   MAX_STYLE_TRAITS,
+  MAX_TASK_LENGTH,
+  MAX_TASKS,
   normalizeTag,
   voiceForLanguage,
   type ConversationLanguage,
 } from "@/lib/agents/wizard";
 
 export const wizardFieldSchema = z.object({
-  field: z.enum(["outcomes", "agentName", "styleTraits", "voice", "conversationLanguage"]),
+  field: z.enum(["goals", "tasks", "agentName", "styleTraits", "voice", "conversationLanguage"]),
   value: z.union([z.string().trim().min(1).max(2000), z.array(z.string().trim().min(1).max(200)).min(1).max(20)]),
 });
 
@@ -40,7 +43,8 @@ export type ResolvedWizardValue =
   | { ok: false; error: string };
 
 const FIELD_LABEL: Record<WizardField, string> = {
-  outcomes: "outcomes",
+  goals: "goals",
+  tasks: "tasks",
   agentName: "agent name",
   styleTraits: "conversational style",
   voice: "voice",
@@ -71,20 +75,36 @@ export function resolveWizardValue(
   value: string | string[],
   draft: WizardDraft,
 ): ResolvedWizardValue {
-  if (field === "outcomes") {
+  if (field === "goals") {
     const items = deduped(toArray(value));
-    if (items.length === 0) return { ok: false, error: "Say at least one outcome." };
-    if (items.length > MAX_OUTCOMES) {
-      return { ok: false, error: `Keep it to ${MAX_OUTCOMES} outcomes.` };
+    if (items.length === 0) return { ok: false, error: "Say at least one goal." };
+    if (items.length > MAX_GOALS) {
+      return { ok: false, error: `Keep it to ${MAX_GOALS} goals.` };
     }
-    if (items.some((v) => v.length > MAX_OUTCOME_LENGTH)) {
-      return { ok: false, error: `Keep outcomes under ${MAX_OUTCOME_LENGTH} characters.` };
+    if (items.some((v) => v.length > MAX_GOAL_LENGTH)) {
+      return { ok: false, error: `Keep goals under ${MAX_GOAL_LENGTH} characters.` };
     }
     return {
       ok: true,
-      patch: { outcomes: items },
-      touched: ["outcomes"],
-      summary: `Set outcomes to ${items.join("; ")}`,
+      patch: { goals: items },
+      touched: ["goals"],
+      summary: `Set goals to ${items.join("; ")}`,
+    };
+  }
+  if (field === "tasks") {
+    const items = deduped(toArray(value));
+    if (items.length > MAX_TASKS) {
+      return { ok: false, error: `Keep it to ${MAX_TASKS} tasks.` };
+    }
+    if (items.some((v) => v.length > MAX_TASK_LENGTH)) {
+      return { ok: false, error: `Keep tasks under ${MAX_TASK_LENGTH} characters.` };
+    }
+    return {
+      ok: true,
+      patch: { tasks: items },
+      touched: ["tasks"],
+      summary:
+        items.length > 0 ? `Set tasks to ${items.join("; ")}` : "Clear the tasks",
     };
   }
   if (field === "agentName") {
@@ -185,7 +205,8 @@ export function createWizardTargetReader(
     return { value, version: fieldVersion(value) };
   };
   return new Map([
-    ["wizard:outcomes", reader("outcomes")],
+    ["wizard:goals", reader("goals")],
+    ["wizard:tasks", reader("tasks")],
     ["wizard:agentName", reader("agentName")],
     ["wizard:styleTraits", reader("styleTraits")],
     ["wizard:voice", reader("voiceId")],
@@ -214,16 +235,27 @@ export function createWizardExecutor(
       return { result: {}, uncertain: true, uncertaintyReason: "Payload failed validation." };
     }
     const { field, value } = parsed.data;
-    if (field === "outcomes") {
+    if (field === "goals") {
       const items = deduped(toArray(value));
       if (
         items.length === 0 ||
-        items.length > MAX_OUTCOMES ||
-        items.some((v) => v.length > MAX_OUTCOME_LENGTH)
+        items.length > MAX_GOALS ||
+        items.some((v) => v.length > MAX_GOAL_LENGTH)
       ) {
-        return { result: {}, uncertain: true, uncertaintyReason: "Outcomes failed validation." };
+        return { result: {}, uncertain: true, uncertaintyReason: "Goals failed validation." };
       }
-      apply({ outcomes: items }, ["outcomes"], `voice: ${field}`);
+      apply({ goals: items }, ["goals"], `voice: ${field}`);
+      return { result: { applied: field }, resultingVersion: fieldVersion(items) };
+    }
+    if (field === "tasks") {
+      const items = deduped(toArray(value));
+      if (
+        items.length > MAX_TASKS ||
+        items.some((v) => v.length > MAX_TASK_LENGTH)
+      ) {
+        return { result: {}, uncertain: true, uncertaintyReason: "Tasks failed validation." };
+      }
+      apply({ tasks: items }, ["tasks"], `voice: ${field}`);
       return { result: { applied: field }, resultingVersion: fieldVersion(items) };
     }
     if (field === "agentName") {

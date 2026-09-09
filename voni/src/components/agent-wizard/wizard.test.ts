@@ -5,66 +5,70 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
   composeBrief,
-  OUTCOME_SUGGESTIONS,
-  resolveOutcomeReference,
+  GOAL_SUGGESTIONS,
+  resolveGoalReference,
+  TASK_SUGGESTIONS,
 } from "./starters";
 import type { WizardDraft } from "./use-wizard-draft";
 
 const EMPTY: WizardDraft = {
-  outcomes: [],
+  goals: [],
+  tasks: [],
   agentName: "",
   styleTraits: [],
   conversationLanguage: "en",
   voiceId: "anna",
 };
 
-test("outcome suggestions are the three fixed sentences", () => {
-  assert.deepEqual(OUTCOME_SUGGESTIONS, [
+test("goal suggestions are the three fixed sentences; tasks have five", () => {
+  assert.deepEqual(GOAL_SUGGESTIONS, [
     "Qualify property leads and book viewings",
     "Answer support questions after hours",
     "Confirm appointments and help reschedule",
   ]);
+  assert.equal(TASK_SUGGESTIONS.length, 5);
 });
 
-test("resolveOutcomeReference matches digits, words, ordinals, and #n", () => {
-  assert.equal(resolveOutcomeReference("2"), OUTCOME_SUGGESTIONS[1]);
-  assert.equal(resolveOutcomeReference("number two"), OUTCOME_SUGGESTIONS[1]);
-  assert.equal(resolveOutcomeReference("Second"), OUTCOME_SUGGESTIONS[1]);
-  assert.equal(resolveOutcomeReference("#3"), OUTCOME_SUGGESTIONS[2]);
-  assert.equal(resolveOutcomeReference("  one  "), OUTCOME_SUGGESTIONS[0]);
-  assert.equal(resolveOutcomeReference("first"), OUTCOME_SUGGESTIONS[0]);
-  assert.equal(resolveOutcomeReference("THIRD"), OUTCOME_SUGGESTIONS[2]);
+test("resolveGoalReference matches digits, words, ordinals, and #n", () => {
+  assert.equal(resolveGoalReference("2"), GOAL_SUGGESTIONS[1]);
+  assert.equal(resolveGoalReference("number two"), GOAL_SUGGESTIONS[1]);
+  assert.equal(resolveGoalReference("Second"), GOAL_SUGGESTIONS[1]);
+  assert.equal(resolveGoalReference("#3"), GOAL_SUGGESTIONS[2]);
+  assert.equal(resolveGoalReference("  one  "), GOAL_SUGGESTIONS[0]);
+  assert.equal(resolveGoalReference("first"), GOAL_SUGGESTIONS[0]);
+  assert.equal(resolveGoalReference("THIRD"), GOAL_SUGGESTIONS[2]);
 });
 
-test("resolveOutcomeReference rejects non-references (raw typing stays text)", () => {
+test("resolveGoalReference rejects non-references (raw typing stays text)", () => {
   for (const text of ["", "hello", "0", "12", "two please", "call it sara", "2a", "number"]) {
-    assert.equal(resolveOutcomeReference(text), null, JSON.stringify(text));
+    assert.equal(resolveGoalReference(text), null, JSON.stringify(text));
   }
 });
 
-test("composeBrief joins outcomes, name, style, and language", () => {
+test("composeBrief joins goals, tasks, name, style, and language", () => {
   assert.equal(
     composeBrief(EMPTY),
     "It converses in English.",
   );
   assert.equal(
-    composeBrief({ ...EMPTY, outcomes: ["  Qualify leads  "] }),
-    "The agent must: Qualify leads. It converses in English.",
+    composeBrief({ ...EMPTY, goals: ["  Qualify leads  "] }),
+    "The agent must achieve: Qualify leads. It converses in English.",
   );
   assert.equal(
     composeBrief({
       ...EMPTY,
-      outcomes: ["Book viewings", "Answer questions"],
+      goals: ["Book viewings", "Answer questions"],
+      tasks: ["Ask for budget"],
       agentName: "Sara",
       styleTraits: ["Friendly", "Calm"],
       conversationLanguage: "es",
     }),
-    "The agent must: Book viewings; Answer questions. The agent is Sara. Conversational style: Friendly, Calm. It converses in Spanish.",
+    "The agent must achieve: Book viewings; Answer questions. It must: Ask for budget. The agent is Sara. Conversational style: Friendly, Calm. It converses in Spanish.",
   );
 });
 
 test("composeBrief excludes voice (voice never reaches the LLM brief)", () => {
-  const full = composeBrief({ ...EMPTY, outcomes: ["Book viewings"], voiceId: "giovanni" });
+  const full = composeBrief({ ...EMPTY, goals: ["Book viewings"], voiceId: "giovanni" });
   assert.doesNotMatch(full, /giovanni/i);
 });
 
@@ -75,14 +79,17 @@ const stepBodiesSource = readFileSync(
   "utf8",
 );
 
-test("OutcomesStep uses the shared TagField with the fixed heading", () => {
-  assert.ok(stepBodiesSource.includes("What should your agent accomplish?"));
-  assert.ok(stepBodiesSource.includes("Add one clear outcome per tag"));
-  assert.ok(stepBodiesSource.includes("OUTCOME_SUGGESTIONS"));
-  assert.ok(stepBodiesSource.includes("MAX_OUTCOMES"));
-  assert.ok(stepBodiesSource.includes("MAX_OUTCOME_LENGTH"));
-  assert.ok(!stepBodiesSource.includes("GoalStep"));
-  assert.ok(!stepBodiesSource.includes("TasksStep"));
+test("PlanStep keeps Goals and Tasks visibly separated on one step", () => {
+  assert.ok(stepBodiesSource.includes("What should your agent do?"));
+  assert.ok(stepBodiesSource.includes("GOAL_SUGGESTIONS"));
+  assert.ok(stepBodiesSource.includes("TASK_SUGGESTIONS"));
+  assert.ok(stepBodiesSource.includes("MAX_GOALS"));
+  assert.ok(stepBodiesSource.includes("MAX_TASKS"));
+  assert.ok(stepBodiesSource.includes("Goals"));
+  const goalsAt = stepBodiesSource.indexOf('label="Goals"');
+  const tasksAt = stepBodiesSource.indexOf('label="Tasks"');
+  assert.ok(goalsAt !== -1 && tasksAt !== -1 && goalsAt < tasksAt);
+  assert.ok(!stepBodiesSource.includes("OutcomesStep"));
 });
 
 test("PersonalityStep orders name, style, language, voice with the style helper", () => {
@@ -94,30 +101,32 @@ test("PersonalityStep orders name, style, language, voice with the style helper"
   assert.ok(nameAt < styleAt && styleAt < pickerAt);
   assert.ok(stepBodiesSource.includes("Shapes how the agent responds"));
   assert.ok(stepBodiesSource.includes("STYLE_SUGGESTIONS"));
+  assert.ok(stepBodiesSource.includes("max-w-sm"));
   assert.ok(!stepBodiesSource.includes("speechSynthesis"));
   assert.ok(!stepBodiesSource.includes("Languages it listens for"));
 });
 
-test("ReviewStep shows outcomes, persona, language, voice with Edit jumps", () => {
-  assert.ok(stepBodiesSource.includes('aria-label="Edit outcomes"'));
+test("ReviewStep shows goals, tasks, persona with Edit jumps", () => {
+  assert.ok(stepBodiesSource.includes('aria-label="Edit goals"'));
+  assert.ok(stepBodiesSource.includes('aria-label="Edit tasks"'));
   assert.ok(stepBodiesSource.includes('aria-label="Edit persona"'));
   assert.ok(stepBodiesSource.includes("voiceLabel(draft.voiceId)"));
   assert.ok(!stepBodiesSource.includes("of 3 set"));
   assert.ok(!stepBodiesSource.includes("onUndo"));
-  assert.ok(!stepBodiesSource.includes("undoLabel"));
   assert.ok(!stepBodiesSource.includes("MascotAvatar"));
 });
 
-test("wizard draft defaults to empty outcomes/name/style with English + anna", async () => {
+test("wizard draft defaults to empty goals/tasks with English + anna", async () => {
   const { EMPTY_DRAFT } = await import("./use-wizard-draft");
-  assert.deepEqual(EMPTY_DRAFT.outcomes, []);
+  assert.deepEqual(EMPTY_DRAFT.goals, []);
+  assert.deepEqual(EMPTY_DRAFT.tasks, []);
   assert.equal(EMPTY_DRAFT.agentName, "");
   assert.deepEqual(EMPTY_DRAFT.styleTraits, []);
   assert.equal(EMPTY_DRAFT.conversationLanguage, "en");
   assert.equal(EMPTY_DRAFT.voiceId, "anna");
 });
 
-test("copilot voice/language summaries use the canonical phrases", async () => {
+test("copilot goal/task summaries use the canonical phrases", async () => {
   const { wizardFieldSchema, wizardSummary } = await import(
     "@/lib/copilot/wizard-tools"
   );
@@ -130,7 +139,7 @@ test("copilot voice/language summaries use the canonical phrases", async () => {
     true,
   );
   assert.equal(
-    wizardFieldSchema.safeParse({ field: "outcomes", value: ["Qualify leads"] }).success,
+    wizardFieldSchema.safeParse({ field: "goals", value: ["Qualify leads"] }).success,
     true,
   );
   assert.equal(wizardSummary("voice", "anna"), "Set voice to Anna");
@@ -148,6 +157,6 @@ test("agents/new save maps wizard voice and single language over the draft", () 
   assert.ok(pageSource.includes("voiceId: wiz.draft.voiceId"));
   assert.ok(pageSource.includes("languageCodes: [wiz.draft.conversationLanguage]"));
   assert.ok(
-    pageSource.includes('enum: ["outcomes", "agentName", "styleTraits", "voice", "conversationLanguage"]'),
+    pageSource.includes('enum: ["goals", "tasks", "agentName", "styleTraits", "voice", "conversationLanguage"]'),
   );
 });

@@ -1,7 +1,6 @@
 "use client";
 
 import { useImperativeHandle, useRef, useState } from "react";
-import { Pencil, Plus, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -15,6 +14,7 @@ import {
   InputGroupAddon,
   InputGroupInput,
 } from "@/components/ui/input-group";
+import { cn } from "@/lib/utils";
 import {
   applyTagAdd,
   applyTagRemove,
@@ -23,7 +23,7 @@ import {
 } from "./tag-helpers";
 
 export type TagSuggestion = {
-  /** Canonical value appended on tap. */
+  /** Canonical value moved up on tap. */
   value: string;
   /** Short label shown on the chip. Defaults to value. */
   label?: string;
@@ -35,14 +35,13 @@ export type TagFieldProps = {
   description?: string;
   values: string[];
   onChange: (next: string[]) => void;
-  /** Tap-to-add chips rendered below the field. Never replace existing tags. */
+  /** Tap-to-move chips rendered below the field. Added ones leave the row. */
   suggestions?: TagSuggestion[];
   suggestionsLabel?: string;
   maxCount: number;
   maxLength: number;
   placeholder?: string;
-  addLabel?: string;
-  addedLabel?: string;
+  addedHint?: string;
   /** Server or step-level error shown under the field. */
   error?: string | null;
   /**
@@ -60,11 +59,11 @@ export type TagFieldHandle = {
 };
 
 /**
- * Reusable tag field (Outcomes, Conversational style). Plain input + visible
- * Add button (shadcn Input Group composition), wrapping tag badges with
- * accessible Edit/Remove, suggestion chips below. Normal input controls only:
- * no rich-text editing, no serialized tag blobs, no comma splitting,
- * no Backspace deletion.
+ * Reusable tag field (Goals, Tasks, Conversational style). The composer is an
+ * empty pill you type straight into — Enter commits it into a solid tag and a
+ * fresh empty pill appears. Tapping a tag edits it inline (Enter commits, Esc
+ * cancels, Remove shows only while editing). Suggestions move up on tap and
+ * move back down on remove. Plain input controls throughout.
  */
 export function TagField({
   id,
@@ -77,8 +76,7 @@ export function TagField({
   maxCount,
   maxLength,
   placeholder,
-  addLabel = "Add",
-  addedLabel = "Added",
+  addedHint,
   error,
   blockOnInvalidPending = true,
   ref,
@@ -92,6 +90,7 @@ export function TagField({
   const message = error ?? localError;
   const hintId = `${id}-hint`;
   const countId = `${id}-count`;
+  const available = suggestions.filter((s) => !isTagAdded(values, s.value));
 
   const commit = () => {
     const result =
@@ -117,22 +116,22 @@ export function TagField({
   useImperativeHandle(
     ref,
     () => ({
-    commitPending: () => {
-      if (input.trim().length === 0 && !editing) return true;
-      const result =
-        editing && editingIndex !== null
-          ? applyTagUpdate(values, editingIndex, input, maxLength)
-          : applyTagAdd(values, input, maxCount, maxLength);
-      if (!result.ok) {
-        setLocalError(result.message);
-        return !blockOnInvalidPending;
-      }
-      setInput("");
-      setLocalError(null);
-      setEditingIndex(null);
-      onChange(result.values);
-      return true;
-    },
+      commitPending: () => {
+        if (input.trim().length === 0 && !editing) return true;
+        const result =
+          editing && editingIndex !== null
+            ? applyTagUpdate(values, editingIndex, input, maxLength)
+            : applyTagAdd(values, input, maxCount, maxLength);
+        if (!result.ok) {
+          setLocalError(result.message);
+          return !blockOnInvalidPending;
+        }
+        setInput("");
+        setLocalError(null);
+        setEditingIndex(null);
+        onChange(result.values);
+        return true;
+      },
     }),
     [input, editing, editingIndex, values, maxCount, maxLength, blockOnInvalidPending, onChange],
   );
@@ -141,11 +140,14 @@ export function TagField({
     setEditingIndex(index);
     setInput(values[index]);
     setLocalError(null);
-    requestAnimationFrame(() => inputRef.current?.focus());
+    requestAnimationFrame(() => {
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    });
   };
 
   return (
-    <Field>
+    <Field data-invalid={message ? true : undefined}>
       <FieldLabel htmlFor={id}>{label}</FieldLabel>
       {description ? <FieldDescription>{description}</FieldDescription> : null}
       {values.length > 0 ? (
@@ -154,44 +156,40 @@ export function TagField({
             <li key={`${tag}-${i}`} className="min-w-0">
               <Badge
                 variant="secondary"
-                className="h-auto min-h-11 gap-1 py-1 pr-1 pl-2.5 whitespace-normal"
+                render={
+                  <button
+                    type="button"
+                    onClick={() => startEditing(i)}
+                    aria-label={`Edit ${tag}`}
+                  />
+                }
+                className={cn(
+                  "h-auto min-h-8 py-1 pr-2.5 pl-2.5 text-xs font-medium whitespace-normal pointer-coarse:min-h-11",
+                  editingIndex === i && "border-primary",
+                )}
               >
-                <span className="min-w-0 text-xs font-medium break-words">{tag}</span>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon-touch"
-                  className="rounded-full"
-                  onClick={() => startEditing(i)}
-                  aria-label={`Edit ${tag}`}
-                >
-                  <Pencil className="size-3.5" aria-hidden />
-                </Button>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon-touch"
-                  className="rounded-full"
-                  onClick={() => onChange(applyTagRemove(values, i))}
-                  aria-label={`Remove ${tag}`}
-                >
-                  <X className="size-3.5" aria-hidden />
-                </Button>
+                <span className="min-w-0 break-words">{tag}</span>
               </Badge>
             </li>
           ))}
         </ul>
       ) : null}
-      <InputGroup className="min-h-11">
+      <InputGroup className="rounded-full">
         <InputGroupInput
           ref={inputRef}
           id={id}
           value={input}
+          disabled={atCap}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.nativeEvent.isComposing && e.keyCode !== 229) {
               e.preventDefault();
               commit();
+            }
+            if (e.key === "Escape") {
+              e.preventDefault();
+              if (editing) cancelEditing();
+              else setInput("");
             }
             // Backspace in an empty input intentionally deletes nothing.
           }}
@@ -200,44 +198,41 @@ export function TagField({
           aria-describedby={`${hintId} ${countId}`}
           aria-invalid={message ? true : undefined}
         />
-        <InputGroupAddon align="inline-end">
-          {editing ? (
-            <>
-              <Button type="button" variant="ghost" size="sm" onClick={cancelEditing}>
-                Cancel
-              </Button>
-              <Button type="button" size="touch" onClick={commit}>
-                Update
-              </Button>
-            </>
-          ) : (
+        {editing ? (
+          <InputGroupAddon align="inline-end">
+            <Button type="button" variant="ghost" size="sm" onClick={cancelEditing}>
+              Cancel
+            </Button>
             <Button
               type="button"
-              size="touch"
-              onClick={commit}
-              disabled={atCap || input.trim().length === 0}
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                onChange(applyTagRemove(values, editingIndex as number));
+                cancelEditing();
+              }}
             >
-              <Plus aria-hidden />
-              {addLabel}
+              Remove
             </Button>
-          )}
-        </InputGroupAddon>
+            <Button type="button" size="sm" onClick={commit}>
+              Update
+            </Button>
+          </InputGroupAddon>
+        ) : null}
       </InputGroup>
       <div className="flex items-center justify-between gap-2">
         <p id={hintId} aria-live="polite" className="text-muted-foreground text-xs">
           {message ??
             (atCap
               ? `Limit reached (${maxCount}/${maxCount}). Remove one to add another.`
-              : editing
-                ? "Editing keeps its position. Update or Cancel."
-                : "One clear outcome per tag.")}
+              : (addedHint ?? "Type and press Enter."))}
         </p>
         <span id={countId} className="text-muted-foreground shrink-0 text-xs">
           {values.length}/{maxCount}
         </span>
       </div>
       {message ? <FieldError>{message}</FieldError> : null}
-      {suggestions.length > 0 ? (
+      {available.length > 0 ? (
         <div className="flex flex-col gap-2">
           <span className="text-muted-foreground text-xs" id={`${id}-suggestions`}>
             {suggestionsLabel}
@@ -247,37 +242,26 @@ export function TagField({
             role="group"
             aria-labelledby={`${id}-suggestions`}
           >
-            {suggestions.map((s) => {
-              const added = isTagAdded(values, s.value);
-              return (
-                <Button
-                  key={s.value}
-                  type="button"
-                  size="touch"
-                  variant={added ? "secondary" : "outline"}
-                  className="whitespace-normal"
-                  disabled={added || atCap}
-                  onClick={() => {
-                    const result = applyTagAdd(values, s.value, maxCount, maxLength);
-                    if (!result.ok) {
-                      setLocalError(result.message);
-                      return;
-                    }
-                    setLocalError(null);
-                    onChange(result.values);
-                  }}
-                  aria-pressed={added}
-                  aria-label={added ? `${s.label ?? s.value} (${addedLabel})` : (s.label ?? s.value)}
-                >
-                  {s.label ?? s.value}
-                  {added ? (
-                    <Badge variant="default" className="gap-1">
-                      {addedLabel}
-                    </Badge>
-                  ) : null}
-                </Button>
-              );
-            })}
+            {available.map((s) => (
+              <Button
+                key={s.value}
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  const result = applyTagAdd(values, s.value, maxCount, maxLength);
+                  if (!result.ok) {
+                    setLocalError(result.message);
+                    return;
+                  }
+                  setLocalError(null);
+                  onChange(result.values);
+                }}
+                aria-label={s.label ?? s.value}
+              >
+                {s.label ?? s.value}
+              </Button>
+            ))}
           </div>
         </div>
       ) : null}

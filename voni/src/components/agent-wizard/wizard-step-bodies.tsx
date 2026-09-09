@@ -5,18 +5,22 @@ import { FileText, TriangleAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Field, FieldLabel } from "@/components/ui/field";
+import { Separator } from "@/components/ui/separator";
 import { TagField, type TagFieldHandle } from "@/components/wizard/tag-field";
 import { ConversationPicker } from "@/components/wizard/conversation-picker";
 import { FormCard, FormCardSections } from "@/components/wizard/form-layout";
 import { GenerationNotice } from "./generation-notice";
-import { OUTCOME_SUGGESTIONS } from "./starters";
+import { GOAL_SUGGESTIONS, TASK_SUGGESTIONS } from "./starters";
 import { INPUT_LANGUAGES, voiceLabel } from "@/lib/agents/voices";
 import {
-  MAX_OUTCOME_LENGTH,
-  MAX_OUTCOMES,
+  MAX_GOAL_LENGTH,
+  MAX_GOALS,
   MAX_STYLE_LENGTH,
   MAX_STYLE_TRAITS,
+  MAX_TASK_LENGTH,
+  MAX_TASKS,
 } from "@/lib/agents/wizard";
+import { cn } from "@/lib/utils";
 import type { FlashKey, WizardDraftApi } from "./use-wizard-draft";
 
 export const STYLE_SUGGESTIONS = ["Friendly", "Energetic", "Calm", "Direct", "Patient"];
@@ -51,35 +55,61 @@ export type StepBodyProps = {
   idPrefix: string;
 };
 
-export function OutcomesStep({
+export function PlanStep({
   api,
   idPrefix,
-  tagRef,
+  goalsRef,
+  tasksRef,
   error,
   onClearError,
-}: StepBodyProps & { tagRef?: React.Ref<TagFieldHandle>; error?: string | null; onClearError?: () => void }) {
+}: StepBodyProps & {
+  goalsRef?: React.Ref<TagFieldHandle>;
+  tasksRef?: React.Ref<TagFieldHandle>;
+  error?: string | null;
+  onClearError?: () => void;
+}) {
   return (
     <FormCard>
       <FormCardSections>
         <StepHeading
-          title="What should your agent accomplish?"
-          description="Add one clear outcome per tag. Choose a suggestion or write your own."
+          title="What should your agent do?"
+          description="Start with goals, then break them into tasks."
         />
-        <div className={flashClass(api.flashed, "outcomes")}>
+        <div className={flashClass(api.flashed, "goals")}>
           <TagField
-            ref={tagRef}
-            id={`${idPrefix}-outcomes`}
-            label="Outcomes"
-            values={api.draft.outcomes}
-            onChange={(outcomes) => {
+            ref={goalsRef}
+            id={`${idPrefix}-goals`}
+            label="Goals"
+            description="Goal-oriented tags — the outcomes that matter."
+            values={api.draft.goals}
+            onChange={(goals) => {
               onClearError?.();
-              api.edit({ outcomes }, "outcomes change");
+              api.edit({ goals }, "goals change");
             }}
-            suggestions={OUTCOME_SUGGESTIONS.map((value) => ({ value }))}
-            maxCount={MAX_OUTCOMES}
-            maxLength={MAX_OUTCOME_LENGTH}
-            placeholder="e.g. Qualify property leads and book viewings"
+            suggestions={GOAL_SUGGESTIONS.map((value) => ({ value }))}
+            maxCount={MAX_GOALS}
+            maxLength={MAX_GOAL_LENGTH}
+            placeholder="Add a goal…"
             error={error}
+          />
+        </div>
+        <Separator />
+        <div className={flashClass(api.flashed, "tasks")}>
+          <TagField
+            ref={tasksRef}
+            id={`${idPrefix}-tasks`}
+            label="Tasks"
+            description="The concrete steps that get there."
+            values={api.draft.tasks}
+            onChange={(tasks) => {
+              onClearError?.();
+              api.edit({ tasks }, "tasks change");
+            }}
+            suggestions={TASK_SUGGESTIONS.map((value) => ({ value }))}
+            maxCount={MAX_TASKS}
+            maxLength={MAX_TASK_LENGTH}
+            placeholder="Add a task…"
+            blockOnInvalidPending={false}
           />
         </div>
       </FormCardSections>
@@ -100,21 +130,23 @@ export function PersonalityStep({
           title="Who should your agent be?"
           description="A name plus a vibe — type it, or tell the voice copilot."
         />
-        <Field>
-          <FieldLabel htmlFor={`${idPrefix}-name`}>Agent name</FieldLabel>
-          <Input
-            id={`${idPrefix}-name`}
-            value={api.draft.agentName}
-            onChange={(e) => {
-              onClearError?.();
-              api.edit({ agentName: e.target.value }, "name change");
-            }}
-            placeholder="e.g. Sara"
-            maxLength={120}
-            autoComplete="off"
-            className={flashClass(api.flashed, "agentName")}
-          />
-        </Field>
+        <div className="max-w-sm">
+          <Field>
+            <FieldLabel htmlFor={`${idPrefix}-name`}>Agent name</FieldLabel>
+            <Input
+              id={`${idPrefix}-name`}
+              value={api.draft.agentName}
+              onChange={(e) => {
+                onClearError?.();
+                api.edit({ agentName: e.target.value }, "name change");
+              }}
+              placeholder="e.g. Sara"
+              maxLength={120}
+              autoComplete="off"
+              className={flashClass(api.flashed, "agentName")}
+            />
+          </Field>
+        </div>
         <div className={flashClass(api.flashed, "styleTraits")}>
           <TagField
             ref={styleRef}
@@ -130,14 +162,15 @@ export function PersonalityStep({
             suggestionsLabel="Try one, combine a few, or write your own"
             maxCount={MAX_STYLE_TRAITS}
             maxLength={MAX_STYLE_LENGTH}
-            placeholder="e.g. Warm but to the point"
+            placeholder="Add a style…"
             blockOnInvalidPending={false}
           />
         </div>
-        <div className={flashClass(api.flashed, "voice") || flashClass(api.flashed, "conversationLanguage")}>
+        <div className={cn(flashClass(api.flashed, "voice"), flashClass(api.flashed, "conversationLanguage"))}>
           <ConversationPicker
             language={api.draft.conversationLanguage}
             voiceId={api.draft.voiceId}
+            agentName={api.draft.agentName}
             onChange={({ language, voiceId }) => {
               onClearError?.();
               api.edit(
@@ -154,6 +187,8 @@ export function PersonalityStep({
 
 export type ReviewPhase = "idle" | "working" | "backgrounded";
 
+export type ReviewField = "goals" | "tasks" | "persona";
+
 export function ReviewStep({
   api,
   phase,
@@ -166,7 +201,7 @@ export function ReviewStep({
 }: {
   api: WizardDraftApi;
   phase: ReviewPhase;
-  /** False until at least one outcome exists — empty briefs never queue. */
+  /** False until at least one goal exists — empty briefs never queue. */
   canGenerate: boolean;
   onOpenJobs: () => void;
   error: string | null;
@@ -174,13 +209,13 @@ export function ReviewStep({
   onUseTemplate?: () => void;
   /** Field the voice copilot just touched — highlights the matching row. */
   flashed: FlashKey;
-  onJump: (step: number) => void;
+  onJump: (step: number, field?: ReviewField) => void;
 }) {
   const { draft } = api;
   const languageLabel =
     INPUT_LANGUAGES.find((l) => l.code === draft.conversationLanguage)?.label ??
     draft.conversationLanguage;
-  const outcomesFlashed = flashed === "outcomes";
+  const planFlashed = flashed === "goals" || flashed === "tasks";
   const personaFlashed =
     flashed === "agentName" ||
     flashed === "styleTraits" ||
@@ -195,14 +230,17 @@ export function ReviewStep({
         />
         <dl className="flex flex-col gap-1 text-sm">
           <div
-            className={`flex items-start gap-2 rounded-md px-2 py-1.5 ${outcomesFlashed ? "field-flash" : ""}`}
+            className={cn(
+              "flex items-start gap-2 rounded-md px-2 py-1.5",
+              planFlashed && "field-flash",
+            )}
           >
-            <dt className="text-muted-foreground w-24 shrink-0 pt-1">Outcomes</dt>
+            <dt className="text-muted-foreground w-24 shrink-0 pt-1">Goals</dt>
             <dd className="min-w-0 flex-1 break-words">
-              {draft.outcomes.length ? (
+              {draft.goals.length ? (
                 <ul className="flex flex-col gap-1">
-                  {draft.outcomes.map((outcome) => (
-                    <li key={outcome}>{outcome}</li>
+                  {draft.goals.map((goal) => (
+                    <li key={goal}>{goal}</li>
                   ))}
                 </ul>
               ) : (
@@ -214,14 +252,46 @@ export function ReviewStep({
               variant="ghost"
               size="sm"
               className="shrink-0 cursor-pointer"
-              onClick={() => onJump(0)}
-              aria-label="Edit outcomes"
+              onClick={() => onJump(0, "goals")}
+              aria-label="Edit goals"
             >
               Edit
             </Button>
           </div>
           <div
-            className={`flex items-start gap-2 rounded-md px-2 py-1.5 ${personaFlashed ? "field-flash" : ""}`}
+            className={cn(
+              "flex items-start gap-2 rounded-md px-2 py-1.5",
+              flashed === "tasks" && "field-flash",
+            )}
+          >
+            <dt className="text-muted-foreground w-24 shrink-0 pt-1">Tasks</dt>
+            <dd className="min-w-0 flex-1 break-words">
+              {draft.tasks.length ? (
+                <ul className="flex flex-col gap-1">
+                  {draft.tasks.map((task) => (
+                    <li key={task}>{task}</li>
+                  ))}
+                </ul>
+              ) : (
+                "—"
+              )}
+            </dd>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="shrink-0 cursor-pointer"
+              onClick={() => onJump(0, "tasks")}
+              aria-label="Edit tasks"
+            >
+              Edit
+            </Button>
+          </div>
+          <div
+            className={cn(
+              "flex items-start gap-2 rounded-md px-2 py-1.5",
+              personaFlashed && "field-flash",
+            )}
           >
             <dt className="text-muted-foreground w-24 shrink-0 pt-1">Persona</dt>
             <dd className="min-w-0 flex-1 break-words">
@@ -247,7 +317,7 @@ export function ReviewStep({
           <p className="text-muted-foreground text-xs">
             {canGenerate
               ? "Generate in the footer below when ready."
-              : "Add at least one outcome first."}
+              : "Add at least one goal first."}
           </p>
         </div>
         {phase === "backgrounded" ? (

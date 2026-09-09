@@ -36,9 +36,10 @@ import { WizardFooter } from "@/components/wizard/form-layout";
 import type { TagFieldHandle } from "@/components/wizard/tag-field";
 import { BackLink } from "@/components/back-link";
 import {
-  OutcomesStep,
   PersonalityStep,
+  PlanStep,
   ReviewStep,
+  type ReviewField,
   type ReviewPhase,
 } from "@/components/agent-wizard/wizard-step-bodies";
 import { WIZARD_STEPS } from "@/components/agent-wizard/use-wizard-draft";
@@ -63,7 +64,8 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
   const generation = useOptimisticJob("agent_generation");
   const { markSeen } = useJobs();
   const [restoring, setRestoring] = useState(restoreJobId !== null);
-  const outcomesRef = useRef<TagFieldHandle>(null);
+  const goalsRef = useRef<TagFieldHandle>(null);
+  const tasksRef = useRef<TagFieldHandle>(null);
   const styleRef = useRef<TagFieldHandle>(null);
   const running =
     restoring ||
@@ -78,7 +80,6 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
       : "idle";
   const briefError = error ?? generation.error;
 
-  // Step errors clear on the next successful advance or field edit.
   const applyResult = useCallback((job: JobJson) => {
     const result = job.result as {
       config?: AgentConfig;
@@ -127,8 +128,8 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
 
   const generate = async () => {
     const brief = composeBrief(wiz.draft);
-    if (wiz.draft.outcomes.length === 0) {
-      setStepError("Add at least one outcome first.");
+    if (wiz.draft.goals.length === 0) {
+      setStepError("Add at least one goal first.");
       wiz.setStep(0);
       return;
     }
@@ -190,11 +191,13 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
   /** Forward navigation validates preceding required fields. */
   const goNext = () => {
     if (wiz.step === 0) {
-      // Pending valid text commits first; invalid pending text blocks here.
-      if (outcomesRef.current && !outcomesRef.current.commitPending()) return;
-      if (wiz.draft.outcomes.length === 0) {
-        setStepError("Add at least one outcome first.");
-        document.querySelector<HTMLElement>("#new-outcomes")?.focus();
+      // Pending valid text commits first; invalid goal text blocks here.
+      // Tasks are optional: valid pending text commits, invalid never blocks.
+      if (goalsRef.current && !goalsRef.current.commitPending()) return;
+      tasksRef.current?.commitPending();
+      if (wiz.draft.goals.length === 0) {
+        setStepError("Add at least one goal first.");
+        document.querySelector<HTMLElement>("#new-goals")?.focus();
         return;
       }
     }
@@ -221,11 +224,11 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
       {
         name: "wizard_propose_change",
         description:
-          "Propose setting the agent draft's outcomes, agent name, conversational style, voice, or conversation language. Call when the user asks to set or change any of these. Returns a proposal id and summary — read the summary back verbatim, then wait for yes or Apply before calling confirm_proposal.",
+          "Propose setting the agent draft's goals, tasks, agent name, conversational style, voice, or conversation language. Call when the user asks to set or change any of these. Returns a proposal id and summary — read the summary back verbatim, then wait for yes or Apply before calling confirm_proposal.",
         parameters: {
           type: "object",
           properties: {
-            field: { type: "string", enum: ["outcomes", "agentName", "styleTraits", "voice", "conversationLanguage"] },
+            field: { type: "string", enum: ["goals", "tasks", "agentName", "styleTraits", "voice", "conversationLanguage"] },
             value: { type: "string" },
           },
           required: ["field", "value"],
@@ -334,7 +337,8 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
     const current = wiz.draft;
     return [
       `step ${wiz.step + 1} of 3 (${WIZARD_STEPS[wiz.step]})`,
-      `${current.outcomes.length} outcomes`,
+      `${current.goals.length} goals`,
+      `${current.tasks.length} tasks`,
       `name ${current.agentName ? "set" : "empty"}`,
       `${current.styleTraits.length} style tags`,
       `voice ${current.voiceId || "unset"}`,
@@ -351,12 +355,14 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
   }, [registerRoute, unregisterRoute, wizardCopilotTools, wizardBrief, draftRef]);
 
   /** Review edit jumps navigate, then focus the requested field. */
-  const goToStep = (step: number) => {
+  const goToStep = (step: number, field?: ReviewField) => {
     wiz.setStep(step);
     requestAnimationFrame(() => {
       const sel =
         step === 0
-          ? "#new-outcomes"
+          ? field === "tasks"
+            ? "#new-tasks"
+            : "#new-goals"
           : step === 1
             ? "#new-name"
             : null;
@@ -416,7 +422,14 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
         <div className="flex min-w-0 flex-col gap-4">
           <TimelineBar current={wiz.step} completed={wiz.completed} onSelect={wiz.setStep} />
           {wiz.step === 0 ? (
-            <OutcomesStep api={wiz} idPrefix="new" tagRef={outcomesRef} error={stepError} onClearError={() => setStepError(null)} />
+            <PlanStep
+              api={wiz}
+              idPrefix="new"
+              goalsRef={goalsRef}
+              tasksRef={tasksRef}
+              error={stepError}
+              onClearError={() => setStepError(null)}
+            />
           ) : null}
           {wiz.step === 1 ? (
             <PersonalityStep api={wiz} idPrefix="new" styleRef={styleRef} onClearError={() => setStepError(null)} />
@@ -425,7 +438,7 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
             <ReviewStep
               api={wiz}
               phase={reviewPhase}
-              canGenerate={wiz.draft.outcomes.length > 0}
+              canGenerate={wiz.draft.goals.length > 0}
               onOpenJobs={() => router.push("/jobs")}
               error={briefError}
               onUseTemplate={useTemplate}
@@ -445,22 +458,20 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
               wiz.step < WIZARD_STEPS.length - 1 ? (
                 <Button
                   type="button"
-                  size="touch"
-                  className="w-full md:w-auto"
+                  className="w-full md:w-auto pointer-coarse:min-h-11"
                   data-copilot-effect="view"
                   onClick={goNext}
                 >
                   Continue
-                  <ArrowRight aria-hidden />
+                  <ArrowRight data-icon="inline-end" aria-hidden />
                 </Button>
               ) : (
                 <LoadingButton
-                  className="w-full md:w-auto"
-                  size="touch"
+                  className="w-full md:w-auto pointer-coarse:min-h-11"
                   pending={reviewPhase === "working"}
                   pendingText="Generating…"
                   onClick={() => void generate()}
-                  disabled={wiz.draft.outcomes.length === 0 || reviewPhase === "working" || reviewPhase === "backgrounded"}
+                  disabled={wiz.draft.goals.length === 0 || reviewPhase === "working" || reviewPhase === "backgrounded"}
                 >
                   Generate agent
                 </LoadingButton>
@@ -480,7 +491,8 @@ function flattenResolved(
   field: WizardField,
   patch: Partial<WizardDraft>,
 ): string | string[] {
-  if (field === "outcomes") return patch.outcomes ?? [];
+  if (field === "goals") return patch.goals ?? [];
+  if (field === "tasks") return patch.tasks ?? [];
   if (field === "styleTraits") return patch.styleTraits ?? [];
   if (field === "agentName") return patch.agentName ?? "";
   if (field === "voice") return patch.voiceId ?? "";

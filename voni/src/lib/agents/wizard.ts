@@ -15,8 +15,10 @@ export type ConversationLanguage = (typeof CONVERSATION_LANGUAGES)[number];
 
 export const conversationLanguageSchema = z.enum(CONVERSATION_LANGUAGES);
 
-export const MAX_OUTCOMES = 12;
-export const MAX_OUTCOME_LENGTH = 140;
+export const MAX_GOALS = 3;
+export const MAX_GOAL_LENGTH = 140;
+export const MAX_TASKS = 12;
+export const MAX_TASK_LENGTH = 140;
 export const MAX_STYLE_TRAITS = 5;
 export const MAX_STYLE_LENGTH = 60;
 export const MAX_AGENT_NAME_LENGTH = 120;
@@ -39,11 +41,17 @@ function caseInsensitiveDupes(values: string[]): boolean {
   return false;
 }
 
-const outcomeItem = z
+const goalItem = z
   .string()
   .trim()
-  .min(1, "Add at least one outcome.")
-  .max(MAX_OUTCOME_LENGTH, `Keep outcomes under ${MAX_OUTCOME_LENGTH} characters.`);
+  .min(1, "Add at least one goal.")
+  .max(MAX_GOAL_LENGTH, `Keep goals under ${MAX_GOAL_LENGTH} characters.`);
+
+const taskItem = z
+  .string()
+  .trim()
+  .min(1)
+  .max(MAX_TASK_LENGTH, `Keep tasks under ${MAX_TASK_LENGTH} characters.`);
 
 const styleItem = z
   .string()
@@ -53,7 +61,8 @@ const styleItem = z
 
 export const wizardDraftSchema = z
   .object({
-    outcomes: z.array(outcomeItem).min(1).max(MAX_OUTCOMES),
+    goals: z.array(goalItem).min(1).max(MAX_GOALS),
+    tasks: z.array(taskItem).max(MAX_TASKS).default([]),
     agentName: z
       .string()
       .trim()
@@ -64,8 +73,11 @@ export const wizardDraftSchema = z
     voiceId: z.string().trim().min(1, "Pick a voice."),
   })
   .superRefine((draft, ctx) => {
-    if (caseInsensitiveDupes(draft.outcomes.map(normalizeTag))) {
-      ctx.addIssue({ code: "custom", message: "That outcome is already added." });
+    if (caseInsensitiveDupes(draft.goals.map(normalizeTag))) {
+      ctx.addIssue({ code: "custom", message: "That goal is already added." });
+    }
+    if (caseInsensitiveDupes(draft.tasks.map(normalizeTag))) {
+      ctx.addIssue({ code: "custom", message: "That task is already added." });
     }
     if (caseInsensitiveDupes(draft.styleTraits.map(normalizeTag))) {
       ctx.addIssue({ code: "custom", message: "That style is already added." });
@@ -86,7 +98,8 @@ export const wizardDraftSchema = z
 export type WizardDraft = z.infer<typeof wizardDraftSchema>;
 
 export const EMPTY_WIZARD_DRAFT: WizardDraft = {
-  outcomes: [],
+  goals: [],
+  tasks: [],
   agentName: "",
   styleTraits: [],
   conversationLanguage: DEFAULT_CONVERSATION_LANGUAGE,
@@ -98,14 +111,16 @@ export const EMPTY_WIZARD_DRAFT: WizardDraft = {
  * whitespace, drop empties. Never splits on commas or punctuation.
  */
 export function normalizeWizardDraft(raw: {
-  outcomes: string[];
+  goals: string[];
+  tasks: string[];
   agentName: string;
   styleTraits: string[];
   conversationLanguage: ConversationLanguage;
   voiceId: string;
 }): WizardDraft {
   return {
-    outcomes: raw.outcomes.map(normalizeTag).filter(Boolean),
+    goals: raw.goals.map(normalizeTag).filter(Boolean),
+    tasks: raw.tasks.map(normalizeTag).filter(Boolean),
     agentName: raw.agentName.trim(),
     styleTraits: raw.styleTraits.map(normalizeTag).filter(Boolean),
     conversationLanguage: raw.conversationLanguage,

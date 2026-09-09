@@ -113,11 +113,11 @@ export function WizardFooter({
           <Button
             type="button"
             variant="ghost"
-            size="touch"
+            className="pointer-coarse:min-h-11"
             disabled={backDisabled}
             onClick={onBack}
           >
-            <ArrowLeft aria-hidden />
+            <ArrowLeft data-icon="inline-start" aria-hidden />
             {backLabel}
           </Button>
           <span className="flex min-w-0 flex-1 justify-end md:flex-none">

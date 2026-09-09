@@ -59,51 +59,78 @@ test("applyTagRemove drops by index; isTagAdded matches case-insensitively", () 
   assert.ok(!isTagAdded(["Friendly"], "   "));
 });
 
-test("TagField uses Field/InputGroup/Badge/Button — no contenteditable or tag textarea", () => {
+test("TagField is a bubble composer with tap-to-edit tags", () => {
   const source = read("tag-field.tsx");
-  assert.match(source, /from "@\/components\/ui\/field"/);
-  assert.match(source, /InputGroupInput/);
-  assert.match(source, /InputGroupAddon/);
-  assert.match(source, /from "@\/components\/ui\/badge"/);
-  assert.doesNotMatch(source, /contenteditable/i);
-  assert.doesNotMatch(source, /\<textarea/i);
-  // Enter commits, IME composition does not, Backspace deletes nothing.
-  assert.match(source, /isComposing/);
-  assert.match(source, /keyCode !== 229/);
-  assert.match(source, /Backspace in an empty input intentionally deletes nothing/);
-  // Accessible edit/remove per tag + suggestion Added state.
-  assert.match(source, /aria-label=\{`Edit \$\{tag\}`\}/);
-  assert.match(source, /aria-label=\{`Remove \$\{tag\}`\}/);
-  assert.match(source, /aria-pressed=\{added\}/);
+  assert.ok(source.includes("InputGroupInput"));
+  assert.ok(source.includes("InputGroupAddon"));
+  assert.ok(source.includes("rounded-full"));
+  assert.ok(source.includes("isComposing"));
+  assert.ok(source.includes("keyCode !== 229"));
+  assert.ok(source.includes("Backspace in an empty input intentionally deletes nothing"));
+  // Tap-to-edit through the Badge render prop; Remove only while editing.
+  assert.ok(source.includes("render={"));
+  assert.ok(source.includes("Edit ${tag}"));
+  assert.ok(source.includes("startEditing"));
+  assert.ok(!source.includes("Remove ${tag}"));
+  // No persistent icon buttons and no icon sizing classes.
+  assert.ok(!source.includes("lucide-react"));
+  assert.ok(!source.includes("size-3"));
+  // Suggestion chips move: only non-added ones render.
+  assert.ok(source.includes("available"));
+  assert.ok(source.includes("aria-pressed") === false);
+  // Validation states per the forms rule.
+  assert.ok(source.includes("data-invalid"));
+  assert.ok(source.includes("aria-invalid"));
 });
 
-test("ConversationPicker uses Select composition with flag-plus-text labels", () => {
+test("VoiceCarousel uses the shadcn Carousel with dots and tap-to-select", () => {
+  const source = read("voice-carousel.tsx");
+  assert.ok(source.includes("CarouselContent"));
+  assert.ok(source.includes("CarouselItem"));
+  assert.ok(source.includes("CarouselPrevious"));
+  assert.ok(source.includes("CarouselNext"));
+  assert.ok(source.includes("setApi"));
+  assert.ok(source.includes("selectedScrollSnap"));
+  assert.ok(source.includes("Go to voice"));
+  assert.ok(source.includes("aria-pressed"));
+  // Samples play on user-initiated slides only, never on mount.
+  assert.ok(source.includes("interacted"));
+  assert.ok(source.includes("speechSynthesis"));
+  assert.ok(source.includes("aria-live=\"polite\""));
+  // Stock Card composition for slides, no icon sizing classes.
+  assert.ok(source.includes("CardContent"));
+  assert.ok(!source.includes("lucide-react"));
+});
+
+test("ConversationPicker keeps the Select composition with flag-plus-text labels", () => {
   const source = read("conversation-picker.tsx");
-  assert.match(source, /SelectGroup/);
-  assert.match(source, /SelectLabel/);
-  assert.match(source, /SelectItem/);
+  assert.ok(source.includes("SelectGroup"));
+  assert.ok(source.includes("SelectLabel"));
+  assert.ok(source.includes("SelectItem"));
   assert.ok(source.includes("<span aria-hidden>{lang.flag}</span>"));
   assert.ok(source.includes("{lang.label}"));
-  assert.ok(source.includes("ACCENT_LABEL[voice.accent]"));
-  assert.match(source, /voiceForLanguage/);
-  assert.ok(source.includes('aria-live="polite"'));
+  assert.ok(source.includes("VoiceCarousel"));
+  assert.ok(source.includes("voiceForLanguage"));
+  assert.ok(source.includes("aria-live=\"polite\""));
 });
 
 test("Form layout tokens: heading gaps, card padding, sticky JobPill-aware footer", () => {
   const source = read("form-layout.tsx");
-  assert.match(source, /mb-6 md:mb-8/);
-  assert.match(source, /gap-2/);
-  assert.match(source, /gap-6/);
-  assert.match(source, /py-4 md:py-6/);
-  assert.match(source, /--card-spacing/);
-  assert.match(source, /sticky/);
-  assert.match(source, /--job-pill-h/);
-  assert.match(source, /safe-area-inset-bottom/);
-  assert.match(source, /focus-within:static/);
+  assert.ok(source.includes("mb-6 md:mb-8"));
+  assert.ok(source.includes("gap-2"));
+  assert.ok(source.includes("gap-6"));
+  assert.ok(source.includes("py-4 md:py-6"));
+  assert.ok(source.includes("--card-spacing"));
+  assert.ok(source.includes("sticky"));
+  assert.ok(source.includes("--job-pill-h"));
+  assert.ok(source.includes("safe-area-inset-bottom"));
+  assert.ok(source.includes("focus-within:static"));
 });
 
-test("Button ships touch and icon-touch sizes (44px / 44x44)", () => {
+test("Button has no custom touch sizes; stock sizes stay intact", () => {
   const source = readFileSync(join(DIR, "../ui/button.tsx"), "utf8");
-  assert.match(source, /touch: "h-auto min-h-11/);
-  assert.match(source, /"icon-touch": "size-11/);
+  assert.ok(!source.includes("icon-touch"));
+  assert.ok(!source.includes("touch:"));
+  assert.ok(source.includes("cursor-pointer"));
+  assert.ok(source.includes("disabled:pointer-events-none"));
 });

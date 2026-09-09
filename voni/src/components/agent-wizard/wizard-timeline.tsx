@@ -5,9 +5,9 @@ import { cn } from "@/lib/utils";
 import { WIZARD_STEPS } from "./use-wizard-draft";
 
 /**
- * Three equal-width step buttons: Outcomes · Personality · Review.
- * One centered row (number + label, wraps when needed), 56px minimum —
- * explicitly overriding the base button height. No percentage display.
+ * Three equal-width step buttons. One centered row (number + label, wraps
+ * when needed), compact by default with a touch floor on coarse pointers.
+ * No percentage display.
  */
 export function TimelineBar({
   current,
@@ -32,7 +32,7 @@ export function TimelineBar({
               onClick={() => onSelect(i)}
               aria-current={active ? "step" : undefined}
               aria-label={`Step ${i + 1}: ${label}${done ? " (done)" : active ? " (current)" : ""}`}
-              className="flex h-auto min-h-14 flex-1 cursor-pointer items-center justify-center rounded-md px-1 py-2 text-center"
+              className="flex h-auto flex-1 cursor-pointer items-center justify-center rounded-md px-1 py-2 text-center pointer-coarse:min-h-14"
             >
               <span
                 className={cn(

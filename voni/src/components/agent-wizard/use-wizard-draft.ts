@@ -7,11 +7,12 @@ import {
   DEFAULT_WIZARD_VOICE_ID,
 } from "@/lib/agents/wizard";
 
-export const WIZARD_STEPS = ["Outcomes", "Personality", "Review"] as const;
+export const WIZARD_STEPS = ["Goals & Tasks", "Personality", "Review"] as const;
 
 /** The single source of truth both the user's mouse and the guide edit. */
 export type WizardDraft = {
-  outcomes: string[];
+  goals: string[];
+  tasks: string[];
   agentName: string;
   styleTraits: string[];
   conversationLanguage: ConversationLanguage;
@@ -20,7 +21,8 @@ export type WizardDraft = {
 };
 
 export const EMPTY_DRAFT: WizardDraft = {
-  outcomes: [],
+  goals: [],
+  tasks: [],
   agentName: "",
   styleTraits: [],
   conversationLanguage: DEFAULT_CONVERSATION_LANGUAGE,
@@ -29,7 +31,8 @@ export const EMPTY_DRAFT: WizardDraft = {
 
 /** Field keys the guide can flash when it applies a patch. */
 export type FlashKey =
-  | "outcomes"
+  | "goals"
+  | "tasks"
   | "agentName"
   | "styleTraits"
   | "voice"
@@ -119,7 +122,7 @@ export function useWizardDraft() {
   const canUndo = undoLabel !== null && historyLen > 0;
 
   const completed = [
-    draft.outcomes.length > 0,
+    draft.goals.length > 0,
     draft.agentName.trim().length > 0,
     false,
   ];

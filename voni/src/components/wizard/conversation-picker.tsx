@@ -9,26 +9,21 @@ import {
   SelectItem,
   SelectLabel,
   SelectTrigger,
-  SelectValue,
 } from "@/components/ui/select";
-import {
-  ACCENT_LABEL,
-  INPUT_LANGUAGES,
-  VOICES,
-  voiceLabel,
-} from "@/lib/agents/voices";
+import { INPUT_LANGUAGES, VOICES, voiceLabel } from "@/lib/agents/voices";
 import {
   voiceForLanguage,
   type ConversationLanguage,
 } from "@/lib/agents/wizard";
+import { VoiceCarousel } from "./voice-carousel";
 
 export type ConversationPickerProps = {
   language: ConversationLanguage;
   voiceId: string;
   /** Atomic language+voice update — the picker never leaves them mismatched. */
   onChange: (next: { language: ConversationLanguage; voiceId: string }) => void;
+  agentName: string;
   languageId?: string;
-  voiceSelectId?: string;
   description?: string;
 };
 
@@ -39,22 +34,22 @@ function languageMeta(code: string) {
 }
 
 /**
- * Shared conversation language + voice picker. The voice dropdown shows only
- * voices for the selected language (name + documented accent). Changing the
- * language keeps a compatible voice, otherwise falls back to anna for English
- * or the first catalog match — announced via a polite status message.
+ * Shared conversation language + voice picker. Language is a dropdown (flag
+ * plus text, never flag alone); voices are a swipeable carousel filtered to
+ * the selected language. Changing the language keeps a compatible voice,
+ * otherwise falls back to anna for English or the first catalog match —
+ * announced via a polite status message.
  */
 export function ConversationPicker({
   language,
   voiceId,
   onChange,
+  agentName,
   languageId = "conversation-language",
-  voiceSelectId = "conversation-voice",
   description,
 }: ConversationPickerProps) {
   const [notice, setNotice] = useState<string | null>(null);
   const voices = VOICES.filter((v) => v.languageCode === language);
-  const active = languageMeta(language);
 
   const selectLanguage = (code: string | null) => {
     if (!code) return;
@@ -74,8 +69,11 @@ export function ConversationPicker({
         <FieldLabel htmlFor={languageId}>Conversation language</FieldLabel>
         {description ? <FieldDescription>{description}</FieldDescription> : null}
         <Select value={language} onValueChange={selectLanguage}>
-          <SelectTrigger id={languageId} className="min-h-11 w-full">
-            <SelectValue />
+          <SelectTrigger id={languageId} className="w-full">
+            <span className="flex items-center gap-1.5">
+              <span aria-hidden>{languageMeta(language).flag}</span>
+              {languageMeta(language).label}
+            </span>
           </SelectTrigger>
           <SelectContent>
             <SelectGroup>
@@ -90,33 +88,23 @@ export function ConversationPicker({
           </SelectContent>
         </Select>
       </Field>
-      <Field>
-        <FieldLabel htmlFor={voiceSelectId}>Voice</FieldLabel>
-        <Select value={voiceId} onValueChange={(v) => v && onChange({ language, voiceId: v })}>
-          <SelectTrigger id={voiceSelectId} className="min-h-11 w-full">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectGroup>
-              <SelectLabel>{active.label} voices</SelectLabel>
-              {voices.map((voice) => (
-                <SelectItem key={voice.id} value={voice.id}>
-                  {voiceLabel(voice.id)}
-                  <span className="opacity-60">{ACCENT_LABEL[voice.accent]}</span>
-                </SelectItem>
-              ))}
-            </SelectGroup>
-          </SelectContent>
-        </Select>
+      <div>
+        <VoiceCarousel
+          voices={voices}
+          value={voiceId}
+          agentName={agentName}
+          onChange={(nextVoiceId) => {
+            setNotice(null);
+            onChange({ language, voiceId: nextVoiceId });
+          }}
+        />
         <span aria-live="polite" className="sr-only">
           {notice}
         </span>
         {notice ? (
-          <p aria-hidden className="text-muted-foreground text-xs">
-            {notice}
-          </p>
+          <p className="text-muted-foreground mt-2 text-xs">{notice}</p>
         ) : null}
-      </Field>
+      </div>
     </div>
   );
 }
