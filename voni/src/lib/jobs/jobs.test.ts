@@ -10,6 +10,8 @@ import {
 import { isTransientJobError } from "./processor";
 import { sanitizeJobError } from "./store";
 import { NoProviderAvailableError } from "@/lib/llm";
+import { REAL_ESTATE_TEMPLATE } from "@/lib/agents/config";
+import { deploymentFingerprint } from "@/lib/agents/provision";
 
 test("job kinds accept exactly the four known kinds", () => {
   assert.ok(jobKindSchema.safeParse("agent_generation").success);
@@ -80,7 +82,7 @@ test("target URLs route each kind to its result destination", () => {
   );
   assert.equal(
     targetUrlFor("integration_test", "job-3", { service: "groq" }),
-    "/settings?tab=platform",
+    "/operator",
   );
   assert.equal(
     targetUrlFor("lead_csv_import", "job-4", { campaignId }),
@@ -136,4 +138,16 @@ test("transient errors are retried, permanent ones are not", () => {
       ),
     ),
   );
+});
+
+test("deployment fingerprints are deterministic and configuration-sensitive", () => {
+  const first = deploymentFingerprint("Layla", REAL_ESTATE_TEMPLATE);
+  const repeated = deploymentFingerprint("Layla", { ...REAL_ESTATE_TEMPLATE });
+  const changed = deploymentFingerprint("Layla", {
+    ...REAL_ESTATE_TEMPLATE,
+    greeting: "Welcome to Voni.",
+  });
+  assert.equal(first, repeated);
+  assert.notEqual(first, changed);
+  assert.match(first, /^[0-9a-f]{64}$/);
 });

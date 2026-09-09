@@ -45,7 +45,7 @@ export async function GET() {
     return NextResponse.json(
       {
         error:
-          "Voice copilot isn't configured. Add an AssemblyAI key in Settings, or keep using mouse and keyboard.",
+          "Voice copilot isn't configured. Ask a Voni operator to finish AssemblyAI setup, or keep using mouse and keyboard.",
       },
       { status: 503 },
     );
@@ -55,7 +55,9 @@ export async function GET() {
   url.searchParams.set("expires_in_seconds", String(TOKEN_TTL_SECONDS));
   url.searchParams.set("max_session_duration_seconds", String(MAX_SESSION_SECONDS));
 
-  const res = await fetch(url, { headers: { Authorization: apiKey } });
+  const res = await fetch(url, {
+    headers: { Authorization: `Bearer ${apiKey}` },
+  });
   if (!res.ok) {
     const body = await res.text().catch(() => "");
     console.error(`[copilot-token] AssemblyAI ${res.status}: ${body.slice(0, 300)}`);
@@ -63,7 +65,7 @@ export async function GET() {
       {
         error:
           res.status === 401
-            ? "Voice copilot failed. The saved AssemblyAI key looks invalid — check Settings."
+            ? "Voice copilot failed. The AssemblyAI credential needs operator attention."
             : "Could not start the voice copilot right now.",
       },
       { status: 502 },

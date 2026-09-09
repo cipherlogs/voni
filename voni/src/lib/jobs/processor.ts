@@ -10,6 +10,7 @@ import {
   completeJob,
   failJob,
   getJobById,
+  heartbeatJob,
   isCancelRequested,
   markCancelled,
   requeueJob,
@@ -107,6 +108,9 @@ export async function runJob(jobId: string, database: JobDb = db): Promise<void>
   if (!claimed) return;
 
   const startedAt = Date.now();
+  const heartbeat = setInterval(() => {
+    void heartbeatJob(jobId, JOB_LEASE_MS, database).catch(() => undefined);
+  }, Math.floor(JOB_LEASE_MS / 3));
   try {
     const schema = JOB_INPUT_SCHEMAS[claimed.kind as JobKind];
     if (!schema) {
@@ -152,8 +156,14 @@ export async function runJob(jobId: string, database: JobDb = db): Promise<void>
     console.warn(
       `[jobs] job ${jobId} kind=${claimed.kind} status=failed attempt=${attempts} code=${code} durationMs=${Date.now() - startedAt}`,
     );
+  } finally {
+    clearInterval(heartbeat);
   }
 }
+
+export const jobExecutor = {
+  execute: runJob,
+};
 
 /** Read-only peek for the queue consumer: skip messages for terminal jobs. */
 export async function isJobQueued(id: string, database: JobDb = db): Promise<boolean> {

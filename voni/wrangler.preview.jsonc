@@ -1,0 +1,25 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  // Isolated local-preview config for the e2e rig (myplan.md Task 19).
+  // NEVER used for deploys. Points at the candidate's own build output,
+  // emulates R2 locally, and keeps the incremental-cache bucket separate
+  // from CSV staging. No --remote, no Cloudflare creates.
+  "main": "./worker.ts",
+  "name": "voni-e2e-preview",
+  "compatibility_date": "2026-09-01",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "assets": {
+    "directory": ".open-next/assets",
+    "binding": "ASSETS"
+  },
+  "r2_buckets": [
+    {
+      "binding": "NEXT_INC_CACHE_R2_BUCKET",
+      "bucket_name": "voni-inc-cache-e2e"
+    },
+    {
+      "binding": "CSV_STAGING",
+      "bucket_name": "voni-csv-staging-e2e"
+    }
+  ]
+}

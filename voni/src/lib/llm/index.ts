@@ -33,7 +33,7 @@ export class NoProviderAvailableError extends Error {
       attempts.length === 0
         ? `No LLM provider is configured. Set META_API_KEY for the environment-only ${META_PROVIDER.label}, or add a free-provider account for one of: ${providers
             .map((p) => p.label)
-            .join(", ")} in Settings → Platform.`
+            .join(", ")} through the server-side operator credential workflow.`
         : `Every configured LLM attempt failed (${attempts.length}):\n` +
           attempts.map((a) => `  - ${a.provider}: ${a.error}`).join("\n");
     super(detail);

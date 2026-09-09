@@ -1,38 +1,40 @@
-import { MAX_JOB_ATTEMPTS, JOB_LEASE_MS } from "./processor";
+import { jobExecutor, MAX_JOB_ATTEMPTS, JOB_LEASE_MS } from "./processor";
 import {
   deleteTerminalJobsOlderThan,
   findAbandonedJobs,
   findMissedJobs,
+  markQueuedStage,
   recoverAbandonedJob,
 } from "./store";
 
-export const MISSED_JOB_MS = 10 * 60 * 1000;
+export const MISSED_JOB_MS = 45 * 1000;
 export const TERMINAL_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
 /**
  * Periodic maintenance, run by the worker's scheduled handler (production)
  * via POST /api/internal/jobs/sweep:
  *
- * - Missed queue messages are republished so claiming can proceed. Claiming
- *   is idempotent, so a message that was merely slow causes no harm.
+ * - Missed queue messages are claimed and executed directly. Claiming is
+ *   idempotent, so overlapping cron invocations and late delivery converge.
  * - Abandoned leases (worker died mid-flight) are taken over while attempts
- *   remain, then republished; exhausted ones are already failed by the
+ *   remain, then executed directly; exhausted ones are already failed by the
  *   takeover.
  * - Terminal jobs past retention are hard-deleted.
  */
 export async function sweepJobs(
-  publish: (message: { jobId: string; kind: string }) => Promise<void>,
-): Promise<{ republished: number; recovered: number; exhausted: number; deleted: number }> {
-  let republished = 0;
+  execute: (jobId: string) => Promise<void> = jobExecutor.execute,
+): Promise<{ started: number; recovered: number; exhausted: number; deleted: number }> {
+  let started = 0;
   let recovered = 0;
   let exhausted = 0;
 
   const missed = await findMissedJobs(MISSED_JOB_MS);
   for (const job of missed) {
-    await publish({ jobId: job.id, kind: job.kind }).catch((error) =>
-      console.error(`[jobs] republish failed for ${job.id}`, error),
+    if (!(await markQueuedStage(job.id, "recovery-started"))) continue;
+    await execute(job.id).catch((error) =>
+      console.error(`[jobs] recovery execution failed for ${job.id}: ${error instanceof Error ? error.name : "unknown"}`),
     );
-    republished += 1;
+    started += 1;
   }
 
   const abandoned = await findAbandonedJobs();
@@ -44,8 +46,9 @@ export async function sweepJobs(
       console.warn(`[jobs] job ${job.id} lease-exhausted`);
       continue;
     }
-    await publish({ jobId: job.id, kind: job.kind }).catch((error) =>
-      console.error(`[jobs] republish failed for ${job.id}`, error),
+    await markQueuedStage(job.id, "recovery-started");
+    await execute(job.id).catch((error) =>
+      console.error(`[jobs] recovered execution failed for ${job.id}: ${error instanceof Error ? error.name : "unknown"}`),
     );
     recovered += 1;
     console.warn(`[jobs] job ${job.id} lease recovered, requeued`);
@@ -53,5 +56,5 @@ export async function sweepJobs(
 
   const deleted = await deleteTerminalJobsOlderThan(TERMINAL_RETENTION_MS);
   if (deleted > 0) console.log(`[jobs] retention swept ${deleted} terminal jobs`);
-  return { republished, recovered, exhausted, deleted };
+  return { started, recovered, exhausted, deleted };
 }

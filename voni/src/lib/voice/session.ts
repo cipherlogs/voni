@@ -31,6 +31,12 @@ import { acquireMic, releaseMic } from "./mic-owner";
 
 const TARGET_SAMPLE_RATE = 24000;
 
+export const VOICE_MIC_CONSTRAINTS: MediaTrackConstraints = {
+  echoCancellation: true,
+  noiseSuppression: false,
+  autoGainControl: true,
+};
+
 /**
  * Two mutually exclusive ways to configure a session, matching the API:
  *
@@ -330,6 +336,13 @@ type QueuedUpdate = {
   reject: (error: Error) => void;
 };
 
+const SENSITIVE_TURN_DETECTION: TurnDetection = {
+  min_silence: 1400,
+  max_silence: 4000,
+  interrupt_response: true,
+  interruption_delay: 0,
+};
+
 /** One scheduled reply chunk. Direct source -> destination per AssemblyAI docs. */
 type QueuedVoice = {
   node: AudioBufferSourceNode;
@@ -347,7 +360,10 @@ export class VoiceSession {
   private state: VoiceState = "idle";
   private onPageHide = () => this.sendEnd();
   private toolCoordinator: ToolCoordinator | null = null;
-  private restoreFastPacing = false;
+  /** Exact turn-detection state to restore after one sensitive value turn. */
+  private pendingTurnDetectionRestore: TurnDetection | null | undefined;
+  /** Last server-acknowledged turn-detection state. Null means adaptive defaults. */
+  private activeTurnDetection: TurnDetection | null = null;
   /** Resume handle from `session.ready`. Null until the first ready. */
   private sessionId: string | null = null;
   private tokenFetcher: TokenFetcher | null = null;
@@ -449,6 +465,11 @@ export class VoiceSession {
         config.mode === "agent" && agentId
           ? { mode: "agent", agentId }
           : config;
+      this.activeTurnDetection =
+        resolved.mode === "inline" && resolved.turnDetection
+          ? { ...resolved.turnDetection }
+          : null;
+      this.pendingTurnDetectionRestore = undefined;
 
       if (!acquireMic(this.micOwner)) {
         throw new VoiceStartError(
@@ -459,7 +480,7 @@ export class VoiceSession {
       try {
         acquiredStream = await navigator.mediaDevices.getUserMedia({
           // See note 2 above — both of these matter.
-          audio: { echoCancellation: true, noiseSuppression: false },
+          audio: VOICE_MIC_CONSTRAINTS,
         });
       } catch (e) {
         releaseMic(this.micOwner);
@@ -779,11 +800,12 @@ export class VoiceSession {
           itemId: typeof msg.item_id === "string" ? msg.item_id : null,
           text: typeof msg.text === "string" ? msg.text : "",
         });
-        if (this.restoreFastPacing) {
-          this.restoreFastPacing = false;
+        if (this.pendingTurnDetectionRestore !== undefined) {
+          const turnDetection = this.pendingTurnDetectionRestore;
+          this.pendingTurnDetectionRestore = undefined;
           void this.updateConfig({
             input: {
-              turn_detection: { min_silence: 100, max_silence: 500 },
+              turn_detection: turnDetection,
             },
           }).catch((error: unknown) =>
             this.handlers.onError?.({
@@ -845,12 +867,15 @@ export class VoiceSession {
 
   private async prepareSensitiveCapture() {
     try {
+      const previous = this.activeTurnDetection
+        ? { ...this.activeTurnDetection }
+        : null;
       await this.updateConfig({
         input: {
-          turn_detection: { min_silence: 500, max_silence: 2000 },
+          turn_detection: SENSITIVE_TURN_DETECTION,
         },
       });
-      this.restoreFastPacing = true;
+      this.pendingTurnDetectionRestore = previous;
       return {
         ok: true as const,
         data: { ready: true, instruction: "Ask for the sensitive field now." },
@@ -942,6 +967,15 @@ export class VoiceSession {
     const item = this.updateInFlight;
     if (item.timer) clearTimeout(item.timer);
     this.updateInFlight = null;
+    const input = item.session.input;
+    if (input && typeof input === "object" && "turn_detection" in input) {
+      const turnDetection = (input as { turn_detection?: unknown })
+        .turn_detection;
+      this.activeTurnDetection =
+        turnDetection && typeof turnDetection === "object"
+          ? { ...(turnDetection as TurnDetection) }
+          : null;
+    }
     item.resolve();
     if (!this.configSynced) {
       this.configSynced = true;

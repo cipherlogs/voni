@@ -6,7 +6,7 @@
  * Sources (single owners, never duplicated here):
  * - dashboard nav: NAV_ITEMS in src/components/app-sidebar.tsx
  * - section titles: SECTION_TITLES in src/components/app-header.tsx
- * - settings tabs: SETTINGS_TABS in src/components/settings-view.tsx (parsed,
+ * - settings tabs: SETTINGS_TABS in src/lib/settings-tabs.ts (parsed,
  *   not imported — that module pulls server actions, which need a database)
  * - which routes exist: page.tsx files under src/app
  *
@@ -24,6 +24,7 @@ const OUT = join(SRC, "lib", "copilot", "app-manifest.ts");
 /** Routes voice must never offer (auth gates, not app screens). */
 const PUBLIC_ROUTES = new Set(["/"]);
 const AUTH_ROUTES = new Set(["/login", "/signup"]);
+const PLATFORM_ADMIN_ROUTES = new Set(["/operator"]);
 
 /**
  * Vocabulary users actually say, per route. The generator fails loudly on a
@@ -47,6 +48,7 @@ const PHRASES: Record<string, string[]> = {
   "/numbers": ["phone numbers", "numbers", "calling numbers", "my numbers"],
   "/jobs": ["jobs", "background jobs", "job status"],
   "/settings": ["settings", "voice copilot", "voice control", "voice settings", "preferences"],
+  "/operator": ["operator", "platform operator", "platform status"],
 };
 
 /** Titles for voice-reachable routes owned by neither the sidebar nor the header. */
@@ -56,6 +58,7 @@ const TITLE_OVERRIDES: Record<string, string> = {
   "/leads/[id]": "Lead details", "/calls/[id]": "Call details",
   "/agents/new": "New agent",
   "/campaigns/new": "New campaign",
+  "/operator": "Platform operator",
 };
 
 const EXAMPLES: Record<string, string[]> = {
@@ -138,6 +141,11 @@ const EXAMPLES: Record<string, string[]> = {
     "Open settings",
     "Open the Voice copilot tab",
     "Set voice to Ivy"
+  ],
+  "/operator": [
+    "Open the operator area",
+    "Show platform readiness",
+    "Read provider status"
   ]
 };
 
@@ -157,6 +165,8 @@ const APP_FEATURE_TERMS = [
   "workspace",
   "services",
   "appearance",
+  "operator",
+  "platform readiness",
 ];
 
 function walk(dir: string, out: string[] = []): string[] {
@@ -188,9 +198,9 @@ function titleFor(route: string): string {
 }
 
 function settingsTabs(): Array<{ value: string; label: string; adminOnly: boolean }> {
-  const source = readFileSync(join(SRC, "components", "settings-view.tsx"), "utf8");
+  const source = readFileSync(join(SRC, "lib", "settings-tabs.ts"), "utf8");
   const block = source.match(/SETTINGS_TABS = \[([\s\S]*?)\] as const;/)?.[1];
-  if (!block) throw new Error("generate-app-manifest: SETTINGS_TABS block not found in settings-view.tsx.");
+  if (!block) throw new Error("generate-app-manifest: SETTINGS_TABS block not found in lib/settings-tabs.ts.");
   const tabs = [...block.matchAll(/\{\s*value:\s*"([^"]+)",\s*label:\s*"([^"]+)"(,\s*adminOnly:\s*true)?/g)].map(
     (m) => ({ value: m[1], label: m[2], adminOnly: Boolean(m[3]) }),
   );
@@ -209,8 +219,8 @@ function build(): string {
         `generate-app-manifest: no voice phrases for ${route} — add them to PHRASES in scripts/generate-app-manifest.mts.`,
       );
     }
-    const access = PUBLIC_ROUTES.has(route) ? "public" : AUTH_ROUTES.has(route) ? "auth" : "signed-in";
-    const navigationKind = access !== "signed-in" ? "none" : route.includes("[") ? "record" : "static";
+    const access = PUBLIC_ROUTES.has(route) ? "public" : AUTH_ROUTES.has(route) ? "auth" : PLATFORM_ADMIN_ROUTES.has(route) ? "platform-admin" : "signed-in";
+    const navigationKind = access === "public" || access === "auth" ? "none" : route.includes("[") ? "record" : "static";
     const title = titleFor(route);
     const examples = EXAMPLES[route];
     if (!examples || examples.length !== 3 || examples.some((e) => !e.trim())) {
@@ -224,7 +234,7 @@ function build(): string {
     "// Regenerate with `npm run copilot:manifest`; CI verifies with `npm run copilot:manifest:check`.",
     "",
     "export const APP_MANIFEST_VERSION = 2;",
-    "export type AppDestination = { route: string; title: string; phrases: string[]; examples: string[]; access: \"public\" | \"auth\" | \"signed-in\"; navigationKind: \"none\" | \"static\" | \"record\" };",
+    "export type AppDestination = { route: string; title: string; phrases: string[]; examples: string[]; access: \"public\" | \"auth\" | \"signed-in\" | \"platform-admin\"; navigationKind: \"none\" | \"static\" | \"record\" };",
     "",
     "export const APP_DESTINATIONS: AppDestination[] = [",
     ...destinations.map((d) => `  ${JSON.stringify(d)},`),

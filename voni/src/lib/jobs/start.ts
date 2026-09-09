@@ -8,6 +8,7 @@ import {
   type JobKind,
 } from "./kinds";
 import { enqueueJobMessage } from "./queue";
+import type { DispatchResult } from "./contracts";
 import {
   createJob,
   findActiveJobs,
@@ -33,6 +34,7 @@ export type StartJobOptions = {
 export type StartedJob = {
   job: JobRow;
   created: boolean;
+  dispatch: DispatchResult | null;
 };
 
 function defaultTitle(kind: JobKind, input: Record<string, unknown>): string {
@@ -107,7 +109,7 @@ export async function startJob(
         (j.input as { configVersion?: number }).configVersion ===
           input.configVersion,
     );
-    if (duplicate) return { job: duplicate, created: false };
+    if (duplicate) return { job: duplicate, created: false, dispatch: null };
     await db
       .update(agents)
       .set({
@@ -133,7 +135,7 @@ export async function startJob(
         (prev.accountId ?? null) === ((input.accountId as string) ?? null)
       );
     });
-    if (duplicate) return { job: duplicate, created: false };
+    if (duplicate) return { job: duplicate, created: false, dispatch: null };
   }
 
   if (kind === "lead_csv_import") {
@@ -163,6 +165,7 @@ export async function startJob(
   });
   // created=false means a resubmission: the original is already queued or
   // running, so there is nothing new to enqueue.
+  let dispatch: DispatchResult | null = null;
   if (created) {
     const targetUrl = targetUrlFor(kind, job.id, input as never);
     await db
@@ -170,7 +173,7 @@ export async function startJob(
       .set({ targetUrl, updatedAt: new Date() })
       .where(eq(backgroundJobs.id, job.id));
     job.targetUrl = targetUrl;
-    await enqueueJobMessage({ jobId: job.id, kind });
+    dispatch = await enqueueJobMessage({ jobId: job.id, kind });
   }
-  return { job, created };
+  return { job, created, dispatch };
 }

@@ -9,7 +9,9 @@ const PROTECTED_PREFIXES = [
   "/leads",
   "/numbers",
   "/calls",
+  "/jobs",
   "/settings",
+  "/operator",
 ];
 
 export function proxy(request: NextRequest) {
@@ -35,6 +37,8 @@ export const config = {
     "/leads/:path*",
     "/numbers/:path*",
     "/calls/:path*",
+    "/jobs/:path*",
     "/settings/:path*",
+    "/operator/:path*",
   ],
 };

@@ -1,38 +1,30 @@
+import { Suspense } from "react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Bot, Plus } from "lucide-react";
+import { CardListSkeleton } from "@/components/page-skeletons";
 import { listAgents } from "./actions";
 import type { AgentConfig } from "@/lib/agents/config";
 import { RouteBrief } from "@/components/copilot/route-brief";
 
-export default async function AgentsPage() {
+/**
+ * Authorized list leaf: count-based brief and rows resolve after the shell.
+ */
+async function AgentsList() {
   const rows = await listAgents();
 
   return (
-    <div className="flex flex-col gap-6">
+    <>
       <RouteBrief
         route="/agents"
         brief={`Agent library: ${rows.length} saved agents. New agents are built on the creation screen.`}
       />
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Agents</h1>
-          <p className="text-muted-foreground text-sm">
-            Reusable AI workers with a mission, rules, tools, and channels.
-          </p>
-        </div>
-        <Button nativeButton={false} render={<Link href="/agents/new" />}>
-          <Plus />
-          New agent
-        </Button>
-      </div>
-
       {rows.length === 0 ? (
         <Card>
           <CardContent className="flex flex-col items-center gap-3 py-16 text-center">
-            <Bot className="text-muted-foreground h-10 w-10" />
+            <Bot className="text-muted-foreground size-10" />
             <div>
               <p className="font-medium">No agents yet</p>
               <p className="text-muted-foreground text-sm">
@@ -95,6 +87,35 @@ export default async function AgentsPage() {
           })}
         </div>
       )}
+    </>
+  );
+}
+
+export default function AgentsPage() {
+  return (
+    <div data-testid="agents-shell" className="flex flex-col gap-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">Agents</h1>
+          <p className="text-muted-foreground text-sm">
+            Reusable AI workers with a mission, rules, tools, and channels.
+          </p>
+        </div>
+        <Button nativeButton={false} render={<Link href="/agents/new" />}>
+          <Plus />
+          New agent
+        </Button>
+      </div>
+
+      <Suspense
+        fallback={
+          <div role="status" aria-label="Loading agents">
+            <CardListSkeleton />
+          </div>
+        }
+      >
+        <AgentsList />
+      </Suspense>
     </div>
   );
 }

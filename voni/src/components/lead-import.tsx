@@ -1,7 +1,7 @@
 "use client";
 
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import { Field, FieldLabel } from "@/components/ui/field";
 import { useJobs } from "@/components/jobs/jobs-provider";
 import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -112,8 +112,8 @@ export function LeadImport({ campaignId }: { campaignId: string }) {
   return (
     <div className="flex flex-col gap-4" data-copilot-form="csv-import" data-copilot-version={copilotVersion}>
       <div className="flex flex-wrap items-end gap-3">
-        <div className="grid gap-2">
-          <Label htmlFor={`csv-${campaignId}`}>Choose CSV file</Label>
+        <Field className="w-auto">
+          <FieldLabel htmlFor={`csv-${campaignId}`}>Choose CSV file</FieldLabel>
           <Input
             ref={inputRef}
             id={`csv-${campaignId}`}
@@ -130,9 +130,9 @@ export function LeadImport({ campaignId }: { campaignId: string }) {
               setError(file && file.size > 2_000_000 ? "That file is larger than 2 MB. Split it and try again." : null);
             }}
           />
-        </div>
+        </Field>
         <div className="grid gap-2">
-          <Label aria-hidden="true" className="invisible select-none">Import</Label>
+          <FieldLabel aria-hidden="true" className="invisible select-none">Import</FieldLabel>
           <LoadingButton
             variant="outline"
             data-copilot-effect="mutation"

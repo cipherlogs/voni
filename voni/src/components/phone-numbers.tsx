@@ -2,16 +2,17 @@
 
 import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
-import { toast } from "sonner";
+import { toast } from "@/components/ui/toast";
 import { LoadingButton } from "@/components/loading-button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
@@ -81,7 +82,7 @@ export function PhoneNumbers({
       if (!result.ok) {
         setError(result.message ?? "That did not work.");
       } else {
-        if (successMessage) toast.success(successMessage);
+        if (successMessage) toast.add({ type: "success", title: successMessage });
         router.refresh();
       }
     });
@@ -93,46 +94,48 @@ export function PhoneNumbers({
           <CardTitle className="text-base">Add a number</CardTitle>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
-          <div className="grid gap-4 sm:grid-cols-3">
-            <div className="grid gap-2">
-              <Label htmlFor="new-number">Number</Label>
+          <FieldGroup className="grid gap-4 sm:grid-cols-3">
+            <Field>
+              <FieldLabel htmlFor="new-number">Number</FieldLabel>
               <Input
                 id="new-number"
                 value={newNumber}
                 onChange={(e) => setNewNumber(e.target.value)}
                 placeholder="+971 4 123 4567"
               />
-            </div>
-            <div className="grid gap-2">
-              <Label htmlFor="new-label">Label</Label>
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="new-label">Label</FieldLabel>
               <Input
                 id="new-label"
                 value={newLabel}
                 onChange={(e) => setNewLabel(e.target.value)}
                 placeholder="Marina office line"
               />
-            </div>
-            <div className="grid gap-2">
-              <Label>Answered by</Label>
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="new-agent">Answered by</FieldLabel>
               <Select
                 value={newAgent}
                 onValueChange={(v) => setNewAgent(v ?? UNBOUND)}
               >
-                <SelectTrigger aria-label="Answered by" className="w-full">
+                <SelectTrigger id="new-agent" aria-label="Answered by" className="w-full">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value={UNBOUND}>Platform default agent</SelectItem>
-                  {agents.map((agent) => (
-                    <SelectItem key={agent.id} value={agent.id}>
-                      {agent.name}
-                      {agent.deployed ? "" : " (draft)"}
-                    </SelectItem>
-                  ))}
+                  <SelectGroup>
+                    <SelectItem value={UNBOUND}>Platform default agent</SelectItem>
+                    {agents.map((agent) => (
+                      <SelectItem key={agent.id} value={agent.id}>
+                        {agent.name}
+                        {agent.deployed ? "" : " (draft)"}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
                 </SelectContent>
               </Select>
-            </div>
-          </div>
+            </Field>
+          </FieldGroup>
           <div>
             <LoadingButton
               disabled={!newNumber.trim()}
@@ -222,14 +225,16 @@ export function PhoneNumbers({
                               <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
-                              <SelectItem value={UNBOUND}>
-                                Platform default agent
-                              </SelectItem>
-                              {agents.map((agent) => (
-                                <SelectItem key={agent.id} value={agent.id}>
-                                  {agent.name}
+                              <SelectGroup>
+                                <SelectItem value={UNBOUND}>
+                                  Platform default agent
                                 </SelectItem>
-                              ))}
+                                {agents.map((agent) => (
+                                  <SelectItem key={agent.id} value={agent.id}>
+                                    {agent.name}
+                                  </SelectItem>
+                                ))}
+                              </SelectGroup>
                             </SelectContent>
                           </Select>
                           {/* A bound but unpublished agent silently falls back

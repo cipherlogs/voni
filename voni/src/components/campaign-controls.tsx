@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
-import { toast } from "sonner";
+import { toast } from "@/components/ui/toast";
 import { LoadingButton } from "@/components/loading-button";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { TriangleAlert, Pause, Play } from "lucide-react";
@@ -37,7 +37,7 @@ export function CampaignControls({
       if (!result.ok) {
         setError(result.message);
       } else {
-        toast.success(next === "active" ? "Campaign activated." : "Campaign paused.");
+        toast.add({ type: "success", title: next === "active" ? "Campaign activated." : "Campaign paused." });
         router.refresh();
       }
     });

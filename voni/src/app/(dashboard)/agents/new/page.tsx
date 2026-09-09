@@ -3,7 +3,7 @@
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { z } from "zod";
 import { useRouter, useSearchParams } from "next/navigation";
-import { toast } from "sonner";
+import { toast } from "@/components/ui/toast";
 import { ArrowLeft, ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -49,10 +49,8 @@ import { createAgentAction } from "../actions";
  * single-textarea page this replaces: the draft is never auto-saved, and a
  * ?job= link restores the watched result.
  */
-function NewAgentInner() {
+function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
   const router = useRouter();
-  const searchParams = useSearchParams();
-  const restoreJobId = searchParams.get("job");
   const wiz = useWizardDraft();
   const [draft, setDraft] = useState<AgentConfig | null>(null);
   const [source, setSource] = useState<string | null>(null);
@@ -144,7 +142,7 @@ function NewAgentInner() {
       return;
     }
     if (started.deduped) {
-      toast("A matching generation is already running — showing that one.");
+      toast.add({ title: "A matching generation is already running — showing that one." });
     }
     router.replace("/agents/new");
   };
@@ -166,14 +164,14 @@ function NewAgentInner() {
     };
     const result = await createAgentAction(name, merged);
     if (!result.ok) {
-      toast.error(result.message);
+      toast.add({ type: "error", title: result.message });
       return;
     }
     if (result.deployment === "attention") {
       router.push(`/agents/${result.id}?deployment=attention`);
       return;
     }
-    toast.success("Agent saved — voice deployment is running");
+    toast.add({ type: "success", title: "Agent saved — voice deployment is running" });
     router.push(`/agents/${result.id}`);
   };
 
@@ -325,7 +323,6 @@ function NewAgentInner() {
   if (draft) {
     return (
       <div className="flex flex-col gap-6">
-        <BackLink href="/agents" label="Agents" />
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <h1 className="text-2xl font-semibold tracking-tight">
@@ -361,8 +358,7 @@ function NewAgentInner() {
   }
 
   return (
-    <div className="mx-auto flex w-full max-w-3xl flex-col gap-6">
-      <BackLink href="/agents" label="Agents" />
+    <>
       <div>
           <h1 className="text-2xl font-semibold tracking-tight">New agent</h1>
           <p className="text-muted-foreground text-sm">
@@ -429,14 +425,41 @@ function NewAgentInner() {
 
       {/* Screen-reader status for backgrounded generation outside the card. */}
       {running && backgrounded ? <span className="sr-only">Generation continuing in the background.</span> : null}
+    </>
+  );
+}
+
+/**
+ * Stable outer frame (Section 5): back link + New agent heading + wizard
+ * frame paint without awaiting the URL. Only ?job= restoration reads the
+ * search params, inside the suspended leaf. Wizard draft, review, and
+ * confirmation behavior are unchanged.
+ */
+export default function NewAgentPage() {
+  return (
+    <div data-testid="agents-new-shell" className="mx-auto flex w-full max-w-3xl flex-col gap-6">
+      <BackLink href="/agents" label="Agents" />
+      <Suspense
+        fallback={
+          <div role="status" aria-label="Loading agent creator">
+            <div>
+              <h1 className="text-2xl font-semibold tracking-tight">New agent</h1>
+              <p className="text-muted-foreground text-sm">
+                Answer four quick steps and we&apos;ll generate a starting
+                mission, tasks, and rules, editable afterward.
+              </p>
+            </div>
+          </div>
+        }
+      >
+        <RestoreJobIdReader />
+      </Suspense>
     </div>
   );
 }
 
-export default function NewAgentPage() {
-  return (
-    <Suspense>
-      <NewAgentInner />
-    </Suspense>
-  );
+/** URL-dependent leaf: owns the useSearchParams call. */
+function RestoreJobIdReader() {
+  const searchParams = useSearchParams();
+  return <NewAgentInner restoreJobId={searchParams.get("job")} />;
 }

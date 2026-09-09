@@ -17,9 +17,17 @@ type Filter = "active" | "review" | "all";
  * Full history surface for background work. The pill handles ambient
  * awareness; this page handles triage at volume: filter, search, retry,
  * dismiss. Every job carries a result destination and a retry path.
+ *
+ * URL-dependent record-search (?search=) lives in its own suspended leaf so
+ * ordinary filtering never waits on it and vice versa.
  */
-function JobsContent() {
+function RecordSearchReader() {
   const searchId = useSearchParams().get("search");
+  if (!searchId) return null;
+  return <RecordSearchDestination key={searchId} id={searchId} />;
+}
+
+function JobsContent() {
   const { jobs, activeJobs, unreadJobs, dismissJob } = useJobs();
   const [filter, setFilter] = useState<Filter>("all");
   const [query, setQuery] = useState("");
@@ -56,20 +64,13 @@ function JobsContent() {
   };
 
   return (
-    <div className="flex flex-col gap-6">
+    <>
       <RouteBrief
         route="/jobs"
         brief={`Background jobs: ${activeJobs.length} active, ${unreadJobs.length} need review, ${jobs.length} total.`}
       />
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Background jobs</h1>
-          <p className="text-muted-foreground text-sm">
-            Slow work keeps running while you browse Voni. Results stay here
-            for 30 days unless dismissed.
-          </p>
-        </div>
-        {finished.length > 0 ? (
+      {finished.length > 0 ? (
+        <div className="flex justify-end">
           <Button
             variant="outline"
             size="sm"
@@ -79,10 +80,12 @@ function JobsContent() {
             {dismissing ? <LoaderCircle className="animate-spin" /> : null}
             Dismiss all finished
           </Button>
-        ) : null}
-      </div>
+        </div>
+      ) : null}
 
-      {searchId ? <RecordSearchDestination key={searchId} id={searchId} /> : null}
+      <Suspense fallback={null}>
+        <RecordSearchReader />
+      </Suspense>
       <div className="flex flex-col gap-4">
         <div className="flex flex-wrap items-center gap-3">
           <Tabs
@@ -117,7 +120,7 @@ function JobsContent() {
 
         {visible.length === 0 ? (
           <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed py-12 text-center">
-            <CircleCheck className="text-muted-foreground h-8 w-8" />
+            <CircleCheck className="text-muted-foreground size-8" />
             <p className="text-sm font-medium">
               {jobs.length === 0
                 ? "Nothing running"
@@ -137,10 +140,32 @@ function JobsContent() {
           </div>
         )}
       </div>
-    </div>
+    </>
   );
 }
 
 export default function JobsPage() {
-  return <Suspense fallback={<p role="status">Loading jobs…</p>}><JobsContent /></Suspense>;
+  return (
+    <div data-testid="jobs-shell" className="flex flex-col gap-6">
+      <div>
+        <h1 className="text-2xl font-semibold tracking-tight">Background jobs</h1>
+        <p className="text-muted-foreground text-sm">
+          Slow work keeps running while you browse Voni. Results stay here
+          for 30 days unless dismissed.
+        </p>
+      </div>
+      {/* Ordinary filtering/navigation paints with the shell; the
+          URL-selected record search resolves in its own leaf above. */}
+      <Suspense
+        fallback={
+          <div role="status" aria-label="Loading jobs" className="flex flex-col gap-4">
+            <div className="bg-muted h-10 w-64 animate-pulse rounded-md" />
+            <div className="bg-muted h-16 w-full animate-pulse rounded-md" />
+          </div>
+        }
+      >
+        <JobsContent />
+      </Suspense>
+    </div>
+  );
 }

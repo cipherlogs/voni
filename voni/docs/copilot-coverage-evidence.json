@@ -1,0 +1,105 @@
+{
+  "schemaVersion": 1,
+  "recordedOn": "2026-09-08",
+  "execution": "browser/tool simulation plus limited controlled speech through the host physical analog sink and microphone",
+  "liveVoicePerformed": true,
+  "manifest": {
+    "version": 2,
+    "pageRoutes": 17,
+    "signedInRoutes": 13,
+    "platformAdminRoutes": 1,
+    "staticDestinations": 10,
+    "dynamicRecordTemplates": 4,
+    "publicOrAuthRoutes": 3,
+    "examplesPerRoute": 3
+  },
+  "routeAudit": [
+    { "route": "/dashboard", "registered": true, "navigationCompleted": true, "controlsRead": 10 },
+    { "route": "/agents", "registered": true, "navigationCompleted": true, "controlsRead": 13 },
+    { "route": "/agents/new", "registered": true, "navigationCompleted": true, "controlsRead": 21 },
+    { "route": "/agents/[id]", "registered": true, "openedFromAuthorizedReference": true, "controlsRead": 69 },
+    { "route": "/campaigns", "registered": true, "navigationCompleted": true, "controlsRead": 12 },
+    { "route": "/campaigns/new", "registered": true, "navigationCompleted": true, "controlsRead": 27 },
+    { "route": "/campaigns/[id]", "registered": true, "openedFromAuthorizedReference": true, "controlsRead": 14 },
+    { "route": "/leads", "registered": true, "navigationCompleted": true, "controlsRead": 33 },
+    { "route": "/leads/[id]", "registered": true, "openedFromAuthorizedReference": true, "controlsRead": 10 },
+    { "route": "/calls/[id]", "registered": true, "openedFromAuthorizedReference": true, "controlsRead": 10 },
+    { "route": "/numbers", "registered": true, "navigationCompleted": true, "controlsRead": 14 },
+    { "route": "/jobs", "registered": true, "navigationCompleted": true, "controlsRead": 14 },
+    { "route": "/settings", "registered": true, "navigationCompleted": true, "controlsRead": 9, "platformSecretControls": 0 },
+    { "route": "/operator", "access": "platform-admin", "authorizationFiltered": true, "unauthorizedResult": "explicit denial", "allowlistedBrowserVerified": false },
+    { "route": "/", "copilotPresent": false, "access": "public" },
+    { "route": "/login", "copilotPresent": false, "access": "auth" },
+    { "route": "/signup", "copilotPresent": false, "access": "auth" }
+  ],
+  "authenticationNavigation": {
+    "signedOut": "login and signup forms rendered; an absolute next value was normalized to /dashboard",
+    "authenticated": "development auth bypass sent /login?next=/settings to /settings and /signup with an unsafe next value to /dashboard without browser or Next runtime errors",
+    "landingHeader": "Open dashboard was the only auth action after client navigation, refresh, and browser Back",
+    "realGoogleSignOutVerified": false
+  },
+  "recordDiscovery": [
+    { "kind": "agents", "matches": 2, "ambiguous": true, "duplicateReusedJob": true, "opened": true },
+    { "kind": "campaigns", "matches": 1, "duplicateReusedJob": true, "opened": true },
+    { "kind": "leads", "firstPage": 20, "secondPage": 2, "duplicateReusedJob": true, "opened": true },
+    { "kind": "calls", "matches": 1, "duplicateReusedJob": true, "opened": true }
+  ],
+  "observedActuation": {
+    "typedEditBeforeConfirmation": "refused without overwriting the typed value",
+    "confirmedTimeInput": "accepted and completed after observing 10:30",
+    "settingsTab": "accepted and completed after observing Voice copilot selected",
+    "baseUiSelection": "refused before readback, then completed after simulated independent assent",
+    "searchViewState": "applied immediately and showed the expected empty state",
+    "previewSheet": "opening and closing completed; dialog scope excluded background controls",
+    "catalogOverflow": "69 rendered controls retained and returned as 60 plus continuation",
+    "visibleControlGapChecks": "zero missing controls in the tested agent, campaign, and number forms"
+  },
+  "durableWork": {
+    "dispatchFailure": "durable job returns recovery-pending; waitUntil is used when present and cron remains available",
+    "cronRecovery": "one-minute cron directly executes queued jobs older than 45 seconds and abandoned leases",
+    "browserWake": "creator-scoped idempotent wake after 15 seconds queued",
+    "leaseHeartbeat": "shared executor renews every one-third lease interval",
+    "recordSearch": "fast results returned directly; result URL survived navigation and reload",
+    "browserClosedCompletion": "a deliberately queued controlled job was processed while the browser was closed and read after reopening",
+    "cancel": "confirmed once; duplicate confirmation replayed the same cancelled outcome",
+    "retry": "confirmed once; duplicate confirmation replayed the same queued outcome",
+    "reconnection": "a simulated fetch failure recovered on the next status read",
+    "csvUpload": {
+      "localPathSelectedByVoice": false,
+      "requestsBeforeConfirmation": 0,
+      "invalidCsv": "confirmed job failed with validation feedback after navigation and reload",
+      "validCsv": "confirmed job succeeded and imported one existing fixture lead after navigation and reload"
+    }
+  },
+  "checks": {
+    "typescript": "passed",
+    "eslint": "passed",
+    "npmTest": { "passed": 215, "failed": 0 },
+    "manifestCheck": "current",
+    "realDatabaseIntegration": "passed ambiguity, 20+2 pagination, duplicate delivery, deleted and fabricated references, workspace and creator isolation, revoked permission, cancellation, retry, and cleanup",
+    "nextCompilationIssues": 0,
+    "nextRuntimeErrors": 0,
+    "browser": "settings rendered five customer tabs without platform controls; unauthorized /operator rendered explicit denial; auth navigation, refresh, and Back completed; console and browser errors were empty"
+  },
+  "liveVoice": {
+    "method": "controlled browser speech through the physical analog sink and microphone; agent output captured from the sink monitor",
+    "sessionsDeletedAfterEvidence": true,
+    "rawAudioCommitted": false,
+    "profiles": [
+      { "profile": "500/2000", "firstAudioP95Ms": 10697, "agentChannelNonSilent": true, "agentClippedSampleRatio": 0, "accepted": false, "reason": "latency failed and acoustic feedback contaminated recognition" },
+      { "profile": "300/1000", "firstAudioP95Ms": null, "exactCommands": 1, "toolCalls": 1, "toolErrors": 0, "accepted": false, "reason": "second clean phrase misrecognized and muted agent channel prevented latency evidence" },
+      { "profile": "100/500", "firstAudioP95Ms": null, "exactCommands": 0, "accepted": false, "reason": "no command recognized" }
+    ],
+    "selectedProfile": "500/2000",
+    "selectionReason": "none met both gates; retain the initial conservative profile pending a clean human/device run"
+  },
+  "unverified": [
+    "42 human-spoken route utterances and multilingual stress recognition",
+    "controlled audible readback and barge-in timing on an owner device",
+    "operator controls in an allowlisted admin browser session",
+    "real Google-session sign-out and resulting landing-header state",
+    "Cloudflare production queue delivery, deliberately deferred"
+  ],
+  "deploymentStatus": "deliberately deferred; no Cloudflare resources, deployments, or production secrets were touched",
+  "temporaryFixtureCleanup": "removed 2 agents, 1 campaign, 22 leads, 1 call, and 12 jobs; exact-ID verification found zero remaining"
+}

@@ -1,33 +1,55 @@
-import { desc, eq, isNotNull } from "drizzle-orm";
+import { Suspense } from "react";
+import { eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import {
-  agents,
-  integrationChecks,
   organizationSettings,
 } from "@/lib/db/schema";
 import { organization } from "@/lib/db/auth-schema";
-import { secret } from "@/lib/env";
 import { requireCtxOrRedirect } from "@/lib/session";
-import { isPlatformAdmin } from "@/lib/platform/admin";
 import { getPlatformConfig } from "@/lib/platform/config";
 import { credentialSummary } from "@/lib/platform/credentials";
-import { listAccounts, type LlmAccountSummary } from "@/lib/platform/llm-accounts";
+import { listAccounts } from "@/lib/platform/llm-accounts";
 import {
   CREDENTIAL_NAMES,
   LLM_PROVIDER_IDS,
   type CredentialName,
   type CredentialSummary,
-  type LlmProviderId,
 } from "@/lib/platform/types";
 import { SettingsView } from "@/components/settings-view";
+import { SETTINGS_TABS } from "@/lib/settings-tabs";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { getCopilotVoicePrefs } from "./actions";
 
-export default async function SettingsPage() {
+/**
+ * Structural shell: heading + tab structure prerender without awaiting any
+ * data. Tab labels reuse SETTINGS_TABS so the shell cannot drift from the
+ * resolved view. Controls stay disabled with no fake values until the data
+ * leaf below resolves (Task 8/Section 5 contract).
+ */
+function SettingsShellFallback() {
+  return (
+    <Tabs defaultValue="account">
+      <TabsList className="max-w-full justify-start overflow-x-auto" variant="line">
+        {SETTINGS_TABS.map((tab) => (
+          <TabsTrigger key={tab.value} value={tab.value} disabled>
+            {tab.label}
+          </TabsTrigger>
+        ))}
+      </TabsList>
+    </Tabs>
+  );
+}
+
+/**
+ * Authorized data leaf: every read stays fresh behind this single boundary.
+ * One boundary (not per-section) so unrelated service readiness resolving
+ * never remounts the form and dirty inputs survive.
+ */
+async function SettingsData() {
   const ctx = await requireCtxOrRedirect("/settings");
-  const [[workspace], [settings], admin, voicePrefs] = await Promise.all([
+  const [[workspace], [settings], voicePrefs] = await Promise.all([
     db.select({ name: organization.name }).from(organization).where(eq(organization.id, ctx.organizationId)).limit(1),
     db.select().from(organizationSettings).where(eq(organizationSettings.organizationId, ctx.organizationId)).limit(1),
-    isPlatformAdmin(ctx.email),
     getCopilotVoicePrefs(),
   ]);
 
@@ -36,15 +58,6 @@ export default async function SettingsPage() {
     summaries.map(([name, value]) => [name, { ...value, updatedAt: value.updatedAt?.toISOString() }]),
   ) as Record<CredentialName, CredentialSummary & { updatedAt?: string }>;
   const llmAccountLists = await Promise.all(LLM_PROVIDER_IDS.map((id) => listAccounts(id)));
-  const serializeAccount = (account: LlmAccountSummary) => ({
-    ...account,
-    cooldownUntil: account.cooldownUntil?.toISOString() ?? null,
-    lastUsedAt: account.lastUsedAt?.toISOString() ?? null,
-    updatedAt: account.updatedAt.toISOString(),
-  });
-  const llmAccounts = Object.fromEntries(
-    LLM_PROVIDER_IDS.map((id, index) => [id, llmAccountLists[index].map(serializeAccount)]),
-  ) as Record<LlmProviderId, ReturnType<typeof serializeAccount>[]>;
   const llmConfigured = llmAccountLists.some((accounts) => accounts.some((account) => account.enabled));
   const platformConfig = await getPlatformConfig();
   const services = [
@@ -64,52 +77,8 @@ export default async function SettingsPage() {
     },
   ];
 
-  let platform = null;
-  if (admin) {
-    const [checks, organizations, savedAgents, bootstrap] = await Promise.all([
-      db.select().from(integrationChecks).orderBy(desc(integrationChecks.testedAt)).limit(50),
-      db.select({ id: organization.id, name: organization.name }).from(organization),
-      db
-        .select({ id: agents.id, name: agents.name, organizationId: agents.organizationId })
-        .from(agents)
-        .where(isNotNull(agents.assemblyaiAgentId)),
-      Promise.all(
-        [
-          "DATABASE_URL",
-          "BETTER_AUTH_SECRET",
-          "BETTER_AUTH_URL",
-          "GOOGLE_CLIENT_ID",
-          "GOOGLE_CLIENT_SECRET",
-          "VONI_ADMIN_EMAILS",
-          "VONI_CREDENTIALS_ENCRYPTION_KEY",
-          "VONI_API_URL",
-          "VONI_TOOL_SECRET",
-          "PUBLIC_HOST",
-        ].map(
-          async (name) => ({ name, configured: Boolean(await secret(name)) }),
-        ),
-      ),
-    ]);
-    const latestChecks = Object.values(
-      checks.reduce<Record<string, (typeof checks)[number]>>((result, check) => {
-        if (!result[check.service]) result[check.service] = check;
-        return result;
-      }, {}),
-    ).map((check) => ({ ...check, testedAt: check.testedAt.toISOString() }));
-    platform = {
-      credentials: summaryMap,
-      llmAccounts,
-      config: platformConfig,
-      checks: latestChecks,
-      organizations,
-      agents: savedAgents,
-      bootstrap,
-    };
-  }
-
   return (
-    <>
-      <SettingsView
+    <SettingsView
       user={{ name: ctx.name, email: ctx.email, image: ctx.image }}
       workspace={{
         name: workspace?.name ?? "Workspace",
@@ -119,8 +88,20 @@ export default async function SettingsPage() {
       }}
       services={services}
       voicePrefs={voicePrefs}
-      platform={platform}
     />
-    </>
+  );
+}
+
+export default function SettingsPage() {
+  return (
+    <div data-testid="settings-shell" className="flex flex-col gap-6">
+      <div>
+        <h1 className="text-2xl font-semibold tracking-tight">Settings</h1>
+        <p className="text-muted-foreground text-sm">Manage your account, workspace, and service readiness.</p>
+      </div>
+      <Suspense fallback={<SettingsShellFallback />}>
+        <SettingsData />
+      </Suspense>
+    </div>
   );
 }

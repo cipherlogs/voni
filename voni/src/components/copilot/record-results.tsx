@@ -31,7 +31,7 @@ export function RecordResults({ job }: { job: JobJson }) {
   if (!result) return null;
   return <Card data-copilot-scope="search-results" data-copilot-key={job.id}>
     <CardHeader><CardTitle>{job.title}</CardTitle></CardHeader>
-    <CardContent className="space-y-3">
+    <CardContent className="flex flex-col gap-3">
       {error ? <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert> : null}
       {result.matches.length === 0 ? <p>No records match this search.</p> : <p>{result.matches.length} matches. Choose the record you mean.</p>}
       {result.matches.map((match) => <div key={match.ref} data-copilot-key={match.ref} className="flex items-center justify-between gap-3">
@@ -66,5 +66,5 @@ export function RecordSearchDestination({ id }: { id: string }) {
   if (error) return <Alert><AlertDescription>{error}</AlertDescription></Alert>;
   if (!current) return <p role="status">Loading search result…</p>;
   if (current.kind !== 'record_search') return <p>This job is not a record search.</p>;
-  return <div className="space-y-3"><JobRow job={current} />{current.status === 'succeeded' ? <RecordResults job={current} /> : null}</div>;
+  return <div className="flex flex-col gap-3"><JobRow job={current} />{current.status === 'succeeded' ? <RecordResults job={current} /> : null}</div>;
 }

@@ -60,7 +60,10 @@ export async function getOrCreateDemoAgent(
 
   const res = await fetch(AGENTS_URL, {
     method: "POST",
-    headers: { Authorization: apiKey, "Content-Type": "application/json" },
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
     body: JSON.stringify({
       name: `demo:${personaId}:${voiceId}`,
       system_prompt: compileSystemPrompt(config),

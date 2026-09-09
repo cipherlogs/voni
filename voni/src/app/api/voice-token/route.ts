@@ -51,10 +51,11 @@ export async function GET() {
     String(MAX_SESSION_SECONDS),
   );
 
-  // GET, not POST — confirmed in HANDOFF and the API spec. A raw key, not
-  // `Bearer <key>`: the Bearer prefix is the LLM Gateway trap from (1x), and
-  // while this product accepts both, the raw header is the documented form.
-  const res = await fetch(url, { headers: { Authorization: apiKey } });
+  // Voice Agent REST endpoints use Bearer auth. The permanent key stays
+  // server-side and the browser receives only this endpoint's single-use token.
+  const res = await fetch(url, {
+    headers: { Authorization: `Bearer ${apiKey}` },
+  });
 
   if (!res.ok) {
     const body = await res.text().catch(() => "");

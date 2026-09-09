@@ -5,6 +5,7 @@ import {
   buildResumeMessage,
   decideReconnectOnClose,
   SessionGeneration,
+  VOICE_MIC_CONSTRAINTS,
   VoiceSession,
   type TranscriptPartial,
 } from "./session";
@@ -346,6 +347,68 @@ test("first session.update omits empty recognition keys", () => {
   assert.ok(!("keyterms" in input));
   assert.ok(!("language_codes" in input));
   assert.ok(!("tools" in (update as Record<string, unknown>)));
+});
+
+test("browser capture enables echo cancellation and automatic gain without browser denoising", () => {
+  assert.deepEqual(VOICE_MIC_CONSTRAINTS, {
+    echoCancellation: true,
+    noiseSuppression: false,
+    autoGainControl: true,
+  });
+});
+
+test("sensitive capture widens once and restores the exact prior pacing", async () => {
+  const { session, sent, handle, internals } = makeSession();
+  internals["activeTurnDetection"] = {
+    min_silence: 500,
+    max_silence: 2000,
+    interrupt_response: true,
+    interruption_delay: 0,
+  };
+  const prepare = (
+    session as unknown as {
+      prepareSensitiveCapture: () => Promise<unknown>;
+    }
+  ).prepareSensitiveCapture.bind(session);
+
+  const prepared = prepare();
+  assert.deepEqual(JSON.parse(sent[0]), {
+    type: "session.update",
+    session: {
+      input: {
+        turn_detection: {
+          min_silence: 1400,
+          max_silence: 4000,
+          interrupt_response: true,
+          interruption_delay: 0,
+        },
+      },
+    },
+  });
+  handle({ type: "session.updated" });
+  await prepared;
+
+  handle({ type: "transcript.user", item_id: "u-sensitive", text: "value" });
+  assert.deepEqual(JSON.parse(sent[1]), {
+    type: "session.update",
+    session: {
+      input: {
+        turn_detection: {
+          min_silence: 500,
+          max_silence: 2000,
+          interrupt_response: true,
+          interruption_delay: 0,
+        },
+      },
+    },
+  });
+  handle({ type: "session.updated" });
+  assert.deepEqual(internals["activeTurnDetection"], {
+    min_silence: 500,
+    max_silence: 2000,
+    interrupt_response: true,
+    interruption_delay: 0,
+  });
 });
 
 test("muted mic drops frames without tearing down the call", () => {

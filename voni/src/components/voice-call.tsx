@@ -10,6 +10,15 @@ import {
   TriangleAlert,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+  MessageScroller,
+  MessageScrollerButton,
+  MessageScrollerContent,
+  MessageScrollerItem,
+  MessageScrollerViewport,
+} from "@/components/ui/message-scroller";
+import { Bubble, BubbleContent } from "@/components/ui/bubble";
+import { Message, MessageHeader } from "@/components/ui/message";
 import { Progress } from "@/components/ui/progress";
 import {
   VoiceSession,
@@ -157,7 +166,6 @@ export function VoiceCall({ mode }: { mode: Mode }) {
   const [elapsed, setElapsed] = useState(0);
 
   const sessionRef = useRef<VoiceSession | null>(null);
-  const captionsRef = useRef<HTMLDivElement>(null);
 
   const capSeconds = isDemo ? 120 : 180;
   const connected = state === "listening" || state === "speaking";
@@ -204,11 +212,8 @@ export function VoiceCall({ mode }: { mode: Mode }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connected]);
 
-  useEffect(() => {
-    const el = captionsRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [turns]);
-
+  // Scrolling, follow behavior, and jump-to-latest are owned by
+  // MessageScroller below — no manual scroll-to-bottom effect.
   // A live session holds the microphone; unmounting without ending it leaves
   // the recording indicator on and burns the billable 30s resume window.
   useEffect(
@@ -461,7 +466,7 @@ export function VoiceCall({ mode }: { mode: Mode }) {
             onClick={start}
             aria-label={`Call ${displayName}`}
           >
-            <Phone className="h-4 w-4" />
+            <Phone aria-hidden />
             {state === "ended" ? "Call again" : `Call ${displayName}`}
           </Button>
         )}
@@ -471,14 +476,13 @@ export function VoiceCall({ mode }: { mode: Mode }) {
           scenario hint, the countdown, errors, captions — so the card's outer
           height never changes and nothing on the page below it moves. */}
       <div
-        ref={captionsRef}
         className={`mt-3 min-h-0 flex-1 overflow-y-auto ${
           turns.length === 0 && !error ? "flex items-center justify-center" : ""
         }`}
       >
         {error ? (
           <div className="flex items-start gap-2 rounded-xl border p-2.5">
-            <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
             <div className="flex flex-col gap-0.5">
               <p className="text-muted-foreground text-xs leading-snug">
                 {retryIn !== null
@@ -490,16 +494,26 @@ export function VoiceCall({ mode }: { mode: Mode }) {
             </div>
           </div>
         ) : turns.length > 0 ? (
-          <div className="flex flex-col gap-2">
-            {turns.map((turn, i) => (
-              <p key={i} className="text-sm leading-snug">
-                <span className="text-muted-foreground">
-                  {turn.role === "user" ? "You" : displayName}{" "}
-                </span>
-                {turn.text}
-              </p>
-            ))}
-          </div>
+          <MessageScroller className="min-h-0 flex-1">
+            <MessageScrollerViewport aria-label="Call transcript">
+              <MessageScrollerContent className="gap-2">
+                {turns.map((turn, i) => {
+                  const speaker = turn.role === "user" ? "You" : displayName;
+                  return (
+                    <MessageScrollerItem key={`${i}-${turn.role}`}>
+                      <Message align={turn.role === "user" ? "end" : "start"}>
+                        <MessageHeader>{speaker}</MessageHeader>
+                        <Bubble>
+                          <BubbleContent>{turn.text}</BubbleContent>
+                        </Bubble>
+                      </Message>
+                    </MessageScrollerItem>
+                  );
+                })}
+              </MessageScrollerContent>
+            </MessageScrollerViewport>
+            <MessageScrollerButton />
+          </MessageScroller>
         ) : (
           <div className="flex flex-col items-center gap-1.5 px-2 text-center">
             <p className="text-muted-foreground text-xs leading-relaxed">

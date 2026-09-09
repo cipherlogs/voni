@@ -16,7 +16,7 @@ are gitignored, and this project's permission settings block writing actual
 ## Operator access and credential encryption
 
 - `VONI_ADMIN_EMAILS` — comma-separated Google account emails allowed to see
-  and change the operator-only Platform settings tab. Matching is exact and
+  and change the operator-only `/operator` area. Matching is exact and
   case-insensitive.
 - `VONI_CREDENTIALS_ENCRYPTION_KEY` — exactly 32 random bytes, encoded as
   base64/base64url or 64 hex characters. Generate a base64 value with:
@@ -27,8 +27,10 @@ are gitignored, and this project's permission settings block writing actual
 
 These values, database/auth credentials, `VONI_API_URL`, `VONI_TOOL_SECRET`,
 and `PUBLIC_HOST` are bootstrap infrastructure and remain environment-only.
-Provider credentials can be saved by an allowlisted operator in Settings;
-encrypted database values take precedence over the environment fallbacks below.
+An allowlisted operator can inspect credential status and non-secret defaults at
+`/operator`. Rotate encrypted credentials through the server-only
+`npm run operator:credential` command. Encrypted database values take
+precedence over the environment fallbacks below.
 
 ## AssemblyAI (Voice Agent API + LLM Gateway)
 - `ASSEMBLYAI_API_KEY` — assemblyai.com dashboard → API Keys. $50 free-tier credit covers early dev.
@@ -41,7 +43,7 @@ local save and shows a retryable deployment warning on the agent page.
 
 - `TELNYX_API_KEY` — environment fallback for the operator-managed Telnyx
   credential. The Call Control connection and caller number are selected in
-  Settings → Platform.
+  `/operator`.
 
 ## Async TTS (WhatsApp voice-note replies — AssemblyAI has no standalone TTS API, plan Section I)
 - `CARTESIA_API_KEY` — cartesia.ai → sign up → dashboard → API Keys. Free plan
@@ -78,8 +80,8 @@ production. Do not commit its value.
 Free-provider keys are not environment variables. Each free provider supports
 several operator-owned accounts, such as five separate Groq accounts, so a
 rate-limited or failing account cools down and the next one takes over. Add
-accounts as an allowlisted operator in **Settings → Platform → LLM provider
-accounts**. Pick a provider, give the account a label, and paste its key.
+accounts through the server-side operator workflow. `/operator` shows account
+health and sanitized connection-test results; keys never enter browser props.
 
 | Provider | Sign up |
 | --- | --- |
@@ -89,10 +91,9 @@ accounts**. Pick a provider, give the account a label, and paste its key.
 | OpenRouter | openrouter.ai — aggregator backstop, widest free model pool |
 
 Optional model/order overrides (`GROQ_MODEL`, `CEREBRAS_MODEL`, `GEMINI_MODEL`,
-`OPENROUTER_MODEL`, and the fallback order) live in the same Settings →
-Platform tab, under "Provider and bridge defaults" — no env vars needed there
-either, though `GROQ_MODEL` etc. still work as an environment-level default if
-no database override is saved.
+`OPENROUTER_MODEL`, and the fallback order) live in `/operator`, under
+"Provider and bridge defaults". `GROQ_MODEL` and the other environment values
+still act as defaults when no database override is saved.
 
 **With no Meta key or free-provider accounts configured the app still works.**
 `/agents/new` offers the pre-built real estate template instead of generation,
@@ -117,7 +118,7 @@ The bridge now persists calls, so it needs database access of its own:
 Before each new call, the bridge fetches a short-lived internal configuration
 containing the resolved AssemblyAI and Telnyx credentials plus the temporary
 workspace, deployed agent, Call Control connection, and caller number selected
-in Settings → Platform. Human transfer always uses the destination saved on
+in `/operator`. Human transfer always uses the destination saved on
 that call's workspace; there is no global transfer-number fallback.
 
 ## Development property inventory

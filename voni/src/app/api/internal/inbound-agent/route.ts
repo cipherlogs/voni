@@ -9,7 +9,7 @@ import { getPlatformConfig } from "@/lib/platform/config";
  * number binding).
  *
  * Before this, every inbound call was answered by the one agent selected in
- * Settings → Platform, so a workspace could run exactly one inbound persona.
+ * the operator area, so a workspace can run exactly one inbound persona.
  * A binding lets a number route to its own agent, and anything unbound still
  * falls back to that platform default rather than dropping the call — an
  * unrecognised number ringing out is a far worse failure than answering it with

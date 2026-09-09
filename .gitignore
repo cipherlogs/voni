@@ -3,6 +3,7 @@
 .env.local
 .env.*.local
 .dev.vars
+.secrets/
 .claude-flow/data/
 .claude-flow/logs/
 .claude-flow/sessions/

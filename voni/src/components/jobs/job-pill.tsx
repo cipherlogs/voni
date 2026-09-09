@@ -71,7 +71,7 @@ export function JobPill() {
       <Card className="shadow-lg">
         <CardContent className="flex flex-col gap-2 py-3">
           <div className="flex items-center gap-2">
-            <LoaderCircle className="h-4 w-4 shrink-0 animate-spin" aria-hidden />
+            <LoaderCircle className="size-4 shrink-0 animate-spin" aria-hidden />
             <p className="min-w-0 flex-1 truncate text-sm font-medium">
               {optimisticJobs.length > 0 && activeJobs.length === 0
                 ? optimisticJobs[0].title

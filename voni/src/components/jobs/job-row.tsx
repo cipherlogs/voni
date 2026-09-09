@@ -46,7 +46,16 @@ export function JobRow({ job }: { job: JobJson }) {
   const { openJob, cancelJob, retryJob, dismissJob } = useJobs();
   const [pendingAction, setPendingAction] = useState<string | null>(null);
   const terminal = isTerminal(job.status);
-  const statusLabel = job.status === "failed" && job.errorCode === "auth" ? "Permission blocked" : job.status === "failed" && job.errorCode === "rate-limited" ? "Rate limited" : jobStatusLabel(job.status);
+  const statusLabel =
+    job.status === "failed" && job.errorCode === "auth"
+      ? "Permission blocked"
+      : job.status === "failed" && job.errorCode === "rate-limited"
+        ? "Rate limited"
+        : job.status === "queued" && job.stage === "waiting-for-worker"
+          ? "Waiting for a worker"
+          : job.status === "queued" && job.stage === "recovery-started"
+            ? "Recovery started"
+            : jobStatusLabel(job.status);
   const elapsed = formatElapsed(
     job.startedAt ?? job.createdAt,
     job.completedAt,
@@ -88,7 +97,9 @@ export function JobRow({ job }: { job: JobJson }) {
       </div>
       <p className="text-muted-foreground text-xs" aria-live="polite">
         {statusLabel}
-        {job.stage ? ` · ${job.stage}` : ""}
+        {job.stage && !job.stage.startsWith("waiting-") && job.stage !== "recovery-started"
+          ? ` · ${job.stage}`
+          : ""}
         {percent != null
           ? ` · ${percent}%`
           : job.progressTotal != null && job.progressDone != null

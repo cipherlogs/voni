@@ -1,3 +1,4 @@
+import { Suspense } from "react";
 import { callDetail } from "@/lib/copilot/detail-data";
 import { RouteBrief } from "@/components/copilot/route-brief";
 import { BackLink } from "@/components/back-link";
@@ -7,18 +8,24 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { DetailSkeleton } from "@/components/page-skeletons";
 
-export default async function CallDetailPage({
+/**
+ * Authorized call leaf: call data and implemented details resolve here.
+ * notFound()/denial stay inside detail-data, called from this leaf.
+ */
+async function CallDetail({
   params,
-}: PageProps<"/calls/[id]">) {
+}: {
+  params: Promise<{ id: string }>;
+}) {
   const { id } = await params;
   const call = await callDetail(id);
   const transcriptCount = Array.isArray(call.transcript) ? call.transcript.length : 0;
 
   return (
-    <div className="flex flex-col gap-6">
+    <>
       <RouteBrief route={`/calls/${id}`} brief={`${call.direction} call with ${call.name ?? call.phone}. Started ${call.startedAt?.toISOString() ?? "not recorded"}. ${call.endedAt ? "Ended " + call.endedAt.toISOString() : "End time not recorded"}. ${transcriptCount} transcript entries recorded. Transcript playback and reasoning trace are not implemented.`} />
-      <BackLink href="/calls" label="Calls" />
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">Call with {call.name ?? call.phone}</h1>
         <p className="text-muted-foreground text-sm">{call.direction} · {call.startedAt?.toISOString() ?? "Start time not recorded"}</p>
@@ -46,6 +53,27 @@ export default async function CallDetailPage({
           </CardContent>
         </Card>
       </div>
+    </>
+  );
+}
+
+export default function CallDetailPage({
+  params,
+}: PageProps<"/calls/[id]">) {
+  return (
+    <div data-testid="call-shell" className="flex flex-col gap-6">
+      <BackLink href="/calls" label="Calls" />
+      {/* Existing back navigation + detail structure shell; authorized call
+          data streams in the leaf below. */}
+      <Suspense
+        fallback={
+          <div role="status" aria-label="Loading call">
+            <DetailSkeleton />
+          </div>
+        }
+      >
+        <CallDetail params={params} />
+      </Suspense>
     </div>
   );
 }

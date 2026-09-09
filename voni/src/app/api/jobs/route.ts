@@ -29,14 +29,21 @@ export async function POST(request: Request) {
   }
 
   try {
-    const { job, created } = await startJob(ctx, kind.data, envelope.input, {
+    const { job, created, dispatch } = await startJob(ctx, kind.data, envelope.input, {
       title: typeof envelope.title === "string" ? envelope.title : undefined,
       idempotencyKey:
         typeof envelope.idempotencyKey === "string" ? envelope.idempotencyKey : undefined,
       relatedId: typeof envelope.relatedId === "string" ? envelope.relatedId : undefined,
     });
     return NextResponse.json(
-      { jobId: job.id, status: job.status, targetUrl: job.targetUrl, created, job: jobToJson(job) },
+      {
+        jobId: job.id,
+        status: job.status,
+        targetUrl: job.targetUrl,
+        created,
+        dispatchState: dispatch?.state ?? "already-accepted",
+        job: jobToJson(job),
+      },
       { status: 202 },
     );
   } catch (error) {

@@ -34,7 +34,7 @@ export async function authorizeBridge(request: Request): Promise<BridgeAuth> {
     return {
       ok: false,
       status: 503,
-      error: "No bridge workspace is selected in Settings → Platform.",
+      error: "No bridge workspace is selected in the platform operator area.",
     };
   }
   return { ok: true, organizationId: config.bridgeOrganizationId };

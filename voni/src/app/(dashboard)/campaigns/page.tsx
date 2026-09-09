@@ -1,8 +1,10 @@
+import { Suspense } from "react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Megaphone, Plus } from "lucide-react";
+import { CardListSkeleton } from "@/components/page-skeletons";
 import { listCampaigns } from "./actions";
 import {
   describeCallingWindow,
@@ -17,33 +19,22 @@ const STATUS_VARIANT = {
   completed: "outline",
 } as const;
 
-export default async function CampaignsPage() {
+/**
+ * Authorized campaign list leaf: rows and states resolve after the shell.
+ */
+async function CampaignsList() {
   const rows = await listCampaigns();
 
   return (
-    <div className="flex flex-col gap-6">
+    <>
       <RouteBrief
         route="/campaigns"
         brief={`Campaign list: ${rows.length} campaigns with status, lead counts, and calling windows. New campaigns start on the creation screen.`}
       />
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Campaigns</h1>
-          <p className="text-muted-foreground text-sm">
-            What work is being given to an agent — a lead list, a calling window,
-            and a channel fallback policy.
-          </p>
-        </div>
-        <Button nativeButton={false} render={<Link href="/campaigns/new" />}>
-          <Plus />
-          New campaign
-        </Button>
-      </div>
-
       {rows.length === 0 ? (
         <Card>
           <CardContent className="flex flex-col items-center gap-3 py-16 text-center">
-            <Megaphone className="text-muted-foreground h-10 w-10" />
+            <Megaphone className="text-muted-foreground size-10" />
             <div>
               <p className="font-medium">No campaigns yet</p>
               <p className="text-muted-foreground text-sm">
@@ -102,6 +93,36 @@ export default async function CampaignsPage() {
           ))}
         </div>
       )}
+    </>
+  );
+}
+
+export default function CampaignsPage() {
+  return (
+    <div data-testid="campaigns-shell" className="flex flex-col gap-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">Campaigns</h1>
+          <p className="text-muted-foreground text-sm">
+            What work is being given to an agent — a lead list, a calling window,
+            and a channel fallback policy.
+          </p>
+        </div>
+        <Button nativeButton={false} render={<Link href="/campaigns/new" />}>
+          <Plus />
+          New campaign
+        </Button>
+      </div>
+
+      <Suspense
+        fallback={
+          <div role="status" aria-label="Loading campaigns">
+            <CardListSkeleton />
+          </div>
+        }
+      >
+        <CampaignsList />
+      </Suspense>
     </div>
   );
 }

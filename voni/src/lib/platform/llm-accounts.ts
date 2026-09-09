@@ -133,6 +133,28 @@ export async function setAccountEnabled(id: string, enabled: boolean, userId: st
     .where(eq(llmProviderAccounts.id, id));
 }
 
+/** Replace one account's encrypted value without exposing it to the browser. */
+export async function rotateAccountCredential(id: string, value: string, userId: string) {
+  const trimmed = value.trim();
+  if (!trimmed) throw new Error("Credential input is empty.");
+  const encrypted = await encryptCredential(trimmed);
+  const keyVersion = await encryptionKeyVersion();
+  const updated = await db
+    .update(llmProviderAccounts)
+    .set({
+      ...encrypted,
+      keyVersion,
+      updatedBy: userId,
+      updatedAt: new Date(),
+      consecutiveFailures: 0,
+      cooldownUntil: null,
+      lastError: null,
+    })
+    .where(eq(llmProviderAccounts.id, id))
+    .returning({ id: llmProviderAccounts.id });
+  if (!updated[0]) throw new Error("LLM account not found.");
+}
+
 export async function markAccountSuccess(id: string) {
   await db
     .update(llmProviderAccounts)

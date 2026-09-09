@@ -2,7 +2,7 @@
 // Regenerate with `npm run copilot:manifest`; CI verifies with `npm run copilot:manifest:check`.
 
 export const APP_MANIFEST_VERSION = 2;
-export type AppDestination = { route: string; title: string; phrases: string[]; examples: string[]; access: "public" | "auth" | "signed-in"; navigationKind: "none" | "static" | "record" };
+export type AppDestination = { route: string; title: string; phrases: string[]; examples: string[]; access: "public" | "auth" | "signed-in" | "platform-admin"; navigationKind: "none" | "static" | "record" };
 
 export const APP_DESTINATIONS: AppDestination[] = [
   {"route":"/","title":"Welcome","phrases":["landing page","public demo"],"examples":["Describe Voni","Show the public demo","How do I sign in?"],"access":"public","navigationKind":"none"},
@@ -19,12 +19,13 @@ export const APP_DESTINATIONS: AppDestination[] = [
   {"route":"/leads/[id]","title":"Lead details","phrases":["lead details","open lead"],"examples":["Find a lead named Alex","Open the second matching lead","Read this lead status"],"access":"signed-in","navigationKind":"record"},
   {"route":"/login","title":"Sign in","phrases":["login","sign in"],"examples":["Sign in to Voni","Continue with Google","Open sign in"],"access":"auth","navigationKind":"none"},
   {"route":"/numbers","title":"Phone numbers","phrases":["phone numbers","numbers","calling numbers","my numbers"],"examples":["Show phone numbers","Read the number assignments","Show available number actions"],"access":"signed-in","navigationKind":"static"},
+  {"route":"/operator","title":"Platform operator","phrases":["operator","platform operator","platform status"],"examples":["Open the operator area","Show platform readiness","Read provider status"],"access":"platform-admin","navigationKind":"static"},
   {"route":"/settings","title":"Settings","phrases":["settings","voice copilot","voice control","voice settings","preferences"],"examples":["Open settings","Open the Voice copilot tab","Set voice to Ivy"],"access":"signed-in","navigationKind":"static"},
   {"route":"/signup","title":"Sign up","phrases":["signup","sign up"],"examples":["Create my account","Sign up with Google","Join Voni"],"access":"auth","navigationKind":"none"},
 ];
 
 /** Static routes voice may navigate to. Dynamic detail pages stay model-proposed, never invented. */
-export const NAVIGABLE_ROUTES: string[] = ["/agents", "/agents/new", "/campaigns", "/campaigns/new", "/dashboard", "/jobs", "/leads", "/numbers", "/settings"];
+export const NAVIGABLE_ROUTES: string[] = ["/agents", "/agents/new", "/campaigns", "/campaigns/new", "/dashboard", "/jobs", "/leads", "/numbers", "/operator", "/settings"];
 
 export const SETTINGS_TABS_MANIFEST: Array<{ value: string; label: string; adminOnly: boolean }> = [
   { value: "account", label: "Account", adminOnly: false },
@@ -32,8 +33,7 @@ export const SETTINGS_TABS_MANIFEST: Array<{ value: string; label: string; admin
   { value: "workspace", label: "Workspace", adminOnly: false },
   { value: "services", label: "Services", adminOnly: false },
   { value: "appearance", label: "Appearance", adminOnly: false },
-  { value: "platform", label: "Platform", adminOnly: true },
 ];
 
 /** Vocabulary boosts so recognition hears feature names the first time. */
-export const APP_FEATURE_TERMS: string[] = ["Voni", "Voice copilot", "dashboard", "agent", "agents", "campaign", "campaigns", "lead", "leads", "phone numbers", "background jobs", "settings", "workspace", "services", "appearance"];
+export const APP_FEATURE_TERMS: string[] = ["Voni", "Voice copilot", "dashboard", "agent", "agents", "campaign", "campaigns", "lead", "leads", "phone numbers", "background jobs", "settings", "workspace", "services", "appearance", "operator", "platform readiness"];

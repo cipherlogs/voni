@@ -1,14 +1,15 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { toast } from "sonner";
+import { toast } from "@/components/ui/toast";
 import { Button } from "@/components/ui/button";
 import { LoadingButton } from "@/components/loading-button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import { Field, FieldContent, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { Plus, Trash2, TriangleAlert } from "lucide-react";
@@ -51,13 +52,11 @@ function StringList({
   placeholder: string;
 }) {
   return (
-    <div className="flex flex-col gap-2">
-      <div>
-        <Label>{label}</Label>
-        {hint ? (
-          <p className="text-muted-foreground text-xs">{hint}</p>
-        ) : null}
-      </div>
+    <Field>
+      <FieldLabel>{label}</FieldLabel>
+      {hint ? (
+        <FieldDescription>{hint}</FieldDescription>
+      ) : null}
       <div className="flex flex-col gap-2">
         {values.map((value, i) => (
           <div key={i} className="flex items-center gap-2">
@@ -92,7 +91,7 @@ function StringList({
         <Plus />
         Add
       </Button>
-    </div>
+    </Field>
   );
 }
 
@@ -110,13 +109,11 @@ function DetectFields({
   };
 
   return (
-    <div className="flex flex-col gap-3">
-      <div>
-        <Label>What to find out</Label>
-        <p className="text-muted-foreground text-xs">
-          Asked one at a time during the call, never as a list.
-        </p>
-      </div>
+    <Field>
+      <FieldLabel>What to find out</FieldLabel>
+      <FieldDescription>
+        Asked one at a time during the call, never as a list.
+      </FieldDescription>
 
       {values.map((field, i) => (
         <div key={i} className="flex flex-col gap-3 rounded-lg border p-3">
@@ -150,10 +147,10 @@ function DetectFields({
                 update(i, { sensitive: checked })
               }
             />
-            <div className="flex flex-col gap-1">
-              <Label htmlFor={`sensitive-${i}`} className="text-sm">
+            <FieldContent className="flex flex-col gap-1">
+              <FieldLabel htmlFor={`sensitive-${i}`} className="text-sm">
                 Spoken as a sequence
-              </Label>
+              </FieldLabel>
               {/*
                 This is not a cosmetic toggle. The live call runs with a very
                 short silence threshold to keep replies fast, which means the
@@ -161,11 +158,11 @@ function DetectFields({
                 a budget. Flagging a field is what tells the call to wait
                 longer while that specific answer is being given.
               */}
-              <p className="text-muted-foreground text-xs">
+              <FieldDescription>
                 Phone numbers, emails, budgets, dates. The agent waits longer
                 before replying so it doesn&apos;t cut the caller off mid-answer.
-              </p>
-            </div>
+              </FieldDescription>
+            </FieldContent>
           </div>
         </div>
       ))}
@@ -185,7 +182,7 @@ function DetectFields({
         <Plus />
         Add field
       </Button>
-    </div>
+    </Field>
   );
 }
 
@@ -224,19 +221,6 @@ export function AgentConfigForm({
         : [...config.tools, tool],
     );
 
-  const toggleChannel = (channel: (typeof CHANNELS)[number]) => {
-    // At least one channel must stay selected — an agent with none can never
-    // be dispatched, and the schema rejects it on save anyway. Better to make
-    // the last one un-clickable than to fail validation after the fact.
-    if (config.channels.includes(channel) && config.channels.length === 1) return;
-    set(
-      "channels",
-      config.channels.includes(channel)
-        ? config.channels.filter((c) => c !== channel)
-        : [...config.channels, channel],
-    );
-  };
-
   const sensitiveCount = config.detect.filter((d) => d.sensitive).length;
 
   return (
@@ -246,22 +230,22 @@ export function AgentConfigForm({
           <CardTitle>Identity</CardTitle>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
-          <div className="flex flex-col gap-2">
-            <Label htmlFor="agent-name">Agent name</Label>
-            <p className="text-muted-foreground text-xs">
+          <Field>
+            <FieldLabel htmlFor="agent-name">Agent name</FieldLabel>
+            <FieldDescription>
               Internal label. Not spoken on the call.
-            </p>
+            </FieldDescription>
             <Input
               id="agent-name"
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="Abu Dhabi inbound qualifier"
             />
-          </div>
+          </Field>
 
-          <div className="grid gap-4 sm:grid-cols-3">
-            <div className="flex flex-col gap-2">
-              <Label htmlFor="identity-name">Says its name is</Label>
+          <FieldGroup className="grid gap-4 sm:grid-cols-3">
+            <Field>
+              <FieldLabel htmlFor="identity-name">Says its name is</FieldLabel>
               <Input
                 id="identity-name"
                 value={config.identity.name}
@@ -269,9 +253,9 @@ export function AgentConfigForm({
                   set("identity", { ...config.identity, name: e.target.value })
                 }
               />
-            </div>
-            <div className="flex flex-col gap-2">
-              <Label htmlFor="identity-role">Role</Label>
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="identity-role">Role</FieldLabel>
               <Input
                 id="identity-role"
                 value={config.identity.role}
@@ -279,9 +263,9 @@ export function AgentConfigForm({
                   set("identity", { ...config.identity, role: e.target.value })
                 }
               />
-            </div>
-            <div className="flex flex-col gap-2">
-              <Label htmlFor="identity-company">Company</Label>
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="identity-company">Company</FieldLabel>
               <Input
                 id="identity-company"
                 value={config.identity.company}
@@ -293,60 +277,65 @@ export function AgentConfigForm({
                   })
                 }
               />
-            </div>
-          </div>
+            </Field>
+          </FieldGroup>
 
-          <div className="flex flex-col gap-2">
-            <Label htmlFor="greeting">Greeting</Label>
-            <p className="text-muted-foreground text-xs">
+          <Field>
+            <FieldLabel htmlFor="greeting">Greeting</FieldLabel>
+            <FieldDescription>
               The first thing the caller hears — and the only line spoken with
               no thinking pause in front of it, so it sets the impression.
               Short, ending in an easy question.
-            </p>
+            </FieldDescription>
             <Input
               id="greeting"
               value={config.greeting}
               onChange={(e) => set("greeting", e.target.value)}
             />
-          </div>
+          </Field>
 
-          <div className="flex flex-col gap-3">
-            <div>
-              <Label>Voice</Label>
-              <p className="text-muted-foreground text-xs">
-                The language the agent speaks in. Fixed for the whole call — the
-                API won&apos;t let it change once a conversation has started.
-              </p>
-            </div>
+          <Field>
+            <FieldLabel>Voice</FieldLabel>
+            <FieldDescription>
+              The language the agent speaks in. Fixed for the whole call — the
+              API won&apos;t let it change once a conversation has started.
+            </FieldDescription>
             {voicesByLanguage().map((group) => (
               <div key={group.language} className="flex flex-col gap-1.5">
                 <span className="text-muted-foreground text-[11px] uppercase tracking-wide">
                   {group.language}
                 </span>
-                <div className="flex flex-wrap gap-2">
+                <ToggleGroup
+                  value={[config.voiceId]}
+                  onValueChange={(values) => {
+                    // A voice is required — ignore deselecting the last one.
+                    const next = Array.isArray(values) ? values[0] : values;
+                    if (next) set("voiceId", next);
+                  }}
+                  variant="outline"
+                  size="sm"
+                  aria-label={`${group.language} voices`}
+                  className="flex flex-wrap"
+                >
                   {group.voices.map((voice: Voice) => (
-                    <Button
+                    <ToggleGroupItem
                       key={voice.id}
-                      type="button"
-                      size="sm"
-                      variant={
-                        voice.id === config.voiceId ? "default" : "outline"
-                      }
-                      onClick={() => set("voiceId", voice.id)}
+                      value={voice.id}
+                      aria-label={`${voiceLabel(voice.id)} — ${ACCENT_LABEL[voice.accent]}`}
                     >
                       {voiceLabel(voice.id)}
                       <span className="opacity-60">
                         {ACCENT_LABEL[voice.accent]}
                       </span>
-                    </Button>
+                    </ToggleGroupItem>
                   ))}
-                </div>
+                </ToggleGroup>
               </div>
             ))}
-          </div>
+          </Field>
 
-          <div className="flex flex-col gap-2">
-            <Label>Languages it listens for</Label>
+          <Field>
+            <FieldLabel>Languages it listens for</FieldLabel>
             {/*
               The asymmetry has to be visible here or the UI lies: the agent
               recognises 18 languages but speaks 6. Selecting Arabic is a real,
@@ -396,7 +385,7 @@ export function AgentConfigForm({
                 {voiceLabel(config.voiceId)}&apos;s language.
               </p>
             ) : null}
-          </div>
+          </Field>
         </CardContent>
       </Card>
 
@@ -405,44 +394,44 @@ export function AgentConfigForm({
           <CardTitle>Mission</CardTitle>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
-          <div className="flex flex-col gap-2">
-            <Label htmlFor="mission">What this agent is for</Label>
+          <Field>
+            <FieldLabel htmlFor="mission">What this agent is for</FieldLabel>
             <Textarea
               id="mission"
               rows={2}
               value={config.mission}
               onChange={(e) => set("mission", e.target.value)}
             />
-          </div>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div className="flex flex-col gap-2">
-              <Label htmlFor="success">Done when</Label>
+          </Field>
+          <FieldGroup className="grid gap-4 sm:grid-cols-2">
+            <Field>
+              <FieldLabel htmlFor="success">Done when</FieldLabel>
               <Textarea
                 id="success"
                 rows={2}
                 value={config.successCondition}
                 onChange={(e) => set("successCondition", e.target.value)}
               />
-            </div>
-            <div className="flex flex-col gap-2">
-              <Label htmlFor="fallback">If that&apos;s not reachable</Label>
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="fallback">If that&apos;s not reachable</FieldLabel>
               <Textarea
                 id="fallback"
                 rows={2}
                 value={config.fallback}
                 onChange={(e) => set("fallback", e.target.value)}
               />
-            </div>
-          </div>
-          <div className="flex flex-col gap-2">
-            <Label htmlFor="followup">Follow-up policy</Label>
+            </Field>
+          </FieldGroup>
+          <Field>
+            <FieldLabel htmlFor="followup">Follow-up policy</FieldLabel>
             <Input
               id="followup"
               value={config.followUpPolicy}
               placeholder="e.g. Retry once next day, then WhatsApp"
               onChange={(e) => set("followUpPolicy", e.target.value)}
             />
-          </div>
+          </Field>
         </CardContent>
       </Card>
 
@@ -494,24 +483,24 @@ export function AgentConfigForm({
           <CardTitle>Tools and channels</CardTitle>
         </CardHeader>
         <CardContent className="flex flex-col gap-6">
-          <div className="flex flex-col gap-2">
-            <Label>Tools</Label>
-            <p className="text-muted-foreground text-xs">
+          <Field>
+            <FieldLabel>Tools</FieldLabel>
+            <FieldDescription>
               What the agent can actually do mid-call. Anything not backed by a
               tool, it will say it needs to check rather than guess.
-            </p>
+            </FieldDescription>
             <div className="flex flex-col gap-2 pt-1">
               {TOOL_REGISTRY.map((tool) => {
                 const on = config.tools.includes(tool.name);
                 return (
-                  <div key={tool.name} className="flex items-start gap-3">
+                  <Field key={tool.name} orientation="horizontal">
                     <Switch
                       id={`tool-${tool.name}`}
                       checked={on}
                       onCheckedChange={() => toggleTool(tool.name)}
                     />
-                    <div className="flex flex-col gap-0.5">
-                      <Label
+                    <FieldContent className="flex flex-col gap-0.5">
+                      <FieldLabel
                         htmlFor={`tool-${tool.name}`}
                         className="font-mono text-xs"
                       >
@@ -521,37 +510,49 @@ export function AgentConfigForm({
                             waits for result
                           </Badge>
                         ) : null}
-                      </Label>
-                      <p className="text-muted-foreground text-xs">
+                      </FieldLabel>
+                      <FieldDescription>
                         {tool.description}
-                      </p>
-                    </div>
-                  </div>
+                      </FieldDescription>
+                    </FieldContent>
+                  </Field>
                 );
               })}
             </div>
-          </div>
+          </Field>
 
           <Separator />
 
-          <div className="flex flex-col gap-2">
-            <Label>Channels</Label>
-            <div className="flex gap-2 pt-1">
+          <Field>
+            <FieldLabel>Channels</FieldLabel>
+            <ToggleGroup
+              multiple
+              value={[...config.channels]}
+              onValueChange={(values) => {
+                const next = (Array.isArray(values) ? values : [])
+                  .filter((c) => (CHANNELS as readonly string[]).includes(c)) as (typeof CHANNELS)[number][];
+                // At least one channel must stay selected — an agent with
+                // none can never be dispatched. Deselecting the last one is
+                // ignored, same as before.
+                if (next.length === 0) return;
+                set("channels", next);
+              }}
+              variant="outline"
+              size="sm"
+              aria-label="Channels"
+              className="flex gap-2 pt-1"
+            >
               {CHANNELS.map((channel) => (
-                <Button
+                <ToggleGroupItem
                   key={channel}
-                  type="button"
-                  size="sm"
-                  variant={
-                    config.channels.includes(channel) ? "default" : "outline"
-                  }
-                  onClick={() => toggleChannel(channel)}
+                  value={channel}
+                  aria-label={channel === "phone" ? "Phone" : "WhatsApp"}
                 >
                   {channel === "phone" ? "Phone" : "WhatsApp"}
-                </Button>
+                </ToggleGroupItem>
               ))}
-            </div>
-          </div>
+            </ToggleGroup>
+          </Field>
         </CardContent>
       </Card>
 
@@ -565,8 +566,7 @@ export function AgentConfigForm({
             try {
               await onSubmit(name, config);
             } catch (error) {
-              toast.error("Could not save", {
-                description: error instanceof Error ? error.message : "Check your connection and try again.",
+              toast.add({ type: "error", title: "Could not save", description: error instanceof Error ? error.message : "Check your connection and try again.",
               });
             } finally {
               setSaving(false);

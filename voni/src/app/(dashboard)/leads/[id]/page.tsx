@@ -1,3 +1,4 @@
+import { Suspense } from "react";
 import { leadDetail } from "@/lib/copilot/detail-data";
 import { RouteBrief } from "@/components/copilot/route-brief";
 import {
@@ -9,17 +10,24 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Phone, MessageCircle } from "lucide-react";
 import { BackLink } from "@/components/back-link";
+import { DetailSkeleton } from "@/components/page-skeletons";
 
-export default async function LeadDetailPage({
+/**
+ * Authorized identity leaf: identity, consent, pipeline, and state resolve
+ * here. notFound()/denial stay inside detail-data, called from this leaf.
+ * The record name remains the resolved heading — no invented title.
+ */
+async function LeadDetail({
   params,
-}: PageProps<"/leads/[id]">) {
+}: {
+  params: Promise<{ id: string }>;
+}) {
   const { id } = await params;
   const { lead, state } = await leadDetail(id);
 
   return (
-    <div className="flex flex-col gap-6">
+    <>
       <RouteBrief route={`/leads/${id}`} brief={`Lead ${lead.name ?? "Unnamed"}, ${lead.phone}. State ${lead.pipelineState}. Consent ${lead.consentStatus}. Intent ${state?.intent ?? "not recorded"}. Next action ${state?.nextAction ?? "not recorded"}. Timeline is not implemented.`} />
-      <BackLink href="/leads" label="Leads" />
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">{lead.name ?? "Unnamed lead"}</h1>
@@ -68,6 +76,27 @@ export default async function LeadDetailPage({
           interleaved by time, feeding one shared conversation state.
         </CardContent>
       </Card>
+    </>
+  );
+}
+
+export default function LeadDetailPage({
+  params,
+}: PageProps<"/leads/[id]">) {
+  return (
+    <div data-testid="lead-shell" className="flex flex-col gap-6">
+      <BackLink href="/leads" label="Leads" />
+      {/* Generic detail structure: back navigation renders with the shell;
+          identity and state stream in the leaf below. */}
+      <Suspense
+        fallback={
+          <div role="status" aria-label="Loading lead">
+            <DetailSkeleton />
+          </div>
+        }
+      >
+        <LeadDetail params={params} />
+      </Suspense>
     </div>
   );
 }

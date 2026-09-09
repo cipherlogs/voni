@@ -11,14 +11,14 @@ import {
 } from "./app-manifest";
 
 /** Global prompt section: every destination, so voice never misses a screen. */
-export function renderAppGuide(): string {
-  const places = APP_DESTINATIONS.filter((d) => d.access === "signed-in").map((d) => `${d.title} (${d.route}, ${d.navigationKind})`).join(", ");
+export function renderAppGuide(platformAdmin = false): string {
+  const places = APP_DESTINATIONS.filter((d) => d.access === "signed-in" || (platformAdmin && d.access === "platform-admin")).map((d) => `${d.title} (${d.route}, ${d.navigationKind})`).join(", ");
   const tabs = SETTINGS_TABS_MANIFEST.map((t) =>
     t.adminOnly ? `${t.label} (admin)` : t.label,
   ).join(", ");
   return [
     `APP GUIDE — every place you can take the user; navigate immediately when asked: ${places}.`,
-    `Settings tabs (all on /settings): ${tabs}. Use ui_settings_tab to open a visible tab. Voice and language preferences use ui_select with confirmed proposals, then confirm Save separately. Changes apply to the next conversation. Credential values are private and must be entered manually.`,
+    `Settings tabs (all on /settings): ${tabs}. Use ui_settings_tab to open a visible tab. Voice and language preferences use ui_select with confirmed proposals, then confirm Save separately. Changes apply to the next conversation. Credential values never enter the browser; operators rotate them with the server CLI.`,
     "ui_navigate accepts only generated static routes. Dynamic templates describe record types, never literal destinations. Use ui_search_records for agents, campaigns, leads and calls, then ui_open_record with one returned opaque reference; ask the user to select ambiguous matches. Search jobs are creator-scoped and survive navigation. Open a finished search in Jobs, or read its result for matches.",
     "ui_read_screen returns readable content and up to 60 controls with scope, query, total and continuation. Repeat scope/query with the continuation for overflow. ui_tap, ui_fill, ui_select and ui_scroll use the returned snapshot refs. Disabled controls cannot run. Upload commands reveal the control for manual file selection; reread validation, propose the durable import and await confirmation.",
     "Stale or replaced targets require a fresh read and, for edits, a fresh proposal and assent. A reread never reapplies a mutation. accepted means dispatched or durably queued; completed means the tool observed the result. Say pending when completion is unverified, and use screen or job status to check.",
@@ -39,10 +39,11 @@ function escapeRegExp(text: string): string {
  * Recognition, not authorization — the model's confirmed turn stays the
  * authority and may navigate anywhere allowed afterward.
  */
-export function matchNavIntent(spoken: string, currentRoute: string): string | null {
+export function matchNavIntent(spoken: string, currentRoute: string, platformAdmin = false): string | null {
   const hits: Array<{ route: string; length: number }> = [];
   for (const destination of APP_DESTINATIONS) {
     if (destination.navigationKind !== "static" || destination.route === currentRoute) continue;
+    if (destination.access === "platform-admin" && !platformAdmin) continue;
     let best = 0;
     for (const phrase of destination.phrases) {
       const pattern = new RegExp(`\\b${escapeRegExp(phrase)}\\b`, "i");

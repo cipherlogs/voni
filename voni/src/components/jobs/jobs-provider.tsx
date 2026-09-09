@@ -10,7 +10,7 @@ import {
   useState,
 } from "react";
 import { useRouter } from "next/navigation";
-import { toast } from "sonner";
+import { toast } from "@/components/ui/toast";
 import type { JobJson } from "@/lib/jobs/serialize";
 
 export type OptimisticEntry = {
@@ -125,17 +125,43 @@ export function jobStatusLabel(status: string): string {
  * opt-in browser notification when the tab is hidden); `seenAt` persists so
  * reloads and other tabs never repeat them.
  */
-export function JobsProvider({ children }: { children: React.ReactNode }) {
+export function JobsProvider({
+  children,
+  enabled,
+}: {
+  children: React.ReactNode;
+  /** While false: no polling, no authenticated requests, no retained user
+   *  state. The shell sets this from auth readiness (myplan.md Task 8). */
+  enabled: boolean;
+}) {
   const router = useRouter();
   const [jobs, setJobs] = useState<JobJson[]>([]);
   const [optimisticJobs, setOptimisticJobs] = useState<OptimisticEntry[]>([]);
   const [notificationsOn, setNotificationsOn] = useState(initialNotificationsOn);
   const jobsRef = useRef<JobJson[]>([]);
   const optimisticRef = useRef<OptimisticEntry[]>([]);
+  const nudgedJobsRef = useRef(new Set<string>());
+  const enabledRef = useRef(enabled);
+  useEffect(() => {
+    enabledRef.current = enabled;
+  }, [enabled]);
 
   useEffect(() => {
     jobsRef.current = jobs;
   }, [jobs]);
+
+  // Leaving readiness clears any retained user state so no previous user's
+  // jobs, or identity, can appear once authentication lapses. Adjusted
+  // during render (not in an effect) per React's previous-render pattern;
+  // the provider instance itself stays mounted across signed-in navigation.
+  const [prevEnabled, setPrevEnabled] = useState(enabled);
+  if (prevEnabled !== enabled) {
+    setPrevEnabled(enabled);
+    if (!enabled) {
+      setJobs([]);
+      setOptimisticJobs([]);
+    }
+  }
 
   useEffect(() => {
     optimisticRef.current = optimisticJobs;
@@ -178,10 +204,16 @@ export function JobsProvider({ children }: { children: React.ReactNode }) {
       // Notifications are best-effort; the in-app result is the guarantee.
     }
     if (job.status === "succeeded") {
-      toast.success(title, {
-        action: job.targetUrl
+      // Durable completion: one notification per observed transition (the
+      // caller gates on seen/unread state). The action keeps its destination
+      // and callback; the toast closes when acted on, as before.
+      const id = toast.add({
+        type: "success",
+        title,
+        description: "Finished. Open it from Jobs.",
+        actionProps: job.targetUrl
           ? {
-              label: "View",
+              children: "View",
               onClick: () => {
                 void fetch(`/api/jobs/${job.id}`, {
                   method: "POST",
@@ -189,16 +221,18 @@ export function JobsProvider({ children }: { children: React.ReactNode }) {
                   body: JSON.stringify({ action: "seen" }),
                 }).catch(() => undefined);
                 router.push(job.targetUrl as string);
+                toast.close(id);
               },
             }
           : undefined,
       });
     } else {
-      toast.error(title, { description: body });
+      toast.add({ type: "error", title, description: body });
     }
   }, [router]);
 
   const refresh = useCallback(async () => {
+    if (!enabledRef.current) return;
     let next: JobJson[];
     try {
       const res = await fetch("/api/jobs", { cache: "no-store" });
@@ -226,10 +260,22 @@ export function JobsProvider({ children }: { children: React.ReactNode }) {
     }
     writeToastState(updated);
     setJobs(next);
+    const now = Date.now();
+    for (const job of next) {
+      const createdAt = job.createdAt ? new Date(job.createdAt).getTime() : now;
+      if (
+        job.status === "queued" &&
+        now - createdAt >= 15_000 &&
+        !nudgedJobsRef.current.has(job.id)
+      ) {
+        nudgedJobsRef.current.add(job.id);
+        void fetch(`/api/jobs/${job.id}/wake`, { method: "POST" }).catch(() => undefined);
+      }
+      if (job.status !== "queued") nudgedJobsRef.current.delete(job.id);
+    }
     // Consume optimistic entries confirmed by a real job of the same title
     // created after the optimistic start (dedupe returns the running job,
     // which also satisfies this), or older than 60s.
-    const now = Date.now();
     setOptimisticJobs((prev) =>
       prev.filter((entry) => {
         if (now - entry.startedAt > 60000) return false;
@@ -244,6 +290,9 @@ export function JobsProvider({ children }: { children: React.ReactNode }) {
   }, [notify]);
 
   useEffect(() => {
+    // Gated on auth readiness: while disabled there is no polling, no
+    // focus/reconnect refresh, and no listeners at all.
+    if (!enabled) return;
     // Cadence follows state: the timer re-arms after every poll using the
     // latest jobs, so slowing to idle (or speeding back up) needs no events.
     // The first poll is scheduled, not run inline, so the effect itself sets
@@ -268,10 +317,11 @@ export function JobsProvider({ children }: { children: React.ReactNode }) {
       window.removeEventListener("focus", onVisible);
       window.removeEventListener("online", onOnline);
     };
-  }, [refresh]);
+  }, [refresh, enabled]);
 
   const openJob = useCallback(
     async (job: JobJson) => {
+      if (!enabledRef.current) return;
       await fetch(`/api/jobs/${job.id}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -285,6 +335,7 @@ export function JobsProvider({ children }: { children: React.ReactNode }) {
 
   const mutate = useCallback(
     async (id: string, action: "cancel" | "retry" | "dismiss") => {
+      if (!enabledRef.current) return;
       await fetch(`/api/jobs/${id}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -297,6 +348,7 @@ export function JobsProvider({ children }: { children: React.ReactNode }) {
 
   const markSeen = useCallback(
     async (id: string) => {
+      if (!enabledRef.current) return;
       await fetch(`/api/jobs/${id}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },

@@ -23,6 +23,7 @@ import {
 } from "../src/lib/jobs/store";
 import { isJobQueued, runJob } from "../src/lib/jobs/processor";
 import { consumeMessage } from "../src/lib/jobs/consumer";
+import { sweepJobs } from "../src/lib/jobs/sweep";
 
 /**
  * Integration check for durable background jobs.
@@ -148,13 +149,27 @@ try {
   const active = await findActiveJobs(organizationId, creatorId, "integration_test");
   assert.ok(active.some((j) => j.id === retried.id));
 
-  // Missed messages: old queued jobs are republish candidates.
+  // Missed messages: old queued jobs are direct recovery candidates.
+  const missedInvalid = await createJob({
+    organizationId,
+    creatorId,
+    kind: "agent_generation",
+    title: "missed invalid",
+    idempotencyKey: "key-missed-invalid",
+    input: {},
+  });
   await db
     .update(backgroundJobs)
-    .set({ createdAt: new Date(Date.now() - 20 * 60 * 1000) })
-    .where(eq(backgroundJobs.id, retried.id));
-  const missed = await findMissedJobs(10 * 60 * 1000);
-  assert.ok(missed.some((j) => j.id === retried.id));
+    .set({ createdAt: new Date(Date.now() - 60_000) })
+    .where(eq(backgroundJobs.id, missedInvalid.job.id));
+  const missed = await findMissedJobs(45_000);
+  assert.ok(missed.some((j) => j.id === missedInvalid.job.id));
+  const swept = await sweepJobs();
+  assert.ok(swept.started >= 1);
+  assert.equal(
+    (await getJob(organizationId, creatorId, missedInvalid.job.id))?.errorCode,
+    "invalid-input",
+  );
 
   // Abandoned leases: takeover is single-winner and exhausts with attempts.
   await claimJob(retried.id, 60_000);
@@ -163,8 +178,8 @@ try {
     .set({ leaseExpiresAt: new Date(Date.now() - 1000) })
     .where(eq(backgroundJobs.id, retried.id));
   assert.ok((await findAbandonedJobs()).some((j) => j.id === retried.id));
-  // attemptCount is 2 now (claim #1, retry reset kept it, claim #2) — force
-  // exhaustion by spending the remaining attempts through recovery.
+  // attemptCount is 2 now (claim #1, retry reset kept it, claim #2), so the
+  // abandoned attempt is already exhausted and recovery must not count twice.
   let outcome: string | null = null;
   outcome = await recoverAbandonedJob(retried.id, 60_000, 2);
   assert.equal(outcome, "exhausted");

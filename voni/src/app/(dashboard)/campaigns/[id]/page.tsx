@@ -1,9 +1,11 @@
+import { Suspense } from "react";
 import { RouteBrief } from "@/components/copilot/route-brief";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
   TableBody,
@@ -41,9 +43,72 @@ function formatWhen(value: Date | null) {
   }).format(value);
 }
 
-export default async function CampaignPage({
+export default function CampaignPage({
   params,
 }: PageProps<"/campaigns/[id]">) {
+  return (
+    <div data-testid="campaign-shell" className="flex flex-col gap-6">
+      <div className="flex flex-col gap-2">
+        <Button
+          nativeButton={false}
+          render={<Link href="/campaigns" />}
+          variant="ghost"
+          size="sm"
+          className="-ml-2 w-fit"
+        >
+          <ChevronLeft />
+          Campaigns
+        </Button>
+      </div>
+
+      {/* URL-independent section structure: titles paint with the shell while
+          the authorized campaign, dispatch readiness, and lead rows stream.
+          Titles intentionally mirror the resolved sections below. */}
+      <Suspense
+        fallback={
+          <div role="status" aria-label="Loading campaign" className="flex flex-col gap-6">
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Dialer</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <Skeleton className="h-5 w-2/3" />
+              </CardContent>
+            </Card>
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Import leads</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <Skeleton className="h-10 w-full" />
+              </CardContent>
+            </Card>
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Queue</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <Skeleton className="h-24 w-full" />
+              </CardContent>
+            </Card>
+          </div>
+        }
+      >
+        <CampaignDetail params={params} />
+      </Suspense>
+    </div>
+  );
+}
+
+/**
+ * Authorized campaign leaf: record, dispatch readiness, and lead rows.
+ * Missing/denied records keep notFound() inside this leaf.
+ */
+async function CampaignDetail({
+  params,
+}: {
+  params: Promise<{ id: string }>;
+}) {
   const { id } = await params;
   const [data, dispatch] = await Promise.all([
     getCampaign(id),
@@ -68,16 +133,6 @@ export default async function CampaignPage({
     <div className="flex flex-col gap-6">
       <RouteBrief route={`/campaigns/${id}`} brief={`Campaign ${campaign.name}. Status ${campaign.status}. ${members.length} leads, ${queued} queued. ${dispatch.dueNow} due now. ${activationBlocker ?? ""} ${dispatch.blockers.join(". ")}`} />
       <div className="flex flex-col gap-2">
-        <Button
-          nativeButton={false}
-          render={<Link href="/campaigns" />}
-          variant="ghost"
-          size="sm"
-          className="-ml-2 w-fit"
-        >
-          <ChevronLeft />
-          Campaigns
-        </Button>
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div>
             <div className="flex items-center gap-2">
@@ -110,9 +165,9 @@ export default async function CampaignPage({
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-base">
             {dispatch.blockers.length === 0 ? (
-              <PhoneOutgoing className="h-4 w-4" />
+              <PhoneOutgoing className="size-4" />
             ) : (
-              <Clock className="text-muted-foreground h-4 w-4" />
+              <Clock className="text-muted-foreground size-4" />
             )}
             Dialer
           </CardTitle>

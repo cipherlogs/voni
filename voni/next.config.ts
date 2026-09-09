@@ -6,6 +6,16 @@ const nextConfig: NextConfig = {
   turbopack: {
     root: process.cwd(),
   },
+  // Cache Components adoption (myplan.md Task 7, direct one-branch):
+  // Partial Prefetching enabled in Task 12 after a clean flag-off audit
+  // (Task 11: zero prefetch props / router.prefetch calls — no legacy
+  // full-prefetch contract, no route-level exports needed).
+  cacheComponents: true,
+  partialPrefetching: true,
+  experimental: {
+    exposeTestingApiInProductionBuild:
+      process.env.VONI_INSTANT_TEST_BUILD === "1",
+  },
 };
 
 export default nextConfig;

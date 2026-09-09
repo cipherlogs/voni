@@ -15,7 +15,7 @@ const PIPELINE_STAGES = [
 
 export default function DashboardPage() {
   return (
-    <div className="flex flex-col gap-6">
+    <div data-testid="dashboard-shell" className="flex flex-col gap-6">
       <RouteBrief
         route="/dashboard"
         brief="Dashboard: pipeline funnel across active campaigns, broken down by stage. Voice reads here."

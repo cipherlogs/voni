@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useTransition } from "react";
-import { toast } from "sonner";
+import { toast } from "@/components/ui/toast";
 import { RotateCw, TriangleAlert } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -91,7 +91,7 @@ export function EditAgent({
         if (job.status === "succeeded") {
           setDeployState("ready");
           setDeployMessage(null);
-          toast.success("Voice deployment is ready");
+          toast.add({ type: "success", title: "Voice deployment is ready" });
           return;
         }
         setDeployState("failed");
@@ -145,7 +145,7 @@ export function EditAgent({
                     setDeployState("queued");
                     setDeployMessage(null);
                     setDeployJobId(result.jobId ?? null);
-                    toast.success("Deployment queued — it runs in the background");
+                    toast.add({ type: "success", title: "Deployment queued — it runs in the background" });
                   }
                 })
               }
@@ -183,7 +183,7 @@ export function EditAgent({
         onSubmit={async (nextName, nextConfig) => {
           const result = await updateAgentAction(id, nextName, nextConfig);
           if (!result.ok) {
-            toast.error(result.message);
+            toast.add({ type: "error", title: result.message });
             return;
           }
           if (result.deployment === "attention") {
@@ -196,7 +196,7 @@ export function EditAgent({
           setDeployState("queued");
           setDeployMessage(null);
           setDeployJobId(result.jobId ?? null);
-          toast.success("Agent saved — voice deployment is running");
+          toast.add({ type: "success", title: "Agent saved — voice deployment is running" });
         }}
       />
     </div>

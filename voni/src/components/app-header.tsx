@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { CircleCheck, History, LoaderCircle, Mic } from "lucide-react";
@@ -10,6 +10,7 @@ import { Separator } from "@/components/ui/separator";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { useCopilot } from "@/components/copilot/copilot-provider";
 import { VoiceBars, type VoiceBarsMood } from "@/components/copilot/voice-bars";
+import { useShellAuth } from "@/components/shell-auth";
 import { getJobProgressPercent } from "@/lib/jobs/ui-helpers";
 import { useJobs } from "@/components/jobs/jobs-provider";
 
@@ -44,13 +45,29 @@ function formatElapsed(totalSeconds: number): string {
   return `${minutes}:${String(seconds).padStart(2, "0")}`;
 }
 
+/** Self-reading title leaf: owns the usePathname call so the boundary above
+ *  covers exactly the section-title computation. */
+function HeaderTitle() {
+  const pathname = usePathname();
+  const match = SECTION_TITLES.find(
+    ([prefix]) => pathname === prefix || pathname.startsWith(`${prefix}/`),
+  );
+  return <span className="text-sm font-medium">{match ? match[1] : "Voni"}</span>;
+}
+
 /**
  * Voice copilot entry point. Same start/stop as the old floating button —
  * tapping Voice IS consent, the way a phone call works; tap again to end.
  * The live call controls and reading panel live in CopilotShell, anchored
  * as a dropdown below the header.
  */
-function CopilotHeaderButton() {
+function CopilotHeaderButton({
+  authReady,
+  authNote,
+}: {
+  authReady: boolean;
+  authNote: string;
+}) {
   const { status, live, proposals, start, stop, noteInteraction, agentPartial } =
     useCopilot();
   // Call timer, local to the button — the provider only learns durations at
@@ -97,8 +114,9 @@ function CopilotHeaderButton() {
       variant="ghost"
       size="sm"
       className="cursor-pointer"
-      disabled={starting}
-      aria-label={label}
+      disabled={starting || !authReady}
+      title={authReady ? undefined : authNote}
+      aria-label={authReady ? label : `Voice copilot unavailable: ${authNote}`}
       onClick={() => {
         noteInteraction();
         if (status === "idle" || status === "error") {
@@ -122,11 +140,13 @@ function CopilotHeaderButton() {
 }
 
 export function AppHeader() {
-  const pathname = usePathname();
+  const authState = useShellAuth();
+  const authReady = authState.status === "authenticated";
+  const authNote =
+    authState.status === "pending"
+      ? "Session loading — voice copilot unlocks after sign-in completes."
+      : "Session unavailable — voice copilot is disabled. Refresh to retry.";
   const { activeJobs, unreadJobs, optimisticJobs } = useJobs();
-  const match = SECTION_TITLES.find(
-    ([prefix]) => pathname === prefix || pathname.startsWith(`${prefix}/`),
-  );
 
   const activeCount = activeJobs.length + optimisticJobs.length;
   const firstActive = activeJobs[0];
@@ -139,9 +159,13 @@ export function AppHeader() {
       <div className="flex items-center gap-2">
         <SidebarTrigger className="-ml-1 md:hidden" />
         <Separator orientation="vertical" className="mr-1 h-4 md:hidden" />
-        <span className="text-sm font-medium">{match ? match[1] : "Voni"}</span>
+        {/* Section title reads the URL, so it suspends behind its own
+            boundary: the bar prerenders with the default title. */}
+        <Suspense fallback={<span className="text-sm font-medium">Voni</span>}>
+          <HeaderTitle />
+        </Suspense>
         <div className="ml-auto flex items-center gap-1">
-          <CopilotHeaderButton />
+          <CopilotHeaderButton authReady={authReady} authNote={authNote} />
           <Button
             variant="ghost"
             size="sm"

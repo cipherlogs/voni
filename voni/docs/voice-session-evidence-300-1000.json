@@ -1,0 +1,71 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-09-08T20:50:02.294Z",
+  "session": {
+    "id": "sess_50fc7c5bbdc040d2b6aabb9cd6dc1471",
+    "agentId": null,
+    "status": "completed",
+    "closeReason": "client_end",
+    "durationSeconds": 193.09032,
+    "createdAt": "2026-09-08T20:46:36.480204Z",
+    "endedAt": "2026-09-08T20:49:49.569000Z"
+  },
+  "timeline": {
+    "commandProfile": "300/1000",
+    "turnCount": 3,
+    "completedTurns": 3,
+    "interruptedTurns": 0,
+    "firstAudioMs": [],
+    "firstAudioP95Ms": null,
+    "toolCallCount": 1,
+    "toolErrorCount": 0,
+    "transcriptSha256": "94bdbf3a545723dbd0e0c861c06fdc6b3f7f7d67097226d333e1be5aeab627d6",
+    "transcripts": [
+      {
+        "user": null,
+        "agent": null,
+        "status": "completed"
+      },
+      {
+        "user": "Open dashboard.",
+        "agent": null,
+        "status": "completed"
+      },
+      {
+        "user": "We greet our calls.",
+        "agent": null,
+        "status": "completed"
+      }
+    ],
+    "userWordCount": 6,
+    "agentWordCount": 0
+  },
+  "recording": {
+    "sha256": "3e8af562c18703f7b77bbca100487a0430df261747d763c4bdf0bb5cdb3cf6de",
+    "bytes": 2360878,
+    "contentType": "audio/ogg",
+    "format": "ogg/opus",
+    "channels": 2,
+    "channelLayout": "stereo (left=user, right=agent)",
+    "sampleRate": 24000,
+    "userChannel": {
+      "samples": 4629600,
+      "rmsDbfs": -17.1,
+      "peakDbfs": 0,
+      "clippedSampleRatio": 0.00020045,
+      "longestDigitalSilenceMs": 500.04,
+      "largestAdjacentStep": 48855,
+      "nonSilent": true
+    },
+    "agentChannel": {
+      "samples": 4629600,
+      "rmsDbfs": null,
+      "peakDbfs": null,
+      "clippedSampleRatio": 0,
+      "longestDigitalSilenceMs": 192900,
+      "largestAdjacentStep": 0,
+      "nonSilent": false
+    },
+    "decoder": "ffmpeg"
+  }
+}

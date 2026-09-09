@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-09-08T20:44:40.726Z",
+  "session": {
+    "id": "sess_c9e74b697b2f4239a029529ae659cd75",
+    "agentId": null,
+    "status": "completed",
+    "closeReason": "client_end",
+    "durationSeconds": 83.41234,
+    "createdAt": "2026-09-08T20:43:04.404356Z",
+    "endedAt": "2026-09-08T20:44:27.813000Z"
+  },
+  "timeline": {
+      "turnCount": 4,
+      "commandProfile": "500/2000",
+    "completedTurns": 4,
+    "interruptedTurns": 0,
+    "firstAudioMs": [
+      362,
+      3227,
+      2190,
+      10697
+    ],
+    "firstAudioP95Ms": 10697,
+    "toolCallCount": 0,
+    "toolErrorCount": 0,
+    "transcriptSha256": "69e034ca5a97478827243888b3d8bafc5b7c6fc83072129b228be7a0a1d17c42",
+    "userWordCount": 40,
+    "agentWordCount": 71
+  },
+  "recording": {
+    "sha256": "7af482697d39a71527c6c735e6ea9429ef613f555f73ae2bb35f5758e65ebaba",
+    "bytes": 1052992,
+    "contentType": "audio/ogg",
+    "format": "ogg/opus",
+    "channels": 2,
+    "channelLayout": "stereo (left=user, right=agent)",
+    "sampleRate": 24000,
+    "userChannel": {
+      "samples": 1996800,
+      "rmsDbfs": -27.38,
+      "peakDbfs": 0,
+      "clippedSampleRatio": 0.00000501,
+      "longestDigitalSilenceMs": 499.08,
+      "largestAdjacentStep": 34571,
+      "nonSilent": true
+    },
+    "agentChannel": {
+      "samples": 1996800,
+      "rmsDbfs": -25.43,
+      "peakDbfs": -1.5,
+      "clippedSampleRatio": 0,
+      "longestDigitalSilenceMs": 36260,
+      "largestAdjacentStep": 13685,
+      "nonSilent": true
+    },
+    "decoder": "ffmpeg"
+  }
+}

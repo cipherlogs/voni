@@ -7,15 +7,17 @@ import { Button } from "@/components/ui/button";
 import { LoadingButton } from "@/components/loading-button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import { Field, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { TriangleAlert } from "lucide-react";
 import {
   DEFAULT_CALLING_WINDOW,
@@ -68,13 +70,6 @@ export function CampaignForm({
   const [maxAttempts, setMaxAttempts] = useState(2);
   const [retryAfterMinutes, setRetryAfterMinutes] = useState(60);
 
-  const toggleDay = (day: number) =>
-    setDays((current) =>
-      current.includes(day)
-        ? current.filter((d) => d !== day)
-        : [...current, day].sort((a, b) => a - b),
-    );
-
   // Validated here as well as on the server so the problem is visible next to
   // the control that causes it, rather than after a round trip.
   const windowInvalid = end <= start;
@@ -126,37 +121,41 @@ export function CampaignForm({
           <CardTitle>Who works this campaign</CardTitle>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
-          <div className="grid gap-2">
-            <Label htmlFor="campaign-name">Campaign name</Label>
-            <Input
-              id="campaign-name"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="Marina 2BR enquiries — September"
-            />
-          </div>
-          <div className="grid gap-2">
-            <Label>Agent</Label>
-            <Select value={agentId} onValueChange={(v) => setAgentId(v ?? "")}>
-              <SelectTrigger aria-label="Agent" className="w-full">
-                <SelectValue placeholder="Select an agent" />
-              </SelectTrigger>
-              <SelectContent>
-                {agents.map((agent) => (
-                  <SelectItem key={agent.id} value={agent.id}>
-                    {agent.name}
-                    {agent.deployed ? "" : " (draft)"}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+          <FieldGroup>
+            <Field>
+              <FieldLabel htmlFor="campaign-name">Campaign name</FieldLabel>
+              <Input
+                id="campaign-name"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="Marina 2BR enquiries — September"
+              />
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="campaign-agent">Agent</FieldLabel>
+              <Select value={agentId} onValueChange={(v) => setAgentId(v ?? "")}>
+                <SelectTrigger id="campaign-agent" aria-label="Agent" className="w-full">
+                  <SelectValue placeholder="Select an agent" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectGroup>
+                    {agents.map((agent) => (
+                      <SelectItem key={agent.id} value={agent.id}>
+                        {agent.name}
+                        {agent.deployed ? "" : " (draft)"}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
             {agentId && !agents.find((a) => a.id === agentId)?.deployed ? (
               <p className="text-muted-foreground text-xs">
                 This agent is still a draft. You can create the campaign now, but
                 publishing the agent is required before it can start calling.
               </p>
             ) : null}
-          </div>
+            </Field>
+          </FieldGroup>
         </CardContent>
       </Card>
 
@@ -165,91 +164,107 @@ export function CampaignForm({
           <CardTitle>When calling is allowed</CardTitle>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
-          <div className="grid gap-4 sm:grid-cols-3">
-            <div className="grid gap-2">
-              <Label htmlFor="window-start">Start</Label>
+          <FieldGroup className="grid gap-4 sm:grid-cols-3">
+            <Field>
+              <FieldLabel htmlFor="window-start">Start</FieldLabel>
               <Input
                 id="window-start"
                 type="time"
                 value={start}
                 onChange={(e) => setStart(e.target.value)}
               />
-            </div>
-            <div className="grid gap-2">
-              <Label htmlFor="window-end">End</Label>
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="window-end">End</FieldLabel>
               <Input
                 id="window-end"
                 type="time"
                 value={end}
                 onChange={(e) => setEnd(e.target.value)}
               />
-            </div>
-            <div className="grid gap-2">
-              <Label>Timezone</Label>
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="window-timezone">Timezone</FieldLabel>
               <Select value={timezone} onValueChange={(v) => setTimezone(v ?? timezone)}>
-                <SelectTrigger aria-label="Timezone" className="w-full">
+                <SelectTrigger id="window-timezone" aria-label="Timezone" className="w-full">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {TIMEZONES.map((zone) => (
-                    <SelectItem key={zone} value={zone}>
-                      {zone}
-                    </SelectItem>
-                  ))}
+                  <SelectGroup>
+                    {TIMEZONES.map((zone) => (
+                      <SelectItem key={zone} value={zone}>
+                        {zone}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
                 </SelectContent>
               </Select>
-            </div>
-          </div>
+            </Field>
+          </FieldGroup>
           {windowInvalid ? (
-            <p className="text-destructive text-xs">
+            <FieldError className="text-xs">
               The end time has to be after the start time. Overnight windows are
               not supported.
-            </p>
+            </FieldError>
           ) : null}
 
-          <div className="grid gap-2">
-            <Label>Days</Label>
-            <div className="flex flex-wrap gap-2">
+          <Field data-invalid={days.length === 0}>
+            <FieldLabel>Days</FieldLabel>
+            <ToggleGroup
+              multiple
+              value={days.map(String)}
+              onValueChange={(values) =>
+                setDays(
+                  (Array.isArray(values) ? values : [])
+                    .map(Number)
+                    .filter((d) => Number.isInteger(d) && d >= 0 && d < 7)
+                    .sort((a, b) => a - b),
+                )
+              }
+              variant="outline"
+              aria-label="Calling days"
+              className="flex flex-wrap"
+            >
               {WEEKDAY_LABELS.map((label, day) => (
-                <Button
+                <ToggleGroupItem
                   key={label}
-                  type="button"
-                  size="sm"
-                  variant={days.includes(day) ? "default" : "outline"}
-                  onClick={() => toggleDay(day)}
+                  value={String(day)}
+                  aria-label={label}
                   aria-pressed={days.includes(day)}
                 >
                   {label.slice(0, 3)}
-                </Button>
+                </ToggleGroupItem>
               ))}
-            </div>
+            </ToggleGroup>
             {days.length === 0 ? (
-              <p className="text-destructive text-xs">Pick at least one day.</p>
+              <FieldError className="text-xs">Pick at least one day.</FieldError>
             ) : null}
-          </div>
+          </Field>
 
-          <div className="grid gap-2">
-            <Label>Consent</Label>
+          <Field>
+            <FieldLabel htmlFor="consent-policy">Consent</FieldLabel>
             <Select
               value={consent}
               onValueChange={(v) => setConsent(v as typeof consent)}
             >
-              <SelectTrigger aria-label="Consent" className="w-full">
+              <SelectTrigger id="consent-policy" aria-label="Consent" className="w-full">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="granted">
-                  Only leads who explicitly consented
-                </SelectItem>
-                <SelectItem value="not_revoked">
-                  Anyone who has not opted out
-                </SelectItem>
+                <SelectGroup>
+                  <SelectItem value="granted">
+                    Only leads who explicitly consented
+                  </SelectItem>
+                  <SelectItem value="not_revoked">
+                    Anyone who has not opted out
+                  </SelectItem>
+                </SelectGroup>
               </SelectContent>
             </Select>
             <p className="text-muted-foreground text-xs">
               Leads marked as opted out are never called, under either setting.
             </p>
-          </div>
+          </Field>
         </CardContent>
       </Card>
 
@@ -258,8 +273,8 @@ export function CampaignForm({
           <CardTitle>How persistent to be</CardTitle>
         </CardHeader>
         <CardContent className="grid gap-4 sm:grid-cols-2">
-          <div className="grid gap-2">
-            <Label htmlFor="max-attempts">Call attempts per lead</Label>
+          <Field>
+            <FieldLabel htmlFor="max-attempts">Call attempts per lead</FieldLabel>
             <Input
               id="max-attempts"
               type="number"
@@ -268,9 +283,9 @@ export function CampaignForm({
               value={maxAttempts}
               onChange={(e) => setMaxAttempts(Number(e.target.value))}
             />
-          </div>
-          <div className="grid gap-2">
-            <Label htmlFor="retry-after">Wait between attempts (minutes)</Label>
+          </Field>
+          <Field>
+            <FieldLabel htmlFor="retry-after">Wait between attempts (minutes)</FieldLabel>
             <Input
               id="retry-after"
               type="number"
@@ -279,7 +294,7 @@ export function CampaignForm({
               value={retryAfterMinutes}
               onChange={(e) => setRetryAfterMinutes(Number(e.target.value))}
             />
-          </div>
+          </Field>
         </CardContent>
       </Card>
 

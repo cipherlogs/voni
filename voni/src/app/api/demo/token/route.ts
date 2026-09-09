@@ -69,7 +69,9 @@ export async function POST(request: NextRequest) {
     String(MAX_SESSION_SECONDS),
   );
 
-  const res = await fetch(url, { headers: { Authorization: apiKey } });
+  const res = await fetch(url, {
+    headers: { Authorization: `Bearer ${apiKey}` },
+  });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     console.error(`[demo-token] AssemblyAI ${res.status}: ${text.slice(0, 300)}`);

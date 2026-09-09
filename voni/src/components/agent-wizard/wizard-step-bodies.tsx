@@ -8,7 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
 import { Textarea } from "@/components/ui/textarea";
 import { LoadingButton } from "@/components/loading-button";
 import { Progress } from "@/components/ui/progress";
@@ -149,17 +149,19 @@ export function GoalStep({
             );
           })}
         </div>
-        <Label htmlFor={id}>Or describe your own goal</Label>
-        <Textarea
-          id={id}
-          rows={3}
-          value={api.draft.goal}
-          onChange={(e) => {
-            api.edit({ goal: e.target.value }, "goal change");
-          }}
-          placeholder="e.g. Contact new property leads and book viewings."
-          className={flashClass(api.flashed, "goal")}
-        />
+        <Field>
+          <FieldLabel htmlFor={id}>Or describe your own goal</FieldLabel>
+          <Textarea
+            id={id}
+            rows={3}
+            value={api.draft.goal}
+            onChange={(e) => {
+              api.edit({ goal: e.target.value }, "goal change");
+            }}
+            placeholder="e.g. Contact new property leads and book viewings."
+            className={flashClass(api.flashed, "goal")}
+          />
+        </Field>
       </CardContent>
     </Card>
   );
@@ -317,8 +319,8 @@ export function PersonalityStep({
     <Card>
       <StepHeader mascot={mascot} />
       <CardContent className="flex flex-col gap-3">
-        <div className="flex flex-col gap-2">
-          <Label htmlFor={`${idPrefix}-name`}>Agent name</Label>
+        <Field>
+          <FieldLabel htmlFor={`${idPrefix}-name`}>Agent name</FieldLabel>
           <Input
             id={`${idPrefix}-name`}
             value={api.draft.agentName}
@@ -328,9 +330,9 @@ export function PersonalityStep({
             placeholder="e.g. Sara"
             className={flashClass(api.flashed, "agentName")}
           />
-        </div>
-        <div className="flex flex-col gap-2">
-          <Label htmlFor={`${idPrefix}-personality`}>Sounds like</Label>
+        </Field>
+        <Field>
+          <FieldLabel htmlFor={`${idPrefix}-personality`}>Sounds like</FieldLabel>
           <Input
             id={`${idPrefix}-personality`}
             value={api.draft.personality}
@@ -340,7 +342,7 @@ export function PersonalityStep({
             placeholder="e.g. Friendly property consultant"
             className={flashClass(api.flashed, "personality")}
           />
-        </div>
+        </Field>
         <div className="flex flex-wrap gap-2">
           {PERSONALITY_CHIPS.map((chip) => (
             <Button
@@ -357,14 +359,12 @@ export function PersonalityStep({
             </Button>
           ))}
         </div>
-        <div className={cn("flex flex-col gap-3", flashClass(api.flashed, "voice"))}>
-          <div>
-            <Label>Voice</Label>
-            <p className="text-muted-foreground text-xs">
-              Preview uses your browser&apos;s voice — the final voice renders
-              on the call.
-            </p>
-          </div>
+        <Field className={cn("flex flex-col gap-3", flashClass(api.flashed, "voice"))}>
+          <FieldLabel>Voice</FieldLabel>
+          <FieldDescription>
+            Preview uses your browser&apos;s voice — the final voice renders
+            on the call.
+          </FieldDescription>
           {voicesByLanguage().map((group) => (
             <div key={group.language} className="flex flex-col gap-1.5">
               <span className="text-muted-foreground text-[11px] uppercase tracking-wide">
@@ -428,7 +428,7 @@ export function PersonalityStep({
           </span>
           {retryIn !== null || previewError ? (
             <Alert variant={previewNeedsKey ? "default" : "destructive"}>
-              <TriangleAlert className="h-4 w-4" aria-hidden />
+              <TriangleAlert className="size-4" aria-hidden />
               <AlertDescription className="flex flex-wrap items-center gap-x-2 gap-y-1">
                 {retryIn !== null ? (
                   <span>
@@ -463,14 +463,14 @@ export function PersonalityStep({
               </AlertDescription>
             </Alert>
           ) : null}
-        </div>
-        <div className={cn("flex flex-col gap-2", flashClass(api.flashed, "languages"))}>
-          <Label>Languages it listens for</Label>
-          <p className="text-muted-foreground text-xs">
+        </Field>
+        <Field className={cn("flex flex-col gap-2", flashClass(api.flashed, "languages"))}>
+          <FieldLabel>Languages it listens for</FieldLabel>
+          <FieldDescription>
             Leave all off to detect automatically — that covers every
             supported language and handles callers switching mid-sentence.
             Pin languages only for a region-specific line.
-          </p>
+          </FieldDescription>
           <div className="flex flex-wrap gap-2 pt-1">
             {INPUT_LANGUAGES.map((lang) => {
               const on = api.draft.languageCodes.includes(lang.code);
@@ -498,10 +498,10 @@ export function PersonalityStep({
               <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
               Some selected languages have no voice yet. Callers can speak
               them and the agent will understand, but it replies in{" "}
-              {voiceLabel(api.draft.voiceId)}&apos;s language.
+                {voiceLabel(api.draft.voiceId)}&apos;s language.
             </p>
           ) : null}
-        </div>
+        </Field>
       </CardContent>
     </Card>
   );
@@ -783,7 +783,7 @@ export function ReviewStep({
         ) : null}
         {error ? (
           <div className="flex items-start gap-2 rounded-lg border p-3">
-            <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+            <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden />
             <div className="flex flex-col gap-1">
               <p className="text-sm font-medium">Couldn&apos;t generate</p>
               <p className="text-muted-foreground text-xs whitespace-pre-wrap">{error}</p>

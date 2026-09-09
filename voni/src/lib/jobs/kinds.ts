@@ -141,7 +141,7 @@ export function targetUrlFor(
     case "agent_deployment":
       return `/agents/${(input as { agentId: string }).agentId}`;
     case "integration_test":
-      return "/settings?tab=platform";
+      return "/operator";
     case "lead_csv_import":
       return `/campaigns/${(input as { campaignId: string }).campaignId}`;
   }

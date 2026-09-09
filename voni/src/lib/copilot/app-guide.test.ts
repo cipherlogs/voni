@@ -60,12 +60,21 @@ test("feature terms stay within the recognition budget", () => {
   assert.ok(APP_FEATURE_TERMS.includes("Voice copilot"));
 });
 
-test("manifest v2 covers all 16 pages without navigating to templates or public routes", () => {
-  assert.equal(APP_DESTINATIONS.length, 16);
+test("manifest v2 covers all 17 pages without navigating to templates or public routes", () => {
+  assert.equal(APP_DESTINATIONS.length, 17);
   for (const route of APP_DESTINATIONS) {
     assert.equal(route.examples.length, 3);
     assert.ok(route.phrases.length > 0);
     assert.equal(NAVIGABLE_ROUTES.includes(route.route), route.navigationKind === "static");
   }
   assert.equal(APP_DESTINATIONS.filter((r) => r.navigationKind === "record").length, 4);
+  assert.equal(APP_DESTINATIONS.filter((r) => r.access === "signed-in").length, 13);
+  assert.equal(APP_DESTINATIONS.filter((r) => r.access === "platform-admin").length, 1);
+});
+
+test("operator navigation is offered only with observable authorization", () => {
+  assert.ok(!renderAppGuide().includes("Platform operator (/operator"));
+  assert.ok(renderAppGuide(true).includes("Platform operator (/operator"));
+  assert.equal(matchNavIntent("open the operator area", "/dashboard"), null);
+  assert.equal(matchNavIntent("open the operator area", "/dashboard", true), "/operator");
 });

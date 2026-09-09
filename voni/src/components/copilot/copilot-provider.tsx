@@ -19,6 +19,7 @@
 
 import {
   createContext,
+  Suspense,
   useCallback,
   useContext,
   useEffect,
@@ -63,7 +64,7 @@ import {
 import { renderAppGuide } from "@/lib/copilot/app-guide";
 import { NAVIGABLE_ROUTES } from "@/lib/copilot/app-manifest";
 import { useJobs } from "@/components/jobs/jobs-provider";
-import { toast } from "sonner";
+import { toast } from "@/components/ui/toast";
 import { recordTools } from "@/lib/copilot/record-tools";
 import { ScreenTools } from "@/lib/copilot/ui-tools";
 import { getCopilotVoicePrefs } from "@/app/(dashboard)/settings/actions";
@@ -170,10 +171,20 @@ const nextCaptionId = () => `cap-${(captionSeq += 1)}`;
  * (external URLs, unknown paths) is refused — the model never invents
  * navigation targets.
  */
-const OPENABLE_DESTINATION = /^\/(agents\/new\?job=[\w-]+|agents\/[0-9a-f-]+|settings|jobs|dashboard|campaigns\/[0-9a-f-]+)(\?.*)?$/;
+const OPENABLE_DESTINATION = /^\/(agents\/new\?job=[\w-]+|agents\/[0-9a-f-]+|settings|operator|jobs|dashboard|campaigns\/[0-9a-f-]+)(\?.*)?$/;
 
-export function CopilotProvider({ children }: { children: React.ReactNode }) {
-  const pathname = usePathname();
+export function CopilotProvider({
+  children,
+  enabled,
+  platformAdmin = false,
+}: {
+  children: React.ReactNode;
+  /** While false: no token requests, no microphone, no tool execution, no
+   *  prefs fetch. The shell sets this from auth readiness (myplan.md Task 8).
+   *  The provider instance stays mounted across signed-in navigation. */
+  enabled: boolean;
+  platformAdmin?: boolean;
+}) {
   const { addOptimistic, removeOptimistic, refresh } = useJobs();
   const router = useRouter();
   const sessionRef = useRef<VoiceSession | null>(null);
@@ -184,7 +195,14 @@ export function CopilotProvider({ children }: { children: React.ReactNode }) {
   const { store: proposalStore, bus: copilotBus } = core;
   const routeConfigs = useRef(new Map<string, RouteToolConfig>());
   const registrationRef = useRef(0);
-  const routeRef = useRef(pathname ?? "/");
+  // Route tracking lives in CopilotRouteSync below (behind Suspense): the
+  // provider itself must not call usePathname at the top, or every dynamic
+  // route fails prerender validation. Defaults to "/" until the sync lands.
+  const routeRef = useRef("/");
+  const enabledRef = useRef(enabled);
+  useEffect(() => {
+    enabledRef.current = enabled;
+  }, [enabled]);
   const screenTools = useRef<ScreenTools | null>(null);
   const navigationRef = useRef<{ destination: string; promise: Promise<BusToolResult> } | null>(null);
   const idleRef = useRef({ lastActivityAt: 0, checkInSent: false, suspended: false });
@@ -270,7 +288,7 @@ export function CopilotProvider({ children }: { children: React.ReactNode }) {
       void session
         .updateConfig(
           {
-            system_prompt: buildSystemPrompt({ route, screenBrief: brief, appGuide: renderAppGuide() }),
+            system_prompt: buildSystemPrompt({ route, screenBrief: brief, appGuide: renderAppGuide(platformAdmin) }),
             input: {
               transcription_prompt: buildTranscriptionPrompt(route),
               keyterms: buildKeyterms(route),
@@ -283,7 +301,7 @@ export function CopilotProvider({ children }: { children: React.ReactNode }) {
           /* Uncertainty surfaces via onConfigUncertainty; tools stay gated. */
         });
     },
-    [sessionToolsFor],
+    [sessionToolsFor, platformAdmin],
   );
 
   const clearTimers = useCallback(() => {
@@ -316,7 +334,23 @@ export function CopilotProvider({ children }: { children: React.ReactNode }) {
     setStatus("idle");
   }, [clearTimers, proposalStore]);
 
+  // Leaving readiness stops any live session and invalidates pending
+  // proposals before another identity could act on them. stop() also clears
+  // transcripts and captions, so no previous user's state remains visible.
+  // Deferred a tick: calling it synchronously in the effect trips the
+  // set-state-in-effect rule and cascading renders.
+  useEffect(() => {
+    if (!enabled) {
+      const timer = setTimeout(() => stop(), 0);
+      return () => clearTimeout(timer);
+    }
+  }, [enabled, stop]);
+
   const start = useCallback(() => {
+    // Gated on auth readiness: no token request, no microphone, no tools
+    // while the session is still loading. The header explains the state and
+    // stays navigable.
+    if (!enabledRef.current) return;
     if (sessionRef.current) return;
     // Mutual exclusion with the agent-test VoiceCall: whoever starts ends
     // the other first. No parked, billable sessions on either side.
@@ -477,7 +511,7 @@ export function CopilotProvider({ children }: { children: React.ReactNode }) {
             route,
             screenBrief:
               routeConfigs.current.get(route)?.brief ?? "(no screen details available)",
-            appGuide: renderAppGuide(),
+            appGuide: renderAppGuide(platformAdmin),
           }),
           greeting: COPILOT_GREETING,
           voiceId: prefs.voiceId,
@@ -510,7 +544,7 @@ export function CopilotProvider({ children }: { children: React.ReactNode }) {
       .catch(() => {
         // start() reports through onError; nothing to add here.
       });
-  }, [noteActivity, sessionToolsFor, stop, liveContext, proposalStore, copilotBus, clearTimers]);
+  }, [noteActivity, sessionToolsFor, stop, liveContext, proposalStore, copilotBus, clearTimers, platformAdmin]);
 
   // Idle rule while live: soft check-in, then end. Typing and taps extend
   // the clock through noteActivity/noteInteraction.
@@ -549,22 +583,28 @@ export function CopilotProvider({ children }: { children: React.ReactNode }) {
   }, [status, stop]);
 
   // Navigation: new registration, expire the departed scope, republish.
-  useEffect(() => {
-    screenTools.current?.invalidate();
-    registrationRef.current += 1;
-    const registration = registrationRef.current;
-    const route = pathname ?? "/";
-    routeRef.current = route;
-    proposalStore.expireWhere(
-      (p) => p.route !== route || p.registration !== registration,
-    );
-    sessionRef.current?.invalidatePendingUpdates();
-    if (sessionRef.current) pushScreenContext(route);
-  }, [pathname, pushScreenContext, proposalStore]);
+  // Driven by CopilotRouteSync (behind Suspense) so the provider itself
+  // never reads URL data at the top level.
+  const handleRouteChange = useCallback(
+    (route: string) => {
+      screenTools.current?.invalidate();
+      registrationRef.current += 1;
+      const registration = registrationRef.current;
+      routeRef.current = route;
+      proposalStore.expireWhere(
+        (p) => p.route !== route || p.registration !== registration,
+      );
+      sessionRef.current?.invalidatePendingUpdates();
+      if (sessionRef.current) pushScreenContext(route);
+    },
+    [proposalStore, pushScreenContext],
+  );
 
   // Voice prefs: load on mount, refresh on save. Failures keep defaults —
-  // prefs must never block the mic.
+  // prefs must never block the mic. Skipped entirely until auth is ready:
+  // no authenticated requests while the session is loading.
   useEffect(() => {
+    if (!enabled) return;
     let alive = true;
     const load = () => {
       getCopilotVoicePrefs()
@@ -580,7 +620,7 @@ export function CopilotProvider({ children }: { children: React.ReactNode }) {
       alive = false;
       window.removeEventListener("voni:voice-prefs-changed", onSaved);
     };
-  }, []);
+  }, [enabled]);
 
   // Mutual exclusion: the agent-test call preempts us, we preempt it.
   useEffect(() => {
@@ -658,7 +698,10 @@ export function CopilotProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     // Navigable routes come from the GENERATED app manifest — adding a screen
     // to the sidebar/header teaches voice the destination with no prompt edit.
-    const routeEnum = NAVIGABLE_ROUTES as unknown as [string, ...string[]];
+    const allowedRoutes = platformAdmin
+      ? NAVIGABLE_ROUTES
+      : NAVIGABLE_ROUTES.filter((route) => route !== "/operator");
+    const routeEnum = allowedRoutes as [string, ...string[]];
     copilotBus.register({
       name: "ui_navigate",
       description:
@@ -689,7 +732,7 @@ export function CopilotProvider({ children }: { children: React.ReactNode }) {
     });
     screenTools.current = controls;
     for (const tool of controls.tools()) copilotBus.register(tool);
-    for (const tool of recordTools({ navigate: navigateVerified, route: () => routeRef.current, addOptimistic, removeOptimistic, refresh, background: (message) => toast.message(message) })) copilotBus.register(tool);
+    for (const tool of recordTools({ navigate: navigateVerified, route: () => routeRef.current, addOptimistic, removeOptimistic, refresh, background: (message) => toast.add({ title: message }) })) copilotBus.register(tool);
     const readOnly = {
       effect: { mutates: false, scope: "jobs", reversible: true },
       routes: "*" as const,
@@ -887,7 +930,7 @@ export function CopilotProvider({ children }: { children: React.ReactNode }) {
       },
       executor: null,
     });
-  }, [router, copilotBus, proposeChange, liveContext, navigateVerified, addOptimistic, removeOptimistic, refresh]);
+  }, [router, copilotBus, proposeChange, liveContext, navigateVerified, addOptimistic, removeOptimistic, refresh, platformAdmin]);
 
   // Never strand a billable session on unmount or sign-out.
   useEffect(() => {
@@ -1011,7 +1054,29 @@ export function CopilotProvider({ children }: { children: React.ReactNode }) {
     ],
   );
 
-  return <CopilotContext.Provider value={value}>{children}</CopilotContext.Provider>;
+  return (
+    <CopilotContext.Provider value={value}>
+      {/* Route sync behind Suspense: owns the usePathname call so dynamic
+          routes keep a prerenderable shell. */}
+      <Suspense fallback={null}>
+        <CopilotRouteSync onRoute={handleRouteChange} />
+      </Suspense>
+      {children}
+    </CopilotContext.Provider>
+  );
+}
+
+/**
+ * Self-reading route leaf for CopilotProvider. Forwards the current route
+ * (and only the route) upward; renders nothing.
+ */
+function CopilotRouteSync({ onRoute }: { onRoute: (route: string) => void }) {
+  const pathname = usePathname();
+  const route = pathname ?? "/";
+  useEffect(() => {
+    onRoute(route);
+  }, [route, onRoute]);
+  return null;
 }
 
 /**

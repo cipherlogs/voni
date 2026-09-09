@@ -110,7 +110,7 @@ export async function updatePlatformCredential(
     if (!isCredentialName(name)) throw new Error("Unknown credential.");
     if (!value.trim()) return { ok: true, message: "No change. The current credential was preserved." };
     await saveCredential(name, value, ctx.userId);
-    revalidatePath("/settings");
+    revalidatePath("/operator");
     return { ok: true, message: "Credential saved." };
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : "Credential could not be saved." };
@@ -127,7 +127,7 @@ export async function removePlatformCredential(
     const name = String(formData.get("credential") ?? "");
     if (!isCredentialName(name)) throw new Error("Unknown credential.");
     const summary = await removeCredentialOverride(name);
-    revalidatePath("/settings");
+    revalidatePath("/operator");
     return {
       ok: true,
       message:
@@ -192,7 +192,7 @@ export async function updatePlatformConfiguration(
       },
       ctx.userId,
     );
-    revalidatePath("/settings");
+    revalidatePath("/operator");
     return { ok: true, message: "Platform defaults saved." };
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : "Platform settings could not be saved." };
@@ -210,7 +210,7 @@ export async function addLlmAccount(
     const label = String(formData.get("label") ?? "");
     const value = String(formData.get("value") ?? "");
     await addAccount(providerId, label, value, ctx.userId);
-    revalidatePath("/settings");
+    revalidatePath("/operator");
     return { ok: true, message: "Account added." };
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : "Account could not be added." };
@@ -227,7 +227,7 @@ export async function removeLlmAccount(
     const id = String(formData.get("accountId") ?? "");
     if (!id) throw new Error("Unknown account.");
     await removeAccount(id);
-    revalidatePath("/settings");
+    revalidatePath("/operator");
     return { ok: true, message: "Account removed." };
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : "Account could not be removed." };
@@ -245,7 +245,7 @@ export async function setLlmAccountEnabled(
     const enabled = String(formData.get("enabled") ?? "") === "true";
     if (!id) throw new Error("Unknown account.");
     await setAccountEnabled(id, enabled, ctx.userId);
-    revalidatePath("/settings");
+    revalidatePath("/operator");
     return { ok: true, message: enabled ? "Account enabled." : "Account disabled." };
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : "Account could not be updated." };

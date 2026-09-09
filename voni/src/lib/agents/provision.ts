@@ -9,7 +9,7 @@ export type AgentDeploymentResult =
   | { ok: true; agentId: string }
   | { ok: false; error: string };
 
-function storedAgentBody(name: string, config: AgentConfig) {
+export function storedAgentBody(name: string, config: AgentConfig) {
   return {
     name,
     system_prompt: compileSystemPrompt(config),
@@ -34,6 +34,88 @@ function storedAgentBody(name: string, config: AgentConfig) {
     },
     tools: compileVoiceTools(config),
   };
+}
+
+function comparableAgent(value: Record<string, unknown>) {
+  const voice = (value.voice ?? {}) as Record<string, unknown>;
+  const input = (value.input ?? {}) as Record<string, unknown>;
+  const output = (value.output ?? {}) as Record<string, unknown>;
+  const tools = Array.isArray(value.tools)
+    ? value.tools.map((tool) => {
+      if (!tool || typeof tool !== "object") return tool;
+        const rest = { ...(tool as Record<string, unknown>) };
+        delete rest.id;
+        return rest;
+      })
+    : [];
+  return {
+    name: value.name,
+    system_prompt: value.system_prompt,
+    greeting: value.greeting ?? null,
+    voice: { voice_id: voice.voice_id },
+    input: {
+      format: input.format,
+      transcription_mode: input.transcription_mode,
+      turn_detection: input.turn_detection ?? null,
+      language_codes: input.language_codes ?? [],
+    },
+    output: {
+      voice: output.voice,
+      format: output.format,
+      volume: output.volume ?? null,
+    },
+    tools,
+  };
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .filter(([, item]) => item !== undefined)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, item]) => `${JSON.stringify(key)}:${stableJson(item)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+export function deploymentFingerprint(name: string, config: AgentConfig): string {
+  return createHash("sha256")
+    .update(stableJson(comparableAgent(storedAgentBody(name, config))))
+    .digest("hex");
+}
+
+async function reconcileRecentAgent(
+  authorization: string,
+  name: string,
+  config: AgentConfig,
+): Promise<string | null> {
+  const listResponse = await fetch(AGENTS_URL, {
+    headers: { Authorization: authorization },
+  });
+  if (!listResponse.ok) return null;
+  const payload = (await listResponse.json()) as
+    | Array<{ id: string; name: string; created_at?: string; deleted_at?: string | null }>
+    | { items?: Array<{ id: string; name: string; created_at?: string; deleted_at?: string | null }> };
+  const items = Array.isArray(payload) ? payload : (payload.items ?? []);
+  const cutoff = Date.now() - 30 * 60 * 1000;
+  const candidates = items
+    .filter((item) => item.name === name && !item.deleted_at && (!item.created_at || new Date(item.created_at).getTime() >= cutoff))
+    .slice(0, 10);
+  const expected = deploymentFingerprint(name, config);
+  for (const candidate of candidates) {
+    const response = await fetch(`${AGENTS_URL}/${encodeURIComponent(candidate.id)}`, {
+      headers: { Authorization: authorization },
+    });
+    if (!response.ok) continue;
+    const remote = (await response.json()) as Record<string, unknown>;
+    const actual = createHash("sha256")
+      .update(stableJson(comparableAgent(remote)))
+      .digest("hex");
+    if (actual === expected) return candidate.id;
+  }
+  return null;
 }
 
 async function requestAgent(
@@ -66,6 +148,7 @@ async function requestAgent(
       ok: false as const,
       error: "Voice deployment did not complete. The saved configuration is safe to retry.",
       status: response.status,
+      uncertain: response.status >= 500,
     };
   }
   const record = (await response.json()) as { id: string };
@@ -78,7 +161,20 @@ export async function provisionAgent(
   remoteId?: string | null,
 ): Promise<AgentDeploymentResult> {
   try {
-    if (!remoteId) return requestAgent("POST", name, config);
+    if (!remoteId) {
+      const apiKey = (await resolveCredential("assemblyai_api_key")).value;
+      if (!apiKey) return { ok: false, error: "AssemblyAI is not configured." };
+      try {
+        const created = await requestAgent("POST", name, config);
+        if (created.ok || !("uncertain" in created) || !created.uncertain) return created;
+      } catch {
+        // The provider may have accepted the POST before the connection failed.
+      }
+      const reconciled = await reconcileRecentAgent(`Bearer ${apiKey}`, name, config).catch(() => null);
+      return reconciled
+        ? { ok: true, agentId: reconciled }
+        : { ok: false, error: "Voice deployment is unavailable. The saved configuration is safe to retry." };
+    }
     const updated = await requestAgent("PUT", name, config, remoteId);
     // A remote agent may have been deleted from the AssemblyAI dashboard. A
     // retry should repair that state instead of failing forever on the stale id.
@@ -94,3 +190,4 @@ export async function provisionAgent(
     };
   }
 }
+import { createHash } from "node:crypto";

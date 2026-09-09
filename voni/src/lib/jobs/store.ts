@@ -199,6 +199,20 @@ export async function heartbeatJob(
     .where(and(eq(backgroundJobs.id, id), eq(backgroundJobs.status, "running")));
 }
 
+/** Record queue-dispatch state without adding a provider-specific DB field. */
+export async function markQueuedStage(
+  id: string,
+  stage: "waiting-for-worker" | "recovery-started",
+  database: JobDb = db,
+): Promise<boolean> {
+  const updated = await database
+    .update(backgroundJobs)
+    .set({ stage, updatedAt: new Date() })
+    .where(and(eq(backgroundJobs.id, id), eq(backgroundJobs.status, "queued")))
+    .returning({ id: backgroundJobs.id });
+  return updated.length > 0;
+}
+
 /** Terminal success. Guarded on `running` so a duplicate delivery cannot
  * overwrite a job that was already retried, cancelled, or finished. */
 export async function completeJob(
@@ -411,7 +425,7 @@ export async function findActiveJobs(
 
 /** Queued jobs that never got a queue message (or lost it) and are old enough
  * to be genuinely missed rather than just created. The scheduled worker
- * republishes one message per returned row; claiming stays idempotent. */
+ * directly executes returned rows; claiming stays idempotent. */
 export async function findMissedJobs(
   olderThanMs: number,
   database: JobDb = db,
@@ -447,7 +461,8 @@ export async function findAbandonedJobs(database: JobDb = db, limit = 100): Prom
 
 /**
  * Take over one abandoned lease atomically (a second overlapping sweep gets
- * null). Counts as an attempt; exhausts the job when attempts run out.
+ * null). The failed claim already counted as an attempt; the next claim will
+ * count the retry, so recovery must not increment twice.
  */
 export async function recoverAbandonedJob(
   id: string,
@@ -459,7 +474,6 @@ export async function recoverAbandonedJob(
   const taken = await database
     .update(backgroundJobs)
     .set({
-      attemptCount: sql`${backgroundJobs.attemptCount} + 1`,
       leaseExpiresAt: new Date(now.getTime() + leaseMs),
       updatedAt: now,
     })
@@ -472,7 +486,7 @@ export async function recoverAbandonedJob(
     )
     .returning({ attemptCount: backgroundJobs.attemptCount });
   if (!taken[0]) return null;
-  if (taken[0].attemptCount > maxAttempts) {
+  if (taken[0].attemptCount >= maxAttempts) {
     await failJob(id, "lease-exhausted", "The job stalled and ran out of attempts.", database);
     return "exhausted";
   }

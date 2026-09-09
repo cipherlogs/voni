@@ -1,38 +1,55 @@
+import { Suspense } from "react";
+import { connection } from "next/server";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Phone, MessageCircle, Wrench } from "lucide-react";
 import { LandingDemo } from "@/components/landing-demo";
-import { ModeToggle } from "@/components/mode-toggle";
-import Link from "next/link";
-import { Button } from "@/components/ui/button";
+import { LandingHeader } from "@/components/landing-header";
+import { headers } from "next/headers";
 import { VoniLogo } from "@/components/voni-logo";
+import { auth } from "@/lib/auth";
+import { devBypassEnabled } from "@/lib/dev-bypass";
 
 /* One gutter for the whole page, so the header logo, the hero, and the feature
    grid all sit on the same left edge instead of each finding its own. */
 const CONTAINER = "mx-auto w-full max-w-6xl px-6";
 
+/**
+ * Session-dependent header controls behind their own boundary (Task 9): the
+ * hero and feature content prerender without awaiting authentication.
+ */
+async function LandingHeaderGate() {
+  const authBypassed = devBypassEnabled();
+  const session = authBypassed
+    ? null
+    : await auth.api.getSession({ headers: await headers() });
+  return (
+    <LandingHeader
+      initialAuthenticated={Boolean(session)}
+      authBypassed={authBypassed}
+    />
+  );
+}
+
+/**
+ * Request-time footer leaf (Task 9): isolates the current-year read so the
+ * rest of the landing page stays prerenderable. No fixed year invented.
+ */
+async function FooterYear() {
+  // Request-time leaf: runs per request behind its boundary, never in the
+  // static shell.
+  await connection();
+  return <>© {new Date().getFullYear()} Voni</>;
+}
+
 export default function LandingPage() {
   return (
     <div className="flex flex-1 flex-col">
-      <header className="bg-background/80 sticky top-0 z-40 border-b backdrop-blur-md">
-        <div className={`${CONTAINER} flex h-16 items-center justify-between`}>
-          <Link href="/" aria-label="Voni home" className="cursor-pointer rounded-md outline-none focus-visible:ring-3 focus-visible:ring-ring/50">
-            <VoniLogo size="sm" wordmark animate />
-          </Link>
-          <div className="flex items-center gap-1.5">
-            <Button nativeButton={false} variant="ghost" render={<Link href="/login" />}>
-              Sign in
-            </Button>
-            <Button nativeButton={false} render={<Link href="/signup" />}>
-              Get started
-            </Button>
-            <div className="bg-border mx-1 h-5 w-px" />
-            <ModeToggle />
-          </div>
-        </div>
-      </header>
+      <Suspense fallback={null}>
+        <LandingHeaderGate />
+      </Suspense>
 
-      <section className={`${CONTAINER} flex flex-col items-center gap-7 py-24 text-center md:py-32`}>
+      <section data-testid="landing-shell" className={`${CONTAINER} flex flex-col items-center gap-7 py-24 text-center md:py-32`}>
         <Badge variant="secondary">Built on AssemblyAI Voice Agent API</Badge>
         <h1 className="max-w-3xl text-4xl font-semibold tracking-tight text-balance md:text-[3.25rem] md:leading-[1.08]">
           An AI employee with a mission, not another chatbot
@@ -80,7 +97,9 @@ export default function LandingPage() {
             <VoniLogo size="sm" />
             <span>It sees the lead. It seals the deal.</span>
           </span>
-          <span>© {new Date().getFullYear()} Voni</span>
+          <Suspense fallback={<span>© Voni</span>}>
+            <FooterYear />
+          </Suspense>
         </div>
       </footer>
     </div>

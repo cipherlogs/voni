@@ -12,7 +12,7 @@ export function ManualLlmGuidance() {
         Add a provider key to enable generation
       </p>
       <ol className="text-muted-foreground flex list-decimal flex-col gap-1 pl-4">
-        <li>Open Settings → Platform (operator access required).</li>
+        <li>Open the platform operator area (operator access required).</li>
         <li>Select Groq, Cerebras, Gemini, or OpenRouter.</li>
         <li>Enter a recognizable account label and its API key.</li>
         <li>Add and test the account.</li>
@@ -24,8 +24,8 @@ export function ManualLlmGuidance() {
         <span className="font-mono">META_API_KEY</span> from{" "}
         <span className="font-mono">.dev.vars</span> locally or a Worker secret
         in production. Stored keys are always masked.{" "}
-        <Link href="/settings?tab=platform" className="cursor-pointer rounded-sm underline underline-offset-4 outline-none focus-visible:ring-2 focus-visible:ring-ring">
-          Open Platform settings
+        <Link href="/operator" className="cursor-pointer rounded-sm underline underline-offset-4 outline-none focus-visible:ring-2 focus-visible:ring-ring">
+          Open platform operator
         </Link>
       </p>
     </div>

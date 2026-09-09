@@ -44,7 +44,7 @@
       "type": "remote",
       "url": "https://mcp.neon.tech/mcp?projectId=fragrant-math-52860605",
       "headers": {
-        "Authorization": "Bearer {env:NEON_API_KEY}"
+        "Authorization": "Bearer {file:.secrets/neon_api_key}"
       },
       "oauth": false,
       "timeout": 15000
@@ -52,15 +52,15 @@
     "Telnyx": {
       "type": "local",
       "command": [
-        "uvx",
+        "/usr/bin/uvx",
         "--from",
         "git+https://github.com/team-telnyx/telnyx-mcp-server.git",
         "telnyx-mcp-server"
       ],
       "environment": {
-        "TELNYX_API_KEY": "{env:TELNYX_API_KEY}"
+        "TELNYX_API_KEY": "{file:.secrets/telnyx_api_key}"
       },
-      "timeout": 60000
+      "timeout": 120000
     },
     "assemblyai-docs": {
       "type": "remote",
