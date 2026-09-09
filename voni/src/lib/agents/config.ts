@@ -1,4 +1,12 @@
 import { z } from "zod";
+import {
+  CONVERSATION_LANGUAGES,
+  MAX_AGENT_NAME_LENGTH,
+  MAX_OUTCOME_LENGTH,
+  MAX_OUTCOMES,
+  MAX_STYLE_LENGTH,
+  MAX_STYLE_TRAITS,
+} from "./wizard";
 
 /**
  * The Agent config — the structured artifact the "agent compiler" produces.
@@ -97,7 +105,25 @@ export const agentConfigSchema = z.object({
    * rate the greeting as the best-sounding moment of the call.
    */
   greeting: z.string().min(1),
+  /**
+   * Wizard-authored outcomes (1–12 × ≤140) and conversational style tags
+   * (0–5 × ≤60), plus the single conversation language. Optional so legacy
+   * configurations keep parsing. Stored in existing JSON config storage —
+   * no column migration.
+   */
+  outcomes: z
+    .array(z.string().trim().min(1).max(MAX_OUTCOME_LENGTH))
+    .min(1)
+    .max(MAX_OUTCOMES)
+    .optional(),
+  styleTraits: z
+    .array(z.string().trim().min(1).max(MAX_STYLE_LENGTH))
+    .max(MAX_STYLE_TRAITS)
+    .optional(),
+  conversationLanguage: z.enum(CONVERSATION_LANGUAGES).optional(),
 });
+
+export const MAX_CONFIG_NAME_LENGTH = MAX_AGENT_NAME_LENGTH;
 
 export type AgentConfig = z.infer<typeof agentConfigSchema>;
 export type DetectField = z.infer<typeof detectFieldSchema>;

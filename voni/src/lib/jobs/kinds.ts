@@ -1,6 +1,7 @@
 import { recordSearchInputSchema, recordSearchResultSchema } from "@/lib/copilot/record-contracts";
 import { z } from "zod";
 import { agentConfigSchema } from "@/lib/agents/config";
+import { wizardDraftSchema } from "@/lib/agents/wizard";
 
 /**
  * Typed contracts for every durable job kind.
@@ -25,6 +26,8 @@ export const jobKindSchema = z.enum(JOB_KINDS);
 
 export const agentGenerationInputSchema = z.object({
   brief: z.string().trim().min(10).max(4000),
+  /** Structured wizard draft. Optional so brief-only jobs stay valid. */
+  wizardDraft: wizardDraftSchema.optional(),
 });
 
 export const agentGenerationResultSchema = z.object({
@@ -32,6 +35,8 @@ export const agentGenerationResultSchema = z.object({
   provider: z.string(),
   model: z.string(),
   latencyMs: z.number(),
+  /** Echo of the validated submitted snapshot, when the job was wizard-driven. */
+  wizardDraft: wizardDraftSchema.optional(),
 });
 
 export const agentDeploymentInputSchema = z.object({
