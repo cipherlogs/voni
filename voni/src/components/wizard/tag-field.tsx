@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useImperativeHandle, useRef, useState } from "react";
 import { Pencil, Plus, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -45,6 +45,18 @@ export type TagFieldProps = {
   addedLabel?: string;
   /** Server or step-level error shown under the field. */
   error?: string | null;
+  /**
+   * Imperative handle for step navigation: commits pending text before
+   * Continue. When false, invalid pending text stays editable without
+   * blocking (for optional fields).
+   */
+  blockOnInvalidPending?: boolean;
+  ref?: React.Ref<TagFieldHandle>;
+};
+
+export type TagFieldHandle = {
+  /** Commits pending text. Returns false when invalid text must block. */
+  commitPending: () => boolean;
 };
 
 /**
@@ -68,6 +80,8 @@ export function TagField({
   addLabel = "Add",
   addedLabel = "Added",
   error,
+  blockOnInvalidPending = true,
+  ref,
 }: TagFieldProps) {
   const [input, setInput] = useState("");
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
@@ -99,6 +113,29 @@ export function TagField({
     setInput("");
     setLocalError(null);
   };
+
+  useImperativeHandle(
+    ref,
+    () => ({
+    commitPending: () => {
+      if (input.trim().length === 0 && !editing) return true;
+      const result =
+        editing && editingIndex !== null
+          ? applyTagUpdate(values, editingIndex, input, maxLength)
+          : applyTagAdd(values, input, maxCount, maxLength);
+      if (!result.ok) {
+        setLocalError(result.message);
+        return !blockOnInvalidPending;
+      }
+      setInput("");
+      setLocalError(null);
+      setEditingIndex(null);
+      onChange(result.values);
+      return true;
+    },
+    }),
+    [input, editing, editingIndex, values, maxCount, maxLength, blockOnInvalidPending, onChange],
+  );
 
   const startEditing = (index: number) => {
     setEditingIndex(index);

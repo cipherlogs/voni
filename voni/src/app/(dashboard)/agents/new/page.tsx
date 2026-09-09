@@ -1,13 +1,14 @@
 "use client";
 
-import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { z } from "zod";
 import { useRouter, useSearchParams } from "next/navigation";
 import { toast } from "@/components/ui/toast";
-import { ArrowLeft, ArrowRight } from "lucide-react";
+import { ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { AgentConfigForm } from "@/components/agent-config-form";
+import { LoadingButton } from "@/components/loading-button";
 import { ManualLlmGuidance } from "@/components/manual-llm-guidance";
 import { REAL_ESTATE_TEMPLATE, type AgentConfig } from "@/lib/agents/config";
 import type { JobJson } from "@/lib/jobs/serialize";
@@ -22,27 +23,29 @@ import type {
 import {
   createWizardExecutor,
   createWizardTargetReader,
+  resolveWizardValue,
   wizardFieldSchema,
   wizardKeyPhrases,
-  wizardSummary,
+  type WizardField,
 } from "@/lib/copilot/wizard-tools";
 import { useWizardDraft } from "@/components/agent-wizard/use-wizard-draft";
+import type { WizardDraft } from "@/components/agent-wizard/use-wizard-draft";
 import { composeBrief } from "@/components/agent-wizard/starters";
 import { TimelineBar } from "@/components/agent-wizard/wizard-timeline";
+import { WizardFooter } from "@/components/wizard/form-layout";
+import type { TagFieldHandle } from "@/components/wizard/tag-field";
 import { BackLink } from "@/components/back-link";
 import {
-  GoalStep,
+  OutcomesStep,
   PersonalityStep,
   ReviewStep,
-  STEP_MASCOTS,
-  TasksStep,
   type ReviewPhase,
 } from "@/components/agent-wizard/wizard-step-bodies";
 import { WIZARD_STEPS } from "@/components/agent-wizard/use-wizard-draft";
 import { createAgentAction } from "../actions";
 
 /**
- * Guided agent creation: four steps build a structured brief (type it here,
+ * Guided agent creation: three steps build a structured draft (type it here,
  * or talk to the global voice copilot — it can propose every field through
  * the confirm gate), then the existing agent_generation job compiles it.
  * Generation, review, save, and restore semantics are unchanged from the
@@ -55,10 +58,13 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
   const [draft, setDraft] = useState<AgentConfig | null>(null);
   const [source, setSource] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [stepError, setStepError] = useState<string | null>(null);
   const [showGuidance, setShowGuidance] = useState(false);
   const generation = useOptimisticJob("agent_generation");
   const { markSeen } = useJobs();
   const [restoring, setRestoring] = useState(restoreJobId !== null);
+  const outcomesRef = useRef<TagFieldHandle>(null);
+  const styleRef = useRef<TagFieldHandle>(null);
   const running =
     restoring ||
     generation.phase === "starting" ||
@@ -72,6 +78,7 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
       : "idle";
   const briefError = error ?? generation.error;
 
+  // Step errors clear on the next successful advance or field edit.
   const applyResult = useCallback((job: JobJson) => {
     const result = job.result as {
       config?: AgentConfig;
@@ -120,6 +127,11 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
 
   const generate = async () => {
     const brief = composeBrief(wiz.draft);
+    if (wiz.draft.outcomes.length === 0) {
+      setStepError("Add at least one outcome first.");
+      wiz.setStep(0);
+      return;
+    }
     if (brief.trim().length < 10) {
       setError("Describe what the agent should do — a sentence or two is enough.");
       return;
@@ -155,12 +167,12 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
   };
 
   const save = async (name: string, config: AgentConfig) => {
-    // The wizard is the source of truth for voice + languages: the generated
-    // draft's voice is overwritten, never merged.
+    // The wizard is the source of truth for voice + language: the generated
+    // draft's voice is overwritten, never merged. (PR4 saves Review as shown.)
     const merged: AgentConfig = {
       ...config,
       voiceId: wiz.draft.voiceId,
-      languageCodes: [...wiz.draft.languageCodes],
+      languageCodes: [wiz.draft.conversationLanguage],
     };
     const result = await createAgentAction(name, merged);
     if (!result.ok) {
@@ -175,7 +187,29 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
     router.push(`/agents/${result.id}`);
   };
 
-  const undo = () => wiz.undo();
+  /** Forward navigation validates preceding required fields. */
+  const goNext = () => {
+    if (wiz.step === 0) {
+      // Pending valid text commits first; invalid pending text blocks here.
+      if (outcomesRef.current && !outcomesRef.current.commitPending()) return;
+      if (wiz.draft.outcomes.length === 0) {
+        setStepError("Add at least one outcome first.");
+        document.querySelector<HTMLElement>("#new-outcomes")?.focus();
+        return;
+      }
+    }
+    if (wiz.step === 1) {
+      // Style is optional: commit valid pending text, never block on it.
+      styleRef.current?.commitPending();
+      if (!wiz.draft.agentName.trim()) {
+        setStepError("Give the agent a name first.");
+        document.querySelector<HTMLElement>("#new-name")?.focus();
+        return;
+      }
+    }
+    setStepError(null);
+    wiz.setStep(Math.min(WIZARD_STEPS.length - 1, wiz.step + 1));
+  };
 
   // Copilot route registration: the global voice session can propose wizard
   // changes through the confirm gate. Brief carries presence only (never
@@ -187,11 +221,11 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
       {
         name: "wizard_propose_change",
         description:
-          "Propose setting the agent draft's goal, agent name, personality, tasks list, voice, or listened languages. Call when the user asks to set or change any of these. Returns a proposal id and summary — read the summary back verbatim, then wait for yes or Apply before calling confirm_proposal.",
+          "Propose setting the agent draft's outcomes, agent name, conversational style, voice, or conversation language. Call when the user asks to set or change any of these. Returns a proposal id and summary — read the summary back verbatim, then wait for yes or Apply before calling confirm_proposal.",
         parameters: {
           type: "object",
           properties: {
-            field: { type: "string", enum: ["goal", "agentName", "personality", "tasks", "voice", "languages"] },
+            field: { type: "string", enum: ["outcomes", "agentName", "styleTraits", "voice", "conversationLanguage"] },
             value: { type: "string" },
           },
           required: ["field", "value"],
@@ -212,19 +246,32 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
             };
           }
           const { field, value } = parsed.data;
-          const summary = wizardSummary(field, value);
+          const resolved = resolveWizardValue(field, value, draftRef.current);
+          if (!resolved.ok) {
+            return { ok: false, error: resolved.error, retryable: false };
+          }
+          const summary = resolved.summary;
           const draftKey =
-            field === "voice" ? "voiceId" : field === "languages" ? "languageCodes" : field;
+            field === "voice"
+              ? "voiceId"
+              : field;
+          const currentValue = draftRef.current[draftKey as keyof typeof draftRef.current];
+          // Undoing a language change restores the exact previous voice,
+          // which restores the pair exactly; otherwise restore the field.
+          const inverse =
+            field === "conversationLanguage" && "voiceId" in resolved.patch
+              ? { field: "voice" as WizardField, value: draftRef.current.voiceId }
+              : { field, value: currentValue as string | string[] };
           const { proposal_id } = proposeChange(
             {
               target: { kind: "wizard", id: field },
-              payload: { field, value },
+              payload: { field, value: flattenResolved(field, resolved.patch) },
               executor: "wizard_apply_exec",
               summary,
               keyPhrases: wizardKeyPhrases(field, value),
               inverse: {
                 summary: `Restore the previous ${field}`,
-                payload: { field, value: draftRef.current[draftKey] },
+                payload: inverse,
               },
             },
             ctx,
@@ -284,15 +331,14 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
     [proposeChange, proposeUndo, applyAgentPatch, draftRef],
   );
   const wizardBrief = useMemo(() => {
-    const draft = wiz.draft;
+    const current = wiz.draft;
     return [
-      `step ${wiz.step + 1} of 4 (${WIZARD_STEPS[wiz.step]})`,
-      `goal ${draft.goal ? "set" : "empty"}`,
-      `name ${draft.agentName ? "set" : "empty"}`,
-      `personality ${draft.personality ? "set" : "empty"}`,
-      `${draft.tasks.length} tasks`,
-      `voice ${draft.voiceId || "unset"}`,
-      `${draft.languageCodes.length} langs`,
+      `step ${wiz.step + 1} of 3 (${WIZARD_STEPS[wiz.step]})`,
+      `${current.outcomes.length} outcomes`,
+      `name ${current.agentName ? "set" : "empty"}`,
+      `${current.styleTraits.length} style tags`,
+      `voice ${current.voiceId || "unset"}`,
+      `language ${current.conversationLanguage}`,
     ].join("; ");
   }, [wiz.step, wiz.draft]);
   useEffect(() => {
@@ -304,18 +350,16 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
     return () => unregisterRoute("/agents/new");
   }, [registerRoute, unregisterRoute, wizardCopilotTools, wizardBrief, draftRef]);
 
-  /** Review edit jumps navigate, then focus the field. */
+  /** Review edit jumps navigate, then focus the requested field. */
   const goToStep = (step: number) => {
     wiz.setStep(step);
     requestAnimationFrame(() => {
       const sel =
         step === 0
-          ? "#new-goal"
+          ? "#new-outcomes"
           : step === 1
             ? "#new-name"
-            : step === 2
-              ? "#new-tasks button"
-              : null;
+            : null;
       if (sel) document.querySelector<HTMLElement>(sel)?.focus();
     });
   };
@@ -362,8 +406,8 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
       <div>
           <h1 className="text-2xl font-semibold tracking-tight">New agent</h1>
           <p className="text-muted-foreground text-sm">
-            Answer four quick steps and we&apos;ll generate a starting
-            mission, tasks, and rules, editable afterward. Prefer talking?
+            Answer three quick steps and we&apos;ll generate a starting
+            mission and rules, editable afterward. Prefer talking?
             The voice copilot (mic, top right) fills in every field with
             you.
           </p>
@@ -372,61 +416,75 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
         <div className="flex min-w-0 flex-col gap-4">
           <TimelineBar current={wiz.step} completed={wiz.completed} onSelect={wiz.setStep} />
           {wiz.step === 0 ? (
-            <GoalStep api={wiz} mascot={STEP_MASCOTS[0]} idPrefix="new" />
+            <OutcomesStep api={wiz} idPrefix="new" tagRef={outcomesRef} error={stepError} onClearError={() => setStepError(null)} />
           ) : null}
           {wiz.step === 1 ? (
-            <PersonalityStep api={wiz} mascot={STEP_MASCOTS[1]} idPrefix="new" />
+            <PersonalityStep api={wiz} idPrefix="new" styleRef={styleRef} onClearError={() => setStepError(null)} />
           ) : null}
           {wiz.step === 2 ? (
-            <TasksStep api={wiz} mascot={STEP_MASCOTS[2]} idPrefix="new" />
-          ) : null}
-          {wiz.step === 3 ? (
             <ReviewStep
               api={wiz}
-              mascot={STEP_MASCOTS[3]}
               phase={reviewPhase}
-              canGenerate={composeBrief(wiz.draft).trim().length >= 10}
-              onGenerate={generate}
+              canGenerate={wiz.draft.outcomes.length > 0}
               onOpenJobs={() => router.push("/jobs")}
               error={briefError}
               onUseTemplate={useTemplate}
               flashed={wiz.flashed}
-              canUndo={wiz.canUndo}
-              undoLabel={wiz.undoLabel}
-              onUndo={undo}
               onJump={goToStep}
             />
           ) : null}
-          {showGuidance && wiz.step === 3 ? <ManualLlmGuidance /> : null}
+          {showGuidance && wiz.step === 2 ? <ManualLlmGuidance /> : null}
+          {stepError && wiz.step === 1 ? (
+            <p role="alert" className="text-destructive text-sm">{stepError}</p>
+          ) : null}
 
-          <div className="flex items-center justify-between">
-            <Button
-              type="button"
-              variant="ghost"
-              disabled={wiz.step === 0}
-              data-copilot-effect="view" onClick={() => wiz.setStep(Math.max(0, wiz.step - 1))}
-            >
-              <ArrowLeft aria-hidden />
-              Back
-            </Button>
-            <span className="flex items-center gap-2">
-              {wiz.step < WIZARD_STEPS.length - 1 ? (
+          <WizardFooter
+            onBack={() => wiz.setStep(Math.max(0, wiz.step - 1))}
+            backDisabled={wiz.step === 0}
+            primary={
+              wiz.step < WIZARD_STEPS.length - 1 ? (
                 <Button
                   type="button"
-                  data-copilot-effect="view" onClick={() => wiz.setStep(Math.min(WIZARD_STEPS.length - 1, wiz.step + 1))}
+                  size="touch"
+                  className="w-full md:w-auto"
+                  data-copilot-effect="view"
+                  onClick={goNext}
                 >
                   Continue
                   <ArrowRight aria-hidden />
                 </Button>
-              ) : null}
-            </span>
-          </div>
+              ) : (
+                <LoadingButton
+                  className="w-full md:w-auto"
+                  size="touch"
+                  pending={reviewPhase === "working"}
+                  pendingText="Generating…"
+                  onClick={() => void generate()}
+                  disabled={wiz.draft.outcomes.length === 0 || reviewPhase === "working" || reviewPhase === "backgrounded"}
+                >
+                  Generate agent
+                </LoadingButton>
+              )
+            }
+          />
         </div>
 
       {/* Screen-reader status for backgrounded generation outside the card. */}
       {running && backgrounded ? <span className="sr-only">Generation continuing in the background.</span> : null}
     </>
   );
+}
+
+/** Flatten a resolved patch back to the tool value shape the executor takes. */
+function flattenResolved(
+  field: WizardField,
+  patch: Partial<WizardDraft>,
+): string | string[] {
+  if (field === "outcomes") return patch.outcomes ?? [];
+  if (field === "styleTraits") return patch.styleTraits ?? [];
+  if (field === "agentName") return patch.agentName ?? "";
+  if (field === "voice") return patch.voiceId ?? "";
+  return (patch.conversationLanguage ?? "en") as string;
 }
 
 /**
@@ -445,8 +503,8 @@ export default function NewAgentPage() {
             <div>
               <h1 className="text-2xl font-semibold tracking-tight">New agent</h1>
               <p className="text-muted-foreground text-sm">
-                Answer four quick steps and we&apos;ll generate a starting
-                mission, tasks, and rules, editable afterward.
+                Answer three quick steps and we&apos;ll generate a starting
+                mission and rules, editable afterward.
               </p>
             </div>
           </div>
