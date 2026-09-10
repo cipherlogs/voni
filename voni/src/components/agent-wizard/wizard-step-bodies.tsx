@@ -176,7 +176,6 @@ export function PersonalityStep({
           <ConversationPicker
             language={api.draft.conversationLanguage}
             voiceId={api.draft.voiceId}
-            agentName={api.draft.agentName}
             onChange={({ language, voiceId }) => {
               api.edit(
                 { conversationLanguage: language, voiceId },

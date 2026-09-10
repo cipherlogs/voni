@@ -7,10 +7,12 @@ import { agents } from "@/lib/db/schema";
 import { requireCtx, requireCtxOrRedirect, type Ctx } from "@/lib/session";
 import {
   agentConfigSchema,
+  draftPlaceholderConfig,
   normalizeConfig,
   REAL_ESTATE_TEMPLATE,
   type AgentConfig,
 } from "@/lib/agents/config";
+import { validateWizardDraft } from "@/lib/agents/wizard";
 import { JobStartError, startJob } from "@/lib/jobs/start";
 
 /**
@@ -59,6 +61,57 @@ async function enqueueDeployment(
           : "Voice deployment could not be queued. Retry from the agent page.",
     };
   }
+}
+
+export type DraftResult =
+  | { ok: true; id: string }
+  | { ok: false; message: string };
+
+/**
+ * Draft-first creation for /agents/new: writes the wizard answers as a
+ * local placeholder draft instantly (no LLM, no waiting) and returns its id.
+ * Generation then upgrades it in place; if generation fails, the draft
+ * still exists — the author's work is never lost to a failed job.
+ */
+export async function createDraftAgentAction(
+  rawDraft: unknown,
+  brief: string,
+): Promise<DraftResult> {
+  let ctx;
+  try {
+    ctx = await requireCtx();
+  } catch {
+    return { ok: false, message: "Sign in again to save this agent." };
+  }
+
+  const parsed = validateWizardDraft(rawDraft);
+  if (!parsed.success) {
+    return {
+      ok: false,
+      message:
+        parsed.error.issues[0]?.message ?? "Complete the wizard first.",
+    };
+  }
+  if (brief.trim().length < 10) {
+    return {
+      ok: false,
+      message: "Describe what the agent should do — a sentence or two is enough.",
+    };
+  }
+
+  const config = normalizeConfig(draftPlaceholderConfig(parsed.data));
+  const [row] = await db
+    .insert(agents)
+    .values({
+      organizationId: ctx.organizationId,
+      name: parsed.data.agentName.trim(),
+      config,
+      deploymentStatus: "draft",
+    })
+    .returning({ id: agents.id });
+
+  revalidatePath("/agents");
+  return { ok: true, id: row.id };
 }
 
 /** Persist a reviewed config as a new Agent, then enqueue its deployment. */

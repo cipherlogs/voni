@@ -165,13 +165,47 @@ test("agents/new save maps wizard voice and single language over the draft", () 
   );
 });
 
-test("wizard column reserves bottom clearance for the stuck footer", () => {
+test("agents/new saves the draft first, then generates into it", () => {
   const pageSource = readFileSync(
     join(dirname(fileURLToPath(import.meta.url)), "../../app/(dashboard)/agents/new/page.tsx"),
     "utf8",
   );
-  // Sticky footers overlay scrolled content when stuck: without reserved
-  // space the card tail (and the footer during generation, when the JobPill
-  // lifts it) slides underneath. The reserve tracks the pill + safe area.
-  assert.ok(pageSource.includes("pb-[calc(4.5rem+var(--job-pill-h,0px)+env(safe-area-inset-bottom))]"));
+  // Draft-first: the agent row exists before generation runs, so the form is
+  // instantly done and a failed job can never lose the author's work. A
+  // retry reuses the same draft id instead of duplicating it.
+  assert.ok(pageSource.includes("createDraftAgentAction"));
+  assert.ok(pageSource.includes("pendingAgentId"));
+  assert.ok(pageSource.includes("agentId }"));
+  assert.ok(pageSource.includes("`/agents/${agentId}?job=${started.jobId}`"));
+  // The loading skeleton mirrors the real creator shape, not bare text.
+  assert.ok(pageSource.includes("NewAgentSkeleton"));
+});
+
+test("wizard footer is static flow — no stuck overlay, no reserve hack", () => {
+  const pageSource = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), "../../app/(dashboard)/agents/new/page.tsx"),
+    "utf8",
+  );
+  assert.ok(!pageSource.includes("pb-[calc"));
+  assert.ok(!pageSource.includes("--job-pill-h"));
+});
+
+test("draft placeholder config is always a valid agent config", async () => {
+  const { draftPlaceholderConfig, agentConfigSchema } = await import(
+    "@/lib/agents/config"
+  );
+  const placeholder = draftPlaceholderConfig({
+    goals: ["Qualify leads and book viewings"],
+    tasks: ["Ask for budget"],
+    agentName: "Sara",
+    styleTraits: ["Friendly"],
+    conversationLanguage: "es",
+    voiceId: "lucia",
+  });
+  assert.ok(agentConfigSchema.safeParse(placeholder).success);
+  assert.equal(placeholder.identity.name, "Sara");
+  assert.equal(placeholder.voiceId, "lucia");
+  assert.deepEqual(placeholder.languageCodes, ["es"]);
+  assert.deepEqual(placeholder.goals, ["Qualify leads and book viewings"]);
+  assert.ok(placeholder.greeting.includes("Sara"));
 });

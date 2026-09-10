@@ -34,6 +34,7 @@ import { TimelineBar } from "@/components/agent-wizard/wizard-timeline";
 import { WizardFooter } from "@/components/wizard/form-layout";
 import type { TagFieldHandle } from "@/components/wizard/tag-field";
 import { BackLink } from "@/components/back-link";
+import { NewAgentSkeleton } from "@/components/page-skeletons";
 import {
   GenerationStatus,
   PersonalityStep,
@@ -41,7 +42,7 @@ import {
   type GenerationStatusPhase,
 } from "@/components/agent-wizard/wizard-step-bodies";
 import { WIZARD_STEPS } from "@/components/agent-wizard/use-wizard-draft";
-import { createAgentAction } from "../actions";
+import { createAgentAction, createDraftAgentAction } from "../actions";
 
 /**
  * Guided agent creation: two steps build a structured draft (type it here,
@@ -60,6 +61,10 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
   // user moves between steps. Each clears only on its own field's edits.
   const [fieldErrors, setFieldErrors] = useState<{ goals?: string; name?: string }>({});
   const [showGuidance, setShowGuidance] = useState(false);
+  // Draft-first flow: the agent row is created before generation starts, so
+  // a retry after a failed job start reuses the same draft (no duplicates).
+  const [pendingAgentId, setPendingAgentId] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
   const generation = useOptimisticJob("agent_generation");
   const { markSeen } = useJobs();
   const [restoring, setRestoring] = useState(restoreJobId !== null);
@@ -160,24 +165,36 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
     setError(null);
     setShowGuidance(false);
     setRestoring(false);
+    // Draft-first: the agent is saved as a draft BEFORE generation runs, so
+    // the form is instantly done — no locked waiting. Generation upgrades
+    // the draft in place; if it fails, the draft still exists.
+    setCreating(true);
+    let agentId = pendingAgentId;
+    if (!agentId) {
+      const created = await createDraftAgentAction(wiz.draft, brief);
+      if (!created.ok) {
+        setCreating(false);
+        setError(created.message);
+        return;
+      }
+      agentId = created.id;
+      setPendingAgentId(agentId);
+    }
+    const name = wiz.draft.agentName.trim();
     const started = await generation.start(
-      { brief },
-      { title: "Generate agent draft" },
-      (job) => {
-        // The draft review (or inline error) consumes the result right here,
-        // so mark it seen: the global pill stays for work in flight, not for
-        // results already on screen. /jobs keeps the full history.
-        if (applyResult(job)) void markSeen(job.id);
-      },
+      { brief, wizardDraft: wiz.draft, agentId },
+      { title: `Generate ${name} draft` },
     );
+    setCreating(false);
     if (!started) {
-      setError("Generation could not start.");
+      // The draft is saved regardless — retry from here reuses it.
+      setError("Draft saved — generation could not start. Retry to try again.");
       return;
     }
     if (started.deduped) {
       toast.add({ title: "A matching generation is already running — showing that one." });
     }
-    router.replace("/agents/new");
+    router.push(`/agents/${agentId}?job=${started.jobId}`);
   };
 
   const useTemplate = () => {
@@ -414,9 +431,7 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
           </p>
       </div>
 
-        <div
-          className="flex min-w-0 flex-col gap-4 pb-[calc(4.5rem+var(--job-pill-h,0px)+env(safe-area-inset-bottom))]"
-        >
+        <div className="flex min-w-0 flex-col gap-4">
           <TimelineBar current={wiz.step} completed={wiz.completed} onSelect={wiz.setStep} />
           {wiz.step === 0 ? (
             <PlanStep
@@ -464,10 +479,10 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
               ) : (
                 <LoadingButton
                   className="w-full md:w-auto pointer-coarse:min-h-11"
-                  pending={generationPhase === "working"}
-                  pendingText="Generating…"
+                  pending={creating || generationPhase === "working"}
+                  pendingText={creating ? "Saving draft…" : "Generating…"}
                   onClick={() => void generate()}
-                  disabled={generationPhase === "working" || generationPhase === "backgrounded"}
+                  disabled={creating || generationPhase === "working" || generationPhase === "backgrounded"}
                 >
                   Generate agent
                 </LoadingButton>
@@ -508,13 +523,7 @@ export default function NewAgentPage() {
       <Suspense
         fallback={
           <div role="status" aria-label="Loading agent creator">
-            <div>
-              <h1 className="text-2xl font-semibold tracking-tight">New agent</h1>
-              <p className="text-muted-foreground text-sm">
-                Answer two quick steps and we&apos;ll generate a starting
-                mission and rules, editable afterward.
-              </p>
-            </div>
+            <NewAgentSkeleton />
           </div>
         }
       >

@@ -64,12 +64,27 @@ test("integration test results keep failed checks as data, not errors", () => {
   assert.ok(parsed.success);
 });
 
+test("generation input accepts the draft-first agent id", () => {
+  const schema = JOB_INPUT_SCHEMAS.agent_generation;
+  assert.ok(schema.safeParse({ brief: "Call new property leads nightly." }).success);
+  assert.ok(
+    schema.safeParse({ brief: "Call new property leads nightly.", agentId: crypto.randomUUID() }).success,
+  );
+  assert.ok(!schema.safeParse({ brief: "Call new property leads nightly.", agentId: "nope" }).success);
+});
+
 test("target URLs route each kind to its result destination", () => {
   const agentId = crypto.randomUUID();
   const campaignId = crypto.randomUUID();
+  // Legacy brief-only jobs still restore on /agents/new.
   assert.equal(
     targetUrlFor("agent_generation", "job-1", { brief: "x".repeat(10) }),
     "/agents/new?job=job-1",
+  );
+  // Draft-first jobs land on the draft they belong to.
+  assert.equal(
+    targetUrlFor("agent_generation", "job-9", { brief: "x".repeat(10), agentId }),
+    `/agents/${agentId}?job=job-9`,
   );
   assert.equal(
     targetUrlFor("agent_deployment", "job-2", {

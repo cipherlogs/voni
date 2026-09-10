@@ -146,8 +146,11 @@ export function TagField({
   // doesn't fire (and reorder) before chip/remove/edit actions run.
   const keepFocus = (e: React.MouseEvent) => e.preventDefault();
 
+  // The error message deliberately leaves the box untinted: valid pills
+  // must never look broken because a *missing* entry was flagged. Only the
+  // composer carries aria-invalid; the text below carries the message.
   return (
-    <Field data-invalid={message ? true : undefined}>
+    <Field>
       <FieldLabel htmlFor={id}>{label}</FieldLabel>
       {description ? <FieldDescription>{description}</FieldDescription> : null}
       {available.length > 0 ? (

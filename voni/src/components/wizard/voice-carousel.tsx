@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Carousel,
   CarouselContent,
@@ -11,15 +11,14 @@ import {
 } from "@/components/ui/carousel";
 import { Card, CardContent } from "@/components/ui/card";
 import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
+import { Check } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ACCENT_LABEL, voiceLabel, type Voice } from "@/lib/agents/voices";
-import { buildPreviewText } from "@/lib/voice/preview";
 
 export type VoiceCarouselProps = {
   voices: Voice[];
   value: string;
   onChange: (voiceId: string) => void;
-  agentName: string;
   id?: string;
 };
 
@@ -35,201 +34,78 @@ function avatarStyle(id: string): React.CSSProperties {
 }
 
 /**
- * Deterministic per-voice speech tuning so slides are distinguishable while
- * swiping. This does NOT reproduce the AssemblyAI voice — the browser can
- * only approximate by language — it just keeps every English slide from
- * sounding literally identical.
+ * Voice picker: swipeable one-voice slides with tiny dots. Tapping a card
+ * selects it — there is deliberately no audio preview. Browser speech
+ * synthesis can only approximate by language, so every English slide sounded
+ * identical and the preview misrepresented the real voice. The final voice
+ * renders on the call; "Test this agent" after saving is the honest check.
  */
-function voiceTunables(id: string): { pitch: number; rate: number } {
-  let hash = 0;
-  for (let i = 0; i < id.length; i += 1) hash = (hash * 31 + id.charCodeAt(i)) >>> 0;
-  return {
-    pitch: 0.85 + ((hash % 100) / 100) * 0.35,
-    rate: 0.95 + (((hash >> 8) % 100) / 100) * 0.1,
-  };
-}
-
-/**
- * Voice picker: swipeable one-voice slides with tiny dots. Sliding to a voice
- * plays its sample (debounced to the settled slide); tapping a card selects
- * it, tapping the playing card stops it. Samples use the browser's voice
- * (AssemblyAI has no standalone preview) — the final voice renders on the
- * call. Nothing auto-plays on mount or language switch.
- */
-export function VoiceCarousel({ voices, value, onChange, agentName, id = "voice-carousel" }: VoiceCarouselProps) {
+export function VoiceCarousel({ voices, value, onChange, id = "voice-carousel" }: VoiceCarouselProps) {
   const [api, setApi] = useState<CarouselApi>();
   const [current, setCurrent] = useState(() => Math.max(0, voices.findIndex((v) => v.id === value)));
-  const [speaking, setSpeaking] = useState<string | null>(null);
-  const [sampleError, setSampleError] = useState<string | null>(null);
-  const interacted = useRef(false);
-  const playSeq = useRef(0);
-  const settleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const selectedIndex = Math.max(0, voices.findIndex((v) => v.id === value));
 
-  /** Effect-safe cut: no setState, so jumps/switches can call it. */
-  const silence = useCallback(() => {
-    playSeq.current += 1;
-    if (settleTimer.current) {
-      clearTimeout(settleTimer.current);
-      settleTimer.current = null;
-    }
-    if (typeof window !== "undefined" && "speechSynthesis" in window) {
-      window.speechSynthesis.cancel();
-    }
-  }, []);
-
-  const stopSample = useCallback(() => {
-    silence();
-    setSpeaking(null);
-  }, [silence]);
-
-  const playSample = useCallback(
-    async (voice: Voice) => {
-      // Single-flight: cut anything playing, invalidate superseded requests.
-      // Chrome's cancel() races a queued speak(), so the fresh utterance goes
-      // out on a short delay after the cut.
-      const seq = playSeq.current + 1;
-      playSeq.current = seq;
-      if (typeof window !== "undefined" && "speechSynthesis" in window) {
-        window.speechSynthesis.cancel();
-      }
-      setSpeaking(null);
-      if (typeof window === "undefined" || !("speechSynthesis" in window)) {
-        setSampleError("Voice samples aren't supported in this browser.");
-        return;
-      }
-      setSampleError(null);
-      await new Promise((resolve) => {
-        settleTimer.current = setTimeout(resolve, 120);
-      });
-      if (seq !== playSeq.current) return;
-      let text: string;
-      try {
-        const res = await fetch("/api/voice-preview", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ voiceId: voice.id, text: buildPreviewText(agentName) }),
-        });
-        if (!res.ok) throw new Error(`preview ${res.status}`);
-        text = ((await res.json()) as { text: string }).text;
-      } catch {
-        if (seq === playSeq.current) setSampleError("Couldn't load the sample. Try again.");
-        return;
-      }
-      if (seq !== playSeq.current) return;
-      const utter = new SpeechSynthesisUtterance(text);
-      const browserVoices = window.speechSynthesis.getVoices();
-      utter.voice =
-        browserVoices.find((v) => v.lang === voice.languageCode) ??
-        browserVoices.find((v) => v.lang.startsWith(voice.languageCode.slice(0, 2))) ??
-        null;
-      utter.lang = voice.languageCode;
-      const tunables = voiceTunables(voice.id);
-      utter.pitch = tunables.pitch;
-      utter.rate = tunables.rate;
-      utter.onend = () => {
-        if (seq === playSeq.current) setSpeaking(null);
-      };
-      utter.onerror = () => {
-        if (seq === playSeq.current) setSpeaking(null);
-      };
-      setSpeaking(voice.id);
-      window.speechSynthesis.speak(utter);
-    },
-    [agentName],
-  );
-
-  // Slide changes: track dots immediately, play only the settled slide and
-  // only after a user gesture — swiping past voices never plays them.
+  // Dots track the settled slide.
   useEffect(() => {
     if (!api) return;
     const onSelect = () => {
-      const index = api.selectedScrollSnap();
-      setCurrent(index);
-      if (settleTimer.current) clearTimeout(settleTimer.current);
-      const voice = voices[index];
-      if (voice && interacted.current) {
-        settleTimer.current = setTimeout(() => {
-          void playSample(voice);
-        }, 400);
-      }
+      setCurrent(api.selectedScrollSnap());
     };
     api.on("select", onSelect);
     return () => {
       api.off("select", onSelect);
     };
-  }, [api, voices, playSample]);
+  }, [api]);
 
   // External value changes (language switch, voice proposals): jump silently.
   useEffect(() => {
-    silence();
     if (!api) return;
     if (api.selectedScrollSnap() !== selectedIndex) api.scrollTo(selectedIndex, true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [api, selectedIndex, voices]);
-
-  // Never leave speech running after unmount.
-  useEffect(() => {
-    return () => {
-      silence();
-    };
-  }, [silence]);
-
-  const markInteracted = () => {
-    interacted.current = true;
-  };
-
-  const toggleCard = (voice: Voice) => {
-    markInteracted();
-    if (speaking === voice.id) {
-      stopSample();
-      return;
-    }
-    onChange(voice.id);
-    void playSample(voice);
-  };
 
   return (
     <Field>
       <FieldLabel id={`${id}-label`}>Voice</FieldLabel>
       <FieldDescription>
-        Preview approximates each voice in your browser — the final voice renders on the call.
+        The voice renders on the call — test it with &ldquo;Test this agent&rdquo; after saving.
       </FieldDescription>
-      <div onPointerDown={markInteracted} onKeyDown={markInteracted} className="mx-auto w-full max-w-xs">
+      <div className="mx-auto w-full max-w-sm">
         <Carousel setApi={setApi} opts={{ align: "center" }} aria-labelledby={`${id}-label`}>
           <CarouselContent className="ml-0">
             {voices.map((voice) => {
               const selected = voice.id === value;
-              const playing = speaking === voice.id;
               return (
                 <CarouselItem key={voice.id} className="basis-full pl-0">
                   <button
                     type="button"
-                    onClick={() => toggleCard(voice)}
+                    onClick={() => onChange(voice.id)}
                     aria-pressed={selected}
-                    aria-label={
-                      playing
-                        ? `Stop ${voiceLabel(voice.id)} sample`
-                        : `Select voice ${voiceLabel(voice.id)}, ${ACCENT_LABEL[voice.accent]}`
-                    }
+                    aria-label={`Select voice ${voiceLabel(voice.id)}, ${ACCENT_LABEL[voice.accent]}`}
                     className="w-full text-left"
                   >
-                    <Card className={cn(selected && "border-primary ring-1 ring-primary")}>
-                      <CardContent className="flex flex-col items-center gap-2 p-4 text-center">
+                    <Card
+                      className={cn(
+                        "border-0 shadow-none",
+                        selected ? "bg-primary/10 ring-1 ring-primary" : "bg-muted/50",
+                      )}
+                    >
+                      <CardContent className="flex flex-row items-center gap-3 p-3">
                         <span
                           aria-hidden
                           style={avatarStyle(voice.id)}
-                          className="flex size-12 shrink-0 items-center justify-center rounded-full text-lg font-semibold text-white"
+                          className="flex size-10 shrink-0 items-center justify-center rounded-full text-base font-semibold text-white"
                         >
                           {voiceLabel(voice.id).charAt(0)}
                         </span>
-                        <span className="flex min-w-0 flex-col gap-0.5">
+                        <span className="flex min-w-0 flex-1 flex-col gap-0.5 text-left">
                           <span className="text-sm font-medium">{voiceLabel(voice.id)}</span>
                           <span className="text-muted-foreground text-xs">
                             {ACCENT_LABEL[voice.accent]}
-                            {playing ? " · Playing — tap to stop" : ""}
                           </span>
                         </span>
+                        {selected ? (
+                          <Check data-icon="inline" aria-hidden className="text-primary shrink-0" />
+                        ) : null}
                       </CardContent>
                     </Card>
                   </button>
@@ -245,7 +121,6 @@ export function VoiceCarousel({ voices, value, onChange, agentName, id = "voice-
                 key={voice.id}
                 type="button"
                 onClick={() => {
-                  markInteracted();
                   api?.scrollTo(i);
                 }}
                 aria-label={`Go to voice ${voiceLabel(voice.id)}`}
@@ -264,13 +139,6 @@ export function VoiceCarousel({ voices, value, onChange, agentName, id = "voice-
           </div>
         </Carousel>
       </div>
-      <span aria-live="polite" className="sr-only">
-        {speaking ? `Playing ${voiceLabel(speaking)} sample. Tap the card to stop.` : null}
-        {sampleError}
-      </span>
-      {sampleError ? (
-        <p className="text-destructive text-xs">{sampleError}</p>
-      ) : null}
     </Field>
   );
 }

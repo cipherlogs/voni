@@ -28,6 +28,8 @@ export const agentGenerationInputSchema = z.object({
   brief: z.string().trim().min(10).max(4000),
   /** Structured wizard draft. Optional so brief-only jobs stay valid. */
   wizardDraft: wizardDraftSchema.optional(),
+  /** Draft-first flow: the agent row to fill in when generation lands. */
+  agentId: z.string().uuid().optional(),
 });
 
 export const agentGenerationResultSchema = z.object({
@@ -37,6 +39,10 @@ export const agentGenerationResultSchema = z.object({
   latencyMs: z.number(),
   /** Echo of the validated submitted snapshot, when the job was wizard-driven. */
   wizardDraft: wizardDraftSchema.optional(),
+  /** Draft-first flow: the agent row this result belongs to, if any. */
+  agentId: z.string().uuid().optional(),
+  /** False when the author saved edits mid-flight and the write was skipped. */
+  applied: z.boolean().optional(),
 });
 
 export const agentDeploymentInputSchema = z.object({
@@ -141,8 +147,10 @@ export function targetUrlFor(
   switch (kind) {
     case "record_search":
       return `/jobs?search=${jobId}`;
-    case "agent_generation":
-      return `/agents/new?job=${jobId}`;
+    case "agent_generation": {
+      const agentId = (input as { agentId?: string }).agentId;
+      return agentId ? `/agents/${agentId}?job=${jobId}` : `/agents/new?job=${jobId}`;
+    }
     case "agent_deployment":
       return `/agents/${(input as { agentId: string }).agentId}`;
     case "integration_test":

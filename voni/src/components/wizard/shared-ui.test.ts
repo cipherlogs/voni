@@ -82,13 +82,14 @@ test("TagField is a token box: pills inside, inline composer, x-remove", () => {
   assert.ok(source.includes("values.length}/{maxCount}"));
   // Suggestion chips move: only non-added ones render.
   assert.ok(source.includes("available"));
-  // Validation states per the forms rule; no icon sizing classes.
-  assert.ok(source.includes("data-invalid"));
+  // Errors never tint valid pills: no data-invalid on the box, only
+  // aria-invalid on the composer plus the message below.
+  assert.ok(!source.includes("data-invalid"));
   assert.ok(source.includes("aria-invalid"));
   assert.ok(!source.includes("size-3"));
 });
 
-test("VoiceCarousel is a centered one-card slider with avatars and stop", () => {
+test("VoiceCarousel is a select-only horizontal slider, no audio preview", () => {
   const source = read("voice-carousel.tsx");
   assert.ok(source.includes("CarouselContent"));
   assert.ok(source.includes("CarouselItem"));
@@ -96,22 +97,25 @@ test("VoiceCarousel is a centered one-card slider with avatars and stop", () => 
   assert.ok(source.includes("CarouselNext"));
   assert.ok(source.includes("setApi"));
   assert.ok(source.includes("selectedScrollSnap"));
-  assert.ok(source.includes("max-w-xs"));
+  assert.ok(source.includes("max-w-sm"));
   assert.ok(source.includes("basis-full"));
   assert.ok(source.includes("Go to voice"));
   assert.ok(source.includes("aria-pressed"));
-  // Samples play on the settled slide after a gesture; tap toggles stop.
-  assert.ok(source.includes("interacted"));
-  assert.ok(source.includes("speechSynthesis"));
-  assert.ok(source.includes("Stop ${voiceLabel(voice.id)} sample"));
-  assert.ok(source.includes("aria-live=\"polite\""));
-  // Per-voice browser tuning (honest approximation, not the real voice).
-  assert.ok(source.includes("voiceTunables"));
-  assert.ok(source.includes("utter.pitch"));
-  // Avatar cards: gradient initial, vertical, stock Card, no icon sizing.
+  // No audio preview: browser synthesis sounded identical per voice and
+  // misrepresented the real call voice. Selection only, honest caption.
+  assert.ok(!source.includes("speechSynthesis"));
+  assert.ok(!source.includes("voiceTunables"));
+  assert.ok(!source.includes("interacted"));
+  assert.ok(!source.includes("Playing"));
+  assert.ok(source.includes("Test this agent"));
+  // Horizontal borderless cards: avatar left, name middle, check right.
+  assert.ok(source.includes("flex-row"));
+  assert.ok(source.includes("border-0"));
+  assert.ok(source.includes("bg-primary/10"));
+  // Avatar cards: gradient initial, stock Card, no icon sizing.
   assert.ok(source.includes("avatarStyle"));
   assert.ok(source.includes("CardContent"));
-  assert.ok(!source.includes("lucide-react"));
+  assert.ok(!source.includes("size-3"));
 });
 
 test("ConversationPicker keeps the Select composition with flag-plus-text labels", () => {
@@ -124,21 +128,23 @@ test("ConversationPicker keeps the Select composition with flag-plus-text labels
   assert.ok(source.includes("VoiceCarousel"));
   assert.ok(source.includes("voiceForLanguage"));
   assert.ok(source.includes("aria-live=\"polite\""));
+  // Compact trigger: a short fixed-choice control must not span the card
+  // (Field's vertical orientation forces children full-width, so the cap
+  // has to be a max-width, not a width).
+  assert.ok(source.includes("max-w-44"));
 });
 
-test("Form layout tokens: heading gaps, card padding, sticky JobPill-aware footer", () => {
+test("Form layout tokens: heading gaps, card padding, static footer", () => {
   const source = read("form-layout.tsx");
   assert.ok(source.includes("mb-6 md:mb-8"));
   assert.ok(source.includes("gap-2"));
   assert.ok(source.includes("gap-6"));
   assert.ok(source.includes("py-4 md:py-6"));
   assert.ok(source.includes("--card-spacing"));
-  assert.ok(source.includes("sticky"));
-  assert.ok(source.includes("--job-pill-h"));
-  assert.ok(source.includes("safe-area-inset-bottom"));
-  // Never flip to static on focus: the button would move between mousedown
-  // and mouseup, eating the click.
-  assert.ok(!source.includes("focus-within:static"));
+  // Normal document flow — a stuck footer covered scrolled form content.
+  assert.ok(!source.includes("sticky"));
+  assert.ok(!source.includes("--job-pill-h"));
+  assert.ok(source.includes("border-t"));
 });
 
 test("Button has no custom touch sizes; stock sizes stay intact", () => {

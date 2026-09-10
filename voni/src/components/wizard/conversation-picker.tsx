@@ -22,7 +22,6 @@ export type ConversationPickerProps = {
   voiceId: string;
   /** Atomic language+voice update — the picker never leaves them mismatched. */
   onChange: (next: { language: ConversationLanguage; voiceId: string }) => void;
-  agentName: string;
   languageId?: string;
   description?: string;
 };
@@ -44,7 +43,6 @@ export function ConversationPicker({
   language,
   voiceId,
   onChange,
-  agentName,
   languageId = "conversation-language",
   description,
 }: ConversationPickerProps) {
@@ -71,7 +69,7 @@ export function ConversationPicker({
         <FieldLabel htmlFor={languageId}>Conversation language</FieldLabel>
         {description ? <FieldDescription>{description}</FieldDescription> : null}
         <Select value={language} onValueChange={selectLanguage}>
-          <SelectTrigger id={languageId} className="w-full">
+          <SelectTrigger id={languageId} className="w-full max-w-44">
             <span className="flex items-center gap-1.5">
               <span aria-hidden>{languageMeta(language).flag}</span>
               {languageMeta(language).label}
@@ -94,7 +92,6 @@ export function ConversationPicker({
         <VoiceCarousel
           voices={voices}
           value={voiceId}
-          agentName={agentName}
           onChange={(nextVoiceId) => {
             setNotice(null);
             onChange({ language, voiceId: nextVoiceId });

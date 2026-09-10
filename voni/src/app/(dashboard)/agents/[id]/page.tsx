@@ -40,6 +40,7 @@ async function AgentDetail({
         initialDeploymentAttention={query.deployment === "attention"}
         deploymentStatus={agent.deploymentStatus}
         deploymentError={agent.deploymentError}
+        generationJobId={typeof query.job === "string" ? query.job : null}
       />
     </>
   );
