@@ -47,23 +47,6 @@ function presentsLabel(voice: Voice) {
   return voice.presents === "unspecified" ? "Neutral" : voice.presents;
 }
 
-const WAVEFORM_BARS = 24;
-
-/**
- * Deterministic decorative waveform heights (percent) per voice id.
- * Decorative by design: the play button carries the accessible label, so the
- * bars are aria-hidden. Highlighted while that voice's clip plays.
- */
-function waveformHeights(id: string): number[] {
-  let hash = 0;
-  for (let i = 0; i < id.length; i += 1)
-    hash = (hash * 31 + id.charCodeAt(i)) >>> 0;
-  return Array.from({ length: WAVEFORM_BARS }, (_, i) => {
-    const mixed = (hash ^ Math.imul(i + 1, 2654435761)) >>> 0;
-    return 25 + (mixed % 76);
-  });
-}
-
 /**
  * Merged language + voice picker. One decision: the language chips filter the
  * voice cards, and choosing a voice sets its language implicitly. Cards sit
@@ -211,7 +194,7 @@ export function VoiceField({
                                 {voiceLabel(v.id).charAt(0)}
                               </AvatarFallback>
                             </Avatar>
-                            <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                            <span className="flex min-w-0 flex-1 flex-col gap-0.5 pr-10">
                               <span className="text-sm font-medium">
                                 {voiceLabel(v.id)}
                               </span>
@@ -219,27 +202,6 @@ export function VoiceField({
                                 {ACCENT_LABEL[v.accent]} · {presentsLabel(v)}
                               </span>
                             </span>
-                            <span
-                              aria-hidden
-                              className="shrink-0 text-base leading-none"
-                            >
-                              {flagFor(group.code)}
-                            </span>
-                          </span>
-                          <span
-                            aria-hidden
-                            className="mt-2 flex h-8 items-center gap-0.5 pr-10"
-                          >
-                            {waveformHeights(v.id).map((h, i) => (
-                              <span
-                                key={i}
-                                style={{ height: `${h}%` }}
-                                className={cn(
-                                  "w-0.5 rounded-full",
-                                  playing ? "bg-primary" : "bg-primary/30",
-                                )}
-                              />
-                            ))}
                           </span>
                         </ToggleGroupItem>
                         {/* Sibling, not nested: a button inside the toggle

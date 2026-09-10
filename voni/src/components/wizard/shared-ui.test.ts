@@ -110,10 +110,12 @@ test("VoiceField merges language chips and voice cards, real clips only", () => 
   assert.ok(source.includes("Pause"));
   assert.ok(!source.includes("voiceTunables"));
   assert.ok(!source.includes("Test this agent"));
-  // Stock Avatar cards with decorative waveform, seamless-selected via the
+  // Stock Avatar cards (no waveform, no flags — the language chips above
+  // already say which language this is), seamless-selected via the
   // toggle pressed state (no Card, ring, checkmark, or custom avatar style).
   assert.ok(source.includes("AvatarFallback"));
-  assert.ok(source.includes("waveformHeights"));
+  assert.ok(!source.includes("waveformHeights"));
+  assert.ok(!source.includes("flagFor(group.code)"));
   assert.ok(source.includes("data-[state=on]:border-primary"));
   assert.ok(source.includes("aria-pressed"));
   assert.ok(!source.includes("avatarStyle"));
