@@ -165,6 +165,13 @@ export const agents = pgTable("agents", {
   configVersion: integer("config_version").notNull().default(1),
   deploymentLease: text("deployment_lease"),
   lastDeployedAt: timestamp("last_deployed_at", { withTimezone: true }),
+  /**
+   * Wizard placeholder linkage: set when /agents/new creates the list row up
+   * front at Generate time, cleared when the reviewed config is saved over
+   * it. The list derives the badge from the live job row (never a stored
+   * flag), so abandoned placeholders decay to plain drafts on their own.
+   */
+  generationJobId: text("generation_job_id"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });

@@ -42,7 +42,12 @@ import {
   type GenerationStatusPhase,
 } from "@/components/agent-wizard/wizard-step-bodies";
 import { WIZARD_STEPS } from "@/components/agent-wizard/use-wizard-draft";
-import { createAgentAction } from "../actions";
+import { DEFAULT_WIZARD_VOICE_ID } from "@/lib/agents/wizard";
+import {
+  createAgentAction,
+  ensureGenerationPlaceholderAction,
+  getGenerationPlaceholderAction,
+} from "../actions";
 
 /**
  * Guided agent creation: two steps build a structured draft (type it here,
@@ -64,6 +69,9 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
   const generation = useOptimisticJob("agent_generation");
   const { markSeen } = useJobs();
   const [restoring, setRestoring] = useState(restoreJobId !== null);
+  // ?job= visits wait for the placeholder snapshot before showing review so
+  // the name field and voice/language (mount-once form state) are seeded.
+  const [seeded, setSeeded] = useState(restoreJobId === null);
   const goalsRef = useRef<TagFieldHandle>(null);
   const tasksRef = useRef<TagFieldHandle>(null);
   const styleRef = useRef<TagFieldHandle>(null);
@@ -110,6 +118,38 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
 
   useEffect(() => {
     if (!restoreJobId || draft) return;
+    // Returning from the list (or a reload) wipes the in-memory wizard, but
+    // the placeholder kept what was submitted: seed it back, but only over a
+    // pristine draft so real edits are never clobbered.
+    let cancelled = false;
+    void getGenerationPlaceholderAction(restoreJobId)
+      .then((ph) => {
+        if (cancelled || !ph) return;
+        const current = wiz.draft;
+        if (
+          current.agentName === "" &&
+          current.voiceId === DEFAULT_WIZARD_VOICE_ID &&
+          current.conversationLanguage === "en" &&
+          current.goals.length === 0 &&
+          current.tasks.length === 0 &&
+          current.styleTraits.length === 0
+        ) {
+          wiz.edit(
+            {
+              agentName: ph.name === "Untitled agent" ? "" : ph.name,
+              voiceId: ph.voiceId,
+              conversationLanguage: ph.conversationLanguage,
+              goals: ph.goals,
+              tasks: ph.tasks,
+              styleTraits: ph.styleTraits,
+            },
+            "restore",
+          );
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setSeeded(true);
+      });
     const stop = generation.trackExternal(
       restoreJobId,
       { title: "Generate agent draft", kind: "agent_generation" },
@@ -118,11 +158,19 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
         // it marks the job seen so no "ready" pill sticks around afterward.
         if (applyResult(job)) {
           setRestoring(false);
+          // Failed restores land on step 0 with the seeded form — jump to
+          // step 1 so the error (which renders there) is actually seen.
+          if (job.status === "failed" || job.status === "cancelled") {
+            wiz.setStep(1);
+          }
           void markSeen(job.id);
         }
       },
     );
-    return stop;
+    return () => {
+      cancelled = true;
+      stop();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [restoreJobId, draft]);
 
@@ -181,6 +229,21 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
       setError("Generation could not start.");
       return;
     }
+    // Best-effort list row so /agents shows the draft while it generates.
+    // Generation continues if this fails; saving still works (plain insert).
+    try {
+      await ensureGenerationPlaceholderAction({
+        jobId: started.jobId,
+        name: wiz.draft.agentName.trim() || "Untitled agent",
+        voiceId: wiz.draft.voiceId,
+        languageCode: wiz.draft.conversationLanguage,
+        goals: wiz.draft.goals,
+        tasks: wiz.draft.tasks,
+        styleTraits: wiz.draft.styleTraits,
+      });
+    } catch {
+      // Placeholder is a courtesy — never fail generation over it.
+    }
     if (started.deduped) {
       toast.add({ title: "A matching generation is already running — showing that one." });
     }
@@ -201,7 +264,11 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
       voiceId: wiz.draft.voiceId,
       languageCodes: [wiz.draft.conversationLanguage],
     };
-    const result = await createAgentAction(name, merged);
+    const result = await createAgentAction(name, merged, {
+      // Upgrades the generation placeholder in place when one exists for
+      // this job (matched by job id, so ?job= restores work too).
+      generationJobId: generation.jobId ?? restoreJobId ?? undefined,
+    });
     if (!result.ok) {
       toast.add({ type: "error", title: result.message });
       return;
@@ -374,7 +441,7 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
     return () => unregisterRoute("/agents/new");
   }, [registerRoute, unregisterRoute, wizardCopilotTools, wizardBrief, draftRef]);
 
-  if (draft) {
+  if (draft && seeded) {
     return (
       <div className="flex flex-col gap-6">
         <div className="flex flex-wrap items-start justify-between gap-3">
@@ -400,7 +467,7 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
         </div>
 
         <AgentConfigForm
-          initialName={wiz.draft.agentName}
+          initialName={wiz.draft.agentName || draft.identity.name}
           initialConfig={draft}
           submitLabel="Save agent"
           onSubmit={save}

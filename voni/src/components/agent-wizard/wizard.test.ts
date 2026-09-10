@@ -194,6 +194,18 @@ test("agents/new generates and reviews in place — never navigates to a draft",
   assert.ok(pageSource.includes("submitting"));
   assert.ok(pageSource.includes("wiz.step === 1 && !submitting"));
   assert.ok(pageSource.includes("submitting ? null : wiz.step === 0 ?"));
+  // Generate creates the list placeholder up front (best-effort); saving
+  // upgrades it by job id so ?job= restores don't twin the row.
+  assert.ok(pageSource.includes("ensureGenerationPlaceholderAction"));
+  assert.ok(pageSource.includes("generationJobId: generation.jobId ?? restoreJobId"));
+  // ?job= returns reseed the wizard from the placeholder (gated so review
+  // mounts with the name/voice/language intact), falling back to the
+  // generated identity name when there is no placeholder.
+  assert.ok(pageSource.includes("getGenerationPlaceholderAction"));
+  assert.ok(pageSource.includes("if (draft && seeded)"));
+  assert.ok(pageSource.includes("wiz.draft.agentName || draft.identity.name"));
+  // Failed restores jump to step 1 so the error is seen, not stranded.
+  assert.ok(pageSource.includes('wiz.setStep(1);'));
   // The loading skeleton mirrors the real creator shape, not bare text.
   assert.ok(pageSource.includes("NewAgentSkeleton"));
 });

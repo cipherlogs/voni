@@ -1,0 +1,1 @@
+ALTER TABLE "agents" ADD COLUMN "generation_job_id" text;

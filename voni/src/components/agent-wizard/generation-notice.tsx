@@ -14,7 +14,10 @@ import { Progress } from "@/components/ui/progress";
  */
 export function GenerationSubmitted({ onOpenJobs }: { onOpenJobs?: () => void }) {
   return (
-    <Alert aria-live="polite" className="border-primary/30 bg-primary/5">
+    <Alert
+      aria-live="polite"
+      className="border-0 bg-transparent px-1 shadow-none"
+    >
       <LoaderCircle className="animate-spin" aria-hidden />
       <AlertTitle>Generating your agent…</AlertTitle>
       <AlertDescription className="flex flex-col gap-3">
