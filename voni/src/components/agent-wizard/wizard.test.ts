@@ -85,9 +85,10 @@ test("PlanStep keeps Goals and Tasks visibly separated on one step", () => {
   assert.ok(stepBodiesSource.includes("TASK_SUGGESTIONS"));
   assert.ok(stepBodiesSource.includes("MAX_GOALS"));
   assert.ok(stepBodiesSource.includes("MAX_TASKS"));
-  assert.ok(stepBodiesSource.includes("Goals"));
-  const goalsAt = stepBodiesSource.indexOf('label="Goals"');
-  const tasksAt = stepBodiesSource.indexOf('label="Tasks"');
+  assert.ok(stepBodiesSource.includes("outcome that must happen"));
+  assert.ok(stepBodiesSource.includes("Short directions"));
+  const goalsAt = stepBodiesSource.indexOf('label="1 · Goals"');
+  const tasksAt = stepBodiesSource.indexOf('label="2 · Tasks"');
   assert.ok(goalsAt !== -1 && tasksAt !== -1 && goalsAt < tasksAt);
   assert.ok(!stepBodiesSource.includes("OutcomesStep"));
 });
@@ -106,13 +107,11 @@ test("PersonalityStep orders name, style, language, voice with the style helper"
   assert.ok(!stepBodiesSource.includes("Languages it listens for"));
 });
 
-test("ReviewStep shows goals, tasks, persona with Edit jumps", () => {
-  assert.ok(stepBodiesSource.includes('aria-label="Edit goals"'));
-  assert.ok(stepBodiesSource.includes('aria-label="Edit tasks"'));
-  assert.ok(stepBodiesSource.includes('aria-label="Edit persona"'));
-  assert.ok(stepBodiesSource.includes("voiceLabel(draft.voiceId)"));
-  assert.ok(!stepBodiesSource.includes("of 3 set"));
-  assert.ok(!stepBodiesSource.includes("onUndo"));
+test("ReviewStep is gone; generation status renders in-flow", () => {
+  assert.ok(!stepBodiesSource.includes("ReviewStep"));
+  assert.ok(!stepBodiesSource.includes("Edit goals"));
+  assert.ok(stepBodiesSource.includes("GenerationStatus"));
+  assert.ok(stepBodiesSource.includes("Use the real estate template"));
   assert.ok(!stepBodiesSource.includes("MascotAvatar"));
 });
 

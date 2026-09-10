@@ -6,7 +6,6 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { toast } from "@/components/ui/toast";
 import { ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { AgentConfigForm } from "@/components/agent-config-form";
 import { LoadingButton } from "@/components/loading-button";
 import { ManualLlmGuidance } from "@/components/manual-llm-guidance";
@@ -36,17 +35,16 @@ import { WizardFooter } from "@/components/wizard/form-layout";
 import type { TagFieldHandle } from "@/components/wizard/tag-field";
 import { BackLink } from "@/components/back-link";
 import {
+  GenerationStatus,
   PersonalityStep,
   PlanStep,
-  ReviewStep,
-  type ReviewField,
-  type ReviewPhase,
+  type GenerationStatusPhase,
 } from "@/components/agent-wizard/wizard-step-bodies";
 import { WIZARD_STEPS } from "@/components/agent-wizard/use-wizard-draft";
 import { createAgentAction } from "../actions";
 
 /**
- * Guided agent creation: three steps build a structured draft (type it here,
+ * Guided agent creation: two steps build a structured draft (type it here,
  * or talk to the global voice copilot — it can propose every field through
  * the confirm gate), then the existing agent_generation job compiles it.
  * Generation, review, save, and restore semantics are unchanged from the
@@ -57,7 +55,6 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
   const router = useRouter();
   const wiz = useWizardDraft();
   const [draft, setDraft] = useState<AgentConfig | null>(null);
-  const [source, setSource] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [stepError, setStepError] = useState<string | null>(null);
   const [showGuidance, setShowGuidance] = useState(false);
@@ -73,7 +70,7 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
     generation.phase === "waiting" ||
     generation.phase === "backgrounded";
   const backgrounded = generation.phase === "backgrounded";
-  const reviewPhase: ReviewPhase = backgrounded
+  const generationPhase: GenerationStatusPhase = backgrounded
     ? "backgrounded"
     : generation.phase === "starting" || generation.phase === "waiting" || restoring
       ? "working"
@@ -83,15 +80,9 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
   const applyResult = useCallback((job: JobJson) => {
     const result = job.result as {
       config?: AgentConfig;
-      provider?: string;
-      model?: string;
-      latencyMs?: number;
     } | null;
     if (job.status === "succeeded" && result?.config) {
       setDraft(result.config);
-      setSource(
-        `${result.provider ?? "unknown"} · ${result.model ?? ""} · ${((result.latencyMs ?? 0) / 1000).toFixed(1)}s`,
-      );
       setError(null);
       setShowGuidance(false);
       return true;
@@ -127,12 +118,30 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
   }, [restoreJobId, draft]);
 
   const generate = async () => {
-    const brief = composeBrief(wiz.draft);
-    if (wiz.draft.goals.length === 0) {
-      setStepError("Add at least one goal first.");
+    // No review step: validate everything here, jumping back on failure.
+    if (goalsRef.current && !goalsRef.current.commitPending()) {
       wiz.setStep(0);
       return;
     }
+    tasksRef.current?.commitPending();
+    if (wiz.draft.goals.length === 0) {
+      setStepError("Add at least one goal first.");
+      wiz.setStep(0);
+      requestAnimationFrame(() => {
+        document.querySelector<HTMLElement>("#new-goals")?.focus();
+      });
+      return;
+    }
+    styleRef.current?.commitPending();
+    if (!wiz.draft.agentName.trim()) {
+      setStepError("Give the agent a name first.");
+      wiz.setStep(1);
+      requestAnimationFrame(() => {
+        document.querySelector<HTMLElement>("#new-name")?.focus();
+      });
+      return;
+    }
+    const brief = composeBrief(wiz.draft);
     if (brief.trim().length < 10) {
       setError("Describe what the agent should do — a sentence or two is enough.");
       return;
@@ -164,7 +173,6 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
     setError(null);
     setShowGuidance(false);
     setDraft(REAL_ESTATE_TEMPLATE);
-    setSource("Real estate template");
   };
 
   const save = async (name: string, config: AgentConfig) => {
@@ -190,28 +198,17 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
 
   /** Forward navigation validates preceding required fields. */
   const goNext = () => {
-    if (wiz.step === 0) {
-      // Pending valid text commits first; invalid goal text blocks here.
-      // Tasks are optional: valid pending text commits, invalid never blocks.
-      if (goalsRef.current && !goalsRef.current.commitPending()) return;
-      tasksRef.current?.commitPending();
-      if (wiz.draft.goals.length === 0) {
-        setStepError("Add at least one goal first.");
-        document.querySelector<HTMLElement>("#new-goals")?.focus();
-        return;
-      }
-    }
-    if (wiz.step === 1) {
-      // Style is optional: commit valid pending text, never block on it.
-      styleRef.current?.commitPending();
-      if (!wiz.draft.agentName.trim()) {
-        setStepError("Give the agent a name first.");
-        document.querySelector<HTMLElement>("#new-name")?.focus();
-        return;
-      }
+    // Pending valid text commits first; invalid goal text blocks here.
+    // Tasks are optional: valid pending text commits, invalid never blocks.
+    if (goalsRef.current && !goalsRef.current.commitPending()) return;
+    tasksRef.current?.commitPending();
+    if (wiz.draft.goals.length === 0) {
+      setStepError("Add at least one goal first.");
+      document.querySelector<HTMLElement>("#new-goals")?.focus();
+      return;
     }
     setStepError(null);
-    wiz.setStep(Math.min(WIZARD_STEPS.length - 1, wiz.step + 1));
+    wiz.setStep(1);
   };
 
   // Copilot route registration: the global voice session can propose wizard
@@ -336,7 +333,7 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
   const wizardBrief = useMemo(() => {
     const current = wiz.draft;
     return [
-      `step ${wiz.step + 1} of 3 (${WIZARD_STEPS[wiz.step]})`,
+      `step ${wiz.step + 1} of 2 (${WIZARD_STEPS[wiz.step]})`,
       `${current.goals.length} goals`,
       `${current.tasks.length} tasks`,
       `name ${current.agentName ? "set" : "empty"}`,
@@ -354,22 +351,6 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
     return () => unregisterRoute("/agents/new");
   }, [registerRoute, unregisterRoute, wizardCopilotTools, wizardBrief, draftRef]);
 
-  /** Review edit jumps navigate, then focus the requested field. */
-  const goToStep = (step: number, field?: ReviewField) => {
-    wiz.setStep(step);
-    requestAnimationFrame(() => {
-      const sel =
-        step === 0
-          ? field === "tasks"
-            ? "#new-tasks"
-            : "#new-goals"
-          : step === 1
-            ? "#new-name"
-            : null;
-      if (sel) document.querySelector<HTMLElement>(sel)?.focus();
-    });
-  };
-
   if (draft) {
     return (
       <div className="flex flex-col gap-6">
@@ -383,13 +364,11 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
             </p>
           </div>
           <div className="flex items-center gap-2">
-            {source ? <Badge variant="secondary">{source}</Badge> : null}
             <Button
               variant="ghost"
               size="sm"
               onClick={() => {
                 setDraft(null);
-                setSource(null);
               }}
             >
               Start over
@@ -412,7 +391,7 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
       <div>
           <h1 className="text-2xl font-semibold tracking-tight">New agent</h1>
           <p className="text-muted-foreground text-sm">
-            Answer three quick steps and we&apos;ll generate a starting
+            Answer two quick steps and we&apos;ll generate a starting
             mission and rules, editable afterward. Prefer talking?
             The voice copilot (mic, top right) fills in every field with
             you.
@@ -434,19 +413,15 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
           {wiz.step === 1 ? (
             <PersonalityStep api={wiz} idPrefix="new" styleRef={styleRef} onClearError={() => setStepError(null)} />
           ) : null}
-          {wiz.step === 2 ? (
-            <ReviewStep
-              api={wiz}
-              phase={reviewPhase}
-              canGenerate={wiz.draft.goals.length > 0}
+          {wiz.step === 1 ? (
+            <GenerationStatus
+              phase={generationPhase}
               onOpenJobs={() => router.push("/jobs")}
               error={briefError}
               onUseTemplate={useTemplate}
-              flashed={wiz.flashed}
-              onJump={goToStep}
             />
           ) : null}
-          {showGuidance && wiz.step === 2 ? <ManualLlmGuidance /> : null}
+          {showGuidance && wiz.step === 1 ? <ManualLlmGuidance /> : null}
           {stepError && wiz.step === 1 ? (
             <p role="alert" className="text-destructive text-sm">{stepError}</p>
           ) : null}
@@ -455,7 +430,7 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
             onBack={() => wiz.setStep(Math.max(0, wiz.step - 1))}
             backDisabled={wiz.step === 0}
             primary={
-              wiz.step < WIZARD_STEPS.length - 1 ? (
+              wiz.step === 0 ? (
                 <Button
                   type="button"
                   className="w-full md:w-auto pointer-coarse:min-h-11"
@@ -468,10 +443,10 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
               ) : (
                 <LoadingButton
                   className="w-full md:w-auto pointer-coarse:min-h-11"
-                  pending={reviewPhase === "working"}
+                  pending={generationPhase === "working"}
                   pendingText="Generating…"
                   onClick={() => void generate()}
-                  disabled={wiz.draft.goals.length === 0 || reviewPhase === "working" || reviewPhase === "backgrounded"}
+                  disabled={generationPhase === "working" || generationPhase === "backgrounded"}
                 >
                   Generate agent
                 </LoadingButton>
@@ -515,7 +490,7 @@ export default function NewAgentPage() {
             <div>
               <h1 className="text-2xl font-semibold tracking-tight">New agent</h1>
               <p className="text-muted-foreground text-sm">
-                Answer three quick steps and we&apos;ll generate a starting
+                Answer two quick steps and we&apos;ll generate a starting
                 mission and rules, editable afterward.
               </p>
             </div>

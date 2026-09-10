@@ -9,11 +9,7 @@ import {
   FieldError,
   FieldLabel,
 } from "@/components/ui/field";
-import {
-  InputGroup,
-  InputGroupAddon,
-  InputGroupInput,
-} from "@/components/ui/input-group";
+import { X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   applyTagAdd,
@@ -41,7 +37,6 @@ export type TagFieldProps = {
   maxCount: number;
   maxLength: number;
   placeholder?: string;
-  addedHint?: string;
   /** Server or step-level error shown under the field. */
   error?: string | null;
   /**
@@ -59,11 +54,11 @@ export type TagFieldHandle = {
 };
 
 /**
- * Reusable tag field (Goals, Tasks, Conversational style). The composer is an
- * empty pill you type straight into — Enter commits it into a solid tag and a
- * fresh empty pill appears. Tapping a tag edits it inline (Enter commits, Esc
- * cancels, Remove shows only while editing). Suggestions move up on tap and
- * move back down on remove. Plain input controls throughout.
+ * Token-box tag field. Selected pills live inside the box with an inline
+ * composer at the end: Enter, Tab, or leaving commits; Esc cancels an edit.
+ * Tapping pill text edits it inline; each pill has an × that only removes.
+ * Suggestions move up on tap and back down on remove. How-to hints are
+ * screen-reader-only; sighted users get the count, errors, and chips.
  */
 export function TagField({
   id,
@@ -76,7 +71,6 @@ export function TagField({
   maxCount,
   maxLength,
   placeholder,
-  addedHint,
   error,
   blockOnInvalidPending = true,
   ref,
@@ -92,19 +86,25 @@ export function TagField({
   const countId = `${id}-count`;
   const available = suggestions.filter((s) => !isTagAdded(values, s.value));
 
-  const commit = () => {
+  const tryCommit = (opts?: { silent?: boolean }): boolean => {
+    if (input.trim().length === 0 && !editing) return true;
     const result =
       editing && editingIndex !== null
         ? applyTagUpdate(values, editingIndex, input, maxLength)
         : applyTagAdd(values, input, maxCount, maxLength);
     if (!result.ok) {
-      setLocalError(result.message);
-      return;
+      if (!opts?.silent) setLocalError(result.message);
+      return !blockOnInvalidPending;
     }
     setInput("");
     setLocalError(null);
     setEditingIndex(null);
     onChange(result.values);
+    return true;
+  };
+
+  const commit = () => {
+    tryCommit();
   };
 
   const cancelEditing = () => {
@@ -116,23 +116,9 @@ export function TagField({
   useImperativeHandle(
     ref,
     () => ({
-      commitPending: () => {
-        if (input.trim().length === 0 && !editing) return true;
-        const result =
-          editing && editingIndex !== null
-            ? applyTagUpdate(values, editingIndex, input, maxLength)
-            : applyTagAdd(values, input, maxCount, maxLength);
-        if (!result.ok) {
-          setLocalError(result.message);
-          return !blockOnInvalidPending;
-        }
-        setInput("");
-        setLocalError(null);
-        setEditingIndex(null);
-        onChange(result.values);
-        return true;
-      },
+      commitPending: () => tryCommit(),
     }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [input, editing, editingIndex, values, maxCount, maxLength, blockOnInvalidPending, onChange],
   );
 
@@ -146,36 +132,57 @@ export function TagField({
     });
   };
 
+  // mousedown preventDefault keeps focus in the composer so blur-commit
+  // doesn't fire (and reorder) before chip/remove/edit actions run.
+  const keepFocus = (e: React.MouseEvent) => e.preventDefault();
+
   return (
     <Field data-invalid={message ? true : undefined}>
       <FieldLabel htmlFor={id}>{label}</FieldLabel>
       {description ? <FieldDescription>{description}</FieldDescription> : null}
-      {values.length > 0 ? (
-        <ul aria-label={`${label}: added`} className="flex flex-wrap gap-2">
-          {values.map((tag, i) => (
-            <li key={`${tag}-${i}`} className="min-w-0">
-              <Badge
-                variant="secondary"
-                render={
-                  <button
-                    type="button"
-                    onClick={() => startEditing(i)}
-                    aria-label={`Edit ${tag}`}
-                  />
-                }
-                className={cn(
-                  "h-auto min-h-8 py-1 pr-2.5 pl-2.5 text-xs font-medium whitespace-normal pointer-coarse:min-h-11",
-                  editingIndex === i && "border-primary",
-                )}
-              >
-                <span className="min-w-0 break-words">{tag}</span>
-              </Badge>
-            </li>
-          ))}
-        </ul>
-      ) : null}
-      <InputGroup className="rounded-full">
-        <InputGroupInput
+      <div
+        className={cn(
+          "border-input flex min-h-9 flex-wrap items-center gap-1.5 rounded-lg border bg-transparent px-2 py-1.5 transition-colors outline-none focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50",
+          atCap && "opacity-70",
+        )}
+        onClick={() => inputRef.current?.focus()}
+      >
+        {values.map((tag, i) => (
+          <Badge
+            key={`${tag}-${i}`}
+            variant="secondary"
+            render={<span role="group" aria-label={tag} />}
+            className={cn(
+              "h-6 gap-0 py-0 pr-0.5 pl-2 text-xs font-medium",
+              editingIndex === i && "border-primary",
+            )}
+          >
+            <button
+              type="button"
+              onMouseDown={keepFocus}
+              onClick={() => startEditing(i)}
+              aria-label={`Edit ${tag}`}
+              className="min-w-0 cursor-pointer break-words"
+            >
+              <span className="block max-w-48 truncate">{tag}</span>
+            </button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-xs"
+              onMouseDown={keepFocus}
+              onClick={() => {
+                if (editingIndex === i) cancelEditing();
+                onChange(applyTagRemove(values, i));
+              }}
+              aria-label={`Remove ${tag}`}
+              className="rounded-full"
+            >
+              <X data-icon="inline" aria-hidden />
+            </Button>
+          </Badge>
+        ))}
+        <input
           ref={inputRef}
           id={id}
           value={input}
@@ -193,41 +200,25 @@ export function TagField({
             }
             // Backspace in an empty input intentionally deletes nothing.
           }}
-          placeholder={placeholder}
+          onBlur={() => {
+            tryCommit({ silent: true });
+          }}
+          placeholder={values.length === 0 && !editing ? placeholder : undefined}
           maxLength={maxLength + 20}
           aria-describedby={`${hintId} ${countId}`}
           aria-invalid={message ? true : undefined}
+          autoComplete="off"
+          className="placeholder:text-muted-foreground min-w-24 flex-1 bg-transparent text-sm outline-none disabled:cursor-not-allowed"
         />
-        {editing ? (
-          <InputGroupAddon align="inline-end">
-            <Button type="button" variant="ghost" size="sm" onClick={cancelEditing}>
-              Cancel
-            </Button>
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              onClick={() => {
-                onChange(applyTagRemove(values, editingIndex as number));
-                cancelEditing();
-              }}
-            >
-              Remove
-            </Button>
-            <Button type="button" size="sm" onClick={commit}>
-              Update
-            </Button>
-          </InputGroupAddon>
-        ) : null}
-      </InputGroup>
+      </div>
+      <p id={hintId} aria-live="polite" className="sr-only">
+        {message ??
+          (atCap
+            ? `Limit reached (${maxCount}/${maxCount}). Remove one to add another.`
+            : "Type and press Enter. Tap a tag to edit it.")}
+      </p>
       <div className="flex items-center justify-between gap-2">
-        <p id={hintId} aria-live="polite" className="text-muted-foreground text-xs">
-          {message ??
-            (atCap
-              ? `Limit reached (${maxCount}/${maxCount}). Remove one to add another.`
-              : (addedHint ?? "Type and press Enter."))}
-        </p>
-        <span id={countId} className="text-muted-foreground shrink-0 text-xs">
+        <span id={countId} className="text-muted-foreground text-xs">
           {values.length}/{maxCount}
         </span>
       </div>
@@ -248,6 +239,7 @@ export function TagField({
                 type="button"
                 size="sm"
                 variant="outline"
+                onMouseDown={keepFocus}
                 onClick={() => {
                   const result = applyTagAdd(values, s.value, maxCount, maxLength);
                   if (!result.ok) {

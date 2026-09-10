@@ -59,28 +59,33 @@ test("applyTagRemove drops by index; isTagAdded matches case-insensitively", () 
   assert.ok(!isTagAdded(["Friendly"], "   "));
 });
 
-test("TagField is a bubble composer with tap-to-edit tags", () => {
+test("TagField is a token box: pills inside, inline composer, x-remove", () => {
   const source = read("tag-field.tsx");
-  assert.ok(source.includes("InputGroupInput"));
-  assert.ok(source.includes("InputGroupAddon"));
-  assert.ok(source.includes("rounded-full"));
+  // Pills + composer share one box; composer is a plain input, not InputGroup.
+  assert.ok(source.includes("render={<span"));
+  assert.ok(source.includes("Edit ${tag}"));
+  assert.ok(source.includes("Remove ${tag}"));
+  assert.ok(source.includes("startEditing"));
+  // Commit on Enter/blur, IME-safe, Esc cancels, no Backspace deletion.
   assert.ok(source.includes("isComposing"));
   assert.ok(source.includes("keyCode !== 229"));
+  assert.ok(source.includes("onBlur"));
+  assert.ok(source.includes("Escape"));
   assert.ok(source.includes("Backspace in an empty input intentionally deletes nothing"));
-  // Tap-to-edit through the Badge render prop; Remove only while editing.
-  assert.ok(source.includes("render={"));
-  assert.ok(source.includes("Edit ${tag}"));
-  assert.ok(source.includes("startEditing"));
-  assert.ok(!source.includes("Remove ${tag}"));
-  // No persistent icon buttons and no icon sizing classes.
-  assert.ok(!source.includes("lucide-react"));
-  assert.ok(!source.includes("size-3"));
+  // No action buttons at all: no Add/Update/Cancel chrome.
+  assert.ok(!source.includes(">Add<"));
+  assert.ok(!source.includes(">Update<"));
+  assert.ok(!source.includes(">Cancel<"));
+  assert.ok(!source.includes("Plus")); 
+  // How-to hints are screen-reader-only; count stays visible.
+  assert.ok(source.includes("sr-only"));
+  assert.ok(source.includes("values.length}/{maxCount}"));
   // Suggestion chips move: only non-added ones render.
   assert.ok(source.includes("available"));
-  assert.ok(source.includes("aria-pressed") === false);
-  // Validation states per the forms rule.
+  // Validation states per the forms rule; no icon sizing classes.
   assert.ok(source.includes("data-invalid"));
   assert.ok(source.includes("aria-invalid"));
+  assert.ok(!source.includes("size-3"));
 });
 
 test("VoiceCarousel uses the shadcn Carousel with dots and tap-to-select", () => {
@@ -93,11 +98,13 @@ test("VoiceCarousel uses the shadcn Carousel with dots and tap-to-select", () =>
   assert.ok(source.includes("selectedScrollSnap"));
   assert.ok(source.includes("Go to voice"));
   assert.ok(source.includes("aria-pressed"));
-  // Samples play on user-initiated slides only, never on mount.
+  // Samples play on the settled slide after a gesture; tap toggles stop.
   assert.ok(source.includes("interacted"));
   assert.ok(source.includes("speechSynthesis"));
+  assert.ok(source.includes("Stop ${voiceLabel(voice.id)} sample"));
   assert.ok(source.includes("aria-live=\"polite\""));
-  // Stock Card composition for slides, no icon sizing classes.
+  // Avatar cards: gradient initial, stock Card composition, no icon sizing.
+  assert.ok(source.includes("avatarStyle"));
   assert.ok(source.includes("CardContent"));
   assert.ok(!source.includes("lucide-react"));
 });

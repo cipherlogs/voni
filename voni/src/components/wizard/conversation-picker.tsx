@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
 import {
   Select,
@@ -49,7 +49,9 @@ export function ConversationPicker({
   description,
 }: ConversationPickerProps) {
   const [notice, setNotice] = useState<string | null>(null);
-  const voices = VOICES.filter((v) => v.languageCode === language);
+  // Stable identity: the carousel's silent-jump effect keys on this array,
+  // so a fresh filter per render would snap back every swipe.
+  const voices = useMemo(() => VOICES.filter((v) => v.languageCode === language), [language]);
 
   const selectLanguage = (code: string | null) => {
     if (!code) return;

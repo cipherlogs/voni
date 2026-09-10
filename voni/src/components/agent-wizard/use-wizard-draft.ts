@@ -7,7 +7,7 @@ import {
   DEFAULT_WIZARD_VOICE_ID,
 } from "@/lib/agents/wizard";
 
-export const WIZARD_STEPS = ["Goals & Tasks", "Personality", "Review"] as const;
+export const WIZARD_STEPS = ["Goals & Tasks", "Personality"] as const;
 
 /** The single source of truth both the user's mouse and the guide edit. */
 export type WizardDraft = {
@@ -124,7 +124,6 @@ export function useWizardDraft() {
   const completed = [
     draft.goals.length > 0,
     draft.agentName.trim().length > 0,
-    false,
   ];
 
   return {

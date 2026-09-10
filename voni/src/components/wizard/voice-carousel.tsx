@@ -23,11 +23,23 @@ export type VoiceCarouselProps = {
   id?: string;
 };
 
+/** Deterministic per-voice gradient avatar. Decorative by design: the voice
+ * initial stays legible in both themes without extra assets. */
+function avatarStyle(id: string): React.CSSProperties {
+  let hash = 0;
+  for (let i = 0; i < id.length; i += 1) hash = (hash * 31 + id.charCodeAt(i)) >>> 0;
+  const hue = hash % 360;
+  return {
+    background: `linear-gradient(135deg, hsl(${hue} 75% 62%), hsl(${(hue + 60) % 360} 75% 48%))`,
+  };
+}
+
 /**
- * ChatGPT-style voice picker: swipeable one-voice slides with tiny dots.
- * Sliding to a voice plays its sample; tapping a card selects it. Samples
- * use the browser's voice (AssemblyAI has no standalone preview) — the final
- * voice renders on the call. Nothing auto-plays on mount or language switch.
+ * Voice picker: swipeable one-voice slides with tiny dots. Sliding to a voice
+ * plays its sample (debounced to the settled slide); tapping a card selects
+ * it, tapping the playing card stops it. Samples use the browser's voice
+ * (AssemblyAI has no standalone preview) — the final voice renders on the
+ * call. Nothing auto-plays on mount or language switch.
  */
 export function VoiceCarousel({ voices, value, onChange, agentName, id = "voice-carousel" }: VoiceCarouselProps) {
   const [api, setApi] = useState<CarouselApi>();
@@ -36,25 +48,46 @@ export function VoiceCarousel({ voices, value, onChange, agentName, id = "voice-
   const [sampleError, setSampleError] = useState<string | null>(null);
   const interacted = useRef(false);
   const playSeq = useRef(0);
+  const settleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const selectedIndex = Math.max(0, voices.findIndex((v) => v.id === value));
 
-  const stopSample = useCallback(() => {
+  /** Effect-safe cut: no setState, so jumps/switches can call it. */
+  const silence = useCallback(() => {
     playSeq.current += 1;
+    if (settleTimer.current) {
+      clearTimeout(settleTimer.current);
+      settleTimer.current = null;
+    }
     if (typeof window !== "undefined" && "speechSynthesis" in window) {
       window.speechSynthesis.cancel();
     }
-    setSpeaking(null);
   }, []);
+
+  const stopSample = useCallback(() => {
+    silence();
+    setSpeaking(null);
+  }, [silence]);
 
   const playSample = useCallback(
     async (voice: Voice) => {
-      stopSample();
+      // Single-flight: cut anything playing, invalidate superseded requests.
+      // Chrome's cancel() races a queued speak(), so the fresh utterance goes
+      // out on a short delay after the cut.
+      const seq = playSeq.current + 1;
+      playSeq.current = seq;
+      if (typeof window !== "undefined" && "speechSynthesis" in window) {
+        window.speechSynthesis.cancel();
+      }
+      setSpeaking(null);
       if (typeof window === "undefined" || !("speechSynthesis" in window)) {
         setSampleError("Voice samples aren't supported in this browser.");
         return;
       }
       setSampleError(null);
-      const seq = playSeq.current;
+      await new Promise((resolve) => {
+        settleTimer.current = setTimeout(resolve, 120);
+      });
+      if (seq !== playSeq.current) return;
       let text: string;
       try {
         const res = await fetch("/api/voice-preview", {
@@ -85,19 +118,24 @@ export function VoiceCarousel({ voices, value, onChange, agentName, id = "voice-
       setSpeaking(voice.id);
       window.speechSynthesis.speak(utter);
     },
-    [agentName, stopSample],
+    [agentName],
   );
 
-  // Slide changes: track dots always, play only after a user gesture.
+  // Slide changes: track dots immediately, play only the settled slide and
+  // only after a user gesture — swiping past voices never plays them.
   useEffect(() => {
     if (!api) return;
     const onSelect = () => {
       const index = api.selectedScrollSnap();
       setCurrent(index);
+      if (settleTimer.current) clearTimeout(settleTimer.current);
       const voice = voices[index];
-      if (voice && interacted.current) void playSample(voice);
+      if (voice && interacted.current) {
+        settleTimer.current = setTimeout(() => {
+          void playSample(voice);
+        }, 400);
+      }
     };
-    onSelect();
     api.on("select", onSelect);
     return () => {
       api.off("select", onSelect);
@@ -106,21 +144,31 @@ export function VoiceCarousel({ voices, value, onChange, agentName, id = "voice-
 
   // External value changes (language switch, voice proposals): jump silently.
   useEffect(() => {
+    silence();
     if (!api) return;
     if (api.selectedScrollSnap() !== selectedIndex) api.scrollTo(selectedIndex, true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [api, selectedIndex, voices]);
 
   // Never leave speech running after unmount.
   useEffect(() => {
     return () => {
-      if (typeof window !== "undefined" && "speechSynthesis" in window) {
-        window.speechSynthesis.cancel();
-      }
+      silence();
     };
-  }, []);
+  }, [silence]);
 
   const markInteracted = () => {
     interacted.current = true;
+  };
+
+  const toggleCard = (voice: Voice) => {
+    markInteracted();
+    if (speaking === voice.id) {
+      stopSample();
+      return;
+    }
+    onChange(voice.id);
+    void playSample(voice);
   };
 
   return (
@@ -134,25 +182,35 @@ export function VoiceCarousel({ voices, value, onChange, agentName, id = "voice-
           <CarouselContent>
             {voices.map((voice) => {
               const selected = voice.id === value;
+              const playing = speaking === voice.id;
               return (
                 <CarouselItem key={voice.id} className="basis-4/5 sm:basis-3/5">
                   <button
                     type="button"
-                    onClick={() => {
-                      markInteracted();
-                      onChange(voice.id);
-                      void playSample(voice);
-                    }}
+                    onClick={() => toggleCard(voice)}
                     aria-pressed={selected}
-                    aria-label={`Select voice ${voiceLabel(voice.id)}, ${ACCENT_LABEL[voice.accent]}`}
+                    aria-label={
+                      playing
+                        ? `Stop ${voiceLabel(voice.id)} sample`
+                        : `Select voice ${voiceLabel(voice.id)}, ${ACCENT_LABEL[voice.accent]}`
+                    }
                     className="w-full text-left"
                   >
-                    <Card className={cn(selected && "border-primary")}>
-                      <CardContent className="flex flex-col gap-1 p-4">
-                        <span className="text-sm font-medium">{voiceLabel(voice.id)}</span>
-                        <span className="text-muted-foreground text-xs">
-                          {ACCENT_LABEL[voice.accent]}
-                          {speaking === voice.id ? " · Playing sample…" : ""}
+                    <Card className={cn(selected && "border-primary ring-1 ring-primary")}>
+                      <CardContent className="flex items-center gap-3 p-4">
+                        <span
+                          aria-hidden
+                          style={avatarStyle(voice.id)}
+                          className="flex size-12 shrink-0 items-center justify-center rounded-full text-lg font-semibold text-white"
+                        >
+                          {voiceLabel(voice.id).charAt(0)}
+                        </span>
+                        <span className="flex min-w-0 flex-col gap-0.5">
+                          <span className="text-sm font-medium">{voiceLabel(voice.id)}</span>
+                          <span className="text-muted-foreground text-xs">
+                            {ACCENT_LABEL[voice.accent]}
+                            {playing ? " · Playing — tap to stop" : ""}
+                          </span>
                         </span>
                       </CardContent>
                     </Card>
@@ -191,7 +249,7 @@ export function VoiceCarousel({ voices, value, onChange, agentName, id = "voice-
         </Carousel>
       </div>
       <span aria-live="polite" className="sr-only">
-        {speaking ? `Playing ${voiceLabel(speaking)} sample.` : null}
+        {speaking ? `Playing ${voiceLabel(speaking)} sample. Tap the card to stop.` : null}
         {sampleError}
       </span>
       {sampleError ? (

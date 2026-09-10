@@ -21,7 +21,7 @@ assert.ok(
   "precondition: TimelineBar exists in wizard-timeline.tsx",
 );
 
-test("TimelineBar is three equal-width step buttons", () => {
+test("TimelineBar is one button per step, equal width", () => {
   assert.ok(timelineBarSource.includes("WIZARD_STEPS"));
   assert.ok(timelineBarSource.includes("flex min-w-0 flex-1"));
   assert.ok(timelineBarSource.includes('aria-current={active ? "step" : undefined}'));
