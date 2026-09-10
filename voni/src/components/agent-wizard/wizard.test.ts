@@ -5,11 +5,13 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
   composeBrief,
+  generationIdempotencyKey,
   GOAL_SUGGESTIONS,
   resolveGoalReference,
   TASK_SUGGESTIONS,
 } from "./starters";
 import type { WizardDraft } from "./use-wizard-draft";
+import { parseWizardDraftCache } from "./use-wizard-draft";
 
 const EMPTY: WizardDraft = {
   goals: [],
@@ -167,13 +169,19 @@ test("copilot goal/task summaries use the canonical phrases", async () => {
   );
 });
 
-test("agents/new save maps wizard voice and single language over the draft", () => {
+test("agents/new review saves as shown — voice folds at result, save is verbatim", () => {
   const pageSource = readFileSync(
     join(dirname(fileURLToPath(import.meta.url)), "../../app/(dashboard)/agents/new/page.tsx"),
     "utf8",
   );
-  assert.ok(pageSource.includes("voiceId: wiz.draft.voiceId"));
-  assert.ok(pageSource.includes("languageCodes: [wiz.draft.conversationLanguage]"));
+  // The wizard's voice + language fold into the review draft when the result
+  // lands (submit-time echo wins, live draft covers brief-only jobs), so the
+  // reviewed config is the saved config — no silent overwrite in save().
+  assert.ok(pageSource.includes("languageCodes: [conversationLanguage]"));
+  assert.ok(pageSource.includes("createAgentAction(name, config, {"));
+  // The old save-time overwrite is gone (the remaining wiz.draft.voiceId
+  // reference is the placeholder snapshot, not the save path).
+  assert.ok(!pageSource.includes("const merged: AgentConfig"));
   assert.ok(
     pageSource.includes('enum: ["goals", "tasks", "agentName", "styleTraits", "voice", "conversationLanguage"]'),
   );
@@ -188,7 +196,13 @@ test("agents/new generates and reviews in place — never navigates to a draft",
   // page, then Save. No draft row is created up front.
   assert.ok(!pageSource.includes("createDraftAgentAction"));
   assert.ok(!pageSource.includes("pendingAgentId"));
+  // The job pointer survives in the URL: a reload re-attaches via the ?job=
+  // restore path instead of orphaning the job. Start over strips it (with a
+  // dismissed-job guard covering the render window before the strip lands)
+  // so the cleared review can't re-seed from the same job.
+  assert.ok(pageSource.includes("router.replace(`/agents/new?job=${started.jobId}`)"));
   assert.ok(pageSource.includes('router.replace("/agents/new")'));
+  assert.ok(pageSource.includes("dismissedJobId"));
   // While a fresh submission runs, the form hides behind the submitted
   // panel (locked until terminal) and the footer action goes away.
   assert.ok(pageSource.includes("submitting"));
@@ -206,8 +220,68 @@ test("agents/new generates and reviews in place — never navigates to a draft",
   assert.ok(pageSource.includes("wiz.draft.agentName || draft.identity.name"));
   // Failed restores jump to step 1 so the error is seen, not stranded.
   assert.ok(pageSource.includes('wiz.setStep(1);'));
+  // Seeding is unconditional: the job watcher routinely settles first (its
+  // first poll already sees a terminal job), which runs effect cleanup — a
+  // cancelled-guarded setSeeded would leave `seeded` false forever and hide
+  // a ready review behind the wizard.
+  assert.ok(!pageSource.includes("if (!cancelled) setSeeded(true)"));
   // The loading skeleton mirrors the real creator shape, not bare text.
   assert.ok(pageSource.includes("NewAgentSkeleton"));
+});
+
+test("generationIdempotencyKey is stable per brief, distinct across briefs", () => {
+  const brief = composeBrief({ ...EMPTY, goals: ["Qualify leads"] });
+  assert.equal(generationIdempotencyKey(brief), generationIdempotencyKey(brief));
+  assert.ok(generationIdempotencyKey(brief).startsWith("generation:"));
+  const other = composeBrief({ ...EMPTY, goals: ["Answer support questions"] });
+  assert.notEqual(generationIdempotencyKey(brief), generationIdempotencyKey(other));
+});
+
+test("parseWizardDraftCache accepts full shapes, rejects corrupt ones", () => {
+  const full = JSON.stringify({
+    draft: { ...EMPTY, goals: ["Book viewings"], step: undefined },
+    step: 1,
+  });
+  const parsed = parseWizardDraftCache(full);
+  assert.ok(parsed);
+  assert.deepEqual(parsed.draft.goals, ["Book viewings"]);
+  assert.equal(parsed.step, 1);
+  // Missing step defaults are tolerated by the hook; the parser keeps them.
+  assert.ok(parseWizardDraftCache(JSON.stringify({ draft: { ...EMPTY } })));
+  for (const bad of [
+    null,
+    "",
+    "{not json",
+    "{}",
+    JSON.stringify({ draft: null }),
+    JSON.stringify({ draft: { ...EMPTY, goals: "nope" } }),
+    JSON.stringify({ draft: { ...EMPTY, conversationLanguage: "xx" } }),
+    JSON.stringify({ draft: { ...EMPTY, agentName: 42 } }),
+  ]) {
+    assert.equal(parseWizardDraftCache(bad), null, String(bad)?.slice(0, 60));
+  }
+});
+
+test("agents/new submits wizardDraft + stable key; processor echoes; guard dedupes", () => {
+  const dir = dirname(fileURLToPath(import.meta.url));
+  const pageSource = readFileSync(
+    join(dir, "../../app/(dashboard)/agents/new/page.tsx"),
+    "utf8",
+  );
+  // Submit carries the structured snapshot plus a stable idempotency key.
+  assert.ok(pageSource.includes("wizardDraft: {"));
+  assert.ok(pageSource.includes("idempotencyKey: generationIdempotencyKey(brief)"));
+  // Processor echoes the snapshot for placeholder-less ?job= restores.
+  const processorSource = readFileSync(
+    join(dir, "../../lib/jobs/processors/generation.ts"),
+    "utf8",
+  );
+  assert.ok(processorSource.includes("input.wizardDraft"));
+  // A second submit mid-flight returns the running job (created=false),
+  // which the existing "already running" toast already covers.
+  const startSource = readFileSync(join(dir, "../../lib/jobs/start.ts"), "utf8");
+  assert.ok(startSource.includes('kind === "agent_generation"'));
+  assert.ok(startSource.includes('"agent_generation",'));
 });
 
 test("wizard footer is static flow — no stuck overlay, no reserve hack", () => {

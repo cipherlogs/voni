@@ -78,3 +78,18 @@ export function composeBrief(draft: WizardDraft): string {
   parts.push(`It converses in ${languageLabel(draft.conversationLanguage)}.`);
   return parts.join(" ");
 }
+
+/**
+ * Stable idempotency key for a generation submit (PR4): the same brief
+ * resubmitted — double-click, retry after an error, reload + resubmit —
+ * returns the existing job instead of starting duplicate work. Any real edit
+ * changes the brief, so genuine resubmits always create fresh jobs. djb2 is
+ * plenty here: the key is scoped to org + creator in `createJob`.
+ */
+export function generationIdempotencyKey(brief: string): string {
+  let hash = 5381;
+  for (let i = 0; i < brief.length; i += 1) {
+    hash = ((hash << 5) + hash + brief.charCodeAt(i)) >>> 0;
+  }
+  return `generation:${hash.toString(16)}`;
+}

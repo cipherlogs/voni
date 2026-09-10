@@ -22,5 +22,8 @@ export async function runGenerationJob(
     provider: generated.provider,
     model: generated.model,
     latencyMs: generated.latencyMs,
+    // Echo the submitted snapshot so ?job= restores can seed the wizard even
+    // when the best-effort placeholder write failed (PR4).
+    ...(input.wizardDraft ? { wizardDraft: input.wizardDraft } : {}),
   };
 }

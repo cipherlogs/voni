@@ -29,7 +29,11 @@ import {
 } from "@/lib/copilot/wizard-tools";
 import { useWizardDraft } from "@/components/agent-wizard/use-wizard-draft";
 import type { WizardDraft } from "@/components/agent-wizard/use-wizard-draft";
-import { composeBrief } from "@/components/agent-wizard/starters";
+import { clearWizardDraftCache } from "@/components/agent-wizard/use-wizard-draft";
+import {
+  composeBrief,
+  generationIdempotencyKey,
+} from "@/components/agent-wizard/starters";
 import { TimelineBar } from "@/components/agent-wizard/wizard-timeline";
 import { WizardFooter } from "@/components/wizard/form-layout";
 import type { TagFieldHandle } from "@/components/wizard/tag-field";
@@ -72,6 +76,9 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
   // ?job= visits wait for the placeholder snapshot before showing review so
   // the name field and voice/language (mount-once form state) are seeded.
   const [seeded, setSeeded] = useState(restoreJobId === null);
+  // Jobs the user walked away from via Start over: never re-seed from them,
+  // even in the render window before the URL strip propagates.
+  const [dismissedJobId, setDismissedJobId] = useState<string | null>(null);
   const goalsRef = useRef<TagFieldHandle>(null);
   const tasksRef = useRef<TagFieldHandle>(null);
   const styleRef = useRef<TagFieldHandle>(null);
@@ -94,30 +101,74 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
       : "idle";
   const briefError = error ?? generation.error;
 
-  const applyResult = useCallback((job: JobJson) => {
-    const result = job.result as {
-      config?: AgentConfig;
-    } | null;
-    if (job.status === "succeeded" && result?.config) {
-      setDraft(result.config);
-      setError(null);
-      setShowGuidance(false);
-      return true;
-    }
-    if (job.status === "failed" || job.status === "cancelled") {
-      setError(
-        job.status === "cancelled"
-          ? "Generation was cancelled."
-          : (job.errorMessage ?? "Generation failed."),
-      );
-      setShowGuidance(job.errorCode === "provider-exhausted");
-      return true;
-    }
-    return false;
-  }, []);
+  /** Untouched since mount: safe to seed from a restore without clobbering. */
+  const isPristineDraft = (current: WizardDraft) =>
+    current.agentName === "" &&
+    current.voiceId === DEFAULT_WIZARD_VOICE_ID &&
+    current.conversationLanguage === "en" &&
+    current.goals.length === 0 &&
+    current.tasks.length === 0 &&
+    current.styleTraits.length === 0;
+
+  const applyResult = useCallback(
+    (job: JobJson) => {
+      const result = job.result as {
+        config?: AgentConfig;
+        wizardDraft?: WizardDraft;
+      } | null;
+      if (job.status === "succeeded" && result?.config) {
+        // Review saves as shown (PR4): the wizard's voice + language are
+        // folded into the review state here, so save() persists verbatim
+        // instead of silently overwriting. The echoed submit-time snapshot
+        // wins (immune to post-submit edits); the live draft covers
+        // brief-only jobs started before the echo existed.
+        const echo = result.wizardDraft ?? null;
+        const live = wiz.draftRef.current;
+        const voiceId = echo?.voiceId ?? live.voiceId;
+        const conversationLanguage =
+          echo?.conversationLanguage ?? live.conversationLanguage;
+        setDraft({
+          ...result.config,
+          voiceId,
+          languageCodes: [conversationLanguage],
+        });
+        // Restore fallback: when the best-effort placeholder write failed,
+        // the echoed snapshot still seeds the wizard (name, voice, goals).
+        if (echo && isPristineDraft(wiz.draftRef.current)) {
+          wiz.edit(
+            {
+              agentName: echo.agentName,
+              voiceId: echo.voiceId,
+              conversationLanguage: echo.conversationLanguage,
+              goals: echo.goals,
+              tasks: echo.tasks,
+              styleTraits: echo.styleTraits,
+            },
+            "restore",
+          );
+        }
+        setError(null);
+        setShowGuidance(false);
+        return true;
+      }
+      if (job.status === "failed" || job.status === "cancelled") {
+        setError(
+          job.status === "cancelled"
+            ? "Generation was cancelled."
+            : (job.errorMessage ?? "Generation failed."),
+        );
+        setShowGuidance(job.errorCode === "provider-exhausted");
+        return true;
+      }
+      return false;
+    },
+    // wiz api object is stable; draftRef carries the live values.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
 
   useEffect(() => {
-    if (!restoreJobId || draft) return;
+    if (!restoreJobId || draft || restoreJobId === dismissedJobId) return;
     // Returning from the list (or a reload) wipes the in-memory wizard, but
     // the placeholder kept what was submitted: seed it back, but only over a
     // pristine draft so real edits are never clobbered.
@@ -125,15 +176,7 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
     void getGenerationPlaceholderAction(restoreJobId)
       .then((ph) => {
         if (cancelled || !ph) return;
-        const current = wiz.draft;
-        if (
-          current.agentName === "" &&
-          current.voiceId === DEFAULT_WIZARD_VOICE_ID &&
-          current.conversationLanguage === "en" &&
-          current.goals.length === 0 &&
-          current.tasks.length === 0 &&
-          current.styleTraits.length === 0
-        ) {
+        if (isPristineDraft(wiz.draftRef.current)) {
           wiz.edit(
             {
               agentName: ph.name === "Untitled agent" ? "" : ph.name,
@@ -148,7 +191,11 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
         }
       })
       .finally(() => {
-        if (!cancelled) setSeeded(true);
+        // Unconditional: the job watcher routinely settles first (its first
+        // poll already sees a terminal job), which runs effect cleanup and
+        // would otherwise leave `seeded` false forever — hiding a ready
+        // review behind the wizard. SetState after unmount is a safe no-op.
+        setSeeded(true);
       });
     const stop = generation.trackExternal(
       restoreJobId,
@@ -172,7 +219,7 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
       stop();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [restoreJobId, draft]);
+  }, [restoreJobId, draft, dismissedJobId]);
 
   const clearFieldError = (field: "goals" | "name") => {
     setFieldErrors((prev) => {
@@ -216,8 +263,26 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
     setShowGuidance(false);
     setRestoring(false);
     const started = await generation.start(
-      { brief },
-      { title: "Generate agent draft" },
+      {
+        brief,
+        // Structured snapshot: echoed in the result so ?job= restores can
+        // seed the wizard even when the placeholder write fails. Voice is
+        // included for seeding only — it never reaches the LLM brief.
+        wizardDraft: {
+          goals: wiz.draft.goals,
+          tasks: wiz.draft.tasks,
+          agentName: wiz.draft.agentName.trim(),
+          styleTraits: wiz.draft.styleTraits,
+          conversationLanguage: wiz.draft.conversationLanguage,
+          voiceId: wiz.draft.voiceId,
+        },
+      },
+      {
+        title: "Generate agent draft",
+        // Same brief resubmitted (double-click, retry, reload + resubmit)
+        // returns the existing job instead of starting duplicate work.
+        idempotencyKey: generationIdempotencyKey(brief),
+      },
       (job) => {
         // The draft review (or inline error) consumes the result right here,
         // so mark it seen: the global pill stays for work in flight, not for
@@ -247,7 +312,9 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
     if (started.deduped) {
       toast.add({ title: "A matching generation is already running — showing that one." });
     }
-    router.replace("/agents/new");
+    // Keep the job pointer: a reload re-attaches via the ?job= restore path
+    // instead of orphaning the job (PR4).
+    router.replace(`/agents/new?job=${started.jobId}`);
   };
 
   const useTemplate = () => {
@@ -257,14 +324,9 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
   };
 
   const save = async (name: string, config: AgentConfig) => {
-    // The wizard is the source of truth for voice + language: the generated
-    // draft's voice is overwritten, never merged. (PR4 saves Review as shown.)
-    const merged: AgentConfig = {
-      ...config,
-      voiceId: wiz.draft.voiceId,
-      languageCodes: [wiz.draft.conversationLanguage],
-    };
-    const result = await createAgentAction(name, merged, {
+    // Review saves as shown (PR4): the wizard's voice + language were folded
+    // into the review draft when the result landed, so this persists verbatim.
+    const result = await createAgentAction(name, config, {
       // Upgrades the generation placeholder in place when one exists for
       // this job (matched by job id, so ?job= restores work too).
       generationJobId: generation.jobId ?? restoreJobId ?? undefined,
@@ -273,6 +335,7 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
       toast.add({ type: "error", title: result.message });
       return;
     }
+    clearWizardDraftCache();
     if (result.deployment === "attention") {
       router.push(`/agents/${result.id}?deployment=attention`);
       return;
@@ -458,7 +521,16 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
               variant="ghost"
               size="sm"
               onClick={() => {
+                clearWizardDraftCache();
+                // Dismiss first: the render window before the URL strip
+                // propagates would otherwise re-seed from the same job.
+                setDismissedJobId(generation.jobId ?? restoreJobId);
                 setDraft(null);
+                // Drop the job pointer too: otherwise the ?job= restore
+                // effect re-seeds the just-cleared review on next render.
+                // (PR4 keeps ?job= in the URL after submit, so this path is
+                // now the default, not just a restore-visit edge.)
+                router.replace("/agents/new");
               }}
             >
               Start over
