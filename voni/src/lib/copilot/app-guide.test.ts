@@ -60,17 +60,15 @@ test("feature terms stay within the recognition budget", () => {
   assert.ok(APP_FEATURE_TERMS.includes("Voice copilot"));
 });
 
-test("manifest v2 covers all 18 pages without navigating to templates or public routes", () => {
-  // TEMP: 18 includes /agents/new/mockups — back to 17/13 when the mockups
-  // route is removed.
-  assert.equal(APP_DESTINATIONS.length, 18);
+test("manifest v2 covers all 17 pages without navigating to templates or public routes", () => {
+  assert.equal(APP_DESTINATIONS.length, 17);
   for (const route of APP_DESTINATIONS) {
     assert.equal(route.examples.length, 3);
     assert.ok(route.phrases.length > 0);
     assert.equal(NAVIGABLE_ROUTES.includes(route.route), route.navigationKind === "static");
   }
   assert.equal(APP_DESTINATIONS.filter((r) => r.navigationKind === "record").length, 4);
-  assert.equal(APP_DESTINATIONS.filter((r) => r.access === "signed-in").length, 14);
+  assert.equal(APP_DESTINATIONS.filter((r) => r.access === "signed-in").length, 13);
   assert.equal(APP_DESTINATIONS.filter((r) => r.access === "platform-admin").length, 1);
 });
 

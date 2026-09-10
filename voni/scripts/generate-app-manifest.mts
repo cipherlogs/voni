@@ -42,8 +42,6 @@ const PHRASES: Record<string, string[]> = {
   "/dashboard": ["dashboard", "home", "overview"],
   "/agents": ["agents", "phone agents", "agent library", "my agents"],
   "/agents/new": ["new agent", "create agent", "build an agent", "agent builder", "agent wizard"],
-  // TEMP: voice-redesign mockups — removed with the mockups route.
-  "/agents/new/mockups": ["voice mockups"],
   "/campaigns": ["campaigns", "my campaigns"],
   "/campaigns/new": ["new campaign", "create campaign", "start a campaign"],
   "/leads": ["leads", "my leads", "lead list"],
@@ -59,8 +57,6 @@ const TITLE_OVERRIDES: Record<string, string> = {
   "/agents/[id]": "Agent details", "/campaigns/[id]": "Campaign details",
   "/leads/[id]": "Lead details", "/calls/[id]": "Call details",
   "/agents/new": "New agent",
-  // TEMP: voice-redesign mockups — removed with the mockups route.
-  "/agents/new/mockups": "Voice mockups",
   "/campaigns/new": "New campaign",
   "/operator": "Platform operator",
 };
@@ -95,12 +91,6 @@ const EXAMPLES: Record<string, string[]> = {
     "Create a new agent",
     "Read this wizard step",
     "Go to review"
-  ],
-  // TEMP: voice-redesign mockups — removed with the mockups route.
-  "/agents/new/mockups": [
-    "Show voice mockup A",
-    "Show voice mockup B",
-    "Show voice mockup C"
   ],
   "/agents/[id]": [
     "Find an agent named Sara",

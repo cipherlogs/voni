@@ -89,53 +89,41 @@ test("TagField is a token box: pills inside, inline composer, x-remove", () => {
   assert.ok(!source.includes("size-3"));
 });
 
-test("VoiceCarousel is a select-only horizontal slider, no audio preview", () => {
-  const source = read("voice-carousel.tsx");
-  assert.ok(source.includes("CarouselContent"));
-  assert.ok(source.includes("CarouselItem"));
-  assert.ok(source.includes("CarouselPrevious"));
-  assert.ok(source.includes("CarouselNext"));
-  assert.ok(source.includes("setApi"));
-  assert.ok(source.includes("selectedScrollSnap"));
-  assert.ok(source.includes("max-w-sm"));
-  assert.ok(source.includes("basis-full"));
-  assert.ok(source.includes("Go to voice"));
-  assert.ok(source.includes("aria-pressed"));
-  // No audio preview: browser synthesis sounded identical per voice and
-  // misrepresented the real call voice. Selection only, honest caption.
+test("VoiceField merges language chips and voice rows, real clips only", () => {
+  const source = read("voice-field.tsx");
+  // One decision, not two controls: chips filter, picking a voice sets its
+  // language implicitly. No carousel, chevrons, dots, or checkmarks.
+  assert.ok(source.includes("ToggleGroup"));
+  assert.ok(source.includes("Spoken language"));
+  assert.ok(source.includes("voiceForLanguage"));
+  assert.ok(!source.includes("Carousel"));
+  assert.ok(!source.includes("Chevron"));
+  assert.ok(!source.includes("selectedScrollSnap"));
+  assert.ok(!source.includes("Go to voice"));
+  // Real AssemblyAI clips: no browser synthesis anywhere near this picker.
+  assert.ok(source.includes("/voices/"));
+  assert.ok(source.includes("Play"));
+  assert.ok(source.includes("Pause"));
   assert.ok(!source.includes("speechSynthesis"));
   assert.ok(!source.includes("voiceTunables"));
-  assert.ok(!source.includes("interacted"));
-  assert.ok(!source.includes("Playing"));
-  assert.ok(source.includes("Test this agent"));
-  // Seamless transparent rows: no Card (its ring + tint read as a seam),
-  // check marks the selection, chevrons live in a padded lane outside.
-  assert.ok(source.includes("flex-row"));
+  assert.ok(!source.includes("Test this agent"));
+  // Stock Avatar rows, seamless with the form (no Card, ring, or tint).
+  assert.ok(source.includes("AvatarFallback"));
+  assert.ok(!source.includes("avatarStyle"));
   assert.ok(!source.includes("CardContent"));
-  assert.ok(!source.includes("bg-primary/10"));
   assert.ok(!source.includes("ring-1"));
-  assert.ok(source.includes("px-10"));
-  assert.ok(source.includes("left-0"));
-  assert.ok(source.includes("right-0"));
-  // Avatar rows: gradient initial, transparent, no icon sizing.
-  assert.ok(source.includes("avatarStyle"));
+  // Single-voice languages say so instead of offering a one-item choice.
+  assert.ok(source.includes("already selected"));
+  assert.ok(source.includes('aria-live="polite"'));
   assert.ok(!source.includes("size-3"));
 });
 
-test("ConversationPicker keeps the Select composition with flag-plus-text labels", () => {
+test("ConversationPicker is the merged Language & voice section", () => {
   const source = read("conversation-picker.tsx");
-  assert.ok(source.includes("SelectGroup"));
-  assert.ok(source.includes("SelectLabel"));
-  assert.ok(source.includes("SelectItem"));
-  assert.ok(source.includes("<span aria-hidden>{lang.flag}</span>"));
-  assert.ok(source.includes("{lang.label}"));
-  assert.ok(source.includes("VoiceCarousel"));
-  assert.ok(source.includes("voiceForLanguage"));
-  assert.ok(source.includes("aria-live=\"polite\""));
-  // Compact trigger: a short fixed-choice control must not span the card
-  // (Field's vertical orientation forces children full-width, so the cap
-  // has to be a max-width, not a width).
-  assert.ok(source.includes("max-w-44"));
+  assert.ok(source.includes("VoiceField"));
+  assert.ok(!source.includes("VoiceCarousel"));
+  assert.ok(!source.includes("SelectTrigger"));
+  assert.ok(!source.includes("max-w-44"));
 });
 
 test("Form layout tokens: heading gaps, card padding, static footer", () => {
