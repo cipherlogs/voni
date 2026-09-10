@@ -95,3 +95,41 @@ export function DetailSkeleton() {
     </div>
   );
 }
+
+/**
+ * Mirrors the /agents/new 2-step creator: heading, timeline bar, one form
+ * card with two labeled sections, and the Back/primary footer row.
+ */
+export function NewAgentSkeleton() {
+  return (
+    <div className="flex min-w-0 flex-col gap-4" aria-hidden>
+      <div className="flex flex-col gap-2">
+        <Skeleton className="h-7 w-40" />
+        <Skeleton className="h-4 w-full max-w-md" />
+      </div>
+      <Skeleton className="h-2 w-full" />
+      <Card>
+        <CardContent className="flex flex-col gap-6 py-6">
+          <div className="flex flex-col gap-2">
+            <Skeleton className="h-5 w-48" />
+            <Skeleton className="h-4 w-full max-w-sm" />
+          </div>
+          <div className="flex flex-col gap-2">
+            <Skeleton className="h-4 w-24" />
+            <Skeleton className="h-4 w-full max-w-xs" />
+            <Skeleton className="h-16 w-full" />
+          </div>
+          <div className="flex flex-col gap-2">
+            <Skeleton className="h-4 w-24" />
+            <Skeleton className="h-4 w-full max-w-xs" />
+            <Skeleton className="h-16 w-full" />
+          </div>
+        </CardContent>
+      </Card>
+      <div className="flex items-center justify-between gap-3 border-t pt-4">
+        <Skeleton className="h-9 w-20" />
+        <Skeleton className="h-9 w-32" />
+      </div>
+    </div>
+  );
+}

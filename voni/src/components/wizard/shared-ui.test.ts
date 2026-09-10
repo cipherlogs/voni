@@ -59,51 +59,100 @@ test("applyTagRemove drops by index; isTagAdded matches case-insensitively", () 
   assert.ok(!isTagAdded(["Friendly"], "   "));
 });
 
-test("TagField uses Field/InputGroup/Badge/Button — no contenteditable or tag textarea", () => {
+test("TagField is a token box: pills inside, inline composer, x-remove", () => {
   const source = read("tag-field.tsx");
-  assert.match(source, /from "@\/components\/ui\/field"/);
-  assert.match(source, /InputGroupInput/);
-  assert.match(source, /InputGroupAddon/);
-  assert.match(source, /from "@\/components\/ui\/badge"/);
-  assert.doesNotMatch(source, /contenteditable/i);
-  assert.doesNotMatch(source, /\<textarea/i);
-  // Enter commits, IME composition does not, Backspace deletes nothing.
-  assert.match(source, /isComposing/);
-  assert.match(source, /keyCode !== 229/);
-  assert.match(source, /Backspace in an empty input intentionally deletes nothing/);
-  // Accessible edit/remove per tag + suggestion Added state.
-  assert.match(source, /aria-label=\{`Edit \$\{tag\}`\}/);
-  assert.match(source, /aria-label=\{`Remove \$\{tag\}`\}/);
-  assert.match(source, /aria-pressed=\{added\}/);
+  // Pills + composer share one box; composer is a plain input, not InputGroup.
+  assert.ok(source.includes("render={<span"));
+  assert.ok(source.includes("Edit ${tag}"));
+  assert.ok(source.includes("Remove ${tag}"));
+  assert.ok(source.includes("startEditing"));
+  // Commit on Enter/blur, IME-safe, Esc cancels, no Backspace deletion.
+  assert.ok(source.includes("isComposing"));
+  assert.ok(source.includes("keyCode !== 229"));
+  assert.ok(source.includes("onBlur"));
+  assert.ok(source.includes("Escape"));
+  assert.ok(source.includes("Backspace in an empty input intentionally deletes nothing"));
+  // No action buttons at all: no Add/Update/Cancel chrome.
+  assert.ok(!source.includes(">Add<"));
+  assert.ok(!source.includes(">Update<"));
+  assert.ok(!source.includes(">Cancel<"));
+  assert.ok(!source.includes("Plus")); 
+  // How-to hints are screen-reader-only; count stays visible.
+  assert.ok(source.includes("sr-only"));
+  assert.ok(source.includes("values.length}/{maxCount}"));
+  // Suggestion chips move: only non-added ones render.
+  assert.ok(source.includes("available"));
+  // Errors never tint valid pills: no data-invalid on the box, only
+  // aria-invalid on the composer plus the message below.
+  assert.ok(!source.includes("data-invalid"));
+  assert.ok(source.includes("aria-invalid"));
+  assert.ok(!source.includes("size-3"));
 });
 
-test("ConversationPicker uses Select composition with flag-plus-text labels", () => {
-  const source = read("conversation-picker.tsx");
-  assert.match(source, /SelectGroup/);
-  assert.match(source, /SelectLabel/);
-  assert.match(source, /SelectItem/);
-  assert.ok(source.includes("<span aria-hidden>{lang.flag}</span>"));
-  assert.ok(source.includes("{lang.label}"));
-  assert.ok(source.includes("ACCENT_LABEL[voice.accent]"));
-  assert.match(source, /voiceForLanguage/);
+test("VoiceField merges language chips and voice cards, real clips only", () => {
+  const source = read("voice-field.tsx");
+  // One decision, not two controls: chips filter, picking a voice sets its
+  // language implicitly. Cards ride a stock Carousel: side chevrons plus
+  // snap dots, no checkmarks — pressed cards are the selection.
+  assert.ok(source.includes("ToggleGroup"));
+  assert.ok(source.includes("Spoken language"));
+  assert.ok(source.includes("voiceForLanguage"));
+  assert.ok(source.includes("Carousel"));
+  assert.ok(source.includes("CarouselItem"));
+  assert.ok(source.includes("CarouselPrevious"));
+  assert.ok(source.includes("CarouselNext"));
+  assert.ok(source.includes("scrollSnapList"));
+  assert.ok(source.includes("Go to voice page"));
+  assert.ok(!source.includes("speechSynthesis"));
+  // Real AssemblyAI clips: no browser synthesis anywhere near this picker.
+  assert.ok(source.includes("/voices/"));
+  assert.ok(source.includes("Play"));
+  assert.ok(source.includes("Pause"));
+  assert.ok(!source.includes("voiceTunables"));
+  assert.ok(!source.includes("Test this agent"));
+  // Stock Avatar cards (no waveform, no flags — the language chips above
+  // already say which language this is), seamless-selected via the
+  // toggle pressed state (no Card, ring, checkmark, or custom avatar style).
+  assert.ok(source.includes("AvatarFallback"));
+  assert.ok(!source.includes("waveformHeights"));
+  assert.ok(!source.includes("flagFor(group.code)"));
+  assert.ok(source.includes("data-[state=on]:border-primary"));
+  assert.ok(source.includes("aria-pressed"));
+  assert.ok(!source.includes("avatarStyle"));
+  assert.ok(!source.includes("CardContent"));
+  assert.ok(!source.includes("ring-1"));
+  assert.ok(!source.includes("Check"));
+  // Single-voice languages say so instead of offering a one-item choice.
+  assert.ok(source.includes("already selected"));
   assert.ok(source.includes('aria-live="polite"'));
+  assert.ok(!source.includes("size-3"));
 });
 
-test("Form layout tokens: heading gaps, card padding, sticky JobPill-aware footer", () => {
+test("ConversationPicker is the merged Language & voice section", () => {
+  const source = read("conversation-picker.tsx");
+  assert.ok(source.includes("VoiceField"));
+  assert.ok(!source.includes("VoiceCarousel"));
+  assert.ok(!source.includes("SelectTrigger"));
+  assert.ok(!source.includes("max-w-44"));
+});
+
+test("Form layout tokens: heading gaps, card padding, static footer", () => {
   const source = read("form-layout.tsx");
-  assert.match(source, /mb-6 md:mb-8/);
-  assert.match(source, /gap-2/);
-  assert.match(source, /gap-6/);
-  assert.match(source, /py-4 md:py-6/);
-  assert.match(source, /--card-spacing/);
-  assert.match(source, /sticky/);
-  assert.match(source, /--job-pill-h/);
-  assert.match(source, /safe-area-inset-bottom/);
-  assert.match(source, /focus-within:static/);
+  assert.ok(source.includes("mb-6 md:mb-8"));
+  assert.ok(source.includes("gap-2"));
+  assert.ok(source.includes("gap-6"));
+  assert.ok(source.includes("py-4 md:py-6"));
+  assert.ok(source.includes("--card-spacing"));
+  // Normal document flow — a stuck footer covered scrolled form content.
+  assert.ok(!source.includes("sticky"));
+  assert.ok(!source.includes("--job-pill-h"));
+  assert.ok(source.includes("border-t"));
 });
 
-test("Button ships touch and icon-touch sizes (44px / 44x44)", () => {
+test("Button has no custom touch sizes; stock sizes stay intact", () => {
   const source = readFileSync(join(DIR, "../ui/button.tsx"), "utf8");
-  assert.match(source, /touch: "h-auto min-h-11/);
-  assert.match(source, /"icon-touch": "size-11/);
+  assert.ok(!source.includes("icon-touch"));
+  assert.ok(!source.includes("touch:"));
+  assert.ok(source.includes("cursor-pointer"));
+  assert.ok(source.includes("disabled:pointer-events-none"));
 });

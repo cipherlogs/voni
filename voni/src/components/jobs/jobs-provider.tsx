@@ -186,6 +186,16 @@ export function JobsProvider({
   }, []);
 
   const notify = useCallback((job: JobJson) => {
+    // /agents/new consumes agent_generation results inline (submitted panel,
+    // review, error) — a toast on top is pure noise. Everywhere else the
+    // toast is the return path for backgrounded work, so it stays.
+    if (
+      job.kind === "agent_generation" &&
+      typeof window !== "undefined" &&
+      window.location.pathname === "/agents/new"
+    ) {
+      return;
+    }
     const title = job.status === "succeeded" ? job.title : `${job.title} — ${jobStatusLabel(job.status)}`;
     const body =
       job.status === "succeeded"

@@ -1,7 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
-import { Pencil, Plus, X } from "lucide-react";
+import { useImperativeHandle, useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -10,11 +9,8 @@ import {
   FieldError,
   FieldLabel,
 } from "@/components/ui/field";
-import {
-  InputGroup,
-  InputGroupAddon,
-  InputGroupInput,
-} from "@/components/ui/input-group";
+import { X } from "lucide-react";
+import { cn } from "@/lib/utils";
 import {
   applyTagAdd,
   applyTagRemove,
@@ -23,7 +19,7 @@ import {
 } from "./tag-helpers";
 
 export type TagSuggestion = {
-  /** Canonical value appended on tap. */
+  /** Canonical value moved up on tap. */
   value: string;
   /** Short label shown on the chip. Defaults to value. */
   label?: string;
@@ -35,24 +31,36 @@ export type TagFieldProps = {
   description?: string;
   values: string[];
   onChange: (next: string[]) => void;
-  /** Tap-to-add chips rendered below the field. Never replace existing tags. */
+  /** Tap-to-move chips rendered above the token box. Added ones leave. */
   suggestions?: TagSuggestion[];
   suggestionsLabel?: string;
   maxCount: number;
   maxLength: number;
   placeholder?: string;
-  addLabel?: string;
-  addedLabel?: string;
   /** Server or step-level error shown under the field. */
   error?: string | null;
+  /**
+   * Imperative handle for step navigation: commits pending text before
+   * Continue. When false, invalid pending text stays editable without
+   * blocking (for optional fields).
+   */
+  blockOnInvalidPending?: boolean;
+  ref?: React.Ref<TagFieldHandle>;
+};
+
+export type TagFieldHandle = {
+  /** Commits pending text. Returns false when invalid text must block. */
+  commitPending: () => boolean;
 };
 
 /**
- * Reusable tag field (Outcomes, Conversational style). Plain input + visible
- * Add button (shadcn Input Group composition), wrapping tag badges with
- * accessible Edit/Remove, suggestion chips below. Normal input controls only:
- * no rich-text editing, no serialized tag blobs, no comma splitting,
- * no Backspace deletion.
+ * Token-box tag field. Selected pills live inside the box with an inline
+ * composer at the end: Enter, Tab, or leaving commits; Esc clears. Tapping
+ * pill text turns that pill into an inline editor (same commit keys, Esc
+ * cancels, empty+Enter removes); each pill's × only removes. Suggestions sit
+ * above the box, move up on tap and back down on remove. How-to hints are
+ * screen-reader-only; sighted users get the count, errors, and chips. The
+ * error slot reserves space so errors never shift layout.
  */
 export function TagField({
   id,
@@ -65,34 +73,21 @@ export function TagField({
   maxCount,
   maxLength,
   placeholder,
-  addLabel = "Add",
-  addedLabel = "Added",
   error,
+  blockOnInvalidPending = true,
+  ref,
 }: TagFieldProps) {
   const [input, setInput] = useState("");
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const editInputRef = useRef<HTMLInputElement>(null);
   const editing = editingIndex !== null;
   const atCap = !editing && values.length >= maxCount;
   const message = error ?? localError;
   const hintId = `${id}-hint`;
   const countId = `${id}-count`;
-
-  const commit = () => {
-    const result =
-      editing && editingIndex !== null
-        ? applyTagUpdate(values, editingIndex, input, maxLength)
-        : applyTagAdd(values, input, maxCount, maxLength);
-    if (!result.ok) {
-      setLocalError(result.message);
-      return;
-    }
-    setInput("");
-    setLocalError(null);
-    setEditingIndex(null);
-    onChange(result.values);
-  };
+  const available = suggestions.filter((s) => !isTagAdded(values, s.value));
 
   const cancelEditing = () => {
     setEditingIndex(null);
@@ -100,107 +95,65 @@ export function TagField({
     setLocalError(null);
   };
 
+  const tryCommit = (opts?: { silent?: boolean }): boolean => {
+    if (input.trim().length === 0) {
+      // Empty+commit while editing removes the tag; otherwise a no-op.
+      if (editing && editingIndex !== null) {
+        onChange(applyTagRemove(values, editingIndex));
+        cancelEditing();
+      }
+      return true;
+    }
+    const result =
+      editing && editingIndex !== null
+        ? applyTagUpdate(values, editingIndex, input, maxLength)
+        : applyTagAdd(values, input, maxCount, maxLength);
+    if (!result.ok) {
+      if (!opts?.silent) setLocalError(result.message);
+      return !blockOnInvalidPending;
+    }
+    setInput("");
+    setLocalError(null);
+    setEditingIndex(null);
+    onChange(result.values);
+    return true;
+  };
+
+  const commit = () => {
+    tryCommit();
+  };
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      commitPending: () => tryCommit(),
+    }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [input, editing, editingIndex, values, maxCount, maxLength, blockOnInvalidPending, onChange],
+  );
+
   const startEditing = (index: number) => {
     setEditingIndex(index);
     setInput(values[index]);
     setLocalError(null);
-    requestAnimationFrame(() => inputRef.current?.focus());
+    requestAnimationFrame(() => {
+      editInputRef.current?.focus();
+      editInputRef.current?.select();
+    });
   };
 
+  // mousedown preventDefault keeps focus in the editor so blur-commit
+  // doesn't fire (and reorder) before chip/remove/edit actions run.
+  const keepFocus = (e: React.MouseEvent) => e.preventDefault();
+
+  // The error message deliberately leaves the box untinted: valid pills
+  // must never look broken because a *missing* entry was flagged. Only the
+  // composer carries aria-invalid; the text below carries the message.
   return (
     <Field>
       <FieldLabel htmlFor={id}>{label}</FieldLabel>
       {description ? <FieldDescription>{description}</FieldDescription> : null}
-      {values.length > 0 ? (
-        <ul aria-label={`${label}: added`} className="flex flex-wrap gap-2">
-          {values.map((tag, i) => (
-            <li key={`${tag}-${i}`} className="min-w-0">
-              <Badge
-                variant="secondary"
-                className="h-auto min-h-11 gap-1 py-1 pr-1 pl-2.5 whitespace-normal"
-              >
-                <span className="min-w-0 text-xs font-medium break-words">{tag}</span>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon-touch"
-                  className="rounded-full"
-                  onClick={() => startEditing(i)}
-                  aria-label={`Edit ${tag}`}
-                >
-                  <Pencil className="size-3.5" aria-hidden />
-                </Button>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon-touch"
-                  className="rounded-full"
-                  onClick={() => onChange(applyTagRemove(values, i))}
-                  aria-label={`Remove ${tag}`}
-                >
-                  <X className="size-3.5" aria-hidden />
-                </Button>
-              </Badge>
-            </li>
-          ))}
-        </ul>
-      ) : null}
-      <InputGroup className="min-h-11">
-        <InputGroupInput
-          ref={inputRef}
-          id={id}
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.nativeEvent.isComposing && e.keyCode !== 229) {
-              e.preventDefault();
-              commit();
-            }
-            // Backspace in an empty input intentionally deletes nothing.
-          }}
-          placeholder={placeholder}
-          maxLength={maxLength + 20}
-          aria-describedby={`${hintId} ${countId}`}
-          aria-invalid={message ? true : undefined}
-        />
-        <InputGroupAddon align="inline-end">
-          {editing ? (
-            <>
-              <Button type="button" variant="ghost" size="sm" onClick={cancelEditing}>
-                Cancel
-              </Button>
-              <Button type="button" size="touch" onClick={commit}>
-                Update
-              </Button>
-            </>
-          ) : (
-            <Button
-              type="button"
-              size="touch"
-              onClick={commit}
-              disabled={atCap || input.trim().length === 0}
-            >
-              <Plus aria-hidden />
-              {addLabel}
-            </Button>
-          )}
-        </InputGroupAddon>
-      </InputGroup>
-      <div className="flex items-center justify-between gap-2">
-        <p id={hintId} aria-live="polite" className="text-muted-foreground text-xs">
-          {message ??
-            (atCap
-              ? `Limit reached (${maxCount}/${maxCount}). Remove one to add another.`
-              : editing
-                ? "Editing keeps its position. Update or Cancel."
-                : "One clear outcome per tag.")}
-        </p>
-        <span id={countId} className="text-muted-foreground shrink-0 text-xs">
-          {values.length}/{maxCount}
-        </span>
-      </div>
-      {message ? <FieldError>{message}</FieldError> : null}
-      {suggestions.length > 0 ? (
+      {available.length > 0 ? (
         <div className="flex flex-col gap-2">
           <span className="text-muted-foreground text-xs" id={`${id}-suggestions`}>
             {suggestionsLabel}
@@ -210,40 +163,146 @@ export function TagField({
             role="group"
             aria-labelledby={`${id}-suggestions`}
           >
-            {suggestions.map((s) => {
-              const added = isTagAdded(values, s.value);
-              return (
-                <Button
-                  key={s.value}
-                  type="button"
-                  size="touch"
-                  variant={added ? "secondary" : "outline"}
-                  className="whitespace-normal"
-                  disabled={added || atCap}
-                  onClick={() => {
-                    const result = applyTagAdd(values, s.value, maxCount, maxLength);
-                    if (!result.ok) {
-                      setLocalError(result.message);
-                      return;
-                    }
-                    setLocalError(null);
-                    onChange(result.values);
-                  }}
-                  aria-pressed={added}
-                  aria-label={added ? `${s.label ?? s.value} (${addedLabel})` : (s.label ?? s.value)}
-                >
-                  {s.label ?? s.value}
-                  {added ? (
-                    <Badge variant="default" className="gap-1">
-                      {addedLabel}
-                    </Badge>
-                  ) : null}
-                </Button>
-              );
-            })}
+            {available.map((s) => (
+              <Button
+                key={s.value}
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={editing}
+                onMouseDown={keepFocus}
+                onClick={() => {
+                  const result = applyTagAdd(values, s.value, maxCount, maxLength);
+                  if (!result.ok) {
+                    setLocalError(result.message);
+                    return;
+                  }
+                  setLocalError(null);
+                  onChange(result.values);
+                }}
+                aria-label={s.label ?? s.value}
+              >
+                {s.label ?? s.value}
+              </Button>
+            ))}
           </div>
         </div>
       ) : null}
+      <div
+        className={cn(
+          "border-input flex min-h-9 flex-wrap items-center gap-1.5 rounded-lg border bg-transparent px-2 py-1.5 transition-colors outline-none focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50",
+          atCap && values.length === 0 && "opacity-70",
+        )}
+        onClick={() => {
+          if (!editing) inputRef.current?.focus();
+        }}
+      >
+        {values.map((tag, i) =>
+          editingIndex === i ? (
+            <span key={`${tag}-${i}`} className="flex min-w-0 flex-1 basis-full">
+              <input
+                ref={editInputRef}
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.nativeEvent.isComposing && e.keyCode !== 229) {
+                    e.preventDefault();
+                    commit();
+                  }
+                  if (e.key === "Escape") {
+                    e.preventDefault();
+                    cancelEditing();
+                  }
+                }}
+                onBlur={() => {
+                  tryCommit({ silent: true });
+                }}
+                maxLength={maxLength + 20}
+                aria-label={`Edit ${tag}`}
+                autoComplete="off"
+                className="border-primary bg-transparent text-sm outline-none ring-1 ring-primary rounded-md px-2 py-0.5 w-full"
+              />
+            </span>
+          ) : (
+            <Badge
+              key={`${tag}-${i}`}
+              variant="secondary"
+              render={<span role="group" aria-label={tag} />}
+              className="h-6 gap-0 py-0 pr-0.5 pl-2 text-xs font-medium"
+            >
+              <button
+                type="button"
+                onMouseDown={keepFocus}
+                onClick={() => startEditing(i)}
+                aria-label={`Edit ${tag}`}
+                className="min-w-0 cursor-pointer break-words"
+              >
+                <span className="block max-w-48 truncate">{tag}</span>
+              </button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-xs"
+                onMouseDown={keepFocus}
+                onClick={() => {
+                  onChange(applyTagRemove(values, i));
+                }}
+                aria-label={`Remove ${tag}`}
+                className="rounded-full"
+              >
+                <X data-icon="inline" aria-hidden />
+              </Button>
+            </Badge>
+          ),
+        )}
+        {!editing ? (
+          <input
+            ref={inputRef}
+            id={id}
+            value={input}
+            disabled={atCap}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.nativeEvent.isComposing && e.keyCode !== 229) {
+                e.preventDefault();
+                commit();
+              }
+              if (e.key === "Escape") {
+                e.preventDefault();
+                setInput("");
+              }
+              // Backspace in an empty input intentionally deletes nothing.
+            }}
+            onBlur={() => {
+              tryCommit({ silent: true });
+            }}
+            placeholder={values.length === 0 ? placeholder : undefined}
+            maxLength={maxLength + 20}
+            aria-describedby={`${hintId} ${countId}`}
+            aria-invalid={message ? true : undefined}
+            autoComplete="off"
+            className="placeholder:text-muted-foreground min-w-24 flex-1 bg-transparent text-sm outline-none disabled:cursor-not-allowed"
+          />
+        ) : (
+          <span id={id} className="sr-only">
+            Editing tag
+          </span>
+        )}
+      </div>
+      <p id={hintId} aria-live="polite" className="sr-only">
+        {message ??
+          (atCap
+            ? `Limit reached (${maxCount}/${maxCount}). Remove one to add another.`
+            : "Type and press Enter. Tap a tag to edit it.")}
+      </p>
+      <div className="flex items-center justify-between gap-2">
+        <span id={countId} className="text-muted-foreground text-xs">
+          {values.length}/{maxCount}
+        </span>
+      </div>
+      <div className="min-h-5">
+        {message ? <FieldError>{message}</FieldError> : null}
+      </div>
     </Field>
   );
 }

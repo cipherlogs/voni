@@ -4,14 +4,10 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-// Regression guard for Task 1 (button cursor + TimelineBar sizing).
-//
 // NOTE: voni has no @testing-library/react / jsdom (see package.json), and
 // the repo's test harness is node:test + tsx with no component-render setup.
 // So instead of rendering TimelineBar, this test asserts on the real
 // component source text — the exact class strings that ship to the DOM.
-// It fails on the pre-fix source (no cursor-pointer on the TimelineBar
-// Button, h-1.5 segment) and passes on the fixed source.
 const dir = dirname(fileURLToPath(import.meta.url));
 const timelineSource = readFileSync(join(dir, "wizard-timeline.tsx"), "utf8");
 const buttonSource = readFileSync(join(dir, "..", "ui", "button.tsx"), "utf8");
@@ -25,30 +21,34 @@ assert.ok(
   "precondition: TimelineBar exists in wizard-timeline.tsx",
 );
 
-test("TimelineBar buttons carry cursor-pointer", () => {
+test("TimelineBar is one button per step, equal width", () => {
+  assert.ok(timelineBarSource.includes("WIZARD_STEPS"));
+  assert.ok(timelineBarSource.includes("flex min-w-0 flex-1"));
+  assert.ok(timelineBarSource.includes('aria-current={active ? "step" : undefined}'));
+});
+
+test("TimelineBar buttons are 56px minimum with one centered row", () => {
   assert.match(
     timelineBarSource,
-    /group flex cursor-pointer flex-col/,
+    /min-h-14/,
+    "step buttons must be at least 56px tall",
+  );
+  assert.match(
+    timelineBarSource,
+    /cursor-pointer/,
     "TimelineBar Button className must include cursor-pointer",
+  );
+  assert.match(
+    timelineBarSource,
+    /justify-center/,
+    "number and label share one centered row",
   );
 });
 
-test("TimelineBar segment uses the enlarged h-2 sizing", () => {
-  assert.match(
-    timelineBarSource,
-    /h-2 w-full rounded-full/,
-    "TimelineBar segment span must use h-2",
-  );
-  assert.match(
-    timelineBarSource,
-    /md:h-2\.5/,
-    "TimelineBar segment span must scale to md:h-2.5",
-  );
-  assert.doesNotMatch(
-    timelineBarSource,
-    /h-1\.5 w-full/,
-    "pre-fix h-1.5 segment sizing must not remain in TimelineBar",
-  );
+test("TimelineBar shows no percentage or progress display", () => {
+  assert.doesNotMatch(timelineBarSource, /Progress/);
+  assert.doesNotMatch(timelineBarSource, /%/);
+  assert.doesNotMatch(timelineSource, /TimelineRail/);
 });
 
 test("shared Button base keeps cursor-pointer without leaking onto disabled state", () => {

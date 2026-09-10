@@ -6,10 +6,12 @@ import {
   defaultGreeting,
   EMPTY_WIZARD_DRAFT,
   LOCALIZED_GREETINGS,
-  MAX_OUTCOME_LENGTH,
-  MAX_OUTCOMES,
+  MAX_GOAL_LENGTH,
+  MAX_GOALS,
   MAX_STYLE_LENGTH,
   MAX_STYLE_TRAITS,
+  MAX_TASK_LENGTH,
+  MAX_TASKS,
   normalizeTag,
   normalizeWizardDraft,
   validateWizardDraft,
@@ -20,22 +22,26 @@ import { agentConfigSchema, REAL_ESTATE_TEMPLATE } from "./config";
 import { JOB_INPUT_SCHEMAS, JOB_RESULT_SCHEMAS } from "@/lib/jobs/kinds";
 
 const BASE: WizardDraft = {
-  outcomes: ["Qualify property leads and book viewings"],
+  goals: ["Qualify property leads and book viewings"],
+  tasks: ["Ask for budget and timeline"],
   agentName: "Sara",
   styleTraits: ["Friendly"],
   conversationLanguage: "en",
   voiceId: "anna",
 };
 
-test("limits match the plan: 1-12 outcomes x140, 0-5 style x60, name 1-120", () => {
-  assert.equal(MAX_OUTCOMES, 12);
-  assert.equal(MAX_OUTCOME_LENGTH, 140);
+test("limits match the plan: 1-3 goals x140, 0-12 tasks x140, 0-5 style x60, name 1-120", () => {
+  assert.equal(MAX_GOALS, 3);
+  assert.equal(MAX_GOAL_LENGTH, 140);
+  assert.equal(MAX_TASKS, 12);
+  assert.equal(MAX_TASK_LENGTH, 140);
   assert.equal(MAX_STYLE_TRAITS, 5);
   assert.equal(MAX_STYLE_LENGTH, 60);
 });
 
 test("empty wizard draft starts blank with English + anna", () => {
-  assert.deepEqual(EMPTY_WIZARD_DRAFT.outcomes, []);
+  assert.deepEqual(EMPTY_WIZARD_DRAFT.goals, []);
+  assert.deepEqual(EMPTY_WIZARD_DRAFT.tasks, []);
   assert.equal(EMPTY_WIZARD_DRAFT.agentName, "");
   assert.deepEqual(EMPTY_WIZARD_DRAFT.styleTraits, []);
   assert.equal(EMPTY_WIZARD_DRAFT.conversationLanguage, "en");
@@ -49,30 +55,36 @@ test("normalizeTag trims and collapses whitespace without splitting commas", () 
 
 test("normalizeWizardDraft cleans without inventing structure", () => {
   const out = normalizeWizardDraft({
-    outcomes: ["  Qualify   leads  ", ""],
+    goals: ["  Qualify   leads  ", ""],
+    tasks: ["  Ask budget  ", ""],
     agentName: "  Sara ",
     styleTraits: ["  Friendly  ", ""],
     conversationLanguage: "en",
     voiceId: "  anna ",
   });
-  assert.deepEqual(out.outcomes, ["Qualify leads"]);
+  assert.deepEqual(out.goals, ["Qualify leads"]);
+  assert.deepEqual(out.tasks, ["Ask budget"]);
   assert.equal(out.agentName, "Sara");
   assert.deepEqual(out.styleTraits, ["Friendly"]);
   assert.equal(out.voiceId, "anna");
 });
 
-test("valid draft passes; empty outcomes/name fail", () => {
+test("valid draft passes; empty goals/name fail; empty tasks pass", () => {
   assert.ok(validateWizardDraft(BASE).success);
-  assert.ok(!validateWizardDraft({ ...BASE, outcomes: [] }).success);
+  assert.ok(!validateWizardDraft({ ...BASE, goals: [] }).success);
   assert.ok(!validateWizardDraft({ ...BASE, agentName: "   " }).success);
+  assert.ok(validateWizardDraft({ ...BASE, tasks: [] }).success);
 });
 
-test("duplicate outcomes and style reject case-insensitively", () => {
+test("duplicate goals, tasks, and style reject case-insensitively", () => {
   assert.ok(
     !validateWizardDraft({
       ...BASE,
-      outcomes: ["Qualify leads", "qualify  LEADS"],
+      goals: ["Qualify leads", "qualify  LEADS"],
     }).success,
+  );
+  assert.ok(
+    !validateWizardDraft({ ...BASE, tasks: ["Ask budget", "ASK  BUDGET"] }).success,
   );
   assert.ok(
     !validateWizardDraft({ ...BASE, styleTraits: ["Friendly", "FRIENDLY"] }).success,
@@ -80,9 +92,12 @@ test("duplicate outcomes and style reject case-insensitively", () => {
 });
 
 test("length and count caps reject", () => {
-  assert.ok(!validateWizardDraft({ ...BASE, outcomes: ["x".repeat(141)] }).success);
+  assert.ok(!validateWizardDraft({ ...BASE, goals: ["x".repeat(141)] }).success);
   assert.ok(
-    !validateWizardDraft({ ...BASE, outcomes: Array.from({ length: 13 }, (_, i) => `Outcome ${i}`) })
+    !validateWizardDraft({ ...BASE, goals: ["a", "b", "c", "d"] }).success,
+  );
+  assert.ok(
+    !validateWizardDraft({ ...BASE, tasks: Array.from({ length: 13 }, (_, i) => `Task ${i}`) })
       .success,
   );
   assert.ok(!validateWizardDraft({ ...BASE, styleTraits: ["x".repeat(61)] }).success);
@@ -139,7 +154,8 @@ test("legacy AgentConfig objects without new fields still parse", () => {
   assert.ok(agentConfigSchema.safeParse(REAL_ESTATE_TEMPLATE).success);
   const withNew = {
     ...REAL_ESTATE_TEMPLATE,
-    outcomes: ["Qualify property leads and book viewings"],
+    goals: ["Qualify property leads and book viewings"],
+    tasks: ["Ask for budget and timeline"],
     styleTraits: ["Friendly"],
     conversationLanguage: "en" as const,
   };

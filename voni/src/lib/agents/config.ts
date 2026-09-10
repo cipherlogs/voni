@@ -2,10 +2,12 @@ import { z } from "zod";
 import {
   CONVERSATION_LANGUAGES,
   MAX_AGENT_NAME_LENGTH,
-  MAX_OUTCOME_LENGTH,
-  MAX_OUTCOMES,
+  MAX_GOAL_LENGTH,
+  MAX_GOALS,
   MAX_STYLE_LENGTH,
   MAX_STYLE_TRAITS,
+  MAX_TASK_LENGTH,
+  MAX_TASKS,
 } from "./wizard";
 
 /**
@@ -106,15 +108,19 @@ export const agentConfigSchema = z.object({
    */
   greeting: z.string().min(1),
   /**
-   * Wizard-authored outcomes (1–12 × ≤140) and conversational style tags
-   * (0–5 × ≤60), plus the single conversation language. Optional so legacy
-   * configurations keep parsing. Stored in existing JSON config storage —
-   * no column migration.
+   * Wizard-authored goals (1–3 × ≤140), tasks (0–12 × ≤140) and conversational
+   * style tags (0–5 × ≤60), plus the single conversation language. Optional so
+   * legacy configurations keep parsing. Stored in existing JSON config
+   * storage — no column migration.
    */
-  outcomes: z
-    .array(z.string().trim().min(1).max(MAX_OUTCOME_LENGTH))
+  goals: z
+    .array(z.string().trim().min(1).max(MAX_GOAL_LENGTH))
     .min(1)
-    .max(MAX_OUTCOMES)
+    .max(MAX_GOALS)
+    .optional(),
+  tasks: z
+    .array(z.string().trim().min(1).max(MAX_TASK_LENGTH))
+    .max(MAX_TASKS)
     .optional(),
   styleTraits: z
     .array(z.string().trim().min(1).max(MAX_STYLE_LENGTH))

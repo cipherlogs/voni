@@ -56,9 +56,9 @@ test("system prompt carries the app guide when provided", () => {
 });
 
 test("wizard summaries and phrases share one source", () => {
-  assert.equal(wizardSummary("goal", "book viewings"), "Set the goal to book viewings");
-  assert.deepEqual(wizardKeyPhrases("goal", "book viewings"), ["goal", "book viewings"]);
-  assert.deepEqual(wizardKeyPhrases("tasks", ["a", "b", "c", "d"]), ["tasks", "a", "b", "c"]);
+  assert.equal(wizardSummary("goals", "book viewings"), "Set goals to book viewings");
+  assert.deepEqual(wizardKeyPhrases("goals", "book viewings"), ["goals", "book viewings"]);
+  assert.deepEqual(wizardKeyPhrases("styleTraits", ["a", "b", "c", "d"]), ["conversational style", "a", "b", "c"]);
 });
 
 test("wizard executor applies through the store and versions the result", async () => {
@@ -67,7 +67,7 @@ test("wizard executor applies through the store and versions the result", async 
     applied.push({ patch, label });
   });
   const ran = await executor(
-    { field: "goal", value: "book viewings" },
+    { field: "goals", value: "book viewings" },
     {
       userId: "u",
       organizationId: "o",
@@ -77,26 +77,47 @@ test("wizard executor applies through the store and versions the result", async 
       readTarget: () => null,
     },
   );
-  assert.deepEqual(applied, [{ patch: { goal: "book viewings" }, label: "voice: goal" }]);
-  assert.equal(ran.resultingVersion, JSON.stringify("book viewings"));
+  assert.deepEqual(applied, [{ patch: { goals: ["book viewings"] }, label: "voice: goals" }]);
+  assert.equal(ran.resultingVersion, JSON.stringify(["book viewings"]));
 });
 
 test("wizard target readers snapshot live draft values", () => {
   let draft: WizardDraft = {
-    goal: "old",
-    agentName: "",
-    personality: "",
+    goals: ["old"],
     tasks: [],
+    agentName: "",
+    styleTraits: [],
+    conversationLanguage: "en",
     voiceId: "anna",
-    languageCodes: [],
   };
   const readers = createWizardTargetReader(() => draft);
-  assert.deepEqual(readers.get("wizard:goal")?.(), {
-    value: "old",
-    version: JSON.stringify("old"),
+  assert.deepEqual(readers.get("wizard:goals")?.(), {
+    value: ["old"],
+    version: JSON.stringify(["old"]),
   });
-  draft = { ...draft, goal: "typed" };
-  assert.equal(readers.get("wizard:goal")?.()?.version, JSON.stringify("typed"));
+  draft = { ...draft, goals: ["typed"] };
+  assert.equal(readers.get("wizard:goals")?.()?.version, JSON.stringify(["typed"]));
+});
+
+test("language changes resolve the voice pair together", async () => {
+  const { resolveWizardValue } = await import("./wizard-tools");
+  const draft: WizardDraft = {
+    goals: ["book viewings"],
+    tasks: [],
+    agentName: "Sara",
+    styleTraits: [],
+    conversationLanguage: "en",
+    voiceId: "anna",
+  };
+  const resolved = resolveWizardValue("conversationLanguage", "es", draft);
+  assert.equal(resolved.ok, true);
+  assert.deepEqual((resolved as { patch: unknown }).patch, {
+    conversationLanguage: "es",
+    voiceId: "lola",
+  });
+  const kept = resolveWizardValue("conversationLanguage", "en", draft);
+  assert.equal(kept.ok, true);
+  assert.deepEqual((kept as { patch: unknown }).patch, { conversationLanguage: "en" });
 });
 
 test("idle rule ends quiet sessions but never active ones", () => {
