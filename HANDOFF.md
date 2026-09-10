@@ -10,7 +10,33 @@ context/usage. Don't hand-edit the **Activity Log** — it's auto-generated.
 
 ## Status
 
-### Resume here (2026-09-09, next-skills plan merged to main)
+### Resume here (2026-09-10, next-dev-loop runtime pass on merged main)
+
+**Now:** Full next-dev-loop verification of merged `main` (PR4 durable generation + PR3
+wizard/voice) against live `next dev :3000`, both views. Drove a real end-to-end agent
+creation in the browser ("Loop Test Agent"): step 1 goals/tasks tagging → step 2
+name/style/voice carousel → Generate → backgrounded durable notice ("This is continuing
+in the background…") with header job indicator → review screen with generated identity,
+mission, rules → Save → detail page ("Deploying…") → list shows the agent, `/jobs`
+shows Generate + Deploy both "Succeeded" with result destinations. Draft cache survived
+a mid-wizard reload (PR4 confirmed). `/login` signed-in redirects to dashboard, no
+exception. `/dashboard`, `/leads`, `/campaigns` render, console clean throughout.
+`get_compilation_issues` empty; `get_errors` clean except one **recoverable hydration
+mismatch** on `/agents/new?job=`: server renders TimelineBar step 1 as current, client
+restores cached `step`/draft from localStorage (`use-wizard-draft.ts` lazy `useState`
+initializers read `window.localStorage`) — expected PR4 trade-off, self-heals on
+regeneration, no user impact. Loop Test Agent cleaned up 2026-09-10 via
+`voni/scripts/cleanup-loop-test-agent.mts` (agent row + linked jobs + remote
+AssemblyAI agent; owner ran the script after a shell-execution outage blocked
+running it from-session — remote-delete outcome per script output, unconfirmed
+from-session).
+**Next:** Same owner/device/cred-bound items as 2026-09-09 (E2E fixtures, postpone
+toolchain + 8 locked `instant()` tests, owner-device voice, real Google sign-out,
+deployed Queue, 768/1440 sweep). Optional follow-up: silence the wizard hydration note
+(e.g. render timeline step from a mounted-gated state) — cosmetic dev-overlay badge only.
+**Why:** Runtime proof now matches the recorded green gates; the merged wizard + durable
+job flow works as designed in a real browser, and the single framework-view note is
+understood and benign.
 
 **Now:** `feat/next-skills-adoption` committed and merged into `main` (single commit, everything staged including the carried-over dirty baseline; secrets verified absent — `.env*`/`.dev.vars`/`.next`/`node_modules` ignored, diff scanned). Both flags on, 36/36 build, gates green (tsc/eslint 0/0, 215 tests, manifest, e2e, diff-check). Branch left in place; dev server running `:3000`.
 **Next:** Unblocks when owner provides: (1) `E2E_DATABASE_URL` + test auth creds → Task 5 fixtures, role/record matrix, two-record reuse, signed-in mobile nav, live job/notify flows; (2) Next/React toolchain fix for `React.unstable_postpone` → un-fixme 8 locked `instant()` tests, run differentials, optimize. Separately: owner-device voice/audio, real Google sign-out loop, deployed Queue delivery, 768/1440 sweep. Evidence docs unchanged: `voni/docs/next-skills-adoption.md`, `voni/instant-nav.rig.md`, `voni/docs/shadcn-audit.md`.
@@ -2379,3 +2405,7 @@ destination (1e).
 - 2026-09-06T13:10:43Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/voice-call.tsx
 - 2026-09-06T14:44:23Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/voni-logo.tsx
 - 2026-09-06T14:44:35Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/app-sidebar.tsx
+- 2026-09-10T19:42:41Z [Write] /home/cipherlogs/.claude/plans/kind-sparking-codd.md
+- 2026-09-10T19:54:29Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/HANDOFF.md
+- 2026-09-10T20:01:14Z [Write] /home/cipherlogs/Repos/AI/leadcalls/voni/scripts/cleanup-loop-test-agent.mts
+- 2026-09-10T20:20:32Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/HANDOFF.md
