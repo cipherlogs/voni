@@ -73,9 +73,15 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
     generation.phase === "waiting" ||
     generation.phase === "backgrounded";
   const backgrounded = generation.phase === "backgrounded";
+  // Fresh submission in flight (not a ?job= restore visit): the form hides
+  // behind the submitted panel until the job reaches a terminal state.
+  const submitting =
+    generation.phase === "starting" ||
+    generation.phase === "waiting" ||
+    generation.phase === "backgrounded";
   const generationPhase: GenerationStatusPhase = backgrounded
     ? "backgrounded"
-    : generation.phase === "starting" || generation.phase === "waiting" || restoring
+    : submitting
       ? "working"
       : "idle";
   const briefError = error ?? generation.error;
@@ -427,7 +433,7 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
               onClearError={(field) => clearFieldError(field)}
             />
           ) : null}
-          {wiz.step === 1 ? (
+          {wiz.step === 1 && !submitting ? (
             <PersonalityStep
               api={wiz}
               idPrefix="new"
@@ -444,13 +450,13 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
               onUseTemplate={useTemplate}
             />
           ) : null}
-          {showGuidance && wiz.step === 1 ? <ManualLlmGuidance /> : null}
+          {showGuidance && wiz.step === 1 && !submitting ? <ManualLlmGuidance /> : null}
 
           <WizardFooter
             onBack={() => wiz.setStep(Math.max(0, wiz.step - 1))}
-            backDisabled={wiz.step === 0}
+            backDisabled={wiz.step === 0 || submitting}
             primary={
-              wiz.step === 0 ? (
+              submitting ? null : wiz.step === 0 ? (
                 <Button
                   type="button"
                   className="w-full md:w-auto pointer-coarse:min-h-11"

@@ -9,7 +9,6 @@ import {
   CarouselPrevious,
   type CarouselApi,
 } from "@/components/ui/carousel";
-import { Card, CardContent } from "@/components/ui/card";
 import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
 import { Check } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -69,7 +68,9 @@ export function VoiceCarousel({ voices, value, onChange, id = "voice-carousel" }
       <FieldDescription>
         The voice renders on the call — test it with &ldquo;Test this agent&rdquo; after saving.
       </FieldDescription>
-      <div className="mx-auto w-full max-w-sm">
+      {/* Padded lane: the chevrons sit in the padding — outside the
+      rows, inside the viewport — so they never overlay content at 390px. */}
+      <div className="mx-auto w-full max-w-sm px-10">
         <Carousel setApi={setApi} opts={{ align: "center" }} aria-labelledby={`${id}-label`}>
           <CarouselContent className="ml-0">
             {voices.map((voice) => {
@@ -83,38 +84,34 @@ export function VoiceCarousel({ voices, value, onChange, id = "voice-carousel" }
                     aria-label={`Select voice ${voiceLabel(voice.id)}, ${ACCENT_LABEL[voice.accent]}`}
                     className="w-full text-left"
                   >
-                    <Card
-                      className={cn(
-                        "border-0 shadow-none",
-                        selected ? "bg-primary/10 ring-1 ring-primary" : "bg-muted/50",
-                      )}
-                    >
-                      <CardContent className="flex flex-row items-center gap-3 p-3">
-                        <span
-                          aria-hidden
-                          style={avatarStyle(voice.id)}
-                          className="flex size-10 shrink-0 items-center justify-center rounded-full text-base font-semibold text-white"
-                        >
-                          {voiceLabel(voice.id).charAt(0)}
+                    {/* Deliberately not a Card: the stock ring + tinted slab
+                    read as a seam against the form. Transparent row, check
+                    marks the selection. */}
+                    <span className="flex flex-row items-center gap-3 px-1 py-2">
+                      <span
+                        aria-hidden
+                        style={avatarStyle(voice.id)}
+                        className="flex size-10 shrink-0 items-center justify-center rounded-full text-base font-semibold text-white"
+                      >
+                        {voiceLabel(voice.id).charAt(0)}
+                      </span>
+                      <span className="flex min-w-0 flex-1 flex-col gap-0.5 text-left">
+                        <span className="text-sm font-medium">{voiceLabel(voice.id)}</span>
+                        <span className="text-muted-foreground text-xs">
+                          {ACCENT_LABEL[voice.accent]}
                         </span>
-                        <span className="flex min-w-0 flex-1 flex-col gap-0.5 text-left">
-                          <span className="text-sm font-medium">{voiceLabel(voice.id)}</span>
-                          <span className="text-muted-foreground text-xs">
-                            {ACCENT_LABEL[voice.accent]}
-                          </span>
-                        </span>
-                        {selected ? (
-                          <Check data-icon="inline" aria-hidden className="text-primary shrink-0" />
-                        ) : null}
-                      </CardContent>
-                    </Card>
+                      </span>
+                      {selected ? (
+                        <Check data-icon="inline" aria-hidden className="text-primary shrink-0" />
+                      ) : null}
+                    </span>
                   </button>
                 </CarouselItem>
               );
             })}
           </CarouselContent>
-          <CarouselPrevious className="left-1" />
-          <CarouselNext className="right-1" />
+          <CarouselPrevious className="left-0" />
+          <CarouselNext className="right-0" />
           <div className="mt-2 flex items-center justify-center gap-1" role="group" aria-label="Voices">
             {voices.map((voice, i) => (
               <button

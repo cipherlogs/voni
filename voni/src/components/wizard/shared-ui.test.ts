@@ -108,13 +108,17 @@ test("VoiceCarousel is a select-only horizontal slider, no audio preview", () =>
   assert.ok(!source.includes("interacted"));
   assert.ok(!source.includes("Playing"));
   assert.ok(source.includes("Test this agent"));
-  // Horizontal borderless cards: avatar left, name middle, check right.
+  // Seamless transparent rows: no Card (its ring + tint read as a seam),
+  // check marks the selection, chevrons live in a padded lane outside.
   assert.ok(source.includes("flex-row"));
-  assert.ok(source.includes("border-0"));
-  assert.ok(source.includes("bg-primary/10"));
-  // Avatar cards: gradient initial, stock Card, no icon sizing.
+  assert.ok(!source.includes("CardContent"));
+  assert.ok(!source.includes("bg-primary/10"));
+  assert.ok(!source.includes("ring-1"));
+  assert.ok(source.includes("px-10"));
+  assert.ok(source.includes("left-0"));
+  assert.ok(source.includes("right-0"));
+  // Avatar rows: gradient initial, transparent, no icon sizing.
   assert.ok(source.includes("avatarStyle"));
-  assert.ok(source.includes("CardContent"));
   assert.ok(!source.includes("size-3"));
 });
 

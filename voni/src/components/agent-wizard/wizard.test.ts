@@ -120,6 +120,20 @@ test("ReviewStep is gone; generation status renders in-flow", () => {
   assert.ok(!stepBodiesSource.includes("MascotAvatar"));
 });
 
+test("working phase shows the submitted panel: mini success, progress, safe-to-leave", () => {
+  // The click must prove it landed instantly, say what is happening, and
+  // answer "can I go?" — before the 3s background threshold fires.
+  assert.ok(stepBodiesSource.includes("GenerationSubmitted"));
+  const noticeSource = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), "./generation-notice.tsx"),
+    "utf8",
+  );
+  assert.ok(noticeSource.includes("Brief received"));
+  assert.ok(noticeSource.includes("Safe to leave"));
+  assert.ok(noticeSource.includes("Open Jobs"));
+  assert.ok(noticeSource.includes('aria-label="Generation in progress"'));
+});
+
 test("wizard draft defaults to empty goals/tasks with English + anna", async () => {
   const { EMPTY_DRAFT } = await import("./use-wizard-draft");
   assert.deepEqual(EMPTY_DRAFT.goals, []);
@@ -175,6 +189,11 @@ test("agents/new generates and reviews in place — never navigates to a draft",
   assert.ok(!pageSource.includes("createDraftAgentAction"));
   assert.ok(!pageSource.includes("pendingAgentId"));
   assert.ok(pageSource.includes('router.replace("/agents/new")'));
+  // While a fresh submission runs, the form hides behind the submitted
+  // panel (locked until terminal) and the footer action goes away.
+  assert.ok(pageSource.includes("submitting"));
+  assert.ok(pageSource.includes("wiz.step === 1 && !submitting"));
+  assert.ok(pageSource.includes("submitting ? null : wiz.step === 0 ?"));
   // The loading skeleton mirrors the real creator shape, not bare text.
   assert.ok(pageSource.includes("NewAgentSkeleton"));
 });
