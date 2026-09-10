@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ConversationLanguage } from "@/lib/agents/wizard";
 import {
+  CONVERSATION_LANGUAGES,
   DEFAULT_CONVERSATION_LANGUAGE,
   DEFAULT_WIZARD_VOICE_ID,
 } from "@/lib/agents/wizard";
@@ -42,16 +43,84 @@ export type FlashKey =
 const MAX_HISTORY = 20;
 
 /**
+ * Durable pre-submit draft (PR4): the wizard survives reload/navigation via
+ * localStorage. Submitted jobs are covered by the placeholder row + ?job=
+ * restore instead — this cache is cleared on save and on Start over.
+ */
+const DRAFT_CACHE_KEY = "voni:wizard-draft";
+
+type CachedDraft = { draft: WizardDraft; step: number };
+
+function isCachedDraft(value: unknown): value is CachedDraft {
+  if (typeof value !== "object" || value === null) return false;
+  const v = value as Record<string, unknown>;
+  const d = v.draft as Record<string, unknown> | null;
+  if (typeof d !== "object" || d === null) return false;
+  const strArray = (x: unknown): x is string[] =>
+    Array.isArray(x) && x.every((i) => typeof i === "string");
+  return (
+    strArray(d.goals) &&
+    strArray(d.tasks) &&
+    strArray(d.styleTraits) &&
+    typeof d.agentName === "string" &&
+    typeof d.voiceId === "string" &&
+    typeof d.conversationLanguage === "string" &&
+    (CONVERSATION_LANGUAGES as readonly string[]).includes(
+      d.conversationLanguage,
+    ) &&
+    (typeof v.step === "number" || typeof v.step === "undefined")
+  );
+}
+
+function readCachedDraft(): CachedDraft | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return parseWizardDraftCache(window.localStorage.getItem(DRAFT_CACHE_KEY));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Pure cache parser (exported for unit tests): corrupt, partial, or
+ * foreign-shape payloads are rejected so the wizard falls back to empty.
+ */
+export function parseWizardDraftCache(raw: string | null): CachedDraft | null {
+  if (!raw) return null;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return isCachedDraft(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Drop the durable draft: call after a successful save or Start over. */
+export function clearWizardDraftCache() {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.removeItem(DRAFT_CACHE_KEY);
+  } catch {
+    // Private-mode writes fail silently; the wizard still works in-memory.
+  }
+}
+
+/**
  * Shared wizard state: one draft, step position, per-field flash, and a
  * snapshot history so every agent patch — and every user edit — is undoable
  * internally (the visible Review undo button is gone; voice undo remains).
  */
 export function useWizardDraft() {
-  const [draft, setDraft] = useState<WizardDraft>(EMPTY_DRAFT);
+  const [draft, setDraft] = useState<WizardDraft>(
+    () => readCachedDraft()?.draft ?? EMPTY_DRAFT,
+  );
   /** Ref mirror so delayed callbacks (voice patches) resolve against the
    * latest draft instead of a send-time snapshot. */
-  const draftRef = useRef<WizardDraft>(EMPTY_DRAFT);
-  const [step, setStep] = useState(0);
+  const draftRef = useRef<WizardDraft>(draft);
+  const [step, setStepState] = useState(() => {
+    const cached = readCachedDraft()?.step ?? 0;
+    return Math.min(Math.max(cached, 0), WIZARD_STEPS.length - 1);
+  });
   const [flashed, setFlashed] = useState<FlashKey>(null);
   const [undoLabel, setUndoLabel] = useState<string | null>(null);
   const [historyLen, setHistoryLen] = useState(0);
@@ -64,6 +133,24 @@ export function useWizardDraft() {
     },
     [],
   );
+
+  // Persist every committed state so reload/navigation restores the wizard.
+  // Best-effort: quota or private-mode failures never break the wizard.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem(
+        DRAFT_CACHE_KEY,
+        JSON.stringify({ draft, step }),
+      );
+    } catch {
+      // Ignore write failures; in-memory state stays authoritative.
+    }
+  }, [draft, step]);
+
+  const setStep = useCallback((next: number) => {
+    setStepState(next);
+  }, []);
 
   const later = useCallback((fn: () => void, ms: number) => {
     timers.current.push(setTimeout(fn, ms));

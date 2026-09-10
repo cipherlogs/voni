@@ -138,8 +138,23 @@ export async function startJob(
     if (duplicate) return { job: duplicate, created: false, dispatch: null };
   }
 
-  if (kind === "lead_csv_import") {
-    const [campaign] = await db
+  if (kind === "agent_generation") {
+    // One active generation per creator: a second submit while the first is
+    // still queued/running returns the running job. Same-brief resubmits are
+    // already deduped by the stable idempotency key in createJob; this covers
+    // a *different* brief submitted mid-flight. The wizard's "already running"
+    // toast covers the UX.
+    const active = await findActiveJobs(
+      ctx.organizationId,
+      ctx.userId,
+      "agent_generation",
+    );
+    if (active.length > 0) {
+      return { job: active[0], created: false, dispatch: null };
+    }
+  }
+
+  if (kind === "lead_csv_import") {    const [campaign] = await db
       .select({ id: campaigns.id })
       .from(campaigns)
       .where(
