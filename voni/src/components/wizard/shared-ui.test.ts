@@ -89,29 +89,37 @@ test("TagField is a token box: pills inside, inline composer, x-remove", () => {
   assert.ok(!source.includes("size-3"));
 });
 
-test("VoiceField merges language chips and voice rows, real clips only", () => {
+test("VoiceField merges language chips and voice cards, real clips only", () => {
   const source = read("voice-field.tsx");
   // One decision, not two controls: chips filter, picking a voice sets its
-  // language implicitly. No carousel, chevrons, dots, or checkmarks.
+  // language implicitly. Cards ride a stock Carousel: side chevrons plus
+  // snap dots, no checkmarks — pressed cards are the selection.
   assert.ok(source.includes("ToggleGroup"));
   assert.ok(source.includes("Spoken language"));
   assert.ok(source.includes("voiceForLanguage"));
-  assert.ok(!source.includes("Carousel"));
-  assert.ok(!source.includes("Chevron"));
-  assert.ok(!source.includes("selectedScrollSnap"));
-  assert.ok(!source.includes("Go to voice"));
+  assert.ok(source.includes("Carousel"));
+  assert.ok(source.includes("CarouselItem"));
+  assert.ok(source.includes("CarouselPrevious"));
+  assert.ok(source.includes("CarouselNext"));
+  assert.ok(source.includes("scrollSnapList"));
+  assert.ok(source.includes("Go to voice page"));
+  assert.ok(!source.includes("speechSynthesis"));
   // Real AssemblyAI clips: no browser synthesis anywhere near this picker.
   assert.ok(source.includes("/voices/"));
   assert.ok(source.includes("Play"));
   assert.ok(source.includes("Pause"));
-  assert.ok(!source.includes("speechSynthesis"));
   assert.ok(!source.includes("voiceTunables"));
   assert.ok(!source.includes("Test this agent"));
-  // Stock Avatar rows, seamless with the form (no Card, ring, or tint).
+  // Stock Avatar cards with decorative waveform, seamless-selected via the
+  // toggle pressed state (no Card, ring, checkmark, or custom avatar style).
   assert.ok(source.includes("AvatarFallback"));
+  assert.ok(source.includes("waveformHeights"));
+  assert.ok(source.includes("data-[state=on]:border-primary"));
+  assert.ok(source.includes("aria-pressed"));
   assert.ok(!source.includes("avatarStyle"));
   assert.ok(!source.includes("CardContent"));
   assert.ok(!source.includes("ring-1"));
+  assert.ok(!source.includes("Check"));
   // Single-voice languages say so instead of offering a one-item choice.
   assert.ok(source.includes("already selected"));
   assert.ok(source.includes('aria-live="polite"'));

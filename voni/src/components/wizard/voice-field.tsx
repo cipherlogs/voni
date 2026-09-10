@@ -4,8 +4,17 @@ import { useEffect, useRef, useState } from "react";
 import { Pause, Play } from "lucide-react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
+import {
+  Carousel,
+  CarouselContent,
+  CarouselItem,
+  CarouselNext,
+  CarouselPrevious,
+  type CarouselApi,
+} from "@/components/ui/carousel";
 import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { cn } from "@/lib/utils";
 import {
   ACCENT_LABEL,
   INPUT_LANGUAGES,
@@ -38,11 +47,28 @@ function presentsLabel(voice: Voice) {
   return voice.presents === "unspecified" ? "Neutral" : voice.presents;
 }
 
+const WAVEFORM_BARS = 24;
+
 /**
- * Merged language + voice picker (mockup A, wired). One decision: the
- * language chips filter the voice rows, and choosing a voice sets its
- * language implicitly. No carousel, no chevrons, no dots, no checkmark —
- * pressed rows are the selection. Each row plays its real AssemblyAI clip
+ * Deterministic decorative waveform heights (percent) per voice id.
+ * Decorative by design: the play button carries the accessible label, so the
+ * bars are aria-hidden. Highlighted while that voice's clip plays.
+ */
+function waveformHeights(id: string): number[] {
+  let hash = 0;
+  for (let i = 0; i < id.length; i += 1)
+    hash = (hash * 31 + id.charCodeAt(i)) >>> 0;
+  return Array.from({ length: WAVEFORM_BARS }, (_, i) => {
+    const mixed = (hash ^ Math.imul(i + 1, 2654435761)) >>> 0;
+    return 25 + (mixed % 76);
+  });
+}
+
+/**
+ * Merged language + voice picker. One decision: the language chips filter the
+ * voice cards, and choosing a voice sets its language implicitly. Cards sit
+ * in a stock Carousel (3-up on desktop, 2 on tablet, 1 + peek on phones)
+ * with side chevrons and snap dots. Each card plays its real AssemblyAI clip
  * (`public/voices`), captured once via the session-greeting path because
  * AssemblyAI publishes no sample clips and no standalone TTS endpoint.
  */
@@ -55,6 +81,9 @@ export function VoiceField({
 }: VoiceFieldProps) {
   const [notice, setNotice] = useState<string | null>(null);
   const [playingId, setPlayingId] = useState<string | null>(null);
+  const [api, setApi] = useState<CarouselApi>();
+  const [pages, setPages] = useState(0);
+  const [page, setPage] = useState(0);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const group = GROUPS.find((g) => g.code === language) ?? GROUPS[0];
 
@@ -64,16 +93,35 @@ export function VoiceField({
     audioRef.current = null;
   }, []);
 
+  // Dots track the settled snap. Sync-on-mount follows the stock shadcn
+  // Carousel API pattern (setCount/setCurrent in the setApi effect).
+  useEffect(() => {
+    if (!api) return;
+    const sync = () => {
+      setPages(api.scrollSnapList().length);
+      setPage(api.selectedScrollSnap());
+    };
+    sync();
+    api.on("select", sync);
+    api.on("reInit", sync);
+    return () => {
+      api.off("select", sync);
+      api.off("reInit", sync);
+    };
+  }, [api]);
+
+  const stopPreview = () => {
+    audioRef.current?.pause();
+    audioRef.current = null;
+    setPlayingId(null);
+  };
+
   const togglePreview = (voice: Voice) => {
-    const current = audioRef.current;
-    if (playingId === voice.id && current) {
-      current.pause();
-      current.currentTime = 0;
-      audioRef.current = null;
-      setPlayingId(null);
+    if (playingId === voice.id) {
+      stopPreview();
       return;
     }
-    if (current) current.pause();
+    if (audioRef.current) audioRef.current.pause();
     const audio = new Audio(`/voices/${voice.id}.mp3`);
     audioRef.current = audio;
     audio.onended = () => setPlayingId(null);
@@ -87,6 +135,7 @@ export function VoiceField({
     if (!code) return;
     const next = code as ConversationLanguage;
     const resolved = voiceForLanguage(next, voiceId);
+    stopPreview();
     onChange({ language: next, voiceId: resolved.voiceId });
     const nextLabel =
       GROUPS.find((g) => g.code === next)?.language ?? next;
@@ -95,6 +144,8 @@ export function VoiceField({
         ? `Voice switched to ${voiceLabel(resolved.voiceId)} for ${nextLabel}.`
         : null,
     );
+    // No scrollTo needed: English is the only multi-voice group, so every
+    // language switch unmounts the track and the fresh mount starts at 0.
   };
 
   const selectVoice = (ids: string[]) => {
@@ -111,7 +162,7 @@ export function VoiceField({
       <FieldLabel id={`${id}-label`}>Language &amp; voice</FieldLabel>
       <FieldDescription>
         {description ??
-          "The voice renders on the call — play a row to hear the real voice."}
+          "The voice renders on the call — play a card to hear the real voice."}
       </FieldDescription>
       <ToggleGroup
         value={[language]}
@@ -125,62 +176,126 @@ export function VoiceField({
           </ToggleGroupItem>
         ))}
       </ToggleGroup>
-      <ToggleGroup
-        value={[voiceId]}
-        onValueChange={selectVoice}
-        aria-labelledby={`${id}-label`}
-        className="flex-col items-stretch gap-0"
-      >
-        {group.voices.map((v) => {
-          const playing = playingId === v.id;
-          return (
-            <div key={v.id} className="flex items-center gap-1">
-              <ToggleGroupItem
-                value={v.id}
-                aria-label={`Select voice ${voiceLabel(v.id)}, ${group.language}`}
-                className="h-auto min-w-0 flex-1 justify-start rounded-lg px-1"
-              >
-                <span className="flex w-full items-center gap-3 px-1 py-2 text-left">
-                  <Avatar className="size-10 shrink-0">
-                    <AvatarFallback>
-                      {voiceLabel(v.id).charAt(0)}
-                    </AvatarFallback>
-                  </Avatar>
-                  <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                    <span className="text-sm font-medium">
-                      {voiceLabel(v.id)}
-                    </span>
-                    <span className="text-muted-foreground text-xs">
-                      {ACCENT_LABEL[v.accent]} · {presentsLabel(v)}
-                    </span>
-                  </span>
-                </span>
-              </ToggleGroupItem>
-              <Button
-                type="button"
-                size="icon-sm"
-                variant="ghost"
-                aria-label={
-                  playing
-                    ? `Stop ${voiceLabel(v.id)} preview`
-                    : `Play ${voiceLabel(v.id)} preview`
-                }
-                aria-pressed={playing}
-                onClick={() => togglePreview(v)}
-                className="shrink-0"
-              >
-                {playing ? <Pause /> : <Play />}
-              </Button>
+      {group.voices.length > 1 ? (
+        <ToggleGroup
+          value={[voiceId]}
+          onValueChange={selectVoice}
+          aria-labelledby={`${id}-label`}
+          className="block w-full"
+        >
+          <Carousel
+            setApi={setApi}
+            opts={{ align: "start", loop: false }}
+            aria-labelledby={`${id}-label`}
+            className="w-full"
+          >
+            <div className="flex items-center gap-2">
+              <CarouselPrevious className="static m-0 shrink-0" />
+              <CarouselContent className="-ml-2 flex-1">
+                {group.voices.map((v) => {
+                  const playing = playingId === v.id;
+                  return (
+                    <CarouselItem
+                      key={v.id}
+                      className="basis-4/5 pl-2 sm:basis-1/2 lg:basis-1/3"
+                    >
+                      <div className="relative">
+                        <ToggleGroupItem
+                          value={v.id}
+                          aria-label={`Select voice ${voiceLabel(v.id)}, ${group.language}`}
+                          className="border-border flex h-auto w-full flex-col items-stretch rounded-xl border p-3 text-left data-[state=on]:border-primary"
+                        >
+                          <span className="flex w-full items-start gap-3">
+                            <Avatar className="size-10 shrink-0">
+                              <AvatarFallback>
+                                {voiceLabel(v.id).charAt(0)}
+                              </AvatarFallback>
+                            </Avatar>
+                            <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                              <span className="text-sm font-medium">
+                                {voiceLabel(v.id)}
+                              </span>
+                              <span className="text-muted-foreground text-xs">
+                                {ACCENT_LABEL[v.accent]} · {presentsLabel(v)}
+                              </span>
+                            </span>
+                            <span
+                              aria-hidden
+                              className="shrink-0 text-base leading-none"
+                            >
+                              {flagFor(group.code)}
+                            </span>
+                          </span>
+                          <span
+                            aria-hidden
+                            className="mt-2 flex h-8 items-center gap-0.5 pr-10"
+                          >
+                            {waveformHeights(v.id).map((h, i) => (
+                              <span
+                                key={i}
+                                style={{ height: `${h}%` }}
+                                className={cn(
+                                  "w-0.5 rounded-full",
+                                  playing ? "bg-primary" : "bg-primary/30",
+                                )}
+                              />
+                            ))}
+                          </span>
+                        </ToggleGroupItem>
+                        {/* Sibling, not nested: a button inside the toggle
+                        item would be invalid markup and every play-tap would
+                        also re-select the voice. */}
+                        <Button
+                          type="button"
+                          size="icon-sm"
+                          variant="ghost"
+                          aria-label={
+                            playing
+                              ? `Stop ${voiceLabel(v.id)} preview`
+                              : `Play ${voiceLabel(v.id)} preview`
+                          }
+                          aria-pressed={playing}
+                          onClick={() => togglePreview(v)}
+                          className="absolute right-2 bottom-2"
+                        >
+                          {playing ? <Pause /> : <Play />}
+                        </Button>
+                      </div>
+                    </CarouselItem>
+                  );
+                })}
+              </CarouselContent>
+              <CarouselNext className="static m-0 shrink-0" />
             </div>
-          );
-        })}
-      </ToggleGroup>
-      {group.voices.length === 1 ? (
+            {pages > 1 ? (
+              <div
+                className="mt-3 flex items-center justify-center gap-1.5"
+                role="group"
+                aria-label="Voice pages"
+              >
+                {Array.from({ length: pages }, (_, i) => (
+                  <button
+                    key={i}
+                    type="button"
+                    onClick={() => api?.scrollTo(i)}
+                    aria-label={`Go to voice page ${i + 1}`}
+                    aria-current={i === page}
+                    className={cn(
+                      "size-2 rounded-full",
+                      i === page ? "bg-primary" : "bg-muted",
+                    )}
+                  />
+                ))}
+              </div>
+            ) : null}
+          </Carousel>
+        </ToggleGroup>
+      ) : (
         <p className="text-muted-foreground text-xs">
           {voiceLabel(group.voices[0].id)} is the only {group.language} voice
           — already selected.
         </p>
-      ) : null}
+      )}
       <span aria-live="polite" className="sr-only">
         {notice}
       </span>
