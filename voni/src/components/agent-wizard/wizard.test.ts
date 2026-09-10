@@ -93,6 +93,11 @@ test("PlanStep keeps Goals and Tasks visibly separated on one step", () => {
   assert.ok(!stepBodiesSource.includes("OutcomesStep"));
 });
 
+test("Name errors render inline under the field in a reserved slot", () => {
+  assert.ok(stepBodiesSource.includes("nameError"));
+  assert.ok(stepBodiesSource.includes("min-h-5"));
+});
+
 test("PersonalityStep orders name, style, language, voice with the style helper", () => {
   const body = stepBodiesSource.slice(stepBodiesSource.indexOf("export function PersonalityStep"));
   const nameAt = body.indexOf("-name");

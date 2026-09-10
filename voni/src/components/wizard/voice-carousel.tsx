@@ -35,6 +35,21 @@ function avatarStyle(id: string): React.CSSProperties {
 }
 
 /**
+ * Deterministic per-voice speech tuning so slides are distinguishable while
+ * swiping. This does NOT reproduce the AssemblyAI voice — the browser can
+ * only approximate by language — it just keeps every English slide from
+ * sounding literally identical.
+ */
+function voiceTunables(id: string): { pitch: number; rate: number } {
+  let hash = 0;
+  for (let i = 0; i < id.length; i += 1) hash = (hash * 31 + id.charCodeAt(i)) >>> 0;
+  return {
+    pitch: 0.85 + ((hash % 100) / 100) * 0.35,
+    rate: 0.95 + (((hash >> 8) % 100) / 100) * 0.1,
+  };
+}
+
+/**
  * Voice picker: swipeable one-voice slides with tiny dots. Sliding to a voice
  * plays its sample (debounced to the settled slide); tapping a card selects
  * it, tapping the playing card stops it. Samples use the browser's voice
@@ -109,6 +124,9 @@ export function VoiceCarousel({ voices, value, onChange, agentName, id = "voice-
         browserVoices.find((v) => v.lang.startsWith(voice.languageCode.slice(0, 2))) ??
         null;
       utter.lang = voice.languageCode;
+      const tunables = voiceTunables(voice.id);
+      utter.pitch = tunables.pitch;
+      utter.rate = tunables.rate;
       utter.onend = () => {
         if (seq === playSeq.current) setSpeaking(null);
       };
@@ -175,16 +193,16 @@ export function VoiceCarousel({ voices, value, onChange, agentName, id = "voice-
     <Field>
       <FieldLabel id={`${id}-label`}>Voice</FieldLabel>
       <FieldDescription>
-        Samples use your browser&apos;s voice — the final voice renders on the call.
+        Preview approximates each voice in your browser — the final voice renders on the call.
       </FieldDescription>
-      <div onPointerDown={markInteracted} onKeyDown={markInteracted}>
+      <div onPointerDown={markInteracted} onKeyDown={markInteracted} className="mx-auto w-full max-w-xs">
         <Carousel setApi={setApi} opts={{ align: "center" }} aria-labelledby={`${id}-label`}>
-          <CarouselContent>
+          <CarouselContent className="ml-0">
             {voices.map((voice) => {
               const selected = voice.id === value;
               const playing = speaking === voice.id;
               return (
-                <CarouselItem key={voice.id} className="basis-4/5 sm:basis-3/5">
+                <CarouselItem key={voice.id} className="basis-full pl-0">
                   <button
                     type="button"
                     onClick={() => toggleCard(voice)}
@@ -197,7 +215,7 @@ export function VoiceCarousel({ voices, value, onChange, agentName, id = "voice-
                     className="w-full text-left"
                   >
                     <Card className={cn(selected && "border-primary ring-1 ring-primary")}>
-                      <CardContent className="flex items-center gap-3 p-4">
+                      <CardContent className="flex flex-col items-center gap-2 p-4 text-center">
                         <span
                           aria-hidden
                           style={avatarStyle(voice.id)}
@@ -219,32 +237,30 @@ export function VoiceCarousel({ voices, value, onChange, agentName, id = "voice-
               );
             })}
           </CarouselContent>
-          <div className="mt-2 flex items-center justify-between gap-2">
-            <CarouselPrevious className="static" />
-            <div className="flex items-center gap-1" role="group" aria-label="Voices">
-              {voices.map((voice, i) => (
-                <button
-                  key={voice.id}
-                  type="button"
-                  onClick={() => {
-                    markInteracted();
-                    api?.scrollTo(i);
-                  }}
-                  aria-label={`Go to voice ${voiceLabel(voice.id)}`}
-                  aria-current={i === current ? "true" : undefined}
-                  className="flex size-6 items-center justify-center"
-                >
-                  <span
-                    aria-hidden
-                    className={cn(
-                      "size-1.5 rounded-full",
-                      i === current ? "bg-primary" : "bg-muted-foreground/30",
-                    )}
-                  />
-                </button>
-              ))}
-            </div>
-            <CarouselNext className="static" />
+          <CarouselPrevious className="left-1" />
+          <CarouselNext className="right-1" />
+          <div className="mt-2 flex items-center justify-center gap-1" role="group" aria-label="Voices">
+            {voices.map((voice, i) => (
+              <button
+                key={voice.id}
+                type="button"
+                onClick={() => {
+                  markInteracted();
+                  api?.scrollTo(i);
+                }}
+                aria-label={`Go to voice ${voiceLabel(voice.id)}`}
+                aria-current={i === current ? "true" : undefined}
+                className="flex size-6 items-center justify-center"
+              >
+                <span
+                  aria-hidden
+                  className={cn(
+                    "size-1.5 rounded-full",
+                    i === current ? "bg-primary" : "bg-muted-foreground/30",
+                  )}
+                />
+              </button>
+            ))}
           </div>
         </Carousel>
       </div>

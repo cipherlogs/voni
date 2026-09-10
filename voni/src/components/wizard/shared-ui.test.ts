@@ -88,7 +88,7 @@ test("TagField is a token box: pills inside, inline composer, x-remove", () => {
   assert.ok(!source.includes("size-3"));
 });
 
-test("VoiceCarousel uses the shadcn Carousel with dots and tap-to-select", () => {
+test("VoiceCarousel is a centered one-card slider with avatars and stop", () => {
   const source = read("voice-carousel.tsx");
   assert.ok(source.includes("CarouselContent"));
   assert.ok(source.includes("CarouselItem"));
@@ -96,6 +96,8 @@ test("VoiceCarousel uses the shadcn Carousel with dots and tap-to-select", () =>
   assert.ok(source.includes("CarouselNext"));
   assert.ok(source.includes("setApi"));
   assert.ok(source.includes("selectedScrollSnap"));
+  assert.ok(source.includes("max-w-xs"));
+  assert.ok(source.includes("basis-full"));
   assert.ok(source.includes("Go to voice"));
   assert.ok(source.includes("aria-pressed"));
   // Samples play on the settled slide after a gesture; tap toggles stop.
@@ -103,7 +105,10 @@ test("VoiceCarousel uses the shadcn Carousel with dots and tap-to-select", () =>
   assert.ok(source.includes("speechSynthesis"));
   assert.ok(source.includes("Stop ${voiceLabel(voice.id)} sample"));
   assert.ok(source.includes("aria-live=\"polite\""));
-  // Avatar cards: gradient initial, stock Card composition, no icon sizing.
+  // Per-voice browser tuning (honest approximation, not the real voice).
+  assert.ok(source.includes("voiceTunables"));
+  assert.ok(source.includes("utter.pitch"));
+  // Avatar cards: gradient initial, vertical, stock Card, no icon sizing.
   assert.ok(source.includes("avatarStyle"));
   assert.ok(source.includes("CardContent"));
   assert.ok(!source.includes("lucide-react"));
@@ -131,7 +136,9 @@ test("Form layout tokens: heading gaps, card padding, sticky JobPill-aware foote
   assert.ok(source.includes("sticky"));
   assert.ok(source.includes("--job-pill-h"));
   assert.ok(source.includes("safe-area-inset-bottom"));
-  assert.ok(source.includes("focus-within:static"));
+  // Never flip to static on focus: the button would move between mousedown
+  // and mouseup, eating the click.
+  assert.ok(!source.includes("focus-within:static"));
 });
 
 test("Button has no custom touch sizes; stock sizes stay intact", () => {

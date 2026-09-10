@@ -4,7 +4,7 @@ import { useEffect, useRef } from "react";
 import { FileText, TriangleAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Field, FieldLabel } from "@/components/ui/field";
+import { Field, FieldError, FieldLabel } from "@/components/ui/field";
 import { Separator } from "@/components/ui/separator";
 import { TagField, type TagFieldHandle } from "@/components/wizard/tag-field";
 import { ConversationPicker } from "@/components/wizard/conversation-picker";
@@ -65,7 +65,7 @@ export function PlanStep({
   goalsRef?: React.Ref<TagFieldHandle>;
   tasksRef?: React.Ref<TagFieldHandle>;
   error?: string | null;
-  onClearError?: () => void;
+  onClearError?: (field: "goals" | "name") => void;
 }) {
   return (
     <FormCard>
@@ -82,7 +82,7 @@ export function PlanStep({
             description="The big picture — the outcome that must happen by the end of the call."
             values={api.draft.goals}
             onChange={(goals) => {
-              onClearError?.();
+              onClearError?.("goals");
               api.edit({ goals }, "goals change");
             }}
             suggestions={GOAL_SUGGESTIONS.map((value) => ({ value }))}
@@ -101,7 +101,6 @@ export function PlanStep({
             description="Short directions for how the agent gets there."
             values={api.draft.tasks}
             onChange={(tasks) => {
-              onClearError?.();
               api.edit({ tasks }, "tasks change");
             }}
             suggestions={TASK_SUGGESTIONS.map((value) => ({ value }))}
@@ -120,8 +119,13 @@ export function PersonalityStep({
   api,
   idPrefix,
   styleRef,
+  nameError,
   onClearError,
-}: StepBodyProps & { styleRef?: React.Ref<TagFieldHandle>; onClearError?: () => void }) {
+}: StepBodyProps & {
+  styleRef?: React.Ref<TagFieldHandle>;
+  nameError?: string | null;
+  onClearError?: (field: "goals" | "name") => void;
+}) {
   return (
     <FormCard>
       <FormCardSections>
@@ -130,20 +134,24 @@ export function PersonalityStep({
           description="A name plus a vibe — type it, or tell the voice copilot."
         />
         <div className="max-w-sm">
-          <Field>
+          <Field data-invalid={nameError ? true : undefined}>
             <FieldLabel htmlFor={`${idPrefix}-name`}>Agent name</FieldLabel>
             <Input
               id={`${idPrefix}-name`}
               value={api.draft.agentName}
               onChange={(e) => {
-                onClearError?.();
+                onClearError?.("name");
                 api.edit({ agentName: e.target.value }, "name change");
               }}
               placeholder="e.g. Sara"
               maxLength={120}
               autoComplete="off"
+              aria-invalid={nameError ? true : undefined}
               className={flashClass(api.flashed, "agentName")}
             />
+            <div className="min-h-5">
+              {nameError ? <FieldError>{nameError}</FieldError> : null}
+            </div>
           </Field>
         </div>
         <div className={flashClass(api.flashed, "styleTraits")}>
@@ -154,7 +162,6 @@ export function PersonalityStep({
             description="Shapes how the agent responds. The selected voice determines how it sounds."
             values={api.draft.styleTraits}
             onChange={(styleTraits) => {
-              onClearError?.();
               api.edit({ styleTraits }, "style change");
             }}
             suggestions={STYLE_SUGGESTIONS.map((value) => ({ value }))}
@@ -171,7 +178,6 @@ export function PersonalityStep({
             voiceId={api.draft.voiceId}
             agentName={api.draft.agentName}
             onChange={({ language, voiceId }) => {
-              onClearError?.();
               api.edit(
                 { conversationLanguage: language, voiceId },
                 "language change",

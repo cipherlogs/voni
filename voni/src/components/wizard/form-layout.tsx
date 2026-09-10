@@ -83,9 +83,9 @@ export function FormCardSections({
 /**
  * One consistent wizard footer: Back left, primary action right (primary
  * takes remaining width on mobile via `w-full md:w-auto` on the button).
- * Sticky above the JobPill + safe-area inset with reserved clearance; drops
- * to normal flow while focused so the mobile keyboard can't trap it behind
- * an overlapping toolbar.
+ * Sticky above the JobPill + safe-area inset with reserved clearance.
+ * Deliberately never switches to static flow on focus — flipping position on
+ * focus moves the button between mousedown and mouseup, eating real clicks.
  */
 export function WizardFooter({
   onBack,
@@ -104,7 +104,7 @@ export function WizardFooter({
     <div
       data-slot="wizard-footer"
       className={cn(
-        "sticky bottom-[calc(var(--job-pill-h,0px)+env(safe-area-inset-bottom))] z-10 focus-within:static",
+        "sticky bottom-[calc(var(--job-pill-h,0px)+env(safe-area-inset-bottom))] z-10",
         className,
       )}
     >

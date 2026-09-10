@@ -56,7 +56,9 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
   const wiz = useWizardDraft();
   const [draft, setDraft] = useState<AgentConfig | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [stepError, setStepError] = useState<string | null>(null);
+  // Keyed by field so a message can never leak into another field when the
+  // user moves between steps. Each clears only on its own field's edits.
+  const [fieldErrors, setFieldErrors] = useState<{ goals?: string; name?: string }>({});
   const [showGuidance, setShowGuidance] = useState(false);
   const generation = useOptimisticJob("agent_generation");
   const { markSeen } = useJobs();
@@ -117,6 +119,15 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [restoreJobId, draft]);
 
+  const clearFieldError = (field: "goals" | "name") => {
+    setFieldErrors((prev) => {
+      if (!prev[field]) return prev;
+      const next = { ...prev };
+      delete next[field];
+      return next;
+    });
+  };
+
   const generate = async () => {
     // No review step: validate everything here, jumping back on failure.
     if (goalsRef.current && !goalsRef.current.commitPending()) {
@@ -125,7 +136,7 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
     }
     tasksRef.current?.commitPending();
     if (wiz.draft.goals.length === 0) {
-      setStepError("Add at least one goal first.");
+      setFieldErrors((prev) => ({ ...prev, goals: "Add at least one goal first." }));
       wiz.setStep(0);
       requestAnimationFrame(() => {
         document.querySelector<HTMLElement>("#new-goals")?.focus();
@@ -134,7 +145,7 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
     }
     styleRef.current?.commitPending();
     if (!wiz.draft.agentName.trim()) {
-      setStepError("Give the agent a name first.");
+      setFieldErrors((prev) => ({ ...prev, name: "Give the agent a name first." }));
       wiz.setStep(1);
       requestAnimationFrame(() => {
         document.querySelector<HTMLElement>("#new-name")?.focus();
@@ -203,11 +214,16 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
     if (goalsRef.current && !goalsRef.current.commitPending()) return;
     tasksRef.current?.commitPending();
     if (wiz.draft.goals.length === 0) {
-      setStepError("Add at least one goal first.");
+      setFieldErrors((prev) => ({ ...prev, goals: "Add at least one goal first." }));
       document.querySelector<HTMLElement>("#new-goals")?.focus();
       return;
     }
-    setStepError(null);
+    setFieldErrors((prev) => {
+      if (!prev.goals) return prev;
+      const next = { ...prev };
+      delete next.goals;
+      return next;
+    });
     wiz.setStep(1);
   };
 
@@ -406,12 +422,18 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
               idPrefix="new"
               goalsRef={goalsRef}
               tasksRef={tasksRef}
-              error={stepError}
-              onClearError={() => setStepError(null)}
+              error={fieldErrors.goals}
+              onClearError={(field) => clearFieldError(field)}
             />
           ) : null}
           {wiz.step === 1 ? (
-            <PersonalityStep api={wiz} idPrefix="new" styleRef={styleRef} onClearError={() => setStepError(null)} />
+            <PersonalityStep
+              api={wiz}
+              idPrefix="new"
+              styleRef={styleRef}
+              nameError={fieldErrors.name}
+              onClearError={(field) => clearFieldError(field)}
+            />
           ) : null}
           {wiz.step === 1 ? (
             <GenerationStatus
@@ -422,9 +444,6 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
             />
           ) : null}
           {showGuidance && wiz.step === 1 ? <ManualLlmGuidance /> : null}
-          {stepError && wiz.step === 1 ? (
-            <p role="alert" className="text-destructive text-sm">{stepError}</p>
-          ) : null}
 
           <WizardFooter
             onBack={() => wiz.setStep(Math.max(0, wiz.step - 1))}
