@@ -165,18 +165,16 @@ test("agents/new save maps wizard voice and single language over the draft", () 
   );
 });
 
-test("agents/new saves the draft first, then generates into it", () => {
+test("agents/new generates and reviews in place — never navigates to a draft", () => {
   const pageSource = readFileSync(
     join(dirname(fileURLToPath(import.meta.url)), "../../app/(dashboard)/agents/new/page.tsx"),
     "utf8",
   );
-  // Draft-first: the agent row exists before generation runs, so the form is
-  // instantly done and a failed job can never lose the author's work. A
-  // retry reuses the same draft id instead of duplicating it.
-  assert.ok(pageSource.includes("createDraftAgentAction"));
-  assert.ok(pageSource.includes("pendingAgentId"));
-  assert.ok(pageSource.includes("agentId }"));
-  assert.ok(pageSource.includes("`/agents/${agentId}?job=${started.jobId}`"));
+  // Generation stays in the wizard: inline progress, then review on this
+  // page, then Save. No draft row is created up front.
+  assert.ok(!pageSource.includes("createDraftAgentAction"));
+  assert.ok(!pageSource.includes("pendingAgentId"));
+  assert.ok(pageSource.includes('router.replace("/agents/new")'));
   // The loading skeleton mirrors the real creator shape, not bare text.
   assert.ok(pageSource.includes("NewAgentSkeleton"));
 });
@@ -188,24 +186,4 @@ test("wizard footer is static flow — no stuck overlay, no reserve hack", () =>
   );
   assert.ok(!pageSource.includes("pb-[calc"));
   assert.ok(!pageSource.includes("--job-pill-h"));
-});
-
-test("draft placeholder config is always a valid agent config", async () => {
-  const { draftPlaceholderConfig, agentConfigSchema } = await import(
-    "@/lib/agents/config"
-  );
-  const placeholder = draftPlaceholderConfig({
-    goals: ["Qualify leads and book viewings"],
-    tasks: ["Ask for budget"],
-    agentName: "Sara",
-    styleTraits: ["Friendly"],
-    conversationLanguage: "es",
-    voiceId: "lucia",
-  });
-  assert.ok(agentConfigSchema.safeParse(placeholder).success);
-  assert.equal(placeholder.identity.name, "Sara");
-  assert.equal(placeholder.voiceId, "lucia");
-  assert.deepEqual(placeholder.languageCodes, ["es"]);
-  assert.deepEqual(placeholder.goals, ["Qualify leads and book viewings"]);
-  assert.ok(placeholder.greeting.includes("Sara"));
 });

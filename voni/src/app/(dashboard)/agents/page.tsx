@@ -46,41 +46,39 @@ async function AgentsList() {
           {rows.map((agent) => {
             const config = agent.config as AgentConfig;
             return (
-              <Card key={agent.id}>
+              <Card key={agent.id} className="relative transition-colors hover:bg-muted/50">
                 <CardContent className="flex flex-wrap items-center justify-between gap-4 py-4">
-                  <div className="flex min-w-0 flex-col gap-1">
-                    <div className="flex items-center gap-2">
-                      <span className="font-medium">{agent.name}</span>
-                      {/* Until an agent is registered with AssemblyAI it can't
-                          take a call, so surface that state rather than
-                          letting the list imply everything is live. */}
-                      <Badge
-                        variant={
-                          agent.assemblyaiAgentId ? "default" : "secondary"
-                        }
-                      >
-                        {agent.assemblyaiAgentId ? "Published" : "Draft"}
-                      </Badge>
-                    </div>
-                    <p className="text-muted-foreground truncate text-sm">
-                      {config.mission}
-                    </p>
-                    <div className="text-muted-foreground flex flex-wrap gap-2 text-xs">
-                      <span>{config.tools.length} tools</span>
-                      <span>·</span>
-                      <span>{config.detect.length} fields captured</span>
-                      <span>·</span>
-                      <span>{config.channels.join(", ")}</span>
-                    </div>
-                  </div>
-                  <Button
-                    nativeButton={false}
-                    variant="outline"
-                    size="sm"
-                    render={<Link href={`/agents/${agent.id}`} />}
+                  <Link
+                    href={`/agents/${agent.id}`}
+                    aria-label={`Edit ${agent.name}`}
+                    className="before:absolute before:inset-0 min-w-0 flex-1"
                   >
-                    Edit
-                  </Button>
+                    <span className="flex min-w-0 flex-col gap-1">
+                      <span className="flex items-center gap-2">
+                        <span className="font-medium">{agent.name}</span>
+                        {/* Until an agent is registered with AssemblyAI it can't
+                            take a call, so surface that state rather than
+                            letting the list imply everything is live. */}
+                        <Badge
+                          variant={
+                            agent.assemblyaiAgentId ? "default" : "secondary"
+                          }
+                        >
+                          {agent.assemblyaiAgentId ? "Published" : "Draft"}
+                        </Badge>
+                      </span>
+                      <span className="text-muted-foreground truncate text-sm">
+                        {config.mission}
+                      </span>
+                      <span className="text-muted-foreground flex flex-wrap gap-2 text-xs">
+                        <span>{config.tools.length} tools</span>
+                        <span>·</span>
+                        <span>{config.detect.length} fields captured</span>
+                        <span>·</span>
+                        <span>{config.channels.join(", ")}</span>
+                      </span>
+                    </span>
+                  </Link>
                 </CardContent>
               </Card>
             );

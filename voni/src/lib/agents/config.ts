@@ -8,8 +8,6 @@ import {
   MAX_STYLE_TRAITS,
   MAX_TASK_LENGTH,
   MAX_TASKS,
-  defaultGreeting,
-  type WizardDraft,
 } from "./wizard";
 
 /**
@@ -135,37 +133,6 @@ export const MAX_CONFIG_NAME_LENGTH = MAX_AGENT_NAME_LENGTH;
 
 export type AgentConfig = z.infer<typeof agentConfigSchema>;
 export type DetectField = z.infer<typeof detectFieldSchema>;
-
-/**
- * Instant local draft from the wizard answers — no LLM, always valid.
- * Generation upgrades it in place when the job lands; if the job fails,
- * this is still a coherent, editable, deployable starting point.
- */
-export function draftPlaceholderConfig(draft: WizardDraft): AgentConfig {
-  const name = draft.agentName.trim();
-  const goals = draft.goals.map((g) => g.trim()).filter(Boolean);
-  const tasks = draft.tasks.map((t) => t.trim()).filter(Boolean);
-  return {
-    mission: `Achieve: ${goals.join("; ")}.`,
-    identity: { name, role: "assistant", company: "" },
-    detect: [],
-    intents: [],
-    blockers: [],
-    tools: [],
-    knowledge: tasks,
-    successCondition: goals[0] ?? "The call completes.",
-    fallback: "Schedule a follow-up, or transfer to a human closer if the lead asks.",
-    followUpPolicy: "",
-    channels: ["phone"],
-    voiceId: draft.voiceId,
-    languageCodes: [draft.conversationLanguage],
-    greeting: defaultGreeting(draft.conversationLanguage, name),
-    goals,
-    tasks,
-    styleTraits: draft.styleTraits.map((s) => s.trim()).filter(Boolean),
-    conversationLanguage: draft.conversationLanguage,
-  };
-}
 
 /**
  * Drop tool names the registry doesn't know about.
