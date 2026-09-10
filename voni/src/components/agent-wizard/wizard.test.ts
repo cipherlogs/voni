@@ -164,3 +164,14 @@ test("agents/new save maps wizard voice and single language over the draft", () 
     pageSource.includes('enum: ["goals", "tasks", "agentName", "styleTraits", "voice", "conversationLanguage"]'),
   );
 });
+
+test("wizard column reserves bottom clearance for the stuck footer", () => {
+  const pageSource = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), "../../app/(dashboard)/agents/new/page.tsx"),
+    "utf8",
+  );
+  // Sticky footers overlay scrolled content when stuck: without reserved
+  // space the card tail (and the footer during generation, when the JobPill
+  // lifts it) slides underneath. The reserve tracks the pill + safe area.
+  assert.ok(pageSource.includes("pb-[calc(4.5rem+var(--job-pill-h,0px)+env(safe-area-inset-bottom))]"));
+});

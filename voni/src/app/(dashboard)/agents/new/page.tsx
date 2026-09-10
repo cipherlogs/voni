@@ -414,7 +414,9 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
           </p>
       </div>
 
-        <div className="flex min-w-0 flex-col gap-4">
+        <div
+          className="flex min-w-0 flex-col gap-4 pb-[calc(4.5rem+var(--job-pill-h,0px)+env(safe-area-inset-bottom))]"
+        >
           <TimelineBar current={wiz.step} completed={wiz.completed} onSelect={wiz.setStep} />
           {wiz.step === 0 ? (
             <PlanStep
