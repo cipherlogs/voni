@@ -57,6 +57,7 @@ import {
   getGenerationPlaceholderAction,
   updateAgentAction,
 } from "../actions";
+import { inputLanguage, voiceLabel } from "@/lib/agents/voices";
 import { AgentDeleteButton } from "../delete-agent-button";
 
 /**
@@ -553,6 +554,17 @@ function NewAgentInner({
   }, [registerRoute, unregisterRoute, wizardCopilotTools, wizardBrief, draftRef]);
 
   if (draft && seeded) {
+    // Verifiable summary: mirrors the saved fields below (name, voice,
+    // language) plus the brief that produced them, so "save as shown"
+    // can be checked at a glance. Counts come from the live wizard
+    // draft; voice/language were folded into the draft on landing.
+    const summaryName = wiz.draft.agentName || draft.identity.name;
+    const summaryVoice = voiceLabel(draft.voiceId);
+    const summaryLanguage =
+      draft.languageCodes.length === 0
+        ? "Auto-detect"
+        : (inputLanguage(draft.languageCodes[0] ?? "")?.label ??
+          draft.languageCodes[0]);
     return (
       <div className="flex flex-col gap-6">
         <div>
@@ -560,8 +572,23 @@ function NewAgentInner({
             Review agent
           </h1>
           <p className="text-muted-foreground text-sm">
-            Everything here is editable. Nothing is saved until you say so.
+            Everything here is editable. Nothing is saved until
+            you say so.
           </p>
+          <div className="text-muted-foreground mt-3 flex flex-col gap-1 text-sm">
+            <p>
+              <span className="text-foreground font-medium">
+                {summaryName}
+              </span>
+            </p>
+            <p>
+              Voice {summaryVoice} · {summaryLanguage}
+            </p>
+            <p>
+              Brief: {wiz.draft.goals.length} goals ·{" "}
+              {wiz.draft.tasks.length} tasks
+            </p>
+          </div>
         </div>
 
         <AgentConfigForm
@@ -615,8 +642,8 @@ function NewAgentInner({
           <p className="text-muted-foreground text-sm">
             Answer two quick steps and we&apos;ll generate a starting
             mission and rules, editable afterward. Prefer talking?
-            The voice copilot (mic, top right) fills in every field with
-            you.
+            The Voice copilot button in the top bar fills in every
+            field with you.
           </p>
       </div>
 

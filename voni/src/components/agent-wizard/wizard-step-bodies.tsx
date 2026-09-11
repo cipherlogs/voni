@@ -217,7 +217,9 @@ export function GenerationStatus({
             <p className="text-muted-foreground text-xs whitespace-pre-wrap">{error}</p>
             <p className="text-muted-foreground text-xs">
               Retry — a fresh attempt starts clean — or use a complete,
-              working template in the meantime.
+              working template in the meantime: a property-consultant
+              agent that books viewings, with viewing tools,
+              qualification questions, and call follow-up rules.
             </p>
             {onUseTemplate ? (
               <span>

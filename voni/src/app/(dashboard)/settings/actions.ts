@@ -42,7 +42,9 @@ export type SettingsActionState = {
 
 const workspaceSchema = z.object({
   name: z.string().trim().min(2).max(100),
-  timezone: z.literal("Asia/Dubai"),
+  // Editable from the named list in the workspace form — any non-empty
+  // IANA zone, so a legacy stored value never blocks a save.
+  timezone: z.string().trim().min(1, "Pick a timezone."),
   humanTransferNumber: z
     .string()
     .trim()

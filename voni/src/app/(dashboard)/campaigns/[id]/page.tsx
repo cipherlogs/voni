@@ -180,9 +180,9 @@ async function CampaignDetail({
                 {dispatch.dueNow === 1 ? "" : "s"} due now.
               </p>
               <p className="text-muted-foreground text-sm">
-                The bridge runner picks these up on its next poll. It previews by
-                default and only places calls when started with{" "}
-                <code className="text-xs">--live</code>.
+                Due leads are picked up automatically. Calls start in
+                preview mode — nothing is dialed until an operator
+                switches the dialer to live mode.
               </p>
             </>
           ) : (
@@ -266,7 +266,11 @@ async function CampaignDetail({
                                 : "secondary"
                           }
                         >
-                          {member.consentStatus}
+                          {member.consentStatus === "granted"
+                            ? "Consented"
+                            : member.consentStatus === "revoked"
+                              ? "Opted out"
+                              : "Unknown"}
                         </Badge>
                       </TableCell>
                       <TableCell>

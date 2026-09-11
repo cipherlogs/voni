@@ -1,20 +1,109 @@
 import { Suspense } from "react";
-import { leadDetail } from "@/lib/copilot/detail-data";
+import Link from "next/link";
+import { and, desc, eq } from "drizzle-orm";
+import { Phone } from "lucide-react";
+import { BackLink } from "@/components/back-link";
 import { RouteBrief } from "@/components/copilot/route-brief";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   Card,
   CardContent,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import { Phone, MessageCircle } from "lucide-react";
-import { BackLink } from "@/components/back-link";
+import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from "@/components/ui/empty";
+import { Separator } from "@/components/ui/separator";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { DetailSkeleton } from "@/components/page-skeletons";
+import type { ReactNode } from "react";
+import {
+  callDuration,
+  relativeCallTime,
+} from "@/lib/calls/format";
+import { leadDetail } from "@/lib/copilot/detail-data";
+import { db } from "@/lib/db";
+import {
+  campaignLeads,
+  campaigns,
+  calls,
+  leads,
+  messages,
+} from "@/lib/db/schema";
+
+const MEMBERSHIP_LABEL: Record<string, string> = {
+  queued: "Queued",
+  dialing: "Dialing",
+  reached: "Reached",
+  exhausted: "No answer",
+  skipped: "Skipped",
+};
+
+/** Human consent label in the shared list badge shape. */
+function ConsentBadge({ status }: { status: string }) {
+  const label =
+    status === "granted"
+      ? "Consented"
+      : status === "revoked"
+        ? "Opted out"
+        : "Unknown";
+  return (
+    <Badge
+      variant={
+        status === "granted"
+          ? "default"
+          : status === "revoked"
+            ? "destructive"
+            : "secondary"
+      }
+    >
+      {label}
+    </Badge>
+  );
+}
 
 /**
- * Authorized identity leaf: identity, consent, pipeline, and state resolve
- * here. notFound()/denial stay inside detail-data, called from this leaf.
+ * House link treatment (same string as the campaign page and the
+ * list rows), hoisted so no edited line exceeds the 80-col cap.
+ */
+const LINK =
+  "cursor-pointer rounded-sm underline-offset-4 outline-none " +
+  "hover:underline focus-visible:ring-2 focus-visible:ring-ring";
+
+function Fact({
+  label,
+  children,
+}: {
+  label: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="flex items-baseline justify-between gap-4 py-2">
+      <dt className="text-muted-foreground shrink-0 text-sm">
+        {label}
+      </dt>
+      <dd className="min-w-0 text-right text-sm">{children}</dd>
+    </div>
+  );
+}
+
+/**
+ * Authorized identity leaf: identity, consent, pipeline, state,
+ * linked calls, campaign queue rows, and messages resolve here.
+ * notFound()/denial stay inside detail-data, called from this leaf.
  * The record name remains the resolved heading — no invented title.
  */
 async function LeadDetail({
@@ -23,15 +112,95 @@ async function LeadDetail({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
+  // Org scoping + uuid validation + notFound live here; every
+  // query below keys off this row's id.
   const { lead, state } = await leadDetail(id);
+
+  const leadCalls = await db
+    .select({
+      id: calls.id,
+      direction: calls.direction,
+      startedAt: calls.startedAt,
+      endedAt: calls.endedAt,
+      campaignName: campaigns.name,
+    })
+    .from(calls)
+    .leftJoin(campaigns, eq(campaigns.id, calls.campaignId))
+    .where(eq(calls.leadId, id))
+    .orderBy(desc(calls.startedAt))
+    .limit(20);
+
+  const memberships = await db
+    .select({
+      id: campaignLeads.id,
+      status: campaignLeads.status,
+      attempts: campaignLeads.attempts,
+      lastOutcome: campaignLeads.lastOutcome,
+      campaignId: campaignLeads.campaignId,
+      campaignName: campaigns.name,
+    })
+    .from(campaignLeads)
+    .innerJoin(
+      campaigns,
+      eq(campaigns.id, campaignLeads.campaignId),
+    )
+    .innerJoin(leads, eq(leads.id, campaignLeads.leadId))
+    .where(
+      and(
+        eq(campaignLeads.leadId, id),
+        eq(leads.organizationId, lead.organizationId),
+      ),
+    )
+    .orderBy(desc(campaignLeads.createdAt))
+    .limit(20);
+
+  // WhatsApp + call turns for this lead, newest first.
+  const activity = await db
+    .select({
+      id: messages.id,
+      channel: messages.channel,
+      direction: messages.direction,
+      content: messages.content,
+      callId: messages.callId,
+      createdAt: messages.createdAt,
+    })
+    .from(messages)
+    .where(eq(messages.leadId, id))
+    .orderBy(desc(messages.createdAt))
+    .limit(50);
+  const recent = [...activity].reverse();
+
+  const channelLabel =
+    activity.length > 0
+      ? activity[0].channel === "call"
+        ? "a call"
+        : "WhatsApp"
+      : "none yet";
+  const brief =
+    `Lead ${lead.name ?? "Unnamed"}, ${lead.phone}. ` +
+    `State ${lead.pipelineState}. ` +
+    `Consent ${lead.consentStatus}. ` +
+    `Intent ${state?.intent ?? "not recorded"}. ` +
+    `Next action ${state?.nextAction ?? "not recorded"}. ` +
+    `${leadCalls.length} calls, ` +
+    `${memberships.length} campaign queues, ` +
+    `${activity.length} messages. ` +
+    `Last contact over ${channelLabel}.`;
+  const blockers = Array.isArray(state?.blockers)
+    ? state.blockers.join(", ") || "None recorded"
+    : "Not recorded";
 
   return (
     <>
-      <RouteBrief route={`/leads/${id}`} brief={`Lead ${lead.name ?? "Unnamed"}, ${lead.phone}. State ${lead.pipelineState}. Consent ${lead.consentStatus}. Intent ${state?.intent ?? "not recorded"}. Next action ${state?.nextAction ?? "not recorded"}. Timeline is not implemented.`} />
+      <RouteBrief route={`/leads/${id}`} brief={brief} />
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">{lead.name ?? "Unnamed lead"}</h1>
-          <p className="text-muted-foreground text-sm">{lead.phone}</p>
+          <h1 className="text-2xl font-semibold tracking-tight">
+            {lead.name ?? "Unnamed lead"}
+          </h1>
+          <p className="text-muted-foreground text-sm">
+            {lead.phone}
+          </p>
         </div>
         <Badge variant="secondary">{lead.pipelineState}</Badge>
       </div>
@@ -39,43 +208,316 @@ async function LeadDetail({
       <div className="grid gap-4 md:grid-cols-3">
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm text-muted-foreground">
+            <CardTitle className="text-muted-foreground text-sm">
               Intent
             </CardTitle>
           </CardHeader>
-          <CardContent className="text-lg font-medium">{state?.intent ?? "Not recorded"}</CardContent>
+          <CardContent className="text-lg font-medium">
+            {state?.intent ?? "Not recorded"}
+          </CardContent>
         </Card>
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm text-muted-foreground">
+            <CardTitle className="text-muted-foreground text-sm">
               Blocker
             </CardTitle>
           </CardHeader>
-          <CardContent className="text-lg font-medium">{Array.isArray(state?.blockers) ? state.blockers.join(", ") || "None recorded" : "Not recorded"}</CardContent>
+          <CardContent className="text-lg font-medium">
+            {blockers}
+          </CardContent>
         </Card>
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm text-muted-foreground">
+            <CardTitle className="text-muted-foreground text-sm">
               Next action
             </CardTitle>
           </CardHeader>
-          <CardContent className="text-lg font-medium">{state?.nextAction ?? "Not recorded"}</CardContent>
+          <CardContent className="text-lg font-medium">
+            {state?.nextAction ?? "Not recorded"}
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-muted-foreground text-sm">
+              Consent
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <ConsentBadge status={lead.consentStatus} />
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-muted-foreground text-sm">
+              Source
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="text-lg font-medium">
+            {lead.source ?? "Not recorded"}
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-muted-foreground text-sm">
+              Goal
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="text-lg font-medium">
+            {state?.goalStatus ?? "Not recorded"}
+          </CardContent>
         </Card>
       </div>
 
       <Card>
         <CardHeader>
-          <CardTitle>Timeline</CardTitle>
+          <CardTitle className="text-base">
+            Calls ({leadCalls.length})
+          </CardTitle>
         </CardHeader>
-        <CardContent className="text-muted-foreground flex flex-col items-center gap-2 py-16 text-center text-sm">
-          <div className="flex gap-3">
-            <Phone className="h-6 w-6" />
-            <MessageCircle className="h-6 w-6" />
-          </div>
-          Calls and WhatsApp messages for this lead will appear here,
-          interleaved by time, feeding one shared conversation state.
+        <CardContent className="p-0">
+          {leadCalls.length === 0 ? (
+            <div className="p-6">
+              <Empty>
+                <EmptyHeader>
+                  <EmptyMedia variant="icon">
+                    <Phone />
+                  </EmptyMedia>
+                  <EmptyTitle>No calls yet</EmptyTitle>
+                  <EmptyDescription>
+                    Calls with this lead appear here
+                    once the first one is placed or
+                    answered.
+                  </EmptyDescription>
+                </EmptyHeader>
+              </Empty>
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Call</TableHead>
+                    <TableHead>Direction</TableHead>
+                    <TableHead>When</TableHead>
+                    <TableHead>Duration</TableHead>
+                    <TableHead>Campaign</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {leadCalls.map((row) => {
+                    const directionLabel =
+                      row.direction === "inbound"
+                        ? "Inbound"
+                        : "Outbound";
+                    const when = relativeCallTime(
+                      row.startedAt,
+                    );
+                    return (
+                      <TableRow key={row.id}>
+                        <TableCell>
+                          <Link
+                            href={`/calls/${row.id}`}
+                            aria-label={`${directionLabel} call, ${when}`}
+                            className={LINK}
+                          >
+                            Open call
+                          </Link>
+                        </TableCell>
+                        <TableCell>
+                          <Badge
+                            variant={
+                              row.direction === "inbound"
+                                ? "default"
+                                : "secondary"
+                            }
+                          >
+                            {directionLabel}
+                          </Badge>
+                        </TableCell>
+                        <TableCell
+                          className="text-muted-foreground text-sm"
+                          title={
+                            row.startedAt?.toISOString() ??
+                            undefined
+                          }
+                        >
+                          {relativeCallTime(row.startedAt)}
+                        </TableCell>
+                        <TableCell
+                          className="font-mono text-xs text-muted-foreground"
+                        >
+                          {callDuration(
+                            row.startedAt,
+                            row.endedAt,
+                          )}
+                        </TableCell>
+                        <TableCell className="max-w-48 truncate text-sm">
+                          {row.campaignName ?? "—"}
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </div>
+          )}
         </CardContent>
       </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">
+            Campaigns ({memberships.length})
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          {memberships.length === 0 ? (
+            <p className="text-muted-foreground py-4 text-center text-sm">
+              This lead is not in any campaign queue.
+            </p>
+          ) : (
+            <dl className="flex flex-col">
+              {memberships.map((row, index) => (
+                <div key={row.id}>
+                  {index > 0 ? <Separator /> : null}
+                  <Fact
+                    label={
+                      row.campaignName ?? "Unnamed campaign"
+                    }
+                  >
+                    <span className="flex flex-wrap justify-end gap-2">
+                      <Badge
+                        variant={
+                          row.status === "reached"
+                            ? "default"
+                            : row.status === "skipped"
+                              ? "destructive"
+                              : "secondary"
+                        }
+                      >
+                        {MEMBERSHIP_LABEL[row.status] ??
+                          row.status}
+                      </Badge>
+                      <span className="text-muted-foreground text-xs">
+                        {row.attempts} attempt
+                        {row.attempts === 1 ? "" : "s"}
+                        {row.lastOutcome
+                          ? ` · last: ${row.lastOutcome}`
+                          : ""}
+                      </span>
+                      <Link
+                        href={`/campaigns/${row.campaignId}`}
+                        aria-label={`Open ${row.campaignName ?? "campaign"}`}
+                        className={LINK}
+                      >
+                        Open queue
+                      </Link>
+                    </span>
+                  </Fact>
+                </div>
+              ))}
+            </dl>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">
+            Messages ({activity.length})
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          {recent.length === 0 ? (
+            <p className="text-muted-foreground py-4 text-center text-sm">
+              No WhatsApp or call messages recorded
+              for this lead.
+            </p>
+          ) : (
+            <ul className="flex flex-col gap-4">
+              {recent.map((message) => {
+                const speaker =
+                  message.channel === "call"
+                    ? message.direction === "inbound"
+                      ? (lead.name ?? "Lead")
+                      : "Agent"
+                    : message.direction === "inbound"
+                      ? "Lead (WhatsApp)"
+                      : "Agent (WhatsApp)";
+                return (
+                  <li
+                    key={message.id}
+                    className="flex flex-col gap-1"
+                  >
+                    <div className="flex items-baseline justify-between gap-4">
+                      <span className="text-sm font-medium">
+                        {speaker}
+                      </span>
+                      <span
+                        className="text-muted-foreground shrink-0 text-xs"
+                        title={message.createdAt.toISOString()}
+                      >
+                        {relativeCallTime(message.createdAt)}
+                      </span>
+                    </div>
+                    <p className="text-sm">
+                      {message.content?.trim()
+                        ? message.content
+                        : message.callId ? (
+                            <Link
+                              href={`/calls/${message.callId}`}
+                              aria-label="Open the call this turn belongs to"
+                              className={LINK}
+                            >
+                              Open call
+                            </Link>
+                          ) : (
+                            "No text recorded."
+                          )}
+                    </p>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </CardContent>
+      </Card>
+
+      <nav
+        aria-label="Related records"
+        className="flex flex-wrap gap-2"
+      >
+        <Button
+          nativeButton={false}
+          render={<Link href="/calls" />}
+          variant="outline"
+          size="sm"
+        >
+          All calls
+        </Button>
+        {memberships.length > 0 ? (
+          <Button
+            nativeButton={false}
+            render={
+              <Link
+                href={`/campaigns/${memberships[0].campaignId}`}
+              />
+            }
+            variant="outline"
+            size="sm"
+          >
+            Open campaign queue
+          </Button>
+        ) : null}
+        <Button
+          nativeButton={false}
+          render={<Link href="/jobs" />}
+          variant="outline"
+          size="sm"
+        >
+          Job center
+        </Button>
+      </nav>
     </>
   );
 }

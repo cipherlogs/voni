@@ -10,6 +10,36 @@ context/usage. Don't hand-edit the **Activity Log** — it's auto-generated.
 
 ## Status
 
+### Resume here (2026-09-11, sidebar collapse + polish landed, verified)
+
+**Now:** Sidebar is user-collapsible and collapsed by default: layout uses uncontrolled `defaultOpen={false}`, rail is always the fixed full-height `collapsible="icon"` variant (the not-full-height bug was the `collapsible="none"` → `h-full`-in-`min-h-svh` structure), header `SidebarTrigger` always visible with accessible name, built-in cmd/ctrl+B works, new `SidebarStateRestore` reads the provider-written `sidebar_state` cookie so the choice survives reload (verified expand → reload → expanded; fresh cookie → collapsed). Polish: detail-page consent badges humanized (Consented/Opted out/Unknown, matching list pages), dashboard `loading.tsx` skeleton `cards={4}`, outcome value links labelled. Verified: tsc 0, eslint 0, 278/278 tests, `detect` clean, 10/10 routes 200, get_errors/get_compilation_issues empty, console HMR-only, keyboard toggle + persistence proven in fresh browser sessions. Work uncommitted; `next dev` left running.
+**Next:** Commit; optionally re-run `$impeccable critique` to measure the lift from 24/40. Standing items unchanged.
+**Why:** User asked for polish + sidebar collapse; both done and jointly verified. Three workflow "critical/major" flags were adjudicated as artifacts (shared browser session cross-talk; review header lives on the post-generation review screen, correctly absent on fresh wizard).
+
+### Resume here (2026-09-11, critique fixes landed: layout+distill+clarify)
+
+**Now:** All three parallel workstreams landed in the tree (uncommitted), combined gates green: (1) layout — dashboard is 4 real-query outcome cards + Next-action strip + collapsed funnel, rail expanded on lg+ with Calls entry, leads 8→6 cols with State cell, campaigns/new uses BackLink, agents-list badge matches detail, timezone editable; (2) distill — call/lead placeholders removed, real messages/tool-calls/outcome/calls-table/campaigns sections with onward links; (3) clarify — review summary header, `--live`/vendor/jargon copy rewritten, consent + copilot labels humanized. Verified: tsc clean, eslint clean (19 files), 278/278 tests, `detect` clean on all touched files, 10/10 routes 200. New files: `dashboard/actions.ts`, `lib/timezones.ts`.
+**Next:** `$impeccable polish` final pass (per the action plan) then re-run `$impeccable critique` to measure the score lift; commit. Standing items unchanged.
+**Why:** User said "run all at once" — all three passes done and jointly verified; polish is the remaining planned step.
+
+### Resume here (2026-09-11, full-app critique 24/40 + user direction)
+
+**Now:** Dual-agent `/impeccable critique` of the whole Voni web app complete (A design-review + B detector-evidence, isolated; A finished before B entered synthesis). Score **24/40 Acceptable**: backbone excellent (ambient job system, calibrated delete, preconditions-before-click), skin competent-but-generic (interchangeable admin tables, dashboard of nine "—" cards, call/lead placeholder holes, icon-only rail hiding the copilot). Static `detect` clean (0 findings); runtime overlay flags mostly vendored-sidebar false positives + long lines. Snapshot at `.impeccable/critique/2026-09-11T19-23-23Z__voni-src-app.md` (first run, no trend yet).
+**Next:** User direction — dashboard conversion view first, full scope incl. minors, nothing off-limits. Action order: `layout` (dashboard + rail + leads table) → `distill` (call/lead placeholders) → `clarify` (generation-model + jargon copy) → `onboard` (first-run/Jordan gaps) → `polish` (final + minors).
+**Why:** Critique close-out; priorities and scope are user-picked, not inferred.
+
+### Resume here (2026-09-11, Meta Muse image engine global)
+
+**Now:** `muse-image` is GLOBAL (`~/.local/bin/muse-image`, on PATH; memory `impeccable-muse-image-engine` records the mapping) — Meta Muse `muse-image-1.0` behind the skill's comp/plate contract, Bearer `$MODEL_API_KEY`, $0.01/image. Repo-local `.impeccable/muse-image.sh` deleted; `.impeccable/README.md` is now a stub pointing agents at the global command. All three probes live (generations 200 + valid PNG; edits 200 via `{image_url: data:...}` objects — bare strings 400; wrapper `generate` → PNG + embedded tEXt + `.json` sidecar, verified). Launcher has NO `generate-image`/`embed-prompt` verbs — the wrapper is the fallback path. Muse limits: `size` = aspect ratio only, `background` always opaque.
+**Next:** Comp-led rounds in ANY repo: `muse-image generate` / `edit --ref <crop>` where the playbook says `impeccable generate-image`; `meta --in` reads provenance. After any `npx skills update`, `impeccable --help` — if `generate-image` appears natively, the wrapper is redundant. No PRODUCT.md/DESIGN.md/code changes; prior gate/test state unchanged.
+**Why:** User decision — engine lives next to the skill, not inside one repo; `skills update` replaces only the skill dir, never `~/.local/bin/`.
+
+### Resume here (2026-09-11, PRODUCT.md captured via /impeccable init)
+
+**Now:** `PRODUCT.md` written at repo root (impeccable schema 1, platform web): vertical-flexible users, conversion essence (agents → calls → campaigns → customers), all three differentiators, current stack/rules as constraints, property as the proof vertical. No image generation on this harness, so code-first is the only path this session — nothing stored in `.impeccable/config.json`. Live mode not configured.
+**Next:** Existing coherent interface without DESIGN.md — `$impeccable document` if the incumbent system should be recorded, or name a surface for `$impeccable shape`/build. No code touched; gate/test state from the prior entry unchanged.
+**Why:** Init captures product truth only — no visual world invented, no DESIGN.md written.
+
 ### Resume here (2026-09-11, full gates green + honest gap closed, uncommitted)
 
 **Now:** Full gates on the tree (uncommitted): tsc clean, eslint clean on all touched source + test files, 278/278 tests (was 271 — the 7 new are `calls-index.test.ts`, which existed on disk but was never wired into `npm test` and failed standalone with ENOENT: its `../../components` relative depth lands in nonexistent `src/app/components/`; fixed to `../../../` and wired into the `test` script alongside the `test:delete-race` script). Race sim run live: `npm run test:delete-race` ALL SCENARIOS PASSED (`simPassed`, `discriminatorProven`, `cleanupOk` all true, 3 scratch jobs + 2 scratch agents cleaned, zero leftovers). Variant A: mid-window deployment job enqueued at t+355ms inside the stubbed 2000ms remote-delete window, after the first cancel pass — the post-remote fresh-discovery resweep caught it (absent after terminal hard-delete; a frozen id-set would have left it queued). Variant B: stubbed remote 500 aborts with ok:false, agent row kept, job row survives. Known harness artifact (logged, not swallowed): `revalidatePath` throws in plain node post-delete (static generation store missing) — DB state asserted either way. Dev-stop for the sim precondition was denied by the shell classifier, so safety was verified from code instead: the sim uses `createJob` directly (no enqueue, no inline dispatch), missed-job recovery needs queued rows older than 45s plus the worker-secret sweep route, and sim rows live ~2s and are cancelled first — dev stayed alive throughout (PID 2596341, `/dashboard` 200 after the run).
@@ -2745,3 +2775,86 @@ destination (1e).
 - 2026-09-11T17:02:45Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/package.json
 - 2026-09-11T17:24:20Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/calls/calls-index.test.ts
 - 2026-09-11T17:38:02Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/HANDOFF.md
+- 2026-09-11T17:53:22Z [Write] /home/cipherlogs/Repos/AI/leadcalls/PRODUCT.md
+- 2026-09-11T17:54:01Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/HANDOFF.md
+- 2026-09-11T18:21:37Z [Write] /home/cipherlogs/Repos/AI/leadcalls/.impeccable/muse-image.sh
+- 2026-09-11T18:22:37Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/.impeccable/muse-image.sh
+- 2026-09-11T18:23:57Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/HANDOFF.md
+- 2026-09-11T18:32:49Z [Write] /home/cipherlogs/Repos/AI/leadcalls/.impeccable/README.md
+- 2026-09-11T18:36:47Z [Write] /home/cipherlogs/.claude/projects/-home-cipherlogs-Repos-AI-leadcalls/memory/impeccable_muse_image_engine.md
+- 2026-09-11T18:36:47Z [Write] /home/cipherlogs/Repos/AI/leadcalls/.impeccable/README.md
+- 2026-09-11T18:36:53Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/HANDOFF.md
+- 2026-09-11T18:37:07Z [Edit] /home/cipherlogs/.claude/projects/-home-cipherlogs-Repos-AI-leadcalls/memory/MEMORY.md
+- 2026-09-11T18:47:45Z [Edit] /home/cipherlogs/.claude/projects/-home-cipherlogs-Repos-AI-leadcalls/memory/impeccable_muse_image_engine.md
+- 2026-09-11T18:47:45Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/.impeccable/README.md
+- 2026-09-11T19:22:44Z [Write] /home/cipherlogs/.claude/jobs/322b5955/tmp/critique-body.md
+- 2026-09-11T19:27:19Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/HANDOFF.md
+- 2026-09-11T19:52:19Z [Write] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/calls/[id]/page.tsx
+- 2026-09-11T19:52:40Z [Write] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/leads/[id]/page.tsx
+- 2026-09-11T19:55:03Z [Write] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/dashboard/actions.ts
+- 2026-09-11T19:55:41Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/leads/[id]/page.tsx
+- 2026-09-11T19:55:41Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/calls/[id]/page.tsx
+- 2026-09-11T19:55:58Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/calls/[id]/page.tsx
+- 2026-09-11T19:56:51Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/leads/[id]/page.tsx
+- 2026-09-11T19:56:57Z [Write] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/dashboard/page.tsx
+- 2026-09-11T20:00:55Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/app-sidebar.tsx
+- 2026-09-11T20:00:55Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/app-sidebar.tsx
+- 2026-09-11T20:00:55Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/app-sidebar.tsx
+- 2026-09-11T20:00:56Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/app-sidebar.tsx
+- 2026-09-11T20:01:06Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/app-sidebar.tsx
+- 2026-09-11T20:01:06Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/app-sidebar.tsx
+- 2026-09-11T20:01:16Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/app-sidebar.tsx
+- 2026-09-11T20:01:16Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/app-sidebar.tsx
+- 2026-09-11T20:01:25Z [Write] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/leads/page.tsx
+- 2026-09-11T20:02:04Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/leads/page.tsx
+- 2026-09-11T20:02:07Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/campaigns/new/page.tsx
+- 2026-09-11T20:02:08Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/campaigns/new/page.tsx
+- 2026-09-11T20:02:33Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/page.tsx
+- 2026-09-11T20:02:33Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/settings-view.tsx
+- 2026-09-11T20:02:33Z [Write] /home/cipherlogs/Repos/AI/leadcalls/voni/src/lib/timezones.ts
+- 2026-09-11T20:02:39Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/settings-view.tsx
+- 2026-09-11T20:02:39Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/settings-view.tsx
+- 2026-09-11T20:02:50Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/settings-view.tsx
+- 2026-09-11T20:02:55Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/new/page.tsx
+- 2026-09-11T20:03:41Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/new/page.tsx
+- 2026-09-11T20:03:47Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/new/page.tsx
+- 2026-09-11T20:03:47Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/[id]/edit-agent.tsx
+- 2026-09-11T20:05:05Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/leads/page.tsx
+- 2026-09-11T20:05:05Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/campaigns/[id]/page.tsx
+- 2026-09-11T20:05:05Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/page.tsx
+- 2026-09-11T20:05:06Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/campaigns/[id]/page.tsx
+- 2026-09-11T20:05:06Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/app-header.tsx
+- 2026-09-11T20:05:06Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/app-header.tsx
+- 2026-09-11T20:05:38Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/copilot/copilot-shell.tsx
+- 2026-09-11T20:05:38Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/agent-wizard/wizard-step-bodies.tsx
+- 2026-09-11T20:05:38Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/settings-view.tsx
+- 2026-09-11T20:05:38Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/calls/page.tsx
+- 2026-09-11T20:05:44Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/settings/actions.ts
+- 2026-09-11T20:05:47Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/copilot/copilot-shell.tsx
+- 2026-09-11T20:05:47Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/copilot/copilot-shell.tsx
+- 2026-09-11T20:05:47Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/copilot/copilot-shell.tsx
+- 2026-09-11T20:08:58Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/calls/[id]/page.tsx
+- 2026-09-11T20:09:01Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/leads/[id]/page.tsx
+- 2026-09-11T20:09:09Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/app-header.tsx
+- 2026-09-11T20:09:09Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/app-header.tsx
+- 2026-09-11T20:09:15Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/settings-view.tsx
+- 2026-09-11T20:10:06Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/app-header.tsx
+- 2026-09-11T20:10:12Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/app-header.tsx
+- 2026-09-11T20:10:17Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/app-header.tsx
+- 2026-09-11T20:14:34Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/copilot/copilot-shell.tsx
+- 2026-09-11T20:14:40Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/copilot/copilot-shell.tsx
+- 2026-09-11T20:26:59Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/HANDOFF.md
+- 2026-09-11T20:59:10Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/layout.tsx
+- 2026-09-11T20:59:17Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/app-sidebar.tsx
+- 2026-09-11T20:59:21Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/app-sidebar.tsx
+- 2026-09-11T20:59:30Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/app-sidebar.tsx
+- 2026-09-11T20:59:35Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/app-header.tsx
+- 2026-09-11T20:59:40Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/calls/[id]/page.tsx
+- 2026-09-11T20:59:41Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/leads/[id]/page.tsx
+- 2026-09-11T20:59:41Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/dashboard/loading.tsx
+- 2026-09-11T20:59:55Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/dashboard/page.tsx
+- 2026-09-11T21:11:47Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/app-sidebar.tsx
+- 2026-09-11T21:11:58Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/app-sidebar.tsx
+- 2026-09-11T21:12:08Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/layout.tsx
+- 2026-09-11T21:12:13Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/layout.tsx
+- 2026-09-11T22:06:09Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/HANDOFF.md

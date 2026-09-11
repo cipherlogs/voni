@@ -50,7 +50,7 @@ export default function LandingPage() {
       </Suspense>
 
       <section data-testid="landing-shell" className={`${CONTAINER} flex flex-col items-center gap-7 py-24 text-center md:py-32`}>
-        <Badge variant="secondary">Built on AssemblyAI Voice Agent API</Badge>
+        <Badge variant="secondary">Live voice calls</Badge>
         <h1 className="max-w-3xl text-4xl font-semibold tracking-tight text-balance md:text-[3.25rem] md:leading-[1.08]">
           An AI employee with a mission, not another chatbot
         </h1>

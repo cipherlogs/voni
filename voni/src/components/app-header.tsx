@@ -100,13 +100,17 @@ function CopilotHeaderButton({
         ? "connecting"
         : "idle";
 
+  const proposalText =
+    proposals.length === 1
+      ? "1 suggestion to review"
+      : `${proposals.length} suggestions to review`;
   const text = starting
     ? "…"
     : proposals.length > 0
-      ? `${proposals.length} ready`
+      ? proposalText
       : live
         ? formatElapsed(elapsed)
-        : "Voice";
+        : "Voice copilot";
 
   return (
     <Button
@@ -149,6 +153,10 @@ export function AppHeader() {
   const { activeJobs, unreadJobs, optimisticJobs } = useJobs();
 
   const activeCount = activeJobs.length + optimisticJobs.length;
+  const unreadText =
+    unreadJobs.length === 1
+      ? "1 result ready"
+      : `${unreadJobs.length} results ready`;
   const firstActive = activeJobs[0];
   const firstPercent = firstActive
     ? getJobProgressPercent(firstActive)
@@ -157,8 +165,14 @@ export function AppHeader() {
   return (
     <header className="app-shell-header bg-background/80 sticky top-0 z-30 flex h-14 shrink-0 flex-col justify-center border-b px-4 backdrop-blur-md">
       <div className="flex items-center gap-2">
-        <SidebarTrigger className="-ml-1 md:hidden" />
-        <Separator orientation="vertical" className="mr-1 h-4 md:hidden" />
+        {/* Collapse toggle: the rail starts collapsed (layout
+            defaultOpen={false}) and the user opens it from here
+            or with cmd/ctrl+B; the provider remembers the choice. */}
+        <SidebarTrigger
+          className="-ml-1"
+          aria-label="Toggle navigation sidebar"
+        />
+        <Separator orientation="vertical" className="mr-1 h-4" />
         {/* Section title reads the URL, so it suspends behind its own
             boundary: the bar prerenders with the default title. */}
         <Suspense fallback={<span className="text-sm font-medium">Voni</span>}>
@@ -177,7 +191,7 @@ export function AppHeader() {
                   activeCount > 0
                     ? `${activeCount} background jobs running. View jobs.`
                     : unreadJobs.length > 0
-                      ? `${unreadJobs.length} unread job results. View jobs.`
+                      ? `${unreadText}. View jobs.`
                       : "View background jobs"
                 }
               />
@@ -194,7 +208,7 @@ export function AppHeader() {
               {activeCount > 0
                 ? `${activeCount} running`
                 : unreadJobs.length > 0
-                  ? `${unreadJobs.length} ready`
+                  ? unreadText
                   : "Jobs"}
             </span>
           </Button>

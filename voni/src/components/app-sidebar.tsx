@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { Suspense, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
 import { toast } from "@/components/ui/toast";
 import {
   Bot,
@@ -10,6 +10,7 @@ import {
   LayoutDashboard,
   Megaphone,
   Phone,
+  PhoneCall,
   Users,
   Settings,
   ShieldCheck,
@@ -50,6 +51,7 @@ export const NAV_ITEMS = [
   { title: "Agents", url: "/agents", icon: Bot },
   { title: "Campaigns", url: "/campaigns", icon: Megaphone },
   { title: "Leads", url: "/leads", icon: Users },
+  { title: "Calls", url: "/calls", icon: PhoneCall },
   { title: "Phone numbers", url: "/numbers", icon: Phone },
   { title: "Background jobs", url: "/jobs", icon: History },
 ];
@@ -67,6 +69,10 @@ export function AppSidebar({
   sessionNote?: string;
 }) {
   return (
+    // Fixed full-height icon rail, user-expandable via the header
+    // trigger (or cmd/ctrl+B). Closed by default from the layout's
+    // defaultOpen={false}; the provider remembers the choice in a
+    // cookie. Icon-only keeps every label one tooltip away.
     <Sidebar collapsible="icon" className="app-shell-sidebar">
       <SidebarHeader>
         <Link
@@ -106,6 +112,29 @@ export function AppSidebar({
       </SidebarFooter>
     </Sidebar>
   );
+}
+
+/**
+ * Runs once inside the provider: applies the remembered sidebar_state
+ * cookie (the provider only writes it — nothing upstream reads it, so
+ * without this the user's expand choice resets every reload). The
+ * cookie holds no identity: it is a bare open/closed bit, safe to
+ * read from this static context.
+ */
+export function SidebarStateRestore() {
+  const { open, setOpen } = useSidebar();
+  const done = useRef(false);
+  useEffect(() => {
+    if (done.current) return;
+    done.current = true;
+    const match = document.cookie.match(
+      /(?:^|;\s*)sidebar_state=(true|false)/,
+    );
+    if (!match) return;
+    const remembered = match[1] === "true";
+    if (remembered !== open) setOpen(remembered);
+  }, [open, setOpen]);
+  return null;
 }
 
 /** Brand lockup: static, no URL read — safe in the shell. */

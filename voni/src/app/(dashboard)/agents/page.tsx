@@ -95,10 +95,14 @@ async function AgentsList() {
                            letting the list imply everything is live. */
                         <Badge
                           variant={
-                            agent.assemblyaiAgentId ? "default" : "secondary"
+                            agent.assemblyaiAgentId
+                              ? "secondary"
+                              : "outline"
                           }
                         >
-                          {agent.assemblyaiAgentId ? "Published" : "Draft"}
+                          {agent.assemblyaiAgentId
+                            ? "Deployed and ready"
+                            : "Draft — not yet deployed"}
                         </Badge>
                         )}
                       </span>

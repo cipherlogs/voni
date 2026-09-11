@@ -37,8 +37,10 @@ const CALL_TABLE_COLUMNS = 4;
  */
 async function CallsRows({ page }: { page: number }) {
   const { rows, page: safePage } = await listCalls(page, CALLS_PAGE_SIZE);
-  // Whether a next page exists: one extra row would prove it. listCalls
-  // caps at pageSize, so a full page means "maybe more".
+  // Next-page detection: listCalls caps at pageSize, so a full page
+  // usually means more exist. A full final page overshoots to an
+  // honest empty state ("No calls on this page — try an earlier
+  // page") rather than hiding Next and stranding the newest rows.
   const hasNext = rows.length === CALLS_PAGE_SIZE;
 
   return (

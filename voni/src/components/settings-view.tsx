@@ -20,6 +20,7 @@ import { Input } from "@/components/ui/input";
 import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { ModeToggle } from "@/components/mode-toggle";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { TIMEZONE_OPTIONS } from "@/lib/timezones";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { signOut } from "@/lib/auth-client";
 import {
@@ -60,6 +61,76 @@ function ActionFeedback({ state }: { state: SettingsActionState }) {
       <AlertTitle>{state.error ? "Could not save" : "Done"}</AlertTitle>
       <AlertDescription>{state.error ?? state.message}</AlertDescription>
     </Alert>
+  );
+}
+
+function WorkspaceNameField({
+  name,
+  canEdit,
+}: {
+  name: string;
+  canEdit: boolean;
+}) {
+  return (
+    <Field>
+      <FieldLabel htmlFor="workspace-name">
+        Workspace name
+      </FieldLabel>
+      <Input
+        id="workspace-name"
+        name="name"
+        defaultValue={name}
+        disabled={!canEdit}
+      />
+    </Field>
+  );
+}
+
+/**
+ * Workspace timezone: editable from the named list, defaulting to the
+ * stored zone when a legacy value is not in the list. Base UI's Select
+ * needs a controlled value, so this mirrors the form-data pattern its
+ * sibling voice selects use — with a hidden input carrying the post.
+ */
+function WorkspaceTimezoneField({
+  timezone,
+  canEdit,
+}: {
+  timezone: string;
+  canEdit: boolean;
+}) {
+  const fallback = TIMEZONE_OPTIONS.includes(
+    timezone as (typeof TIMEZONE_OPTIONS)[number],
+  )
+    ? timezone
+    : TIMEZONE_OPTIONS[0];
+  const [zone, setZone] = useState(fallback);
+  return (
+    <Field>
+      <FieldLabel htmlFor="workspace-timezone">Timezone</FieldLabel>
+      <input type="hidden" name="timezone" value={zone} />
+      <Select
+        value={zone}
+        onValueChange={(value) => setZone(value ?? zone)}
+        disabled={!canEdit}
+      >
+        <SelectTrigger
+          id="workspace-timezone"
+          className="w-full"
+        >
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectGroup>
+            {TIMEZONE_OPTIONS.map((option) => (
+              <SelectItem key={option} value={option}>
+                {option}
+              </SelectItem>
+            ))}
+          </SelectGroup>
+        </SelectContent>
+      </Select>
+    </Field>
   );
 }
 
@@ -153,7 +224,12 @@ export function SettingsView({
   voicePrefs,
 }: {
   user: { name: string; email: string; image: string | null };
-  workspace: { name: string; timezone: string; humanTransferNumber: string; canEdit: boolean };
+  workspace: {
+    name: string;
+    timezone: string;
+    humanTransferNumber: string;
+    canEdit: boolean;
+  };
   services: Array<{ id: string; label: string; configured: boolean }>;
   voicePrefs: CopilotVoicePrefs;
 }) {
@@ -216,8 +292,14 @@ export function SettingsView({
             <CardContent>
               <form action={workspaceAction} className="grid max-w-xl gap-5">
                 <FieldGroup>
-                  <Field><FieldLabel htmlFor="workspace-name">Workspace name</FieldLabel><Input id="workspace-name" name="name" defaultValue={workspace.name} disabled={!workspace.canEdit} /></Field>
-                  <Field><FieldLabel htmlFor="timezone">Timezone</FieldLabel><Input id="timezone" name="timezone" value="Asia/Dubai" readOnly /></Field>
+                  <WorkspaceNameField
+                    name={workspace.name}
+                    canEdit={workspace.canEdit}
+                  />
+                  <WorkspaceTimezoneField
+                    timezone={workspace.timezone}
+                    canEdit={workspace.canEdit}
+                  />
                   <Field><FieldLabel htmlFor="transfer-number">Human transfer number</FieldLabel><Input id="transfer-number" name="humanTransferNumber" type="tel" defaultValue={workspace.humanTransferNumber} placeholder="+971501234567" disabled={!workspace.canEdit} /><p className="text-muted-foreground text-xs">Used only for this workspace when an agent transfers a live call.</p></Field>
                 </FieldGroup>
                 {!workspace.canEdit ? <Alert><ShieldCheck /><AlertTitle>Owner access required</AlertTitle><AlertDescription>Only a workspace owner can change these values.</AlertDescription></Alert> : null}
@@ -232,7 +314,20 @@ export function SettingsView({
           <div className="grid gap-4 sm:grid-cols-2">
             {services.map((service) => (
               <Card key={service.id} className="interactive-card">
-                <CardHeader><CardTitle className="flex items-center justify-between gap-3 text-base">{service.label}<Badge variant={service.configured ? "secondary" : "outline"}>{service.configured ? "Ready" : "Needs setup"}</Badge></CardTitle><CardDescription>{service.configured ? "Voni-managed capacity is configured." : "A Voni operator must finish platform setup."}</CardDescription></CardHeader>
+                <CardHeader>
+                  <CardTitle className="flex items-center justify-between gap-3 text-base">
+                    {service.label}
+                    <Badge variant={service.configured ? "secondary" : "outline"}>
+                      {service.configured ? "Ready" : "Needs setup"}
+                    </Badge>
+                  </CardTitle>
+                  <CardDescription>
+                    {service.configured
+                      ? "Voni-managed capacity is configured."
+                      : "Ask your workspace admin, or whoever runs " +
+                        "your Voni server, to finish platform setup."}
+                  </CardDescription>
+                </CardHeader>
               </Card>
             ))}
           </div>

@@ -6,6 +6,7 @@ import { JobPill } from "@/components/jobs/job-pill";
 import { CopilotShell } from "@/components/copilot/copilot-shell";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { ShellAuthBridge, ShellAuthProvider } from "@/components/shell-auth";
+import { SidebarStateRestore } from "@/components/app-sidebar";
 import { ShellProviders, ShellSidebar } from "@/components/shell-frame";
 import { auth } from "@/lib/auth";
 import { safeNextPath } from "@/lib/auth-redirect";
@@ -70,15 +71,18 @@ export default function DashboardLayout({
   children: React.ReactNode;
 }) {
   return (
-    // Desktop sidebar stays permanently icon-collapsed; mobile still opens
-    // via its own openMobile state and is unaffected by this. The wider
-    // icon rail gives the enlarged nav buttons room to breathe instead of
-    // exactly filling the column.
+    // User-controlled collapse: closed by default, remembered in the
+    // sidebar_state cookie. The icon variant stays fixed full-height;
+    // the provider must stay uncontrolled (defaultOpen, not open) so
+    // the header trigger and cmd/ctrl+B can actually toggle it.
+    // Mobile opens via its own openMobile state, unaffected by this.
+    // The wider icon rail gives the enlarged nav buttons room.
     <SidebarProvider
-      open={false}
+      defaultOpen={false}
       style={{ "--sidebar-width-icon": "4.5rem" } as React.CSSProperties}
     >
       <ShellAuthProvider>
+        <SidebarStateRestore />
         <ShellSidebar />
         <SidebarInset>
           <ShellProviders>

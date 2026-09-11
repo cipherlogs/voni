@@ -41,18 +41,22 @@ const STATUS_TEXT: Record<CopilotStatus, string> = {
 };
 
 function RecoveryHint({ code }: { code?: string }) {
+  const tap = "then tap Voice copilot";
   const hint =
     code === "mic"
-      ? "Allow the mic in your browser — usually the icon in the address bar — then tap Voice to try again. Or keep typing."
+      ? "Allow the mic in your browser — usually the icon in the " +
+        `address bar — ${tap} to try again. Or keep typing.`
       : code === "busy-mic"
-        ? "Another voice session holds the mic. Stop it first, then tap Voice."
+        ? `Another voice session holds the mic. Stop it first, ${tap}.`
         : code === "auth"
-          ? "Sign in again, then tap Voice."
+          ? `Sign in again, ${tap}.`
           : code === "config"
-            ? "Add an AssemblyAI key in Settings, or keep using mouse and keyboard."
+            ? "Add an AssemblyAI key in Settings, or keep using " +
+              "mouse and keyboard."
             : code === "expired"
-              ? "That call ended. Tap Voice when ready."
-              : "Check your connection and tap Voice — or tap what you need instead.";
+              ? "That call ended. Tap Voice copilot when ready."
+              : `Check your connection and ${tap} — or tap what ` +
+                "you need instead.";
   return <AlertDescription>{hint}</AlertDescription>;
 }
 

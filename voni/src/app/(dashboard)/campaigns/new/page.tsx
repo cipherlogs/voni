@@ -1,8 +1,6 @@
 import { Suspense } from "react";
-import Link from "next/link";
-import { Button } from "@/components/ui/button";
-import { ChevronLeft } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
+import { BackLink } from "@/components/back-link";
 import { CampaignForm } from "@/components/campaign-form";
 import { RouteBrief } from "@/components/copilot/route-brief";
 import { listAgentOptions } from "../actions";
@@ -24,16 +22,9 @@ export default function NewCampaignPage() {
         brief="New campaign form: lead list, agent, calling window, and fallback policy. Voice reads here; changes stay manual for now."
       />
       <div className="flex flex-col gap-2">
-        <Button
-          nativeButton={false}
-          render={<Link href="/campaigns" />}
-          variant="ghost"
-          size="sm"
-          className="w-fit -ml-2"
-        >
-          <ChevronLeft />
-          Campaigns
-        </Button>
+        <div>
+          <BackLink href="/campaigns" label="Campaigns" />
+        </div>
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">New campaign</h1>
           <p className="text-muted-foreground text-sm">

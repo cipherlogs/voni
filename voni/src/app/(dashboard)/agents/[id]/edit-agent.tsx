@@ -221,8 +221,8 @@ export function EditAgent(props: {
             <AlertTitle>Ready to review</AlertTitle>
             <AlertDescription>
               Generation finished. The result waits on the review screen —
-              the form below still shows the placeholder, so review and
-              save there.{" "}
+              review and save it there; this form still shows the
+              earlier draft.{" "}
               <Link
                 href={
                   generationJobId

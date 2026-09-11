@@ -11,11 +11,49 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { Users, Upload } from "lucide-react";
 import { RouteBrief } from "@/components/copilot/route-brief";
 import { listLeads } from "./actions";
 
-const LEAD_TABLE_COLUMNS = 8;
+const LEAD_TABLE_COLUMNS = 6;
+
+/** Intent, blocker, and next action share one State cell: the action
+ *  leads, the rest sit truncated behind a tooltip. */
+function LeadStateCell({
+  intent,
+  blocker,
+  nextAction,
+}: {
+  intent: string | null;
+  blocker: string | null;
+  nextAction: string | null;
+}) {
+  const rest = [intent, blocker].filter(
+    (part): part is string => part !== null,
+  );
+  const detail =
+    rest.length > 0 ? rest.join(" · ") : "No recorded context yet.";
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <span className="text-muted-foreground block max-w-55 cursor-default truncate text-left text-sm">
+            <span className="text-foreground">
+              {nextAction ?? "—"}
+            </span>
+            {rest.length > 0 ? ` · ${rest.join(" · ")}` : ""}
+          </span>
+        }
+      />
+      <TooltipContent side="top">{detail}</TooltipContent>
+    </Tooltip>
+  );
+}
 
 /**
  * Authorized rows leaf: rows, counts, and Empty state resolve after the
@@ -33,7 +71,10 @@ async function LeadsRows() {
       <TableBody>
         {rows.length === 0 ? (
           <TableRow>
-            <TableCell colSpan={LEAD_TABLE_COLUMNS} className="h-40 text-center">
+            <TableCell
+              colSpan={LEAD_TABLE_COLUMNS}
+              className="h-40 text-center"
+            >
               <div className="text-muted-foreground flex flex-col items-center gap-2">
                 <Users className="size-8" />
                 No leads yet — import a CSV via a campaign to get started.
@@ -44,11 +85,16 @@ async function LeadsRows() {
           rows.map((lead) => (
             <TableRow key={lead.id} data-copilot-key={lead.id}>
               <TableCell>
-                <Link href={`/leads/${lead.id}`} className="cursor-pointer rounded-sm underline-offset-4 outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring">
+                <Link
+                  href={`/leads/${lead.id}`}
+                  className="cursor-pointer rounded-sm underline-offset-4 outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring"
+                >
                   {lead.name ?? "Unnamed"}
                 </Link>
               </TableCell>
-              <TableCell className="font-mono text-xs">{lead.phone}</TableCell>
+              <TableCell className="font-mono text-xs">
+                {lead.phone}
+              </TableCell>
               <TableCell>
                 <Badge
                   variant={
@@ -59,19 +105,21 @@ async function LeadsRows() {
                         : "secondary"
                   }
                 >
-                  {lead.consentStatus}
+                  {lead.consentStatus === "granted"
+                    ? "Consented"
+                    : lead.consentStatus === "revoked"
+                      ? "Opted out"
+                      : "Unknown"}
                 </Badge>
               </TableCell>
               <TableCell>{lead.pipelineState}</TableCell>
               <TableCell>{lead.callCount}</TableCell>
-              <TableCell className="text-muted-foreground max-w-[16rem] truncate text-sm">
-                {lead.intent ?? "—"}
-              </TableCell>
-              <TableCell className="text-muted-foreground max-w-[16rem] truncate text-sm">
-                {lead.blocker ?? "—"}
-              </TableCell>
-              <TableCell className="text-muted-foreground max-w-[16rem] truncate text-sm">
-                {lead.nextAction ?? "—"}
+              <TableCell>
+                <LeadStateCell
+                  intent={lead.intent}
+                  blocker={lead.blocker}
+                  nextAction={lead.nextAction}
+                />
               </TableCell>
             </TableRow>
           ))
@@ -86,7 +134,9 @@ export default function LeadsPage() {
     <div data-testid="leads-shell" className="flex flex-col gap-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Leads</h1>
+          <h1 className="text-2xl font-semibold tracking-tight">
+            Leads
+          </h1>
           <p className="text-muted-foreground text-sm">
             Every lead, reachable across phone and WhatsApp, with one shared
             pipeline stage.
@@ -95,9 +145,13 @@ export default function LeadsPage() {
         {/* Import belongs to a campaign — a lead list with no campaign has
             nothing to be worked by — so this points at the place where the
             import actually happens rather than opening a second path to it. */}
-        <Button nativeButton={false} render={<Link href="/campaigns" />} variant="outline">
+        <Button
+          nativeButton={false}
+          render={<Link href="/campaigns" />}
+          variant="outline"
+        >
           <Upload />
-          Import CSV
+          Import via a campaign
         </Button>
       </div>
       <Card>
@@ -111,17 +165,22 @@ export default function LeadsPage() {
                   <TableHead>Consent</TableHead>
                   <TableHead>Stage</TableHead>
                   <TableHead>Calls</TableHead>
-                  <TableHead>Intent</TableHead>
-                  <TableHead>Blocker</TableHead>
-                  <TableHead>Next action</TableHead>
+                  <TableHead>State</TableHead>
                 </TableRow>
               </TableHeader>
               <Suspense
                 fallback={
                   <TableBody>
                     <TableRow>
-                      <TableCell colSpan={LEAD_TABLE_COLUMNS} className="h-40 text-center">
-                        <span role="status" aria-label="Loading leads" className="text-muted-foreground text-sm">
+                      <TableCell
+                        colSpan={LEAD_TABLE_COLUMNS}
+                        className="h-40 text-center"
+                      >
+                        <span
+                          role="status"
+                          aria-label="Loading leads"
+                          className="text-muted-foreground text-sm"
+                        >
                           Loading leads…
                         </span>
                       </TableCell>
