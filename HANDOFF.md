@@ -10,10 +10,10 @@ context/usage. Don't hand-edit the **Activity Log** — it's auto-generated.
 
 ## Status
 
-### Resume here (2026-09-11, sidebar collapse + polish landed, verified)
+### Resume here (2026-09-11, header separator centered, everything committed)
 
-**Now:** Sidebar is user-collapsible and collapsed by default: layout uses uncontrolled `defaultOpen={false}`, rail is always the fixed full-height `collapsible="icon"` variant (the not-full-height bug was the `collapsible="none"` → `h-full`-in-`min-h-svh` structure), header `SidebarTrigger` always visible with accessible name, built-in cmd/ctrl+B works, new `SidebarStateRestore` reads the provider-written `sidebar_state` cookie so the choice survives reload (verified expand → reload → expanded; fresh cookie → collapsed). Polish: detail-page consent badges humanized (Consented/Opted out/Unknown, matching list pages), dashboard `loading.tsx` skeleton `cards={4}`, outcome value links labelled. Verified: tsc 0, eslint 0, 278/278 tests, `detect` clean, 10/10 routes 200, get_errors/get_compilation_issues empty, console HMR-only, keyboard toggle + persistence proven in fresh browser sessions. Work uncommitted; `next dev` left running.
-**Next:** Commit; optionally re-run `$impeccable critique` to measure the lift from 24/40. Standing items unchanged.
+**Now:** All prior work plus the header separator fix is COMMITTED. Separator between the sidebar collapse toggle and the page title was pinned to the flex-start (measured: 28px row, 16px separator, 0px top gap / 12px bottom gap) because `h-4` defeats the vendored `data-vertical:self-stretch`; fixed with `my-auto` in `voni/src/components/app-header.tsx` (verified: 6px/6px gaps after reload). Fix matches upstream `base-nova` separator (no vendored-component drift), is the only vertical separator outside `components/ui/`, and gates are green (tsc 0, eslint 0 on touched file, get_compilation_issues/get_errors empty, console HMR-only). Runtime artifacts committed too per user decision (`.swarm/agentdb-memory.db*` ~2MB sqlite, `model-router-state.json`, `voni/.claude-flow/sessions/` metrics json, `.impeccable/README.md` muse-image engine stub). `next dev` left running.
+**Next:** Optionally re-run `$impeccable critique` to measure the lift from 24/40. Standing items unchanged.
 **Why:** User asked for polish + sidebar collapse; both done and jointly verified. Three workflow "critical/major" flags were adjudicated as artifacts (shared browser session cross-talk; review header lives on the post-generation review screen, correctly absent on fresh wizard).
 
 ### Resume here (2026-09-11, critique fixes landed: layout+distill+clarify)
@@ -2858,3 +2858,5 @@ destination (1e).
 - 2026-09-11T21:12:08Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/layout.tsx
 - 2026-09-11T21:12:13Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/layout.tsx
 - 2026-09-11T22:06:09Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/HANDOFF.md
+- 2026-09-11T22:38:48Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/app-header.tsx
+- 2026-09-11T22:56:03Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/HANDOFF.md

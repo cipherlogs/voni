@@ -172,7 +172,10 @@ export function AppHeader() {
           className="-ml-1"
           aria-label="Toggle navigation sidebar"
         />
-        <Separator orientation="vertical" className="mr-1 h-4" />
+        {/* Short stub divider: h-4 defeats the vendored
+            data-vertical:self-stretch, pinning the stub to flex-start,
+            so my-auto centers it via flex auto margins instead. */}
+        <Separator orientation="vertical" className="mr-1 h-4 my-auto" />
         {/* Section title reads the URL, so it suspends behind its own
             boundary: the bar prerenders with the default title. */}
         <Suspense fallback={<span className="text-sm font-medium">Voni</span>}>
