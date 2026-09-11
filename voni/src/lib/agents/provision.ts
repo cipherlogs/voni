@@ -191,3 +191,50 @@ export async function provisionAgent(
   }
 }
 import { createHash } from "node:crypto";
+
+export type RemoteDeleteResult =
+  | { ok: true; alreadyGone: boolean }
+  | { ok: false; status: number; reason: "missing-key" | "refused" | "transport" };
+
+/**
+ * Delete a stored voice agent from AssemblyAI.
+ *
+ * DELETE /v1/agents/{agent_id} returns 204 with no body; 404 means already
+ * gone and is fine. Any other outcome aborts so the local row is kept and
+ * the delete is safe to retry.
+ * (Docs: /voice-agents/voice-agent-api/api-spec/delete-agent)
+ */
+export async function deleteRemoteAgent(
+  remoteId: string,
+  deps?: { apiKey?: string | null; fetchFn?: typeof fetch },
+): Promise<RemoteDeleteResult> {
+  // `"apiKey" in deps` distinguishes an explicitly injected key (including
+  // null for the missing-key path, used by tests) from production, which
+  // resolves the credential.
+  const apiKey =
+    deps && "apiKey" in deps
+      ? deps.apiKey
+      : (await resolveCredential("assemblyai_api_key")).value;
+  if (!apiKey) return { ok: false, status: 0, reason: "missing-key" };
+  const fetchFn = deps?.fetchFn ?? fetch;
+  try {
+    const response = await fetchFn(
+      `${AGENTS_URL}/${encodeURIComponent(remoteId)}`,
+      {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${apiKey}` },
+        signal: AbortSignal.timeout(15000),
+      },
+    );
+    if (response.status === 404) return { ok: true, alreadyGone: true };
+    if (response.ok) return { ok: true, alreadyGone: false };
+    const detail = await response.text().catch(() => "");
+    console.error(
+      `[agent-deployment] DELETE failed ${response.status}: ${detail.slice(0, 500)}`,
+    );
+    return { ok: false, status: response.status, reason: "refused" };
+  } catch (error) {
+    console.error("[agent-deployment] delete request failed", error);
+    return { ok: false, status: 0, reason: "transport" };
+  }
+}

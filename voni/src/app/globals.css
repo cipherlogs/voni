@@ -266,6 +266,56 @@
   }
 }
 
+/* Voice cards: per-character avatar drift, playing pulse, and the preview
+   fill sweep. Durations are fixed (not tokens): the float/pulse are ambient
+   loops, while the fill reads its length from `--preview-duration` (the real
+   clip length, ~3s) set on the playing card. The global reduced-motion rule
+   below squashes all three to a static frame. */
+.voni-voice-idle .voni-voice-cloud-a {
+  animation: voni-voice-drift 5200ms ease-in-out infinite alternate;
+}
+
+.voni-voice-idle .voni-voice-cloud-b {
+  animation: voni-voice-drift 6800ms ease-in-out infinite alternate-reverse;
+}
+
+.voni-voice-playing {
+  animation: voni-voice-pulse 1200ms ease-in-out infinite;
+}
+
+.voni-voice-fill {
+  transform-origin: left;
+  animation: voni-voice-fill var(--preview-duration, 3s) linear forwards;
+}
+
+@keyframes voni-voice-drift {
+  from {
+    transform: translate(0, 0);
+  }
+  to {
+    transform: translate(3px, 2px);
+  }
+}
+
+@keyframes voni-voice-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.08);
+  }
+}
+
+@keyframes voni-voice-fill {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
 @keyframes dashboard-out {
   to {
     opacity: 0;

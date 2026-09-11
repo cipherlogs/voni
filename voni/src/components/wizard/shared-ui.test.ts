@@ -103,28 +103,49 @@ test("VoiceField merges language chips and voice cards, real clips only", () => 
   assert.ok(source.includes("CarouselNext"));
   assert.ok(source.includes("scrollSnapList"));
   assert.ok(source.includes("Go to voice page"));
+  // Center-mode carousel: the selected card glides to center via Embla's
+  // native animated scrollTo — one call site only (selectVoice; never the
+  // click-preview handler, which fires on the same tap and would jitter).
+  assert.ok(source.includes('align: "center"'));
+  // Edge snaps must center too: the default trimSnaps parks the first and
+  // last slides at the track edges instead.
+  assert.ok(source.includes("containScroll: false"));
+  assert.ok(source.includes("api.scrollTo(idx"));
+  assert.ok(source.includes("prefers-reduced-motion"));
+  assert.ok(!source.includes("align: \"start\""));
+  {
+    const start = source.indexOf("const previewVoice");
+    const previewFn = source.slice(start, source.indexOf("};", start));
+    assert.ok(!previewFn.includes("scrollTo"));
+  }
   assert.ok(!source.includes("speechSynthesis"));
   // Real AssemblyAI clips: no browser synthesis anywhere near this picker.
+  // The card itself is the preview control — no separate play button.
   assert.ok(source.includes("/voices/"));
-  assert.ok(source.includes("Play"));
-  assert.ok(source.includes("Pause"));
+  assert.ok(source.includes("previewVoice"));
+  assert.ok(source.includes("voni-voice-fill"));
+  assert.ok(source.includes("--preview-duration"));
+  assert.ok(!source.includes("PreviewButton"));
   assert.ok(!source.includes("voiceTunables"));
   assert.ok(!source.includes("Test this agent"));
-  // Stock Avatar cards (no waveform, no flags — the language chips above
-  // already say which language this is), seamless-selected via the
-  // toggle pressed state (no Card, ring, checkmark, or custom avatar style).
-  assert.ok(source.includes("AvatarFallback"));
+  // CSS character avatars, accent flag badges, selected ring — no Card,
+  // waveform, checkmark, or custom avatar style.
+  assert.ok(source.includes("VoiceAvatar"));
+  assert.ok(source.includes("ACCENT_FLAG"));
+  assert.ok(!source.includes("AvatarFallback"));
   assert.ok(!source.includes("waveformHeights"));
-  assert.ok(!source.includes("flagFor(group.code)"));
+  assert.ok(source.includes("flagFor"));
   assert.ok(source.includes("data-[state=on]:border-primary"));
-  assert.ok(source.includes("aria-pressed"));
+  assert.ok(source.includes("data-[state=on]:ring-1"));
   assert.ok(!source.includes("avatarStyle"));
   assert.ok(!source.includes("CardContent"));
-  assert.ok(!source.includes("ring-1"));
-  assert.ok(!source.includes("Check"));
+  assert.ok(!source.includes("<Check"));
   // Single-voice languages say so instead of offering a one-item choice.
   assert.ok(source.includes("already selected"));
+  // Announcements stay sr-only; the visible "Voice switched to …" line is
+  // gone — the selection is visible on the card itself.
   assert.ok(source.includes('aria-live="polite"'));
+  assert.ok(!source.includes("mt-2 text-xs"));
   assert.ok(!source.includes("size-3"));
 });
 

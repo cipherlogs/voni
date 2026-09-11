@@ -19,3 +19,40 @@ export async function callDetail(id: string) {
   if (!call) notFound();
   return call;
 }
+
+const CALL_LIST_COLUMNS = {
+  id: calls.id,
+  leadId: calls.leadId,
+  name: leads.name,
+  phone: leads.phone,
+  direction: calls.direction,
+  startedAt: calls.startedAt,
+  endedAt: calls.endedAt,
+} as const;
+
+/**
+ * Recent calls for the agents-page section and the /calls index: org-scoped
+ * `calls` joined to `leads` for the display name, newest first. Same join +
+ * scoping as `callDetail`, so visibility rules match the detail route the
+ * rows link to.
+ */
+export async function listCalls(page: number, pageSize: number) {
+  const ctx = await requireCtxOrRedirect("/calls");
+  const safePage = Math.max(1, Math.floor(page));
+  const safeSize = Math.min(50, Math.max(1, Math.floor(pageSize)));
+  const rows = await db
+    .select(CALL_LIST_COLUMNS)
+    .from(calls)
+    .innerJoin(leads, eq(calls.leadId, leads.id))
+    .where(eq(leads.organizationId, ctx.organizationId))
+    .orderBy(desc(calls.startedAt))
+    .limit(safeSize)
+    .offset((safePage - 1) * safeSize);
+  return { rows, page: safePage, pageSize: safeSize };
+}
+
+/** The 5 most recent calls, for the secondary section on /agents. */
+export async function recentCalls() {
+  const { rows } = await listCalls(1, 5);
+  return rows;
+}

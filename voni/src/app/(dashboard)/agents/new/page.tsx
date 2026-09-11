@@ -6,6 +6,16 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { toast } from "@/components/ui/toast";
 import { ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import { AgentConfigForm } from "@/components/agent-config-form";
 import { LoadingButton } from "@/components/loading-button";
 import { ManualLlmGuidance } from "@/components/manual-llm-guidance";
@@ -61,7 +71,11 @@ import {
  * single-textarea page this replaces: the draft is never auto-saved, and a
  * ?job= link restores the watched result.
  */
-function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
+function NewAgentInner({
+  restoreJobId,
+}: {
+  restoreJobId: string | null;
+}) {
   const router = useRouter();
   const wiz = useWizardDraft();
   const [draft, setDraft] = useState<AgentConfig | null>(null);
@@ -507,35 +521,13 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
   if (draft && seeded) {
     return (
       <div className="flex flex-col gap-6">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <h1 className="text-2xl font-semibold tracking-tight">
-              Review agent
-            </h1>
-            <p className="text-muted-foreground text-sm">
-              Everything here is editable. Nothing is saved until you say so.
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => {
-                clearWizardDraftCache();
-                // Dismiss first: the render window before the URL strip
-                // propagates would otherwise re-seed from the same job.
-                setDismissedJobId(generation.jobId ?? restoreJobId);
-                setDraft(null);
-                // Drop the job pointer too: otherwise the ?job= restore
-                // effect re-seeds the just-cleared review on next render.
-                // (PR4 keeps ?job= in the URL after submit, so this path is
-                // now the default, not just a restore-visit edge.)
-                router.replace("/agents/new");
-              }}
-            >
-              Start over
-            </Button>
-          </div>
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">
+            Review agent
+          </h1>
+          <p className="text-muted-foreground text-sm">
+            Everything here is editable. Nothing is saved until you say so.
+          </p>
         </div>
 
         <AgentConfigForm
@@ -543,6 +535,46 @@ function NewAgentInner({ restoreJobId }: { restoreJobId: string | null }) {
           initialConfig={draft}
           submitLabel="Save agent"
           onSubmit={save}
+          footerSecondary={
+            <Dialog>
+              <DialogTrigger
+                render={<Button variant="ghost" size="sm" />}
+              >
+                Discard draft
+              </DialogTrigger>
+              <DialogContent>
+                <DialogHeader>
+                  <DialogTitle>Discard this draft?</DialogTitle>
+                  <DialogDescription>
+                    The generated configuration is thrown away and the
+                    creator resets. Nothing saved is touched.
+                  </DialogDescription>
+                </DialogHeader>
+                <DialogFooter>
+                  <DialogClose render={<Button variant="outline" />}>
+                    Cancel
+                  </DialogClose>
+                  <DialogClose
+                    render={<Button variant="destructive" />}
+                    onClick={() => {
+                      clearWizardDraftCache();
+                      // Dismiss first: the render window before the URL strip
+                      // propagates would otherwise re-seed from the same job.
+                      setDismissedJobId(generation.jobId ?? restoreJobId);
+                      setDraft(null);
+                      // Drop the job pointer too: otherwise the ?job= restore
+                      // effect re-seeds the just-cleared review on next render.
+                      // (PR4 keeps ?job= in the URL after submit, so this path is
+                      // now the default, not just a restore-visit edge.)
+                      router.replace("/agents/new");
+                    }}
+                  >
+                    Discard draft
+                  </DialogClose>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
+          }
         />
       </div>
     );

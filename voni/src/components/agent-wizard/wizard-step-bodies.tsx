@@ -9,7 +9,7 @@ import { Separator } from "@/components/ui/separator";
 import { TagField, type TagFieldHandle } from "@/components/wizard/tag-field";
 import { ConversationPicker } from "@/components/wizard/conversation-picker";
 import { FormCard, FormCardSections } from "@/components/wizard/form-layout";
-import { GenerationNotice, GenerationSubmitted } from "./generation-notice";
+import { GenerationStatusCard } from "./generation-notice";
 import { GOAL_SUGGESTIONS, TASK_SUGGESTIONS } from "./starters";
 import {
   MAX_GOAL_LENGTH,
@@ -206,11 +206,8 @@ export function GenerationStatus({
 }) {
   return (
     <>
-      {phase === "working" ? (
-        <GenerationSubmitted onOpenJobs={onOpenJobs} />
-      ) : null}
-      {phase === "backgrounded" ? (
-        <GenerationNotice title="Still generating your draft…" onOpenJobs={onOpenJobs} />
+      {phase === "working" || phase === "backgrounded" ? (
+        <GenerationStatusCard phase={phase} onOpenJobs={onOpenJobs} />
       ) : null}
       {error ? (
         <div className="flex items-start gap-2 rounded-lg border p-3">

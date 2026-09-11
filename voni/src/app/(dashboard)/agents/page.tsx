@@ -6,8 +6,10 @@ import { Badge } from "@/components/ui/badge";
 import { Bot, Plus } from "lucide-react";
 import { CardListSkeleton } from "@/components/page-skeletons";
 import { listAgentsWithGeneration } from "./actions";
+import { AgentDeleteButton } from "./delete-agent-button";
 import type { AgentConfig } from "@/lib/agents/config";
 import { RouteBrief } from "@/components/copilot/route-brief";
+import { RecentCalls } from "@/components/calls/recent-calls";
 
 /**
  * Authorized list leaf: count-based brief and rows resolve after the shell.
@@ -119,6 +121,15 @@ async function AgentsList() {
                       )}
                     </span>
                   </Link>
+                  {/* Sibling of the stretched link, stacked above its overlay
+                      (relative z-10), so the button stays clickable while the
+                      rest of the card navigates. Generation placeholders skip
+                      delete — their job owns the row until it settles. */}
+                  {gen ? null : (
+                    <div className="relative z-10 flex shrink-0 items-center">
+                      <AgentDeleteButton id={agent.id} name={agent.name} />
+                    </div>
+                  )}
                 </CardContent>
               </Card>
             );
@@ -153,6 +164,17 @@ export default function AgentsPage() {
         }
       >
         <AgentsList />
+      </Suspense>
+
+      {/* Secondary section: streams in without blocking the agents list. */}
+      <Suspense
+        fallback={
+          <div role="status" aria-label="Loading recent calls">
+            <CardListSkeleton rows={2} />
+          </div>
+        }
+      >
+        <RecentCalls />
       </Suspense>
     </div>
   );

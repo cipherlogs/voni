@@ -29,7 +29,6 @@ test("manifest covers every nav item, title, and settings tab", () => {
     assert.ok(routes.has(item.url), `manifest covers nav ${item.url}`);
   }
   for (const [prefix] of SECTION_TITLES as Array<[string, string]>) {
-    if (prefix === "/calls") continue; // no index page — voice cannot land there
     assert.ok(routes.has(prefix), `manifest covers section ${prefix}`);
   }
   assert.deepEqual(
@@ -60,15 +59,15 @@ test("feature terms stay within the recognition budget", () => {
   assert.ok(APP_FEATURE_TERMS.includes("Voice copilot"));
 });
 
-test("manifest v2 covers all 17 pages without navigating to templates or public routes", () => {
-  assert.equal(APP_DESTINATIONS.length, 17);
+test("manifest v2 covers all 18 pages without navigating to templates or public routes", () => {
+  assert.equal(APP_DESTINATIONS.length, 18);
   for (const route of APP_DESTINATIONS) {
     assert.equal(route.examples.length, 3);
     assert.ok(route.phrases.length > 0);
     assert.equal(NAVIGABLE_ROUTES.includes(route.route), route.navigationKind === "static");
   }
   assert.equal(APP_DESTINATIONS.filter((r) => r.navigationKind === "record").length, 4);
-  assert.equal(APP_DESTINATIONS.filter((r) => r.access === "signed-in").length, 13);
+  assert.equal(APP_DESTINATIONS.filter((r) => r.access === "signed-in").length, 14);
   assert.equal(APP_DESTINATIONS.filter((r) => r.access === "platform-admin").length, 1);
 });
 

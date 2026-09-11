@@ -1,0 +1,63 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import test from "node:test";
+
+// Source-text assertions (see actions.delete.test.ts for why): the confirm
+// dialog contract, trigger composition, and house feedback patterns are
+// checked on the real component source.
+const dir = dirname(fileURLToPath(import.meta.url));
+const buttonSource = readFileSync(join(dir, "delete-agent-button.tsx"), "utf8");
+const pageSource = readFileSync(join(dir, "page.tsx"), "utf8");
+const editSource = readFileSync(join(dir, "[id]", "edit-agent.tsx"), "utf8");
+
+test("delete dialog names the agent and states the consequences", () => {
+  assert.ok(buttonSource.includes("DialogTitle"));
+  assert.ok(buttonSource.includes("DialogDescription"));
+  assert.ok(buttonSource.includes("AssemblyAI"));
+  assert.ok(buttonSource.includes("cannot be undone"));
+});
+
+test("delete requires typing the agent name (GitHub-style gate)", () => {
+  // Type-to-confirm: an Input bound to a confirmation string gates the
+  // destructive confirm until it exactly matches the agent name.
+  assert.ok(buttonSource.includes("confirmation"));
+  assert.ok(buttonSource.includes("Type"));
+  assert.ok(buttonSource.includes("to enable deletion"));
+  assert.ok(buttonSource.includes("trim() === name"));
+  assert.ok(buttonSource.includes("disabled={!confirmed}"));
+  assert.ok(buttonSource.includes("setConfirmation(\"\")"));
+});
+
+test("delete trigger composes via render= (Base UI), never asChild", () => {
+  assert.ok(buttonSource.includes("render="));
+  assert.ok(!buttonSource.includes("asChild"));
+});
+
+test("delete icon uses no sizing class and destructive confirm uses LoadingButton", () => {
+  assert.match(buttonSource, /<Trash2( data-icon="inline-start")? \/>/);
+  assert.ok(buttonSource.includes("LoadingButton"));
+  assert.ok(buttonSource.includes('pendingText="Deleting…"'));
+});
+
+test("delete failures stay visible in-dialog and as a toast", () => {
+  assert.ok(buttonSource.includes('variant="destructive"'));
+  assert.ok(buttonSource.includes("AlertDescription"));
+  assert.ok(buttonSource.includes('type: "error"'));
+  assert.ok(buttonSource.includes('type: "success"'));
+});
+
+test("list row renders delete as a sibling above the stretched-link overlay", () => {
+  assert.ok(pageSource.includes("AgentDeleteButton"));
+  assert.ok(pageSource.includes("relative z-10"));
+  // Generation placeholders skip delete — their job owns the row.
+  assert.ok(pageSource.includes("gen ? null"));
+});
+
+test("detail page deletes from the footer next to Save, no danger zone", () => {
+  assert.ok(editSource.includes("AgentDeleteButton"));
+  assert.ok(editSource.includes("footerSecondary"));
+  assert.ok(editSource.includes('redirectTo="/agents"'));
+  assert.ok(!editSource.includes("Danger zone"));
+});

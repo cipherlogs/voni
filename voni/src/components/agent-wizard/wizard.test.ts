@@ -122,18 +122,23 @@ test("ReviewStep is gone; generation status renders in-flow", () => {
   assert.ok(!stepBodiesSource.includes("MascotAvatar"));
 });
 
-test("working phase shows the submitted panel: mini success, progress, safe-to-leave", () => {
+test("working + backgrounded share one status card: mini success, progress, safe-to-leave", () => {
   // The click must prove it landed instantly, say what is happening, and
-  // answer "can I go?" — before the 3s background threshold fires.
-  assert.ok(stepBodiesSource.includes("GenerationSubmitted"));
+  // answer "can I go?" — before the 3s background threshold fires. Both
+  // phases share GenerationStatusCard so the 3s flip swaps only the title,
+  // never the layout.
+  assert.ok(stepBodiesSource.includes("GenerationStatusCard"));
+  assert.ok(!stepBodiesSource.includes("GenerationSubmitted"));
   const noticeSource = readFileSync(
     join(dirname(fileURLToPath(import.meta.url)), "./generation-notice.tsx"),
     "utf8",
   );
   assert.ok(noticeSource.includes("Brief received"));
-  assert.ok(noticeSource.includes("Safe to leave"));
+  assert.ok(noticeSource.includes("safe to leave"));
   assert.ok(noticeSource.includes("Open Jobs"));
   assert.ok(noticeSource.includes('aria-label="Generation in progress"'));
+  assert.ok(noticeSource.includes("Generating your agent"));
+  assert.ok(noticeSource.includes("Still generating your draft"));
 });
 
 test("wizard draft defaults to empty goals/tasks with English + anna", async () => {

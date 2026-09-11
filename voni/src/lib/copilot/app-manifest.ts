@@ -9,6 +9,7 @@ export const APP_DESTINATIONS: AppDestination[] = [
   {"route":"/agents","title":"Agents","phrases":["agents","phone agents","agent library","my agents"],"examples":["Show my agents","Find an agent named Sara","Open the agent library"],"access":"signed-in","navigationKind":"static"},
   {"route":"/agents/[id]","title":"Agent details","phrases":["agent details","open agent"],"examples":["Find an agent named Sara","Open the second matching agent","Read this agent configuration"],"access":"signed-in","navigationKind":"record"},
   {"route":"/agents/new","title":"New agent","phrases":["new agent","create agent","build an agent","agent builder","agent wizard"],"examples":["Create a new agent","Read this wizard step","Go to review"],"access":"signed-in","navigationKind":"static"},
+  {"route":"/calls","title":"Calls","phrases":["calls","my calls","call list","call history"],"examples":["Open calls","Show my call history","Read the call list"],"access":"signed-in","navigationKind":"static"},
   {"route":"/calls/[id]","title":"Call details","phrases":["call details","open call"],"examples":["Find calls for Alex","Open the first matching call","Read this call summary"],"access":"signed-in","navigationKind":"record"},
   {"route":"/campaigns","title":"Campaigns","phrases":["campaigns","my campaigns"],"examples":["Open campaigns","Find my viewing campaign","Show active campaigns"],"access":"signed-in","navigationKind":"static"},
   {"route":"/campaigns/[id]","title":"Campaign details","phrases":["campaign details","open campaign"],"examples":["Find a campaign named Viewings","Read this campaign queue","Show the CSV upload control"],"access":"signed-in","navigationKind":"record"},
@@ -25,7 +26,7 @@ export const APP_DESTINATIONS: AppDestination[] = [
 ];
 
 /** Static routes voice may navigate to. Dynamic detail pages stay model-proposed, never invented. */
-export const NAVIGABLE_ROUTES: string[] = ["/agents", "/agents/new", "/campaigns", "/campaigns/new", "/dashboard", "/jobs", "/leads", "/numbers", "/operator", "/settings"];
+export const NAVIGABLE_ROUTES: string[] = ["/agents", "/agents/new", "/calls", "/campaigns", "/campaigns/new", "/dashboard", "/jobs", "/leads", "/numbers", "/operator", "/settings"];
 
 export const SETTINGS_TABS_MANIFEST: Array<{ value: string; label: string; adminOnly: boolean }> = [
   { value: "account", label: "Account", adminOnly: false },

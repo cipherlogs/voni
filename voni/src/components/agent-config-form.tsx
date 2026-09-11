@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { toast } from "@/components/ui/toast";
 import { Button } from "@/components/ui/button";
 import { LoadingButton } from "@/components/loading-button";
@@ -186,12 +186,38 @@ function DetectFields({
   );
 }
 
+/**
+ * Form footer rule (matches WizardFooter): secondary/tertiary actions left,
+ * primary action right. Full-width primary on coarse pointers.
+ */
+export function ConfigFormFooter({
+  secondary,
+  primary,
+}: {
+  secondary?: ReactNode;
+  primary: ReactNode;
+}) {
+  return (
+    <div className="border-t pt-4">
+      <div className="flex items-center justify-between gap-3">
+        <span className="flex min-w-0 flex-1 justify-start md:flex-none">
+          {secondary}
+        </span>
+        <span className="flex min-w-0 flex-1 justify-end md:flex-none">
+          {primary}
+        </span>
+      </div>
+    </div>
+  );
+}
+
 export function AgentConfigForm({
   initialName,
   initialConfig,
   submitLabel,
   onSubmit,
   onChange,
+  footerSecondary,
 }: {
   initialName: string;
   initialConfig: AgentConfig;
@@ -199,6 +225,8 @@ export function AgentConfigForm({
   onSubmit: (name: string, config: AgentConfig) => Promise<void>;
   /** Fires on every edit, so a live test call can use the unsaved config. */
   onChange?: (config: AgentConfig) => void;
+  /** Optional secondary action rendered left of the primary save (e.g. Discard draft). */
+  footerSecondary?: ReactNode;
 }) {
   const [name, setName] = useState(initialName);
   const [config, setConfig] = useState<AgentConfig>(initialConfig);
@@ -556,26 +584,30 @@ export function AgentConfigForm({
         </CardContent>
       </Card>
 
-      <div className="flex items-center gap-3">
-        <LoadingButton
-          disabled={!name.trim()}
-          pending={saving}
-          pendingText="Saving…"
-          onClick={async () => {
-            setSaving(true);
-            try {
-              await onSubmit(name, config);
-            } catch (error) {
-              toast.add({ type: "error", title: "Could not save", description: error instanceof Error ? error.message : "Check your connection and try again.",
-              });
-            } finally {
-              setSaving(false);
-            }
-          }}
-        >
-          {submitLabel}
-        </LoadingButton>
-      </div>
+      <ConfigFormFooter
+        secondary={footerSecondary}
+        primary={
+          <LoadingButton
+            className="w-full md:w-auto pointer-coarse:min-h-11"
+            disabled={!name.trim()}
+            pending={saving}
+            pendingText="Saving…"
+            onClick={async () => {
+              setSaving(true);
+              try {
+                await onSubmit(name, config);
+              } catch (error) {
+                toast.add({ type: "error", title: "Could not save", description: error instanceof Error ? error.message : "Check your connection and try again.",
+                });
+              } finally {
+                setSaving(false);
+              }
+            }}
+          >
+            {submitLabel}
+          </LoadingButton>
+        }
+      />
     </div>
   );
 }

@@ -18,6 +18,7 @@ import type { AgentConfig } from "@/lib/agents/config";
 import type { JobJson } from "@/lib/jobs/serialize";
 import { useOptimisticJob } from "@/components/jobs/use-optimistic-job";
 import { retryAgentDeploymentAction, updateAgentAction } from "../actions";
+import { AgentDeleteButton } from "../delete-agent-button";
 
 export type DeploymentState = "draft" | "queued" | "deploying" | "ready" | "failed";
 
@@ -179,6 +180,9 @@ export function EditAgent({
         initialName={name}
         initialConfig={config}
         submitLabel="Save changes"
+        footerSecondary={
+          <AgentDeleteButton id={id} name={name} layout="full" redirectTo="/agents" />
+        }
         onChange={setCurrent}
         onSubmit={async (nextName, nextConfig) => {
           const result = await updateAgentAction(id, nextName, nextConfig);

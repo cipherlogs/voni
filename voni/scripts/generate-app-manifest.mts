@@ -45,6 +45,7 @@ const PHRASES: Record<string, string[]> = {
   "/campaigns": ["campaigns", "my campaigns"],
   "/campaigns/new": ["new campaign", "create campaign", "start a campaign"],
   "/leads": ["leads", "my leads", "lead list"],
+  "/calls": ["calls", "my calls", "call list", "call history"],
   "/numbers": ["phone numbers", "numbers", "calling numbers", "my numbers"],
   "/jobs": ["jobs", "background jobs", "job status"],
   "/settings": ["settings", "voice copilot", "voice control", "voice settings", "preferences"],
@@ -116,6 +117,11 @@ const EXAMPLES: Record<string, string[]> = {
     "Open leads",
     "Find a lead named Alex",
     "Read the lead list"
+  ],
+  "/calls": [
+    "Open calls",
+    "Show my call history",
+    "Read the call list"
   ],
   "/leads/[id]": [
     "Find a lead named Alex",

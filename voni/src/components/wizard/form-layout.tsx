@@ -85,6 +85,10 @@ export function FormCardSections({
  * takes remaining width on mobile via `w-full md:w-auto` on the button).
  * Normal document flow at the end of the form — a floating bar covered
  * scrolled content on this short 2-step form instead of helping.
+ *
+ * App-wide button rule: secondary/tertiary actions left, primary action
+ * right (`justify-between` / `justify-end`). ConfigFormFooter in
+ * agent-config-form.tsx follows the same rule for non-wizard forms.
  */
 export function WizardFooter({
   onBack,

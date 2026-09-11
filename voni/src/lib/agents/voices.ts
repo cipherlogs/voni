@@ -111,6 +111,19 @@ export const ACCENT_LABEL: Record<Voice["accent"], string> = {
   FR: "French",
 };
 
+/** Flag per accent, shown next to the accent label on voice cards. Emoji
+    only — no assets, no sizing classes (same convention as the language chips
+    above, which render `lang.flag` bare inside the toggle). */
+export const ACCENT_FLAG: Record<Voice["accent"], string> = {
+  US: "🇺🇸",
+  UK: "🇬🇧",
+  IT: "🇮🇹",
+  ES: "🇪🇸",
+  DE: "🇩🇪",
+  PT: "🇵🇹",
+  FR: "🇫🇷",
+};
+
 /** Voices grouped by the language they speak, for a grouped picker. */
 export function voicesByLanguage(): { language: string; code: string; voices: Voice[] }[] {
   const order = ["English", "Spanish", "French", "German", "Italian", "Portuguese"];

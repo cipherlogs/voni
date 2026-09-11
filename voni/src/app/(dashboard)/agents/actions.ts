@@ -1,9 +1,17 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { agents, backgroundJobs } from "@/lib/db/schema";
+import {
+  agents,
+  backgroundJobs,
+  calls,
+  campaigns,
+  phoneNumbers,
+  platformConfiguration,
+} from "@/lib/db/schema";
+import { deleteRemoteAgent } from "@/lib/agents/provision";
 import { requireCtx, requireCtxOrRedirect, type Ctx } from "@/lib/session";
 import {
   agentConfigSchema,
@@ -376,6 +384,160 @@ export async function retryAgentDeploymentAction(id: string): Promise<SaveResult
   );
   revalidatePath(`/agents/${id}`);
   return result;
+}
+
+export type DeleteResult = { ok: true } | { ok: false; message: string };
+
+/**
+ * Delete an agent and clean up everything it leaves behind, in this order:
+ *
+ *   1. Refuse when a campaign references the agent (campaigns.agent_id is NOT
+ *      NULL with no cascade — deleting the row would fail or strand work).
+ *   2. Cancel in-flight generation/deployment jobs first, so workers converge
+ *      instead of failing on a row that disappears mid-run.
+ *   3. Delete the remote AssemblyAI stored agent (DELETE /v1/agents/{id} ->
+ *      204; 404 means already gone and is fine). Any other remote failure
+ *      aborts before local data is touched, so the delete is safe to retry.
+ *   4. Null the nullable FKs (calls keep their history, numbers park
+ *      unbound). The bridge default stays null-safe via onDelete: set null.
+ *   5. Delete linked job rows (never by title — names are not unique), then
+ *      the agent row itself.
+ */
+export async function deleteAgentAction(id: string): Promise<DeleteResult> {
+  let ctx;
+  try {
+    ctx = await requireCtx();
+  } catch {
+    return { ok: false, message: "Sign in again to delete this agent." };
+  }
+
+  const [agent] = await db
+    .select()
+    .from(agents)
+    .where(and(eq(agents.id, id), eq(agents.organizationId, ctx.organizationId)))
+    .limit(1);
+  if (!agent) return { ok: false, message: "Agent not found." };
+
+  // Campaigns require an agent — deleting one that owns a campaign is out of
+  // scope, so refuse with the reason rather than stranding the campaign.
+  const [camp] = await db
+    .select({ id: campaigns.id, name: campaigns.name })
+    .from(campaigns)
+    .where(eq(campaigns.agentId, id))
+    .limit(1);
+  if (camp) {
+    return {
+      ok: false,
+      message: `${agent.name} is used by the campaign “${camp.name}”. Remove the campaign first, then delete the agent.`,
+    };
+  }
+
+  // In-flight jobs reference the row (generation placeholder, deployment
+  // lease, relatedId). Cancel queued/running ones so their processors see the
+  // cancellation and converge instead of failing on a missing agent.
+  const linkedJobs = await db
+    .select({ id: backgroundJobs.id, status: backgroundJobs.status })
+    .from(backgroundJobs)
+    .where(
+      and(
+        eq(backgroundJobs.organizationId, ctx.organizationId),
+        or(
+          eq(backgroundJobs.relatedId, id),
+          ...(agent.generationJobId
+            ? [eq(backgroundJobs.id, agent.generationJobId)]
+            : []),
+        ),
+      ),
+    );
+  for (const job of linkedJobs) {
+    if (job.status !== "queued" && job.status !== "running") continue;
+    if (job.status === "queued") {
+      await db
+        .update(backgroundJobs)
+        .set({
+          status: "cancelled",
+          errorCode: "cancelled",
+          errorMessage: "Cancelled: the agent was deleted.",
+          completedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(
+          and(eq(backgroundJobs.id, job.id), eq(backgroundJobs.status, "queued")),
+        );
+    } else {
+      await db
+        .update(backgroundJobs)
+        .set({ cancelRequested: true, updatedAt: new Date() })
+        .where(eq(backgroundJobs.id, job.id));
+    }
+  }
+
+  // Remote first: a failed remote delete keeps the local row so retry repairs
+  // the state instead of orphaning a live AssemblyAI agent.
+  if (agent.assemblyaiAgentId) {
+    const remote = await deleteRemoteAgent(agent.assemblyaiAgentId);
+    if (!remote.ok) {
+      if (remote.reason === "missing-key") {
+        console.warn(
+          `[agent-delete] AssemblyAI key missing — deleting local agent ${id} only.`,
+        );
+      } else {
+        return {
+          ok: false,
+          message:
+            remote.status === 401
+              ? "AssemblyAI refused the delete (check the API key), so nothing was removed. Fix the key and try again."
+              : "The voice agent could not be removed from AssemblyAI, so nothing was removed. Try again — the saved configuration is safe.",
+        };
+      }
+    }
+  }
+
+  // Preserve call history and registered numbers; they just lose the binding.
+  await db.update(calls).set({ agentId: null }).where(eq(calls.agentId, id));
+  await db
+    .update(phoneNumbers)
+    .set({ agentId: null })
+    .where(eq(phoneNumbers.agentId, id));
+
+  // Warn-shaped, not blocking: platform_configuration.bridge_agent_id has
+  // onDelete set null, so the DB clears it with the row — but the bridge then
+  // has no agent and its config route reports it missing.
+  const [bridge] = await db
+    .select({ bridgeAgentId: platformConfiguration.bridgeAgentId })
+    .from(platformConfiguration)
+    .limit(1);
+  const wasBridgeAgent = bridge?.bridgeAgentId === id;
+
+  // Linked job rows by id (relatedId + generation placeholder). Never by
+  // title — agent names are not unique, so a title match could erase another
+  // agent's jobs.
+  const jobIds = new Set(linkedJobs.map((job) => job.id));
+  if (agent.generationJobId) jobIds.add(agent.generationJobId);
+  for (const jobId of jobIds) {
+    await db
+      .delete(backgroundJobs)
+      .where(
+        and(
+          eq(backgroundJobs.id, jobId),
+          eq(backgroundJobs.organizationId, ctx.organizationId),
+        ),
+      );
+  }
+
+  await db
+    .delete(agents)
+    .where(and(eq(agents.id, id), eq(agents.organizationId, ctx.organizationId)));
+
+  revalidatePath("/agents");
+  revalidatePath(`/agents/${id}`);
+
+  if (wasBridgeAgent) {
+    console.warn(
+      `[agent-delete] deleted agent ${id} was the bridge default — Settings → Platform needs a new bridge agent.`,
+    );
+  }
+  return { ok: true };
 }
 
 export async function listAgents() {

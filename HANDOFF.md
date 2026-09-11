@@ -10,6 +10,75 @@ context/usage. Don't hand-edit the **Activity Log** — it's auto-generated.
 
 ## Status
 
+### Resume here (2026-09-11, voice card glides to center on selection)
+
+**Now:** Personality step voice carousel is center-mode: selecting any voice glides its card to center via Embla's native animated `scrollTo` (single call site in `selectVoice` — covers mouse + keyboard; `previewVoice` click handler deliberately scroll-free to avoid mid-glide jitter). `containScroll: false` so edge snaps (Alba/Paul) center too — caught live: default `trimSnaps` parked Paul at the track end. Mount jump is instant (`scrollTo(idx, true)`) so draft-restored selections open centered without animating; language switches need no scroll (resolved voice is always index 0). `prefers-reduced-motion` jumps instantly (JS `matchMedia` — global CSS can't reach Embla's JS animation). Verified: tsc/eslint clean, 259/259 tests (new asserts: `align: "center"`, `containScroll: false`, single `scrollTo` site, reduced-motion), `get_errors`/`get_compilation_issues` empty, runtime pass on live `next dev :3000` — Paul measured cx=509 vs viewport center 509, screenshot shows centered selected ring; keyboard Space selection centers (Vera cx=center); stop-preview re-click keeps position; reduced-motion emulation centers instantly; no console errors. `next dev` left running; browser session closed.
+**Next:** Standing items unchanged (E2E fixtures, postpone toolchain + locked `instant()` tests, owner-device voice, real Google sign-out, deployed Queue, 768/1440 sweep).
+**Why:** Selected voice sat off-center wherever it was — the eye hunted for the ring. Selection now lands where the eye rests.
+
+### Resume here (2026-09-11, recent-calls section + /calls index shipped)
+
+**Now:** `/agents` has a secondary Recent calls section (5 rows: lead + relative time + Inbound/Outbound badge, each linking to `/calls/[id]`); empty orgs get an explicit shadcn `Empty` ("No calls yet") instead of a missing section. New `/calls` index: 20-per-page table (Lead, Direction, Started, Duration), clamped `?page=`, Prev/Next, "No calls on this page" for overshot pages. Data via `listCalls`/`recentCalls` in `detail-data.ts` (org-scoped `calls`⨝`leads` join, `startedAt desc`); time labels are arithmetic-only (`relativeCallTime`/`callDuration`, no locale formatting, hydration-safe). Voice copilot manifest regenerated with `/calls` static route (PHRASES + EXAMPLES; title via existing `SECTION_TITLES` entry). Verified: tsc clean, eslint clean (1 unused import removed), 259/259 tests (new `calls-index.test.ts`: table shape, pagination, empty states, org-scoping, no-locale asserts; `app-guide.test.ts` 17→18 pages + `/calls` skip removed), `get_errors`/`get_compilation_issues` empty, runtime pass on live `next dev :3000` (section renders with Empty state, `/calls` + `?page=2` verified, no console errors). `next dev` left running; browser session closed.
+**Next:** Standing items unchanged (E2E fixtures, postpone toolchain + locked `instant()` tests, owner-device voice, real Google sign-out, deployed Queue, 768/1440 sweep).
+**Why:** The user asked where the recent-calls empty state is and wanted a view-all target — both now exist with no schema changes.
+
+### Resume here (2026-09-10, creation-polish pass: voice mockups + status/discard/save-dangers + button rule)
+
+**Now:** One coherent polish pass over agent creation/edit, awaiting the user's
+voice-mock pick. `VoiceField` gained 3 working variants behind temporary
+`?voiceMock=a|b|c` (`current` default; switch removed after pick): A polished
+carousel (selected ring + accent Badge), B radio rows (all voices visible, no
+carousel), C compact Select + preview card. Previewed all 3 live in the
+browser with screenshots. Generation working (<3s) + backgrounded panels
+unified into one `GenerationStatusCard` (stable border/actions, title-only
+swap, ~2 lines copy each) — no more mid-read layout jump; `useOptimisticJob`
+timing untouched. Review "Start over" → "Discard draft": moved into the
+`ConfigFormFooter` (secondary left, Save right), gated behind a Dialog
+confirm; dismiss-then-strip ordering kept. Save is right-aligned everywhere
+via `ConfigFormFooter` (new shared footer, same rule as `WizardFooter`,
+rule documented in `form-layout.tsx`); detail Danger zone pushed down with
+a `Separator`, muted `border-destructive/20`, right-aligned delete.
+Verified: tsc/eslint clean, 258/258 tests (updated `wizard.test.ts` status
+asserts + `shared-ui.test.ts` VoiceField guards for the mock ring), framework
+`get_compilation_issues` empty, runtime pass on live `next dev :3000`
+(mockups render + preview buttons, detail save/danger spacing screenshot).
+Known pre-existing note (unchanged): `/agents/new` hydration flag is the
+TimelineBar server-step vs localStorage cached-step mismatch on restore
+visits — fresh profile is clean, self-heals, no impact.
+**Next:** User picks voice mock (A/B/C) → delete other two + `?voiceMock`
+switch; same owner/device/cred-bound items as below (E2E fixtures,
+postpone toolchain + 8 locked `instant()` tests, owner-device voice, real
+Google sign-out, deployed Queue, 768/1440 sweep).
+**Why:** The five named polish gaps (voice section, double wordy
+confirmations, confusing Start over, Save-on-Danger, wandering button
+alignment) are closed in one shadcn-only pass with durability semantics
+untouched.
+
+### Resume here (2026-09-10, agent delete shipped + runtime-verified)
+
+**Now:** `/agents` rows and the agent detail page both have delete. List rows
+show a trash icon (sibling above the stretched-link overlay, `relative z-10`;
+placeholders skip delete while their generation job owns the row); the detail
+page has a Danger-zone card returning to `/agents`. Both go through a confirm
+dialog naming the agent and its consequences, then `deleteAgentAction`:
+campaign-block with the campaign name, cancel in-flight jobs first, remote
+`DELETE /v1/agents/{id}` (204 gone / 404 already-gone; any other failure keeps
+the local row so retry is safe), null `calls`/`phone_numbers` FKs (history and
+numbers survive), delete linked job rows by id (never title-ILIKE), delete the
+row, revalidate `/agents` + `/agents/[id]`. Missing AssemblyAI key proceeds
+local-only with a server warning. Verified: tsc/eslint clean, 258/258 tests
+(17 new: remote-delete mapping + hygiene/source-contract asserts), framework
+`get_compilation_issues`/`get_errors` empty, and a real browser delete of
+"Rela Tester" (owner-approved) removed the row with no console errors. First
+confirm click silently missed (stale ref after dialog open); fresh-ref retry
+succeeded — no code issue.
+**Next:** Same owner/device/cred-bound items as the block below (E2E fixtures,
+postpone toolchain + 8 locked `instant()` tests, owner-device voice, real
+Google sign-out, deployed Queue, 768/1440 sweep).
+**Why:** Deleting previously needed the one-off
+`voni/scripts/cleanup-loop-test-agent.mts`; the same hygiene now ships in-app
+with guard rails, tests, and runtime proof.
+
 ### Resume here (2026-09-10, next-dev-loop runtime pass on merged main)
 
 **Now:** Full next-dev-loop verification of merged `main` (PR4 durable generation + PR3
@@ -2409,3 +2478,107 @@ destination (1e).
 - 2026-09-10T19:54:29Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/HANDOFF.md
 - 2026-09-10T20:01:14Z [Write] /home/cipherlogs/Repos/AI/leadcalls/voni/scripts/cleanup-loop-test-agent.mts
 - 2026-09-10T20:20:32Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/HANDOFF.md
+- 2026-09-10T20:41:49Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/lib/agents/provision.ts
+- 2026-09-10T20:42:39Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/actions.ts
+- 2026-09-10T20:42:53Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/actions.ts
+- 2026-09-10T20:42:58Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/actions.ts
+- 2026-09-10T20:43:57Z [Write] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/delete-agent-button.tsx
+- 2026-09-10T20:44:10Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/page.tsx
+- 2026-09-10T20:44:22Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/page.tsx
+- 2026-09-10T20:44:26Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/[id]/edit-agent.tsx
+- 2026-09-10T20:44:30Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/[id]/edit-agent.tsx
+- 2026-09-10T20:45:43Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/lib/agents/provision.ts
+- 2026-09-10T20:45:49Z [Write] /home/cipherlogs/Repos/AI/leadcalls/voni/src/lib/agents/provision.test.ts
+- 2026-09-10T20:46:44Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/lib/agents/provision.ts
+- 2026-09-10T20:46:53Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/lib/agents/provision.test.ts
+- 2026-09-10T20:46:53Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/actions.ts
+- 2026-09-10T20:48:00Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/package.json
+- 2026-09-10T20:48:06Z [Write] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/actions.delete.test.ts
+- 2026-09-10T20:48:14Z [Write] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/delete-agent-button.test.tsx
+- 2026-09-10T20:48:30Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/package.json
+- 2026-09-10T20:48:37Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/package.json
+- 2026-09-10T21:05:18Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/HANDOFF.md
+- 2026-09-10T21:42:15Z [Write] /home/cipherlogs/.claude/plans/when-creating-a-new-peaceful-micali.md
+- 2026-09-10T21:48:09Z [Edit] /home/cipherlogs/.claude/plans/when-creating-a-new-peaceful-micali.md
+- 2026-09-10T21:51:02Z [Write] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/wizard/voice-field.tsx
+- 2026-09-10T21:51:11Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/wizard/conversation-picker.tsx
+- 2026-09-10T21:51:11Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/wizard/conversation-picker.tsx
+- 2026-09-10T21:51:22Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/wizard/conversation-picker.tsx
+- 2026-09-10T21:51:22Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/agent-wizard/wizard-step-bodies.tsx
+- 2026-09-10T21:51:22Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/agent-wizard/wizard-step-bodies.tsx
+- 2026-09-10T21:51:22Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/agent-wizard/wizard-step-bodies.tsx
+- 2026-09-10T21:51:45Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/new/page.tsx
+- 2026-09-10T21:51:52Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/new/page.tsx
+- 2026-09-10T21:51:52Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/new/page.tsx
+- 2026-09-10T21:51:53Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/new/page.tsx
+- 2026-09-10T21:52:30Z [Write] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/agent-wizard/generation-notice.tsx
+- 2026-09-10T21:52:39Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/agent-wizard/wizard-step-bodies.tsx
+- 2026-09-10T21:52:39Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/agent-wizard/wizard-step-bodies.tsx
+- 2026-09-10T21:52:39Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/agent-wizard/wizard.test.ts
+- 2026-09-10T21:53:25Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/agent-config-form.tsx
+- 2026-09-10T21:53:32Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/agent-config-form.tsx
+- 2026-09-10T21:53:37Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/agent-config-form.tsx
+- 2026-09-10T21:54:19Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/new/page.tsx
+- 2026-09-10T21:54:27Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/new/page.tsx
+- 2026-09-10T21:54:44Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/[id]/edit-agent.tsx
+- 2026-09-10T21:54:44Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/[id]/edit-agent.tsx
+- 2026-09-10T21:55:10Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/wizard/form-layout.tsx
+- 2026-09-10T21:57:38Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/wizard/shared-ui.test.ts
+- 2026-09-10T21:57:49Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/wizard/shared-ui.test.ts
+- 2026-09-10T22:15:38Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/[id]/edit-agent.tsx
+- 2026-09-10T22:17:51Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/HANDOFF.md
+- 2026-09-10T22:54:42Z [Edit] /home/cipherlogs/.claude/plans/when-creating-a-new-peaceful-micali.md
+- 2026-09-10T23:03:35Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/lib/agents/voices.ts
+- 2026-09-10T23:03:45Z [Write] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/wizard/voice-avatar.tsx
+- 2026-09-10T23:03:59Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/globals.css
+- 2026-09-10T23:04:56Z [Write] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/wizard/voice-field.tsx
+- 2026-09-10T23:05:11Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/wizard/conversation-picker.tsx
+- 2026-09-10T23:05:15Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/wizard/conversation-picker.tsx
+- 2026-09-10T23:05:24Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/wizard/conversation-picker.tsx
+- 2026-09-10T23:05:24Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/agent-wizard/wizard-step-bodies.tsx
+- 2026-09-10T23:05:24Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/agent-wizard/wizard-step-bodies.tsx
+- 2026-09-10T23:05:24Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/agent-wizard/wizard-step-bodies.tsx
+- 2026-09-10T23:05:25Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/new/page.tsx
+- 2026-09-10T23:05:25Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/new/page.tsx
+- 2026-09-10T23:05:25Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/new/page.tsx
+- 2026-09-10T23:05:25Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/new/page.tsx
+- 2026-09-10T23:05:36Z [Write] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/delete-agent-button.tsx
+- 2026-09-10T23:05:44Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/[id]/edit-agent.tsx
+- 2026-09-10T23:05:44Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/[id]/edit-agent.tsx
+- 2026-09-10T23:05:44Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/[id]/edit-agent.tsx
+- 2026-09-10T23:05:54Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/delete-agent-button.test.tsx
+- 2026-09-10T23:05:54Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/delete-agent-button.test.tsx
+- 2026-09-10T23:05:54Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/wizard/shared-ui.test.ts
+- 2026-09-10T23:07:23Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/wizard/voice-field.tsx
+- 2026-09-10T23:16:16Z [Edit] /home/cipherlogs/.claude/plans/when-creating-a-new-peaceful-micali.md
+- 2026-09-10T23:32:33Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/lib/copilot/detail-data.ts
+- 2026-09-10T23:32:50Z [Write] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/calls/recent-calls.tsx
+- 2026-09-10T23:32:50Z [Write] /home/cipherlogs/Repos/AI/leadcalls/voni/src/lib/calls/format.ts
+- 2026-09-10T23:33:09Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/page.tsx
+- 2026-09-10T23:33:09Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/page.tsx
+- 2026-09-10T23:33:30Z [Write] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/calls/page.tsx
+- 2026-09-10T23:33:36Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/calls/page.tsx
+- 2026-09-10T23:33:43Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/calls/page.tsx
+- 2026-09-10T23:40:46Z [Edit] /home/cipherlogs/.claude/plans/when-creating-a-new-peaceful-micali.md
+- 2026-09-10T23:41:27Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/calls/page.tsx
+- 2026-09-10T23:41:27Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/calls/page.tsx
+- 2026-09-10T23:41:33Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/calls/page.tsx
+- 2026-09-10T23:41:39Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/scripts/generate-app-manifest.mts
+- 2026-09-10T23:41:39Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/scripts/generate-app-manifest.mts
+- 2026-09-10T23:42:32Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/lib/copilot/app-guide.test.ts
+- 2026-09-10T23:42:42Z [Write] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/calls/calls-index.test.ts
+- 2026-09-10T23:47:53Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/calls/page.tsx
+- 2026-09-10T23:48:42Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/lib/copilot/app-guide.test.ts
+- 2026-09-11T00:01:59Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/HANDOFF.md
+- 2026-09-11T01:04:12Z [Edit] /home/cipherlogs/.claude/plans/when-creating-a-new-peaceful-micali.md
+- 2026-09-11T01:05:23Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/wizard/voice-field.tsx
+- 2026-09-11T01:05:32Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/wizard/voice-field.tsx
+- 2026-09-11T01:05:33Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/wizard/voice-field.tsx
+- 2026-09-11T01:05:33Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/wizard/voice-field.tsx
+- 2026-09-11T01:05:43Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/wizard/shared-ui.test.ts
+- 2026-09-11T01:06:55Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/wizard/shared-ui.test.ts
+- 2026-09-11T01:10:25Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/wizard/voice-field.tsx
+- 2026-09-11T01:12:45Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/wizard/shared-ui.test.ts
+- 2026-09-11T01:12:45Z [Edit] /home/cipherlogs/.claude/plans/when-creating-a-new-peaceful-micali.md
+- 2026-09-11T01:14:47Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/HANDOFF.md
+- 2026-09-11T11:31:46Z [Write] /home/cipherlogs/.claude/plans/restart-the-server-and-idempotent-hopcroft.md
