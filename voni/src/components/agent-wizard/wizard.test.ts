@@ -183,7 +183,11 @@ test("agents/new review saves as shown — voice folds at result, save is verbat
   // lands (submit-time echo wins, live draft covers brief-only jobs), so the
   // reviewed config is the saved config — no silent overwrite in save().
   assert.ok(pageSource.includes("languageCodes: [conversationLanguage]"));
-  assert.ok(pageSource.includes("createAgentAction(name, config, {"));
+  // Twin-via-insert guard: the review save upgrades the placeholder in place
+  // via updateAgentAction; plain insert is only the no-placeholder fallback
+  // (template drafts).
+  assert.ok(pageSource.includes("updateAgentAction(placeholder.id, name, config, {"));
+  assert.ok(pageSource.includes("createAgentAction(name, config)"));
   // The old save-time overwrite is gone (the remaining wiz.draft.voiceId
   // reference is the placeholder snapshot, not the save path).
   assert.ok(!pageSource.includes("const merged: AgentConfig"));
@@ -192,19 +196,23 @@ test("agents/new review saves as shown — voice folds at result, save is verbat
   );
 });
 
-test("agents/new generates and reviews in place — never navigates to a draft", () => {
+test("agents/new starts generation and keeps the ?job= review pointer", () => {
   const pageSource = readFileSync(
     join(dirname(fileURLToPath(import.meta.url)), "../../app/(dashboard)/agents/new/page.tsx"),
     "utf8",
   );
-  // Generation stays in the wizard: inline progress, then review on this
-  // page, then Save. No draft row is created up front.
+  // Generation starts in the wizard and is reviewed right here on this page:
+  // no draft row is created up front.
   assert.ok(!pageSource.includes("createDraftAgentAction"));
   assert.ok(!pageSource.includes("pendingAgentId"));
-  // The job pointer survives in the URL: a reload re-attaches via the ?job=
-  // restore path instead of orphaning the job. Start over strips it (with a
-  // dismissed-job guard covering the render window before the strip lands)
-  // so the cleared review can't re-seed from the same job.
+  // Saving a reviewed draft lands on the detail page via the created id.
+  assert.ok(
+    pageSource.includes("`/agents/${") || pageSource.includes("targetUrl"),
+  );
+  // The ?job= pointer is kept as the canonical review-consumption path: a
+  // reload re-attaches via the ?job= restore instead of orphaning the job
+  // (PR4). "Back to editing" dismisses the review locally (dismiss guard +
+  // pointer strip); the job and its placeholder row survive that dismiss.
   assert.ok(pageSource.includes("router.replace(`/agents/new?job=${started.jobId}`)"));
   assert.ok(pageSource.includes('router.replace("/agents/new")'));
   assert.ok(pageSource.includes("dismissedJobId"));
@@ -213,25 +221,60 @@ test("agents/new generates and reviews in place — never navigates to a draft",
   assert.ok(pageSource.includes("submitting"));
   assert.ok(pageSource.includes("wiz.step === 1 && !submitting"));
   assert.ok(pageSource.includes("submitting ? null : wiz.step === 0 ?"));
-  // Generate creates the list placeholder up front (best-effort); saving
-  // upgrades it by job id so ?job= restores don't twin the row.
+  // Generate creates the list placeholder up front (best-effort) so the
+  // detail page has a row to render while the job runs. Saving from this
+  // page's reviewed draft upgrades it by job id (matched server-side, so
+  // ?job= restores work too) rather than always inserting a fresh row.
   assert.ok(pageSource.includes("ensureGenerationPlaceholderAction"));
-  assert.ok(pageSource.includes("generationJobId: generation.jobId ?? restoreJobId"));
-  // ?job= returns reseed the wizard from the placeholder (gated so review
-  // mounts with the name/voice/language intact), falling back to the
-  // generated identity name when there is no placeholder.
+  assert.ok(pageSource.includes("generation.jobId ?? restoreJobId"));
+  assert.ok(pageSource.includes("await getGenerationPlaceholderAction(jobId)"));
+  // The ?job= restore path lives here: placeholder reseed, seeded review
+  // gate, identity-name fallback for the review form.
   assert.ok(pageSource.includes("getGenerationPlaceholderAction"));
   assert.ok(pageSource.includes("if (draft && seeded)"));
   assert.ok(pageSource.includes("wiz.draft.agentName || draft.identity.name"));
-  // Failed restores jump to step 1 so the error is seen, not stranded.
-  assert.ok(pageSource.includes('wiz.setStep(1);'));
-  // Seeding is unconditional: the job watcher routinely settles first (its
-  // first poll already sees a terminal job), which runs effect cleanup — a
-  // cancelled-guarded setSeeded would leave `seeded` false forever and hide
-  // a ready review behind the wizard.
-  assert.ok(!pageSource.includes("if (!cancelled) setSeeded(true)"));
+  assert.ok(pageSource.includes("setSeeded(true)"));
   // The loading skeleton mirrors the real creator shape, not bare text.
   assert.ok(pageSource.includes("NewAgentSkeleton"));
+});
+
+test("generation review is consumed on agents/new?job=; the detail links back, save upgrades", () => {
+  const dir = dirname(fileURLToPath(import.meta.url));
+  const detailSource = readFileSync(
+    join(dir, "../../app/(dashboard)/agents/[id]/page.tsx"),
+    "utf8",
+  );
+  const editSource = readFileSync(
+    join(dir, "../../app/(dashboard)/agents/[id]/edit-agent.tsx"),
+    "utf8",
+  );
+  const newSource = readFileSync(
+    join(dir, "../../app/(dashboard)/agents/new/page.tsx"),
+    "utf8",
+  );
+  // The detail leaf resolves the row's live generation state (badge + review
+  // gating derive from it, never a stored flag).
+  assert.ok(detailSource.includes("getAgentWithGeneration"));
+  // The ?job= restore path lives on agents/new (placeholder snapshot reseed
+  // + echoed submit-time wizardDraft), not on the detail/edit side.
+  assert.ok(newSource.includes("getGenerationPlaceholderAction"));
+  assert.ok(newSource.includes("wizardDraft"));
+  assert.ok(!editSource.includes("getGenerationPlaceholderAction"));
+  // This page never consumes the generated config itself (no
+  // applyResult-style result handling here — its generation watcher tracks
+  // status/copy only) — the detail edit form shows the placeholder, and the
+  // ready banner links to the canonical ?job= review on agents/new instead of
+  // implying the form below holds the result.
+  assert.ok(editSource.includes("generationJobId"));
+  assert.ok(editSource.includes("/agents/new?job=${generationJobId}"));
+  assert.ok(!editSource.includes("applyResult"));
+  assert.ok(!editSource.includes("result?.config"));
+  assert.ok(!editSource.includes("setDraft("));
+  // Saves from either side upgrade the placeholder in place by job id — via
+  // updateAgentAction with the generationJobId opt, not createAgentAction.
+  assert.ok(editSource.includes("updateAgentAction"));
+  assert.ok(editSource.includes("generationJobId"));
+  assert.ok(!editSource.includes("createAgentAction"));
 });
 
 test("generationIdempotencyKey is stable per brief, distinct across briefs", () => {
@@ -287,6 +330,74 @@ test("agents/new submits wizardDraft + stable key; processor echoes; guard dedup
   const startSource = readFileSync(join(dir, "../../lib/jobs/start.ts"), "utf8");
   assert.ok(startSource.includes('kind === "agent_generation"'));
   assert.ok(startSource.includes('"agent_generation",'));
+});
+
+test("failed generation keeps a wizard retry path: job routes to ?job=, detail banner shows the error and links back", () => {
+  const dir = dirname(fileURLToPath(import.meta.url));
+  const storeSource = readFileSync(
+    join(dir, "../../lib/jobs/store.ts"),
+    "utf8",
+  );
+  const editSource = readFileSync(
+    join(dir, "../../app/(dashboard)/agents/[id]/edit-agent.tsx"),
+    "utf8",
+  );
+  const detailSource = readFileSync(
+    join(dir, "../../app/(dashboard)/agents/[id]/page.tsx"),
+    "utf8",
+  );
+  const actionsSource = readFileSync(
+    join(dir, "../../app/(dashboard)/agents/actions.ts"),
+    "utf8",
+  );
+  // failJob rewrites the target back to the wizard restore URL for
+  // agent_generation jobs, so job-center/toast/pill "View" lands on the
+  // wizard error path (message, guidance, step jump, retry).
+  assert.ok(storeSource.includes("`/agents/new?job=${id}`"));
+  assert.ok(storeSource.includes('job?.kind === "agent_generation"'));
+  // The detail leaf carries the sanitized failure message through to the
+  // did-not-finish banner, which shows it and links back to the wizard
+  // ?job= retry path instead of only to /jobs.
+  assert.ok(actionsSource.includes("generationError"));
+  assert.ok(actionsSource.includes("errorMessage: backgroundJobs.errorMessage"));
+  assert.ok(detailSource.includes("generationError"));
+  assert.ok(editSource.includes("generationError"));
+  assert.ok(editSource.includes("Retry in the wizard"));
+  assert.ok(editSource.includes("/agents/new?job=${generationJobId}"));
+});
+
+test("saved generation jobs are consumed: back-nav to ?job= strips instead of re-seeding", () => {
+  const dir = dirname(fileURLToPath(import.meta.url));
+  const pageSource = readFileSync(
+    join(dir, "../../app/(dashboard)/agents/new/page.tsx"),
+    "utf8",
+  );
+  const helperSource = readFileSync(join(dir, "use-wizard-draft.ts"), "utf8");
+  // Consumed-set helper lives next to clearWizardDraftCache (sessionStorage:
+  // survives back-nav + reload in-tab, never leaks across tabs).
+  assert.ok(helperSource.includes("CONSUMED_JOBS_KEY"));
+  assert.ok(helperSource.includes("export function isJobConsumed"));
+  assert.ok(helperSource.includes("export function markJobConsumed"));
+  assert.ok(helperSource.includes("sessionStorage"));
+  // save() records the consumed job id (placeholder upgrades only — template
+  // plain inserts carry no jobId) and arms the in-memory dismiss guard too.
+  assert.ok(pageSource.includes("markJobConsumed(jobId)"));
+  // Restore effect checks the consumed set first and strips the stale pointer
+  // instead of running trackExternal/applyResult on it.
+  assert.ok(pageSource.includes("isJobConsumed(restoreJobId)"));
+  const restoreEffect = pageSource.slice(pageSource.indexOf("isJobConsumed(restoreJobId)"));
+  assert.ok(restoreEffect.includes('router.replace("/agents/new")'));
+  // Single-upgrade-owner invariant holds: create still never looks up or
+  // clears job ids.
+  const actionsSource = readFileSync(
+    join(dir, "../../app/(dashboard)/agents/actions.ts"),
+    "utf8",
+  );
+  const createFn = actionsSource.slice(
+    actionsSource.indexOf("export async function createAgentAction"),
+    actionsSource.indexOf("export async function ensureGenerationPlaceholderAction"),
+  );
+  assert.ok(!createFn.includes("eq(agents.generationJobId"));
 });
 
 test("wizard footer is static flow — no stuck overlay, no reserve hack", () => {

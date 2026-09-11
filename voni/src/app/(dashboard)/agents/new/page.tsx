@@ -6,16 +6,6 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { toast } from "@/components/ui/toast";
 import { ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogClose,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog";
 import { AgentConfigForm } from "@/components/agent-config-form";
 import { LoadingButton } from "@/components/loading-button";
 import { ManualLlmGuidance } from "@/components/manual-llm-guidance";
@@ -39,7 +29,11 @@ import {
 } from "@/lib/copilot/wizard-tools";
 import { useWizardDraft } from "@/components/agent-wizard/use-wizard-draft";
 import type { WizardDraft } from "@/components/agent-wizard/use-wizard-draft";
-import { clearWizardDraftCache } from "@/components/agent-wizard/use-wizard-draft";
+import {
+  clearWizardDraftCache,
+  isJobConsumed,
+  markJobConsumed,
+} from "@/components/agent-wizard/use-wizard-draft";
 import {
   composeBrief,
   generationIdempotencyKey,
@@ -61,7 +55,9 @@ import {
   createAgentAction,
   ensureGenerationPlaceholderAction,
   getGenerationPlaceholderAction,
+  updateAgentAction,
 } from "../actions";
+import { AgentDeleteButton } from "../delete-agent-button";
 
 /**
  * Guided agent creation: two steps build a structured draft (type it here,
@@ -90,6 +86,9 @@ function NewAgentInner({
   // ?job= visits wait for the placeholder snapshot before showing review so
   // the name field and voice/language (mount-once form state) are seeded.
   const [seeded, setSeeded] = useState(restoreJobId === null);
+  // Placeholder row id for the review footer delete (never-provisioned draft).
+  const [placeholderId, setPlaceholderId] = useState<string | null>(null);
+  const [placeholderName, setPlaceholderName] = useState<string | null>(null);
   // Jobs the user walked away from via Start over: never re-seed from them,
   // even in the render window before the URL strip propagates.
   const [dismissedJobId, setDismissedJobId] = useState<string | null>(null);
@@ -183,6 +182,20 @@ function NewAgentInner({
 
   useEffect(() => {
     if (!restoreJobId || draft || restoreJobId === dismissedJobId) return;
+    // Browser Back after a save lands on the stale ?job= pointer with fresh
+    // in-memory state (dismissedJobId is lost on remount). The placeholder is
+    // already upgraded and its generationJobId cleared, so re-seeding here
+    // would resurrect a review with no placeholder behind it — and saving that
+    // review would twin the row via a plain insert. Saved job ids stay in a
+    // tab-persistent consumed set (see markJobConsumed in save); strip the
+    // stale pointer instead of restoring it.
+    if (isJobConsumed(restoreJobId)) {
+      // No setState here (react-hooks/set-state-in-effect): the replace
+      // remounts with restoreJobId=null, which resets restoring/seeded via
+      // their initializers. Navigation away is the guard.
+      router.replace("/agents/new");
+      return;
+    }
     // Returning from the list (or a reload) wipes the in-memory wizard, but
     // the placeholder kept what was submitted: seed it back, but only over a
     // pristine draft so real edits are never clobbered.
@@ -190,6 +203,8 @@ function NewAgentInner({
     void getGenerationPlaceholderAction(restoreJobId)
       .then((ph) => {
         if (cancelled || !ph) return;
+        setPlaceholderId(ph.id);
+        setPlaceholderName(ph.name);
         if (isPristineDraft(wiz.draftRef.current)) {
           wiz.edit(
             {
@@ -311,7 +326,7 @@ function NewAgentInner({
     // Best-effort list row so /agents shows the draft while it generates.
     // Generation continues if this fails; saving still works (plain insert).
     try {
-      await ensureGenerationPlaceholderAction({
+      const placeholder = await ensureGenerationPlaceholderAction({
         jobId: started.jobId,
         name: wiz.draft.agentName.trim() || "Untitled agent",
         voiceId: wiz.draft.voiceId,
@@ -320,6 +335,11 @@ function NewAgentInner({
         tasks: wiz.draft.tasks,
         styleTraits: wiz.draft.styleTraits,
       });
+      if (placeholder.ok) {
+        setPlaceholderId(placeholder.id);
+        // Mirror the server fallback so the delete dialog names the real row.
+        setPlaceholderName(wiz.draft.agentName.trim() || "Untitled agent");
+      }
     } catch {
       // Placeholder is a courtesy — never fail generation over it.
     }
@@ -340,16 +360,30 @@ function NewAgentInner({
   const save = async (name: string, config: AgentConfig) => {
     // Review saves as shown (PR4): the wizard's voice + language were folded
     // into the review draft when the result landed, so this persists verbatim.
-    const result = await createAgentAction(name, config, {
-      // Upgrades the generation placeholder in place when one exists for
-      // this job (matched by job id, so ?job= restores work too).
-      generationJobId: generation.jobId ?? restoreJobId ?? undefined,
-    });
+    // Twin-via-insert guard: createAgentAction always inserts (it ignores
+    // generationJobId), so a placeholder save must upgrade in place via
+    // updateAgentAction. Resolve the placeholder id from restoreJobId/jobId
+    // through getGenerationPlaceholderAction (which returns the row id);
+    // plain insert stays only for template drafts with no placeholder.
+    const jobId = generation.jobId ?? restoreJobId ?? null;
+    const placeholder =
+      jobId !== null ? await getGenerationPlaceholderAction(jobId) : null;
+    const result =
+      placeholder !== null
+        ? await updateAgentAction(placeholder.id, name, config, {
+            generationJobId: jobId ?? undefined,
+          })
+        : await createAgentAction(name, config);
     if (!result.ok) {
       toast.add({ type: "error", title: result.message });
       return;
     }
     clearWizardDraftCache();
+    // Record placeholder-upgrade saves so a browser Back to the stale ?job=
+    // pointer strips it instead of re-seeding a review that would twin on
+    // save. Template-draft plain inserts carry no jobId and skip this.
+    if (placeholder !== null && jobId !== null) markJobConsumed(jobId);
+    setDismissedJobId(jobId);
     if (result.deployment === "attention") {
       router.push(`/agents/${result.id}?deployment=attention`);
       return;
@@ -536,44 +570,38 @@ function NewAgentInner({
           submitLabel="Save agent"
           onSubmit={save}
           footerSecondary={
-            <Dialog>
-              <DialogTrigger
-                render={<Button variant="ghost" size="sm" />}
+            <span className="flex flex-wrap items-center gap-2">
+              {placeholderId ? (
+                <AgentDeleteButton
+                  id={placeholderId}
+                  name={placeholderName || draft.identity.name}
+                  layout="full"
+                  redirectTo="/agents"
+                  neverProvisioned
+                />
+              ) : null}
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  clearWizardDraftCache();
+                  // Dismiss first: the render window before the URL strip
+                  // propagates would otherwise re-seed from the same job.
+                  setDismissedJobId(generation.jobId ?? restoreJobId);
+                  setDraft(null);
+                  // Drop the job pointer too: otherwise the ?job= restore
+                  // effect re-seeds the just-cleared review on next render.
+                  // (PR4 keeps ?job= in the URL after submit, so this path is
+                  // now the default, not just a restore-visit edge.) This is
+                  // a local view-dismiss only — the placeholder row stays and
+                  // is removed via the delete button above.
+                  router.replace("/agents/new");
+                }}
               >
-                Discard draft
-              </DialogTrigger>
-              <DialogContent>
-                <DialogHeader>
-                  <DialogTitle>Discard this draft?</DialogTitle>
-                  <DialogDescription>
-                    The generated configuration is thrown away and the
-                    creator resets. Nothing saved is touched.
-                  </DialogDescription>
-                </DialogHeader>
-                <DialogFooter>
-                  <DialogClose render={<Button variant="outline" />}>
-                    Cancel
-                  </DialogClose>
-                  <DialogClose
-                    render={<Button variant="destructive" />}
-                    onClick={() => {
-                      clearWizardDraftCache();
-                      // Dismiss first: the render window before the URL strip
-                      // propagates would otherwise re-seed from the same job.
-                      setDismissedJobId(generation.jobId ?? restoreJobId);
-                      setDraft(null);
-                      // Drop the job pointer too: otherwise the ?job= restore
-                      // effect re-seeds the just-cleared review on next render.
-                      // (PR4 keeps ?job= in the URL after submit, so this path is
-                      // now the default, not just a restore-visit edge.)
-                      router.replace("/agents/new");
-                    }}
-                  >
-                    Discard draft
-                  </DialogClose>
-                </DialogFooter>
-              </DialogContent>
-            </Dialog>
+                Back to editing
+              </Button>
+            </span>
           }
         />
       </div>

@@ -10,6 +10,30 @@ context/usage. Don't hand-edit the **Activity Log** — it's auto-generated.
 
 ## Status
 
+### Resume here (2026-09-11, full gates green + honest gap closed, uncommitted)
+
+**Now:** Full gates on the tree (uncommitted): tsc clean, eslint clean on all touched source + test files, 278/278 tests (was 271 — the 7 new are `calls-index.test.ts`, which existed on disk but was never wired into `npm test` and failed standalone with ENOENT: its `../../components` relative depth lands in nonexistent `src/app/components/`; fixed to `../../../` and wired into the `test` script alongside the `test:delete-race` script). Race sim run live: `npm run test:delete-race` ALL SCENARIOS PASSED (`simPassed`, `discriminatorProven`, `cleanupOk` all true, 3 scratch jobs + 2 scratch agents cleaned, zero leftovers). Variant A: mid-window deployment job enqueued at t+355ms inside the stubbed 2000ms remote-delete window, after the first cancel pass — the post-remote fresh-discovery resweep caught it (absent after terminal hard-delete; a frozen id-set would have left it queued). Variant B: stubbed remote 500 aborts with ok:false, agent row kept, job row survives. Known harness artifact (logged, not swallowed): `revalidatePath` throws in plain node post-delete (static generation store missing) — DB state asserted either way. Dev-stop for the sim precondition was denied by the shell classifier, so safety was verified from code instead: the sim uses `createJob` directly (no enqueue, no inline dispatch), missed-job recovery needs queued rows older than 45s plus the worker-secret sweep route, and sim rows live ~2s and are cancelled first — dev stayed alive throughout (PID 2596341, `/dashboard` 200 after the run).
+**Next:** Work uncommitted. Standing items unchanged (E2E fixtures, postpone toolchain + locked `instant()` tests, owner-device voice, real Google sign-out, deployed Queue, 768/1440 sweep). Honest gap from the prior entry is closed: the resweep race is proven by sim with a real discriminator, and the toast suppression is pinned by the `ui-helpers` case table (16 pathname/kind/status cases incl. the `/agents/new` exclusion) plus the provider-wiring test. Residual color, not a gap: the sim stubs AssemblyAI fetch (204/500) — one live pass against a real provisioned agent (real delete + real browser toast count) is still worth doing when a provisioned agent is in play.
+**Why:** The prior entry's own caveat — sim-unproven resweep, source-text-only toast assert — no longer holds; what remains is live-provisioned confirmation, which needs owner-side credentials, not more unit evidence.
+
+### Resume here (2026-09-11, 3 minors fixed + verified, uncommitted)
+
+**Now:** All three third-pass minors fixed in the tree (uncommitted), gates green: (1) back-nav re-twin — sessionStorage consumed-set (`voni:wizard-consumed-jobs`, helpers in `use-wizard-draft.ts`); save records the consumed job id + arms the in-memory dismiss; the restore effect strips a consumed `?job=` via `router.replace` instead of re-seeding (lint forced this shape — no setState-in-effect; the replace remounts with `restoreJobId=null`); (2) delete resweep — fresh `relatedId` + fresh `generationJobId` discovery after the remote delete, cancel pass over the union, then terminal-only hard-delete (old frozen-`inArray` `resweepRows` block removed; micro-window after sweep accepted); (3) detail double toast — provider `notify()` suppresses `agent_deployment` succeeded on `/agents/<id>` (regex excludes `/agents/new`; errors stay global). Verified: tsc clean, eslint clean, 272/272 tests (new `jobs-provider.test.ts` wired into `npm test`; its path-pattern test caught `/agents/new` matching the first regex — tightened with `(?!new$)`). Runtime pass on live `next dev :3000` (Next 16.3.4, agent-browser 0.36.0): consumed-guard probe (seeded id → `?job=` stripped to `/agents/new`, fresh wizard, probe key cleaned), Review Sara detail renders with review link, console HMR-only, `get_errors`/`get_compilation_issues` empty. `next dev` left running; browser session closed.
+**Next:** Work uncommitted. Standing items unchanged (E2E fixtures, postpone toolchain + locked `instant()` tests, owner-device voice, real Google sign-out, deployed Queue, 768/1440 sweep). Honest gap: the resweep race (real concurrent enqueue mid-delete) and the toast-count assert were verified by unit/source-text tests + the consumed-guard browser probe, not by live firing against a provisioned agent — worth one live pass when a provisioned agent is in play.
+**Why:** The 3 survivors from the third adversarial pass are closed in the user's decided shapes (consumed-set, single fresh pass, success-only suppression); no structural gaps remain from this pass.
+
+### Resume here (2026-09-11, residual repair landed green; 3 minors open)
+
+**Now:** All five residuals repaired in the tree (uncommitted): review Save routes through `updateAgentAction` (placeholder upgrades in place; plain insert only for template drafts) — twin-via-insert closed; detail polls generation status (banner flips without reload, `markSeen` clears the pill, `job.result` still consumed only on `?job=`); `failJob` rewrites `targetUrl` to `/agents/new?job=` for failed generations and the detail banner shows the error + "Retry in the wizard"; delete re-checks affected rows, resweeps before row delete, and tears down just-provisioned remotes; `neverProvisioned` keys off `assemblyaiAgentId` presence with live `deployState` derivation. Verified: tsc/eslint clean, 268/268 tests, runtime pass on live `next dev :3000` (Review Sara → detail, banner + review link, delete copy + gate, Cancel safe, console + framework clean). `next dev` left running.
+**Next:** DECISION: third adversarial pass leaves 3 minors — (1) browser-back-after-save to `?job=` re-twins (placeholder lookup misses post-upgrade; needs a cleared-pointer guard); (2) delete resweep blind to jobs enqueued during the remote-delete window (needs fresh `relatedId` discovery, not the frozen id set); (3) double success toast on detail (provider + watcher both fire — cosmetic). None block the twin fix or the two reported issues. Standing items unchanged (E2E fixtures, postpone toolchain + locked `instant()` tests, owner-device voice, real Google sign-out, deployed Queue, 768/1440 sweep).
+**Why:** Both reported issues now hold end-to-end under a green suite; the 3 survivors are narrow follow-ups, not structural gaps.
+
+### Resume here (2026-09-11, draft open + delete unify shipped, verified, residuals open)
+
+**Now:** Draft rows open straight into `/agents/[id]` (no more list → creation-form flash → review double-hop); detail shows a stub banner — generating / Ready-to-review with link-back to `/agents/new?job=` (kept as canonical result-consumption) / didn't-finish with manual save allowed. Draft removal is the full delete dialog everywhere (list rows for terminal/plain drafts, detail footer, review footer) with `neverProvisioned` short copy; the inline Discard dialog is removed. Delete hard-deletes only terminal job rows and tears down just-provisioned remotes on mid-deploy cancel; placeholder upgrade is single-owned by `updateAgentAction`. Verified: tsc/eslint clean, 264/264 tests, runtime pass on live `next dev :3000` (Review Sara → detail, banner + review link, delete copy + typed-name gate, Cancel safe, console clean, `get_errors`/`get_compilation_issues` empty). Work uncommitted; `next dev` left running.
+**Next:** DECISION: second adversarial pass found residuals — critical twin-via-insert (review Save still calls `createAgentAction`, which now ignores `generationJobId`, so every save inserts a twin; fix is routing review save through `updateAgentAction`), stale banner + missing `markSeen` on detail, failed-job links landing on detail instead of the wizard error path, delete-vs-claim race, `neverProvisioned` over/understatement on queued/first-deploy-failed/succeeded rows. Standing items unchanged (E2E fixtures, postpone toolchain + locked `instant()` tests, owner-device voice, real Google sign-out, deployed Queue, 768/1440 sweep).
+**Why:** One removal concept everywhere and rows that open the thing itself; the residuals are correctness gaps the verify pass caught before they shipped under a green suite.
+
 ### Resume here (2026-09-11, voice card glides to center on selection)
 
 **Now:** Personality step voice carousel is center-mode: selecting any voice glides its card to center via Embla's native animated `scrollTo` (single call site in `selectVoice` — covers mouse + keyboard; `previewVoice` click handler deliberately scroll-free to avoid mid-glide jitter). `containScroll: false` so edge snaps (Alba/Paul) center too — caught live: default `trimSnaps` parked Paul at the track end. Mount jump is instant (`scrollTo(idx, true)`) so draft-restored selections open centered without animating; language switches need no scroll (resolved voice is always index 0). `prefers-reduced-motion` jumps instantly (JS `matchMedia` — global CSS can't reach Embla's JS animation). Verified: tsc/eslint clean, 259/259 tests (new asserts: `align: "center"`, `containScroll: false`, single `scrollTo` site, reduced-motion), `get_errors`/`get_compilation_issues` empty, runtime pass on live `next dev :3000` — Paul measured cx=509 vs viewport center 509, screenshot shows centered selected ring; keyboard Space selection centers (Vera cx=center); stop-preview re-click keeps position; reduced-motion emulation centers instantly; no console errors. `next dev` left running; browser session closed.
@@ -2582,3 +2606,142 @@ destination (1e).
 - 2026-09-11T01:12:45Z [Edit] /home/cipherlogs/.claude/plans/when-creating-a-new-peaceful-micali.md
 - 2026-09-11T01:14:47Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/HANDOFF.md
 - 2026-09-11T11:31:46Z [Write] /home/cipherlogs/.claude/plans/restart-the-server-and-idempotent-hopcroft.md
+- 2026-09-11T12:32:40Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/page.tsx
+- 2026-09-11T12:32:42Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/delete-agent-button.tsx
+- 2026-09-11T12:32:45Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/delete-agent-button.tsx
+- 2026-09-11T12:32:49Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/delete-agent-button.tsx
+- 2026-09-11T12:32:52Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/page.tsx
+- 2026-09-11T12:32:58Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/actions.ts
+- 2026-09-11T12:33:05Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/page.tsx
+- 2026-09-11T12:33:07Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/actions.ts
+- 2026-09-11T12:33:25Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/delete-agent-button.test.tsx
+- 2026-09-11T12:33:55Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/actions.ts
+- 2026-09-11T12:33:57Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/[id]/page.tsx
+- 2026-09-11T12:35:01Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/actions.placeholder.test.ts
+- 2026-09-11T12:36:03Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/[id]/page.tsx
+- 2026-09-11T12:36:12Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/[id]/page.tsx
+- 2026-09-11T12:37:22Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/[id]/edit-agent.tsx
+- 2026-09-11T12:37:54Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/[id]/edit-agent.tsx
+- 2026-09-11T12:38:04Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/lib/jobs/store.ts
+- 2026-09-11T12:38:42Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/lib/jobs/store.ts
+- 2026-09-11T12:38:53Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/lib/jobs/store.ts
+- 2026-09-11T12:39:00Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/lib/jobs/start.ts
+- 2026-09-11T12:39:05Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/lib/jobs/start.ts
+- 2026-09-11T12:39:11Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/lib/jobs/processor.ts
+- 2026-09-11T12:39:16Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/lib/jobs/processor.ts
+- 2026-09-11T12:39:54Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/lib/jobs/processors/generation.ts
+- 2026-09-11T12:41:47Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/[id]/edit-agent.tsx
+- 2026-09-11T12:42:01Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/[id]/edit-agent.tsx
+- 2026-09-11T12:42:08Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/[id]/edit-agent.tsx
+- 2026-09-11T12:42:16Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/[id]/edit-agent.tsx
+- 2026-09-11T12:42:21Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/[id]/edit-agent.tsx
+- 2026-09-11T12:42:25Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/[id]/edit-agent.tsx
+- 2026-09-11T12:44:14Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/actions.ts
+- 2026-09-11T12:44:26Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/actions.ts
+- 2026-09-11T12:44:29Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/actions.ts
+- 2026-09-11T12:45:44Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/new/page.tsx
+- 2026-09-11T12:46:59Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/new/page.tsx
+- 2026-09-11T12:47:03Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/new/page.tsx
+- 2026-09-11T12:47:08Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/new/page.tsx
+- 2026-09-11T12:47:14Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/new/page.tsx
+- 2026-09-11T12:47:50Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/new/page.tsx
+- 2026-09-11T12:47:56Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/new/page.tsx
+- 2026-09-11T12:51:45Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/agent-wizard/wizard.test.ts
+- 2026-09-11T12:51:45Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/agent-wizard/wizard.test.ts
+- 2026-09-11T12:52:57Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/agent-wizard/wizard.test.ts
+- 2026-09-11T12:53:26Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/agent-wizard/wizard.test.ts
+- 2026-09-11T12:58:39Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/agent-wizard/wizard.test.ts
+- 2026-09-11T12:59:01Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/new/page.tsx
+- 2026-09-11T13:04:12Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/lib/jobs/jobs.test.ts
+- 2026-09-11T13:04:58Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/lib/jobs/jobs.test.ts
+- 2026-09-11T13:07:42Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/lib/jobs/jobs.test.ts
+- 2026-09-11T13:08:35Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/lib/jobs/jobs.test.ts
+- 2026-09-11T13:08:39Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/lib/jobs/jobs.test.ts
+- 2026-09-11T13:38:21Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/[id]/edit-agent.tsx
+- 2026-09-11T13:38:29Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/[id]/edit-agent.tsx
+- 2026-09-11T13:38:34Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/[id]/edit-agent.tsx
+- 2026-09-11T13:38:37Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/[id]/edit-agent.tsx
+- 2026-09-11T13:40:41Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/[id]/edit-agent.tsx
+- 2026-09-11T13:40:50Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/actions.ts
+- 2026-09-11T13:41:23Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/[id]/edit-agent.tsx
+- 2026-09-11T13:41:23Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/[id]/edit-agent.tsx
+- 2026-09-11T13:41:30Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/[id]/edit-agent.tsx
+- 2026-09-11T13:41:32Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/actions.ts
+- 2026-09-11T13:41:33Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/[id]/edit-agent.tsx
+- 2026-09-11T13:41:35Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/actions.ts
+- 2026-09-11T13:41:37Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/page.tsx
+- 2026-09-11T13:41:38Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/[id]/page.tsx
+- 2026-09-11T13:42:09Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/lib/jobs/processors/deployment.ts
+- 2026-09-11T13:42:13Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/lib/jobs/processors/deployment.ts
+- 2026-09-11T13:42:36Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/actions.ts
+- 2026-09-11T13:42:46Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/actions.delete.test.ts
+- 2026-09-11T13:42:55Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/actions.delete.test.ts
+- 2026-09-11T13:52:45Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/actions.ts
+- 2026-09-11T13:53:36Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/actions.ts
+- 2026-09-11T13:53:39Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/actions.ts
+- 2026-09-11T13:54:05Z [Write] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/actions.placeholder.test.ts
+- 2026-09-11T14:08:33Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/agent-wizard/wizard.test.ts
+- 2026-09-11T14:08:42Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/agent-wizard/wizard.test.ts
+- 2026-09-11T14:12:18Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/agent-wizard/wizard.test.ts
+- 2026-09-11T14:12:21Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/agent-wizard/wizard.test.ts
+- 2026-09-11T14:37:02Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/HANDOFF.md
+- 2026-09-11T14:40:01Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/page.tsx
+- 2026-09-11T14:40:10Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/[id]/edit-agent.tsx
+- 2026-09-11T14:40:13Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/[id]/edit-agent.tsx
+- 2026-09-11T14:40:22Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/new/page.tsx
+- 2026-09-11T14:40:26Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/new/page.tsx
+- 2026-09-11T14:40:32Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/[id]/edit-agent.tsx
+- 2026-09-11T14:40:34Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/agent-wizard/wizard.test.ts
+- 2026-09-11T14:40:34Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/agent-wizard/wizard.test.ts
+- 2026-09-11T14:41:16Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/[id]/edit-agent.tsx
+- 2026-09-11T14:41:23Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/[id]/edit-agent.tsx
+- 2026-09-11T14:41:29Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/actions.ts
+- 2026-09-11T14:41:37Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/actions.ts
+- 2026-09-11T14:41:48Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/actions.ts
+- 2026-09-11T14:42:16Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/actions.delete.test.ts
+- 2026-09-11T14:42:24Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/[id]/edit-agent.tsx
+- 2026-09-11T14:43:41Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/actions.delete.test.ts
+- 2026-09-11T14:45:51Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/agent-wizard/wizard.test.ts
+- 2026-09-11T15:18:22Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/lib/jobs/store.ts
+- 2026-09-11T15:21:44Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/actions.ts
+- 2026-09-11T15:21:49Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/[id]/page.tsx
+- 2026-09-11T15:21:49Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/[id]/page.tsx
+- 2026-09-11T15:21:54Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/[id]/edit-agent.tsx
+- 2026-09-11T15:21:54Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/[id]/edit-agent.tsx
+- 2026-09-11T15:25:06Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/[id]/edit-agent.tsx
+- 2026-09-11T15:27:12Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/[id]/edit-agent.tsx
+- 2026-09-11T15:27:12Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/[id]/edit-agent.tsx
+- 2026-09-11T15:27:54Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/lib/jobs/jobs.test.ts
+- 2026-09-11T15:28:02Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/lib/jobs/jobs.test.ts
+- 2026-09-11T15:28:36Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/agent-wizard/wizard.test.ts
+- 2026-09-11T15:39:46Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/HANDOFF.md
+- 2026-09-11T15:58:05Z [Write] /home/cipherlogs/.claude/plans/remaining-third-adversarial-pass-lucky-diffie.md
+- 2026-09-11T15:58:32Z [Edit] /home/cipherlogs/.claude/plans/remaining-third-adversarial-pass-lucky-diffie.md
+- 2026-09-11T16:02:16Z [Edit] /home/cipherlogs/.claude/plans/remaining-third-adversarial-pass-lucky-diffie.md
+- 2026-09-11T16:02:28Z [Edit] /home/cipherlogs/.claude/plans/remaining-third-adversarial-pass-lucky-diffie.md
+- 2026-09-11T16:04:49Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/actions.ts
+- 2026-09-11T16:05:05Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/actions.delete.test.ts
+- 2026-09-11T16:07:33Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/agent-wizard/use-wizard-draft.ts
+- 2026-09-11T16:07:41Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/new/page.tsx
+- 2026-09-11T16:07:46Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/new/page.tsx
+- 2026-09-11T16:07:53Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/new/page.tsx
+- 2026-09-11T16:08:24Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/agent-wizard/wizard.test.ts
+- 2026-09-11T16:09:26Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/jobs/jobs-provider.tsx
+- 2026-09-11T16:09:43Z [Write] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/jobs/jobs-provider.test.ts
+- 2026-09-11T16:11:14Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/new/page.tsx
+- 2026-09-11T16:13:09Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/package.json
+- 2026-09-11T16:15:03Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/jobs/jobs-provider.tsx
+- 2026-09-11T16:15:06Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/jobs/jobs-provider.test.ts
+- 2026-09-11T16:15:12Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/jobs/jobs-provider.test.ts
+- 2026-09-11T16:25:53Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/HANDOFF.md
+- 2026-09-11T16:37:38Z [Write] /home/cipherlogs/.claude/plans/remaining-third-adversarial-pass-lucky-diffie.md
+- 2026-09-11T16:41:43Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/lib/jobs/ui-helpers.ts
+- 2026-09-11T16:41:47Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/jobs/jobs-provider.tsx
+- 2026-09-11T16:41:50Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/jobs/jobs-provider.tsx
+- 2026-09-11T16:41:53Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/lib/jobs/ui-helpers.test.ts
+- 2026-09-11T16:41:58Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/lib/jobs/ui-helpers.test.ts
+- 2026-09-11T16:42:02Z [Write] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/jobs/jobs-provider.test.ts
+- 2026-09-11T17:02:39Z [Write] /home/cipherlogs/Repos/AI/leadcalls/voni/scripts/verify-delete-race.mts
+- 2026-09-11T17:02:45Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/package.json
+- 2026-09-11T17:24:20Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/calls/calls-index.test.ts
+- 2026-09-11T17:38:02Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/HANDOFF.md

@@ -47,9 +47,10 @@ async function AgentsList() {
         <div className="flex flex-col gap-3">
           {rows.map((agent) => {
             const config = agent.config as AgentConfig;
-            // Placeholder rows link back to the wizard restore URL — the
-            // badge derives from the live job, never a stored flag. A
-            // placeholder whose job aged out reads as a plain draft.
+            // Placeholder rows link to the detail page like real rows — the
+            // detail handles the review state. The badge derives from the
+            // live job, never a stored flag. A placeholder whose job aged
+            // out reads as a plain draft.
             const gen =
               agent.generationJobId && agent.generationStatus
                 ? {
@@ -64,8 +65,8 @@ async function AgentsList() {
               <Card key={agent.id} className="relative transition-colors hover:bg-muted/50">
                 <CardContent className="flex flex-wrap items-center justify-between gap-4 py-4">
                   <Link
-                    href={gen ? `/agents/new?job=${gen.jobId}` : `/agents/${agent.id}`}
-                    aria-label={`${gen ? (gen.ready ? "Review" : "View generation for") : "Edit"} ${agent.name}`}
+                    href={`/agents/${agent.id}`}
+                    aria-label={`${gen ? "Review" : "Edit"} ${agent.name}`}
                     className="before:absolute before:inset-0 min-w-0 flex-1"
                   >
                     <span className="flex min-w-0 flex-col gap-1">
@@ -123,11 +124,20 @@ async function AgentsList() {
                   </Link>
                   {/* Sibling of the stretched link, stacked above its overlay
                       (relative z-10), so the button stays clickable while the
-                      rest of the card navigates. Generation placeholders skip
-                      delete — their job owns the row until it settles. */}
-                  {gen ? null : (
+                      rest of the card navigates. The job owns the row only
+                      while active — terminal placeholders and drafts can be
+                      deleted. */}
+                  {gen?.running ? null : (
                     <div className="relative z-10 flex shrink-0 items-center">
-                      <AgentDeleteButton id={agent.id} name={agent.name} />
+                      <AgentDeleteButton
+                        id={agent.id}
+                        name={agent.name}
+                        // Keyed off assemblyaiAgentId presence, not
+                        // deploymentStatus: queued/deploying/failed
+                        // first-deploys have no remote agent yet, so they
+                        // get the short copy too.
+                        neverProvisioned={!agent.assemblyaiAgentId}
+                      />
                     </div>
                   )}
                 </CardContent>

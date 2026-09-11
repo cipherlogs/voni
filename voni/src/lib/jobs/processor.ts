@@ -9,6 +9,7 @@ import {
   claimJob,
   completeJob,
   failJob,
+  findGenerationPlaceholderId,
   getJobById,
   heartbeatJob,
   isCancelRequested,
@@ -126,7 +127,19 @@ export async function runJob(jobId: string, database: JobDb = db): Promise<void>
     const handler = await handlerFor(claimed.kind as JobKind);
     const result = await handler(claimed, parsed.data as never);
     await throwIfCancelled(jobId, database);
-    const ok = await completeJob(jobId, result, database);
+    // Finished generation jobs land on the placeholder detail page. The
+    // placeholder row is created client-side after start, so resolve it here
+    // at completion; when there is none (older jobs, failed write) the ?job=
+    // URL from start stays.
+    let targetUrl: string | undefined;
+    if (claimed.kind === "agent_generation") {
+      const placeholderId = await findGenerationPlaceholderId(
+        jobId,
+        database,
+      ).catch(() => null);
+      if (placeholderId) targetUrl = `/agents/${placeholderId}`;
+    }
+    const ok = await completeJob(jobId, result, database, targetUrl);
     if (!ok) {
       console.warn(
         `[jobs] job ${jobId} finished but was no longer running (cancelled or retried).`,

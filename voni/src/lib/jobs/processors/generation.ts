@@ -5,8 +5,10 @@ import type { JobRow } from "../store";
 
 /**
  * agent_generation: NL brief -> validated config. Never persists — the
- * result restores as an editable draft on /agents/new?job=<id>, and the
- * mandatory review step means generation never creates an agent by itself.
+ * result restores as an editable draft on /agents/new?job=<id> (or lands on
+ * the placeholder detail page /agents/[id] when the client created that row
+ * up front), and the mandatory review step means generation never creates an
+ * agent by itself.
  */
 export async function runGenerationJob(
   job: JobRow,

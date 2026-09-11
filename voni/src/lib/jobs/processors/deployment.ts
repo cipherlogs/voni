@@ -1,9 +1,9 @@
 import { and, eq, isNull } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { agents } from "@/lib/db/schema";
-import { provisionAgent } from "@/lib/agents/provision";
+import { deleteRemoteAgent, provisionAgent } from "@/lib/agents/provision";
 import { CancelledJobError, throwIfCancelled } from "../processor";
-import { sanitizeJobError, type JobRow } from "../store";
+import { isCancelRequested, sanitizeJobError, type JobRow } from "../store";
 import type { JobInput } from "../kinds";
 
 /**
@@ -88,6 +88,14 @@ export async function runDeploymentJob(
     await throwIfCancelled(job.id);
     const deployed = await provisionAgent(input.name, input.config, agent.assemblyaiAgentId);
     if (!deployed.ok) throw new Error(deployed.error);
+    // A delete during provision would be orphaned: the row is already gone,
+    // so throwIfCancelled's CancelledJobError path just releases the lease and
+    // propagates — the just-provisioned remote agent would keep serving with
+    // no local owner. Tear it down before converging to cancelled.
+    if (await isCancelRequested(job.id)) {
+      await deleteRemoteAgent(deployed.agentId).catch(() => undefined);
+      throw new CancelledJobError();
+    }
     const deployedAt = new Date();
     await releaseLease({
       assemblyaiAgentId: deployed.agentId,

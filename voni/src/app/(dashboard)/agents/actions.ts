@@ -102,51 +102,11 @@ export async function createAgentAction(
 
   const config = normalizeConfig(parsed.data);
 
-  // Saving over a generation placeholder upgrades it in place instead of
-  // leaving a twin row behind. Lookup is by job id (not component state) so
-  // ?job= restores and deduped resubmits upgrade the same row.
-  if (opts?.generationJobId) {
-    const [placeholder] = await db
-      .select({ id: agents.id })
-      .from(agents)
-      .where(
-        and(
-          eq(agents.organizationId, ctx.organizationId),
-          eq(agents.generationJobId, opts.generationJobId),
-          eq(agents.deploymentStatus, "draft"),
-        ),
-      )
-      .limit(1);
-    if (placeholder) {
-      const updated = await db
-        .update(agents)
-        .set({
-          name: trimmed,
-          config,
-          generationJobId: null,
-          deploymentStatus: "queued",
-          configVersion: sql`${agents.configVersion} + 1`,
-          updatedAt: new Date(),
-        })
-        .where(
-          and(
-            eq(agents.id, placeholder.id),
-            eq(agents.organizationId, ctx.organizationId),
-          ),
-        )
-        .returning({ id: agents.id, configVersion: agents.configVersion });
-      const result = await enqueueDeployment(
-        ctx,
-        updated[0].id,
-        trimmed,
-        config,
-        updated[0].configVersion,
-      );
-      revalidatePath("/agents");
-      revalidatePath(`/agents/${updated[0].id}`);
-      return result;
-    }
-  }
+  // No generationJobId upgrade branch here: placeholder upgrades have a single
+  // owner (updateAgentAction), so a stale ?job= save cannot twin rows through
+  // a second path. opts stays so the in-flight new/page review call still
+  // compiles; its generationJobId is intentionally ignored.
+  void opts;
 
   const [row] = await db
     .insert(agents)
@@ -251,6 +211,7 @@ export async function ensureGenerationPlaceholderAction(input: {
 }
 
 export type GenerationPlaceholder = {
+  id: string;
   name: string;
   voiceId: string;
   languageCode: string;
@@ -276,7 +237,7 @@ export async function getGenerationPlaceholderAction(
   }
   if (!jobId) return null;
   const [row] = await db
-    .select({ name: agents.name, config: agents.config })
+    .select({ id: agents.id, name: agents.name, config: agents.config })
     .from(agents)
     .where(
       and(
@@ -297,6 +258,7 @@ export async function getGenerationPlaceholderAction(
       ? (config.languageCodes[0] as string)
       : "en";
   return {
+    id: row.id,
     name: row.name,
     voiceId: typeof config.voiceId === "string" ? config.voiceId : "anna",
     languageCode,
@@ -315,6 +277,7 @@ export async function updateAgentAction(
   id: string,
   name: string,
   rawConfig: unknown,
+  opts?: { generationJobId?: string },
 ): Promise<SaveResult> {
   let ctx;
   try {
@@ -329,6 +292,57 @@ export async function updateAgentAction(
   }
 
   const config = normalizeConfig(parsed.data);
+  // Saving over a generation placeholder upgrades it in place instead of
+  // leaving a twin row behind: when this row is still a draft placeholder
+  // for the passed job, the full validated config replaces the stub, the row
+  // leaves draft, and the job id is cleared so later saves are plain edits.
+  if (opts?.generationJobId) {
+    const [placeholder] = await db
+      .select({ id: agents.id })
+      .from(agents)
+      .where(
+        and(
+          eq(agents.id, id),
+          eq(agents.organizationId, ctx.organizationId),
+          eq(agents.generationJobId, opts.generationJobId),
+          eq(agents.deploymentStatus, "draft"),
+        ),
+      )
+      .limit(1);
+    if (placeholder) {
+      const upgraded = await db
+        .update(agents)
+        .set({
+          name: name.trim(),
+          config,
+          generationJobId: null,
+          deploymentStatus: "queued",
+          configVersion: sql`${agents.configVersion} + 1`,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(agents.id, placeholder.id),
+            eq(agents.organizationId, ctx.organizationId),
+          ),
+        )
+        .returning({ id: agents.id, configVersion: agents.configVersion });
+      // The select-then-update above can race a concurrent save (or delete):
+      // zero affected rows means the placeholder is gone, so report not-found
+      // instead of throwing on upgraded[0].
+      if (upgraded.length === 0) return { ok: false, message: "Agent not found." };
+      const result = await enqueueDeployment(
+        ctx,
+        upgraded[0].id,
+        name.trim(),
+        config,
+        upgraded[0].configVersion,
+      );
+      revalidatePath("/agents");
+      revalidatePath(`/agents/${upgraded[0].id}`);
+      return result;
+    }
+  }
   // The version bump and the deployment job are one logical save: the job
   // carries the version it was created for, and the processor refuses to
   // publish anything older than the row's current version.
@@ -345,6 +359,9 @@ export async function updateAgentAction(
     .where(and(eq(agents.id, id), eq(agents.organizationId, ctx.organizationId)))
     .returning({ id: agents.id, configVersion: agents.configVersion });
 
+  // Zero affected rows means the row was deleted (or belongs to another org)
+  // between the auth check and the write: report not-found, never read
+  // updated[0] unguarded (that threw a 500 instead of the SaveResult error).
   if (updated.length === 0) return { ok: false, message: "Agent not found." };
 
   const result = await enqueueDeployment(
@@ -400,8 +417,10 @@ export type DeleteResult = { ok: true } | { ok: false; message: string };
  *      aborts before local data is touched, so the delete is safe to retry.
  *   4. Null the nullable FKs (calls keep their history, numbers park
  *      unbound). The bridge default stays null-safe via onDelete: set null.
- *   5. Delete linked job rows (never by title — names are not unique), then
- *      the agent row itself.
+ *   5. Delete linked terminal job rows (never by title — names are not
+ *      unique), then the agent row itself. Still-running rows are left in
+ *      place with their cancel flag set so their workers observe the signal
+ *      and converge to cancelled; the retention sweeper removes them later.
  */
 export async function deleteAgentAction(id: string): Promise<DeleteResult> {
   let ctx;
@@ -449,10 +468,18 @@ export async function deleteAgentAction(id: string): Promise<DeleteResult> {
         ),
       ),
     );
-  for (const job of linkedJobs) {
-    if (job.status !== "queued" && job.status !== "running") continue;
-    if (job.status === "queued") {
-      await db
+  // A worker can claim a job (queued -> running) at any point during this
+  // delete: between the select above and the cancel below, during the remote
+  // call, or via a concurrent (re)queue. The guarded queued-update reports
+  // zero affected rows when it loses that race, so read the rows back and
+  // flag anything that flipped to running — without the flag the worker would
+  // run against an agent row that no longer exists.
+  const cancelOneLinkedJob = async (
+    jobId: string,
+    status: string,
+  ): Promise<void> => {
+    if (status === "queued") {
+      const updated = await db
         .update(backgroundJobs)
         .set({
           status: "cancelled",
@@ -462,14 +489,30 @@ export async function deleteAgentAction(id: string): Promise<DeleteResult> {
           updatedAt: new Date(),
         })
         .where(
-          and(eq(backgroundJobs.id, job.id), eq(backgroundJobs.status, "queued")),
-        );
-    } else {
+          and(eq(backgroundJobs.id, jobId), eq(backgroundJobs.status, "queued")),
+        )
+        .returning({ id: backgroundJobs.id });
+      if (updated.length > 0) return;
+      // Lost a claim race: the job is running now. Flag it so the worker
+      // observes the cancel at its next boundary and converges to cancelled.
       await db
         .update(backgroundJobs)
         .set({ cancelRequested: true, updatedAt: new Date() })
-        .where(eq(backgroundJobs.id, job.id));
+        .where(
+          and(
+            eq(backgroundJobs.id, jobId),
+            eq(backgroundJobs.status, "running"),
+          ),
+        );
+    } else if (status === "running") {
+      await db
+        .update(backgroundJobs)
+        .set({ cancelRequested: true, updatedAt: new Date() })
+        .where(eq(backgroundJobs.id, jobId));
     }
+  };
+  for (const job of linkedJobs) {
+    await cancelOneLinkedJob(job.id, job.status);
   }
 
   // Remote first: a failed remote delete keeps the local row so retry repairs
@@ -511,23 +554,82 @@ export async function deleteAgentAction(id: string): Promise<DeleteResult> {
 
   // Linked job rows by id (relatedId + generation placeholder). Never by
   // title — agent names are not unique, so a title match could erase another
-  // agent's jobs.
+  // agent's jobs. Only terminal rows are hard-deleted: running rows keep
+  // their cancelRequested flag so the worker sees the signal at its next
+  // boundary and converges to cancelled (hard-deleting them would erase the
+  // signal and let the worker fail on the missing agent row instead). The
+  // retention sweeper removes the cancelled tombstones later.
   const jobIds = new Set(linkedJobs.map((job) => job.id));
   if (agent.generationJobId) jobIds.add(agent.generationJobId);
-  for (const jobId of jobIds) {
+
+  // Fresh discovery before the row disappears: the remote delete above can
+  // take seconds, and during it a worker can claim a still-queued linked job
+  // (after the cancel block ran, so no cancelRequested is set) — or a
+  // concurrent save/retry can enqueue a brand-new job with relatedId == id
+  // while the agent row still exists. The frozen jobIds set sees neither, so
+  // re-discover by relatedId (+ a fresh read of generationJobId) and cancel
+  // first; only then hard-delete terminal rows. Residual micro-window between
+  // this sweep and the row delete is accepted — an orphan there fails terminal
+  // and the retention sweeper cleans it.
+  const [freshAgent] = await db
+    .select({ generationJobId: agents.generationJobId })
+    .from(agents)
+    .where(and(eq(agents.id, id), eq(agents.organizationId, ctx.organizationId)))
+    .limit(1);
+  const freshRows = await db
+    .select({
+      id: backgroundJobs.id,
+      status: backgroundJobs.status,
+      cancelRequested: backgroundJobs.cancelRequested,
+    })
+    .from(backgroundJobs)
+    .where(
+      and(
+        eq(backgroundJobs.organizationId, ctx.organizationId),
+        or(
+          eq(backgroundJobs.relatedId, id),
+          ...(freshAgent?.generationJobId
+            ? [eq(backgroundJobs.id, freshAgent.generationJobId)]
+            : []),
+        ),
+      ),
+    );
+  for (const job of freshRows) {
+    if (job.status === "queued") {
+      await cancelOneLinkedJob(job.id, job.status);
+    } else if (job.status === "running" && !job.cancelRequested) {
+      await db
+        .update(backgroundJobs)
+        .set({ cancelRequested: true, updatedAt: new Date() })
+        .where(eq(backgroundJobs.id, job.id));
+    }
+  }
+  const sweepIds = new Set(jobIds);
+  for (const job of freshRows) sweepIds.add(job.id);
+  if (freshAgent?.generationJobId) sweepIds.add(freshAgent.generationJobId);
+  for (const jobId of sweepIds) {
     await db
       .delete(backgroundJobs)
       .where(
         and(
           eq(backgroundJobs.id, jobId),
           eq(backgroundJobs.organizationId, ctx.organizationId),
+          or(
+            eq(backgroundJobs.status, "succeeded"),
+            eq(backgroundJobs.status, "failed"),
+            eq(backgroundJobs.status, "cancelled"),
+          ),
         ),
       );
   }
 
-  await db
+  const deletedAgents = await db
     .delete(agents)
-    .where(and(eq(agents.id, id), eq(agents.organizationId, ctx.organizationId)));
+    .where(and(eq(agents.id, id), eq(agents.organizationId, ctx.organizationId)))
+    .returning({ id: agents.id });
+  if (deletedAgents.length === 0) {
+    return { ok: false, message: "Agent not found." };
+  }
 
   revalidatePath("/agents");
   revalidatePath(`/agents/${id}`);
@@ -595,6 +697,42 @@ export async function getAgent(id: string) {
     .where(and(eq(agents.id, id), eq(agents.organizationId, ctx.organizationId)))
     .limit(1);
   return rows[0] ?? null;
+}
+
+/** Single-row plus live generation state for the detail leaf. The sanitized
+ * failure message feeds the did-not-finish banner so it can show the error
+ * and link back through the wizard retry path. */
+export async function getAgentWithGeneration(id: string) {
+  const agent = await getAgent(id);
+  if (!agent || !agent.generationJobId) {
+    return agent
+      ? {
+          agent,
+          generationStatus: null as string | null,
+          generationError: null as string | null,
+        }
+      : null;
+  }
+  const ctx = await requireCtxOrRedirect();
+  const rows = await db
+    .select({
+      id: backgroundJobs.id,
+      status: backgroundJobs.status,
+      errorMessage: backgroundJobs.errorMessage,
+    })
+    .from(backgroundJobs)
+    .where(
+      and(
+        eq(backgroundJobs.organizationId, ctx.organizationId),
+        eq(backgroundJobs.id, agent.generationJobId),
+      ),
+    )
+    .limit(1);
+  return {
+    agent,
+    generationStatus: rows[0]?.status ?? null,
+    generationError: rows[0]?.errorMessage ?? null,
+  };
 }
 
 /** The pre-built fallback, offered whenever generation is unavailable. */

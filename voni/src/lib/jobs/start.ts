@@ -12,6 +12,7 @@ import type { DispatchResult } from "./contracts";
 import {
   createJob,
   findActiveJobs,
+  findGenerationPlaceholderId,
   type JobRow,
 } from "./store";
 
@@ -182,7 +183,16 @@ export async function startJob(
   // running, so there is nothing new to enqueue.
   let dispatch: DispatchResult | null = null;
   if (created) {
-    const targetUrl = targetUrlFor(kind, job.id, input as never);
+    // Finished generation jobs land on the placeholder detail page. The
+    // placeholder row may already exist (deduped resubmit restoring ?job=);
+    // otherwise the ?job= URL stands until completion resolves it.
+    let targetUrl = targetUrlFor(kind, job.id, input as never);
+    if (kind === "agent_generation") {
+      const placeholderId = await findGenerationPlaceholderId(job.id).catch(
+        () => null,
+      );
+      if (placeholderId) targetUrl = `/agents/${placeholderId}`;
+    }
     await db
       .update(backgroundJobs)
       .set({ targetUrl, updatedAt: new Date() })

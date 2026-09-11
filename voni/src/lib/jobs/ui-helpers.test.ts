@@ -5,6 +5,7 @@ import {
   getJobProgressPercent,
   jobErrorCopy,
   partitionJobs,
+  shouldSuppressJobToast,
   type MinimalJob,
 } from "./ui-helpers";
 
@@ -97,6 +98,44 @@ test("queued counts as active, fresh cancelled counts as unread", () => {
     history.map((j) => j.id),
     [],
   );
+});
+
+test("shouldSuppressJobToast suppresses inline-consumed results", () => {
+  const cases: Array<{
+    kind: string;
+    status: string;
+    pathname: string;
+    expected: boolean;
+  }> = [
+    // Suppressed.
+    { kind: "agent_generation", status: "succeeded", pathname: "/agents/new", expected: true },
+    { kind: "agent_generation", status: "failed", pathname: "/agents/new", expected: true },
+    { kind: "agent_deployment", status: "succeeded", pathname: "/agents/abc-123", expected: true },
+    // Not suppressed: generation consumed only on the wizard page.
+    { kind: "agent_generation", status: "succeeded", pathname: "/agents/abc", expected: false },
+    { kind: "agent_generation", status: "succeeded", pathname: "/jobs", expected: false },
+    // Not suppressed: only deployment success on a detail page is inline.
+    { kind: "agent_deployment", status: "failed", pathname: "/agents/abc-123", expected: false },
+    { kind: "agent_deployment", status: "cancelled", pathname: "/agents/abc-123", expected: false },
+    { kind: "agent_deployment", status: "succeeded", pathname: "/agents", expected: false },
+    { kind: "agent_deployment", status: "succeeded", pathname: "/agents/", expected: false },
+    { kind: "agent_deployment", status: "succeeded", pathname: "/agents/new", expected: false },
+    { kind: "agent_deployment", status: "succeeded", pathname: "/agents/abc/calls", expected: false },
+    { kind: "agent_deployment", status: "succeeded", pathname: "/jobs", expected: false },
+    // Not suppressed: other kinds always toast globally.
+    { kind: "lead_csv_import", status: "succeeded", pathname: "/jobs", expected: false },
+    { kind: "lead_csv_import", status: "succeeded", pathname: "/agents/new", expected: false },
+    // Empty pathname never suppresses.
+    { kind: "agent_generation", status: "succeeded", pathname: "", expected: false },
+    { kind: "agent_deployment", status: "succeeded", pathname: "", expected: false },
+  ];
+  for (const { kind, status, pathname, expected } of cases) {
+    assert.equal(
+      shouldSuppressJobToast(kind, status, pathname),
+      expected,
+      `${kind}/${status} on ${pathname || "(empty)"}`,
+    );
+  }
 });
 
 test("jobErrorCopy gives distinct copy per failure mode", () => {

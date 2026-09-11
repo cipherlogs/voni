@@ -51,8 +51,18 @@ test("delete failures stay visible in-dialog and as a toast", () => {
 test("list row renders delete as a sibling above the stretched-link overlay", () => {
   assert.ok(pageSource.includes("AgentDeleteButton"));
   assert.ok(pageSource.includes("relative z-10"));
-  // Generation placeholders skip delete — their job owns the row.
-  assert.ok(pageSource.includes("gen ? null"));
+  // The job owns the row only while running — failed/cancelled and aged-out
+  // (gen null) placeholders keep their delete button.
+  assert.ok(pageSource.includes("gen?.running ? null"));
+  assert.ok(!pageSource.includes("gen ? null"));
+});
+
+test("never-provisioned delete shortens copy but keeps the typed-name gate", () => {
+  assert.ok(buttonSource.includes("neverProvisioned"));
+  assert.ok(buttonSource.includes("No voice agent exists yet"));
+  assert.ok(buttonSource.includes("not yet provisioned"));
+  // Short copy only — the destructive confirm still requires typing the name.
+  assert.ok(buttonSource.includes("disabled={!confirmed}"));
 });
 
 test("detail page deletes from the footer next to Save, no danger zone", () => {

@@ -12,15 +12,15 @@ const dir = dirname(fileURLToPath(import.meta.url));
 const indexSource = readFileSync(join(dir, "page.tsx"), "utf8");
 const agentsSource = readFileSync(join(dir, "..", "agents", "page.tsx"), "utf8");
 const sectionSource = readFileSync(
-  join(dir, "..", "..", "components", "calls", "recent-calls.tsx"),
+  join(dir, "..", "..", "..", "components", "calls", "recent-calls.tsx"),
   "utf8",
 );
 const dataSource = readFileSync(
-  join(dir, "..", "..", "lib", "copilot", "detail-data.ts"),
+  join(dir, "..", "..", "..", "lib", "copilot", "detail-data.ts"),
   "utf8",
 );
 const formatSource = readFileSync(
-  join(dir, "..", "..", "lib", "calls", "format.ts"),
+  join(dir, "..", "..", "..", "lib", "calls", "format.ts"),
   "utf8",
 );
 

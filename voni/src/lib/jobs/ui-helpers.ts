@@ -57,6 +57,35 @@ export function partitionJobs<T extends MinimalJob>(
   return { activeJobs, unreadJobs, history };
 }
 
+/** Matches /agents/<id> detail pages but not /agents, /agents/, /agents/new. */
+const AGENT_DETAIL_PATH = /^\/agents\/(?!new$)[^/]+$/;
+
+/**
+ * Whether the global toast for a terminal job transition should be skipped
+ * because the current page already consumes the result inline.
+ *
+ * - agent_generation on exact /agents/new: the wizard shows submitted panel,
+ *   review, and error state inline — a toast on top is pure noise.
+ * - agent_deployment + succeeded on /agents/<id>: the detail watcher toasts
+ *   and banners inline — a second global success toast is noise. Errors stay
+ *   global (the watcher never toasts on failure).
+ */
+export function shouldSuppressJobToast(
+  kind: string,
+  status: string,
+  pathname: string,
+): boolean {
+  if (kind === "agent_generation" && pathname === "/agents/new") return true;
+  if (
+    kind === "agent_deployment" &&
+    status === "succeeded" &&
+    AGENT_DETAIL_PATH.test(pathname)
+  ) {
+    return true;
+  }
+  return false;
+}
+
 /** Distinct failure copy per mode — never a generic "something went wrong". */
 export function jobErrorCopy(errorCode: string | null): string {
   switch (errorCode) {

@@ -12,6 +12,7 @@ import {
 import { useRouter } from "next/navigation";
 import { toast } from "@/components/ui/toast";
 import type { JobJson } from "@/lib/jobs/serialize";
+import { shouldSuppressJobToast } from "@/lib/jobs/ui-helpers";
 
 export type OptimisticEntry = {
   key: string;
@@ -186,14 +187,9 @@ export function JobsProvider({
   }, []);
 
   const notify = useCallback((job: JobJson) => {
-    // /agents/new consumes agent_generation results inline (submitted panel,
-    // review, error) — a toast on top is pure noise. Everywhere else the
-    // toast is the return path for backgrounded work, so it stays.
-    if (
-      job.kind === "agent_generation" &&
-      typeof window !== "undefined" &&
-      window.location.pathname === "/agents/new"
-    ) {
+    // Pages that consume a result inline suppress the global toast for it;
+    // see shouldSuppressJobToast for the exact contract.
+    if (shouldSuppressJobToast(job.kind, job.status, typeof window !== "undefined" ? window.location.pathname : "")) {
       return;
     }
     const title = job.status === "succeeded" ? job.title : `${job.title} — ${jobStatusLabel(job.status)}`;

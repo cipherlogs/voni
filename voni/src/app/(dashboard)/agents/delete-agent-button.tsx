@@ -36,6 +36,7 @@ export function AgentDeleteButton({
   name,
   layout = "icon",
   redirectTo,
+  neverProvisioned = false,
 }: {
   id: string;
   name: string;
@@ -43,6 +44,12 @@ export function AgentDeleteButton({
   layout?: "icon" | "full";
   /** Where to go after a successful delete (detail page uses "/agents"). */
   redirectTo?: string;
+  /**
+   * True when the agent was never provisioned (no assemblyaiAgentId and
+   * deploymentStatus is draft / never deployed). Only shortens the copy —
+   * the typed-name gate and delete flow are unchanged.
+   */
+  neverProvisioned?: boolean;
 }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
@@ -108,15 +115,29 @@ export function AgentDeleteButton({
         <DialogHeader>
           <DialogTitle>Delete “{name}”?</DialogTitle>
           <DialogDescription>
-            This is permanent. Type the agent&apos;s name to confirm.
+            This is permanent.{" "}
+            {neverProvisioned
+              ? "No voice agent exists yet, so only the draft is removed."
+              : null}{" "}
+            Type the agent&apos;s name to confirm.
           </DialogDescription>
         </DialogHeader>
         <Alert variant="destructive">
           <TriangleAlert />
           <AlertDescription>
-            This removes the voice agent from AssemblyAI, unbinds its phone
-            numbers, and erases its job history. Past call records are kept.
-            This cannot be undone.
+            {neverProvisioned ? (
+              <>
+                This agent was not yet provisioned: only the draft and its job
+                history are removed. Past call records are kept. This cannot
+                be undone.
+              </>
+            ) : (
+              <>
+                This removes the voice agent from AssemblyAI, unbinds its
+                phone numbers, and erases its job history. Past call records
+                are kept. This cannot be undone.
+              </>
+            )}
           </AlertDescription>
         </Alert>
         <Field>

@@ -106,6 +106,49 @@ export function clearWizardDraftCache() {
 }
 
 /**
+ * Consumed generation jobs (back-nav twin guard): job ids whose reviewed save
+ * already upgraded the placeholder in place. sessionStorage survives
+ * back-navigation and reloads in-tab but never leaks across tabs — the stale
+ * ?job= pointer in history must not re-seed a review that has already been
+ * saved. Append-only; a saved job never becomes unconsumed.
+ */
+const CONSUMED_JOBS_KEY = "voni:wizard-consumed-jobs";
+
+function readConsumedJobs(): string[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.sessionStorage.getItem(CONSUMED_JOBS_KEY);
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed)
+      ? parsed.filter((v): v is string => typeof v === "string")
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+/** True when this job id's review was already saved in this tab. */
+export function isJobConsumed(jobId: string): boolean {
+  if (!jobId) return false;
+  return readConsumedJobs().includes(jobId);
+}
+
+/** Record a saved job id so a browser Back to ?job= cannot re-seed it. */
+export function markJobConsumed(jobId: string) {
+  if (typeof window === "undefined" || !jobId) return;
+  try {
+    const next = readConsumedJobs();
+    if (!next.includes(jobId)) {
+      next.push(jobId);
+      window.sessionStorage.setItem(CONSUMED_JOBS_KEY, JSON.stringify(next));
+    }
+  } catch {
+    // Private-mode writes fail silently; the restore guard just won't fire.
+  }
+}
+
+/**
  * Shared wizard state: one draft, step position, per-field flash, and a
  * snapshot history so every agent patch — and every user edit — is undoable
  * internally (the visible Review undo button is gone; voice undo remains).

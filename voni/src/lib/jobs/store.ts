@@ -1,6 +1,6 @@
 import { and, desc, eq, isNull, lt, or, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { backgroundJobs } from "@/lib/db/schema";
+import { agents, backgroundJobs } from "@/lib/db/schema";
 import type { JobErrorCode, JobKind } from "./kinds";
 
 export type JobDb = typeof db;
@@ -213,6 +213,31 @@ export async function markQueuedStage(
   return updated.length > 0;
 }
 
+/**
+ * Placeholder agent id for a generation job, when the client has created the
+ * list row up front (matched by job id, org-scoped). Null when the row does
+ * not exist yet (older jobs, direct links, failed placeholder write) — callers
+ * keep the ?job= URL in that case.
+ */
+export async function findGenerationPlaceholderId(
+  jobId: string,
+  database: JobDb = db,
+): Promise<string | null> {
+  const job = await getJobById(jobId, database);
+  if (!job) return null;
+  const [row] = await database
+    .select({ id: agents.id })
+    .from(agents)
+    .where(
+      and(
+        eq(agents.organizationId, job.organizationId),
+        eq(agents.generationJobId, jobId),
+      ),
+    )
+    .limit(1);
+  return row?.id ?? null;
+}
+
 /** Terminal success. Guarded on `running` so a duplicate delivery cannot
  * overwrite a job that was already retried, cancelled, or finished. */
 export async function completeJob(
@@ -237,13 +262,29 @@ export async function completeJob(
   return updated.length > 0;
 }
 
-/** Terminal failure with a sanitized, user-safe message. Same guard. */
+/** Terminal failure with a sanitized, user-safe message. Same guard.
+ *
+ * Failed generation jobs route back through the wizard: the ?job= restore on
+ * /agents/new shows the message, the provider-exhausted guidance, and the
+ * retry path (jumping to the step that renders the error). A leftover
+ * placeholder detail URL would strand the user on a banner that cannot retry,
+ * so it is rewritten here — one choke point covering the processor's
+ * permanent/invalid-input failures and the sweep's lease-exhausted ones. An
+ * explicit targetUrl still wins when a caller passes one. */
 export async function failJob(
   id: string,
   code: JobErrorCode,
   message: string,
   database: JobDb = db,
+  targetUrl?: string,
 ): Promise<boolean> {
+  let nextTargetUrl = targetUrl;
+  if (nextTargetUrl === undefined) {
+    const job = await getJobById(id, database).catch(() => null);
+    if (job?.kind === "agent_generation") {
+      nextTargetUrl = `/agents/new?job=${id}`;
+    }
+  }
   const now = new Date();
   const updated = await database
     .update(backgroundJobs)
@@ -251,6 +292,7 @@ export async function failJob(
       status: "failed",
       errorCode: code,
       errorMessage: message,
+      ...(nextTargetUrl !== undefined ? { targetUrl: nextTargetUrl } : {}),
       completedAt: now,
       leaseExpiresAt: null,
       updatedAt: now,
