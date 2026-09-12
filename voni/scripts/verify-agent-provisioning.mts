@@ -29,7 +29,13 @@ try {
   );
   assert.equal(response.ok, true);
   const agent = (await response.json()) as {
-    tools: Array<{ name: string; execution_mode: string }>;
+    tools: Array<{
+      name: string;
+      execution_mode: string;
+      parameters?: {
+        properties?: { field_key?: { enum?: string[] } };
+      };
+    }>;
     input?: {
       format?: { encoding?: string; sample_rate?: number };
       transcription_mode?: string;
@@ -39,8 +45,14 @@ try {
     system_prompt: string;
   };
   const tools = agent.tools;
-  assert.deepEqual(tools.map((tool) => tool.name), [...REAL_ESTATE_TEMPLATE.tools]);
-  assert.equal(tools.length, 8);
+  assert.deepEqual(
+    tools.map((tool) => tool.name),
+    [
+      ...REAL_ESTATE_TEMPLATE.tools,
+      "prepare_sensitive_capture",
+    ],
+  );
+  assert.equal(tools.length, 9);
   assert.equal(
     tools.find((tool) => tool.name === "search_properties")?.execution_mode,
     "interactive",
@@ -49,18 +61,26 @@ try {
     tools.find((tool) => tool.name === "book_viewing")?.execution_mode,
     "hold",
   );
+  assert.equal(
+    tools.find((tool) => tool.name === "prepare_sensitive_capture")
+      ?.parameters?.properties?.field_key?.enum?.includes("budget"),
+    true,
+  );
   assert.equal(agent.input?.format?.encoding, "audio/pcmu");
   assert.equal(agent.input?.format?.sample_rate, 8000);
   assert.equal(agent.input?.transcription_mode, "min_latency");
   assert.equal(agent.input?.turn_detection?.min_silence, 100);
   assert.equal(agent.input?.turn_detection?.max_silence, 500);
   assert.equal(agent.output?.format?.encoding, "audio/pcmu");
+  assert.match(agent.system_prompt, /prepare_sensitive_capture/);
   console.log(
     JSON.stringify({
       storedAgent: "created, updated, and read back",
       businessTools: 8,
+      pacingTools: 1,
       input: "PCMU 8000 Hz min_latency",
       output: "PCMU 8000 Hz",
+      promptRequiresSensitivePacing: true,
     }),
   );
 } finally {

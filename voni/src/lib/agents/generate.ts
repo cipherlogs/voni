@@ -25,7 +25,9 @@ Rules:
 - "mission" is one sentence describing the business outcome, not the behaviour.
 - "identity.name" is the name the agent gives on the phone. Default to "Voni"
   unless the brief names one. "identity.role" is a human job title.
-- "detect" lists the facts the agent must learn from the lead.
+- "detect" lists the facts the agent must learn from the lead. Mark
+  "sensitive": true for anything spoken as a sequence that must not be
+  interrupted — phone numbers, emails, budgets, dates, reference numbers.
 - "tools" may ONLY contain names from this list; omit any that do not apply:
 ${TOOL_REGISTRY.map((t) => `    ${t.name} — ${t.description}`).join("\n")}
 - "greeting" is the first line the agent speaks. Keep it under 12 words and end
@@ -39,7 +41,7 @@ JSON shape:
 {
   "mission": string,
   "identity": { "name": string, "role": string },
-  "detect": [{ "key": string, "label": string, "description": string }],
+  "detect": [{ "key": string, "label": string, "description": string, "sensitive": boolean }],
   "tools": [string],
   "knowledge": string,
   "channels": [string],

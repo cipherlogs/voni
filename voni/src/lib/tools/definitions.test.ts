@@ -1,26 +1,36 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { REAL_ESTATE_TEMPLATE } from "@/lib/agents/config";
-import { compileVoiceTools, validateToolArguments } from "./definitions";
+import {
+  SENSITIVE_CAPTURE_TOOL,
+  compileVoiceTools,
+  validateToolArguments,
+} from "./definitions";
 import { isWithinRecurringAvailability } from "./execute";
 
-test("compiles only the selected business tools", () => {
+test("compiles only selected business tools plus sensitive pacing", () => {
   const tools = compileVoiceTools({
     ...REAL_ESTATE_TEMPLATE,
     tools: ["search_properties", "book_viewing", "invented_tool"],
     detect: [
-      { key: "phone", label: "Phone", description: "" },
-      { key: "location", label: "Location", description: "" },
+      { key: "phone", label: "Phone", description: "", sensitive: true },
+      { key: "location", label: "Location", description: "", sensitive: false },
     ],
   });
   assert.deepEqual(
     tools.map((tool) => tool.name),
-    ["search_properties", "book_viewing"],
+    ["search_properties", "book_viewing", SENSITIVE_CAPTURE_TOOL],
   );
   assert.equal(tools.at(-1)?.execution_mode, "hold");
+  assert.deepEqual(
+    (tools.at(-1)?.parameters.properties as Record<string, { enum: string[] }>)[
+      "field_key"
+    ].enum,
+    ["phone"],
+  );
 });
 
-test("registers nothing beyond the selected tools", () => {
+test("does not register pacing without a sensitive field", () => {
   const tools = compileVoiceTools({
     ...REAL_ESTATE_TEMPLATE,
     tools: ["check_calendar"],

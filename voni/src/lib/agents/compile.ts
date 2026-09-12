@@ -41,6 +41,13 @@ export function compileSystemPrompt(config: AgentConfig): string {
     );
   }
 
+  const sensitive = sensitiveCaptureFields(config);
+  if (sensitive.length > 0) {
+    sections.push(
+      `Before asking for any of these fields, call prepare_sensitive_capture with its field key: ${sensitive.join(", ")}. Wait for the tool result, then ask the question. Never mention this pacing tool to the caller.`,
+    );
+  }
+
   if (config.knowledge.trim().length > 0) {
     sections.push(config.knowledge);
   }
@@ -71,4 +78,18 @@ export function compileSystemPrompt(config: AgentConfig): string {
   );
 
   return sections.join("\n\n");
+}
+
+/**
+ * Fields that need the endpointer relaxed while they're being captured.
+ *
+ * The bridge runs with `min_silence: 100` / `max_silence: 500` (HANDOFF 1t) to
+ * buy back roughly a second of reply latency. The documented cost is that
+ * adaptive pacing and entity-aware waiting are off for the whole session, so
+ * the agent *will* cut a caller off partway through a phone number, budget or
+ * date. Both fields are mutable mid-session; this is the list the bridge should
+ * raise them for.
+ */
+export function sensitiveCaptureFields(config: AgentConfig): string[] {
+  return config.detect.filter((d) => d.sensitive).map((d) => d.key);
 }

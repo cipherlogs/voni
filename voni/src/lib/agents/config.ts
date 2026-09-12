@@ -47,10 +47,25 @@ export const TOOL_NAMES = TOOL_REGISTRY.map((t) => t.name);
 export const CHANNELS = ["phone", "whatsapp"] as const;
 
 /** A field the agent must capture during the conversation. */
+/**
+ * A field the agent must capture during the conversation.
+ *
+ * ⚠️ `sensitive` is load-bearing, not decorative. HANDOFF (1t) records that we
+ * set `min_silence: 100` / `max_silence: 500` to win back ~1s of latency, and
+ * that this *disabled adaptive pacing and entity-aware waiting* — so the agent
+ * will cut a caller off mid phone-number or mid-email. Both fields are mutable
+ * mid-session, and this flag is what tells the bridge which capture steps need
+ * them temporarily raised. Marking a field sensitive is how that gets wired.
+ *
+ * It has no control on the agent detail page — that form follows a mockup with
+ * no toggle for it — so it is authored by the wizard and the generator, and the
+ * detail form must round-trip it untouched rather than dropping it on save.
+ */
 export const detectFieldSchema = z.object({
   key: z.string().min(1),
   label: z.string().min(1),
   description: z.string().default(""),
+  sensitive: z.boolean().default(false),
 });
 
 export const agentConfigSchema = z.object({
@@ -164,13 +179,13 @@ export const REAL_ESTATE_TEMPLATE: AgentConfig = {
     "Convert inbound and consented property leads into qualified viewing appointments.",
   identity: { name: "Voni", role: "property consultant" },
   detect: [
-    { key: "budget", label: "Budget", description: "Price range the lead can commit to." },
-    { key: "location", label: "Location", description: "Preferred area or community." },
-    { key: "property_type", label: "Property type", description: "Apartment, villa, townhouse." },
-    { key: "timeline", label: "Timeline", description: "How soon they want to move or buy." },
-    { key: "financing", label: "Financing", description: "Cash, mortgage, or undecided." },
-    { key: "investment_or_end_user", label: "Investment or end user", description: "Buying to live in or to let." },
-    { key: "buying_intent", label: "Buying intent", description: "How serious and ready they are." },
+    { key: "budget", label: "Budget", description: "Price range the lead can commit to.", sensitive: true },
+    { key: "location", label: "Location", description: "Preferred area or community.", sensitive: false },
+    { key: "property_type", label: "Property type", description: "Apartment, villa, townhouse.", sensitive: false },
+    { key: "timeline", label: "Timeline", description: "How soon they want to move or buy.", sensitive: false },
+    { key: "financing", label: "Financing", description: "Cash, mortgage, or undecided.", sensitive: true },
+    { key: "investment_or_end_user", label: "Investment or end user", description: "Buying to live in or to let.", sensitive: false },
+    { key: "buying_intent", label: "Buying intent", description: "How serious and ready they are.", sensitive: false },
   ],
   tools: [...TOOL_NAMES],
   knowledge:

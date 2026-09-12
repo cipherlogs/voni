@@ -1,6 +1,9 @@
 import { z } from "zod";
 import type { AgentConfig } from "@/lib/agents/config";
 import { TOOL_NAMES } from "@/lib/agents/config";
+import { sensitiveCaptureFields } from "@/lib/agents/compile";
+
+export const SENSITIVE_CAPTURE_TOOL = "prepare_sensitive_capture";
 
 const isoDateTime = z
   .string()
@@ -220,10 +223,35 @@ const BUSINESS_TOOLS: Record<ToolName, VoiceTool> = {
 };
 
 export function compileVoiceTools(config: AgentConfig): VoiceTool[] {
-  return config.tools.flatMap((name) => {
+  const selected = config.tools.flatMap((name) => {
     const tool = BUSINESS_TOOLS[name as ToolName];
     return tool ? [tool] : [];
   });
+  const sensitive = sensitiveCaptureFields(config);
+  if (sensitive.length > 0) {
+    selected.push({
+      type: "function",
+      name: SENSITIVE_CAPTURE_TOOL,
+      description:
+        "Internal pacing control. Call this immediately before asking the caller for one of the listed sensitive fields. Never mention this tool to the caller.",
+      parameters: {
+        type: "object",
+        properties: {
+          field_key: {
+            type: "string",
+            enum: sensitive,
+            examples: [sensitive[0]],
+            description: "The sensitive field you are about to ask for.",
+          },
+        },
+        required: ["field_key"],
+        additionalProperties: false,
+      },
+      execution_mode: "hold",
+      timeout_seconds: 5,
+    });
+  }
+  return selected;
 }
 
 export function validateToolArguments(name: string, value: unknown) {

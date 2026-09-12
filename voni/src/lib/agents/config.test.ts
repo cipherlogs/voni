@@ -79,8 +79,11 @@ test("strips fields removed from the schema instead of rejecting the row", () =>
   if (!parsed.success) return;
 
   assert.deepEqual(parsed.data.identity, { name: "Vera", role: "coordinator" });
+  // `sensitive` survives: it drives mid-call endpointer widening and is
+  // authored by the wizard/generator, even though the detail form has no
+  // control for it.
   assert.deepEqual(parsed.data.detect, [
-    { key: "budget", label: "Budget", description: "" },
+    { key: "budget", label: "Budget", description: "", sensitive: true },
   ]);
   for (const removed of [
     "intents",

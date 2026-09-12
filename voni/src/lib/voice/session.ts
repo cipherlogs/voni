@@ -21,7 +21,10 @@
  *    the hardware clock and turns into pops and gaps.
  */
 
-import type { VoiceTool } from "@/lib/tools/definitions";
+import {
+  SENSITIVE_CAPTURE_TOOL,
+  type VoiceTool,
+} from "@/lib/tools/definitions";
 import type { ToolResponse } from "@/lib/tools/execute";
 import { ToolCoordinator } from "./tool-coordinator";
 import { acquireMic, releaseMic } from "./mic-owner";
@@ -333,6 +336,13 @@ type QueuedUpdate = {
   reject: (error: Error) => void;
 };
 
+const SENSITIVE_TURN_DETECTION: TurnDetection = {
+  min_silence: 1400,
+  max_silence: 4000,
+  interrupt_response: true,
+  interruption_delay: 0,
+};
+
 /** One scheduled reply chunk. Direct source -> destination per AssemblyAI docs. */
 type QueuedVoice = {
   node: AudioBufferSourceNode;
@@ -350,6 +360,10 @@ export class VoiceSession {
   private state: VoiceState = "idle";
   private onPageHide = () => this.sendEnd();
   private toolCoordinator: ToolCoordinator | null = null;
+  /** Exact turn-detection state to restore after one sensitive value turn. */
+  private pendingTurnDetectionRestore: TurnDetection | null | undefined;
+  /** Last server-acknowledged turn-detection state. Null means adaptive defaults. */
+  private activeTurnDetection: TurnDetection | null = null;
   /** Resume handle from `session.ready`. Null until the first ready. */
   private sessionId: string | null = null;
   private tokenFetcher: TokenFetcher | null = null;
@@ -451,6 +465,12 @@ export class VoiceSession {
         config.mode === "agent" && agentId
           ? { mode: "agent", agentId }
           : config;
+      this.activeTurnDetection =
+        resolved.mode === "inline" && resolved.turnDetection
+          ? { ...resolved.turnDetection }
+          : null;
+      this.pendingTurnDetectionRestore = undefined;
+
       if (!acquireMic(this.micOwner)) {
         throw new VoiceStartError(
           "busy-mic",
@@ -544,6 +564,9 @@ export class VoiceSession {
         onActivityChange: (active) => this.handlers.onToolActivity?.(active),
         execute: async (call) => {
           if (this.injectedExecutor) return this.injectedExecutor(call);
+          if (call.name === SENSITIVE_CAPTURE_TOOL) {
+            return this.prepareSensitiveCapture();
+          }
           if (!config.testAgentId) {
             return {
               ok: false,
@@ -777,6 +800,19 @@ export class VoiceSession {
           itemId: typeof msg.item_id === "string" ? msg.item_id : null,
           text: typeof msg.text === "string" ? msg.text : "",
         });
+        if (this.pendingTurnDetectionRestore !== undefined) {
+          const turnDetection = this.pendingTurnDetectionRestore;
+          this.pendingTurnDetectionRestore = undefined;
+          void this.updateConfig({
+            input: {
+              turn_detection: turnDetection,
+            },
+          }).catch((error: unknown) =>
+            this.handlers.onError?.({
+              message: error instanceof Error ? error.message : "Could not restore call pacing.",
+            }),
+          );
+        }
         break;
 
       case "transcript.agent":
@@ -827,6 +863,30 @@ export class VoiceSession {
       throw new Error("The call connection is closed.");
     }
     this.ws.send(JSON.stringify(message));
+  }
+
+  private async prepareSensitiveCapture() {
+    try {
+      const previous = this.activeTurnDetection
+        ? { ...this.activeTurnDetection }
+        : null;
+      await this.updateConfig({
+        input: {
+          turn_detection: SENSITIVE_TURN_DETECTION,
+        },
+      });
+      this.pendingTurnDetectionRestore = previous;
+      return {
+        ok: true as const,
+        data: { ready: true, instruction: "Ask for the sensitive field now." },
+      };
+    } catch {
+      return {
+        ok: false as const,
+        error: "Could not prepare sensitive capture. Ask the caller to repeat slowly.",
+        retryable: true,
+      };
+    }
   }
 
   /**
@@ -907,6 +967,15 @@ export class VoiceSession {
     const item = this.updateInFlight;
     if (item.timer) clearTimeout(item.timer);
     this.updateInFlight = null;
+    const input = item.session.input;
+    if (input && typeof input === "object" && "turn_detection" in input) {
+      const turnDetection = (input as { turn_detection?: unknown })
+        .turn_detection;
+      this.activeTurnDetection =
+        turnDetection && typeof turnDetection === "object"
+          ? { ...(turnDetection as TurnDetection) }
+          : null;
+    }
     item.resolve();
     if (!this.configSynced) {
       this.configSynced = true;
