@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
+  MessageScrollerProvider,
   MessageScroller,
   MessageScrollerButton,
   MessageScrollerContent,
@@ -18,7 +19,7 @@ import {
   MessageScrollerViewport,
 } from "@/components/ui/message-scroller";
 import { Bubble, BubbleContent } from "@/components/ui/bubble";
-import { Message, MessageHeader } from "@/components/ui/message";
+import { Message } from "@/components/ui/message";
 import { Progress } from "@/components/ui/progress";
 import {
   VoiceSession,
@@ -74,7 +75,17 @@ import {
  */
 
 type Mode =
-  | { kind: "inline"; config: AgentConfig; agentId?: string }
+  | {
+      kind: "inline";
+      config: AgentConfig;
+      agentId?: string;
+      /**
+       * Whether the form holds unsaved edits. Gates the "Testing unsaved
+       * edits" strip — the mockup's snapshot is the dirty state. Optional
+       * until the host page wires it; absent means dirty (today's behaviour).
+       */
+      isDirty?: boolean;
+    }
   | { kind: "demo" };
 
 /** Output languages, in the order the row shows them. */
@@ -95,11 +106,46 @@ const LANGUAGE_TABS: { code: string; label: string }[] = [
  *
  * Hang-up is spelled out rather than using the `destructive` button variant:
  * this scaffold's `destructive` is a TINT (`bg-destructive/10` with red
- * text), not the solid red fill a hang-up button needs.
+ * text), not the solid red fill a hang-up button needs. The solid fill still
+ * comes from the `destructive` token (both themes) with white text — no raw
+ * red shade and no manual dark: overrides.
  */
 const CALL_GREEN = "bg-brand text-brand-foreground hover:bg-brand/90";
-const HANGUP_RED =
-  "bg-red-600 text-white hover:bg-red-700 dark:bg-red-600 dark:hover:bg-red-500";
+const HANGUP_RED = "bg-destructive text-white hover:bg-destructive/90";
+
+/**
+ * The callcard's own elevation, spelled out because no `shadow-*` step matches
+ * it: a 1px contact shadow plus a wide, heavily-inset ambient one.
+ */
+const CARD_SHADOW =
+  "shadow-[0_1px_2px_rgba(0,0,0,.04),0_12px_32px_-20px_rgba(0,0,0,.25)]";
+
+/**
+ * The error body copy sits a long way darker than `--destructive` itself —
+ * red-900 against the red-600 border and the red-50 tint. Mixing toward
+ * `--foreground` reaches it in light mode AND inverts correctly in dark, which
+ * a literal `#7f1d1d` would not.
+ */
+const ERROR_BODY =
+  "text-[color-mix(in_oklch,var(--destructive),var(--foreground)_45%)]";
+
+/**
+ * Two keyframe sets the card needs and Tailwind does not ship: the portrait's
+ * live ring (a soft 1.04 bloom that fades out, NOT `animate-ping`'s scale-2
+ * blast) and the live dot's blink. Hoisted and de-duplicated by React, so both
+ * modes rendering the card at once still emit one copy.
+ */
+const CALL_KEYFRAMES = `
+@keyframes voni-callring {
+  0% { transform: scale(.96); opacity: .5; }
+  70% { transform: scale(1.04); opacity: .15; }
+  100% { transform: scale(1.04); opacity: 0; }
+}
+@keyframes voni-livedot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .35; }
+}
+`;
 
 function voicesFor(code: string): Voice[] {
   return VOICES.filter((v) => v.languageCode === code);
@@ -302,14 +348,44 @@ export function VoiceCall({ mode }: { mode: Mode }) {
 
   const frozen = active ? "pointer-events-none opacity-35" : "";
 
+  // The heading the rail's aside is labelled by: in inline mode the host
+  // page provides it via aria-label, but a bare card still needs its own
+  // accessible name — and the visible title matches the mockup's callcard
+  // in both modes.
+  const callTitle = isDemo ? `Call ${displayName}` : "Test this agent";
+
+  // The strip answers "which version am I about to talk to" in every inline
+  // state, not just the dirty one — a pill that appears and disappears reads
+  // as a warning, where the point is a permanent, checkable fact. Two claims
+  // only, both of which the component can actually verify.
+  const versionStrip =
+    mode.kind === "inline"
+      ? (mode.isDirty ?? true)
+        ? "Testing unsaved edits · Save to deploy"
+        : "Testing the saved version"
+      : null;
+
+  // Mockup mic-hint: the speaks-first instruction, not a repeat of the lede
+  // above it. Shared by the empty-state block and the transcript footer below
+  // so the hint survives once captions appear mid-call.
+  const micHint = isDemo
+    ? `Uses your microphone · ${capSeconds / 60} min max · Just talk — it speaks first.`
+    : "Uses your microphone · Just talk — it speaks first.";
+
   return (
     // Fixed height — the single reason this component can never move the page.
     // The flexing region near the bottom absorbs every state change internally.
     <div
-      className={`bg-card flex w-full max-w-sm flex-col rounded-2xl border p-5 shadow-sm ${
-        isDemo ? "h-[30rem]" : "h-[22rem]"
+      role="region"
+      aria-label={callTitle}
+      className={`bg-card flex w-full flex-col items-center rounded-[16px] border p-5 text-center ${CARD_SHADOW} ${
+        isDemo ? "h-[30rem] max-w-sm" : ""
       }`}
     >
+      <style href="voni-call-keyframes" precedence="medium">
+        {CALL_KEYFRAMES}
+      </style>
+
       {/* The agent picker: a row of faces. Tap one and that person calls you.
           The selection is the portrait directly below, so there is nothing to
           read, nothing to learn, and no screen to come back from. */}
@@ -353,42 +429,81 @@ export function VoiceCall({ mode }: { mode: Mode }) {
         </div>
       ) : null}
 
-      {/* Identity. The single line under the name always answers
-          "what is happening right now". */}
-      <div className={`flex flex-col items-center gap-2 ${isDemo ? "mt-4" : ""}`}>
-        <div className="relative">
-          {state === "speaking" || state === "connecting" ? (
-            <div
-              className={`bg-primary/25 absolute -inset-1 rounded-full ${
-                state === "speaking" ? "animate-ping" : "animate-pulse"
-              }`}
+      {/* Callcard header: title, then the lede answering "what is this".
+          Inline mirrors the on-screen config including unsaved edits — say
+          so, or users leave believing the test covered the deployed version.
+          Demo keeps its vertical; each mode says what IT does. */}
+      <h2 className="text-base font-semibold">{callTitle}</h2>
+      <p className="text-muted-foreground mt-1 text-[13px] leading-[1.5]">
+        {isDemo
+          ? persona.vertical
+          : "Talks to the version on screen, including unsaved edits. No phone number involved."}
+      </p>
+      {versionStrip ? (
+        <p className="text-foreground/75 bg-muted/50 mt-2.5 inline-flex items-center rounded-full border px-3 py-[5px] text-xs">
+          {versionStrip}
+        </p>
+      ) : null}
+
+      {/* Identity. The role stays put under the name in every state; while
+          the call is live a second line answers "what is happening right
+          now" — timer plus a brand-green live dot, matching the mockup's
+          stacked role + `0:42 · listening` lines. */}
+      <div className="relative mt-4">
+        {/* 2px brand-green ring while the call is live: one bloom that fades
+            out and restarts, identical in every live sub-state, so the card's
+            geometry never shifts between connecting, listening and speaking. */}
+        {active ? (
+          <span
+            aria-hidden
+            className="border-brand absolute -inset-1.5 animate-[voni-callring_1.8s_ease-out_infinite] rounded-full border-2 opacity-45 motion-reduce:animate-none"
+          />
+        ) : null}
+        {isDemo ? (
+          <Portrait persona={persona} size={84} className="relative" />
+        ) : (
+          <div
+            aria-hidden
+            className="bg-primary text-primary-foreground relative flex items-center justify-center rounded-full font-semibold"
+            style={{ width: 84, height: 84, fontSize: 34 }}
+          >
+            {displayName.charAt(0)}
+          </div>
+        )}
+      </div>
+
+      <div className="mt-2.5 text-lg font-semibold tracking-[-0.01em]">
+        {displayName}
+      </div>
+      {/* Role line: always present, matching the mockup even mid-call. */}
+      <div className="text-muted-foreground mt-0.5 text-[13px] tabular-nums">
+        {config.identity.role}
+      </div>
+      {/* State line: only off-idle, answering "what is happening right now".
+          13px semibold tabular in every state, live dot only while connected —
+          the ended recap line is the same treatment minus the dot. */}
+      {state !== "idle" ? (
+        <p
+          className="mt-2 inline-flex items-center gap-2 text-[13px] font-semibold tabular-nums"
+          aria-live="polite"
+        >
+          {connected ? (
+            <span
               aria-hidden
+              className="bg-brand inline-block size-2 shrink-0 animate-[voni-livedot_1.6s_ease-in-out_infinite] rounded-full motion-reduce:animate-none"
             />
           ) : null}
-          <Portrait persona={persona} size={84} className="relative" />
-        </div>
-
-        <div className="flex flex-col items-center gap-0.5 text-center">
-          <span className="text-lg leading-tight font-semibold tracking-tight">
-            {displayName}
-          </span>
-          <span className="text-muted-foreground text-sm tabular-nums">
-            {state === "connecting"
-              ? "Calling…"
-              : connected
-                ? toolActive
-                  ? "Looking that up…"
-                  : `${mmss(elapsed)} · ${state === "speaking" ? "speaking" : "listening"}`
-                : state === "ended"
-                  ? quotaExceeded
-                    ? "Free demo time is up"
-                    : `Call ended · ${mmss(elapsed)}`
-                  : isDemo
-                    ? persona.vertical
-                    : config.identity.role}
-          </span>
-        </div>
-      </div>
+          {state === "connecting"
+            ? "Calling…"
+            : connected
+              ? toolActive
+                ? "Looking that up…"
+                : `${mmss(elapsed)} · ${state === "speaking" ? "speaking" : "listening"}`
+              : quotaExceeded
+                ? "Free demo time is up"
+                : `Call ended · ${mmss(elapsed)}`}
+        </p>
+      ) : null}
 
       {/* Language first, then voice. Language is the choice a visitor actually
           has an opinion about; which of eleven English voices is not, so it
@@ -451,22 +566,22 @@ export function VoiceCall({ mode }: { mode: Mode }) {
       ) : null}
 
       {/* Primary action, shaped like the button on every phone ever made. */}
-      <div className="mt-4 flex justify-center">
+      <div className="mt-3.5 flex justify-center">
         {active ? (
           <Button
-            className={`h-12 w-12 rounded-full p-0 ${HANGUP_RED}`}
+            className={`size-[52px] rounded-full p-0 ${HANGUP_RED}`}
             onClick={hangUp}
-            aria-label="End call"
+            aria-label="End test call"
           >
-            <PhoneOff className="h-5 w-5" />
+            <PhoneOff className="size-[22px]" />
           </Button>
         ) : (
           <Button
-            className={`h-12 rounded-full px-7 ${CALL_GREEN}`}
+            className={`h-11 gap-2 rounded-full px-7 text-sm font-semibold ${CALL_GREEN}`}
             onClick={start}
             aria-label={`Call ${displayName}`}
           >
-            <Phone aria-hidden />
+            <Phone className="size-[18px]" aria-hidden />
             {state === "ended" ? "Call again" : `Call ${displayName}`}
           </Button>
         )}
@@ -476,61 +591,130 @@ export function VoiceCall({ mode }: { mode: Mode }) {
           scenario hint, the countdown, errors, captions — so the card's outer
           height never changes and nothing on the page below it moves. */}
       <div
-        className={`mt-3 min-h-0 flex-1 overflow-y-auto ${
+        className={`mt-3 min-h-0 w-full flex-1 overflow-y-auto ${
           turns.length === 0 && !error ? "flex items-center justify-center" : ""
         }`}
       >
         {error ? (
-          <div className="flex items-start gap-2 rounded-xl border p-2.5">
-            <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
-            <div className="flex flex-col gap-0.5">
-              <p className="text-muted-foreground text-xs leading-snug">
-                {retryIn !== null
-                  ? retryIn > 0
-                    ? `Too many calls right now — try again in ${retryIn}s.`
-                    : "You can try again now."
-                  : error.message}
-              </p>
+          <div
+            role="alert"
+            className="border-destructive/25 bg-destructive/5 flex w-full gap-2.5 rounded-[12px] border px-3 py-2.5 text-left"
+          >
+            <TriangleAlert className="text-destructive mt-px size-4 shrink-0" />
+            <div>
+              {retryIn !== null ? (
+                <>
+                  <strong className="block text-[13px] font-semibold">
+                    Too many calls right now
+                  </strong>
+                  <p className={`mt-0.5 text-xs leading-snug ${ERROR_BODY}`}>
+                    {retryIn > 0
+                      ? `Try again in ${retryIn}s. The test call limit resets automatically.`
+                      : "You can try again now."}
+                  </p>
+                </>
+              ) : (
+                <p className={`text-xs leading-snug ${ERROR_BODY}`}>
+                  {error.message}
+                </p>
+              )}
             </div>
           </div>
         ) : turns.length > 0 ? (
-          <MessageScroller className="min-h-0 flex-1">
-            <MessageScrollerViewport aria-label="Call transcript">
-              <MessageScrollerContent className="gap-2">
-                {turns.map((turn, i) => {
-                  const speaker = turn.role === "user" ? "You" : displayName;
-                  return (
-                    <MessageScrollerItem key={`${i}-${turn.role}`}>
-                      <Message align={turn.role === "user" ? "end" : "start"}>
-                        <MessageHeader>{speaker}</MessageHeader>
-                        <Bubble>
-                          <BubbleContent>{turn.text}</BubbleContent>
-                        </Bubble>
-                      </Message>
-                    </MessageScrollerItem>
-                  );
-                })}
-              </MessageScrollerContent>
-            </MessageScrollerViewport>
-            <MessageScrollerButton />
-          </MessageScroller>
+          <div className="mt-0.5 flex w-full flex-col text-left">
+            {/* Transcript AND the live footer together — the mockup shows
+                bubbles with the mic hint beneath them mid-call, so the footer
+                no longer hides once captions appear. */}
+            <MessageScrollerProvider autoScroll defaultScrollPosition="end">
+              <MessageScroller className="min-h-0 flex-1">
+                <MessageScrollerViewport aria-label="Call transcript">
+                  <MessageScrollerContent className="gap-2">
+                    {turns.map((turn, i) => {
+                      const speaker = turn.role === "user" ? "You" : displayName;
+                      const isUser = turn.role === "user";
+                      return (
+                        <MessageScrollerItem key={`${i}-${turn.role}`}>
+                          <Message align={isUser ? "end" : "start"}>
+                            {/* Mockup bubbles are full-bleed rows inset from
+                                one side, not shrink-to-fit chat balloons: the
+                                agent sits on the muted surface offset 24px
+                                right, you on the card surface offset 24px
+                                left, and the speaker label lives INSIDE the
+                                bubble. Variants stay tokens only. */}
+                            <Bubble
+                              align={isUser ? "end" : "start"}
+                              variant={isUser ? "outline" : "muted"}
+                              className={`w-full max-w-none ${isUser ? "ml-6" : "mr-6"}`}
+                            >
+                              <BubbleContent className="border-border w-full max-w-full rounded-[12px] py-2 text-[13px] leading-[1.5]">
+                                <span className="text-muted-foreground mb-0.5 block text-[11px] font-bold">
+                                  {speaker}
+                                </span>
+                                {turn.text}
+                              </BubbleContent>
+                            </Bubble>
+                          </Message>
+                        </MessageScrollerItem>
+                      );
+                    })}
+                  </MessageScrollerContent>
+                </MessageScrollerViewport>
+                <MessageScrollerButton />
+              </MessageScroller>
+            </MessageScrollerProvider>
+            {/* Live footer under the transcript: the countdown (+ progress)
+                inside the last 30s, else the speaks-first hint — the same
+                content the empty state shows while connected. */}
+            {connected ? (
+              <div className="flex flex-col items-center gap-1.5 px-2 pt-2 text-center">
+                {remaining <= 30 ? (
+                  <>
+                    <p className="text-muted-foreground text-xs leading-relaxed">
+                      {`${remaining}s left on this call`}
+                    </p>
+                    <Progress
+                      value={Math.max(0, (remaining / 30) * 100)}
+                      aria-label="Time left on this call"
+                      className="w-32"
+                    />
+                  </>
+                ) : (
+                  <p className="text-muted-foreground text-xs">{micHint}</p>
+                )}
+              </div>
+            ) : null}
+          </div>
+        ) : state === "ended" ? (
+          /* The mockup's `.recap`: a full-width, left-aligned bordered box
+             sitting under the "Call ended · m:ss" line. Nothing in the session
+             produces a call summary, so it carries the one thing the component
+             can truthfully say about the call that just finished rather than a
+             fabricated outcome. */
+          <div className="w-full rounded-[12px] border px-3 py-2.5 text-left text-[13px]">
+            {quotaExceeded
+              ? isDemo
+                ? "Sign up to keep talking past the free demo limit."
+                : "The test call limit was reached."
+              : "Call again anytime."}
+          </div>
         ) : (
           <div className="flex flex-col items-center gap-1.5 px-2 text-center">
-            <p className="text-muted-foreground text-xs leading-relaxed">
-              {connected
-                ? remaining <= 30
+            {/* Idle inline shows only the mic-hint below: the lede, the
+                version strip, and the hint already say "unsaved edits" three
+                ways, so a fourth "Just talk" paragraph is pure repetition.
+                Connected keeps it (the speaks-first transient); demo idle
+                keeps its scenario line. */}
+            {connected ? (
+              <p className="text-muted-foreground text-xs leading-relaxed">
+                {remaining <= 30
                   ? `${remaining}s left on this call`
-                  : "Just talk — it speaks first."
-                : state === "ended"
-                  ? quotaExceeded
-                    ? isDemo
-                      ? "Sign up to keep talking past the free demo limit."
-                      : "The test call limit was reached."
-                    : "Call again anytime."
-                  : isDemo
-                    ? persona.yourRole
-                    : "Calls the version on screen, including unsaved edits."}
-            </p>
+                  : "Just talk — it speaks first."}
+              </p>
+            ) : isDemo && state === "idle" ? (
+              <p className="text-muted-foreground text-xs leading-relaxed">
+                {persona.yourRole}
+              </p>
+            ) : null}
             {connected && remaining <= 30 ? (
               <Progress
                 value={Math.max(0, (remaining / 30) * 100)}
@@ -538,10 +722,8 @@ export function VoiceCall({ mode }: { mode: Mode }) {
                 className="w-32"
               />
             ) : null}
-            {!connected && state !== "ended" && isDemo ? (
-              <p className="text-muted-foreground/70 text-[11px]">
-                Uses your microphone · {capSeconds / 60} min max
-              </p>
+            {!connected ? (
+              <p className="text-muted-foreground text-xs">{micHint}</p>
             ) : null}
           </div>
         )}

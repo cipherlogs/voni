@@ -174,15 +174,10 @@ export async function ensureGenerationPlaceholderAction(input: {
 
   const stub: AgentConfig = {
     mission: "Generating…",
-    identity: { name: trimmed, role: "Generating…", company: "" },
+    identity: { name: trimmed, role: "Generating…" },
     detect: [],
-    intents: [],
-    blockers: [],
     tools: [],
-    knowledge: [],
-    successCondition: "Generating…",
-    fallback: "Generating…",
-    followUpPolicy: "",
+    knowledge: "",
     channels: ["phone"],
     voiceId: input.voiceId,
     languageCodes: [input.languageCode],

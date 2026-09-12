@@ -1,0 +1,393 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vera — Agent detail (Direction B split rail)</title>
+<style>
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: #fafafa;
+    color: #1a1a1a;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+  }
+  a { color: #1a1a1a; }
+  :focus-visible { outline: 2px solid #262626; outline-offset: 2px; border-radius: 6px; }
+  .page { max-width: 1280px; margin: 0 auto; padding: 24px 24px 96px; }
+  .topbar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 4px 0 16px;
+  }
+  .backlink {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 14px; font-weight: 500; text-decoration: none; color: #1a1a1a;
+    padding: 8px 4px; border-radius: 8px;
+  }
+  .backlink:hover { text-decoration: underline; }
+  .pill-global {
+    display: inline-flex; align-items: center; gap: 8px;
+    background: #fff; border: 1px solid #e5e5e5; border-radius: 999px;
+    padding: 6px 12px; font-size: 12px; color: #737373;
+    box-shadow: 0 1px 2px rgba(0,0,0,.04);
+  }
+  .dot-live { width: 8px; height: 8px; border-radius: 999px; background: #16a34a; }
+
+  .layout { display: grid; grid-template-columns: minmax(0,1fr) 400px; gap: 24px; align-items: start; }
+  .rail { grid-column: 2; grid-row: 1; position: sticky; top: 24px; }
+  .config { grid-column: 1; grid-row: 1; min-width: 0; }
+
+  h1 { font-size: 24px; font-weight: 600; letter-spacing: -0.02em; margin: 8px 0 4px; }
+  .sub { color: #737373; font-size: 14px; margin: 0 0 16px; }
+
+  .statusline {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    background: #fff; border: 1px solid #e5e5e5; border-radius: 12px;
+    padding: 12px 14px; margin: 0 0 16px;
+    box-shadow: 0 1px 2px rgba(0,0,0,.04), 0 8px 24px -16px rgba(0,0,0,.18);
+  }
+  .badge {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 12px; font-weight: 600; border-radius: 999px;
+    border: 1px solid #e5e5e5; padding: 4px 10px; background: #fff; white-space: nowrap;
+  }
+  .badge-deploy { background: #f5f5f5; color: #262626; }
+  .spinner { width: 14px; height: 14px; border-radius: 999px; border: 2px solid #d4d4d4; border-top-color: #262626; animation: spin 1s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .status-text { font-size: 13px; color: #525252; }
+  .progress { flex-basis: 100%; height: 6px; border-radius: 999px; background: #f0f0f0; overflow: hidden; }
+  .progress > span { display: block; height: 100%; width: 46%; background: #262626; border-radius: 999px; }
+
+  .card {
+    background: #fff; border: 1px solid #e5e5e5; border-radius: 12px;
+    box-shadow: 0 1px 2px rgba(0,0,0,.04), 0 8px 24px -16px rgba(0,0,0,.18);
+    margin: 0 0 16px;
+  }
+  .card-head { padding: 16px 18px 0; }
+  .card-head h2 { font-size: 16px; font-weight: 600; margin: 0 0 2px; letter-spacing: -0.01em; }
+  .card-head p { margin: 0; font-size: 13px; color: #737373; }
+  .card-body { padding: 14px 18px 18px; display: flex; flex-direction: column; gap: 12px; }
+  .field label { display: block; font-size: 13px; font-weight: 600; margin: 0 0 6px; }
+  .hint { font-size: 12px; color: #737373; margin: 6px 0 0; }
+  input[type="text"], textarea, select {
+    width: 100%; box-sizing: border-box;
+    border: 1px solid #e5e5e5; border-radius: 10px; background: #fff; color: #1a1a1a;
+    font: inherit; font-size: 14px; padding: 10px 12px;
+  }
+  textarea { min-height: 76px; resize: vertical; }
+  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .checkrow { display: flex; flex-wrap: wrap; gap: 8px; }
+  .check {
+    display: inline-flex; align-items: center; gap: 8px;
+    border: 1px solid #e5e5e5; border-radius: 999px; padding: 8px 12px; font-size: 13px; background: #fff;
+  }
+  .check input { width: 16px; height: 16px; accent-color: #262626; }
+  .tool {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    border: 1px solid #e5e5e5; border-radius: 10px; padding: 10px 12px; background: #fff;
+  }
+  .tool strong { font-size: 13px; font-weight: 600; display: block; }
+  .tool small { font-size: 12px; color: #737373; display: block; }
+  .waitbadge {
+    font-size: 11px; font-weight: 600; white-space: nowrap;
+    border: 1px solid #e5e5e5; background: #f5f5f5; color: #525252;
+    border-radius: 999px; padding: 3px 9px;
+  }
+  .switchrow { display: flex; align-items: center; justify-content: space-between; gap: 12px; border-top: 1px solid #f0f0f0; padding-top: 12px; }
+  .switchrow .t { font-size: 13px; font-weight: 600; }
+  .switchrow .d { font-size: 12px; color: #737373; margin: 2px 0 0; }
+  .switch { position: relative; width: 44px; height: 26px; border-radius: 999px; background: #262626; border: 1px solid #262626; flex: none; }
+  .switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 20px; height: 20px; border-radius: 999px; background: #fff; }
+  .switch.off { background: #e5e5e5; border-color: #e5e5e5; }
+  .switch.off::after { left: 20px; }
+  .suggest {
+    background: #fafafa; border: 1px dashed #e5e5e5; border-radius: 10px;
+    padding: 10px 12px; font-size: 13px; color: #525252;
+  }
+
+  .footer-actions {
+    display: flex; align-items: center; justify-content: space-between; gap: 16px;
+    background: #fff; border: 1px solid #e5e5e5; border-radius: 12px; padding: 14px 18px;
+    box-shadow: 0 1px 2px rgba(0,0,0,.04), 0 8px 24px -16px rgba(0,0,0,.18);
+  }
+  .savewrap { display: flex; align-items: center; gap: 10px; }
+  .dirty { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: #737373; }
+  .dirty i { width: 8px; height: 8px; border-radius: 999px; background: #d97706; display: inline-block; }
+  .btn {
+    font: inherit; font-size: 14px; font-weight: 600; border-radius: 999px;
+    min-height: 44px; padding: 10px 22px; cursor: pointer;
+    display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+    border: 1px solid transparent; text-decoration: none;
+  }
+  .btn-primary { background: #262626; color: #fff; }
+  .btn-danger-ghost { background: #fff; color: #dc2626; border-color: #f0caca; }
+  .btn-danger-ghost:hover { background: #fef2f2; }
+  .delete-zone { display: flex; align-items: center; gap: 10px; border-top: 1px solid #f0f0f0; margin-top: 12px; padding-top: 12px; }
+  .delete-zone p { font-size: 12px; color: #737373; margin: 0; }
+
+  .callcard {
+    background: #fff; border: 1px solid #e5e5e5; border-radius: 16px;
+    box-shadow: 0 1px 2px rgba(0,0,0,.04), 0 12px 32px -20px rgba(0,0,0,.25);
+    padding: 20px; display: flex; flex-direction: column; align-items: center; text-align: center;
+  }
+  .callcard h2 { font-size: 16px; font-weight: 600; margin: 0; }
+  .callcard .lede { font-size: 13px; color: #737373; margin: 4px 0 0; }
+  .version-strip {
+    margin-top: 10px; font-size: 12px; color: #525252;
+    background: #fafafa; border: 1px solid #e5e5e5; border-radius: 999px; padding: 5px 12px;
+  }
+  .portrait {
+    width: 84px; height: 84px; border-radius: 999px; background: #262626; color: #fff;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 34px; font-weight: 600; margin-top: 16px; position: relative;
+  }
+  .portrait .ring {
+    position: absolute; inset: -6px; border-radius: 999px;
+    border: 2px solid #16a34a; opacity: .45; animation: pulse 1.8s ease-out infinite;
+  }
+  @keyframes pulse { 0% { transform: scale(.96); opacity: .5; } 70% { transform: scale(1.04); opacity: .15; } 100% { transform: scale(1.04); opacity: 0; } }
+  .who { margin-top: 10px; font-size: 18px; font-weight: 600; letter-spacing: -0.01em; }
+  .roleline { font-size: 13px; color: #737373; margin-top: 2px; font-variant-numeric: tabular-nums; }
+  .timer { display: inline-flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .livedot { width: 8px; height: 8px; border-radius: 999px; background: #16a34a; animation: blink 1.6s ease-in-out infinite; }
+  @keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+  .call-actions { margin-top: 14px; display: flex; justify-content: center; }
+  .btn-call { background: #16a34a; color: #fff; min-height: 44px; padding: 12px 28px; }
+  .btn-hangup {
+    background: #dc2626; color: #fff; border-radius: 999px;
+    width: 52px; height: 52px; min-width: 52px; min-height: 52px; padding: 0;
+  }
+  .transcript { width: 100%; text-align: left; margin-top: 14px; display: flex; flex-direction: column; gap: 8px; }
+  .bubble { border: 1px solid #e5e5e5; border-radius: 12px; padding: 8px 12px; font-size: 13px; }
+  .bubble .who2 { font-size: 11px; font-weight: 700; color: #737373; display: block; margin-bottom: 2px; }
+  .bubble.agent { background: #fafafa; margin-right: 24px; }
+  .bubble.you { background: #fff; margin-left: 24px; }
+  .mic-hint { font-size: 12px; color: #737373; margin-top: 12px; }
+  .recap { width: 100%; text-align: left; border: 1px solid #e5e5e5; border-radius: 12px; padding: 10px 12px; margin-top: 12px; font-size: 13px; }
+  .errorbox {
+    width: 100%; box-sizing: border-box; text-align: left;
+    border: 1px solid #f0caca; background: #fef2f2; border-radius: 12px;
+    padding: 10px 12px; margin-top: 12px; display: flex; gap: 10px;
+  }
+  .errorbox strong { font-size: 13px; display: block; }
+  .errorbox p { font-size: 12px; color: #7f1d1d; margin: 2px 0 0; }
+
+  .states { margin-top: 32px; }
+  .states h2 { font-size: 16px; font-weight: 600; margin: 0 0 4px; }
+  .states > p { font-size: 13px; color: #737373; margin: 0 0 12px; }
+  .states-grid { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 12px; }
+  .mini {
+    background: #fff; border: 1px solid #e5e5e5; border-radius: 12px; padding: 12px 14px;
+    box-shadow: 0 1px 2px rgba(0,0,0,.04);
+  }
+  .mini h3 { font-size: 13px; font-weight: 700; margin: 0 0 6px; }
+  .mini p { font-size: 12px; color: #737373; margin: 6px 0 0; }
+  .mini .status-text { font-size: 12px; }
+
+  .mobile-savebar { display: none; }
+
+  svg { flex: none; }
+
+  @media (max-width: 1023px) {
+    .page { padding: 16px 16px 120px; }
+    .layout { display: flex; flex-direction: column; }
+    .rail { position: static; width: 100%; order: -1; }
+    .config { width: 100%; }
+    .row2 { grid-template-columns: 1fr; }
+    .states-grid { grid-template-columns: 1fr; }
+    .footer-actions { display: none; }
+    .mobile-savebar {
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
+      position: fixed; left: 0; right: 0; bottom: 0; z-index: 20;
+      background: #fff; border-top: 1px solid #e5e5e5; padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
+      box-shadow: 0 -8px 24px -16px rgba(0,0,0,.25);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .spinner, .portrait .ring, .livedot { animation: none; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <div class="topbar">
+    <span class="pill-global"><span class="dot-live" aria-hidden="true"></span> Voni · Agents</span>
+    <span class="pill-global">Direction B · Task-split two-column</span>
+  </div>
+
+  <div class="layout">
+
+    <!-- TEST RAIL first in DOM so mobile stacks it first; desktop grid places it right -->
+    <aside class="rail" aria-label="Test rail">
+      <div class="callcard">
+        <h2>Test this agent</h2>
+        <p class="lede">Talks to the version on screen, including unsaved edits. No phone number involved.</p>
+        <p class="version-strip">Testing unsaved edits · Save to deploy</p>
+
+        <div class="portrait" aria-hidden="true"><span class="ring"></span>V</div>
+        <div class="who">Vera</div>
+        <div class="roleline">Property viewing coordinator</div>
+        <p class="timer" aria-live="polite"><span class="livedot" aria-hidden="true"></span> 0:42 · listening</p>
+
+        <div class="call-actions">
+          <button type="button" class="btn btn-hangup" aria-label="End test call">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.68 13.31a16 16 0 0 0 3.41 2.6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.42 19.42 0 0 1-3.33-2.67m-2.67-3.34a19.79 19.79 0 0 1-3.07-8.63A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91"/><line x1="23" y1="1" x2="1" y2="23"/></svg>
+          </button>
+        </div>
+
+        <div class="transcript" aria-label="Live test transcript">
+          <div class="bubble agent"><span class="who2">Vera</span>Hi, this is Vera from Harborline Property. Are you looking to rent or buy, and which area caught your eye?</div>
+          <div class="bubble you"><span class="who2">You</span>Renting — a 2-bedroom near Riverside, ideally under $2,400.</div>
+        </div>
+
+        <p class="mic-hint">Uses your microphone · Just talk — it speaks first.</p>
+      </div>
+    </aside>
+
+    <!-- CONFIGURE STREAM -->
+    <div class="config">
+      <a class="backlink" href="#">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg>
+        Agents
+      </a>
+      <h1>Vera</h1>
+      <p class="sub">Changes take effect on the next call this agent takes.</p>
+
+      <div class="statusline" aria-live="polite">
+        <span class="badge badge-deploy"><span class="spinner" aria-hidden="true"></span> Deploying…</span>
+        <span class="status-text">Deploying new version… previous version still taking calls</span>
+        <span class="progress" role="progressbar" aria-label="Deployment progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="46"><span></span></span>
+      </div>
+
+      <section class="card" aria-labelledby="h-identity">
+        <div class="card-head"><h2 id="h-identity">Identity</h2><p>Name, voice, and language callers hear.</p></div>
+        <div class="card-body">
+          <div class="field"><label for="f-name">Agent name</label><input id="f-name" type="text" value="Vera"></div>
+          <div class="row2">
+            <div class="field"><label for="f-role">Role</label><input id="f-role" type="text" value="Property viewing coordinator"></div>
+            <div class="field"><label for="f-lang">Language</label>
+              <select id="f-lang"><option selected>English (US)</option><option>English (UK)</option><option>Spanish</option></select>
+            </div>
+          </div>
+          <div class="field"><label for="f-voice">Voice</label>
+            <select id="f-voice"><option selected>Sarah — warm, unhurried</option><option>Marcus — crisp, direct</option><option>Priya — bright, friendly</option></select>
+            <p class="hint">Switching voice starts a fresh session. The current test call ends and a new one begins in the new voice.</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="card" aria-labelledby="h-mission">
+        <div class="card-head"><h2 id="h-mission">Mission</h2><p>What Vera is trying to accomplish on every call.</p></div>
+        <div class="card-body">
+          <div class="field"><label for="f-mission">Mission statement</label>
+            <textarea id="f-mission">Qualify inbound property inquiries and book viewings</textarea>
+          </div>
+          <div class="field"><label for="f-greet">Greeting</label>
+            <input id="f-greet" type="text" value="Hi, this is Vera from Harborline Property. How can I help you today?">
+          </div>
+          <div class="suggest">Suggested first line to test: “Hi, I’m looking for a 2-bedroom near Riverside under $2,400.”</div>
+        </div>
+      </section>
+
+      <section class="card" aria-labelledby="h-conv">
+        <div class="card-head"><h2 id="h-conv">Conversation</h2><p>Details Vera listens for before booking.</p></div>
+        <div class="card-body">
+          <div class="field">
+            <label>Detect and remember</label>
+            <div class="checkrow">
+              <label class="check"><input type="checkbox" checked> Budget</label>
+              <label class="check"><input type="checkbox" checked> Bedrooms</label>
+              <label class="check"><input type="checkbox" checked> Target area</label>
+              <label class="check"><input type="checkbox" checked> Move-in date</label>
+              <label class="check"><input type="checkbox"> Parking</label>
+              <label class="check"><input type="checkbox"> Pets</label>
+            </div>
+            <p class="hint">Unchecked details are still answered if the caller mentions them, but Vera won’t ask for them.</p>
+          </div>
+          <div class="field"><label for="f-rules">House rules</label>
+            <textarea id="f-rules">Never quote fees you can’t verify. If no viewing fits, offer the waitlist and confirm the phone number twice.</textarea>
+          </div>
+        </div>
+      </section>
+
+      <section class="card" aria-labelledby="h-tools">
+        <div class="card-head"><h2 id="h-tools">Tools and channels</h2><p>What Vera can do, and where it answers.</p></div>
+        <div class="card-body">
+          <div class="tool"><div><strong>check_availability</strong><small>Looks up open viewing slots for a listing</small></div><span class="waitbadge">waits for result</span></div>
+          <div class="tool"><div><strong>book_viewing</strong><small>Reserves a slot and sends confirmation</small></div><span class="waitbadge">waits for result</span></div>
+          <div class="tool"><div><strong>send_details</strong><small>Texts photos, price, and address after the call</small></div><span class="waitbadge">waits for result</span></div>
+          <div class="switchrow">
+            <div><div class="t">Phone calls</div><p class="d">Inbound and test calls in the browser.</p></div>
+            <span class="switch" role="switch" aria-checked="true" tabindex="0" aria-label="Phone calls"></span>
+          </div>
+          <div class="switchrow">
+            <div><div class="t">WhatsApp</div><p class="d">Follow-ups and viewing confirmations.</p></div>
+            <span class="switch off" role="switch" aria-checked="false" tabindex="0" aria-label="WhatsApp"></span>
+          </div>
+        </div>
+      </section>
+
+      <div class="footer-actions">
+        <div class="savewrap">
+          <button type="button" class="btn btn-primary">Save changes</button>
+          <span class="dirty"><i aria-hidden="true"></i> Unsaved changes</span>
+        </div>
+        <div>
+          <button type="button" class="btn btn-danger-ghost">Delete</button>
+        </div>
+      </div>
+      <div class="card" style="margin-top:12px;">
+        <div class="card-body">
+          <div class="delete-zone">
+            <div style="flex:1;"><strong style="font-size:13px;">Delete Vera?</strong><p>Removes this agent and its phone routing. Past calls stay in history.</p></div>
+            <button type="button" class="btn btn-danger-ghost" style="min-height:44px;">Delete…</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ALL STATES STRIP -->
+  <section class="states" aria-label="All states">
+    <h2>All states</h2>
+    <p>Every status and call variant on one strip, so nothing ships as a surprise.</p>
+    <div class="states-grid">
+      <div class="mini"><h3>Status · Ready</h3><span class="badge">Deployed and ready</span><p>New calls use the saved version.</p></div>
+      <div class="mini"><h3>Status · Queued</h3><span class="badge">Deployment queued</span><p class="status-text">Agent saved — voice deployment is running in the background.</p></div>
+      <div class="mini"><h3>Status · Attention / failed</h3><span class="badge" style="border-color:#f0caca;background:#fef2f2;color:#991b1b;">Deployment failed</span><p>Saved, but voice deployment needs attention. Phone calls keep using the previous deployed version until this succeeds.</p></div>
+      <div class="mini"><h3>Generation · Running</h3><span class="badge badge-deploy"><span class="spinner" aria-hidden="true"></span> Configuration generating</span><p>Review, test, and save unlock when it’s ready. <a href="#">View progress in Jobs</a></p></div>
+      <div class="mini"><h3>Generation · Ready</h3><span class="badge">Ready to review</span><p>Generation finished. The result waits on the review screen. <a href="#">Review the generated configuration</a></p></div>
+      <div class="mini"><h3>Generation · Failed</h3><span class="badge" style="border-color:#f0caca;background:#fef2f2;color:#991b1b;">Generation didn’t finish</span><p>Edit and save manually, or go back to the wizard to see the error and retry.</p></div>
+      <div class="mini">
+        <h3>Call · Ended recap</h3>
+        <p class="timer">Call ended · 2:15</p>
+        <div class="recap">Vera qualified a Riverside 2-bedroom lead and booked <strong>Sat 11:30</strong>. Confirmation text sent.</div>
+        <div class="call-actions"><button type="button" class="btn btn-call" style="min-height:44px;"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg> Call again</button></div>
+      </div>
+      <div class="mini">
+        <h3>Call · 429 rate limited</h3>
+        <div class="errorbox" role="alert">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#991b1b" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+          <div><strong>Too many calls right now</strong><p>Try again in 38s. The test call limit resets automatically.</p></div>
+        </div>
+        <p>Distinct from mic errors and dropped connections — countdown comes from the server retry window.</p>
+      </div>
+      <div class="mini">
+        <h3>Call · Idle</h3>
+        <div class="call-actions" style="margin-top:6px;"><button type="button" class="btn btn-call" style="min-height:44px;"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg> Call Vera</button></div>
+        <p>Uses your microphone · Calls the version on screen, including unsaved edits.</p>
+      </div>
+    </div>
+  </section>
+</div>
+
+<div class="mobile-savebar">
+  <span class="dirty"><i aria-hidden="true"></i> Unsaved changes</span>
+  <button type="button" class="btn btn-primary">Save changes</button>
+</div>
+
+</body>
+</html>

@@ -3,8 +3,8 @@ import { RouteBrief } from "@/components/copilot/route-brief";
 import { notFound } from "next/navigation";
 import { getAgentWithGeneration } from "../actions";
 import { EditAgent } from "./edit-agent";
-import { BackLink } from "@/components/back-link";
 import { DetailSkeleton } from "@/components/page-skeletons";
+import { agentConfigSchema, normalizeConfig } from "@/lib/agents/config";
 import type { AgentConfig } from "@/lib/agents/config";
 
 /**
@@ -34,19 +34,23 @@ async function AgentDetail({
       ? ` Generation ${generationStatus ?? "unknown"}.`
       : "";
 
+  // Parse rather than cast: stored rows predate the current schema (notably
+  // `knowledge`, once a string[]), and the schema's coercions only run on a
+  // parse. A cast would hand the form a legacy array, which React then renders
+  // comma-joined into the textarea. Genuinely unparseable rows fall back to the
+  // raw value so the editor still opens instead of crashing the route.
+  const parsedConfig = agentConfigSchema.safeParse(agent.config);
+  const storedConfig = parsedConfig.success
+    ? normalizeConfig(parsedConfig.data)
+    : (agent.config as AgentConfig);
+
   return (
     <>
       <RouteBrief route={`/agents/${id}`} brief={`Agent ${agent.name}. Deployment ${agent.deploymentStatus}.${generationNote} Configuration version ${agent.configVersion}. Edit configuration or test this agent.`} />
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">{agent.name}</h1>
-        <p className="text-muted-foreground text-sm">
-          Changes take effect on the next call this agent takes.
-        </p>
-      </div>
       <EditAgent
         id={agent.id}
         name={agent.name}
-        config={agent.config as AgentConfig}
+        config={storedConfig}
         initialDeploymentAttention={query.deployment === "attention"}
         deploymentStatus={agent.deploymentStatus}
         deploymentError={agent.deploymentError}
@@ -66,9 +70,8 @@ export default function AgentPage({
 }: PageProps<"/agents/[id]">) {
   return (
     <div data-testid="agent-shell" className="flex flex-col gap-6">
-      <BackLink href="/agents" label="Agents" />
       {/* Generic detail frame: no invented record title — the resolved leaf
-          renders the real agent name as the heading. */}
+          renders backlink, heading, and sub inside the config column. */}
       <Suspense
         fallback={
           <div role="status" aria-label="Loading agent">

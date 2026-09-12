@@ -25,28 +25,23 @@ Rules:
 - "mission" is one sentence describing the business outcome, not the behaviour.
 - "identity.name" is the name the agent gives on the phone. Default to "Voni"
   unless the brief names one. "identity.role" is a human job title.
-- "detect" lists the facts the agent must learn from the lead. Mark
-  "sensitive": true for anything spoken as a sequence that must not be
-  interrupted — phone numbers, emails, budgets, dates, reference numbers.
+- "detect" lists the facts the agent must learn from the lead.
 - "tools" may ONLY contain names from this list; omit any that do not apply:
 ${TOOL_REGISTRY.map((t) => `    ${t.name} — ${t.description}`).join("\n")}
 - "greeting" is the first line the agent speaks. Keep it under 12 words and end
   it with a question, so the caller has something easy to answer.
 - "channels" is a subset of ["phone", "whatsapp"].
+- "knowledge" is one short paragraph of house rules: the hard facts and
+  prohibitions the agent must respect. Use "" when the brief states none.
 - Keep every string short. These are spoken on a phone call.
 
 JSON shape:
 {
   "mission": string,
-  "identity": { "name": string, "role": string, "company": string },
-  "detect": [{ "key": string, "label": string, "description": string, "sensitive": boolean }],
-  "intents": [string],
-  "blockers": [string],
+  "identity": { "name": string, "role": string },
+  "detect": [{ "key": string, "label": string, "description": string }],
   "tools": [string],
-  "knowledge": [string],
-  "successCondition": string,
-  "fallback": string,
-  "followUpPolicy": string,
+  "knowledge": string,
   "channels": [string],
   "voiceId": string,
   "greeting": string

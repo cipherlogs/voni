@@ -1,0 +1,700 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vera — Agent detail (Direction A)</title>
+<style>
+  :root {
+    --bg: #fafafa;
+    --card: #ffffff;
+    --ink: #1a1a1a;
+    --muted: #737373;
+    --border: #e5e5e5;
+    --green: #16a34a;
+    --green-dark: #15803d;
+    --red: #dc2626;
+    --dark: #262626;
+    --radius-card: 12px;
+    --radius-call: 16px;
+    --radius-pill: 999px;
+  }
+  html { box-sizing: border-box; }
+  *, *::before, *::after { box-sizing: inherit; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: -apple-system, "Segoe UI", Inter, Roboto, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+  }
+  .wrap {
+    max-width: 880px;
+    margin: 0 auto;
+    padding: 32px 20px 140px;
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+  }
+  h1 {
+    font-size: 24px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    margin: 8px 0 4px;
+  }
+  h2.card-title {
+    font-size: 16px;
+    font-weight: 600;
+    margin: 0;
+  }
+  p { margin: 0; }
+  .back {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--muted);
+    font-size: 14px;
+    text-decoration: none;
+    min-height: 44px;
+  }
+  .back:hover { color: var(--ink); }
+  .back:focus-visible, button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visible {
+    outline: 2px solid var(--ink);
+    outline-offset: 2px;
+    border-radius: 6px;
+  }
+  .sub { color: var(--muted); font-size: 14px; }
+
+  /* Unified status line */
+  .status-line {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    font-size: 14px;
+  }
+  .dot {
+    width: 9px; height: 9px; border-radius: 50%;
+    background: var(--green);
+    flex: none;
+  }
+  .dot.amber { background: #d97706; }
+  .status-meta { color: var(--muted); }
+  .status-note {
+    font-size: 12px; color: var(--muted);
+    border: 1px dashed var(--border);
+    border-radius: 8px;
+    padding: 8px 12px;
+    background: var(--card);
+  }
+
+  /* Cards */
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-card);
+    box-shadow: 0 1px 2px rgba(0,0,0,0.04), 0 4px 12px rgba(0,0,0,0.04);
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+  .card.quiet { gap: 12px; }
+  .hint { font-size: 12px; color: var(--muted); }
+  .label { font-size: 13px; font-weight: 600; margin-bottom: 2px; }
+  .field-value {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 9px 12px;
+    font-size: 14px;
+    background: #fcfcfc;
+    color: var(--ink);
+  }
+  .mock-input { pointer-events: none; }
+
+  /* Test / call card — visually dominant */
+  .call-card {
+    border-radius: var(--radius-call);
+    padding: 28px;
+    gap: 0;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.05), 0 10px 28px rgba(0,0,0,0.07);
+  }
+  .signifier {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    color: #92600a;
+    background: #fef6e0;
+    border: 1px solid #f0dfae;
+    border-radius: var(--radius-pill);
+    padding: 5px 12px;
+    align-self: flex-start;
+    margin-bottom: 20px;
+  }
+  .identity {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+    text-align: center;
+  }
+  .avatar-wrap { position: relative; }
+  .avatar {
+    width: 84px; height: 84px;
+    border-radius: 50%;
+    background: var(--dark);
+    color: #fff;
+    font-size: 32px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+  }
+  .pulse {
+    position: absolute;
+    inset: -6px;
+    border-radius: 50%;
+    background: rgba(22,163,74,0.25);
+    animation: ping 1.6s cubic-bezier(0,0,0.2,1) infinite;
+  }
+  @keyframes ping {
+    0% { transform: scale(1); opacity: 0.8; }
+    80%, 100% { transform: scale(1.18); opacity: 0; }
+  }
+  .identity-name { font-size: 18px; font-weight: 600; letter-spacing: -0.01em; }
+  .identity-role { font-size: 14px; color: var(--muted); }
+  .identity-status { font-size: 14px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .call-actions {
+    display: flex;
+    justify-content: center;
+    margin: 20px 0 12px;
+  }
+  .btn {
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: 600;
+    border-radius: var(--radius-pill);
+    border: 1px solid transparent;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 44px;
+  }
+  .btn-call {
+    background: var(--green);
+    color: #fff;
+    padding: 0 28px;
+    font-size: 15px;
+  }
+  .btn-call:hover { background: var(--green-dark); }
+  .btn-hangup {
+    background: var(--red);
+    color: #fff;
+    width: 52px; height: 52px;
+    border-radius: 50%;
+    justify-content: center;
+    padding: 0;
+  }
+  .btn-dark {
+    background: var(--dark);
+    color: #fff;
+    padding: 0 20px;
+  }
+  .btn-dark:hover { background: #000; }
+  .mic-hint { text-align: center; }
+  .suggest {
+    margin-top: 12px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: #fcfcfc;
+    padding: 12px 14px;
+    font-size: 13px;
+    color: var(--muted);
+    text-align: center;
+  }
+  .suggest strong { color: var(--ink); font-weight: 600; }
+  .session-note {
+    margin-top: 12px;
+    font-size: 12px;
+    color: var(--muted);
+    text-align: center;
+  }
+
+  /* Transcript */
+  .captions-label {
+    font-size: 12px;
+    color: var(--muted);
+    text-transform: none;
+    margin: 20px 0 8px;
+    text-align: center;
+  }
+  .transcript {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    max-height: 260px;
+    overflow-y: auto;
+  }
+  .turn { display: flex; flex-direction: column; gap: 2px; max-width: 85%; }
+  .turn.agent { align-self: flex-start; }
+  .turn.user { align-self: flex-end; align-items: flex-end; }
+  .speaker { font-size: 12px; font-weight: 600; color: var(--muted); }
+  .bubble {
+    border-radius: 12px;
+    padding: 8px 12px;
+    font-size: 14px;
+  }
+  .turn.agent .bubble { background: #f3f3f3; color: var(--ink); }
+  .turn.user .bubble { background: var(--dark); color: #fff; }
+  .tool-moment {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--muted);
+    font-style: italic;
+  }
+  .spin { animation: spin 1s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* Tool rows + toggles in config cards */
+  .tool-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 10px 0;
+    border-top: 1px solid var(--border);
+  }
+  .tool-row:first-of-type { border-top: none; }
+  .switch {
+    flex: none;
+    width: 40px; height: 24px;
+    border-radius: var(--radius-pill);
+    background: var(--green);
+    position: relative;
+    margin-top: 2px;
+  }
+  .switch::after {
+    content: "";
+    position: absolute;
+    top: 2px; right: 2px;
+    width: 20px; height: 20px;
+    border-radius: 50%;
+    background: #fff;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.2);
+  }
+  .switch.off { background: #d4d4d4; }
+  .switch.off::after { right: auto; left: 2px; }
+  .tool-name { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; font-weight: 600; }
+  .badge-wait {
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--muted);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-pill);
+    padding: 1px 8px;
+    margin-left: 8px;
+    vertical-align: 1px;
+  }
+  .tool-desc { font-size: 13px; color: var(--muted); }
+  .channel-row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .channel {
+    border: 1px solid var(--ink);
+    background: var(--ink);
+    color: #fff;
+    border-radius: var(--radius-pill);
+    padding: 8px 16px;
+    font-size: 13px;
+    font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 44px;
+  }
+  .channel.ghost { background: var(--card); color: var(--ink); border-color: var(--border); }
+  .pill-list { display: flex; flex-wrap: wrap; gap: 8px; }
+  .pill {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-pill);
+    padding: 6px 12px;
+    font-size: 13px;
+    background: #fcfcfc;
+  }
+
+  /* Sticky save bar */
+  .savebar {
+    position: sticky;
+    bottom: 0;
+    z-index: 10;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-card);
+    box-shadow: 0 -2px 6px rgba(0,0,0,0.04), 0 6px 20px rgba(0,0,0,0.06);
+    padding: 14px 20px;
+    padding-bottom: calc(14px + env(safe-area-inset-bottom, 0px));
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  .savebar .dirty { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 600; margin-right: auto; }
+  .dirty-dot { width: 9px; height: 9px; border-radius: 50%; background: #d97706; flex: none; }
+  .btn-delete {
+    background: transparent;
+    border: none;
+    color: var(--muted);
+    font-weight: 500;
+    text-decoration: underline;
+    text-underline-offset: 3px;
+    padding: 0 8px;
+  }
+  .btn-delete:hover { color: var(--red); }
+  .savebar-sep { color: var(--border); }
+
+  /* Alerts */
+  .alert {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-card);
+    background: var(--card);
+    box-shadow: 0 1px 2px rgba(0,0,0,0.04), 0 4px 12px rgba(0,0,0,0.04);
+    padding: 16px 18px;
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+  }
+  .alert.danger { border-color: #f3c1c1; background: #fef4f4; }
+  .alert svg { flex: none; margin-top: 2px; }
+  .alert-title { font-weight: 600; font-size: 14px; }
+  .alert-body { font-size: 13px; color: var(--muted); margin-top: 2px; }
+  .alert.danger .alert-body { color: #7a2b2b; }
+  .alert a { color: inherit; text-underline-offset: 3px; }
+
+  /* Ended recap + 429 */
+  .recap {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-call);
+    background: var(--card);
+    box-shadow: 0 1px 2px rgba(0,0,0,0.04), 0 4px 12px rgba(0,0,0,0.04);
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    text-align: center;
+  }
+  .error-box {
+    border: 1px solid #f3c1c1;
+    background: #fef4f4;
+    border-radius: 10px;
+    padding: 12px 14px;
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+    font-size: 13px;
+    color: #7a2b2b;
+  }
+
+  /* All-states strip */
+  .states-strip {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    border-top: 1px solid var(--border);
+    padding-top: 24px;
+    margin-top: 8px;
+  }
+  .states-heading { font-size: 16px; font-weight: 600; }
+  .mini {
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--card);
+    padding: 12px 14px;
+    font-size: 13px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .mini-label { font-size: 12px; color: var(--muted); font-weight: 600; }
+  .countdown { font-variant-numeric: tabular-nums; font-weight: 600; }
+
+  .icon { width: 16px; height: 16px; flex: none; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .pulse, .spin { animation: none; }
+  }
+  @media (max-width: 520px) {
+    .wrap { padding: 20px 14px 150px; }
+    .call-card { padding: 20px 16px; }
+    .savebar { border-radius: 12px 12px 0 0; margin: 0 -14px; border-left: none; border-right: none; border-bottom: none; }
+  }
+</style>
+</head>
+<body>
+<main class="wrap">
+
+  <!-- 1. Header -->
+  <div>
+    <a class="back" href="#" aria-label="Back to agents">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg>
+      Agents
+    </a>
+    <h1>Vera</h1>
+    <p class="sub">Changes take effect on the next call this agent takes.</p>
+  </div>
+
+  <!-- 2. Unified status line -->
+  <div class="status-line" aria-live="polite">
+    <span class="dot" aria-hidden="true"></span>
+    <span><strong>Deployed and ready</strong></span>
+    <span class="status-meta">· config v12 · saved 2h ago</span>
+  </div>
+  <!-- Dirty state is carried by the sticky save bar below (amber dot + "Unsaved changes"). -->
+
+  <!-- 3. Test card — primary, voice-first -->
+  <section class="card call-card" aria-label="Test this agent">
+    <span class="signifier">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+      Testing unsaved edits · Save to deploy
+    </span>
+
+    <div class="identity">
+      <div class="avatar-wrap">
+        <div class="pulse" aria-hidden="true"></div>
+        <div class="avatar" aria-hidden="true">V</div>
+      </div>
+      <div>
+        <div class="identity-name">Vera</div>
+        <div class="identity-role">Property viewing coordinator</div>
+        <div class="identity-status">1:24 · speaking</div>
+      </div>
+    </div>
+
+    <div class="call-actions">
+      <button class="btn btn-hangup" type="button" aria-label="End call">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.68 13.31a16 16 0 0 0 3.41 2.6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.42 19.42 0 0 1-3.33-2.67m-2.67-3.34a19.79 19.79 0 0 1-3.07-8.63A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91"/><path d="m22 22-5-5"/></svg>
+      </button>
+    </div>
+
+    <p class="hint mic-hint">Uses your microphone · 3 min max · it speaks first</p>
+
+    <div class="suggest">Suggested first line — <strong>“Hi, I’m looking for a 2-bed near the station”</strong></div>
+
+    <p class="session-note">Switching voice starts a fresh session — the current test call transcript is discarded.</p>
+
+    <p class="captions-label" id="captions-label">Live captions</p>
+    <div class="transcript" role="log" aria-labelledby="captions-label" aria-live="polite">
+      <div class="turn agent">
+        <span class="speaker">Vera</span>
+        <span class="bubble">Hi, this is Vera from Harbour Lets. Are you looking to rent or to buy?</span>
+      </div>
+      <div class="turn user">
+        <span class="speaker">You</span>
+        <span class="bubble">Rent — a 2-bed near the station, ideally under £1,800.</span>
+      </div>
+      <div class="turn agent">
+        <span class="speaker">Vera</span>
+        <span class="bubble">Got it — two bedrooms near the station under £1,800. Let me check what’s available this week.</span>
+        <span class="tool-moment">
+          <svg class="icon spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+          Looking that up…
+        </span>
+      </div>
+    </div>
+
+    <div class="call-actions" style="margin-top:20px">
+      <button class="btn btn-call" type="button" aria-label="Call Vera" style="display:none">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.42 19.42 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+        Call Vera
+      </button>
+    </div>
+    <p class="hint mic-hint">Call again anytime from here.</p>
+  </section>
+
+  <!-- 4. Config cards (quieter) -->
+  <section class="card quiet" aria-label="Identity">
+    <h2 class="card-title">Identity</h2>
+    <div>
+      <p class="label">Agent name</p>
+      <p class="hint">Internal label. Not spoken on the call.</p>
+      <p class="field-value mock-input" style="margin-top:6px">Vera — inbound property qualifier</p>
+    </div>
+    <div>
+      <p class="label">Says its name is</p>
+      <p class="field-value mock-input" style="margin-top:6px">Vera · Property viewing coordinator · Harbour Lets</p>
+    </div>
+    <div>
+      <p class="label">Greeting</p>
+      <p class="hint">The first thing the caller hears. Short, ending in an easy question.</p>
+      <p class="field-value mock-input" style="margin-top:6px">“Hi, this is Vera from Harbour Lets. Are you looking to rent or to buy?”</p>
+    </div>
+    <div>
+      <p class="label">Voice</p>
+      <p class="hint">Fixed for the whole call — switching starts a fresh session.</p>
+      <div class="pill-list" style="margin-top:6px">
+        <span class="pill"><strong>Amelia</strong> · British</span>
+        <span class="pill">Daniel · British</span>
+        <span class="pill">Priya · Indian</span>
+      </div>
+    </div>
+  </section>
+
+  <section class="card quiet" aria-label="Mission">
+    <h2 class="card-title">Mission</h2>
+    <p class="field-value mock-input">Qualify inbound property inquiries and book viewings. Collect budget, area, and move-in date before offering slots.</p>
+    <div>
+      <p class="label">What to learn on every call</p>
+      <div class="pill-list" style="margin-top:6px">
+        <span class="pill">Budget</span>
+        <span class="pill">Preferred area</span>
+        <span class="pill">Move-in date</span>
+      </div>
+    </div>
+    <div>
+      <p class="label">Follow-up rule</p>
+      <p class="field-value mock-input">If no viewing is booked, retry once next day, then WhatsApp.</p>
+    </div>
+  </section>
+
+  <section class="card quiet" aria-label="Conversation">
+    <h2 class="card-title">Conversation</h2>
+    <div>
+      <p class="label">Intents to recognise</p>
+      <div class="pill-list" style="margin-top:6px">
+        <span class="pill">Wants to view a specific property</span>
+        <span class="pill">Asks about price or fees</span>
+        <span class="pill">Asks about the area or commute</span>
+      </div>
+    </div>
+    <div>
+      <p class="label">Objections to expect</p>
+      <div class="pill-list" style="margin-top:6px">
+        <span class="pill">Needs to consult a partner first</span>
+        <span class="pill">Rent feels high</span>
+      </div>
+    </div>
+    <div>
+      <p class="label">Rules and facts</p>
+      <p class="field-value mock-input">Never invent property information — check availability first. Never quote fees beyond the published schedule.</p>
+    </div>
+  </section>
+
+  <section class="card quiet" aria-label="Tools and channels">
+    <h2 class="card-title">Tools and channels</h2>
+    <p class="hint">What the agent can actually do mid-call. Anything not backed by a tool, it will say it needs to check rather than guess.</p>
+    <div>
+      <div class="tool-row">
+        <span class="switch" aria-hidden="true"></span>
+        <div>
+          <span class="tool-name">check_availability<span class="badge-wait">waits for result</span></span>
+          <p class="tool-desc">Looks up open viewing slots for a property before offering times.</p>
+        </div>
+      </div>
+      <div class="tool-row">
+        <span class="switch" aria-hidden="true"></span>
+        <div>
+          <span class="tool-name">book_viewing<span class="badge-wait">waits for result</span></span>
+          <p class="tool-desc">Books a viewing and sends confirmation to the caller.</p>
+        </div>
+      </div>
+      <div class="tool-row">
+        <span class="switch off" aria-hidden="true"></span>
+        <div>
+          <span class="tool-name">send_brochure</span>
+          <p class="tool-desc">Sends the property brochure by message after the call.</p>
+        </div>
+      </div>
+    </div>
+    <div>
+      <p class="label">Channels</p>
+      <div class="channel-row" style="margin-top:6px">
+        <span class="channel">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.42 19.42 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+          Phone
+        </span>
+        <span class="channel ghost">WhatsApp</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- 5. Sticky save bar -->
+  <div class="savebar" aria-live="polite">
+    <span class="dirty"><span class="dirty-dot" aria-hidden="true"></span>Unsaved changes</span>
+    <button class="btn btn-dark" type="button">Save changes</button>
+    <span class="savebar-sep" aria-hidden="true">|</span>
+    <button class="btn btn-delete" type="button">Delete</button>
+  </div>
+
+  <!-- 6. All-states reference strip -->
+  <div class="states-strip" aria-label="All states reference">
+    <h2 class="states-heading">All states</h2>
+
+    <div class="mini">
+      <span class="mini-label">Status line — queued / deploying</span>
+      <span><span class="dot amber" style="display:inline-block;vertical-align:1px" aria-hidden="true"></span> <strong>Deployment queued</strong> <span class="status-meta">· config v13 · voice deployment is running</span></span>
+      <span><span class="dot amber" style="display:inline-block;vertical-align:1px" aria-hidden="true"></span> <strong>Deploying…</strong> <span class="status-meta">· config v13 · previous version still taking calls</span></span>
+    </div>
+
+    <div class="mini">
+      <span class="mini-label">Attention — deployment failed</span>
+      <div class="alert danger" role="alert">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+        <div>
+          <div class="alert-title">Saved, but voice deployment needs attention</div>
+          <div class="alert-body">The configuration was saved, but voice deployment did not complete. Phone calls will keep using the previous deployed version until this succeeds.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="mini">
+      <span class="mini-label">Generation running</span>
+      <div class="alert">
+        <svg class="icon spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+        <div>
+          <div class="alert-title">Configuration generating</div>
+          <div class="alert-body">This agent’s configuration is still being generated. Review, test, and save unlock when it’s ready. <a href="#">View progress in Jobs</a></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="mini">
+      <span class="mini-label">Generation ready</span>
+      <div class="alert">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></svg>
+        <div>
+          <div class="alert-title">Ready to review</div>
+          <div class="alert-body">Generation finished. The result waits on the review screen — review and save it there; this form still shows the earlier draft. <a href="#">Review the generated configuration</a></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="mini">
+      <span class="mini-label">Ended call recap</span>
+      <div class="recap">
+        <div class="avatar" style="width:56px;height:56px;font-size:22px" aria-hidden="true">V</div>
+        <div><strong>Vera</strong></div>
+        <div class="hint">Call ended · 1:47</div>
+        <button class="btn btn-call" type="button" aria-label="Call Vera again" style="font-size:14px">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.42 19.42 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+          Call again
+        </button>
+      </div>
+    </div>
+
+    <div class="mini">
+      <span class="mini-label">Rate limited — 429</span>
+      <div class="error-box" role="alert">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+        <span>Too many calls right now — try again in <span class="countdown">24s</span>.</span>
+      </div>
+    </div>
+  </div>
+
+</main>
+</body>
+</html>

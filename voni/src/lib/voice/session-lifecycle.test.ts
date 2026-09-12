@@ -357,60 +357,6 @@ test("browser capture enables echo cancellation and automatic gain without brows
   });
 });
 
-test("sensitive capture widens once and restores the exact prior pacing", async () => {
-  const { session, sent, handle, internals } = makeSession();
-  internals["activeTurnDetection"] = {
-    min_silence: 500,
-    max_silence: 2000,
-    interrupt_response: true,
-    interruption_delay: 0,
-  };
-  const prepare = (
-    session as unknown as {
-      prepareSensitiveCapture: () => Promise<unknown>;
-    }
-  ).prepareSensitiveCapture.bind(session);
-
-  const prepared = prepare();
-  assert.deepEqual(JSON.parse(sent[0]), {
-    type: "session.update",
-    session: {
-      input: {
-        turn_detection: {
-          min_silence: 1400,
-          max_silence: 4000,
-          interrupt_response: true,
-          interruption_delay: 0,
-        },
-      },
-    },
-  });
-  handle({ type: "session.updated" });
-  await prepared;
-
-  handle({ type: "transcript.user", item_id: "u-sensitive", text: "value" });
-  assert.deepEqual(JSON.parse(sent[1]), {
-    type: "session.update",
-    session: {
-      input: {
-        turn_detection: {
-          min_silence: 500,
-          max_silence: 2000,
-          interrupt_response: true,
-          interruption_delay: 0,
-        },
-      },
-    },
-  });
-  handle({ type: "session.updated" });
-  assert.deepEqual(internals["activeTurnDetection"], {
-    min_silence: 500,
-    max_silence: 2000,
-    interrupt_response: true,
-    interruption_delay: 0,
-  });
-});
-
 test("muted mic drops frames without tearing down the call", () => {
   const { session, sent, handle } = makeSession();
   handle({ type: "session.ready", session_id: "sess_mute" });

@@ -87,7 +87,7 @@ export const PERSONAS: Persona[] = [
     voiceId: "anna",
     config: {
       ...REAL_ESTATE_TEMPLATE,
-      identity: { name: "Layla", role: "property consultant", company: "" },
+      identity: { name: "Layla", role: "property consultant" },
       voiceId: "anna",
       greeting: "Hi, it's Layla calling about the apartment. Is now okay?",
     },
@@ -111,33 +111,17 @@ export const PERSONAS: Persona[] = [
     config: {
       mission:
         "Turn a car enquiry into a booked test drive at the dealership.",
-      identity: { name: "Marcus", role: "sales advisor", company: "" },
+      identity: { name: "Marcus", role: "sales advisor" },
       detect: [
-        { key: "model_interest", label: "Model of interest", description: "Which vehicle or type.", sensitive: false },
-        { key: "budget", label: "Budget", description: "Cash price or monthly payment.", sensitive: true },
-        { key: "trade_in", label: "Trade-in", description: "Whether they have a car to trade.", sensitive: false },
-        { key: "financing", label: "Financing", description: "Cash, finance, or lease.", sensitive: false },
-        { key: "timeline", label: "Timeline", description: "How soon they want to buy.", sensitive: false },
-      ],
-      intents: [
-        "Wants to test drive a specific model",
-        "Comparing two or three cars",
-        "Only asking about price",
-        "Wants to value a trade-in first",
-      ],
-      blockers: [
-        "Waiting on finance approval",
-        "Partner has to see it too",
-        "Found a cheaper one elsewhere",
+        { key: "model_interest", label: "Model of interest", description: "Which vehicle or type." },
+        { key: "budget", label: "Budget", description: "Cash price or monthly payment." },
+        { key: "trade_in", label: "Trade-in", description: "Whether they have a car to trade." },
+        { key: "financing", label: "Financing", description: "Cash, finance, or lease." },
+        { key: "timeline", label: "Timeline", description: "How soon they want to buy." },
       ],
       tools: ["check_calendar", "book_viewing", "schedule_follow_up", "update_lead", "transfer_to_human"],
-      knowledge: [
-        "Never quote a price or availability you have not confirmed with a tool.",
-        "Do not promise a finance rate — that is the finance desk's call.",
-      ],
-      successCondition: "A test drive is booked with a date and time.",
-      fallback: "Schedule a callback, or hand over to a human advisor.",
-      followUpPolicy: "If no answer, try once more the next evening.",
+      knowledge:
+        "Never quote a price or availability you have not confirmed with a tool. Do not promise a finance rate — that is the finance desk's call.",
       channels: ["phone", "whatsapp"],
       // Empty = detect across all 18 recognised languages. A demo visitor
       // may open in any of them, and the agent should follow rather than
@@ -165,33 +149,17 @@ export const PERSONAS: Persona[] = [
     voiceId: "eve",
     config: {
       mission: "Take and confirm restaurant reservations.",
-      identity: { name: "Sofia", role: "host", company: "" },
+      identity: { name: "Sofia", role: "host" },
       detect: [
-        { key: "date_time", label: "Date and time", description: "When they want the table.", sensitive: true },
-        { key: "party_size", label: "Party size", description: "How many people.", sensitive: false },
-        { key: "seating", label: "Seating preference", description: "Inside, terrace, bar.", sensitive: false },
-        { key: "occasion", label: "Occasion", description: "Birthday, business, casual.", sensitive: false },
-        { key: "dietary", label: "Dietary needs", description: "Allergies or restrictions.", sensitive: false },
-      ],
-      intents: [
-        "Booking a new reservation",
-        "Changing or cancelling an existing one",
-        "Asking about the menu or opening hours",
-        "Large group or private hire",
-      ],
-      blockers: [
-        "Requested time is fully booked",
-        "Group is larger than the room takes",
-        "Wants a specific table we cannot guarantee",
+        { key: "date_time", label: "Date and time", description: "When they want the table." },
+        { key: "party_size", label: "Party size", description: "How many people." },
+        { key: "seating", label: "Seating preference", description: "Inside, terrace, bar." },
+        { key: "occasion", label: "Occasion", description: "Birthday, business, casual." },
+        { key: "dietary", label: "Dietary needs", description: "Allergies or restrictions." },
       ],
       tools: ["check_availability", "check_calendar", "book_viewing", "update_lead", "transfer_to_human"],
-      knowledge: [
-        "Never confirm a table without checking availability with a tool.",
-        "Always read the date, time and party size back before confirming.",
-      ],
-      successCondition: "A reservation is confirmed with date, time and party size.",
-      fallback: "Offer the nearest available times, or take a waitlist entry.",
-      followUpPolicy: "Send a confirmation and a reminder the morning of.",
+      knowledge:
+        "Never confirm a table without checking availability with a tool. Always read the date, time and party size back before confirming.",
       channels: ["phone", "whatsapp"],
       // Empty = detect across all 18 recognised languages. A demo visitor
       // may open in any of them, and the agent should follow rather than
@@ -220,35 +188,18 @@ export const PERSONAS: Persona[] = [
     config: {
       mission:
         "Book dental appointments and get urgent cases seen sooner.",
-      identity: { name: "Nadia", role: "clinic coordinator", company: "" },
+      identity: { name: "Nadia", role: "clinic coordinator" },
       detect: [
-        { key: "reason", label: "Reason for visit", description: "Checkup, pain, cosmetic, emergency.", sensitive: false },
-        { key: "urgency", label: "Urgency", description: "Pain level and how long it has lasted.", sensitive: false },
-        { key: "new_or_existing", label: "New or existing patient", description: "Whether they are on file.", sensitive: false },
-        { key: "availability", label: "Availability", description: "Days and times that work.", sensitive: true },
-        { key: "insurance", label: "Insurance", description: "Provider, if any.", sensitive: true },
-      ],
-      intents: [
-        "Routine checkup or cleaning",
-        "In pain and wants to be seen soon",
-        "Cosmetic enquiry",
-        "Rescheduling an existing appointment",
-      ],
-      blockers: [
-        "No slots before the pain becomes urgent",
-        "Insurance not accepted",
-        "Nervous about treatment",
+        { key: "reason", label: "Reason for visit", description: "Checkup, pain, cosmetic, emergency." },
+        { key: "urgency", label: "Urgency", description: "Pain level and how long it has lasted." },
+        { key: "new_or_existing", label: "New or existing patient", description: "Whether they are on file." },
+        { key: "availability", label: "Availability", description: "Days and times that work." },
+        { key: "insurance", label: "Insurance", description: "Provider, if any." },
       ],
       tools: ["check_calendar", "check_availability", "book_viewing", "schedule_follow_up", "update_lead", "transfer_to_human"],
-      knowledge: [
-        // The line that keeps a booking assistant from practising medicine.
-        "Never give clinical or medical advice. Book the appointment and let the dentist advise.",
-        "If someone describes severe swelling, bleeding that will not stop, or trouble breathing, tell them to seek urgent care immediately and offer to transfer them.",
-        "Never confirm a slot without checking the calendar with a tool.",
-      ],
-      successCondition: "An appointment is booked with a date and time.",
-      fallback: "Offer the next available slot, or take details for a callback.",
-      followUpPolicy: "Confirm by message and remind the day before.",
+      // The first sentence is what keeps a booking assistant from practising medicine.
+      knowledge:
+        "Never give clinical or medical advice. Book the appointment and let the dentist advise. If someone describes severe swelling, bleeding that will not stop, or trouble breathing, tell them to seek urgent care immediately and offer to transfer them. Never confirm a slot without checking the calendar with a tool.",
       channels: ["phone", "whatsapp"],
       // Empty = detect across all 18 recognised languages. A demo visitor
       // may open in any of them, and the agent should follow rather than
@@ -277,34 +228,17 @@ export const PERSONAS: Persona[] = [
     config: {
       mission:
         "Answer inbound calls, capture who is calling and why, and route or take a message.",
-      identity: { name: "Adam", role: "receptionist", company: "" },
+      identity: { name: "Adam", role: "receptionist" },
       detect: [
-        { key: "caller_name", label: "Caller name", description: "Who is calling.", sensitive: false },
-        { key: "company", label: "Company", description: "Where they are calling from.", sensitive: false },
-        { key: "reason", label: "Reason for calling", description: "What they need.", sensitive: false },
-        { key: "callback_number", label: "Callback number", description: "Best number to reach them.", sensitive: true },
-        { key: "urgency", label: "Urgency", description: "How soon they need a response.", sensitive: false },
-      ],
-      intents: [
-        "Wants to reach a specific person",
-        "General sales enquiry",
-        "Existing customer with a problem",
-        "Cold sales call to us",
-      ],
-      blockers: [
-        "The person they want is unavailable",
-        "Question needs someone technical",
-        "Caller will not say what it is about",
+        { key: "caller_name", label: "Caller name", description: "Who is calling." },
+        { key: "company", label: "Company", description: "Where they are calling from." },
+        { key: "reason", label: "Reason for calling", description: "What they need." },
+        { key: "callback_number", label: "Callback number", description: "Best number to reach them." },
+        { key: "urgency", label: "Urgency", description: "How soon they need a response." },
       ],
       tools: ["schedule_follow_up", "update_lead", "transfer_to_human"],
-      knowledge: [
-        "Never invent an answer about pricing, availability or policy — take a message instead.",
-        "Always read a callback number back digit by digit before ending the call.",
-      ],
-      successCondition:
-        "The caller is routed to the right person, or a complete message is taken.",
-      fallback: "Take a message with a name, number and reason.",
-      followUpPolicy: "Pass the message on the same day.",
+      knowledge:
+        "Never invent an answer about pricing, availability or policy — take a message instead. Always read a callback number back digit by digit before ending the call.",
       channels: ["phone"],
       // Empty = detect across all 18 recognised languages. A demo visitor
       // may open in any of them, and the agent should follow rather than

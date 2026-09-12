@@ -46,21 +46,11 @@ export const TOOL_NAMES = TOOL_REGISTRY.map((t) => t.name);
 
 export const CHANNELS = ["phone", "whatsapp"] as const;
 
-/**
- * A field the agent must capture during the conversation.
- *
- * ⚠️ `sensitive` is load-bearing, not decorative. HANDOFF (1t) records that we
- * set `min_silence: 100` / `max_silence: 500` to win back ~1s of latency, and
- * that this *disabled adaptive pacing and entity-aware waiting* — so the agent
- * will cut a caller off mid phone-number or mid-email. Both fields are mutable
- * mid-session, and this flag is what tells the bridge which capture steps need
- * them temporarily raised. Marking a field sensitive is how that gets wired.
- */
+/** A field the agent must capture during the conversation. */
 export const detectFieldSchema = z.object({
   key: z.string().min(1),
   label: z.string().min(1),
   description: z.string().default(""),
-  sensitive: z.boolean().default(false),
 });
 
 export const agentConfigSchema = z.object({
@@ -70,21 +60,35 @@ export const agentConfigSchema = z.object({
   identity: z.object({
     name: z.string().min(1),
     role: z.string().min(1),
-    company: z.string().default(""),
   }),
   /** Qualification data to extract during the conversation. */
   detect: z.array(detectFieldSchema).default([]),
-  /** Lead intents worth recognising and branching on. */
-  intents: z.array(z.string()).default([]),
-  /** Objections/blockers the agent should expect and handle. */
-  blockers: z.array(z.string()).default([]),
   /** Tool names from TOOL_REGISTRY. Unknown names are dropped on normalize. */
   tools: z.array(z.string()).default([]),
-  /** Hard facts and prohibitions. Section G: never invent property info. */
-  knowledge: z.array(z.string()).default([]),
-  successCondition: z.string().min(1),
-  fallback: z.string().min(1),
-  followUpPolicy: z.string().default(""),
+  /**
+   * House rules: hard facts and prohibitions, as one free-text block.
+   *
+   * Stored configurations written before this became a single field hold a
+   * `string[]`, and rows are not migrated — the preprocess folds a legacy
+   * array back into one string on every parse path. Without it
+   * `agentConfigSchema.safeParse` rejects every pre-existing agent, which
+   * breaks saving and retrying deployment on all of them, not just editing.
+   */
+  knowledge: z.preprocess(
+    (value) =>
+      Array.isArray(value)
+        ? value
+            .filter((entry): entry is string => typeof entry === "string")
+            .map((entry) => entry.trim())
+            .filter((entry) => entry.length > 0)
+            // These were list items, so most carry no terminal punctuation.
+            // Joined raw they compile into one run-on sentence in the system
+            // prompt, so give each its own full stop unless it already ends.
+            .map((entry) => (/[.!?]$/.test(entry) ? entry : `${entry}.`))
+            .join(" ")
+        : value,
+    z.string().default(""),
+  ),
   channels: z.array(z.enum(CHANNELS)).min(1).default(["phone"]),
   /** AssemblyAI voice catalog id. `anna` is the one validated on real calls. */
   voiceId: z.string().default("anna"),
@@ -158,41 +162,19 @@ export function normalizeConfig(config: AgentConfig): AgentConfig {
 export const REAL_ESTATE_TEMPLATE: AgentConfig = {
   mission:
     "Convert inbound and consented property leads into qualified viewing appointments.",
-  identity: { name: "Voni", role: "property consultant", company: "" },
+  identity: { name: "Voni", role: "property consultant" },
   detect: [
-    { key: "budget", label: "Budget", description: "Price range the lead can commit to.", sensitive: true },
-    { key: "location", label: "Location", description: "Preferred area or community.", sensitive: false },
-    { key: "property_type", label: "Property type", description: "Apartment, villa, townhouse.", sensitive: false },
-    { key: "timeline", label: "Timeline", description: "How soon they want to move or buy.", sensitive: false },
-    { key: "financing", label: "Financing", description: "Cash, mortgage, or undecided.", sensitive: true },
-    { key: "investment_or_end_user", label: "Investment or end user", description: "Buying to live in or to let.", sensitive: false },
-    { key: "buying_intent", label: "Buying intent", description: "How serious and ready they are.", sensitive: false },
-  ],
-  intents: [
-    "Wants to view a specific property",
-    "Exploring the market, not ready yet",
-    "Comparing areas or price points",
-    "Wants to sell or let rather than buy",
-    "Not interested / wrong number",
-  ],
-  blockers: [
-    "Budget below anything available",
-    "Wants an area we do not cover",
-    "Needs to consult a partner before deciding",
-    "Only wants to communicate over WhatsApp",
-    "Asks a question only a human can answer",
+    { key: "budget", label: "Budget", description: "Price range the lead can commit to." },
+    { key: "location", label: "Location", description: "Preferred area or community." },
+    { key: "property_type", label: "Property type", description: "Apartment, villa, townhouse." },
+    { key: "timeline", label: "Timeline", description: "How soon they want to move or buy." },
+    { key: "financing", label: "Financing", description: "Cash, mortgage, or undecided." },
+    { key: "investment_or_end_user", label: "Investment or end user", description: "Buying to live in or to let." },
+    { key: "buying_intent", label: "Buying intent", description: "How serious and ready they are." },
   ],
   tools: [...TOOL_NAMES],
-  knowledge: [
-    "Never invent property information — every property fact must come from a tool result.",
-    "Respect the campaign's calling-hours window.",
-    "Never proceed without recorded consent.",
-    "If asked whether this is a recording or an AI, say so plainly and continue.",
-  ],
-  successCondition: "A viewing is booked and confirmed.",
-  fallback: "Schedule a follow-up, or transfer to a human closer if the lead asks.",
-  followUpPolicy:
-    "If no answer, retry once the next day within the calling window, then fall back to WhatsApp.",
+  knowledge:
+    "Never invent property information — every property fact must come from a tool result. Respect the campaign's calling-hours window. Never proceed without recorded consent. If asked whether this is a recording or an AI, say so plainly and continue.",
   channels: ["phone", "whatsapp"],
   voiceId: "anna",
   // Left empty: the UAE market is bilingual, and automatic detection

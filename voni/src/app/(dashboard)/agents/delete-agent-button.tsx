@@ -37,11 +37,24 @@ export function AgentDeleteButton({
   layout = "icon",
   redirectTo,
   neverProvisioned = false,
+  className,
+  label = "Delete agent",
+  showIcon = true,
 }: {
   id: string;
   name: string;
   /** "icon" for list rows, "full" for the detail footer next to Save. */
   layout?: "icon" | "full";
+  /**
+   * Extra classes for the `layout="full"` trigger. The agent detail page
+   * dresses it as the mockup's ghost-danger pill; every other caller keeps
+   * the default solid destructive button.
+   */
+  className?: string;
+  /** Trigger label for `layout="full"`. The dialog's own copy is unaffected. */
+  label?: string;
+  /** `layout="full"` only. The mockup's ghost-danger pill is text alone. */
+  showIcon?: boolean;
   /** Where to go after a successful delete (detail page uses "/agents"). */
   redirectTo?: string;
   /**
@@ -98,7 +111,7 @@ export function AgentDeleteButton({
               aria-label={`Delete ${name}`}
             />
           ) : (
-            <Button variant="destructive" />
+            <Button variant="destructive" className={className} />
           )
         }
       >
@@ -106,8 +119,8 @@ export function AgentDeleteButton({
           <Trash2 />
         ) : (
           <>
-            <Trash2 data-icon="inline-start" />
-            Delete agent
+            {showIcon ? <Trash2 data-icon="inline-start" /> : null}
+            {label}
           </>
         )}
       </DialogTrigger>
