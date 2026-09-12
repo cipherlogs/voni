@@ -45,3 +45,12 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 .neon
+
+# agent runtime state
+# The root .gitignore's equivalents (.swarm/, .claude-flow/) use anchored
+# patterns, so they cover the repo root only and never this package.
+/.swarm/
+/.claude-flow/
+
+# local design artifacts (prototype screenshots and similar)
+/artifacts/
