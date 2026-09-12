@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { AudioLines } from "lucide-react";
 import { toast } from "@/components/ui/toast";
 import { LoadingButton } from "@/components/loading-button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -157,7 +158,9 @@ export function AgentConfigForm({
    * first misclick. There is no add-a-field UI any more, so this set is fixed
    * for the life of the form.
    */
-  const [knownDetect] = useState<DetectField[]>(() => initialConfig.detect);
+  const [knownDetect, setKnownDetect] = useState<DetectField[]>(
+    () => initialConfig.detect,
+  );
   const selectedDetect = useMemo(
     () => new Set(config.detect.map((d) => d.key)),
     [config.detect],
@@ -219,9 +222,32 @@ export function AgentConfigForm({
     const next = new Set(selectedDetect);
     if (checked) next.add(key);
     else next.delete(key);
+    // Re-checking restores the field from the known set below, pacing flag
+    // included — an uncheck/recheck round-trip never drops it.
     set(
       "detect",
       knownDetect.filter((f) => next.has(f.key)),
+    );
+  };
+
+  /**
+   * Per-pill pacing toggle: marks a detect field `sensitive` so the voice
+   * agent slows down and captures it digit-by-digit ("spoken as a sequence").
+   * The compiler only emits the `prepare_sensitive_capture` pacing instruction
+   * for flagged fields, so an unflagged field keeps the plain ask. Ride the
+   * flag with the pill — unchecking then re-checking preserves it via
+   * `toggleDetect`'s restore-from-known-set behavior above.
+   */
+  const toggleDetectSensitive = (key: string, sensitive: boolean) => {
+    // Written to both the live config and the known set: unchecking a pill
+    // then re-checking it restores the field from the known set, so the
+    // pacing choice must ride along or the round-trip silently drops it.
+    setKnownDetect((known) =>
+      known.map((f) => (f.key === key ? { ...f, sensitive } : f)),
+    );
+    set(
+      "detect",
+      config.detect.map((f) => (f.key === key ? { ...f, sensitive } : f)),
     );
   };
 
@@ -433,27 +459,65 @@ export function AgentConfigForm({
             <div className="flex flex-wrap gap-2">
               {knownDetect.map((field, i) => {
                 const id = `detect-${field.key || i}`;
+                const paceId = `detect-pace-${field.key || i}`;
+                const selected = selectedDetect.has(field.key);
+                const fieldSensitive = config.detect.some(
+                  (d) => d.key === field.key && d.sensitive,
+                );
                 return (
-                  <FieldLabel
+                  <span
                     key={field.key || i}
-                    htmlFor={id}
-                    className="w-auto cursor-pointer items-center gap-2 rounded-full border px-3 py-2 text-[13px] font-normal has-data-checked:border-primary/30 has-data-checked:bg-primary/5"
+                    className="inline-flex items-center gap-1 rounded-full border px-3 py-2 text-[13px] has-data-checked:border-primary/30 has-data-checked:bg-primary/5"
                   >
-                    <Checkbox
-                      id={id}
-                      checked={selectedDetect.has(field.key)}
-                      onCheckedChange={(checked: boolean) =>
-                        toggleDetect(field.key, checked)
-                      }
-                    />
-                    {field.label}
-                  </FieldLabel>
+                    <FieldLabel
+                      htmlFor={id}
+                      className="flex cursor-pointer items-center gap-2 font-normal"
+                    >
+                      <Checkbox
+                        id={id}
+                        checked={selected}
+                        onCheckedChange={(checked: boolean) =>
+                          toggleDetect(field.key, checked)
+                        }
+                      />
+                      {field.label}
+                    </FieldLabel>
+                    {selected ? (
+                      <button
+                        type="button"
+                        id={paceId}
+                        title={
+                          fieldSensitive
+                            ? `Read back slowly for ${field.label} is on — the agent spells it out digit by digit`
+                            : `Read back slowly for ${field.label} is off`
+                        }
+                        aria-label={
+                          fieldSensitive
+                            ? `Turn off slow read-back for ${field.label}`
+                            : `Turn on slow read-back for ${field.label}`
+                        }
+                        aria-pressed={fieldSensitive}
+                        onClick={() =>
+                          toggleDetectSensitive(field.key, !fieldSensitive)
+                        }
+                        className={`flex size-11 cursor-pointer items-center justify-center rounded-full transition-colors ${
+                          fieldSensitive
+                            ? "bg-brand/15 text-brand hover:bg-brand/25"
+                            : "text-muted-foreground hover:bg-muted hover:text-foreground"
+                        }`}
+                      >
+                        <AudioLines className="size-4" aria-hidden="true" />
+                      </button>
+                    ) : null}
+                  </span>
                 );
               })}
             </div>
             <FieldDescription className={HINT}>
               Unchecked details are still answered if the caller mentions them,
-              but {agentLabel} won&apos;t ask for them.
+              but {agentLabel} won&apos;t ask for them. The waveform marks a
+              field to read back slowly — phone numbers, emails, and other
+              details the caller spells out.
             </FieldDescription>
           </Field>
 

@@ -56,6 +56,22 @@ function LeadStateCell({
 }
 
 /**
+ * RouteBrief renders nothing but must not sit inside a <table>: React
+ * hydrates a component boundary as a DOM node, and a node between <table>
+ * and <tbody> reads as a nested <div> — invalid table HTML that logs a
+ * hydration error on every list visit. A client leaf here keeps the count
+ * in the brief without breaking the table structure.
+ */
+function LeadsBrief({ count }: { count: number }) {
+  return (
+    <RouteBrief
+      route="/leads"
+      brief={`Lead list: ${count} leads with pipeline stages across phone and WhatsApp. Voice reads here.`}
+    />
+  );
+}
+
+/**
  * Authorized rows leaf: rows, counts, and Empty state resolve after the
  * table structure shell.
  */
@@ -64,10 +80,7 @@ async function LeadsRows() {
 
   return (
     <>
-      <RouteBrief
-        route="/leads"
-        brief={`Lead list: ${rows.length} leads with pipeline stages across phone and WhatsApp. Voice reads here.`}
-      />
+      <LeadsBrief count={rows.length} />
       <TableBody>
         {rows.length === 0 ? (
           <TableRow>
@@ -84,7 +97,9 @@ async function LeadsRows() {
         ) : (
           rows.map((lead) => (
             <TableRow key={lead.id} data-copilot-key={lead.id}>
-              <TableCell>
+              {/* Frozen identity column: keeps the who visible while the
+                  state columns scroll away on narrow screens. */}
+              <TableCell className="bg-card sticky left-0 z-10">
                 <Link
                   href={`/leads/${lead.id}`}
                   className="cursor-pointer rounded-sm underline-offset-4 outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring"
@@ -154,44 +169,48 @@ export default function LeadsPage() {
           Import via a campaign
         </Button>
       </div>
+      {/* One table: header and Suspense rows share it so columns size
+          together and horizontal scroll moves them as one unit. The rows
+          leaf renders LeadsBrief (a null render — no DOM node, so the
+          table structure stays valid) plus the TableBody. */}
       <Card>
         <CardContent className="p-0">
-          <div className="overflow-x-auto">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Name</TableHead>
-                  <TableHead>Phone</TableHead>
-                  <TableHead>Consent</TableHead>
-                  <TableHead>Stage</TableHead>
-                  <TableHead>Calls</TableHead>
-                  <TableHead>State</TableHead>
-                </TableRow>
-              </TableHeader>
-              <Suspense
-                fallback={
-                  <TableBody>
-                    <TableRow>
-                      <TableCell
-                        colSpan={LEAD_TABLE_COLUMNS}
-                        className="h-40 text-center"
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead className="bg-card sticky left-0 z-10">
+                  Name
+                </TableHead>
+                <TableHead>Phone</TableHead>
+                <TableHead>Consent</TableHead>
+                <TableHead>Stage</TableHead>
+                <TableHead>Calls</TableHead>
+                <TableHead>State</TableHead>
+              </TableRow>
+            </TableHeader>
+            <Suspense
+              fallback={
+                <TableBody>
+                  <TableRow>
+                    <TableCell
+                      colSpan={LEAD_TABLE_COLUMNS}
+                      className="h-40 text-center"
+                    >
+                      <span
+                        role="status"
+                        aria-label="Loading leads"
+                        className="text-muted-foreground text-sm"
                       >
-                        <span
-                          role="status"
-                          aria-label="Loading leads"
-                          className="text-muted-foreground text-sm"
-                        >
-                          Loading leads…
-                        </span>
-                      </TableCell>
-                    </TableRow>
-                  </TableBody>
-                }
-              >
-                <LeadsRows />
-              </Suspense>
-            </Table>
-          </div>
+                        Loading leads…
+                      </span>
+                    </TableCell>
+                  </TableRow>
+                </TableBody>
+              }
+            >
+              <LeadsRows />
+            </Suspense>
+          </Table>
         </CardContent>
       </Card>
     </div>

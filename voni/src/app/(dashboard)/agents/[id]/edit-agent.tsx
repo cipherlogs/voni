@@ -479,40 +479,32 @@ export function EditAgent(props: {
           // position:fixed, and without one the bar slides under the nav.
           footerClassName="sticky bottom-18 z-10 -mx-1 border-t bg-background/95 px-1 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur supports-[backdrop-filter]:bg-background/80 lg:static lg:z-auto lg:mx-0 lg:border-0 lg:bg-transparent lg:px-0 lg:pt-4 lg:pb-0 lg:backdrop-blur-none"
         />
-        {/* .delete-zone, 12px below the footer bar. The mockup gives the zone
-            a border-top with nothing above it inside the card — a leftover of
-            the mockup's own markup, so it is not reproduced here. */}
-        <Card className={`mt-3 ${CARD_SHADOW}`}>
-          <CardContent>
-            <div className="flex flex-wrap items-center gap-2.5">
-              <div className="min-w-0 flex-1">
-                <p className="text-[13px] font-semibold">Delete {name}?</p>
-                <p className="text-muted-foreground text-xs">
-                  Removes this agent and its phone routing. Past calls stay in history.
-                </p>
-              </div>
-              <AgentDeleteButton
-                id={id}
-                name={name}
-                layout="full"
-                redirectTo="/agents"
-                label="Delete…"
-                showIcon={false}
-                className={"bg-card text-destructive border-destructive/25 hover:bg-destructive/5 hover:text-destructive min-h-11 rounded-full px-5.5 text-sm font-semibold"}
-                // Live deployState, not the frozen server snapshot: once a
-                // background deploy succeeds nothing remote is short-copy
-                // anymore, even though the neverProvisioned prop can't update.
-                neverProvisioned={!assemblyaiAgentId && deployState !== "ready"}
-              />
-            </div>
-          </CardContent>
-        </Card>
+        {/* Quiet second door to the same typed-name delete dialog — the one
+            full-weight delete path lives in the footer bar next to Save.
+            A second bordered card here competed with Save and doubled the
+            destructive affordance, so this is a muted sentence, not a card. */}
+        <p className="mt-3 text-center text-xs text-muted-foreground">
+          Done with this agent?{" "}
+          <AgentDeleteButton
+            id={id}
+            name={name}
+            layout="full"
+            redirectTo="/agents"
+            label={`Delete ${name}`}
+            showIcon={false}
+            className="h-auto min-h-0 rounded-none border-0 bg-transparent p-0 text-xs font-normal text-muted-foreground underline underline-offset-4 shadow-none hover:bg-transparent hover:text-destructive hover:underline dark:bg-transparent"
+            // Live deployState, not the frozen server snapshot: once a
+            // background deploy succeeds nothing remote is short-copy
+            // anymore, even though the neverProvisioned prop can't update.
+            neverProvisioned={!assemblyaiAgentId && deployState !== "ready"}
+          />
+        </p>
       </div>
 
       <aside
         id="test-rail"
         aria-label="Test this agent"
-        className="order-first lg:order-none lg:sticky lg:top-6"
+        className="order-first lg:order-none lg:sticky lg:top-6 lg:max-h-[calc(100vh-3rem)] lg:overflow-y-auto"
       >
         {canTestCall ? (
           <>

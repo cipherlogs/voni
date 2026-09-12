@@ -370,7 +370,7 @@ export function VoiceCall({ mode }: { mode: Mode }) {
   // so the hint survives once captions appear mid-call.
   const micHint = isDemo
     ? `Uses your microphone · ${capSeconds / 60} min max · Just talk — it speaks first.`
-    : "Uses your microphone · Just talk — it speaks first.";
+    : `Uses your microphone · ${capSeconds / 60} min max · Just talk — it speaks first.`;
 
   return (
     // Fixed height — the single reason this component can never move the page.
@@ -485,7 +485,7 @@ export function VoiceCall({ mode }: { mode: Mode }) {
       {state !== "idle" ? (
         <p
           className="mt-2 inline-flex items-center gap-2 text-[13px] font-semibold tabular-nums"
-          aria-live="polite"
+          role="status"
         >
           {connected ? (
             <span
@@ -539,12 +539,12 @@ export function VoiceCall({ mode }: { mode: Mode }) {
               type="button"
               variant="ghost"
               size="icon"
-              className="h-6 w-6"
+              className="size-11"
               disabled={active || siblings.length < 2}
               aria-label="Previous voice"
               onClick={() => cycleVoice(-1)}
             >
-              <ChevronLeft className="h-3.5 w-3.5" />
+              <ChevronLeft className="size-4" />
             </Button>
             <span className="w-36 text-center">
               {voiceLabel(effectiveVoiceId)}
@@ -554,12 +554,12 @@ export function VoiceCall({ mode }: { mode: Mode }) {
               type="button"
               variant="ghost"
               size="icon"
-              className="h-6 w-6"
+              className="size-11"
               disabled={active || siblings.length < 2}
               aria-label="Next voice"
               onClick={() => cycleVoice(1)}
             >
-              <ChevronRight className="h-3.5 w-3.5" />
+              <ChevronRight className="size-4" />
             </Button>
           </div>
         </div>
@@ -589,11 +589,14 @@ export function VoiceCall({ mode }: { mode: Mode }) {
 
       {/* The one flexing region. Every variable-length thing lives here — the
           scenario hint, the countdown, errors, captions — so the card's outer
-          height never changes and nothing on the page below it moves. */}
+          height never changes and nothing on the page below it moves. On
+          small screens the inline (unstuck) card grows taller so a live
+          transcript shows more than ~2 bubbles; on desktop the sticky rail
+          scrolls internally instead (`lg:max-h` on the aside above). */}
       <div
         className={`mt-3 min-h-0 w-full flex-1 overflow-y-auto ${
           turns.length === 0 && !error ? "flex items-center justify-center" : ""
-        }`}
+        } ${!isDemo ? "min-h-[16rem] lg:min-h-0" : ""}`}
       >
         {error ? (
           <div
@@ -627,7 +630,10 @@ export function VoiceCall({ mode }: { mode: Mode }) {
                 no longer hides once captions appear. */}
             <MessageScrollerProvider autoScroll defaultScrollPosition="end">
               <MessageScroller className="min-h-0 flex-1">
-                <MessageScrollerViewport aria-label="Call transcript">
+                <MessageScrollerViewport
+                  aria-label="Call transcript"
+                  aria-live="polite"
+                >
                   <MessageScrollerContent className="gap-2">
                     {turns.map((turn, i) => {
                       const speaker = turn.role === "user" ? "You" : displayName;
@@ -694,8 +700,8 @@ export function VoiceCall({ mode }: { mode: Mode }) {
             {quotaExceeded
               ? isDemo
                 ? "Sign up to keep talking past the free demo limit."
-                : "The test call limit was reached."
-              : "Call again anytime."}
+                : "The test call limit was reached — it resets automatically, so you can try again in a bit."
+              : "Call again anytime within the test call limit."}
           </div>
         ) : (
           <div className="flex flex-col items-center gap-1.5 px-2 text-center">

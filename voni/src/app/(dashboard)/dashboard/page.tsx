@@ -11,10 +11,14 @@ import { RouteBrief } from "@/components/copilot/route-brief";
 import { getDashboardSummary } from "./actions";
 
 /**
- * Conversion view: four outcome totals backed by recorded rows, each
- * linking to its filtered list. The raw stage funnel survives below as
- * a collapsed secondary view, and campaigns with no leads surface a
- * next action rather than a dead end.
+ * Conversion view: four outcome totals backed by recorded rows. The raw
+ * stage funnel survives below as a collapsed secondary view, and campaigns
+ * with no leads surface a next action rather than a dead end.
+ *
+ * The cards are deliberately NOT links: neither /leads nor /calls accepts
+ * a filter param today, so a "filtered list" href would land on the same
+ * unfiltered table with a promise the URL does not keep. When list
+ * filtering exists, re-link each card to its filtered view.
  */
 async function DashboardOutcomes() {
   const summary = await getDashboardSummary();
@@ -22,22 +26,18 @@ async function DashboardOutcomes() {
     {
       label: "Leads worked",
       value: summary.leadsWorked,
-      href: "/leads",
     },
     {
       label: "Connected",
       value: summary.connectedCalls,
-      href: "/calls",
     },
     {
       label: "Appointments booked",
       value: summary.appointmentsBooked,
-      href: "/calls",
     },
     {
       label: "Needs human handoff",
       value: summary.needsHandoff,
-      href: "/leads",
     },
   ];
 
@@ -56,13 +56,12 @@ async function DashboardOutcomes() {
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <Link
-                href={card.href}
+              <div
                 aria-label={`${card.label}: ${card.value}`}
-                className="cursor-pointer rounded-sm text-2xl font-semibold outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring"
+                className="text-2xl font-semibold tabular-nums"
               >
                 {card.value}
-              </Link>
+              </div>
             </CardContent>
           </Card>
         ))}

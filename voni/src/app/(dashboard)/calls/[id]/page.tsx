@@ -159,6 +159,8 @@ async function CallDetail({
     .select({
       id: toolCallLogs.id,
       toolName: toolCallLogs.toolName,
+      arguments: toolCallLogs.arguments,
+      result: toolCallLogs.result,
       latencyMs: toolCallLogs.latencyMs,
       isError: toolCallLogs.isError,
       createdAt: toolCallLogs.createdAt,
@@ -309,6 +311,11 @@ async function CallDetail({
         <CardHeader>
           <CardTitle className="text-base">
             Conversation
+            {spoken.length >= 100 ? (
+              <span className="text-muted-foreground ml-2 align-middle text-xs font-normal">
+                Showing the first 100 turns
+              </span>
+            ) : null}
           </CardTitle>
         </CardHeader>
         <CardContent>
@@ -357,6 +364,11 @@ async function CallDetail({
         <CardHeader>
           <CardTitle className="text-base">
             Tool calls
+            {tools.length >= 50 ? (
+              <span className="text-muted-foreground ml-2 align-middle text-xs font-normal">
+                Showing the first 50
+              </span>
+            ) : null}
           </CardTitle>
         </CardHeader>
         <CardContent>
@@ -377,26 +389,46 @@ async function CallDetail({
               {tools.map((tool) => (
                 <li
                   key={tool.id}
-                  className="flex items-baseline justify-between gap-4"
+                  className="flex flex-col gap-1"
                 >
-                  <span
-                    className="min-w-0 truncate text-sm font-medium"
-                    title={`${tool.toolName} · ${tool.createdAt.toISOString()}`}
-                  >
-                    {tool.toolName}
-                  </span>
-                  <span className="flex shrink-0 items-center gap-2">
-                    {tool.isError ? (
-                      <Badge variant="destructive">
-                        Error
-                      </Badge>
-                    ) : null}
-                    <span className="text-muted-foreground text-xs">
-                      {tool.latencyMs != null
-                        ? `${tool.latencyMs} ms`
-                        : "—"}
+                  <div className="flex items-baseline justify-between gap-4">
+                    <span
+                      className="min-w-0 truncate text-sm font-medium"
+                      title={`${tool.toolName} · ${tool.createdAt.toISOString()}`}
+                    >
+                      {tool.toolName}
                     </span>
-                  </span>
+                    <span className="flex shrink-0 items-center gap-2">
+                      {tool.isError ? (
+                        <Badge variant="destructive">
+                          Error
+                        </Badge>
+                      ) : null}
+                      <span className="text-muted-foreground text-xs">
+                        {tool.latencyMs != null
+                          ? `${tool.latencyMs} ms`
+                          : "—"}
+                      </span>
+                    </span>
+                  </div>
+                  {tool.arguments != null ||
+                  tool.result != null ? (
+                    <details className="group">
+                      <summary className="text-muted-foreground w-fit cursor-pointer rounded-sm text-xs outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring">
+                        Arguments and result
+                      </summary>
+                      <pre className="bg-muted/50 mt-1 max-h-48 overflow-auto rounded-lg p-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap">
+                        {JSON.stringify(
+                          {
+                            arguments: tool.arguments,
+                            result: tool.result,
+                          },
+                          null,
+                          2,
+                        )}
+                      </pre>
+                    </details>
+                  ) : null}
                 </li>
               ))}
             </ul>

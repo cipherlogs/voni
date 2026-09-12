@@ -10,6 +10,12 @@ context/usage. Don't hand-edit the **Activity Log** — it's auto-generated.
 
 ## Status
 
+### Resume here (2026-09-12, impeccable whole-app refinement pass complete, uncommitted)
+
+**Now:** `/impeccable be thorough` executed as a whole-app REFINEMENT pass (existing world kept, no redesign) across agents → dashboard → calls → leads → campaigns → numbers → jobs → settings/operator → landing, all uncommitted on local `main`. Both standing open calls are CLOSED: (1) per-pill slow-read-back (`sensitive` pacing) toggle added to detect pills in `agent-config-form.tsx` — backend had already been restored in `69b29965`, only the UI was missing; flag rides live config + known set so uncheck/recheck preserves it; (2) delete-zone bordered card demoted to muted "Done with this agent?" text-link opening the same typed-name dialog — footer Delete is the one full-weight path. Agents surface: rail sticky + internal scroll, taller mobile transcript, 44px targets, `role="status"` timer + live transcript, inline 3-min cap disclosure, honest ended copy. Conversion loop: frozen leads Name column, call-detail tool args/results disclosure + truncation notes, campaign BackLink + searchable `CampaignQueue` (new, +5 tests), dashboard cards de-linked (no filter params exist — documented in situ). Supporting: inline FieldError on numbers, failure toasts on job actions, landing demo disclosure; settings/operator confirmed gap-free. BONUS: fixed React hydration error (`<div>` nested in `<table>` via RouteBrief/Suspense) on leads + calls — RouteBrief moved to null-render leaves. Finish protocol: detector `[]`, finish reviewer `fix` → 1 ship-blocker (split leads `<Table>`) fixed → verdict 4/4 resolved. Verified: tsc 0, eslint 0, **288/288 tests**, `get_compilation_issues` `[]`, desktop + mobile captures in `.impeccable/review/`. Live voice dial not tested (needs a mic). Pre-existing, not introduced: E1439 instant-shell-url-data on `/calls` searchParams, flushSync view-transition warning.
+**Next:** Commit this pass (or review first); then push local main (still 7 ahead of origin from Direction B merge) + delete `redesign/agent-detail-direction-b`. No DESIGN.md written — refine pass, no system-level visual change approved.
+**Why:** User ran `/impeccable be thorough`, chose whole-app + refine + full finish protocol, answered both open-call questions (per-pill toggle; keep footer Delete), said "proceed" and "use ruflo swarms when needed".
+
 ### Resume here (2026-09-12, Direction B merged to main, NOT pushed)
 
 **Now:** `redesign/agent-detail-direction-b` is committed and fast-forward-merged into local `main` (`43ee1177`). Main now includes: Direction B mockup cut + schema removal (incl. the `detect[].sensitive` restore in `69b29965`, handoff for why), agent-flow prototypes, skill doc updates (AssemblyAI Sept 2026 APIs + next-dev-loop), skills-lock hashes. `.claude-flow/policy/state.json` (runtime audit receipts) deliberately LEFT UNCOMMITTED as a working-tree modification — it is session-generated audit log, do not commit it. Branch `redesign/agent-detail-direction-b` still exists locally. Local main is 7 ahead of `origin/main` — push not done (not requested).
@@ -3036,3 +3042,61 @@ destination (1e).
 - 2026-09-12T16:07:04Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/agent-config-form.tsx
 - 2026-09-12T16:10:09Z [Write] /home/cipherlogs/Repos/AI/leadcalls/voni/src/lib/agents/config.test.ts
 - 2026-09-12T18:32:22Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/HANDOFF.md
+- 2026-09-12T20:36:30Z [Write] /home/cipherlogs/.claude/plans/be-thorough-jiggly-allen.md
+- 2026-09-12T20:42:58Z [Write] /home/cipherlogs/.claude/plans/be-thorough-jiggly-allen.md
+- 2026-09-12T20:52:19Z [Edit] /home/cipherlogs/.claude/plans/be-thorough-jiggly-allen.md
+- 2026-09-12T21:01:47Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/agent-config-form.tsx
+- 2026-09-12T21:01:54Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/agent-config-form.tsx
+- 2026-09-12T21:02:00Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/agent-config-form.tsx
+- 2026-09-12T21:02:32Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/[id]/edit-agent.tsx
+- 2026-09-12T21:02:54Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/agent-config-form.tsx
+- 2026-09-12T21:02:58Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/agent-config-form.tsx
+- 2026-09-12T21:03:09Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/agent-config-form.tsx
+- 2026-09-12T21:03:11Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/agent-config-form.tsx
+- 2026-09-12T21:24:59Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/[id]/edit-agent.tsx
+- 2026-09-12T21:25:07Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/voice-call.tsx
+- 2026-09-12T21:25:13Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/voice-call.tsx
+- 2026-09-12T21:25:24Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/agent-config-form.tsx
+- 2026-09-12T21:25:30Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/voice-call.tsx
+- 2026-09-12T21:25:36Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/voice-call.tsx
+- 2026-09-12T21:25:48Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/voice-call.tsx
+- 2026-09-12T21:25:57Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/voice-call.tsx
+- 2026-09-12T21:34:45Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/leads/page.tsx
+- 2026-09-12T21:34:53Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/leads/page.tsx
+- 2026-09-12T21:34:57Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/calls/[id]/page.tsx
+- 2026-09-12T21:35:04Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/calls/[id]/page.tsx
+- 2026-09-12T21:35:11Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/calls/[id]/page.tsx
+- 2026-09-12T21:35:16Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/calls/[id]/page.tsx
+- 2026-09-12T21:35:36Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/campaigns/[id]/page.tsx
+- 2026-09-12T21:35:42Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/campaigns/[id]/page.tsx
+- 2026-09-12T21:37:26Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/campaign-controls.tsx
+- 2026-09-12T21:37:33Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/campaign-controls.tsx
+- 2026-09-12T21:37:42Z [Write] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/campaign-queue.tsx
+- 2026-09-12T21:37:51Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/campaigns/[id]/page.tsx
+- 2026-09-12T21:37:57Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/campaigns/[id]/page.tsx
+- 2026-09-12T21:38:14Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/campaigns/[id]/page.tsx
+- 2026-09-12T21:38:19Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/campaigns/[id]/page.tsx
+- 2026-09-12T21:44:58Z [Write] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/campaign-queue.test.ts
+- 2026-09-12T21:46:05Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/campaign-queue.test.ts
+- 2026-09-12T21:46:09Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/campaign-queue.test.ts
+- 2026-09-12T21:48:02Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/dashboard/page.tsx
+- 2026-09-12T21:48:06Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/dashboard/page.tsx
+- 2026-09-12T21:48:37Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/dashboard/page.tsx
+- 2026-09-12T21:48:46Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/dashboard/page.tsx
+- 2026-09-12T21:55:01Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/phone-numbers.tsx
+- 2026-09-12T21:55:11Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/phone-numbers.tsx
+- 2026-09-12T21:55:18Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/phone-numbers.tsx
+- 2026-09-12T21:55:41Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/jobs/jobs-provider.tsx
+- 2026-09-12T21:56:00Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/landing-demo.tsx
+- 2026-09-12T22:02:05Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/leads/page.tsx
+- 2026-09-12T22:02:21Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/leads/page.tsx
+- 2026-09-12T22:04:42Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/leads/page.tsx
+- 2026-09-12T22:04:52Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/leads/page.tsx
+- 2026-09-12T22:06:37Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/calls/page.tsx
+- 2026-09-12T22:06:55Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/calls/page.tsx
+- 2026-09-12T22:19:26Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/leads/page.tsx
+- 2026-09-12T22:25:29Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/HANDOFF.md
+- 2026-09-12T22:38:50Z [Edit] /home/cipherlogs/.claude/plans/be-thorough-jiggly-allen.md
+- 2026-09-12T22:42:26Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/calls/page.tsx
+- 2026-09-12T22:42:34Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/calls/page.tsx
+- 2026-09-12T22:42:42Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/calls/page.tsx

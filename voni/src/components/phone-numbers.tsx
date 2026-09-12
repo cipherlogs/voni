@@ -7,7 +7,7 @@ import { LoadingButton } from "@/components/loading-button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
+import { Field, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
   Select,
@@ -65,6 +65,16 @@ export function PhoneNumbers({
   const [newNumber, setNewNumber] = useState("");
   const [newLabel, setNewLabel] = useState("");
   const [newAgent, setNewAgent] = useState<string>(UNBOUND);
+  // Client-side format echo of the server's E.164 normaliser: anything with
+  // fewer than 8 dialable digits (or more than 15) can never normalise, so
+  // it is flagged inline as it is typed rather than after a round trip.
+  // The server stays authoritative — this never blocks submission.
+  const dialableDigits = newNumber.replace(/\D/g, "");
+  const numberFormatError =
+    newNumber.trim().length > 0 &&
+    (dialableDigits.length < 8 || dialableDigits.length > 15)
+      ? "That number looks too short to dial — check for a missing country or area code."
+      : null;
 
   // Tracked per-action (not one shared boolean) so clicking one row's remove
   // button doesn't visually disable every other row with no way to tell which
@@ -102,7 +112,16 @@ export function PhoneNumbers({
                 value={newNumber}
                 onChange={(e) => setNewNumber(e.target.value)}
                 placeholder="+971 4 123 4567"
+                aria-invalid={numberFormatError ? true : undefined}
+                aria-describedby={
+                  numberFormatError ? "new-number-error" : undefined
+                }
               />
+              {numberFormatError ? (
+                <FieldError id="new-number-error">
+                  {numberFormatError}
+                </FieldError>
+              ) : null}
             </Field>
             <Field>
               <FieldLabel htmlFor="new-label">Label</FieldLabel>

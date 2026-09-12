@@ -1,21 +1,13 @@
 import { Suspense } from "react";
 import { RouteBrief } from "@/components/copilot/route-brief";
-import Link from "next/link";
 import { notFound } from "next/navigation";
-import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import { ChevronLeft, PhoneOutgoing, Clock } from "lucide-react";
+import { BackLink } from "@/components/back-link";
+import { PhoneOutgoing, Clock } from "lucide-react";
 import { CampaignControls } from "@/components/campaign-controls";
+import { CampaignQueue } from "@/components/campaign-queue";
 import { LeadImport } from "@/components/lead-import";
 import { describeCallingWindow } from "@/lib/campaigns/policy";
 import { getCampaign, getCampaignDispatchStatus } from "../actions";
@@ -27,38 +19,13 @@ const STATUS_VARIANT = {
   completed: "outline",
 } as const;
 
-const LEAD_STATUS_LABEL: Record<string, string> = {
-  queued: "Queued",
-  dialing: "Dialing",
-  reached: "Reached",
-  exhausted: "No answer",
-  skipped: "Skipped",
-};
-
-function formatWhen(value: Date | null) {
-  if (!value) return "—";
-  return new Intl.DateTimeFormat("en-GB", {
-    dateStyle: "medium",
-    timeStyle: "short",
-  }).format(value);
-}
-
 export default function CampaignPage({
   params,
 }: PageProps<"/campaigns/[id]">) {
   return (
     <div data-testid="campaign-shell" className="flex flex-col gap-6">
-      <div className="flex flex-col gap-2">
-        <Button
-          nativeButton={false}
-          render={<Link href="/campaigns" />}
-          variant="ghost"
-          size="sm"
-          className="-ml-2 w-fit"
-        >
-          <ChevronLeft />
-          Campaigns
-        </Button>
+      <div>
+        <BackLink href="/campaigns" label="Campaigns" />
       </div>
 
       {/* URL-independent section structure: titles paint with the shell while
@@ -220,77 +187,7 @@ async function CampaignDetail({
           </CardTitle>
         </CardHeader>
         <CardContent className="p-0">
-          <div className="overflow-x-auto">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Lead</TableHead>
-                  <TableHead>Phone</TableHead>
-                  <TableHead>Consent</TableHead>
-                  <TableHead>State</TableHead>
-                  <TableHead>Attempts</TableHead>
-                  <TableHead>Last attempt</TableHead>
-                  <TableHead>Outcome</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {members.length === 0 ? (
-                  <TableRow>
-                    <TableCell colSpan={7} className="h-32 text-center">
-                      <span className="text-muted-foreground">
-                        No leads yet — import a CSV above.
-                      </span>
-                    </TableCell>
-                  </TableRow>
-                ) : (
-                  members.map((member) => (
-                    <TableRow key={member.id} data-copilot-key={member.id}>
-                      <TableCell>
-                        <Link
-                          href={`/leads/${member.leadId}`}
-                          className="cursor-pointer rounded-sm underline-offset-4 outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring"
-                        >
-                          {member.leadName ?? "Unnamed"}
-                        </Link>
-                      </TableCell>
-                      <TableCell className="font-mono text-xs">
-                        {member.phone}
-                      </TableCell>
-                      <TableCell>
-                        <Badge
-                          variant={
-                            member.consentStatus === "granted"
-                              ? "default"
-                              : member.consentStatus === "revoked"
-                                ? "destructive"
-                                : "secondary"
-                          }
-                        >
-                          {member.consentStatus === "granted"
-                            ? "Consented"
-                            : member.consentStatus === "revoked"
-                              ? "Opted out"
-                              : "Unknown"}
-                        </Badge>
-                      </TableCell>
-                      <TableCell>
-                        {LEAD_STATUS_LABEL[member.status] ?? member.status}
-                      </TableCell>
-                      <TableCell>
-                        {member.attempts} / {campaign.maxAttempts}
-                      </TableCell>
-                      <TableCell className="text-muted-foreground text-sm">
-                        {formatWhen(member.lastAttemptAt)}
-                      </TableCell>
-                      <TableCell className="text-muted-foreground text-sm">
-                        {member.lastOutcome ?? "—"}
-                      </TableCell>
-                    </TableRow>
-                  ))
-                )}
-              </TableBody>
-            </Table>
-          </div>
+          <CampaignQueue members={members} maxAttempts={campaign.maxAttempts} />
         </CardContent>
       </Card>
     </div>

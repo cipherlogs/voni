@@ -342,11 +342,28 @@ export function JobsProvider({
   const mutate = useCallback(
     async (id: string, action: "cancel" | "retry" | "dismiss") => {
       if (!enabledRef.current) return;
-      await fetch(`/api/jobs/${id}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action }),
-      }).catch(() => undefined);
+      // The old shape swallowed every failure: a failed cancel/retry/dismiss
+      // left the row looking untouched with no word on why. Surface the
+      // failure as a toast so it survives the row it belongs to.
+      const verb =
+        action === "cancel" ? "Cancelling" : action === "retry" ? "Retrying" : "Dismissing";
+      let failed = false;
+      try {
+        const res = await fetch(`/api/jobs/${id}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action }),
+        });
+        failed = !res.ok;
+      } catch {
+        failed = true;
+      }
+      if (failed) {
+        toast.add({
+          type: "error",
+          title: `${verb} that job did not work — try again.`,
+        });
+      }
       await refresh();
     },
     [refresh],

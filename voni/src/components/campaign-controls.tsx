@@ -55,6 +55,11 @@ export function CampaignControls({
           <LoadingButton
             onClick={() => change("active")}
             disabled={activationBlocker !== null}
+            aria-describedby={
+              !running && activationBlocker
+                ? `campaign-blocker-${id}`
+                : undefined
+            }
             pending={pending}
             pendingText="Activating…"
             icon={<Play />}
@@ -63,7 +68,13 @@ export function CampaignControls({
           </LoadingButton>
         )}
         {!running && activationBlocker ? (
-          <p className="text-muted-foreground text-sm">{activationBlocker}</p>
+          <p
+            id={`campaign-blocker-${id}`}
+            role="note"
+            className="text-muted-foreground text-sm"
+          >
+            {activationBlocker}
+          </p>
         ) : null}
       </div>
       {error ? (

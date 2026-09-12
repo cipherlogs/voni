@@ -16,8 +16,16 @@ import { VoiceCall } from "@/components/voice-call";
  */
 export function LandingDemo() {
   return (
-    <div className="mt-6 flex justify-center">
+    <div className="mt-6 flex flex-col items-center gap-3">
       <VoiceCall mode={{ kind: "demo" }} />
+      {/* Demo-mode disclosure: one line under the widget, not inside it —
+          the card's geometry is fixed and nothing may shift it. States what
+          the click does (a live browser call, no phone needed) and its two
+          limits (2 minutes, daily per-IP cap) before the mic prompt arrives. */}
+      <p className="text-muted-foreground max-w-sm text-center text-xs leading-relaxed">
+        A live 2-minute demo call in your browser — no phone number needed.
+        Uses your microphone and is rate-limited per visitor per day.
+      </p>
     </div>
   );
 }

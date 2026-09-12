@@ -28,6 +28,21 @@ const CALLS_PAGE_SIZE = 20;
 const CALL_TABLE_COLUMNS = 4;
 
 /**
+ * RouteBrief renders nothing but must not sit inside a <table>: React
+ * hydrates a component boundary as a DOM node, and a node between <table>
+ * and <tbody> reads as a nested <div> — invalid table HTML that logs a
+ * hydration error on every list visit.
+ */
+function CallsBrief({ page }: { page: number }) {
+  return (
+    <RouteBrief
+      route="/calls"
+      brief={`Call history: page ${page} with lead, direction, start time, and duration. Voice reads here.`}
+    />
+  );
+}
+
+/**
  * Calls index: every call in the org, newest first, 20 per page. Rows link
  * to /calls/[id] detail. Mirrors the leads table shape (header, table,
  * suspense leaf, skeleton fallback) per the shared list pattern.
@@ -35,7 +50,21 @@ const CALL_TABLE_COLUMNS = 4;
  * Out-of-range pages render an Empty state, not a 404 — a guessed ?page=
  * is a navigation slip, not a missing resource.
  */
-async function CallsRows({ page }: { page: number }) {
+async function CallsRows({
+  searchParams,
+}: {
+  searchParams: Promise<{ page?: string | string[] }>;
+}) {
+  // URL data is read here, inside the Suspense boundary below — not in the
+  // page shell above it. Awaiting searchParams in the shell would tie the
+  // App Shell to one URL and break instant navigation (E1439); the shell
+  // (h1, Card, table header) stays static and only these rows stream.
+  const params = await searchParams;
+  const raw = Array.isArray(params.page) ? params.page[0] : params.page;
+  const parsed = Number(raw);
+  // Clamp here so the shell never renders a nonsense page; listCalls
+  // clamps again defensively for direct callers.
+  const page = Number.isFinite(parsed) ? Math.max(1, Math.floor(parsed)) : 1;
   const { rows, page: safePage } = await listCalls(page, CALLS_PAGE_SIZE);
   // Next-page detection: listCalls caps at pageSize, so a full page
   // usually means more exist. A full final page overshoots to an
@@ -45,28 +74,32 @@ async function CallsRows({ page }: { page: number }) {
 
   return (
     <>
-      <RouteBrief
-        route="/calls"
-        brief={`Call history: page ${safePage} with lead, direction, start time, and duration. Voice reads here.`}
-      />
+      <CallsBrief page={safePage} />
       {rows.length === 0 ? (
-        <div className="p-6">
-          <Empty>
-            <EmptyHeader>
-              <EmptyMedia variant="icon">
-                <Phone />
-              </EmptyMedia>
-              <EmptyTitle>
-                {safePage > 1 ? "No calls on this page" : "No calls yet"}
-              </EmptyTitle>
-              <EmptyDescription>
-                {safePage > 1
-                  ? "Try an earlier page — calls are newest first."
-                  : "Calls appear here after the first inbound or outbound call."}
-              </EmptyDescription>
-            </EmptyHeader>
-          </Empty>
-        </div>
+        <TableBody>
+          <TableRow>
+            <TableCell
+              colSpan={CALL_TABLE_COLUMNS}
+              className="h-40 text-center"
+            >
+              <Empty>
+                <EmptyHeader>
+                  <EmptyMedia variant="icon">
+                    <Phone />
+                  </EmptyMedia>
+                  <EmptyTitle>
+                    {safePage > 1 ? "No calls on this page" : "No calls yet"}
+                  </EmptyTitle>
+                  <EmptyDescription>
+                    {safePage > 1
+                      ? "Try an earlier page — calls are newest first."
+                      : "Calls appear here after the first inbound or outbound call."}
+                  </EmptyDescription>
+                </EmptyHeader>
+              </Empty>
+            </TableCell>
+          </TableRow>
+        </TableBody>
       ) : (
         <>
           <TableBody>
@@ -160,15 +193,7 @@ async function CallsRows({ page }: { page: number }) {
   );
 }
 
-export default async function CallsPage({
-  searchParams,
-}: PageProps<"/calls">) {
-  const params = await searchParams;
-  const raw = Array.isArray(params.page) ? params.page[0] : params.page;
-  const parsed = Number(raw);
-  // Clamp here so the shell never renders a nonsense page; listCalls
-  // clamps again defensively for direct callers.
-  const page = Number.isFinite(parsed) ? Math.max(1, Math.floor(parsed)) : 1;
+export default function CallsPage({ searchParams }: PageProps<"/calls">) {
   return (
     <div data-testid="calls-shell" className="flex flex-col gap-6">
       <div className="flex items-center justify-between">
@@ -212,7 +237,7 @@ export default async function CallsPage({
                   </TableBody>
                 }
               >
-                <CallsRows page={page} />
+                <CallsRows searchParams={searchParams} />
               </Suspense>
             </Table>
           </div>
