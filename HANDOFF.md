@@ -10,6 +10,12 @@ context/usage. Don't hand-edit the **Activity Log** — it's auto-generated.
 
 ## Status
 
+### Resume here (2026-09-12, Direction B merged to main, NOT pushed)
+
+**Now:** `redesign/agent-detail-direction-b` is committed and fast-forward-merged into local `main` (`43ee1177`). Main now includes: Direction B mockup cut + schema removal (incl. the `detect[].sensitive` restore in `69b29965`, handoff for why), agent-flow prototypes, skill doc updates (AssemblyAI Sept 2026 APIs + next-dev-loop), skills-lock hashes. `.claude-flow/policy/state.json` (runtime audit receipts) deliberately LEFT UNCOMMITTED as a working-tree modification — it is session-generated audit log, do not commit it. Branch `redesign/agent-detail-direction-b` still exists locally. Local main is 7 ahead of `origin/main` — push not done (not requested).
+**Next:** Push when ready; then delete the branch. Standing item unchanged: offer to restore just the mid-call `sensitive` pacing flag, and resolve the two redundant delete affordances.
+**Why:** User asked "commit all and merge with main".
+
 ### Resume here (2026-09-12, Direction B cut to the mockup + schema removal, uncommitted)
 
 **Now:** The page is now actually cut down to `agents-id-b-split.html`, via 4 parallel subagents (schema/backend, form, rail, shell) plus integration fixes. The prior pass had misread the mockup's `All states` strip as a section to ship — it is the STATE SPEC for the statusline badge, the generation/attention banners, and the call variants. It is gone and must not come back. User chose schema-level removal of everything the mockup does not show, so `agentConfigSchema` lost `identity.company`, `intents`, `blockers`, `successCondition`, `fallback`, `followUpPolicy`, `detect[].sensitive`, and `knowledge` became `string` (was `string[]`). Consumers updated: `compile.ts` (dropped the sensitive-capture, blockers and done-when sections; surviving copy verbatim), `tools/definitions.ts` + `voice/session.ts` (`prepare_sensitive_capture` and its turn-detection bookkeeping removed entirely), `generate.ts` (LLM JSON contract), all 5 `personas.ts`, the `actions.ts` generation stub, `scripts/verify-agent-provisioning.mts` (9 tools -> 8). Form rebuilt 660 -> 486 lines: 4 cards, language + voice are now selects, `detect` is reversible checkbox pills, tools are read-only rows with `waits for result` only on `hold`-mode tools, footer bar is Save+dirty left / Delete right. Rail gained the missing `.version-strip` pill. New `ui/checkbox.tsx` (shadcn CLI, Base UI). `BackLink` promoted to the mockup's metrics — this restyles the backlink on `campaigns/new`, `leads/[id]`, `calls/[id]`, `agents/new` too. `AgentDeleteButton` gained `className`/`label`/`showIcon`; defaults unchanged for other callers.
@@ -3029,3 +3035,4 @@ destination (1e).
 - 2026-09-12T16:07:00Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/agent-config-form.tsx
 - 2026-09-12T16:07:04Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/agent-config-form.tsx
 - 2026-09-12T16:10:09Z [Write] /home/cipherlogs/Repos/AI/leadcalls/voni/src/lib/agents/config.test.ts
+- 2026-09-12T18:32:22Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/HANDOFF.md
