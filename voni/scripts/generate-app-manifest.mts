@@ -188,6 +188,8 @@ function routeOf(pageFile: string): string | null {
   const rel = pageFile.slice(join(SRC, "app").length);
   const parts = rel.split("/").slice(0, -1).filter((p) => p !== "" && !/^\(.*\)$/.test(p));
 
+  // Local design prototypes are outside tool-enabled product navigation.
+  if (parts[0] === "prototypes") return null;
   return `/${parts.join("/")}`;
 }
 
