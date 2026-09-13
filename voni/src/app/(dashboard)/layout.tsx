@@ -71,14 +71,17 @@ export default function DashboardLayout({
   children: React.ReactNode;
 }) {
   return (
-    // User-controlled collapse: closed by default, remembered in the
-    // sidebar_state cookie. The icon variant stays fixed full-height;
-    // the provider must stay uncontrolled (defaultOpen, not open) so
-    // the header trigger and cmd/ctrl+B can actually toggle it.
+    // User-controlled collapse: open by default on desktop until the user
+    // explicitly collapses once, remembered in the sidebar_state cookie.
+    // The icon variant stays fixed full-height; the provider must stay
+    // uncontrolled (defaultOpen, not open) so the header trigger and
+    // cmd/ctrl+B can actually toggle it. No cookie yet means no explicit
+    // choice, so the default (open) wins; SidebarStateRestore applies the
+    // remembered value only when the cookie exists.
     // Mobile opens via its own openMobile state, unaffected by this.
     // The wider icon rail gives the enlarged nav buttons room.
     <SidebarProvider
-      defaultOpen={false}
+      defaultOpen={true}
       style={{ "--sidebar-width-icon": "4.5rem" } as React.CSSProperties}
     >
       <ShellAuthProvider>

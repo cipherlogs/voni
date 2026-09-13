@@ -17,8 +17,6 @@
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
   --color-sidebar-accent: var(--sidebar-accent);
-  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
-  --color-sidebar-primary: var(--sidebar-primary);
   --color-sidebar-foreground: var(--sidebar-foreground);
   --color-sidebar: var(--sidebar);
   --color-chart-5: var(--chart-5);
@@ -77,7 +75,11 @@
   /* Brand accent: the green already used by the call button (Jakob's Law —
      phone-app convention), now the product's one signature color rather than
      a hardcoded Tailwind shade living only in voice-call.tsx. Same value in
-     light and dark: green-600 already has enough contrast on both. */
+     light and dark. Contrast truth: green-600 clears the 3:1 non-text/UI
+     floor (large graphics, focus-adjacent fills) on both themes but never
+     body-text 4.5:1 — use it for fills and accents, never for text on
+     light/dark surfaces. Interactive fills pair it with a darker
+     hover/pressed mix so the pressed state buys headroom. */
   --brand: var(--color-green-600);
   --brand-foreground: oklch(1 0 0);
   --destructive: oklch(0.577 0.245 27.325);
@@ -92,8 +94,6 @@
   --radius: 0.5rem;
   --sidebar: oklch(0.985 0 0);
   --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
   --sidebar-accent: oklch(0.97 0 0);
   --sidebar-accent-foreground: oklch(0.205 0 0);
   --sidebar-border: oklch(0.922 0 0);
@@ -257,6 +257,19 @@
   }
 }
 
+/* Voice signature live dot: a soft blink, same family as the call card's.
+   The global reduced-motion rule plus motion-reduce:animate-none on the dot
+   squash this to a static frame. */
+@keyframes voni-livedot {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
 @keyframes wizard-pulse {
   from {
     opacity: 1;
@@ -403,8 +416,6 @@
   --chart-5: oklch(0.269 0 0);
   --sidebar: oklch(0.205 0 0);
   --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
   --sidebar-accent: oklch(0.269 0 0);
   --sidebar-accent-foreground: oklch(0.985 0 0);
   --sidebar-border: oklch(1 0 0 / 10%);

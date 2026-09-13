@@ -1,9 +1,14 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
+import { RotateCcw, Trash2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
+import { dialOutcomeLabel } from "@/lib/campaigns/outcome-label";
 import {
   Table,
   TableBody,
@@ -12,6 +17,12 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { toast } from "@/components/ui/toast";
+import { LoadingButton } from "@/components/loading-button";
+import {
+  queueBulkAction,
+  queueUndoRemoveAction,
+} from "@/app/(dashboard)/campaigns/actions";
 
 /**
  * The campaign's lead queue with a name/phone search, following the jobs
@@ -53,11 +64,19 @@ function formatWhen(value: Date | null) {
 export function CampaignQueue({
   members,
   maxAttempts,
+  campaignId,
 }: {
   members: QueueMember[];
   maxAttempts: number;
+  campaignId?: string;
 }) {
+  const router = useRouter();
   const [query, setQuery] = useState("");
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkOp, setBulkOp] = useState<"remove" | "reset" | null>(null);
+  // Undo window: the 8s toast holds the only copy of what was removed, so a
+  // ref (not state) carries the ids — re-renders must never clear it early.
+  const undoRef = useRef<{ leadIds: string[] } | null>(null);
 
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -68,6 +87,105 @@ export function CampaignQueue({
         member.phone.toLowerCase().includes(q),
     );
   }, [members, query]);
+
+  const selectable = campaignId !== undefined;
+  const allVisibleSelected =
+    visible.length > 0 && visible.every((member) => selected.has(member.id));
+  const someVisibleSelected = visible.some((member) => selected.has(member.id));
+
+  const toggle = (id: string, checked: boolean) =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (checked) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+
+  const toggleVisible = (checked: boolean) =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      for (const member of visible) {
+        if (checked) next.add(member.id);
+        else next.delete(member.id);
+      }
+      return next;
+    });
+
+  const actionable = useMemo(
+    () => visible.filter((member) => selected.has(member.id)).map((m) => m.id),
+    [visible, selected],
+  );
+
+  const undoRemove = async () => {
+    const leadIds = undoRef.current?.leadIds;
+    if (!leadIds || !campaignId) return;
+    const result = await queueUndoRemoveAction(campaignId, leadIds);
+    if (result.ok) {
+      toast.add({
+        type: "success",
+        title: `Restored ${result.restored} lead${result.restored === 1 ? "" : "s"} to the queue.`,
+      });
+      undoRef.current = null;
+      router.refresh();
+    } else {
+      toast.add({ type: "error", title: result.message });
+    }
+  };
+
+  const runBulk = async (op: "remove" | "reset") => {
+    if (!campaignId || actionable.length === 0 || bulkOp) return;
+    setBulkOp(op);
+    try {
+      const result = await queueBulkAction({
+        campaignId,
+        ids: actionable,
+        op,
+      });
+      if (!result.ok) {
+        toast.add({ type: "error", title: result.message });
+        return;
+      }
+      if (op === "remove") {
+        const count = result.removed.length;
+        if (count > 0) {
+          undoRef.current = {
+            leadIds: result.removed.map((r) => r.leadId),
+          };
+          const id = toast.add({
+            type: "success",
+            title: `Removed ${count} lead${count === 1 ? "" : "s"} from the queue.`,
+            description: "The dialer will skip them.",
+            timeout: 8000,
+            actionProps: {
+              children: "Undo",
+              onClick: () => {
+                void undoRemove();
+                toast.close(id);
+              },
+            },
+          });
+          setSelected(new Set());
+        }
+      } else {
+        const count = result.reset.length;
+        toast.add({
+          type: "success",
+          title:
+            count > 0
+              ? `Reset ${count} lead${count === 1 ? "" : "s"} to queued.`
+              : "Those leads are already queued — nothing changed.",
+        });
+        setSelected((prev) => {
+          const next = new Set(prev);
+          for (const id of result.reset) next.delete(id);
+          return next;
+        });
+      }
+      router.refresh();
+    } finally {
+      setBulkOp(null);
+    }
+  };
 
   return (
     <div className="flex flex-col gap-3 p-4 pb-0 sm:p-6 sm:pb-0">
@@ -83,6 +201,16 @@ export function CampaignQueue({
         <Table>
           <TableHeader>
             <TableRow>
+              {selectable ? (
+                <TableHead className="w-10">
+                  <Checkbox
+                    checked={allVisibleSelected}
+                    indeterminate={someVisibleSelected && !allVisibleSelected}
+                    onCheckedChange={toggleVisible}
+                    aria-label={`Select all ${visible.length} leads in this view`}
+                  />
+                </TableHead>
+              ) : null}
               <TableHead>Lead</TableHead>
               <TableHead>Phone</TableHead>
               <TableHead>Consent</TableHead>
@@ -95,7 +223,7 @@ export function CampaignQueue({
           <TableBody>
             {members.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={7} className="h-32 text-center">
+                <TableCell colSpan={selectable ? 8 : 7} className="h-32 text-center">
                   <span className="text-muted-foreground">
                     No leads yet — import a CSV above.
                   </span>
@@ -103,7 +231,7 @@ export function CampaignQueue({
               </TableRow>
             ) : visible.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={7} className="h-32 text-center">
+                <TableCell colSpan={selectable ? 8 : 7} className="h-32 text-center">
                   <span className="text-muted-foreground">
                     No leads match “{query.trim()}”.
                   </span>
@@ -112,6 +240,15 @@ export function CampaignQueue({
             ) : (
               visible.map((member) => (
                 <TableRow key={member.id} data-copilot-key={member.id}>
+                  {selectable ? (
+                    <TableCell>
+                      <Checkbox
+                        checked={selected.has(member.id)}
+                        onCheckedChange={(checked) => toggle(member.id, checked)}
+                        aria-label={`Select ${member.leadName ?? member.phone}`}
+                      />
+                    </TableCell>
+                  ) : null}
                   <TableCell>
                     <Link
                       href={`/leads/${member.leadId}`}
@@ -150,7 +287,7 @@ export function CampaignQueue({
                     {formatWhen(member.lastAttemptAt)}
                   </TableCell>
                   <TableCell className="text-muted-foreground text-sm">
-                    {member.lastOutcome ?? "—"}
+                    {dialOutcomeLabel(member.lastOutcome)}
                   </TableCell>
                 </TableRow>
               ))
@@ -158,6 +295,47 @@ export function CampaignQueue({
           </TableBody>
         </Table>
       </div>
+      {selectable && selected.size > 0 ? (
+        <div
+          role="toolbar"
+          aria-label="Bulk queue actions"
+          className="bg-card sticky bottom-4 z-10 flex flex-wrap items-center gap-2 rounded-lg border p-3 shadow-lg"
+        >
+          <span className="text-sm font-medium" aria-live="polite">
+            {selected.size} selected
+          </span>
+          <LoadingButton
+            size="sm"
+            variant="outline"
+            pending={bulkOp === "remove"}
+            pendingText="Removing…"
+            icon={<Trash2 />}
+            disabled={actionable.length === 0}
+            onClick={() => void runBulk("remove")}
+          >
+            Remove from queue
+          </LoadingButton>
+          <LoadingButton
+            size="sm"
+            variant="outline"
+            pending={bulkOp === "reset"}
+            pendingText="Resetting…"
+            icon={<RotateCcw />}
+            disabled={actionable.length === 0}
+            onClick={() => void runBulk("reset")}
+          >
+            Reset to queued
+          </LoadingButton>
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={bulkOp !== null}
+            onClick={() => setSelected(new Set())}
+          >
+            Clear
+          </Button>
+        </div>
+      ) : null}
     </div>
   );
 }

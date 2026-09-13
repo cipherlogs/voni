@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Progress } from "@/components/ui/progress";
 import type { JobJson } from "@/lib/jobs/serialize";
 import {
@@ -42,7 +43,16 @@ function primaryActionLabel(job: JobJson): string {
  * per-row (not a shared boolean) so acting on one job never disables the
  * others. Status is always text — never spinner-alone.
  */
-export function JobRow({ job }: { job: JobJson }) {
+export function JobRow({
+  job,
+  selected,
+  onToggle,
+}: {
+  job: JobJson;
+  /** Controlled selection for bulk retry/cancel. Omit to hide the checkbox. */
+  selected?: boolean;
+  onToggle?: (id: string, checked: boolean) => void;
+}) {
   const { openJob, cancelJob, retryJob, dismissJob } = useJobs();
   const [pendingAction, setPendingAction] = useState<string | null>(null);
   const terminal = isTerminal(job.status);
@@ -74,8 +84,16 @@ export function JobRow({ job }: { job: JobJson }) {
 
   return (
     <div className="flex flex-col gap-2 rounded-lg border p-3" data-copilot-key={job.id} data-copilot-version={job.updatedAt} data-copilot-scope="jobs">
-      <div className="flex items-start justify-between gap-2">
-        <p className="text-sm font-medium">{job.title}</p>
+      <div className="flex items-start gap-2">
+        {onToggle ? (
+          <Checkbox
+            checked={selected ?? false}
+            onCheckedChange={(checked) => onToggle(job.id, checked)}
+            aria-label={`Select ${job.title}`}
+            className="mt-0.5"
+          />
+        ) : null}
+        <p className="text-sm font-medium flex-1">{job.title}</p>
         <Badge
           variant={
             job.status === "succeeded"

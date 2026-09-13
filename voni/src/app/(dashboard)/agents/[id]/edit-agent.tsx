@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import { toast } from "@/components/ui/toast";
 import {
   CircleCheck,
@@ -32,13 +32,46 @@ import { AgentDeleteButton } from "../delete-agent-button";
 
 export type DeploymentState = "draft" | "queued" | "deploying" | "ready" | "failed";
 
+/** LocalStorage key for one agent's unsaved edits, mirroring use-wizard-draft.ts. */
+const editDraftKey = (agentId: string) => `voni:edit-draft:${agentId}`;
+
+type EditDraftSnapshot = { name: string; config: AgentConfig };
+
 /**
- * The mockup's card elevation: a hairline lift plus a wide, very soft drop.
- * Shared by the statusline, the state banners, and the delete card so they
- * read as one surface language with the form's cards.
+ * Pure snapshot parser (same shape as parseWizardDraftCache): corrupt,
+ * partial, or foreign-shape payloads are rejected so the editor falls back to
+ * the server state.
  */
-const CARD_SHADOW =
-  "shadow-[0_1px_2px_rgba(0,0,0,0.04),0_8px_24px_-16px_rgba(0,0,0,0.18)]";
+export function parseEditDraftCache(raw: string | null): EditDraftSnapshot | null {
+  if (!raw) return null;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null) return null;
+    const v = parsed as Record<string, unknown>;
+    if (typeof v.name !== "string") return null;
+    if (typeof v.config !== "object" || v.config === null) return null;
+    return { name: v.name, config: v.config as AgentConfig };
+  } catch {
+    return null;
+  }
+}
+
+function readEditDraft(agentId: string): EditDraftSnapshot | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return parseEditDraftCache(window.localStorage.getItem(editDraftKey(agentId)));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Border-only surfaces: the statusline, all banners, and the config form
+ * cards and footer on this editor carry a border and no shadow token, per
+ * the border-OR-shadow floor. The mockup arrived with a hairline lift plus
+ * a wide, very soft drop, but border AND shadow together would break the
+ * floor — so the elevation was dropped on both files.
+ */
 
 function deploymentLabel(state: DeploymentState): string {
   switch (state) {
@@ -97,6 +130,9 @@ export function EditAgent(props: {
    * job did not fail (or aged out, where no row was found). */
   generationError?: string | null;
   isGenerationStub?: boolean;
+  /** True when this agent is the platform bridge default — the delete dialog
+   * carries a blocking note (the DB clears the default with the row). */
+  isBridgeAgent?: boolean;
 }) {
   const {
     id,
@@ -110,16 +146,62 @@ export function EditAgent(props: {
     generationStatus = null,
     generationError = null,
     isGenerationStub = false,
+    isBridgeAgent = false,
   } = props;
-  const [current, setCurrent] = useState<AgentConfig>(config);
-  const [currentName, setCurrentName] = useState<string>(name);
+  // Durable pre-save draft (mirrors use-wizard-draft.ts): unsaved edits
+  // survive reload/navigation via localStorage, keyed by agent id. The cache
+  // is cleared on every save, so anything present belongs to edits made after
+  // the last save — recover it only when it actually differs from the server
+  // state (a no-op cache from a clean save restores nothing).
+  const serverSnapshot = JSON.stringify({ name, config });
+  const [recovered] = useState<EditDraftSnapshot | null>(() => {
+    const cached = readEditDraft(id);
+    if (!cached) return null;
+    try {
+      if (JSON.stringify(cached) === serverSnapshot) return null;
+      return cached;
+    } catch {
+      return null;
+    }
+  });
+  const [current, setCurrent] = useState<AgentConfig>(() => recovered?.config ?? config);
+  const [currentName, setCurrentName] = useState<string>(() => recovered?.name ?? name);
+  const [restoredDraft, setRestoredDraft] = useState(recovered !== null);
   // Dirty when the live name/config differ from the last-saved snapshot.
   // The form reports both via onChange (name passthrough included).
-  const [savedSnapshot, setSavedSnapshot] = useState<string>(() =>
-    JSON.stringify({ name, config }),
-  );
+  const [savedSnapshot, setSavedSnapshot] = useState<string>(() => serverSnapshot);
   const isDirty =
     JSON.stringify({ name: currentName, config: current }) !== savedSnapshot;
+
+  // Persist every unsaved edit so reload/navigation restores the editor.
+  // Best-effort: quota or private-mode failures never break the form.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      if (!isDirty) {
+        window.localStorage.removeItem(editDraftKey(id));
+        return;
+      }
+      window.localStorage.setItem(
+        editDraftKey(id),
+        JSON.stringify({ name: currentName, config: current }),
+      );
+    } catch {
+      // Ignore write failures; in-memory state stays authoritative.
+    }
+  }, [id, isDirty, currentName, current]);
+
+  // Unsaved edits survive reload now; still warn on reload/close while dirty.
+  // Scoped to this editor on purpose — the creation wizard owns its own
+  // navigation handling and shares the form component below.
+  useEffect(() => {
+    if (!isDirty) return;
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [isDirty]);
   const [deployState, setDeployState] = useState<DeploymentState>(
     (["draft", "queued", "deploying", "ready", "failed"] as const).includes(
       deploymentStatus as DeploymentState,
@@ -140,6 +222,13 @@ export function EditAgent(props: {
   // number.
   const [deployPercent, setDeployPercent] = useState<number | null>(null);
   const [retrying, startRetry] = useTransition();
+  // Single-flight guard for deployment retries (mirrors the generation
+  // idempotency shape): a double-click or a retry-after-retry must not queue
+  // duplicate deployment jobs. State (not a ref) drives the disabled prop —
+  // refs cannot be read during render — plus a synchronous ref check in the
+  // handler drops the second press of a double-click before state commits.
+  const [retryQueued, setRetryQueued] = useState(false);
+  const retryInFlight = useRef(false);
   const deployment = useOptimisticJob("agent_deployment");
   const generation = useOptimisticJob("agent_generation");
   const { markSeen } = useJobs();
@@ -253,6 +342,36 @@ export function EditAgent(props: {
           → form → delete card (12 below the footer bar). */}
       <div className="min-w-0">
         <BackLink href="/agents" label="Agents" />
+        {restoredDraft ? (
+          <Alert className="mb-4 rounded-xl text-[13px]">
+            <RotateCw />
+            <AlertTitle>Unsaved edits restored</AlertTitle>
+            <AlertDescription className="flex flex-wrap items-center justify-between gap-3">
+              <span>
+                These edits were never saved. Save them, or discard to return
+                to the last saved version.
+              </span>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  setCurrent(config);
+                  setCurrentName(name);
+                  setSavedSnapshot(serverSnapshot);
+                  setRestoredDraft(false);
+                  try {
+                    window.localStorage.removeItem(editDraftKey(id));
+                  } catch {
+                    // Best-effort; in-memory state stays authoritative.
+                  }
+                }}
+              >
+                Discard restored edits
+              </Button>
+            </AlertDescription>
+          </Alert>
+        ) : null}
         <h1 className="mt-2 mb-1 text-2xl font-semibold tracking-[-0.02em]">
           {name}
         </h1>
@@ -260,7 +379,7 @@ export function EditAgent(props: {
           Changes take effect on the next call this agent takes.
         </p>
         <div
-          className={`bg-card mb-4 flex flex-wrap items-center gap-2.5 rounded-xl border px-3.5 py-3 ${CARD_SHADOW}`}
+          className="bg-card mb-4 flex flex-wrap items-center gap-2.5 rounded-xl border px-3.5 py-3"
           aria-live="polite"
         >
           <Badge
@@ -294,7 +413,7 @@ export function EditAgent(props: {
 
         {isGenerationStub ? (
           generationRunning ? (
-            <Alert className={`mb-4 rounded-xl text-[13px] ${CARD_SHADOW}`}>
+            <Alert className="mb-4 rounded-xl text-[13px]">
               <LoaderCircle className="animate-spin" />
               <AlertTitle>Configuration generating</AlertTitle>
               <AlertDescription>
@@ -309,7 +428,7 @@ export function EditAgent(props: {
               </AlertDescription>
             </Alert>
           ) : generationReady ? (
-            <Alert className={`mb-4 rounded-xl text-[13px] ${CARD_SHADOW}`}>
+            <Alert className="mb-4 rounded-xl text-[13px]">
               <CircleCheck />
               <AlertTitle>Ready to review</AlertTitle>
               <AlertDescription>
@@ -329,7 +448,7 @@ export function EditAgent(props: {
               </AlertDescription>
             </Alert>
           ) : (
-            <Alert className={`mb-4 rounded-xl text-[13px] ${CARD_SHADOW}`}>
+            <Alert className="mb-4 rounded-xl text-[13px]">
               <TriangleAlert />
               <AlertTitle>Generation didn&apos;t finish</AlertTitle>
               <AlertDescription className="flex flex-col gap-2">
@@ -365,7 +484,7 @@ export function EditAgent(props: {
         {needsAttention ? (
           <Alert
             variant="destructive"
-            className={`mb-4 rounded-xl text-[13px] ${CARD_SHADOW}`}
+            className="mb-4 rounded-xl text-[13px]"
           >
             <TriangleAlert />
             <AlertTitle>Saved, but voice deployment needs attention</AlertTitle>
@@ -380,25 +499,46 @@ export function EditAgent(props: {
                 size="sm"
                 pending={retrying}
                 pendingText="Queuing…"
+                disabled={retryQueued}
                 icon={<RotateCw />}
-                onClick={() =>
+                onClick={() => {
+                  // Single-flight: drop the click when a retry is already in
+                  // flight. The ref flips synchronously so a double-click's
+                  // second press is dropped before state commits;
+                  // LoadingButton's pending-while-retrying keeps it disabled
+                  // through the round trip.
+                  if (retryInFlight.current) return;
+                  retryInFlight.current = true;
+                  setRetryQueued(true);
                   startRetry(async () => {
-                    const result = await retryAgentDeploymentAction(id);
-                    if (!result.ok) {
-                      setDeployMessage(result.message);
-                    } else if (result.deployment === "attention") {
-                      setDeployState("failed");
-                      setDeployMessage(
-                        result.deploymentMessage ?? "Voice deployment did not complete.",
-                      );
-                    } else {
-                      setDeployState("queued");
-                      setDeployMessage(null);
-                      setDeployJobId(result.jobId ?? null);
-                      toast.add({ type: "success", title: "Deployment queued — it runs in the background" });
+                    try {
+                      // Stable per-agent retry key (mirrors
+                      // generationIdempotencyKey): a retry-after-retry for the
+                      // same saved version dedupes server-side instead of
+                      // queueing a second deployment.
+                      const result = await retryAgentDeploymentAction(id);
+                      if (!result.ok) {
+                        setDeployMessage(result.message);
+                      } else if (result.deployment === "attention") {
+                        setDeployState("failed");
+                        setDeployMessage(
+                          result.deploymentMessage ?? "Voice deployment did not complete.",
+                        );
+                      } else {
+                        setDeployState("queued");
+                        setDeployMessage(null);
+                        setDeployJobId(result.jobId ?? null);
+                        toast.add({ type: "success", title: "Deployment queued — it runs in the background" });
+                      }
+                    } finally {
+                      // The deployment watcher owns the longer-lived "queued"
+                      // state via deployJobId; this flag only guards the
+                      // submit round trip itself.
+                      retryInFlight.current = false;
+                      setRetryQueued(false);
                     }
-                  })
-                }
+                  });
+                }}
               >
                 Retry deployment
               </LoadingButton>
@@ -411,23 +551,6 @@ export function EditAgent(props: {
           initialConfig={config}
           submitLabel="Save changes"
           isDirty={isDirty}
-          footerSecondary={
-            <AgentDeleteButton
-              id={id}
-              name={name}
-              layout="full"
-              redirectTo="/agents"
-              // The mockup's .btn-danger-ghost: white surface, red text, soft
-              // red border, red-tinted hover — not the solid destructive fill.
-              label="Delete"
-              showIcon={false}
-              className={"bg-card text-destructive border-destructive/25 hover:bg-destructive/5 hover:text-destructive min-h-11 rounded-full px-5.5 text-sm font-semibold"}
-              // Live deployState, not the frozen server snapshot: once a
-              // background deploy succeeds nothing remote is short-copy
-              // anymore, even though the neverProvisioned prop can't update.
-              neverProvisioned={!assemblyaiAgentId && deployState !== "ready"}
-            />
-          }
           onChange={(next, nextName) => {
             setCurrent(next);
             setCurrentName(nextName);
@@ -465,12 +588,24 @@ export function EditAgent(props: {
                 result.deploymentMessage ?? "Voice deployment did not complete.",
               );
               setSavedSnapshot(JSON.stringify({ name: nextName, config: nextConfig }));
+              setRestoredDraft(false);
+              try {
+                window.localStorage.removeItem(editDraftKey(id));
+              } catch {
+                // Best-effort; in-memory state stays authoritative.
+              }
               return;
             }
             setDeployState("queued");
             setDeployMessage(null);
             setDeployJobId(result.jobId ?? null);
             setSavedSnapshot(JSON.stringify({ name: nextName, config: nextConfig }));
+            setRestoredDraft(false);
+            try {
+              window.localStorage.removeItem(editDraftKey(id));
+            } catch {
+              // Best-effort; in-memory state stays authoritative.
+            }
             toast.add({ type: "success", title: "Agent saved — voice deployment is running" });
           }}
           // Sticky bottom save bar on small screens so Save stays reachable
@@ -479,32 +614,43 @@ export function EditAgent(props: {
           // position:fixed, and without one the bar slides under the nav.
           footerClassName="sticky bottom-18 z-10 -mx-1 border-t bg-background/95 px-1 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur supports-[backdrop-filter]:bg-background/80 lg:static lg:z-auto lg:mx-0 lg:border-0 lg:bg-transparent lg:px-0 lg:pt-4 lg:pb-0 lg:backdrop-blur-none"
         />
-        {/* Quiet second door to the same typed-name delete dialog — the one
-            full-weight delete path lives in the footer bar next to Save.
-            A second bordered card here competed with Save and doubled the
-            destructive affordance, so this is a muted sentence, not a card. */}
-        <p className="mt-3 text-center text-xs text-muted-foreground">
-          Done with this agent?{" "}
-          <AgentDeleteButton
-            id={id}
-            name={name}
-            layout="full"
-            redirectTo="/agents"
-            label={`Delete ${name}`}
-            showIcon={false}
-            className="h-auto min-h-0 rounded-none border-0 bg-transparent p-0 text-xs font-normal text-muted-foreground underline underline-offset-4 shadow-none hover:bg-transparent hover:text-destructive hover:underline dark:bg-transparent"
-            // Live deployState, not the frozen server snapshot: once a
-            // background deploy succeeds nothing remote is short-copy
-            // anymore, even though the neverProvisioned prop can't update.
-            neverProvisioned={!assemblyaiAgentId && deployState !== "ready"}
-          />
-        </p>
+        {/* The single delete path: a bordered danger zone opening the same
+            typed-name dialog. A bordered delete button in the footer bar next
+            to Save doubled the destructive affordance, so this section is
+            the only one. */}
+        <section
+          aria-labelledby="danger-zone-heading"
+          className="mt-3 rounded-xl border border-destructive/25 p-4"
+        >
+          <h2
+            id="danger-zone-heading"
+            className="text-sm font-semibold text-destructive"
+          >
+            Danger zone
+          </h2>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Deleting this agent is permanent and cannot be undone.
+          </p>
+          <div className="mt-3">
+            <AgentDeleteButton
+              id={id}
+              name={name}
+              layout="full"
+              redirectTo="/agents"
+              // Live deployState, not the frozen server snapshot: once a
+              // background deploy succeeds nothing remote is short-copy
+              // anymore, even though the neverProvisioned prop can't update.
+              neverProvisioned={!assemblyaiAgentId && deployState !== "ready"}
+              isBridgeAgent={isBridgeAgent}
+            />
+          </div>
+        </section>
       </div>
 
       <aside
         id="test-rail"
         aria-label="Test this agent"
-        className="order-first lg:order-none lg:sticky lg:top-6 lg:max-h-[calc(100vh-3rem)] lg:overflow-y-auto"
+        className="order-first lg:order-none lg:sticky lg:top-[4.5rem] lg:z-10 lg:max-h-[calc(100vh-3rem)] lg:overflow-y-auto lg:rounded-xl lg:bg-background"
       >
         {canTestCall ? (
           <>

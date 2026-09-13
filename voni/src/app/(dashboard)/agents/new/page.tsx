@@ -82,7 +82,7 @@ function NewAgentInner({
   const [fieldErrors, setFieldErrors] = useState<{ goals?: string; name?: string }>({});
   const [showGuidance, setShowGuidance] = useState(false);
   const generation = useOptimisticJob("agent_generation");
-  const { markSeen } = useJobs();
+  const { markSeen, cancelJob } = useJobs();
   const [restoring, setRestoring] = useState(restoreJobId !== null);
   // ?job= visits wait for the placeholder snapshot before showing review so
   // the name field and voice/language (mount-once form state) are seeded.
@@ -672,6 +672,14 @@ function NewAgentInner({
             <GenerationStatus
               phase={generationPhase}
               onOpenJobs={() => router.push("/jobs")}
+              onCancel={
+                generation.jobId
+                  ? () => {
+                      const id = generation.jobId;
+                      if (id) void cancelJob(id);
+                    }
+                  : undefined
+              }
               error={briefError}
               onUseTemplate={useTemplate}
             />

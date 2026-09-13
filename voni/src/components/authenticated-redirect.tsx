@@ -26,7 +26,7 @@ export function AuthenticatedRedirect({ destination }: { destination: string }) 
 
       <div
         aria-live="polite"
-        className="flex w-full flex-col items-center gap-5 rounded-xl border bg-card p-8 text-center shadow-xs"
+        className="flex w-full flex-col items-center gap-5 rounded-xl border bg-card p-8 text-center"
       >
         <LoaderCircle className="size-5 animate-spin" aria-hidden="true" />
         <div className="flex flex-col gap-2">

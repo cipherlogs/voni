@@ -88,7 +88,8 @@ export function FormCardSections({
  *
  * App-wide button rule: secondary/tertiary actions left, primary action
  * right (`justify-between` / `justify-end`). ConfigFormFooter in
- * agent-config-form.tsx follows the same rule for non-wizard forms.
+ * agent-config-form.tsx follows the same rule: secondary left, primary right
+ * (and `justify-end` when there is no secondary).
  */
 export function WizardFooter({
   onBack,

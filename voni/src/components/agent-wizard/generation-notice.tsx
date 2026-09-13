@@ -16,10 +16,13 @@ export function GenerationStatusCard({
   phase,
   onOpenJobs,
   onKeepEditing,
+  onCancel,
 }: {
   phase: "working" | "backgrounded";
   onOpenJobs?: () => void;
   onKeepEditing?: () => void;
+  /** Cancels the in-flight generation job (durable cancel via Jobs). */
+  onCancel?: () => void;
 }) {
   return (
     <Alert aria-live="polite" className="border-primary/30 bg-primary/5">
@@ -46,6 +49,11 @@ export function GenerationStatusCard({
           {onKeepEditing ? (
             <Button type="button" size="sm" variant="ghost" onClick={onKeepEditing}>
               Keep editing
+            </Button>
+          ) : null}
+          {onCancel ? (
+            <Button type="button" size="sm" variant="ghost" onClick={onCancel}>
+              Cancel generation
             </Button>
           ) : null}
         </span>

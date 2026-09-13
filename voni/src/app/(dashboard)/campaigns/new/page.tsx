@@ -1,17 +1,35 @@
 import { Suspense } from "react";
+import { eq } from "drizzle-orm";
 import { Skeleton } from "@/components/ui/skeleton";
 import { BackLink } from "@/components/back-link";
 import { CampaignForm } from "@/components/campaign-form";
 import { RouteBrief } from "@/components/copilot/route-brief";
 import { listAgentOptions } from "../actions";
+import { db } from "@/lib/db";
+import { organizationSettings } from "@/lib/db/schema";
+import { requireCtxOrRedirect } from "@/lib/session";
 
 /**
- * Agent options leaf: the select choices resolve after the form frame.
- * The form keeps its own state; this single boundary never remounts it.
+ * Agent options leaf: the select choices plus the workspace timezone resolve
+ * after the form frame. The form keeps its own state; this single boundary
+ * never remounts it.
  */
 async function CampaignAgentOptions() {
-  const agents = await listAgentOptions();
-  return <CampaignForm agents={agents} />;
+  const ctx = await requireCtxOrRedirect("/campaigns/new");
+  const [agents, [settings]] = await Promise.all([
+    listAgentOptions(),
+    db
+      .select({ timezone: organizationSettings.timezone })
+      .from(organizationSettings)
+      .where(eq(organizationSettings.organizationId, ctx.organizationId))
+      .limit(1),
+  ]);
+  return (
+    <CampaignForm
+      agents={agents}
+      workspaceTimezone={settings?.timezone ?? undefined}
+    />
+  );
 }
 
 export default function NewCampaignPage() {

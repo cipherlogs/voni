@@ -4,6 +4,7 @@ import { notFound } from "next/navigation";
 import { getAgentWithGeneration } from "../actions";
 import { EditAgent } from "./edit-agent";
 import { DetailSkeleton } from "@/components/page-skeletons";
+import { VoiceLineLive } from "@/components/voice-line";
 import { agentConfigSchema, normalizeConfig } from "@/lib/agents/config";
 import type { AgentConfig } from "@/lib/agents/config";
 
@@ -23,7 +24,7 @@ async function AgentDetail({
   const query = await searchParams;
   const result = await getAgentWithGeneration(id);
   if (!result) notFound();
-  const { agent, generationStatus, generationError } = result;
+  const { agent, generationStatus, generationError, isBridgeAgent } = result;
 
   // A draft row still carrying its generation job id holds a placeholder
   // config until the reviewed save upgrades it in place.
@@ -59,6 +60,7 @@ async function AgentDetail({
         generationStatus={generationStatus}
         generationError={generationError}
         isGenerationStub={isGenerationStub}
+        isBridgeAgent={isBridgeAgent}
       />
     </>
   );
@@ -81,6 +83,7 @@ export default function AgentPage({
       >
         <AgentDetail params={params} searchParams={searchParams} />
       </Suspense>
+      <VoiceLineLive />
     </div>
   );
 }

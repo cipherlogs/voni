@@ -1,6 +1,7 @@
 import { and, eq, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { agents, campaigns } from "@/lib/db/schema";
+import { dispatchIdleLabel } from "./outcome-label";
 import {
   allowedConsentStatuses,
   evaluateCallingWindow,
@@ -130,7 +131,16 @@ export async function nextDialTarget(
     )
     .orderBy(campaigns.createdAt);
 
-  if (active.length === 0) return { status: "idle", reason: "no active campaigns" };
+  // Idle reasons leave here as operator sentences (`dispatchIdleLabel`),
+  // not the raw dispatcher shorthand: the bridge runner logs `reason`
+  // verbatim to the operator (`logger.info(f"idle: ...")`), so the mapping
+  // must happen at the source rather than at any one consumer.
+  if (active.length === 0) {
+    return {
+      status: "idle",
+      reason: dispatchIdleLabel("no active campaigns") ?? "no active campaigns",
+    };
+  }
 
   // One bridge process holds one media stream, so a second dial while a call is
   // live would be answered by nobody. The `dialing` row is already the record
@@ -144,7 +154,12 @@ export async function nextDialTarget(
     LIMIT 1
   `);
   if (inFlight.rows.length > 0) {
-    return { status: "idle", reason: "a call is already in progress" };
+    return {
+      status: "idle",
+      reason:
+        dispatchIdleLabel("a call is already in progress") ??
+        "a call is already in progress",
+    };
   }
 
   // Reasons accumulate so an idle runner can say *why* rather than just
@@ -230,7 +245,8 @@ export async function nextDialTarget(
     };
   }
 
-  return { status: "idle", reason: reasons.join("; ") || "no leads due" };
+  const raw = reasons.join("; ") || "no leads due";
+  return { status: "idle", reason: dispatchIdleLabel(raw) ?? raw };
 }
 
 /** Outcomes the bridge reports back after a dial completes. */

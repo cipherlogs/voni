@@ -9,7 +9,6 @@ import { listAgentsWithGeneration } from "./actions";
 import { AgentDeleteButton } from "./delete-agent-button";
 import type { AgentConfig } from "@/lib/agents/config";
 import { RouteBrief } from "@/components/copilot/route-brief";
-import { RecentCalls } from "@/components/calls/recent-calls";
 
 /**
  * Authorized list leaf: count-based brief and rows resolve after the shell.
@@ -157,7 +156,7 @@ async function AgentsList() {
 export default function AgentsPage() {
   return (
     <div data-testid="agents-shell" className="flex flex-col gap-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Agents</h1>
           <p className="text-muted-foreground text-sm">
@@ -178,17 +177,6 @@ export default function AgentsPage() {
         }
       >
         <AgentsList />
-      </Suspense>
-
-      {/* Secondary section: streams in without blocking the agents list. */}
-      <Suspense
-        fallback={
-          <div role="status" aria-label="Loading recent calls">
-            <CardListSkeleton rows={2} />
-          </div>
-        }
-      >
-        <RecentCalls />
       </Suspense>
     </div>
   );

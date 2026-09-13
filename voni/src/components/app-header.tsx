@@ -9,10 +9,12 @@ import { Progress } from "@/components/ui/progress";
 import { Separator } from "@/components/ui/separator";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { useCopilot } from "@/components/copilot/copilot-provider";
+import { formatCallStatus } from "@/lib/calls/call-status";
 import { VoiceBars, type VoiceBarsMood } from "@/components/copilot/voice-bars";
 import { useShellAuth } from "@/components/shell-auth";
 import { getJobProgressPercent } from "@/lib/jobs/ui-helpers";
 import { useJobs } from "@/components/jobs/jobs-provider";
+import { ShortcutsDialog } from "@/components/shortcuts-dialog";
 
 /**
  * The shell header. It exists to name where you are — without a title the bar
@@ -39,11 +41,6 @@ export const SECTION_TITLES: Array<[string, string]> = [
   ["/settings", "Settings"],
 ];
 
-function formatElapsed(totalSeconds: number): string {
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return `${minutes}:${String(seconds).padStart(2, "0")}`;
-}
 
 /** Self-reading title leaf: owns the usePathname call so the boundary above
  *  covers exactly the section-title computation. */
@@ -109,7 +106,7 @@ function CopilotHeaderButton({
     : proposals.length > 0
       ? proposalText
       : live
-        ? formatElapsed(elapsed)
+        ? formatCallStatus(elapsed)
         : "Voice copilot";
 
   return (
@@ -163,14 +160,16 @@ export function AppHeader() {
     : null;
 
   return (
-    <header className="app-shell-header bg-background/80 sticky top-0 z-30 flex h-14 shrink-0 flex-col justify-center border-b px-4 backdrop-blur-md">
+    <header className="app-shell-header bg-background sticky top-0 z-30 flex h-14 shrink-0 flex-col justify-center border-b px-4">
       <div className="flex items-center gap-2">
-        {/* Collapse toggle: the rail starts collapsed (layout
-            defaultOpen={false}) and the user opens it from here
+        {/* Collapse toggle: the rail starts open on desktop (layout
+            defaultOpen) until the user collapses it from here
             or with cmd/ctrl+B; the provider remembers the choice. */}
         <SidebarTrigger
           className="-ml-1"
           aria-label="Toggle navigation sidebar"
+          aria-keyshortcuts="Control+b Meta+b"
+          title="Toggle navigation sidebar (Ctrl+B or Cmd+B)"
         />
         {/* Short stub divider: h-4 defeats the vendored
             data-vertical:self-stretch, pinning the stub to flex-start,
@@ -182,6 +181,7 @@ export function AppHeader() {
           <HeaderTitle />
         </Suspense>
         <div className="ml-auto flex items-center gap-1">
+          <ShortcutsDialog />
           <CopilotHeaderButton authReady={authReady} authNote={authNote} />
           <Button
             variant="ghost"
@@ -212,7 +212,7 @@ export function AppHeader() {
                 ? `${activeCount} running`
                 : unreadJobs.length > 0
                   ? unreadText
-                  : "Jobs"}
+                  : "Background jobs"}
             </span>
           </Button>
         </div>

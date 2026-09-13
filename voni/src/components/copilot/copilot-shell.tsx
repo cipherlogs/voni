@@ -30,6 +30,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { formatCallStatus } from "@/lib/calls/call-status";
 import { useCopilot, type CopilotStatus } from "./copilot-provider";
 
 const STATUS_TEXT: Record<CopilotStatus, string> = {
@@ -61,9 +62,13 @@ function RecoveryHint({ code }: { code?: string }) {
 }
 
 function formatElapsed(totalSeconds: number): string {
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return `${minutes}:${String(seconds).padStart(2, "0")}`;
+  // Shared m:ss rule with call durations and job elapsed times
+  // (lib/calls/call-status.ts) so every elapsed time reads the same way.
+  // Local wrapper (not a direct import) because negative/NaN inputs here
+  // mean "still starting" rather than "clamp to zero".
+  return Number.isFinite(totalSeconds) && totalSeconds >= 0
+    ? formatCallStatus(totalSeconds)
+    : "0:00";
 }
 
 export function CopilotShell() {

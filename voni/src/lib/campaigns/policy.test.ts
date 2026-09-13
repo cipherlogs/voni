@@ -109,11 +109,11 @@ test("malformed stored policy falls back to the safe default", () => {
 test("describes a window in the compressed form the campaign list shows", () => {
   assert.equal(
     describeCallingWindow(dubai),
-    "09:00-18:00 Asia/Dubai, Mon-Sat",
+    "09:00-18:00 Dubai time, Mon-Sat",
   );
   assert.match(describeCallingWindow({ ...dubai, daysOfWeek: [0, 1, 2, 3, 4, 5, 6] }), /every day/);
   assert.equal(
     describeCallingWindow({ ...dubai, daysOfWeek: [1, 3, 5] }),
-    "09:00-18:00 Asia/Dubai, Mon, Wed, Fri",
+    "09:00-18:00 Dubai time, Mon, Wed, Fri",
   );
 });

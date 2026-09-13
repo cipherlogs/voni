@@ -69,10 +69,11 @@ export function AppSidebar({
   sessionNote?: string;
 }) {
   return (
-    // Fixed full-height icon rail, user-expandable via the header
-    // trigger (or cmd/ctrl+B). Closed by default from the layout's
-    // defaultOpen={false}; the provider remembers the choice in a
-    // cookie. Icon-only keeps every label one tooltip away.
+    // Fixed full-height icon rail, user-collapsible via the header
+    // trigger (or cmd/ctrl+B). Open by default on desktop from the
+    // layout's defaultOpen until the user explicitly collapses once;
+    // the provider remembers the choice in a cookie. Icon-only keeps
+    // every label one tooltip away.
     <Sidebar collapsible="icon" className="app-shell-sidebar">
       <SidebarHeader>
         <Link

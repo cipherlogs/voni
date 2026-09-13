@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { AudioLines } from "lucide-react";
 import { toast } from "@/components/ui/toast";
 import { LoadingButton } from "@/components/loading-button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -11,6 +10,7 @@ import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
+import { cn } from "@/lib/utils";
 import {
   Select,
   SelectContent,
@@ -50,7 +50,9 @@ import {
 
 /** Shared control geometry, read off the mockup's CSS rather than approximated. */
 const CONTROL = "h-auto min-h-[42px] w-full rounded-[10px] px-3 py-2.5";
-const CARD = "gap-3.5 rounded-xl pt-4 pb-[18px] shadow-[0_1px_2px_rgba(0,0,0,0.04),0_8px_24px_-16px_rgba(0,0,0,0.18)]";
+// Border-only elevation (house border-OR-shadow floor): the mockup's ambient
+// shadow lives on the edit-agent statusline, not on form cards or footers.
+const CARD = "gap-3.5 rounded-xl border pt-4 pb-[18px]";
 const CARD_HEAD = "px-[18px]";
 const CARD_BODY = "flex flex-col gap-3 px-[18px]";
 const LABEL = "text-[13px] font-semibold";
@@ -80,16 +82,12 @@ const CHANNEL_META = [
 ] as const;
 
 /**
- * Form footer (the mockup's `.footer-actions`): a bordered bar with the
- * primary save and the unsaved-changes marker on the left, and whatever
- * secondary action the host passes on the right.
+ * Form footer (the mockup's `.footer-actions`): a bordered bar following the
+ * house rule — secondary actions left, primary save right — matching
+ * WizardFooter's secondary-left/primary-right layout (`justify-between` with
+ * both slots, `justify-end` when there is no secondary).
  *
- * Note this is the reverse of WizardFooter's secondary-left/primary-right
- * rule. The mockup puts Save first deliberately: this form is a long scroll
- * and the save is the one action a reader is looking for at the end of it,
- * while the action on the right is destructive.
- *
- * The border, padding and shadow are desktop-only — on small screens the host
+ * The border and padding are desktop-only — on small screens the host
  * page turns this into a fixed bottom save bar (`footerClassName`) that
  * supplies its own top border, so a bordered card inside it would double up.
  */
@@ -104,12 +102,19 @@ export function ConfigFormFooter({
 }) {
   return (
     <div className={className ?? "lg:pt-4"}>
-      <div className="flex items-center justify-between gap-4 lg:rounded-xl lg:border lg:bg-card lg:px-[18px] lg:py-3.5 lg:shadow-[0_1px_2px_rgba(0,0,0,0.04),0_8px_24px_-16px_rgba(0,0,0,0.18)]">
-        <span className="flex min-w-0 flex-wrap items-center gap-2.5">
+      <div
+        className={cn(
+          "flex items-center gap-4 lg:rounded-xl lg:border lg:bg-card lg:px-[18px] lg:py-3.5",
+          secondary ? "justify-between" : "justify-end",
+        )}
+      >
+        {secondary ? (
+          <span className="flex min-w-0 flex-wrap items-center gap-2">
+            {secondary}
+          </span>
+        ) : null}
+        <span className="flex min-w-0 flex-wrap items-center justify-end gap-2.5">
           {primary}
-        </span>
-        <span className="flex min-w-0 flex-wrap items-center justify-end gap-2">
-          {secondary}
         </span>
       </div>
     </div>
@@ -141,7 +146,7 @@ export function AgentConfigForm({
    * each other on one screen.
    */
   isDirty?: boolean;
-  /** Optional secondary action rendered right of the primary save (e.g. Delete). */
+  /** Optional secondary action rendered left of the primary save (e.g. Delete). */
   footerSecondary?: ReactNode;
   /** Lets a host page restyle the footer (e.g. sticky save bar on the detail page). */
   footerClassName?: string;
@@ -152,11 +157,11 @@ export function AgentConfigForm({
 
   /**
    * Every detail this agent has ever been configured to detect, seeded once
-   * from the incoming config. Unchecking a pill removes the field from
+   * from the incoming config. Unchecking a row removes the field from
    * `config.detect`; the full set stays here so re-checking restores it (with
-   * its description) in its original position rather than losing it on the
-   * first misclick. There is no add-a-field UI any more, so this set is fixed
-   * for the life of the form.
+   * its description and pacing flag) in its original position rather than
+   * losing it on the first misclick. There is no add-a-field UI any more, so
+   * this set is fixed for the life of the form.
    */
   const [knownDetect, setKnownDetect] = useState<DetectField[]>(
     () => initialConfig.detect,
@@ -231,17 +236,15 @@ export function AgentConfigForm({
   };
 
   /**
-   * Per-pill pacing toggle: marks a detect field `sensitive` so the voice
+   * Row-level pacing toggle: marks a detect field `sensitive` so the voice
    * agent slows down and captures it digit-by-digit ("spoken as a sequence").
    * The compiler only emits the `prepare_sensitive_capture` pacing instruction
-   * for flagged fields, so an unflagged field keeps the plain ask. Ride the
-   * flag with the pill — unchecking then re-checking preserves it via
-   * `toggleDetect`'s restore-from-known-set behavior above.
+   * for flagged fields, so an unflagged field keeps the plain ask. Written to
+   * both the live config and the known set — unchecking a row then re-checking
+   * it restores the field from the known set, so the pacing choice must ride
+   * along or the round-trip silently drops it.
    */
   const toggleDetectSensitive = (key: string, sensitive: boolean) => {
-    // Written to both the live config and the known set: unchecking a pill
-    // then re-checking it restores the field from the known set, so the
-    // pacing choice must ride along or the round-trip silently drops it.
     setKnownDetect((known) =>
       known.map((f) => (f.key === key ? { ...f, sensitive } : f)),
     );
@@ -456,7 +459,7 @@ export function AgentConfigForm({
         <CardContent className={CARD_BODY}>
           <Field className="gap-1.5">
             <FieldLabel className={LABEL}>Detect and remember</FieldLabel>
-            <div className="flex flex-wrap gap-2">
+            <div className="flex flex-col gap-2">
               {knownDetect.map((field, i) => {
                 const id = `detect-${field.key || i}`;
                 const paceId = `detect-pace-${field.key || i}`;
@@ -465,14 +468,11 @@ export function AgentConfigForm({
                   (d) => d.key === field.key && d.sensitive,
                 );
                 return (
-                  <span
+                  <div
                     key={field.key || i}
-                    className="inline-flex items-center gap-1 rounded-full border px-3 py-2 text-[13px] has-data-checked:border-primary/30 has-data-checked:bg-primary/5"
+                    className="flex items-center justify-between gap-3 rounded-[10px] border px-3 py-2.5"
                   >
-                    <FieldLabel
-                      htmlFor={id}
-                      className="flex cursor-pointer items-center gap-2 font-normal"
-                    >
+                    <div className="flex min-w-0 flex-1 items-center gap-2.5">
                       <Checkbox
                         id={id}
                         checked={selected}
@@ -480,44 +480,47 @@ export function AgentConfigForm({
                           toggleDetect(field.key, checked)
                         }
                       />
-                      {field.label}
-                    </FieldLabel>
-                    {selected ? (
-                      <button
-                        type="button"
-                        id={paceId}
-                        title={
-                          fieldSensitive
-                            ? `Read back slowly for ${field.label} is on — the agent spells it out digit by digit`
-                            : `Read back slowly for ${field.label} is off`
-                        }
-                        aria-label={
-                          fieldSensitive
-                            ? `Turn off slow read-back for ${field.label}`
-                            : `Turn on slow read-back for ${field.label}`
-                        }
-                        aria-pressed={fieldSensitive}
-                        onClick={() =>
-                          toggleDetectSensitive(field.key, !fieldSensitive)
-                        }
-                        className={`flex size-11 cursor-pointer items-center justify-center rounded-full transition-colors ${
-                          fieldSensitive
-                            ? "bg-brand/15 text-brand hover:bg-brand/25"
-                            : "text-muted-foreground hover:bg-muted hover:text-foreground"
-                        }`}
-                      >
-                        <AudioLines className="size-4" aria-hidden="true" />
-                      </button>
-                    ) : null}
-                  </span>
+                      <div className="flex min-w-0 flex-col">
+                        <FieldLabel
+                          htmlFor={id}
+                          className="cursor-pointer text-[13px] font-semibold"
+                        >
+                          {field.label}
+                        </FieldLabel>
+                        {field.description ? (
+                          <FieldDescription className="text-xs">
+                            {field.description}
+                          </FieldDescription>
+                        ) : null}
+                      </div>
+                    </div>
+                    <Switch
+                      id={paceId}
+                      checked={selected ? fieldSensitive : false}
+                      disabled={!selected}
+                      onCheckedChange={(checked: boolean) =>
+                        toggleDetectSensitive(field.key, checked)
+                      }
+                      title={
+                        fieldSensitive
+                          ? `Read back slowly for ${field.label} is on — the agent spells it out digit by digit`
+                          : `Read back slowly for ${field.label} is off`
+                      }
+                      aria-label={
+                        fieldSensitive
+                          ? `Turn off slow read-back for ${field.label}`
+                          : `Turn on slow read-back for ${field.label}`
+                      }
+                    />
+                  </div>
                 );
               })}
             </div>
             <FieldDescription className={HINT}>
               Unchecked details are still answered if the caller mentions them,
-              but {agentLabel} won&apos;t ask for them. The waveform marks a
-              field to read back slowly — phone numbers, emails, and other
-              details the caller spells out.
+              but {agentLabel} won&apos;t ask for them. The slow read-back
+              switch marks a field to read back slowly — phone numbers, emails,
+              and other details the caller spells out.
             </FieldDescription>
           </Field>
 
@@ -606,7 +609,6 @@ export function AgentConfigForm({
         primary={
           <>
             <LoadingButton
-              className="min-h-11 rounded-full px-[22px] text-sm font-semibold"
               disabled={!name.trim()}
               pending={saving}
               pendingText="Saving…"

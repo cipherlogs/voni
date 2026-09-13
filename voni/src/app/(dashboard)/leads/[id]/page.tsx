@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import {
   Card,
   CardContent,
+  CardDescription,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
@@ -29,6 +30,8 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { DetailSkeleton } from "@/components/page-skeletons";
+import { dialOutcomeLabel } from "@/lib/campaigns/outcome-label";
+import { pipelineStateLabel } from "@/lib/leads/stage-filter";
 import type { ReactNode } from "react";
 import {
   callDuration,
@@ -178,7 +181,7 @@ async function LeadDetail({
       : "none yet";
   const brief =
     `Lead ${lead.name ?? "Unnamed"}, ${lead.phone}. ` +
-    `State ${lead.pipelineState}. ` +
+    `State ${pipelineStateLabel(lead.pipelineState)}. ` +
     `Consent ${lead.consentStatus}. ` +
     `Intent ${state?.intent ?? "not recorded"}. ` +
     `Next action ${state?.nextAction ?? "not recorded"}. ` +
@@ -202,7 +205,9 @@ async function LeadDetail({
             {lead.phone}
           </p>
         </div>
-        <Badge variant="secondary">{lead.pipelineState}</Badge>
+        <Badge variant="secondary">
+          {pipelineStateLabel(lead.pipelineState)}
+        </Badge>
       </div>
 
       <div className="grid gap-4 md:grid-cols-3">
@@ -211,6 +216,9 @@ async function LeadDetail({
             <CardTitle className="text-muted-foreground text-sm">
               Intent
             </CardTitle>
+            <CardDescription>
+              What the lead is after, as recorded after the last contact.
+            </CardDescription>
           </CardHeader>
           <CardContent className="text-lg font-medium">
             {state?.intent ?? "Not recorded"}
@@ -221,6 +229,9 @@ async function LeadDetail({
             <CardTitle className="text-muted-foreground text-sm">
               Blocker
             </CardTitle>
+            <CardDescription>
+              What is stopping this lead from booking.
+            </CardDescription>
           </CardHeader>
           <CardContent className="text-lg font-medium">
             {blockers}
@@ -231,6 +242,9 @@ async function LeadDetail({
             <CardTitle className="text-muted-foreground text-sm">
               Next action
             </CardTitle>
+            <CardDescription>
+              The follow-up the agent planned for this lead.
+            </CardDescription>
           </CardHeader>
           <CardContent className="text-lg font-medium">
             {state?.nextAction ?? "Not recorded"}
@@ -261,6 +275,10 @@ async function LeadDetail({
             <CardTitle className="text-muted-foreground text-sm">
               Goal
             </CardTitle>
+            <CardDescription>
+              Campaign goal status for this lead: active, success, or
+              failed.
+            </CardDescription>
           </CardHeader>
           <CardContent className="text-lg font-medium">
             {state?.goalStatus ?? "Not recorded"}
@@ -402,7 +420,7 @@ async function LeadDetail({
                         {row.attempts} attempt
                         {row.attempts === 1 ? "" : "s"}
                         {row.lastOutcome
-                          ? ` · last: ${row.lastOutcome}`
+                          ? ` · last: ${dialOutcomeLabel(row.lastOutcome)}`
                           : ""}
                       </span>
                       <Link

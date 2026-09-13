@@ -195,11 +195,14 @@ export type GenerationStatusPhase = "idle" | "working" | "backgrounded";
 export function GenerationStatus({
   phase,
   onOpenJobs,
+  onCancel,
   error,
   onUseTemplate,
 }: {
   phase: GenerationStatusPhase;
   onOpenJobs: () => void;
+  /** Cancels the in-flight generation job. */
+  onCancel?: () => void;
   error: string | null;
   /** Real-estate template escape hatch when generation fails. */
   onUseTemplate?: () => void;
@@ -207,7 +210,7 @@ export function GenerationStatus({
   return (
     <>
       {phase === "working" || phase === "backgrounded" ? (
-        <GenerationStatusCard phase={phase} onOpenJobs={onOpenJobs} />
+        <GenerationStatusCard phase={phase} onOpenJobs={onOpenJobs} onCancel={onCancel} />
       ) : null}
       {error ? (
         <div className="flex items-start gap-2 rounded-lg border p-3">

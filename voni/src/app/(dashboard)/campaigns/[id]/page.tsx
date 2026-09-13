@@ -2,10 +2,11 @@ import { Suspense } from "react";
 import { RouteBrief } from "@/components/copilot/route-brief";
 import { notFound } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { BackLink } from "@/components/back-link";
-import { PhoneOutgoing, Clock } from "lucide-react";
+import { BookOpen, PhoneOutgoing, Clock } from "lucide-react";
 import { CampaignControls } from "@/components/campaign-controls";
 import { CampaignQueue } from "@/components/campaign-queue";
 import { LeadImport } from "@/components/lead-import";
@@ -147,10 +148,26 @@ async function CampaignDetail({
                 {dispatch.dueNow === 1 ? "" : "s"} due now.
               </p>
               <p className="text-muted-foreground text-sm">
-                Due leads are picked up automatically. Calls start in
-                preview mode — nothing is dialed until an operator
-                switches the dialer to live mode.
+                Due leads are picked up automatically once the dialer is
+                running. Activating this campaign alone does not start
+                calls.
               </p>
+              <Button
+                nativeButton={false}
+                variant="outline"
+                size="sm"
+                className="w-fit"
+                render={
+                  <a
+                    href="https://github.com/cipherlogs/voni/blob/main/telephony-bot/campaign_runner.py"
+                    target="_blank"
+                    rel="noreferrer"
+                  />
+                }
+              >
+                <BookOpen />
+                Start calling (runbook)
+              </Button>
             </>
           ) : (
             <>
@@ -171,7 +188,10 @@ async function CampaignDetail({
         </CardContent>
       </Card>
 
-      <Card>
+      {/* id="import": the dashboard first-run step 2 deep-links here, so a
+          campaign waiting for its CSV lands on the import form — with the
+          sticky header's height accounted for via scroll-margin. */}
+      <Card id="import" className="scroll-mt-20">
         <CardHeader>
           <CardTitle className="text-base">Import leads</CardTitle>
         </CardHeader>
@@ -187,7 +207,11 @@ async function CampaignDetail({
           </CardTitle>
         </CardHeader>
         <CardContent className="p-0">
-          <CampaignQueue members={members} maxAttempts={campaign.maxAttempts} />
+          <CampaignQueue
+            members={members}
+            maxAttempts={campaign.maxAttempts}
+            campaignId={campaign.id}
+          />
         </CardContent>
       </Card>
     </div>

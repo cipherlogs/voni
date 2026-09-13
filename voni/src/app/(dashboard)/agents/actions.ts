@@ -53,11 +53,19 @@ async function enqueueDeployment(
   configVersion: number,
 ): Promise<Extract<SaveResult, { ok: true }>> {
   try {
+    // Stable per-(agent, version) key (mirrors generationIdempotencyKey): a
+    // retry-after-retry for the same saved version resubmits the same key and
+    // dedupes server-side instead of queueing a second deployment. A new save
+    // bumps configVersion, so genuine redeploys always create fresh jobs.
     const { job } = await startJob(
       ctx,
       "agent_deployment",
       { agentId: id, configVersion, name, config },
-      { title: `Deploy ${name}`, relatedId: id },
+      {
+        title: `Deploy ${name}`,
+        relatedId: id,
+        idempotencyKey: `deployment:${id}:v${configVersion}`,
+      },
     );
     return { ok: true, id, deployment: "queued", jobId: job.id };
   } catch (error) {
@@ -696,19 +704,26 @@ export async function getAgent(id: string) {
 
 /** Single-row plus live generation state for the detail leaf. The sanitized
  * failure message feeds the did-not-finish banner so it can show the error
- * and link back through the wizard retry path. */
+ * and link back through the wizard retry path. `isBridgeAgent` feeds the
+ * delete dialog's blocking bridge note (the DB clears the default with the
+ * row via onDelete: set null). */
 export async function getAgentWithGeneration(id: string) {
   const agent = await getAgent(id);
-  if (!agent || !agent.generationJobId) {
-    return agent
-      ? {
-          agent,
-          generationStatus: null as string | null,
-          generationError: null as string | null,
-        }
-      : null;
-  }
+  if (!agent) return null;
   const ctx = await requireCtxOrRedirect();
+  const [bridge] = await db
+    .select({ bridgeAgentId: platformConfiguration.bridgeAgentId })
+    .from(platformConfiguration)
+    .limit(1);
+  const isBridgeAgent = bridge?.bridgeAgentId === id;
+  if (!agent.generationJobId) {
+    return {
+      agent,
+      generationStatus: null as string | null,
+      generationError: null as string | null,
+      isBridgeAgent,
+    };
+  }
   const rows = await db
     .select({
       id: backgroundJobs.id,
@@ -727,6 +742,7 @@ export async function getAgentWithGeneration(id: string) {
     agent,
     generationStatus: rows[0]?.status ?? null,
     generationError: rows[0]?.errorMessage ?? null,
+    isBridgeAgent,
   };
 }
 

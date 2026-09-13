@@ -32,6 +32,7 @@ import {
 import { compileSystemPrompt } from "@/lib/agents/compile";
 import type { AgentConfig } from "@/lib/agents/config";
 import { compileVoiceTools } from "@/lib/tools/definitions";
+import { formatCallStatus } from "@/lib/calls/call-status";
 import { PERSONAS, personaConfig, type Persona } from "@/lib/agents/personas";
 import {
   VOICES,
@@ -109,16 +110,16 @@ const LANGUAGE_TABS: { code: string; label: string }[] = [
  * text), not the solid red fill a hang-up button needs. The solid fill still
  * comes from the `destructive` token (both themes) with white text — no raw
  * red shade and no manual dark: overrides.
+ *
+ * Contrast note (matches --brand in globals.css): brand green clears 3:1
+ * non-text only, never 4.5:1 body text — so these constants stay fill-only
+ * (white text on green) and the hover deepens toward green-700 via
+ * color-mix for pressed-state headroom.
  */
-const CALL_GREEN = "bg-brand text-brand-foreground hover:bg-brand/90";
+const CALL_GREEN =
+  "bg-brand text-brand-foreground hover:bg-[color-mix(in_oklch,var(--brand),black_18%)]";
 const HANGUP_RED = "bg-destructive text-white hover:bg-destructive/90";
 
-/**
- * The callcard's own elevation, spelled out because no `shadow-*` step matches
- * it: a 1px contact shadow plus a wide, heavily-inset ambient one.
- */
-const CARD_SHADOW =
-  "shadow-[0_1px_2px_rgba(0,0,0,.04),0_12px_32px_-20px_rgba(0,0,0,.25)]";
 
 /**
  * The error body copy sits a long way darker than `--destructive` itself —
@@ -130,10 +131,11 @@ const ERROR_BODY =
   "text-[color-mix(in_oklch,var(--destructive),var(--foreground)_45%)]";
 
 /**
- * Two keyframe sets the card needs and Tailwind does not ship: the portrait's
- * live ring (a soft 1.04 bloom that fades out, NOT `animate-ping`'s scale-2
- * blast) and the live dot's blink. Hoisted and de-duplicated by React, so both
- * modes rendering the card at once still emit one copy.
+ * The portrait's live ring (a soft 1.04 bloom that fades out, NOT
+ * `animate-ping`'s scale-2 blast) — a keyframe Tailwind does not ship. The
+ * live dot reuses the global `voni-livedot` in globals.css. Hoisted and
+ * de-duplicated by React, so both modes rendering the card at once still emit
+ * one copy.
  */
 const CALL_KEYFRAMES = `
 @keyframes voni-callring {
@@ -141,21 +143,12 @@ const CALL_KEYFRAMES = `
   70% { transform: scale(1.04); opacity: .15; }
   100% { transform: scale(1.04); opacity: 0; }
 }
-@keyframes voni-livedot {
-  0%, 100% { opacity: 1; }
-  50% { opacity: .35; }
-}
 `;
 
 function voicesFor(code: string): Voice[] {
   return VOICES.filter((v) => v.languageCode === code);
 }
 
-function mmss(seconds: number): string {
-  const m = Math.floor(seconds / 60);
-  const s = seconds % 60;
-  return `${m}:${s.toString().padStart(2, "0")}`;
-}
 
 function Portrait({
   persona,
@@ -378,7 +371,7 @@ export function VoiceCall({ mode }: { mode: Mode }) {
     <div
       role="region"
       aria-label={callTitle}
-      className={`bg-card flex w-full flex-col items-center rounded-[16px] border p-5 text-center ${CARD_SHADOW} ${
+      className={`bg-card flex w-full flex-col items-center rounded-[16px] border p-5 text-center ${
         isDemo ? "h-[30rem] max-w-sm" : ""
       }`}
     >
@@ -498,10 +491,10 @@ export function VoiceCall({ mode }: { mode: Mode }) {
             : connected
               ? toolActive
                 ? "Looking that up…"
-                : `${mmss(elapsed)} · ${state === "speaking" ? "speaking" : "listening"}`
+                : `${formatCallStatus(elapsed)} · ${state === "speaking" ? "speaking" : "listening"}`
               : quotaExceeded
                 ? "Free demo time is up"
-                : `Call ended · ${mmss(elapsed)}`}
+                : `Call ended · ${formatCallStatus(elapsed)}`}
         </p>
       ) : null}
 

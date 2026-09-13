@@ -12,9 +12,10 @@ import { setCampaignStatusAction } from "@/app/(dashboard)/campaigns/actions";
  * Activate / pause, with the reason it cannot be activated shown next to the
  * control rather than delivered as a failed click.
  *
- * Activation is the moment a campaign starts producing real phone calls to real
- * people, so it stays an explicit, deliberate action — never a side effect of
- * creating a campaign or importing a list.
+ * Activation only makes a campaign's leads eligible for dialing — it does not
+ * place calls on its own. The runner previews by default, so it stays an
+ * explicit, deliberate action — never a side effect of creating a campaign or
+ * importing a list — and the live dial happens on the bridge host.
  */
 export function CampaignControls({
   id,

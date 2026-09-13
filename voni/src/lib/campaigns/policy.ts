@@ -216,5 +216,7 @@ export function describeCallingWindow(window: CallingWindow): string {
       : contiguous && days.length > 1
         ? `${WEEKDAY_LABELS[days[0]].slice(0, 3)}-${WEEKDAY_LABELS[days[days.length - 1]].slice(0, 3)}`
         : days.map((d) => WEEKDAY_LABELS[d].slice(0, 3)).join(", ");
-  return `${window.start}-${window.end} ${window.timezone}, ${label}`;
+  const zone =
+    window.timezone === "Asia/Dubai" ? "Dubai time" : window.timezone;
+  return `${window.start}-${window.end} ${zone}, ${label}`;
 }

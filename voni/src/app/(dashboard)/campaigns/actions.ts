@@ -214,6 +214,134 @@ export async function getCampaign(id: string) {
   return { campaign: row, members };
 }
 
+/**
+ * Bulk queue triage: remove members from the queue (Undo re-inserts within a
+ * short window) or reset them to queued (idempotent retry). Capped at 200 per
+ * call, org-checked through the campaign row so one tenant can never touch
+ * another's queue. No schema changes: removal deletes rows, reset updates
+ * only the queue fields, and re-insert reuses the import's conflict guard.
+ */
+
+const queueBulkSchema = z.object({
+  campaignId: z.string().uuid(),
+  ids: z.array(z.string().uuid()).min(1).max(200),
+  op: z.enum(["remove", "reset"]),
+});
+
+export type QueueBulkResult =
+  | { ok: true; removed: { id: string; leadId: string }[]; reset: string[] }
+  | { ok: false; message: string };
+
+async function orgCampaign(campaignId: string, organizationId: string) {
+  const [row] = await db
+    .select({ id: campaigns.id, maxAttempts: campaigns.maxAttempts })
+    .from(campaigns)
+    .where(
+      and(eq(campaigns.id, campaignId), eq(campaigns.organizationId, organizationId)),
+    )
+    .limit(1);
+  return row ?? null;
+}
+
+export async function queueBulkAction(raw: unknown): Promise<QueueBulkResult> {
+  let ctx;
+  try {
+    ctx = await requireCtx();
+  } catch {
+    return { ok: false, message: "Sign in again to manage the queue." };
+  }
+  const parsed = queueBulkSchema.safeParse(raw);
+  if (!parsed.success) {
+    return { ok: false, message: "Pick up to 200 queue rows." };
+  }
+  const campaign = await orgCampaign(parsed.data.campaignId, ctx.organizationId);
+  if (!campaign) return { ok: false, message: "Campaign not found." };
+
+  const wanted = new Set(parsed.data.ids);
+  const rows = await db
+    .select({ id: campaignLeads.id, leadId: campaignLeads.leadId })
+    .from(campaignLeads)
+    .where(eq(campaignLeads.campaignId, parsed.data.campaignId));
+  const matching = rows.filter((row) => wanted.has(row.id));
+
+  if (parsed.data.op === "remove") {
+    if (matching.length === 0) return { ok: true, removed: [], reset: [] };
+    await db
+      .delete(campaignLeads)
+      .where(
+        and(
+          eq(campaignLeads.campaignId, parsed.data.campaignId),
+          sql`${campaignLeads.id} IN (${sql.join(matching.map((m) => sql`${m.id}`), sql`, `)})`,
+        ),
+      );
+    revalidatePath(`/campaigns/${parsed.data.campaignId}`);
+    return {
+      ok: true,
+      removed: matching.map((m) => ({ id: m.id, leadId: m.leadId })),
+      reset: [],
+    };
+  }
+
+  if (matching.length === 0) return { ok: true, removed: [], reset: [] };
+  // Idempotent per row: already-queued rows with no attempts are left alone
+  // (guarded in SQL), so a repeated reset is a no-op rather than a rewrite.
+  const updated = await db
+    .update(campaignLeads)
+    .set({
+      status: "queued",
+      attempts: 0,
+      lastAttemptAt: null,
+      nextAttemptAfter: null,
+      lastOutcome: null,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(campaignLeads.campaignId, parsed.data.campaignId),
+        sql`${campaignLeads.id} IN (${sql.join(matching.map((m) => sql`${m.id}`), sql`, `)})`,
+        sql`NOT (${campaignLeads.status} = 'queued' AND ${campaignLeads.attempts} = 0 AND ${campaignLeads.lastOutcome} IS NULL)`,
+      ),
+    )
+    .returning({ id: campaignLeads.id });
+  revalidatePath(`/campaigns/${parsed.data.campaignId}`);
+  return { ok: true, removed: [], reset: updated.map((u) => u.id) };
+}
+
+/** Re-insert removed queue rows within the Undo window. The unique
+ * (campaign, lead) index makes this safe to repeat — already-restored rows
+ * are skipped, never duplicated. */
+export async function queueUndoRemoveAction(
+  campaignId: string,
+  leadIds: string[],
+): Promise<{ ok: true; restored: number } | { ok: false; message: string }> {
+  let ctx;
+  try {
+    ctx = await requireCtx();
+  } catch {
+    return { ok: false, message: "Sign in again to manage the queue." };
+  }
+  if (
+    typeof campaignId !== "string" ||
+    !Array.isArray(leadIds) ||
+    leadIds.length === 0 ||
+    leadIds.length > 200
+  ) {
+    return { ok: false, message: "Nothing to restore." };
+  }
+  const campaign = await orgCampaign(campaignId, ctx.organizationId);
+  if (!campaign) return { ok: false, message: "Campaign not found." };
+
+  const restored = await db
+    .insert(campaignLeads)
+    .values(leadIds.map((leadId) => ({ campaignId, leadId })))
+    .onConflictDoNothing({
+      target: [campaignLeads.campaignId, campaignLeads.leadId],
+    })
+    .returning({ id: campaignLeads.id });
+  revalidatePath(`/campaigns/${campaignId}`);
+  return { ok: true, restored: restored.length };
+}
+
 export async function listAgentOptions() {
   const ctx = await requireCtxOrRedirect("/campaigns");
   return db

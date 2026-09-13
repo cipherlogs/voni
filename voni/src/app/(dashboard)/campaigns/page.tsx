@@ -104,8 +104,8 @@ export default function CampaignsPage() {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Campaigns</h1>
           <p className="text-muted-foreground text-sm">
-            What work is being given to an agent — a lead list, a calling window,
-            and a channel fallback policy.
+            Which leads an agent should call, when it may call, and what
+            happens if no one answers.
           </p>
         </div>
         <Button nativeButton={false} render={<Link href="/campaigns/new" />}>

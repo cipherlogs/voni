@@ -128,6 +128,13 @@ export async function removePlatformCredential(
     await requirePlatformAdmin(ctx.email);
     const name = String(formData.get("credential") ?? "");
     if (!isCredentialName(name)) throw new Error("Unknown credential.");
+    // Explicit confirm gate: the browser (or any future UI trigger) must send
+    // the credential name back verbatim. There is no undo for a removal — the
+    // deployment value (or nothing) takes over immediately.
+    const confirm = String(formData.get("confirm") ?? "");
+    if (confirm !== name) {
+      throw new Error("Type the credential name to confirm removal.");
+    }
     const summary = await removeCredentialOverride(name);
     revalidatePath("/operator");
     return {
@@ -228,6 +235,13 @@ export async function removeLlmAccount(
     await requirePlatformAdmin(ctx.email);
     const id = String(formData.get("accountId") ?? "");
     if (!id) throw new Error("Unknown account.");
+    // Explicit confirm gate, same shape as removePlatformCredential: the
+    // account id must be sent back verbatim. Provider keys are rotated through
+    // the operator CLI; this gate covers any future UI trigger too.
+    const confirm = String(formData.get("confirm") ?? "");
+    if (confirm !== id) {
+      throw new Error("Type the account id to confirm removal.");
+    }
     await removeAccount(id);
     revalidatePath("/operator");
     return { ok: true, message: "Account removed." };

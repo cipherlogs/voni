@@ -1,6 +1,6 @@
 import { Suspense } from "react";
 import Link from "next/link";
-import { Phone } from "lucide-react";
+import { Phone, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
@@ -15,17 +15,77 @@ import {
 } from "@/components/ui/table";
 import {
   Empty,
+  EmptyContent,
   EmptyDescription,
   EmptyHeader,
   EmptyMedia,
   EmptyTitle,
 } from "@/components/ui/empty";
 import { RouteBrief } from "@/components/copilot/route-brief";
+import { FilterChips } from "@/components/filter-chips";
+import { VoiceLineLive } from "@/components/voice-line";
 import { listCalls } from "@/lib/copilot/detail-data";
+import {
+  callOutcomeLabel,
+  normalizeCallOutcome,
+} from "@/lib/calls/outcome-filter";
 import { callDuration, relativeCallTime } from "@/lib/calls/format";
 
 const CALLS_PAGE_SIZE = 20;
-const CALL_TABLE_COLUMNS = 4;
+const CALL_TABLE_COLUMNS = 5;
+
+/** Curated filter chips: All + the dashboard outcomes (?outcome=). */
+function callsChips(active: string | undefined) {
+  return [
+    { label: "All", href: "/calls", active: !active },
+    {
+      label: "Connected",
+      href: "/calls?outcome=connected",
+      active: active === "connected",
+    },
+    {
+      label: "Booked",
+      href: "/calls?outcome=booked",
+      active: active === "booked",
+    },
+    {
+      label: "Needs handoff",
+      href: "/calls?outcome=handoff",
+      active: active === "handoff",
+    },
+  ];
+}
+
+type CallsSearchParams = {
+  page?: string | string[];
+  outcome?: string | string[] | null;
+};
+
+/** Pagination href that carries the active outcome filter, if any. */
+function callsPageHref(
+  page: number,
+  outcome: string | undefined,
+): string {
+  const params = new URLSearchParams();
+  if (outcome) params.set("outcome", outcome);
+  if (page > 1) params.set("page", String(page));
+  const query = params.toString();
+  return query ? `/calls?${query}` : "/calls";
+}
+
+/**
+ * Absolute start time for the Started column's second line. Local to this
+ * server component (not in lib/calls/format.ts): that module must stay
+ * arithmetic-only so SSR and client render agree — an Intl string rendered
+ * here comes from the server payload, never recomputed on the client.
+ */
+function absoluteCallTime(value: Date | null): string {
+  if (!value) return "—";
+  return new Intl.DateTimeFormat("en-GB", {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(value);
+}
 
 /**
  * RouteBrief renders nothing but must not sit inside a <table>: React
@@ -53,7 +113,7 @@ function CallsBrief({ page }: { page: number }) {
 async function CallsRows({
   searchParams,
 }: {
-  searchParams: Promise<{ page?: string | string[] }>;
+  searchParams: Promise<CallsSearchParams>;
 }) {
   // URL data is read here, inside the Suspense boundary below — not in the
   // page shell above it. Awaiting searchParams in the shell would tie the
@@ -65,16 +125,57 @@ async function CallsRows({
   // Clamp here so the shell never renders a nonsense page; listCalls
   // clamps again defensively for direct callers.
   const page = Number.isFinite(parsed) ? Math.max(1, Math.floor(parsed)) : 1;
-  const { rows, page: safePage } = await listCalls(page, CALLS_PAGE_SIZE);
-  // Next-page detection: listCalls caps at pageSize, so a full page
-  // usually means more exist. A full final page overshoots to an
-  // honest empty state ("No calls on this page — try an earlier
-  // page") rather than hiding Next and stranding the newest rows.
-  const hasNext = rows.length === CALLS_PAGE_SIZE;
+  const {
+    rows,
+    page: safePage,
+    total,
+    outcome,
+  } = await listCalls(page, CALLS_PAGE_SIZE, { outcome: params.outcome });
+  const totalPages = Math.max(1, Math.ceil(total / CALLS_PAGE_SIZE));
+  const hasNext = safePage < totalPages;
+  // The footer only renders across pages; the count lives here instead so
+  // a filtered single page still states its total — never an unchecked
+  // number.
+  const countLabel = outcome
+    ? `${total} ${total === 1 ? "call" : "calls"} · outcome ${callOutcomeLabel(outcome)}`
+    : `${total} ${total === 1 ? "call" : "calls"}`;
 
   return (
     <>
       <CallsBrief page={safePage} />
+      <TableBody>
+        <TableRow>
+          <TableCell colSpan={CALL_TABLE_COLUMNS} className="py-3">
+            <div className="flex items-center gap-2 text-sm">
+              <span
+                role="status"
+                aria-label={
+                  outcome
+                    ? `Filtered results: ${countLabel}`
+                    : `Results: ${countLabel}`
+                }
+                className="text-muted-foreground"
+              >
+                {countLabel}
+              </span>
+              {outcome ? (
+                <>
+                  <Badge>{callOutcomeLabel(outcome)}</Badge>
+                  <Button
+                    nativeButton={false}
+                    render={<Link href="/calls" />}
+                    variant="ghost"
+                    size="sm"
+                  >
+                    <X data-icon="inline-start" />
+                    Clear
+                  </Button>
+                </>
+              ) : null}
+            </div>
+          </TableCell>
+        </TableRow>
+      </TableBody>
       {rows.length === 0 ? (
         <TableBody>
           <TableRow>
@@ -88,14 +189,32 @@ async function CallsRows({
                     <Phone />
                   </EmptyMedia>
                   <EmptyTitle>
-                    {safePage > 1 ? "No calls on this page" : "No calls yet"}
+                    {outcome
+                      ? "No calls match this filter"
+                      : safePage > 1
+                        ? "No calls on this page"
+                        : "No calls yet"}
                   </EmptyTitle>
                   <EmptyDescription>
-                    {safePage > 1
-                      ? "Try an earlier page — calls are newest first."
-                      : "Calls appear here after the first inbound or outbound call."}
+                    {outcome
+                      ? "Try a different outcome."
+                      : safePage > 1
+                        ? "Try an earlier page — calls are newest first."
+                        : "Calls appear here after the first inbound or outbound call."}
                   </EmptyDescription>
                 </EmptyHeader>
+                {outcome ? (
+                  <EmptyContent>
+                    <Button
+                      nativeButton={false}
+                      render={<Link href="/calls" />}
+                      variant="outline"
+                      size="sm"
+                    >
+                      Clear the filter
+                    </Button>
+                  </EmptyContent>
+                ) : null}
               </Empty>
             </TableCell>
           </TableRow>
@@ -107,12 +226,13 @@ async function CallsRows({
               const label = call.name ?? call.phone;
               const directionLabel =
                 call.direction === "inbound" ? "Inbound" : "Outbound";
+              const absolute = absoluteCallTime(call.startedAt);
               return (
                 <TableRow key={call.id}>
                   <TableCell>
                     <Link
                       href={`/calls/${call.id}`}
-                      aria-label={`${directionLabel} call with ${label}`}
+                      aria-label={`${directionLabel} call with ${label}, started ${absolute}`}
                       className="cursor-pointer rounded-sm underline-offset-4 outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring"
                     >
                       {label}
@@ -127,14 +247,28 @@ async function CallsRows({
                       {directionLabel}
                     </Badge>
                   </TableCell>
-                  <TableCell
-                    className="text-muted-foreground text-sm"
-                    title={call.startedAt?.toISOString() ?? undefined}
-                  >
-                    {relativeCallTime(call.startedAt)}
+                  {/* Relative first, absolute beneath: the full timestamp
+                      reads without hover, and the link text carries it for
+                      screen readers — no title-tooltip-only time. */}
+                  <TableCell className="text-sm">
+                    <span className="text-muted-foreground block">
+                      {relativeCallTime(call.startedAt)}
+                    </span>
+                    <span className="text-muted-foreground/80 block text-xs">
+                      {absolute}
+                    </span>
                   </TableCell>
                   <TableCell className="text-muted-foreground font-mono text-xs">
                     {callDuration(call.startedAt, call.endedAt)}
+                  </TableCell>
+                  <TableCell>
+                    <Link
+                      href={`/calls/${call.id}`}
+                      aria-label={`Open call with ${label}, started ${absolute}`}
+                      className="text-muted-foreground cursor-pointer rounded-sm text-xs whitespace-nowrap underline-offset-4 outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      Open call
+                    </Link>
                   </TableCell>
                 </TableRow>
               );
@@ -145,39 +279,41 @@ async function CallsRows({
               <TableRow>
                 <TableCell colSpan={CALL_TABLE_COLUMNS}>
                   <div className="flex items-center justify-between gap-3">
+                    {/* Touch target: min-h-11 toward the 44px floor (WCAG
+                        2.5.8) — same size-11 precedent as the voice-card
+                        steppers. The footer row has room, so no layout cost. */}
                     <Button
                       nativeButton={false}
                       render={
                         <Link
-                          href={
-                            safePage > 2
-                              ? `/calls?page=${safePage - 1}`
-                              : "/calls"
-                          }
+                          href={callsPageHref(safePage - 1, outcome)}
                           aria-disabled={safePage <= 1}
                           tabIndex={safePage <= 1 ? -1 : undefined}
                         />
                       }
                       variant="outline"
                       size="sm"
+                      className="min-h-11 min-w-11 px-4"
                       disabled={safePage <= 1}
                     >
                       Previous
                     </Button>
                     <span className="text-muted-foreground text-xs">
-                      Page {safePage}
+                      Page {safePage} of {totalPages} · {total}{" "}
+                      {total === 1 ? "call" : "calls"}
                     </span>
                     <Button
                       nativeButton={false}
                       render={
                         <Link
-                          href={`/calls?page=${safePage + 1}`}
+                          href={callsPageHref(safePage + 1, outcome)}
                           aria-disabled={!hasNext}
                           tabIndex={!hasNext ? -1 : undefined}
                         />
                       }
                       variant="outline"
                       size="sm"
+                      className="min-h-11 min-w-11 px-4"
                       disabled={!hasNext}
                     >
                       Next
@@ -193,6 +329,32 @@ async function CallsRows({
   );
 }
 
+/**
+ * Curated filter chips resolve here — this leaf awaits searchParams, so the
+ * shell stays URL-free (E1439). It renders above the Card, never inside the
+ * <table>: a <nav> child of <table> is invalid HTML and logs a hydration
+ * error on every visit.
+ */
+async function CallsChips({
+  searchParams,
+}: {
+  searchParams: Promise<CallsSearchParams>;
+}) {
+  const params = await searchParams;
+  const active = normalizeCallOutcome(params.outcome);
+  return (
+    <div className="flex flex-col gap-1">
+      <FilterChips label="Call filters" chips={callsChips(active)} />
+      {/* Grain hint: Connected counts calls (ended), not leads — the other
+          two cards count leads. Without this a clicked Connected card looks
+          like a smaller number than the dashboard promised. */}
+      <p className="text-muted-foreground text-xs">
+        Connected counts calls, not leads.
+      </p>
+    </div>
+  );
+}
+
 export default function CallsPage({ searchParams }: PageProps<"/calls">) {
   return (
     <div data-testid="calls-shell" className="flex flex-col gap-6">
@@ -205,6 +367,10 @@ export default function CallsPage({ searchParams }: PageProps<"/calls">) {
           </p>
         </div>
       </div>
+      <VoiceLineLive />
+      <Suspense fallback={null}>
+        <CallsChips searchParams={searchParams} />
+      </Suspense>
       <Card>
         <CardContent className="p-0">
           <div className="overflow-x-auto">
@@ -215,6 +381,9 @@ export default function CallsPage({ searchParams }: PageProps<"/calls">) {
                   <TableHead>Direction</TableHead>
                   <TableHead>Started</TableHead>
                   <TableHead>Duration</TableHead>
+                  <TableHead>
+                    <span className="sr-only">Open call detail</span>
+                  </TableHead>
                 </TableRow>
               </TableHeader>
               <Suspense
@@ -243,6 +412,18 @@ export default function CallsPage({ searchParams }: PageProps<"/calls">) {
           </div>
         </CardContent>
       </Card>
+      {/* Shortcut discovery: one line, inert text — the global handler reads
+          the ? key; this hint only names it. */}
+      <p className="text-muted-foreground text-xs">
+        Press{" "}
+        <kbd
+          data-slot="kbd"
+          className="rounded border bg-muted px-1 font-mono text-[11px] font-medium"
+        >
+          ?
+        </kbd>{" "}
+        for keyboard shortcuts.
+      </p>
     </div>
   );
 }

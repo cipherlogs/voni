@@ -11,6 +11,7 @@ import {
 } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "@/components/ui/toast";
+import { formatCallStatus } from "@/lib/calls/call-status";
 import type { JobJson } from "@/lib/jobs/serialize";
 import { shouldSuppressJobToast } from "@/lib/jobs/ui-helpers";
 
@@ -89,14 +90,13 @@ export function isTerminal(status: string): boolean {
   return TERMINAL.includes(status);
 }
 
-/** "3s" for elapsed displays, "1m 12s" beyond a minute. */
+/** Elapsed job time as m:ss ("0:42", "3:07") via the shared call-status rule. */
 export function formatElapsed(fromIso: string | null, toIso: string | null): string {
   const from = fromIso ? new Date(fromIso).getTime() : Date.now();
   const ms = Math.max(0, new Date(toIso ?? Date.now()).getTime() - from);
-  const seconds = Math.floor(ms / 1000);
-  if (seconds < 60) return `${seconds}s`;
-  const minutes = Math.floor(seconds / 60);
-  return `${minutes}m ${seconds % 60}s`;
+  // Shared m:ss rule with call durations (lib/calls/call-status.ts) so every
+  // elapsed time in the product reads the same way.
+  return formatCallStatus(Math.floor(ms / 1000));
 }
 
 export function jobStatusLabel(status: string): string {

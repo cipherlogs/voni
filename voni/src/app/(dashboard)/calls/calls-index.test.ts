@@ -60,9 +60,10 @@ test("calls index empty states distinguish no-calls from overshot pages", () => 
   assert.ok(indexSource.includes("No calls on this page"));
 });
 
-test("agents page owns a secondary recent-calls section with its own empty state", () => {
-  assert.ok(agentsSource.includes("RecentCalls"));
-  assert.ok(agentsSource.includes('aria-label="Loading recent calls"'));
+test("recent-calls section lives outside the agents list, with its own empty state", () => {
+  // Recent calls was removed from /agents (not useful there) — calls live
+  // under /calls. The section component contract itself is unchanged.
+  assert.ok(!agentsSource.includes("RecentCalls"));
   assert.ok(sectionSource.includes("Recent calls"));
   assert.ok(sectionSource.includes('href="/calls"'));
   assert.ok(sectionSource.includes("View all"));

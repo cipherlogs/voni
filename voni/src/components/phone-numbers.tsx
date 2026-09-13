@@ -4,10 +4,27 @@ import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 import { toast } from "@/components/ui/toast";
 import { LoadingButton } from "@/components/loading-button";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { Field, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
+import {
+  Field,
+  FieldDescription,
+  FieldError,
+  FieldGroup,
+  FieldLabel,
+} from "@/components/ui/field";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
   Select,
@@ -45,6 +62,116 @@ type PhoneNumber = {
 const UNBOUND = "__unbound__";
 
 /**
+ * Number removal with a typed-name confirm step, mirroring AgentDeleteButton:
+ * inbound calls route through these numbers, so deleting one is destructive —
+ * the dialog restates the consequence and requires typing the number before
+ * the confirm enables. No size class on the icon (house rule).
+ */
+function NumberRemoveButton({ number }: { number: PhoneNumber }) {
+  const router = useRouter();
+  const [open, setOpen] = useState(false);
+  const [deleting, startDelete] = useTransition();
+  const [error, setError] = useState<string | null>(null);
+  const [confirmation, setConfirmation] = useState("");
+  const trimmed =
+    number.label && number.label.trim() ? number.label.trim() : null;
+  const gateValue = trimmed ?? number.e164;
+  // The typed confirmation is UI friction only — ownership stays enforced
+  // server-side by removePhoneNumberAction.
+  const confirmed = confirmation.trim() === gateValue;
+
+  const confirm = () =>
+    startDelete(async () => {
+      setError(null);
+      const result = await removePhoneNumberAction(number.id);
+      if (!result.ok) {
+        // Stay in the dialog so the reason is readable next to the action,
+        // and toast so it survives dismissal.
+        setError(result.message ?? "That did not work.");
+        toast.add({ type: "error", title: result.message ?? "That did not work." });
+        return;
+      }
+      setOpen(false);
+      setConfirmation("");
+      toast.add({ type: "success", title: "Number removed." });
+      router.refresh();
+    });
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        if (!next) {
+          setError(null);
+          setConfirmation("");
+        }
+      }}
+    >
+      <DialogTrigger
+        render={<Button variant="ghost" size="icon" aria-label={`Remove ${number.e164}`} />}
+      >
+        <Trash2 />
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Remove {number.e164}?</DialogTitle>
+          <DialogDescription>
+            This is permanent. Type{" "}
+            <span className="font-medium text-foreground">{gateValue}</span>{" "}
+            to confirm.
+          </DialogDescription>
+        </DialogHeader>
+        <Alert variant="destructive">
+          <TriangleAlert />
+          <AlertDescription>
+            This number stops answering inbound calls{number.agentName ? ` for ${number.agentName}` : ""}.
+            Call history is kept. This cannot be undone.
+          </AlertDescription>
+        </Alert>
+        <Field>
+          <FieldLabel htmlFor={`remove-confirm-${number.id}`}>
+            {trimmed ? "Number label" : "Number"}
+          </FieldLabel>
+          <FieldDescription>
+            Type <span className="font-medium text-foreground">{gateValue}</span>{" "}
+            to enable removal.
+          </FieldDescription>
+          <Input
+            id={`remove-confirm-${number.id}`}
+            value={confirmation}
+            onChange={(e) => setConfirmation(e.target.value)}
+            placeholder={gateValue}
+            autoComplete="off"
+            aria-invalid={confirmation.length > 0 && !confirmed ? true : undefined}
+          />
+        </Field>
+        {error ? (
+          <Alert variant="destructive">
+            <TriangleAlert />
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
+        ) : null}
+        <DialogFooter>
+          <DialogClose render={<Button variant="outline" />}>
+            Cancel
+          </DialogClose>
+          <LoadingButton
+            variant="destructive"
+            pending={deleting}
+            pendingText="Removing…"
+            disabled={!confirmed}
+            onClick={confirm}
+          >
+            Remove number
+          </LoadingButton>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/**
  * Inbound number binding (plan Day 7-8).
  *
  * Binding is edited inline in the table rather than behind a modal: the whole
@@ -75,6 +202,21 @@ export function PhoneNumbers({
     (dialableDigits.length < 8 || dialableDigits.length > 15)
       ? "That number looks too short to dial — check for a missing country or area code."
       : null;
+
+  // Closed-trigger label: Base UI's SelectValue resolves its text from
+  // registered items, but popup items only mount while the dropdown is open —
+  // so a closed trigger falls back to the raw value ("__unbound__", or an
+  // agent UUID as on campaigns/new). A value-to-label function child renders
+  // the human label at all times with no mounted-item dependency.
+  // The platform default is the named fallback agent configured for
+  // inbound calls, not an anonymous answering machine — so the unbound
+  // option names it. __unbound__ stays internal: it is the Select value,
+  // never rendered text.
+  const agentLabel = (id: string | null) => {
+    if (id === null || id === UNBOUND)
+      return "Main reception agent answers";
+    return agents.find((agent) => agent.id === id)?.name ?? "Unknown agent";
+  };
 
   // Tracked per-action (not one shared boolean) so clicking one row's remove
   // button doesn't visually disable every other row with no way to tell which
@@ -139,11 +281,13 @@ export function PhoneNumbers({
                 onValueChange={(v) => setNewAgent(v ?? UNBOUND)}
               >
                 <SelectTrigger id="new-agent" aria-label="Answered by" className="w-full">
-                  <SelectValue />
+                  <SelectValue>{agentLabel}</SelectValue>
                 </SelectTrigger>
                 <SelectContent>
                   <SelectGroup>
-                    <SelectItem value={UNBOUND}>Platform default agent</SelectItem>
+                    <SelectItem value={UNBOUND}>
+                      Main reception agent answers
+                    </SelectItem>
                     {agents.map((agent) => (
                       <SelectItem key={agent.id} value={agent.id}>
                         {agent.name}
@@ -153,6 +297,10 @@ export function PhoneNumbers({
                   </SelectGroup>
                 </SelectContent>
               </Select>
+              <FieldDescription>
+                Leave this on the main reception agent unless a
+                specific agent should pick up this line.
+              </FieldDescription>
             </Field>
           </FieldGroup>
           <div>
@@ -209,10 +357,10 @@ export function PhoneNumbers({
               <TableBody>
                 {numbers.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={4} className="h-32 text-center">
+                    <TableCell colSpan={4} className="p-8 text-center">
                       <span className="text-muted-foreground">
-                        No numbers registered. Inbound calls are answered by the
-                        platform default agent.
+                        No numbers registered. Inbound calls are
+                        answered by the main reception agent.
                       </span>
                     </TableCell>
                   </TableRow>
@@ -240,13 +388,17 @@ export function PhoneNumbers({
                               )
                             }
                           >
-                            <SelectTrigger aria-label={`Agent for ${number.e164}`} className="w-56">
-                              <SelectValue />
+                            {/* Touch target: the default h-8 trigger reads
+                                32px — min-h-11 lifts it toward the 44px floor
+                                (WCAG 2.5.8) without widening the row trigger
+                                past the row's own padding. */}
+                            <SelectTrigger aria-label={`Agent for ${number.e164}`} className="min-h-11 w-56">
+                              <SelectValue>{agentLabel}</SelectValue>
                             </SelectTrigger>
                             <SelectContent>
                               <SelectGroup>
                                 <SelectItem value={UNBOUND}>
-                                  Platform default agent
+                                  Main reception agent answers
                                 </SelectItem>
                                 {agents.map((agent) => (
                                   <SelectItem key={agent.id} value={agent.id}>
@@ -265,16 +417,7 @@ export function PhoneNumbers({
                         </div>
                       </TableCell>
                       <TableCell>
-                        <LoadingButton
-                          variant="ghost"
-                          size="icon"
-                          aria-label={`Remove ${number.e164}`}
-                          pending={pendingId === `remove:${number.id}`}
-                          icon={<Trash2 />}
-                          onClick={() =>
-                            run(`remove:${number.id}`, () => removePhoneNumberAction(number.id), "Number removed.")
-                          }
-                        />
+                        <NumberRemoveButton number={number} />
                       </TableCell>
                     </TableRow>
                   ))

@@ -110,7 +110,8 @@ try {
   assert.equal(decision.status, "idle", "a draft campaign must not dial");
   assert.match(
     decision.status === "idle" ? decision.reason : "",
-    /no active campaigns/,
+    /No active campaigns/,
+    "an idle runner must speak in operator sentences",
   );
 
   await db
@@ -158,7 +159,8 @@ try {
   assert.equal(concurrent.status, "idle", "must not dial two calls at once");
   assert.match(
     concurrent.status === "idle" ? concurrent.reason : "",
-    /already in progress/,
+    /already in progress — the next lead dials when it ends/,
+    "an idle runner must speak in operator sentences",
   );
 
   // --- A no-answer requeues with backoff, and is not due yet ---------------

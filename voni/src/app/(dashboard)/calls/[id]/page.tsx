@@ -39,6 +39,7 @@ import {
   toolCallLogs,
 } from "@/lib/db/schema";
 import { requireCtxOrRedirect } from "@/lib/session";
+import { pipelineStateLabel } from "@/lib/leads/stage-filter";
 
 function formatWhen(value: Date | null) {
   if (!value) return "—";
@@ -98,7 +99,7 @@ function Fact({
 
 /**
  * Authorized call leaf: facts, the recorded turns, the recorded
- * tool calls, and the state this call produced resolve here.
+ * actions, and the state this call produced resolve here.
  * notFound()/denial stay inside detail-data, called from this leaf.
  */
 async function CallDetail({
@@ -192,7 +193,7 @@ async function CallDetail({
       ? "Ended " + call.endedAt.toISOString()
       : "End time not recorded"}. ` +
     `${spoken.length} transcript turns, ` +
-    `${tools.length} tool calls recorded.`;
+    `${tools.length} actions taken.`;
   const leadLabel = call.name ?? call.phone;
 
   return (
@@ -261,7 +262,7 @@ async function CallDetail({
       <Card>
         <CardHeader>
           <CardTitle className="text-base">
-            Routing and consent
+            Call setup
           </CardTitle>
         </CardHeader>
         <CardContent>
@@ -300,7 +301,7 @@ async function CallDetail({
             <Separator />
             <Fact label="Pipeline">
               <Badge variant="secondary">
-                {link.pipeline}
+                {pipelineStateLabel(link.pipeline)}
               </Badge>
             </Fact>
           </dl>
@@ -363,7 +364,7 @@ async function CallDetail({
       <Card>
         <CardHeader>
           <CardTitle className="text-base">
-            Tool calls
+            Actions taken during this call
             {tools.length >= 50 ? (
               <span className="text-muted-foreground ml-2 align-middle text-xs font-normal">
                 Showing the first 50
@@ -378,9 +379,9 @@ async function CallDetail({
                 <EmptyMedia variant="icon">
                   <Wrench />
                 </EmptyMedia>
-                <EmptyTitle>No tool calls recorded</EmptyTitle>
+                <EmptyTitle>No actions recorded</EmptyTitle>
                 <EmptyDescription>
-                  This call ran without invoking any tools.
+                  This call ran without taking any actions.
                 </EmptyDescription>
               </EmptyHeader>
             </Empty>

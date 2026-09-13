@@ -40,6 +40,7 @@ export function AgentDeleteButton({
   className,
   label = "Delete agent",
   showIcon = true,
+  isBridgeAgent = false,
 }: {
   id: string;
   name: string;
@@ -63,6 +64,12 @@ export function AgentDeleteButton({
    * the typed-name gate and delete flow are unchanged.
    */
   neverProvisioned?: boolean;
+  /**
+   * True when this agent is the platform bridge default. Deleting it clears
+   * the bridge default (onDelete: set null), so the dialog carries a blocking
+   * note — the bridge has no agent until an operator picks a new one.
+   */
+  isBridgeAgent?: boolean;
 }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
@@ -135,6 +142,17 @@ export function AgentDeleteButton({
             Type the agent&apos;s name to confirm.
           </DialogDescription>
         </DialogHeader>
+        {isBridgeAgent ? (
+          <Alert variant="destructive">
+            <TriangleAlert />
+            <AlertDescription>
+              This agent is the platform bridge default. Deleting it clears
+              the bridge default — the voice bridge has no agent until an
+              operator picks a new one in Settings → Platform. Delete only if
+              a replacement is ready.
+            </AlertDescription>
+          </Alert>
+        ) : null}
         <Alert variant="destructive">
           <TriangleAlert />
           <AlertDescription>

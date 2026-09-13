@@ -57,7 +57,7 @@ export function AuthForm({
         <span className="sr-only">Voni home</span>
       </Link>
 
-      <div className="w-full rounded-xl border bg-card p-8 shadow-xs">
+      <div className="w-full rounded-xl border bg-card p-8">
         <div className="flex flex-col gap-7">
           <div className="flex flex-col gap-2 text-center">
             <h1 className="text-xl font-semibold tracking-tight">

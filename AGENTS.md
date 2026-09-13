@@ -4,17 +4,7 @@ IMPORTANT: You must load what's inside ~/.config/ai/AGENTS.md
 and https://www.assemblyai.com/docs/llms.txt. The API has changed — do not rely on
 memorized parameter names. also use the AssemblyAI MCP that I have installed
 
-## UX Skill Protocol
-Before designing or reviewing any user-facing feature, apply these skills in order:
-1. strategyUX — validate the problem/business fit before proposing a solution
-2. leanUX — treat the solution as a hypothesis, prefer outcomes over outputs
-3. everydayUX — apply discoverability, feedback, mapping, error prevention
-4. lawUX — check against the relevant Laws of UX (Jakob's Law, Hick's Law, etc.)
-
-and make sure that you only use shadcn components.
-
 ## Responsive async work protocol
-
 Every user-triggered asynchronous action must give immediate feedback, and any
 non-interactive operation that may exceed 3 seconds is durable background work:
 
