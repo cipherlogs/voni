@@ -53,6 +53,26 @@ const LEAD_STATUS_LABEL: Record<string, string> = {
   skipped: "Skipped",
 };
 
+// table-05 StatusBadge shape with semantic tokens (no raw palette): each
+// human label from LEAD_STATUS_LABEL maps to a tone, matching the campaigns
+// list's STATUS_VARIANT badge idiom. No table-02/03/04 reference exists yet,
+// so this follows the only vendored status-badge shape in the repo.
+const LEAD_STATUS_TONE: Record<string, "default" | "secondary" | "outline"> = {
+  queued: "secondary",
+  dialing: "default",
+  reached: "default",
+  exhausted: "outline",
+  skipped: "outline",
+};
+
+function LeadStatusBadge({ status }: { status: string }) {
+  return (
+    <Badge variant={LEAD_STATUS_TONE[status] ?? "outline"}>
+      {LEAD_STATUS_LABEL[status] ?? status}
+    </Badge>
+  );
+}
+
 function formatWhen(value: Date | null) {
   if (!value) return "—";
   return new Intl.DateTimeFormat("en-GB", {
@@ -188,15 +208,17 @@ export function CampaignQueue({
   };
 
   return (
-    <div className="flex flex-col gap-3 p-4 pb-0 sm:p-6 sm:pb-0">
-      <Input
-        type="search"
-        placeholder="Search by name or phone…"
-        value={query}
-        onChange={(e) => setQuery(e.target.value)}
-        className="max-w-xs"
-        aria-label="Search queue"
-      />
+    <div className="flex flex-col gap-4">
+      <div className="flex flex-col gap-4 p-4 pb-0 sm:flex-row sm:items-center sm:justify-between sm:p-6 sm:pb-0">
+        <Input
+          type="search"
+          placeholder="Search by name or phone…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          className="h-8 w-full sm:w-64"
+          aria-label="Search queue"
+        />
+      </div>
       <div className="overflow-x-auto">
         <Table>
           <TableHeader>
@@ -278,7 +300,7 @@ export function CampaignQueue({
                     </Badge>
                   </TableCell>
                   <TableCell>
-                    {LEAD_STATUS_LABEL[member.status] ?? member.status}
+                    <LeadStatusBadge status={member.status} />
                   </TableCell>
                   <TableCell>
                     {member.attempts} / {maxAttempts}
@@ -299,7 +321,7 @@ export function CampaignQueue({
         <div
           role="toolbar"
           aria-label="Bulk queue actions"
-          className="bg-card sticky bottom-4 z-10 flex flex-wrap items-center gap-2 rounded-lg border p-3 shadow-lg"
+          className="bg-card sticky bottom-4 z-10 mx-4 mb-4 flex flex-wrap items-center gap-2 rounded-lg border p-3 shadow-lg sm:mx-6"
         >
           <span className="text-sm font-medium" aria-live="polite">
             {selected.size} selected

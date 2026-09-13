@@ -250,7 +250,9 @@ async function LeadsRows({
                     </Badge>
                   </TableCell>
                   <TableCell>
-                    {pipelineStateLabel(lead.pipelineState)}
+                    <Badge variant="secondary">
+                      {pipelineStateLabel(lead.pipelineState)}
+                    </Badge>
                   </TableCell>
                   <TableCell>{lead.callCount}</TableCell>
                   <TableCell>
@@ -397,7 +399,7 @@ export default function LeadsPage({
         Press{" "}
         <kbd
           data-slot="kbd"
-          className="rounded border bg-muted px-1 font-mono text-[11px] font-medium"
+          className="rounded border bg-muted px-1 font-mono text-xs font-medium"
         >
           ?
         </kbd>{" "}

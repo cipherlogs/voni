@@ -1,6 +1,6 @@
-import { Suspense } from "react";
+import { Fragment, Suspense } from "react";
 import Link from "next/link";
-import { Phone, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, Phone, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
@@ -132,6 +132,14 @@ async function CallsRows({
   } = await listCalls(page, CALLS_PAGE_SIZE, { outcome: params.outcome });
   const totalPages = Math.max(1, Math.ceil(total / CALLS_PAGE_SIZE));
   const hasNext = safePage < totalPages;
+  // Numbered pages stay bounded: first, last, and the current
+  // neighborhood — a long history would otherwise render one button
+  // per page. Gaps between windows read as an ellipsis below.
+  const pageWindow = Array.from(
+    new Set([1, safePage - 1, safePage, safePage + 1, totalPages]),
+  )
+    .filter((page) => page >= 1 && page <= totalPages)
+    .sort((a, b) => a - b);
   // The footer only renders across pages; the count lives here instead so
   // a filtered single page still states its total — never an unchecked
   // number.
@@ -277,46 +285,82 @@ async function CallsRows({
             <TableFooter>
               <TableRow>
                 <TableCell colSpan={CALL_TABLE_COLUMNS}>
-                  <div className="flex items-center justify-between gap-3">
-                    {/* Touch target: min-h-11 toward the 44px floor (WCAG
-                        2.5.8) — same size-11 precedent as the voice-card
-                        steppers. The footer row has room, so no layout cost. */}
-                    <Button
-                      nativeButton={false}
-                      render={
-                        <Link
-                          href={callsPageHref(safePage - 1, outcome)}
-                          aria-disabled={safePage <= 1}
-                          tabIndex={safePage <= 1 ? -1 : undefined}
-                        />
-                      }
-                      variant="outline"
-                      size="sm"
-                      className="min-h-11 min-w-11 px-4"
-                      disabled={safePage <= 1}
-                    >
-                      Previous
-                    </Button>
+                  <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                     <span className="text-muted-foreground text-xs">
-                      Page {safePage} of {totalPages} · {total}{" "}
-                      {total === 1 ? "call" : "calls"}
+                      Page {safePage} of {totalPages}
                     </span>
-                    <Button
-                      nativeButton={false}
-                      render={
-                        <Link
-                          href={callsPageHref(safePage + 1, outcome)}
-                          aria-disabled={!hasNext}
-                          tabIndex={!hasNext ? -1 : undefined}
-                        />
-                      }
-                      variant="outline"
-                      size="sm"
-                      className="min-h-11 min-w-11 px-4"
-                      disabled={!hasNext}
-                    >
-                      Next
-                    </Button>
+                    {/* Table-05 pagination idiom (icon + numbered
+                        buttons), kept on URL-param hrefs so the outcome
+                        filter carries across pages. Touch target: min-h-11
+                        toward the 44px floor (WCAG 2.5.8) — same size-11
+                        precedent as the voice-card steppers. */}
+                    <div className="flex items-center gap-1">
+                      <Button
+                        aria-label="Previous page"
+                        nativeButton={false}
+                        render={
+                          <Link
+                            href={callsPageHref(safePage - 1, outcome)}
+                            aria-disabled={safePage <= 1}
+                            tabIndex={safePage <= 1 ? -1 : undefined}
+                          />
+                        }
+                        variant="outline"
+                        size="icon"
+                        className="min-h-11 min-w-11"
+                        disabled={safePage <= 1}
+                      >
+                        <ChevronLeft className="size-4" />
+                        <span className="sr-only">Previous page</span>
+                      </Button>
+                      {pageWindow.map((page, index) => (
+                        <Fragment key={page}>
+                          {index > 0 &&
+                          page - pageWindow[index - 1] > 1 ? (
+                            <span
+                              aria-hidden="true"
+                              className="text-muted-foreground px-1 text-xs"
+                            >
+                              …
+                            </span>
+                          ) : null}
+                          <Button
+                            aria-label={`Go to page ${page}`}
+                            nativeButton={false}
+                            render={
+                              <Link
+                                href={callsPageHref(page, outcome)}
+                              />
+                            }
+                            variant={
+                              safePage === page ? "default" : "outline"
+                            }
+                            size="icon"
+                            className="min-h-11 min-w-11"
+                          >
+                            {page}
+                          </Button>
+                        </Fragment>
+                      ))}
+                      <Button
+                        aria-label="Next page"
+                        nativeButton={false}
+                        render={
+                          <Link
+                            href={callsPageHref(safePage + 1, outcome)}
+                            aria-disabled={!hasNext}
+                            tabIndex={!hasNext ? -1 : undefined}
+                          />
+                        }
+                        variant="outline"
+                        size="icon"
+                        className="min-h-11 min-w-11"
+                        disabled={!hasNext}
+                      >
+                        <ChevronRight className="size-4" />
+                        <span className="sr-only">Next page</span>
+                      </Button>
+                    </div>
                   </div>
                 </TableCell>
               </TableRow>
@@ -416,7 +460,7 @@ export default function CallsPage({ searchParams }: PageProps<"/calls">) {
         Press{" "}
         <kbd
           data-slot="kbd"
-          className="rounded border bg-muted px-1 font-mono text-[11px] font-medium"
+          className="rounded border bg-muted px-1 font-mono text-xs font-medium"
         >
           ?
         </kbd>{" "}

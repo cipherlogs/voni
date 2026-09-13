@@ -20,7 +20,6 @@ import {
   EmptyMedia,
   EmptyTitle,
 } from "@/components/ui/empty";
-import { Separator } from "@/components/ui/separator";
 import {
   Table,
   TableBody,
@@ -32,7 +31,8 @@ import {
 import { DetailSkeleton } from "@/components/page-skeletons";
 import { dialOutcomeLabel } from "@/lib/campaigns/outcome-label";
 import { pipelineStateLabel } from "@/lib/leads/stage-filter";
-import type { ReactNode } from "react";
+import { cn } from "@/lib/utils";
+import { Fragment } from "react";
 import {
   callDuration,
   relativeCallTime,
@@ -85,23 +85,6 @@ function ConsentBadge({ status }: { status: string }) {
 const LINK =
   "cursor-pointer rounded-sm underline-offset-4 outline-none " +
   "hover:underline focus-visible:ring-2 focus-visible:ring-ring";
-
-function Fact({
-  label,
-  children,
-}: {
-  label: string;
-  children: ReactNode;
-}) {
-  return (
-    <div className="flex items-baseline justify-between gap-4 py-2">
-      <dt className="text-muted-foreground shrink-0 text-sm">
-        {label}
-      </dt>
-      <dd className="min-w-0 text-right text-sm">{children}</dd>
-    </div>
-  );
-}
 
 /**
  * Authorized identity leaf: identity, consent, pipeline, state,
@@ -382,62 +365,89 @@ async function LeadDetail({
         </CardContent>
       </Card>
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">
+      {/* Grouped-rows idiom (table-04): each campaign queues this lead
+          once, so every row is its own group — the header names the campaign,
+          the row carries attempts + last outcome + the queue link. */}
+      <div className="rounded-lg border bg-card">
+        <div className="flex items-center justify-between gap-4 px-4 pt-4">
+          <h2 className="text-base font-semibold tracking-tight">
             Campaigns ({memberships.length})
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          {memberships.length === 0 ? (
-            <p className="text-muted-foreground py-4 text-center text-sm">
-              This lead is not in any campaign queue.
-            </p>
-          ) : (
-            <dl className="flex flex-col">
-              {memberships.map((row, index) => (
-                <div key={row.id}>
-                  {index > 0 ? <Separator /> : null}
-                  <Fact
-                    label={
-                      row.campaignName ?? "Unnamed campaign"
-                    }
-                  >
-                    <span className="flex flex-wrap justify-end gap-2">
-                      <Badge
-                        variant={
-                          row.status === "reached"
-                            ? "default"
-                            : row.status === "skipped"
-                              ? "destructive"
-                              : "secondary"
-                        }
+          </h2>
+        </div>
+        {memberships.length === 0 ? (
+          <p className="text-muted-foreground px-4 py-4 text-center text-sm">
+            This lead is not in any campaign queue.
+          </p>
+        ) : (
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="font-medium">Status</TableHead>
+                  <TableHead className="font-medium">Attempts</TableHead>
+                  <TableHead className="font-medium">Last outcome</TableHead>
+                  <TableHead>
+                    <span className="sr-only">Open campaign queue</span>
+                  </TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {memberships.map((row) => (
+                  <Fragment key={row.id}>
+                    <TableRow className="bg-muted/50 hover:bg-muted/50">
+                      <TableCell
+                        className="py-2 font-semibold"
+                        colSpan={4}
                       >
-                        {MEMBERSHIP_LABEL[row.status] ??
-                          row.status}
-                      </Badge>
-                      <span className="text-muted-foreground text-xs">
+                        {row.campaignName ?? "Unnamed campaign"}
+                      </TableCell>
+                    </TableRow>
+                    <TableRow>
+                      <TableCell>
+                        <Badge
+                          className={cn("gap-1.5 rounded-full")}
+                          variant="outline"
+                        >
+                          <span
+                            aria-hidden="true"
+                            className={cn(
+                              "size-1.5 rounded-full",
+                              row.status === "reached"
+                                ? "bg-primary"
+                                : row.status === "skipped"
+                                  ? "bg-destructive"
+                                  : "bg-muted-foreground",
+                            )}
+                          />
+                          {MEMBERSHIP_LABEL[row.status] ?? row.status}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="text-sm">
                         {row.attempts} attempt
                         {row.attempts === 1 ? "" : "s"}
+                      </TableCell>
+                      <TableCell className="text-muted-foreground text-sm">
                         {row.lastOutcome
-                          ? ` · last: ${dialOutcomeLabel(row.lastOutcome)}`
-                          : ""}
-                      </span>
-                      <Link
-                        href={`/campaigns/${row.campaignId}`}
-                        aria-label={`Open ${row.campaignName ?? "campaign"}`}
-                        className={LINK}
-                      >
-                        Open queue
-                      </Link>
-                    </span>
-                  </Fact>
-                </div>
-              ))}
-            </dl>
-          )}
-        </CardContent>
-      </Card>
+                          ? dialOutcomeLabel(row.lastOutcome)
+                          : "—"}
+                      </TableCell>
+                      <TableCell>
+                        <Link
+                          href={`/campaigns/${row.campaignId}`}
+                          aria-label={`Open ${row.campaignName ?? "campaign"}`}
+                          className={LINK}
+                        >
+                          Open queue
+                        </Link>
+                      </TableCell>
+                    </TableRow>
+                  </Fragment>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        )}
+      </div>
 
       <Card>
         <CardHeader>

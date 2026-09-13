@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 import { Button } from "@/components/ui/button";
 import { LoadingButton } from "@/components/loading-button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Field, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -17,6 +17,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Separator } from "@/components/ui/separator";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { TriangleAlert } from "lucide-react";
 import {
@@ -184,11 +185,19 @@ export function CampaignForm({
 
   return (
     <div className="flex flex-col gap-6" data-copilot-form="campaign">
-      <Card>
-        <CardHeader>
-          <CardTitle>Who works this campaign</CardTitle>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-4">
+      <section
+        aria-labelledby="campaign-who-heading"
+        className="grid gap-6 md:grid-cols-3"
+      >
+        <div>
+          <h2 id="campaign-who-heading" className="text-balance font-semibold">
+            Who works this campaign
+          </h2>
+          <p className="text-pretty text-muted-foreground text-sm leading-6">
+            Name it, then pick the agent that places the calls.
+          </p>
+        </div>
+        <div className="sm:max-w-3xl md:col-span-2">
           <FieldGroup>
             <Field>
               <FieldLabel htmlFor="campaign-name">Campaign name</FieldLabel>
@@ -224,14 +233,24 @@ export function CampaignForm({
             ) : null}
             </Field>
           </FieldGroup>
-        </CardContent>
-      </Card>
+        </div>
+      </section>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>When calling is allowed</CardTitle>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-4">
+      <Separator />
+
+      <section
+        aria-labelledby="campaign-when-heading"
+        className="grid gap-6 md:grid-cols-3"
+      >
+        <div>
+          <h2 id="campaign-when-heading" className="text-balance font-semibold">
+            When calling is allowed
+          </h2>
+          <p className="text-pretty text-muted-foreground text-sm leading-6">
+            The window and days the dialer may place calls in.
+          </p>
+        </div>
+        <div className="sm:max-w-3xl md:col-span-2">
           <FieldGroup className="grid gap-4 sm:grid-cols-3">
             <Field>
               <FieldLabel htmlFor="window-start">Start</FieldLabel>
@@ -333,14 +352,25 @@ export function CampaignForm({
               Leads marked as opted out are never called, under either setting.
             </p>
           </Field>
-        </CardContent>
-      </Card>
+        </div>
+      </section>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>How persistent to be</CardTitle>
-        </CardHeader>
-        <CardContent className="grid gap-4 sm:grid-cols-2">
+      <Separator />
+
+      <section
+        aria-labelledby="campaign-how-heading"
+        className="grid gap-6 md:grid-cols-3"
+      >
+        <div>
+          <h2 id="campaign-how-heading" className="text-balance font-semibold">
+            How persistent to be
+          </h2>
+          <p className="text-pretty text-muted-foreground text-sm leading-6">
+            How many tries per lead, and how long to wait between them.
+          </p>
+        </div>
+        <div className="sm:max-w-3xl md:col-span-2">
+          <FieldGroup className="grid gap-4 sm:grid-cols-2">
           <Field data-invalid={attemptsInvalid || fieldError === "numeric"}>
             <FieldLabel htmlFor="max-attempts">Call attempts per lead</FieldLabel>
             <Input
@@ -383,8 +413,9 @@ export function CampaignForm({
               <FieldError>{error}</FieldError>
             ) : null}
           </Field>
-        </CardContent>
-      </Card>
+          </FieldGroup>
+        </div>
+      </section>
 
       {error ? (
         <Alert variant="destructive">

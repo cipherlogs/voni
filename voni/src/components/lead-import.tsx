@@ -189,8 +189,16 @@ export function LeadImport({ campaignId }: { campaignId: string }) {
 
   return (
     <div className="flex flex-col gap-4" data-copilot-form="csv-import" data-copilot-version={copilotVersion}>
-      <div className="flex flex-wrap items-end gap-3">
-        <Field className="w-auto">
+      <div className="grid gap-6 md:grid-cols-3">
+        <div>
+          <h3 className="text-balance font-semibold">CSV file</h3>
+          <p className="text-pretty text-muted-foreground text-sm leading-6">
+            Pick a file with a phone column; rows are validated in the import job.
+          </p>
+        </div>
+        <div className="sm:max-w-3xl md:col-span-2">
+          <div className="flex flex-wrap items-end gap-3">
+            <Field className="w-auto">
           <FieldLabel htmlFor={`csv-${campaignId}`}>Choose CSV file</FieldLabel>
           <Input
             ref={inputRef}
@@ -326,6 +334,8 @@ export function LeadImport({ campaignId }: { campaignId: string }) {
             </Button>
           </p>
         ) : null}
+          </div>
+        </div>
       </div>
 
       {error ? (
