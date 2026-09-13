@@ -9,6 +9,7 @@ import {
   FieldError,
   FieldLabel,
 } from "@/components/ui/field";
+import { InputGroup, InputGroupInput } from "@/components/ui/input-group";
 import { X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
@@ -169,6 +170,7 @@ export function TagField({
                 type="button"
                 size="sm"
                 variant="outline"
+                className="rounded-full"
                 disabled={editing}
                 onMouseDown={keepFocus}
                 onClick={() => {
@@ -188,9 +190,9 @@ export function TagField({
           </div>
         </div>
       ) : null}
-      <div
+      <InputGroup
         className={cn(
-          "border-input flex min-h-9 flex-wrap items-center gap-1.5 rounded-lg border bg-transparent px-2 py-1.5 transition-colors outline-none focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50",
+          "h-auto min-h-9 flex-wrap items-center gap-1.5 px-2 py-1.5",
           atCap && values.length === 0 && "opacity-70",
         )}
         onClick={() => {
@@ -220,7 +222,7 @@ export function TagField({
                 maxLength={maxLength + 20}
                 aria-label={`Edit ${tag}`}
                 autoComplete="off"
-                className="border-primary bg-transparent text-sm outline-none ring-1 ring-primary rounded-md px-2 py-0.5 w-full"
+                className="border-ring w-full rounded-md bg-transparent px-2 py-0.5 text-sm outline-none ring-3 ring-ring/50"
               />
             </span>
           ) : (
@@ -256,7 +258,7 @@ export function TagField({
           ),
         )}
         {!editing ? (
-          <input
+          <InputGroupInput
             ref={inputRef}
             id={id}
             value={input}
@@ -281,14 +283,14 @@ export function TagField({
             aria-describedby={`${hintId} ${countId}`}
             aria-invalid={message ? true : undefined}
             autoComplete="off"
-            className="placeholder:text-muted-foreground min-w-24 flex-1 bg-transparent text-sm outline-none disabled:cursor-not-allowed"
+            className="placeholder:text-muted-foreground h-auto w-auto min-w-24 flex-1 bg-transparent text-sm outline-none disabled:cursor-not-allowed"
           />
         ) : (
           <span id={id} className="sr-only">
             Editing tag
           </span>
         )}
-      </div>
+      </InputGroup>
       <p id={hintId} aria-live="polite" className="sr-only">
         {message ??
           (atCap

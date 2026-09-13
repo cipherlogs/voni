@@ -3,13 +3,14 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { toast } from "@/components/ui/toast";
 import { LoadingButton } from "@/components/loading-button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
+import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
 import {
   Select,
@@ -54,9 +55,7 @@ const CONTROL = "w-full rounded-[10px] px-3 py-2 text-base md:min-h-[42px] md:py
 // Border-only elevation (house border-OR-shadow floor): the mockup's ambient
 // shadow lives on the edit-agent statusline, not on form cards or footers.
 const CARD = "gap-3.5 rounded-xl border pt-4 pb-[18px]";
-const CARD_HEAD = "px-[18px]";
-const CARD_BODY = "flex flex-col gap-3 px-[18px]";
-const LABEL = "text-[13px] font-semibold";
+const LABEL = "text-sm font-medium";
 const HINT = "mt-1.5 text-xs";
 
 /** `languageCodes: []` — automatic detection across all 18 recognised
@@ -83,13 +82,14 @@ const CHANNEL_META = [
 ] as const;
 
 /**
- * Form footer (the mockup's `.footer-actions`): a bordered bar following the
- * house rule — secondary actions left, primary save right — matching
- * WizardFooter's secondary-left/primary-right layout (`justify-between` with
- * both slots, `justify-end` when there is no secondary).
+ * Form footer (form-layout-01 terminal bar idiom): a Separator plus a
+ * right-aligned action row following the house rule — secondary actions left,
+ * primary save right — matching WizardFooter's secondary-left/primary-right
+ * layout (`justify-between` with both slots, `justify-end` when there is no
+ * secondary).
  *
- * The footer is normal document flow everywhere — the bordered bar renders
- * inline after the last card on all screen sizes, never fixed or sticky.
+ * The footer is normal document flow everywhere — the bar renders inline
+ * after the last card on all screen sizes, never fixed or sticky.
  */
 export function ConfigFormFooter({
   secondary,
@@ -102,9 +102,10 @@ export function ConfigFormFooter({
 }) {
   return (
     <div className={className ?? "lg:pt-4"}>
+      <Separator className="mb-4" />
       <div
         className={cn(
-          "flex items-center gap-4 lg:rounded-xl lg:border lg:bg-card lg:px-[18px] lg:py-3.5",
+          "flex items-center gap-4",
           secondary ? "justify-between" : "justify-end",
         )}
       >
@@ -271,14 +272,20 @@ export function AgentConfigForm({
 
   return (
     <div className="flex flex-col gap-4">
-      <Card className={CARD}>
-        <CardHeader className={CARD_HEAD}>
-          <CardTitle className="font-semibold tracking-[-0.01em]">Identity</CardTitle>
-          <CardDescription className="text-[13px]">
+      {/* Identity section (form-layout-02 side-label idiom): the section head
+          sits beside the controls on wide screens, stacked above on mobile. */}
+      <section aria-labelledby="config-identity-heading" className="grid grid-cols-1 gap-4 md:grid-cols-3 md:gap-6">
+        <div>
+          <h2 id="config-identity-heading" className="text-balance font-semibold text-foreground">
+            Identity
+          </h2>
+          <p className="mt-1 text-pretty text-muted-foreground text-sm leading-6">
             Name, voice, and language callers hear.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className={CARD_BODY}>
+          </p>
+        </div>
+        <div className="md:col-span-2">
+          <Card className={CARD}>
+            <CardContent className="flex flex-col gap-3 pt-4">
           <Field className="gap-1.5">
             <FieldLabel htmlFor="agent-name" className={LABEL}>
               Agent name
@@ -400,17 +407,25 @@ export function AgentConfigForm({
               and a new one begins in the new voice.
             </FieldDescription>
           </Field>
-        </CardContent>
-      </Card>
+            </CardContent>
+          </Card>
+        </div>
+      </section>
 
-      <Card className={CARD}>
-        <CardHeader className={CARD_HEAD}>
-          <CardTitle className="font-semibold tracking-[-0.01em]">Mission</CardTitle>
-          <CardDescription className="text-[13px]">
+      <Separator />
+      {/* Mission section (form-layout-02 side-label idiom). */}
+      <section aria-labelledby="config-mission-heading" className="grid grid-cols-1 gap-4 md:grid-cols-3 md:gap-6">
+        <div>
+          <h2 id="config-mission-heading" className="text-balance font-semibold text-foreground">
+            Mission
+          </h2>
+          <p className="mt-1 text-pretty text-muted-foreground text-sm leading-6">
             What {agentLabel} is trying to accomplish on every call.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className={CARD_BODY}>
+          </p>
+        </div>
+        <div className="md:col-span-2">
+          <Card className={CARD}>
+            <CardContent className="flex flex-col gap-3 pt-4">
           <Field className="gap-1.5">
             <FieldLabel htmlFor="mission" className={LABEL}>
               Mission statement
@@ -439,21 +454,31 @@ export function AgentConfigForm({
               onChange={(e) => set("greeting", e.target.value)}
             />
           </Field>
-          <p className="rounded-[10px] border border-dashed bg-muted/50 px-3 py-2.5 text-[13px] text-muted-foreground">
+          <p className="rounded-[10px] border border-border bg-muted/50 px-3 py-2.5 text-xs text-muted-foreground">
             Suggested first line to test: “Hi, I&apos;m looking for a 2-bedroom
             near Riverside under $2,400.”
           </p>
-        </CardContent>
-      </Card>
+            </CardContent>
+          </Card>
+        </div>
+      </section>
 
-      <Card className={CARD}>
-        <CardHeader className={CARD_HEAD}>
-          <CardTitle className="font-semibold tracking-[-0.01em]">Conversation</CardTitle>
-          <CardDescription className="text-[13px]">
+      <Separator />
+      {/* Conversation section (form-layout-02 side-label idiom; detect rows use
+          the form-layout-03 settings-row idiom: title+description left,
+          Switch right). */}
+      <section aria-labelledby="config-conversation-heading" className="grid grid-cols-1 gap-4 md:grid-cols-3 md:gap-6">
+        <div>
+          <h2 id="config-conversation-heading" className="text-balance font-semibold text-foreground">
+            Conversation
+          </h2>
+          <p className="mt-1 text-pretty text-muted-foreground text-sm leading-6">
             Details {agentLabel} listens for before booking.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className={CARD_BODY}>
+          </p>
+        </div>
+        <div className="md:col-span-2">
+          <Card className={CARD}>
+            <CardContent className="flex flex-col gap-3 pt-4">
           <Field className="gap-1.5">
             <FieldLabel className={LABEL}>Detect and remember</FieldLabel>
             <div className="flex flex-col gap-2">
@@ -477,10 +502,10 @@ export function AgentConfigForm({
                           toggleDetect(field.key, checked)
                         }
                       />
-                      <div className="flex min-w-0 flex-col">
+                      <div className="flex min-w-0 flex-col gap-0.5">
                         <FieldLabel
                           htmlFor={id}
-                          className="cursor-pointer text-[13px] font-semibold"
+                          className="cursor-pointer text-sm font-medium"
                         >
                           {field.label}
                         </FieldLabel>
@@ -533,19 +558,26 @@ export function AgentConfigForm({
               onChange={(e) => set("knowledge", e.target.value)}
             />
           </Field>
-        </CardContent>
-      </Card>
+            </CardContent>
+          </Card>
+        </div>
+      </section>
 
-      <Card className={CARD}>
-        <CardHeader className={CARD_HEAD}>
-          <CardTitle className="font-semibold tracking-[-0.01em]">
+      <Separator />
+      {/* Tools and channels section (form-layout-02 side-label idiom; tool
+          rows + channel rows use the form-layout-03 settings-row idiom). */}
+      <section aria-labelledby="config-tools-heading" className="grid grid-cols-1 gap-4 md:grid-cols-3 md:gap-6">
+        <div>
+          <h2 id="config-tools-heading" className="text-balance font-semibold text-foreground">
             Tools and channels
-          </CardTitle>
-          <CardDescription className="text-[13px]">
+          </h2>
+          <p className="mt-1 text-pretty text-muted-foreground text-sm leading-6">
             What {agentLabel} can do, and where it answers.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className={CARD_BODY}>
+          </p>
+        </div>
+        <div className="md:col-span-2">
+          <Card className={CARD}>
+            <CardContent className="flex flex-col gap-3 pt-4">
           {/* Read-only: which tools an agent has is decided by its template,
               not per-agent here. The badge marks the ones the call stops and
               waits on instead of talking over — `mode: "hold"` in the
@@ -557,12 +589,12 @@ export function AgentConfigForm({
                 key={toolName}
                 className="flex items-center justify-between gap-3 rounded-[10px] border px-3 py-2.5"
               >
-                <div className="flex min-w-0 flex-col">
-                  <strong className="text-[13px] font-semibold">{toolName}</strong>
+                <div className="flex min-w-0 flex-col gap-0.5">
+                  <strong className="text-sm font-medium">{toolName}</strong>
                   {tool ? (
-                    <small className="text-xs text-muted-foreground">
+                    <span className="text-xs text-muted-foreground">
                       {tool.description}
-                    </small>
+                    </span>
                   ) : null}
                 </div>
                 {tool?.mode === "hold" ? (
@@ -582,7 +614,7 @@ export function AgentConfigForm({
                 className="flex items-center justify-between gap-3 border-t pt-3"
               >
                 <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-                  <FieldLabel htmlFor={id} className="text-[13px] font-semibold">
+                  <FieldLabel htmlFor={id} className="text-sm font-medium">
                     {channel.title}
                   </FieldLabel>
                   <FieldDescription className="text-xs">
@@ -597,8 +629,10 @@ export function AgentConfigForm({
               </div>
             );
           })}
-        </CardContent>
-      </Card>
+            </CardContent>
+          </Card>
+        </div>
+      </section>
 
       <ConfigFormFooter
         secondary={footerSecondary}
@@ -632,7 +666,7 @@ export function AgentConfigForm({
               <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
                 <span
                   aria-hidden
-                  className="inline-block size-2 rounded-full bg-amber-600"
+                  className="inline-block size-2 rounded-full bg-chart-2"
                 />
                 Unsaved changes
               </span>

@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import { FileText, TriangleAlert } from "lucide-react";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Field, FieldError, FieldLabel } from "@/components/ui/field";
@@ -25,7 +26,7 @@ import type { FlashKey, WizardDraftApi } from "./use-wizard-draft";
 export const STYLE_SUGGESTIONS = ["Friendly", "Energetic", "Calm", "Direct", "Patient"];
 
 function flashClass(flashed: FlashKey, key: Exclude<FlashKey, null>): string {
-  return flashed === key ? "field-flash" : "";
+  return flashed === key ? "ring-1 ring-primary/30 bg-primary/5" : "";
 }
 
 function StepHeading({ title, description }: { title: string; description: string }) {
@@ -213,17 +214,17 @@ export function GenerationStatus({
         <GenerationStatusCard phase={phase} onOpenJobs={onOpenJobs} onCancel={onCancel} />
       ) : null}
       {error ? (
-        <div className="flex items-start gap-2 rounded-lg border p-3">
-          <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden />
-          <div className="flex flex-col gap-1">
-            <p className="text-sm font-medium">Couldn&apos;t generate</p>
-            <p className="text-muted-foreground text-xs whitespace-pre-wrap">{error}</p>
-            <p className="text-muted-foreground text-xs">
+        <Alert>
+          <TriangleAlert aria-hidden />
+          <AlertTitle>Couldn&apos;t generate</AlertTitle>
+          <AlertDescription>
+            <span className="whitespace-pre-wrap">{error}</span>
+            <span>
               Retry — a fresh attempt starts clean — or use a complete,
               working template in the meantime: a property-consultant
               agent that books viewings, with viewing tools,
               qualification questions, and call follow-up rules.
-            </p>
+            </span>
             {onUseTemplate ? (
               <span>
                 <Button type="button" size="sm" variant="outline" onClick={onUseTemplate}>
@@ -232,8 +233,8 @@ export function GenerationStatus({
                 </Button>
               </span>
             ) : null}
-          </div>
-        </div>
+          </AlertDescription>
+        </Alert>
       ) : null}
     </>
   );

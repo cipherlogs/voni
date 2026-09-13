@@ -4,13 +4,21 @@ import Link from "next/link";
 import { useEffect, useRef, useState, useTransition } from "react";
 import { toast } from "@/components/ui/toast";
 import {
+  Check,
   CircleCheck,
   LoaderCircle,
+  Mic,
   RotateCw,
   TriangleAlert,
 } from "lucide-react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
+import {
+  Empty,
+  EmptyContent,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from "@/components/ui/empty";
 import { Progress } from "@/components/ui/progress";
 import { getJobProgressPercent } from "@/lib/jobs/ui-helpers";
 import { Button } from "@/components/ui/button";
@@ -316,15 +324,20 @@ export function EditAgent(props: {
   // when the job reports progress (see deployPercent); otherwise Base UI
   // renders it indeterminate with value={null}.
   const deployActive = deployState === "deploying" || deployState === "queued";
-  // Badge variants from the mockup's states strip: a red-tinted pill for a
-  // failed deployment, the muted pill while deploying, and the plain
-  // bordered pill for queued / ready / draft.
-  const deployBadgeVariant =
-    deployState === "failed"
-      ? "destructive"
+  // Onboarding-06 step markers + stats-11 progress idiom: draft → queued →
+  // deploying → ready, with failed as the terminal alert state. Markers ride
+  // the wizard-timeline idiom (filled Check when done, primary ring when
+  // active, muted outline upcoming); the bar renders indeterminate with
+  // value={null} until the job reports progress.
+  const deployStepIndex =
+    deployState === "ready" || deployState === "failed"
+      ? 3
       : deployState === "deploying"
-        ? "secondary"
-        : "outline";
+        ? 2
+        : deployState === "queued"
+          ? 1
+          : 0;
+  const deploySteps = ["Draft", "Queued", "Deploying", "Ready"] as const;
   const deployStatusCopy =
     deployState === "deploying"
       ? "Deploying new version… previous version still taking calls"
@@ -343,7 +356,7 @@ export function EditAgent(props: {
       <div className="min-w-0">
         <BackLink href="/agents" label="Agents" />
         {restoredDraft ? (
-          <Alert className="mb-4 rounded-xl text-[13px]">
+          <Alert className="mb-4 rounded-xl text-sm">
             <RotateCw />
             <AlertTitle>Unsaved edits restored</AlertTitle>
             <AlertDescription className="flex flex-wrap items-center justify-between gap-3">
@@ -379,26 +392,57 @@ export function EditAgent(props: {
           Changes take effect on the next call this agent takes.
         </p>
         <div
-          className="bg-card mb-4 flex flex-wrap items-center gap-2.5 rounded-xl border px-3.5 py-3"
+          className="bg-card mb-4 flex flex-col gap-3 rounded-xl border px-3.5 py-3"
           aria-live="polite"
         >
-          <Badge
-            variant={deployBadgeVariant}
-            className={`h-auto gap-1.5 rounded-full px-2.5 py-1 font-semibold [&>svg]:size-3.5! ${
-              deployBadgeVariant === "destructive"
-                ? "border-destructive/25"
-                : deployBadgeVariant === "outline"
-                  ? "bg-card"
-                  : ""
-            }`}
-          >
-            {deployState === "deploying" ? (
-              <LoaderCircle aria-hidden className="animate-spin" />
-            ) : null}
-            {deploymentLabel(deployState)}
-          </Badge>
+          <ol className="flex items-stretch gap-1" aria-label="Deployment progress">
+            {deploySteps.map((label, i) => {
+              const failed = deployState === "failed";
+              const done =
+                i < deployStepIndex || (deployState === "ready" && i === deployStepIndex);
+              const active = !failed && i === deployStepIndex;
+              const failedHere = failed && i === deployStepIndex;
+              return (
+                <li key={label} className="flex min-w-0 flex-1 items-center gap-2">
+                  <span
+                    aria-hidden
+                    className={
+                      "flex size-5 shrink-0 items-center justify-center rounded-full text-xs " +
+                      (done
+                        ? "bg-primary text-primary-foreground"
+                        : failedHere
+                          ? "bg-destructive text-destructive-foreground"
+                          : active
+                            ? "border border-primary text-primary ring-1 ring-primary/30"
+                            : "border text-muted-foreground")
+                    }
+                  >
+                    {done ? (
+                      <Check aria-hidden className="size-3" />
+                    ) : failedHere ? (
+                      <TriangleAlert aria-hidden className="size-3" />
+                    ) : active && deployState === "deploying" ? (
+                      <LoaderCircle aria-hidden className="size-3 animate-spin" />
+                    ) : (
+                      i + 1
+                    )}
+                  </span>
+                  <span
+                    className={
+                      "flex min-w-0 flex-col items-start gap-0.5 text-left " +
+                      (active || failedHere ? "font-medium" : "text-muted-foreground")
+                    }
+                  >
+                    <span className="text-xs">Step {i + 1}</span>
+                    <span className="min-w-0 truncate text-sm">{label}</span>
+                  </span>
+                </li>
+              );
+            })}
+          </ol>
+          <p className="text-sm font-medium">{deploymentLabel(deployState)}</p>
           {deployStatusCopy ? (
-            <span className="text-muted-foreground text-[13px]">
+            <span className="text-muted-foreground text-xs">
               {deployStatusCopy}
             </span>
           ) : null}
@@ -406,14 +450,14 @@ export function EditAgent(props: {
             <Progress
               value={deployPercent}
               aria-label="Deployment progress"
-              className="basis-full [&_[data-slot=progress-track]]:h-1.5"
+              className="w-full [&_[data-slot=progress-track]]:h-1.5"
             />
           ) : null}
         </div>
 
         {isGenerationStub ? (
           generationRunning ? (
-            <Alert className="mb-4 rounded-xl text-[13px]">
+            <Alert className="mb-4 rounded-xl text-sm">
               <LoaderCircle className="animate-spin" />
               <AlertTitle>Configuration generating</AlertTitle>
               <AlertDescription>
@@ -428,7 +472,7 @@ export function EditAgent(props: {
               </AlertDescription>
             </Alert>
           ) : generationReady ? (
-            <Alert className="mb-4 rounded-xl text-[13px]">
+            <Alert className="mb-4 rounded-xl text-sm">
               <CircleCheck />
               <AlertTitle>Ready to review</AlertTitle>
               <AlertDescription>
@@ -448,7 +492,7 @@ export function EditAgent(props: {
               </AlertDescription>
             </Alert>
           ) : (
-            <Alert className="mb-4 rounded-xl text-[13px]">
+            <Alert className="mb-4 rounded-xl text-sm">
               <TriangleAlert />
               <AlertTitle>Generation didn&apos;t finish</AlertTitle>
               <AlertDescription className="flex flex-col gap-2">
@@ -484,7 +528,7 @@ export function EditAgent(props: {
         {needsAttention ? (
           <Alert
             variant="destructive"
-            className="mb-4 rounded-xl text-[13px]"
+            className="mb-4 rounded-xl text-sm"
           >
             <TriangleAlert />
             <AlertTitle>Saved, but voice deployment needs attention</AlertTitle>
@@ -649,17 +693,28 @@ export function EditAgent(props: {
             />
           </>
         ) : (
-          <Card>
-            <CardHeader>
-              <CardTitle>Test this agent</CardTitle>
-            </CardHeader>
-            <CardContent className="flex flex-col gap-4">
-              <p className="text-muted-foreground text-sm">
+          <Empty>
+            <EmptyHeader>
+              <EmptyMedia variant="icon">
+                <Mic />
+              </EmptyMedia>
+              <EmptyTitle>Test this agent</EmptyTitle>
+              <EmptyDescription>
                 Test calls unlock once generation finishes — the voice and
                 language here are placeholders until then.
-              </p>
-            </CardContent>
-          </Card>
+              </EmptyDescription>
+            </EmptyHeader>
+            <EmptyContent>
+              <Button
+                nativeButton={false}
+                size="sm"
+                variant="outline"
+                render={<Link href="/jobs" />}
+              >
+                View progress in Jobs
+              </Button>
+            </EmptyContent>
+          </Empty>
         )}
       </aside>
     </div>

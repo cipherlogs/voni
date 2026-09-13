@@ -3,6 +3,15 @@ import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import {
+  Empty,
+  EmptyContent,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from "@/components/ui/empty";
+import { PageHeading } from "@/components/wizard/form-layout";
 import { Bot, Plus } from "lucide-react";
 import { CardListSkeleton } from "@/components/page-skeletons";
 import { listAgentsWithGeneration } from "./actions";
@@ -23,16 +32,18 @@ async function AgentsList() {
         brief={`Agent library: ${rows.length} saved agents. New agents are built on the creation screen.`}
       />
       {rows.length === 0 ? (
-        <Card>
-          <CardContent className="flex flex-col items-center gap-3 py-16 text-center">
-            <Bot className="text-muted-foreground size-10" />
-            <div>
-              <p className="font-medium">No agents yet</p>
-              <p className="text-muted-foreground text-sm">
-                Describe what you want an agent to accomplish and we&apos;ll
-                generate a starting configuration.
-              </p>
-            </div>
+        <Empty>
+          <EmptyHeader>
+            <EmptyMedia>
+              <Bot className="text-muted-foreground size-10" />
+            </EmptyMedia>
+            <EmptyTitle>No agents yet</EmptyTitle>
+            <EmptyDescription>
+              Describe what you want an agent to accomplish and we&apos;ll
+              generate a starting configuration.
+            </EmptyDescription>
+          </EmptyHeader>
+          <EmptyContent>
             <Button
               nativeButton={false}
               render={<Link href="/agents/new" />}
@@ -40,8 +51,8 @@ async function AgentsList() {
             >
               Create your first agent
             </Button>
-          </CardContent>
-        </Card>
+          </EmptyContent>
+        </Empty>
       ) : (
         <div className="flex flex-col gap-3">
           {rows.map((agent) => {
@@ -61,16 +72,16 @@ async function AgentsList() {
                   }
                 : null;
             return (
-              <Card key={agent.id} className="relative transition-colors hover:bg-muted/50">
-                <CardContent className="flex flex-wrap items-center justify-between gap-4 py-4">
+              <Card key={agent.id} className="relative border py-0 shadow-sm transition-[border-color,box-shadow]">
+                <CardContent className="flex flex-wrap items-center gap-4 p-4">
                   <Link
                     href={`/agents/${agent.id}`}
                     aria-label={`${gen ? "Review" : "Edit"} ${agent.name}`}
                     className="before:absolute before:inset-0 min-w-0 flex-1"
                   >
-                    <span className="flex min-w-0 flex-col gap-1">
-                      <span className="flex items-center gap-2">
-                        <span className="font-medium">{agent.name}</span>
+                    <span className="flex min-w-0 flex-1 flex-col gap-1">
+                      <span className="flex flex-wrap items-center gap-2">
+                        <span className="text-pretty text-sm font-medium">{agent.name}</span>
                         {gen ? (
                           <Badge
                             variant={
@@ -156,18 +167,16 @@ async function AgentsList() {
 export default function AgentsPage() {
   return (
     <div data-testid="agents-shell" className="flex flex-col gap-6">
-      <div className="flex flex-wrap items-center justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Agents</h1>
-          <p className="text-muted-foreground text-sm">
-            Reusable AI workers with a mission, rules, tools, and channels.
-          </p>
-        </div>
-        <Button nativeButton={false} render={<Link href="/agents/new" />}>
-          <Plus />
-          New agent
-        </Button>
-      </div>
+      <PageHeading
+        title="Agents"
+        description="Reusable AI workers with a mission, rules, tools, and channels."
+        actions={
+          <Button nativeButton={false} render={<Link href="/agents/new" />}>
+            <Plus />
+            New agent
+          </Button>
+        }
+      />
 
       <Suspense
         fallback={
