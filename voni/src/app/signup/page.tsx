@@ -36,13 +36,10 @@ async function SignupDecision({
 
 export default function SignupPage(props: PageProps<"/signup">) {
   return (
-    <main
-      data-testid="signup-shell"
-      className="flex min-h-svh flex-col items-center justify-center px-4 py-12"
-    >
+    <main data-testid="signup-shell" className="flex min-h-svh flex-col">
       <Suspense
         fallback={
-          <p aria-live="polite" className="text-muted-foreground text-sm">
+          <p aria-live="polite" className="text-muted-foreground p-6 text-sm">
             Loading sign-up…
           </p>
         }

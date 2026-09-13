@@ -1,10 +1,9 @@
 import { Suspense } from "react";
 import { connection } from "next/server";
-import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Phone, MessageCircle, Wrench } from "lucide-react";
 import { LandingDemo } from "@/components/landing-demo";
 import { LandingHeader } from "@/components/landing-header";
+import { GridListShowcase } from "@/components/landing-grid-list";
 import { headers } from "next/headers";
 import { VoniLogo } from "@/components/voni-logo";
 import { auth } from "@/lib/auth";
@@ -70,22 +69,8 @@ export default function LandingPage() {
       </section>
 
       <section className="border-t">
-        <div className={`${CONTAINER} grid gap-4 py-16 md:grid-cols-3 md:py-20`}>
-          <FeatureCard
-            icon={<Phone className="size-4" />}
-            title="Goal-pursuing, not scripted"
-            description="Your agent tracks Intent, Blocker, State, and Next Action for every lead — and picks up exactly where it left off on the next call."
-          />
-          <FeatureCard
-            icon={<MessageCircle className="size-4" />}
-            title="One conversation, every channel"
-            description="Phone and WhatsApp feed the same lead timeline. A reply on WhatsApp is remembered on the next call — not a separate silo."
-          />
-          <FeatureCard
-            icon={<Wrench className="size-4" />}
-            title="Reasoning you can see"
-            description="Every Blocker and Next Action is traced back to the tool call or transcript moment that produced it — not a black box."
-          />
+        <div className={`${CONTAINER} py-16 md:py-20`}>
+          <GridListShowcase />
         </div>
       </section>
 
@@ -103,27 +88,5 @@ export default function LandingPage() {
         </div>
       </footer>
     </div>
-  );
-}
-
-function FeatureCard({
-  icon,
-  title,
-  description,
-}: {
-  icon: React.ReactNode;
-  title: string;
-  description: string;
-}) {
-  return (
-    <Card className="interactive-card">
-      <CardContent className="flex flex-col gap-3 py-2">
-        <div className="bg-muted text-foreground flex size-8 items-center justify-center rounded-md">
-          {icon}
-        </div>
-        <p className="font-medium">{title}</p>
-        <p className="text-muted-foreground leading-relaxed">{description}</p>
-      </CardContent>
-    </Card>
   );
 }
