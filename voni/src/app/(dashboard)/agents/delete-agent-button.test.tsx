@@ -65,14 +65,14 @@ test("never-provisioned delete shortens copy but keeps the typed-name gate", () 
   assert.ok(buttonSource.includes("disabled={!confirmed}"));
 });
 
-test("detail page deletes from the danger zone only, no footer delete or muted sentence", () => {
-  // One delete affordance total: the bordered "Danger zone" section. The
-  // footer-bar delete next to Save doubled the destructive affordance, so it
-  // is gone — no footerSecondary prop, no muted sentence link.
+test("detail page deletes from the footer, no danger zone", () => {
+  // One delete affordance total: the footer secondary slot. The bordered
+  // "Danger zone" section is gone — no section heading, no muted sentence
+  // link.
   assert.ok(editSource.includes("AgentDeleteButton"));
-  assert.ok(editSource.includes("Danger zone"));
-  assert.ok(editSource.includes("danger-zone-heading"));
-  assert.ok(!editSource.includes("footerSecondary"));
+  assert.ok(editSource.includes("footerSecondary"));
   assert.ok(editSource.includes('redirectTo="/agents"'));
+  assert.ok(!editSource.includes("Danger zone"));
+  assert.ok(!editSource.includes("danger-zone-heading"));
   assert.ok(!editSource.includes("Done with this agent?"));
 });

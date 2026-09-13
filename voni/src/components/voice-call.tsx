@@ -371,7 +371,7 @@ export function VoiceCall({ mode }: { mode: Mode }) {
     <div
       role="region"
       aria-label={callTitle}
-      className={`bg-card flex w-full flex-col items-center rounded-[16px] border p-5 text-center ${
+      className={`bg-card flex w-full flex-col items-center rounded-[16px] border p-4 text-center md:p-5 ${
         isDemo ? "h-[30rem] max-w-sm" : ""
       }`}
     >
@@ -589,7 +589,7 @@ export function VoiceCall({ mode }: { mode: Mode }) {
       <div
         className={`mt-3 min-h-0 w-full flex-1 overflow-y-auto ${
           turns.length === 0 && !error ? "flex items-center justify-center" : ""
-        } ${!isDemo ? "min-h-[16rem] lg:min-h-0" : ""}`}
+        } ${!isDemo ? "min-h-[12rem] max-h-[18rem] lg:min-h-0 lg:max-h-none" : ""}`}
       >
         {error ? (
           <div
@@ -634,16 +634,16 @@ export function VoiceCall({ mode }: { mode: Mode }) {
                       return (
                         <MessageScrollerItem key={`${i}-${turn.role}`}>
                           <Message align={isUser ? "end" : "start"}>
-                            {/* Mockup bubbles are full-bleed rows inset from
-                                one side, not shrink-to-fit chat balloons: the
-                                agent sits on the muted surface offset 24px
-                                right, you on the card surface offset 24px
-                                left, and the speaker label lives INSIDE the
-                                bubble. Variants stay tokens only. */}
+                            {/* Desktop mockup bubbles are full-bleed rows inset
+                                from one side (24px), with the speaker label
+                                inside the bubble. On phones they shrink to
+                                85% chat-style balloons inset 16px so they
+                                read as conversation, not rows. Variants stay
+                                tokens only. */}
                             <Bubble
                               align={isUser ? "end" : "start"}
                               variant={isUser ? "outline" : "muted"}
-                              className={`w-full max-w-none ${isUser ? "ml-6" : "mr-6"}`}
+                              className={`w-auto max-w-[85%] md:w-full md:max-w-none ${isUser ? "ml-4 md:ml-6" : "mr-4 md:mr-6"}`}
                             >
                               <BubbleContent className="border-border w-full max-w-full rounded-[12px] py-2 text-[13px] leading-[1.5]">
                                 <span className="text-muted-foreground mb-0.5 block text-[11px] font-bold">

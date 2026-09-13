@@ -181,6 +181,7 @@ export function AgentDeleteButton({
           </FieldDescription>
           <Input
             id={`delete-confirm-${id}`}
+            className="max-w-sm"
             value={confirmation}
             onChange={(e) => setConfirmation(e.target.value)}
             placeholder={name}

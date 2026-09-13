@@ -23,7 +23,6 @@ import {
 } from "@/components/ui/empty";
 import { RouteBrief } from "@/components/copilot/route-brief";
 import { FilterChips } from "@/components/filter-chips";
-import { VoiceLineLive } from "@/components/voice-line";
 import { listCalls } from "@/lib/copilot/detail-data";
 import {
   callOutcomeLabel,
@@ -367,7 +366,6 @@ export default function CallsPage({ searchParams }: PageProps<"/calls">) {
           </p>
         </div>
       </div>
-      <VoiceLineLive />
       <Suspense fallback={null}>
         <CallsChips searchParams={searchParams} />
       </Suspense>

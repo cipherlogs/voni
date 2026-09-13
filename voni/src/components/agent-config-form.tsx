@@ -48,8 +48,9 @@ import {
  * surface, not a filtered view of it.
  */
 
-/** Shared control geometry, read off the mockup's CSS rather than approximated. */
-const CONTROL = "h-auto min-h-[42px] w-full rounded-[10px] px-3 py-2.5";
+/** Shared control geometry: phones get shadcn `h-8`-equivalent sizing with
+ * `text-base` (keeps iOS no-zoom behavior); 42px restores at `md:`. */
+const CONTROL = "w-full rounded-[10px] px-3 py-2 text-base md:min-h-[42px] md:py-2.5 md:text-sm";
 // Border-only elevation (house border-OR-shadow floor): the mockup's ambient
 // shadow lives on the edit-agent statusline, not on form cards or footers.
 const CARD = "gap-3.5 rounded-xl border pt-4 pb-[18px]";
@@ -87,9 +88,8 @@ const CHANNEL_META = [
  * WizardFooter's secondary-left/primary-right layout (`justify-between` with
  * both slots, `justify-end` when there is no secondary).
  *
- * The border and padding are desktop-only — on small screens the host
- * page turns this into a fixed bottom save bar (`footerClassName`) that
- * supplies its own top border, so a bordered card inside it would double up.
+ * The footer is normal document flow everywhere — the bordered bar renders
+ * inline after the last card on all screen sizes, never fixed or sticky.
  */
 export function ConfigFormFooter({
   secondary,
@@ -129,7 +129,6 @@ export function AgentConfigForm({
   onChange,
   isDirty = false,
   footerSecondary,
-  footerClassName,
 }: {
   initialName: string;
   initialConfig: AgentConfig;
@@ -148,8 +147,6 @@ export function AgentConfigForm({
   isDirty?: boolean;
   /** Optional secondary action rendered left of the primary save (e.g. Delete). */
   footerSecondary?: ReactNode;
-  /** Lets a host page restyle the footer (e.g. sticky save bar on the detail page). */
-  footerClassName?: string;
 }) {
   const [name, setName] = useState(initialName);
   const [config, setConfig] = useState<AgentConfig>(initialConfig);
@@ -288,7 +285,7 @@ export function AgentConfigForm({
             </FieldLabel>
             <Input
               id="agent-name"
-              className={CONTROL}
+              className={cn(CONTROL, "max-w-md")}
               value={name}
               placeholder="Vera"
               data-invalid={!name.trim() || undefined}
@@ -304,7 +301,7 @@ export function AgentConfigForm({
               </FieldLabel>
               <Input
                 id="identity-role"
-                className={CONTROL}
+                className={cn(CONTROL, "max-w-md")}
                 value={config.identity.role}
                 placeholder="Property viewing coordinator"
                 data-invalid={!config.identity.role.trim() || undefined}
@@ -335,7 +332,7 @@ export function AgentConfigForm({
                 <SelectTrigger
                   id="agent-language"
                   aria-label="Language"
-                  className={CONTROL}
+                  className={cn(CONTROL, "max-w-xs")}
                 >
                   <SelectValue />
                 </SelectTrigger>
@@ -376,7 +373,7 @@ export function AgentConfigForm({
                 if (value) set("voiceId", String(value));
               }}
             >
-              <SelectTrigger id="agent-voice" aria-label="Voice" className={CONTROL}>
+              <SelectTrigger id="agent-voice" aria-label="Voice" className={cn(CONTROL, "max-w-md")}>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -604,7 +601,6 @@ export function AgentConfigForm({
       </Card>
 
       <ConfigFormFooter
-        className={footerClassName}
         secondary={footerSecondary}
         primary={
           <>

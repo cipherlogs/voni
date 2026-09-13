@@ -4,7 +4,6 @@ import { notFound } from "next/navigation";
 import { getAgentWithGeneration } from "../actions";
 import { EditAgent } from "./edit-agent";
 import { DetailSkeleton } from "@/components/page-skeletons";
-import { VoiceLineLive } from "@/components/voice-line";
 import { agentConfigSchema, normalizeConfig } from "@/lib/agents/config";
 import type { AgentConfig } from "@/lib/agents/config";
 
@@ -83,7 +82,6 @@ export default function AgentPage({
       >
         <AgentDetail params={params} searchParams={searchParams} />
       </Suspense>
-      <VoiceLineLive />
     </div>
   );
 }

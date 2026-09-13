@@ -23,8 +23,8 @@ test("calls chips resolve inside a Suspense leaf above the Card, never the shell
   );
   assert.ok(!shell.includes("await searchParams"), "shell never awaits searchParams");
   // A <nav> child of <table> is invalid HTML (hydration error) — the chips
-  // leaf renders between VoiceLineLive and the Card, and the rows leaf
-  // carries only TableBody rows.
+  // leaf renders above the Card, and the rows leaf carries only TableBody
+  // rows.
   assert.ok(shell.includes("<CallsChips"), "chips render in a shell Suspense leaf");
   const leaf = pageSource.slice(
     pageSource.indexOf("async function CallsChips"),

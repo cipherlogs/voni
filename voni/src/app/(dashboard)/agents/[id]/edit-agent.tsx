@@ -608,30 +608,11 @@ export function EditAgent(props: {
             }
             toast.add({ type: "success", title: "Agent saved — voice deployment is running" });
           }}
-          // Sticky bottom save bar on small screens so Save stays reachable
-          // past the long config form; static footer content on desktop.
-          // A z-index sits it above the global bottom nav — both are
-          // position:fixed, and without one the bar slides under the nav.
-          footerClassName="sticky bottom-18 z-10 -mx-1 border-t bg-background/95 px-1 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur supports-[backdrop-filter]:bg-background/80 lg:static lg:z-auto lg:mx-0 lg:border-0 lg:bg-transparent lg:px-0 lg:pt-4 lg:pb-0 lg:backdrop-blur-none"
-        />
-        {/* The single delete path: a bordered danger zone opening the same
-            typed-name dialog. A bordered delete button in the footer bar next
-            to Save doubled the destructive affordance, so this section is
-            the only one. */}
-        <section
-          aria-labelledby="danger-zone-heading"
-          className="mt-3 rounded-xl border border-destructive/25 p-4"
-        >
-          <h2
-            id="danger-zone-heading"
-            className="text-sm font-semibold text-destructive"
-          >
-            Danger zone
-          </h2>
-          <p className="mt-1 text-xs text-muted-foreground">
-            Deleting this agent is permanent and cannot be undone.
-          </p>
-          <div className="mt-3">
+          // Delete lives in the footer secondary slot (left on desktop,
+          // full-width above Save on mobile) opening the same typed-name
+          // dialog. The footer uses ConfigFormFooter's default document-flow
+          // layout — no sticky positioning.
+          footerSecondary={
             <AgentDeleteButton
               id={id}
               name={name}
@@ -643,14 +624,14 @@ export function EditAgent(props: {
               neverProvisioned={!assemblyaiAgentId && deployState !== "ready"}
               isBridgeAgent={isBridgeAgent}
             />
-          </div>
-        </section>
+          }
+        />
       </div>
 
       <aside
         id="test-rail"
         aria-label="Test this agent"
-        className="order-first lg:order-none lg:sticky lg:top-[4.5rem] lg:z-10 lg:max-h-[calc(100vh-3rem)] lg:overflow-y-auto lg:rounded-xl lg:bg-background"
+        className="lg:sticky lg:top-[4.5rem] lg:z-10 lg:max-h-[calc(100vh-3rem)] lg:overflow-y-auto lg:rounded-xl lg:bg-background"
       >
         {canTestCall ? (
           <>

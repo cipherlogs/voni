@@ -1049,11 +1049,11 @@
 .mockAction span {
   grid-column: 1 / -1;
   color: var(--muted-foreground);
-  font-size: 0.7rem;
+  font-size: 0.75rem;
 }
 
 .mockAction strong {
-  font-size: 0.8rem;
+  font-size: 0.8125rem;
 }
 
 .mockAction svg {

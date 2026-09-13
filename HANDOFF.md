@@ -10,6 +10,18 @@ context/usage. Don't hand-edit the **Activity Log** — it's auto-generated.
 
 ## Status
 
+### Resume here (2026-09-13, Blocks-anchored redesign: DESIGN.md frozen, ready to cut redesign/blocks-only)
+
+**Now:** Landing the agent-detail polish commit; `voni/DESIGN.md` frozen (Blocks-anchored plan approved; Phase 0 gap/route/divergence evidence merged into `.claude/plans/fan-out-subagents-to-deep-hippo.md`). Next: cut `redesign/blocks-only` from clean main, Phase 2 foundation (registry installs per allow-list + THIRD-PARTY-NOTICES, globals.css swap, cn unify, voice-call strip).
+**Next:** Cut the redesign branch and start Phase 2 foundation.
+**Why:** Blocks-anchored redesign plan (user-approved; strict literal-only retired after Blocks research showed snippet-collection reality).
+
+### Resume here (2026-09-13, agent detail mobile/polish: test card, unsticky footer, footer delete, input widths, shadcn mobile sizing, voice-line removal — uncommitted)
+
+**Now:** All 6 user-reported issues fixed via 4 parallel Agent leaves (no Ruflo tooling available in-session; used named teammates) + lead verification round. (1) Test card (`voice-call.tsx`): `p-5`→`p-4 md:p-5`, transcript `min-h-[12rem] max-h-[18rem] lg:min-h-0 lg:max-h-none` with internal scroll (no more page push), bubbles `max-w-[85%]` phone balloons / full-bleed mockup rows at `md:`; `order-first` removed from rail (`edit-agent.tsx:634`) so H1 leads on phones; desktop `lg:sticky` rail untouched. (2) Sticky footer gone: `footerClassName` sticky-bar prop deleted from `edit-agent.tsx` + removed from `AgentConfigForm` API (`agent-config-form.tsx`); `ConfigFormFooter` doc rewritten — normal document flow everywhere, secondary-left/primary-right kept. (3) Danger zone deleted; Delete lives in footer secondary slot (`footerSecondary={<AgentDeleteButton …/>}`), typed-name dialog unchanged. (4) Per-field widths: name/role `max-w-md`, language `max-w-xs`, voice `max-w-md`, prose fields full; delete-confirm `max-w-sm`. (5) `CONTROL` is now mobile-first (`py-2 text-base md:min-h-[42px] md:py-2.5 md:text-sm`); select trigger base already `h-8`. (6) `voice-line.tsx` deleted; unwired from `agents/[id]/page.tsx` + `calls/page.tsx`; test comment fixed; header copilot button untouched. Verified: `tsc --noEmit` clean on touched files (one pre-existing error in `prototypes/strategy/page.tsx:302`), **12/12** affected tests pass, `compile_route` + `get_errors` clean, 390px browser round on :3000 (H1-first stacking, Delete-left/Save-right footer in flow, typed-name modal gate incl. disabled confirm, no voice bar on /calls, console clean). `next dev` left running; browser session closed.
+**Next:** Commit these files (or review first). Reverses the bordered danger-zone from the earlier consistency sweep — superseded by user's explicit direction.
+**Why:** User's 6-issue agent-detail polish task (`/unlazy`: fan out subagents).
+
 ### Resume here (2026-09-13, UI consistency sweep: header/footers/conversation/danger-zone/recent-calls/help-icon, uncommitted)
 
 **Now:** All 7 user-reported issues fixed via 3 parallel fix crews + verify crew (Workflow `ui-consistency-sweep`), then 2 contract-test updates + runtime browser round. (1) Header: `app-header.tsx:163` now opaque `bg-background` (dropped `/80` + `backdrop-blur-md`), sticky top-0 z-30 h-14 kept — no more ghosting; test rail `edit-agent.tsx:653` sticks at `lg:top-[4.5rem]` with `bg-background rounded-xl z-10` so it clears the 56px header. (2) Footers: `ConfigFormFooter` flipped to secondary-left/primary-right house rule (matches WizardFooter); agent Save pill override removed → default solid `rounded-lg`; campaign-form/campaign-controls verified already conforming. (3) Conversation card: one Card, three stacked Fields — listen-for copy, detect as bordered Checkbox rows with single row-level slow-read-back Switch (pacing preserved via `toggleDetectSensitive`, `lib/agents/config.ts` untouched), house-rules textarea; `AudioLines` removed. (4) Danger zone: muted sentence replaced with bordered `border-destructive/25` section (heading + description + default destructive `AgentDeleteButton`, typed-name dialog unchanged). (5) Recent calls removed from `/agents` (Suspense block + import gone); `recent-calls.tsx` component file kept (still the section contract). (6) Help icon: literal `?` → lucide `Keyboard` in `shortcuts-dialog.tsx`, `font-mono` dropped, a11y attrs kept. (7) Errors: `get_errors` + `get_compilation_issues` clean; pre-existing only (RouteBrief table-nesting on /calls, flushSync warning, no E1439 in log). Tests updated to new contracts: `delete-agent-button.test.tsx` asserts danger-zone (not muted sentence), `calls-index.test.ts` asserts RecentCalls absent from /agents. Verified: tsc 0, eslint 0, **346/346 tests**, `get_errors` empty, browser round on :3000 — /agents (no recent-calls, Keyboard icon button present), /agents/[id] (opaque 56px sticky header, one Conversation card with checkbox+switch rows, Save `rounded-lg 8px`, Danger zone section renders, console clean apart from HMR/Fast-Refresh noise). Mobile sticky save bar + desktop lg rail stick-offset not visually confirmed (viewport stayed 640px; rail read `static` = correct pre-breakpoint behavior). `next dev` left running.
@@ -3529,3 +3541,38 @@ destination (1e).
 - 2026-09-13T15:15:34Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/delete-agent-button.test.tsx
 - 2026-09-13T15:15:38Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/calls/calls-index.test.ts
 - 2026-09-13T15:32:31Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/HANDOFF.md
+- 2026-09-13T15:51:06Z [Write] /home/cipherlogs/.claude/plans/fan-out-subagents-and-functional-sky.md
+- 2026-09-13T15:55:05Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/[id]/page.tsx
+- 2026-09-13T15:55:05Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/calls/page.tsx
+- 2026-09-13T15:55:11Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/[id]/page.tsx
+- 2026-09-13T15:55:11Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/calls/page.tsx
+- 2026-09-13T15:55:11Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/calls/calls-filter-chips.test.ts
+- 2026-09-13T15:55:54Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/[id]/edit-agent.tsx
+- 2026-09-13T15:55:58Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/delete-agent-button.test.tsx
+- 2026-09-13T15:56:24Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/agent-config-form.tsx
+- 2026-09-13T15:56:31Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/agent-config-form.tsx
+- 2026-09-13T15:56:35Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/agent-config-form.tsx
+- 2026-09-13T15:56:38Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/agent-config-form.tsx
+- 2026-09-13T15:56:43Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/agent-config-form.tsx
+- 2026-09-13T15:56:53Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/agent-config-form.tsx
+- 2026-09-13T15:56:55Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/agent-config-form.tsx
+- 2026-09-13T15:57:00Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/agent-config-form.tsx
+- 2026-09-13T15:57:04Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/agent-config-form.tsx
+- 2026-09-13T15:57:07Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/delete-agent-button.tsx
+- 2026-09-13T15:57:12Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/delete-agent-button.tsx
+- 2026-09-13T15:57:13Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/voice-call.tsx
+- 2026-09-13T15:57:16Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/voice-call.tsx
+- 2026-09-13T15:57:21Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/voice-call.tsx
+- 2026-09-13T15:59:34Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/delete-agent-button.tsx
+- 2026-09-13T15:59:37Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/delete-agent-button.tsx
+- 2026-09-13T15:59:42Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/agents/[id]/edit-agent.tsx
+- 2026-09-13T16:16:52Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/HANDOFF.md
+- 2026-09-13T16:39:01Z [Write] /home/cipherlogs/.claude/plans/fan-out-subagents-to-deep-hippo.md
+- 2026-09-13T16:40:22Z [Edit] /home/cipherlogs/.claude/plans/fan-out-subagents-to-deep-hippo.md
+- 2026-09-13T16:41:09Z [Edit] /home/cipherlogs/.claude/plans/fan-out-subagents-to-deep-hippo.md
+- 2026-09-13T16:43:20Z [Write] /home/cipherlogs/.claude/plans/fan-out-subagents-to-deep-hippo.md
+- 2026-09-13T16:55:07Z [Edit] /home/cipherlogs/.claude/plans/fan-out-subagents-to-deep-hippo.md
+- 2026-09-13T16:55:25Z [Edit] /home/cipherlogs/.claude/plans/fan-out-subagents-to-deep-hippo.md
+- 2026-09-13T17:12:07Z [Write] /home/cipherlogs/.claude/plans/fan-out-subagents-to-deep-hippo.md
+- 2026-09-13T17:13:01Z [Write] /home/cipherlogs/Repos/AI/leadcalls/voni/DESIGN.md
+- 2026-09-13T17:16:06Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/HANDOFF.md
