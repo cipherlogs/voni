@@ -138,6 +138,14 @@ or be cut — or be a DESIGN.md-listed exception.
   CSS deleted with the routes. `ls src/app/prototypes` must 404-think → empty.
 - `cn` imports unify to `@/lib/utils` (remove `from "cn"` specifiers).
   `grep -rn 'from "cn"' src`
+  (DONE 2026-09-13 — 13 ui/ files unified. The `"cn"` npm dep remains
+  installed; remove it when no specifier references it.)
+- Vendored Blocks files live under `src/components/<block-id>/` (NOT
+  `src/components/ui/` — the CLI's default `ui/` overwrites are rejected;
+  see foundation notes). Ban greps exclude them:
+  `grep -rn 'text-\[' src --exclude-dir=node_modules | grep -v 'src/components/ui/' | grep -v 'src/components/table-05'`
+  (same exclusion pattern for the other greps; table-05 is the first
+  reference vendoring, more block dirs follow).
 - `sonner` references must be zero (Base UI toast is canonical).
   `grep -rni 'sonner' src package.json`
 - `asChild` must be zero (`render=` everywhere). `grep -rn 'asChild' src`

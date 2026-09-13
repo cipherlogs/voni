@@ -38,7 +38,8 @@ the flows that already follow it.
   `useTransition`-driven and `useFormStatus`-driven pending state (see
   `SubmitButton` in `src/components/settings-view.tsx` for the latter).
 - **Every mutation must surface success and failure.** An inline `Alert` for
-  validation/blocking errors, a `sonner` `toast` for a fire-and-forget
+  validation/blocking errors, a Base UI `toast` (`toast.add` from
+  `src/components/ui/toast.tsx`) for a fire-and-forget
   confirmation — see `edit-agent.tsx` and `agents/new/page.tsx` for the house
   pattern of using both together. Never let a failed action just silently
   reset a pending flag with nothing shown (see the `catch` in
