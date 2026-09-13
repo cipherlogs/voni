@@ -43,14 +43,21 @@ a Blocks token system exists.
 - **Radius:** adopt Blocks `--radius: 0.625rem` (currently `0.5rem`) with
   the same `sm–4xl` derivation. One-line change, whole-app effect.
 - **Shadow:** shadcn/Tailwind defaults. No custom shadows.
-- **Motion:** bespoke motion system CULLED — `--motion-*`/`--ease-*`
-  tokens and all bespoke keyframes go (`voni-chip-in`, `voni-arc-morph`,
-  `copilot-bars-live`, `voni-voice-*`, `voni-livedot`, `field-flash`,
-  `wizard-active-dot`, `interactive-card` lift,
-  `auth/status/list/content-enter`, dashboard view-transitions), except
-  what §4 explicitly re-homes. `prefers-reduced-motion` guard stays.
-  `sidebar-02`'s `framer-motion` dep is REJECTED — do not adopt it;
-  sidebar motion uses the token system.
+- **Motion:** bespoke motion system CULLED — deleted in group 6:
+  `voni-voice-*`, `copilot-bars-live`, `voni-livedot`, `field-flash`,
+  `wizard-pulse`/`wizard-active-dot`, `interactive-card` lift,
+  `list-enter`, `--brand`-coupled arc accent. SURVIVING listed
+  exceptions (amendment 2026-09-13 — each still referenced by live
+  code; deleting any breaks rendering): `voni-chip-in` + `voni-arc-morph`
+  + `voni-arc-fade` + `.voni-arc` (logo mark animation; accent stroke
+  re-pointed to `var(--color-green-600)`), `auth-enter` + `content-enter`
+  (+ `.status-enter` alias), dashboard view-transitions
+  (`dashboard-content` + `dashboard-out`/`dashboard-in`). `--motion-*` /
+  `--ease-*` tokens stay while the survivors consume them. Future work
+  may cull the survivors with their consumers; until then they are
+  allowed. `prefers-reduced-motion` guard stays. `sidebar-02`'s
+  `framer-motion` dep is REJECTED — do not adopt it; sidebar motion
+  uses the token system.
 - **Dark mode:** class-based + `next-themes` (as today). `dark:` utilities
   inside generated `ui/` primitives stay; the 4 bespoke `dark:` sites
   (`voni-logo` hex, `connection-test-button` emerald, `bubble`, mode-toggle
