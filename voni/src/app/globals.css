@@ -28,8 +28,6 @@
   --color-input: var(--input);
   --color-border: var(--border);
   --color-destructive: var(--destructive);
-  --color-brand-foreground: var(--brand-foreground);
-  --color-brand: var(--brand);
   --color-accent-foreground: var(--accent-foreground);
   --color-accent: var(--accent);
   --color-muted-foreground: var(--muted-foreground);
@@ -72,16 +70,6 @@
   --muted-foreground: oklch(0.52 0 0);
   --accent: oklch(0.97 0 0);
   --accent-foreground: oklch(0.205 0 0);
-  /* Brand accent: the green already used by the call button (Jakob's Law —
-     phone-app convention), now the product's one signature color rather than
-     a hardcoded Tailwind shade living only in voice-call.tsx. Same value in
-     light and dark. Contrast truth: green-600 clears the 3:1 non-text/UI
-     floor (large graphics, focus-adjacent fills) on both themes but never
-     body-text 4.5:1 — use it for fills and accents, never for text on
-     light/dark surfaces. Interactive fills pair it with a darker
-     hover/pressed mix so the pressed state buys headroom. */
-  --brand: var(--color-green-600);
-  --brand-foreground: oklch(1 0 0);
   --destructive: oklch(0.577 0.245 27.325);
   --border: oklch(0.922 0 0);
   --input: oklch(0.922 0 0);
@@ -98,6 +86,28 @@
   --sidebar-accent-foreground: oklch(0.205 0 0);
   --sidebar-border: oklch(0.922 0 0);
   --sidebar-ring: oklch(0.708 0 0);
+}
+
+/* Live-call green — NARROWLY SCOPED, not a token. Only voice-call.tsx may
+   reference these three classes (fill for the call button, ring for the live
+   portrait, dot for the state line). Same value in light and dark; the fill
+   pairs with white text, never body text. Never reintroduce as --brand or
+   under any other global name. */
+.voice-call-live-fill {
+  background-color: var(--color-green-600);
+  color: oklch(1 0 0);
+}
+
+.voice-call-live-fill:hover {
+  background-color: color-mix(in oklch, var(--color-green-600), black 12%);
+}
+
+.voice-call-live-ring {
+  border-color: var(--color-green-600);
+}
+
+.voice-call-live-dot {
+  background-color: var(--color-green-600);
 }
 
 ::view-transition {
@@ -125,8 +135,7 @@
   animation: auth-enter var(--motion-slow) ease-out both;
 }
 
-.status-enter,
-.list-enter {
+.status-enter {
   animation: content-enter var(--motion-standard) ease-out both;
 }
 
@@ -152,7 +161,7 @@
 }
 
 .voni-arc-accent {
-  stroke: var(--color-brand);
+  stroke: var(--color-green-600);
   opacity: 0;
   animation:
     voni-arc-morph var(--motion-loop) ease-in-out infinite,
@@ -191,141 +200,6 @@
   50%,
   70% {
     opacity: 1;
-  }
-}
-
-.interactive-card {
-  transition:
-    border-color var(--motion-fast) ease,
-    background-color var(--motion-fast) ease,
-    transform var(--motion-fast) ease;
-}
-
-.interactive-card:hover {
-  transform: translateY(-1px);
-}
-
-/* Wizard demos: agent-applied field flash (one-shot, slow token) and the
-   active timeline node's pulse (slow token, alternate). No new library —
-   tw-animate-css + these two keyframes only. */
-.field-flash {
-  animation: field-flash var(--motion-slow) var(--ease-out-soft) 3;
-}
-
-@keyframes field-flash {
-  0%,
-  100% {
-    box-shadow: 0 0 0 0 transparent;
-  }
-  50% {
-    box-shadow: 0 0 0 3px var(--ring);
-  }
-}
-
-.wizard-active-dot {
-  animation: wizard-pulse var(--motion-slow) ease-in-out infinite alternate;
-}
-
-/* Copilot mark: bars dance while it speaks. A waveform loop needs its own
-   cadence — none of the transition tokens fit — so 900ms is deliberate.
-   The global reduced-motion rule squashes this to a static frame. */
-.copilot-bars-live rect {
-  transform-box: fill-box;
-  transform-origin: center;
-  animation: copilot-bars 900ms ease-in-out infinite;
-}
-
-.copilot-bars-live rect:nth-child(2) {
-  animation-delay: 120ms;
-}
-
-.copilot-bars-live rect:nth-child(3) {
-  animation-delay: 240ms;
-}
-
-.copilot-bars-live rect:nth-child(4) {
-  animation-delay: 360ms;
-}
-
-@keyframes copilot-bars {
-  0%,
-  100% {
-    transform: scaleY(0.45);
-  }
-  50% {
-    transform: scaleY(1);
-  }
-}
-
-/* Voice signature live dot: a soft blink, same family as the call card's.
-   The global reduced-motion rule plus motion-reduce:animate-none on the dot
-   squash this to a static frame. */
-@keyframes voni-livedot {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.35;
-  }
-}
-
-@keyframes wizard-pulse {
-  from {
-    opacity: 1;
-  }
-  to {
-    opacity: 0.35;
-  }
-}
-
-/* Voice cards: per-character avatar drift, playing pulse, and the preview
-   fill sweep. Durations are fixed (not tokens): the float/pulse are ambient
-   loops, while the fill reads its length from `--preview-duration` (the real
-   clip length, ~3s) set on the playing card. The global reduced-motion rule
-   below squashes all three to a static frame. */
-.voni-voice-idle .voni-voice-cloud-a {
-  animation: voni-voice-drift 5200ms ease-in-out infinite alternate;
-}
-
-.voni-voice-idle .voni-voice-cloud-b {
-  animation: voni-voice-drift 6800ms ease-in-out infinite alternate-reverse;
-}
-
-.voni-voice-playing {
-  animation: voni-voice-pulse 1200ms ease-in-out infinite;
-}
-
-.voni-voice-fill {
-  transform-origin: left;
-  animation: voni-voice-fill var(--preview-duration, 3s) linear forwards;
-}
-
-@keyframes voni-voice-drift {
-  from {
-    transform: translate(0, 0);
-  }
-  to {
-    transform: translate(3px, 2px);
-  }
-}
-
-@keyframes voni-voice-pulse {
-  0%,
-  100% {
-    transform: scale(1);
-  }
-  50% {
-    transform: scale(1.08);
-  }
-}
-
-@keyframes voni-voice-fill {
-  from {
-    transform: scaleX(0);
-  }
-  to {
-    transform: scaleX(1);
   }
 }
 
@@ -375,17 +249,12 @@
     transform: none !important;
   }
 
-  .interactive-card:hover {
-    transform: none;
-  }
-
   /* The blanket 1ms override above still leaves `infinite` iterating forever,
      just too fast to see cleanly — for a looping mark that reads as flicker,
      not stillness. Stop it outright and let each class's own base styles
      (resting arc, no accent) stand as the resting frame. */
   .voni-arc,
-  .voni-arc-accent,
-  .wizard-active-dot {
+  .voni-arc-accent {
     animation: none !important;
   }
 }

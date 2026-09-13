@@ -1,3 +1,9 @@
+/**
+ * Built in-style per voni/DESIGN.md §4 (feedback): no skeleton block exists
+ * in Blocks, so every loading shape here is composed from the Skeleton
+ * primitive + flex/grid + gap in Blocks idiom. Route loading.tsx boundaries
+ * stay; markup only, no logic.
+ */
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 

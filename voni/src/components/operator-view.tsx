@@ -8,6 +8,12 @@ import { ConnectionTestButton } from "@/components/connection-test-button";
 import { LoadingButton } from "@/components/loading-button";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
+import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+} from "@/components/ui/empty";
 import { Separator } from "@/components/ui/separator";
 import { Input } from "@/components/ui/input";
 import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
@@ -167,7 +173,7 @@ export function OperatorView({ data }: { data: OperatorData }) {
           <p className="mt-1 text-pretty text-muted-foreground text-sm leading-6">Status, latency, time, and sanitized errors only.</p>
         </div>
         <div className="flex flex-col gap-2 sm:max-w-3xl md:col-span-2">
-          {data.checks.length ? data.checks.map((check) => <div key={check.service} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border p-4 text-sm"><span className="flex items-center gap-2">{check.status === "passed" ? <CheckCircle2 className="size-4" /> : <CircleDot className="size-4" />}<span className="font-medium">{check.service}</span></span><span className="text-muted-foreground">{check.status} · {check.latencyMs} ms · {new Date(check.testedAt).toLocaleString()}</span>{check.error ? <span className="text-destructive w-full">{check.error}</span> : null}</div>) : <p className="text-muted-foreground text-sm">No connection tests yet.</p>}
+          {data.checks.length ? data.checks.map((check) => <div key={check.service} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border p-4 text-sm"><span className="flex items-center gap-2">{check.status === "passed" ? <CheckCircle2 className="size-4" /> : <CircleDot className="size-4" />}<span className="font-medium">{check.service}</span></span><span className="text-muted-foreground">{check.status} · {check.latencyMs} ms · {new Date(check.testedAt).toLocaleString()}</span>{check.error ? <span className="text-destructive w-full">{check.error}</span> : null}</div>) : <Empty><EmptyHeader><EmptyMedia variant="icon"><CircleDot /></EmptyMedia><EmptyDescription>No connection tests yet.</EmptyDescription></EmptyHeader></Empty>}
         </div>
       </div>
     </div>

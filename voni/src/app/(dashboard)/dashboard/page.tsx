@@ -5,6 +5,7 @@ import {
   Card,
   CardContent,
   CardDescription,
+  CardFooter,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
@@ -61,14 +62,14 @@ function SetupSteps({
     },
   ];
   return (
-    <Card>
-      <CardHeader>
+    <Card className="gap-0 p-0">
+      <CardHeader className="p-6 pb-2">
         <CardTitle>Get set up</CardTitle>
         <CardDescription>
           Three steps to your first call — nothing to report yet.
         </CardDescription>
       </CardHeader>
-      <CardContent>
+      <CardContent className="p-6 pt-4">
         <ol className="flex flex-col gap-4">
           {steps.map((step) => (
             <li key={step.title} className="flex items-start gap-3">
@@ -170,40 +171,42 @@ async function DashboardOutcomes() {
       />
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         {cards.map((card) => (
-          <Card key={card.label} className="interactive-card">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-muted-foreground text-sm font-medium">
+          <Card key={card.label} className="gap-0 p-0">
+            <CardContent className="flex flex-col gap-1 p-6">
+              <span className="text-muted-foreground text-sm">
                 {card.label}
-              </CardTitle>
+              </span>
               {card.hint ? (
-                <CardDescription>{card.hint}</CardDescription>
+                <span className="text-muted-foreground text-sm">
+                  {card.hint}
+                </span>
               ) : null}
-            </CardHeader>
-            <CardContent className="flex flex-col gap-2">
-              <div
+              <span
                 aria-label={`${card.label}: ${card.value}`}
-                className="text-2xl font-semibold tabular-nums"
+                className="mt-1 text-3xl font-semibold tabular-nums"
               >
                 {card.value}
-              </div>
+              </span>
+            </CardContent>
+            <CardFooter className="justify-end p-0">
               <Link
                 href={card.href}
                 aria-label={card.linkLabel}
-                className="text-muted-foreground inline-flex w-fit cursor-pointer items-center gap-1 rounded-sm text-xs underline-offset-4 outline-none hover:text-foreground hover:underline focus-visible:ring-2 focus-visible:ring-ring"
+                className="inline-flex cursor-pointer items-center gap-1 rounded-sm px-6 py-3 text-sm font-medium text-primary outline-none hover:text-primary/90 focus-visible:ring-2 focus-visible:ring-ring"
               >
                 View
                 <ArrowUpRight aria-hidden="true" className="size-3.5" />
               </Link>
-            </CardContent>
+            </CardFooter>
           </Card>
         ))}
       </div>
       {summary.emptyCampaigns.length > 0 ? (
-        <Card>
-          <CardHeader>
+        <Card className="gap-0 p-0">
+          <CardHeader className="p-6 pb-2">
             <CardTitle className="text-base">Next action</CardTitle>
           </CardHeader>
-          <CardContent className="text-muted-foreground text-sm">
+          <CardContent className="text-muted-foreground p-6 pt-4 text-sm">
             {summary.emptyCampaigns.map((campaign) => (
               <span
                 key={campaign.id}
@@ -231,28 +234,28 @@ async function DashboardOutcomes() {
             normalizes and matches case-insensitively. */}
         <div className="mt-4 grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-5">
           {summary.stages.map((stage) => (
-            <Card key={stage.stage} className="interactive-card">
-              <CardHeader className="pb-2">
-                <CardTitle className="text-muted-foreground text-sm font-medium">
+            <Card key={stage.stage} className="gap-0 p-0">
+              <CardContent className="flex flex-col gap-1 p-6">
+                <span className="text-muted-foreground text-sm">
                   {pipelineStateLabel(stage.stage)}
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="flex flex-col gap-2">
-                <div
+                </span>
+                <span
                   aria-label={`${pipelineStateLabel(stage.stage)}: ${stage.value}`}
-                  className="text-2xl font-semibold tabular-nums"
+                  className="mt-1 text-3xl font-semibold tabular-nums"
                 >
                   {stage.value}
-                </div>
+                </span>
+              </CardContent>
+              <CardFooter className="justify-end p-0">
                 <Link
                   href={`/leads?stage=${encodeURIComponent(stage.stage)}`}
                   aria-label={`View ${pipelineStateLabel(stage.stage)} leads`}
-                  className="text-muted-foreground inline-flex w-fit cursor-pointer items-center gap-1 rounded-sm text-xs underline-offset-4 outline-none hover:text-foreground hover:underline focus-visible:ring-2 focus-visible:ring-ring"
+                  className="inline-flex cursor-pointer items-center gap-1 rounded-sm px-6 py-3 text-sm font-medium text-primary outline-none hover:text-primary/90 focus-visible:ring-2 focus-visible:ring-ring"
                 >
                   View
                   <ArrowUpRight aria-hidden="true" className="size-3.5" />
                 </Link>
-              </CardContent>
+              </CardFooter>
             </Card>
           ))}
         </div>

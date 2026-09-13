@@ -1,8 +1,15 @@
 import { Suspense } from "react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import {
+  Empty,
+  EmptyContent,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from "@/components/ui/empty";
 import {
   Table,
   TableBody,
@@ -40,15 +47,17 @@ async function CampaignsList() {
         brief={`Campaign list: ${rows.length} campaigns with status, lead counts, and calling windows. New campaigns start on the creation screen.`}
       />
       {rows.length === 0 ? (
-        <Card>
-          <CardContent className="flex flex-col items-center gap-3 py-16 text-center">
-            <Megaphone className="text-muted-foreground size-10" />
-            <div>
-              <p className="font-medium">No campaigns yet</p>
-              <p className="text-muted-foreground text-sm">
-                Create an agent first, then assign it leads to work.
-              </p>
-            </div>
+        <Empty>
+          <EmptyHeader>
+            <EmptyMedia variant="icon">
+              <Megaphone />
+            </EmptyMedia>
+            <EmptyTitle>No campaigns yet</EmptyTitle>
+            <EmptyDescription>
+              Create an agent first, then assign it leads to work.
+            </EmptyDescription>
+          </EmptyHeader>
+          <EmptyContent>
             <Button
               nativeButton={false}
               render={<Link href="/campaigns/new" />}
@@ -56,8 +65,8 @@ async function CampaignsList() {
             >
               Create your first campaign
             </Button>
-          </CardContent>
-        </Card>
+          </EmptyContent>
+        </Empty>
       ) : (
         <div className="overflow-x-auto rounded-lg border">
           <Table>

@@ -3,9 +3,15 @@
 import Link from "next/link";
 import { useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { RotateCcw, Trash2 } from "lucide-react";
+import { RotateCcw, Trash2, Users } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+} from "@/components/ui/empty";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { dialOutcomeLabel } from "@/lib/campaigns/outcome-label";
@@ -246,17 +252,31 @@ export function CampaignQueue({
             {members.length === 0 ? (
               <TableRow>
                 <TableCell colSpan={selectable ? 8 : 7} className="h-32 text-center">
-                  <span className="text-muted-foreground">
-                    No leads yet — import a CSV above.
-                  </span>
+                  <Empty>
+                    <EmptyHeader>
+                      <EmptyMedia variant="icon">
+                        <Users />
+                      </EmptyMedia>
+                      <EmptyDescription>
+                        No leads yet — import a CSV above.
+                      </EmptyDescription>
+                    </EmptyHeader>
+                  </Empty>
                 </TableCell>
               </TableRow>
             ) : visible.length === 0 ? (
               <TableRow>
                 <TableCell colSpan={selectable ? 8 : 7} className="h-32 text-center">
-                  <span className="text-muted-foreground">
-                    No leads match “{query.trim()}”.
-                  </span>
+                  <Empty>
+                    <EmptyHeader>
+                      <EmptyMedia variant="icon">
+                        <Users />
+                      </EmptyMedia>
+                      <EmptyDescription>
+                        No leads match “{query.trim()}”.
+                      </EmptyDescription>
+                    </EmptyHeader>
+                  </Empty>
                 </TableCell>
               </TableRow>
             ) : (

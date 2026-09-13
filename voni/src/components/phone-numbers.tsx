@@ -41,7 +41,14 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Plus, TriangleAlert, Trash2 } from "lucide-react";
+import { Phone, Plus, TriangleAlert, Trash2 } from "lucide-react";
+import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from "@/components/ui/empty";
 import {
   addPhoneNumberAction,
   bindPhoneNumberAction,
@@ -364,8 +371,18 @@ export function PhoneNumbers({
                 {numbers.length === 0 ? (
                   <TableRow>
                     <TableCell colSpan={4} className="h-24 text-center">
-                      No numbers registered. Inbound calls are answered by
-                      the main reception agent.
+                      <Empty>
+                        <EmptyHeader>
+                          <EmptyMedia variant="icon">
+                            <Phone />
+                          </EmptyMedia>
+                          <EmptyTitle>No numbers registered</EmptyTitle>
+                          <EmptyDescription>
+                            Inbound calls are answered by the main reception
+                            agent.
+                          </EmptyDescription>
+                        </EmptyHeader>
+                      </Empty>
                     </TableCell>
                   </TableRow>
                 ) : (

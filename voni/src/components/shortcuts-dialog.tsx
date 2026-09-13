@@ -39,7 +39,7 @@ function Kbd({ children }: { children: React.ReactNode }) {
   return (
     <kbd
       data-slot="kbd"
-      className="inline-flex min-w-5 items-center justify-center rounded border bg-muted px-1 py-0.5 font-mono text-[11px] font-medium text-muted-foreground"
+      className="inline-flex min-w-5 items-center justify-center rounded border bg-muted px-1 py-0.5 font-mono text-xs font-medium text-muted-foreground"
     >
       {children}
     </kbd>
