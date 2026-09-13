@@ -9,8 +9,6 @@ import {
   LoaderCircle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
-import { Progress } from "@/components/ui/progress";
 import { getJobProgressPercent } from "@/lib/jobs/ui-helpers";
 import { JobRow } from "./job-row";
 import { useJobs } from "./jobs-provider";
@@ -68,8 +66,8 @@ export function JobPill() {
       className="fixed bottom-4 left-4 z-40 w-80 max-w-[calc(100vw-2rem)]"
       aria-live="polite"
     >
-      <Card className="shadow-lg">
-        <CardContent className="flex flex-col gap-2 py-3">
+      <div className="max-w-sm rounded-lg border bg-card shadow-lg">
+        <div className="flex flex-col gap-2 p-3">
           <div className="flex items-center gap-2">
             <LoaderCircle className="size-4 shrink-0 animate-spin" aria-hidden />
             <p className="min-w-0 flex-1 truncate text-sm font-medium">
@@ -93,7 +91,19 @@ export function JobPill() {
             </Button>
           </div>
           {firstPercent != null ? (
-            <Progress value={firstPercent} aria-label="Latest job progress" />
+            <div
+              role="progressbar"
+              aria-label="Latest job progress"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={firstPercent}
+              className="relative h-1 overflow-hidden rounded-full bg-muted"
+            >
+              <div
+                className="h-full origin-left bg-primary"
+                style={{ transform: `scaleX(${firstPercent / 100})` }}
+              />
+            </div>
           ) : null}
           {expanded ? (
             <div className="flex max-h-80 flex-col gap-2 overflow-y-auto pt-1">
@@ -103,7 +113,7 @@ export function JobPill() {
                       key={entry.key}
                       className="flex items-center gap-2 rounded-lg border p-3"
                     >
-                      <LoaderCircle className="h-3.5 w-3.5 animate-spin" aria-hidden />
+                      <LoaderCircle className="size-3.5 shrink-0 animate-spin" aria-hidden />
                       <p className="min-w-0 flex-1 truncate text-sm font-medium">
                         {entry.title}
                       </p>
@@ -132,8 +142,8 @@ export function JobPill() {
               />
             </div>
           ) : null}
-        </CardContent>
-      </Card>
+        </div>
+      </div>
     </div>
   );
 }

@@ -39,7 +39,8 @@ test("add-number form hints when the default is the right choice", () => {
 });
 
 test("numbers empty state has breathing room", () => {
-  assert.ok(source.includes("p-8 text-center"), "padded empty cell, not cramped");
+  // table-05 idiom (DESIGN.md §4): tall centered empty row, not a padded cell.
+  assert.ok(source.includes("h-24 text-center"), "table-05 empty row shape");
   assert.ok(
     !source.includes("h-32 text-center"),
     "no fixed-height cramped empty cell",

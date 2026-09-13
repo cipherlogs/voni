@@ -5,7 +5,6 @@ import { useState, useTransition } from "react";
 import { toast } from "@/components/ui/toast";
 import { LoadingButton } from "@/components/loading-button";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -241,13 +240,21 @@ export function PhoneNumbers({
 
   return (
     <div className="flex flex-col gap-6">
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Add a number</CardTitle>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-4">
-          <FieldGroup className="grid gap-4 sm:grid-cols-3">
-            <Field>
+      <section
+        aria-labelledby="add-number-heading"
+        className="grid gap-6 md:grid-cols-3"
+      >
+        <div>
+          <h2 id="add-number-heading" className="text-balance font-semibold">
+            Add a number
+          </h2>
+          <p className="text-pretty text-muted-foreground text-sm leading-6">
+            Which agent picks up when someone calls one of your numbers.
+          </p>
+        </div>
+        <div className="sm:max-w-3xl md:col-span-2">
+          <FieldGroup className="grid gap-4 sm:grid-cols-6">
+            <Field className="sm:col-span-2">
               <FieldLabel htmlFor="new-number">Number</FieldLabel>
               <Input
                 id="new-number"
@@ -265,7 +272,7 @@ export function PhoneNumbers({
                 </FieldError>
               ) : null}
             </Field>
-            <Field>
+            <Field className="sm:col-span-2">
               <FieldLabel htmlFor="new-label">Label</FieldLabel>
               <Input
                 id="new-label"
@@ -274,7 +281,7 @@ export function PhoneNumbers({
                 placeholder="Marina office line"
               />
             </Field>
-            <Field>
+            <Field className="sm:col-span-2">
               <FieldLabel htmlFor="new-agent">Answered by</FieldLabel>
               <Select
                 value={newAgent}
@@ -303,7 +310,7 @@ export function PhoneNumbers({
               </FieldDescription>
             </Field>
           </FieldGroup>
-          <div>
+          <div className="mt-4">
             <LoadingButton
               disabled={!newNumber.trim()}
               pending={pendingId === "add"}
@@ -332,8 +339,8 @@ export function PhoneNumbers({
               Add number
             </LoadingButton>
           </div>
-        </CardContent>
-      </Card>
+        </div>
+      </section>
 
       {error ? (
         <Alert variant="destructive">
@@ -342,10 +349,9 @@ export function PhoneNumbers({
         </Alert>
       ) : null}
 
-      <Card>
-        <CardContent className="p-0">
-          <div className="overflow-x-auto">
-            <Table>
+      <div className="rounded-lg border">
+        <div className="overflow-x-auto">
+          <Table>
               <TableHeader>
                 <TableRow>
                   <TableHead>Number</TableHead>
@@ -357,11 +363,9 @@ export function PhoneNumbers({
               <TableBody>
                 {numbers.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={4} className="p-8 text-center">
-                      <span className="text-muted-foreground">
-                        No numbers registered. Inbound calls are
-                        answered by the main reception agent.
-                      </span>
+                    <TableCell colSpan={4} className="h-24 text-center">
+                      No numbers registered. Inbound calls are answered by
+                      the main reception agent.
                     </TableCell>
                   </TableRow>
                 ) : (
@@ -424,9 +428,8 @@ export function PhoneNumbers({
                 )}
               </TableBody>
             </Table>
-          </div>
-        </CardContent>
-      </Card>
+        </div>
+      </div>
     </div>
   );
 }

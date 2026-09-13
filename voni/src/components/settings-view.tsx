@@ -15,7 +15,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { LoadingButton } from "@/components/loading-button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { ModeToggle } from "@/components/mode-toggle";
@@ -134,6 +134,10 @@ function WorkspaceTimezoneField({
   );
 }
 
+function serviceInitials(label: string) {
+  return label.split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase();
+}
+
 function VoiceCopilotCard({ prefs }: { prefs: CopilotVoicePrefs }) {
   const [saveState, saveAction] = useActionState(updateCopilotVoicePrefs, INITIAL);
   const [voiceId, setVoiceId] = useState(prefs.voiceId);
@@ -145,16 +149,16 @@ function VoiceCopilotCard({ prefs }: { prefs: CopilotVoicePrefs }) {
     if (saveState.ok) window.dispatchEvent(new CustomEvent("voni:voice-prefs-changed"));
   }, [saveState]);
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Voice copilot</CardTitle>
-        <CardDescription>
+    <div className="grid grid-cols-1 gap-10 md:grid-cols-3">
+      <div>
+        <h2 className="text-balance font-semibold text-foreground">Voice copilot</h2>
+        <p className="mt-1 text-pretty text-muted-foreground text-sm leading-6">
           Who talks back when you tap the mic. Only affects your conversations —
           nothing here changes what callers hear on the phone.
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
-        <form action={saveAction} className="grid max-w-xl gap-5">
+        </p>
+      </div>
+      <div className="sm:max-w-3xl md:col-span-2">
+        <form action={saveAction} className="grid gap-5">
           <Field>
             <FieldLabel htmlFor="copilot-voice">Voice</FieldLabel>
             <Select name="voiceId" value={voiceId} onValueChange={(value) => setVoiceId(value ?? prefs.voiceId)}>
@@ -208,8 +212,8 @@ function VoiceCopilotCard({ prefs }: { prefs: CopilotVoicePrefs }) {
           <ActionFeedback state={saveState} />
           <div><SubmitButton>Save voice copilot</SubmitButton></div>
         </form>
-      </CardContent>
-    </Card>
+      </div>
+    </div>
   );
 }
 
@@ -270,16 +274,21 @@ export function SettingsView({
         </TabsList>
 
         <TabsContent value="account" className="pt-4">
-          <Card>
-            <CardHeader><CardTitle>Account</CardTitle><CardDescription>Your Google profile and session.</CardDescription></CardHeader>
-            <CardContent className="flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
-              <div className="flex items-center gap-3">
-                <Avatar size="lg">{user.image ? <AvatarImage src={user.image} alt="" /> : null}<AvatarFallback>{initials || "V"}</AvatarFallback></Avatar>
-                <div><p className="font-medium">{user.name}</p><p className="text-muted-foreground text-sm">{user.email}</p></div>
+          <div className="grid grid-cols-1 gap-10 md:grid-cols-3">
+            <div>
+              <h2 className="text-balance font-semibold text-foreground">Account</h2>
+              <p className="mt-1 text-pretty text-muted-foreground text-sm leading-6">Your Google profile and session.</p>
+            </div>
+            <div className="sm:max-w-3xl md:col-span-2">
+              <div className="flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex items-center gap-3">
+                  <Avatar size="lg">{user.image ? <AvatarImage src={user.image} alt="" /> : null}<AvatarFallback>{initials || "V"}</AvatarFallback></Avatar>
+                  <div><p className="font-medium">{user.name}</p><p className="text-muted-foreground text-sm">{user.email}</p></div>
+                </div>
+                <LoadingButton variant="outline" onClick={handleSignOut} pending={signingOut} pendingText="Signing out…" icon={<LogOut />}>Sign out</LoadingButton>
               </div>
-              <LoadingButton variant="outline" onClick={handleSignOut} pending={signingOut} pendingText="Signing out…" icon={<LogOut />}>Sign out</LoadingButton>
-            </CardContent>
-          </Card>
+            </div>
+          </div>
         </TabsContent>
 
         <TabsContent value="voice" className="pt-4">
@@ -287,10 +296,13 @@ export function SettingsView({
         </TabsContent>
 
         <TabsContent value="workspace" className="pt-4">
-          <Card>
-            <CardHeader><CardTitle>Workspace</CardTitle><CardDescription>Customer-facing defaults for this organization.</CardDescription></CardHeader>
-            <CardContent>
-              <form action={workspaceAction} className="grid max-w-xl gap-5">
+          <div className="grid grid-cols-1 gap-10 md:grid-cols-3">
+            <div>
+              <h2 className="text-balance font-semibold text-foreground">Workspace</h2>
+              <p className="mt-1 text-pretty text-muted-foreground text-sm leading-6">Customer-facing defaults for this organization.</p>
+            </div>
+            <div className="sm:max-w-3xl md:col-span-2">
+              <form action={workspaceAction} className="grid gap-5">
                 <FieldGroup>
                   <WorkspaceNameField
                     name={workspace.name}
@@ -306,35 +318,48 @@ export function SettingsView({
                 <ActionFeedback state={workspaceState} />
                 {workspace.canEdit ? <div><SubmitButton>Save workspace</SubmitButton></div> : null}
               </form>
-            </CardContent>
-          </Card>
+            </div>
+          </div>
         </TabsContent>
 
         <TabsContent value="services" className="pt-4">
-          <div className="grid gap-4 sm:grid-cols-2">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             {services.map((service) => (
-              <Card key={service.id} className="interactive-card">
-                <CardHeader>
-                  <CardTitle className="flex items-center justify-between gap-3 text-base">
-                    {service.label}
-                    <Badge variant={service.configured ? "secondary" : "outline"}>
-                      {service.configured ? "Ready" : "Needs setup"}
-                    </Badge>
-                  </CardTitle>
-                  <CardDescription>
-                    {service.configured
-                      ? "Voni-managed capacity is configured."
-                      : "Ask your workspace admin, or whoever runs " +
-                        "your Voni server, to finish platform setup."}
-                  </CardDescription>
-                </CardHeader>
+              <Card key={service.id}>
+                <CardContent className="flex items-center gap-4 p-4">
+                  <Avatar className="size-10">
+                    <AvatarFallback>{serviceInitials(service.label)}</AvatarFallback>
+                  </Avatar>
+                  <div className="min-w-0 flex-1">
+                    <p className="flex items-center justify-between gap-3 font-medium">
+                      {service.label}
+                      <Badge variant={service.configured ? "secondary" : "outline"}>
+                        {service.configured ? "Ready" : "Needs setup"}
+                      </Badge>
+                    </p>
+                    <p className="text-muted-foreground text-sm">
+                      {service.configured
+                        ? "Voni-managed capacity is configured."
+                        : "Ask your workspace admin, or whoever runs " +
+                          "your Voni server, to finish platform setup."}
+                    </p>
+                  </div>
+                </CardContent>
               </Card>
             ))}
           </div>
         </TabsContent>
 
         <TabsContent value="appearance" className="pt-4">
-          <Card><CardHeader><CardTitle>Appearance</CardTitle><CardDescription>Use light, dark, or your system setting.</CardDescription></CardHeader><CardContent><ModeToggle /></CardContent></Card>
+          <div className="grid grid-cols-1 gap-10 md:grid-cols-3">
+            <div>
+              <h2 className="text-balance font-semibold text-foreground">Appearance</h2>
+              <p className="mt-1 text-pretty text-muted-foreground text-sm leading-6">Use light, dark, or your system setting.</p>
+            </div>
+            <div className="sm:max-w-3xl md:col-span-2">
+              <ModeToggle />
+            </div>
+          </div>
         </TabsContent>
 
       </Tabs>

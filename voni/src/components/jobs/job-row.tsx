@@ -11,7 +11,6 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Progress } from "@/components/ui/progress";
 import type { JobJson } from "@/lib/jobs/serialize";
 import {
   getJobProgressPercent,
@@ -83,17 +82,18 @@ export function JobRow({
   };
 
   return (
-    <div className="flex flex-col gap-2 rounded-lg border p-3" data-copilot-key={job.id} data-copilot-version={job.updatedAt} data-copilot-scope="jobs">
-      <div className="flex items-start gap-2">
-        {onToggle ? (
-          <Checkbox
-            checked={selected ?? false}
-            onCheckedChange={(checked) => onToggle(job.id, checked)}
-            aria-label={`Select ${job.title}`}
-            className="mt-0.5"
-          />
-        ) : null}
-        <p className="text-sm font-medium flex-1">{job.title}</p>
+    <div className="flex flex-col gap-3 rounded-lg border p-3" data-copilot-key={job.id} data-copilot-version={job.updatedAt} data-copilot-scope="jobs">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-2">
+          {onToggle ? (
+            <Checkbox
+              checked={selected ?? false}
+              onCheckedChange={(checked) => onToggle(job.id, checked)}
+              aria-label={`Select ${job.title}`}
+            />
+          ) : null}
+          <p className="min-w-0 flex-1 truncate text-sm font-medium">{job.title}</p>
+        </div>
         <Badge
           variant={
             job.status === "succeeded"
@@ -104,29 +104,47 @@ export function JobRow({
           }
         >
           {job.status === "failed" ? (
-            <TriangleAlert className="mr-1 h-3 w-3" />
+            <TriangleAlert data-icon="inline-start" />
           ) : job.status === "succeeded" ? (
-            <CircleCheck className="mr-1 h-3 w-3" />
+            <CircleCheck data-icon="inline-start" />
           ) : (
-            <LoaderCircle className="mr-1 h-3 w-3 animate-spin" />
+            <LoaderCircle data-icon="inline-start" className="animate-spin" />
           )}
           {statusLabel}
         </Badge>
       </div>
-      <p className="text-muted-foreground text-xs" aria-live="polite">
-        {statusLabel}
-        {job.stage && !job.stage.startsWith("waiting-") && job.stage !== "recovery-started"
-          ? ` · ${job.stage}`
-          : ""}
-        {percent != null
-          ? ` · ${percent}%`
-          : job.progressTotal != null && job.progressDone != null
-            ? ` · ${job.progressDone} of ${job.progressTotal}`
+      <div className="flex items-center gap-2">
+        <p className="text-muted-foreground min-w-0 flex-1 truncate text-xs" aria-live="polite">
+          {statusLabel}
+          {job.stage && !job.stage.startsWith("waiting-") && job.stage !== "recovery-started"
+            ? ` · ${job.stage}`
             : ""}
-        {` · ${elapsed} elapsed`}
-      </p>
+          {` · ${elapsed} elapsed`}
+        </p>
+        {percent != null ? (
+          <span className="text-muted-foreground shrink-0 text-xs tabular-nums">
+            {percent}%
+          </span>
+        ) : job.progressTotal != null && job.progressDone != null ? (
+          <span className="text-muted-foreground shrink-0 text-xs tabular-nums">
+            {job.progressDone} of {job.progressTotal}
+          </span>
+        ) : null}
+      </div>
       {percent != null && !terminal ? (
-        <Progress value={percent} aria-label={`${job.title} progress`} />
+        <div
+          role="progressbar"
+          aria-label={`${job.title} progress`}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={percent}
+          className="relative h-1 overflow-hidden rounded-full bg-muted"
+        >
+          <div
+            className="h-full origin-left bg-primary"
+            style={{ transform: `scaleX(${percent / 100})` }}
+          />
+        </div>
       ) : null}
       {job.status === "failed" ? (
         <p className="text-destructive text-xs">

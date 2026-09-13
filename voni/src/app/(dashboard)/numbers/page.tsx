@@ -32,9 +32,27 @@ export default function NumbersPage() {
       </div>
       <Suspense
         fallback={
-          <div role="status" aria-label="Loading phone numbers" className="flex flex-col gap-4">
-            <Skeleton className="h-24 w-full" />
-            <Skeleton className="h-24 w-full" />
+          <div role="status" aria-label="Loading phone numbers" className="flex flex-col gap-6">
+            <div className="grid gap-6 md:grid-cols-3">
+              <div className="flex flex-col gap-2">
+                <Skeleton className="h-5 w-36" />
+                <Skeleton className="h-4 w-full max-w-xs" />
+              </div>
+              <div className="sm:max-w-3xl md:col-span-2">
+                <div className="grid gap-4 sm:grid-cols-6">
+                  <Skeleton className="h-9 sm:col-span-2" />
+                  <Skeleton className="h-9 sm:col-span-2" />
+                  <Skeleton className="h-9 sm:col-span-2" />
+                </div>
+              </div>
+            </div>
+            <div className="rounded-lg border p-4">
+              <div className="flex flex-col gap-4">
+                <Skeleton className="h-4 w-full" />
+                <Skeleton className="h-4 w-full" />
+                <Skeleton className="h-4 w-2/3" />
+              </div>
+            </div>
           </div>
         }
       >

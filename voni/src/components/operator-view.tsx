@@ -8,7 +8,7 @@ import { ConnectionTestButton } from "@/components/connection-test-button";
 import { LoadingButton } from "@/components/loading-button";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Separator } from "@/components/ui/separator";
 import { Input } from "@/components/ui/input";
 import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -85,16 +85,24 @@ export function OperatorView({ data }: { data: OperatorData }) {
         <AlertDescription>Rotate encrypted credentials with <code>npm run operator:credential</code>. The command reads the value from stdin and never accepts it as an argument.</AlertDescription>
       </Alert>
 
-      <Card>
-        <CardHeader><CardTitle>Bootstrap readiness</CardTitle><CardDescription>Required deployment values are shown by name only.</CardDescription></CardHeader>
-        <CardContent className="grid gap-2 sm:grid-cols-2">
-          {data.bootstrap.map((item) => <div key={item.name} className="flex items-center justify-between rounded-md border px-3 py-2 text-sm"><span className="font-mono text-xs">{item.name}</span><Badge variant={item.configured ? "secondary" : "outline"}>{item.configured ? "Set" : "Missing"}</Badge></div>)}
-        </CardContent>
-      </Card>
+      <div className="grid grid-cols-1 gap-10 md:grid-cols-3">
+        <div>
+          <h2 className="text-balance font-semibold text-foreground">Bootstrap readiness</h2>
+          <p className="mt-1 text-pretty text-muted-foreground text-sm leading-6">Required deployment values are shown by name only.</p>
+        </div>
+        <div className="grid gap-2 sm:max-w-3xl sm:grid-cols-2 md:col-span-2">
+          {data.bootstrap.map((item) => <div key={item.name} className="flex items-center justify-between rounded-lg border p-4 text-sm"><span className="font-mono text-xs">{item.name}</span><Badge variant={item.configured ? "secondary" : "outline"}>{item.configured ? "Set" : "Missing"}</Badge></div>)}
+        </div>
+      </div>
 
-      <Card>
-        <CardHeader><CardTitle>Service credentials</CardTitle><CardDescription>Status and origin only. Values and rotation controls are server-only.</CardDescription></CardHeader>
-        <CardContent className="grid gap-3 md:grid-cols-3">
+      <Separator className="my-8" />
+
+      <div className="grid grid-cols-1 gap-10 md:grid-cols-3">
+        <div>
+          <h2 className="text-balance font-semibold text-foreground">Service credentials</h2>
+          <p className="mt-1 text-pretty text-muted-foreground text-sm leading-6">Status and origin only. Values and rotation controls are server-only.</p>
+        </div>
+        <div className="grid gap-3 sm:max-w-3xl md:col-span-2 md:grid-cols-3">
           {(Object.keys(CREDENTIAL_LABELS) as CredentialName[]).map((name) => (
             <div key={name} className="grid gap-3 rounded-lg border p-4">
               <div className="flex items-center justify-between gap-2"><span className="font-medium">{CREDENTIAL_LABELS[name]}</span><Badge variant={data.credentials[name].configured ? "secondary" : "outline"}>{data.credentials[name].configured ? "Ready" : "Missing"}</Badge></div>
@@ -102,12 +110,17 @@ export function OperatorView({ data }: { data: OperatorData }) {
               <ConnectionTestButton service={CREDENTIAL_SERVICES[name]} />
             </div>
           ))}
-        </CardContent>
-      </Card>
+        </div>
+      </div>
 
-      <Card>
-        <CardHeader><CardTitle>LLM account status</CardTitle><CardDescription>Health is visible; account keys and lifecycle controls remain in the operator CLI.</CardDescription></CardHeader>
-        <CardContent className="grid gap-4 md:grid-cols-2">
+      <Separator className="my-8" />
+
+      <div className="grid grid-cols-1 gap-10 md:grid-cols-3">
+        <div>
+          <h2 className="text-balance font-semibold text-foreground">LLM account status</h2>
+          <p className="mt-1 text-pretty text-muted-foreground text-sm leading-6">Health is visible; account keys and lifecycle controls remain in the operator CLI.</p>
+        </div>
+        <div className="grid gap-4 sm:max-w-3xl md:col-span-2 md:grid-cols-2">
           {(Object.keys(PROVIDER_LABELS) as LlmProviderId[]).map((providerId) => (
             <div key={providerId} className="grid gap-2 rounded-lg border p-4">
               <p className="font-medium">{PROVIDER_LABELS[providerId]}</p>
@@ -119,12 +132,17 @@ export function OperatorView({ data }: { data: OperatorData }) {
               )) : <p className="text-muted-foreground text-sm">No accounts configured.</p>}
             </div>
           ))}
-        </CardContent>
-      </Card>
+        </div>
+      </div>
 
-      <Card>
-        <CardHeader><CardTitle>Provider and bridge defaults</CardTitle><CardDescription>These identifiers and routing defaults contain no provider secrets.</CardDescription></CardHeader>
-        <CardContent>
+      <Separator className="my-8" />
+
+      <div className="grid grid-cols-1 gap-10 md:grid-cols-3">
+        <div>
+          <h2 className="text-balance font-semibold text-foreground">Provider and bridge defaults</h2>
+          <p className="mt-1 text-pretty text-muted-foreground text-sm leading-6">These identifiers and routing defaults contain no provider secrets.</p>
+        </div>
+        <div className="sm:max-w-3xl md:col-span-2">
           <form action={action} className="grid gap-5">
             <FieldGroup className="grid gap-4 md:grid-cols-2">
               {(["groq", "cerebras", "gemini", "openrouter"] as const).map((provider) => <Field key={provider}><FieldLabel htmlFor={`${provider}-model`}>{PROVIDER_LABELS[provider]} model</FieldLabel><Input id={`${provider}-model`} name={`${provider}Model`} defaultValue={data.config[`${provider}Model`]} /></Field>)}
@@ -138,15 +156,20 @@ export function OperatorView({ data }: { data: OperatorData }) {
             {state.error || state.message ? <Alert variant={state.error ? "destructive" : "default"}><AlertTitle>{state.error ? "Could not save" : "Done"}</AlertTitle><AlertDescription>{state.error ?? state.message}</AlertDescription></Alert> : null}
             <div><SaveDefaultsButton /></div>
           </form>
-        </CardContent>
-      </Card>
+        </div>
+      </div>
 
-      <Card>
-        <CardHeader><CardTitle>Latest connection tests</CardTitle><CardDescription>Status, latency, time, and sanitized errors only.</CardDescription></CardHeader>
-        <CardContent className="flex flex-col gap-2">
-          {data.checks.length ? data.checks.map((check) => <div key={check.service} className="flex flex-wrap items-center justify-between gap-2 rounded-md border px-3 py-2 text-sm"><span className="flex items-center gap-2">{check.status === "passed" ? <CheckCircle2 className="size-4" /> : <CircleDot className="size-4" />}<span className="font-medium">{check.service}</span></span><span className="text-muted-foreground">{check.status} · {check.latencyMs} ms · {new Date(check.testedAt).toLocaleString()}</span>{check.error ? <span className="text-destructive w-full">{check.error}</span> : null}</div>) : <p className="text-muted-foreground text-sm">No connection tests yet.</p>}
-        </CardContent>
-      </Card>
+      <Separator className="my-8" />
+
+      <div className="grid grid-cols-1 gap-10 md:grid-cols-3">
+        <div>
+          <h2 className="text-balance font-semibold text-foreground">Latest connection tests</h2>
+          <p className="mt-1 text-pretty text-muted-foreground text-sm leading-6">Status, latency, time, and sanitized errors only.</p>
+        </div>
+        <div className="flex flex-col gap-2 sm:max-w-3xl md:col-span-2">
+          {data.checks.length ? data.checks.map((check) => <div key={check.service} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border p-4 text-sm"><span className="flex items-center gap-2">{check.status === "passed" ? <CheckCircle2 className="size-4" /> : <CircleDot className="size-4" />}<span className="font-medium">{check.service}</span></span><span className="text-muted-foreground">{check.status} · {check.latencyMs} ms · {new Date(check.testedAt).toLocaleString()}</span>{check.error ? <span className="text-destructive w-full">{check.error}</span> : null}</div>) : <p className="text-muted-foreground text-sm">No connection tests yet.</p>}
+        </div>
+      </div>
     </div>
   );
 }
