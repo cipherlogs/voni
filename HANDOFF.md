@@ -10,6 +10,12 @@ context/usage. Don't hand-edit the **Activity Log** — it's auto-generated.
 
 ## Status
 
+### Resume here (2026-09-13, Voni strategy simplified to PDF, uncommitted)
+
+**Now:** The Markdown strategy and `/prototypes/strategy` page were removed at the user's request, together with the page's gate ledger and review screenshots. The sole strategy deliverable is `voni/docs/voni-strategy.pdf`: a plain-language, 10-page A4 brief with diagrams, workflow scoring, a banking walkthrough, insurance and government examples, action boundaries, roadmap, commercial hypothesis, stop conditions, and linked primary sources. Verified with `pdfinfo` (10 A4 pages), `qpdf --check` (no syntax or stream errors), extracted-text review, and rendered page inspection. The live Next route inventory no longer includes `/prototypes/strategy`; `get_errors` is clean.
+**Next:** Review the PDF copy. Revise only the PDF if the audience or tone changes; do not restore the web route or Markdown report unless explicitly requested.
+**Why:** User replaced the web-page request with one simple PDF and asked for plain, Unslope-style copy.
+
 ### Resume here (2026-09-13, Blocks-anchored redesign: DESIGN.md frozen, ready to cut redesign/blocks-only)
 
 **Now:** Landing the agent-detail polish commit; `voni/DESIGN.md` frozen (Blocks-anchored plan approved; Phase 0 gap/route/divergence evidence merged into `.claude/plans/fan-out-subagents-to-deep-hippo.md`). Next: cut `redesign/blocks-only` from clean main, Phase 2 foundation (registry installs per allow-list + THIRD-PARTY-NOTICES, globals.css swap, cn unify, voice-call strip).
