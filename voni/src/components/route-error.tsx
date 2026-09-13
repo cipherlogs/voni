@@ -34,9 +34,13 @@ export function RouteError({
     retryAfterSeconds ?? null,
   );
   // A new error resets a stale countdown; a changed backoff re-arms it.
-  useEffect(() => {
+  // (keyed by error so the set happens during render selection, not as a
+  // passive effect — avoids the set-state-in-effect lint and the extra tick.)
+  const [armedFor, setArmedFor] = useState<unknown>(error);
+  if (armedFor !== error) {
+    setArmedFor(error);
     setRetryIn(retryAfterSeconds ?? null);
-  }, [error, retryAfterSeconds]);
+  }
   useEffect(() => {
     if (retryIn === null || retryIn <= 0) return;
     const id = window.setTimeout(() => setRetryIn(retryIn - 1), 1000);

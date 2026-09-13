@@ -118,10 +118,12 @@ const HANGUP_RED = "bg-destructive text-white hover:bg-destructive/90";
 
 
 /**
- * The error body copy sits a long way darker than `--destructive` itself —
- * red-900 against the red-600 border and the red-50 tint. Mixing toward
- * `--foreground` reaches it in light mode AND inverts correctly in dark, which
- * a literal `#7f1d1d` would not.
+ * The error body copy sits a long way darker than `--destructive` itself.
+ * Mixing toward `--foreground` reaches it in light mode AND inverts
+ * correctly in dark, which a literal `#7f1d1d` would not. Token-derived
+ * color-mix is the one surviving arbitrary-value use (DESIGN.md §5
+ * listed exception — no token expresses "destructive mixed toward
+ * foreground", and a new token for one error line would be worse).
  */
 const ERROR_BODY =
   "text-[color-mix(in_oklch,var(--destructive),var(--foreground)_45%)]";

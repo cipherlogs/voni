@@ -93,7 +93,7 @@ export function ConnectionTestButton({
         ) : null}
         {passed && outcome?.status === "passed" ? (
           <span
-            className="flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-400"
+            className="flex items-center gap-1 text-xs text-primary"
             aria-live="polite"
           >
             <CircleCheck className="h-3.5 w-3.5" />

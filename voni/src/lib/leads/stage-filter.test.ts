@@ -116,8 +116,8 @@ test("funnel stage cards link to their filtered leads view", () => {
     "funnel links name their stage for assistive tech",
   );
   assert.ok(
-    page.includes("interactive-card"),
-    "funnel cards carry the house hover affordance",
+    page.includes("CardFooter"),
+    "funnel cards use the stats-05 card shape (DESIGN.md §4)",
   );
 });
 
@@ -386,8 +386,8 @@ test("dashboard outcome cards link to their filtered lists", () => {
     "the de-linking comment is gone — links exist now",
   );
   assert.ok(
-    page.includes("interactive-card"),
-    "linked cards carry the house hover affordance",
+    page.includes("CardFooter"),
+    "linked cards use the stats-05 card shape (DESIGN.md §4)",
   );
 });
 
