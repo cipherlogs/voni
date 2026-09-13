@@ -13,9 +13,9 @@ import { cn } from "@/lib/utils";
  */
 
 const SIZES = {
-  sm: { chip: "size-7 rounded-[7px]", mark: "size-4", word: "text-sm" },
-  md: { chip: "size-9 rounded-[9px]", mark: "size-5", word: "text-[15px]" },
-  lg: { chip: "size-12 rounded-[12px]", mark: "size-7", word: "text-lg" },
+  sm: { chip: "size-7 rounded-md", mark: "size-4", word: "text-sm" },
+  md: { chip: "size-9 rounded-lg", mark: "size-5", word: "text-sm" },
+  lg: { chip: "size-12 rounded-lg", mark: "size-7", word: "text-lg" },
 } as const;
 
 export type VoniLogoSize = keyof typeof SIZES;
@@ -127,7 +127,7 @@ export function VoniLogo({
         // In dark mode this inverts to a dark chip with a light mark —
         // without that, the light-mode chip reads as a stray white square
         // against the dark sidebar instead of a brand mark.
-        "inline-flex shrink-0 items-center justify-center border border-black/10 bg-[#fafafa] text-[#0a0a0a] dark:border-white/10 dark:bg-[#0a0a0a] dark:text-[#fafafa]",
+        "inline-flex shrink-0 items-center justify-center border bg-card text-card-foreground",
         scale.chip,
         animate && "voni-chip-in",
         className,

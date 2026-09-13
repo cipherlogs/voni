@@ -155,24 +155,33 @@ function SidebarNavSelf() {
   return <SidebarNav pathname={pathname} />;
 }
 
+/**
+ * Nav idiom from Blocks sidebar-03 (nav-main): full-width rounded rows,
+ * icon + label, collapsed rail centers icons. Adapted: flat NAV_ITEMS
+ * (no collapsible subs), active-link Suspense boundary kept, account menu
+ * untouched. framer-motion NOT adopted.
+ */
 function SidebarNav({ pathname }: { pathname: string | null }) {
   return (
     <SidebarMenu className="gap-1">
-      {NAV_ITEMS.map((item) => (
-        <SidebarMenuItem key={item.url}>
-          <SidebarMenuButton
-            isActive={pathname != null && pathname.startsWith(item.url)}
-            tooltip={item.title}
-            className="text-sidebar-foreground/60 group-data-[collapsible=icon]:mx-auto group-data-[collapsible=icon]:size-10! group-data-[collapsible=icon]:p-2! [&_svg]:size-5!"
-            render={
-              <Link href={item.url}>
-                <item.icon />
-                <span>{item.title}</span>
-              </Link>
-            }
-          />
-        </SidebarMenuItem>
-      ))}
+      {NAV_ITEMS.map((item) => {
+        const active = pathname != null && pathname.startsWith(item.url);
+        return (
+          <SidebarMenuItem key={item.url}>
+            <SidebarMenuButton
+              isActive={active}
+              tooltip={item.title}
+              className="flex w-full items-center rounded-lg px-2 transition-colors group-data-[collapsible=icon]:mx-auto group-data-[collapsible=icon]:size-10! group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:p-2! [&_svg]:size-5!"
+              render={
+                <Link href={item.url}>
+                  <item.icon />
+                  <span>{item.title}</span>
+                </Link>
+              }
+            />
+          </SidebarMenuItem>
+        );
+      })}
     </SidebarMenu>
   );
 }
