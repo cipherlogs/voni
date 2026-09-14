@@ -4010,3 +4010,4 @@ destination (1e).
 - 2026-09-14T13:11:24Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/package.json
 - 2026-09-14T13:23:07Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/HANDOFF.md
 - 2026-09-14T13:23:08Z [Write] /home/cipherlogs/.claude/projects/-home-cipherlogs-Repos-AI-leadcalls/memory/feedback_ask-before-assuming-block-structure.md
+- 2026-09-14T14:20:26Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/.gitignore
