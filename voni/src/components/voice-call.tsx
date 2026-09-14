@@ -10,16 +10,7 @@ import {
   TriangleAlert,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import {
-  MessageScrollerProvider,
-  MessageScroller,
-  MessageScrollerButton,
-  MessageScrollerContent,
-  MessageScrollerItem,
-  MessageScrollerViewport,
-} from "@/components/ui/message-scroller";
-import { Bubble, BubbleContent } from "@/components/ui/bubble";
-import { Message } from "@/components/ui/message";
+import { Chat01 } from "@/components/chat-01/chat-01";
 import { Progress } from "@/components/ui/progress";
 import {
   VoiceSession,
@@ -41,6 +32,7 @@ import {
   ACCENT_LABEL,
   type Voice,
 } from "@/lib/agents/voices";
+import { cn } from "@/lib/utils";
 
 /**
  * The live call surface.
@@ -100,50 +92,41 @@ const LANGUAGE_TABS: { code: string; label: string }[] = [
 ];
 
 /**
- * Call = green, hang up = red. Universal across every phone, softphone and
- * messaging app (Jakob's Law) — call green is also the product's brand
- * accent (`--brand`), so this is now both the expected phone-app convention
- * and the deliberate brand color, not a coincidence of two green shades.
+ * Call = green solid fill, hang up = red solid fill. Universal across every
+ * phone, softphone and messaging app (Jakob's Law).
+ *
+ * The live-call green is scoped (`.voice-call-live-fill` in globals.css —
+ * owned by a parallel crew, referenced here, never defined here), never a
+ * general token. Fill-only with white text; never body text.
  *
  * Hang-up is spelled out rather than using the `destructive` button variant:
  * this scaffold's `destructive` is a TINT (`bg-destructive/10` with red
  * text), not the solid red fill a hang-up button needs. The solid fill still
  * comes from the `destructive` token (both themes) with white text — no raw
  * red shade and no manual dark: overrides.
- *
- * Contrast note (matches --brand in globals.css): brand green clears 3:1
- * non-text only, never 4.5:1 body text — so these constants stay fill-only
- * (white text on green) and the hover deepens toward green-700 via
- * color-mix for pressed-state headroom.
  */
-const CALL_GREEN =
-  "bg-brand text-brand-foreground hover:bg-[color-mix(in_oklch,var(--brand),black_18%)]";
+const CALL_GREEN = "voice-call-live-fill";
 const HANGUP_RED = "bg-destructive text-white hover:bg-destructive/90";
 
 
 /**
- * The error body copy sits a long way darker than `--destructive` itself —
- * red-900 against the red-600 border and the red-50 tint. Mixing toward
- * `--foreground` reaches it in light mode AND inverts correctly in dark, which
- * a literal `#7f1d1d` would not.
+ * The error body copy sits a long way darker than `--destructive` itself.
+ * Mixing toward `--foreground` reaches it in light mode AND inverts
+ * correctly in dark, which a literal `#7f1d1d` would not. Token-derived
+ * color-mix is the one surviving arbitrary-value use (DESIGN.md §5
+ * listed exception — no token expresses "destructive mixed toward
+ * foreground", and a new token for one error line would be worse).
  */
 const ERROR_BODY =
   "text-[color-mix(in_oklch,var(--destructive),var(--foreground)_45%)]";
 
 /**
- * The portrait's live ring (a soft 1.04 bloom that fades out, NOT
- * `animate-ping`'s scale-2 blast) — a keyframe Tailwind does not ship. The
- * live dot reuses the global `voni-livedot` in globals.css. Hoisted and
- * de-duplicated by React, so both modes rendering the card at once still emit
- * one copy.
+ * Liveness is static, not animated: the portrait ring and the state-line dot
+ * use the scoped `.voice-call-live-ring` / `.voice-call-live-dot` classes in
+ * globals.css (owned by a parallel crew). The bespoke `voni-callring`
+ * keyframe bloom is cut; liveness reads from the static scoped-green ring +
+ * dot + state text + hang-up affordance.
  */
-const CALL_KEYFRAMES = `
-@keyframes voni-callring {
-  0% { transform: scale(.96); opacity: .5; }
-  70% { transform: scale(1.04); opacity: .15; }
-  100% { transform: scale(1.04); opacity: 0; }
-}
-`;
 
 function voicesFor(code: string): Voice[] {
   return VOICES.filter((v) => v.languageCode === code);
@@ -161,11 +144,13 @@ function Portrait({
 }) {
   const [failed, setFailed] = useState(false);
 
+  // Portrait sizes are known branches only (36 picker, 84 card, 84 inline)
+  // so geometry stays on the scale — never a computed px style.
+  const sizeClass = size <= 36 ? "size-9 text-sm" : "size-21 text-3xl";
   if (!persona.portrait || failed) {
     return (
       <div
-        className={`bg-muted text-muted-foreground flex shrink-0 items-center justify-center rounded-full font-medium ${className}`}
-        style={{ width: size, height: size, fontSize: size / 2.6 }}
+        className={`bg-muted text-muted-foreground flex shrink-0 items-center justify-center rounded-full font-medium ${sizeClass} ${className}`}
         aria-hidden
       >
         {persona.name.charAt(0)}
@@ -179,15 +164,30 @@ function Portrait({
       alt=""
       width={size}
       height={size}
-      className={`shrink-0 rounded-full object-cover ${className}`}
-      style={{ width: size, height: size }}
+      className={`shrink-0 rounded-full object-cover ${sizeClass} ${className}`}
       onError={() => setFailed(true)}
       priority
     />
   );
 }
 
-export function VoiceCall({ mode }: { mode: Mode }) {
+export type VoiceCallStatus = {
+  state: VoiceState;
+  elapsed: number;
+  toolActive: boolean;
+};
+
+export function VoiceCall({
+  mode,
+  className,
+  onStatusChange,
+  presentation = "card",
+}: {
+  mode: Mode;
+  className?: string;
+  onStatusChange?: (status: VoiceCallStatus) => void;
+  presentation?: "card" | "dialog";
+}) {
   const isDemo = mode.kind === "demo";
 
   const [personaId, setPersonaId] = useState(PERSONAS[0].id);
@@ -205,6 +205,7 @@ export function VoiceCall({ mode }: { mode: Mode }) {
   const [elapsed, setElapsed] = useState(0);
 
   const sessionRef = useRef<VoiceSession | null>(null);
+  const startingRef = useRef(false);
 
   const capSeconds = isDemo ? 120 : 180;
   const connected = state === "listening" || state === "speaking";
@@ -251,6 +252,10 @@ export function VoiceCall({ mode }: { mode: Mode }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connected]);
 
+  useEffect(() => {
+    onStatusChange?.({ state, elapsed, toolActive });
+  }, [elapsed, onStatusChange, state, toolActive]);
+
   // Scrolling, follow behavior, and jump-to-latest are owned by
   // MessageScroller below — no manual scroll-to-bottom effect.
   // A live session holds the microphone; unmounting without ending it leaves
@@ -278,6 +283,8 @@ export function VoiceCall({ mode }: { mode: Mode }) {
   }, []);
 
   const start = useCallback(async () => {
+    if (startingRef.current) return;
+    startingRef.current = true;
     setError(null);
     setRetryIn(null);
     setTurns([]);
@@ -300,26 +307,30 @@ export function VoiceCall({ mode }: { mode: Mode }) {
 
     // Straight from the click handler: getUserMedia and AudioContext startup
     // are gated behind a user gesture in every major browser.
-    if (mode.kind === "demo") {
-      await session.start(
-        // Placeholder id — the token endpoint returns the real one and `start`
-        // prefers it, so the browser cannot choose which agent it reaches.
-        { mode: "agent", agentId: "" },
-        demoToken(persona.id, voiceId),
-      );
-    } else {
-      await session.start(
-        {
-          mode: "inline",
-          systemPrompt: compileSystemPrompt(config),
-          greeting: config.greeting,
-          voiceId: config.voiceId,
-          languageCodes: config.languageCodes,
-          tools: compileVoiceTools(config),
-          testAgentId: mode.agentId,
-        },
-        authedToken,
-      );
+    try {
+      if (mode.kind === "demo") {
+        await session.start(
+          // Placeholder id — the token endpoint returns the real one and `start`
+          // prefers it, so the browser cannot choose which agent it reaches.
+          { mode: "agent", agentId: "" },
+          demoToken(persona.id, voiceId),
+        );
+      } else {
+        await session.start(
+          {
+            mode: "inline",
+            systemPrompt: compileSystemPrompt(config),
+            greeting: config.greeting,
+            voiceId: config.voiceId,
+            languageCodes: config.languageCodes,
+            tools: compileVoiceTools(config),
+            testAgentId: mode.agentId,
+          },
+          authedToken,
+        );
+      }
+    } finally {
+      startingRef.current = false;
     }
   }, [mode, persona.id, voiceId, config]);
 
@@ -371,13 +382,13 @@ export function VoiceCall({ mode }: { mode: Mode }) {
     <div
       role="region"
       aria-label={callTitle}
-      className={`bg-card flex w-full flex-col items-center rounded-[16px] border p-4 text-center md:p-5 ${
-        isDemo ? "h-[30rem] max-w-sm" : ""
-      }`}
+      data-voice-state={state}
+      className={cn(
+        "bg-card flex w-full flex-col items-center rounded-2xl border p-4 text-center md:p-5",
+        isDemo ? "h-120 max-w-sm" : "h-full min-h-0",
+        className,
+      )}
     >
-      <style href="voni-call-keyframes" precedence="medium">
-        {CALL_KEYFRAMES}
-      </style>
 
       {/* The agent picker: a row of faces. Tap one and that person calls you.
           The selection is the portrait directly below, so there is nothing to
@@ -426,16 +437,20 @@ export function VoiceCall({ mode }: { mode: Mode }) {
           Inline mirrors the on-screen config including unsaved edits — say
           so, or users leave believing the test covered the deployed version.
           Demo keeps its vertical; each mode says what IT does. */}
-      <h2 className="text-base font-semibold">{callTitle}</h2>
-      <p className="text-muted-foreground mt-1 text-[13px] leading-[1.5]">
-        {isDemo
-          ? persona.vertical
-          : "Talks to the version on screen, including unsaved edits. No phone number involved."}
-      </p>
-      {versionStrip ? (
-        <p className="text-foreground/75 bg-muted/50 mt-2.5 inline-flex items-center rounded-full border px-3 py-[5px] text-xs">
-          {versionStrip}
-        </p>
+      {presentation === "card" ? (
+        <>
+          <h2 className="text-base font-semibold">{callTitle}</h2>
+          <p className="text-muted-foreground mt-1 text-sm leading-[1.5]">
+            {isDemo
+              ? persona.vertical
+              : "Talks to the version on screen, including unsaved edits. No phone number involved."}
+          </p>
+          {versionStrip ? (
+            <p className="text-foreground/75 bg-muted/50 mt-2.5 inline-flex items-center rounded-full border px-3 py-[5px] text-xs">
+              {versionStrip}
+            </p>
+          ) : null}
+        </>
       ) : null}
 
       {/* Identity. The role stays put under the name in every state; while
@@ -443,13 +458,13 @@ export function VoiceCall({ mode }: { mode: Mode }) {
           now" — timer plus a brand-green live dot, matching the mockup's
           stacked role + `0:42 · listening` lines. */}
       <div className="relative mt-4">
-        {/* 2px brand-green ring while the call is live: one bloom that fades
-            out and restarts, identical in every live sub-state, so the card's
-            geometry never shifts between connecting, listening and speaking. */}
+        {/* Static scoped-green ring while the call is live: identical in every
+            live sub-state, so the card's geometry never shifts between
+            connecting, listening and speaking. */}
         {active ? (
           <span
             aria-hidden
-            className="border-brand absolute -inset-1.5 animate-[voni-callring_1.8s_ease-out_infinite] rounded-full border-2 opacity-45 motion-reduce:animate-none"
+            className="voice-call-live-ring absolute -inset-1.5 rounded-full border-2"
           />
         ) : null}
         {isDemo ? (
@@ -457,8 +472,7 @@ export function VoiceCall({ mode }: { mode: Mode }) {
         ) : (
           <div
             aria-hidden
-            className="bg-primary text-primary-foreground relative flex items-center justify-center rounded-full font-semibold"
-            style={{ width: 84, height: 84, fontSize: 34 }}
+            className="bg-primary text-primary-foreground relative flex size-21 items-center justify-center rounded-full text-3xl font-semibold"
           >
             {displayName.charAt(0)}
           </div>
@@ -469,21 +483,21 @@ export function VoiceCall({ mode }: { mode: Mode }) {
         {displayName}
       </div>
       {/* Role line: always present, matching the mockup even mid-call. */}
-      <div className="text-muted-foreground mt-0.5 text-[13px] tabular-nums">
+      <div className="text-muted-foreground mt-0.5 text-sm tabular-nums">
         {config.identity.role}
       </div>
       {/* State line: only off-idle, answering "what is happening right now".
-          13px semibold tabular in every state, live dot only while connected —
+          text-sm semibold tabular in every state, live dot only while connected —
           the ended recap line is the same treatment minus the dot. */}
       {state !== "idle" ? (
         <p
-          className="mt-2 inline-flex items-center gap-2 text-[13px] font-semibold tabular-nums"
+          className="mt-2 inline-flex items-center gap-2 text-sm font-semibold tabular-nums"
           role="status"
         >
           {connected ? (
             <span
               aria-hidden
-              className="bg-brand inline-block size-2 shrink-0 animate-[voni-livedot_1.6s_ease-in-out_infinite] rounded-full motion-reduce:animate-none"
+              className="voice-call-live-dot inline-block size-2 shrink-0 rounded-full"
             />
           ) : null}
           {state === "connecting"
@@ -516,7 +530,7 @@ export function VoiceCall({ mode }: { mode: Mode }) {
                 disabled={active}
                 aria-pressed={lang.code === langCode}
                 onClick={() => pickLanguage(lang.code)}
-                className={`cursor-pointer rounded-full px-2 py-1 text-[11px] whitespace-nowrap outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 ${
+                className={`cursor-pointer rounded-full px-2 py-1 text-xs whitespace-nowrap outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 ${
                   lang.code === langCode
                     ? "bg-primary text-primary-foreground"
                     : "text-muted-foreground hover:bg-accent"
@@ -570,7 +584,10 @@ export function VoiceCall({ mode }: { mode: Mode }) {
           </Button>
         ) : (
           <Button
-            className={`h-11 gap-2 rounded-full px-7 text-sm font-semibold ${CALL_GREEN}`}
+            className={cn(
+              "h-11 gap-2 rounded-full px-7 text-sm font-semibold",
+              presentation === "card" && CALL_GREEN,
+            )}
             onClick={start}
             aria-label={`Call ${displayName}`}
           >
@@ -587,20 +604,22 @@ export function VoiceCall({ mode }: { mode: Mode }) {
           transcript shows more than ~2 bubbles; on desktop the sticky rail
           scrolls internally instead (`lg:max-h` on the aside above). */}
       <div
-        className={`mt-3 min-h-0 w-full flex-1 overflow-y-auto ${
-          turns.length === 0 && !error ? "flex items-center justify-center" : ""
-        } ${!isDemo ? "min-h-[12rem] max-h-[18rem] lg:min-h-0 lg:max-h-none" : ""}`}
+        className={cn(
+          "mt-3 min-h-0 w-full flex-1",
+          turns.length === 0 && !error && "flex items-center justify-center",
+          isDemo ? "overflow-y-auto" : "overflow-hidden",
+        )}
       >
         {error ? (
           <div
             role="alert"
-            className="border-destructive/25 bg-destructive/5 flex w-full gap-2.5 rounded-[12px] border px-3 py-2.5 text-left"
+            className="border-destructive/25 bg-destructive/5 flex w-full gap-2.5 rounded-xl border px-3 py-2.5 text-left"
           >
             <TriangleAlert className="text-destructive mt-px size-4 shrink-0" />
             <div>
               {retryIn !== null ? (
                 <>
-                  <strong className="block text-[13px] font-semibold">
+                  <strong className="block text-sm font-semibold">
                     Too many calls right now
                   </strong>
                   <p className={`mt-0.5 text-xs leading-snug ${ERROR_BODY}`}>
@@ -617,50 +636,8 @@ export function VoiceCall({ mode }: { mode: Mode }) {
             </div>
           </div>
         ) : turns.length > 0 ? (
-          <div className="mt-0.5 flex w-full flex-col text-left">
-            {/* Transcript AND the live footer together — the mockup shows
-                bubbles with the mic hint beneath them mid-call, so the footer
-                no longer hides once captions appear. */}
-            <MessageScrollerProvider autoScroll defaultScrollPosition="end">
-              <MessageScroller className="min-h-0 flex-1">
-                <MessageScrollerViewport
-                  aria-label="Call transcript"
-                  aria-live="polite"
-                >
-                  <MessageScrollerContent className="gap-2">
-                    {turns.map((turn, i) => {
-                      const speaker = turn.role === "user" ? "You" : displayName;
-                      const isUser = turn.role === "user";
-                      return (
-                        <MessageScrollerItem key={`${i}-${turn.role}`}>
-                          <Message align={isUser ? "end" : "start"}>
-                            {/* Desktop mockup bubbles are full-bleed rows inset
-                                from one side (24px), with the speaker label
-                                inside the bubble. On phones they shrink to
-                                85% chat-style balloons inset 16px so they
-                                read as conversation, not rows. Variants stay
-                                tokens only. */}
-                            <Bubble
-                              align={isUser ? "end" : "start"}
-                              variant={isUser ? "outline" : "muted"}
-                              className={`w-auto max-w-[85%] md:w-full md:max-w-none ${isUser ? "ml-4 md:ml-6" : "mr-4 md:mr-6"}`}
-                            >
-                              <BubbleContent className="border-border w-full max-w-full rounded-[12px] py-2 text-[13px] leading-[1.5]">
-                                <span className="text-muted-foreground mb-0.5 block text-[11px] font-bold">
-                                  {speaker}
-                                </span>
-                                {turn.text}
-                              </BubbleContent>
-                            </Bubble>
-                          </Message>
-                        </MessageScrollerItem>
-                      );
-                    })}
-                  </MessageScrollerContent>
-                </MessageScrollerViewport>
-                <MessageScrollerButton />
-              </MessageScroller>
-            </MessageScrollerProvider>
+          <div className="mt-0.5 flex size-full min-h-0 flex-col text-left">
+            <Chat01 turns={turns} agentName={displayName} />
             {/* Live footer under the transcript: the countdown (+ progress)
                 inside the last 30s, else the speaks-first hint — the same
                 content the empty state shows while connected. */}
@@ -689,7 +666,7 @@ export function VoiceCall({ mode }: { mode: Mode }) {
              produces a call summary, so it carries the one thing the component
              can truthfully say about the call that just finished rather than a
              fabricated outcome. */
-          <div className="w-full rounded-[12px] border px-3 py-2.5 text-left text-[13px]">
+          <div className="w-full rounded-xl border px-3 py-2.5 text-left text-sm">
             {quotaExceeded
               ? isDemo
                 ? "Sign up to keep talking past the free demo limit."

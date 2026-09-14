@@ -21,7 +21,12 @@ import {
   toolCallLogs,
 } from "@/lib/db/schema";
 import { resolveCredential } from "@/lib/platform/credentials";
-import { validateToolArguments, type ToolName } from "./definitions";
+import { isCredentialName } from "@/lib/platform/types";
+import {
+  customToolId,
+  validateToolArguments,
+  type ToolName,
+} from "./definitions";
 
 export type ToolResponse =
   | { ok: true; data: Record<string, unknown>; dryRun?: boolean }
@@ -34,6 +39,8 @@ export type ResolvedToolContext =
       leadId: string;
       organizationId: string;
       telnyxCallControlId: string | null;
+      /** Nullable: inbound bridge calls can exist before any stored agent row. */
+      agentId: string | null;
     }
   | { kind: "test"; agentId: string; organizationId: string };
 
@@ -213,6 +220,84 @@ async function availabilityResult(
   };
 }
 
+/**
+ * Execute a user-added webhook tool. The agent's config is re-read from the
+ * row (not trusted from the tool call) so a renamed or removed tool fails
+ * closed. Test contexts dry-run like the built-in mutating tools.
+ */
+async function runCustomWebhookTool(
+  id: string,
+  args: Record<string, unknown>,
+  context: ResolvedToolContext,
+  externalCallId: string,
+): Promise<ToolResponse> {
+  // The agent's config is re-read from its row so a renamed or removed tool
+  // fails closed. Test contexts carry the agent id directly; live calls
+  // carry it on the call row (nullable — bridge inbound calls can predate
+  // any stored agent row, in which case no custom tool can resolve).
+  const agentId = context.kind === "call" ? context.agentId : context.agentId;
+  if (!agentId) return fail("That custom tool is no longer configured.");
+  const [row] = await db
+    .select({ config: agents.config })
+    .from(agents)
+    .where(
+      and(
+        eq(agents.id, agentId),
+        eq(agents.organizationId, context.organizationId),
+      ),
+    )
+    .limit(1);
+  const config = row?.config as
+    | { customTools?: { id: string; url: string; authCredentialName?: string }[] }
+    | undefined;
+  const tool = config?.customTools?.find((t) => t.id === id);
+  if (!tool) return fail("That custom tool is no longer configured.");
+  if (context.kind === "test") {
+    return {
+      ok: true,
+      dryRun: true,
+      data: {
+        simulated: true,
+        confirmation: "Dry run only. The webhook was not called.",
+        tool: tool.id,
+        arguments: args,
+      },
+    };
+  }
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (tool.authCredentialName && isCredentialName(tool.authCredentialName)) {
+    const credential = await resolveCredential(tool.authCredentialName);
+    if (credential.value) headers.Authorization = `Bearer ${credential.value}`;
+  }
+  let response: Response;
+  try {
+    response = await fetch(tool.url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ arguments: args, externalCallId }),
+      signal: AbortSignal.timeout(15000),
+    });
+  } catch {
+    return fail("The custom tool is temporarily unavailable. Please try again.", true);
+  }
+  if (!response.ok) {
+    return fail(
+      "The custom tool rejected the request.",
+      response.status >= 500,
+    );
+  }
+  let data: Record<string, unknown> = {};
+  try {
+    const parsed: unknown = await response.json();
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      data = parsed as Record<string, unknown>;
+    }
+  } catch {
+    // A webhook that returns no JSON body still succeeded — report that.
+  }
+  return { ok: true, data: { tool: tool.id, ...data } };
+}
+
 async function runValidatedTool(
   name: ToolName,
   args: Record<string, unknown>,
@@ -220,6 +305,11 @@ async function runValidatedTool(
   externalCallId: string,
 ): Promise<ToolResponse> {
   const organizationId = context.organizationId;
+
+  const customId = customToolId(name);
+  if (customId !== null) {
+    return runCustomWebhookTool(customId, args, context, externalCallId);
+  }
 
   switch (name) {
     case "search_properties": {
@@ -545,6 +635,7 @@ export async function resolveCallContext(callId: string) {
       leadId: calls.leadId,
       organizationId: leads.organizationId,
       telnyxCallControlId: calls.telnyxCallControlId,
+      agentId: calls.agentId,
     })
     .from(calls)
     .innerJoin(leads, eq(calls.leadId, leads.id))

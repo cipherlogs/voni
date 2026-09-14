@@ -71,7 +71,7 @@ function useLeadsSelection(): Selection {
  *
  * The sticky bar (count + raw-stage Select + Apply) appears when count > 0.
  * Failed applies render an inline Alert; success toasts and refreshes.
- * House async pattern: LoadingButton + inline error + sonner toast, same as
+ * House async pattern: LoadingButton + inline error + Base UI toast, same as
  * phone-numbers and the campaign queue bulk bar.
  */
 export function LeadsSelection({ children }: { children: ReactNode }) {
@@ -150,6 +150,8 @@ export function LeadsSelection({ children }: { children: ReactNode }) {
     <LeadsSelectionContext.Provider value={selection}>
       {children}
       {selected.size > 0 ? (
+        // table-05 selection-bar idiom: sticky bottom bar with count +
+        // action controls, matching the campaign queue bulk toolbar.
         <div
           role="toolbar"
           aria-label="Bulk lead actions"

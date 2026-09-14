@@ -185,6 +185,8 @@ export async function ensureGenerationPlaceholderAction(input: {
     identity: { name: trimmed, role: "Generating…" },
     detect: [],
     tools: [],
+    toolIdeas: [],
+    customTools: [],
     knowledge: "",
     channels: ["phone"],
     voiceId: input.voiceId,
@@ -707,21 +709,38 @@ export async function getAgent(id: string) {
  * and link back through the wizard retry path. `isBridgeAgent` feeds the
  * delete dialog's blocking bridge note (the DB clears the default with the
  * row via onDelete: set null). */
+export type ChannelReadiness = {
+  phoneReady: boolean | null;
+  whatsappReady: boolean | null;
+};
+
 export async function getAgentWithGeneration(id: string) {
   const agent = await getAgent(id);
   if (!agent) return null;
   const ctx = await requireCtxOrRedirect();
   const [bridge] = await db
-    .select({ bridgeAgentId: platformConfiguration.bridgeAgentId })
+    .select({
+      bridgeAgentId: platformConfiguration.bridgeAgentId,
+      telnyxConnectionId: platformConfiguration.telnyxConnectionId,
+      telnyxCallerNumber: platformConfiguration.telnyxCallerNumber,
+    })
     .from(platformConfiguration)
     .limit(1);
   const isBridgeAgent = bridge?.bridgeAgentId === id;
+  const readiness: ChannelReadiness = {
+    phoneReady:
+      bridge?.telnyxConnectionId && bridge?.telnyxCallerNumber ? true : false,
+    // WhatsApp has no dedicated send path in the agent flow yet — the toggle
+    // labels intent, so readiness is unknown rather than a false negative.
+    whatsappReady: null,
+  };
   if (!agent.generationJobId) {
     return {
       agent,
       generationStatus: null as string | null,
       generationError: null as string | null,
       isBridgeAgent,
+      ...readiness,
     };
   }
   const rows = await db
@@ -743,6 +762,7 @@ export async function getAgentWithGeneration(id: string) {
     generationStatus: rows[0]?.status ?? null,
     generationError: rows[0]?.errorMessage ?? null,
     isBridgeAgent,
+    ...readiness,
   };
 }
 

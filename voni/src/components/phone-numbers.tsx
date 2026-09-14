@@ -5,7 +5,6 @@ import { useState, useTransition } from "react";
 import { toast } from "@/components/ui/toast";
 import { LoadingButton } from "@/components/loading-button";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -26,6 +25,7 @@ import {
   FieldLabel,
 } from "@/components/ui/field";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { FormCard, FormCardSections } from "@/components/wizard/form-layout";
 import {
   Select,
   SelectContent,
@@ -42,7 +42,14 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Plus, TriangleAlert, Trash2 } from "lucide-react";
+import { Phone, Plus, TriangleAlert, Trash2 } from "lucide-react";
+import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from "@/components/ui/empty";
 import {
   addPhoneNumberAction,
   bindPhoneNumberAction,
@@ -241,99 +248,111 @@ export function PhoneNumbers({
 
   return (
     <div className="flex flex-col gap-6">
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Add a number</CardTitle>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-4">
-          <FieldGroup className="grid gap-4 sm:grid-cols-3">
-            <Field>
-              <FieldLabel htmlFor="new-number">Number</FieldLabel>
-              <Input
-                id="new-number"
-                value={newNumber}
-                onChange={(e) => setNewNumber(e.target.value)}
-                placeholder="+971 4 123 4567"
-                aria-invalid={numberFormatError ? true : undefined}
-                aria-describedby={
-                  numberFormatError ? "new-number-error" : undefined
-                }
-              />
-              {numberFormatError ? (
-                <FieldError id="new-number-error">
-                  {numberFormatError}
-                </FieldError>
-              ) : null}
-            </Field>
-            <Field>
-              <FieldLabel htmlFor="new-label">Label</FieldLabel>
-              <Input
-                id="new-label"
-                value={newLabel}
-                onChange={(e) => setNewLabel(e.target.value)}
-                placeholder="Marina office line"
-              />
-            </Field>
-            <Field>
-              <FieldLabel htmlFor="new-agent">Answered by</FieldLabel>
-              <Select
-                value={newAgent}
-                onValueChange={(v) => setNewAgent(v ?? UNBOUND)}
-              >
-                <SelectTrigger id="new-agent" aria-label="Answered by" className="w-full">
-                  <SelectValue>{agentLabel}</SelectValue>
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectGroup>
-                    <SelectItem value={UNBOUND}>
-                      Main reception agent answers
-                    </SelectItem>
-                    {agents.map((agent) => (
-                      <SelectItem key={agent.id} value={agent.id}>
-                        {agent.name}
-                        {agent.deployed ? "" : " (draft)"}
-                      </SelectItem>
-                    ))}
-                  </SelectGroup>
-                </SelectContent>
-              </Select>
-              <FieldDescription>
-                Leave this on the main reception agent unless a
-                specific agent should pick up this line.
-              </FieldDescription>
-            </Field>
-          </FieldGroup>
-          <div>
-            <LoadingButton
-              disabled={!newNumber.trim()}
-              pending={pendingId === "add"}
-              pendingText="Adding…"
-              icon={<Plus />}
-              onClick={() =>
-                run(
-                  "add",
-                  async () => {
-                    const result = await addPhoneNumberAction(
-                      newNumber,
-                      newLabel,
-                      newAgent === UNBOUND ? null : newAgent,
-                    );
-                    if (result.ok) {
-                      setNewNumber("");
-                      setNewLabel("");
-                      setNewAgent(UNBOUND);
-                    }
-                    return result;
-                  },
-                  "Number added.",
-                )
-              }
+      <div className="max-w-xl">
+        <FormCard>
+          <FormCardSections>
+            <section
+              aria-labelledby="add-number-heading"
+              className="flex flex-col gap-3"
             >
-              Add number
-            </LoadingButton>
-          </div>
-        </CardContent>
-      </Card>
+              <div>
+                <h2 id="add-number-heading" className="text-balance font-semibold">
+                  Add a number
+                </h2>
+                <p className="text-pretty text-muted-foreground text-sm leading-6">
+                  Which agent picks up when someone calls one of your numbers.
+                </p>
+              </div>
+              <FieldGroup className="grid gap-4 sm:grid-cols-6">
+                <Field className="sm:col-span-2">
+                  <FieldLabel htmlFor="new-number">Number</FieldLabel>
+                  <Input
+                    id="new-number"
+                    value={newNumber}
+                    onChange={(e) => setNewNumber(e.target.value)}
+                    placeholder="+971 4 123 4567"
+                    aria-invalid={numberFormatError ? true : undefined}
+                    aria-describedby={
+                      numberFormatError ? "new-number-error" : undefined
+                    }
+                  />
+                  {numberFormatError ? (
+                    <FieldError id="new-number-error">
+                      {numberFormatError}
+                    </FieldError>
+                  ) : null}
+                </Field>
+                <Field className="sm:col-span-2">
+                  <FieldLabel htmlFor="new-label">Label</FieldLabel>
+                  <Input
+                    id="new-label"
+                    value={newLabel}
+                    onChange={(e) => setNewLabel(e.target.value)}
+                    placeholder="Marina office line"
+                  />
+                </Field>
+                <Field className="sm:col-span-2">
+                  <FieldLabel htmlFor="new-agent">Answered by</FieldLabel>
+                  <Select
+                    value={newAgent}
+                    onValueChange={(v) => setNewAgent(v ?? UNBOUND)}
+                  >
+                    <SelectTrigger id="new-agent" aria-label="Answered by" className="w-full">
+                      <SelectValue>{agentLabel}</SelectValue>
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectGroup>
+                        <SelectItem value={UNBOUND}>
+                          Main reception agent answers
+                        </SelectItem>
+                        {agents.map((agent) => (
+                          <SelectItem key={agent.id} value={agent.id}>
+                            {agent.name}
+                            {agent.deployed ? "" : " (draft)"}
+                          </SelectItem>
+                        ))}
+                      </SelectGroup>
+                    </SelectContent>
+                  </Select>
+                  <FieldDescription>
+                    Leave this on the main reception agent unless a
+                    specific agent should pick up this line.
+                  </FieldDescription>
+                </Field>
+              </FieldGroup>
+              <div className="mt-1">
+                <LoadingButton
+                  disabled={!newNumber.trim()}
+                  pending={pendingId === "add"}
+                  pendingText="Adding…"
+                  icon={<Plus />}
+                  onClick={() =>
+                    run(
+                      "add",
+                      async () => {
+                        const result = await addPhoneNumberAction(
+                          newNumber,
+                          newLabel,
+                          newAgent === UNBOUND ? null : newAgent,
+                        );
+                        if (result.ok) {
+                          setNewNumber("");
+                          setNewLabel("");
+                          setNewAgent(UNBOUND);
+                        }
+                        return result;
+                      },
+                      "Number added.",
+                    )
+                  }
+                >
+                  Add number
+                </LoadingButton>
+              </div>
+            </section>
+          </FormCardSections>
+        </FormCard>
+      </div>
 
       {error ? (
         <Alert variant="destructive">
@@ -342,10 +361,9 @@ export function PhoneNumbers({
         </Alert>
       ) : null}
 
-      <Card>
-        <CardContent className="p-0">
-          <div className="overflow-x-auto">
-            <Table>
+      <div className="rounded-lg border">
+        <div className="overflow-x-auto">
+          <Table>
               <TableHeader>
                 <TableRow>
                   <TableHead>Number</TableHead>
@@ -357,11 +375,19 @@ export function PhoneNumbers({
               <TableBody>
                 {numbers.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={4} className="p-8 text-center">
-                      <span className="text-muted-foreground">
-                        No numbers registered. Inbound calls are
-                        answered by the main reception agent.
-                      </span>
+                    <TableCell colSpan={4} className="h-24 text-center">
+                      <Empty>
+                        <EmptyHeader>
+                          <EmptyMedia variant="icon">
+                            <Phone />
+                          </EmptyMedia>
+                          <EmptyTitle>No numbers registered</EmptyTitle>
+                          <EmptyDescription>
+                            Inbound calls are answered by the main reception
+                            agent.
+                          </EmptyDescription>
+                        </EmptyHeader>
+                      </Empty>
                     </TableCell>
                   </TableRow>
                 ) : (
@@ -424,9 +450,8 @@ export function PhoneNumbers({
                 )}
               </TableBody>
             </Table>
-          </div>
-        </CardContent>
-      </Card>
+        </div>
+      </div>
     </div>
   );
 }

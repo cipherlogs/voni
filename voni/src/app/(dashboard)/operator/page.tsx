@@ -1,7 +1,7 @@
 import { Suspense } from "react";
 import { desc, isNotNull } from "drizzle-orm";
 import { OperatorDenied, OperatorView, type OperatorData } from "@/components/operator-view";
-import { Skeleton } from "@/components/ui/skeleton";
+import { DetailSkeleton, PageHeaderSkeleton } from "@/components/page-skeletons";
 import { db } from "@/lib/db";
 import { agents, integrationChecks } from "@/lib/db/schema";
 import { organization } from "@/lib/db/auth-schema";
@@ -15,19 +15,15 @@ import { requireCtxOrRedirect } from "@/lib/session";
 
 /**
  * Generic operator frame: paints without awaiting authorization or data.
+ * Skeleton pieces come from page-skeletons (DESIGN.md §4 — one canonical
+ * composition); the shell testid + status label stay for the manifest.
  */
 function OperatorFrame() {
   return (
     <div data-testid="operator-shell" className="flex flex-col gap-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Platform operator</h1>
-        <p className="text-muted-foreground text-sm">
-          Administrative controls. Access is allowlist-restricted.
-        </p>
-      </div>
-      <div role="status" aria-label="Loading operator console" className="flex flex-col gap-4">
-        <Skeleton className="h-24 w-full" />
-        <Skeleton className="h-24 w-full" />
+      <PageHeaderSkeleton />
+      <div role="status" aria-label="Loading operator console">
+        <DetailSkeleton />
       </div>
     </div>
   );

@@ -116,8 +116,8 @@ test("funnel stage cards link to their filtered leads view", () => {
     "funnel links name their stage for assistive tech",
   );
   assert.ok(
-    page.includes("interactive-card"),
-    "funnel cards carry the house hover affordance",
+    page.includes("CardFooter"),
+    "funnel cards use the stats-05 card shape (DESIGN.md §4)",
   );
 });
 
@@ -294,12 +294,13 @@ const callsDir = join(here, "..", "..", "app", "(dashboard)", "calls");
 test("dashboard first-run replaces the zero grid with a setup path", () => {
   const page = readFileSync(join(dashboardDir, "page.tsx"), "utf8");
   const actions = readFileSync(join(dashboardDir, "actions.ts"), "utf8");
+  const setup = readFileSync(join(here, "..", "dashboard", "setup.ts"), "utf8");
   assert.ok(actions.includes("isFirstRun"), "summary exposes first-run");
   assert.ok(page.includes("isFirstRun"), "page branches on first-run");
   assert.ok(
-    page.includes('"/agents/new"') &&
-      page.includes('"/campaigns/new"') &&
-      page.includes('"/campaigns"'),
+    setup.includes('"/agents/new"') &&
+      setup.includes('"/campaigns/new"') &&
+      setup.includes('"/campaigns"'),
     "setup steps link to agent creation, campaign creation, campaigns",
   );
   assert.ok(
@@ -323,12 +324,13 @@ test("first-run covers zero outcomes with waiting campaigns, not without", () =>
 
 test("setup step 2 names the waiting campaign and deep-links its import", () => {
   const page = readFileSync(join(dashboardDir, "page.tsx"), "utf8");
+  const setup = readFileSync(join(here, "..", "dashboard", "setup.ts"), "utf8");
   assert.ok(
-    page.includes("Import leads into ${firstEmpty.name}"),
+    setup.includes("Import leads into ${waitingCampaign.name}"),
     "step 2 titles the campaign-creation truth when a campaign waits",
   );
   assert.ok(
-    page.includes("#import"),
+    setup.includes("#import"),
     "setup and next-action links land on the import section",
   );
   assert.ok(
@@ -386,8 +388,8 @@ test("dashboard outcome cards link to their filtered lists", () => {
     "the de-linking comment is gone — links exist now",
   );
   assert.ok(
-    page.includes("interactive-card"),
-    "linked cards carry the house hover affordance",
+    page.includes("CardFooter"),
+    "linked cards use the stats-05 card shape (DESIGN.md §4)",
   );
 });
 

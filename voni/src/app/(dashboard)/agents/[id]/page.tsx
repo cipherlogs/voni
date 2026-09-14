@@ -23,7 +23,14 @@ async function AgentDetail({
   const query = await searchParams;
   const result = await getAgentWithGeneration(id);
   if (!result) notFound();
-  const { agent, generationStatus, generationError, isBridgeAgent } = result;
+  const {
+    agent,
+    generationStatus,
+    generationError,
+    isBridgeAgent,
+    phoneReady,
+    whatsappReady,
+  } = result;
 
   // A draft row still carrying its generation job id holds a placeholder
   // config until the reviewed save upgrades it in place.
@@ -51,6 +58,9 @@ async function AgentDetail({
         id={agent.id}
         name={agent.name}
         config={storedConfig}
+        createdAt={agent.createdAt.toISOString()}
+        updatedAt={agent.updatedAt.toISOString()}
+        configVersion={agent.configVersion}
         initialDeploymentAttention={query.deployment === "attention"}
         deploymentStatus={agent.deploymentStatus}
         deploymentError={agent.deploymentError}
@@ -60,6 +70,8 @@ async function AgentDetail({
         generationError={generationError}
         isGenerationStub={isGenerationStub}
         isBridgeAgent={isBridgeAgent}
+        phoneReady={phoneReady}
+        whatsappReady={whatsappReady}
       />
     </>
   );

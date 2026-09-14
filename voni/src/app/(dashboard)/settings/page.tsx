@@ -16,27 +16,21 @@ import {
   type CredentialSummary,
 } from "@/lib/platform/types";
 import { SettingsView } from "@/components/settings-view";
-import { SETTINGS_TABS } from "@/lib/settings-tabs";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { CardListSkeleton, PageHeaderSkeleton } from "@/components/page-skeletons";
 import { getCopilotVoicePrefs } from "./actions";
 
 /**
- * Structural shell: heading + tab structure prerender without awaiting any
- * data. Tab labels reuse SETTINGS_TABS so the shell cannot drift from the
- * resolved view. Controls stay disabled with no fake values until the data
- * leaf below resolves (Task 8/Section 5 contract).
+ * Structural shell: heading + skeleton prerender without awaiting any data
+ * (page-skeletons pieces per DESIGN.md §4 — one canonical composition).
+ * The tab structure arrives with the resolved view; the skeleton holds the
+ * layout until the single data leaf below resolves (Task 8 contract).
  */
 function SettingsShellFallback() {
   return (
-    <Tabs defaultValue="account">
-      <TabsList className="max-w-full justify-start overflow-x-auto" variant="line">
-        {SETTINGS_TABS.map((tab) => (
-          <TabsTrigger key={tab.value} value={tab.value} disabled>
-            {tab.label}
-          </TabsTrigger>
-        ))}
-      </TabsList>
-    </Tabs>
+    <div className="flex flex-col gap-6" aria-hidden>
+      <PageHeaderSkeleton />
+      <CardListSkeleton rows={3} />
+    </div>
   );
 }
 

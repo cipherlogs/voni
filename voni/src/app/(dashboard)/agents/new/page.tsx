@@ -5,6 +5,7 @@ import { z } from "zod";
 import { useRouter, useSearchParams } from "next/navigation";
 import { toast } from "@/components/ui/toast";
 import { ArrowRight } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { AgentConfigForm } from "@/components/agent-config-form";
 import { LoadingButton } from "@/components/loading-button";
@@ -39,7 +40,13 @@ import {
   generationIdempotencyKey,
 } from "@/components/agent-wizard/starters";
 import { TimelineBar } from "@/components/agent-wizard/wizard-timeline";
-import { WizardFooter } from "@/components/wizard/form-layout";
+import {
+  FormCard,
+  FormCardSections,
+  PageHeading,
+  WizardFooter,
+} from "@/components/wizard/form-layout";
+import { Progress } from "@/components/ui/progress";
 import type { TagFieldHandle } from "@/components/wizard/tag-field";
 import { BackLink } from "@/components/back-link";
 import { NewAgentSkeleton } from "@/components/page-skeletons";
@@ -567,29 +574,31 @@ function NewAgentInner({
           draft.languageCodes[0]);
     return (
       <div className="flex flex-col gap-6">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">
-            Review agent
-          </h1>
-          <p className="text-muted-foreground text-sm">
-            Everything here is editable. Nothing is saved until
-            you say so.
-          </p>
-          <div className="text-muted-foreground mt-3 flex flex-col gap-1 text-sm">
-            <p>
-              <span className="text-foreground font-medium">
-                {summaryName}
-              </span>
-            </p>
-            <p>
-              Voice {summaryVoice} · {summaryLanguage}
-            </p>
-            <p>
-              Brief: {wiz.draft.goals.length} goals ·{" "}
-              {wiz.draft.tasks.length} tasks
-            </p>
-          </div>
-        </div>
+        <PageHeading
+          title="Review agent"
+          description="Everything here is editable. Nothing is saved until you say so."
+        />
+        <FormCard>
+          <FormCardSections>
+            <div className="flex flex-col gap-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-foreground text-sm font-medium">
+                  {summaryName}
+                </span>
+                <Badge variant="secondary">Ready to save</Badge>
+              </div>
+              <div className="text-muted-foreground flex flex-col gap-1 text-sm">
+                <p>
+                  Voice {summaryVoice} · {summaryLanguage}
+                </p>
+                <p>
+                  Brief: {wiz.draft.goals.length} goals ·{" "}
+                  {wiz.draft.tasks.length} tasks
+                </p>
+              </div>
+            </div>
+          </FormCardSections>
+        </FormCard>
 
         <AgentConfigForm
           initialName={wiz.draft.agentName || draft.identity.name}
@@ -635,20 +644,32 @@ function NewAgentInner({
     );
   }
 
+  const stepLabel = WIZARD_STEPS[wiz.step] ?? "";
+  const progressValue = ((wiz.step + 1) / WIZARD_STEPS.length) * 100;
   return (
     <>
-      <div>
-          <h1 className="text-2xl font-semibold tracking-tight">New agent</h1>
-          <p className="text-muted-foreground text-sm">
-            Answer two quick steps and we&apos;ll generate a starting
-            mission and rules, editable afterward. Prefer talking?
-            The Voice copilot button in the top bar fills in every
-            field with you.
-          </p>
-      </div>
+      <PageHeading
+        title="New agent"
+        description="Answer two quick steps and we'll generate a starting mission and rules, editable afterward. Prefer talking? The Voice copilot button in the top bar fills in every field with you."
+      />
 
-        <div className="flex min-w-0 flex-col gap-4">
-          <TimelineBar current={wiz.step} completed={wiz.completed} onSelect={wiz.setStep} />
+        <FormCard>
+          <FormCardSections>
+            <div className="flex flex-col gap-2">
+              <div className="flex flex-wrap items-baseline justify-between gap-2">
+                <p className="text-sm font-medium">{stepLabel}</p>
+                <p className="text-muted-foreground text-xs">
+                  Step {wiz.step + 1} of {WIZARD_STEPS.length}
+                </p>
+              </div>
+              <p className="text-muted-foreground text-sm">
+                {wiz.step === 0
+                  ? "Start with the big picture, then break it into directions."
+                  : "A name plus a vibe — type it, or tell the voice copilot."}
+              </p>
+              <Progress value={progressValue} aria-label="Creation progress" />
+            </div>
+            <TimelineBar current={wiz.step} completed={wiz.completed} onSelect={wiz.setStep} />
           {wiz.step === 0 ? (
             <PlanStep
               api={wiz}
@@ -685,7 +706,11 @@ function NewAgentInner({
             />
           ) : null}
           {showGuidance && wiz.step === 1 && !submitting ? <ManualLlmGuidance /> : null}
+          </FormCardSections>
+        </FormCard>
 
+        {/* Page footer: outside filled bodies */}
+        <div>
           <WizardFooter
             onBack={() => wiz.setStep(Math.max(0, wiz.step - 1))}
             backDisabled={wiz.step === 0 || submitting}

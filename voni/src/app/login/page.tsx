@@ -38,13 +38,10 @@ async function LoginDecision({
 
 export default function LoginPage(props: PageProps<"/login">) {
   return (
-    <main
-      data-testid="login-shell"
-      className="flex min-h-svh flex-col items-center justify-center px-4 py-12"
-    >
+    <main data-testid="login-shell" className="flex min-h-svh flex-col">
       <Suspense
         fallback={
-          <p aria-live="polite" className="text-muted-foreground text-sm">
+          <p aria-live="polite" className="text-muted-foreground p-6 text-sm">
             Loading sign-in…
           </p>
         }

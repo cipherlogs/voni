@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { ArrowLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
 
 /**
@@ -106,22 +107,21 @@ export function WizardFooter({
 }) {
   return (
     <div data-slot="wizard-footer" className={cn(className)}>
-      <div className="border-t pt-4">
-        <div className="flex items-center justify-between gap-3">
-          <Button
-            type="button"
-            variant="ghost"
-            className="pointer-coarse:min-h-11"
-            disabled={backDisabled}
-            onClick={onBack}
-          >
-            <ArrowLeft data-icon="inline-start" aria-hidden />
-            {backLabel}
-          </Button>
-          <span className="flex min-w-0 flex-1 justify-end md:flex-none">
-            {primary}
-          </span>
-        </div>
+      <Separator />
+      <div className="flex items-center justify-between gap-3 pt-4">
+        <Button
+          type="button"
+          variant="outline"
+          className="pointer-coarse:min-h-11"
+          disabled={backDisabled}
+          onClick={onBack}
+        >
+          <ArrowLeft data-icon="inline-start" aria-hidden />
+          {backLabel}
+        </Button>
+        <span className="flex min-w-0 flex-1 justify-end md:flex-none">
+          {primary}
+        </span>
       </div>
     </div>
   );

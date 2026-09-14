@@ -123,16 +123,20 @@ test("VoiceField merges language chips and voice cards, real clips only", () => 
   // The card itself is the preview control — no separate play button.
   assert.ok(source.includes("/voices/"));
   assert.ok(source.includes("previewVoice"));
-  assert.ok(source.includes("voni-voice-fill"));
-  assert.ok(source.includes("--preview-duration"));
+  // ai-01 composer-card idiom (DESIGN.md §4): fill sweep culled, progress
+  // via token wash; avatar on AvatarFallback tokens.
+  assert.ok(!source.includes("voni-voice-fill"));
+  assert.ok(!source.includes("--preview-duration"));
+  assert.ok(source.includes("bg-primary/10"));
   assert.ok(!source.includes("PreviewButton"));
   assert.ok(!source.includes("voiceTunables"));
   assert.ok(!source.includes("Test this agent"));
-  // CSS character avatars, accent flag badges, selected ring — no Card,
+  // Token avatars, accent flag badges, selected ring — no Card,
   // waveform, checkmark, or custom avatar style.
-  assert.ok(source.includes("VoiceAvatar"));
+  assert.ok(source.includes("VoiceCardAvatar"));
   assert.ok(source.includes("ACCENT_FLAG"));
-  assert.ok(!source.includes("AvatarFallback"));
+  assert.ok(source.includes("AvatarFallback"));
+  assert.ok(source.includes("AudioLines"));
   assert.ok(!source.includes("waveformHeights"));
   assert.ok(source.includes("flagFor"));
   assert.ok(source.includes("data-[state=on]:border-primary"));
@@ -165,9 +169,10 @@ test("Form layout tokens: heading gaps, card padding, static footer", () => {
   assert.ok(source.includes("py-4 md:py-6"));
   assert.ok(source.includes("--card-spacing"));
   // Normal document flow — a stuck footer covered scrolled form content.
+  // dialog-11 terminal bar (DESIGN.md §4): ruled Separator, not a border-t div.
   assert.ok(!source.includes("sticky"));
   assert.ok(!source.includes("--job-pill-h"));
-  assert.ok(source.includes("border-t"));
+  assert.ok(source.includes("<Separator"));
 });
 
 test("Button has no custom touch sizes; stock sizes stay intact", () => {

@@ -4,6 +4,7 @@ import { notFound } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { BackLink } from "@/components/back-link";
 import { BookOpen, PhoneOutgoing, Clock } from "lucide-react";
@@ -129,18 +130,23 @@ async function CampaignDetail({
       {/* Why the dialer is or is not working right now. A campaign that is
           simply outside its calling window is indistinguishable from a broken
           one without this. */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
-            {dispatch.blockers.length === 0 ? (
-              <PhoneOutgoing className="size-4" />
-            ) : (
-              <Clock className="text-muted-foreground size-4" />
-            )}
+      <section aria-labelledby="campaign-dialer-heading">
+        <div className="flex items-center gap-2">
+          {dispatch.blockers.length === 0 ? (
+            <PhoneOutgoing className="size-4" />
+          ) : (
+            <Clock className="text-muted-foreground size-4" />
+          )}
+          <h2 id="campaign-dialer-heading" className="text-base font-medium">
             Dialer
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-1">
+          </h2>
+          {dispatch.blockers.length === 0 ? (
+            <Badge>Ready</Badge>
+          ) : (
+            <Badge variant="outline">Not dialing</Badge>
+          )}
+        </div>
+        <div className="mt-2 flex flex-col gap-1">
           {dispatch.blockers.length === 0 ? (
             <>
               <p className="font-medium">
@@ -171,7 +177,6 @@ async function CampaignDetail({
             </>
           ) : (
             <>
-              <p className="font-medium">Not dialing</p>
               <ul className="text-muted-foreground flex list-disc flex-col gap-0.5 pl-5 text-sm">
                 {dispatch.blockers.map((blocker) => (
                   <li key={blocker}>{blocker}</li>
@@ -185,35 +190,37 @@ async function CampaignDetail({
               ) : null}
             </>
           )}
-        </CardContent>
-      </Card>
+        </div>
+      </section>
+
+      <Separator />
 
       {/* id="import": the dashboard first-run step 2 deep-links here, so a
           campaign waiting for its CSV lands on the import form — with the
           sticky header's height accounted for via scroll-margin. */}
-      <Card id="import" className="scroll-mt-20">
-        <CardHeader>
-          <CardTitle className="text-base">Import leads</CardTitle>
-        </CardHeader>
-        <CardContent>
+      <section aria-labelledby="campaign-import-heading" id="import" className="scroll-mt-20">
+        <h2 id="campaign-import-heading" className="text-base font-medium">
+          Import leads
+        </h2>
+        <div className="mt-2">
           <LeadImport campaignId={campaign.id} />
-        </CardContent>
-      </Card>
+        </div>
+      </section>
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">
-            Queue ({members.length} lead{members.length === 1 ? "" : "s"})
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="p-0">
+      <Separator />
+
+      <section aria-labelledby="campaign-queue-heading">
+        <h2 id="campaign-queue-heading" className="text-base font-medium">
+          Queue ({members.length} lead{members.length === 1 ? "" : "s"})
+        </h2>
+        <div className="mt-2 overflow-x-auto rounded-lg border">
           <CampaignQueue
             members={members}
             maxAttempts={campaign.maxAttempts}
             campaignId={campaign.id}
           />
-        </CardContent>
-      </Card>
+        </div>
+      </section>
     </div>
   );
 }

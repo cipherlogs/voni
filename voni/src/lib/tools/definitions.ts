@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { AgentConfig } from "@/lib/agents/config";
+import type { AgentConfig, CustomTool } from "@/lib/agents/config";
 import { TOOL_NAMES } from "@/lib/agents/config";
 import { sensitiveCaptureFields } from "@/lib/agents/compile";
 
@@ -222,11 +222,36 @@ const BUSINESS_TOOLS: Record<ToolName, VoiceTool> = {
   },
 };
 
+/**
+ * Compile one user-added webhook tool into a voice-callable function tool.
+ * Permissive object schema: the agent sends whatever JSON the webhook
+ * expects, and validation passes anything object-shaped through.
+ */
+export function compileCustomTool(tool: CustomTool): VoiceTool {
+  return {
+    type: "function",
+    name: `custom_${tool.id}`,
+    description: `${tool.label}. ${tool.description}`,
+    parameters: { type: "object", additionalProperties: true },
+    execution_mode: tool.mode,
+    timeout_seconds: tool.mode === "hold" ? 20 : 15,
+  };
+}
+
+export function customToolId(name: string): string | null {
+  return name.startsWith("custom_") && name.length > "custom_".length
+    ? name.slice("custom_".length)
+    : null;
+}
+
 export function compileVoiceTools(config: AgentConfig): VoiceTool[] {
   const selected = config.tools.flatMap((name) => {
     const tool = BUSINESS_TOOLS[name as ToolName];
     return tool ? [tool] : [];
   });
+  for (const custom of config.customTools ?? []) {
+    selected.push(compileCustomTool(custom));
+  }
   const sensitive = sensitiveCaptureFields(config);
   if (sensitive.length > 0) {
     selected.push({
@@ -255,6 +280,13 @@ export function compileVoiceTools(config: AgentConfig): VoiceTool[] {
 }
 
 export function validateToolArguments(name: string, value: unknown) {
+  // Custom webhook tools accept any object-shaped arguments — the webhook
+  // owns its contract, and strictness here would reject valid payloads.
+  if (customToolId(name) !== null) {
+    return typeof value === "object" && value !== null
+      ? { ok: true as const, data: value as Record<string, unknown> }
+      : { ok: false as const, error: "Tool arguments must be an object." };
+  }
   const schema = toolArgumentSchemas[name as ToolName];
   if (!schema) return { ok: false as const, error: "Unknown tool." };
   const parsed = schema.safeParse(value);

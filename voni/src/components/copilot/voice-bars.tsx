@@ -1,7 +1,9 @@
 /**
  * The copilot's mark: four rounded bars in a flat disc, no stock mic glyph.
- * Bars animate while the copilot speaks; listening/idle states stay static.
- * Reduced-motion is handled globally (globals.css squashes all animation).
+ * Static in every mood — the `copilot-bars-live` animation loop is culled
+ * (DESIGN.md §2 motion cull), so speaking reads via `text-primary` color,
+ * never motion. Reduced-motion needs no per-component query: there is
+ * nothing to squash.
  */
 
 export type VoiceBarsMood = "idle" | "connecting" | "listening" | "speaking";
@@ -20,11 +22,12 @@ export function VoiceBars({
   mood: VoiceBarsMood;
   className?: string;
 }) {
+  const speaking = mood === "speaking";
   return (
     <svg
       viewBox="0 0 24 24"
       aria-hidden
-      className={mood === "speaking" ? `copilot-bars-live ${className ?? ""}` : className}
+      className={speaking ? `text-primary ${className ?? ""}` : className}
       fill="currentColor"
     >
       {BARS.map((bar) => (

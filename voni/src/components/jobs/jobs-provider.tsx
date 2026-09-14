@@ -122,7 +122,7 @@ export function jobStatusLabel(status: string): string {
  * Polls /api/jobs on a cadence driven by what is happening: every 2s while
  * the visible tab has active jobs, every 5s while hidden with active jobs,
  * every 30s while idle — plus an immediate refresh on focus or reconnect.
- * Terminal transitions observed while watching fire one Sonner toast (and an
+ * Terminal transitions observed while watching fire one Base UI toast (and an
  * opt-in browser notification when the tab is hidden); `seenAt` persists so
  * reloads and other tabs never repeat them.
  */

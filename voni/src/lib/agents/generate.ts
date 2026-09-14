@@ -30,6 +30,9 @@ Rules:
   interrupted — phone numbers, emails, budgets, dates, reference numbers.
 - "tools" may ONLY contain names from this list; omit any that do not apply:
 ${TOOL_REGISTRY.map((t) => `    ${t.name} — ${t.description}`).join("\n")}
+- You may also propose up to 5 "toolIdeas" (name/label/description) for work
+  the brief implies but no listed tool covers. These are suggestions only —
+  never invent executable tools outside the allowed list.
 - "greeting" is the first line the agent speaks. Keep it under 12 words and end
   it with a question, so the caller has something easy to answer.
 - "channels" is a subset of ["phone", "whatsapp"].
@@ -43,6 +46,7 @@ JSON shape:
   "identity": { "name": string, "role": string },
   "detect": [{ "key": string, "label": string, "description": string, "sensitive": boolean }],
   "tools": [string],
+  "toolIdeas": [{ "name": string, "label": string, "description": string }],
   "knowledge": string,
   "channels": [string],
   "voiceId": string,

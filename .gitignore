@@ -23,9 +23,19 @@ build/
 __pycache__/
 *.pyc
 
+# Claude per-machine local settings
+.claude/settings.local.json
+
+# Impeccable design-review artifacts (local critiques/screenshots)
+.impeccable/
+
+# Unlazy gate-runner state (locks + local ledgers)
+.unlazy/
+
 # Local indexes & scratch
 ruvector.db
 .superpowers/
+.swarm/hnsw.index
 .swarm/memory.db*
 # Same SQLite trio under the agentdb- prefix; the rule above predates it,
 # so the .db/-wal/-shm runtime files were being tracked.

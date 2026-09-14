@@ -18,7 +18,7 @@ export function BackLink({ href, label }: { href: string; label: string }) {
       variant="link"
       className="h-auto w-fit cursor-pointer gap-1.5 rounded-lg px-1 py-2 text-sm font-medium text-foreground no-underline hover:underline [&>svg]:size-4"
     >
-      <ChevronLeft aria-hidden />
+      <ChevronLeft data-icon="inline-start" aria-hidden />
       {label}
     </Button>
   );

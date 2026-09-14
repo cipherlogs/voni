@@ -6,6 +6,13 @@ import { BellRing, CircleCheck, History, LoaderCircle, RotateCw, X } from "lucid
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from "@/components/ui/empty";
+import {
   Dialog,
   DialogClose,
   DialogContent,
@@ -17,6 +24,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { LoadingButton } from "@/components/loading-button";
+import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "@/components/ui/toast";
 import { JobRow } from "@/components/jobs/job-row";
 import { useJobs } from "@/components/jobs/jobs-provider";
@@ -202,7 +210,7 @@ function JobsContent() {
         <RecordSearchReader />
       </Suspense>
       <div className="flex flex-col gap-4">
-        <div className="flex flex-wrap items-center gap-3">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <Tabs
             value={filter}
             onValueChange={(value) => setFilter(value as Filter)}
@@ -228,7 +236,7 @@ function JobsContent() {
             placeholder="Search jobs…"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            className="max-w-xs"
+            className="h-8 w-full sm:w-64"
             aria-label="Search jobs"
           />
           {filtersActive ? (
@@ -245,19 +253,23 @@ function JobsContent() {
         </div>
 
         {visible.length === 0 ? (
-          <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed py-12 text-center">
-            <CircleCheck className="text-muted-foreground size-8" />
-            <p className="text-sm font-medium">
-              {jobs.length === 0
-                ? "Nothing running"
-                : "No jobs match this filter"}
-            </p>
-            <p className="text-muted-foreground text-sm">
-              {jobs.length === 0
-                ? "Slow work — agent generation, deployments, connection tests, imports — will appear here."
-                : "Try a different filter or search."}
-            </p>
-          </div>
+          <Empty>
+            <EmptyHeader>
+              <EmptyMedia variant="icon">
+                <CircleCheck />
+              </EmptyMedia>
+              <EmptyTitle>
+                {jobs.length === 0
+                  ? "Nothing running"
+                  : "No jobs match this filter"}
+              </EmptyTitle>
+              <EmptyDescription>
+                {jobs.length === 0
+                  ? "Slow work — agent generation, deployments, connection tests, imports — will appear here."
+                  : "Try a different filter or search."}
+              </EmptyDescription>
+            </EmptyHeader>
+          </Empty>
         ) : (
           <>
             <label className="flex w-fit cursor-pointer items-center gap-2 text-sm text-muted-foreground">
@@ -286,7 +298,7 @@ function JobsContent() {
           <div
             role="toolbar"
             aria-label="Bulk job actions"
-            className="bg-card sticky bottom-4 z-10 flex flex-wrap items-center gap-2 rounded-lg border p-3 shadow-lg"
+            className="bg-card sticky bottom-4 flex flex-wrap gap-2 rounded-lg border p-3"
           >
             <span className="text-sm font-medium" aria-live="polite">
               {selected.size} selected
@@ -370,8 +382,24 @@ export default function JobsPage() {
       <Suspense
         fallback={
           <div role="status" aria-label="Loading jobs" className="flex flex-col gap-4">
-            <div className="bg-muted h-10 w-64 animate-pulse rounded-md" />
-            <div className="bg-muted h-16 w-full animate-pulse rounded-md" />
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+              <Skeleton className="h-9 w-full max-w-xs" />
+              <Skeleton className="h-8 w-full sm:w-64" />
+            </div>
+            <div className="flex flex-col gap-3">
+              <div className="rounded-lg border p-3">
+                <div className="flex flex-col gap-2">
+                  <Skeleton className="h-4 w-48" />
+                  <Skeleton className="h-3 w-full max-w-md" />
+                </div>
+              </div>
+              <div className="rounded-lg border p-3">
+                <div className="flex flex-col gap-2">
+                  <Skeleton className="h-4 w-40" />
+                  <Skeleton className="h-3 w-full max-w-sm" />
+                </div>
+              </div>
+            </div>
           </div>
         }
       >

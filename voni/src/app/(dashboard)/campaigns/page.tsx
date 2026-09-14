@@ -1,8 +1,23 @@
 import { Suspense } from "react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import {
+  Empty,
+  EmptyContent,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from "@/components/ui/empty";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { Megaphone, Plus } from "lucide-react";
 import { CardListSkeleton } from "@/components/page-skeletons";
 import { listCampaigns } from "./actions";
@@ -32,15 +47,17 @@ async function CampaignsList() {
         brief={`Campaign list: ${rows.length} campaigns with status, lead counts, and calling windows. New campaigns start on the creation screen.`}
       />
       {rows.length === 0 ? (
-        <Card>
-          <CardContent className="flex flex-col items-center gap-3 py-16 text-center">
-            <Megaphone className="text-muted-foreground size-10" />
-            <div>
-              <p className="font-medium">No campaigns yet</p>
-              <p className="text-muted-foreground text-sm">
-                Create an agent first, then assign it leads to work.
-              </p>
-            </div>
+        <Empty>
+          <EmptyHeader>
+            <EmptyMedia variant="icon">
+              <Megaphone />
+            </EmptyMedia>
+            <EmptyTitle>No campaigns yet</EmptyTitle>
+            <EmptyDescription>
+              Create an agent first, then assign it leads to work.
+            </EmptyDescription>
+          </EmptyHeader>
+          <EmptyContent>
             <Button
               nativeButton={false}
               render={<Link href="/campaigns/new" />}
@@ -48,49 +65,59 @@ async function CampaignsList() {
             >
               Create your first campaign
             </Button>
-          </CardContent>
-        </Card>
+          </EmptyContent>
+        </Empty>
       ) : (
-        <div className="flex flex-col gap-3">
-          {rows.map((campaign) => (
-            <Card key={campaign.id}>
-              <CardContent className="flex flex-wrap items-center justify-between gap-4 py-4">
-                <div className="flex min-w-0 flex-col gap-1">
-                  <div className="flex items-center gap-2">
-                    <span className="font-medium">{campaign.name}</span>
-                    <Badge variant={STATUS_VARIANT[campaign.status]}>
-                      {campaign.status}
-                    </Badge>
-                    {/* An unpublished agent is the most common reason a
-                        campaign silently never dials, so it is called out in
-                        the list rather than only on the detail page. */}
-                    {campaign.agentDeployed ? null : (
-                      <Badge variant="outline">agent is a draft</Badge>
-                    )}
-                  </div>
-                  <p className="text-muted-foreground truncate text-sm">
+        <div className="overflow-x-auto rounded-lg border">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Campaign</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>Calling window</TableHead>
+                <TableHead>Leads</TableHead>
+                <TableHead className="w-12" />
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {rows.map((campaign) => (
+                <TableRow key={campaign.id}>
+                  <TableCell className="font-medium">{campaign.name}</TableCell>
+                  <TableCell>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge variant={STATUS_VARIANT[campaign.status]}>
+                        {campaign.status}
+                      </Badge>
+                      {/* An unpublished agent is the most common reason a
+                          campaign silently never dials, so it is called out in
+                          the list rather than only on the detail page. */}
+                      {campaign.agentDeployed ? null : (
+                        <Badge variant="outline">agent is a draft</Badge>
+                      )}
+                    </div>
+                  </TableCell>
+                  <TableCell className="text-muted-foreground text-sm">
                     {campaign.agentName} ·{" "}
                     {describeCallingWindow(parseCallingWindow(campaign.callingWindow))}
-                  </p>
-                  <div className="text-muted-foreground flex flex-wrap gap-2 text-xs">
-                    <span>{campaign.total} leads</span>
-                    <span>·</span>
-                    <span>{campaign.queued} queued</span>
-                    <span>·</span>
-                    <span>{campaign.reached} reached</span>
-                  </div>
-                </div>
-                <Button
-                  nativeButton={false}
-                  variant="outline"
-                  size="sm"
-                  render={<Link href={`/campaigns/${campaign.id}`} />}
-                >
-                  Open
-                </Button>
-              </CardContent>
-            </Card>
-          ))}
+                  </TableCell>
+                  <TableCell className="text-muted-foreground text-sm">
+                    {campaign.total} leads · {campaign.queued} queued ·{" "}
+                    {campaign.reached} reached
+                  </TableCell>
+                  <TableCell>
+                    <Button
+                      nativeButton={false}
+                      variant="outline"
+                      size="sm"
+                      render={<Link href={`/campaigns/${campaign.id}`} />}
+                    >
+                      Open
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
         </div>
       )}
     </>

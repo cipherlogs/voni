@@ -88,7 +88,7 @@ test("bulk bar: count + raw-stage Select + LoadingButton Apply, alert on failure
   assert.ok(bulkSource.includes("<LoadingButton"), "Apply uses LoadingButton");
   assert.ok(bulkSource.includes("Applying…"), "Apply names its pending state");
   assert.ok(bulkSource.includes('<Alert variant="destructive"'), "inline Alert on failure");
-  assert.ok(bulkSource.includes("toast.add"), "sonner toast on success");
+  assert.ok(bulkSource.includes("toast.add"), "Base UI toast on success");
   assert.ok(bulkSource.includes("router.refresh()"), "success refreshes the list");
 });
 

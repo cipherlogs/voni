@@ -418,7 +418,7 @@ async function CallDetail({
                       <summary className="text-muted-foreground w-fit cursor-pointer rounded-sm text-xs outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring">
                         Arguments and result
                       </summary>
-                      <pre className="bg-muted/50 mt-1 max-h-48 overflow-auto rounded-lg p-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap">
+                      <pre className="bg-muted/50 mt-1 max-h-48 overflow-auto rounded-lg p-2 font-mono text-xs leading-relaxed whitespace-pre-wrap">
                         {JSON.stringify(
                           {
                             arguments: tool.arguments,

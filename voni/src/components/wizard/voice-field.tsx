@@ -1,6 +1,8 @@
 "use client";
 
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useRef, useState } from "react";
+import { AudioLines } from "lucide-react";
+import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import {
   Carousel,
@@ -25,7 +27,32 @@ import {
   voiceForLanguage,
   type ConversationLanguage,
 } from "@/lib/agents/wizard";
-import { VoiceAvatar } from "./voice-avatar";
+/**
+ * Leading avatar slot for a voice card (ai-01 composer-card idiom): a token
+ * avatar with the voice's initial. While its preview clip plays the fallback
+ * washes with a static primary tint (no bespoke gradient, no keyed fill —
+ * the selection + indicator carry the playing state).
+ */
+function VoiceCardAvatar({
+  voiceId,
+  playing,
+}: {
+  voiceId: string;
+  playing: boolean;
+}) {
+  return (
+    <Avatar className="size-10 shrink-0">
+      <AvatarFallback
+        className={cn(
+          "bg-muted text-foreground text-sm font-semibold",
+          playing && "bg-primary/10 text-primary",
+        )}
+      >
+        <span aria-hidden>{voiceLabel(voiceId).charAt(0)}</span>
+      </AvatarFallback>
+    </Avatar>
+  );
+}
 
 export type VoiceFieldProps = {
   language: ConversationLanguage;
@@ -116,8 +143,8 @@ function LanguageChips({
  * Merged language + voice picker. One decision: the language chips filter the
  * voice cards, and choosing a voice sets its language implicitly. Each card
  * IS the preview control — clicking it selects the voice and plays its real
- * AssemblyAI clip (`public/voices`), with a fill sweep tracking the clip.
- * Clicking the selected card again stops playback.
+ * AssemblyAI clip (`public/voices`), with a washed avatar + live indicator
+ * tracking playback. Clicking the selected card again stops playback.
  */
 export function VoiceField({
   language,
@@ -127,8 +154,7 @@ export function VoiceField({
   description,
 }: VoiceFieldProps) {
   const [notice, setNotice] = useState<string | null>(null);
-  const { playingId, previewDuration, stopPreview, togglePreview } =
-    useVoicePreview();
+  const { playingId, stopPreview, togglePreview } = useVoicePreview();
   const [api, setApi] = useState<CarouselApi>();
   const [pages, setPages] = useState(0);
   const [page, setPage] = useState(0);
@@ -251,25 +277,14 @@ export function VoiceField({
                         value={v.id}
                         aria-label={`Voice ${voiceLabel(v.id)}, ${group.language}${playing ? ", playing preview" : ""}`}
                         onClick={() => previewVoice(v)}
-                        className="border-border bg-card relative flex h-auto w-full flex-col items-stretch overflow-hidden rounded-xl border p-3 text-left data-[state=on]:border-primary data-[state=on]:ring-1 data-[state=on]:ring-primary/30"
+                        // ai-01 composer-card idiom: leading avatar slot +
+                        // primary name/region stack + trailing live-indicator
+                        // slot, selected via the primary token ring.
+                        className="border-border bg-card relative flex h-auto w-full flex-col items-stretch overflow-hidden rounded-[28px] border p-2.5 text-left shadow-xs data-[state=on]:border-primary data-[state=on]:ring-1 data-[state=on]:ring-primary/30"
                       >
-                        {/* Fill sweep tracking the clip. Keyed by playingId so
-                            every replay restarts the sweep from zero. */}
-                        {playing ? (
-                          <span
-                            key={playingId}
-                            aria-hidden
-                            className="voni-voice-fill pointer-events-none absolute inset-0 bg-primary/10"
-                            style={
-                              {
-                                "--preview-duration": `${previewDuration}s`,
-                              } as CSSProperties
-                            }
-                          />
-                        ) : null}
-                        <span className="relative flex w-full items-center gap-3">
-                          <VoiceAvatar voiceId={v.id} playing={playing} />
-                          <span className="flex min-w-0 flex-1 flex-col gap-1">
+                        <span className="relative flex w-full items-center gap-2">
+                          <VoiceCardAvatar voiceId={v.id} playing={playing} />
+                          <span className="flex min-w-0 flex-1 flex-col gap-1 px-1.5">
                             <span className="text-sm font-medium">
                               {voiceLabel(v.id)}
                             </span>
@@ -283,20 +298,18 @@ export function VoiceField({
                               </span>
                             </span>
                           </span>
-                          {/* Non-interactive playing indicator — the card
-                              itself is the control, so this is status only. */}
-                          {playing ? (
-                            <svg
-                              aria-hidden
-                              className="copilot-bars-live h-3.5 w-3.5 shrink-0 text-primary"
-                              viewBox="0 0 12 12"
-                              fill="currentColor"
-                            >
-                              <rect x="1" y="4" width="2" height="4" rx="1" />
-                              <rect x="5" y="2" width="2" height="8" rx="1" />
-                              <rect x="9" y="4" width="2" height="4" rx="1" />
-                            </svg>
-                          ) : null}
+                          {/* Trailing indicator slot (ai-01 trailing-slot
+                              idiom) — status only, the card itself is the
+                              control. */}
+                          <span className="flex shrink-0 items-center">
+                            {playing ? (
+                              <AudioLines
+                                data-icon="inline"
+                                aria-hidden
+                                className="text-primary"
+                              />
+                            ) : null}
+                          </span>
                         </span>
                       </ToggleGroupItem>
                     </CarouselItem>

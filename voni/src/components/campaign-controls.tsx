@@ -45,15 +45,18 @@ export function CampaignControls({
 
   const running = status === "active";
 
+  // table-02 row-action idiom: the action sits at the row's end with its
+  // precondition note inline, matching the list row's Open-button column.
   return (
-    <div className="flex flex-col gap-2">
-      <div className="flex flex-wrap items-center gap-3">
+    <div className="flex flex-col items-end gap-2">
+      <div className="flex flex-wrap items-center justify-end gap-3">
         {running ? (
-          <LoadingButton variant="outline" onClick={() => change("paused")} pending={pending} pendingText="Pausing…" icon={<Pause />}>
+          <LoadingButton variant="outline" size="sm" onClick={() => change("paused")} pending={pending} pendingText="Pausing…" icon={<Pause />}>
             Pause campaign
           </LoadingButton>
         ) : (
           <LoadingButton
+            size="sm"
             onClick={() => change("active")}
             disabled={activationBlocker !== null}
             aria-describedby={
@@ -68,16 +71,16 @@ export function CampaignControls({
             Activate campaign
           </LoadingButton>
         )}
-        {!running && activationBlocker ? (
-          <p
-            id={`campaign-blocker-${id}`}
-            role="note"
-            className="text-muted-foreground text-sm"
-          >
-            {activationBlocker}
-          </p>
-        ) : null}
       </div>
+      {!running && activationBlocker ? (
+        <p
+          id={`campaign-blocker-${id}`}
+          role="note"
+          className="text-muted-foreground text-right text-sm"
+        >
+          {activationBlocker}
+        </p>
+      ) : null}
       {error ? (
         <Alert variant="destructive">
           <TriangleAlert />
