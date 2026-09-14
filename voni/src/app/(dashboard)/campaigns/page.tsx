@@ -49,7 +49,7 @@ async function CampaignsList() {
       {rows.length === 0 ? (
         <Empty>
           <EmptyHeader>
-            <EmptyMedia variant="icon">
+            <EmptyMedia variant="feature">
               <Megaphone />
             </EmptyMedia>
             <EmptyTitle>No campaigns yet</EmptyTitle>

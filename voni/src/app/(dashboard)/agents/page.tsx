@@ -34,8 +34,8 @@ async function AgentsList() {
       {rows.length === 0 ? (
         <Empty>
           <EmptyHeader>
-            <EmptyMedia>
-              <Bot className="text-muted-foreground size-10" />
+            <EmptyMedia variant="feature">
+              <Bot />
             </EmptyMedia>
             <EmptyTitle>No agents yet</EmptyTitle>
             <EmptyDescription>

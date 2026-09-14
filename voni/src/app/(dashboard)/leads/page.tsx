@@ -188,7 +188,7 @@ async function LeadsRows({
                 <TableCell colSpan={LEAD_TABLE_COLUMNS} className="p-8">
                   <Empty>
                     <EmptyHeader>
-                      <EmptyMedia variant="icon">
+                      <EmptyMedia variant={stage ? "icon" : "feature"}>
                         <Users />
                       </EmptyMedia>
                       <EmptyTitle>
@@ -200,18 +200,16 @@ async function LeadsRows({
                           : "Import a CSV via a campaign to get started — leads are created when a campaign runs an import."}
                       </EmptyDescription>
                     </EmptyHeader>
-                    {stage ? (
-                      <EmptyContent>
-                        <Button
-                          nativeButton={false}
-                          render={<Link href="/leads" />}
-                          variant="outline"
-                          size="sm"
-                        >
-                          Clear the filter
-                        </Button>
-                      </EmptyContent>
-                    ) : null}
+                    <EmptyContent>
+                      <Button
+                        nativeButton={false}
+                        render={<Link href={stage ? "/leads" : "/campaigns"} />}
+                        variant="outline"
+                        size="sm"
+                      >
+                        {stage ? "Clear the filter" : "Open campaigns"}
+                      </Button>
+                    </EmptyContent>
                   </Empty>
                 </TableCell>
               </TableRow>

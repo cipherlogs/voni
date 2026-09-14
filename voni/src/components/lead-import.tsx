@@ -8,9 +8,10 @@ import { useJobs } from "@/components/jobs/jobs-provider";
 import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { LoadingButton } from "@/components/loading-button";
-import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { MascotAvatar } from "@/components/agent-wizard/guide-mascot";
 import { FormCard, FormCardSections } from "@/components/wizard/form-layout";
-import { Upload, TriangleAlert, CircleCheck, X } from "lucide-react";
+import { Upload, TriangleAlert, X } from "lucide-react";
 import type { JobJson } from "@/lib/jobs/serialize";
 import { useOptimisticJob } from "@/components/jobs/use-optimistic-job";
 import { parseCsv, mapHeaders } from "@/lib/leads/csv";
@@ -350,17 +351,17 @@ export function LeadImport({ campaignId }: { campaignId: string }) {
 
       {result ? (
         <Alert>
-          <CircleCheck />
+          <MascotAvatar mood="celebrating" size="sm" />
+          <AlertTitle>
+            {result.queued}{" "}
+            {result.queued === 1 ? "lead" : "leads"} added
+            to the call list
+            {result.imported !== result.queued
+              ? ` · ${result.imported} in the file`
+              : ""}
+          </AlertTitle>
           <AlertDescription>
             <div className="flex flex-col gap-2">
-              <p className="font-medium text-foreground">
-                {result.queued}{" "}
-                {result.queued === 1 ? "lead" : "leads"} added
-                to the call list
-                {result.imported !== result.queued
-                  ? ` · ${result.imported} in the file`
-                  : ""}
-              </p>
               <ul className="text-muted-foreground flex flex-col gap-1 text-sm">
                 {result.alreadyInCampaign > 0 ? (
                   <li>

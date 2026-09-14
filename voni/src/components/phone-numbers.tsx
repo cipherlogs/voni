@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import {
+  DestructiveDialogIcon,
   Dialog,
   DialogClose,
   DialogContent,
@@ -122,6 +123,7 @@ function NumberRemoveButton({ number }: { number: PhoneNumber }) {
       </DialogTrigger>
       <DialogContent>
         <DialogHeader>
+          <DestructiveDialogIcon />
           <DialogTitle>Remove {number.e164}?</DialogTitle>
           <DialogDescription>
             This is permanent. Type{" "}
@@ -378,7 +380,7 @@ export function PhoneNumbers({
                     <TableCell colSpan={4} className="h-24 text-center">
                       <Empty>
                         <EmptyHeader>
-                          <EmptyMedia variant="icon">
+                          <EmptyMedia variant="feature">
                             <Phone />
                           </EmptyMedia>
                           <EmptyTitle>No numbers registered</EmptyTitle>

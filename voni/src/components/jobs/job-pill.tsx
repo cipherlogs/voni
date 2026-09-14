@@ -5,8 +5,10 @@ import Link from "next/link";
 import {
   ChevronDown,
   ChevronUp,
+  CircleCheck,
   History,
   LoaderCircle,
+  X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { getJobProgressPercent } from "@/lib/jobs/ui-helpers";
@@ -21,7 +23,9 @@ import { useJobs } from "./jobs-provider";
  * clear themselves once their result is consumed where it was started (e.g.
  * the wizard's draft review marks its generation seen); unconsumed results
  * surface once via toast and live on in /jobs "Needs review". Nothing
- * finished sticks to the viewport.
+ * finished sticks to the viewport — except one transient, self-clearing
+ * "All caught up" acknowledgment (delight amendment 2026-09-14) so
+ * completion doesn't just vanish.
  */
 export function JobPill() {
   const { activeJobs, optimisticJobs } = useJobs();
@@ -48,7 +52,71 @@ export function JobPill() {
     };
   }, [expanded, activeCount]);
 
-  if (activeCount === 0) return null;
+  // Transient "All caught up" beat: when the last real job drains, show one
+  // acknowledgment instead of vanishing silently. Time-bound + self-clearing
+  // (and manually dismissible), so nothing finished sticks to the viewport.
+  // Never fires for optimistic-only states (no real job ever ran) or when
+  // the pill was never showing work. Follows the provider's previous-render
+  // pattern (jobs-provider.tsx): adjust during render, never setState in an
+  // effect body. The self-clear timer is the only effect, and it only
+  // subscribes (setState fires from the timeout callback, not the body).
+  const [prevActive, setPrevActive] = useState(false);
+  const [caughtUp, setCaughtUp] = useState(false);
+  const hasActive = activeJobs.length > 0;
+  if (prevActive !== hasActive) {
+    setPrevActive(hasActive);
+    // Drain edge only (true→false): real work just finished. Optimistic-only
+    // sessions never set prevActive (pill shows them via optimisticJobs, but
+    // activeJobs stays empty), so they can never fire this beat.
+    if (prevActive && !hasActive) setCaughtUp(true);
+    if (hasActive) setCaughtUp(false);
+  }
+  useEffect(() => {
+    if (!caughtUp) return;
+    const timer = setTimeout(() => setCaughtUp(false), 4000);
+    return () => clearTimeout(timer);
+  }, [caughtUp]);
+
+  if (activeCount === 0 && !caughtUp) return null;
+
+  if (activeCount === 0 && caughtUp) {
+    return (
+      <div
+        ref={box}
+        data-copilot-scope="jobs"
+        className="fixed bottom-4 left-4 z-40 w-80 max-w-[calc(100vw-2rem)]"
+        aria-live="polite"
+      >
+        <div className="status-enter max-w-sm rounded-lg border bg-card shadow-lg">
+          <div className="flex items-center gap-2 p-3">
+            <CircleCheck className="size-4 shrink-0" aria-hidden />
+            <p className="min-w-0 flex-1 truncate text-sm font-medium">
+              All caught up — results are in Jobs.
+            </p>
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              nativeButton={false}
+              render={<Link href="/jobs" />}
+              aria-label="Open Jobs"
+              data-copilot-effect="view"
+            >
+              <History />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              onClick={() => setCaughtUp(false)}
+              aria-label="Dismiss"
+              data-copilot-effect="view"
+            >
+              <X />
+            </Button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   const firstActive = activeJobs[0];
   const firstPercent = firstActive
