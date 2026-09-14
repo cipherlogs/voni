@@ -64,6 +64,33 @@ test("validates strict tool arguments", () => {
   );
 });
 
+test("compiles enabled custom webhook tools with permissive arguments", () => {
+  const tools = compileVoiceTools({
+    ...REAL_ESTATE_TEMPLATE,
+    tools: [],
+    customTools: [
+      {
+        id: "order_status",
+        label: "Check order status",
+        description: "Look up the caller's latest order by phone number.",
+        mode: "hold",
+        kind: "webhook",
+        url: "https://example.com/tools/order-status",
+      },
+    ],
+    detect: [],
+  });
+  assert.deepEqual(tools.map((tool) => tool.name), ["custom_order_status"]);
+  assert.equal(tools[0]?.execution_mode, "hold");
+  assert.equal(tools[0]?.timeout_seconds, 20);
+  assert.equal(
+    validateToolArguments("custom_order_status", { phone: "+971500000000" }).ok,
+    true,
+  );
+  assert.equal(validateToolArguments("custom_order_status", "nope").ok, false);
+  assert.equal(validateToolArguments("never_registered", {}).ok, false);
+});
+
 test("applies Dubai recurring viewing boundaries", () => {
   const schedule = {
     timezone: "Asia/Dubai",

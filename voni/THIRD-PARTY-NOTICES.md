@@ -31,6 +31,5 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-(Source: [LICENSE.md](https://github.com/ephraimduncan/blocks/blob/main/LICENSE.md).
-Full license text to be verified against the upstream file at vendoring time —
-the raw LICENSE fetch returned 404 during research, so confirm before release.)
+(Source: [LICENSE.md](https://github.com/ephraimduncan/blocks/blob/main/LICENSE.md),
+verified against upstream on 2026-09-14.)

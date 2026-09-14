@@ -140,9 +140,18 @@ export function SidebarStateRestore() {
 
 /** Brand lockup: static, no URL read — safe in the shell. */
 function SidebarBrand() {
-  const { isMobile } = useSidebar();
-  return isMobile ? (
-    <VoniLogo size="md" wordmark animate />
+  const { isMobile, state } = useSidebar();
+  if (isMobile) {
+    return (
+      <span className="flex h-12 items-center">
+        <VoniLogo size="md" wordmark animate />
+      </span>
+    );
+  }
+  return state === "expanded" ? (
+    <span className="flex h-12 items-center">
+      <VoniLogo size="lg" wordmark animate className="text-3xl" />
+    </span>
   ) : (
     <VoniLogo size="lg" animate />
   );
@@ -171,7 +180,7 @@ function SidebarNav({ pathname }: { pathname: string | null }) {
             <SidebarMenuButton
               isActive={active}
               tooltip={item.title}
-              className="flex w-full items-center rounded-lg px-2 transition-colors group-data-[collapsible=icon]:mx-auto group-data-[collapsible=icon]:size-10! group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:p-2! [&_svg]:size-5!"
+              className="flex w-full items-center rounded-lg px-2 transition-colors group-data-[collapsible=icon]:mx-auto group-data-[collapsible=icon]:size-10! group-data-[collapsible=icon]:justify-center! group-data-[collapsible=icon]:gap-0! group-data-[collapsible=icon]:p-2! group-data-[collapsible=icon]:[&>span:last-child]:hidden! [&_svg]:size-5!"
               render={
                 <Link href={item.url}>
                   <item.icon />
@@ -229,13 +238,13 @@ function SidebarAccount({
               <SidebarMenuButton
                 size="lg"
                 tooltip={user.email}
-                className="group-data-[collapsible=icon]:mx-auto"
+                className="group-data-[collapsible=icon]:mx-auto group-data-[collapsible=icon]:size-10! group-data-[collapsible=icon]:justify-center! group-data-[collapsible=icon]:gap-0! group-data-[collapsible=icon]:p-1! group-data-[collapsible=icon]:[&_.sidebar-account-label]:hidden group-data-[collapsible=icon]:[&>svg]:hidden"
               >
                 <Avatar className="size-8 rounded-lg">
                   {user.image ? <AvatarImage src={user.image} alt="" /> : null}
                   <AvatarFallback className="rounded-lg">{initials || "V"}</AvatarFallback>
                 </Avatar>
-                <span className="grid min-w-0 flex-1 text-left text-sm leading-tight">
+                <span className="sidebar-account-label grid min-w-0 flex-1 text-left text-sm leading-tight">
                   <span className="truncate font-medium">{user.name}</span>
                   <span className="text-muted-foreground truncate text-xs">{user.email}</span>
                 </span>

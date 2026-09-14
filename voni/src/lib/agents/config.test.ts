@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { agentConfigSchema, REAL_ESTATE_TEMPLATE } from "./config";
+import {
+  agentConfigSchema,
+  normalizeConfig,
+  REAL_ESTATE_TEMPLATE,
+} from "./config";
 
 /**
  * `knowledge` used to be a `string[]` and stored rows were never migrated, so
@@ -94,4 +98,58 @@ test("strips fields removed from the schema instead of rejecting the row", () =>
   ]) {
     assert.equal(removed in parsed.data, false, `${removed} should be stripped`);
   }
+});
+
+test("keeps LLM tool ideas verbatim while dropping unknown executable tools", () => {
+  const parsed = agentConfigSchema.safeParse({
+    ...REAL_ESTATE_TEMPLATE,
+    tools: ["search_properties", "send_brochure"],
+    toolIdeas: [
+      {
+        name: "check_order_status",
+        label: "Check order status",
+        description: "Look up the caller's latest order by phone number.",
+      },
+    ],
+  });
+  assert.equal(parsed.success, true);
+  if (!parsed.success) return;
+  const normalized = normalizeConfig(parsed.data);
+  assert.deepEqual(normalized.tools, ["search_properties"]);
+  assert.deepEqual(normalized.toolIdeas, [
+    {
+      name: "check_order_status",
+      label: "Check order status",
+      description: "Look up the caller's latest order by phone number.",
+    },
+  ]);
+});
+
+test("preserves user-added custom webhook tools through normalize", () => {
+  const custom = {
+    id: "order_status",
+    label: "Check order status",
+    description: "Look up the caller's latest order by phone number.",
+    mode: "interactive",
+    kind: "webhook",
+    url: "https://example.com/tools/order-status",
+  };
+  const parsed = agentConfigSchema.safeParse({
+    ...REAL_ESTATE_TEMPLATE,
+    customTools: [custom],
+  });
+  assert.equal(parsed.success, true);
+  if (!parsed.success) return;
+  assert.deepEqual(normalizeConfig(parsed.data).customTools, [custom]);
+});
+
+test("legacy rows without ideas or customs parse to empty lists", () => {
+  const { ...legacy } = REAL_ESTATE_TEMPLATE;
+  delete (legacy as { toolIdeas?: unknown }).toolIdeas;
+  delete (legacy as { customTools?: unknown }).customTools;
+  const parsed = agentConfigSchema.safeParse(legacy);
+  assert.equal(parsed.success, true);
+  if (!parsed.success) return;
+  assert.deepEqual(parsed.data.toolIdeas, []);
+  assert.deepEqual(parsed.data.customTools, []);
 });

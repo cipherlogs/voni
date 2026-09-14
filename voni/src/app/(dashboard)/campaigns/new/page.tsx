@@ -34,7 +34,7 @@ async function CampaignAgentOptions() {
 
 export default function NewCampaignPage() {
   return (
-    <div data-testid="campaigns-new-shell" className="flex flex-col gap-6">
+    <div data-testid="campaigns-new-shell" className="mx-auto flex w-full max-w-3xl flex-col gap-6">
       <RouteBrief
         route="/campaigns/new"
         brief="New campaign form: lead list, agent, calling window, and fallback policy. Voice reads here; changes stay manual for now."

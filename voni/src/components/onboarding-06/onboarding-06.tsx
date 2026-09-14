@@ -13,17 +13,18 @@
  * +0 npm deps; cn from @/lib/utils.
  */
 
-import { Check } from 'lucide-react';
+import { Check, TriangleAlert } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
-export type TimelineState = 'done' | 'current' | 'upcoming';
+export type TimelineState = 'done' | 'current' | 'upcoming' | 'error' | 'neutral';
 
 export interface TimelineEntry {
   id: string;
   state: TimelineState;
   title: string;
   description: string;
-  time: string;
+  /** Optional: omitted entries render no timestamp rather than an invented one. */
+  time?: string;
 }
 
 interface Onboarding06Props {
@@ -53,6 +54,8 @@ export default function Onboarding06({
               <div className="relative flex size-6 flex-none items-center justify-center bg-background">
                 {entry.state === 'done' ? (
                   <Check aria-hidden className="size-5 text-primary" />
+                ) : entry.state === 'error' ? (
+                  <TriangleAlert aria-hidden className="size-4 text-destructive" />
                 ) : entry.state === 'current' ? (
                   <div
                     aria-hidden
@@ -67,10 +70,12 @@ export default function Onboarding06({
               </div>
               <div>
                 <p className="mt-0.5 font-medium text-foreground text-sm">
-                  {entry.title}{' '}
-                  <span className="font-normal text-muted-foreground/60">
-                    &#8729; {entry.time}
-                  </span>
+                  {entry.title}
+                  {entry.time ? (
+                    <span className="font-normal text-muted-foreground/60">
+                      {' '}&#8729; {entry.time}
+                    </span>
+                  ) : null}
                 </p>
                 <p className="mt-0.5 text-muted-foreground text-sm leading-6">
                   {entry.description}

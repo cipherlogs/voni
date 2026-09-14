@@ -9,7 +9,6 @@ import { Field, FieldError, FieldLabel } from "@/components/ui/field";
 import { Separator } from "@/components/ui/separator";
 import { TagField, type TagFieldHandle } from "@/components/wizard/tag-field";
 import { ConversationPicker } from "@/components/wizard/conversation-picker";
-import { FormCard, FormCardSections } from "@/components/wizard/form-layout";
 import { GenerationStatusCard } from "./generation-notice";
 import { GOAL_SUGGESTIONS, TASK_SUGGESTIONS } from "./starters";
 import {
@@ -69,8 +68,7 @@ export function PlanStep({
   onClearError?: (field: "goals" | "name") => void;
 }) {
   return (
-    <FormCard>
-      <FormCardSections>
+    <div className="flex flex-col gap-6">
         <StepHeading
           title="What should your agent do?"
           description="Start with the big picture, then break it into directions."
@@ -111,8 +109,7 @@ export function PlanStep({
             blockOnInvalidPending={false}
           />
         </div>
-      </FormCardSections>
-    </FormCard>
+    </div>
   );
 }
 
@@ -128,8 +125,7 @@ export function PersonalityStep({
   onClearError?: (field: "goals" | "name") => void;
 }) {
   return (
-    <FormCard>
-      <FormCardSections>
+    <div className="flex flex-col gap-6">
         <StepHeading
           title="Who should your agent be?"
           description="A name plus a vibe — type it, or tell the voice copilot."
@@ -185,8 +181,7 @@ export function PersonalityStep({
             }}
           />
         </div>
-      </FormCardSections>
-    </FormCard>
+    </div>
   );
 }
 

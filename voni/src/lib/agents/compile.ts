@@ -58,6 +58,16 @@ export function compileSystemPrompt(config: AgentConfig): string {
     );
   }
 
+  // Custom webhook tools arrive as `custom_<id>` voice tools; the prompt line
+  // stays tool-agnostic so any user-added webhook is covered without a longer
+  // prompt. The per-tool description (label + what it does) ships on the tool
+  // definition itself, where the model reads it at call time.
+  if ((config.customTools ?? []).length > 0) {
+    sections.push(
+      "Custom tools call an outside service and return its answer — wait for the result before acting on it.",
+    );
+  }
+
   // Language handling. The agent hears 18 languages but speaks 6, so a caller
   // can address it in one it cannot answer in — Arabic being the case that
   // matters most for the UAE launch. Left unsaid, the model tries to reply in

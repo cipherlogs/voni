@@ -19,6 +19,8 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { ModeToggle } from "@/components/mode-toggle";
+import { FormCard, FormCardSections } from "@/components/wizard/form-layout";
+import { Separator } from "@/components/ui/separator";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { TIMEZONE_OPTIONS } from "@/lib/timezones";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -149,16 +151,16 @@ function VoiceCopilotCard({ prefs }: { prefs: CopilotVoicePrefs }) {
     if (saveState.ok) window.dispatchEvent(new CustomEvent("voni:voice-prefs-changed"));
   }, [saveState]);
   return (
-    <div className="grid grid-cols-1 gap-10 md:grid-cols-3">
-      <div>
-        <h2 className="text-balance font-semibold text-foreground">Voice copilot</h2>
-        <p className="mt-1 text-pretty text-muted-foreground text-sm leading-6">
-          Who talks back when you tap the mic. Only affects your conversations —
-          nothing here changes what callers hear on the phone.
-        </p>
-      </div>
-      <div className="sm:max-w-3xl md:col-span-2">
-        <form action={saveAction} className="grid gap-5">
+    <FormCard>
+      <FormCardSections>
+        <div>
+          <h2 className="text-balance font-semibold text-foreground">Voice copilot</h2>
+          <p className="mt-1 text-pretty text-muted-foreground text-sm leading-6">
+            Who talks back when you tap the mic. Only affects your conversations —
+            nothing here changes what callers hear on the phone.
+          </p>
+        </div>
+        <form action={saveAction} className="grid gap-5 max-w-xl">
           <Field>
             <FieldLabel htmlFor="copilot-voice">Voice</FieldLabel>
             <Select name="voiceId" value={voiceId} onValueChange={(value) => setVoiceId(value ?? prefs.voiceId)}>
@@ -210,10 +212,15 @@ function VoiceCopilotCard({ prefs }: { prefs: CopilotVoicePrefs }) {
             {note ? <p className="text-muted-foreground text-xs">{note}</p> : null}
           </Field>
           <ActionFeedback state={saveState} />
-          <div><SubmitButton>Save voice copilot</SubmitButton></div>
+          <div>
+            <Separator />
+            <div className="flex items-center justify-end gap-3 pt-4">
+              <SubmitButton>Save voice copilot</SubmitButton>
+            </div>
+          </div>
         </form>
-      </div>
-    </div>
+      </FormCardSections>
+    </FormCard>
   );
 }
 
@@ -274,21 +281,21 @@ export function SettingsView({
         </TabsList>
 
         <TabsContent value="account" className="pt-4">
-          <div className="grid grid-cols-1 gap-10 md:grid-cols-3">
-            <div>
-              <h2 className="text-balance font-semibold text-foreground">Account</h2>
-              <p className="mt-1 text-pretty text-muted-foreground text-sm leading-6">Your Google profile and session.</p>
-            </div>
-            <div className="sm:max-w-3xl md:col-span-2">
-              <div className="flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
+          <FormCard>
+            <FormCardSections>
+              <div>
+                <h2 className="text-balance font-semibold text-foreground">Account</h2>
+                <p className="mt-1 text-pretty text-muted-foreground text-sm leading-6">Your Google profile and session.</p>
+              </div>
+              <div className="flex max-w-xl flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
                 <div className="flex items-center gap-3">
                   <Avatar size="lg">{user.image ? <AvatarImage src={user.image} alt="" /> : null}<AvatarFallback>{initials || "V"}</AvatarFallback></Avatar>
                   <div><p className="font-medium">{user.name}</p><p className="text-muted-foreground text-sm">{user.email}</p></div>
                 </div>
                 <LoadingButton variant="outline" onClick={handleSignOut} pending={signingOut} pendingText="Signing out…" icon={<LogOut />}>Sign out</LoadingButton>
               </div>
-            </div>
-          </div>
+            </FormCardSections>
+          </FormCard>
         </TabsContent>
 
         <TabsContent value="voice" className="pt-4">
@@ -296,13 +303,13 @@ export function SettingsView({
         </TabsContent>
 
         <TabsContent value="workspace" className="pt-4">
-          <div className="grid grid-cols-1 gap-10 md:grid-cols-3">
-            <div>
-              <h2 className="text-balance font-semibold text-foreground">Workspace</h2>
-              <p className="mt-1 text-pretty text-muted-foreground text-sm leading-6">Customer-facing defaults for this organization.</p>
-            </div>
-            <div className="sm:max-w-3xl md:col-span-2">
-              <form action={workspaceAction} className="grid gap-5">
+          <FormCard>
+            <FormCardSections>
+              <div>
+                <h2 className="text-balance font-semibold text-foreground">Workspace</h2>
+                <p className="mt-1 text-pretty text-muted-foreground text-sm leading-6">Customer-facing defaults for this organization.</p>
+              </div>
+              <form action={workspaceAction} className="grid max-w-xl gap-5">
                 <FieldGroup>
                   <WorkspaceNameField
                     name={workspace.name}
@@ -316,10 +323,17 @@ export function SettingsView({
                 </FieldGroup>
                 {!workspace.canEdit ? <Alert><ShieldCheck /><AlertTitle>Owner access required</AlertTitle><AlertDescription>Only a workspace owner can change these values.</AlertDescription></Alert> : null}
                 <ActionFeedback state={workspaceState} />
-                {workspace.canEdit ? <div><SubmitButton>Save workspace</SubmitButton></div> : null}
+                {workspace.canEdit ? (
+                  <div>
+                    <Separator />
+                    <div className="flex items-center justify-end gap-3 pt-4">
+                      <SubmitButton>Save workspace</SubmitButton>
+                    </div>
+                  </div>
+                ) : null}
               </form>
-            </div>
-          </div>
+            </FormCardSections>
+          </FormCard>
         </TabsContent>
 
         <TabsContent value="services" className="pt-4">

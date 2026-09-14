@@ -1,10 +1,9 @@
 import { Suspense } from "react";
 import Link from "next/link";
-import { ArrowUpRight, Bot, CirclePlay, Upload } from "lucide-react";
+import { ArrowUpRight } from "lucide-react";
 import {
   Card,
   CardContent,
-  CardDescription,
   CardFooter,
   CardHeader,
   CardTitle,
@@ -12,92 +11,9 @@ import {
 import { StatGridSkeleton } from "@/components/page-skeletons";
 import { pipelineStateLabel } from "@/lib/leads/stage-filter";
 import { RouteBrief } from "@/components/copilot/route-brief";
+import { Onboarding01 } from "@/components/onboarding-01/onboarding-01";
+import { getDashboardSetupSteps } from "@/lib/dashboard/setup";
 import { getDashboardSummary } from "./actions";
-
-/**
- * First-run setup path: when the workspace has no outcomes yet, the zero
- * grid would be a dead end — four "0" cards and a collapsed funnel with no
- * next step. Task-led links instead, one row per setup step, so a new
- * operator can act rather than interpret. Empty campaigns waiting for a
- * CSV count as setup, not outcomes: step 2 then names the campaign and
- * deep-links its import section instead of the campaign-creation form.
- * Once the first outcome lands, this branch stops rendering and the
- * outcome grid takes over.
- */
-function SetupSteps({
-  emptyCampaigns,
-}: {
-  emptyCampaigns: Array<{ id: string; name: string }>;
-}) {
-  const firstEmpty = emptyCampaigns[0];
-  const steps = [
-    {
-      icon: <Bot />,
-      title: "1. Create an agent",
-      body: "Give the caller a voice, a goal, and the questions it should ask.",
-      href: "/agents/new",
-      linkLabel: "Create an agent",
-    },
-    firstEmpty
-      ? {
-          icon: <Upload />,
-          title: `2. Import leads into ${firstEmpty.name}`,
-          body: "The campaign is waiting — import its CSV to get started.",
-          href: `/campaigns/${firstEmpty.id}#import`,
-          linkLabel: `Import into ${firstEmpty.name}`,
-        }
-      : {
-          icon: <Upload />,
-          title: "2. Create a campaign",
-          body: "Campaigns bring the leads — create one, then import a CSV into it.",
-          href: "/campaigns/new",
-          linkLabel: "Create a campaign",
-        },
-    {
-      icon: <CirclePlay />,
-      title: "3. Activate",
-      body: "Review the campaign and switch it on — calls start when the dialer is live.",
-      href: "/campaigns",
-      linkLabel: "Open campaigns",
-    },
-  ];
-  return (
-    <Card className="gap-0 p-0">
-      <CardHeader className="p-6 pb-2">
-        <CardTitle>Get set up</CardTitle>
-        <CardDescription>
-          Three steps to your first call — nothing to report yet.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="p-6 pt-4">
-        <ol className="flex flex-col gap-4">
-          {steps.map((step) => (
-            <li key={step.title} className="flex items-start gap-3">
-              <span
-                aria-hidden="true"
-                className="bg-muted text-muted-foreground flex size-9 shrink-0 items-center justify-center rounded-md [&_svg]:size-5"
-              >
-                {step.icon}
-              </span>
-              <span className="flex flex-col gap-1">
-                <span className="font-medium">{step.title}</span>
-                <span className="text-muted-foreground text-sm">
-                  {step.body}{" "}
-                  <Link
-                    href={step.href}
-                    className="cursor-pointer rounded-sm font-medium text-foreground underline underline-offset-4 outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  >
-                    {step.linkLabel}
-                  </Link>
-                </span>
-              </span>
-            </li>
-          ))}
-        </ol>
-      </CardContent>
-    </Card>
-  );
-}
 
 /**
  * Conversion view: four outcome totals backed by recorded rows. Each card
@@ -152,13 +68,17 @@ async function DashboardOutcomes() {
   ];
 
   if (summary.isFirstRun) {
+    const setupSteps = getDashboardSetupSteps(
+      summary.setup,
+      summary.emptyCampaigns,
+    );
     return (
       <>
         <RouteBrief
           route="/dashboard"
-          brief="Dashboard: fresh workspace, no outcomes yet. Three setup steps: create an agent, import leads into a campaign, activate. Voice reads here."
+          brief={`Dashboard: no outcomes yet. Setup is ${setupSteps.filter((step) => step.completed).length} of ${setupSteps.length} complete. The next incomplete step is ${setupSteps.find((step) => !step.completed)?.title ?? "done"}. Voice reads here.`}
         />
-        <SetupSteps emptyCampaigns={summary.emptyCampaigns} />
+        <Onboarding01 steps={setupSteps} />
       </>
     );
   }

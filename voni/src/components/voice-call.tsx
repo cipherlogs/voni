@@ -10,16 +10,7 @@ import {
   TriangleAlert,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import {
-  MessageScrollerProvider,
-  MessageScroller,
-  MessageScrollerButton,
-  MessageScrollerContent,
-  MessageScrollerItem,
-  MessageScrollerViewport,
-} from "@/components/ui/message-scroller";
-import { Bubble, BubbleContent } from "@/components/ui/bubble";
-import { Message } from "@/components/ui/message";
+import { Chat01 } from "@/components/chat-01/chat-01";
 import { Progress } from "@/components/ui/progress";
 import {
   VoiceSession,
@@ -41,6 +32,7 @@ import {
   ACCENT_LABEL,
   type Voice,
 } from "@/lib/agents/voices";
+import { cn } from "@/lib/utils";
 
 /**
  * The live call surface.
@@ -179,7 +171,23 @@ function Portrait({
   );
 }
 
-export function VoiceCall({ mode }: { mode: Mode }) {
+export type VoiceCallStatus = {
+  state: VoiceState;
+  elapsed: number;
+  toolActive: boolean;
+};
+
+export function VoiceCall({
+  mode,
+  className,
+  onStatusChange,
+  presentation = "card",
+}: {
+  mode: Mode;
+  className?: string;
+  onStatusChange?: (status: VoiceCallStatus) => void;
+  presentation?: "card" | "dialog";
+}) {
   const isDemo = mode.kind === "demo";
 
   const [personaId, setPersonaId] = useState(PERSONAS[0].id);
@@ -197,6 +205,7 @@ export function VoiceCall({ mode }: { mode: Mode }) {
   const [elapsed, setElapsed] = useState(0);
 
   const sessionRef = useRef<VoiceSession | null>(null);
+  const startingRef = useRef(false);
 
   const capSeconds = isDemo ? 120 : 180;
   const connected = state === "listening" || state === "speaking";
@@ -243,6 +252,10 @@ export function VoiceCall({ mode }: { mode: Mode }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connected]);
 
+  useEffect(() => {
+    onStatusChange?.({ state, elapsed, toolActive });
+  }, [elapsed, onStatusChange, state, toolActive]);
+
   // Scrolling, follow behavior, and jump-to-latest are owned by
   // MessageScroller below — no manual scroll-to-bottom effect.
   // A live session holds the microphone; unmounting without ending it leaves
@@ -270,6 +283,8 @@ export function VoiceCall({ mode }: { mode: Mode }) {
   }, []);
 
   const start = useCallback(async () => {
+    if (startingRef.current) return;
+    startingRef.current = true;
     setError(null);
     setRetryIn(null);
     setTurns([]);
@@ -292,26 +307,30 @@ export function VoiceCall({ mode }: { mode: Mode }) {
 
     // Straight from the click handler: getUserMedia and AudioContext startup
     // are gated behind a user gesture in every major browser.
-    if (mode.kind === "demo") {
-      await session.start(
-        // Placeholder id — the token endpoint returns the real one and `start`
-        // prefers it, so the browser cannot choose which agent it reaches.
-        { mode: "agent", agentId: "" },
-        demoToken(persona.id, voiceId),
-      );
-    } else {
-      await session.start(
-        {
-          mode: "inline",
-          systemPrompt: compileSystemPrompt(config),
-          greeting: config.greeting,
-          voiceId: config.voiceId,
-          languageCodes: config.languageCodes,
-          tools: compileVoiceTools(config),
-          testAgentId: mode.agentId,
-        },
-        authedToken,
-      );
+    try {
+      if (mode.kind === "demo") {
+        await session.start(
+          // Placeholder id — the token endpoint returns the real one and `start`
+          // prefers it, so the browser cannot choose which agent it reaches.
+          { mode: "agent", agentId: "" },
+          demoToken(persona.id, voiceId),
+        );
+      } else {
+        await session.start(
+          {
+            mode: "inline",
+            systemPrompt: compileSystemPrompt(config),
+            greeting: config.greeting,
+            voiceId: config.voiceId,
+            languageCodes: config.languageCodes,
+            tools: compileVoiceTools(config),
+            testAgentId: mode.agentId,
+          },
+          authedToken,
+        );
+      }
+    } finally {
+      startingRef.current = false;
     }
   }, [mode, persona.id, voiceId, config]);
 
@@ -363,9 +382,12 @@ export function VoiceCall({ mode }: { mode: Mode }) {
     <div
       role="region"
       aria-label={callTitle}
-      className={`bg-card flex w-full flex-col items-center rounded-2xl border p-4 text-center md:p-5 ${
-        isDemo ? "h-120 max-w-sm" : ""
-      }`}
+      data-voice-state={state}
+      className={cn(
+        "bg-card flex w-full flex-col items-center rounded-2xl border p-4 text-center md:p-5",
+        isDemo ? "h-120 max-w-sm" : "h-full min-h-0",
+        className,
+      )}
     >
 
       {/* The agent picker: a row of faces. Tap one and that person calls you.
@@ -415,16 +437,20 @@ export function VoiceCall({ mode }: { mode: Mode }) {
           Inline mirrors the on-screen config including unsaved edits — say
           so, or users leave believing the test covered the deployed version.
           Demo keeps its vertical; each mode says what IT does. */}
-      <h2 className="text-base font-semibold">{callTitle}</h2>
-      <p className="text-muted-foreground mt-1 text-sm leading-[1.5]">
-        {isDemo
-          ? persona.vertical
-          : "Talks to the version on screen, including unsaved edits. No phone number involved."}
-      </p>
-      {versionStrip ? (
-        <p className="text-foreground/75 bg-muted/50 mt-2.5 inline-flex items-center rounded-full border px-3 py-[5px] text-xs">
-          {versionStrip}
-        </p>
+      {presentation === "card" ? (
+        <>
+          <h2 className="text-base font-semibold">{callTitle}</h2>
+          <p className="text-muted-foreground mt-1 text-sm leading-[1.5]">
+            {isDemo
+              ? persona.vertical
+              : "Talks to the version on screen, including unsaved edits. No phone number involved."}
+          </p>
+          {versionStrip ? (
+            <p className="text-foreground/75 bg-muted/50 mt-2.5 inline-flex items-center rounded-full border px-3 py-[5px] text-xs">
+              {versionStrip}
+            </p>
+          ) : null}
+        </>
       ) : null}
 
       {/* Identity. The role stays put under the name in every state; while
@@ -558,7 +584,10 @@ export function VoiceCall({ mode }: { mode: Mode }) {
           </Button>
         ) : (
           <Button
-            className={`h-11 gap-2 rounded-full px-7 text-sm font-semibold ${CALL_GREEN}`}
+            className={cn(
+              "h-11 gap-2 rounded-full px-7 text-sm font-semibold",
+              presentation === "card" && CALL_GREEN,
+            )}
             onClick={start}
             aria-label={`Call ${displayName}`}
           >
@@ -575,9 +604,11 @@ export function VoiceCall({ mode }: { mode: Mode }) {
           transcript shows more than ~2 bubbles; on desktop the sticky rail
           scrolls internally instead (`lg:max-h` on the aside above). */}
       <div
-        className={`mt-3 min-h-0 w-full flex-1 overflow-y-auto ${
-          turns.length === 0 && !error ? "flex items-center justify-center" : ""
-        } ${!isDemo ? "min-h-[12rem] max-h-[18rem] lg:min-h-0 lg:max-h-none" : ""}`}
+        className={cn(
+          "mt-3 min-h-0 w-full flex-1",
+          turns.length === 0 && !error && "flex items-center justify-center",
+          isDemo ? "overflow-y-auto" : "overflow-hidden",
+        )}
       >
         {error ? (
           <div
@@ -605,50 +636,8 @@ export function VoiceCall({ mode }: { mode: Mode }) {
             </div>
           </div>
         ) : turns.length > 0 ? (
-          <div className="mt-0.5 flex w-full flex-col text-left">
-            {/* Transcript AND the live footer together — the mockup shows
-                bubbles with the mic hint beneath them mid-call, so the footer
-                no longer hides once captions appear. */}
-            <MessageScrollerProvider autoScroll defaultScrollPosition="end">
-              <MessageScroller className="min-h-0 flex-1">
-                <MessageScrollerViewport
-                  aria-label="Call transcript"
-                  aria-live="polite"
-                >
-                  <MessageScrollerContent className="gap-2">
-                    {turns.map((turn, i) => {
-                      const speaker = turn.role === "user" ? "You" : displayName;
-                      const isUser = turn.role === "user";
-                      return (
-                        <MessageScrollerItem key={`${i}-${turn.role}`}>
-                          <Message align={isUser ? "end" : "start"}>
-                            {/* Desktop mockup bubbles are full-bleed rows inset
-                                from one side (24px), with the speaker label
-                                inside the bubble. On phones they shrink to
-                                85% chat-style balloons inset 16px so they
-                                read as conversation, not rows. Variants stay
-                                tokens only. */}
-                            <Bubble
-                              align={isUser ? "end" : "start"}
-                              variant={isUser ? "outline" : "muted"}
-                              className={`w-auto max-w-[85%] md:w-full md:max-w-none ${isUser ? "ml-4 md:ml-6" : "mr-4 md:mr-6"}`}
-                            >
-                              <BubbleContent className="border-border w-full max-w-full rounded-xl py-2 text-sm leading-[1.5]">
-                                <span className="text-muted-foreground mb-0.5 block text-xs font-bold">
-                                  {speaker}
-                                </span>
-                                {turn.text}
-                              </BubbleContent>
-                            </Bubble>
-                          </Message>
-                        </MessageScrollerItem>
-                      );
-                    })}
-                  </MessageScrollerContent>
-                </MessageScrollerViewport>
-                <MessageScrollerButton />
-              </MessageScroller>
-            </MessageScrollerProvider>
+          <div className="mt-0.5 flex size-full min-h-0 flex-col text-left">
+            <Chat01 turns={turns} agentName={displayName} />
             {/* Live footer under the transcript: the countdown (+ progress)
                 inside the last 30s, else the speaks-first hint — the same
                 content the empty state shows while connected. */}

@@ -14,7 +14,7 @@ import { VoiceBars, type VoiceBarsMood } from "@/components/copilot/voice-bars";
 import { useShellAuth } from "@/components/shell-auth";
 import { getJobProgressPercent } from "@/lib/jobs/ui-helpers";
 import { useJobs } from "@/components/jobs/jobs-provider";
-import { ShortcutsDialog } from "@/components/shortcuts-dialog";
+import { CommandMenu03 } from "@/components/command-menu-03/command-menu-03";
 
 /**
  * The shell header. It exists to name where you are — without a title the bar
@@ -133,7 +133,7 @@ function CopilotHeaderButton({
       ) : (
         <Mic aria-hidden />
       )}
-      <span aria-live="polite" className="tabular-nums">
+      <span aria-live="polite" className="hidden tabular-nums sm:inline">
         {text}
       </span>
     </Button>
@@ -181,7 +181,7 @@ export function AppHeader() {
           <HeaderTitle />
         </Suspense>
         <div className="ml-auto flex items-center gap-1">
-          <ShortcutsDialog />
+          <CommandMenu03 />
           <CopilotHeaderButton authReady={authReady} authNote={authNote} />
           <Button
             variant="ghost"
@@ -207,7 +207,7 @@ export function AppHeader() {
             ) : (
               <History aria-hidden />
             )}
-            <span aria-live="polite">
+            <span aria-live="polite" className="hidden sm:inline">
               {activeCount > 0
                 ? `${activeCount} running`
                 : unreadJobs.length > 0

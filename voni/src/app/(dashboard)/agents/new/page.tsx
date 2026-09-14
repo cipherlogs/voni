@@ -709,8 +709,8 @@ function NewAgentInner({
           </FormCardSections>
         </FormCard>
 
-        <FormCard>
-          <FormCardSections>
+        {/* Page footer: outside filled bodies */}
+        <div>
           <WizardFooter
             onBack={() => wiz.setStep(Math.max(0, wiz.step - 1))}
             backDisabled={wiz.step === 0 || submitting}
@@ -738,8 +738,7 @@ function NewAgentInner({
               )
             }
           />
-          </FormCardSections>
-        </FormCard>
+        </div>
 
       {/* Screen-reader status for backgrounded generation outside the card. */}
       {running && backgrounded ? <span className="sr-only">Generation continuing in the background.</span> : null}

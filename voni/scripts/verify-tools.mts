@@ -72,6 +72,7 @@ try {
     leadId,
     organizationId,
     telnyxCallControlId: "test-call-control-id",
+    agentId,
   };
   const browser: ResolvedToolContext = { kind: "test", agentId, organizationId };
   assert.equal((await resolveCallContext(callId))?.organizationId, organizationId);

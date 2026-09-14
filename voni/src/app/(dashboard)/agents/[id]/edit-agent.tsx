@@ -4,23 +4,11 @@ import Link from "next/link";
 import { useEffect, useRef, useState, useTransition } from "react";
 import { toast } from "@/components/ui/toast";
 import {
-  Check,
   CircleCheck,
   LoaderCircle,
-  Mic,
   RotateCw,
   TriangleAlert,
 } from "lucide-react";
-import {
-  Empty,
-  EmptyContent,
-  EmptyDescription,
-  EmptyHeader,
-  EmptyMedia,
-  EmptyTitle,
-} from "@/components/ui/empty";
-import { Progress } from "@/components/ui/progress";
-import { getJobProgressPercent } from "@/lib/jobs/ui-helpers";
 import { Button } from "@/components/ui/button";
 import { LoadingButton } from "@/components/loading-button";
 import {
@@ -30,15 +18,17 @@ import {
 } from "@/components/ui/alert";
 import { BackLink } from "@/components/back-link";
 import { AgentConfigForm } from "@/components/agent-config-form";
-import { VoiceCall } from "@/components/voice-call";
+import { TestAgentDialog } from "@/components/test-agent-dialog";
 import type { AgentConfig } from "@/lib/agents/config";
 import type { JobJson } from "@/lib/jobs/serialize";
 import { useJobs } from "@/components/jobs/jobs-provider";
 import { useOptimisticJob } from "@/components/jobs/use-optimistic-job";
 import { retryAgentDeploymentAction, updateAgentAction } from "../actions";
 import { AgentDeleteButton } from "../delete-agent-button";
+import Onboarding07 from "@/components/onboarding-07/onboarding-07";
+import { buildAgentStatusEntries } from "@/lib/agent-status/build-entries";
 
-export type DeploymentState = "draft" | "queued" | "deploying" | "ready" | "failed";
+export type DeploymentState = "draft" | "queued" | "deploying" | "ready" | "failed" | "cancelled";
 
 /** LocalStorage key for one agent's unsaved edits, mirroring use-wizard-draft.ts. */
 const editDraftKey = (agentId: string) => `voni:edit-draft:${agentId}`;
@@ -74,26 +64,18 @@ function readEditDraft(agentId: string): EditDraftSnapshot | null {
 }
 
 /**
- * Border-only surfaces: the statusline, all banners, and the config form
- * cards and footer on this editor carry a border and no shadow token, per
- * the border-OR-shadow floor. The mockup arrived with a hairline lift plus
- * a wide, very soft drop, but border AND shadow together would break the
- * floor — so the elevation was dropped on both files.
+ * Border-only surfaces: the status timeline, all banners, and the config
+ * form cards and footer on this editor carry a border and no shadow token,
+ * per the border-OR-shadow floor.
  */
 
-function deploymentLabel(state: DeploymentState): string {
-  switch (state) {
-    case "draft":
-      return "Draft — not yet deployed";
-    case "queued":
-      return "Deployment queued";
-    case "deploying":
-      return "Deploying…";
-    case "ready":
-      return "Deployed and ready";
-    case "failed":
-      return "Deployment failed";
-  }
+/** States the deployment watcher can report, including jobs cancelled mid-flight. */
+function coerceDeploymentState(status: string): DeploymentState {
+  return (["draft", "queued", "deploying", "ready", "failed", "cancelled"] as const).includes(
+    status as DeploymentState,
+  )
+    ? (status as DeploymentState)
+    : "draft";
 }
 
 /**
@@ -141,6 +123,13 @@ export function EditAgent(props: {
   /** True when this agent is the platform bridge default — the delete dialog
    * carries a blocking note (the DB clears the default with the row). */
   isBridgeAgent?: boolean;
+  /** Record timestamps + saved version for the Agent status timeline. */
+  createdAt?: string | null;
+  updatedAt?: string | null;
+  configVersion?: number;
+  /** Channel integration state, derived server-side — see AgentConfigForm. */
+  phoneReady?: boolean | null;
+  whatsappReady?: boolean | null;
 }) {
   const {
     id,
@@ -155,6 +144,11 @@ export function EditAgent(props: {
     generationError = null,
     isGenerationStub = false,
     isBridgeAgent = false,
+    createdAt = null,
+    updatedAt = null,
+    configVersion = 1,
+    phoneReady = null,
+    whatsappReady = null,
   } = props;
   // Durable pre-save draft (mirrors use-wizard-draft.ts): unsaved edits
   // survive reload/navigation via localStorage, keyed by agent id. The cache
@@ -210,12 +204,8 @@ export function EditAgent(props: {
     window.addEventListener("beforeunload", onBeforeUnload);
     return () => window.removeEventListener("beforeunload", onBeforeUnload);
   }, [isDirty]);
-  const [deployState, setDeployState] = useState<DeploymentState>(
-    (["draft", "queued", "deploying", "ready", "failed"] as const).includes(
-      deploymentStatus as DeploymentState,
-    )
-      ? (deploymentStatus as DeploymentState)
-      : "draft",
+  const [deployState, setDeployState] = useState<DeploymentState>(() =>
+    coerceDeploymentState(deploymentStatus),
   );
   const [deployMessage, setDeployMessage] = useState<string | null>(
     initialDeploymentAttention || deploymentStatus === "failed"
@@ -224,11 +214,9 @@ export function EditAgent(props: {
       : null,
   );
   const [deployJobId, setDeployJobId] = useState<string | null>(null);
-  // Determinate 0..100 deployment progress, when the job reports it.
-  // Deployment jobs today never do (only csv-import reports progress), so
-  // this stays null and the bar renders indeterminate — never an invented
-  // number.
-  const [deployPercent, setDeployPercent] = useState<number | null>(null);
+  // Latest observed deployment job snapshot, for the Agent status timeline's
+  // job timestamps. Tracking/retries below own the outcome; this is display only.
+  const [deployJob, setDeployJob] = useState<JobJson | null>(null);
   const [retrying, startRetry] = useTransition();
   // Single-flight guard for deployment retries (mirrors the generation
   // idempotency shape): a double-click or a retry-after-retry must not queue
@@ -255,19 +243,22 @@ export function EditAgent(props: {
       deployJobId,
       { title: `Deploy ${name}`, kind: "agent_deployment" },
       (job: JobJson) => {
-        setDeployPercent(getJobProgressPercent(job));
+        setDeployJob(job);
         if (job.status === "succeeded") {
           setDeployState("ready");
           setDeployMessage(null);
           toast.add({ type: "success", title: "Voice deployment is ready" });
           return;
         }
+        if (job.status === "cancelled") {
+          setDeployState("cancelled");
+          setDeployMessage(
+            "Deployment was cancelled. The previous version is still live.",
+          );
+          return;
+        }
         setDeployState("failed");
-        setDeployMessage(
-          job.status === "cancelled"
-            ? "Deployment was cancelled. The previous version is still live."
-            : (job.errorMessage ?? "Voice deployment did not complete."),
-        );
+        setDeployMessage(job.errorMessage ?? "Voice deployment did not complete.");
       },
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -312,47 +303,22 @@ export function EditAgent(props: {
   const canTestCall = !isGenerationStub || generationReady;
   const canSave = !isGenerationStub || !generationRunning;
 
-  // Direction B (task-split): on wide screens the config stream sits left
-  // and the test call rides a sticky right rail; on small screens the test
-  // card stacks first with a sticky bottom save bar. Backlink, heading, the
-  // deployment statusline, and the generation banners all live inside the
-  // left stream in that order, followed by the form and the delete card; the
-  // rail is DOM-last inside the grid so tab order follows the primary
-  // configure → test → save flow.
-  // The mockup's deployment statusline: badge + explanatory copy + a
-  // progress bar while a deploy is in flight. The bar is determinate only
-  // when the job reports progress (see deployPercent); otherwise Base UI
-  // renders it indeterminate with value={null}.
-  const deployActive = deployState === "deploying" || deployState === "queued";
-  // Onboarding-06 step markers + stats-11 progress idiom: draft → queued →
-  // deploying → ready, with failed as the terminal alert state. Markers ride
-  // the wizard-timeline idiom (filled Check when done, primary ring when
-  // active, muted outline upcoming); the bar renders indeterminate with
-  // value={null} until the job reports progress.
-  const deployStepIndex =
-    deployState === "ready" || deployState === "failed"
-      ? 3
-      : deployState === "deploying"
-        ? 2
-        : deployState === "queued"
-          ? 1
-          : 0;
-  const deploySteps = ["Draft", "Queued", "Deploying", "Ready"] as const;
-  const deployStatusCopy =
-    deployState === "deploying"
-      ? "Deploying new version… previous version still taking calls"
-      : deployState === "queued"
-        ? "Agent saved — voice deployment is running in the background"
-        : deployState === "ready"
-          ? "New calls use the saved version."
-          : null;
+  // The editor is a single reading column. Voice testing opens from the form
+  // footer in a full-screen dialog, so the form keeps its full working width.
+  const statusEntries = buildAgentStatusEntries({
+    createdAt,
+    updatedAt,
+    configVersion,
+    deploymentStatus: deployState,
+    deploymentError: deployMessage,
+    deploymentJob: deployJob,
+  });
 
   return (
-    <div className="flex flex-col gap-6 lg:grid lg:grid-cols-[minmax(0,1fr)_25rem] lg:items-start">
-      {/* Config stream. The mockup's vertical rhythm is not uniform, so the
-          column is a block with per-child margins rather than a flex gap:
-          backlink → h1 (8/4) → sub (16) → statusline (16) → each banner (16)
-          → form → delete card (12 below the footer bar). */}
+    <div className="mx-auto flex w-full max-w-3xl flex-col gap-6">
+      {/* Config stream. The column is a block with per-child margins rather
+          than a flex gap: backlink → h1 (8/4) → sub (16) → status timeline
+          (16) → each banner (16) → form. */}
       <div className="min-w-0">
         <BackLink href="/agents" label="Agents" />
         {restoredDraft ? (
@@ -391,68 +357,13 @@ export function EditAgent(props: {
         <p className="text-muted-foreground mb-4 text-sm">
           Changes take effect on the next call this agent takes.
         </p>
-        <div
-          className="bg-card mb-4 flex flex-col gap-3 rounded-xl border px-3.5 py-3"
-          aria-live="polite"
-        >
-          <ol className="flex items-stretch gap-1" aria-label="Deployment progress">
-            {deploySteps.map((label, i) => {
-              const failed = deployState === "failed";
-              const done =
-                i < deployStepIndex || (deployState === "ready" && i === deployStepIndex);
-              const active = !failed && i === deployStepIndex;
-              const failedHere = failed && i === deployStepIndex;
-              return (
-                <li key={label} className="flex min-w-0 flex-1 items-center gap-2">
-                  <span
-                    aria-hidden
-                    className={
-                      "flex size-5 shrink-0 items-center justify-center rounded-full text-xs " +
-                      (done
-                        ? "bg-primary text-primary-foreground"
-                        : failedHere
-                          ? "bg-destructive text-destructive-foreground"
-                          : active
-                            ? "border border-primary text-primary ring-1 ring-primary/30"
-                            : "border text-muted-foreground")
-                    }
-                  >
-                    {done ? (
-                      <Check aria-hidden className="size-3" />
-                    ) : failedHere ? (
-                      <TriangleAlert aria-hidden className="size-3" />
-                    ) : active && deployState === "deploying" ? (
-                      <LoaderCircle aria-hidden className="size-3 animate-spin" />
-                    ) : (
-                      i + 1
-                    )}
-                  </span>
-                  <span
-                    className={
-                      "flex min-w-0 flex-col items-start gap-0.5 text-left " +
-                      (active || failedHere ? "font-medium" : "text-muted-foreground")
-                    }
-                  >
-                    <span className="text-xs">Step {i + 1}</span>
-                    <span className="min-w-0 truncate text-sm">{label}</span>
-                  </span>
-                </li>
-              );
-            })}
-          </ol>
-          <p className="text-sm font-medium">{deploymentLabel(deployState)}</p>
-          {deployStatusCopy ? (
-            <span className="text-muted-foreground text-xs">
-              {deployStatusCopy}
-            </span>
-          ) : null}
-          {deployActive ? (
-            <Progress
-              value={deployPercent}
-              aria-label="Deployment progress"
-              className="w-full [&_[data-slot=progress-track]]:h-1.5"
-            />
-          ) : null}
+        <div className="mb-4" aria-live="polite">
+          <Onboarding07
+            title="Agent status"
+            description="Creation, latest saved version, and voice deployment — progress on top, details in the collapsed logs."
+            entries={statusEntries}
+            defaultOpen={false}
+          />
         </div>
 
         {isGenerationStub ? (
@@ -595,6 +506,8 @@ export function EditAgent(props: {
           initialConfig={config}
           submitLabel="Save changes"
           isDirty={isDirty}
+          phoneReady={phoneReady}
+          whatsappReady={whatsappReady}
           onChange={(next, nextName) => {
             setCurrent(next);
             setCurrentName(nextName);
@@ -669,54 +582,17 @@ export function EditAgent(props: {
               isBridgeAgent={isBridgeAgent}
             />
           }
+          footerPrimaryActions={
+            <TestAgentDialog
+              agentId={id}
+              name={currentName}
+              config={current}
+              isDirty={isDirty}
+              canTest={canTestCall}
+            />
+          }
         />
       </div>
-
-      <aside
-        id="test-rail"
-        aria-label="Test this agent"
-        className="lg:sticky lg:top-[4.5rem] lg:z-10 lg:max-h-[calc(100vh-3rem)] lg:overflow-y-auto lg:rounded-xl lg:bg-background"
-      >
-        {canTestCall ? (
-          <>
-            {/* The call card is the whole surface: VoiceCall already owns
-                the border, padding, version strip, portrait, status, call
-                button, and transcript. A wrapping Card here would nest a
-                bordered card inside a duplicate header — nested cards are
-                always wrong. */}
-            {/* Keyed on the voice: it is immutable for the life of a session, so
-                switching it has to start a fresh one rather than mutate this one.
-                The previous transcript is discarded — disclosed at the picker. */}
-            <VoiceCall
-              key={current.voiceId}
-              mode={{ kind: "inline", config: current, agentId: id, isDirty }}
-            />
-          </>
-        ) : (
-          <Empty>
-            <EmptyHeader>
-              <EmptyMedia variant="icon">
-                <Mic />
-              </EmptyMedia>
-              <EmptyTitle>Test this agent</EmptyTitle>
-              <EmptyDescription>
-                Test calls unlock once generation finishes — the voice and
-                language here are placeholders until then.
-              </EmptyDescription>
-            </EmptyHeader>
-            <EmptyContent>
-              <Button
-                nativeButton={false}
-                size="sm"
-                variant="outline"
-                render={<Link href="/jobs" />}
-              >
-                View progress in Jobs
-              </Button>
-            </EmptyContent>
-          </Empty>
-        )}
-      </aside>
     </div>
   );
 }

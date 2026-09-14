@@ -46,7 +46,6 @@ export const TOOL_NAMES = TOOL_REGISTRY.map((t) => t.name);
 
 export const CHANNELS = ["phone", "whatsapp"] as const;
 
-/** A field the agent must capture during the conversation. */
 /**
  * A field the agent must capture during the conversation.
  *
@@ -68,6 +67,35 @@ export const detectFieldSchema = z.object({
   sensitive: z.boolean().default(false),
 });
 
+/**
+ * An LLM-suggested tool idea: work the wizard brief implies but no built-in
+ * covers. Display-only — never executed, never compiled into voice tools.
+ * Survives `normalizeConfig` verbatim so a generation's suggestions reach the
+ * review screen and the detail form's "Suggested for this agent" group.
+ */
+export const toolIdeaSchema = z.object({
+  name: z.string().trim().min(1).max(80),
+  label: z.string().trim().min(1).max(80),
+  description: z.string().trim().min(1).max(500),
+});
+
+/**
+ * A user-added custom tool: a webhook the agent may call mid-conversation.
+ * `kind` is `"webhook"` only (no code editor in this pass); `mode` follows
+ * the built-in convention (`interactive` talks over the result, `hold`
+ * stops and waits). `authCredentialName` names a platform credential whose
+ * value is sent as a bearer header — free-form so any provider works.
+ */
+export const customToolSchema = z.object({
+  id: z.string().trim().min(1).max(80),
+  label: z.string().trim().min(1).max(80),
+  description: z.string().trim().min(1).max(500),
+  mode: z.enum(["interactive", "hold"]).default("interactive"),
+  kind: z.literal("webhook").default("webhook"),
+  url: z.string().trim().url().max(2000),
+  authCredentialName: z.string().trim().min(1).max(80).optional(),
+});
+
 export const agentConfigSchema = z.object({
   /** One sentence: the business outcome this agent exists to produce. */
   mission: z.string().min(1),
@@ -80,6 +108,17 @@ export const agentConfigSchema = z.object({
   detect: z.array(detectFieldSchema).default([]),
   /** Tool names from TOOL_REGISTRY. Unknown names are dropped on normalize. */
   tools: z.array(z.string()).default([]),
+  /**
+   * LLM-suggested tool ideas from the wizard brief. Optional with a default
+   * so legacy configurations keep parsing; stored in existing JSON config
+   * storage — no column migration.
+   */
+  toolIdeas: z.array(toolIdeaSchema).default([]),
+  /**
+   * User-added webhook tools. Validated by shape (not dropped) on normalize;
+   * stored in existing JSON config storage — no column migration.
+   */
+  customTools: z.array(customToolSchema).default([]),
   /**
    * House rules: hard facts and prohibitions, as one free-text block.
    *
@@ -160,11 +199,23 @@ export type DetectField = z.infer<typeof detectFieldSchema>;
  * `qualify_lead`). Registering one that has no server-side implementation would
  * make the agent call it mid-conversation and stall, so this filters rather
  * than trusting the model. Runs after schema validation, on every path.
+ *
+ * Custom webhook tools and LLM tool ideas are kept verbatim: customs are
+ * validated by shape (schema above), and ideas are display-only — neither can
+ * stall a call the way an invented built-in name would.
  */
 export function normalizeConfig(config: AgentConfig): AgentConfig {
   const known = new Set<string>(TOOL_NAMES);
-  return { ...config, tools: config.tools.filter((t) => known.has(t)) };
+  return {
+    ...config,
+    tools: config.tools.filter((t) => known.has(t)),
+    toolIdeas: [...(config.toolIdeas ?? [])],
+    customTools: [...(config.customTools ?? [])],
+  };
 }
+
+export type ToolIdea = z.infer<typeof toolIdeaSchema>;
+export type CustomTool = z.infer<typeof customToolSchema>;
 
 /**
  * The real estate launch template, verbatim from plan Section G.
@@ -188,6 +239,8 @@ export const REAL_ESTATE_TEMPLATE: AgentConfig = {
     { key: "buying_intent", label: "Buying intent", description: "How serious and ready they are.", sensitive: false },
   ],
   tools: [...TOOL_NAMES],
+  toolIdeas: [],
+  customTools: [],
   knowledge:
     "Never invent property information — every property fact must come from a tool result. Respect the campaign's calling-hours window. Never proceed without recorded consent. If asked whether this is a recording or an AI, say so plainly and continue.",
   channels: ["phone", "whatsapp"],

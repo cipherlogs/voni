@@ -1,13 +1,15 @@
 "use server";
 
-import { and, count, eq, sql } from "drizzle-orm";
+import { and, count, eq, inArray, isNull, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import {
   calls,
   campaignLeads,
   campaigns,
+  agents,
   leads,
 } from "@/lib/db/schema";
+import type { DashboardSetupState } from "@/lib/dashboard/setup";
 import {
   callConnected,
   latestBlockersNonEmpty,
@@ -23,12 +25,8 @@ export type DashboardSummary = {
   needsHandoff: number;
   stages: Array<{ stage: string; value: number }>;
   emptyCampaigns: Array<{ id: string; name: string }>;
-  /** True when the workspace has no outcomes yet and no leads have been
-   *  imported: the page shows the setup path instead of a zero grid. Empty
-   *  campaigns waiting for a CSV count as setup, not as outcomes — step 2
-   *  deep-links straight to their import section. A workspace with outcomes
-   *  but only-imported campaigns still gets the outcome cards plus the
-   *  campaign next actions; the setup moment has passed. */
+  setup: DashboardSetupState;
+  /** True until the workspace records its first dashboard outcome. */
   isFirstRun: boolean;
 };
 
@@ -98,6 +96,36 @@ export async function getDashboardSummary(): Promise<DashboardSummary> {
     .having(sql`count(${campaignLeads.id}) = 0`)
     .limit(3);
 
+  const [[createdAgent], [importedLead], [activatedCampaign]] =
+    await Promise.all([
+      db
+        .select({ id: agents.id })
+        .from(agents)
+        .where(
+          and(
+            eq(agents.organizationId, org),
+            isNull(agents.generationJobId),
+          ),
+        )
+        .limit(1),
+      db
+        .select({ id: campaignLeads.id })
+        .from(campaignLeads)
+        .innerJoin(campaigns, eq(campaignLeads.campaignId, campaigns.id))
+        .where(eq(campaigns.organizationId, org))
+        .limit(1),
+      db
+        .select({ id: campaigns.id })
+        .from(campaigns)
+        .where(
+          and(
+            eq(campaigns.organizationId, org),
+            inArray(campaigns.status, ["active", "paused", "completed"]),
+          ),
+        )
+        .limit(1),
+    ]);
+
   const leadsWorked = worked?.value ?? 0;
   const connectedCalls = connected?.value ?? 0;
   const appointmentsBooked = booked?.value ?? 0;
@@ -109,6 +137,11 @@ export async function getDashboardSummary(): Promise<DashboardSummary> {
     needsHandoff,
     stages: stageRows,
     emptyCampaigns,
+    setup: {
+      agentCreated: Boolean(createdAgent),
+      leadsImported: Boolean(importedLead),
+      campaignActivated: Boolean(activatedCampaign),
+    },
     isFirstRun:
       leadsWorked === 0 &&
       connectedCalls === 0 &&

@@ -76,17 +76,22 @@ Install via `npx shadcn add @blocks-so/<id>` (alias already in
 | Tables | `table-05` (paged+selectable base), `table-02` (row actions), `table-03` (filters), `table-04` (grouped rows) | @tanstack/react-table + badge/button/checkbox/dropdown-menu/input/select/table |
 | Lists | `grid-list-01…03` | — |
 | Agent wizard | `dialog-11` (multi-step), `onboarding-01…04` (steps/progress), `form-layout-*` sections | — |
-| Agent timeline | `onboarding-05` (activity feed) or `-06` (timeline; needs @tabler/icons-react → SWAP to lucide) | lucide only |
+| Agent timeline | `onboarding-07` (collapsible pipeline wrapper) + `onboarding-06` (timeline; needs @tabler/icons-react → SWAP to lucide) | lucide only |
 | Forms | `form-layout-02` (side labels), `form-layout-03` (checkbox settings) | — |
-| Dialogs/menus/upload | `dialog-01…12`, `command-menu-01…03`, `file-upload-01…06` as needed | per-item audit |
+| Dialogs/menus/upload | `dialog-01…12`, `command-menu-01…03`, `file-upload-01…06` as needed | `cmdk` only for command-menu-03; per-item audit otherwise |
 | Copilot shell | `chat-03`, `ai-05` (markup idiom only; 1094-line provider logic untouched) | NO `ai`-SDK addition without amendment |
-| Voice affordance | `ai-01` (chat voice input as the Blocks voice idiom; telephony card itself is the §4 exception) | — |
+| Voice affordance | `ai-01` (chat voice input), `chat-01` (voice transcript layout; no text composer); telephony card itself is the §4 exception | @shadcn/react already present |
 | Shell | `sidebar-02` or `-03` idiom (restyle current shell; NO framer-motion) | — |
 
 **Banned:** everything not listed. Notably: no new chart libs beyond
 dashboard-01's recharts; no `framer-motion`; no `@tabler/icons-react`
 (swap to lucide); no `sonner` (canonical toast is Base UI — see §4);
-no `cmdk`/`ai`-SDK additions without amendment.
+no `ai`-SDK additions without amendment; `cmdk` is allowed only for the
+installed command-menu-03 adaptation.
+
+Installed 2026-09-14: `command-menu-03` at upstream commit `f9b89ceb4979d35209705f8029877b60d6c70bc5`, `onboarding-01` at `5377a1ce792a169336c87f99a438a273867b6815`, and `chat-01` at `8f6f90c5b077628d2f4d3e41faa31cb8b608fe0b`. Registry demo data and Tabler icons were removed; Voni behavior, Lucide icons, and Base UI composition replace them.
+
+Installed 2026-09-14: `onboarding-07` ("Onboarding Deploy Pipeline") — progress meters on top (three side-by-side `Progress` meters for created / saved version / deployment, restored from upstream), with a single `AccordionItem` "Logs overview (N)" logs item below it, collapsed by default. Deployment errors surface on the always-visible meter row plus an inline error line, so failures never hide inside the collapsed panel. Upstream demo animation data, rerun button, centered wrapper, and Tabler icons NOT adopted; Base UI Accordion + Progress primitives + Lucide + live job-driven entries replace them.
 
 ## 4. Patterns (one canonical composition per area)
 
@@ -109,9 +114,54 @@ no `cmdk`/`ai`-SDK additions without amendment.
   **tag field** is `build-in-style` (badge + input-group idiom).
 - **Settings/operator/numbers:** form-layout-02/03; numbers list from
   table-05 or grid-list-02.
+- **Form reference: campaign/new density** (amendment 2026-09-14,
+  supersedes the same-day `CONTROL` blessing): every form converges on the
+  `campaign-form.tsx` composition — base `h-8` controls from `ui/` with width
+  caps only (no per-form `CONTROL` geometry overrides), `FormCard` >
+  `FormCardSections` bodies (16px mobile / 24px desktop padding), sections as
+  stacked heading + description + fields at `gap-3`, then the page footer in
+  normal document flow outside any filled body. Fields compose with
+  `FieldGroup` + `Field` + labels/descriptions + `data-invalid` /
+  `aria-invalid` per Base UI. Width caps only: names/roles `max-w-md`, short
+  selectors `max-w-xs`, time/numeric `max-w-40`, prose full width.
+  `grep -rn 'CONTROL' src/components/` must be empty.
+- **Transparent footers** (amendment 2026-09-14): page-form footers sit
+  outside filled bodies with a separator and consistent spacing
+  (`Separator` + `pt-4`, secondary-left / primary-right, wrapping on narrow
+  screens). The new-agent footer is no longer wrapped in its own filled
+  card. Dialog footers carry no contrasting fill (`DialogFooter` is
+  border-top only; the dialog surface itself stays opaque). Data-card
+  footers (dashboard stat cards) are excluded from this rule.
+- **Form widths** (amendment 2026-09-14): shells — agent
+  creation/review/details + campaign form `max-w-3xl`;
+  workspace/copilot settings + number entry + CSV import `max-w-xl`;
+  operator defaults `max-w-2xl`; auth screens + simple confirmation dialogs
+  `max-w-sm`. Controls — names/roles/email/model/connection/voice IDs
+  `max-w-md`; phone/language/timezone/short selectors `max-w-xs`;
+  time/numeric `max-w-40`; prose/knowledge/instructions/tag editors full
+  form width. All widths stay responsive; labels/help/errors align with
+  their controls; embedded forms constrain themselves without narrowing
+  surrounding tables or operational pages.
+- **Agent status timeline** (amendment 2026-09-14, collapsed 2026-09-14):
+  `agents/[id]` renders an `onboarding-07` deploy pipeline — an
+  always-visible header with one progress meter per step (created /
+  latest saved configuration version / current deployment status) plus an
+  inline error line when deployment failed or was cancelled, and beneath
+  the meters a single collapsed `AccordionItem` "Logs overview (N)" that
+  expands to reveal the `onboarding-06` vertical "Agent status" timeline — at most three
+  entries (creation, latest saved configuration version, current deployment
+  status) with explicit text for draft/queued/deploying/ready/failed/
+  cancelled. The logs trigger shows "Logs overview (N)" plus the latest
+  entry title; the entry
+  type carries `error`/`neutral` states and optional timestamps;
+  unavailable timestamps are omitted, never invented. The old horizontal
+  step strip (step array/index, percentage state, progress bar) is deleted.
+  Deployment tracking, retries, duplicate protection, generation safeguards,
+  save/test gating, notifications, and global Jobs access are unchanged.
 - **Voice exception (narrow):** `voice-call.tsx` session/mic state
   machine, 429 countdown, and distinct failure states stay; all styling
-  goes Blocks idiom. One re-derived call green, scoped to live-call
+  goes Blocks idiom. The inline test uses chat-01's conversation layout
+  inside a full-screen Base UI dialog. One re-derived call green, scoped to live-call
   affordances only — never a general token. Everything slow stays a
   durable job + JobCenter (async protocol §8).
 - **Feedback:** loading.tsx boundaries stay, skeleton markup rewritten
@@ -168,7 +218,7 @@ or be cut — or be a DESIGN.md-listed exception.
 | Extended charting beyond those | cut | No Charts group; cut > custom |
 | Base data tables + pagination + stage/outcome cells | blocks-has | table-05/02/03/04 |
 | Filter chips / bulk-action bar | build-in-style | No chip/bulk blocks; badge+toggle-group / table-05-selection idioms |
-| Agents list / new wizard / detail timeline / voice-preview pairing | blocks-has | grid-list, dialog-11+onboarding+form-layout, onboarding-05/06, ai-01 |
+| Agents list / new wizard / detail timeline / voice-preview pairing | blocks-has | grid-list, dialog-11+onboarding+form-layout, onboarding-05/06, chat-01 |
 | Agent tag field | build-in-style | No tag-input block |
 | voice-call card | build-in-style (bound exception) | No telephony block; logic stays, styling goes Blocks |
 | Jobs rows / header pill | blocks-has / build-in-style | table-05+stats-11 / badge+progress idiom, semantics kept |

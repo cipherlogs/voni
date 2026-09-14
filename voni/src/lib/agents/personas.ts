@@ -119,7 +119,7 @@ export const PERSONAS: Persona[] = [
         { key: "financing", label: "Financing", description: "Cash, finance, or lease.", sensitive: false },
         { key: "timeline", label: "Timeline", description: "How soon they want to buy.", sensitive: false },
       ],
-      tools: ["check_calendar", "book_viewing", "schedule_follow_up", "update_lead", "transfer_to_human"],
+      tools: ["check_calendar", "book_viewing", "schedule_follow_up", "update_lead", "transfer_to_human"],      toolIdeas: [],      customTools: [],
       knowledge:
         "Never quote a price or availability you have not confirmed with a tool. Do not promise a finance rate — that is the finance desk's call.",
       channels: ["phone", "whatsapp"],
@@ -157,7 +157,7 @@ export const PERSONAS: Persona[] = [
         { key: "occasion", label: "Occasion", description: "Birthday, business, casual.", sensitive: false },
         { key: "dietary", label: "Dietary needs", description: "Allergies or restrictions.", sensitive: false },
       ],
-      tools: ["check_availability", "check_calendar", "book_viewing", "update_lead", "transfer_to_human"],
+      tools: ["check_availability", "check_calendar", "book_viewing", "update_lead", "transfer_to_human"],      toolIdeas: [],      customTools: [],
       knowledge:
         "Never confirm a table without checking availability with a tool. Always read the date, time and party size back before confirming.",
       channels: ["phone", "whatsapp"],
@@ -196,7 +196,7 @@ export const PERSONAS: Persona[] = [
         { key: "availability", label: "Availability", description: "Days and times that work.", sensitive: true },
         { key: "insurance", label: "Insurance", description: "Provider, if any.", sensitive: true },
       ],
-      tools: ["check_calendar", "check_availability", "book_viewing", "schedule_follow_up", "update_lead", "transfer_to_human"],
+      tools: ["check_calendar", "check_availability", "book_viewing", "schedule_follow_up", "update_lead", "transfer_to_human"],      toolIdeas: [],      customTools: [],
       // The first sentence is what keeps a booking assistant from practising medicine.
       knowledge:
         "Never give clinical or medical advice. Book the appointment and let the dentist advise. If someone describes severe swelling, bleeding that will not stop, or trouble breathing, tell them to seek urgent care immediately and offer to transfer them. Never confirm a slot without checking the calendar with a tool.",
@@ -236,7 +236,7 @@ export const PERSONAS: Persona[] = [
         { key: "callback_number", label: "Callback number", description: "Best number to reach them.", sensitive: true },
         { key: "urgency", label: "Urgency", description: "How soon they need a response.", sensitive: false },
       ],
-      tools: ["schedule_follow_up", "update_lead", "transfer_to_human"],
+      tools: ["schedule_follow_up", "update_lead", "transfer_to_human"],      toolIdeas: [],      customTools: [],
       knowledge:
         "Never invent an answer about pricing, availability or policy — take a message instead. Always read a callback number back digit by digit before ending the call.",
       channels: ["phone"],

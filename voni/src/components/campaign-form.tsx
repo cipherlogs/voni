@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { FormCard, FormCardSections } from "@/components/wizard/form-layout";
 import { TriangleAlert } from "lucide-react";
 import {
   DEFAULT_CALLING_WINDOW,
@@ -185,237 +186,231 @@ export function CampaignForm({
 
   return (
     <div className="flex flex-col gap-6" data-copilot-form="campaign">
-      <section
-        aria-labelledby="campaign-who-heading"
-        className="grid gap-6 md:grid-cols-3"
-      >
-        <div>
-          <h2 id="campaign-who-heading" className="text-balance font-semibold">
-            Who works this campaign
-          </h2>
-          <p className="text-pretty text-muted-foreground text-sm leading-6">
-            Name it, then pick the agent that places the calls.
-          </p>
-        </div>
-        <div className="sm:max-w-3xl md:col-span-2">
-          <FieldGroup>
-            <Field>
-              <FieldLabel htmlFor="campaign-name">Campaign name</FieldLabel>
-              <Input
-                id="campaign-name"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="Marina 2BR enquiries — September"
-              />
-            </Field>
-            <Field>
-              <FieldLabel htmlFor="campaign-agent">Agent</FieldLabel>
-              <Select value={agentId} onValueChange={(v) => setAgentId(v ?? "")}>
-                <SelectTrigger id="campaign-agent" aria-label="Agent" className="w-full">
-                  <SelectValue placeholder="Select an agent" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectGroup>
-                    {agents.map((agent) => (
-                      <SelectItem key={agent.id} value={agent.id}>
-                        {agent.name}
-                        {agent.deployed ? "" : " (draft)"}
-                      </SelectItem>
-                    ))}
-                  </SelectGroup>
-                </SelectContent>
-              </Select>
-            {agentId && !agents.find((a) => a.id === agentId)?.deployed ? (
-              <p className="text-muted-foreground text-xs">
-                This agent is still a draft. You can create the campaign now, but
-                publishing the agent is required before it can start calling.
+      <FormCard>
+        <FormCardSections>
+          <section aria-labelledby="campaign-who-heading" className="flex flex-col gap-3">
+            <div>
+              <h2 id="campaign-who-heading" className="text-balance font-semibold">
+                Who works this campaign
+              </h2>
+              <p className="text-pretty text-muted-foreground text-sm leading-6">
+                Name it, then pick the agent that places the calls.
               </p>
+            </div>
+            <FieldGroup>
+              <Field>
+                <FieldLabel htmlFor="campaign-name">Campaign name</FieldLabel>
+                <Input
+                  id="campaign-name"
+                  className="max-w-md"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="Marina 2BR enquiries — September"
+                />
+              </Field>
+              <Field>
+                <FieldLabel htmlFor="campaign-agent">Agent</FieldLabel>
+                <Select value={agentId} onValueChange={(v) => setAgentId(v ?? "")}>
+                  <SelectTrigger id="campaign-agent" aria-label="Agent" className="w-full max-w-md">
+                    <SelectValue placeholder="Select an agent" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      {agents.map((agent) => (
+                        <SelectItem key={agent.id} value={agent.id}>
+                          {agent.name}
+                          {agent.deployed ? "" : " (draft)"}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+                {agentId && !agents.find((a) => a.id === agentId)?.deployed ? (
+                  <p className="text-muted-foreground text-xs">
+                    This agent is still a draft. You can create the campaign now, but
+                    publishing the agent is required before it can start calling.
+                  </p>
+                ) : null}
+              </Field>
+            </FieldGroup>
+          </section>
+
+          <Separator />
+
+          <section aria-labelledby="campaign-when-heading" className="flex flex-col gap-3">
+            <div>
+              <h2 id="campaign-when-heading" className="text-balance font-semibold">
+                When calling is allowed
+              </h2>
+              <p className="text-pretty text-muted-foreground text-sm leading-6">
+                The window and days the dialer may place calls in.
+              </p>
+            </div>
+            <FieldGroup className="grid gap-4 sm:grid-cols-3">
+              <Field>
+                <FieldLabel htmlFor="window-start">Start</FieldLabel>
+                <Input
+                  id="window-start"
+                  type="time"
+                  className="max-w-40"
+                  value={start}
+                  onChange={(e) => setStart(e.target.value)}
+                />
+              </Field>
+              <Field>
+                <FieldLabel htmlFor="window-end">End</FieldLabel>
+                <Input
+                  id="window-end"
+                  type="time"
+                  className="max-w-40"
+                  value={end}
+                  onChange={(e) => setEnd(e.target.value)}
+                />
+              </Field>
+              <Field>
+                <FieldLabel htmlFor="window-timezone">Timezone</FieldLabel>
+                <Select value={timezone} onValueChange={(v) => setTimezone(v ?? timezone)}>
+                  <SelectTrigger id="window-timezone" aria-label="Timezone" className="w-full max-w-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      {TIMEZONES.map((zone) => (
+                        <SelectItem key={zone} value={zone}>
+                          {zone}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+              </Field>
+            </FieldGroup>
+            {windowInvalid ? (
+              <FieldError className="text-xs">
+                The end time has to be after the start time. Overnight windows are
+                not supported.
+              </FieldError>
             ) : null}
-            </Field>
-          </FieldGroup>
-        </div>
-      </section>
 
-      <Separator />
+            <Field data-invalid={days.length === 0}>
+              <FieldLabel>Days</FieldLabel>
+              <ToggleGroup
+                multiple
+                value={days.map(String)}
+                onValueChange={(values) =>
+                  setDays(
+                    (Array.isArray(values) ? values : [])
+                      .map(Number)
+                      .filter((d) => Number.isInteger(d) && d >= 0 && d < 7)
+                      .sort((a, b) => a - b),
+                  )
+                }
+                variant="outline"
+                aria-label="Calling days"
+                className="flex flex-wrap"
+              >
+                {WEEKDAY_LABELS.map((label, day) => (
+                  <ToggleGroupItem
+                    key={label}
+                    value={String(day)}
+                    aria-label={label}
+                    aria-pressed={days.includes(day)}
+                  >
+                    {label.slice(0, 3)}
+                  </ToggleGroupItem>
+                ))}
+              </ToggleGroup>
+              {days.length === 0 ? (
+                <FieldError className="text-xs">Pick at least one day.</FieldError>
+              ) : null}
+            </Field>
 
-      <section
-        aria-labelledby="campaign-when-heading"
-        className="grid gap-6 md:grid-cols-3"
-      >
-        <div>
-          <h2 id="campaign-when-heading" className="text-balance font-semibold">
-            When calling is allowed
-          </h2>
-          <p className="text-pretty text-muted-foreground text-sm leading-6">
-            The window and days the dialer may place calls in.
-          </p>
-        </div>
-        <div className="sm:max-w-3xl md:col-span-2">
-          <FieldGroup className="grid gap-4 sm:grid-cols-3">
             <Field>
-              <FieldLabel htmlFor="window-start">Start</FieldLabel>
-              <Input
-                id="window-start"
-                type="time"
-                value={start}
-                onChange={(e) => setStart(e.target.value)}
-              />
-            </Field>
-            <Field>
-              <FieldLabel htmlFor="window-end">End</FieldLabel>
-              <Input
-                id="window-end"
-                type="time"
-                value={end}
-                onChange={(e) => setEnd(e.target.value)}
-              />
-            </Field>
-            <Field>
-              <FieldLabel htmlFor="window-timezone">Timezone</FieldLabel>
-              <Select value={timezone} onValueChange={(v) => setTimezone(v ?? timezone)}>
-                <SelectTrigger id="window-timezone" aria-label="Timezone" className="w-full">
+              <FieldLabel htmlFor="consent-policy">Consent</FieldLabel>
+              <Select
+                value={consent}
+                onValueChange={(v) => setConsent(v as typeof consent)}
+              >
+                <SelectTrigger id="consent-policy" aria-label="Consent" className="w-full max-w-md">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectGroup>
-                    {TIMEZONES.map((zone) => (
-                      <SelectItem key={zone} value={zone}>
-                        {zone}
-                      </SelectItem>
-                    ))}
+                    <SelectItem value="granted">
+                      Only leads who explicitly consented
+                    </SelectItem>
+                    <SelectItem value="not_revoked">
+                      Anyone who has not opted out
+                    </SelectItem>
                   </SelectGroup>
                 </SelectContent>
               </Select>
+              <p className="text-muted-foreground text-xs">
+                Leads marked as opted out are never called, under either setting.
+              </p>
             </Field>
-          </FieldGroup>
-          {windowInvalid ? (
-            <FieldError className="text-xs">
-              The end time has to be after the start time. Overnight windows are
-              not supported.
-            </FieldError>
-          ) : null}
+          </section>
 
-          <Field data-invalid={days.length === 0}>
-            <FieldLabel>Days</FieldLabel>
-            <ToggleGroup
-              multiple
-              value={days.map(String)}
-              onValueChange={(values) =>
-                setDays(
-                  (Array.isArray(values) ? values : [])
-                    .map(Number)
-                    .filter((d) => Number.isInteger(d) && d >= 0 && d < 7)
-                    .sort((a, b) => a - b),
-                )
-              }
-              variant="outline"
-              aria-label="Calling days"
-              className="flex flex-wrap"
-            >
-              {WEEKDAY_LABELS.map((label, day) => (
-                <ToggleGroupItem
-                  key={label}
-                  value={String(day)}
-                  aria-label={label}
-                  aria-pressed={days.includes(day)}
-                >
-                  {label.slice(0, 3)}
-                </ToggleGroupItem>
-              ))}
-            </ToggleGroup>
-            {days.length === 0 ? (
-              <FieldError className="text-xs">Pick at least one day.</FieldError>
-            ) : null}
-          </Field>
+          <Separator />
 
-          <Field>
-            <FieldLabel htmlFor="consent-policy">Consent</FieldLabel>
-            <Select
-              value={consent}
-              onValueChange={(v) => setConsent(v as typeof consent)}
-            >
-              <SelectTrigger id="consent-policy" aria-label="Consent" className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectGroup>
-                  <SelectItem value="granted">
-                    Only leads who explicitly consented
-                  </SelectItem>
-                  <SelectItem value="not_revoked">
-                    Anyone who has not opted out
-                  </SelectItem>
-                </SelectGroup>
-              </SelectContent>
-            </Select>
-            <p className="text-muted-foreground text-xs">
-              Leads marked as opted out are never called, under either setting.
-            </p>
-          </Field>
-        </div>
-      </section>
-
-      <Separator />
-
-      <section
-        aria-labelledby="campaign-how-heading"
-        className="grid gap-6 md:grid-cols-3"
-      >
-        <div>
-          <h2 id="campaign-how-heading" className="text-balance font-semibold">
-            How persistent to be
-          </h2>
-          <p className="text-pretty text-muted-foreground text-sm leading-6">
-            How many tries per lead, and how long to wait between them.
-          </p>
-        </div>
-        <div className="sm:max-w-3xl md:col-span-2">
-          <FieldGroup className="grid gap-4 sm:grid-cols-2">
-          <Field data-invalid={attemptsInvalid || fieldError === "numeric"}>
-            <FieldLabel htmlFor="max-attempts">Call attempts per lead</FieldLabel>
-            <Input
-              id="max-attempts"
-              type="number"
-              min={MAX_ATTEMPTS_MIN}
-              max={MAX_ATTEMPTS_MAX}
-              value={maxAttempts}
-              onChange={(e) => setMaxAttempts(e.target.value)}
-              aria-invalid={attemptsInvalid ? true : undefined}
-              aria-describedby={
-                attemptsInvalid ? "max-attempts-error" : undefined
-              }
-            />
-            {attemptsInvalid ? (
-              <FieldError id="max-attempts-error">
-                Use a whole number from {MAX_ATTEMPTS_MIN} to {MAX_ATTEMPTS_MAX}.
-              </FieldError>
-            ) : fieldError === "numeric" && error ? (
-              <FieldError>{error}</FieldError>
-            ) : null}
-          </Field>
-          <Field data-invalid={retryInvalid || fieldError === "numeric"}>
-            <FieldLabel htmlFor="retry-after">Wait between attempts (minutes)</FieldLabel>
-            <Input
-              id="retry-after"
-              type="number"
-              min={RETRY_MINUTES_MIN}
-              max={RETRY_MINUTES_MAX}
-              value={retryAfterMinutes}
-              onChange={(e) => setRetryAfterMinutes(e.target.value)}
-              aria-invalid={retryInvalid ? true : undefined}
-              aria-describedby={retryInvalid ? "retry-after-error" : undefined}
-            />
-            {retryInvalid ? (
-              <FieldError id="retry-after-error">
-                Use a whole number from {RETRY_MINUTES_MIN} to {RETRY_MINUTES_MAX}.
-              </FieldError>
-            ) : fieldError === "numeric" && error ? (
-              <FieldError>{error}</FieldError>
-            ) : null}
-          </Field>
-          </FieldGroup>
-        </div>
-      </section>
+          <section aria-labelledby="campaign-how-heading" className="flex flex-col gap-3">
+            <div>
+              <h2 id="campaign-how-heading" className="text-balance font-semibold">
+                How persistent to be
+              </h2>
+              <p className="text-pretty text-muted-foreground text-sm leading-6">
+                How many tries per lead, and how long to wait between them.
+              </p>
+            </div>
+            <FieldGroup className="grid gap-4 sm:grid-cols-2">
+              <Field data-invalid={attemptsInvalid || fieldError === "numeric"}>
+                <FieldLabel htmlFor="max-attempts">Call attempts per lead</FieldLabel>
+                <Input
+                  id="max-attempts"
+                  type="number"
+                  min={MAX_ATTEMPTS_MIN}
+                  max={MAX_ATTEMPTS_MAX}
+                  className="max-w-40"
+                  value={maxAttempts}
+                  onChange={(e) => setMaxAttempts(e.target.value)}
+                  aria-invalid={attemptsInvalid ? true : undefined}
+                  aria-describedby={
+                    attemptsInvalid ? "max-attempts-error" : undefined
+                  }
+                />
+                {attemptsInvalid ? (
+                  <FieldError id="max-attempts-error">
+                    Use a whole number from {MAX_ATTEMPTS_MIN} to {MAX_ATTEMPTS_MAX}.
+                  </FieldError>
+                ) : fieldError === "numeric" && error ? (
+                  <FieldError>{error}</FieldError>
+                ) : null}
+              </Field>
+              <Field data-invalid={retryInvalid || fieldError === "numeric"}>
+                <FieldLabel htmlFor="retry-after">Wait between attempts (minutes)</FieldLabel>
+                <Input
+                  id="retry-after"
+                  type="number"
+                  min={RETRY_MINUTES_MIN}
+                  max={RETRY_MINUTES_MAX}
+                  className="max-w-40"
+                  value={retryAfterMinutes}
+                  onChange={(e) => setRetryAfterMinutes(e.target.value)}
+                  aria-invalid={retryInvalid ? true : undefined}
+                  aria-describedby={retryInvalid ? "retry-after-error" : undefined}
+                />
+                {retryInvalid ? (
+                  <FieldError id="retry-after-error">
+                    Use a whole number from {RETRY_MINUTES_MIN} to {RETRY_MINUTES_MAX}.
+                  </FieldError>
+                ) : fieldError === "numeric" && error ? (
+                  <FieldError>{error}</FieldError>
+                ) : null}
+              </Field>
+            </FieldGroup>
+          </section>
+        </FormCardSections>
+      </FormCard>
 
       {error ? (
         <Alert variant="destructive">
@@ -424,32 +419,35 @@ export function CampaignForm({
         </Alert>
       ) : null}
 
-      <div className="flex flex-wrap items-center gap-3">
-        <LoadingButton onClick={submit} disabled={blocked} pending={pending} pendingText="Creating…">
-          Create campaign
-        </LoadingButton>
-        <Button
-          nativeButton={false}
-          render={
-            <Link
-              href="/campaigns"
-              onClick={(e) => {
-                if (
-                  dirty &&
-                  !window.confirm(
-                    "Leave without creating this campaign? Your entries will be lost.",
-                  )
-                ) {
-                  e.preventDefault();
-                }
-              }}
-            />
-          }
-          variant="ghost"
-        >
-          Cancel
-        </Button>
-        <p className="text-muted-foreground w-full text-sm">
+      <div>
+        <Separator />
+        <div className="flex flex-wrap items-center justify-between gap-3 pt-4">
+          <Button
+            nativeButton={false}
+            render={
+              <Link
+                href="/campaigns"
+                onClick={(e) => {
+                  if (
+                    dirty &&
+                    !window.confirm(
+                      "Leave without creating this campaign? Your entries will be lost.",
+                    )
+                  ) {
+                    e.preventDefault();
+                  }
+                }}
+              />
+            }
+            variant="ghost"
+          >
+            Cancel
+          </Button>
+          <LoadingButton onClick={submit} disabled={blocked} pending={pending} pendingText="Creating…">
+            Create campaign
+          </LoadingButton>
+        </div>
+        <p className="text-muted-foreground mt-3 w-full text-sm">
           You will import leads on the next screen. Nothing is called until you
           activate the campaign.
         </p>

@@ -25,6 +25,7 @@ import {
   FieldLabel,
 } from "@/components/ui/field";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { FormCard, FormCardSections } from "@/components/wizard/form-layout";
 import {
   Select,
   SelectContent,
@@ -247,107 +248,111 @@ export function PhoneNumbers({
 
   return (
     <div className="flex flex-col gap-6">
-      <section
-        aria-labelledby="add-number-heading"
-        className="grid gap-6 md:grid-cols-3"
-      >
-        <div>
-          <h2 id="add-number-heading" className="text-balance font-semibold">
-            Add a number
-          </h2>
-          <p className="text-pretty text-muted-foreground text-sm leading-6">
-            Which agent picks up when someone calls one of your numbers.
-          </p>
-        </div>
-        <div className="sm:max-w-3xl md:col-span-2">
-          <FieldGroup className="grid gap-4 sm:grid-cols-6">
-            <Field className="sm:col-span-2">
-              <FieldLabel htmlFor="new-number">Number</FieldLabel>
-              <Input
-                id="new-number"
-                value={newNumber}
-                onChange={(e) => setNewNumber(e.target.value)}
-                placeholder="+971 4 123 4567"
-                aria-invalid={numberFormatError ? true : undefined}
-                aria-describedby={
-                  numberFormatError ? "new-number-error" : undefined
-                }
-              />
-              {numberFormatError ? (
-                <FieldError id="new-number-error">
-                  {numberFormatError}
-                </FieldError>
-              ) : null}
-            </Field>
-            <Field className="sm:col-span-2">
-              <FieldLabel htmlFor="new-label">Label</FieldLabel>
-              <Input
-                id="new-label"
-                value={newLabel}
-                onChange={(e) => setNewLabel(e.target.value)}
-                placeholder="Marina office line"
-              />
-            </Field>
-            <Field className="sm:col-span-2">
-              <FieldLabel htmlFor="new-agent">Answered by</FieldLabel>
-              <Select
-                value={newAgent}
-                onValueChange={(v) => setNewAgent(v ?? UNBOUND)}
-              >
-                <SelectTrigger id="new-agent" aria-label="Answered by" className="w-full">
-                  <SelectValue>{agentLabel}</SelectValue>
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectGroup>
-                    <SelectItem value={UNBOUND}>
-                      Main reception agent answers
-                    </SelectItem>
-                    {agents.map((agent) => (
-                      <SelectItem key={agent.id} value={agent.id}>
-                        {agent.name}
-                        {agent.deployed ? "" : " (draft)"}
-                      </SelectItem>
-                    ))}
-                  </SelectGroup>
-                </SelectContent>
-              </Select>
-              <FieldDescription>
-                Leave this on the main reception agent unless a
-                specific agent should pick up this line.
-              </FieldDescription>
-            </Field>
-          </FieldGroup>
-          <div className="mt-4">
-            <LoadingButton
-              disabled={!newNumber.trim()}
-              pending={pendingId === "add"}
-              pendingText="Adding…"
-              icon={<Plus />}
-              onClick={() =>
-                run(
-                  "add",
-                  async () => {
-                    const result = await addPhoneNumberAction(
-                      newNumber,
-                      newLabel,
-                      newAgent === UNBOUND ? null : newAgent,
-                    );
-                    if (result.ok) {
-                      setNewNumber("");
-                      setNewLabel("");
-                      setNewAgent(UNBOUND);
-                    }
-                    return result;
-                  },
-                  "Number added.",
-                )
-              }
+      <div className="max-w-xl">
+        <FormCard>
+          <FormCardSections>
+            <section
+              aria-labelledby="add-number-heading"
+              className="flex flex-col gap-3"
             >
-              Add number
-            </LoadingButton>
-          </div>
-        </div>
-      </section>
+              <div>
+                <h2 id="add-number-heading" className="text-balance font-semibold">
+                  Add a number
+                </h2>
+                <p className="text-pretty text-muted-foreground text-sm leading-6">
+                  Which agent picks up when someone calls one of your numbers.
+                </p>
+              </div>
+              <FieldGroup className="grid gap-4 sm:grid-cols-6">
+                <Field className="sm:col-span-2">
+                  <FieldLabel htmlFor="new-number">Number</FieldLabel>
+                  <Input
+                    id="new-number"
+                    value={newNumber}
+                    onChange={(e) => setNewNumber(e.target.value)}
+                    placeholder="+971 4 123 4567"
+                    aria-invalid={numberFormatError ? true : undefined}
+                    aria-describedby={
+                      numberFormatError ? "new-number-error" : undefined
+                    }
+                  />
+                  {numberFormatError ? (
+                    <FieldError id="new-number-error">
+                      {numberFormatError}
+                    </FieldError>
+                  ) : null}
+                </Field>
+                <Field className="sm:col-span-2">
+                  <FieldLabel htmlFor="new-label">Label</FieldLabel>
+                  <Input
+                    id="new-label"
+                    value={newLabel}
+                    onChange={(e) => setNewLabel(e.target.value)}
+                    placeholder="Marina office line"
+                  />
+                </Field>
+                <Field className="sm:col-span-2">
+                  <FieldLabel htmlFor="new-agent">Answered by</FieldLabel>
+                  <Select
+                    value={newAgent}
+                    onValueChange={(v) => setNewAgent(v ?? UNBOUND)}
+                  >
+                    <SelectTrigger id="new-agent" aria-label="Answered by" className="w-full">
+                      <SelectValue>{agentLabel}</SelectValue>
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectGroup>
+                        <SelectItem value={UNBOUND}>
+                          Main reception agent answers
+                        </SelectItem>
+                        {agents.map((agent) => (
+                          <SelectItem key={agent.id} value={agent.id}>
+                            {agent.name}
+                            {agent.deployed ? "" : " (draft)"}
+                          </SelectItem>
+                        ))}
+                      </SelectGroup>
+                    </SelectContent>
+                  </Select>
+                  <FieldDescription>
+                    Leave this on the main reception agent unless a
+                    specific agent should pick up this line.
+                  </FieldDescription>
+                </Field>
+              </FieldGroup>
+              <div className="mt-1">
+                <LoadingButton
+                  disabled={!newNumber.trim()}
+                  pending={pendingId === "add"}
+                  pendingText="Adding…"
+                  icon={<Plus />}
+                  onClick={() =>
+                    run(
+                      "add",
+                      async () => {
+                        const result = await addPhoneNumberAction(
+                          newNumber,
+                          newLabel,
+                          newAgent === UNBOUND ? null : newAgent,
+                        );
+                        if (result.ok) {
+                          setNewNumber("");
+                          setNewLabel("");
+                          setNewAgent(UNBOUND);
+                        }
+                        return result;
+                      },
+                      "Number added.",
+                    )
+                  }
+                >
+                  Add number
+                </LoadingButton>
+              </div>
+            </section>
+          </FormCardSections>
+        </FormCard>
+      </div>
 
       {error ? (
         <Alert variant="destructive">
