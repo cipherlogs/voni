@@ -31,6 +31,11 @@ const emptyMediaVariants = cva(
       variant: {
         default: "bg-transparent",
         icon: "flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted text-foreground [&_svg:not([class*='size-'])]:size-4",
+        // Delight amendment 2026-09-14: first-run empties get a larger
+        // icon disc so the moment reads as a room to fill, not a missing
+        // row. Filtered-result empties keep the compact `icon` variant.
+        feature:
+          "flex size-12 shrink-0 items-center justify-center rounded-2xl bg-muted text-foreground [&_svg:not([class*='size-'])]:size-6",
       },
     },
     defaultVariants: {

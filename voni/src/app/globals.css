@@ -231,6 +231,41 @@
   }
 }
 
+/* Delight amendment 2026-09-14: truthful waiting + settled success.
+   Shimmer is a translucent sweep over the Skeleton's own bg-muted base
+   (token-only gradient, no new palette); the done-pop fires once when a
+   job row's badge transitions to terminal while mounted. */
+.voni-shimmer {
+  background-image: linear-gradient(
+    100deg,
+    transparent 20%,
+    color-mix(in oklch, var(--muted-foreground) 12%, transparent) 50%,
+    transparent 80%
+  );
+  background-size: 200% 100%;
+  animation: voni-shimmer 1600ms linear infinite;
+}
+
+.voni-done-pop {
+  animation: voni-done-pop var(--motion-slow) var(--ease-out-soft) both;
+}
+
+@keyframes voni-shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+
+@keyframes voni-done-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -256,6 +291,14 @@
   .voni-arc,
   .voni-arc-accent {
     animation: none !important;
+  }
+
+  /* Delight amendment 2026-09-14: the shimmer is infinite, so it needs the
+     same outright stop — the Skeleton's own bg-muted base is the resting
+     frame. The one-shot done-pop is covered by the 1ms squash above. */
+  .voni-shimmer {
+    animation: none !important;
+    background-image: none !important;
   }
 }
 

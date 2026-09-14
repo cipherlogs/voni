@@ -7,6 +7,22 @@
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 
+/**
+ * Stagger the shimmer sweep so rows don't pulse in lockstep. Negative delays
+ * start each bar mid-cycle (one 1600ms period split three ways); positive
+ * delays would leave bars static on first paint. Arbitrary *properties* are
+ * fine here — the §5 ban covers arbitrary color/spacing *values*.
+ */
+const SHIMMER_DELAYS = [
+  "[animation-delay:0ms]",
+  "[animation-delay:-533ms]",
+  "[animation-delay:-1066ms]",
+] as const;
+
+/** Vary title/meta widths per row so stacked rows don't stripe identically. */
+const CARD_TITLE_WIDTHS = ["w-48", "w-40", "w-56"] as const;
+const CARD_META_WIDTHS = ["w-32", "w-40", "w-24"] as const;
+
 /** Header row shared by every list page: a title/subtitle pair and an optional action button. */
 export function PageHeaderSkeleton({ withAction = true }: { withAction?: boolean }) {
   return (
@@ -28,9 +44,9 @@ export function CardListSkeleton({ rows = 4 }: { rows?: number }) {
         <Card key={i}>
           <CardContent className="flex items-center justify-between gap-4 py-4">
             <div className="flex min-w-0 flex-1 flex-col gap-2">
-              <Skeleton className="h-4 w-48" />
-              <Skeleton className="h-3 w-full max-w-md" />
-              <Skeleton className="h-3 w-32" />
+              <Skeleton className={`h-4 ${CARD_TITLE_WIDTHS[i % CARD_TITLE_WIDTHS.length]} ${SHIMMER_DELAYS[i % SHIMMER_DELAYS.length]}`} />
+              <Skeleton className={`h-3 w-full max-w-md ${SHIMMER_DELAYS[(i + 1) % SHIMMER_DELAYS.length]}`} />
+              <Skeleton className={`h-3 ${CARD_META_WIDTHS[i % CARD_META_WIDTHS.length]} ${SHIMMER_DELAYS[(i + 2) % SHIMMER_DELAYS.length]}`} />
             </div>
             <Skeleton className="h-8 w-16 shrink-0" />
           </CardContent>
@@ -49,7 +65,7 @@ export function TableSkeleton({ rows = 6, columns = 6 }: { rows?: number; column
           {Array.from({ length: rows }, (_, i) => (
             <div key={i} className="flex items-center gap-4">
               {Array.from({ length: columns }, (_, j) => (
-                <Skeleton key={j} className="h-4 flex-1" />
+                <Skeleton key={j} className={`h-4 flex-1 ${SHIMMER_DELAYS[(i + j) % SHIMMER_DELAYS.length]}`} />
               ))}
             </div>
           ))}
@@ -66,10 +82,10 @@ export function StatGridSkeleton({ cards = 5 }: { cards?: number }) {
       {Array.from({ length: cards }, (_, i) => (
         <Card key={i}>
           <CardHeader className="pb-2">
-            <Skeleton className="h-4 w-20" />
+            <Skeleton className={`h-4 w-20 ${SHIMMER_DELAYS[i % SHIMMER_DELAYS.length]}`} />
           </CardHeader>
           <CardContent>
-            <Skeleton className="h-7 w-10" />
+            <Skeleton className={`h-7 w-10 ${SHIMMER_DELAYS[(i + 1) % SHIMMER_DELAYS.length]}`} />
           </CardContent>
         </Card>
       ))}

@@ -34,8 +34,9 @@ test("queue filters client-side by name or phone, jobs-page pattern", () => {
 });
 
 test("queue keeps the empty state and adds a no-match state", () => {
-  assert.ok(queueSource.includes("No leads yet — import a CSV above."));
-  assert.ok(queueSource.includes("No leads match"));
+  assert.ok(queueSource.includes("No leads in this campaign yet"));
+  assert.ok(queueSource.includes("Import a CSV above"));
+  assert.ok(queueSource.includes("No matches in this view"));
 });
 
 test("queue labels states in human words", () => {

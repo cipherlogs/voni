@@ -260,6 +260,44 @@ Live calls stay foreground; everything slow is a job.
    live-call affordances distinct.
 5. Merge `redesign/blocks-only` → `main` only when all gates pass.
 
+## 10. Delight pass amendment (2026-09-14)
+
+Tasteful-and-restrained, Operate-mode delight. Every addition below reuses
+the `--motion-*` / `--ease-*` tokens, token-only color
+(`color-mix(in oklch, …)` over `bg-muted` — no hex, no new palette), and
+the existing `prefers-reduced-motion` squash; each new *looping* keyframe
+gets its own `animation: none` line in that media query with a static
+fallback, since the blanket 1ms override reads as flicker on infinite
+loops. One-shot enters are covered by the squash alone.
+
+- **New keyframes (allowed):** `voni-shimmer` — translucent sweep across
+  `Skeleton` (loading reads as "content incoming", base stays `bg-muted`
+  so reduced-motion/no-JS still reads fine); `voni-done-pop` — one-shot
+  scale 0.96→1 + fade on a job row's success badge when it transitions to
+  terminal while mounted. Bulk-bar arrival reuses the existing
+  `.status-enter` (`content-enter`); no new keyframe.
+- **Overlay timing unification:** `dialog` / `select` / `dropdown-menu`
+  move `duration-100` → `duration-[var(--motion-standard)]` (180ms, one
+  shared enter language). `sheet`, toast transitions, and all §2 survivors
+  untouched.
+- **Transient job-completion beat:** when `activeCount` drops to zero from
+  nonzero, `JobPill` may render a time-bound (~4s), self-clearing
+  "All caught up — results are in Jobs" pill (link to `/jobs`,
+  `aria-live="polite"`, manual close; never for optimistic-only states).
+  This is an acknowledgment, not a resting state — "nothing finished
+  sticks to the viewport" still holds. Toast-once + "Needs review"
+  destination unchanged.
+- **Celebrating mascot surfaces (max two):** `mood="celebrating"` only
+  where the product already marks a milestone a human would call "done"
+  (agent deployment `ready`, first CSV import completing). Moods stay
+  static icon swaps; `VoiceBars` / `VoiceAvatar` / `voice-call.tsx` stay
+  motion-free. If a surface can't justify itself in review, cut it —
+  toasts + inline confirmations already satisfy the house protocol.
+- **Empty-state `feature` variant:** additive `EmptyMedia` variant
+  (`size-12 rounded-2xl bg-muted` icon disc) for first-run empties;
+  filtered-result empties keep the compact `icon` variant. `Empty*` API
+  unchanged.
+
 ## Appendix A — Route table (keep vs replace)
 
 Markup replaced, logic kept, unless noted:

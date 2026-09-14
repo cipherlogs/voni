@@ -13,6 +13,7 @@ import {
   EmptyTitle,
 } from "@/components/ui/empty";
 import {
+  DestructiveDialogIcon,
   Dialog,
   DialogClose,
   DialogContent,
@@ -255,7 +256,7 @@ function JobsContent() {
         {visible.length === 0 ? (
           <Empty>
             <EmptyHeader>
-              <EmptyMedia variant="icon">
+              <EmptyMedia variant={jobs.length === 0 ? "feature" : "icon"}>
                 <CircleCheck />
               </EmptyMedia>
               <EmptyTitle>
@@ -265,7 +266,7 @@ function JobsContent() {
               </EmptyTitle>
               <EmptyDescription>
                 {jobs.length === 0
-                  ? "Slow work — agent generation, deployments, connection tests, imports — will appear here."
+                  ? "Slow work — agent generation, deployments, imports — appears here and keeps running while you browse Voni."
                   : "Try a different filter or search."}
               </EmptyDescription>
             </EmptyHeader>
@@ -298,7 +299,7 @@ function JobsContent() {
           <div
             role="toolbar"
             aria-label="Bulk job actions"
-            className="bg-card sticky bottom-4 flex flex-wrap gap-2 rounded-lg border p-3"
+            className="bg-card status-enter sticky bottom-4 flex flex-wrap gap-2 rounded-lg border p-3"
           >
             <span className="text-sm font-medium" aria-live="polite">
               {selected.size} selected
@@ -340,6 +341,7 @@ function JobsContent() {
       <Dialog open={confirmCancelOpen} onOpenChange={setConfirmCancelOpen}>
         <DialogContent>
           <DialogHeader>
+            <DestructiveDialogIcon />
             <DialogTitle>Cancel {cancellable.length} jobs?</DialogTitle>
             <DialogDescription>
               {runningSelected.length} {runningSelected.length === 1 ? "is" : "are"} still
@@ -390,13 +392,13 @@ export default function JobsPage() {
               <div className="rounded-lg border p-3">
                 <div className="flex flex-col gap-2">
                   <Skeleton className="h-4 w-48" />
-                  <Skeleton className="h-3 w-full max-w-md" />
+                  <Skeleton className="h-3 w-full max-w-md [animation-delay:-533ms]" />
                 </div>
               </div>
               <div className="rounded-lg border p-3">
                 <div className="flex flex-col gap-2">
-                  <Skeleton className="h-4 w-40" />
-                  <Skeleton className="h-3 w-full max-w-sm" />
+                  <Skeleton className="h-4 w-40 [animation-delay:-1066ms]" />
+                  <Skeleton className="h-3 w-full max-w-sm [animation-delay:-533ms]" />
                 </div>
               </div>
             </div>

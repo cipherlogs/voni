@@ -11,6 +11,7 @@ import {
   EmptyDescription,
   EmptyHeader,
   EmptyMedia,
+  EmptyTitle,
 } from "@/components/ui/empty";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -254,11 +255,13 @@ export function CampaignQueue({
                 <TableCell colSpan={selectable ? 8 : 7} className="h-32 text-center">
                   <Empty>
                     <EmptyHeader>
-                      <EmptyMedia variant="icon">
+                      <EmptyMedia variant="feature">
                         <Users />
                       </EmptyMedia>
+                      <EmptyTitle>No leads in this campaign yet</EmptyTitle>
                       <EmptyDescription>
-                        No leads yet — import a CSV above.
+                        Import a CSV above — imported leads queue here for
+                        the dialer.
                       </EmptyDescription>
                     </EmptyHeader>
                   </Empty>
@@ -272,6 +275,7 @@ export function CampaignQueue({
                       <EmptyMedia variant="icon">
                         <Users />
                       </EmptyMedia>
+                      <EmptyTitle>No matches in this view</EmptyTitle>
                       <EmptyDescription>
                         No leads match “{query.trim()}”.
                       </EmptyDescription>
@@ -341,7 +345,7 @@ export function CampaignQueue({
         <div
           role="toolbar"
           aria-label="Bulk queue actions"
-          className="bg-card sticky bottom-4 z-10 mx-4 mb-4 flex flex-wrap items-center gap-2 rounded-lg border p-3 shadow-lg sm:mx-6"
+          className="bg-card status-enter sticky bottom-4 z-10 mx-4 mb-4 flex flex-wrap items-center gap-2 rounded-lg border p-3 shadow-lg sm:mx-6"
         >
           <span className="text-sm font-medium" aria-live="polite">
             {selected.size} selected

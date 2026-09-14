@@ -152,10 +152,13 @@ export function LeadsSelection({ children }: { children: ReactNode }) {
       {selected.size > 0 ? (
         // table-05 selection-bar idiom: sticky bottom bar with count +
         // action controls, matching the campaign queue bulk toolbar.
+        // Mount-only arrival via status-enter; unmount stays instant —
+        // a true exit transition would keep the bar mounted through
+        // dismissal and risk stale-selection bugs.
         <div
           role="toolbar"
           aria-label="Bulk lead actions"
-          className="bg-card sticky bottom-4 z-10 flex flex-wrap items-center gap-2 rounded-lg border p-3 shadow-lg"
+          className="bg-card status-enter sticky bottom-4 z-10 flex flex-wrap items-center gap-2 rounded-lg border p-3 shadow-lg"
         >
           <span className="text-sm font-medium" aria-live="polite">
             {selected.size} selected

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   CircleCheck,
   LoaderCircle,
@@ -55,6 +55,17 @@ export function JobRow({
   const { openJob, cancelJob, retryJob, dismissJob } = useJobs();
   const [pendingAction, setPendingAction] = useState<string | null>(null);
   const terminal = isTerminal(job.status);
+  // One-shot arrival when this row transitions to succeeded while mounted
+  // (delight amendment 2026-09-14). Keyed off the transition, not the
+  // render — a row that mounts already-succeeded stays still.
+  const [justSucceeded, setJustSucceeded] = useState(false);
+  const prevStatus = useRef(job.status);
+  useEffect(() => {
+    if (prevStatus.current !== "succeeded" && job.status === "succeeded") {
+      setJustSucceeded(true);
+    }
+    prevStatus.current = job.status;
+  }, [job.status]);
   const statusLabel =
     job.status === "failed" && job.errorCode === "auth"
       ? "Permission blocked"
@@ -95,6 +106,7 @@ export function JobRow({
           <p className="min-w-0 flex-1 truncate text-sm font-medium">{job.title}</p>
         </div>
         <Badge
+          className={justSucceeded ? "voni-done-pop" : undefined}
           variant={
             job.status === "succeeded"
               ? "secondary"

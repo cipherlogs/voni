@@ -37,13 +37,14 @@ export function FilterChips({
               variant={chip.active ? "outline" : "ghost"}
               size="sm"
               aria-current={chip.active ? "page" : undefined}
+              className="transition-colors duration-[var(--motion-fast)]"
             >
-              {chip.active ? (
-                <Badge
-                  aria-hidden="true"
-                  className="size-1.5 rounded-full p-0"
-                />
-              ) : null}
+              {/* Always rendered so toggling the active state never shifts
+                  chip width mid-read; hidden dot is opacity-0 + aria-hidden. */}
+              <Badge
+                aria-hidden="true"
+                className={chip.active ? "size-1.5 rounded-full p-0" : "size-1.5 rounded-full p-0 opacity-0"}
+              />
               {chip.label}
             </Button>
           </li>

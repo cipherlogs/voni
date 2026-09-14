@@ -8,6 +8,7 @@ import { LoadingButton } from "@/components/loading-button";
 import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
+  DestructiveDialogIcon,
   Dialog,
   DialogClose,
   DialogContent,
@@ -133,6 +134,7 @@ export function AgentDeleteButton({
       </DialogTrigger>
       <DialogContent>
         <DialogHeader>
+          <DestructiveDialogIcon />
           <DialogTitle>Delete “{name}”?</DialogTitle>
           <DialogDescription>
             This is permanent.{" "}
