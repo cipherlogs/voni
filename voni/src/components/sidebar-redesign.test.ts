@@ -108,6 +108,28 @@ test("notifications bell is removed outright", () => {
   assert.doesNotMatch(shell, /notifications-bell/);
 });
 
+test("collapse trigger matches the rail icon contract", () => {
+  const shell = source("sidebar-03/app-sidebar.tsx");
+  // Same box, hover wash, and shape as the rail icons: the primitive's
+  // icon-sm/ghost look is overridden at the call site (the shared
+  // ui/sidebar.tsx primitive stays untouched).
+  assert.match(shell, /<SidebarTrigger/);
+  assert.match(shell, /size-8/);
+  assert.match(shell, /rounded-md/);
+  assert.match(shell, /hover:bg-sidebar-accent/);
+  assert.match(shell, /focus-visible:ring-2/);
+  // Icon-only at every density, so it carries a tooltip like the rail rows
+  // (unlike SidebarMenuButton, always shown — never icon-plus-label).
+  assert.match(shell, /TooltipTrigger/);
+  assert.match(shell, /TooltipContent/);
+  assert.match(shell, /side="right"/);
+  // Toggle state is announced: dynamic label plus aria-expanded.
+  assert.match(shell, /Collapse sidebar/);
+  assert.match(shell, /Expand sidebar/);
+  assert.match(shell, /aria-expanded/);
+  assert.match(shell, /aria-label=\{triggerLabel\}/);
+});
+
 test("voice and jobs status relocate into the rail, panel anchors to the corner", () => {
   const utility = source("sidebar-03/utility-rows.tsx");
   const shell = source("copilot/copilot-shell.tsx");

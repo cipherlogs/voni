@@ -37,6 +37,11 @@ import { cn } from "@/lib/utils";
 import { signOut } from "@/lib/auth-client";
 import { BrandLogo } from "@/components/sidebar-03/logo";
 import { SidebarUtilityGroup } from "@/components/sidebar-03/utility-rows";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 
 /**
  * Sidebar-03 shell, Voni-wired (full-block adoption).
@@ -48,7 +53,9 @@ import { SidebarUtilityGroup } from "@/components/sidebar-03/utility-rows";
  * account menu — since this is a single-workspace product with no
  * workspace-switching backend. The header carries the brand lockup plus the
  * collapse trigger only (no notifications bell); jobs status lives solely in
- * the utility group.
+ * the utility group. The trigger matches the rail-icon contract (32px box,
+ * accent hover, tooltip, state-announcing label) via class overrides — the
+ * shared ui/sidebar.tsx primitive itself is untouched.
  */
 
 export function DashboardSidebarShell({
@@ -96,6 +103,11 @@ export function DashboardSidebarShell({
 function SidebarBrandHeader() {
   const { isMobile, state } = useSidebar();
   const isCollapsed = !isMobile && state === "collapsed";
+  // State-announcing label: the trigger is icon-only at every density, so
+  // the tooltip + aria-label carry its only visible name.
+  const triggerLabel = isCollapsed
+    ? "Expand sidebar (⌘B)"
+    : "Collapse sidebar (⌘B)";
 
   return (
     <div
@@ -114,13 +126,22 @@ function SidebarBrandHeader() {
         <span className="sr-only">Voni dashboard</span>
       </Link>
 
-      <div
-        className={cn(
-          "flex items-center gap-2",
-          isCollapsed ? "flex-row md:flex-col-reverse" : "flex-row",
-        )}
-      >
-        <SidebarTrigger />
+      <div className="flex flex-row items-center">
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <SidebarTrigger
+                aria-label={triggerLabel}
+                aria-expanded={!isCollapsed}
+                title={triggerLabel}
+                className="size-8 rounded-md hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2"
+              />
+            }
+          />
+          <TooltipContent side="right" align="center">
+            {triggerLabel}
+          </TooltipContent>
+        </Tooltip>
       </div>
     </div>
   );

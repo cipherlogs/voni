@@ -132,7 +132,9 @@ source with the manifest generator following it.
 Header bell removed 2026-09-16 (user pick): sidebar-03 header carries brand
 lockup + collapse trigger only; jobs status lives solely in the utility-group
 row (NAV_ITEMS keeps /jobs for command-menu + copilot manifest, nav list
-filters it, utility click marks seen).
+filters it, utility click marks seen). Collapse trigger matches the rail-icon
+contract: 32px box, accent hover, always-shown tooltip, state-announcing
+label (Collapse/Expand sidebar + ⌘B) with aria-expanded.
 
 ## 4. Patterns (one canonical composition per area)
 
