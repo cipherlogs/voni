@@ -123,14 +123,15 @@ test("VoiceField merges language chips and voice cards, real clips only", () => 
   // The card itself is the preview control — no separate play button.
   assert.ok(source.includes("/voices/"));
   assert.ok(source.includes("previewVoice"));
-  // grid-list-02 card idiom (DESIGN pin): CardContent row + AvatarImage
-  // portrait on the grid-list surface (border shadow-sm, hover border +
-  // shadow). Selection keeps the primary border + ring tokens; the avatar is
-  // illustrative, not the real talent, and presents is an inferred UI field.
+  // grid-list-02 card idiom (DESIGN pin): CardContent row + deterministic
+  // CSS-only VoiceMotif on the grid-list surface (border shadow-sm, hover
+  // border + shadow). Selection keeps the primary border + ring tokens; the
+  // motif is decorative, not the real talent, and presents is an inferred UI
+  // field. No image assets — AvatarImage must not appear in this picker.
   assert.ok(source.includes("grid-list-02"));
   assert.ok(source.includes("CardContent"));
-  assert.ok(source.includes("AvatarImage"));
-  assert.ok(source.includes("/voices/avatars/"));
+  assert.ok(!source.includes("AvatarImage"));
+  assert.ok(!source.includes("/voices/avatars/"));
   // No stretched-link anchor on the card — the toggle itself is the control.
   assert.ok(!source.includes("<a "));
   assert.ok(!source.includes("absolute inset-0"));
@@ -138,11 +139,12 @@ test("VoiceField merges language chips and voice cards, real clips only", () => 
   assert.ok(source.includes("hover:shadow-md"));
   assert.ok(source.includes("flex items-center gap-4 p-4"));
   assert.ok(source.includes("inferred UI field"));
-  assert.ok(source.includes("illustrative portrait"));
-  // jean (unspecified/Neutral) is portraitless — initials tile only, so no
-  // photo mis-cues a gender for the neutral slot.
-  assert.ok(source.includes("PORTRAITLESS"));
-  assert.ok(source.includes('"jean"'));
+  assert.ok(source.includes("motif"));
+  // All voices get the motif treatment uniformly — no portraitless
+  // special-case, so no photo ever mis-cues a gender for any slot.
+  assert.ok(source.includes("VoiceMotif"));
+  assert.ok(!source.includes("PORTRAITLESS"));
+  assert.ok(!source.includes("AvatarImage"));
   // ai-01 composer-card idiom (DESIGN.md §4): fill sweep culled, progress
   // via token wash; avatar on AvatarFallback tokens.
   assert.ok(!source.includes("voni-voice-fill"));
@@ -155,10 +157,11 @@ test("VoiceField merges language chips and voice cards, real clips only", () => 
   // as sr-only text inside the card's aria-label. (The single-voice branch
   // keeps a muted helper line; the pin below targets the card markup.)
   assert.ok(source.includes("presentsLabel"));
-  // Token avatars, accent flag badges, selected ring — no
+  // Token motif tiles, accent flag badges, selected ring — no image assets,
   // waveform, checkmark, or custom avatar style. The old hash-surface
-  // helper (voice-avatar.tsx) is deleted — portraits + fallback only.
-  assert.ok(source.includes("VoiceCardAvatar"));
+  // helper (voice-avatar.tsx) is deleted — motif fallback only.
+  assert.ok(source.includes("motifFor"));
+  assert.ok(source.includes("prefers-reduced-motion"));
   assert.ok(source.includes("ACCENT_FLAG"));
   assert.ok(source.includes("AvatarFallback"));
   assert.ok(source.includes("AudioLines"));
@@ -204,7 +207,9 @@ test("Form layout tokens: heading gaps, flat sections, static footer", () => {
   // Normal document flow — a stuck footer covered scrolled form content.
   // dialog-11 terminal bar (DESIGN.md §4): ruled Separator, not a border-t div.
   assert.ok(!source.includes("sticky"));
+  // JobPill removed: its --job-pill-h offset token must not resurface here.
   assert.ok(!source.includes("--job-pill-h"));
+  assert.ok(!source.includes("job-pill"));
   assert.ok(source.includes("<Separator"));
 });
 
@@ -212,6 +217,6 @@ test("Button has no custom touch sizes; stock sizes stay intact", () => {
   const source = readFileSync(join(DIR, "../ui/button.tsx"), "utf8");
   assert.ok(!source.includes("icon-touch"));
   assert.ok(!source.includes("touch:"));
-  assert.ok(source.includes("cursor-pointer"));
+  assert.ok(!source.includes("cursor-pointer"));
   assert.ok(source.includes("disabled:pointer-events-none"));
 });

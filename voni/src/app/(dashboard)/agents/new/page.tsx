@@ -8,7 +8,6 @@ import { ArrowRight } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { AgentConfigForm } from "@/components/agent-config-form";
-import { LoadingButton } from "@/components/loading-button";
 import { ManualLlmGuidance } from "@/components/manual-llm-guidance";
 import { REAL_ESTATE_TEMPLATE, type AgentConfig } from "@/lib/agents/config";
 import type { JobJson } from "@/lib/jobs/serialize";
@@ -28,7 +27,7 @@ import {
   wizardKeyPhrases,
   type WizardField,
 } from "@/lib/copilot/wizard-tools";
-import { useWizardDraft } from "@/components/agent-wizard/use-wizard-draft";
+import { EMPTY_DRAFT, hasUnfinishedWizardDraft, useWizardDraft } from "@/components/agent-wizard/use-wizard-draft";
 import type { WizardDraft } from "@/components/agent-wizard/use-wizard-draft";
 import {
   clearWizardDraftCache,
@@ -57,8 +56,8 @@ import {
   GenerationStatus,
   PersonalityStep,
   PlanStep,
-  type GenerationStatusPhase,
 } from "@/components/agent-wizard/wizard-step-bodies";
+import { GenerationStatusCard } from "@/components/agent-wizard/generation-notice";
 import { WIZARD_STEPS } from "@/components/agent-wizard/use-wizard-draft";
 import { DEFAULT_WIZARD_VOICE_ID } from "@/lib/agents/wizard";
 import {
@@ -106,6 +105,19 @@ function NewAgentInner({
   // ?job= visits wait for the placeholder snapshot before showing review so
   // the name field and voice/language (mount-once form state) are seeded.
   const [seeded, setSeeded] = useState(restoreJobId === null);
+  // Explicit draft gate (no silent restore): entering /agents/new with NO
+  // ?job= and a durable pre-submit cache renders Continue/Discard instead of
+  // the wizard. Client-only-after-mount: first render matches the server
+  // (gate closed); the mount effect below opens it when a cache exists, so
+  // the localStorage read never diverges SSR from the first client render.
+  const [draftGateOpen, setDraftGateOpen] = useState(false);
+  useEffect(() => {
+    if (restoreJobId !== null) return;
+    if (hasUnfinishedWizardDraft()) setDraftGateOpen(true);
+    // restoreJobId is fixed for this mount; the gate opens once, then owns
+    // its open/close state via Continue/Discard.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   // Placeholder row id for the review footer delete (never-provisioned draft).
   const [placeholderId, setPlaceholderId] = useState<string | null>(null);
   const [placeholderName, setPlaceholderName] = useState<string | null>(null);
@@ -121,17 +133,13 @@ function NewAgentInner({
     generation.phase === "waiting" ||
     generation.phase === "backgrounded";
   const backgrounded = generation.phase === "backgrounded";
-  // Fresh submission in flight (not a ?job= restore visit): the form hides
-  // behind the submitted panel until the job reaches a terminal state.
+  // Fresh submission in flight (not a ?job= restore visit): the minimal-wait
+  // early return below owns this render, so the wizard below only needs the
+  // flag as defense-in-depth. Terminal failure/retry states are phase "done".
   const submitting =
     generation.phase === "starting" ||
     generation.phase === "waiting" ||
     generation.phase === "backgrounded";
-  const generationPhase: GenerationStatusPhase = backgrounded
-    ? "backgrounded"
-    : submitting
-      ? "working"
-      : "idle";
   const briefError = error ?? generation.error;
 
   /** Untouched since mount: safe to seed from a restore without clobbering. */
@@ -395,6 +403,13 @@ function NewAgentInner({
     setDraft(REAL_ESTATE_TEMPLATE);
   };
 
+  const handleCancelGeneration = generation.jobId
+    ? () => {
+        const id = generation.jobId;
+        if (id) void cancelJob(id);
+      }
+    : undefined;
+
   const save = async (name: string, config: AgentConfig) => {
     // Review saves as shown (PR4): the wizard's voice + language were folded
     // into the review draft when the result landed, so this persists verbatim.
@@ -413,7 +428,10 @@ function NewAgentInner({
           })
         : await createAgentAction(name, config);
     if (!result.ok) {
-      toast.add({ type: "error", title: result.message });
+      toast.add({
+        type: "error",
+        title: result.errorCode ? jobErrorCopy(result.errorCode) : result.message,
+      });
       return;
     }
     // Goal 8: a reviewed save is a terminal outcome — reset the wizard for
@@ -595,6 +613,77 @@ function NewAgentInner({
     return () => unregisterRoute("/agents/new");
   }, [registerRoute, unregisterRoute, wizardCopilotTools, wizardBrief, draftRef]);
 
+  // Minimal generation wait: while submitting/restoring/backgrounded, the
+  // entire wizard hides — steps, timeline, progress, footer, status-card
+  // actions beyond Cancel, template hatch, and retry card. Only a single
+  // Alert + indeterminate Progress + Cancel-generation button renders. This
+  // sits after every hook (rules-of-hooks) but before the success review
+  // branch, so ?job= restore, copilot registration, and the seeded review
+  // all keep working while the wait is visible.
+  const minimalWait = running && !(draft && seeded);
+  // Draft gate sits with the other early returns (after every hook): a
+  // no-?job= entry with a durable cache shows Continue/Discard INSTEAD of the
+  // silently-restored wizard. ?job= restores never reach here (restoring=true
+  // owns that render via minimalWait above; review owns it below).
+  if (draftGateOpen && restoreJobId === null && !draft && !submitting) {
+    return (
+      <>
+        <PageHeading
+          title="Continue draft?"
+          description="You have an unfinished agent draft from a previous visit. Continue where you left off, or discard it and start fresh."
+        />
+        <div className="flex flex-col gap-3 sm:flex-row">
+          <Button
+            type="button"
+            className="w-full sm:w-auto"
+            onClick={() => setDraftGateOpen(false)}
+          >
+            Continue draft
+            <ArrowRight data-icon="inline-end" aria-hidden />
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            className="w-full sm:w-auto"
+            onClick={() => {
+              clearWizardDraftCache();
+              wiz.edit(
+                {
+                  goals: [],
+                  tasks: [],
+                  agentName: "",
+                  styleTraits: [],
+                  conversationLanguage: EMPTY_DRAFT.conversationLanguage,
+                  voiceId: EMPTY_DRAFT.voiceId,
+                },
+                "discard",
+              );
+              wiz.setStep(WIZARD_FRESH_STEP);
+              setDraftGateOpen(false);
+            }}
+          >
+            Discard and start fresh
+          </Button>
+        </div>
+      </>
+    );
+  }
+  if (minimalWait) {
+    return (
+      <>
+        <PageHeading
+          title="New agent"
+          description="Answer two quick steps and we'll generate a starting mission and rules, editable afterward. Prefer talking? The Voice copilot button in the top bar fills in every field with you."
+        />
+        <GenerationStatusCard
+          phase={backgrounded ? "backgrounded" : "working"}
+          onCancel={handleCancelGeneration}
+        />
+        {backgrounded ? <span className="sr-only">Generation continuing in the background.</span> : null}
+      </>
+    );
+  }
+
   if (draft && seeded) {
     // Verifiable summary: mirrors the saved fields below (name, voice,
     // language) plus the brief that produced them, so "save as shown"
@@ -634,7 +723,7 @@ function NewAgentInner({
         <AgentConfigForm
           initialName={wiz.draft.agentName || draft.identity.name}
           initialConfig={draft}
-          submitLabel="Save agent"
+          submitLabel="Deploy agent"
           onSubmit={save}
           footerSecondary={
             <span className="flex flex-wrap items-center gap-2">
@@ -677,6 +766,10 @@ function NewAgentInner({
 
   const stepLabel = WIZARD_STEPS[wiz.step] ?? "";
   const progressValue = ((wiz.step + 1) / WIZARD_STEPS.length) * 100;
+  // Below this point `running` is always false: the minimal-wait early return
+  // above owns every submitting/restoring/backgrounded render, so the wizard
+  // here is the plain two-step flow (plus terminal retry/error states). The
+  // `!submitting` guards are kept as defense-in-depth.
   return (
     <>
       <PageHeading
@@ -773,16 +866,8 @@ function NewAgentInner({
           ) : (
             <>
               <GenerationStatus
-                phase={generationPhase}
-                onOpenJobs={() => router.push("/jobs")}
-                onCancel={
-                  generation.jobId
-                    ? () => {
-                        const id = generation.jobId;
-                        if (id) void cancelJob(id);
-                      }
-                    : undefined
-                }
+                phase="idle"
+                onCancel={handleCancelGeneration}
                 error={briefError}
                 onUseTemplate={useTemplate}
               />
@@ -795,13 +880,15 @@ function NewAgentInner({
           )
         ) : null}
 
-        {/* Page footer: outside filled bodies */}
+        {/* Page footer: outside filled bodies. Unreachable while submitting —
+            the minimal-wait early return above owns that render — so the
+            primary is always a real action here. */}
         <div>
           <WizardFooter
             onBack={() => wiz.setStep(Math.max(0, wiz.step - 1))}
-            backDisabled={wiz.step === 0 || submitting}
+            backDisabled={wiz.step === 0}
             primary={
-              submitting ? null : wiz.step === 0 ? (
+              wiz.step === 0 ? (
                 <Button
                   type="button"
                   className="w-full md:w-auto pointer-coarse:min-h-11"
@@ -812,22 +899,19 @@ function NewAgentInner({
                   <ArrowRight data-icon="inline-end" aria-hidden />
                 </Button>
               ) : (
-                <LoadingButton
+                <Button
+                  type="button"
                   className="w-full md:w-auto pointer-coarse:min-h-11"
-                  pending={generationPhase === "working"}
-                  pendingText="Generating…"
+                  data-copilot-effect="view"
                   onClick={() => void generate()}
-                  disabled={generationPhase === "working" || generationPhase === "backgrounded"}
                 >
                   Generate agent
-                </LoadingButton>
+                  <ArrowRight data-icon="inline-end" aria-hidden />
+                </Button>
               )
             }
           />
         </div>
-
-      {/* Screen-reader status for backgrounded generation outside the card. */}
-      {running && backgrounded ? <span className="sr-only">Generation continuing in the background.</span> : null}
     </>
   );
 }

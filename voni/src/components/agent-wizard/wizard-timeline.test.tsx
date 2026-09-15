@@ -51,11 +51,11 @@ test("TimelineBar shows no percentage or progress display", () => {
   assert.doesNotMatch(timelineSource, /TimelineRail/);
 });
 
-test("shared Button base keeps cursor-pointer without leaking onto disabled state", () => {
-  assert.match(
+test("shared Button base uses the native arrow cursor, never the hand, without leaking onto disabled state", () => {
+  assert.doesNotMatch(
     buttonSource,
     /cursor-pointer/,
-    "buttonVariants base must include cursor-pointer",
+    "buttonVariants base must not include cursor-pointer",
   );
   assert.match(
     buttonSource,
