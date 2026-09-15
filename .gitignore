@@ -41,5 +41,13 @@ ruvector.db
 # so the .db/-wal/-shm runtime files were being tracked.
 .swarm/agentdb-memory.db*
 .swarm/backups/
+.swarm/state.json
 .claude-flow/metrics/
 .claude-flow/daemon-state.json
+.claude-flow/policy/state.json
+.claude-flow/swarm/
+.claude-flow/tasks/
+.claude-flow/terminals/
+
+# Voni gate ledger (unlazy runner output, regenerated per run)
+voni/GATES.md

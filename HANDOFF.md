@@ -4076,3 +4076,4 @@ destination (1e).
 - 2026-09-15T03:27:18Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/DESIGN.md
 - 2026-09-15T03:27:34Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/DESIGN.md
 - 2026-09-15T10:32:53Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/HANDOFF.md
+- 2026-09-15T10:39:46Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/.gitignore
