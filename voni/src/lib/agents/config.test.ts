@@ -143,6 +143,30 @@ test("preserves user-added custom webhook tools through normalize", () => {
   assert.deepEqual(normalizeConfig(parsed.data).customTools, [custom]);
 });
 
+test("keeps known provider namespaced keys while dropping unknown namespaces", () => {
+  const parsed = agentConfigSchema.safeParse({
+    ...REAL_ESTATE_TEMPLATE,
+    tools: [
+      "search_properties",
+      "gmail.send_email",
+      "zoho.log_call",
+      "google-docs.append_note",
+      "outlook.send_email",
+      "gmail.delete_everything",
+      "not.a.real.tool.key",
+    ],
+  });
+  assert.equal(parsed.success, true);
+  if (!parsed.success) return;
+  const normalized = normalizeConfig(parsed.data);
+  assert.deepEqual(normalized.tools, [
+    "search_properties",
+    "gmail.send_email",
+    "zoho.log_call",
+    "google-docs.append_note",
+  ]);
+});
+
 test("legacy rows without ideas or customs parse to empty lists", () => {
   const { ...legacy } = REAL_ESTATE_TEMPLATE;
   delete (legacy as { toolIdeas?: unknown }).toolIdeas;

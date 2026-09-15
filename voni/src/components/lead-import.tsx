@@ -10,7 +10,7 @@ import { useRouter } from "next/navigation";
 import { LoadingButton } from "@/components/loading-button";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { MascotAvatar } from "@/components/agent-wizard/guide-mascot";
-import { FormCard, FormCardSections } from "@/components/wizard/form-layout";
+import { FormCard, FormSection, FormSectionHeading } from "@/components/wizard/form-layout";
 import { Upload, TriangleAlert, X } from "lucide-react";
 import type { JobJson } from "@/lib/jobs/serialize";
 import { useOptimisticJob } from "@/components/jobs/use-optimistic-job";
@@ -190,16 +190,20 @@ export function LeadImport({ campaignId }: { campaignId: string }) {
   const pending = starting || running;
 
   return (
-    <div className="flex max-w-xl flex-col gap-4" data-copilot-form="csv-import" data-copilot-version={copilotVersion}>
+    <div className="flex flex-col gap-4" data-copilot-form="csv-import" data-copilot-version={copilotVersion}>
       <FormCard>
-        <FormCardSections>
-          <section aria-labelledby="csv-import-heading" className="flex flex-col gap-3">
-            <div>
-              <h3 id="csv-import-heading" className="text-balance font-semibold">CSV file</h3>
-              <p className="text-pretty text-muted-foreground text-sm leading-6">
-                Pick a file with a phone column; rows are validated in the import job.
-              </p>
-            </div>
+        <>
+          <FormSection
+            aria-labelledby="csv-import-heading"
+            heading={
+              <FormSectionHeading
+                level={3}
+                id="csv-import-heading"
+                title="CSV file"
+                description="Pick a file with a phone column; rows are validated in the import job."
+              />
+            }
+          >
           <div className="flex flex-wrap items-end gap-3">
             <Field className="w-auto">
           <FieldLabel htmlFor={`csv-${campaignId}`}>Choose CSV file</FieldLabel>
@@ -338,8 +342,8 @@ export function LeadImport({ campaignId }: { campaignId: string }) {
           </p>
         ) : null}
           </div>
-          </section>
-        </FormCardSections>
+          </FormSection>
+        </>
       </FormCard>
 
       {error ? (

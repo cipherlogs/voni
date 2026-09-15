@@ -106,6 +106,30 @@ export function clearWizardDraftCache() {
 }
 
 /**
+ * Totally-terminal reset for a finished creation (Goal 8): drop the durable
+ * pre-submit draft AND the in-tab consumed-job entries minted by this
+ * creation, so a brand-new creation starts at step 1 with no failed brief or
+ * stale review pointer. The in-memory undo stack (max 20) is hook state and
+ * dies with the unmount — nothing to clear here. Per-agent
+ * `voni:edit-draft:<id>` keys are untouched: wizard resets must never clobber
+ * another screen's unsaved edits.
+ */
+export function resetWizardForNewCreation() {
+  clearWizardDraftCache();
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.removeItem(CONSUMED_JOBS_KEY);
+  } catch {
+    // Private-mode writes fail silently; the restore guard just won't fire.
+  }
+}
+
+/** In-memory step reset for a fresh creation: step 0 with the draft cache
+ * already dropped (see resetWizardForNewCreation for the durable half).
+ * Exported as a named target so callers and tests can pin the contract. */
+export const WIZARD_FRESH_STEP = 0;
+
+/**
  * Consumed generation jobs (back-nav twin guard): job ids whose reviewed save
  * already upgraded the placeholder in place. sessionStorage survives
  * back-navigation and reloads in-tab but never leaks across tabs — the stale
@@ -161,7 +185,10 @@ export function useWizardDraft() {
    * latest draft instead of a send-time snapshot. */
   const draftRef = useRef<WizardDraft>(draft);
   const [step, setStepState] = useState(() => {
-    const cached = readCachedDraft()?.step ?? 0;
+    // Post-terminal caches are dropped by resetWizardForNewCreation, so any
+    // cache present here is a live pre-submit draft — restore its step. No
+    // cache (fresh or post-terminal creation) starts at WIZARD_FRESH_STEP.
+    const cached = readCachedDraft()?.step ?? WIZARD_FRESH_STEP;
     return Math.min(Math.max(cached, 0), WIZARD_STEPS.length - 1);
   });
   const [flashed, setFlashed] = useState<FlashKey>(null);

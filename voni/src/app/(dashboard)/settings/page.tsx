@@ -17,6 +17,8 @@ import {
 } from "@/lib/platform/types";
 import { SettingsView } from "@/components/settings-view";
 import { CardListSkeleton, PageHeaderSkeleton } from "@/components/page-skeletons";
+import { PROVIDER_CATALOG } from "@/lib/providers/registry";
+import { getConnectedProviderIds } from "@/lib/providers/store";
 import { getCopilotVoicePrefs } from "./actions";
 
 /**
@@ -41,10 +43,11 @@ function SettingsShellFallback() {
  */
 async function SettingsData() {
   const ctx = await requireCtxOrRedirect("/settings");
-  const [[workspace], [settings], voicePrefs] = await Promise.all([
+  const [[workspace], [settings], voicePrefs, connectedProviderIds] = await Promise.all([
     db.select({ name: organization.name }).from(organization).where(eq(organization.id, ctx.organizationId)).limit(1),
     db.select().from(organizationSettings).where(eq(organizationSettings.organizationId, ctx.organizationId)).limit(1),
     getCopilotVoicePrefs(),
+    getConnectedProviderIds(ctx.organizationId),
   ]);
 
   const summaries = await Promise.all(CREDENTIAL_NAMES.map(async (name) => [name, await credentialSummary(name)] as const));
@@ -82,6 +85,8 @@ async function SettingsData() {
       }}
       services={services}
       voicePrefs={voicePrefs}
+      providerCatalog={PROVIDER_CATALOG}
+      connectedProviderIds={connectedProviderIds}
     />
   );
 }

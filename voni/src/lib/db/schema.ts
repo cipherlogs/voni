@@ -66,6 +66,55 @@ export const integrationCheckStatusEnum = pgEnum("integration_check_status", [
   "failed",
 ]);
 
+export const providerConnectionStatusEnum = pgEnum(
+  "provider_connection_status",
+  ["connected", "error"],
+);
+
+/**
+ * Workspace-scoped third-party provider connections (GOAL 4A: Gmail / Zoho /
+ * Google Docs). One row per (organization, provider); absence means
+ * disconnected ("needs setup" on the agent page).
+ *
+ * `organizationId` is plain text like `agents.organizationId` (not an FK) so
+ * connection state still persists under the dev-bypass ctx, which carries a
+ * synthetic org id with no `organization` row. `connectedBy` keeps the audit
+ * FK to `user.id` (the dev connect action materializes the bypass stub row,
+ * mirroring `ensurePrefsOwner` in settings/actions.ts).
+ *
+ * No credentials live here — connect records only status + display label.
+ * Disconnecting deletes the row; saved agent configs are never touched (the
+ * agent page surfaces needs-setup state from the store accessors instead).
+ */
+export const providerConnections = pgTable(
+  "provider_connections",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    organizationId: text("organization_id").notNull(),
+    providerId: text("provider_id").notNull(),
+    status: providerConnectionStatusEnum("status")
+      .notNull()
+      .default("connected"),
+    accountLabel: text("account_label"),
+    connectedBy: text("connected_by")
+      .notNull()
+      .references(() => user.id),
+    lastCheckedAt: timestamp("last_checked_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("provider_connections_org_provider_uidx").on(
+      table.organizationId,
+      table.providerId,
+    ),
+  ],
+);
+
 // Global, operator-managed secret overrides. AES-GCM appends its authentication
 // tag to `ciphertext`; the random IV is stored separately. The root key never
 // enters the database.

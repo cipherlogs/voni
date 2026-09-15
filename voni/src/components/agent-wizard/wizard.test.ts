@@ -260,15 +260,20 @@ test("generation review is consumed on agents/new?job=; the detail links back, s
   assert.ok(newSource.includes("getGenerationPlaceholderAction"));
   assert.ok(newSource.includes("wizardDraft"));
   assert.ok(!editSource.includes("getGenerationPlaceholderAction"));
-  // This page never consumes the generated config itself (no
-  // applyResult-style result handling here — its generation watcher tracks
-  // status/copy only) — the detail edit form shows the placeholder, and the
-  // ready banner links to the canonical ?job= review on agents/new instead of
-  // implying the form below holds the result.
+  // This page never consumes the INITIAL generated config itself (no
+  // applyResult-style result handling for the stub job — its generation
+  // watcher tracks status/copy only) — the detail edit form shows the
+  // placeholder, and the ready banner links to the canonical ?job= review on
+  // agents/new instead of implying the form below holds the result. A
+  // user-initiated REGENERATION from the retry card applies its own fresh
+  // result into the visible form in place (appliedJobResult + the
+  // pendingJobResult Review/Apply affordance) — that path is owned by the
+  // edit page, never by the canonical ?job= review.
   assert.ok(editSource.includes("generationJobId"));
   assert.ok(editSource.includes("/agents/new?job=${generationJobId}"));
   assert.ok(!editSource.includes("applyResult"));
-  assert.ok(!editSource.includes("result?.config"));
+  assert.ok(editSource.includes("appliedJobResult"));
+  assert.ok(editSource.includes("pendingJobResult"));
   assert.ok(!editSource.includes("setDraft("));
   // Saves from either side upgrade the placeholder in place by job id — via
   // updateAgentAction with the generationJobId opt, not createAgentAction.
@@ -317,8 +322,13 @@ test("agents/new submits wizardDraft + stable key; processor echoes; guard dedup
     "utf8",
   );
   // Submit carries the structured snapshot plus a stable idempotency key.
+  // Initial Generate passes the stable per-brief key through the shared
+  // startGeneration path; explicit retries pass their own fresh
+  // `generation:retry:` key so a retry is a new submission by construction.
   assert.ok(pageSource.includes("wizardDraft: {"));
-  assert.ok(pageSource.includes("idempotencyKey: generationIdempotencyKey(brief)"));
+  assert.ok(pageSource.includes("generationIdempotencyKey(brief)"));
+  assert.ok(pageSource.includes("`generation:retry:${crypto.randomUUID()}`"));
+  assert.ok(pageSource.includes("startGeneration(brief,"));
   // Processor echoes the snapshot for placeholder-less ?job= restores.
   const processorSource = readFileSync(
     join(dir, "../../lib/jobs/processors/generation.ts"),
@@ -326,10 +336,13 @@ test("agents/new submits wizardDraft + stable key; processor echoes; guard dedup
   );
   assert.ok(processorSource.includes("input.wizardDraft"));
   // A second submit mid-flight returns the running job (created=false),
-  // which the existing "already running" toast already covers.
+  // which the existing "already running" toast already covers. Terminal rows
+  // never replay on the same key — a retry is always a fresh submission.
   const startSource = readFileSync(join(dir, "../../lib/jobs/start.ts"), "utf8");
   assert.ok(startSource.includes('kind === "agent_generation"'));
   assert.ok(startSource.includes('"agent_generation",'));
+  assert.ok(startSource.includes("getJobByIdempotencyKey"));
+  assert.ok(startSource.includes('status === "cancelled"'));
 });
 
 test("failed generation keeps a wizard retry path: job routes to ?job=, detail banner shows the error and links back", () => {
@@ -356,14 +369,17 @@ test("failed generation keeps a wizard retry path: job routes to ?job=, detail b
   assert.ok(storeSource.includes("`/agents/new?job=${id}`"));
   assert.ok(storeSource.includes('job?.kind === "agent_generation"'));
   // The detail leaf carries the sanitized failure message through to the
-  // did-not-finish banner, which shows it and links back to the wizard
-  // ?job= retry path instead of only to /jobs.
+  // retry card, which shows jobErrorCopy(live code) and retries in place
+  // with a fresh key instead of linking back to the wizard. The ?job=
+  // restore route still lands on the wizard error path.
   assert.ok(actionsSource.includes("generationError"));
   assert.ok(actionsSource.includes("errorMessage: backgroundJobs.errorMessage"));
   assert.ok(detailSource.includes("generationError"));
   assert.ok(editSource.includes("generationError"));
-  assert.ok(editSource.includes("Retry in the wizard"));
-  assert.ok(editSource.includes("/agents/new?job=${generationJobId}"));
+  assert.ok(editSource.includes("GenerationRetryCard"));
+  assert.ok(editSource.includes("jobErrorCopy(liveGenerationErrorCode)"));
+  assert.ok(editSource.includes("generation:retry:${crypto.randomUUID()}"));
+  assert.ok(editSource.includes('retryTestId="generation-retry-stub"'));
 });
 
 test("saved generation jobs are consumed: back-nav to ?job= strips instead of re-seeding", () => {

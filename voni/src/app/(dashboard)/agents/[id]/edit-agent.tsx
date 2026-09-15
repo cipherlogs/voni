@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState, useTransition } from "react";
 import { toast } from "@/components/ui/toast";
 import {
@@ -23,10 +24,11 @@ import type { AgentConfig } from "@/lib/agents/config";
 import type { JobJson } from "@/lib/jobs/serialize";
 import { useJobs } from "@/components/jobs/jobs-provider";
 import { useOptimisticJob } from "@/components/jobs/use-optimistic-job";
+import { shouldSuppressJobToast, jobErrorCopy, BACKGROUND_AFTER_MS } from "@/lib/jobs/ui-helpers";
+import { UnsavedPill } from "@/components/unsaved-pill";
+import { GenerationRetryCard } from "@/components/generation-retry-card";
 import { retryAgentDeploymentAction, updateAgentAction } from "../actions";
 import { AgentDeleteButton } from "../delete-agent-button";
-import Onboarding07 from "@/components/onboarding-07/onboarding-07";
-import { buildAgentStatusEntries } from "@/lib/agent-status/build-entries";
 
 export type DeploymentState = "draft" | "queued" | "deploying" | "ready" | "failed" | "cancelled";
 
@@ -64,9 +66,9 @@ function readEditDraft(agentId: string): EditDraftSnapshot | null {
 }
 
 /**
- * Border-only surfaces: the status timeline, all banners, and the config
- * form cards and footer on this editor carry a border and no shadow token,
- * per the border-OR-shadow floor.
+ * Border-only surfaces: all banners, and the config form cards and footer on
+ * this editor carry a border and no shadow token, per the border-OR-shadow
+ * floor.
  */
 
 /** States the deployment watcher can report, including jobs cancelled mid-flight. */
@@ -123,10 +125,6 @@ export function EditAgent(props: {
   /** True when this agent is the platform bridge default — the delete dialog
    * carries a blocking note (the DB clears the default with the row). */
   isBridgeAgent?: boolean;
-  /** Record timestamps + saved version for the Agent status timeline. */
-  createdAt?: string | null;
-  updatedAt?: string | null;
-  configVersion?: number;
   /** Channel integration state, derived server-side — see AgentConfigForm. */
   phoneReady?: boolean | null;
   whatsappReady?: boolean | null;
@@ -144,9 +142,6 @@ export function EditAgent(props: {
     generationError = null,
     isGenerationStub = false,
     isBridgeAgent = false,
-    createdAt = null,
-    updatedAt = null,
-    configVersion = 1,
     phoneReady = null,
     whatsappReady = null,
   } = props;
@@ -214,9 +209,6 @@ export function EditAgent(props: {
       : null,
   );
   const [deployJobId, setDeployJobId] = useState<string | null>(null);
-  // Latest observed deployment job snapshot, for the Agent status timeline's
-  // job timestamps. Tracking/retries below own the outcome; this is display only.
-  const [deployJob, setDeployJob] = useState<JobJson | null>(null);
   const [retrying, startRetry] = useTransition();
   // Single-flight guard for deployment retries (mirrors the generation
   // idempotency shape): a double-click or a retry-after-retry must not queue
@@ -225,9 +217,35 @@ export function EditAgent(props: {
   // handler drops the second press of a double-click before state commits.
   const [retryQueued, setRetryQueued] = useState(false);
   const retryInFlight = useRef(false);
+  const router = useRouter();
   const deployment = useOptimisticJob("agent_deployment");
   const generation = useOptimisticJob("agent_generation");
   const { markSeen } = useJobs();
+  // Live generation job snapshot for the terminal-retry card (Goal 6): the
+  // server-rendered generationError is message-only, so the watcher keeps the
+  // error code for jobErrorCopy. Null until a terminal watch resolves.
+  const [liveGenerationErrorCode, setLiveGenerationErrorCode] = useState<string | null>(null);
+  // Applying a live completion into the visible form (Goal 7): the form holds
+  // its own state seeded once from props, so applying means bumping this key
+  // to remount it with the new config — never a silent in-place mutation.
+  const [appliedJobResult, setAppliedJobResult] = useState<{
+    name: string;
+    config: AgentConfig;
+    jobId: string;
+  } | null>(null);
+  // Review/Apply affordance when the user is dirty-editing (Goal 7): the
+  // completed config waits here instead of overwriting their edits.
+  const [pendingJobResult, setPendingJobResult] = useState<{
+    name: string;
+    config: AgentConfig;
+    jobId: string;
+  } | null>(null);
+  // Regeneration submit state (Goals 6–7): fresh-key start.
+  const [regenInFlight, setRegenInFlight] = useState(false);
+  const [regenError, setRegenError] = useState<string | null>(null);
+  // Backgrounded-regeneration notice (Goal 7): flips after
+  // BACKGROUND_AFTER_MS without a terminal state.
+  const [regenBackgrounded, setRegenBackgrounded] = useState(false);
   // Live copy of the generation status: starts at the server-rendered value
   // and flips when the watcher below observes the terminal state.
   const [liveGenerationStatus, setLiveGenerationStatus] = useState<string | null>(
@@ -243,7 +261,6 @@ export function EditAgent(props: {
       deployJobId,
       { title: `Deploy ${name}`, kind: "agent_deployment" },
       (job: JobJson) => {
-        setDeployJob(job);
         if (job.status === "succeeded") {
           setDeployState("ready");
           setDeployMessage(null);
@@ -265,7 +282,8 @@ export function EditAgent(props: {
   }, [deployJobId]);
 
   // While the generation job is still in flight, watch it so the banner flips
-  // from generating to ready/failed without a reload. Status/copy only — the
+  // from generating to ready/failed without a reload. Every terminal state
+  // resolves live here (succeeded/failed/cancelled). Status/copy only — the
   // generated config stays in the job result and is consumed exclusively on
   // the canonical review screen (/agents/new?job=<id>); this watcher never
   // applies job.result. It marks the job seen on terminal state so the
@@ -280,7 +298,11 @@ export function EditAgent(props: {
       { title: "Generate agent draft", kind: "agent_generation" },
       (job: JobJson) => {
         setLiveGenerationStatus(job.status);
-        if (job.status === "succeeded") {
+        setLiveGenerationErrorCode(job.errorCode ?? null);
+        if (
+          job.status === "succeeded" &&
+          !shouldSuppressJobToast(job.kind, job.status, window.location.pathname)
+        ) {
           toast.add({ type: "success", title: "Configuration is ready to review" });
         }
         void markSeen(job.id);
@@ -289,12 +311,56 @@ export function EditAgent(props: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isGenerationStub, generationJobId]);
 
+  // Live snapshot refs for the regeneration completion below: the effect
+  // fires once at completion time, so it reads the edit state then — not the
+  // render-time closure. Synced in an effect (never during render).
+  const liveEditRef = useRef({ name: currentName, dirty: isDirty });
+  useEffect(() => {
+    liveEditRef.current = { name: currentName, dirty: isDirty };
+  }, [currentName, isDirty]);
+  // Regeneration completion (Goal 7): the retry card's own start() onTerminal
+  // already resolves every terminal state live (succeeded/failed/cancelled)
+  // and flips the stub banner. This block owns only the succeeded-apply step:
+  // job.result config lands in the visible form in place (remount + notice) —
+  // EXCEPT when the user is dirty-editing, where a Review/Apply affordance
+  // waits instead of a silent overwrite.
+  useEffect(() => {
+    const terminal = generation.result?.job;
+    if (!terminal || terminal.status !== "succeeded") return;
+    if (appliedJobResult?.jobId === terminal.id) return;
+    if (pendingJobResult?.jobId === terminal.id) return;
+    const result = terminal.result as {
+      config?: AgentConfig;
+    } | null;
+    if (!result?.config) return;
+    const live = liveEditRef.current;
+    const applied = { name: live.name, config: result.config, jobId: terminal.id };
+    if (live.dirty) {
+      setPendingJobResult(applied);
+    } else {
+      setAppliedJobResult(applied);
+      setSavedSnapshot(JSON.stringify({ name: live.name, config: result.config }));
+      setCurrent(result.config);
+      toast.add({ type: "success", title: "Regenerated configuration applied" });
+    }
+    // shouldSuppressJobToast: the toast above fires only on terminal jobs the
+    // provider would not also toast for — agent_generation terminal states on
+    // /agents/<id> are never suppressed (the rule covers /agents/new and
+    // agent_deployment success), so exactly one toast fires.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [generation.result]);
+
   const needsAttention = deployState === "failed" || deployMessage !== null;
 
   const generationRunning =
     isGenerationStub &&
     (liveGenerationStatus === "queued" || liveGenerationStatus === "running");
   const generationReady = isGenerationStub && liveGenerationStatus === "succeeded";
+  // Terminal stub failure (Goal 6): failed, cancelled, or aged-out (the job
+  // row is gone so liveGenerationStatus is null). The retry card owns this
+  // state and the empty config sections below hide.
+  const generationTerminalFailure =
+    isGenerationStub && !generationRunning && !generationReady;
   // A stub's voiceId/language are placeholders until its generation job
   // succeeds, so test calls stay gated until the config is real. Saves stay
   // gated only while generation is still in flight — a terminal
@@ -305,20 +371,11 @@ export function EditAgent(props: {
 
   // The editor is a single reading column. Voice testing opens from the form
   // footer in a full-screen dialog, so the form keeps its full working width.
-  const statusEntries = buildAgentStatusEntries({
-    createdAt,
-    updatedAt,
-    configVersion,
-    deploymentStatus: deployState,
-    deploymentError: deployMessage,
-    deploymentJob: deployJob,
-  });
-
   return (
     <div className="mx-auto flex w-full max-w-3xl flex-col gap-6">
       {/* Config stream. The column is a block with per-child margins rather
-          than a flex gap: backlink → h1 (8/4) → sub (16) → status timeline
-          (16) → each banner (16) → form. */}
+          than a flex gap: backlink → h1 (8/4) → sub (16) → each banner
+          (16) → form. */}
       <div className="min-w-0">
         <BackLink href="/agents" label="Agents" />
         {restoredDraft ? (
@@ -351,20 +408,13 @@ export function EditAgent(props: {
             </AlertDescription>
           </Alert>
         ) : null}
+        <UnsavedPill isDirty={isDirty} />
         <h1 className="mt-2 mb-1 text-2xl font-semibold tracking-[-0.02em]">
           {name}
         </h1>
         <p className="text-muted-foreground mb-4 text-sm">
           Changes take effect on the next call this agent takes.
         </p>
-        <div className="mb-4" aria-live="polite">
-          <Onboarding07
-            title="Agent status"
-            description="Creation, latest saved version, and voice deployment — progress on top, details in the collapsed logs."
-            entries={statusEntries}
-            defaultOpen={false}
-          />
-        </div>
 
         {isGenerationStub ? (
           generationRunning ? (
@@ -403,36 +453,83 @@ export function EditAgent(props: {
               </AlertDescription>
             </Alert>
           ) : (
-            <Alert className="mb-4 rounded-xl text-sm">
-              <TriangleAlert />
-              <AlertTitle>Generation didn&apos;t finish</AlertTitle>
-              <AlertDescription className="flex flex-col gap-2">
-                <span>
-                  {generationError ??
-                    "The generated configuration isn't available."}{" "}
-                  Edit and save manually, or go back to the wizard to see the
-                  error and retry.
-                </span>
-                <span className="flex flex-wrap items-center gap-2">
-                  {generationJobId ? (
-                    <Button
-                      nativeButton={false}
-                      size="sm"
-                      variant="outline"
-                      render={<Link href={`/agents/new?job=${generationJobId}`} />}
-                    >
-                      Retry in the wizard
-                    </Button>
-                  ) : null}
-                  <Link
-                    href="/jobs"
-                    className="focus-visible:ring-ring cursor-pointer rounded-sm text-xs underline underline-offset-4 outline-none focus-visible:ring-2"
-                  >
-                    View in Jobs
-                  </Link>
-                </span>
-              </AlertDescription>
-            </Alert>
+            // Terminal stub failure (Goal 6): the StepCard retry card owns
+            // this state. Copy contract — (1) the draft didn't finish, (2)
+            // the retry starts a fresh attempt, (3) a completed draft appears
+            // here for review. Failure copy is jobErrorCopy(live code), never
+            // generic; the server-rendered message covers the aged-out case
+            // where no job row (and no code) exists.
+            <div className="mb-4">
+              <GenerationRetryCard
+                title="Generation didn't finish"
+                description={`${liveGenerationErrorCode ? jobErrorCopy(liveGenerationErrorCode) : (generationError ?? "The generated configuration isn't available.")} Retry to start a fresh attempt — a completed draft appears here for review.`}
+                retrying={regenInFlight}
+                onRetry={() => {
+                  // Fresh-key retry (Goal 6): a new submission with a random
+                  // nonce suffix, never the stable per-brief key — even though
+                  // start.ts refuses to replay terminal rows, the retry is a
+                  // fresh submission by construction.
+                  if (regenInFlight) return;
+                  setRegenInFlight(true);
+                  setRegenError(null);
+                  setRegenBackgrounded(false);
+                  const brief = [
+                    currentName.trim() ? `The agent is ${currentName.trim()}.` : null,
+                    "Regenerate the full agent configuration.",
+                  ]
+                    .filter(Boolean)
+                    .join(" ");
+                  const timer = setTimeout(() => setRegenBackgrounded(true), BACKGROUND_AFTER_MS);
+                  void generation
+                    .start(
+                      {
+                        brief,
+                        wizardDraft: {
+                          goals: current.goals ?? [],
+                          tasks: current.tasks ?? [],
+                          agentName: currentName.trim(),
+                          styleTraits: current.styleTraits ?? [],
+                          conversationLanguage: current.conversationLanguage ?? "en",
+                          voiceId: current.voiceId,
+                        },
+                      },
+                      {
+                        title: "Regenerate agent draft",
+                        idempotencyKey: `generation:retry:${crypto.randomUUID()}`,
+                      },
+                      (job: JobJson) => {
+                        clearTimeout(timer);
+                        setRegenInFlight(false);
+                        setRegenBackgrounded(false);
+                        setLiveGenerationStatus(job.status);
+                        setLiveGenerationErrorCode(job.errorCode ?? null);
+                        void markSeen(job.id);
+                      },
+                    )
+                    .then((started) => {
+                      clearTimeout(timer);
+                      if (!started) {
+                        setRegenInFlight(false);
+                        setRegenBackgrounded(false);
+                        setRegenError("This could not start. Check your connection and retry.");
+                      }
+                    });
+                }}
+                onOpenJobs={() => {
+                  router.push("/jobs");
+                }}
+                retryTestId="generation-retry-stub"
+              />
+              {regenError ? (
+                <p className="mt-2 text-muted-foreground text-sm">{regenError}</p>
+              ) : null}
+              {regenBackgrounded && regenInFlight ? (
+                <p className="mt-2 text-muted-foreground text-sm">
+                  This is continuing in the background. You can browse Voni and
+                  return when it is ready.
+                </p>
+              ) : null}
+            </div>
           )
         ) : null}
 
@@ -501,9 +598,71 @@ export function EditAgent(props: {
           </Alert>
         ) : null}
 
+        {/* Review/Apply affordance (Goal 7): a live regeneration completed
+            while the user was dirty-editing, so the fresh config waits here
+            instead of silently overwriting their edits. */}
+        {pendingJobResult ? (
+          <Alert className="mb-4 rounded-xl border-primary/30 bg-primary/5 text-sm">
+            <CircleCheck />
+            <AlertTitle>Regenerated configuration ready</AlertTitle>
+            <AlertDescription className="flex flex-wrap items-center justify-between gap-3">
+              <span>
+                The regeneration finished while you had unsaved edits. Review
+                it, then apply — or keep editing and it stays waiting.
+              </span>
+              <span className="flex flex-wrap items-center gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={() => {
+                    setCurrent(pendingJobResult.config);
+                    setSavedSnapshot(
+                      JSON.stringify({
+                        name: pendingJobResult.name,
+                        config: pendingJobResult.config,
+                      }),
+                    );
+                    setAppliedJobResult(pendingJobResult);
+                    setPendingJobResult(null);
+                    toast.add({ type: "success", title: "Regenerated configuration applied" });
+                  }}
+                >
+                  Review and apply
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => setPendingJobResult(null)}
+                >
+                  Keep my edits
+                </Button>
+              </span>
+            </AlertDescription>
+          </Alert>
+        ) : null}
+        {appliedJobResult && !isDirty ? (
+          <Alert className="mb-4 rounded-xl text-sm">
+            <CircleCheck />
+            <AlertTitle>Regenerated configuration applied</AlertTitle>
+            <AlertDescription>
+              The live regeneration result is now in the form below — review
+              and save it. Your previous view is gone; saving persists the new
+              configuration.
+            </AlertDescription>
+          </Alert>
+        ) : null}
+
+        {/* Goal 6: on stub terminal failure the retry card above owns the
+            state — the empty placeholder sections hide so the stub shows ONLY
+            the retry path. Manual edit-and-save must stay available per the
+            canSave gate, so the form renders only when NOT a terminal stub
+            failure. */}
+        {!generationTerminalFailure ? (
         <AgentConfigForm
-          initialName={name}
-          initialConfig={config}
+          key={appliedJobResult ? `applied-${appliedJobResult.jobId}` : "server"}
+          initialName={appliedJobResult ? appliedJobResult.name : name}
+          initialConfig={appliedJobResult ? appliedJobResult.config : config}
           submitLabel="Save changes"
           isDirty={isDirty}
           phoneReady={phoneReady}
@@ -592,6 +751,7 @@ export function EditAgent(props: {
             />
           }
         />
+        ) : null}
       </div>
     </div>
   );

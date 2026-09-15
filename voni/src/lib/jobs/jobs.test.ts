@@ -151,6 +151,28 @@ test("failed generation jobs route back through the wizard, not the placeholder 
   assert.ok(storeSource.includes('job?.kind === "agent_generation"'));
 });
 
+test("terminal generation rows never replay on the same idempotency key", () => {
+  // Goal 6 idempotency rule: the stable generation:<djb2> key dedupes
+  // queued/running resubmits via createJob, but a key that maps to a TERMINAL
+  // (succeeded/failed/cancelled) row must not replay that dead row — a retry
+  // is new work that starts clean. start.ts swaps in a fresh random key and
+  // falls through to a new submission.
+  const startSource = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), "start.ts"),
+    "utf8",
+  );
+  assert.ok(startSource.includes("getJobByIdempotencyKey"));
+  assert.ok(startSource.includes('prior.status === "succeeded"'));
+  assert.ok(startSource.includes('prior.status === "failed"'));
+  assert.ok(startSource.includes('prior.status === "cancelled"'));
+  assert.ok(startSource.includes("idempotencyKey: crypto.randomUUID()"));
+  // Guard placement: only after the active-job dedupe (mid-flight resubmits
+  // still return the running job), and scoped to agent_generation — other
+  // kinds keep their existing dedupe behavior.
+  const genBlock = startSource.slice(startSource.indexOf('kind === "agent_generation"'));
+  assert.ok(genBlock.indexOf("findActiveJobs") < genBlock.indexOf("getJobByIdempotencyKey"));
+});
+
 test("sanitizeJobError redacts secrets and truncates", () => {
   const dirty =
     "fetch failed for Bearer abc123 with api_key=sk-live-xyz " +

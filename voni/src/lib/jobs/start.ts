@@ -13,6 +13,7 @@ import {
   createJob,
   findActiveJobs,
   findGenerationPlaceholderId,
+  getJobByIdempotencyKey,
   type JobRow,
 } from "./store";
 
@@ -152,6 +153,27 @@ export async function startJob(
     );
     if (active.length > 0) {
       return { job: active[0], created: false, dispatch: null };
+    }
+    // Terminal rows never replay: when the incoming key maps to a finished
+    // (succeeded/failed/cancelled) generation, drop the replay and fall
+    // through to a fresh submission below. A retry is new work that starts
+    // clean — replaying the terminal row would strand the caller watching a
+    // job that can never transition again.
+    const incomingKey = options.idempotencyKey?.trim();
+    if (incomingKey) {
+      const prior = await getJobByIdempotencyKey(
+        ctx.organizationId,
+        ctx.userId,
+        incomingKey,
+      ).catch(() => null);
+      if (
+        prior &&
+        (prior.status === "succeeded" ||
+          prior.status === "failed" ||
+          prior.status === "cancelled")
+      ) {
+        options = { ...options, idempotencyKey: crypto.randomUUID() };
+      }
     }
   }
 

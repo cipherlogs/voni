@@ -4,7 +4,12 @@ import { and, eq } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { db } from "@/lib/db";
-import { agents, copilotVoicePrefs, organizationSettings } from "@/lib/db/schema";
+import {
+  agents,
+  copilotVoicePrefs,
+  organizationSettings,
+  providerConnections,
+} from "@/lib/db/schema";
 import { user } from "@/lib/db/auth-schema";
 import { DEV_BYPASS_USER, devBypassEnabled } from "@/lib/dev-bypass";
 import { organization } from "@/lib/db/auth-schema";
@@ -27,6 +32,7 @@ import {
   copilotVoicePrefsSchema,
   type CopilotVoicePrefs,
 } from "@/lib/copilot/voice-prefs";
+import { isProviderId } from "@/lib/providers/store";
 
 function requireLlmProviderId(value: FormDataEntryValue | null): LlmProviderId {
   const id = String(value ?? "");
@@ -281,6 +287,86 @@ async function ensurePrefsOwner(userId: string): Promise<void> {
     .insert(user)
     .values({ id: DEV_BYPASS_USER.id, name: DEV_BYPASS_USER.name, email: DEV_BYPASS_USER.email })
     .onConflictDoNothing();
+}
+
+const providerConnectionSchema = z.object({
+  providerId: z.string().trim().min(1, "Unknown provider."),
+  connect: z.enum(["true", "false"]),
+});
+
+/**
+ * GOAL 4A: connect/disconnect a third-party provider for the workspace.
+ *
+ * Server-side persistence only — no credentials are exchanged (connect
+ * records status + optional display label; disconnect deletes the row).
+ * Saved agent configs are never touched: agents referencing a disconnected
+ * provider surface needs-setup state via the provider store accessors.
+ */
+export async function setProviderConnection(
+  formData: FormData,
+): Promise<SettingsActionState> {
+  const parsed = providerConnectionSchema.safeParse({
+    providerId: formData.get("providerId"),
+    connect: formData.get("connect"),
+  });
+  if (!parsed.success) {
+    return { ok: false, error: "Unknown provider." };
+  }
+  const { providerId, connect } = parsed.data;
+  if (!isProviderId(providerId)) {
+    return { ok: false, error: "Unknown provider." };
+  }
+  try {
+    const ctx = await requireCtx();
+    if (ctx.role !== "owner") {
+      throw new Error("Only workspace owners can manage provider connections.");
+    }
+    await ensurePrefsOwner(ctx.userId);
+    const now = new Date();
+    if (connect === "true") {
+      await db
+        .insert(providerConnections)
+        .values({
+          organizationId: ctx.organizationId,
+          providerId,
+          status: "connected",
+          connectedBy: ctx.userId,
+          lastCheckedAt: now,
+          updatedAt: now,
+        })
+        .onConflictDoUpdate({
+          target: [
+            providerConnections.organizationId,
+            providerConnections.providerId,
+          ],
+          set: { status: "connected", lastCheckedAt: now, updatedAt: now },
+        });
+    } else {
+      await db
+        .delete(providerConnections)
+        .where(
+          and(
+            eq(providerConnections.organizationId, ctx.organizationId),
+            eq(providerConnections.providerId, providerId),
+          ),
+        );
+    }
+    revalidatePath("/settings");
+    return {
+      ok: true,
+      message:
+        connect === "true" ? "Provider connected." : "Provider disconnected.",
+    };
+  } catch (error) {
+    console.error("[providers] connection update failed", error);
+    return {
+      ok: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Could not update the provider connection.",
+    };
+  }
 }
 
 export async function getCopilotVoicePrefs(): Promise<CopilotVoicePrefs> {  const ctx = await requireCtx();

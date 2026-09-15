@@ -19,7 +19,7 @@ import {
 } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import { FormCard, FormCardSections } from "@/components/wizard/form-layout";
+import { FormCard, FormSection, FormSectionHeading, FormSectionSeparator } from "@/components/wizard/form-layout";
 import { TriangleAlert } from "lucide-react";
 import {
   DEFAULT_CALLING_WINDOW,
@@ -187,16 +187,17 @@ export function CampaignForm({
   return (
     <div className="flex flex-col gap-6" data-copilot-form="campaign">
       <FormCard>
-        <FormCardSections>
-          <section aria-labelledby="campaign-who-heading" className="flex flex-col gap-3">
-            <div>
-              <h2 id="campaign-who-heading" className="text-balance font-semibold">
-                Who works this campaign
-              </h2>
-              <p className="text-pretty text-muted-foreground text-sm leading-6">
-                Name it, then pick the agent that places the calls.
-              </p>
-            </div>
+        <>
+          <FormSection
+            aria-labelledby="campaign-who-heading"
+            heading={
+              <FormSectionHeading
+                id="campaign-who-heading"
+                title="Who works this campaign"
+                description="Name it, then pick the agent that places the calls."
+              />
+            }
+          >
             <FieldGroup>
               <Field>
                 <FieldLabel htmlFor="campaign-name">Campaign name</FieldLabel>
@@ -233,19 +234,20 @@ export function CampaignForm({
                 ) : null}
               </Field>
             </FieldGroup>
-          </section>
+          </FormSection>
 
-          <Separator />
+          <FormSectionSeparator />
 
-          <section aria-labelledby="campaign-when-heading" className="flex flex-col gap-3">
-            <div>
-              <h2 id="campaign-when-heading" className="text-balance font-semibold">
-                When calling is allowed
-              </h2>
-              <p className="text-pretty text-muted-foreground text-sm leading-6">
-                The window and days the dialer may place calls in.
-              </p>
-            </div>
+          <FormSection
+            aria-labelledby="campaign-when-heading"
+            heading={
+              <FormSectionHeading
+                id="campaign-when-heading"
+                title="When calling is allowed"
+                description="The window and days the dialer may place calls in."
+              />
+            }
+          >
             <FieldGroup className="grid gap-4 sm:grid-cols-3">
               <Field>
                 <FieldLabel htmlFor="window-start">Start</FieldLabel>
@@ -349,19 +351,20 @@ export function CampaignForm({
                 Leads marked as opted out are never called, under either setting.
               </p>
             </Field>
-          </section>
+          </FormSection>
 
-          <Separator />
+          <FormSectionSeparator />
 
-          <section aria-labelledby="campaign-how-heading" className="flex flex-col gap-3">
-            <div>
-              <h2 id="campaign-how-heading" className="text-balance font-semibold">
-                How persistent to be
-              </h2>
-              <p className="text-pretty text-muted-foreground text-sm leading-6">
-                How many tries per lead, and how long to wait between them.
-              </p>
-            </div>
+          <FormSection
+            aria-labelledby="campaign-how-heading"
+            heading={
+              <FormSectionHeading
+                id="campaign-how-heading"
+                title="How persistent to be"
+                description="How many tries per lead, and how long to wait between them."
+              />
+            }
+          >
             <FieldGroup className="grid gap-4 sm:grid-cols-2">
               <Field data-invalid={attemptsInvalid || fieldError === "numeric"}>
                 <FieldLabel htmlFor="max-attempts">Call attempts per lead</FieldLabel>
@@ -408,8 +411,8 @@ export function CampaignForm({
                 ) : null}
               </Field>
             </FieldGroup>
-          </section>
-        </FormCardSections>
+          </FormSection>
+        </>
       </FormCard>
 
       {error ? (

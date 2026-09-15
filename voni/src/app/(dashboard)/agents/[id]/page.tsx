@@ -58,9 +58,6 @@ async function AgentDetail({
         id={agent.id}
         name={agent.name}
         config={storedConfig}
-        createdAt={agent.createdAt.toISOString()}
-        updatedAt={agent.updatedAt.toISOString()}
-        configVersion={agent.configVersion}
         initialDeploymentAttention={query.deployment === "attention"}
         deploymentStatus={agent.deploymentStatus}
         deploymentError={agent.deploymentError}

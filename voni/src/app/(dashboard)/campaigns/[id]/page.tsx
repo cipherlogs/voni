@@ -202,7 +202,7 @@ async function CampaignDetail({
         <h2 id="campaign-import-heading" className="text-base font-medium">
           Import leads
         </h2>
-        <div className="mt-2">
+        <div className="mt-2 max-w-3xl">
           <LeadImport campaignId={campaign.id} />
         </div>
       </section>

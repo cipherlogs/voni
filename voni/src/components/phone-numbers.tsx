@@ -26,7 +26,7 @@ import {
   FieldLabel,
 } from "@/components/ui/field";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { FormCard, FormCardSections } from "@/components/wizard/form-layout";
+import { FormCard, FormSection, FormSectionHeading } from "@/components/wizard/form-layout";
 import {
   Select,
   SelectContent,
@@ -250,21 +250,19 @@ export function PhoneNumbers({
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="max-w-xl">
-        <FormCard>
-          <FormCardSections>
-            <section
-              aria-labelledby="add-number-heading"
-              className="flex flex-col gap-3"
-            >
-              <div>
-                <h2 id="add-number-heading" className="text-balance font-semibold">
-                  Add a number
-                </h2>
-                <p className="text-pretty text-muted-foreground text-sm leading-6">
-                  Which agent picks up when someone calls one of your numbers.
-                </p>
-              </div>
+      <FormCard>
+        <>
+          <FormSection
+            aria-labelledby="add-number-heading"
+            heading={
+              <FormSectionHeading
+                id="add-number-heading"
+                title="Add a number"
+                description="Which agent picks up when someone calls one of your numbers."
+              />
+            }
+          >
+            <div className="flex flex-col gap-4">
               <FieldGroup className="grid gap-4 sm:grid-cols-6">
                 <Field className="sm:col-span-2">
                   <FieldLabel htmlFor="new-number">Number</FieldLabel>
@@ -322,7 +320,7 @@ export function PhoneNumbers({
                   </FieldDescription>
                 </Field>
               </FieldGroup>
-              <div className="mt-1">
+              <div>
                 <LoadingButton
                   disabled={!newNumber.trim()}
                   pending={pendingId === "add"}
@@ -351,10 +349,10 @@ export function PhoneNumbers({
                   Add number
                 </LoadingButton>
               </div>
-            </section>
-          </FormCardSections>
-        </FormCard>
-      </div>
+            </div>
+          </FormSection>
+        </>
+      </FormCard>
 
       {error ? (
         <Alert variant="destructive">

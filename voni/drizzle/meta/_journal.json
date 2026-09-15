@@ -71,6 +71,13 @@
       "when": 1789046469459,
       "tag": "0009_bright_nehzno",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1789419907142,
+      "tag": "0010_provider-connections",
+      "breakpoints": true
     }
   ]
 }

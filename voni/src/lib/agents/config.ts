@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { findCatalogTool } from "@/lib/providers/registry";
 import {
   CONVERSATION_LANGUAGES,
   MAX_AGENT_NAME_LENGTH,
@@ -106,7 +107,11 @@ export const agentConfigSchema = z.object({
   }),
   /** Qualification data to extract during the conversation. */
   detect: z.array(detectFieldSchema).default([]),
-  /** Tool names from TOOL_REGISTRY. Unknown names are dropped on normalize. */
+  /**
+   * Tool names from TOOL_REGISTRY, plus connected-provider keys in
+   * `"<provider>.<tool>"` form (see `findCatalogTool`). Unknown names in
+   * either namespace are dropped on normalize.
+   */
   tools: z.array(z.string()).default([]),
   /**
    * LLM-suggested tool ideas from the wizard brief. Optional with a default
@@ -193,12 +198,17 @@ export type AgentConfig = z.infer<typeof agentConfigSchema>;
 export type DetectField = z.infer<typeof detectFieldSchema>;
 
 /**
- * Drop tool names the registry doesn't know about.
+ * Drop tool names neither the built-in registry nor the connected-provider
+ * catalog knows about.
  *
  * Small models cheerfully invent plausible tools (`send_brochure`,
  * `qualify_lead`). Registering one that has no server-side implementation would
  * make the agent call it mid-conversation and stall, so this filters rather
  * than trusting the model. Runs after schema validation, on every path.
+ *
+ * Namespaced provider keys (`"<provider>.<tool>"`, e.g. `gmail.send_email`)
+ * survive when they resolve via `findCatalogTool`; anything else with a dot is
+ * not a known provider tool and is dropped like any other invented name.
  *
  * Custom webhook tools and LLM tool ideas are kept verbatim: customs are
  * validated by shape (schema above), and ideas are display-only — neither can
@@ -208,7 +218,9 @@ export function normalizeConfig(config: AgentConfig): AgentConfig {
   const known = new Set<string>(TOOL_NAMES);
   return {
     ...config,
-    tools: config.tools.filter((t) => known.has(t)),
+    tools: config.tools.filter(
+      (t) => known.has(t) || findCatalogTool(t) !== null,
+    ),
     toolIdeas: [...(config.toolIdeas ?? [])],
     customTools: [...(config.customTools ?? [])],
   };

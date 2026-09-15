@@ -94,10 +94,14 @@ test("agent detail is one column with a full-screen idle test dialog", () => {
   const edit = source("../app/(dashboard)/agents/[id]/edit-agent.tsx");
   const dialog = source("test-agent-dialog.tsx");
   const chat = source("chat-01/chat-01.tsx");
-  assert.doesNotMatch(form, /md:grid-cols-3|md:col-span-2/);
+  // form-layout-03 idiom: flat side-label sections use md:grid-cols-3 with
+  // the field column at md:col-span-2 (Goal 2 unboxing).
+  assert.match(form, /md:grid-cols-3|md:col-span-2/);
   assert.match(form, /footerPrimaryActions\?: ReactNode/);
   assert.match(edit, /max-w-3xl/);
-  assert.match(edit, /Agent status/);
+  // Goal 1: the Agent status timeline is removed; only the deployment /
+  // generation banners remain on the detail page.
+  assert.doesNotMatch(edit, /Agent status/);
   assert.doesNotMatch(edit, /test-rail|lg:grid-cols-\[minmax/);
   assert.match(edit, /<TestAgentDialog/);
   assert.match(dialog, /h-dvh w-screen max-w-none/);

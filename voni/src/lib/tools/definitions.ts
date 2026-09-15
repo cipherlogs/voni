@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { AgentConfig, CustomTool } from "@/lib/agents/config";
 import { TOOL_NAMES } from "@/lib/agents/config";
 import { sensitiveCaptureFields } from "@/lib/agents/compile";
+import { findCatalogTool } from "@/lib/providers/registry";
 
 export const SENSITIVE_CAPTURE_TOOL = "prepare_sensitive_capture";
 
@@ -244,10 +245,38 @@ export function customToolId(name: string): string | null {
     : null;
 }
 
+/**
+ * Compile one connected-provider catalog tool into a voice-callable stub.
+ *
+ * The catalog carries no execution mode, so provider tools default to `hold`:
+ * they are terminal side-effect actions (send an email, log a call), and hold
+ * tells the agent to wait for a real result rather than narrate one it does
+ * not have yet. Parameters stay permissive — provider tools have no
+ * server-side argument schema yet, so execution fails closed in
+ * `validateToolArguments` until a real implementation lands.
+ */
+export function compileProviderTool(key: string): VoiceTool | null {
+  const hit = findCatalogTool(key);
+  if (!hit) return null;
+  return {
+    type: "function",
+    name: key,
+    description: `${hit.provider.label} ${hit.tool.label}. ${hit.tool.description}`,
+    parameters: { type: "object", additionalProperties: true },
+    execution_mode: "hold",
+    timeout_seconds: 20,
+  };
+}
+
 export function compileVoiceTools(config: AgentConfig): VoiceTool[] {
   const selected = config.tools.flatMap((name) => {
     const tool = BUSINESS_TOOLS[name as ToolName];
-    return tool ? [tool] : [];
+    if (tool) return [tool];
+    // Namespaced provider keys (`"<provider>.<tool>"`) compile to stubs so a
+    // saved provider pick never breaks compilation of the built-ins it sits
+    // beside; anything else unknown is still skipped silently.
+    const providerTool = compileProviderTool(name);
+    return providerTool ? [providerTool] : [];
   });
   for (const custom of config.customTools ?? []) {
     selected.push(compileCustomTool(custom));

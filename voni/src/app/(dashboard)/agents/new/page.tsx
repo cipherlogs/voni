@@ -34,15 +34,18 @@ import {
   clearWizardDraftCache,
   isJobConsumed,
   markJobConsumed,
+  resetWizardForNewCreation,
+  WIZARD_FRESH_STEP,
 } from "@/components/agent-wizard/use-wizard-draft";
+import { GenerationRetryCard } from "@/components/generation-retry-card";
+import { jobErrorCopy } from "@/lib/jobs/ui-helpers";
 import {
   composeBrief,
   generationIdempotencyKey,
 } from "@/components/agent-wizard/starters";
 import { TimelineBar } from "@/components/agent-wizard/wizard-timeline";
 import {
-  FormCard,
-  FormCardSections,
+  FormSectionSeparator,
   PageHeading,
   WizardFooter,
 } from "@/components/wizard/form-layout";
@@ -90,6 +93,15 @@ function NewAgentInner({
   const [showGuidance, setShowGuidance] = useState(false);
   const generation = useOptimisticJob("agent_generation");
   const { markSeen, cancelJob } = useJobs();
+  // Terminal-failure snapshot for the retry card (Goal 6): applyResult keeps
+  // the raw error string for inline display; this keeps the error CODE for
+  // jobErrorCopy. Null until a failed/cancelled watch resolves.
+  const [terminalErrorCode, setTerminalErrorCode] = useState<string | null>(null);
+  // Terminal failure consumed for a fresh creation (Goal 8): once the error
+  // has been shown/consumed, starting over resets to a clean step-1 wizard.
+  const [terminalFailureSeen, setTerminalFailureSeen] = useState(false);
+  // Fresh-key retry in flight (Goal 6).
+  const [retrying, setRetrying] = useState(false);
   const [restoring, setRestoring] = useState(restoreJobId !== null);
   // ?job= visits wait for the placeholder snapshot before showing review so
   // the name field and voice/language (mount-once form state) are seeded.
@@ -178,6 +190,7 @@ function NewAgentInner({
             ? "Generation was cancelled."
             : (job.errorMessage ?? "Generation failed."),
         );
+        setTerminalErrorCode(job.errorCode ?? null);
         setShowGuidance(job.errorCode === "provider-exhausted");
         return true;
       }
@@ -296,8 +309,22 @@ function NewAgentInner({
       setError("Describe what the agent should do — a sentence or two is enough.");
       return;
     }
+    await startGeneration(brief, generationIdempotencyKey(brief));
+  };
+
+  /**
+   * Shared submit path (Goal 6): initial Generate and the terminal-failure
+   * retry both land here. The initial submit passes the stable per-brief key
+   * (same-brief resubmits dedupe); the retry passes a `generation:retry:`
+   * fresh key so it is a new submission by construction. Start-failure stays
+   * inline (unchanged): a null start sets the inline error, no retry card.
+   */
+  const startGeneration = async (brief: string, idempotencyKey: string) => {
     setError(null);
+    setTerminalErrorCode(null);
+    setTerminalFailureSeen(false);
     setShowGuidance(false);
+    setRetrying(false);
     setRestoring(false);
     const started = await generation.start(
       {
@@ -316,9 +343,10 @@ function NewAgentInner({
       },
       {
         title: "Generate agent draft",
-        // Same brief resubmitted (double-click, retry, reload + resubmit)
-        // returns the existing job instead of starting duplicate work.
-        idempotencyKey: generationIdempotencyKey(brief),
+        // Same brief resubmitted (double-click, reload + resubmit) returns
+        // the existing job instead of starting duplicate work. Explicit
+        // retries pass their own fresh key (see the retry card below).
+        idempotencyKey,
       },
       (job) => {
         // The draft review (or inline error) consumes the result right here,
@@ -329,6 +357,8 @@ function NewAgentInner({
     );
     if (!started) {
       setError("Generation could not start.");
+      // Start-failure stays inline (Goal 6): no retry card — the card is for
+      // terminal job outcomes, not for a submission that never left.
       return;
     }
     // Best-effort list row so /agents shows the draft while it generates.
@@ -386,11 +416,16 @@ function NewAgentInner({
       toast.add({ type: "error", title: result.message });
       return;
     }
-    clearWizardDraftCache();
-    // Record placeholder-upgrade saves so a browser Back to the stale ?job=
-    // pointer strips it instead of re-seeding a review that would twin on
-    // save. Template-draft plain inserts carry no jobId and skip this.
+    // Goal 8: a reviewed save is a terminal outcome — reset the wizard for
+    // the next creation (step 0 + consumed-job entries) on top of the draft
+    // clear, so a fresh creation starts clean. The Back-guard still needs the
+    // consumed id for THIS job, which resetWizardForNewCreation clears from
+    // storage — so record it first, then reset durable state, then arm the
+    // in-memory dismiss.
     if (placeholder !== null && jobId !== null) markJobConsumed(jobId);
+    clearWizardDraftCache();
+    resetWizardForNewCreation();
+    wiz.setStep(WIZARD_FRESH_STEP);
     setDismissedJobId(jobId);
     if (result.deployment === "attention") {
       router.push(`/agents/${result.id}?deployment=attention`);
@@ -578,27 +613,23 @@ function NewAgentInner({
           title="Review agent"
           description="Everything here is editable. Nothing is saved until you say so."
         />
-        <FormCard>
-          <FormCardSections>
-            <div className="flex flex-col gap-2">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-foreground text-sm font-medium">
-                  {summaryName}
-                </span>
-                <Badge variant="secondary">Ready to save</Badge>
-              </div>
-              <div className="text-muted-foreground flex flex-col gap-1 text-sm">
-                <p>
-                  Voice {summaryVoice} · {summaryLanguage}
-                </p>
-                <p>
-                  Brief: {wiz.draft.goals.length} goals ·{" "}
-                  {wiz.draft.tasks.length} tasks
-                </p>
-              </div>
-            </div>
-          </FormCardSections>
-        </FormCard>
+        <div className="flex flex-col gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-foreground text-sm font-medium">
+              {summaryName}
+            </span>
+            <Badge variant="secondary">Ready to save</Badge>
+          </div>
+          <div className="text-muted-foreground flex flex-col gap-1 text-sm">
+            <p>
+              Voice {summaryVoice} · {summaryLanguage}
+            </p>
+            <p>
+              Brief: {wiz.draft.goals.length} goals ·{" "}
+              {wiz.draft.tasks.length} tasks
+            </p>
+          </div>
+        </div>
 
         <AgentConfigForm
           initialName={wiz.draft.agentName || draft.identity.name}
@@ -653,61 +684,116 @@ function NewAgentInner({
         description="Answer two quick steps and we'll generate a starting mission and rules, editable afterward. Prefer talking? The Voice copilot button in the top bar fills in every field with you."
       />
 
-        <FormCard>
-          <FormCardSections>
-            <div className="flex flex-col gap-2">
-              <div className="flex flex-wrap items-baseline justify-between gap-2">
-                <p className="text-sm font-medium">{stepLabel}</p>
-                <p className="text-muted-foreground text-xs">
-                  Step {wiz.step + 1} of {WIZARD_STEPS.length}
-                </p>
-              </div>
-              <p className="text-muted-foreground text-sm">
-                {wiz.step === 0
-                  ? "Start with the big picture, then break it into directions."
-                  : "A name plus a vibe — type it, or tell the voice copilot."}
-              </p>
-              <Progress value={progressValue} aria-label="Creation progress" />
+        <div className="flex flex-col gap-2">
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <p className="text-sm font-medium">{stepLabel}</p>
+            <p className="text-muted-foreground text-xs">
+              Step {wiz.step + 1} of {WIZARD_STEPS.length}
+            </p>
+          </div>
+          <p className="text-muted-foreground text-sm">
+            {wiz.step === 0
+              ? "Start with the big picture, then break it into directions."
+              : "A name plus a vibe — type it, or tell the voice copilot."}
+          </p>
+          <Progress value={progressValue} aria-label="Creation progress" />
+        </div>
+        <TimelineBar current={wiz.step} completed={wiz.completed} onSelect={wiz.setStep} />
+        <FormSectionSeparator />
+        {wiz.step === 0 ? (
+          <PlanStep
+            api={wiz}
+            idPrefix="new"
+            goalsRef={goalsRef}
+            tasksRef={tasksRef}
+            error={fieldErrors.goals}
+            onClearError={(field) => clearFieldError(field)}
+          />
+        ) : null}
+        {wiz.step === 1 && !submitting ? (
+          <PersonalityStep
+            api={wiz}
+            idPrefix="new"
+            styleRef={styleRef}
+            nameError={fieldErrors.name}
+            onClearError={(field) => clearFieldError(field)}
+          />
+        ) : null}
+        {wiz.step === 1 ? (
+          briefError && !submitting && (terminalErrorCode !== null || error !== null) ? (
+            // Terminal-failure retry card (Goal 6): distinct per-mode copy via
+            // jobErrorCopy(terminalErrorCode) — never generic — plus the retry
+            // contract: a fresh attempt starts clean and a completed draft
+            // appears here for review. Cancelled jobs get their cancelled
+            // copy, not the failure copy. Start-failure (never submitted)
+            // stays inline via GenerationStatus below — it never sets
+            // terminalErrorCode, so it cannot land here.
+            <div className="flex flex-col gap-3">
+              <GenerationRetryCard
+                title={terminalErrorCode === "cancelled" || briefError === "Generation was cancelled." ? "Generation was cancelled" : "Generation didn't finish"}
+                description={`${terminalErrorCode ? jobErrorCopy(terminalErrorCode) : briefError} Retry to start a fresh attempt — a completed draft appears here for review.`}
+                retrying={retrying}
+                onRetry={() => {
+                  // Fresh-key retry: a new submission with a random nonce
+                  // suffix, never the stable per-brief key.
+                  if (retrying) return;
+                  setRetrying(true);
+                  const brief = composeBrief(wiz.draft);
+                  setTerminalFailureSeen(false);
+                  void startGeneration(brief, `generation:retry:${crypto.randomUUID()}`).finally(() => {
+                    setRetrying(false);
+                  });
+                }}
+                onOpenJobs={() => router.push("/jobs")}
+                retryTestId="generation-retry-new"
+              />
+              {showGuidance ? <ManualLlmGuidance /> : null}
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                onClick={() => {
+                  // Goal 8: terminal failure consumed for a fresh creation —
+                  // drop durable state and reset to a clean step-1 wizard.
+                  // The failed brief is gone; pre-submit reload restore still
+                  // works for live drafts because nothing live was cleared
+                  // beyond the finished creation's entries.
+                  setTerminalFailureSeen(true);
+                  setError(null);
+                  setTerminalErrorCode(null);
+                  setShowGuidance(false);
+                  resetWizardForNewCreation();
+                  wiz.setStep(WIZARD_FRESH_STEP);
+                  router.replace("/agents/new");
+                }}
+              >
+                Start over with a new brief
+              </Button>
             </div>
-            <TimelineBar current={wiz.step} completed={wiz.completed} onSelect={wiz.setStep} />
-          {wiz.step === 0 ? (
-            <PlanStep
-              api={wiz}
-              idPrefix="new"
-              goalsRef={goalsRef}
-              tasksRef={tasksRef}
-              error={fieldErrors.goals}
-              onClearError={(field) => clearFieldError(field)}
-            />
-          ) : null}
-          {wiz.step === 1 && !submitting ? (
-            <PersonalityStep
-              api={wiz}
-              idPrefix="new"
-              styleRef={styleRef}
-              nameError={fieldErrors.name}
-              onClearError={(field) => clearFieldError(field)}
-            />
-          ) : null}
-          {wiz.step === 1 ? (
-            <GenerationStatus
-              phase={generationPhase}
-              onOpenJobs={() => router.push("/jobs")}
-              onCancel={
-                generation.jobId
-                  ? () => {
-                      const id = generation.jobId;
-                      if (id) void cancelJob(id);
-                    }
-                  : undefined
-              }
-              error={briefError}
-              onUseTemplate={useTemplate}
-            />
-          ) : null}
-          {showGuidance && wiz.step === 1 && !submitting ? <ManualLlmGuidance /> : null}
-          </FormCardSections>
-        </FormCard>
+          ) : (
+            <>
+              <GenerationStatus
+                phase={generationPhase}
+                onOpenJobs={() => router.push("/jobs")}
+                onCancel={
+                  generation.jobId
+                    ? () => {
+                        const id = generation.jobId;
+                        if (id) void cancelJob(id);
+                      }
+                    : undefined
+                }
+                error={briefError}
+                onUseTemplate={useTemplate}
+              />
+              {terminalFailureSeen ? (
+                <p className="text-muted-foreground text-sm">
+                  Previous attempt cleared — describe the agent above and generate again.
+                </p>
+              ) : null}
+            </>
+          )
+        ) : null}
 
         {/* Page footer: outside filled bodies */}
         <div>

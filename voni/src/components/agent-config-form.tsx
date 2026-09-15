@@ -2,17 +2,36 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { ChevronsUpDown } from "lucide-react";
 import { toast } from "@/components/ui/toast";
 import { LoadingButton } from "@/components/loading-button";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Field, FieldDescription, FieldError, FieldLabel } from "@/components/ui/field";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
+import {
+  Field,
+  FieldDescription,
+  FieldError,
+  FieldGroup,
+  FieldLabel,
+} from "@/components/ui/field";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { cn } from "@/lib/utils";
 import {
   Select,
@@ -31,7 +50,13 @@ import {
   type DetectField,
   type ToolIdea,
 } from "@/lib/agents/config";
-import { CREDENTIAL_NAMES, type CredentialName } from "@/lib/platform/types";
+import {
+  PROVIDER_CATALOG,
+  matchCatalogTool,
+  overlapLabels,
+  providerToolKey,
+  type ProviderId,
+} from "@/lib/providers/registry";
 import {
   voicesByLanguage,
   INPUT_LANGUAGES,
@@ -42,219 +67,13 @@ import {
 } from "@/lib/agents/voices";
 
 /**
- * The editable config form, rebuilt against the approved
- * approved single-column detail layout: four cards (Identity / Mission /
- * Conversation / Tools and channels) and a composed footer bar.
- *
- * The previous version exposed roughly sixty controls — every field the
- * compiler could produce, on the theory that a generated config is a draft
- * that may need heavy editing. In practice that buried the handful of
- * settings anyone actually changes. The schema was cut to match
- * (`src/lib/agents/config.ts`), so what is left here is the whole config
- * surface, not a filtered view of it.
+ * The editable config form: four flat side-label sections (Identity /
+ * Mission / Conversation / Tools and channels) following the
+ * blocks.so form-layout-03 idiom — a `grid grid-cols-1 gap-10
+ * md:grid-cols-3` per section with the h2 + muted description on the
+ * left, fields clamped to `md:col-span-2`, and `Separator my-8` between
+ * sections — ending in the composed ConfigFormFooter bar.
  */
-
-/**
- * Form density follows the campaign/new reference (DESIGN.md §4): base `h-8`
- * controls from `ui/` with width caps only — no per-form geometry overrides.
- * `Field`/`FieldLabel`/`FieldDescription` supply the label, gap, and hint
- * sizing; sections stack at `gap-3`.
- */
-
-/**
- * Add-custom-tool composer: name + description + mode + webhook URL +
- * optional credential picker. Emits a CustomTool on valid submit and clears.
- * A blank URL drafts nothing — the row stays local until it can execute.
- */
-function AddCustomToolForm({
-  existingIds,
-  onAdd,
-}: {
-  existingIds: Set<string>;
-  onAdd: (tool: CustomTool) => void;
-}) {
-  const [label, setLabel] = useState("");
-  const [description, setDescription] = useState("");
-  const [url, setUrl] = useState("");
-  const [mode, setMode] = useState<CustomTool["mode"]>("interactive");
-  const [credential, setCredential] = useState("");
-  const [error, setError] = useState<string | null>(null);
-
-  const slug = label
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "_")
-    .replace(/^_|_$/g, "")
-    .slice(0, 60);
-  const duplicate = slug.length > 0 && existingIds.has(slug);
-  const parsedUrl = (() => {
-    try {
-      return url.trim() ? new URL(url.trim()) : null;
-    } catch {
-      return null;
-    }
-  })();
-  const urlInvalid = url.trim().length > 0 && !parsedUrl;
-  const canAdd =
-    label.trim().length > 0 &&
-    description.trim().length > 0 &&
-    parsedUrl !== null &&
-    !duplicate;
-
-  return (
-    <Field>
-      <FieldLabel>Add custom tool</FieldLabel>
-      <div className="flex flex-col gap-3 rounded-[10px] border px-3 py-2.5">
-        <div className="grid gap-3 sm:grid-cols-2">
-          <Field>
-            <FieldLabel htmlFor="custom-tool-label">Name</FieldLabel>
-            <Input
-              id="custom-tool-label"
-              className="max-w-md"
-              value={label}
-              placeholder="Check order status"
-              onChange={(e) => {
-                setLabel(e.target.value);
-                setError(null);
-              }}
-            />
-          </Field>
-          <Field>
-            <FieldLabel htmlFor="custom-tool-mode">Waits for result</FieldLabel>
-            <Select
-              items={{ interactive: "No — talks over it", hold: "Yes — waits" }}
-              value={mode}
-              onValueChange={(value) =>
-                setMode(value === "hold" ? "hold" : "interactive")
-              }
-            >
-              <SelectTrigger id="custom-tool-mode" aria-label="Waits for result">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectGroup>
-                  <SelectItem value="interactive">No — talks over it</SelectItem>
-                  <SelectItem value="hold">Yes — waits</SelectItem>
-                </SelectGroup>
-              </SelectContent>
-            </Select>
-          </Field>
-        </div>
-        <Field>
-          <FieldLabel htmlFor="custom-tool-description">What it does</FieldLabel>
-          <Textarea
-            id="custom-tool-description"
-            className="min-h-[76px] resize-y [field-sizing:fixed]"
-            value={description}
-            placeholder="Looks up the caller's latest order by phone number."
-            onChange={(e) => {
-              setDescription(e.target.value);
-              setError(null);
-            }}
-          />
-        </Field>
-        <div className="grid gap-3 sm:grid-cols-2">
-          <Field data-invalid={urlInvalid}>
-            <FieldLabel htmlFor="custom-tool-url">Webhook URL</FieldLabel>
-            <Input
-              id="custom-tool-url"
-              inputMode="url"
-              className="max-w-md"
-              value={url}
-              placeholder="https://example.com/tools/order-status"
-              aria-invalid={urlInvalid || undefined}
-              onChange={(e) => {
-                setUrl(e.target.value);
-                setError(null);
-              }}
-            />
-          </Field>
-          <Field>
-            <FieldLabel htmlFor="custom-tool-credential">
-              Credential (optional)
-            </FieldLabel>
-            <Select
-              items={{
-                "": "None",
-                ...Object.fromEntries(
-                  CREDENTIAL_NAMES.map((name) => [name, name]),
-                ),
-              }}
-              value={credential}
-              onValueChange={(value) => setCredential(String(value ?? ""))}
-            >
-              <SelectTrigger
-                id="custom-tool-credential"
-                aria-label="Credential"
-              >
-                <SelectValue placeholder="None" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectGroup>
-                  <SelectItem value="">None</SelectItem>
-                  {CREDENTIAL_NAMES.map((name: CredentialName) => (
-                    <SelectItem key={name} value={name}>
-                      {name}
-                    </SelectItem>
-                  ))}
-                </SelectGroup>
-              </SelectContent>
-            </Select>
-          </Field>
-        </div>
-        {duplicate ? (
-          <FieldError className="text-xs">
-            A tool with this name already exists — rename it.
-          </FieldError>
-        ) : null}
-        {urlInvalid ? (
-          <FieldError className="text-xs">
-            Enter a valid https URL for the webhook.
-          </FieldError>
-        ) : null}
-        {error ? <FieldError className="text-xs">{error}</FieldError> : null}
-        <div>
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            disabled={!canAdd}
-            onClick={() => {
-              if (!parsedUrl) {
-                setError("Enter a valid https URL for the webhook.");
-                return;
-              }
-              if (parsedUrl.protocol !== "https:") {
-                setError("Custom tool webhooks must use https.");
-                return;
-              }
-              onAdd({
-                id: slug || `custom_${Date.now().toString(36)}`,
-                label: label.trim(),
-                description: description.trim(),
-                mode,
-                kind: "webhook",
-                url: parsedUrl.toString(),
-                ...(credential ? { authCredentialName: credential } : {}),
-              });
-              setLabel("");
-              setDescription("");
-              setUrl("");
-              setMode("interactive");
-              setCredential("");
-              setError(null);
-            }}
-          >
-            Add custom tool
-          </Button>
-        </div>
-      </div>
-      <FieldDescription>
-        Calls your URL with the tool arguments as JSON. The bearer credential
-        is sent as an Authorization header when set.
-      </FieldDescription>
-    </Field>
-  );
-}
 
 /** `languageCodes: []` — automatic detection across all 18 recognised
  *  languages, which the docs recommend for a mixed-language line. Carried as
@@ -273,7 +92,7 @@ const PACE_ITEMS = {
 } as const;
 
 /**
- * Channel rows in the Tools-and-channels card, matching the mockup's
+ * Channel rows in the Tools-and-channels section, matching the mockup's
  * `.switchrow` rows (title + description on the left, Switch on the right).
  */
 const CHANNEL_META = [
@@ -290,6 +109,243 @@ const CHANNEL_META = [
 ] as const;
 
 /**
+ * A flat form-layout-03 section: h2 + muted description left, fields right.
+ * Adapted from blocks.so form-layout-03 (MIT ©2025 Ephraim Duncan), whose
+ * block renders sections in `grid grid-cols-1 gap-10 md:grid-cols-3` with a
+ * `sm:max-w-3xl md:col-span-2` field column, minus its centered demo shell
+ * (the host page owns page chrome) and its demo footer buttons (ours lives
+ * in ConfigFormFooter).
+ */
+function FormLayoutSection({
+  id,
+  title,
+  description,
+  children,
+}: {
+  id: string;
+  title: string;
+  description: string;
+  children: ReactNode;
+}) {
+  return (
+    <section aria-labelledby={id}>
+      <div className="grid grid-cols-1 gap-10 md:grid-cols-3">
+        <div>
+          <h2
+            id={id}
+            className="text-balance font-semibold text-foreground"
+          >
+            {title}
+          </h2>
+          <p className="mt-1 text-pretty text-muted-foreground text-sm leading-6">
+            {description}
+          </p>
+        </div>
+        <div className="sm:max-w-3xl md:col-span-2">{children}</div>
+      </div>
+    </section>
+  );
+}
+
+/**
+ * Picker over connected-provider tools (GOAL 4B): checkbox rows grouped by
+ * provider with overlap hints where the catalog says tools achieve the same
+ * thing ("X and Y achieve the same thing — pick one"), plus a "Connect
+ * more in Settings" link-out. Unconnected providers render as a single
+ * disabled prompt row pointing at /settings instead of their tools.
+ *
+ * Selections live in `config.tools` as namespaced `"<provider>.<tool>"`
+ * keys so they round-trip through the existing JSON config storage.
+ */
+function ProviderToolPicker({
+  connectedProviders,
+  selectedKeys,
+  onToggle,
+}: {
+  connectedProviders: ProviderId[];
+  selectedKeys: Set<string>;
+  onToggle: (key: string, enabled: boolean) => void;
+}) {
+  const connected = useMemo(
+    () => new Set<string>(connectedProviders),
+    [connectedProviders],
+  );
+  if (PROVIDER_CATALOG.length === 0) return null;
+  return (
+    <Field>
+      <FieldLabel>Provider tools</FieldLabel>
+      <div className="flex flex-col gap-2">
+        {PROVIDER_CATALOG.filter((provider) =>
+          connected.has(provider.id),
+        ).map((provider) => (
+          <fieldset key={provider.id}>
+            <legend className="text-xs font-medium text-muted-foreground">
+              {provider.label}
+            </legend>
+            <div className="mt-1 flex flex-col gap-2">
+              {provider.tools.map((tool) => {
+                const key = providerToolKey(provider.id, tool.id);
+                const id = `provider-tool-${provider.id}-${tool.id}`;
+                const enabled = selectedKeys.has(key);
+                const overlaps = overlapLabels(tool);
+                return (
+                  <div
+                    key={tool.id}
+                    className="flex min-w-0 flex-1 items-center gap-2.5 rounded-[10px] border px-3 py-2.5"
+                  >
+                    <Checkbox
+                      id={id}
+                      checked={enabled}
+                      onCheckedChange={(checked: boolean) =>
+                        onToggle(key, checked)
+                      }
+                    />
+                    <div className="flex min-w-0 flex-col gap-0.5">
+                      <FieldLabel
+                        htmlFor={id}
+                        className="cursor-pointer text-sm font-medium"
+                      >
+                        {tool.label}
+                      </FieldLabel>
+                      <FieldDescription className="text-xs">
+                        {tool.description}
+                      </FieldDescription>
+                      {overlaps.length > 0 ? (
+                        <span className="text-xs text-muted-foreground">
+                          {tool.label} and {overlaps.join(", ")} achieve the
+                          same thing — pick one.
+                        </span>
+                      ) : null}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </fieldset>
+        ))}
+        {PROVIDER_CATALOG.filter(
+          (provider) => !connected.has(provider.id),
+        ).map((provider) => (
+          <div
+            key={provider.id}
+            className="flex items-center justify-between gap-3 rounded-[10px] border px-3 py-2.5"
+          >
+            <div className="flex min-w-0 flex-col gap-0.5">
+              <strong className="text-sm font-medium">
+                {provider.label}
+              </strong>
+              <span className="text-xs text-muted-foreground">
+                {provider.description}
+              </span>
+            </div>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              nativeButton={false}
+              render={<Link href="/settings" />}
+            >
+              Connect
+            </Button>
+          </div>
+        ))}
+      </div>
+      <FieldDescription>
+        <Link href="/settings" className="underline underline-offset-4">
+          Connect more in Settings
+        </Link>
+      </FieldDescription>
+    </Field>
+  );
+}
+
+/**
+ * A built-in voice tool rendered in the tools table: checkbox in the select
+ * column, plain name, a "waits for result" Badge when the registry marks it
+ * hold-mode. The row action menu is display-only — tool catalog rows have no
+ * per-row destructive action, so "View details" is disabled scaffolding
+ * carried for the table-05 shape.
+ */
+function BuiltinToolRow({
+  name,
+  description,
+  hold,
+  enabled,
+  onToggle,
+}: {
+  name: string;
+  description: string;
+  hold: boolean;
+  enabled: boolean;
+  onToggle: (enabled: boolean) => void;
+}) {
+  return (
+    <ToolTableRow
+      id={`tool-${name}`}
+      checked={enabled}
+      onCheckedChange={onToggle}
+      name={name}
+      description={description}
+      status={
+        hold ? (
+          <Badge variant="secondary" className="whitespace-nowrap">
+            waits for result
+          </Badge>
+        ) : (
+          <Badge variant="outline" className="whitespace-nowrap">
+            instant
+          </Badge>
+        )
+      }
+    />
+  );
+}
+
+/**
+ * One selectable row in the connected-tools table: table-05's checkbox +
+ * name + status-Badge shape over tools data. The last column stays empty for
+ * now — the block's row-actions menu arrives with the first per-tool action
+ * that needs it, not before.
+ */
+function ToolTableRow({
+  id,
+  checked,
+  onCheckedChange,
+  name,
+  description,
+  status,
+}: {
+  id: string;
+  checked: boolean;
+  onCheckedChange: (checked: boolean) => void;
+  name: ReactNode;
+  description: ReactNode;
+  status: ReactNode;
+}) {
+  return (
+    <TableRow data-state={checked && "selected"}>
+      <TableCell>
+        <Checkbox
+          id={id}
+          aria-label={`Select ${typeof name === "string" ? name : "tool"}`}
+          checked={checked}
+          onCheckedChange={onCheckedChange}
+        />
+      </TableCell>
+      <TableCell>
+        <div className="flex min-w-0 flex-col gap-0.5">
+          <FieldLabel htmlFor={id} className="cursor-pointer font-medium">
+            {name}
+          </FieldLabel>
+          <span className="text-xs text-muted-foreground">{description}</span>
+        </div>
+      </TableCell>
+      <TableCell>{status}</TableCell>
+    </TableRow>
+  );
+}
+
+/**
  * Form footer (form-layout-01 terminal bar idiom): a Separator plus a
  * right-aligned action row following the house rule — secondary actions left,
  * primary save right — matching WizardFooter's secondary-left/primary-right
@@ -297,7 +353,7 @@ const CHANNEL_META = [
  * secondary).
  *
  * The footer is normal document flow everywhere — the bar renders inline
- * after the last card on all screen sizes, never fixed or sticky.
+ * after the last section on all screen sizes, never fixed or sticky.
  */
 export function ConfigFormFooter({
   secondary,
@@ -341,6 +397,7 @@ export function AgentConfigForm({
   footerPrimaryActions,
   phoneReady,
   whatsappReady,
+  connectedProviders = [],
 }: {
   initialName: string;
   initialConfig: AgentConfig;
@@ -357,12 +414,16 @@ export function AgentConfigForm({
   phoneReady?: boolean | null;
   whatsappReady?: boolean | null;
   /**
-   * Whether there are unsaved edits, for the footer's "• Unsaved changes"
-   * marker. Deliberately a prop rather than derived here: the host page
-   * already computes this from its own last-saved snapshot and feeds the same
-   * value to the test rail's version strip. Two independent computations
-   * would drift, and the footer chip and the rail pill would then contradict
-   * each other on one screen.
+   * Provider ids the workspace has connected (e.g. from /settings). The
+   * picker shows checkbox rows for connected providers and a Connect prompt
+   * for the rest. Defaults to none connected, so the picker degrades to the
+   * link-out rather than an empty list.
+   */
+  connectedProviders?: string[];
+  /**
+   * Whether there are unsaved edits. Kept as a prop (the host page already
+   * computes it from its own last-saved snapshot) but no longer rendered
+   * here — the floating pill owns the unsaved indicator.
    */
   isDirty?: boolean;
   /** Optional secondary action rendered left of the primary save (e.g. Delete). */
@@ -370,9 +431,12 @@ export function AgentConfigForm({
   /** Optional actions composed immediately before Save (e.g. Test agent). */
   footerPrimaryActions?: ReactNode;
 }) {
+  void isDirty;
   const [name, setName] = useState(initialName);
   const [config, setConfig] = useState<AgentConfig>(initialConfig);
   const [saving, setSaving] = useState(false);
+  const [toolsOpen, setToolsOpen] = useState(false);
+  const [ideaGuidance, setIdeaGuidance] = useState<string | null>(null);
 
   /**
    * Every detail this agent has ever been configured to detect, seeded once
@@ -486,6 +550,7 @@ export function AgentConfigForm({
   };
 
   const dismissIdea = (ideaName: string) => {
+    setIdeaGuidance(null);
     set(
       "toolIdeas",
       (config.toolIdeas ?? []).filter((idea) => idea.name !== ideaName),
@@ -493,39 +558,39 @@ export function AgentConfigForm({
   };
 
   const enableIdea = (idea: ToolIdea) => {
-    // A matching built-in wins over a new custom row: one enabled name
-    // instead of a duplicate webhook that does the same job.
+    // A matching built-in wins over a new provider pick: one enabled name
+    // instead of a duplicate tool that does the same job.
     const match = TOOL_REGISTRY.find(
       (t) =>
         t.name === idea.name ||
         t.name.includes(idea.name) ||
         idea.name.includes(t.name),
     );
-    if (match) toggleTool(match.name, true);
-    else {
-      // No wall-clock fallback: an un-sluggable idea name rejects at the
-      // schema layer instead of minting a random id mid-render.
-      const id = idea.name
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, "_")
-        .replace(/^_|_$/g, "")
-        .slice(0, 60);
-      if (!id) return;
-      addCustomTool({
-        id,
-        label: idea.label,
-        description: idea.description,
-        mode: "interactive",
-        kind: "webhook",
-        url: "",
-      });
+    if (match) {
+      toggleTool(match.name, true);
+      dismissIdea(idea.name);
+      return;
     }
-    dismissIdea(idea.name);
-  };
-
-  const addCustomTool = (tool: CustomTool) => {
-    if ((config.customTools ?? []).some((t) => t.id === tool.id)) return;
-    set("customTools", [...(config.customTools ?? []), tool]);
+    // Otherwise the nearest connected-provider tool wins; with none
+    // connected (or no catalog match) the row stays and explains which
+    // provider to connect instead of drafting a webhook that has no URL.
+    const catalog = matchCatalogTool(`${idea.label} ${idea.name}`);
+    if (
+      catalog &&
+      connectedProviders.includes(catalog.provider.id)
+    ) {
+      toggleTool(
+        providerToolKey(catalog.provider.id, catalog.tool.id),
+        true,
+      );
+      dismissIdea(idea.name);
+      return;
+    }
+    setIdeaGuidance(
+      catalog
+        ? `“${idea.label}” looks like ${catalog.provider.label} ${catalog.tool.label} — connect ${catalog.provider.label} in Settings to enable it.`
+        : `No connected provider offers “${idea.label}” yet — connect the provider that owns it in Settings.`,
+    );
   };
 
   const removeCustomTool = (id: string) => {
@@ -540,23 +605,36 @@ export function AgentConfigForm({
     .slice(1)
     .map((code) => inputLanguage(code)?.label ?? code);
 
+  // Collapsed header counts: enabled voice tools (built-ins plus provider
+  // picks already in config.tools), legacy custom rows, and channel state.
+  const enabledBuiltins = config.tools.filter((t) =>
+    TOOL_REGISTRY.some((tool) => tool.name === t),
+  ).length;
+  const enabledProviderTools = config.tools.length - enabledBuiltins;
+  const legacyCustomCount = (config.customTools ?? []).length;
+  const enabledToolCount =
+    enabledBuiltins + enabledProviderTools + legacyCustomCount;
+  const channelsOn = config.channels.length;
+  const phoneOn = config.channels.includes("phone");
+  const whatsappOn = config.channels.includes("whatsapp");
+  const selectedProviderKeys = useMemo(
+    () => new Set(config.tools),
+    [config.tools],
+  );
+  const allBuiltinSelected =
+    TOOL_REGISTRY.length > 0 &&
+    TOOL_REGISTRY.every((tool) => config.tools.includes(tool.name));
+
   return (
     <div className="flex flex-col gap-3">
-      <section aria-labelledby="config-identity-heading" className="flex flex-col gap-3">
-        <div>
-          <h2 id="config-identity-heading" className="text-balance font-semibold text-foreground">
-            Identity
-          </h2>
-          <p className="mt-1 text-pretty text-muted-foreground text-sm leading-6">
-            Name, voice, and language callers hear.
-          </p>
-        </div>
-          <Card className="rounded-xl border">
-            <CardContent className="flex flex-col gap-3">
+      <FormLayoutSection
+        id="config-identity-heading"
+        title="Identity"
+        description="Name, voice, and language callers hear."
+      >
+        <FieldGroup>
           <Field>
-            <FieldLabel htmlFor="agent-name">
-              Agent name
-            </FieldLabel>
+            <FieldLabel htmlFor="agent-name">Agent name</FieldLabel>
             <Input
               id="agent-name"
               className="max-w-md"
@@ -570,9 +648,7 @@ export function AgentConfigForm({
 
           <div className="grid gap-3 lg:grid-cols-2">
             <Field>
-              <FieldLabel htmlFor="identity-role">
-                Role
-              </FieldLabel>
+              <FieldLabel htmlFor="identity-role">Role</FieldLabel>
               <Input
                 id="identity-role"
                 className="max-w-md"
@@ -586,9 +662,7 @@ export function AgentConfigForm({
               />
             </Field>
             <Field>
-              <FieldLabel htmlFor="agent-language">
-                Language
-              </FieldLabel>
+              <FieldLabel htmlFor="agent-language">Language</FieldLabel>
               <Select
                 items={languageItems}
                 value={
@@ -636,9 +710,7 @@ export function AgentConfigForm({
           </div>
 
           <Field>
-            <FieldLabel htmlFor="agent-voice">
-              Voice
-            </FieldLabel>
+            <FieldLabel htmlFor="agent-voice">Voice</FieldLabel>
             <Select
               items={voiceItems}
               value={config.voiceId}
@@ -647,7 +719,11 @@ export function AgentConfigForm({
                 if (value) set("voiceId", String(value));
               }}
             >
-              <SelectTrigger id="agent-voice" aria-label="Voice" className="w-full max-w-md">
+              <SelectTrigger
+                id="agent-voice"
+                aria-label="Voice"
+                className="w-full max-w-md"
+              >
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -674,26 +750,18 @@ export function AgentConfigForm({
               and a new one begins in the new voice.
             </FieldDescription>
           </Field>
-            </CardContent>
-          </Card>
-      </section>
+        </FieldGroup>
+      </FormLayoutSection>
 
-      <Separator />
-      <section aria-labelledby="config-mission-heading" className="flex flex-col gap-3">
-        <div>
-          <h2 id="config-mission-heading" className="text-balance font-semibold text-foreground">
-            Mission
-          </h2>
-          <p className="mt-1 text-pretty text-muted-foreground text-sm leading-6">
-            What {agentLabel} is trying to accomplish on every call.
-          </p>
-        </div>
-          <Card className="rounded-xl border">
-            <CardContent className="flex flex-col gap-3">
+      <Separator className="my-8" />
+      <FormLayoutSection
+        id="config-mission-heading"
+        title="Mission"
+        description={`What ${agentLabel} is trying to accomplish on every call.`}
+      >
+        <FieldGroup>
           <Field>
-            <FieldLabel htmlFor="mission">
-              Mission statement
-            </FieldLabel>
+            <FieldLabel htmlFor="mission">Mission statement</FieldLabel>
             <Textarea
               id="mission"
               className="min-h-[76px] resize-y [field-sizing:fixed]"
@@ -705,9 +773,7 @@ export function AgentConfigForm({
             />
           </Field>
           <Field>
-            <FieldLabel htmlFor="greeting">
-              Greeting
-            </FieldLabel>
+            <FieldLabel htmlFor="greeting">Greeting</FieldLabel>
             <Input
               id="greeting"
               value={config.greeting}
@@ -721,23 +787,16 @@ export function AgentConfigForm({
             Suggested first line to test: “Hi, I&apos;m looking for a 2-bedroom
             near Riverside under $2,400.”
           </p>
-            </CardContent>
-          </Card>
-      </section>
+        </FieldGroup>
+      </FormLayoutSection>
 
-      <Separator />
-      {/* Detect rows retain the form-layout-03 settings-row idiom. */}
-      <section aria-labelledby="config-conversation-heading" className="flex flex-col gap-3">
-        <div>
-          <h2 id="config-conversation-heading" className="text-balance font-semibold text-foreground">
-            Conversation
-          </h2>
-          <p className="mt-1 text-pretty text-muted-foreground text-sm leading-6">
-            Details {agentLabel} listens for before booking.
-          </p>
-        </div>
-          <Card className="rounded-xl border">
-            <CardContent className="flex flex-col gap-3">
+      <Separator className="my-8" />
+      <FormLayoutSection
+        id="config-conversation-heading"
+        title="Conversation"
+        description={`Details ${agentLabel} listens for before booking.`}
+      >
+        <FieldGroup>
           <Field>
             <FieldLabel>Detect and remember</FieldLabel>
             <div className="flex flex-col gap-2">
@@ -820,9 +879,7 @@ export function AgentConfigForm({
           </Field>
 
           <Field>
-            <FieldLabel htmlFor="knowledge">
-              House rules
-            </FieldLabel>
+            <FieldLabel htmlFor="knowledge">House rules</FieldLabel>
             <Textarea
               id="knowledge"
               className="min-h-[76px] resize-y [field-sizing:fixed]"
@@ -831,199 +888,242 @@ export function AgentConfigForm({
               onChange={(e) => set("knowledge", e.target.value)}
             />
           </Field>
-            </CardContent>
-          </Card>
-      </section>
+        </FieldGroup>
+      </FormLayoutSection>
 
-      <Separator />
-      {/* Tool and channel rows retain the form-layout-03 settings-row idiom. */}
-      <section aria-labelledby="config-tools-heading" className="flex flex-col gap-3">
-        <div>
-          <h2 id="config-tools-heading" className="text-balance font-semibold text-foreground">
-            Tools and channels
-          </h2>
-          <p className="mt-1 text-pretty text-muted-foreground text-sm leading-6">
-            What {agentLabel} can do, and where it answers.
-          </p>
-        </div>
-          <Card className="rounded-xl border">
-            <CardContent className="flex flex-col gap-3">
-          {/* Suggested for this agent: LLM tool ideas from the wizard brief.
-              Enabling maps to the nearest built-in when one matches, or
-              drafts a custom webhook row below; dismissing drops the card. */}
-          {(config.toolIdeas ?? []).length > 0 ? (
-            <Field>
-              <FieldLabel>Suggested for this agent</FieldLabel>
-              <div className="flex flex-col gap-2">
-                {(config.toolIdeas ?? []).map((idea) => (
-                  <div
-                    key={idea.name}
-                    className="flex items-center justify-between gap-3 rounded-[10px] border px-3 py-2.5"
-                  >
-                    <div className="flex min-w-0 flex-col gap-0.5">
-                      <strong className="text-sm font-medium">
-                        {idea.label}
-                      </strong>
-                      <span className="text-xs text-muted-foreground">
-                        {idea.description}
+      <Separator className="my-8" />
+      <FormLayoutSection
+        id="config-tools-heading"
+        title="Tools and channels"
+        description={`What ${agentLabel} can do, and where it answers.`}
+      >
+        <Collapsible
+          open={toolsOpen}
+          onOpenChange={setToolsOpen}
+          className="flex flex-col gap-3"
+        >
+          <CollapsibleTrigger
+            render={
+              <Button
+                type="button"
+                variant="ghost"
+                className="group/button h-auto w-full justify-start px-3 py-3 text-left"
+              />
+            }
+          >
+            <span className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+              <span className="font-medium">Connected tools</span>
+              <Badge variant="secondary">
+                Tools · {enabledToolCount}
+              </Badge>
+              <Badge variant="outline">
+                Channels · {channelsOn === CHANNELS.length ? "all on" : `${channelsOn} on`} · phone{" "}
+                {phoneOn ? "on" : "off"} · whatsapp {whatsappOn ? "on" : "off"}
+              </Badge>
+            </span>
+            <ChevronsUpDown
+              aria-hidden="true"
+              className="ml-auto shrink-0 transition-transform group-data-panel-open/button:rotate-180"
+            />
+          </CollapsibleTrigger>
+          <CollapsibleContent className="flex flex-col gap-3">
+            {/* Suggested for this agent: LLM tool ideas from the wizard brief.
+                Enabling maps to the nearest built-in or connected-provider
+                tool; with no match the row stays and points at the provider
+                to connect. Dismissing drops the card. */}
+            {(config.toolIdeas ?? []).length > 0 ? (
+              <Field>
+                <FieldLabel>Suggested for this agent</FieldLabel>
+                <div className="flex flex-col gap-2">
+                  {(config.toolIdeas ?? []).map((idea) => (
+                    <div
+                      key={idea.name}
+                      className="flex items-center justify-between gap-3 rounded-[10px] border px-3 py-2.5"
+                    >
+                      <div className="flex min-w-0 flex-col gap-0.5">
+                        <strong className="text-sm font-medium">
+                          {idea.label}
+                        </strong>
+                        <span className="text-xs text-muted-foreground">
+                          {idea.description}
+                        </span>
+                      </div>
+                      <span className="flex shrink-0 items-center gap-2">
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          onClick={() => enableIdea(idea)}
+                        >
+                          Enable
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => dismissIdea(idea.name)}
+                        >
+                          Dismiss
+                        </Button>
                       </span>
                     </div>
-                    <span className="flex shrink-0 items-center gap-2">
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="outline"
-                        onClick={() => enableIdea(idea)}
-                      >
-                        Enable
-                      </Button>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="ghost"
-                        onClick={() => dismissIdea(idea.name)}
-                      >
-                        Dismiss
-                      </Button>
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </Field>
-          ) : null}
+                  ))}
+                </div>
+                {ideaGuidance ? (
+                  <FieldError className="text-xs">{ideaGuidance}</FieldError>
+                ) : null}
+              </Field>
+            ) : null}
 
-          {/* Connected tools: one enable checkbox per row plus the hold-mode
-              badge as information. Unchecking removes the tool from the
-              config — re-enabling below restores it. */}
-          <Field>
-            <FieldLabel>Connected tools</FieldLabel>
-            <div className="flex flex-col gap-2">
-              {TOOL_REGISTRY.map((tool) => {
-                const enabled = config.tools.includes(tool.name);
-                const id = `tool-${tool.name}`;
-                return (
-                  <div
-                    key={tool.name}
-                    className="flex items-center justify-between gap-3 rounded-[10px] border px-3 py-2.5"
-                  >
-                    <div className="flex min-w-0 flex-1 items-center gap-2.5">
-                      <Checkbox
-                        id={id}
-                        checked={enabled}
-                        onCheckedChange={(checked: boolean) =>
-                          toggleTool(tool.name, checked)
+            {/* Connected tools: table-05's checkbox/name/status shape over
+                tools data. The select-all box mirrors the whole registry; the
+                name column reads the catalog entry; the status column carries
+                the hold-mode badge as information. */}
+            <Field>
+              <FieldLabel>Connected tools</FieldLabel>
+              <div className="rounded-lg border">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="w-10">
+                        <Checkbox
+                          aria-label="Select all tools"
+                          checked={allBuiltinSelected}
+                          onCheckedChange={(checked: boolean) => {
+                            for (const tool of TOOL_REGISTRY) {
+                              toggleTool(tool.name, checked);
+                            }
+                          }}
+                        />
+                      </TableHead>
+                      <TableHead>Name</TableHead>
+                      <TableHead>Status</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {TOOL_REGISTRY.map((tool) => (
+                      <BuiltinToolRow
+                        key={tool.name}
+                        name={tool.name}
+                        description={tool.description}
+                        hold={tool.mode === "hold"}
+                        enabled={config.tools.includes(tool.name)}
+                        onToggle={(enabled) =>
+                          toggleTool(tool.name, enabled)
                         }
                       />
-                      <div className="flex min-w-0 flex-col gap-0.5">
-                        <FieldLabel
-                          htmlFor={id}
-                          className="cursor-pointer text-sm font-medium"
-                        >
-                          {tool.name}
-                        </FieldLabel>
-                        <FieldDescription className="text-xs">
-                          {tool.description}
-                        </FieldDescription>
-                      </div>
-                    </div>
-                    {tool.mode === "hold" ? (
-                      <Badge variant="secondary" className="whitespace-nowrap">
-                        waits for result
-                      </Badge>
-                    ) : null}
-                  </div>
-                );
-              })}
-              {(config.customTools ?? []).map((tool) => (
-                <div
-                  key={tool.id}
-                  className="flex items-center justify-between gap-3 rounded-[10px] border px-3 py-2.5"
-                >
-                  <div className="flex min-w-0 flex-col gap-0.5">
-                    <strong className="text-sm font-medium">
-                      {tool.label}
-                    </strong>
-                    <span className="text-xs text-muted-foreground">
-                      {tool.description}
-                    </span>
-                  </div>
-                  <span className="flex shrink-0 items-center gap-2">
-                    {tool.mode === "hold" ? (
-                      <Badge variant="secondary" className="whitespace-nowrap">
-                        waits for result
-                      </Badge>
-                    ) : null}
-                    <Badge variant="outline" className="whitespace-nowrap">
-                      custom
-                    </Badge>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => removeCustomTool(tool.id)}
-                    >
-                      Disconnect
-                    </Button>
-                  </span>
-                </div>
-              ))}
-            </div>
-          </Field>
-
-          <AddCustomToolForm
-            existingIds={new Set([
-              ...TOOL_REGISTRY.map((t) => t.name),
-              ...(config.customTools ?? []).map((t) => t.id),
-            ])}
-            onAdd={addCustomTool}
-          />
-
-          {CHANNEL_META.map((channel) => {
-            const id = `channel-${channel.value}`;
-            const enabled = config.channels.includes(channel.value);
-            const ready =
-              channel.value === "phone" ? phoneReady : whatsappReady;
-            return (
-              <div
-                key={channel.value}
-                className="flex items-center justify-between gap-3 border-t pt-3"
-              >
-                <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-                  <FieldLabel htmlFor={id} className="text-sm font-medium">
-                    {channel.title}
-                  </FieldLabel>
-                  <FieldDescription className="text-xs">
-                    {ready === false
-                      ? `${channel.description} Needs setup — connect it before this channel can answer.`
-                      : channel.description}
-                  </FieldDescription>
-                  {ready === false ? (
-                    <span className="flex flex-wrap items-center gap-2 pt-1">
-                      <Badge variant="secondary">Needs setup</Badge>
-                      <Link
-                        href={
-                          channel.value === "phone" ? "/numbers" : "/settings"
-                        }
-                        className="text-xs underline underline-offset-4"
-                      >
-                        {channel.value === "phone"
-                          ? "Connect a number"
-                          : "Open settings"}
-                      </Link>
-                    </span>
-                  ) : null}
-                </div>
-                <Switch
-                  id={id}
-                  checked={enabled}
-                  onCheckedChange={() => toggleChannel(channel.value)}
-                />
+                    ))}
+                    {/* Legacy webhook rows stay read-only so saved agents
+                        never lose tools: disconnect only. An entry whose url
+                        failed validation at enable time cannot execute — the
+                        "Needs URL" badge says so instead of failing silently
+                        on the next call. */}
+                    {(config.customTools ?? []).map((tool: CustomTool) => (
+                      <TableRow key={tool.id}>
+                        <TableCell />
+                        <TableCell>
+                          <div className="flex min-w-0 flex-col gap-0.5">
+                            <strong className="text-sm font-medium">
+                              {tool.label}
+                            </strong>
+                            <span className="text-xs text-muted-foreground">
+                              {tool.description}
+                            </span>
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          <span className="flex flex-wrap items-center gap-2">
+                            {tool.mode === "hold" ? (
+                              <Badge
+                                variant="secondary"
+                                className="whitespace-nowrap"
+                              >
+                                waits for result
+                              </Badge>
+                            ) : null}
+                            <Badge
+                              variant="outline"
+                              className="whitespace-nowrap"
+                            >
+                              custom
+                            </Badge>
+                            {!tool.url ? (
+                              <Badge
+                                variant="secondary"
+                                className="whitespace-nowrap"
+                              >
+                                Needs URL
+                              </Badge>
+                            ) : null}
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => removeCustomTool(tool.id)}
+                            >
+                              Disconnect
+                            </Button>
+                          </span>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
               </div>
-            );
-          })}
-            </CardContent>
-          </Card>
-      </section>
+            </Field>
+
+            <ProviderToolPicker
+              connectedProviders={connectedProviders as ProviderId[]}
+              selectedKeys={selectedProviderKeys}
+              onToggle={toggleTool}
+            />
+
+            {CHANNEL_META.map((channel) => {
+              const id = `channel-${channel.value}`;
+              const enabled = config.channels.includes(channel.value);
+              const ready =
+                channel.value === "phone" ? phoneReady : whatsappReady;
+              return (
+                <div
+                  key={channel.value}
+                  className="flex items-center justify-between gap-3 border-t pt-3"
+                >
+                  <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                    <FieldLabel htmlFor={id} className="text-sm font-medium">
+                      {channel.title}
+                    </FieldLabel>
+                    <FieldDescription className="text-xs">
+                      {ready === false
+                        ? `${channel.description} Needs setup — connect it before this channel can answer.`
+                        : channel.description}
+                    </FieldDescription>
+                    {ready === false ? (
+                      <span className="flex flex-wrap items-center gap-2 pt-1">
+                        <Badge variant="secondary">Needs setup</Badge>
+                        <Link
+                          href={
+                            channel.value === "phone" ? "/numbers" : "/settings"
+                          }
+                          className="text-xs underline underline-offset-4"
+                        >
+                          {channel.value === "phone"
+                            ? "Connect a number"
+                            : "Open settings"}
+                        </Link>
+                      </span>
+                    ) : null}
+                  </div>
+                  <Switch
+                    id={id}
+                    checked={enabled}
+                    onCheckedChange={() => toggleChannel(channel.value)}
+                  />
+                </div>
+              );
+            })}
+          </CollapsibleContent>
+        </Collapsible>
+      </FormLayoutSection>
 
       <ConfigFormFooter
         secondary={footerSecondary}
@@ -1054,15 +1154,6 @@ export function AgentConfigForm({
             >
               {submitLabel}
             </LoadingButton>
-            {isDirty ? (
-              <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                <span
-                  aria-hidden
-                  className="inline-block size-2 rounded-full bg-chart-2"
-                />
-                Unsaved changes
-              </span>
-            ) : null}
           </>
         }
       />

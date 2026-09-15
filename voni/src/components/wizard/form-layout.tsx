@@ -3,19 +3,26 @@
 import type { ReactNode } from "react";
 import { ArrowLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
 
 /**
  * Shared form spacing + footer compositions.
  *
+ * Canonical pattern: blocks.so form-layout-03 — flat side-label sections, no
+ * Card chrome around form groups. Forms are not surfaces, so FormCard renders
+ * a plain wrapper: spacing comes from the sections and their `my-8`
+ * separators, never from card padding. Only true surfaces (stat/dashboard
+ * cards, status alerts, empty states, dialogs) keep Card.
+ *
  * Token map (spec):
  * - Page title → description: 8px (gap-2).
  * - Page heading → first content section: 24px mobile, 32px md+ (mb-6 md:mb-8).
- * - Form sections: 24px apart (gap-6).
- * - Wizard card padding: 16px mobile, 24px md+ (p-4 md:p-6 + card var).
- * - Card header → content: 24px (gap-6).
+ * - Side-label section: `grid grid-cols-1 gap-10 md:grid-cols-3`; heading
+ *   left, fields in `sm:max-w-3xl md:col-span-2`; sections divided by
+ *   `Separator my-8`.
+ * - Single-section stacks (one group, wizard chrome, review summaries) keep
+ *   `flex flex-col gap-6` via FormCardSections.
  *
  * Widths stay page-specific — these compositions never set max-width.
  */
@@ -47,38 +54,100 @@ export function PageHeading({
 }
 
 /**
- * Spacious card variant for forms. Do NOT use for dashboard/stat cards —
- * those keep the default compact padding.
+ * Flat form container. Intentionally NOT a Card: form groups are not surfaces,
+ * so there is no border, background, or padding here. Single-section consumers
+ * stack through FormCardSections; multi-section forms place FormSection blocks
+ * divided by FormSectionSeparator directly inside.
  */
 export function FormCard({
   className,
   children,
   ...props
-}: React.ComponentProps<typeof Card>) {
+}: React.ComponentProps<"div">) {
   return (
-    <Card
-      data-slot="form-card"
-      className={cn(
-        "gap-6 py-4 md:py-6 md:[--card-spacing:--spacing(6)]",
-        className,
-      )}
-      {...props}
-    >
+    <div data-slot="form-card" className={cn(className)} {...props}>
       {children}
-    </Card>
+    </div>
   );
 }
 
 export function FormCardSections({
   className,
   ...props
-}: React.ComponentProps<typeof CardContent>) {
+}: React.ComponentProps<"div">) {
   return (
-    <CardContent
+    <div
       className={cn("flex flex-col gap-6", className)}
       {...props}
     />
   );
+}
+
+/**
+ * One flat side-label section (form-layout-03): heading left, fields right,
+ * stacking on mobile. Pass the heading node (usually FormSectionHeading, or
+ * the wizard's StepHeading which keeps its step-focus behavior) and the field
+ * content as children; section labelling flows through standard section props
+ * such as `aria-labelledby`.
+ */
+export function FormSection({
+  heading,
+  className,
+  children,
+  ...props
+}: React.ComponentProps<"section"> & {
+  heading: ReactNode;
+}) {
+  return (
+    <section
+      className={cn("grid grid-cols-1 gap-10 md:grid-cols-3", className)}
+      {...props}
+    >
+      <div>{heading}</div>
+      <div className="sm:max-w-3xl md:col-span-2">{children}</div>
+    </section>
+  );
+}
+
+/**
+ * The left-column heading for a FormSection: h2 (settings groups under a page
+ * h1) or h3 (nested groups, e.g. the CSV import under the campaign h2).
+ */
+export function FormSectionHeading({
+  level = 2,
+  id,
+  title,
+  description,
+}: {
+  level?: 2 | 3;
+  id?: string;
+  title: string;
+  description?: string;
+}) {
+  const Tag = level === 3 ? "h3" : "h2";
+  return (
+    <>
+      <Tag id={id} className="text-balance font-semibold">
+        {title}
+      </Tag>
+      {description ? (
+        <p className="mt-1 text-pretty text-muted-foreground text-sm leading-6">
+          {description}
+        </p>
+      ) : null}
+    </>
+  );
+}
+
+/**
+ * The ruled divider between flat sections (and before the action row):
+ * `Separator my-8`, per the canonical pattern.
+ */
+export function FormSectionSeparator({
+  className,
+  ...props
+}: React.ComponentProps<typeof Separator>) {
+  return <Separator className={cn("my-8", className)} {...props} />;
 }
 
 /**

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { REAL_ESTATE_TEMPLATE } from "@/lib/agents/config";
 import {
   SENSITIVE_CAPTURE_TOOL,
+  compileProviderTool,
   compileVoiceTools,
   validateToolArguments,
 } from "./definitions";
@@ -28,6 +29,37 @@ test("compiles only selected business tools plus sensitive pacing", () => {
     ].enum,
     ["phone"],
   );
+});
+
+test("compiles catalog provider tools to hold stubs without breaking built-ins", () => {
+  const tools = compileVoiceTools({
+    ...REAL_ESTATE_TEMPLATE,
+    tools: [
+      "search_properties",
+      "gmail.send_email",
+      "zoho.log_call",
+      "book_viewing",
+      "outlook.send_email",
+    ],
+    detect: [],
+  });
+  assert.deepEqual(
+    tools.map((tool) => tool.name),
+    [
+      "search_properties",
+      "gmail.send_email",
+      "zoho.log_call",
+      "book_viewing",
+    ],
+  );
+  const stub = tools.find((tool) => tool.name === "gmail.send_email");
+  assert.equal(stub?.execution_mode, "hold");
+  assert.match(stub?.description ?? "", /Gmail/);
+});
+
+test("returns null for unknown provider keys", () => {
+  assert.equal(compileProviderTool("outlook.send_email"), null);
+  assert.equal(compileProviderTool("search_properties"), null);
 });
 
 test("does not register pacing without a sensitive field", () => {

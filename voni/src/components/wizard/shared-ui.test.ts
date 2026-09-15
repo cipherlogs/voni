@@ -161,13 +161,22 @@ test("ConversationPicker is the merged Language & voice section", () => {
   assert.ok(!source.includes("max-w-44"));
 });
 
-test("Form layout tokens: heading gaps, card padding, static footer", () => {
+test("Form layout tokens: heading gaps, flat sections, static footer", () => {
   const source = read("form-layout.tsx");
   assert.ok(source.includes("mb-6 md:mb-8"));
   assert.ok(source.includes("gap-2"));
   assert.ok(source.includes("gap-6"));
-  assert.ok(source.includes("py-4 md:py-6"));
-  assert.ok(source.includes("--card-spacing"));
+  // Flat side-label sections (form-layout-03): no Card chrome on form groups.
+  assert.ok(source.includes("grid grid-cols-1 gap-10 md:grid-cols-3"));
+  assert.ok(source.includes("sm:max-w-3xl md:col-span-2"));
+  assert.ok(source.includes('"my-8"'));
+  assert.ok(source.includes("FormSection"));
+  assert.ok(source.includes("FormSectionHeading"));
+  assert.ok(source.includes("FormSectionSeparator"));
+  // FormCard is a plain wrapper now — settings-view keeps its own stack via
+  // FormCardSections. No Card import survives in this file.
+  assert.ok(!source.includes("ui/card"));
+  assert.ok(!source.includes("py-4 md:py-6"));
   // Normal document flow — a stuck footer covered scrolled form content.
   // dialog-11 terminal bar (DESIGN.md §4): ruled Separator, not a border-t div.
   assert.ok(!source.includes("sticky"));
