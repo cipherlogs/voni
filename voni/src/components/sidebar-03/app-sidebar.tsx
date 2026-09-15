@@ -36,7 +36,6 @@ import {
 import { cn } from "@/lib/utils";
 import { signOut } from "@/lib/auth-client";
 import { BrandLogo } from "@/components/sidebar-03/logo";
-import { NotificationsBell } from "@/components/sidebar-03/notifications-bell";
 import { SidebarUtilityGroup } from "@/components/sidebar-03/utility-rows";
 
 /**
@@ -45,10 +44,11 @@ import { SidebarUtilityGroup } from "@/components/sidebar-03/utility-rows";
  * Upstream differences, all deliberate: the demo `Logo` + "Acme" lockup is
  * the four-state `BrandLogo`; the `motion.div` around the header controls
  * is a plain container (motion dependency rejected per the frozen design
- * record — same layout classes); the bell reads live jobs plus recent
- * calls instead of the sample notifications; the footer holds exactly one
- * identity — the account menu — since this is a single-workspace product
- * with no workspace-switching backend.
+ * record — same layout classes); the footer holds exactly one identity — the
+ * account menu — since this is a single-workspace product with no
+ * workspace-switching backend. The header carries the brand lockup plus the
+ * collapse trigger only (no notifications bell); jobs status lives solely in
+ * the utility group.
  */
 
 export function DashboardSidebarShell({
@@ -120,7 +120,6 @@ function SidebarBrandHeader() {
           isCollapsed ? "flex-row md:flex-col-reverse" : "flex-row",
         )}
       >
-        <NotificationsBell />
         <SidebarTrigger />
       </div>
     </div>

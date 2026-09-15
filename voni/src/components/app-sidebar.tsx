@@ -1,9 +1,7 @@
 "use client";
 
-import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
-import { Suspense, useEffect, useRef, useState } from "react";
-import { toast } from "@/components/ui/toast";
+import { usePathname } from "next/navigation";
+import { Suspense, useEffect, useRef } from "react";
 import {
   Bot,
   History,
@@ -12,43 +10,16 @@ import {
   Phone,
   PhoneCall,
   Users,
-  Settings,
-  ShieldCheck,
-  LogOut,
-  LoaderCircle,
-  ChevronsUpDown,
 } from "lucide-react";
 
-import {
-  Sidebar,
-  SidebarContent,
-  SidebarFooter,
-  SidebarGroup,
-  SidebarGroupContent,
-  SidebarGroupLabel,
-  SidebarHeader,
-  SidebarMenu,
-  SidebarMenuButton,
-  SidebarMenuItem,
-  useSidebar,
-} from "@/components/ui/sidebar";
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuGroup,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import { VoniLogo } from "@/components/voni-logo";
-import { useJobs } from "@/components/jobs/jobs-provider";
-import { signOut } from "@/lib/auth-client";
+import { useSidebar } from "@/components/ui/sidebar";
+import { DashboardSidebarShell } from "@/components/sidebar-03/app-sidebar";
+import DashboardNavigation, {
+  type Route,
+} from "@/components/sidebar-03/nav-main";
 
 /** Single source for the dashboard nav — also feeds the voice copilot's app manifest. */
-export const NAV_ITEMS = [
-  { title: "Dashboard", url: "/dashboard", icon: LayoutDashboard },
+export const NAV_ITEMS = [  { title: "Dashboard", url: "/dashboard", icon: LayoutDashboard },
   { title: "Agents", url: "/agents", icon: Bot },
   { title: "Campaigns", url: "/campaigns", icon: Megaphone },
   { title: "Leads", url: "/leads", icon: Users },
@@ -57,62 +28,66 @@ export const NAV_ITEMS = [
   { title: "Background jobs", url: "/jobs", icon: History },
 ];
 
+/** Single source for section titles — also feeds the voice copilot's app manifest. */
+export const SECTION_TITLES: Array<[string, string]> = [
+  ["/dashboard", "Dashboard"],
+  ["/agents", "Agents"],
+  ["/campaigns", "Campaigns"],
+  ["/leads", "Leads"],
+  ["/numbers", "Phone numbers"],
+  ["/calls", "Calls"],
+  ["/jobs", "Background jobs"],
+  ["/settings", "Settings"],
+];
+
+/** Flat workspace destinations mapped onto the sidebar-03 route shape.
+ *  NAV_ITEMS keeps /jobs as the single source for the command menu and the
+ *  voice copilot manifest; the nav list filters it so the sidebar shows no
+ *  duplicate — jobs status lives solely in the utility group. */
+function toRoutes(): Route[] {
+  return NAV_ITEMS.filter((item) => item.url !== "/jobs").map((item) => ({
+    id: item.url.replace(/^\//, ""),
+    title: item.title,
+    icon: <item.icon className="size-4" />,
+    link: item.url,
+  }));
+}
+
 export function AppSidebar({
   user,
   platformAdmin = false,
   sessionNote = "Session loading…",
 }: {
   /** Absent until the shell auth resolver completes — branding and ordinary
-   *  navigation render without it; the account menu stays hidden (Task 8). */
+   *  navigation render without it; the account menu stays hidden. */
   user?: { name: string; email: string; image?: string | null };
   platformAdmin?: boolean;
   /** Text status shown in the footer while unauthenticated. */
   sessionNote?: string;
 }) {
+  // Fixed full-height floating rail, user-collapsible via the header
+  // trigger (or cmd/ctrl+B). Open by default on desktop from the
+  // layout's defaultOpen until the user explicitly collapses once;
+  // the provider remembers the choice in a cookie.
+  const routes = toRoutes();
   return (
-    // Fixed full-height icon rail, user-collapsible via the header
-    // trigger (or cmd/ctrl+B). Open by default on desktop from the
-    // layout's defaultOpen until the user explicitly collapses once;
-    // the provider remembers the choice in a cookie. Icon-only keeps
-    // every label one tooltip away.
-    <Sidebar collapsible="icon" className="app-shell-sidebar">
-      <SidebarHeader>
-        <Link
-          href="/dashboard"
-          className="flex cursor-pointer items-center rounded-md px-1 py-1.5 outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0"
+    <DashboardSidebarShell
+      user={user}
+      platformAdmin={platformAdmin}
+      sessionNote={sessionNote}
+      nav={
+        // Active-link state reads the URL, so it suspends behind its own
+        // boundary: links prerender without active styling, the highlight
+        // streams in.
+        <Suspense
+          fallback={
+            <DashboardNavigation routes={routes} activePath={null} />
+          }
         >
-          {/* Mobile's Sheet is always full-width, so it can afford the full
-              lockup; the desktop rail is icon-only, so it gets the minimal
-              mark alone. Static — no URL read, safe in the shell. */}
-          <SidebarBrand />
-          <span className="sr-only">Voni dashboard</span>
-        </Link>
-      </SidebarHeader>
-      <SidebarContent>
-        <SidebarGroup>
-          <SidebarGroupLabel>Workspace</SidebarGroupLabel>
-          <SidebarGroupContent>
-            {/* Active-link state reads the URL, so it suspends behind its own
-                boundary (Cache Components): links prerender without active
-                styling, the highlight streams in. */}
-            <Suspense fallback={<SidebarNav pathname={null} />}>
-              <SidebarNavSelf />
-            </Suspense>
-          </SidebarGroupContent>
-        </SidebarGroup>
-      </SidebarContent>
-      <SidebarFooter>
-        {user ? (
-          <SidebarAccount user={user} platformAdmin={platformAdmin} />
-        ) : (
-          // Session still resolving: text status, never a previous user's
-          // identity. Navigation above stays usable.
-          <p className="text-sidebar-foreground/60 px-2 py-1 text-xs">
-            {sessionNote}
-          </p>
-        )}
-      </SidebarFooter>
-    </Sidebar>
+          <SidebarNavSelf routes={routes} />
+        </Suspense>
+      }
+    />
   );
 }
 
@@ -139,174 +114,29 @@ export function SidebarStateRestore() {
   return null;
 }
 
-/** Brand lockup: static, no URL read — safe in the shell. */
-function SidebarBrand() {
-  const { isMobile, state } = useSidebar();
-  if (isMobile) {
-    return (
-      <span className="flex h-12 items-center">
-        <VoniLogo size="md" wordmark animate />
-      </span>
-    );
-  }
-  return state === "expanded" ? (
-    <span className="flex h-12 items-center">
-      <VoniLogo size="lg" wordmark animate className="text-3xl" />
-    </span>
-  ) : (
-    <VoniLogo size="lg" animate />
-  );
-}
-
 /** Self-reading nav leaf: owns the usePathname call so the boundary above
  *  covers exactly the active-state computation. */
-function SidebarNavSelf() {
+function SidebarNavSelf({ routes }: { routes: Route[] }) {
   const pathname = usePathname();
-  return <SidebarNav pathname={pathname} />;
+  return <SidebarNav routes={routes} pathname={pathname} />;
 }
 
 /**
- * Nav idiom from Blocks sidebar-03 (nav-main): full-width rounded rows,
- * icon + label, collapsed rail centers icons. Adapted: flat NAV_ITEMS
- * (no collapsible subs), active-link Suspense boundary kept, account menu
- * untouched. framer-motion NOT adopted.
+ * Active-link nav leaf. Jobs status is not badged here — the utility group
+ * below the nav owns the single jobs entry (see SidebarJobsRow), so this
+ * leaf only resolves the active path.
  */
-function SidebarNav({ pathname }: { pathname: string | null }) {
-  // Text count for the jobs row: ambient status only (never a bare dot or
-  // icon-alone), read from the shell-level JobsProvider above this sidebar.
-  // The count survives the collapsed icon rail as a corner pill and joins
-  // the tooltip text, so the state is never icon-only in either density.
-  const { activeJobs, unreadJobs } = useJobs();
-  const jobsCount = activeJobs.length + unreadJobs.length;
-  return (
-    <SidebarMenu className="gap-1">
-      {NAV_ITEMS.map((item) => {
-        const active = pathname != null && pathname.startsWith(item.url);
-        const badge =
-          item.url === "/jobs" && jobsCount > 0 ? String(jobsCount) : null;
-        return (
-          <SidebarMenuItem key={item.url}>
-            <SidebarMenuButton
-              isActive={active}
-              tooltip={badge ? `${item.title} (${badge})` : item.title}
-              className="flex w-full items-center rounded-lg px-2 transition-colors group-data-[collapsible=icon]:mx-auto group-data-[collapsible=icon]:size-10! group-data-[collapsible=icon]:justify-center! group-data-[collapsible=icon]:gap-0! group-data-[collapsible=icon]:p-2! group-data-[collapsible=icon]:[&_.sidebar-nav-label]:hidden! [&_svg]:size-5!"
-              render={
-                <Link
-                  href={item.url}
-                  className="relative"
-                  aria-label={badge ? `${item.title}, ${badge} pending` : undefined}
-                >
-                  <item.icon />
-                  <span className="sidebar-nav-label truncate">{item.title}</span>
-                  {badge ? (
-                    <span
-                      aria-hidden
-                      className="sidebar-nav-badge bg-sidebar-accent text-sidebar-accent-foreground ml-auto rounded-full px-1.5 text-xs font-medium tabular-nums group-data-[collapsible=icon]:absolute group-data-[collapsible=icon]:top-1 group-data-[collapsible=icon]:right-1 group-data-[collapsible=icon]:ml-0 group-data-[collapsible=icon]:px-1 group-data-[collapsible=icon]:py-px group-data-[collapsible=icon]:text-[10px] group-data-[collapsible=icon]:leading-none group-data-[collapsible=icon]:shadow-sm"
-                    >
-                      {badge}
-                    </span>
-                  ) : null}
-                </Link>
-              }
-            />
-          </SidebarMenuItem>
-        );
-      })}
-    </SidebarMenu>
-  );
-}
-
-/** Account menu: user-gated, no URL read of its own. Split out so the shell
- *  keeps one static shape above the auth boundary. */
-function SidebarAccount({
-  user,
-  platformAdmin,
+function SidebarNav({
+  routes,
+  pathname,
 }: {
-  user: { name: string; email: string; image?: string | null };
-  platformAdmin: boolean;
+  routes: Route[];
+  pathname: string | null;
 }) {
-  const router = useRouter();
-  const [signingOut, setSigningOut] = useState(false);
-  const initials = user.name
-    .split(/\s+/)
-    .map((part) => part[0])
-    .join("")
-    .slice(0, 2)
-    .toUpperCase();
-
-  async function handleSignOut() {
-    if (signingOut) return;
-    setSigningOut(true);
-    const { error } = await signOut();
-    if (error) {
-      setSigningOut(false);
-      toast.add({ type: "error", title: "Could not sign out", description: "Check your connection and try again." });
-      return;
-    }
-    // replace() so the signed-in page is not left in history for the back
-    // button, then refresh() to drop the client router cache still holding
-    // authenticated fragments.
-    router.replace("/login");
-    router.refresh();
-  }
-
   return (
-    <SidebarMenu>
-      <SidebarMenuItem>
-        <DropdownMenu>
-          <DropdownMenuTrigger
-            render={
-              <SidebarMenuButton
-                size="lg"
-                tooltip={user.email}
-                className="group-data-[collapsible=icon]:mx-auto group-data-[collapsible=icon]:size-10! group-data-[collapsible=icon]:justify-center! group-data-[collapsible=icon]:gap-0! group-data-[collapsible=icon]:p-1! group-data-[collapsible=icon]:[&_.sidebar-account-label]:hidden group-data-[collapsible=icon]:[&>svg]:hidden"
-              >
-                <Avatar className="size-8 rounded-lg">
-                  {user.image ? <AvatarImage src={user.image} alt="" /> : null}
-                  <AvatarFallback className="rounded-lg">{initials || "V"}</AvatarFallback>
-                </Avatar>
-                <span className="sidebar-account-label grid min-w-0 flex-1 text-left text-sm leading-tight">
-                  <span className="truncate font-medium">{user.name}</span>
-                  <span className="text-muted-foreground truncate text-xs">{user.email}</span>
-                </span>
-                <ChevronsUpDown className="ml-auto size-4" />
-              </SidebarMenuButton>
-            }
-          />
-          <DropdownMenuContent side="top" align="start" className="w-64">
-            {/* DropdownMenuLabel is Base UI's Menu.GroupLabel, which reads
-                MenuGroupContext and throws when it has no Menu.Group above
-                it — that crash took the whole dashboard down as soon as this
-                menu opened, which is why Sign out was unreachable. Keeping
-                the label inside the group it names is both the fix and the
-                correct accessible structure. */}
-            <DropdownMenuGroup>
-              <DropdownMenuLabel className="font-normal">
-                <span className="grid gap-0.5">
-                  <span className="truncate font-medium text-foreground">{user.name}</span>
-                  <span className="truncate text-xs">{user.email}</span>
-                </span>
-              </DropdownMenuLabel>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem render={<Link href="/settings" />}>
-                <Settings />
-                Settings
-              </DropdownMenuItem>
-              {platformAdmin ? (
-                <DropdownMenuItem render={<Link href="/operator" />}>
-                  <ShieldCheck />
-                  Platform operator
-                </DropdownMenuItem>
-              ) : null}
-            </DropdownMenuGroup>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={handleSignOut} disabled={signingOut}>
-              {signingOut ? <LoaderCircle className="animate-spin" /> : <LogOut />}
-              {signingOut ? "Signing out…" : "Sign out"}
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-      </SidebarMenuItem>
-    </SidebarMenu>
+    <DashboardNavigation
+      routes={routes}
+      activePath={pathname}
+    />
   );
 }

@@ -108,6 +108,32 @@ reference; 1094-line provider logic untouched), pinned at upstream commit
 `54f6cbfa2c91a4377c980d9b0ac787d6ce5750a0` (feat(ai): redesign the ai-05 chat
 block (#79), 2026-09-03). No `ai`-SDK addition without amendment.
 
+Installed 2026-09-15: `sidebar-03` — full-block adoption for the app shell
+(`src/components/sidebar-03/`: brand slot, main navigation with collapsible
+subs, single-workspace team switcher; notifications bell reads jobs plus
+recent calls from live sources, never sample data; demo `index.tsx` scaffold
+NOT adopted). Manually vendored from the registry JSON (the registry carries
+no commit hash, so none is pinned — the CLI install was rejected because it
+would overwrite 10 shared `ui/` primitives) — shared primitives untouched, no
+`framer-motion` added, no `cn` dep added. Row hover/active states use the
+existing `sidebar-accent` token (the theme carries no `sidebar-muted`);
+vendored-block `§5`-grep exclusion covers `src/components/sidebar-03/`.
+Brand slot renders
+the four-asset set (`public/brand/logo-{expanded,collapsed}-{light,dark}.svg`,
+placeholder vectors derived from the Voni arc) via class-strategy theme swap
+at the upstream `h-8` slot; footer stacks the single-workspace switcher above
+the existing account menu; jobs count badge and active-link Suspense boundary
+preserved. `sidebar-02`'s `framer-motion` rejection (§2) extends to this block.
+Top bar removed 2026-09-15: search, voice entry, and jobs status live in the
+rail as collapsing rows; the voice panel anchors to the viewport corner;
+pages own their titles (no new title components — every page already
+rendered its own `h1`); the section-title constant moved beside the nav
+source with the manifest generator following it.
+Header bell removed 2026-09-16 (user pick): sidebar-03 header carries brand
+lockup + collapse trigger only; jobs status lives solely in the utility-group
+row (NAV_ITEMS keeps /jobs for command-menu + copilot manifest, nav list
+filters it, utility click marks seen).
+
 ## 4. Patterns (one canonical composition per area)
 
 - **Auth** (`/login`, `/signup`): `login-01`/`login-07` idiom around the

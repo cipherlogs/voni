@@ -50,17 +50,13 @@ test("footer is single-identity: account menu only, switcher fully removed", () 
 
 test("sidebar dropdown labels live inside their menu group", () => {
   const shell = source("sidebar-03/app-sidebar.tsx");
-  const bell = source("sidebar-03/notifications-bell.tsx");
-  // Base UI GroupLabel reads MenuGroupContext and throws without a Group
-  // above it — every DropdownMenuLabel must sit inside a DropdownMenuGroup.
-  for (const [name, src] of [["shell", shell], ["bell", bell]] as const) {
-    assert.match(src, /DropdownMenuGroup/, `${name} groups its menu`);
-    assert.match(src, /DropdownMenuLabel/, `${name} labels its menu`);
-    const groupAt = src.indexOf("<DropdownMenuGroup");
-    const labelAt = src.indexOf("<DropdownMenuLabel");
-    assert.ok(groupAt !== -1 && labelAt !== -1 && groupAt < labelAt, `${name} label sits inside its group`);
-  }
-  assert.doesNotMatch(bell, /sampleNotifications/);
+  // Bell removed outright (see below): the shell account menu is the only
+  // dropdown left, so only it is checked here.
+  assert.match(shell, /DropdownMenuGroup/, `shell groups its menu`);
+  assert.match(shell, /DropdownMenuLabel/, `shell labels its menu`);
+  const groupAt = shell.indexOf("<DropdownMenuGroup");
+  const labelAt = shell.indexOf("<DropdownMenuLabel");
+  assert.ok(groupAt !== -1 && labelAt !== -1 && groupAt < labelAt, `shell label sits inside its group`);
 });
 
 test("last-resort error matches the shared route error card", () => {
@@ -103,24 +99,13 @@ test("command-menu-03 lives in the rail, with no top bar left", () => {
   }
 });
 
-test("bell reads live jobs plus recent calls, never sample data", () => {
+test("notifications bell is removed outright", () => {
   const shell = source("sidebar-03/app-sidebar.tsx");
-  const bell = source("sidebar-03/notifications-bell.tsx");
-  const endpoint = source("../app/api/activity/recent/route.ts");
-  assert.match(shell, /<NotificationsBell \/>/);
-  assert.doesNotMatch(shell, /NotificationsPopover/);
-  assert.match(bell, /useJobs/);
-  assert.match(bell, /\/api\/activity\/recent/);
-  assert.match(bell, /markSeen/);
-  assert.match(bell, /activeJobs\.length \+ unreadJobs\.length/);
-  assert.doesNotMatch(bell, /\/avatars\//);
-  assert.doesNotMatch(bell, /sampleNotifications/);
-  // Endpoint is org-scoped, display-safe, and gated.
-  assert.match(endpoint, /getCtx/);
-  assert.match(endpoint, /401/);
-  assert.match(endpoint, /listCalls\(1, 5\)/);
-  assert.doesNotMatch(endpoint, /phone/);
-  assert.doesNotMatch(endpoint, /transcript/);
+  // The bell module is deleted outright (not hidden): no file, no import,
+  // no header usage.
+  assert.equal(existsSync(join(here, "sidebar-03/notifications-bell.tsx")), false);
+  assert.doesNotMatch(shell, /NotificationsBell/);
+  assert.doesNotMatch(shell, /notifications-bell/);
 });
 
 test("voice and jobs status relocate into the rail, panel anchors to the corner", () => {
@@ -198,23 +183,24 @@ test("dashboard onboarding is persisted-data driven", () => {
   assert.match(onboarding, /Progress/);
 });
 
-test("jobs nav carries a text count badge, never icon-alone", () => {
+test("jobs status lives only in the utility row, nav row removed", () => {
   const entry = source("app-sidebar.tsx");
-  const nav = source("sidebar-03/nav-main.tsx");
-  // Badge reads the shell-level provider: active (in-flight) + unread
-  // (finished, unseen) jobs on the "Background jobs" row only.
-  assert.match(entry, /useJobs/);
-  assert.match(entry, /activeJobs\.length \+ unreadJobs\.length/);
-  assert.match(entry, /\{ jobs: String\(jobsCount\) \}/);
-  // Text count, not a bare dot or icon: the digits render, the accessible
-  // name carries them too, and the tooltip includes them.
-  assert.match(nav, /sidebar-nav-badge/);
-  assert.match(nav, /aria-label=\{badge/);
-  assert.match(nav, /\$\{route\.title\} \(\$\{badge\}\)/);
-  // Collapsed icon rail: the label hides but the count survives as a corner
-  // pill (absolute-positioned under group-data-[collapsible=icon]).
-  assert.match(nav, /sidebar-nav-label/);
-  assert.match(nav, /group-data-\[collapsible=icon\]:absolute/);
+  const utility = source("sidebar-03/utility-rows.tsx");
+  // NAV_ITEMS keeps /jobs as the single source for command-menu + copilot
+  // manifest; toRoutes filters it so the nav list has no duplicate row.
+  assert.match(entry, /Background jobs/);
+  assert.match(entry, /\.filter\(/);
+  assert.match(entry, /\/jobs/);
+  assert.doesNotMatch(entry, /\{ jobs: String\(jobsCount\) \}/);
+  assert.doesNotMatch(entry, /activeJobs\.length \+ unreadJobs\.length/);
+  // The utility row is the single jobs entry: ambient status with live
+  // percent while running, results-ready text after, quiet link otherwise,
+  // marking seen on open so unread does not stick without the bell.
+  assert.match(utility, /useJobs/);
+  assert.match(utility, /markSeen/);
+  assert.match(utility, /View background jobs/);
+  assert.match(utility, /getJobProgressPercent/);
+  assert.match(utility, /group-data-\[collapsible=icon\]:hidden/);
 });
 
 test("agent detail is one column with a constrained-card test dialog", () => {
