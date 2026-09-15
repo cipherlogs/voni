@@ -52,6 +52,14 @@ export function GenerationRetryCard({
                 {description}
               </p>
               <span className="mt-3 flex flex-wrap items-center gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  onClick={onOpenJobs}
+                >
+                  View in Jobs
+                </Button>
                 <LoadingButton
                   type="button"
                   size="sm"
@@ -63,14 +71,6 @@ export function GenerationRetryCard({
                 >
                   Retry generation
                 </LoadingButton>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="ghost"
-                  onClick={onOpenJobs}
-                >
-                  View in Jobs
-                </Button>
               </span>
             </div>
             <CircleAlert

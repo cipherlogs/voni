@@ -598,6 +598,12 @@ export function AgentConfigForm({
   };
 
   const agentLabel = name.trim() || "this agent";
+  // Pending/failure copy follows submitLabel ("Save changes" → Saving… /
+  // Could not save; "Deploy agent" → Deploying… / Could not deploy) so the
+  // review-context form never shows Save copy.
+  const isDeployLabel = /deploy/i.test(submitLabel);
+  const pendingLabel = isDeployLabel ? "Deploying…" : "Saving…";
+  const failureTitle = isDeployLabel ? "Could not deploy" : "Could not save";
   // A config can legitimately pin several recognition languages even though
   // this select writes one at a time. Surface the rest rather than letting the
   // trigger imply the others are gone.
@@ -1131,7 +1137,7 @@ export function AgentConfigForm({
             <LoadingButton
               disabled={!name.trim()}
               pending={saving}
-              pendingText="Saving…"
+              pendingText={pendingLabel}
               onClick={async () => {
                 setSaving(true);
                 try {
@@ -1139,7 +1145,7 @@ export function AgentConfigForm({
                 } catch (error) {
                   toast.add({
                     type: "error",
-                    title: "Could not save",
+                    title: failureTitle,
                     description:
                       error instanceof Error
                         ? error.message

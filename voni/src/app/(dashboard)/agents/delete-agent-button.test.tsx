@@ -41,16 +41,21 @@ test("delete icon uses no sizing class and destructive confirm uses LoadingButto
   assert.ok(buttonSource.includes('pendingText="Deleting…"'));
 });
 
-test("delete failures stay visible in-dialog and as a toast", () => {
+test("delete failures stay visible in-dialog, inline-only (no error toast)", () => {
   assert.ok(buttonSource.includes('variant="destructive"'));
   assert.ok(buttonSource.includes("AlertDescription"));
-  assert.ok(buttonSource.includes('type: "error"'));
+  // Success still toasts (dialog closes + navigation); failures render only
+  // in the inline Alert while the dialog stays open with the gate intact.
   assert.ok(buttonSource.includes('type: "success"'));
+  assert.ok(!buttonSource.includes('type: "error"'));
 });
 
-test("list row renders delete as a sibling above the stretched-link overlay", () => {
+test("list row renders delete beside Open in the action cell, no stretched link", () => {
   assert.ok(pageSource.includes("AgentDeleteButton"));
-  assert.ok(pageSource.includes("relative z-10"));
+  // The table idiom has no stretched-link overlay — rows navigate only via
+  // the explicit Open button — so the Card-era stacking workaround is gone.
+  assert.ok(!pageSource.includes("before:absolute before:inset-0"));
+  assert.ok(!pageSource.includes("relative z-10"));
   // The job owns the row only while running — failed/cancelled and aged-out
   // (gen null) placeholders keep their delete button.
   assert.ok(pageSource.includes("gen?.running ? null"));

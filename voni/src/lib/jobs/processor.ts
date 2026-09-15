@@ -127,17 +127,22 @@ export async function runJob(jobId: string, database: JobDb = db): Promise<void>
     const handler = await handlerFor(claimed.kind as JobKind);
     const result = await handler(claimed, parsed.data as never);
     await throwIfCancelled(jobId, database);
-    // Finished generation jobs land on the placeholder detail page. The
-    // placeholder row is created client-side after start, so resolve it here
-    // at completion; when there is none (older jobs, failed write) the ?job=
-    // URL from start stays.
+    // Generation success keeps the /agents/new?job=<id> target set at start:
+    // review owns apply and edit-agent never applies job.result in place, so a
+    // stub detail rewrite would strand the user on a banner that cannot apply.
+    // Omitting targetUrl leaves the ?job= URL intact. Aged-out jobs whose start
+    // row lost its pointer (or a start that predates it) fall back to the
+    // placeholder detail page when a row exists; otherwise the ?job= URL stays.
     let targetUrl: string | undefined;
     if (claimed.kind === "agent_generation") {
-      const placeholderId = await findGenerationPlaceholderId(
-        jobId,
-        database,
-      ).catch(() => null);
-      if (placeholderId) targetUrl = `/agents/${placeholderId}`;
+      const current = await getJobById(jobId, database).catch(() => null);
+      if (!current?.targetUrl) {
+        const placeholderId = await findGenerationPlaceholderId(
+          jobId,
+          database,
+        ).catch(() => null);
+        if (placeholderId) targetUrl = `/agents/${placeholderId}`;
+      }
     }
     const ok = await completeJob(jobId, result, database, targetUrl);
     if (!ok) {

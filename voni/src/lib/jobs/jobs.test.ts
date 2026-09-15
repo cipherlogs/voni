@@ -96,10 +96,12 @@ test("target URLs route each kind to its result destination", () => {
   );
 });
 
-test("finished generation jobs land on the placeholder detail page", () => {
-  // Step 5 destination: once the placeholder row exists (created client-side
-  // after start), start.ts stores `/agents/<placeholderId>` and processor.ts
-  // rewrites it again at completion; without a row the ?job= fallback stays.
+test("finished generation jobs keep the ?job= review URL", () => {
+  // Phase 1 Req 2: generation success keeps /agents/new?job=<id> (review owns
+  // apply; edit-agent never applies job.result in place) instead of rewriting
+  // to /agents/<placeholderId> stub detail. start.ts sets the ?job= target at
+  // creation; processor.ts leaves it intact, falling back to the placeholder
+  // detail URL only when the stored targetUrl is missing (aged-out/pre-pointer row).
   const kindsSource = readFileSync(
     join(dirname(fileURLToPath(import.meta.url)), "kinds.ts"),
     "utf8",
@@ -118,12 +120,14 @@ test("finished generation jobs land on the placeholder detail page", () => {
   );
   // kinds.ts still computes the pre-placeholder ?job= fallback URL.
   assert.ok(kindsSource.includes("`/agents/new?job=${jobId}`"));
-  // start.ts resolves the placeholder to its detail URL at creation time.
-  assert.ok(startSource.includes("findGenerationPlaceholderId"));
-  assert.ok(startSource.includes("targetUrl = `/agents/${placeholderId}`"));
-  // processor.ts rewrites the target again at completion for the landed row.
+  // start.ts keeps the ?job= target at creation (no placeholder rewrite).
+  assert.ok(!startSource.includes("findGenerationPlaceholderId"));
+  assert.ok(startSource.includes("targetUrlFor(kind, job.id, input"));
+  // processor.ts keeps the ?job= target at completion, falling back to the
+  // placeholder detail URL only when the stored targetUrl is missing.
   assert.ok(processorSource.includes("findGenerationPlaceholderId"));
-  assert.ok(processorSource.includes("targetUrl = `/agents/${placeholderId}`"));
+  assert.ok(processorSource.includes("if (!current?.targetUrl)"));
+  assert.ok(processorSource.includes("if (placeholderId) targetUrl = `/agents/${placeholderId}`"));
   assert.ok(processorSource.includes("completeJob(jobId, result, database, targetUrl)"));
   // The lookup is org-scoped on the generation job id.
   assert.ok(storeSource.includes("eq(agents.generationJobId, jobId)"));

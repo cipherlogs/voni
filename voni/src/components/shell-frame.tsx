@@ -31,15 +31,27 @@ export function ShellSidebar() {
   );
 }
 
+/**
+ * Jobs scope for the whole shell — sidebar included. The "Background jobs"
+ * nav badge reads useJobs(), so the provider must sit above ShellSidebar.
+ * The `enabled` auth gate is unchanged: no polling, no authenticated
+ * requests, and no retained user state until sign-in completes (Task 8).
+ */
+export function ShellJobsProvider({ children }: { children: ReactNode }) {
+  const auth = useShellAuth();
+  const enabled = auth.status === "authenticated";
+  return <JobsProvider enabled={enabled}>{children}</JobsProvider>;
+}
+
 export function ShellProviders({ children }: { children: ReactNode }) {
   const auth = useShellAuth();
   const enabled = auth.status === "authenticated";
   const platformAdmin = auth.status === "authenticated" ? auth.platformAdmin : false;
+  // JobsProvider lives above us now (ShellJobsProvider) — CopilotProvider's
+  // useJobs() call still resolves, and this instance still only enables once.
   return (
-    <JobsProvider enabled={enabled}>
-      <CopilotProvider enabled={enabled} platformAdmin={platformAdmin}>
-        {children}
-      </CopilotProvider>
-    </JobsProvider>
+    <CopilotProvider enabled={enabled} platformAdmin={platformAdmin}>
+      {children}
+    </CopilotProvider>
   );
 }

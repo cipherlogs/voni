@@ -34,24 +34,17 @@ SOFTWARE.
 (Source: [LICENSE.md](https://github.com/ephraimduncan/blocks/blob/main/LICENSE.md),
 verified against upstream on 2026-09-14.)
 
-## Voice portraits (dev placeholders, randomuser.me)
+Pinned at: `command-menu-03` f9b89ceb4979d35209705f8029877b60d6c70bc5,
+`onboarding-01` 5377a1ce792a169336c87f99a438a273867b6815, `chat-01`
+8f6f90c5b077628d2f4d3e41faa31cb8b608fe0b, `ai-05`
+54f6cbfa2c91a4377c980d9b0ac787d6ce5750a0 (pinned).
 
-`public/voices/avatars/<voice-id>.webp` (96px square, served locally — never
-hotlinked) are illustrative UI avatars for the agent-creation voice picker,
-not the real voice talent. `presents` in `src/lib/agents/voices.ts` is an
-inferred UI field, not a documented voice property.
+## Voice portraits (retired 2026-09-15)
 
-Sourced from [randomuser.me](https://randomuser.me) portraits
-([CC-BY / free-use generated portrait set](https://randomuser.me)) for
-development only. Replace with a licensed set before production.
-
-Mapping (voice id → portrait):
-
-| Voice | Presents | Portrait |
-|---|---|---|
-| alba, eve, jane, mary | feminine | women/1, 2, 3, 4 |
-| anna, vera, lola, estelle | feminine | women/5, 6, 7, 8 |
-| michael, charles, paul | masculine | men/1, 2, 3 |
-| giovanni, juergen, rafael | masculine | men/4, 5, 6 |
-| george | masculine | men/32 |
-| jean | unspecified/Neutral | none — initials tile only, so nothing mis-cues a gender |
+The dev-placeholder headshots previously served from
+`public/voices/avatars/<voice-id>.webp` (randomuser.me-sourced) and the
+voice→portrait mapping table below them are retired: the agent-creation
+voice picker now renders deterministic CSS-only motif avatars (`VoiceMotif`
+in `src/components/wizard/voice-field.tsx` — hash(voiceId) → oklch
+semantic-token gradient + blurred blob pair, no image assets), identical
+for every voice. The files are deleted; the section is kept as a record.

@@ -66,9 +66,9 @@ const AGENT_DETAIL_PATH = /^\/agents\/(?!new$)[^/]+$/;
  *
  * - agent_generation on exact /agents/new: the wizard shows submitted panel,
  *   review, and error state inline — a toast on top is pure noise.
- * - agent_deployment + succeeded on /agents/<id>: the detail watcher toasts
- *   and banners inline — a second global success toast is noise. Errors stay
- *   global (the watcher never toasts on failure).
+ * - agent_deployment + succeeded/failed on /agents/<id>: the detail watcher
+ *   is the single owner — it toasts success and banners failure inline via
+ *   jobErrorCopy — so a second global toast is noise. Cancelled stays global.
  */
 export function shouldSuppressJobToast(
   kind: string,
@@ -78,7 +78,7 @@ export function shouldSuppressJobToast(
   if (kind === "agent_generation" && pathname === "/agents/new") return true;
   if (
     kind === "agent_deployment" &&
-    status === "succeeded" &&
+    (status === "succeeded" || status === "failed") &&
     AGENT_DETAIL_PATH.test(pathname)
   ) {
     return true;

@@ -93,10 +93,9 @@ function NumberRemoveButton({ number }: { number: PhoneNumber }) {
       setError(null);
       const result = await removePhoneNumberAction(number.id);
       if (!result.ok) {
-        // Stay in the dialog so the reason is readable next to the action,
-        // and toast so it survives dismissal.
+        // Stay in the dialog so the reason is readable next to the action.
+        // Inline-only: the dialog stays open, so no duplicate toast.
         setError(result.message ?? "That did not work.");
-        toast.add({ type: "error", title: result.message ?? "That did not work." });
         return;
       }
       setOpen(false);

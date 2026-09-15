@@ -1,7 +1,6 @@
 import { Suspense } from "react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import {
   Empty,
@@ -11,10 +10,19 @@ import {
   EmptyMedia,
   EmptyTitle,
 } from "@/components/ui/empty";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { PageHeading } from "@/components/wizard/form-layout";
 import { Bot, Plus } from "lucide-react";
-import { CardListSkeleton } from "@/components/page-skeletons";
+import { TableSkeleton } from "@/components/page-skeletons";
 import { listAgentsWithGeneration } from "./actions";
+import { LiveAgentsRefresh } from "./live-agents-refresh";
 import { AgentDeleteButton } from "./delete-agent-button";
 import type { AgentConfig } from "@/lib/agents/config";
 import { RouteBrief } from "@/components/copilot/route-brief";
@@ -54,110 +62,151 @@ async function AgentsList() {
           </EmptyContent>
         </Empty>
       ) : (
-        <div className="flex flex-col gap-3">
-          {rows.map((agent) => {
-            const config = agent.config as AgentConfig;
-            // Placeholder rows link to the detail page like real rows — the
-            // detail handles the review state. The badge derives from the
-            // live job, never a stored flag. A placeholder whose job aged
-            // out reads as a plain draft.
-            const gen =
-              agent.generationJobId && agent.generationStatus
-                ? {
-                    jobId: agent.generationJobId,
-                    running:
-                      agent.generationStatus === "queued" ||
-                      agent.generationStatus === "running",
-                    ready: agent.generationStatus === "succeeded",
-                  }
-                : null;
-            return (
-              <Card key={agent.id} className="relative border py-0 shadow-sm transition-[border-color,box-shadow]">
-                <CardContent className="flex flex-wrap items-center gap-4 p-4">
-                  <Link
-                    href={`/agents/${agent.id}`}
-                    aria-label={`${gen ? "Review" : "Edit"} ${agent.name}`}
-                    className="before:absolute before:inset-0 min-w-0 flex-1"
-                  >
-                    <span className="flex min-w-0 flex-1 flex-col gap-1">
-                      <span className="flex flex-wrap items-center gap-2">
-                        <span className="text-pretty text-sm font-medium">{agent.name}</span>
-                        {gen ? (
-                          <Badge
-                            variant={
-                              gen.ready
-                                ? "default"
-                                : agent.generationStatus === "failed" ||
-                                    agent.generationStatus === "cancelled"
-                                  ? "destructive"
-                                  : "secondary"
-                            }
-                          >
-                            {gen.running
-                              ? "Generating…"
-                              : gen.ready
-                                ? "Ready to review"
-                                : "Generation failed"}
-                          </Badge>
-                        ) : (
+        <div className="overflow-x-auto rounded-lg border">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Agent</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>Config</TableHead>
+                <TableHead className="w-12" />
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {rows.map((agent) => {
+                const config = agent.config as AgentConfig;
+                // The badge derives from the live job, never a stored flag. A
+                // placeholder whose job aged out reads as a plain draft.
+                const gen =
+                  agent.generationJobId && agent.generationStatus
+                    ? {
+                        jobId: agent.generationJobId,
+                        running:
+                          agent.generationStatus === "queued" ||
+                          agent.generationStatus === "running",
+                        ready: agent.generationStatus === "succeeded",
+                      }
+                    : null;
+                const openLabel = `${gen ? "Review" : "Edit"} ${agent.name}`;
+                return (
+                  <TableRow key={agent.id}>
+                    <TableCell>
+                      <div className="flex min-w-0 flex-col gap-1">
+                        <span className="text-pretty text-sm font-medium">
+                          {agent.name}
+                        </span>
+                        <span className="text-muted-foreground max-w-xs truncate text-sm">
+                          {config.mission}
+                        </span>
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      {gen ? (
+                        <Badge
+                          variant={
+                            gen.ready
+                              ? "default"
+                              : agent.generationStatus === "failed" ||
+                                  agent.generationStatus === "cancelled"
+                                ? "destructive"
+                                : "secondary"
+                          }
+                        >
+                          {gen.running
+                            ? "Generating…"
+                            : gen.ready
+                              ? "Ready to review"
+                              : "Generation failed"}
+                        </Badge>
+                      ) : (
                         /* Until an agent is registered with AssemblyAI it can't
                            take a call, so surface that state rather than
                            letting the list imply everything is live. */
                         <Badge
                           variant={
-                            agent.assemblyaiAgentId
-                              ? "secondary"
-                              : "outline"
+                            agent.assemblyaiAgentId ? "secondary" : "outline"
                           }
                         >
                           {agent.assemblyaiAgentId
                             ? "Deployed and ready"
                             : "Draft — not yet deployed"}
                         </Badge>
-                        )}
-                      </span>
-                      <span className="text-muted-foreground truncate text-sm">
-                        {config.mission}
-                      </span>
-                      {gen && !gen.ready ? (
-                        <span className="text-muted-foreground text-xs">
-                          {gen.running
-                            ? "Configuration generating…"
-                            : "Open to review the error and retry."}
-                        </span>
-                      ) : (
-                      <span className="text-muted-foreground flex flex-wrap gap-2 text-xs">
-                        <span>{config.tools.length} tools</span>
-                        <span>·</span>
-                        <span>{config.detect.length} fields captured</span>
-                        <span>·</span>
-                        <span>{config.channels.join(", ")}</span>
-                      </span>
                       )}
-                    </span>
-                  </Link>
-                  {/* Sibling of the stretched link, stacked above its overlay
-                      (relative z-10), so the button stays clickable while the
-                      rest of the card navigates. The job owns the row only
-                      while active — terminal placeholders and drafts can be
-                      deleted. */}
-                  {gen?.running ? null : (
-                    <div className="relative z-10 flex shrink-0 items-center">
-                      <AgentDeleteButton
-                        id={agent.id}
-                        name={agent.name}
-                        // Keyed off assemblyaiAgentId presence, not
-                        // deploymentStatus: queued/deploying/failed
-                        // first-deploys have no remote agent yet, so they
-                        // get the short copy too.
-                        neverProvisioned={!agent.assemblyaiAgentId}
-                      />
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-            );
-          })}
+                    </TableCell>
+                    <TableCell className="text-muted-foreground text-sm">
+                      {gen && !gen.ready ? (
+                        gen.running ? (
+                          "Configuration generating…"
+                        ) : (
+                          "Open to review the error and retry."
+                        )
+                      ) : (
+                        <span className="flex flex-wrap gap-2">
+                          <span>{config.tools.length} tools</span>
+                          <span>·</span>
+                          <span>{config.detect.length} fields captured</span>
+                          <span>·</span>
+                          <span>{config.channels.join(", ")}</span>
+                        </span>
+                      )}
+                    </TableCell>
+                    <TableCell>
+                      <div className="flex items-center gap-1">
+                        {/* A running generation owns the row: its stub config
+                            would open a broken editor, so Open stays disabled
+                            (no link) until the job settles. Ready to review
+                            opens the /agents/new?job= review; failed rows link
+                            to the detail page's review state, not the stub. */}
+                        {gen?.running ? (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            disabled
+                            aria-disabled="true"
+                            aria-label={openLabel}
+                          >
+                            Open
+                          </Button>
+                        ) : (
+                          <Button
+                            nativeButton={false}
+                            variant="outline"
+                            size="sm"
+                            render={
+                              <Link
+                                href={
+                                  gen?.ready
+                                    ? `/agents/new?job=${gen.jobId}`
+                                    : `/agents/${agent.id}`
+                                }
+                                aria-label={openLabel}
+                              />
+                            }
+                          >
+                            Open
+                          </Button>
+                        )}
+                        {/* The job owns the row only while active — terminal
+                            placeholders and drafts can be deleted. Each row's
+                            button owns its own pending state. */}
+                        {gen?.running ? null : (
+                          <AgentDeleteButton
+                            id={agent.id}
+                            name={agent.name}
+                            // Keyed off assemblyaiAgentId presence, not
+                            // deploymentStatus: queued/deploying/failed
+                            // first-deploys have no remote agent yet, so they
+                            // get the short copy too.
+                            neverProvisioned={!agent.assemblyaiAgentId}
+                          />
+                        )}
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
+            </TableBody>
+          </Table>
         </div>
       )}
     </>
@@ -181,12 +230,14 @@ export default function AgentsPage() {
       <Suspense
         fallback={
           <div role="status" aria-label="Loading agents">
-            <CardListSkeleton />
+            <TableSkeleton />
           </div>
         }
       >
         <AgentsList />
       </Suspense>
+      {/* Refreshes the RSC rows when a generation/deployment settles. */}
+      <LiveAgentsRefresh />
     </div>
   );
 }

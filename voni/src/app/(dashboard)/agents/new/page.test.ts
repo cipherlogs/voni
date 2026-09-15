@@ -64,3 +64,19 @@ test("draft gate keeps native button roles and shared focus styling", () => {
   assert.ok(!gateSource.includes("pointer-coarse"));
   assert.ok(!gateSource.includes("min-h-"));
 });
+
+test("draft gate orders secondary-left primary-right with primary on top on mobile", () => {
+  // DESIGN.md paired-action amendment 2026-09-15: Discard (outline) comes
+  // first in DOM, Continue (primary) second — secondary-left / primary-right
+  // on desktop per Blocks right-aligned form actions. (lastIndexOf skips the
+  // "Continue draft?" PageHeading title and targets the button label.)
+  assert.ok(
+    gateSource.indexOf("Discard and start fresh") <
+      gateSource.lastIndexOf("Continue draft"),
+    "discard must precede continue in DOM",
+  );
+  // Stacked mobile keeps primary on top via flex-col-reverse (DialogFooter
+  // idiom); desktop pushes the pair right via sm:justify-end.
+  assert.ok(gateSource.includes("flex-col-reverse"));
+  assert.ok(gateSource.includes("sm:justify-end"));
+});

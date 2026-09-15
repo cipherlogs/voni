@@ -43,6 +43,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { VoniLogo } from "@/components/voni-logo";
+import { useJobs } from "@/components/jobs/jobs-provider";
 import { signOut } from "@/lib/auth-client";
 
 /** Single source for the dashboard nav — also feeds the voice copilot's app manifest. */
@@ -171,20 +172,40 @@ function SidebarNavSelf() {
  * untouched. framer-motion NOT adopted.
  */
 function SidebarNav({ pathname }: { pathname: string | null }) {
+  // Text count for the jobs row: ambient status only (never a bare dot or
+  // icon-alone), read from the shell-level JobsProvider above this sidebar.
+  // The count survives the collapsed icon rail as a corner pill and joins
+  // the tooltip text, so the state is never icon-only in either density.
+  const { activeJobs, unreadJobs } = useJobs();
+  const jobsCount = activeJobs.length + unreadJobs.length;
   return (
     <SidebarMenu className="gap-1">
       {NAV_ITEMS.map((item) => {
         const active = pathname != null && pathname.startsWith(item.url);
+        const badge =
+          item.url === "/jobs" && jobsCount > 0 ? String(jobsCount) : null;
         return (
           <SidebarMenuItem key={item.url}>
             <SidebarMenuButton
               isActive={active}
-              tooltip={item.title}
-              className="flex w-full items-center rounded-lg px-2 transition-colors group-data-[collapsible=icon]:mx-auto group-data-[collapsible=icon]:size-10! group-data-[collapsible=icon]:justify-center! group-data-[collapsible=icon]:gap-0! group-data-[collapsible=icon]:p-2! group-data-[collapsible=icon]:[&>span:last-child]:hidden! [&_svg]:size-5!"
+              tooltip={badge ? `${item.title} (${badge})` : item.title}
+              className="flex w-full items-center rounded-lg px-2 transition-colors group-data-[collapsible=icon]:mx-auto group-data-[collapsible=icon]:size-10! group-data-[collapsible=icon]:justify-center! group-data-[collapsible=icon]:gap-0! group-data-[collapsible=icon]:p-2! group-data-[collapsible=icon]:[&_.sidebar-nav-label]:hidden! [&_svg]:size-5!"
               render={
-                <Link href={item.url}>
+                <Link
+                  href={item.url}
+                  className="relative"
+                  aria-label={badge ? `${item.title}, ${badge} pending` : undefined}
+                >
                   <item.icon />
-                  <span>{item.title}</span>
+                  <span className="sidebar-nav-label truncate">{item.title}</span>
+                  {badge ? (
+                    <span
+                      aria-hidden
+                      className="sidebar-nav-badge bg-sidebar-accent text-sidebar-accent-foreground ml-auto rounded-full px-1.5 text-xs font-medium tabular-nums group-data-[collapsible=icon]:absolute group-data-[collapsible=icon]:top-1 group-data-[collapsible=icon]:right-1 group-data-[collapsible=icon]:ml-0 group-data-[collapsible=icon]:px-1 group-data-[collapsible=icon]:py-px group-data-[collapsible=icon]:text-[10px] group-data-[collapsible=icon]:leading-none group-data-[collapsible=icon]:shadow-sm"
+                    >
+                      {badge}
+                    </span>
+                  ) : null}
                 </Link>
               }
             />

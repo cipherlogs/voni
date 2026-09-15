@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { AudioLines } from "lucide-react";
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { CardContent } from "@/components/ui/card";
 import {
@@ -38,21 +38,49 @@ import {
  * mount-only instant scrollTo, selectVoice the sole scrollTo (reduced-motion
  * aware), previewVoice never scrolls, clips at /voices/<id>.mp3.
  *
- * Leading avatar slot: a local illustrative portrait
- * (`public/voices/avatars/<voice-id>.webp`, ~96px square) with the initial as
- * the loading/error fallback. The portraits are illustrative placeholders, not
- * the real voice talent, and `presents` is an inferred UI field, not a
- * documented voice property. `jean` (unspecified/Neutral) has no portrait —
- * its initials tile is the whole avatar, so nothing mis-cues a gender.
- * While its preview clip plays the fallback washes
- * with a static primary tint (no bespoke gradient, no keyed fill — the
- * selection + indicator carry the playing state).
+ * Leading avatar slot: a deterministic CSS-only motif (`VoiceMotif`) — the
+ * voice id hashes to one of six muted/accent token pairs for the gradient
+ * base plus two soft blurred radial blobs whose positions derive from the
+ * same hash. No image assets, no per-voice special cases: every voice gets
+ * the motif treatment uniformly, so nothing mis-cues a gender and `presents`
+ * (an inferred UI field, not a documented voice property) survives only
+ * sr-only inside the card `aria-label`. While its preview clip plays the
+ * motif washes with the static `bg-primary/10` tint — the selection + AudioLines
+ * indicator carry the playing state. The motif is static decoration (no
+ * animation), so `prefers-reduced-motion` is inherently respected;
+ * `selectVoice`'s scrollTo stays reduced-motion aware.
  */
 
-/** Voice ids with no portrait asset — initials tile is the whole avatar. */
-const PORTRAITLESS = new Set(["jean"]);
+/** Six tinted gradient stops + blob tints, keyed by hash(voiceId).
+ *  oklch semantic tokens only — no new palette, no raw colors. The base
+ *  gradient leads with the chart tint (45%) so neighbouring voices read
+ *  distinct — muted→muted blends rendered as flat gray in the browser —
+ *  and the blobs sit on top at 55–65% so the decoration is clearly
+ *  visible without overwhelming the initial. */
+const MOTIF_STOPS = [
+  { from: "var(--muted)", via: "var(--secondary)", blob: "var(--primary)" },
+  { from: "var(--secondary)", via: "var(--accent)", blob: "var(--ring)" },
+  { from: "var(--accent)", via: "var(--muted)", blob: "var(--chart-2)" },
+  { from: "var(--muted)", via: "var(--card)", blob: "var(--chart-3)" },
+  { from: "var(--secondary)", via: "var(--muted)", blob: "var(--chart-4)" },
+  { from: "var(--accent)", via: "var(--secondary)", blob: "var(--chart-5)" },
+] as const;
 
-function VoiceCardAvatar({
+function motifFor(voiceId: string) {
+  let hash = 0;
+  for (let i = 0; i < voiceId.length; i += 1) {
+    hash = (hash * 31 + voiceId.charCodeAt(i)) >>> 0;
+  }
+  const stops = MOTIF_STOPS[hash % MOTIF_STOPS.length];
+  // Two blob anchors spread across the tile so neighbours read distinct.
+  const ax = 18 + (hash % 47);
+  const ay = 15 + ((hash >>> 3) % 55);
+  const bx = 22 + ((hash >>> 6) % 43);
+  const by = 20 + ((hash >>> 9) % 50);
+  return { stops, ax, ay, bx, by };
+}
+
+function VoiceMotif({
   voiceId,
   playing,
 }: {
@@ -60,23 +88,29 @@ function VoiceCardAvatar({
   playing: boolean;
 }) {
   const label = voiceLabel(voiceId);
+  const { stops, ax, ay, bx, by } = motifFor(voiceId);
   return (
     <Avatar className="size-10">
-      {/* Dev note: illustrative portrait, not the real talent. */}
-      {PORTRAITLESS.has(voiceId) ? null : (
-        <AvatarImage
-          src={`/voices/avatars/${voiceId}.webp`}
-          alt=""
-          aria-hidden
-        />
-      )}
       <AvatarFallback
         className={cn(
-          "bg-muted text-foreground text-sm font-semibold",
+          "relative overflow-hidden text-foreground text-sm font-semibold",
           playing && "bg-primary/10 text-primary",
         )}
+        style={
+          playing
+            ? undefined
+            : {
+                backgroundImage: [
+                  `radial-gradient(circle at ${ax}% ${ay}%, color-mix(in oklch, ${stops.blob} 55%, transparent) 0, transparent 55%)`,
+                  `radial-gradient(circle at ${bx}% ${by}%, color-mix(in oklch, ${stops.blob} 65%, var(--card)) 0, transparent 62%)`,
+                  `linear-gradient(135deg, color-mix(in oklch, ${stops.blob} 45%, ${stops.from}) 0%, ${stops.via} 100%)`,
+                ].join(", "),
+              }
+        }
       >
-        <span aria-hidden>{label.charAt(0)}</span>
+        <span aria-hidden className="relative">
+          {label.charAt(0)}
+        </span>
       </AvatarFallback>
     </Avatar>
   );
@@ -312,7 +346,7 @@ export function VoiceField({
                         className="relative h-auto w-full rounded-xl border border-input bg-card p-0 text-left text-card-foreground text-sm shadow-sm transition-[border-color,box-shadow] duration-100 ease-out hover:border-muted-foreground hover:shadow-md data-[state=on]:border-primary data-[state=on]:ring-1 data-[state=on]:ring-primary/30"
                       >
                         <CardContent className="flex w-full items-center gap-4 p-4">
-                          <VoiceCardAvatar voiceId={v.id} playing={playing} />
+                          <VoiceMotif voiceId={v.id} playing={playing} />
                           <span className="flex min-w-0 flex-1 flex-col gap-1">
                             <span className="text-pretty font-medium text-foreground text-sm">
                               {voiceLabel(v.id)}

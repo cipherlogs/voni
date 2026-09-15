@@ -25,9 +25,16 @@ import {
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { LoadingButton } from "@/components/loading-button";
-import { Skeleton } from "@/components/ui/skeleton";
+import { TableSkeleton } from "@/components/page-skeletons";
 import { toast } from "@/components/ui/toast";
-import { JobRow } from "@/components/jobs/job-row";
+import {
+  Table,
+  TableBody,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { JobTableRow } from "@/components/jobs/job-row";
 import { useJobs } from "@/components/jobs/jobs-provider";
 import { bulkJobsAction } from "./actions";
 import { RecordSearchDestination } from "@/components/copilot/record-results";
@@ -195,15 +202,15 @@ function JobsContent() {
       />
       {finished.length > 0 ? (
         <div className="flex justify-end">
-          <Button
+          <LoadingButton
             variant="outline"
             size="sm"
-            disabled={dismissing}
+            pending={dismissing}
+            pendingText="Dismissing…"
             onClick={() => void dismissAllFinished()}
           >
-            {dismissing ? <LoaderCircle className="animate-spin" /> : null}
             Dismiss all finished
-          </Button>
+          </LoadingButton>
         </div>
       ) : null}
 
@@ -272,27 +279,38 @@ function JobsContent() {
             </EmptyHeader>
           </Empty>
         ) : (
-          <>
-            <label className="flex w-fit cursor-pointer items-center gap-2 text-sm text-muted-foreground">
-              <Checkbox
-                checked={allPageSelected}
-                indeterminate={somePageSelected && !allPageSelected}
-                onCheckedChange={togglePage}
-                aria-label={`Select all ${pageJobs.length} jobs on this page`}
-              />
-              Select all on this page
-            </label>
-            <div className="flex flex-col gap-3" aria-live="polite">
-              {pageJobs.map((job) => (
-                <JobRow
-                  key={job.id}
-                  job={job}
-                  selected={selected.has(job.id)}
-                  onToggle={toggle}
-                />
-              ))}
-            </div>
-          </>
+          <div className="overflow-x-auto rounded-lg border" aria-live="polite">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>
+                    <Checkbox
+                      checked={allPageSelected}
+                      indeterminate={somePageSelected && !allPageSelected}
+                      onCheckedChange={togglePage}
+                      aria-label={`Select all ${pageJobs.length} jobs on this page`}
+                    />
+                  </TableHead>
+                  <TableHead>Job</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Progress</TableHead>
+                  <TableHead>
+                    <span className="sr-only">Actions</span>
+                  </TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {pageJobs.map((job) => (
+                  <JobTableRow
+                    key={job.id}
+                    job={job}
+                    selected={selected.has(job.id)}
+                    onToggle={toggle}
+                  />
+                ))}
+              </TableBody>
+            </Table>
+          </div>
         )}
 
         {selected.size > 0 ? (
@@ -383,25 +401,8 @@ export default function JobsPage() {
           URL-selected record search resolves in its own leaf above. */}
       <Suspense
         fallback={
-          <div role="status" aria-label="Loading jobs" className="flex flex-col gap-4">
-            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-              <Skeleton className="h-9 w-full max-w-xs" />
-              <Skeleton className="h-8 w-full sm:w-64" />
-            </div>
-            <div className="flex flex-col gap-3">
-              <div className="rounded-lg border p-3">
-                <div className="flex flex-col gap-2">
-                  <Skeleton className="h-4 w-48" />
-                  <Skeleton className="h-3 w-full max-w-md [animation-delay:-533ms]" />
-                </div>
-              </div>
-              <div className="rounded-lg border p-3">
-                <div className="flex flex-col gap-2">
-                  <Skeleton className="h-4 w-40 [animation-delay:-1066ms]" />
-                  <Skeleton className="h-3 w-full max-w-sm [animation-delay:-533ms]" />
-                </div>
-              </div>
-            </div>
+          <div role="status" aria-label="Loading jobs">
+            <TableSkeleton rows={6} columns={5} />
           </div>
         }
       >

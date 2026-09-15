@@ -2,7 +2,6 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { JobRow } from "@/components/jobs/job-row";
-import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { LoadingButton } from '@/components/loading-button';
@@ -38,7 +37,7 @@ export function RecordResults({ job }: { job: JobJson }) {
         <div><p>{match.label}</p><p className="text-muted-foreground text-sm">{match.description}</p></div>
         <LoadingButton data-copilot-effect="navigation" pending={pending === match.ref} pendingText="Opening…" aria-label={`Open ${match.label}: ${match.description}`} onClick={() => void command('open', match.ref)}>Open</LoadingButton>
       </div>)}
-      {result.continuation ? <Button data-copilot-effect="view" disabled={pending === result.continuation} onClick={() => void command('continue', result.continuation!)}>{pending === result.continuation ? 'Searching…' : 'More matches'}</Button> : null}
+      {result.continuation ? <LoadingButton data-copilot-effect="view" pending={pending === result.continuation} pendingText="Searching…" onClick={() => void command('continue', result.continuation!)}>More matches</LoadingButton> : null}
     </CardContent>
   </Card>;
 }

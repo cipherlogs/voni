@@ -114,19 +114,21 @@ test("PersonalityStep orders name, style, language, voice with the style helper"
   assert.ok(!stepBodiesSource.includes("Languages it listens for"));
 });
 
-test("ReviewStep is gone; generation status renders in-flow", () => {
+test("ReviewStep is gone; terminal errors render in-flow, waits render Cancel-only", () => {
   assert.ok(!stepBodiesSource.includes("ReviewStep"));
   assert.ok(!stepBodiesSource.includes("Edit goals"));
   assert.ok(stepBodiesSource.includes("GenerationStatus"));
   assert.ok(stepBodiesSource.includes("Use the real estate template"));
   assert.ok(!stepBodiesSource.includes("MascotAvatar"));
+  // In-flight phases render no template hatch and no Open Jobs action — the
+  // minimal wait is Cancel-only; the hatch/error copy is terminal-only.
+  assert.ok(!stepBodiesSource.includes("onOpenJobs"));
 });
 
-test("working + backgrounded share one status card: mini success, progress, safe-to-leave", () => {
-  // The click must prove it landed instantly, say what is happening, and
-  // answer "can I go?" — before the 3s background threshold fires. Both
-  // phases share GenerationStatusCard so the 3s flip swaps only the title,
-  // never the layout.
+test("working + backgrounded share one Cancel-only status card: progress + safe-to-leave, no wizard", () => {
+  // While submitting/restoring/backgrounded the entire wizard hides behind a
+  // minimal wait: a single Alert + indeterminate Progress + Cancel only. No
+  // Open Jobs, no Keep editing — the wizard returns at the terminal state.
   assert.ok(stepBodiesSource.includes("GenerationStatusCard"));
   assert.ok(!stepBodiesSource.includes("GenerationSubmitted"));
   const noticeSource = readFileSync(
@@ -135,10 +137,23 @@ test("working + backgrounded share one status card: mini success, progress, safe
   );
   assert.ok(noticeSource.includes("Brief received"));
   assert.ok(noticeSource.includes("safe to leave"));
-  assert.ok(noticeSource.includes("Open Jobs"));
+  assert.ok(noticeSource.includes("Cancel generation"));
+  assert.ok(!noticeSource.includes("Open Jobs"));
+  assert.ok(!noticeSource.includes("Keep editing"));
+  assert.ok(!noticeSource.includes("onOpenJobs"));
+  assert.ok(!noticeSource.includes("onKeepEditing"));
   assert.ok(noticeSource.includes('aria-label="Generation in progress"'));
   assert.ok(noticeSource.includes("Generating your agent"));
   assert.ok(noticeSource.includes("Still generating your draft"));
+  const pageSource = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), "../../app/(dashboard)/agents/new/page.tsx"),
+    "utf8",
+  );
+  // The minimal wait is an early return while running (submit/restore/
+  // backgrounded) without a seeded review — wizard bodies, timeline, step
+  // progress, footer, and the retry card never render in that window.
+  assert.ok(pageSource.includes("if (minimalWait)"));
+  assert.ok(pageSource.includes("running && !(draft && seeded)"));
 });
 
 test("wizard draft defaults to empty goals/tasks with English + anna", async () => {
@@ -216,11 +231,15 @@ test("agents/new starts generation and keeps the ?job= review pointer", () => {
   assert.ok(pageSource.includes("router.replace(`/agents/new?job=${started.jobId}`)"));
   assert.ok(pageSource.includes('router.replace("/agents/new")'));
   assert.ok(pageSource.includes("dismissedJobId"));
-  // While a fresh submission runs, the form hides behind the submitted
-  // panel (locked until terminal) and the footer action goes away.
+  // While a fresh submission runs, the entire wizard hides behind the
+  // minimal wait (single Alert + Progress + Cancel, locked until terminal):
+  // the minimalWait early return owns that render, so the footer below never
+  // needs a submitting branch — its primary is always a real action.
   assert.ok(pageSource.includes("submitting"));
+  assert.ok(pageSource.includes("if (minimalWait)"));
+  assert.ok(pageSource.includes("running && !(draft && seeded)"));
+  assert.ok(!pageSource.includes("submitting ? null"));
   assert.ok(pageSource.includes("wiz.step === 1 && !submitting"));
-  assert.ok(pageSource.includes("submitting ? null : wiz.step === 0 ?"));
   // Generate creates the list placeholder up front (best-effort) so the
   // detail page has a row to render while the job runs. Saving from this
   // page's reviewed draft upgrades it by job id (matched server-side, so
@@ -280,6 +299,21 @@ test("generation review is consumed on agents/new?job=; the detail links back, s
   assert.ok(editSource.includes("updateAgentAction"));
   assert.ok(editSource.includes("generationJobId"));
   assert.ok(!editSource.includes("createAgentAction"));
+});
+
+test("still-generating stubs hide the placeholder form; aged-out stubs stay editable", () => {
+  const dir = dirname(fileURLToPath(import.meta.url));
+  const editSource = readFileSync(
+    join(dir, "../../app/(dashboard)/agents/[id]/edit-agent.tsx"),
+    "utf8",
+  );
+  // A direct URL to a still-generating stub shows the minimal generating
+  // banner only — never the placeholder AgentConfigForm. The form-hide is a
+  // dedicated gate on top of the canSave/canTestCall submit gates, and
+  // aged-out stubs (null status = terminal failure) stay editable.
+  assert.ok(editSource.includes("hideFormWhileGenerating"));
+  assert.ok(editSource.includes("isGenerationStub && generationRunning"));
+  assert.ok(editSource.includes("!generationTerminalFailure && !hideFormWhileGenerating"));
 });
 
 test("generationIdempotencyKey is stable per brief, distinct across briefs", () => {
@@ -422,5 +456,7 @@ test("wizard footer is static flow — no stuck overlay, no reserve hack", () =>
     "utf8",
   );
   assert.ok(!pageSource.includes("pb-[calc"));
+  // JobPill removed: its --job-pill-h offset token must not resurface here.
   assert.ok(!pageSource.includes("--job-pill-h"));
+  assert.ok(!pageSource.includes("job-pill"));
 });

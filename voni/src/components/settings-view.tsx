@@ -312,12 +312,9 @@ function ProvidersSection({
         const result = await setProviderConnection(next);
         if (!result.ok) {
           setOptimistic(null);
+          // Inline-only: the section Alert below renders this error, so no
+          // duplicate toast.
           setError(result.error ?? "Could not update the provider connection.");
-          toast.add({
-            type: "error",
-            title: "Provider connection failed",
-            description: result.error ?? "Check your connection and try again.",
-          });
         }
       } catch {
         setOptimistic(null);

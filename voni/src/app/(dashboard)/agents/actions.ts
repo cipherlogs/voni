@@ -24,6 +24,7 @@ import {
   type ConversationLanguage,
 } from "@/lib/agents/wizard";
 import { JobStartError, startJob } from "@/lib/jobs/start";
+import type { JobErrorCode } from "@/lib/jobs/kinds";
 
 /**
  * Server actions for the agent compiler (plan Day 3-4).
@@ -42,8 +43,30 @@ export type SaveResult =
       deployment: "ready" | "attention" | "queued";
       jobId?: string;
       deploymentMessage?: string;
+      /** Set only on attention: the mapped JobStartError code (e.g.
+       * stale-version when a concurrent save won the race). Never set on the
+       * queued happy path. */
+      errorCode?: JobErrorCode;
     }
-  | { ok: false; message: string };
+  | { ok: false; message: string; errorCode?: JobErrorCode };
+
+/**
+ * Map a JobStartError from enqueueDeployment to a JOB_ERROR_CODES-style code.
+ * Mirrors processor.ts errorCodeFor's message sniffing (same order): the
+ * 429-in-4xx rule comes first because later 4xx checks would swallow it.
+ */
+function enqueueErrorCode(error: unknown): JobErrorCode {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  if (/stale version|newer configuration/i.test(message)) return "stale-version";
+  if (/deployment|assemblyai|provision/i.test(message)) return "provider-failure";
+  if (/timeout|timed out/i.test(message)) return "timeout";
+  if (/429|too many requests|rate[- ]?limit/i.test(message)) return "rate-limited";
+  if (/HTTP 401|unauthorized|credential|forbidden|HTTP 403/i.test(message))
+    return "auth";
+  if (/not found|HTTP 404/i.test(message)) return "not-found";
+  if (/conflict|duplicate|already/i.test(message)) return "conflict";
+  return "unknown";
+}
 
 async function enqueueDeployment(
   ctx: Ctx,
@@ -69,14 +92,25 @@ async function enqueueDeployment(
     );
     return { ok: true, id, deployment: "queued", jobId: job.id };
   } catch (error) {
+    // A JobStartError means the save itself succeeded but the deployment job
+    // was refused (e.g. a concurrent save won the version race): attention
+    // with the mapped code, retried from the agent page. Anything else (queue
+    // down) is attention without a code — the verbatim message covers it.
+    if (error instanceof JobStartError) {
+      return {
+        ok: true,
+        id,
+        deployment: "attention",
+        deploymentMessage: error.message,
+        errorCode: enqueueErrorCode(error),
+      };
+    }
     return {
       ok: true,
       id,
       deployment: "attention",
       deploymentMessage:
-        error instanceof JobStartError
-          ? error.message
-          : "Voice deployment could not be queued. Retry from the agent page.",
+        "Voice deployment could not be queued. Retry from the agent page.",
     };
   }
 }
@@ -91,11 +125,20 @@ export async function createAgentAction(
   try {
     ctx = await requireCtx();
   } catch {
-    return { ok: false, message: "Sign in again to save this agent." };
+    return {
+      ok: false,
+      message: "Sign in again to save this agent.",
+      errorCode: "auth",
+    };
   }
 
   const trimmed = name.trim();
-  if (!trimmed) return { ok: false, message: "Give the agent a name." };
+  if (!trimmed)
+    return {
+      ok: false,
+      message: "Give the agent a name.",
+      errorCode: "invalid-input",
+    };
 
   const parsed = agentConfigSchema.safeParse(rawConfig);
   if (!parsed.success) {
@@ -105,6 +148,7 @@ export async function createAgentAction(
         .slice(0, 3)
         .map((i) => i.path.join(".") || "config")
         .join(", ")}`,
+      errorCode: "invalid-input",
     };
   }
 
@@ -288,12 +332,20 @@ export async function updateAgentAction(
   try {
     ctx = await requireCtx();
   } catch {
-    return { ok: false, message: "Sign in again to save this agent." };
+    return {
+      ok: false,
+      message: "Sign in again to save this agent.",
+      errorCode: "auth",
+    };
   }
 
   const parsed = agentConfigSchema.safeParse(rawConfig);
   if (!parsed.success) {
-    return { ok: false, message: "Configuration is incomplete." };
+    return {
+      ok: false,
+      message: "Configuration is incomplete.",
+      errorCode: "invalid-input",
+    };
   }
 
   const config = normalizeConfig(parsed.data);
@@ -335,7 +387,12 @@ export async function updateAgentAction(
       // The select-then-update above can race a concurrent save (or delete):
       // zero affected rows means the placeholder is gone, so report not-found
       // instead of throwing on upgraded[0].
-      if (upgraded.length === 0) return { ok: false, message: "Agent not found." };
+      if (upgraded.length === 0)
+        return {
+          ok: false,
+          message: "Agent not found.",
+          errorCode: "not-found",
+        };
       const result = await enqueueDeployment(
         ctx,
         upgraded[0].id,
@@ -367,7 +424,12 @@ export async function updateAgentAction(
   // Zero affected rows means the row was deleted (or belongs to another org)
   // between the auth check and the write: report not-found, never read
   // updated[0] unguarded (that threw a 500 instead of the SaveResult error).
-  if (updated.length === 0) return { ok: false, message: "Agent not found." };
+  if (updated.length === 0)
+    return {
+      ok: false,
+      message: "Agent not found.",
+      errorCode: "not-found",
+    };
 
   const result = await enqueueDeployment(
     ctx,
@@ -387,16 +449,30 @@ export async function retryAgentDeploymentAction(id: string): Promise<SaveResult
   try {
     ctx = await requireCtx();
   } catch {
-    return { ok: false, message: "Sign in again to deploy this agent." };
+    return {
+      ok: false,
+      message: "Sign in again to deploy this agent.",
+      errorCode: "auth",
+    };
   }
   const [agent] = await db
     .select()
     .from(agents)
     .where(and(eq(agents.id, id), eq(agents.organizationId, ctx.organizationId)))
     .limit(1);
-  if (!agent) return { ok: false, message: "Agent not found." };
+  if (!agent)
+    return {
+      ok: false,
+      message: "Agent not found.",
+      errorCode: "not-found",
+    };
   const parsed = agentConfigSchema.safeParse(agent.config);
-  if (!parsed.success) return { ok: false, message: "Configuration is incomplete." };
+  if (!parsed.success)
+    return {
+      ok: false,
+      message: "Configuration is incomplete.",
+      errorCode: "invalid-input",
+    };
   const result = await enqueueDeployment(
     ctx,
     agent.id,

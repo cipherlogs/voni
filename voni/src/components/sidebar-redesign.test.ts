@@ -98,7 +98,25 @@ test("dashboard onboarding is persisted-data driven", () => {
   assert.match(onboarding, /Progress/);
 });
 
-test("agent detail is one column with a full-screen idle test dialog", () => {
+test("jobs nav carries a text count badge, never icon-alone", () => {
+  const sidebar = source("app-sidebar.tsx");
+  // Badge reads the shell-level provider: active (in-flight) + unread
+  // (finished, unseen) jobs on the "Background jobs" row only.
+  assert.match(sidebar, /useJobs/);
+  assert.match(sidebar, /activeJobs\.length \+ unreadJobs\.length/);
+  assert.match(sidebar, /item\.url === "\/jobs"/);
+  // Text count, not a bare dot or icon: the digits render, the accessible
+  // name carries them too, and the tooltip includes them.
+  assert.match(sidebar, /sidebar-nav-badge/);
+  assert.match(sidebar, /aria-label=\{badge/);
+  assert.match(sidebar, /\$\{item\.title\} \(\$\{badge\}\)/);
+  // Collapsed icon rail: the label hides but the count survives as a corner
+  // pill (absolute-positioned under group-data-[collapsible=icon]).
+  assert.match(sidebar, /sidebar-nav-label/);
+  assert.match(sidebar, /group-data-\[collapsible=icon\]:absolute/);
+});
+
+test("agent detail is one column with a constrained-card test dialog", () => {
   const form = source("agent-config-form.tsx");
   const edit = source("../app/(dashboard)/agents/[id]/edit-agent.tsx");
   const dialog = source("test-agent-dialog.tsx");
@@ -113,7 +131,9 @@ test("agent detail is one column with a full-screen idle test dialog", () => {
   assert.doesNotMatch(edit, /Agent status/);
   assert.doesNotMatch(edit, /test-rail|lg:grid-cols-\[minmax/);
   assert.match(edit, /<TestAgentDialog/);
-  assert.match(dialog, /h-dvh w-screen max-w-none/);
+  // Upstream card wins: constrained ai-05 card, not fullscreen chrome.
+  assert.match(dialog, /h-\[560px\].*max-w-2xl.*rounded-3xl/);
+  assert.doesNotMatch(dialog, /h-dvh w-screen max-w-none/);
   assert.match(dialog, /canTest && open/);
   assert.match(dialog, /presentation="dialog"/);
   assert.match(chat, /MessageScrollerProvider/);

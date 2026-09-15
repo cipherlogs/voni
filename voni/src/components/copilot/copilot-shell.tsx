@@ -9,8 +9,7 @@
  * disclosure.
  *
  * Non-modal on purpose — mouse and keyboard stay usable beside it. The stack
- * hangs below the h-14 header and keeps navigation reachable at 390px; the
- * JobPill sits bottom-left, so the two never overlap.
+ * hangs below the h-14 header and keeps navigation reachable at 390px.
  */
 
 "use client";
@@ -184,18 +183,18 @@ export function CopilotShell() {
                     <Button
                       type="button"
                       size="sm"
-                      disabled={!armed}
-                      data-copilot-manual="independent-assent" onClick={() => applyTap(proposal.id)}
-                    >
-                      Apply
-                    </Button>
-                    <Button
-                      type="button"
-                      size="sm"
                       variant="outline"
                       onClick={() => dismissTap(proposal.id)}
                     >
                       Dismiss
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      disabled={!armed}
+                      data-copilot-manual="independent-assent" onClick={() => applyTap(proposal.id)}
+                    >
+                      Apply
                     </Button>
                   </div>
                 </div>

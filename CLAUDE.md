@@ -160,3 +160,17 @@ auto-generated.
 ## Voice copilot coverage
 
 Make every signed-in screen and interactive state discoverable and operable by voice, with stable references, verified navigation, and confirmed mutations. Audit all 16 page routes; document public/auth routes as outside tool-enabled copilot access.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live as local markdown files under `.scratch/`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default five-role vocabulary, each label string equal to its name. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context layout (one `CONTEXT.md` + `docs/adr/` at the repo root). See `docs/agents/domain.md`.

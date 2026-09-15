@@ -53,7 +53,7 @@ test("terminal generation rows never replay on the same key (start.ts)", () => {
 
 test("stub terminal failure shows ONLY the retry card — sections hide", () => {
   assert.ok(editSource.includes("generationTerminalFailure"));
-  assert.ok(editSource.includes("{!generationTerminalFailure ? ("));
+  assert.ok(editSource.includes("{!generationTerminalFailure && !hideFormWhileGenerating ? ("));
 });
 
 test("cancelled stub failure keeps its cancelled copy, not the failure copy", () => {

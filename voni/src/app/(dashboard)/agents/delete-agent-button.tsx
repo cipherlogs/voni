@@ -88,9 +88,9 @@ export function AgentDeleteButton({
       const result = await deleteAgentAction(id);
       if (!result.ok) {
         // Stay in the dialog so the reason (e.g. owns a campaign) is
-        // readable next to the action, and toast so it survives dismissal.
+        // readable next to the action. Inline-only: the dialog stays open
+        // with the typed-name gate intact, so no duplicate toast.
         setError(result.message);
-        toast.add({ type: "error", title: result.message });
         return;
       }
       setOpen(false);

@@ -27,7 +27,7 @@ import { CommandMenu03 } from "@/components/command-menu-03/command-menu-03";
  *
  * Background work is ambient: a text status link (never an ambiguous icon)
  * plus a slim progress strip for the most recent active job. Detail lives in
- * the floating pill and on /jobs.
+ * the "Background jobs" nav badge and on /jobs.
  */
 /** Single source for section titles — also feeds the voice copilot's app manifest. */
 export const SECTION_TITLES: Array<[string, string]> = [

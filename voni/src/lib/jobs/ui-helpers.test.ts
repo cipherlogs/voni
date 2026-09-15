@@ -111,11 +111,12 @@ test("shouldSuppressJobToast suppresses inline-consumed results", () => {
     { kind: "agent_generation", status: "succeeded", pathname: "/agents/new", expected: true },
     { kind: "agent_generation", status: "failed", pathname: "/agents/new", expected: true },
     { kind: "agent_deployment", status: "succeeded", pathname: "/agents/abc-123", expected: true },
+    { kind: "agent_deployment", status: "failed", pathname: "/agents/abc-123", expected: true },
     // Not suppressed: generation consumed only on the wizard page.
     { kind: "agent_generation", status: "succeeded", pathname: "/agents/abc", expected: false },
     { kind: "agent_generation", status: "succeeded", pathname: "/jobs", expected: false },
-    // Not suppressed: only deployment success on a detail page is inline.
-    { kind: "agent_deployment", status: "failed", pathname: "/agents/abc-123", expected: false },
+    // Not suppressed: cancelled deployments stay global (the detail watcher
+    // banners them but never toasts, so the global toast is the only ping).
     { kind: "agent_deployment", status: "cancelled", pathname: "/agents/abc-123", expected: false },
     { kind: "agent_deployment", status: "succeeded", pathname: "/agents", expected: false },
     { kind: "agent_deployment", status: "succeeded", pathname: "/agents/", expected: false },

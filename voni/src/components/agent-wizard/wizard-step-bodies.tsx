@@ -190,13 +190,11 @@ export type GenerationStatusPhase = "idle" | "working" | "backgrounded";
 /** Generation progress, errors, and the template fallback — shown in-flow. */
 export function GenerationStatus({
   phase,
-  onOpenJobs,
   onCancel,
   error,
   onUseTemplate,
 }: {
   phase: GenerationStatusPhase;
-  onOpenJobs: () => void;
   /** Cancels the in-flight generation job. */
   onCancel?: () => void;
   error: string | null;
@@ -206,7 +204,7 @@ export function GenerationStatus({
   return (
     <>
       {phase === "working" || phase === "backgrounded" ? (
-        <GenerationStatusCard phase={phase} onOpenJobs={onOpenJobs} onCancel={onCancel} />
+        <GenerationStatusCard phase={phase} onCancel={onCancel} />
       ) : null}
       {error ? (
         <Alert>

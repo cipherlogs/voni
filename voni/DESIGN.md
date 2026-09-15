@@ -99,8 +99,14 @@ Remote avatar PNGs cut (initials fallback only); documenso sample people
 replaced with neutral placeholders; `space-x-4` rebuilt as flex+gap. Pinned
 2026-09-15 as the voice-card interior for the agent-creation carousel (visual
 composition only — the `ToggleGroupItem` toggle stays the control, no
-stretched-link `<a>`; voice portraits in `public/voices/avatars/` replace the
-initials fallback where present).
+stretched-link `<a>`; the avatar slot is a deterministic CSS-only motif
+(`VoiceMotif`, hash(voiceId) → muted/accent gradient + blurred blob pair,
+oklch semantic tokens only), identical for every voice.
+
+Installed 2026-09-15: `ai-05` — markup idiom only (copilot-shell composition
+reference; 1094-line provider logic untouched), pinned at upstream commit
+`54f6cbfa2c91a4377c980d9b0ac787d6ce5750a0` (feat(ai): redesign the ai-05 chat
+block (#79), 2026-09-03). No `ai`-SDK addition without amendment.
 
 ## 4. Patterns (one canonical composition per area)
 
@@ -141,6 +147,18 @@ initials fallback where present).
   card. Dialog footers carry no contrasting fill (`DialogFooter` is
   border-top only; the dialog surface itself stays opaque). Data-card
   footers (dashboard stat cards) are excluded from this rule.
+- **Paired-action order + right alignment** (amendment 2026-09-15):
+  every paired action row follows secondary-left / primary-right on
+  desktop, not just footers — draft gate, alert rows, retry cards,
+  copilot proposal cards, dialog footers. Primary = `variant="default"`
+  (or `destructive` for destructive confirms); secondary = `outline`;
+  `ghost` is tertiary/borderless and never the boxed pair of a primary.
+  Form action rows align right on desktop (`sm:justify-end`, matching
+  Blocks `dialog-11` abort/confirm bar and `form-layout-*` `justify-end`);
+  stacked rows use `flex-col-reverse` so the primary stays on top on
+  mobile (matching `DialogFooter`'s `flex-col-reverse sm:flex-row
+  sm:justify-end`). Inline `flex-wrap` rows keep DOM order = visual
+  order.
 - **Form widths** (amendment 2026-09-14): shells — agent
   creation/review/details + campaign form `max-w-3xl`;
   workspace/copilot settings + number entry + CSV import `max-w-xl`;
@@ -175,9 +193,12 @@ initials fallback where present).
   adopt the `grid-list-02` card interior (surface, `CardContent` row,
   `size-10` avatar) inside the existing Embla carousel — interaction
   byte-identical, toggle stays the control (no stretched-link), visible
-  feminine/masculine text replaced by headshot avatars
-  (`public/voices/avatars/`, 15 portraits + initials-only tile for the
-  unspecified `jean`), gender survives sr-only in the card `aria-label`.
+  feminine/masculine text replaced by deterministic CSS-only motif avatars
+  (amendment 2026-09-15: `VoiceMotif` in `voice-field.tsx` — hash(voiceId)
+  → oklch semantic-token gradient + blurred blob pair, `AvatarFallback`
+  only, no image assets; uniform across all voices, so the prior 15
+  `public/voices/avatars/*.webp` headshots and the `jean` initials-only
+  special-case are retired), gender survives sr-only in the card `aria-label`.
   (c) form controls converge on one token set: `h-8` + `rounded-lg` +
   `border-input`, `text-base md:text-sm` on every input-like control
   (select trigger + tag composer included), focus-only

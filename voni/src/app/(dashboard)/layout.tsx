@@ -2,12 +2,11 @@ import { Suspense } from "react";
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { AppHeader } from "@/components/app-header";
-import { JobPill } from "@/components/jobs/job-pill";
 import { CopilotShell } from "@/components/copilot/copilot-shell";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { ShellAuthBridge, ShellAuthProvider } from "@/components/shell-auth";
 import { SidebarStateRestore } from "@/components/app-sidebar";
-import { ShellProviders, ShellSidebar } from "@/components/shell-frame";
+import { ShellJobsProvider, ShellProviders, ShellSidebar } from "@/components/shell-frame";
 import { auth } from "@/lib/auth";
 import { safeNextPath } from "@/lib/auth-redirect";
 import { devBypassEnabled, DEV_BYPASS_USER } from "@/lib/dev-bypass";
@@ -86,24 +85,20 @@ export default function DashboardLayout({
     >
       <ShellAuthProvider>
         <SidebarStateRestore />
-        <ShellSidebar />
-        <SidebarInset>
-          <ShellProviders>
-            <AppHeader />
-            <ViewTransition name="dashboard-content" default="dashboard-route">
-              {/* Bottom clearance tracks the fixed JobPill height so a
-                visible pill can never cover trailing actions (e.g. the
-                agent review's Save button) on long scrolled pages. The
-                pill publishes --job-pill-h live and resets it to 0px on
-                unmount, so this is plain page breathing room when idle. */}
-              <div className="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-6 p-4 pb-[calc(var(--job-pill-h,0px)+2rem)] md:p-6 lg:p-8">
-                {children}
-              </div>
-            </ViewTransition>
-            <JobPill />
-            <CopilotShell />
-          </ShellProviders>
-        </SidebarInset>
+        <ShellJobsProvider>
+          <ShellSidebar />
+          <SidebarInset>
+            <ShellProviders>
+              <AppHeader />
+              <ViewTransition name="dashboard-content" default="dashboard-route">
+                <div className="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-6 p-4 md:p-6 lg:p-8">
+                  {children}
+                </div>
+              </ViewTransition>
+              <CopilotShell />
+            </ShellProviders>
+          </SidebarInset>
+        </ShellJobsProvider>
         <Suspense fallback={null}>
           <ShellAuthResolver />
         </Suspense>

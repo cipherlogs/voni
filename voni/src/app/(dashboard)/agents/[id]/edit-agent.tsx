@@ -202,10 +202,28 @@ export function EditAgent(props: {
   const [deployState, setDeployState] = useState<DeploymentState>(() =>
     coerceDeploymentState(deploymentStatus),
   );
-  const [deployMessage, setDeployMessage] = useState<string | null>(
+  /**
+   * Single inline error path (Req 4): deployment attention, save failures,
+   * and regen start failures all land here instead of three separate
+   * surfaces. Copy prefers jobErrorCopy(code); the server/job message covers
+   * the no-code case. A toast may repeat the same failure only when
+   * shouldSuppressJobToast lets it through.
+   */
+  const [editorError, setEditorError] = useState<{
+    title: string;
+    code: string | null;
+    message: string;
+    retryDeployment?: boolean;
+  } | null>(
     initialDeploymentAttention || deploymentStatus === "failed"
-      ? (deploymentError ??
-        "The configuration was saved, but voice deployment did not complete.")
+      ? {
+          title: "Saved, but voice deployment needs attention",
+          code: null,
+          message:
+            deploymentError ??
+            "The configuration was saved, but voice deployment did not complete.",
+          retryDeployment: true,
+        }
       : null,
   );
   const [deployJobId, setDeployJobId] = useState<string | null>(null);
@@ -240,9 +258,10 @@ export function EditAgent(props: {
     config: AgentConfig;
     jobId: string;
   } | null>(null);
-  // Regeneration submit state (Goals 6–7): fresh-key start.
+  // Regeneration submit state (Goals 6–7): fresh-key start. Start failures
+  // route into the single editorError banner path (Req 4), not a separate
+  // inline line — the retry card keeps status/copy only.
   const [regenInFlight, setRegenInFlight] = useState(false);
-  const [regenError, setRegenError] = useState<string | null>(null);
   // Backgrounded-regeneration notice (Goal 7): flips after
   // BACKGROUND_AFTER_MS without a terminal state.
   const [regenBackgrounded, setRegenBackgrounded] = useState(false);
@@ -251,6 +270,33 @@ export function EditAgent(props: {
   const [liveGenerationStatus, setLiveGenerationStatus] = useState<string | null>(
     generationStatus,
   );
+
+  /**
+   * Report into the single inline banner path (Req 4): deployment attention,
+   * save failures, and regen start failures all land in editorError. Copy
+   * prefers jobErrorCopy(code); the server/job message covers the no-code
+   * case. The matching toast fires only when shouldSuppressJobToast lets it
+   * through — the global provider owns the rest (e.g. watched deployment
+   * failures, which it already toasts), so those call sites pass no toastKind.
+   */
+  const reportEditorError = (
+    entry: { title: string; message: string; code?: string | null; retryDeployment?: boolean },
+    toastKind?: { kind: string; status: string },
+  ) => {
+    setEditorError({
+      title: entry.title,
+      code: entry.code ?? null,
+      message: entry.message,
+      retryDeployment: entry.retryDeployment,
+    });
+    if (
+      toastKind &&
+      typeof window !== "undefined" &&
+      !shouldSuppressJobToast(toastKind.kind, toastKind.status, window.location.pathname)
+    ) {
+      toast.add({ type: "error", title: entry.title, description: entry.message });
+    }
+  };
 
   // While a deployment job is active, watch it so the banner reflects the
   // outcome without a reload. Slow work still completes (and notifies)
@@ -263,19 +309,32 @@ export function EditAgent(props: {
       (job: JobJson) => {
         if (job.status === "succeeded") {
           setDeployState("ready");
-          setDeployMessage(null);
+          setEditorError(null);
           toast.add({ type: "success", title: "Voice deployment is ready" });
           return;
         }
         if (job.status === "cancelled") {
           setDeployState("cancelled");
-          setDeployMessage(
-            "Deployment was cancelled. The previous version is still live.",
-          );
+          // Banner only, no toast: the provider watches the same terminal
+          // transition and already toasts it globally.
+          setEditorError({
+            title: "Saved, but voice deployment needs attention",
+            code: null,
+            message: "Deployment was cancelled. The previous version is still live.",
+            retryDeployment: true,
+          });
           return;
         }
         setDeployState("failed");
-        setDeployMessage(job.errorMessage ?? "Voice deployment did not complete.");
+        // No toast here: the provider watches the same terminal transition
+        // and already toasts the failure globally (shouldSuppressJobToast
+        // covers only the success case on this route).
+        setEditorError({
+          title: "Saved, but voice deployment needs attention",
+          code: job.errorCode ?? null,
+          message: job.errorMessage ?? "Voice deployment did not complete.",
+          retryDeployment: true,
+        });
       },
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -350,7 +409,7 @@ export function EditAgent(props: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [generation.result]);
 
-  const needsAttention = deployState === "failed" || deployMessage !== null;
+  const needsAttention = deployState === "failed" || editorError !== null;
 
   const generationRunning =
     isGenerationStub &&
@@ -368,6 +427,10 @@ export function EditAgent(props: {
   // the banner's edit-and-save-manually path must stay open.
   const canTestCall = !isGenerationStub || generationReady;
   const canSave = !isGenerationStub || !generationRunning;
+  // Minimal generating state: a direct URL to a still-generating stub must
+  // never show the placeholder AgentConfigForm. Aged-out stubs (null status)
+  // are terminal failures above, so they stay editable.
+  const hideFormWhileGenerating = isGenerationStub && generationRunning;
 
   // The editor is a single reading column. Voice testing opens from the form
   // footer in a full-screen dialog, so the form keeps its full working width.
@@ -471,7 +534,7 @@ export function EditAgent(props: {
                   // fresh submission by construction.
                   if (regenInFlight) return;
                   setRegenInFlight(true);
-                  setRegenError(null);
+                  setEditorError(null);
                   setRegenBackgrounded(false);
                   const brief = [
                     currentName.trim() ? `The agent is ${currentName.trim()}.` : null,
@@ -511,7 +574,17 @@ export function EditAgent(props: {
                       if (!started) {
                         setRegenInFlight(false);
                         setRegenBackgrounded(false);
-                        setRegenError("This could not start. Check your connection and retry.");
+                        // Start failure routes into the single inline banner
+                        // path (Req 4): copy prefers jobErrorCopy (no code
+                        // here, so the default), and the toast fires only when
+                        // shouldSuppressJobToast lets it through.
+                        reportEditorError(
+                          {
+                            title: "Generation could not start",
+                            message: "This could not start. Check your connection and retry.",
+                          },
+                          { kind: "agent_generation", status: "failed" },
+                        );
                       }
                     });
                 }}
@@ -520,9 +593,6 @@ export function EditAgent(props: {
                 }}
                 retryTestId="generation-retry-stub"
               />
-              {regenError ? (
-                <p className="mt-2 text-muted-foreground text-sm">{regenError}</p>
-              ) : null}
               {regenBackgrounded && regenInFlight ? (
                 <p className="mt-2 text-muted-foreground text-sm">
                   This is continuing in the background. You can browse Voni and
@@ -533,18 +603,20 @@ export function EditAgent(props: {
           )
         ) : null}
 
-        {needsAttention ? (
+        {needsAttention && editorError ? (
           <Alert
             variant="destructive"
             className="mb-4 rounded-xl text-sm"
           >
             <TriangleAlert />
-            <AlertTitle>Saved, but voice deployment needs attention</AlertTitle>
+            <AlertTitle>{editorError.title}</AlertTitle>
             <AlertDescription className="flex flex-wrap items-center justify-between gap-3">
               <span>
-                {deployMessage} Phone calls will keep using the previous
+                {editorError.code ? jobErrorCopy(editorError.code) : editorError.message}{" "}
+                Phone calls will keep using the previous
                 deployed version until this succeeds.
               </span>
+              {editorError.retryDeployment ? (
               <LoadingButton
                 type="button"
                 variant="outline"
@@ -570,15 +642,27 @@ export function EditAgent(props: {
                       // queueing a second deployment.
                       const result = await retryAgentDeploymentAction(id);
                       if (!result.ok) {
-                        setDeployMessage(result.message);
+                        // Single inline banner path (Req 4): no toast — the
+                        // user is looking at the banner they just clicked.
+                        setDeployState("failed");
+                        setEditorError({
+                          title: "Deployment could not start",
+                          code: result.errorCode ?? null,
+                          message: result.message,
+                          retryDeployment: true,
+                        });
                       } else if (result.deployment === "attention") {
                         setDeployState("failed");
-                        setDeployMessage(
-                          result.deploymentMessage ?? "Voice deployment did not complete.",
-                        );
+                        setEditorError({
+                          title: "Saved, but voice deployment needs attention",
+                          code: result.errorCode ?? null,
+                          message:
+                            result.deploymentMessage ?? "Voice deployment did not complete.",
+                          retryDeployment: true,
+                        });
                       } else {
                         setDeployState("queued");
-                        setDeployMessage(null);
+                        setEditorError(null);
                         setDeployJobId(result.jobId ?? null);
                         toast.add({ type: "success", title: "Deployment queued — it runs in the background" });
                       }
@@ -594,6 +678,7 @@ export function EditAgent(props: {
               >
                 Retry deployment
               </LoadingButton>
+              ) : null}
             </AlertDescription>
           </Alert>
         ) : null}
@@ -614,6 +699,14 @@ export function EditAgent(props: {
                 <Button
                   type="button"
                   size="sm"
+                  variant="ghost"
+                  onClick={() => setPendingJobResult(null)}
+                >
+                  Keep my edits
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
                   onClick={() => {
                     setCurrent(pendingJobResult.config);
                     setSavedSnapshot(
@@ -628,14 +721,6 @@ export function EditAgent(props: {
                   }}
                 >
                   Review and apply
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => setPendingJobResult(null)}
-                >
-                  Keep my edits
                 </Button>
               </span>
             </AlertDescription>
@@ -655,15 +740,19 @@ export function EditAgent(props: {
 
         {/* Goal 6: on stub terminal failure the retry card above owns the
             state — the empty placeholder sections hide so the stub shows ONLY
-            the retry path. Manual edit-and-save must stay available per the
-            canSave gate, so the form renders only when NOT a terminal stub
-            failure. */}
-        {!generationTerminalFailure ? (
+            the retry path. While generation is still running the form hides
+            entirely (minimal generating state): the placeholder config must
+            never render as an editable form. Aged-out stubs are terminal
+            failures (null status), so they stay editable. Manual
+            edit-and-save must stay available per the canSave gate, so the form
+            renders only when NOT a terminal stub failure and NOT still
+            generating. */}
+        {!generationTerminalFailure && !hideFormWhileGenerating ? (
         <AgentConfigForm
           key={appliedJobResult ? `applied-${appliedJobResult.jobId}` : "server"}
           initialName={appliedJobResult ? appliedJobResult.name : name}
           initialConfig={appliedJobResult ? appliedJobResult.config : config}
-          submitLabel="Save changes"
+          submitLabel={isGenerationStub ? "Deploy agent" : "Save changes"}
           isDirty={isDirty}
           phoneReady={phoneReady}
           whatsappReady={whatsappReady}
@@ -695,14 +784,29 @@ export function EditAgent(props: {
               generationJobId ? { generationJobId } : undefined,
             );
             if (!result.ok) {
-              toast.add({ type: "error", title: result.message });
+              // Single inline banner path (Req 4): no duplicate toast — the
+              // user is looking at the banner, and the global provider owns
+              // job toasts for watched transitions.
+              setDeployState("failed");
+              setEditorError({
+                title: isGenerationStub ? "Could not deploy" : "Could not save",
+                code: result.errorCode ?? null,
+                message: result.message,
+                retryDeployment: true,
+              });
               return;
             }
             if (result.deployment === "attention") {
               setDeployState("failed");
-              setDeployMessage(
-                result.deploymentMessage ?? "Voice deployment did not complete.",
-              );
+              setEditorError({
+                title: isGenerationStub
+                  ? "Deployed with attention needed"
+                  : "Saved, but voice deployment needs attention",
+                code: result.errorCode ?? null,
+                message:
+                  result.deploymentMessage ?? "Voice deployment did not complete.",
+                retryDeployment: true,
+              });
               setSavedSnapshot(JSON.stringify({ name: nextName, config: nextConfig }));
               setRestoredDraft(false);
               try {
@@ -713,7 +817,7 @@ export function EditAgent(props: {
               return;
             }
             setDeployState("queued");
-            setDeployMessage(null);
+            setEditorError(null);
             setDeployJobId(result.jobId ?? null);
             setSavedSnapshot(JSON.stringify({ name: nextName, config: nextConfig }));
             setRestoredDraft(false);

@@ -12,7 +12,6 @@ import type { DispatchResult } from "./contracts";
 import {
   createJob,
   findActiveJobs,
-  findGenerationPlaceholderId,
   getJobByIdempotencyKey,
   type JobRow,
 } from "./store";
@@ -205,16 +204,12 @@ export async function startJob(
   // running, so there is nothing new to enqueue.
   let dispatch: DispatchResult | null = null;
   if (created) {
-    // Finished generation jobs land on the placeholder detail page. The
-    // placeholder row may already exist (deduped resubmit restoring ?job=);
-    // otherwise the ?job= URL stands until completion resolves it.
-    let targetUrl = targetUrlFor(kind, job.id, input as never);
-    if (kind === "agent_generation") {
-      const placeholderId = await findGenerationPlaceholderId(job.id).catch(
-        () => null,
-      );
-      if (placeholderId) targetUrl = `/agents/${placeholderId}`;
-    }
+    // Generation success restores as an editable draft on /agents/new?job=<id>
+    // because review owns apply (edit-agent never applies job.result in place),
+    // so the ?job= URL stands from start through completion. Failure already
+    // keeps it via failJob's choke-point rewrite; other kinds use their
+    // targetUrlFor destination unchanged.
+    const targetUrl = targetUrlFor(kind, job.id, input as never);
     await db
       .update(backgroundJobs)
       .set({ targetUrl, updatedAt: new Date() })

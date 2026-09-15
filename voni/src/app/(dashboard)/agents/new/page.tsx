@@ -632,15 +632,7 @@ function NewAgentInner({
           title="Continue draft?"
           description="You have an unfinished agent draft from a previous visit. Continue where you left off, or discard it and start fresh."
         />
-        <div className="flex flex-col gap-3 sm:flex-row">
-          <Button
-            type="button"
-            className="w-full sm:w-auto"
-            onClick={() => setDraftGateOpen(false)}
-          >
-            Continue draft
-            <ArrowRight data-icon="inline-end" aria-hidden />
-          </Button>
+        <div className="flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
           <Button
             type="button"
             variant="outline"
@@ -663,6 +655,14 @@ function NewAgentInner({
             }}
           >
             Discard and start fresh
+          </Button>
+          <Button
+            type="button"
+            className="w-full sm:w-auto"
+            onClick={() => setDraftGateOpen(false)}
+          >
+            Continue draft
+            <ArrowRight data-icon="inline-end" aria-hidden />
           </Button>
         </div>
       </>

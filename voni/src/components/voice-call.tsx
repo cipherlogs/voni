@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import {
   Phone,
@@ -10,6 +10,7 @@ import {
   TriangleAlert,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { LoadingButton } from "@/components/loading-button";
 import { Chat01 } from "@/components/chat-01/chat-01";
 import { Progress } from "@/components/ui/progress";
 import {
@@ -106,7 +107,13 @@ const LANGUAGE_TABS: { code: string; label: string }[] = [
  * red shade and no manual dark: overrides.
  */
 const CALL_GREEN = "voice-call-live-fill";
+export { CALL_GREEN };
 const HANGUP_RED = "bg-destructive text-white hover:bg-destructive/90";
+export { HANGUP_RED };
+
+/** Session caps, in seconds. The server enforces them; the UI only mirrors. */
+export const INLINE_CAP_SECONDS = 180;
+const DEMO_CAP_SECONDS = 120;
 
 
 /**
@@ -177,16 +184,34 @@ export type VoiceCallStatus = {
   toolActive: boolean;
 };
 
+export type VoiceCallPending = {
+  starting: boolean;
+  hangingUp: boolean;
+};
+
+export type VoiceCallHandle = {
+  start: () => void;
+  hangUp: () => void;
+};
+
 export function VoiceCall({
   mode,
   className,
   onStatusChange,
+  onPendingChange,
   presentation = "card",
+  chromeless = false,
+  ref,
 }: {
   mode: Mode;
   className?: string;
   onStatusChange?: (status: VoiceCallStatus) => void;
+  onPendingChange?: (pending: VoiceCallPending) => void;
   presentation?: "card" | "dialog";
+  /** ai-05 dialog host: the host header owns the call buttons and the host
+      footer owns status, so the card renders identity + transcript only. */
+  chromeless?: boolean;
+  ref?: React.Ref<VoiceCallHandle>;
 }) {
   const isDemo = mode.kind === "demo";
 
@@ -203,11 +228,31 @@ export function VoiceCall({
   const [retryIn, setRetryIn] = useState<number | null>(null);
   const [toolActive, setToolActive] = useState(false);
   const [elapsed, setElapsed] = useState(0);
+  // Pending flags mirror the startingRef single-flight (start) and the async
+  // stop() (hang-up) so both buttons show disabled + spinner + pending text
+  // instead of silently dropping clicks (visual feedback protocol).
+  const [starting, setStarting] = useState(false);
+  const [hangingUp, setHangingUp] = useState(false);
 
   const sessionRef = useRef<VoiceSession | null>(null);
   const startingRef = useRef(false);
 
-  const capSeconds = isDemo ? 120 : 180;
+  // Synchronous pending mirror for the host footer: the onPendingChange
+  // effect below only runs after paint, so the click handler also notifies
+  // directly — the footer's Calling… lands in the same commit as the press,
+  // before the token/mic/audio awaits resolve. The effect stays as the
+  // steady-state mirror (same values → React bails out, no extra render).
+  const onPendingChangeRef = useRef(onPendingChange);
+  useEffect(() => {
+    onPendingChangeRef.current = onPendingChange;
+  }, [onPendingChange]);
+  const pendingRef = useRef<VoiceCallPending>({ starting: false, hangingUp: false });
+  const notifyPending = useCallback((next: VoiceCallPending) => {
+    pendingRef.current = next;
+    onPendingChangeRef.current?.(next);
+  }, []);
+
+  const capSeconds = isDemo ? DEMO_CAP_SECONDS : INLINE_CAP_SECONDS;
   const connected = state === "listening" || state === "speaking";
   const active = connected || state === "connecting";
 
@@ -256,6 +301,10 @@ export function VoiceCall({
     onStatusChange?.({ state, elapsed, toolActive });
   }, [elapsed, onStatusChange, state, toolActive]);
 
+  useEffect(() => {
+    notifyPending({ starting, hangingUp });
+  }, [hangingUp, notifyPending, starting]);
+
   // Scrolling, follow behavior, and jump-to-latest are owned by
   // MessageScroller below — no manual scroll-to-bottom effect.
   // A live session holds the microphone; unmounting without ending it leaves
@@ -285,6 +334,11 @@ export function VoiceCall({
   const start = useCallback(async () => {
     if (startingRef.current) return;
     startingRef.current = true;
+    // Paint first, await after: state + the host-footter notification both
+    // land synchronously here, so a slow token fetch or mic grant never
+    // reads as a stuck click. Cleanup in `finally` restores both.
+    setStarting(true);
+    notifyPending({ ...pendingRef.current, starting: true });
     setError(null);
     setRetryIn(null);
     setTurns([]);
@@ -331,13 +385,26 @@ export function VoiceCall({
       }
     } finally {
       startingRef.current = false;
+      setStarting(false);
+      notifyPending({ ...pendingRef.current, starting: false });
     }
-  }, [mode, persona.id, voiceId, config]);
+  }, [mode, notifyPending, persona.id, voiceId, config]);
 
-  const hangUp = async () => {
-    await sessionRef.current?.stop();
-    sessionRef.current = null;
-  };
+  const hangUp = useCallback(async () => {
+    if (hangingUp) return;
+    setHangingUp(true);
+    notifyPending({ ...pendingRef.current, hangingUp: true });
+    try {
+      await sessionRef.current?.stop();
+      sessionRef.current = null;
+    } finally {
+      setHangingUp(false);
+      notifyPending({ ...pendingRef.current, hangingUp: false });
+    }
+  }, [hangingUp, notifyPending]);
+
+  // ai-05 dialog host drives start/hang-up from its own header buttons.
+  useImperativeHandle(ref, () => ({ start, hangUp }), [start, hangUp]);
 
   const pickLanguage = (code: string) => {
     const next = voicesFor(code)[0];
@@ -572,30 +639,40 @@ export function VoiceCall({
         </div>
       ) : null}
 
-      {/* Primary action, shaped like the button on every phone ever made. */}
-      <div className="mt-3.5 flex justify-center">
-        {active ? (
-          <Button
-            className={`size-[52px] rounded-full p-0 ${HANGUP_RED}`}
-            onClick={hangUp}
-            aria-label="End test call"
-          >
-            <PhoneOff className="size-[22px]" />
-          </Button>
-        ) : (
-          <Button
-            className={cn(
-              "h-11 gap-2 rounded-full px-7 text-sm font-semibold",
-              presentation === "card" && CALL_GREEN,
-            )}
-            onClick={start}
-            aria-label={`Call ${displayName}`}
-          >
-            <Phone className="size-[18px]" aria-hidden />
-            {state === "ended" ? "Call again" : `Call ${displayName}`}
-          </Button>
-        )}
-      </div>
+      {/* Primary action, shaped like the button on every phone ever made.
+          LoadingButton: the pending call/hang-up shows disabled + spinner +
+          pending text (call) or spinner (icon-only hang-up) rather than
+          silently dropping the click. Chromeless ai-05 hosts render these in
+          their own header/footer instead. */}
+      {chromeless ? null : (
+        <div className="mt-3.5 flex justify-center">
+          {active ? (
+            <LoadingButton
+              pending={hangingUp}
+              icon={<PhoneOff className="size-[22px]" />}
+              className={`size-[52px] rounded-full p-0 ${HANGUP_RED}`}
+              onClick={hangUp}
+              aria-label="End test call"
+            >
+              {null}
+            </LoadingButton>
+          ) : (
+            <LoadingButton
+              pending={starting}
+              pendingText="Calling…"
+              icon={<Phone className="size-[18px]" aria-hidden />}
+              className={cn(
+                "h-11 gap-2 rounded-full px-7 text-sm font-semibold",
+                presentation === "card" && CALL_GREEN,
+              )}
+              onClick={start}
+              aria-label={`Call ${displayName}`}
+            >
+              {state === "ended" ? "Call again" : `Call ${displayName}`}
+            </LoadingButton>
+          )}
+        </div>
+      )}
 
       {/* The one flexing region. Every variable-length thing lives here — the
           scenario hint, the countdown, errors, captions — so the card's outer
@@ -679,7 +756,8 @@ export function VoiceCall({
                 version strip, and the hint already say "unsaved edits" three
                 ways, so a fourth "Just talk" paragraph is pure repetition.
                 Connected keeps it (the speaks-first transient); demo idle
-                keeps its scenario line. */}
+                keeps its scenario line. Chromeless ai-05 hosts own the
+                footer hint, so the card stays identity + transcript only. */}
             {connected ? (
               <p className="text-muted-foreground text-xs leading-relaxed">
                 {remaining <= 30
@@ -698,7 +776,7 @@ export function VoiceCall({
                 className="w-32"
               />
             ) : null}
-            {!connected ? (
+            {!connected && !chromeless ? (
               <p className="text-muted-foreground text-xs">{micHint}</p>
             ) : null}
           </div>

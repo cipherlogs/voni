@@ -106,6 +106,30 @@ export function clearWizardDraftCache() {
 }
 
 /**
+ * Explicit resume/discard gate (Phase 3): true when a readable cache entry
+ * exists AND it holds unfinished work — a non-empty draft (anything beyond
+ * EMPTY_DRAFT) or a step past WIZARD_FRESH_STEP. Pure read: no writes, no
+ * clears, never throws (server/no-cache reads false). Callers (new/page.tsx)
+ * run this before deciding whether to hold the in-memory wizard at fresh
+ * state behind a gate instead of silently restoring. Persistence timing,
+ * cache key, and consumed-job behavior are untouched.
+ */
+export function hasUnfinishedWizardDraft(): boolean {
+  const cached = readCachedDraft();
+  if (!cached) return false;
+  if ((cached.step ?? WIZARD_FRESH_STEP) > WIZARD_FRESH_STEP) return true;
+  const d = cached.draft;
+  return (
+    d.goals.length > 0 ||
+    d.tasks.length > 0 ||
+    d.agentName.trim().length > 0 ||
+    d.styleTraits.length > 0 ||
+    d.conversationLanguage !== DEFAULT_CONVERSATION_LANGUAGE ||
+    d.voiceId !== DEFAULT_WIZARD_VOICE_ID
+  );
+}
+
+/**
  * Totally-terminal reset for a finished creation (Goal 8): drop the durable
  * pre-submit draft AND the in-tab consumed-job entries minted by this
  * creation, so a brand-new creation starts at step 1 with no failed brief or
