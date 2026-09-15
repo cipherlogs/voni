@@ -212,6 +212,8 @@ function FieldError({
     return null
   }
 
+  // Single error size (text-sm): forms must not override this smaller —
+  // every form converges on the campaign-form error composition.
   return (
     <div
       role="alert"

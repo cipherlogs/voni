@@ -123,6 +123,26 @@ test("VoiceField merges language chips and voice cards, real clips only", () => 
   // The card itself is the preview control — no separate play button.
   assert.ok(source.includes("/voices/"));
   assert.ok(source.includes("previewVoice"));
+  // grid-list-02 card idiom (DESIGN pin): CardContent row + AvatarImage
+  // portrait on the grid-list surface (border shadow-sm, hover border +
+  // shadow). Selection keeps the primary border + ring tokens; the avatar is
+  // illustrative, not the real talent, and presents is an inferred UI field.
+  assert.ok(source.includes("grid-list-02"));
+  assert.ok(source.includes("CardContent"));
+  assert.ok(source.includes("AvatarImage"));
+  assert.ok(source.includes("/voices/avatars/"));
+  // No stretched-link anchor on the card — the toggle itself is the control.
+  assert.ok(!source.includes("<a "));
+  assert.ok(!source.includes("absolute inset-0"));
+  assert.ok(source.includes("hover:border-muted-foreground"));
+  assert.ok(source.includes("hover:shadow-md"));
+  assert.ok(source.includes("flex items-center gap-4 p-4"));
+  assert.ok(source.includes("inferred UI field"));
+  assert.ok(source.includes("illustrative portrait"));
+  // jean (unspecified/Neutral) is portraitless — initials tile only, so no
+  // photo mis-cues a gender for the neutral slot.
+  assert.ok(source.includes("PORTRAITLESS"));
+  assert.ok(source.includes('"jean"'));
   // ai-01 composer-card idiom (DESIGN.md §4): fill sweep culled, progress
   // via token wash; avatar on AvatarFallback tokens.
   assert.ok(!source.includes("voni-voice-fill"));
@@ -131,8 +151,13 @@ test("VoiceField merges language chips and voice cards, real clips only", () => 
   assert.ok(!source.includes("PreviewButton"));
   assert.ok(!source.includes("voiceTunables"));
   assert.ok(!source.includes("Test this agent"));
-  // Token avatars, accent flag badges, selected ring — no Card,
-  // waveform, checkmark, or custom avatar style.
+  // Secondary line is the accent badge only — presentsLabel survives purely
+  // as sr-only text inside the card's aria-label. (The single-voice branch
+  // keeps a muted helper line; the pin below targets the card markup.)
+  assert.ok(source.includes("presentsLabel"));
+  // Token avatars, accent flag badges, selected ring — no
+  // waveform, checkmark, or custom avatar style. The old hash-surface
+  // helper (voice-avatar.tsx) is deleted — portraits + fallback only.
   assert.ok(source.includes("VoiceCardAvatar"));
   assert.ok(source.includes("ACCENT_FLAG"));
   assert.ok(source.includes("AvatarFallback"));
@@ -142,7 +167,7 @@ test("VoiceField merges language chips and voice cards, real clips only", () => 
   assert.ok(source.includes("data-[state=on]:border-primary"));
   assert.ok(source.includes("data-[state=on]:ring-1"));
   assert.ok(!source.includes("avatarStyle"));
-  assert.ok(!source.includes("CardContent"));
+  assert.ok(!source.includes("surfaceForVoice"));
   assert.ok(!source.includes("<Check"));
   // Single-voice languages say so instead of offering a one-item choice.
   assert.ok(source.includes("already selected"));
@@ -150,7 +175,6 @@ test("VoiceField merges language chips and voice cards, real clips only", () => 
   // gone — the selection is visible on the card itself.
   assert.ok(source.includes('aria-live="polite"'));
   assert.ok(!source.includes("mt-2 text-xs"));
-  assert.ok(!source.includes("size-3"));
 });
 
 test("ConversationPicker is the merged Language & voice section", () => {

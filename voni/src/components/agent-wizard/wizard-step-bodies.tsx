@@ -87,7 +87,7 @@ export function PlanStep({
             suggestions={GOAL_SUGGESTIONS.map((value) => ({ value }))}
             maxCount={MAX_GOALS}
             maxLength={MAX_GOAL_LENGTH}
-            placeholder="Add a goal…"
+            placeholder="Add a goal"
             error={error}
           />
         </div>
@@ -105,7 +105,7 @@ export function PlanStep({
             suggestions={TASK_SUGGESTIONS.map((value) => ({ value }))}
             maxCount={MAX_TASKS}
             maxLength={MAX_TASK_LENGTH}
-            placeholder="Add a task…"
+            placeholder="Add a task"
             blockOnInvalidPending={false}
           />
         </div>
@@ -140,7 +140,7 @@ export function PersonalityStep({
                 onClearError?.("name");
                 api.edit({ agentName: e.target.value }, "name change");
               }}
-              placeholder="e.g. Sara"
+              placeholder="Name your agent"
               maxLength={120}
               autoComplete="off"
               aria-invalid={nameError ? true : undefined}
@@ -165,7 +165,7 @@ export function PersonalityStep({
             suggestionsLabel="Try one, combine a few, or write your own"
             maxCount={MAX_STYLE_TRAITS}
             maxLength={MAX_STYLE_LENGTH}
-            placeholder="Add a style…"
+            placeholder="Add a style"
             blockOnInvalidPending={false}
           />
         </div>

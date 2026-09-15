@@ -10,6 +10,12 @@ context/usage. Don't hand-edit the **Activity Log** — it's auto-generated.
 
 ## Status
 
+### Resume here (2026-09-15, blocks.so UI refinements: onboarding/voice/forms/theme, committed)
+
+**Now:** Four-track blocks.so polish pass in `voni/`, committed on `main`: (1) dashboard `onboarding-01` drops per-step `Bot`/`Upload`/`CirclePlay` icons — text-only rows, `StepIndicator` + progress count carry status, body indent `pl-16`→`pl-12`; (2) agent-creation voice cards adopt the `grid-list-02` interior inside the unchanged Embla carousel, visible feminine/masculine text replaced by 15 local headshots (`public/voices/avatars/*.webp`, 96px, served by Next.js; `jean`/unspecified stays initials-only; gender sr-only in card aria-label), orphaned `voice-avatar.tsx` hash helper deleted; (3) form controls converge on one token set (`h-8`, `text-base md:text-sm` everywhere incl. select/tag composer, focus-only rings, disabled parity, `FieldError text-sm`, full-width selects with `max-w-*` caps; phone `min-h-11` kept as documented touch exception; placeholders swept to sentence case); (4) theme default `system` + one-time `voni-theme-migrated-v1` migration clearing legacy stored light/dark. `DESIGN.md` UI-polish amendment + `grid-list-02` pin, `THIRD-PARTY-NOTICES.md` avatar sources/mapping. Verification: tsc clean, 394/394 tests, lint 0 errors, browser-verified `/agents/new` + `/dashboard` (desktop), `get_errors` clean — the one `/agents/new` hydration blip reproduces on the clean tree (pre-existing draft-restore, not this change). Left uncommitted per convention: `.claude-flow` runtime state, `.swarm/*`, `voni/GATES.md` (pre-existing).
+**Next:** `next build` + Cloudflare preview before merge flow; swap randomuser.me dev portraits for a licensed set before production.
+**Why:** User's four-item UI refinement request (blocks.so-only, swarm-executed, avatar fixes verified via contact sheet: `george.webp` replaced, `jean` set to initials-only per user pick).
+
 ### Resume here (2026-09-14, onboarding-07 fixed: progress on top + collapsed logs, uncommitted)
 
 **Now:** `onboarding-07` rebuilt in `voni/` on `redesign/blocks-only` (uncommitted): progress meters on top (3 side-by-side `Progress` for created / saved version / deployment, restored from upstream `blocks.so/r/onboarding-07.json` — the CLI `add` would have regressed `button.tsx`/`progress.tsx` to `from "cn"`, so hand-vendored from fetched source instead), single `AccordionItem` "Logs overview (N) ∙ latest title" below, collapsed by default (`defaultOpen={false}` → `defaultValue={[]}`), deployment errors on the always-visible meter row + inline error line. Follows the earlier agent-details overhaul on the same branch: (1) status timeline (now this fix), (2) density converged on campaign/new, (3) conversation rows one-control, (4) generic tools full backend, (5) channels as integration cards. `DESIGN.md` §§3–4 amended. Verification: new `onboarding-07.test.tsx` (6 cases) + `build-entries.test.ts` 17/17 pass, tsc 0, eslint 0, MCP compilation issues=[] / errors=[], browser round on :3000 — collapsed on load, expand reveals exactly 3 entries, no console errors. `package.json` test script extended with the new test file. Next dev left running; browser session closed. (2) Density converged on campaign/new: `CONTROL`/`CARD`/`LABEL`/`HINT` deleted from `agent-config-form.tsx`, sections/cards at `gap-3`, base `h-8` + width caps; measured parity (agent-name and campaign-name both 32px/14px). (3) Conversation rows one-control: per-row Switch replaced by `sm` pacing Select (Ask normally / Read back slowly), `sensitive` round-trip kept. (4) Generic tools (full backend): schema gains `toolIdeas` (LLM suggestions, display-only) + `customTools` (webhook id/label/description/mode/url/optional credential); `generate.ts` SYSTEM proposes ≤5 ideas; `compileVoiceTools` appends `custom_<id>` tools; `executeTool` routes customs to webhook fetch (org-scoped config re-read, bearer header, 15s timeout, dry-run in test); UI has Suggested/Connected/Add-custom groups with Enable/Dismiss/Disconnect; (5) channels as integration cards: phone readiness derived from Telnyx connection+caller (`getAgentWithGeneration` → `phoneReady`), unconfigured shows Needs-setup badge + /numbers link; WhatsApp readiness null (no send path yet). `DESIGN.md` §§3–4 amended (onboarding-07 install note, density rule superseding CONTROL blessing). Ledger `.unlazy/agent-detail/` 10/10 gates (G9 manual with desktop evidence; mobile-390 unavailable — no viewport flag in agent-browser version — recorded as follow-up).
@@ -4011,3 +4017,62 @@ destination (1e).
 - 2026-09-14T13:23:07Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/HANDOFF.md
 - 2026-09-14T13:23:08Z [Write] /home/cipherlogs/.claude/projects/-home-cipherlogs-Repos-AI-leadcalls/memory/feedback_ask-before-assuming-block-structure.md
 - 2026-09-14T14:20:26Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/.gitignore
+- 2026-09-15T00:51:50Z [Write] /home/cipherlogs/.claude/plans/use-ruflo-swarm-for-splendid-newt.md
+- 2026-09-15T00:56:47Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/onboarding-01/onboarding-01.tsx
+- 2026-09-15T00:56:51Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/onboarding-01/onboarding-01.tsx
+- 2026-09-15T00:56:55Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/onboarding-01/onboarding-01.tsx
+- 2026-09-15T00:57:00Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/onboarding-01/onboarding-01.tsx
+- 2026-09-15T00:57:04Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/onboarding-01/onboarding-01.tsx
+- 2026-09-15T00:57:27Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/onboarding-01/onboarding-01.tsx
+- 2026-09-15T00:57:32Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/sidebar-redesign.test.ts
+- 2026-09-15T00:57:42Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/theme-provider.tsx
+- 2026-09-15T01:01:35Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/wizard/voice-field.tsx
+- 2026-09-15T01:01:44Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/wizard/voice-field.tsx
+- 2026-09-15T01:01:49Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/wizard/voice-field.tsx
+- 2026-09-15T01:02:42Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/wizard/voice-field.tsx
+- 2026-09-15T01:03:18Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/wizard/voice-field.tsx
+- 2026-09-15T01:03:28Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/wizard/shared-ui.test.ts
+- 2026-09-15T01:03:32Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/wizard/shared-ui.test.ts
+- 2026-09-15T01:03:36Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/wizard/shared-ui.test.ts
+- 2026-09-15T01:04:31Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/wizard/shared-ui.test.ts
+- 2026-09-15T01:04:34Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/wizard/shared-ui.test.ts
+- 2026-09-15T01:04:38Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/wizard/shared-ui.test.ts
+- 2026-09-15T01:04:42Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/wizard/shared-ui.test.ts
+- 2026-09-15T01:04:48Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/wizard/shared-ui.test.ts
+- 2026-09-15T01:05:16Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/wizard/shared-ui.test.ts
+- 2026-09-15T01:07:37Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/ui/select.tsx
+- 2026-09-15T01:07:38Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/ui/checkbox.tsx
+- 2026-09-15T01:07:38Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/ui/switch.tsx
+- 2026-09-15T01:09:48Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/wizard/tag-field.tsx
+- 2026-09-15T01:09:48Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/wizard/tag-field.tsx
+- 2026-09-15T01:09:48Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/campaign-form.tsx
+- 2026-09-15T01:09:48Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/campaign-form.tsx
+- 2026-09-15T01:09:48Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/agent-config-form.tsx
+- 2026-09-15T01:09:48Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/agent-config-form.tsx
+- 2026-09-15T01:09:48Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/agent-config-form.tsx
+- 2026-09-15T01:09:49Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/wizard/voice-field.tsx
+- 2026-09-15T01:12:56Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/ui/select.tsx
+- 2026-09-15T01:12:56Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/agent-wizard/wizard-step-bodies.tsx
+- 2026-09-15T01:12:56Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/agent-config-form.tsx
+- 2026-09-15T01:14:50Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/ui/select.tsx
+- 2026-09-15T01:14:50Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/leads-bulk-bar.tsx
+- 2026-09-15T01:14:50Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/wizard/tag-field.tsx
+- 2026-09-15T01:14:50Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/ui/field.tsx
+- 2026-09-15T01:16:43Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/campaign-queue.tsx
+- 2026-09-15T01:16:44Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/app/(dashboard)/jobs/page.tsx
+- 2026-09-15T01:16:44Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/agent-wizard/wizard-step-bodies.tsx
+- 2026-09-15T01:16:44Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/agent-wizard/wizard-step-bodies.tsx
+- 2026-09-15T01:16:44Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/agent-wizard/wizard-step-bodies.tsx
+- 2026-09-15T01:20:14Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/agent-config-form.tsx
+- 2026-09-15T01:20:36Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/table-05.tsx
+- 2026-09-15T02:03:03Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/wizard/voice-avatar.tsx
+- 2026-09-15T02:03:13Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/wizard/voice-avatar.tsx
+- 2026-09-15T03:08:14Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/wizard/voice-field.tsx
+- 2026-09-15T03:13:47Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/THIRD-PARTY-NOTICES.md
+- 2026-09-15T03:14:13Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/wizard/shared-ui.test.ts
+- 2026-09-15T03:14:24Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/src/components/wizard/shared-ui.test.ts
+- 2026-09-15T03:26:15Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/DESIGN.md
+- 2026-09-15T03:26:25Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/DESIGN.md
+- 2026-09-15T03:27:18Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/DESIGN.md
+- 2026-09-15T03:27:34Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/voni/DESIGN.md
+- 2026-09-15T10:32:53Z [Edit] /home/cipherlogs/Repos/AI/leadcalls/HANDOFF.md

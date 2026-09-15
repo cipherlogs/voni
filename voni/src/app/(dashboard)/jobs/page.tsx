@@ -234,7 +234,7 @@ function JobsContent() {
           <Input
             type="search"
             data-copilot-effect="view"
-            placeholder="Search jobs…"
+            placeholder="Search jobs"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             className="h-8 w-full sm:w-64"

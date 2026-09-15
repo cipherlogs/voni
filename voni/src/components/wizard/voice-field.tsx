@@ -2,8 +2,9 @@
 
 import { useEffect, useRef, useState } from "react";
 import { AudioLines } from "lucide-react";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
+import { CardContent } from "@/components/ui/card";
 import {
   Carousel,
   CarouselContent,
@@ -28,11 +29,29 @@ import {
   type ConversationLanguage,
 } from "@/lib/agents/wizard";
 /**
- * Leading avatar slot for a voice card (ai-01 composer-card idiom): a token
- * avatar with the voice's initial. While its preview clip plays the fallback
- * washes with a static primary tint (no bespoke gradient, no keyed fill —
- * the selection + indicator carry the playing state).
+ * Voice cards in the `@blocks-so/grid-list-02` idiom (reference
+ * `src/components/grid-list-02/grid-list-02.tsx`): Card surface
+ * (border + shadow-sm, hover:border-muted-foreground + hover:shadow-md),
+ * CardContent-equivalent row (flex items-center gap-4 p-4), Avatar size-10.
+ * Carousel interaction below is byte-identical to the previous revision: Embla
+ * opts align:center containScroll:false loop:false, setApi/scrollSnapList dots,
+ * mount-only instant scrollTo, selectVoice the sole scrollTo (reduced-motion
+ * aware), previewVoice never scrolls, clips at /voices/<id>.mp3.
+ *
+ * Leading avatar slot: a local illustrative portrait
+ * (`public/voices/avatars/<voice-id>.webp`, ~96px square) with the initial as
+ * the loading/error fallback. The portraits are illustrative placeholders, not
+ * the real voice talent, and `presents` is an inferred UI field, not a
+ * documented voice property. `jean` (unspecified/Neutral) has no portrait —
+ * its initials tile is the whole avatar, so nothing mis-cues a gender.
+ * While its preview clip plays the fallback washes
+ * with a static primary tint (no bespoke gradient, no keyed fill — the
+ * selection + indicator carry the playing state).
  */
+
+/** Voice ids with no portrait asset — initials tile is the whole avatar. */
+const PORTRAITLESS = new Set(["jean"]);
+
 function VoiceCardAvatar({
   voiceId,
   playing,
@@ -40,15 +59,24 @@ function VoiceCardAvatar({
   voiceId: string;
   playing: boolean;
 }) {
+  const label = voiceLabel(voiceId);
   return (
-    <Avatar className="size-10 shrink-0">
+    <Avatar className="size-10">
+      {/* Dev note: illustrative portrait, not the real talent. */}
+      {PORTRAITLESS.has(voiceId) ? null : (
+        <AvatarImage
+          src={`/voices/avatars/${voiceId}.webp`}
+          alt=""
+          aria-hidden
+        />
+      )}
       <AvatarFallback
         className={cn(
           "bg-muted text-foreground text-sm font-semibold",
           playing && "bg-primary/10 text-primary",
         )}
       >
-        <span aria-hidden>{voiceLabel(voiceId).charAt(0)}</span>
+        <span aria-hidden>{label.charAt(0)}</span>
       </AvatarFallback>
     </Avatar>
   );
@@ -275,17 +303,18 @@ export function VoiceField({
                     >
                       <ToggleGroupItem
                         value={v.id}
-                        aria-label={`Voice ${voiceLabel(v.id)}, ${group.language}${playing ? ", playing preview" : ""}`}
+                        aria-label={`Voice ${voiceLabel(v.id)}, ${group.language}, ${presentsLabel(v)}${playing ? ", playing preview" : ""}`}
                         onClick={() => previewVoice(v)}
-                        // ai-01 composer-card idiom: leading avatar slot +
-                        // primary name/region stack + trailing live-indicator
-                        // slot, selected via the primary token ring.
-                        className="border-border bg-card relative flex h-auto w-full flex-col items-stretch overflow-hidden rounded-[28px] border p-2.5 text-left shadow-xs data-[state=on]:border-primary data-[state=on]:ring-1 data-[state=on]:ring-primary/30"
+                        // grid-list-02 surface: Card border + shadow-sm,
+                        // hover border + shadow; the pressed state layers the
+                        // primary border + ring on top. The toggle itself is
+                        // the control — no stretched-link <a>.
+                        className="relative h-auto w-full rounded-xl border border-input bg-card p-0 text-left text-card-foreground text-sm shadow-sm transition-[border-color,box-shadow] duration-100 ease-out hover:border-muted-foreground hover:shadow-md data-[state=on]:border-primary data-[state=on]:ring-1 data-[state=on]:ring-primary/30"
                       >
-                        <span className="relative flex w-full items-center gap-2">
+                        <CardContent className="flex w-full items-center gap-4 p-4">
                           <VoiceCardAvatar voiceId={v.id} playing={playing} />
-                          <span className="flex min-w-0 flex-1 flex-col gap-1 px-1.5">
-                            <span className="text-sm font-medium">
+                          <span className="flex min-w-0 flex-1 flex-col gap-1">
+                            <span className="text-pretty font-medium text-foreground text-sm">
                               {voiceLabel(v.id)}
                             </span>
                             <span className="flex flex-wrap items-center gap-1.5">
@@ -293,14 +322,10 @@ export function VoiceField({
                                 <span aria-hidden>{ACCENT_FLAG[v.accent]}</span>{" "}
                                 {ACCENT_LABEL[v.accent]}
                               </Badge>
-                              <span className="text-muted-foreground text-xs">
-                                {presentsLabel(v)}
-                              </span>
                             </span>
                           </span>
-                          {/* Trailing indicator slot (ai-01 trailing-slot
-                              idiom) — status only, the card itself is the
-                              control. */}
+                          {/* Trailing indicator slot — status only, the card
+                              itself is the control. */}
                           <span className="flex shrink-0 items-center">
                             {playing ? (
                               <AudioLines
@@ -310,7 +335,7 @@ export function VoiceField({
                               />
                             ) : null}
                           </span>
-                        </span>
+                        </CardContent>
                       </ToggleGroupItem>
                     </CarouselItem>
                   );

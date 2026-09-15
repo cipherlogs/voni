@@ -87,6 +87,15 @@ test("dashboard onboarding is persisted-data driven", () => {
   assert.match(actions, /"active", "paused", "completed"/);
   assert.match(onboarding, /<Collapsible/);
   assert.doesNotMatch(onboarding, /setCurrentSteps|setDismissed|handleStepAction/);
+  // No per-step icons: status reads from the shared StepIndicator only.
+  assert.doesNotMatch(onboarding, /STEP_ICONS|CirclePlay/);
+  assert.doesNotMatch(onboarding, /\bBot\b/);
+  assert.doesNotMatch(onboarding, /\bUpload\b/);
+  assert.match(onboarding, /StepIndicator/);
+  assert.match(onboarding, /CircleDashed/);
+  assert.match(onboarding, /<Check/);
+  assert.match(onboarding, /ChevronDown/);
+  assert.match(onboarding, /Progress/);
 });
 
 test("agent detail is one column with a full-screen idle test dialog", () => {

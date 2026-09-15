@@ -33,3 +33,25 @@ SOFTWARE.
 
 (Source: [LICENSE.md](https://github.com/ephraimduncan/blocks/blob/main/LICENSE.md),
 verified against upstream on 2026-09-14.)
+
+## Voice portraits (dev placeholders, randomuser.me)
+
+`public/voices/avatars/<voice-id>.webp` (96px square, served locally — never
+hotlinked) are illustrative UI avatars for the agent-creation voice picker,
+not the real voice talent. `presents` in `src/lib/agents/voices.ts` is an
+inferred UI field, not a documented voice property.
+
+Sourced from [randomuser.me](https://randomuser.me) portraits
+([CC-BY / free-use generated portrait set](https://randomuser.me)) for
+development only. Replace with a licensed set before production.
+
+Mapping (voice id → portrait):
+
+| Voice | Presents | Portrait |
+|---|---|---|
+| alba, eve, jane, mary | feminine | women/1, 2, 3, 4 |
+| anna, vera, lola, estelle | feminine | women/5, 6, 7, 8 |
+| michael, charles, paul | masculine | men/1, 2, 3 |
+| giovanni, juergen, rafael | masculine | men/4, 5, 6 |
+| george | masculine | men/32 |
+| jean | unspecified/Neutral | none — initials tile only, so nothing mis-cues a gender |

@@ -764,7 +764,6 @@ export function AgentConfigForm({
             <FieldLabel htmlFor="mission">Mission statement</FieldLabel>
             <Textarea
               id="mission"
-              className="min-h-[76px] resize-y [field-sizing:fixed]"
               value={config.mission}
               placeholder="Qualify inbound property inquiries and book viewings"
               data-invalid={!config.mission.trim() || undefined}
@@ -777,7 +776,7 @@ export function AgentConfigForm({
             <Input
               id="greeting"
               value={config.greeting}
-              placeholder="Hi, this is Vera. How can I help you today?"
+              placeholder="Greet the caller by name and offer help"
               data-invalid={!config.greeting.trim() || undefined}
               aria-invalid={!config.greeting.trim() || undefined}
               onChange={(e) => set("greeting", e.target.value)}
@@ -882,9 +881,8 @@ export function AgentConfigForm({
             <FieldLabel htmlFor="knowledge">House rules</FieldLabel>
             <Textarea
               id="knowledge"
-              className="min-h-[76px] resize-y [field-sizing:fixed]"
               value={config.knowledge}
-              placeholder="Never quote fees you can't verify."
+              placeholder="Never quote fees you cannot verify"
               onChange={(e) => set("knowledge", e.target.value)}
             />
           </Field>
@@ -970,7 +968,7 @@ export function AgentConfigForm({
                   ))}
                 </div>
                 {ideaGuidance ? (
-                  <FieldError className="text-xs">{ideaGuidance}</FieldError>
+                  <FieldError>{ideaGuidance}</FieldError>
                 ) : null}
               </Field>
             ) : null}

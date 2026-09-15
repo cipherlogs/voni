@@ -289,7 +289,7 @@ export default function Table05() {
         <Input
           className="h-8 w-full sm:w-64"
           onChange={(e) => setGlobalFilter(e.target.value)}
-          placeholder="Search..."
+          placeholder="Search"
           value={globalFilter}
         />
       </div>

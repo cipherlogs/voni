@@ -167,7 +167,7 @@ export function LeadsSelection({ children }: { children: ReactNode }) {
             <SelectTrigger
               size="sm"
               aria-label="Stage to move selected leads to"
-              className="min-w-40"
+              className="w-auto min-w-40"
             >
               <SelectValue placeholder="Choose a stage" />
             </SelectTrigger>

@@ -93,6 +93,15 @@ Installed 2026-09-14: `command-menu-03` at upstream commit `f9b89ceb4979d3520970
 
 Installed 2026-09-14: `onboarding-07` ("Onboarding Deploy Pipeline") — progress meters on top (three side-by-side `Progress` meters for created / saved version / deployment, restored from upstream), with a single `AccordionItem` "Logs overview (N)" logs item below it, collapsed by default. Deployment errors surface on the always-visible meter row plus an inline error line, so failures never hide inside the collapsed panel. Upstream demo animation data, rerun button, centered wrapper, and Tabler icons NOT adopted; Base UI Accordion + Progress primitives + Lucide + live job-driven entries replace them.
 
+Installed 2026-09-14: `grid-list-02` — avatar + name + secondary-line card
+(`Card` surface, `CardContent flex items-center gap-4 p-4`, `Avatar size-10`).
+Remote avatar PNGs cut (initials fallback only); documenso sample people
+replaced with neutral placeholders; `space-x-4` rebuilt as flex+gap. Pinned
+2026-09-15 as the voice-card interior for the agent-creation carousel (visual
+composition only — the `ToggleGroupItem` toggle stays the control, no
+stretched-link `<a>`; voice portraits in `public/voices/avatars/` replace the
+initials fallback where present).
+
 ## 4. Patterns (one canonical composition per area)
 
 - **Auth** (`/login`, `/signup`): `login-01`/`login-07` idiom around the
@@ -158,6 +167,29 @@ Installed 2026-09-14: `onboarding-07` ("Onboarding Deploy Pipeline") — progres
   step strip (step array/index, percentage state, progress bar) is deleted.
   Deployment tracking, retries, duplicate protection, generation safeguards,
   save/test gating, notifications, and global Jobs access are unchanged.
+- **UI polish amendment (2026-09-15):** (a) dashboard `onboarding-01` drops
+  the per-step decorative icons (`Bot`/`Upload`/`CirclePlay`) — rows are
+  text-focused, status reads from the shared `StepIndicator`
+  (filled primary `Check` vs muted `CircleDashed`) + header progress count;
+  body indent retargeted `pl-16` → `pl-12`. (b) agent-creation voice cards
+  adopt the `grid-list-02` card interior (surface, `CardContent` row,
+  `size-10` avatar) inside the existing Embla carousel — interaction
+  byte-identical, toggle stays the control (no stretched-link), visible
+  feminine/masculine text replaced by headshot avatars
+  (`public/voices/avatars/`, 15 portraits + initials-only tile for the
+  unspecified `jean`), gender survives sr-only in the card `aria-label`.
+  (c) form controls converge on one token set: `h-8` + `rounded-lg` +
+  `border-input`, `text-base md:text-sm` on every input-like control
+  (select trigger + tag composer included), focus-only
+  `border-ring + ring-3 ring-ring/50`, disabled bg+opacity parity,
+  `FieldError text-sm` with no usage-site overrides, select full-width by
+  default with form-level `max-w-*` caps, checkbox `rounded-sm`, switch
+  `h-4.5 w-8` / `h-3.5 w-6`; documented usage-site exceptions only:
+  `phone-numbers min-h-11` touch target, tag box `min-h-9`, textarea
+  auto-grow. Placeholders: sentence case, no trailing period. (d) theme
+  default stays `system` (`layout.tsx` already) + one-time
+  `voni-theme-migrated-v1` client migration clearing legacy stored
+  light/dark so every profile follows the OS until an explicit override.
 - **Voice exception (narrow):** `voice-call.tsx` session/mic state
   machine, 429 countdown, and distinct failure states stay; all styling
   goes Blocks idiom. The inline test uses chat-01's conversation layout

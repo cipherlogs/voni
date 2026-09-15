@@ -219,7 +219,7 @@ export function CampaignQueue({
       <div className="flex flex-col gap-4 p-4 pb-0 sm:flex-row sm:items-center sm:justify-between sm:p-6 sm:pb-0">
         <Input
           type="search"
-          placeholder="Search by name or phone…"
+          placeholder="Search by name or phone"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           className="h-8 w-full sm:w-64"

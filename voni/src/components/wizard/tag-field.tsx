@@ -222,7 +222,7 @@ export function TagField({
                 maxLength={maxLength + 20}
                 aria-label={`Edit ${tag}`}
                 autoComplete="off"
-                className="border-ring w-full rounded-md bg-transparent px-2 py-0.5 text-sm outline-none ring-3 ring-ring/50"
+                className="w-full rounded-md border border-input bg-transparent px-2 py-0.5 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
               />
             </span>
           ) : (
@@ -283,7 +283,7 @@ export function TagField({
             aria-describedby={`${hintId} ${countId}`}
             aria-invalid={message ? true : undefined}
             autoComplete="off"
-            className="placeholder:text-muted-foreground h-auto w-auto min-w-24 flex-1 bg-transparent text-sm outline-none disabled:cursor-not-allowed"
+            className="placeholder:text-muted-foreground h-auto w-auto min-w-24 flex-1 rounded-md bg-transparent text-sm outline-none focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-not-allowed"
           />
         ) : (
           <span id={id} className="sr-only">

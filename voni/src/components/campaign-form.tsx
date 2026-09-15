@@ -288,7 +288,7 @@ export function CampaignForm({
               </Field>
             </FieldGroup>
             {windowInvalid ? (
-              <FieldError className="text-xs">
+              <FieldError>
                 The end time has to be after the start time. Overnight windows are
                 not supported.
               </FieldError>
@@ -323,7 +323,7 @@ export function CampaignForm({
                 ))}
               </ToggleGroup>
               {days.length === 0 ? (
-                <FieldError className="text-xs">Pick at least one day.</FieldError>
+                <FieldError>Pick at least one day.</FieldError>
               ) : null}
             </Field>
 
