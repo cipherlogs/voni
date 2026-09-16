@@ -1,15 +1,15 @@
 /**
- * Global copilot dropdown: live call pill + detail panel, anchored under the
- * header's Voice button.
+ * Global copilot dropdown: live call pill + detail panel, anchored to the
+ * viewport corner beside the sidebar's Voice row.
  *
- * No portal, no second "Start talking" step — tapping Voice in the header IS
+ * No portal, no second "Start talking" step — tapping Voice in the rail IS
  * consent, the way a phone call works. The pill carries the timer and true
  * call controls (mic mute, speaker mute, end); the panel only opens for
  * things that need reading: errors, pending proposals, and the privacy
  * disclosure.
  *
  * Non-modal on purpose — mouse and keyboard stay usable beside it. The stack
- * hangs below the h-14 header and keeps navigation reachable at 390px.
+ * sits above the viewport bottom and keeps navigation reachable at 390px.
  */
 
 "use client";
@@ -97,7 +97,7 @@ export function CopilotShell() {
   const showPanel = expanded || error !== null || proposals.length > 0;
 
   // Call timer, local to the shell — the provider only learns durations at
-  // hang-up. The effect only ticks; the header button owns the start reset.
+  // hang-up. The effect only ticks; the rail button owns the start reset.
   useEffect(() => {
     if (!live) return;
     const startedAt = Date.now();
@@ -108,13 +108,13 @@ export function CopilotShell() {
   }, [live]);
 
   const showCallControls = live || status === "starting";
-  // Nothing to show while idle: the header button is the entry point.
+  // Nothing to show while idle: the rail button is the entry point.
   if (!showPanel && !showCallControls) return null;
 
   return (
     <div
       data-copilot-scope="copilot"
-      className="fixed top-16 right-4 z-50 flex max-h-[calc(100dvh-5rem)] flex-col items-end gap-2 overflow-y-auto"
+      className="fixed right-4 bottom-4 z-50 flex max-h-[calc(100dvh-2rem)] flex-col items-end gap-2 overflow-y-auto"
       onPointerDown={noteInteraction}
       onKeyDown={noteInteraction}
     >

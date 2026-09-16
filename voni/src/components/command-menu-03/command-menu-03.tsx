@@ -158,19 +158,24 @@ export function CommandMenu03() {
 
   return (
     <>
+      {/* Rail-aware trigger: full search row when the rail is expanded,
+          centered icon when it is collapsed. Lives in the sidebar since
+          the top bar was removed; the global shortcut below keeps working
+          with no visible trigger at all. */}
       <Button
         type="button"
         variant="ghost"
-        size="sm"
-        className="cursor-pointer"
-        aria-label="Open command menu"
+        className="h-8 w-full cursor-pointer justify-start gap-2 px-2 text-sm group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:gap-0 group-data-[collapsible=icon]:px-0"
+        aria-label="Search Voni"
         aria-keyshortcuts="Meta+K Control+K /"
-        title="Open command menu (Cmd/Ctrl+K)"
+        title="Search Voni (Cmd/Ctrl+K)"
         onClick={() => setOpen(true)}
       >
         <Search aria-hidden="true" />
-        <span className="hidden sm:inline">Command</span>
-        <Kbd className="hidden lg:inline-flex">⌘ K</Kbd>
+        <span className="hidden flex-1 text-left font-medium sm:inline group-data-[collapsible=icon]:hidden">
+          Search
+        </span>
+        <Kbd className="hidden lg:inline-flex group-data-[collapsible=icon]:hidden">⌘ K</Kbd>
       </Button>
 
       <CommandDialog

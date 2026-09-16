@@ -47,7 +47,8 @@ import {
  * Sidebar-03 shell, Voni-wired (full-block adoption).
  *
  * Upstream differences, all deliberate: the demo `Logo` + "Acme" lockup is
- * the four-state `BrandLogo`; the `motion.div` around the header controls
+ * the animated Classic `BrandLogo` (homepage loop for expanded, static chip
+ * for collapsed — no theme-specific assets); the `motion.div` around the header controls
  * is a plain container (motion dependency rejected per the frozen design
  * record — same layout classes); the footer holds exactly one identity — the
  * account menu — since this is a single-workspace product with no

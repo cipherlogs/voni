@@ -126,7 +126,6 @@
   animation: var(--motion-slow) ease-out both dashboard-in;
 }
 
-.app-shell-header,
 .app-shell-sidebar {
   view-transition-name: none;
 }

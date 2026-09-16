@@ -59,9 +59,9 @@ a Blocks token system exists.
   `framer-motion` dep is REJECTED — do not adopt it; sidebar motion
   uses the token system.
 - **Dark mode:** class-based + `next-themes` (as today). `dark:` utilities
-  inside generated `ui/` primitives stay; the 4 bespoke `dark:` sites
-  (`voni-logo` hex, `connection-test-button` emerald, `bubble`, mode-toggle
-  mechanics) are fixed per §5.
+  inside generated `ui/` primitives stay; the bespoke `dark:` sites
+  (`connection-test-button` emerald, `bubble`, mode-toggle mechanics —
+  logo hex retired 2026-09-16) are fixed per §5.
 
 ## 3. Components (pinned allow-list)
 
@@ -118,10 +118,16 @@ would overwrite 10 shared `ui/` primitives) — shared primitives untouched, no
 `framer-motion` added, no `cn` dep added. Row hover/active states use the
 existing `sidebar-accent` token (the theme carries no `sidebar-muted`);
 vendored-block `§5`-grep exclusion covers `src/components/sidebar-03/`.
-Brand slot renders
-the four-asset set (`public/brand/logo-{expanded,collapsed}-{light,dark}.svg`,
-placeholder vectors derived from the Voni arc) via class-strategy theme swap
-at the upstream `h-8` slot; footer stacks the single-workspace switcher above
+Brand slot renders the animated Classic `BrandLogo` (amendment 2026-09-16,
+user pick from the `/logo-mockups` review — concept 01, homepage loop
+verbatim): expanded density loops the tight wordmark (`VoniMark animate`,
+cropped viewBox, hairline gap); collapsed density holds the static chip with
+one-shot `voni-chip-in`, no loop. Theme via `currentColor` + tokens — the
+placeholder four-asset set (`public/brand/`, deleted with this amendment) and
+its class-strategy swap are retired, along with the `next/image` dependency
+in the slot and two bespoke `dark:` sites (§5). Motion stays in the §2
+survivor set: no new keyframes, no `framer-motion`. The slot keeps the
+upstream `h-8` height; footer stacks the single-workspace switcher above
 the existing account menu; jobs count badge and active-link Suspense boundary
 preserved. `sidebar-02`'s `framer-motion` rejection (§2) extends to this block.
 Top bar removed 2026-09-15: search, voice entry, and jobs status live in the
@@ -263,8 +269,9 @@ or be cut — or be a DESIGN.md-listed exception.
 - Hardcoded palette: `emerald|amber|#[0-9a-fA-F]{3,6}` outside comments
   (~20 hits; prototypes carry 12) → map to tokens; prototypes CUT with
   their CSS. `grep -rniE 'emerald|amber|#[0-9a-f]{3,6}\b' src`
-- `dark:` outside `src/components/ui/` generated code (4 bespoke sites:
-  logo hex, connection emerald, bubble, mode-toggle mechanics) → fix.
+- `dark:` outside `src/components/ui/` generated code (3 remaining bespoke
+  sites: connection emerald, bubble, mode-toggle mechanics — logo hex retired
+  2026-09-16 with the animated Classic slot) → fix.
   `grep -rn 'dark:' src | grep -v 'src/components/ui/'`
 - `style={{` (6 sites: voice-call avatar px → exception restyle;
   voice-avatar `hsl()` hash gradient → rebuild in-style;
@@ -306,6 +313,7 @@ or be cut — or be a DESIGN.md-listed exception.
 | Copilot shell | blocks-has (markup idiom) | chat-03/ai-05; provider logic untouched |
 | Login/signup | blocks-has | login-01/07; Better Auth logic untouched |
 | Settings/operator/numbers | blocks-has | form-layout-02/03; table-05/grid-list-02 |
+| Settings in-page nav (Variant D, 2026-09-16) | build-in-style | No settings-nav block exists; the page-level nav borrows the sidebar-03 row idiom (muted label, accent fill on active, rounded-lg, lucide with no size classes — icons sized by the TabsTrigger primitive itself) for a desktop sidebar that stacks full-width on mobile (vertical orientation keeps Up/Down keys truthful at both breakpoints). Tabs state machine, SETTINGS_TABS source, copilot `ui_settings_tab` contract (role=tab + labels), data leaves, gates, and actions unchanged. |
 | Skeletons / RouteError / empty states / toasts | build-in-style | No blocks; boundaries+semantics kept, markup rewritten |
 | Shell sidebar+header / dialogs / command menu / file upload | blocks-has | sidebar-02/03, dialog-01…12, command-menu, file-upload |
 | Landing `/` | build-in-style | No marketing group; minimal composed entry |

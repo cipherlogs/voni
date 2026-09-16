@@ -43,12 +43,16 @@ export function ShellJobsProvider({ children }: { children: ReactNode }) {
   return <JobsProvider enabled={enabled}>{children}</JobsProvider>;
 }
 
-export function ShellProviders({ children }: { children: ReactNode }) {
+/**
+ * Voice scope for the whole shell — the sidebar included. The sidebar voice
+ * row reads useCopilot(), so the provider must sit above ShellSidebar, next
+ * to the jobs scope. The `enabled` auth gate is unchanged: no mic, no
+ * session, and no retained voice state until sign-in completes.
+ */
+export function ShellCopilotProvider({ children }: { children: ReactNode }) {
   const auth = useShellAuth();
   const enabled = auth.status === "authenticated";
   const platformAdmin = auth.status === "authenticated" ? auth.platformAdmin : false;
-  // JobsProvider lives above us now (ShellJobsProvider) — CopilotProvider's
-  // useJobs() call still resolves, and this instance still only enables once.
   return (
     <CopilotProvider enabled={enabled} platformAdmin={platformAdmin}>
       {children}

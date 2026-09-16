@@ -7,11 +7,16 @@ import { useRouter } from "next/navigation";
 import { toast } from "@/components/ui/toast";
 import {
   AlertCircle,
+  Building2,
   CheckCircle2,
   LogOut,
+  Mic,
   Plug,
   ShieldCheck,
+  Sun,
   Unplug,
+  User,
+  type LucideIcon,
 } from "lucide-react";
 import { SiGmail, SiGoogledocs, SiZoho } from "react-icons/si";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -57,6 +62,27 @@ const INITIAL: SettingsActionState = { ok: false };
 // Single source lives in @/lib/settings-tabs (plain module importable from
 // server components); re-exported here so existing import paths keep working.
 export { SETTINGS_TABS } from "@/lib/settings-tabs";
+
+type SettingsTabValue = (typeof SETTINGS_TABS)[number]["value"];
+
+/**
+ * Amendment 2026-09-16 (Variant D sidebar): the page-level nav borrows the
+ * sidebar-03 row idiom — muted label, accent fill on active, rounded-lg,
+ * lucide with no size classes (the TabsTrigger primitive sizes icons itself).
+ * No settings-nav block exists, so this is build-in-style per the DESIGN.md
+ * gap table. The Tabs state machine, SETTINGS_TABS source, and the copilot
+ * `ui_settings_tab` contract (role=tab + labels) are unchanged; only the
+ * topology moves (desktop sidebar, mobile stacked full-width nav). The
+ * vertical orientation also keeps Up/Down arrow keys truthful at both
+ * breakpoints.
+ */
+const TAB_ICONS: Record<SettingsTabValue, LucideIcon> = {
+  account: User,
+  voice: Mic,
+  workspace: Building2,
+  services: Plug,
+  appearance: Sun,
+};
 
 /**
  * Flat settings section — the form-layout-03 idiom: side h2 + muted
@@ -327,7 +353,7 @@ function ProvidersSection({
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         {catalog.map((provider) => (
           <ProviderCard
             key={provider.id}
@@ -474,16 +500,30 @@ export function SettingsView({
       <RouteBrief route="/settings" brief={`Settings. Current tab: ${visibleTabs.find((tab) => tab.value === activeTab)?.label ?? activeTab}. Available tabs: ${visibleTabs.map((tab) => tab.label).join(", ")}. ${services.filter((service) => service.configured).length} of ${services.length} services configured. Workspace edits ${workspace.canEdit ? "allowed" : "disabled"}. Voice and language preferences require confirmed edits and a confirmed save. Platform credentials are operator-managed outside customer settings.`} />
       {/* Heading lives in the page shell (settings/page.tsx) so it paints
           before data resolves; it is intentionally not duplicated here. */}
-      <Tabs value={activeTab} onValueChange={setActiveTab}>
-        <TabsList className="max-w-full justify-start overflow-x-auto" variant="line">
-          {visibleTabs.map((tab) => (
-            <TabsTrigger key={tab.value} value={tab.value}>
-              {tab.label}
-            </TabsTrigger>
-          ))}
+      <Tabs
+        value={activeTab}
+        onValueChange={setActiveTab}
+        orientation="vertical"
+        className="flex-col gap-6 md:flex-row md:gap-10"
+      >
+        <TabsList className="w-full justify-start bg-transparent p-1 md:w-60 md:shrink-0 md:items-stretch">
+          {visibleTabs.map((tab) => {
+            const Icon = TAB_ICONS[tab.value];
+            return (
+              <TabsTrigger
+                key={tab.value}
+                value={tab.value}
+                className="w-full justify-start gap-3 rounded-lg px-3 py-2 text-left text-muted-foreground data-active:bg-sidebar-accent data-active:text-foreground data-active:shadow-none hover:bg-sidebar-accent hover:text-foreground"
+              >
+                <Icon aria-hidden />
+                {tab.label}
+              </TabsTrigger>
+            );
+          })}
         </TabsList>
 
-        <TabsContent value="account" className="pt-4">
+        <div className="min-w-0 flex-1">
+        <TabsContent value="account">
           <SettingsSection
             title="Account"
             description="Your Google profile and session."
@@ -498,7 +538,7 @@ export function SettingsView({
           </SettingsSection>
         </TabsContent>
 
-        <TabsContent value="voice" className="pt-4">
+        <TabsContent value="voice">
           <SettingsSection
             title="Voice copilot"
             description="Who talks back when you tap the mic. Only affects your conversations — nothing here changes what callers hear on the phone."
@@ -507,7 +547,7 @@ export function SettingsView({
           </SettingsSection>
         </TabsContent>
 
-        <TabsContent value="workspace" className="pt-4">
+        <TabsContent value="workspace">
           <SettingsSection
             title="Workspace"
             description="Customer-facing defaults for this organization."
@@ -538,7 +578,7 @@ export function SettingsView({
           </SettingsSection>
         </TabsContent>
 
-        <TabsContent value="services" className="pt-4">
+        <TabsContent value="services">
           <div className="flex flex-col gap-6">
             <SettingsSection
               title="Providers"
@@ -551,7 +591,7 @@ export function SettingsView({
               title="Service readiness"
               description="Voni-managed platform capacity. Finished by whoever runs your Voni server."
             >
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
                 {services.map((service) => (
                   <Card key={service.id}>
                     <CardContent className="flex items-center gap-4 p-4">
@@ -580,7 +620,7 @@ export function SettingsView({
           </div>
         </TabsContent>
 
-        <TabsContent value="appearance" className="pt-4">
+        <TabsContent value="appearance">
           <SettingsSection
             title="Appearance"
             description="Use light, dark, or your system setting."
@@ -589,6 +629,7 @@ export function SettingsView({
           </SettingsSection>
         </TabsContent>
 
+        </div>
       </Tabs>
     </div>
   );

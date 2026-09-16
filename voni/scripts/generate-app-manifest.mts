@@ -5,7 +5,7 @@
  *
  * Sources (single owners, never duplicated here):
  * - dashboard nav: NAV_ITEMS in src/components/app-sidebar.tsx
- * - section titles: SECTION_TITLES in src/components/app-header.tsx
+ * - section titles: SECTION_TITLES in src/components/app-sidebar.tsx
  * - settings tabs: SETTINGS_TABS in src/lib/settings-tabs.ts (parsed,
  *   not imported — that module pulls server actions, which need a database)
  * - which routes exist: page.tsx files under src/app
@@ -16,7 +16,7 @@
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { NAV_ITEMS } from "../src/components/app-sidebar";
-import { SECTION_TITLES } from "../src/components/app-header";
+import { SECTION_TITLES } from "../src/components/app-sidebar";
 
 const SRC = join(import.meta.dirname, "..", "src");
 const OUT = join(SRC, "lib", "copilot", "app-manifest.ts");

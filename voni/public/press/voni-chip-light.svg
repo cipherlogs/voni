@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" width="96" height="96">
+  <!-- Voni chip/app-icon, light — paper square, ink mark, hairline edge so the
+    chip reads on white pages. Self-contained press master. -->
+  <rect width="96" height="96" rx="24" fill="#fafafa" stroke="#0a0a0a" stroke-opacity="0.08" />
+  <g transform="translate(24,24) scale(2)">
+    <path d="M5 15Q12 5 19 15" fill="none" stroke="#0a0a0a" stroke-width="2.75" stroke-linecap="round" />
+  </g>
+</svg>

@@ -673,7 +673,7 @@ function NewAgentInner({
       <>
         <PageHeading
           title="New agent"
-          description="Answer two quick steps and we'll generate a starting mission and rules, editable afterward. Prefer talking? The Voice copilot button in the top bar fills in every field with you."
+          description="Answer two quick steps and we'll generate a starting mission and rules, editable afterward. Prefer talking? The Voice copilot button in the sidebar fills in every field with you."
         />
         <GenerationStatusCard
           phase={backgrounded ? "backgrounded" : "working"}
@@ -774,7 +774,7 @@ function NewAgentInner({
     <>
       <PageHeading
         title="New agent"
-        description="Answer two quick steps and we'll generate a starting mission and rules, editable afterward. Prefer talking? The Voice copilot button in the top bar fills in every field with you."
+        description="Answer two quick steps and we'll generate a starting mission and rules, editable afterward. Prefer talking? The Voice copilot button in the sidebar fills in every field with you."
       />
 
         <div className="flex flex-col gap-2">

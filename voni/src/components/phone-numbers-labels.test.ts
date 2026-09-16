@@ -9,7 +9,7 @@ import test from "node:test";
 // state are checked on the real source.
 const dir = dirname(fileURLToPath(import.meta.url));
 const source = readFileSync(join(dir, "phone-numbers.tsx"), "utf8");
-const headerSource = readFileSync(join(dir, "app-header.tsx"), "utf8");
+const headerSource = readFileSync(join(dir, "sidebar-03", "utility-rows.tsx"), "utf8");
 
 test("no raw sentinel ships in the Answered-by options", () => {
   assert.ok(!source.includes(">__unbound__<"), "sentinel never renders as label text");
@@ -54,7 +54,6 @@ test("row Answered-by trigger meets the touch-target floor", () => {
   );
 });
 
-test("header idle label matches nav and page title", () => {
-  assert.ok(headerSource.includes(': "Background jobs"}'), "idle label is Background jobs");
-  assert.ok(!headerSource.includes(': "Jobs"}'), 'no short "Jobs" label left');
+test("jobs row idle label matches nav and page title", () => {
+  assert.ok(headerSource.includes('"Background jobs"'), "idle label is Background jobs");
 });

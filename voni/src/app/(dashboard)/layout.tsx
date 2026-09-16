@@ -1,12 +1,11 @@
 import { Suspense } from "react";
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
-import { AppHeader } from "@/components/app-header";
 import { CopilotShell } from "@/components/copilot/copilot-shell";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { ShellAuthBridge, ShellAuthProvider } from "@/components/shell-auth";
 import { SidebarStateRestore } from "@/components/app-sidebar";
-import { ShellJobsProvider, ShellProviders, ShellSidebar } from "@/components/shell-frame";
+import { ShellCopilotProvider, ShellJobsProvider, ShellSidebar } from "@/components/shell-frame";
 import { auth } from "@/lib/auth";
 import { safeNextPath } from "@/lib/auth-redirect";
 import { devBypassEnabled, DEV_BYPASS_USER } from "@/lib/dev-bypass";
@@ -73,31 +72,34 @@ export default function DashboardLayout({
     // User-controlled collapse: open by default on desktop until the user
     // explicitly collapses once, remembered in the sidebar_state cookie.
     // The icon variant stays fixed full-height; the provider must stay
-    // uncontrolled (defaultOpen, not open) so the header trigger and
+    // uncontrolled (defaultOpen, not open) so the rail trigger and
     // cmd/ctrl+B can actually toggle it. No cookie yet means no explicit
     // choice, so the default (open) wins; SidebarStateRestore applies the
     // remembered value only when the cookie exists.
     // Mobile opens via its own openMobile state, unaffected by this.
-    // The wider icon rail gives the enlarged nav buttons room.
-    <SidebarProvider
-      defaultOpen={true}
-      style={{ "--sidebar-width-icon": "4.5rem" } as React.CSSProperties}
-    >
+    // The icon rail keeps the default width: sidebar-03 rows are standard
+    // height, so the demo's 3rem geometry holds without an override.
+    //
+    // No top bar: search, voice, and jobs status live in the rail, and
+    // every page renders its own title. Provider order is load-bearing —
+    // auth first, then jobs, then voice — because the sidebar reads all
+    // three (account menu, jobs badge and bell, voice row) and each
+    // provider gates on the snapshot above it.
+    <SidebarProvider defaultOpen={true}>
       <ShellAuthProvider>
         <SidebarStateRestore />
         <ShellJobsProvider>
-          <ShellSidebar />
-          <SidebarInset>
-            <ShellProviders>
-              <AppHeader />
+          <ShellCopilotProvider>
+            <ShellSidebar />
+            <SidebarInset>
               <ViewTransition name="dashboard-content" default="dashboard-route">
                 <div className="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-6 p-4 md:p-6 lg:p-8">
                   {children}
                 </div>
               </ViewTransition>
               <CopilotShell />
-            </ShellProviders>
-          </SidebarInset>
+            </SidebarInset>
+          </ShellCopilotProvider>
         </ShellJobsProvider>
         <Suspense fallback={null}>
           <ShellAuthResolver />

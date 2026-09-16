@@ -17,13 +17,16 @@ test("floating sidebar-03 shell centers controls and swaps brand by density and 
   assert.match(shell, /collapsible="icon"/);
   assert.doesNotMatch(shell, /framer-motion/);
   assert.doesNotMatch(shell, /NotificationsPopover/);
-  // Four-state brand: expanded lockup vs collapsed mark, class-strategy theme swap.
-  assert.match(brand, /logo-expanded-light\.svg/);
-  assert.match(brand, /logo-expanded-dark\.svg/);
-  assert.match(brand, /logo-collapsed-light\.svg/);
-  assert.match(brand, /logo-collapsed-dark\.svg/);
-  assert.match(brand, /dark:hidden/);
-  assert.match(brand, /hidden dark:block/);
+  // Animated Classic brand: VoniMark loop for the expanded lockup, static
+  // chip for the collapsed mark; theme via currentColor + tokens (no
+  // theme-specific assets, no class-strategy swap).
+  assert.match(brand, /VoniMark/);
+  assert.match(brand, /animate/);
+  assert.match(brand, /voni-chip-in/);
+  assert.doesNotMatch(brand, /\.svg/);
+  assert.doesNotMatch(brand, /next\/image/);
+  assert.doesNotMatch(brand, /dark:/);
+  assert.doesNotMatch(brand, /framer-motion/);
   assert.match(shell, /density=\{isCollapsed \? "collapsed" : "expanded"\}/);
   // Entry keeps the shared nav source, the active-link Suspense boundary,
   // and the remembered-state restore.

@@ -348,8 +348,8 @@ export function CopilotProvider({
 
   const start = useCallback(() => {
     // Gated on auth readiness: no token request, no microphone, no tools
-    // while the session is still loading. The header explains the state and
-    // stays navigable.
+    // while the session is still loading. The rail button explains the
+    // state and stays navigable.
     if (!enabledRef.current) return;
     if (sessionRef.current) return;
     // Mutual exclusion with the agent-test VoiceCall: whoever starts ends
@@ -697,7 +697,7 @@ export function CopilotProvider({
   // Global read-only tools, registered once. Route tools arrive per page.
   useEffect(() => {
     // Navigable routes come from the GENERATED app manifest — adding a screen
-    // to the sidebar/header teaches voice the destination with no prompt edit.
+    // to the rail teaches voice the destination with no prompt edit.
     const allowedRoutes = platformAdmin
       ? NAVIGABLE_ROUTES
       : NAVIGABLE_ROUTES.filter((route) => route !== "/operator");

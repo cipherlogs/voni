@@ -37,7 +37,9 @@ verified against upstream on 2026-09-14.)
 Pinned at: `command-menu-03` f9b89ceb4979d35209705f8029877b60d6c70bc5,
 `onboarding-01` 5377a1ce792a169336c87f99a438a273867b6815, `chat-01`
 8f6f90c5b077628d2f4d3e41faa31cb8b608fe0b, `ai-05`
-54f6cbfa2c91a4377c980d9b0ac787d6ce5750a0 (pinned).
+54f6cbfa2c91a4377c980d9b0ac787d6ce5750a0, `sidebar-03` (manually vendored
+2026-09-15 from the registry JSON, which records no upstream commit — CLI
+install rejected to protect shared primitives).
 
 ## Voice portraits (retired 2026-09-15)
 

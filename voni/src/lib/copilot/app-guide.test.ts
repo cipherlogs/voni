@@ -8,7 +8,7 @@ import {
   SETTINGS_TABS_MANIFEST,
 } from "./app-manifest";
 import { NAV_ITEMS } from "@/components/app-sidebar";
-import { SECTION_TITLES } from "@/components/app-header";
+import { SECTION_TITLES } from "@/components/app-sidebar";
 import { SETTINGS_TABS } from "@/components/settings-view";
 
 test("guide names every destination and the voice tab", () => {
