@@ -10,6 +10,12 @@ context/usage. Don't hand-edit the **Activity Log** — it's auto-generated.
 
 ## Status
 
+### Resume here (2026-09-16, settings-bento ticket 01 DONE, COMMITTED)
+
+**Now:** Ticket 01 closed and committed: V01 grid + 7 approved second-round scenes (`scenes.tsx` + `provider-marks.tsx` new, `TILE_SCENES` 1:1 with renamed `TileBgKind`, pinned by 2 new `settings-tiles.test.ts` cases), `BentoTile` simplified (V10 props removed), dead round-1 CSS cut, Calendar paper under `--provider-cal-paper`, all scene roots carry `bento-fade` + §10b hover breath + categories, orbit session chip, DESIGN.md §5/§10b amended. Gates: tsc 0, eslint 0, suite 417/417, manifest current, §5 greps clean (only exempted hits), two-axis review done (3 fixes applied, rest dismissed with rationale in ticket). Proof: `/tmp/bento-ref/round4-*` (desktop, 390px, hover CTA, focus ring, reduced-motion).
+**Next:** Ticket 02 (landing + `/settings/[tab]` routes) — registry `href`/`span` seam is proven and waiting.
+**Why:** Ticket 01 was stuck uncommitted mid-scene-round; this finishes and records it.
+
 ### Resume here (2026-09-16, settings-bento ticket 01 v3: ten faithful variants, UNCOMMITTED)
 
 **Now:** Gallery v3 answers the failed v1 review + the dropped 10-variant requirement: icon-free `BentoTile` (scene carries meaning, `chromeless` prop for the pure-demo control), 7 alternate scenes (mark-wall marquee + new `bento-marquee` keyframe/amendment line, EQ, circuit, waveform, cluster, toggle, stack), 10 full-grid variants each with distinct hero bg + layout, V01 heroes read from registry `span` (proves the ticket-02 seam). Screenshot proof: 10 desktop + 390px spots + beam zooms + focus CTA reveal vs the Magic UI reference. Gates: tsc 0, eslint 0, suite 415/415, manifest current, §5 greps clean. Two-axis review done (fixes applied: amendment wording, transcript rename, per-scene fades, registry heroes, header copy).

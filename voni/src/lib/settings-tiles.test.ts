@@ -44,3 +44,23 @@ test("v1 heroes are voice and services", () => {
   const heroes = SETTINGS_TILES.filter((t) => t.span === "hero").map((t) => t.value).sort();
   assert.deepEqual(heroes, ["services", "voice"]);
 });
+
+test("bgKinds are exactly the seven approved scene-round-2 kinds", () => {
+  const kinds = SETTINGS_TILES.map((t) => t.bgKind).sort();
+  assert.deepEqual(kinds, [
+    "constellation",
+    "control",
+    "horizon",
+    "incoming",
+    "lanes",
+    "orbit",
+    "spine",
+  ]);
+});
+
+test("every tile maps its bgKind to a distinct scene", () => {
+  const byKind = new Map(SETTINGS_TILES.map((t) => [t.bgKind, t.value]));
+  assert.equal(byKind.size, SETTINGS_TILES.length);
+  assert.equal(byKind.get("constellation"), "services");
+  assert.equal(byKind.get("lanes"), "voice");
+});

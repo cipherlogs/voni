@@ -24,13 +24,13 @@ export type TileIcon = "user" | "mic" | "building" | "plug" | "sun" | "phone" | 
 export type TileSpan = "standard" | "hero";
 
 export type TileBgKind =
-  | "session"
-  | "transcript"
-  | "defaults"
-  | "beam"
-  | "theme"
-  | "wiring"
-  | "meters";
+  | "constellation"
+  | "lanes"
+  | "orbit"
+  | "spine"
+  | "horizon"
+  | "incoming"
+  | "control";
 
 export interface SettingsTile {
   readonly value: TileValue;
@@ -55,27 +55,27 @@ export const SETTINGS_TILES: ReadonlyArray<SettingsTile> = [
     href: "/settings/account",
     icon: "user",
     span: "standard",
-    bgKind: "session",
+    bgKind: "orbit",
   },
   {
     value: "voice",
     label: "Voice copilot",
     description: "Who talks back when you tap the mic.",
-    cta: "Pick a voice",
+    cta: "Configure voice copilot",
     href: "/settings/voice",
     icon: "mic",
     span: "hero",
-    bgKind: "transcript",
+    bgKind: "lanes",
   },
   {
     value: "workspace",
     label: "Workspace",
     description: "Customer-facing defaults for this organization.",
-    cta: "Edit workspace",
+    cta: "Manage workspace",
     href: "/settings/workspace",
     icon: "building",
     span: "standard",
-    bgKind: "defaults",
+    bgKind: "spine",
   },
   {
     value: "services",
@@ -85,38 +85,38 @@ export const SETTINGS_TILES: ReadonlyArray<SettingsTile> = [
     href: "/settings/services",
     icon: "plug",
     span: "hero",
-    bgKind: "beam",
+    bgKind: "constellation",
   },
   {
     value: "appearance",
     label: "Appearance",
     description: "Use light, dark, or your system setting.",
-    cta: "Change theme",
+    cta: "Manage appearance",
     href: "/settings/appearance",
     icon: "sun",
     span: "standard",
-    bgKind: "theme",
+    bgKind: "horizon",
   },
   {
     value: "numbers",
     label: "Phone numbers",
     description: "Which agent picks up when someone calls.",
-    cta: "Assign numbers",
+    cta: "Manage numbers",
     href: "/numbers",
     icon: "phone",
     span: "standard",
-    bgKind: "wiring",
+    bgKind: "incoming",
     external: true,
   },
   {
     value: "operator",
     label: "Platform operator",
     description: "Voni-managed platform capacity.",
-    cta: "Open operator console",
+    cta: "View status",
     href: "/operator",
     icon: "shield",
     span: "standard",
-    bgKind: "meters",
+    bgKind: "control",
     external: true,
     adminOnly: true,
   },

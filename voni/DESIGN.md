@@ -268,7 +268,8 @@ or be cut — or be a DESIGN.md-listed exception.
   `grep -rn 'text-\[\|bg-\[' src | grep -v 'src/components/ui/'`
 - Hardcoded palette: `emerald|amber|#[0-9a-fA-F]{3,6}` outside comments
   (~20 hits; prototypes carry 12) → map to tokens; prototypes CUT with
-  their CSS. `grep -rniE 'emerald|amber|#[0-9a-f]{3,6}\b' src`
+  their CSS. `grep -rniE 'emerald|amber|#[0-9a-f]{3,6}\b' src | grep -v 'provider-'`
+  (the `--provider-*` scene-glyph exception in §10b is the only exemption).
 - `dark:` outside `src/components/ui/` generated code (3 remaining bespoke
   sites: connection emerald, bubble, mode-toggle mechanics — logo hex retired
   2026-09-16 with the animated Classic slot) → fix.
@@ -280,7 +281,10 @@ or be cut — or be a DESIGN.md-listed exception.
 - `space-x-|space-y-` (must be zero; use flex+gap). `grep -rn 'space-[xy]-' src`
 - Non-`size-*` icon squares. `grep -rn 'h-[0-9].*w-\[0-9\]' src`
 - Extra CSS files / keyframes: only `globals.css` survives; prototype
-  CSS deleted with the routes. `ls src/app/prototypes` must 404-think → empty.
+  CSS deleted with the routes. `ls src/app/prototypes` must 404-think → empty
+  (exception: the ticket-01 `settings-gallery` throwaway lives under
+  `prototypes/` until ticket 08 deletes it — the manifest generator already
+  excludes that path, so voice files see zero churn).
 - `cn` imports unify to `@/lib/utils` (remove `from "cn"` specifiers).
   `grep -rn 'from "cn"' src`
   (DONE 2026-09-13 — 13 ui/ files unified. The `"cn"` npm dep remains
@@ -403,23 +407,43 @@ styles as the static frame.
   content pads itself, so the `Card` primitive's spacing fights it).
   Content is bottom-anchored (`justify-between` + `mt-auto`); scenes are
   absolute, oversized, cropped top/right.
-- **Mask fades:** `.bento-fade` (40% stop) + `.bento-fade-soft` (10% stop)
-  replace the reference `[mask-image:...]` arbitrary properties.
-- **New keyframes (allowed):** `bento-beam-flow` — dash slide on SVG beam
-  connectors (static dashes are the resting frame); `bento-node-ping` —
-  one breath per cycle on the beam agent node (invisible base is the
-  resting frame); `bento-list-cycle` — 12s staggered reveal for scene
-  lists with nth-child offsets (fully visible base is the resting frame).
-  Gallery alternates add one more: `bento-marquee` — 30s seamless `-50%`
-  slide over a duplicated mark track (rest position is the resting frame).
+- **Mask fades:** `.bento-fade` (40% stop) replaces the reference
+  `[mask-image:...]` arbitrary properties; every scene root carries it so the
+  mask eats the bottom into the content.
+- **New keyframes (allowed):** `bento-node-ping` — one breath per cycle on
+  the constellation agent node (invisible base is the resting frame).
+  Round-1 families (`bento-beam-flow`, `bento-list-cycle`, `bento-marquee`)
+  retired with deleted variants V02 and round 1.
+  Scene round 2 (approved concepts) adds: `bento-branch-cycle` — shared
+  6s sequential-emphasis wave for the constellation fan (1.2s apart) and
+  the control-plane scan (2s apart); `bento-lane` — 3s duplex alternation
+  (response lane delayed 1.5s); `bento-orbit` — 24s ±30° sweep with return;
+  `bento-spine-travel` + `bento-spine-node` — 4s shared-timeline rail signal
+  and node windows; `bento-horizon-drift` — 14s ±4% alternate;
+  `bento-route-pulse` — 5s number→seal pause→agent travel in element
+  percentages (base parks just past the seal). The mark-wall marquee left
+  with deleted variant V02.
+- **Provider scene tokens:** `--provider-*` fills (Gmail/Calendar/Slack/
+  Drive official sets, Notion uses `currentColor`) are glyph fills ONLY
+  inside the Services constellation — never UI chrome. They are the single
+  exception to the §5 hex grep below: that grep gains a `grep -v
+  'provider-'` exemption. Glyph geometry: Simple Icons shapes with official
+  fills (PD-textlogo, trademark nominative use — sources noted beside the
+  components); any mark failing small-size legibility falls back to its
+  single-color si glyph, stated plainly. The theme-horizon dark layer
+  carries always-light mock lines (`bg-white/xx`, `text-white`) — the
+  single raw-color exemption, scoped to that layer; everything else token.
+- **Scene categories:** A flow diagrams, B event streams, C interface
+  miniatures, D signal scenes, E state transformations. New concept rounds
+  name their category; cross-category repeats need a reason.
 - **Hover language:** scenes rest at `scale-90` and breathe to `group-hover:scale-95`
   (no tile icon — removed 2026-09-16, the scene carries the meaning; bottom
   content is name/description/CTA only), CTA row reveals on `group-hover` *and*
   `group-focus-visible` (keyboard parity the reference lacks), always
   visible below `lg`. Interactive feedback (shadow, wash, CTA reveal) uses
-  `duration-[var(--motion-standard)]`; scene choreography keeps the
-  reference-mirror constants (`duration-300`, `1200ms`/`2400ms`/`12s` loops,
-  `6 6` dashes, `8px` list drift) exactly like the `22rem` rows above —
+  `duration-[var(--motion-standard)]`; scene choreography keeps
+  `duration-300` hover breaths plus the round-2 loop constants (`6s`/`3s`/
+  `24s`/`4s`/`14s`/`5s`, `2400ms` ping) exactly like the `22rem` rows above —
   no new palette. Overlay wash via token `bg-foreground/[0.03]`-style
   tints only.
 - **Badges:** one deliberate deviation — a live status badge floats
