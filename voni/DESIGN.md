@@ -318,7 +318,7 @@ or be cut — or be a DESIGN.md-listed exception.
 | Shell sidebar+header / dialogs / command menu / file upload | blocks-has | sidebar-02/03, dialog-01…12, command-menu, file-upload |
 | Landing `/` | build-in-style | No marketing group; minimal composed entry |
 | `/prototypes/*` + strategy.module.css + prototype.css | cut | Dev-only, light-only; delete page+content+CSS together |
-| Settings bento landing (amendment 2026-09-16, landing track) | build-in-style | No bento block exists; faithful Magic UI bento-grid structure (tall 22rem rows, full-bleed masked scenes, bottom-anchored icon/name/description, hover-reveal CTA) rebuilt from Card tokens + lucide + CSS-only scenes. Variant D row idiom stays production until tickets 02–08 cut over; the throwaway gallery that proves the language lives under `prototypes/` and dies in ticket 08 |
+| Settings bento landing (amendment 2026-09-16, landing track) | build-in-style | No bento block exists; faithful Magic UI bento-grid structure (tall 22rem rows, full-bleed masked scenes, bottom-anchored name/description with no icon — the scene carries the meaning, hover-reveal CTA) rebuilt from Card tokens + lucide + CSS-only scenes. Variant D row idiom stays production until tickets 02–08 cut over; the throwaway gallery that proves the language lives under `prototypes/` and dies in ticket 08 |
 
 ## 7. Composition rules
 
@@ -410,8 +410,11 @@ styles as the static frame.
   one breath per cycle on the beam agent node (invisible base is the
   resting frame); `bento-list-cycle` — 12s staggered reveal for scene
   lists with nth-child offsets (fully visible base is the resting frame).
-- **Hover language:** scenes rest at `scale-90` and breathe to `group-hover:scale-95`,
-  icon `size-12` shrinks to 75% `origin-left`, CTA row reveals on `group-hover` *and*
+  Gallery alternates add one more: `bento-marquee` — 30s seamless `-50%`
+  slide over a duplicated mark track (rest position is the resting frame).
+- **Hover language:** scenes rest at `scale-90` and breathe to `group-hover:scale-95`
+  (no tile icon — removed 2026-09-16, the scene carries the meaning; bottom
+  content is name/description/CTA only), CTA row reveals on `group-hover` *and*
   `group-focus-visible` (keyboard parity the reference lacks), always
   visible below `lg`. Interactive feedback (shadow, wash, CTA reveal) uses
   `duration-[var(--motion-standard)]`; scene choreography keeps the

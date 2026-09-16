@@ -360,6 +360,23 @@
   }
 }
 
+/* Seamless mark-wall loop for the Services alternate scene. The track holds
+   two identical halves (see tiles.tsx); sliding exactly one half makes the
+   seam invisible. Base position is the resting frame. */
+.bento-marquee-track {
+  animation: bento-marquee 30s linear infinite;
+}
+
+.bento-marquee-reverse {
+  animation-direction: reverse;
+}
+
+@keyframes bento-marquee {
+  to {
+    transform: translateX(-50%);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -397,10 +414,11 @@
 
   /* Bento amendment 2026-09-16 (landing track): the three tile-scene loops
      stop outright; each class's own base styles are the resting frame
-     (static dashes, all list rows visible, no ping ring). */
+     (static dashes, all list rows visible, no ping ring, mark wall at rest). */
   .bento-beam-flow,
   .bento-list-item,
-  .bento-node-ping {
+  .bento-node-ping,
+  .bento-marquee-track {
     animation: none !important;
   }
 }
