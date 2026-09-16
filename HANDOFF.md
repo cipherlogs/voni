@@ -10,13 +10,13 @@ context/usage. Don't hand-edit the **Activity Log** — it's auto-generated.
 
 ## Status
 
-### Resume here (2026-09-16, review-fix batch: text-[10px] + logo-mockups deletion, uncommitted)
+### Resume here (2026-09-16, review-fix batch: text-[10px] + logo-mockups deletion, COMMITTED 62f5b5e0)
 
 **Now:** Closed 2 of 3 Standards hard violations from the two-axis review (uncommitted tree vs `HEAD`, spec `.scratch/sidebar-03-brand-swap`): (1) `sidebar-03/nav-main.tsx` collapsed jobs pill drops `group-data-[collapsible=icon]:text-[10px]` (DESIGN.md §5 bans `text-[` arbitrary values) — pill keeps scale `text-xs` in both densities; (2) deleted disposable `voni/src/app/logo-mockups/` (`page.tsx` + `mock.css`, 8 `lm-*` keyframes) per its own "delete after the pick" header + manifest comment — Classic pick recorded in DESIGN.md, press regen unaffected (`press-wordmark-shots.mts` shoots `/press-specimen/`, already deleted); removed the now-dead `logo-mockups` guard in `scripts/generate-app-manifest.mts`. Left alone deliberately: Classic `currentColor` brand, bell/switcher removal, press kit, settings sidebar — all documented user picks (DESIGN.md amendments 2026-09-16 + prior Status entry), so the Spec axis failures are stale-spec, not code bugs; staged `.scratch` spec files untouched. Verification: tsc 0, eslint 0 on touched files, sidebar suite 411/411, manifest regen byte-identical.
-**Next:** User picks any final tweak or approves the uncommitted set; optionally mark the staged `.scratch/sidebar-03-brand-swap` spec superseded by the Classic amendments.
+**Next:** User picks any final tweak or approves; optionally mark the committed `.scratch/sidebar-03-brand-swap` spec superseded by the Classic amendments.
 **Why:** "proceed" after the review — fix what's actionable, don't revert explicit user picks.
 
-### Resume here (2026-09-16, Classic logo ship + press kit, uncommitted)
+### Resume here (2026-09-16, Classic logo ship + press kit, COMMITTED 62f5b5e0)
 
 **Now:** Shipped Classic (mockup concept 01, homepage loop verbatim) to the sidebar + built the press kit, left uncommitted: (1) `sidebar-03/logo.tsx` rewritten — expanded loops the tight wordmark (`VoniMark animate`, cropped viewBox, hairline gap), collapsed holds the static chip + one-shot `voni-chip-in`, theme via `currentColor` (4 placeholder `public/brand/*.svg` deleted, `next/image` + 2 bespoke `dark:` sites retired, `DESIGN.md` amendment recorded); (2) `/logo-mockups` tightened to production lockup construction + animated "mark solo" row per card (10/10 verified in-browser light+dark); (3) `public/press/` kit — 8 SVG masters (wordmark/mark/chip/mono), 12 PNGs (`press-raster.mts` via sharp + `press-wordmark-shots.mts` via agent-browser at DPR 2, real Geist; OG 1200×630 exact), avatars 1024/500/400, README with rules + regen commands; specimen route deleted after the run. Verification: tsc 0, eslint 0 on touched files (1 pre-existing error in untouched `agents/new/page.tsx`), sidebar tests 13/13, manifest current, zero compile/runtime errors, real-dashboard screenshots expanded + collapsed. Left uncommitted per convention.
 **Next:** User picks any final tweak or approves; optional follow-ups already scoped separately: OG/Twitter meta wiring + `apple-icon` refresh, SMIL animated web logo (v2).
