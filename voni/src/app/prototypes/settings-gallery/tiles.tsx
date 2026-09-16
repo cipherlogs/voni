@@ -1,9 +1,11 @@
 import Link from "next/link";
 import {
+  ArrowRight,
   Bot,
   Building2,
   Check,
   Mic,
+  Moon,
   Phone,
   Plug,
   ShieldCheck,
@@ -13,7 +15,6 @@ import {
 } from "lucide-react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
-import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import type { SettingsTile, TileIcon } from "@/lib/settings-tiles";
 
@@ -47,162 +48,177 @@ export function galleryHref(tile: Pick<SettingsTile, "href" | "external">): stri
   return tile.external ? tile.href : "/settings";
 }
 
-function MiniFrame({ children }: { children: React.ReactNode }) {
+/** Services scene: provider nodes hand work to one agent through live beams.
+ * The SVG uses non-scaling strokes in a 400-unit space so its paths stay
+ * registered with the HTML nodes at any tile width. */
+export function BeamScene() {
   return (
-    <div aria-hidden className="overflow-hidden rounded-lg border bg-muted/50 p-3">
-      {children}
+    <div className="bento-fade absolute top-0 right-0 h-72 w-full origin-top-right scale-90 transition-transform duration-300 group-hover:scale-95">
+      <svg
+        viewBox="0 0 400 288"
+        fill="none"
+        preserveAspectRatio="none"
+        aria-hidden
+        className="absolute inset-0 size-full"
+      >
+        <path
+          d="M 44 144 C 100 144, 140 144, 182 144"
+          strokeWidth={1.5}
+          vectorEffect="non-scaling-stroke"
+          className="bento-beam-flow stroke-muted-foreground/60"
+        />
+        <path
+          d="M 218 144 C 272 144, 312 80, 366 80"
+          strokeWidth={1.5}
+          vectorEffect="non-scaling-stroke"
+          className="bento-beam-flow stroke-muted-foreground/60"
+        />
+        <path
+          d="M 218 144 C 272 144, 312 144, 366 144"
+          strokeWidth={1.5}
+          vectorEffect="non-scaling-stroke"
+          className="bento-beam-flow stroke-muted-foreground/60"
+        />
+        <path
+          d="M 218 144 C 272 144, 312 208, 366 208"
+          strokeWidth={1.5}
+          vectorEffect="non-scaling-stroke"
+          className="bento-beam-flow stroke-muted-foreground/60"
+        />
+      </svg>
+      <div className="absolute top-1/2 left-8 -translate-y-1/2">
+        <span className="flex size-12 items-center justify-center rounded-full bg-card text-muted-foreground shadow-sm ring-1 ring-border">
+          <User className="size-5" />
+        </span>
+      </div>
+      <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2">
+        <span aria-hidden className="bento-node-ping absolute inset-0 rounded-full ring-2 ring-primary" />
+        <span className="relative flex size-16 items-center justify-center rounded-full bg-card text-foreground shadow-md ring-1 ring-border">
+          <Bot className="size-7" />
+        </span>
+      </div>
+      <div className="absolute top-1/2 right-8 flex -translate-y-1/2 flex-col gap-6">
+        {["G", "Z", "D"].map((initial) => (
+          <span
+            key={initial}
+            className="flex size-10 items-center justify-center rounded-full bg-card text-sm text-muted-foreground shadow-sm ring-1 ring-border"
+          >
+            {initial}
+          </span>
+        ))}
+      </div>
     </div>
   );
 }
 
-/** Services hero language: provider nodes hand work to one agent. */
-export function BeamMini() {
-  return (
-    <MiniFrame>
-      <div className="flex h-24 items-center gap-3">
-        <div className="flex flex-col gap-2">
-          {["G", "Z", "D"].map((initial) => (
-            <Avatar key={initial} size="sm">
-              <AvatarFallback>{initial}</AvatarFallback>
-            </Avatar>
-          ))}
-        </div>
-        <div className="relative flex-1">
-          <div className="border-t border-dashed border-border" />
-          <div className="absolute top-1/2 left-1/2 size-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-primary transition-transform duration-[var(--motion-standard)] group-hover:translate-x-4" />
-        </div>
-        <Avatar size="sm">
-          <AvatarFallback>
-            <Bot className="size-4" />
-          </AvatarFallback>
-        </Avatar>
-      </div>
-    </MiniFrame>
-  );
-}
-
-/** Voice hero language: equalizer bars over the voice motif. */
-export function EqMini() {
-  const bars = [
-    { height: "h-5", strong: false },
-    { height: "h-9", strong: true },
-    { height: "h-12", strong: true },
-    { height: "h-7", strong: false },
-    { height: "h-10", strong: true },
+/** Voice scene: transcript rows cycle through like the reference list. */
+export function ListScene() {
+  const rows = [
+    { speaker: "You", line: "Set my voice to Ivy, please." },
+    { speaker: "Voni", line: "Done — Ivy, auto-detect on." },
+    { speaker: "You", line: "And switch me to dark?" },
+    { speaker: "Voni", line: "Appearance is now System." },
   ];
   return (
-    <MiniFrame>
-      <div className="flex h-24 items-end justify-center gap-1.5">
-        {bars.map((bar, index) => (
-          <div
-            key={index}
-            className={cn(
-              "w-2 rounded-full transition-transform duration-[var(--motion-standard)] group-hover:scale-y-110",
-              bar.height,
-              bar.strong ? "bg-primary" : "bg-primary/40",
-            )}
-          />
-        ))}
+    <div className="bento-fade-soft bento-list absolute top-8 right-6 flex w-3/4 max-w-xs origin-top-right scale-90 flex-col gap-2 transition-transform duration-300 group-hover:scale-95">
+      {rows.map((row) => (
+        <div key={`${row.speaker}-${row.line}`} className="bento-list-item rounded-xl border bg-card p-3 shadow-sm">
+          <p className="text-xs font-medium">{row.speaker}</p>
+          <p className="truncate text-xs text-muted-foreground">{row.line}</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** Account scene: identity card with a live session seal. */
+export function SessionScene() {
+  return (
+    <div className="bento-fade absolute top-10 right-6 w-60 origin-top-right scale-90 rounded-xl border bg-card p-4 shadow-sm transition-transform duration-300 group-hover:scale-95">
+      <div className="flex items-center gap-3">
+        <Avatar size="lg">
+          <AvatarFallback>A</AvatarFallback>
+        </Avatar>
+        <div className="min-w-0">
+          <p className="truncate text-sm font-medium">Amara</p>
+          <p className="truncate text-xs text-muted-foreground">amara@acme.test</p>
+        </div>
       </div>
-    </MiniFrame>
-  );
-}
-
-/** Shared dashed handoff connector with a centered state seal. */
-function MiniLink({ icon: Icon }: { icon: LucideIcon }) {
-  return (
-    <span className="relative flex-1">
-      <span className="block border-t border-dashed border-border" />
-      <span className="absolute top-1/2 left-1/2 flex size-5 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-primary text-primary-foreground">
-        <Icon className="size-3" />
-      </span>
-    </span>
-  );
-}
-
-/** Account language: identity hands off to a Voni session. */
-export function SessionMini() {
-  return (
-    <MiniFrame>
-      <div className="flex h-24 items-center gap-2">
-        <span className="flex items-center gap-2 rounded-lg border bg-card px-2 py-1 text-xs">
-          <Avatar size="sm">
-            <AvatarFallback>A</AvatarFallback>
-          </Avatar>
-          Amara
+      <div className="mt-3 flex items-center gap-2 rounded-lg bg-muted/50 px-3 py-2">
+        <span className="flex size-5 items-center justify-center rounded-full bg-primary text-primary-foreground">
+          <Check className="size-3" />
         </span>
-        <MiniLink icon={Check} />
-        <span className="rounded-lg border bg-card px-2 py-1 text-xs">Voni session</span>
+        <p className="text-xs">Voni session · active</p>
       </div>
-    </MiniFrame>
+    </div>
   );
 }
 
-/** Workspace language: stacked customer-facing defaults. */
-export function DefaultsMini() {
+/** Workspace scene: scaled customer-facing defaults widget. */
+export function DefaultsScene() {
   const rows = [
     { label: "Workspace", value: "Acme Viewings" },
     { label: "Timezone", value: "Asia/Dubai" },
     { label: "Transfer number", value: "+971 50 123 4567" },
   ];
   return (
-    <MiniFrame>
-      <div className="flex h-24 flex-col justify-center gap-1.5">
-        {rows.map((row) => (
-          <div key={row.label} className="rounded-lg bg-card px-3 py-1.5">
+    <div className="bento-fade absolute inset-x-8 top-10 origin-top scale-90 rounded-xl border bg-card p-3 shadow-sm transition-transform duration-300 group-hover:scale-95">
+      <div className="flex flex-col gap-1.5">        {rows.map((row) => (
+          <div key={row.label} className="rounded-lg bg-muted/50 px-3 py-2">
             <p className="text-xs text-muted-foreground">{row.label}</p>
-            <p className="truncate text-sm">{row.value}</p>
+            <p className="truncate text-sm font-medium">{row.value}</p>
           </div>
         ))}
       </div>
-    </MiniFrame>
+    </div>
   );
 }
 
-/** Appearance language: light/dark split preview. */
-export function ThemeMini() {
+/** Appearance scene: light/dark split preview. */
+export function ThemeScene() {
   return (
-    <MiniFrame>
-      <div className="grid h-24 grid-cols-2 gap-2">
-        <div className="flex flex-col items-center justify-center gap-1 rounded-lg border bg-card">
-          <Sun className="size-4" />
-          <span className="text-xs">Light</span>
-        </div>
-        <div className="flex flex-col items-center justify-center gap-1 rounded-lg border bg-primary text-primary-foreground">
-          <Sun className="size-4" />
-          <span className="text-xs">Dark follows OS</span>
-        </div>
+    <div className="bento-fade absolute inset-x-8 top-12 grid origin-top scale-90 grid-cols-2 gap-3 transition-transform duration-300 group-hover:scale-95">
+      <div className="flex h-28 flex-col items-center justify-center gap-1 rounded-xl border bg-card shadow-sm">
+        <Sun className="size-5" />
+        <span className="text-xs font-medium">Light</span>
       </div>
-    </MiniFrame>
+      <div className="flex h-28 flex-col items-center justify-center gap-1 rounded-xl bg-foreground text-background shadow-sm">
+        <Moon className="size-5" />
+        <span className="text-xs font-medium">Dark follows OS</span>
+      </div>
+    </div>
   );
 }
 
-/** Numbers language: a number wires to its agent. */
-export function WiringMini() {
+/** Numbers scene: a number wires to its agent. */
+export function WiringScene() {
   return (
-    <MiniFrame>
-      <div className="flex h-24 items-center gap-2">
-        <span className="rounded-lg border bg-card px-2 py-1 font-mono text-xs">+971 50 123 4567</span>
-        <MiniLink icon={Plug} />
-        <span className="flex items-center gap-1.5 rounded-lg border bg-card px-2 py-1 text-xs">
-          <Bot className="size-3.5" />
-          Sara
+    <div className="bento-fade absolute inset-x-8 top-16 flex origin-top scale-90 items-center gap-3 transition-transform duration-300 group-hover:scale-95">
+      <span className="rounded-xl border bg-card px-3 py-2 font-mono text-xs shadow-sm">+971 50 123 4567</span>
+      <span className="relative flex-1">
+        <span className="block border-t border-dashed border-border" />
+        <span className="absolute top-1/2 left-1/2 flex size-5 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-primary text-primary-foreground">
+          <Plug className="size-3" />
         </span>
-      </div>
-    </MiniFrame>
+      </span>
+      <span className="flex items-center gap-1.5 rounded-xl border bg-card px-3 py-2 text-xs font-medium shadow-sm">
+        <Bot className="size-3.5" />
+        Sara
+      </span>
+    </div>
   );
 }
 
-/** Operator language: readiness meters. */
-export function MetersMini() {
+/** Operator scene: scaled readiness meters. */
+export function MetersScene() {
   const rows = [
     { label: "Voice agents", width: "w-3/4" },
     { label: "Phone calls", width: "w-1/2" },
     { label: "AI generation", width: "w-full" },
   ];
   return (
-    <MiniFrame>
-      <div className="flex h-24 flex-col justify-center gap-2.5">
+    <div className="bento-fade absolute inset-x-8 top-12 origin-top scale-90 rounded-xl border bg-card p-4 shadow-sm transition-transform duration-300 group-hover:scale-95">
+      <div className="flex flex-col gap-3">
         {rows.map((row) => (
           <div key={row.label} className="flex items-center gap-3">
             <span className="w-24 shrink-0 truncate text-xs text-muted-foreground">{row.label}</span>
@@ -212,100 +228,72 @@ export function MetersMini() {
           </div>
         ))}
       </div>
-    </MiniFrame>
+    </div>
   );
 }
 
-/** Variant-08 language: truthful mark wall (real providers + readiness only). */
-export function MarqueeMini() {
-  const marks = [
-    "Gmail · Connected",
-    "Zoho · Off",
-    "Docs · Off",
-    "Voice · Ready",
-    "Phone · Needs setup",
-    "AI generation · Ready",
-    "Voice notes · Needs setup",
-  ];
-  return (
-    <MiniFrame>
-      <div className="flex h-24 flex-col justify-center gap-2 overflow-hidden">
-        {[0, 1].map((row) => (
-          <div key={row} className="flex w-max gap-2">
-            {marks.map((mark) => (
-              <span
-                key={`${row}-${mark}`}
-                className="flex items-center gap-1.5 rounded-full border bg-card px-2.5 py-1 text-xs whitespace-nowrap"
-              >
-                <span className="flex size-4 items-center justify-center rounded-full bg-muted text-xs text-muted-foreground">
-                  {mark.charAt(0)}
-                </span>
-                {mark}
-              </span>
-            ))}
-          </div>
-        ))}
-      </div>
-    </MiniFrame>
-  );
-}
-
-export const BG_MINIATURES: Record<SettingsTile["bgKind"], () => React.JSX.Element> = {
-  session: SessionMini,
-  equalizer: EqMini,
-  defaults: DefaultsMini,
-  beam: BeamMini,
-  theme: ThemeMini,
-  wiring: WiringMini,
-  meters: MetersMini,
+export const TILE_SCENES: Record<SettingsTile["bgKind"], () => React.JSX.Element> = {
+  session: SessionScene,
+  transcript: ListScene,
+  defaults: DefaultsScene,
+  beam: BeamScene,
+  theme: ThemeScene,
+  wiring: WiringScene,
+  meters: MetersScene,
 };
 
 /**
- * One mock tile: whole card is a single link (grid-list-02 stretched-link
- * idiom, no nested controls). Static mock data — live badges arrive in ticket
- * 04, looping motion in ticket 05 (hover transitions only here).
+ * One faithful bento tile: tall card, full-bleed masked scene, bottom-anchored
+ * icon/name/description, hover-reveal CTA. The whole card is a single link
+ * (stretched-link idiom); the CTA row is a styled span, never a nested link.
+ * Static mock data — live badges arrive in ticket 04.
  */
-export function MockTile({
+export function BentoTile({
   tile,
-  miniature,
-  spanClassName,
+  className,
 }: {
   tile: SettingsTile;
-  miniature?: React.ReactNode;
-  spanClassName?: string;
+  className?: string;
 }) {
   const Icon = TILE_ICONS[tile.icon];
+  const Scene = TILE_SCENES[tile.bgKind];
   const badge = MOCK_BADGES[tile.value] ?? { text: "Preview", variant: "outline" as const };
-  const Miniature = tile.bgKind in BG_MINIATURES ? BG_MINIATURES[tile.bgKind] : null;
   return (
     <Link
       href={galleryHref(tile)}
       prefetch={false}
-      aria-label={`${tile.label} — ${tile.description} Badge: ${badge.text}`}
+      aria-label={`${tile.label} — ${tile.description} Status: ${badge.text}`}
       className={cn(
         "group rounded-xl focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:outline-none",
-        spanClassName,
+        className,
       )}
     >
-      <Card className="h-full transition-shadow duration-[var(--motion-standard)] hover:shadow-md">
-        <CardContent className="flex flex-col gap-4 p-4">
-          {miniature ?? (Miniature ? <Miniature /> : null)}
-          <div className="flex items-center gap-3">
-            <Avatar size="sm">
-              <AvatarFallback>
-                <Icon className="size-4" />
-              </AvatarFallback>
-            </Avatar>
-            <div className="min-w-0 flex-1">
-              <p className="flex items-center justify-between gap-3 text-sm font-medium">
-                {tile.label}
-                <Badge variant={badge.variant}>{badge.text}</Badge>
-              </p>
-              <p className="truncate text-sm text-muted-foreground">{tile.description}</p>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
+      <div className="relative flex h-full flex-col justify-between overflow-hidden rounded-xl bg-card text-card-foreground ring-1 ring-foreground/10 transition-shadow duration-[var(--motion-standard)] hover:shadow-md">
+        <div aria-hidden className="pointer-events-none absolute inset-x-0 top-0 h-72 overflow-hidden">
+          <Scene />
+        </div>
+        <Badge variant={badge.variant} className="absolute top-4 right-4 z-10">
+          {badge.text}
+        </Badge>
+        <div className="pointer-events-none relative z-10 mt-auto flex flex-col gap-1 p-6">
+          <Icon className="size-12 origin-left text-foreground transition-transform duration-300 group-hover:scale-75" />
+          <h3 className="text-xl font-semibold tracking-tight">{tile.label}</h3>
+          <p className="max-w-lg text-sm text-muted-foreground">{tile.description}</p>
+        </div>
+        <div className="pointer-events-none relative z-10 hidden w-full translate-y-2 flex-row items-center px-6 pb-6 opacity-0 transition-all duration-[var(--motion-standard)] group-focus-visible:translate-y-0 group-focus-visible:opacity-100 group-hover:translate-y-0 group-hover:opacity-100 lg:flex">
+          <span className="inline-flex items-center gap-1 text-sm font-medium text-primary">
+            {tile.cta}
+            <ArrowRight className="size-4" />
+          </span>
+        </div>
+        <div className="pointer-events-none relative z-10 flex w-full flex-row items-center px-6 pb-6 lg:hidden">
+          <span className="inline-flex items-center gap-1 text-sm font-medium text-primary">
+            {tile.cta}
+            <ArrowRight className="size-4" />
+          </span>
+        </div>
+        <div className="pointer-events-none absolute inset-0 transition-colors duration-[var(--motion-standard)] group-hover:bg-foreground/[0.03]" />
+      </div>
     </Link>
   );
 }

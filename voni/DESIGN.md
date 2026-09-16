@@ -318,6 +318,7 @@ or be cut — or be a DESIGN.md-listed exception.
 | Shell sidebar+header / dialogs / command menu / file upload | blocks-has | sidebar-02/03, dialog-01…12, command-menu, file-upload |
 | Landing `/` | build-in-style | No marketing group; minimal composed entry |
 | `/prototypes/*` + strategy.module.css + prototype.css | cut | Dev-only, light-only; delete page+content+CSS together |
+| Settings bento landing (amendment 2026-09-16, landing track) | build-in-style | No bento block exists; faithful Magic UI bento-grid structure (tall 22rem rows, full-bleed masked scenes, bottom-anchored icon/name/description, hover-reveal CTA) rebuilt from Card tokens + lucide + CSS-only scenes. Variant D row idiom stays production until tickets 02–08 cut over; the throwaway gallery that proves the language lives under `prototypes/` and dies in ticket 08 |
 
 ## 7. Composition rules
 
@@ -386,6 +387,41 @@ loops. One-shot enters are covered by the squash alone.
   (`size-12 rounded-2xl bg-muted` icon disc) for first-run empties;
   filtered-result empties keep the compact `icon` variant. `Empty*` API
   unchanged.
+
+## 10b. Bento amendment (2026-09-16, landing track)
+
+Faithful-structure bento tiles for the settings landing, proven in the
+throwaway gallery before cutover. Everything below reuses the `--motion-*` /
+`--ease-*` tokens and token-only color; each looping keyframe gets its own
+`animation: none` line in the `prefers-reduced-motion` block with the base
+styles as the static frame.
+
+- **Layout:** `.bento-grid-rows` (`grid-auto-rows: 22rem`, mirroring the
+  reference rhythm — the single dimensional mirror, documented here instead
+  of arbitrary values at usage sites). Tiles compose `rounded-xl bg-card`
+  + `ring-1 ring-foreground/10` (Card tokens, plain div — the reference
+  content pads itself, so the `Card` primitive's spacing fights it).
+  Content is bottom-anchored (`justify-between` + `mt-auto`); scenes are
+  absolute, oversized, cropped top/right.
+- **Mask fades:** `.bento-fade` (40% stop) + `.bento-fade-soft` (10% stop)
+  replace the reference `[mask-image:...]` arbitrary properties.
+- **New keyframes (allowed):** `bento-beam-flow` — dash slide on SVG beam
+  connectors (static dashes are the resting frame); `bento-node-ping` —
+  one breath per cycle on the beam agent node (invisible base is the
+  resting frame); `bento-list-cycle` — 12s staggered reveal for scene
+  lists with nth-child offsets (fully visible base is the resting frame).
+- **Hover language:** scenes rest at `scale-90` and breathe to `group-hover:scale-95`,
+  icon `size-12` shrinks to 75% `origin-left`, CTA row reveals on `group-hover` *and*
+  `group-focus-visible` (keyboard parity the reference lacks), always
+  visible below `lg`. Interactive feedback (shadow, wash, CTA reveal) uses
+  `duration-[var(--motion-standard)]`; scene choreography keeps the
+  reference-mirror constants (`duration-300`, `1200ms`/`2400ms`/`12s` loops,
+  `6 6` dashes, `8px` list drift) exactly like the `22rem` rows above —
+  no new palette. Overlay wash via token `bg-foreground/[0.03]`-style
+  tints only.
+- **Badges:** one deliberate deviation — a live status badge floats
+  top-right per tile (the reference has none; settings tiles need live
+  state without disturbing the bottom content silhouette).
 
 ## Appendix A — Route table (keep vs replace)
 

@@ -21,6 +21,7 @@ test("tiles carry unique values, labels, descriptions, and allowed icons", () =>
   for (const tile of SETTINGS_TILES) {
     assert.ok(tile.label.trim().length > 0);
     assert.ok(tile.description.trim().length > 0);
+    assert.ok(tile.cta.trim().length > 0, `tile ${tile.value} names its action`);
     assert.ok(icons.has(tile.icon), `tile ${tile.value} uses an allowed icon key`);
     assert.ok(tile.span === "standard" || tile.span === "hero");
   }

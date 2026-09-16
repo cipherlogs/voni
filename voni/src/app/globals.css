@@ -265,6 +265,101 @@
   }
 }
 
+/* Bento amendment 2026-09-16 (landing track): faithful Magic UI bento-grid
+   structure remapped to tokens. Tall rows mirror the reference 22rem rhythm;
+   scenes are full-bleed, oversized, and masked into the bottom-anchored
+   content. All color token-only (oklch vars + color-mix); timing reuses the
+   --motion-* / --ease-* tokens. Each looping keyframe has its own
+   `animation: none` line in the reduced-motion block below with the base
+   styles as the static frame. */
+.bento-grid-rows {
+  grid-auto-rows: 22rem;
+}
+
+.bento-fade {
+  -webkit-mask-image: linear-gradient(to top, transparent 40%, #000 100%);
+  mask-image: linear-gradient(to top, transparent 40%, #000 100%);
+}
+
+.bento-fade-soft {
+  -webkit-mask-image: linear-gradient(to top, transparent 10%, #000 100%);
+  mask-image: linear-gradient(to top, transparent 10%, #000 100%);
+}
+
+/* Traveling dashes on beam connectors. Base (static dashes) is the resting
+   frame; the loop only slides the offset. */
+.bento-beam-flow {
+  stroke-dasharray: 6 6;
+  animation: bento-beam-flow 1200ms linear infinite;
+}
+
+@keyframes bento-beam-flow {
+  to {
+    stroke-dashoffset: -24;
+  }
+}
+
+/* Ping ring on the beam's agent node. Base is invisible; the loop breathes
+   it once per cycle. */
+.bento-node-ping {
+  opacity: 0;
+  transform-origin: center;
+  transform-box: fill-box;
+  animation: bento-node-ping 2400ms var(--ease-out-soft) infinite;
+}
+
+@keyframes bento-node-ping {
+  0% {
+    opacity: 0;
+    transform: scale(0.8);
+  }
+  30% {
+    opacity: 0.6;
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.6);
+  }
+}
+
+/* Staggered reveal cycle for scene lists (voice transcript rows). Base is
+   fully visible (the resting frame); the loop fades each row through in
+   turn. Per-row offsets come from nth-child below so usage sites stay
+   class-clean. */
+.bento-list-item {
+  opacity: 1;
+  animation: bento-list-cycle 12s ease-in-out infinite;
+}
+
+.bento-list > *:nth-child(2) {
+  animation-delay: 3s;
+}
+
+.bento-list > *:nth-child(3) {
+  animation-delay: 6s;
+}
+
+.bento-list > *:nth-child(4) {
+  animation-delay: 9s;
+}
+
+@keyframes bento-list-cycle {
+  0% {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  8%,
+  72% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  88%,
+  100% {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -298,6 +393,15 @@
   .voni-shimmer {
     animation: none !important;
     background-image: none !important;
+  }
+
+  /* Bento amendment 2026-09-16 (landing track): the three tile-scene loops
+     stop outright; each class's own base styles are the resting frame
+     (static dashes, all list rows visible, no ping ring). */
+  .bento-beam-flow,
+  .bento-list-item,
+  .bento-node-ping {
+    animation: none !important;
   }
 }
 

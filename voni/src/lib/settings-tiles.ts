@@ -25,7 +25,7 @@ export type TileSpan = "standard" | "hero";
 
 export type TileBgKind =
   | "session"
-  | "equalizer"
+  | "transcript"
   | "defaults"
   | "beam"
   | "theme"
@@ -36,6 +36,8 @@ export interface SettingsTile {
   readonly value: TileValue;
   readonly label: string;
   readonly description: string;
+  /** Per-tile action verb for the hover-reveal CTA row (e.g. "Manage services"). */
+  readonly cta: string;
   readonly href: string;
   readonly icon: TileIcon;
   readonly span: TileSpan;
@@ -49,6 +51,7 @@ export const SETTINGS_TILES: ReadonlyArray<SettingsTile> = [
     value: "account",
     label: "Account",
     description: "Your Google profile and session.",
+    cta: "Manage account",
     href: "/settings/account",
     icon: "user",
     span: "standard",
@@ -58,15 +61,17 @@ export const SETTINGS_TILES: ReadonlyArray<SettingsTile> = [
     value: "voice",
     label: "Voice copilot",
     description: "Who talks back when you tap the mic.",
+    cta: "Pick a voice",
     href: "/settings/voice",
     icon: "mic",
     span: "hero",
-    bgKind: "equalizer",
+    bgKind: "transcript",
   },
   {
     value: "workspace",
     label: "Workspace",
     description: "Customer-facing defaults for this organization.",
+    cta: "Edit workspace",
     href: "/settings/workspace",
     icon: "building",
     span: "standard",
@@ -76,6 +81,7 @@ export const SETTINGS_TILES: ReadonlyArray<SettingsTile> = [
     value: "services",
     label: "Services",
     description: "Connect the tools your agents can use.",
+    cta: "Manage services",
     href: "/settings/services",
     icon: "plug",
     span: "hero",
@@ -85,6 +91,7 @@ export const SETTINGS_TILES: ReadonlyArray<SettingsTile> = [
     value: "appearance",
     label: "Appearance",
     description: "Use light, dark, or your system setting.",
+    cta: "Change theme",
     href: "/settings/appearance",
     icon: "sun",
     span: "standard",
@@ -94,6 +101,7 @@ export const SETTINGS_TILES: ReadonlyArray<SettingsTile> = [
     value: "numbers",
     label: "Phone numbers",
     description: "Which agent picks up when someone calls.",
+    cta: "Assign numbers",
     href: "/numbers",
     icon: "phone",
     span: "standard",
@@ -104,6 +112,7 @@ export const SETTINGS_TILES: ReadonlyArray<SettingsTile> = [
     value: "operator",
     label: "Platform operator",
     description: "Voni-managed platform capacity.",
+    cta: "Open operator console",
     href: "/operator",
     icon: "shield",
     span: "standard",
