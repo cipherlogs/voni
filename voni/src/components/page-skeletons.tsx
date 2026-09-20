@@ -2,10 +2,19 @@
  * Built in-style per voni/DESIGN.md §4 (feedback): no skeleton block exists
  * in Blocks, so every loading shape here is composed from the Skeleton
  * primitive + flex/grid + gap in Blocks idiom. Route loading.tsx boundaries
- * stay; markup only, no logic.
+ * stay; presentational only — static data iteration (catalog/registry row
+ * counts) but no fetches, no state, no real copy.
+ *
+ * Skeletons mirror the neutral first paint: conditional states that resolve
+ * with data are intentionally omitted (non-owner workspace alert, voice
+ * pairing note, dirty notes, save feedback, admin-gated operator tile).
  */
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
+import { buildServiceReadiness } from "@/lib/settings-badges";
+import { PROVIDER_CATALOG } from "@/lib/providers/registry";
+import { SETTINGS_TILES } from "@/lib/settings-tiles";
 import type { SettingsTabValue } from "@/lib/settings-tabs";
 
 /**
@@ -131,7 +140,7 @@ function SettingsSectionFrame({ children }: { children: React.ReactNode }) {
         <Skeleton className="h-5 w-32" />
         <Skeleton className="h-4 w-full max-w-xs" />
       </div>
-      <div className="md:col-span-2">{children}</div>
+      <div className="md:col-span-2 sm:max-w-3xl">{children}</div>
     </div>
   );
 }
@@ -142,13 +151,13 @@ export function SettingsAccountSkeleton() {
     <SettingsSectionFrame>
       <div className="flex max-w-xl flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-3">
-          <Skeleton className="size-12 rounded-full" />
+          <Skeleton className="size-10 rounded-full" />
           <div className="flex flex-col gap-2">
             <Skeleton className="h-4 w-32" />
             <Skeleton className="h-3 w-48" />
           </div>
         </div>
-        <Skeleton className="h-9 w-28" />
+        <Skeleton className="h-8 w-28" />
       </div>
     </SettingsSectionFrame>
   );
@@ -169,7 +178,7 @@ export function SettingsVoiceSkeleton() {
           <Skeleton className="h-3 w-full max-w-md" />
         </div>
         <div className="flex items-center justify-end gap-3 border-t pt-4">
-          <Skeleton className="h-9 w-36" />
+          <Skeleton className="h-8 w-36" />
         </div>
       </div>
     </SettingsSectionFrame>
@@ -195,7 +204,7 @@ export function SettingsWorkspaceSkeleton() {
           <Skeleton className="h-3 w-full max-w-md" />
         </div>
         <div className="flex items-center justify-end gap-3 border-t pt-4">
-          <Skeleton className="h-9 w-32" />
+          <Skeleton className="h-8 w-32" />
         </div>
       </div>
     </SettingsSectionFrame>
@@ -203,42 +212,75 @@ export function SettingsWorkspaceSkeleton() {
 }
 
 /**
- * Mirrors ServicesSection: provider connection cards plus the
- * service-readiness grid. Two cards each keep the streaming shape honest
- * without fetching the catalog.
+ * Readiness row count derives from the shared helper (called with an
+ * all-off fixture; only the row count is used, never any state or copy —
+ * loading placeholders stay bars, never real text).
+ */
+const READINESS_SKELETON_ROWS = buildServiceReadiness({
+  assemblyaiConfigured: false,
+  telnyxConfigured: false,
+  telnyxConnectionId: null,
+  telnyxCallerNumber: null,
+  llmConfigured: false,
+  cartesiaConfigured: false,
+  cartesiaVoiceId: null,
+});
+
+/**
+ * Mirrors ServicesSection: one provider connection card per catalog entry
+ * (header + tool rows + small toggle) plus one readiness row per platform
+ * service, split by the same separator as the real section. Card and row
+ * counts derive from the production sources, so a new provider or service
+ * can never stream the wrong shape.
  */
 export function SettingsServicesSkeleton() {
   return (
     <div className="flex flex-col gap-6">
       <SettingsSectionFrame>
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-          {[0, 1].map((i) => (
-            <Card key={i}>
-              <CardContent className="flex flex-col gap-4 p-4">
-                <div className="flex items-center gap-4">
-                  <Skeleton className="size-10 rounded-full" />
-                  <div className="flex min-w-0 flex-1 flex-col gap-2">
-                    <Skeleton className="h-4 w-32" />
-                    <Skeleton className="h-3 w-full max-w-xs" />
+        <div className="flex flex-col gap-4">
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+            {PROVIDER_CATALOG.map((provider) => (
+              <Card key={provider.id}>
+                <CardContent className="flex flex-col gap-4 p-4">
+                  <div className="flex items-center gap-4">
+                    <Skeleton className="size-10 rounded-full" />
+                    <div className="flex min-w-0 flex-1 flex-col gap-2">
+                      <div className="flex items-center justify-between gap-3">
+                        <Skeleton className="h-4 w-32" />
+                        <Skeleton className="h-5 w-16" />
+                      </div>
+                      <Skeleton className="h-3 w-full max-w-xs" />
+                    </div>
                   </div>
-                </div>
-                <Skeleton className="h-16 w-full" />
-                <div className="flex items-center justify-end">
-                  <Skeleton className="h-8 w-24" />
-                </div>
-              </CardContent>
-            </Card>
-          ))}
+                  <div className="flex flex-col gap-2">
+                    {provider.tools.map((tool) => (
+                      <div key={tool.id} className="flex flex-col gap-2 rounded-lg bg-muted/50 px-3 py-2">
+                        <Skeleton className="h-4 w-40" />
+                        <Skeleton className="h-3 w-full max-w-xs" />
+                      </div>
+                    ))}
+                  </div>
+                  <div className="flex items-center justify-end">
+                    <Skeleton className="h-7 w-24" />
+                  </div>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
         </div>
       </SettingsSectionFrame>
+      <Separator className="my-8" />
       <SettingsSectionFrame>
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-          {[0, 1].map((i) => (
-            <Card key={i}>
+          {READINESS_SKELETON_ROWS.map((service) => (
+            <Card key={service.id}>
               <CardContent className="flex items-center gap-4 p-4">
                 <Skeleton className="size-10 rounded-full" />
                 <div className="flex min-w-0 flex-1 flex-col gap-2">
-                  <Skeleton className="h-4 w-28" />
+                  <div className="flex items-center justify-between gap-3">
+                    <Skeleton className="h-4 w-28" />
+                    <Skeleton className="h-5 w-14" />
+                  </div>
                   <Skeleton className="h-3 w-full max-w-xs" />
                 </div>
               </CardContent>
@@ -250,15 +292,44 @@ export function SettingsServicesSkeleton() {
   );
 }
 
-/** Mirrors AppearanceSection: the theme toggle row. */
+/** Mirrors AppearanceSection: the theme control is one icon-only toggle. */
 export function SettingsAppearanceSkeleton() {
   return (
     <SettingsSectionFrame>
-      <div className="flex items-center gap-3">
-        <Skeleton className="h-9 w-36" />
-        <Skeleton className="h-4 w-48" />
-      </div>
+      <Skeleton className="size-8" />
     </SettingsSectionFrame>
+  );
+}
+
+/**
+ * Mirrors the settings landing: heading pair plus one tile frame per
+ * registry entry (order + hero spans from the same source as the landing,
+ * so a new tile can never stream the wrong grid). Each frame echoes the
+ * production tile anatomy — scene slice, bottom-anchored title/description,
+ * live badge nub — without interactivity.
+ */
+export function SettingsLandingSkeleton() {
+  return (
+    <div className="flex flex-col gap-6">
+      <div className="flex flex-col gap-2">
+        <Skeleton className="h-8 w-40" />
+        <Skeleton className="h-4 w-72" />
+      </div>
+      <div className="bento-grid-rows grid w-full grid-cols-1 gap-4 lg:grid-cols-3">
+        {SETTINGS_TILES.map((tile) => (
+          <div key={tile.value} className={tile.span === "hero" ? "lg:col-span-2" : undefined}>
+            <div className="relative flex h-full flex-col justify-between overflow-hidden rounded-xl bg-card ring-1 ring-foreground/10">
+              <Skeleton className="h-72 w-full rounded-none" />
+              <div className="relative flex flex-col gap-2 p-6">
+                <Skeleton className="h-5 w-32" />
+                <Skeleton className="h-4 w-full max-w-md" />
+              </div>
+              <Skeleton className="absolute top-4 right-4 h-5 w-16" />
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 
