@@ -94,7 +94,7 @@ export async function updateWorkspaceSettings(
           updatedAt: now,
         },
       });
-    revalidatePath("/settings");
+    revalidatePath("/settings/workspace");
     return { ok: true, message: "Workspace settings saved." };
   } catch (error) {
     const message = error instanceof z.ZodError
@@ -351,7 +351,7 @@ export async function setProviderConnection(
           ),
         );
     }
-    revalidatePath("/settings");
+    revalidatePath("/settings/services");
     return {
       ok: true,
       message:
@@ -401,7 +401,7 @@ export async function updateCopilotVoicePrefs(
         target: copilotVoicePrefs.userId,
         set: { ...values, updatedAt: now },
       });
-    revalidatePath("/settings");
+    revalidatePath("/settings/voice");
     return { ok: true, message: "Voice copilot updated. It applies to your next conversation." };
   } catch (error) {
     console.error("[voice-prefs] save failed", error);

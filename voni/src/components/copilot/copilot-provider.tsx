@@ -171,7 +171,7 @@ const nextCaptionId = () => `cap-${(captionSeq += 1)}`;
  * (external URLs, unknown paths) is refused — the model never invents
  * navigation targets.
  */
-const OPENABLE_DESTINATION = /^\/(agents\/new\?job=[\w-]+|agents\/[0-9a-f-]+|settings|operator|jobs|dashboard|campaigns\/[0-9a-f-]+)(\?.*)?$/;
+const OPENABLE_DESTINATION = /^\/(agents\/new\?job=[\w-]+|agents\/[0-9a-f-]+|settings(\/(account|voice|workspace|services|appearance))?|operator|jobs|dashboard|campaigns\/[0-9a-f-]+)(\?.*)?$/;
 
 export function CopilotProvider({
   children,

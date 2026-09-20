@@ -2,21 +2,15 @@
 
 import { useActionState, useEffect, useState, useTransition } from "react";
 import { useFormStatus } from "react-dom";
-import { RouteBrief } from "@/components/copilot/route-brief";
 import { useRouter } from "next/navigation";
 import { toast } from "@/components/ui/toast";
 import {
   AlertCircle,
-  Building2,
   CheckCircle2,
   LogOut,
-  Mic,
   Plug,
   ShieldCheck,
-  Sun,
   Unplug,
-  User,
-  type LucideIcon,
 } from "lucide-react";
 import { SiGmail, SiGoogledocs, SiZoho } from "react-icons/si";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -30,7 +24,6 @@ import { ModeToggle } from "@/components/mode-toggle";
 import { Separator } from "@/components/ui/separator";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { TIMEZONE_OPTIONS } from "@/lib/timezones";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { signOut } from "@/lib/auth-client";
 import {
   ACCENT_LABEL,
@@ -40,7 +33,6 @@ import {
   voiceLabel,
 } from "@/lib/agents/voices";
 import { prefsPairingNote, type CopilotVoicePrefs } from "@/lib/copilot/voice-prefs";
-import { SETTINGS_TABS } from "@/lib/settings-tabs";
 import type {
   ProviderMeta,
   ProviderId,
@@ -59,30 +51,24 @@ import { cn } from "@/lib/utils";
 
 const INITIAL: SettingsActionState = { ok: false };
 
-// Single source lives in @/lib/settings-tabs (plain module importable from
-// server components); re-exported here so existing import paths keep working.
-export { SETTINGS_TABS } from "@/lib/settings-tabs";
+export interface AccountInfo {
+  name: string;
+  email: string;
+  image: string | null;
+}
 
-type SettingsTabValue = (typeof SETTINGS_TABS)[number]["value"];
+export interface WorkspaceInfo {
+  name: string;
+  timezone: string;
+  humanTransferNumber: string;
+  canEdit: boolean;
+}
 
-/**
- * Amendment 2026-09-16 (Variant D sidebar): the page-level nav borrows the
- * sidebar-03 row idiom — muted label, accent fill on active, rounded-lg,
- * lucide with no size classes (the TabsTrigger primitive sizes icons itself).
- * No settings-nav block exists, so this is build-in-style per the DESIGN.md
- * gap table. The Tabs state machine, SETTINGS_TABS source, and the copilot
- * `ui_settings_tab` contract (role=tab + labels) are unchanged; only the
- * topology moves (desktop sidebar, mobile stacked full-width nav). The
- * vertical orientation also keeps Up/Down arrow keys truthful at both
- * breakpoints.
- */
-const TAB_ICONS: Record<SettingsTabValue, LucideIcon> = {
-  account: User,
-  voice: Mic,
-  workspace: Building2,
-  services: Plug,
-  appearance: Sun,
-};
+export interface ServiceReadiness {
+  id: string;
+  label: string;
+  configured: boolean;
+}
 
 /**
  * Flat settings section — the form-layout-03 idiom: side h2 + muted
@@ -450,34 +436,14 @@ function VoiceCopilotCard({ prefs }: { prefs: CopilotVoicePrefs }) {
 }
 
 /**
- * Settings tabs are sourced from @/lib/settings-tabs (also fed to the voice
- * copilot's app manifest), so voice always knows every tab by name.
+ * Route sections: one component per `/settings/<tab>` route (ticket 02).
+ * Each renders inside the shared section shell (`[tab]/layout.tsx`) with
+ * data from its own server leaf — no shared tab state, so one section's
+ * reload never remounts another section's form.
  */
-export function SettingsView({
-  user,
-  workspace,
-  services,
-  voicePrefs,
-  providerCatalog,
-  connectedProviderIds,
-}: {
-  user: { name: string; email: string; image: string | null };
-  workspace: {
-    name: string;
-    timezone: string;
-    humanTransferNumber: string;
-    canEdit: boolean;
-  };
-  services: Array<{ id: string; label: string; configured: boolean }>;
-  voicePrefs: CopilotVoicePrefs;
-  providerCatalog: ProviderMeta[];
-  connectedProviderIds: string[];
-}) {
-  const [workspaceState, workspaceAction] = useActionState(updateWorkspaceSettings, INITIAL);
+export function AccountSection({ user }: { user: AccountInfo }) {
   const router = useRouter();
   const [signingOut, setSigningOut] = useState(false);
-  const [activeTab, setActiveTab] = useState("account");
-  const visibleTabs = SETTINGS_TABS;
   const initials = user.name.split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase();
 
   async function handleSignOut() {
@@ -496,141 +462,125 @@ export function SettingsView({
   }
 
   return (
-    <div className="flex flex-col gap-6">
-      <RouteBrief route="/settings" brief={`Settings. Current tab: ${visibleTabs.find((tab) => tab.value === activeTab)?.label ?? activeTab}. Available tabs: ${visibleTabs.map((tab) => tab.label).join(", ")}. ${services.filter((service) => service.configured).length} of ${services.length} services configured. Workspace edits ${workspace.canEdit ? "allowed" : "disabled"}. Voice and language preferences require confirmed edits and a confirmed save. Platform credentials are operator-managed outside customer settings.`} />
-      {/* Heading lives in the page shell (settings/page.tsx) so it paints
-          before data resolves; it is intentionally not duplicated here. */}
-      <Tabs
-        value={activeTab}
-        onValueChange={setActiveTab}
-        orientation="vertical"
-        className="flex-col gap-6 md:flex-row md:gap-10"
-      >
-        <TabsList className="w-full justify-start bg-transparent p-1 md:w-60 md:shrink-0 md:items-stretch">
-          {visibleTabs.map((tab) => {
-            const Icon = TAB_ICONS[tab.value];
-            return (
-              <TabsTrigger
-                key={tab.value}
-                value={tab.value}
-                className="w-full justify-start gap-3 rounded-lg px-3 py-2 text-left text-muted-foreground data-active:bg-sidebar-accent data-active:text-foreground data-active:shadow-none hover:bg-sidebar-accent hover:text-foreground"
-              >
-                <Icon aria-hidden />
-                {tab.label}
-              </TabsTrigger>
-            );
-          })}
-        </TabsList>
-
-        <div className="min-w-0 flex-1">
-        <TabsContent value="account">
-          <SettingsSection
-            title="Account"
-            description="Your Google profile and session."
-          >
-            <div className="flex max-w-xl flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
-              <div className="flex items-center gap-3">
-                <Avatar size="lg">{user.image ? <AvatarImage src={user.image} alt="" /> : null}<AvatarFallback>{initials || "V"}</AvatarFallback></Avatar>
-                <div><p className="font-medium">{user.name}</p><p className="text-muted-foreground text-sm">{user.email}</p></div>
-              </div>
-              <LoadingButton variant="outline" onClick={handleSignOut} pending={signingOut} pendingText="Signing out…" icon={<LogOut data-icon="inline-start" />}>Sign out</LoadingButton>
-            </div>
-          </SettingsSection>
-        </TabsContent>
-
-        <TabsContent value="voice">
-          <SettingsSection
-            title="Voice copilot"
-            description="Who talks back when you tap the mic. Only affects your conversations — nothing here changes what callers hear on the phone."
-          >
-            <VoiceCopilotCard prefs={voicePrefs} />
-          </SettingsSection>
-        </TabsContent>
-
-        <TabsContent value="workspace">
-          <SettingsSection
-            title="Workspace"
-            description="Customer-facing defaults for this organization."
-          >
-            <form action={workspaceAction} className="grid max-w-xl gap-5">
-              <FieldGroup>
-                <WorkspaceNameField
-                  name={workspace.name}
-                  canEdit={workspace.canEdit}
-                />
-                <WorkspaceTimezoneField
-                  timezone={workspace.timezone}
-                  canEdit={workspace.canEdit}
-                />
-                <Field><FieldLabel htmlFor="transfer-number">Human transfer number</FieldLabel><Input id="transfer-number" name="humanTransferNumber" type="tel" defaultValue={workspace.humanTransferNumber} placeholder="+971501234567" disabled={!workspace.canEdit} /><p className="text-muted-foreground text-xs">Used only for this workspace when an agent transfers a live call.</p></Field>
-              </FieldGroup>
-              {!workspace.canEdit ? <Alert><ShieldCheck /><AlertTitle>Owner access required</AlertTitle><AlertDescription>Only a workspace owner can change these values.</AlertDescription></Alert> : null}
-              <ActionFeedback state={workspaceState} />
-              {workspace.canEdit ? (
-                <div>
-                  <Separator />
-                  <div className="flex items-center justify-end gap-3 pt-4">
-                    <SubmitButton>Save workspace</SubmitButton>
-                  </div>
-                </div>
-              ) : null}
-            </form>
-          </SettingsSection>
-        </TabsContent>
-
-        <TabsContent value="services">
-          <div className="flex flex-col gap-6">
-            <SettingsSection
-              title="Providers"
-              description="Connect the tools your agents can use — email, CRM, and docs. Connections are stored server-side for this workspace."
-            >
-              <ProvidersSection catalog={providerCatalog} connectedIds={connectedProviderIds} />
-            </SettingsSection>
-            <Separator className="my-8" />
-            <SettingsSection
-              title="Service readiness"
-              description="Voni-managed platform capacity. Finished by whoever runs your Voni server."
-            >
-              <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-                {services.map((service) => (
-                  <Card key={service.id}>
-                    <CardContent className="flex items-center gap-4 p-4">
-                      <Avatar className="size-10">
-                        <AvatarFallback>{serviceInitials(service.label)}</AvatarFallback>
-                      </Avatar>
-                      <div className="min-w-0 flex-1">
-                        <p className="flex items-center justify-between gap-3 font-medium">
-                          {service.label}
-                          <Badge variant={service.configured ? "secondary" : "outline"}>
-                            {service.configured ? "Ready" : "Needs setup"}
-                          </Badge>
-                        </p>
-                        <p className="text-muted-foreground text-sm">
-                          {service.configured
-                            ? "Voni-managed capacity is configured."
-                            : "Ask your workspace admin, or whoever runs " +
-                              "your Voni server, to finish platform setup."}
-                        </p>
-                      </div>
-                    </CardContent>
-                  </Card>
-                ))}
-              </div>
-            </SettingsSection>
-          </div>
-        </TabsContent>
-
-        <TabsContent value="appearance">
-          <SettingsSection
-            title="Appearance"
-            description="Use light, dark, or your system setting."
-          >
-            <ModeToggle />
-          </SettingsSection>
-        </TabsContent>
-
+    <SettingsSection
+      title="Account"
+      description="Your Google profile and session."
+    >
+      <div className="flex max-w-xl flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-center gap-3">
+          <Avatar size="lg">{user.image ? <AvatarImage src={user.image} alt="" /> : null}<AvatarFallback>{initials || "V"}</AvatarFallback></Avatar>
+          <div><p className="font-medium">{user.name}</p><p className="text-muted-foreground text-sm">{user.email}</p></div>
         </div>
-      </Tabs>
+        <LoadingButton variant="outline" onClick={handleSignOut} pending={signingOut} pendingText="Signing out…" icon={<LogOut data-icon="inline-start" />}>Sign out</LoadingButton>
+      </div>
+    </SettingsSection>
+  );
+}
+
+export function VoiceSection({ prefs }: { prefs: CopilotVoicePrefs }) {
+  return (
+    <SettingsSection
+      title="Voice copilot"
+      description="Who talks back when you tap the mic. Only affects your conversations — nothing here changes what callers hear on the phone."
+    >
+      <VoiceCopilotCard prefs={prefs} />
+    </SettingsSection>
+  );
+}
+
+export function WorkspaceSection({ workspace }: { workspace: WorkspaceInfo }) {
+  const [workspaceState, workspaceAction] = useActionState(updateWorkspaceSettings, INITIAL);
+  return (
+    <SettingsSection
+      title="Workspace"
+      description="Customer-facing defaults for this organization."
+    >
+      <form action={workspaceAction} className="grid max-w-xl gap-5">
+        <FieldGroup>
+          <WorkspaceNameField
+            name={workspace.name}
+            canEdit={workspace.canEdit}
+          />
+          <WorkspaceTimezoneField
+            timezone={workspace.timezone}
+            canEdit={workspace.canEdit}
+          />
+          <Field><FieldLabel htmlFor="transfer-number">Human transfer number</FieldLabel><Input id="transfer-number" name="humanTransferNumber" type="tel" defaultValue={workspace.humanTransferNumber} placeholder="+971501234567" disabled={!workspace.canEdit} /><p className="text-muted-foreground text-xs">Used only for this workspace when an agent transfers a live call.</p></Field>
+        </FieldGroup>
+        {!workspace.canEdit ? <Alert><ShieldCheck /><AlertTitle>Owner access required</AlertTitle><AlertDescription>Only a workspace owner can change these values.</AlertDescription></Alert> : null}
+        <ActionFeedback state={workspaceState} />
+        {workspace.canEdit ? (
+          <div>
+            <Separator />
+            <div className="flex items-center justify-end gap-3 pt-4">
+              <SubmitButton>Save workspace</SubmitButton>
+            </div>
+          </div>
+        ) : null}
+      </form>
+    </SettingsSection>
+  );
+}
+
+export function ServicesSection({
+  services,
+  providerCatalog,
+  connectedProviderIds,
+}: {
+  services: ServiceReadiness[];
+  providerCatalog: ProviderMeta[];
+  connectedProviderIds: string[];
+}) {
+  return (
+    <div className="flex flex-col gap-6">
+      <SettingsSection
+        title="Providers"
+        description="Connect the tools your agents can use — email, CRM, and docs. Connections are stored server-side for this workspace."
+      >
+        <ProvidersSection catalog={providerCatalog} connectedIds={connectedProviderIds} />
+      </SettingsSection>
+      <Separator className="my-8" />
+      <SettingsSection
+        title="Service readiness"
+        description="Voni-managed platform capacity. Finished by whoever runs your Voni server."
+      >
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          {services.map((service) => (
+            <Card key={service.id}>
+              <CardContent className="flex items-center gap-4 p-4">
+                <Avatar className="size-10">
+                  <AvatarFallback>{serviceInitials(service.label)}</AvatarFallback>
+                </Avatar>
+                <div className="min-w-0 flex-1">
+                  <p className="flex items-center justify-between gap-3 font-medium">
+                    {service.label}
+                    <Badge variant={service.configured ? "secondary" : "outline"}>
+                      {service.configured ? "Ready" : "Needs setup"}
+                    </Badge>
+                  </p>
+                  <p className="text-muted-foreground text-sm">
+                    {service.configured
+                      ? "Voni-managed capacity is configured."
+                      : "Ask your workspace admin, or whoever runs " +
+                        "your Voni server, to finish platform setup."}
+                  </p>
+                </div>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      </SettingsSection>
     </div>
+  );
+}
+
+export function AppearanceSection() {
+  return (
+    <SettingsSection
+      title="Appearance"
+      description="Use light, dark, or your system setting."
+    >
+      <ModeToggle />
+    </SettingsSection>
   );
 }

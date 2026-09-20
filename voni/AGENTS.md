@@ -36,7 +36,7 @@ the flows that already follow it.
   (`src/components/loading-button.tsx`) rather than hand-rolling the
   `LoaderCircle` + `animate-spin` + `disabled` pattern again; it works for both
   `useTransition`-driven and `useFormStatus`-driven pending state (see
-  `SubmitButton` in `src/components/settings-view.tsx` for the latter).
+  `SubmitButton` in `src/components/settings-sections.tsx` for the latter).
 - **Every mutation must surface success and failure.** An inline `Alert` for
   validation/blocking errors, a Base UI `toast` (`toast.add` from
   `src/components/ui/toast.tsx`) for a fire-and-forget

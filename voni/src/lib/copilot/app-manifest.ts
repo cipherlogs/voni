@@ -22,6 +22,7 @@ export const APP_DESTINATIONS: AppDestination[] = [
   {"route":"/numbers","title":"Phone numbers","phrases":["phone numbers","numbers","calling numbers","my numbers"],"examples":["Show phone numbers","Read the number assignments","Show available number actions"],"access":"signed-in","navigationKind":"static"},
   {"route":"/operator","title":"Platform operator","phrases":["operator","platform operator","platform status"],"examples":["Open the operator area","Show platform readiness","Read provider status"],"access":"platform-admin","navigationKind":"static"},
   {"route":"/settings","title":"Settings","phrases":["settings","voice copilot","voice control","voice settings","preferences"],"examples":["Open settings","Open the Voice copilot tab","Set voice to Ivy"],"access":"signed-in","navigationKind":"static"},
+  {"route":"/settings/[tab]","title":"Settings section","phrases":["settings section","account settings","workspace settings","services settings","appearance settings","voice copilot section"],"examples":["Open the voice copilot section","Show the workspace section","Read the services section"],"access":"signed-in","navigationKind":"record"},
   {"route":"/signup","title":"Sign up","phrases":["signup","sign up"],"examples":["Create my account","Sign up with Google","Join Voni"],"access":"auth","navigationKind":"none"},
 ];
 

@@ -1,4 +1,4 @@
-import type { SETTINGS_TABS } from "./settings-tabs";
+import type { SettingsTabValue } from "./settings-tabs";
 
 /**
  * Tile registry for the settings bento landing (`.scratch/settings-bento`).
@@ -14,10 +14,20 @@ import type { SETTINGS_TABS } from "./settings-tabs";
  * Internal `href`s name the `/settings/<tab>` routes that land in ticket 02;
  * until then the gallery resolves them to the live `/settings` page.
  */
-export type SettingsTabValue = (typeof SETTINGS_TABS)[number]["value"];
-
 /** Every tile value: the five tab values plus the two external destinations. */
 export type TileValue = SettingsTabValue | "numbers" | "operator";
+
+export type { SettingsTabValue } from "./settings-tabs";
+
+/**
+ * Section lookup (ticket 02): the non-external tile serving
+ * `/settings/<tab>`, or undefined for unknown values and externals.
+ * Single validation source for the section layout + page guards, so a
+ * tile-without-tab can never split heading vs. content 404s.
+ */
+export function settingsSectionTile(tab: string): SettingsTile | undefined {
+  return SETTINGS_TILES.find((entry) => entry.value === tab && !entry.external);
+}
 
 export type TileIcon = "user" | "mic" | "building" | "plug" | "sun" | "phone" | "shield";
 

@@ -4,8 +4,9 @@ import { cn } from "@/lib/utils";
 import { CalendarMark, DriveMark, GmailMark, NotionMark, SlackMark } from "./provider-marks";
 
 /**
- * Final V01 scenes (ticket 01b winners; gallery throwaway, deleted in
- * ticket 08 — see DESIGN.md landing-bento amendment + ADR-0001).
+ * Final V01 scenes (ticket 01b winners, graduated to production in ticket
+ * 02; the throwaway gallery imports them until ticket 08 deletes it — see
+ * DESIGN.md §10b + ADR-0001).
  * Winners: services A, voice A, account C, workspace A, appearance A
  * (placeholder — first replate in ticket 09), numbers B, operator A.
  * Lower-third composition: scene mass sits just above the bottom-anchored
@@ -122,8 +123,8 @@ export function LanesScene() {
           </span>
         </div>
         <span className="mt-1.5 flex items-end justify-center gap-0.5" aria-hidden>
-          {[8, 14, 10, 16, 12].map((h, i) => (
-            <span key={i} style={{ height: h }} className="w-1 rounded-full bg-primary/60" />
+          {["h-2", "h-3.5", "h-2.5", "h-4", "h-3"].map((bar, i) => (
+            <span key={i} className={`w-1 rounded-full bg-primary/60 ${bar}`} />
           ))}
         </span>
       </div>

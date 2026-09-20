@@ -49,6 +49,7 @@ const PHRASES: Record<string, string[]> = {
   "/numbers": ["phone numbers", "numbers", "calling numbers", "my numbers"],
   "/jobs": ["jobs", "background jobs", "job status"],
   "/settings": ["settings", "voice copilot", "voice control", "voice settings", "preferences"],
+  "/settings/[tab]": ["settings section", "account settings", "workspace settings", "services settings", "appearance settings", "voice copilot section"],
   "/operator": ["operator", "platform operator", "platform status"],
 };
 
@@ -58,6 +59,7 @@ const TITLE_OVERRIDES: Record<string, string> = {
   "/agents/[id]": "Agent details", "/campaigns/[id]": "Campaign details",
   "/leads/[id]": "Lead details", "/calls/[id]": "Call details",
   "/agents/new": "New agent",
+  "/settings/[tab]": "Settings section",
   "/campaigns/new": "New campaign",
   "/operator": "Platform operator",
 };
@@ -147,6 +149,11 @@ const EXAMPLES: Record<string, string[]> = {
     "Open settings",
     "Open the Voice copilot tab",
     "Set voice to Ivy"
+  ],
+  "/settings/[tab]": [
+    "Open the voice copilot section",
+    "Show the workspace section",
+    "Read the services section"
   ],
   "/operator": [
     "Open the operator area",

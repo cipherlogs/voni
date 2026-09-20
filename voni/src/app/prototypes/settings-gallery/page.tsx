@@ -13,9 +13,8 @@ const HERO_SPAN = "lg:col-span-2";
  * Throwaway gallery v6 (ticket 01b final, deleted in ticket 08): the
  * recombined V01 winners — services A, voice A, account C, workspace A,
  * appearance A (placeholder until ticket 09), numbers B, operator A.
- * Static mock data; nothing prefetches. Section tiles point at the live
- * `/settings` page until ticket 02 makes the planned `/settings/<tab>`
- * routes real; numbers and operator link for real.
+ * Static mock data; nothing prefetches. Tiles link the real destinations
+ * (section routes landed in ticket 02).
  */
 const ORDER: ReadonlyArray<SettingsTile["value"]> = [
   "services",

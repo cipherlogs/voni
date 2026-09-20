@@ -200,7 +200,7 @@ test("Form layout tokens: heading gaps, flat sections, static footer", () => {
   assert.ok(source.includes("FormSection"));
   assert.ok(source.includes("FormSectionHeading"));
   assert.ok(source.includes("FormSectionSeparator"));
-  // FormCard is a plain wrapper now — settings-view keeps its own stack via
+  // FormCard is a plain wrapper now — settings-sections keeps its own stack via
   // FormCardSections. No Card import survives in this file.
   assert.ok(!source.includes("ui/card"));
   assert.ok(!source.includes("py-4 md:py-6"));
