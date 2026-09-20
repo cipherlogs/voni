@@ -113,6 +113,9 @@ function NewAgentInner({
   const [draftGateOpen, setDraftGateOpen] = useState(false);
   useEffect(() => {
     if (restoreJobId !== null) return;
+    // Client-only-after-mount localStorage read; first render matches SSR
+    // with gate closed, so this intentional mount-effect setState is safe.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (hasUnfinishedWizardDraft()) setDraftGateOpen(true);
     // restoreJobId is fixed for this mount; the gate opens once, then owns
     // its open/close state via Continue/Discard.

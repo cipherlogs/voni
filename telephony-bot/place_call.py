@@ -9,6 +9,7 @@ import os
 import aiohttp
 
 from bridge_config import bridge_config
+from campaign_runner import normalize_public_host, telnyx_stream_params
 
 
 def arguments() -> argparse.Namespace:
@@ -25,9 +26,7 @@ def arguments() -> argparse.Namespace:
 async def place(destination: str, approved: bool) -> None:
     if not approved:
         raise SystemExit("Refusing to dial without --yes confirming user approval.")
-    public_host = os.environ.get("PUBLIC_HOST", "").strip().removeprefix("https://")
-    if not public_host or "/" in public_host:
-        raise SystemExit("Set PUBLIC_HOST to the current tunnel hostname, with no scheme or path.")
+    public_host = normalize_public_host(os.environ.get("PUBLIC_HOST", ""))
 
     runtime = await bridge_config.get(force=True)
     if destination == runtime.caller_number:
@@ -37,10 +36,7 @@ async def place(destination: str, approved: bool) -> None:
         "connection_id": runtime.telnyx_connection_id,
         "to": destination,
         "from": runtime.caller_number,
-        "stream_url": f"wss://{public_host}/media-stream",
-        "stream_track": "inbound_track",
-        "stream_bidirectional_mode": "rtp",
-        "stream_bidirectional_codec": "PCMA",
+        **telnyx_stream_params(public_host, "PCMA"),
     }
     timeout = aiohttp.ClientTimeout(total=15)
     async with aiohttp.ClientSession(timeout=timeout) as session:

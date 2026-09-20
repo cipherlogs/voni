@@ -65,6 +65,55 @@ def decode_client_state(value: str | None) -> dict[str, str]:
     return decoded if isinstance(decoded, dict) else {}
 
 
+def normalize_public_host(raw: str) -> str:
+    """Strip an accidental scheme and reject empty/path hosts.
+
+    Every dial/answer path validates the same way: PUBLIC_HOST is the bare
+    tunnel hostname with no scheme or path. Raises SystemExit like the
+    call sites did, so a misconfigured process still refuses to dial.
+    """
+    host = (raw or "").strip().removeprefix("https://")
+    if not host or "/" in host:
+        raise SystemExit(
+            "Set PUBLIC_HOST to the current tunnel hostname, with no scheme or path."
+        )
+    return host
+
+
+def telnyx_stream_params(public_host: str, codec: str) -> dict[str, str]:
+    """The four stream keys shared by every Telnyx dial/answer command.
+
+    `codec` stays a parameter on purpose: inbound answers declare PCMU
+    (Telnyx's default, what every observed inbound call negotiated) while
+    outbound dials declare PCMA (what showed up on outbound PSTN legs).
+    """
+    return {
+        "stream_url": f"wss://{public_host}/media-stream",
+        "stream_track": "inbound_track",
+        "stream_bidirectional_mode": "rtp",
+        "stream_bidirectional_codec": codec,
+    }
+
+
+def build_dial_payload(
+    connection_id: str,
+    to: str,
+    from_number: str,
+    public_host: str,
+    codec: str,
+    campaign_lead_id: str,
+    campaign_id: str,
+) -> dict[str, str]:
+    """Full `/calls` dial body: routing plus stream params plus linkage."""
+    return {
+        "connection_id": connection_id,
+        "to": to,
+        "from": from_number,
+        **telnyx_stream_params(public_host, codec),
+        "client_state": encode_client_state(campaign_lead_id, campaign_id),
+    }
+
+
 class DispatchClient:
     """Voni's dispatch API — the queue, the policy, and the outcome log."""
 
@@ -132,18 +181,15 @@ async def place_campaign_call(
         logger.error("refusing to dial: destination equals the caller number")
         return False
 
-    payload = {
-        "connection_id": runtime.telnyx_connection_id,
-        "to": target["phone"],
-        "from": runtime.caller_number,
-        "stream_url": f"wss://{public_host}/media-stream",
-        "stream_track": "inbound_track",
-        "stream_bidirectional_mode": "rtp",
-        "stream_bidirectional_codec": "PCMA",
-        "client_state": encode_client_state(
-            target["campaignLeadId"], target["campaignId"]
-        ),
-    }
+    payload = build_dial_payload(
+        connection_id=runtime.telnyx_connection_id,
+        to=target["phone"],
+        from_number=runtime.caller_number,
+        public_host=public_host,
+        codec="PCMA",
+        campaign_lead_id=target["campaignLeadId"],
+        campaign_id=target["campaignId"],
+    )
     async with session.post(
         "https://api.telnyx.com/v2/calls",
         headers={
@@ -170,11 +216,7 @@ def describe(target: dict) -> str:
 
 
 async def run(live: bool, once: bool, interval: float) -> None:
-    public_host = os.environ.get("PUBLIC_HOST", "").strip().removeprefix("https://")
-    if live and (not public_host or "/" in public_host):
-        raise SystemExit(
-            "Set PUBLIC_HOST to the current tunnel hostname, with no scheme or path."
-        )
+    public_host = normalize_public_host(os.environ.get("PUBLIC_HOST", "")) if live else ""
 
     mode = "claim" if live else "preview"
     logger.info(

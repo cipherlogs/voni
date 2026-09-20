@@ -1,7 +1,7 @@
 """Voni telephony spike: Telnyx Call Control <-> AssemblyAI Voice Agent API.
 
 Replaces the earlier cascading pipeline (AssemblyAI STT -> LLM Gateway ->
-Cartesia TTS, orchestrated by pipecat; kept at `server_cascading.py.bak`).
+Cartesia TTS, orchestrated by pipecat; removed, see git history).
 
 Why the switch: LLM Gateway is the one AssemblyAI product the $50 free credit
 does *not* cover, and an unfunded account gets 2 requests/minute on it. A voice
@@ -40,7 +40,7 @@ from pipecat.runner.utils import parse_telephony_websocket
 from voni_db import recorder
 from tool_coordinator import ToolCoordinator
 from bridge_config import BridgeConfig, bridge_config
-from campaign_runner import decode_client_state, dispatch
+from campaign_runner import decode_client_state, dispatch, telnyx_stream_params
 
 PUBLIC_HOST = os.environ["PUBLIC_HOST"]  # e.g. "abc-123.trycloudflare.com" (no scheme)
 
@@ -264,10 +264,7 @@ async def webhook(request: Request):
                     "Content-Type": "application/json",
                 },
                 json={
-                    "stream_url": f"wss://{PUBLIC_HOST}/media-stream",
-                    "stream_track": "inbound_track",
-                    "stream_bidirectional_mode": "rtp",
-                    "stream_bidirectional_codec": BIDIRECTIONAL_CODEC,
+                    **telnyx_stream_params(PUBLIC_HOST, BIDIRECTIONAL_CODEC),
                 },
             ) as resp:
                 text = await resp.text()
@@ -717,7 +714,6 @@ async def media_stream(websocket: WebSocket):
             f"{BIDIRECTIONAL_CODEC} at answer time — Telnyx will transcode our "
             f"audio, degrading quality"
         )
-    encoding = in_encoding
     if in_encoding is None:
         logger.error(f"Unsupported Telnyx encoding {telnyx_encoding!r}, closing")
         await websocket.close()

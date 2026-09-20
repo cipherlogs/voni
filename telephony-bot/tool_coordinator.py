@@ -58,7 +58,6 @@ class ToolCoordinator:
             self.latest_event = event_type
         elif event_type == "reply.done":
             self.latest_event = event_type
-            reply_id = event.get("reply_id")
             if event.get("status") == "interrupted":
                 for call_id, item in list(self.pending.items()):
                     self.pending.pop(call_id, None)
