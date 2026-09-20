@@ -40,6 +40,10 @@ export type TileBadge = SettingsTileBadge;
  *
  * Prefetch stays off until ticket 06 wires hover/focus intent prefetch —
  * the landing must not fetch-avalanche every section on viewport entry.
+ * Motion gating (ticket 05): the scene wrapper carries
+ * `bento-scene-viewport` (`content-visibility: auto` in globals.css) so
+ * offscreen tiles skip scene rendering; onscreen tiles keep the
+ * V01-reviewed rest-playing loops, breathing to scale-95 on hover/focus.
  */
 export function BentoTile({
   tile,
@@ -63,7 +67,7 @@ export function BentoTile({
       )}
     >
       <div className="relative flex h-full flex-col justify-between overflow-hidden rounded-xl bg-card text-card-foreground ring-1 ring-foreground/10 transition-shadow duration-[var(--motion-standard)] hover:shadow-md">
-        <div aria-hidden className="pointer-events-none absolute inset-x-0 top-0 h-72 overflow-hidden">
+        <div aria-hidden className="bento-scene-viewport pointer-events-none absolute inset-x-0 top-0 h-72 overflow-hidden">
           <Scene />
         </div>
         {badge ? (

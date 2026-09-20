@@ -281,6 +281,19 @@
   mask-image: linear-gradient(to top, transparent 25%, #000 100%);
 }
 
+/* Ticket 05 motion gating (landing track): offscreen tiles skip scene
+   rendering via `content-visibility: auto` (the CSS-only pause-offscreen;
+   no IntersectionObserver island — see DESIGN.md §10b). Onscreen tiles
+   keep the V01-reviewed rest-playing loops; hover/focus only breathes the
+   scene scale (group-hover:scale-95 in scenes.tsx). The intrinsic size
+   mirrors the `h-72` scene slice (the wrapper's explicit height pins
+   layout; this is the skip placeholder) so skipped tiles hold layout. The
+   reduced-motion block below stays the only animation stop. */
+.bento-scene-viewport {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 18rem;
+}
+
 /* Ping ring on the constellation agent node. Base is invisible; the loop
    breathes it once per cycle. */
 .bento-node-ping {

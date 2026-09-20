@@ -486,6 +486,28 @@ styles as the static frame.
   replate in ticket 09), numbers B, operator A. Gallery width-capped to
   the dashboard container (`max-w-6xl`) so tiles review at production
   geometry.
+- **Motion gating (ticket 05, 2026-09-20):** the V01 loops ship as-is —
+  the ticket's "beam/equalizer" text named retired round-1 scenes, so per
+  the ticket-01b/02 handoff notes this ticket carries the winners to a
+  shippable landing instead of redesigning scenes. Onscreen tiles loop at
+  rest (rest-playing; hover/focus only breathes `scale-90`→`scale-95` plus
+  the CTA reveal — no play-state gating, so `animation-play-state: paused`
+  must not appear). Offscreen tiles skip scene rendering via
+  `.bento-scene-viewport` (`content-visibility: auto` +
+  `contain-intrinsic-size: auto 22rem`, mirroring the tile rhythm) — the
+  CSS-only pause-offscreen, no IntersectionObserver island. Loop durations
+  stay raw (`6s`/`3s`/`4s`/`5s`, `2400ms` ping) as the documented
+  `22rem`-style dimensional exception, not `--motion-*` tokens.
+  Reduced-motion frames are unchanged (every survivor keeps its
+  `animation: none` line with base styles as the static frame). Survivor
+  keyframes closed out by this ticket: `bento-node-ping`,
+  `bento-branch-cycle`, `bento-lane`, `bento-spine-travel` +
+  `bento-spine-node`, `bento-packet-x`, `bento-scan-flare`,
+  `bento-point-breathe`, `bento-shuttle-x`, `bento-pulse-alt` / `-delay`,
+  `bento-descend-seal` — retired families (round-1 beam-flow/list-cycle,
+  marquee, orbit, horizon, flat route-pulse, losing B/C grammars) left
+  with their deleted scenes per the §10b lists above. No gap-table row:
+  no new visual language was introduced, so there is no gap to record.
 
 ## Appendix A — Route table (keep vs replace)
 
