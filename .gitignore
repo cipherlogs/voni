@@ -1,12 +1,8 @@
-# Ruflo local secrets and runtime data
 .env
 .env.local
 .env.*.local
 .dev.vars
 .secrets/
-.claude-flow/data/
-.claude-flow/logs/
-.claude-flow/sessions/
 .mcp.json
 
 # Dependencies & build outputs
@@ -35,19 +31,6 @@ __pycache__/
 # Local indexes & scratch
 ruvector.db
 .superpowers/
-.swarm/hnsw.index
-.swarm/memory.db*
-# Same SQLite trio under the agentdb- prefix; the rule above predates it,
-# so the .db/-wal/-shm runtime files were being tracked.
-.swarm/agentdb-memory.db*
-.swarm/backups/
-.swarm/state.json
-.claude-flow/metrics/
-.claude-flow/daemon-state.json
-.claude-flow/policy/state.json
-.claude-flow/swarm/
-.claude-flow/tasks/
-.claude-flow/terminals/
 
 # Voni gate ledger (unlazy runner output, regenerated per run)
 voni/GATES.md

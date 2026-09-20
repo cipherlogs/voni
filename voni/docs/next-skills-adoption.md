@@ -18,7 +18,7 @@
 
 ### Tracked modifications already present (do not overwrite intent)
 
-`layout.tsx` (dashboard group), `settings/page.tsx` + `actions.ts`, `login/page.tsx`, `signup/page.tsx`, `page.tsx` (landing), `app-sidebar.tsx`, `copilot-provider.tsx`, `jobs-provider.tsx`, `job-row.tsx`, `settings-view.tsx`, `proxy.ts`, `manual-llm-guidance.tsx`, job system (`queue.ts`, `store.ts`, `processor.ts`, `start.ts`, `sweep.ts`, `kinds.ts`, `jobs.test.ts`), voice session, LLM index, platform llm-accounts, copilot app-guide/manifest, `ENVIRONMENT.md`, `copilot-coverage.md`, `wrangler.jsonc`, `package.json`, manifest generator + verify scripts, plus `.claude-flow/policy/state.json`, `.gitignore`, `HANDOFF.md`, `notes`, `opencode.json` housekeeping.
+`layout.tsx` (dashboard group), `settings/page.tsx` + `actions.ts`, `login/page.tsx`, `signup/page.tsx`, `page.tsx` (landing), `app-sidebar.tsx`, `copilot-provider.tsx`, `jobs-provider.tsx`, `job-row.tsx`, `settings-view.tsx`, `proxy.ts`, `manual-llm-guidance.tsx`, job system (`queue.ts`, `store.ts`, `processor.ts`, `start.ts`, `sweep.ts`, `kinds.ts`, `jobs.test.ts`), voice session, LLM index, platform llm-accounts, copilot app-guide/manifest, `ENVIRONMENT.md`, `copilot-coverage.md`, `wrangler.jsonc`, `package.json`, manifest generator + verify scripts, plus `.gitignore`, `HANDOFF.md`, `notes`, and `opencode.json` housekeeping.
 
 ### Untracked files preserved (part of current app, Task 1 rule 5)
 

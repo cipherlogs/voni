@@ -5,13 +5,13 @@
       "source": "AssemblyAI/assemblyai-skill",
       "sourceType": "github",
       "skillPath": "skills/assemblyai/SKILL.md",
-      "computedHash": "5eea4743c7ae8047c7158c5828e4eb5026b4e155d441e214b206ab47a29a7b2a"
+      "computedHash": "885cafe2785231d62390ecae8f8b3b80e1ff23d58fb33f270433b51a7d8ef001"
     },
     "next-dev-loop": {
       "source": "vercel/next.js",
       "sourceType": "github",
       "skillPath": "skills/next-dev-loop/SKILL.md",
-      "computedHash": "d604c9440a736b08836fe782e8c0bf6a596d00c4e20e3e245e4a4394efbf74f4"
+      "computedHash": "e76687a3348c55045964390be844925baf481d4751a39ea20b299c12ca5fba28"
     }
   }
 }

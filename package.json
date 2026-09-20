@@ -1,7 +1,4 @@
 {
-  "dependencies": {
-    "@claude-flow/codex": "^3.0.2"
-  },
   "devDependencies": {
     "typescript": "^7.0.2"
   }
