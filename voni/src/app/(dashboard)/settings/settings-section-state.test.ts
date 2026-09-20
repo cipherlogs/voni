@@ -96,14 +96,57 @@ test("service skeletons derive counts from the real sources", () => {
 
 test("skeleton bar counts match each section's first-paint elements", () => {
   const skeletons = repoFile("components", "page-skeletons.tsx");
-  // Account: avatar + name + email + sign-out (frame title/desc ride along).
-  assert.equal(skeletonBars(skeletons, "SettingsAccountSkeleton"), 4);
-  // Voice: two label+select pairs + one help line + save.
-  assert.equal(skeletonBars(skeletons, "SettingsVoiceSkeleton"), 6);
-  // Workspace: three label+control pairs + transfer help + save.
-  assert.equal(skeletonBars(skeletons, "SettingsWorkspaceSkeleton"), 8);
-  // Appearance: the theme control is one icon-only toggle, not a wide row.
-  assert.equal(skeletonBars(skeletons, "SettingsAppearanceSkeleton"), 1);
+  // Account: profile avatar + name + email, session desc + sign-out.
+  assert.equal(skeletonBars(skeletons, "SettingsAccountSkeleton"), 5);
+  // Voice: two label+select pairs + one help line + Cancel + save.
+  assert.equal(skeletonBars(skeletons, "SettingsVoiceSkeleton"), 7);
+  // Workspace: three label+control pairs + transfer help + Cancel + save.
+  assert.equal(skeletonBars(skeletons, "SettingsWorkspaceSkeleton"), 9);
+  // Appearance: theme toggle + hint, preview copy.
+  assert.equal(skeletonBars(skeletons, "SettingsAppearanceSkeleton"), 3);
+});
+
+test("settings sections converge on the campaign form density", () => {
+  const sections = repoFile("components", "settings-sections.tsx");
+  // FormCard > FormSection composition, no bespoke SettingsSection fork.
+  assert.match(sections, /FormCard/);
+  assert.match(sections, /FormSection/);
+  assert.match(sections, /FormSectionHeading/);
+  assert.match(sections, /FormSectionSeparator/);
+  assert.doesNotMatch(sections, /function SettingsSection/);
+  // FieldGroup + Field + FieldError, max-w caps on controls.
+  assert.match(sections, /FieldGroup/);
+  assert.match(sections, /FieldError/);
+  assert.match(sections, /max-w-md/);
+  assert.match(sections, /max-w-xs/);
+  // Paired-action footers: ghost Cancel left, primary right, mobile primary on top.
+  assert.match(sections, /Cancel/);
+  assert.match(sections, /flex-col-reverse/);
+  assert.match(sections, /sm:justify-between/);
+  // Services readiness copy is distinct per service, not one repeated line.
+  assert.match(sections, /serviceHint/);
+  assert.doesNotMatch(sections, /Voni-managed capacity is configured\./);
+});
+
+test("numbers add form carries the transparent footer", () => {
+  const numbers = repoFile("components", "phone-numbers.tsx");
+  assert.match(numbers, /FormCard/);
+  assert.match(numbers, /FormSection/);
+  assert.match(numbers, /Cancel/);
+  assert.match(numbers, /flex-col-reverse/);
+  assert.match(numbers, /max-w-md/);
+  assert.match(numbers, /max-w-xs/);
+});
+
+test("operator sections use FormCard and ship a loading boundary", () => {
+  const view = repoFile("components", "operator-view.tsx");
+  assert.match(view, /FormCard/);
+  assert.match(view, /FormSection/);
+  assert.match(view, /FormSectionSeparator/);
+  assert.match(view, /Cancel/);
+  assert.match(view, /max-w-md/);
+  assert.match(view, /max-w-xs/);
+  assert.ok(existsSync(join(here, "..", "operator", "loading.tsx")), "operator/loading.tsx exists");
 });
 
 test("landing streams a bento-grid skeleton, not the generic fallback", () => {

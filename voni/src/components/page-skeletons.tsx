@@ -129,9 +129,10 @@ export function DetailSkeleton() {
 }
 
 /**
- * Settings section frame (ticket 03): mirrors the `SettingsSection`
- * flat idiom — side h2 + muted description left, content right. Markup
- * only, no logic; composed from the Skeleton primitive + grid + gap.
+ * Settings section frame: mirrors the `FormSection` flat idiom
+ * (form-layout-03 / campaign density) — side h2 + muted description left,
+ * content right. Markup only, no logic; composed from the Skeleton
+ * primitive + grid + gap.
  */
 function SettingsSectionFrame({ children }: { children: React.ReactNode }) {
   return (
@@ -145,39 +146,46 @@ function SettingsSectionFrame({ children }: { children: React.ReactNode }) {
   );
 }
 
-/** Mirrors AccountSection: avatar + name/email row plus the sign-out action. */
+/** Mirrors AccountSection: profile (avatar + name/email) + session (desc + sign-out). */
 export function SettingsAccountSkeleton() {
   return (
-    <SettingsSectionFrame>
-      <div className="flex max-w-xl flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex items-center gap-3">
+    <div className="flex flex-col gap-6">
+      <SettingsSectionFrame>
+        <div className="flex max-w-xl items-center gap-3">
           <Skeleton className="size-10 rounded-full" />
           <div className="flex flex-col gap-2">
             <Skeleton className="h-4 w-32" />
             <Skeleton className="h-3 w-48" />
           </div>
         </div>
-        <Skeleton className="h-8 w-28" />
-      </div>
-    </SettingsSectionFrame>
+      </SettingsSectionFrame>
+      <Separator className="my-8" />
+      <SettingsSectionFrame>
+        <div className="flex max-w-xl flex-col gap-3">
+          <Skeleton className="h-3 w-full max-w-md" />
+          <Skeleton className="h-8 w-28" />
+        </div>
+      </SettingsSectionFrame>
+    </div>
   );
 }
 
-/** Mirrors VoiceCopilotCard: two selects with hints plus the save footer. */
+/** Mirrors VoiceCopilotCard: two selects with hints plus Cancel + save footer. */
 export function SettingsVoiceSkeleton() {
   return (
     <SettingsSectionFrame>
       <div className="grid max-w-xl gap-5">
         <div className="flex flex-col gap-2">
           <Skeleton className="h-4 w-20" />
-          <Skeleton className="h-8 w-full" />
+          <Skeleton className="h-8 w-full max-w-md" />
         </div>
         <div className="flex flex-col gap-2">
           <Skeleton className="h-4 w-20" />
-          <Skeleton className="h-8 w-full" />
+          <Skeleton className="h-8 w-full max-w-md" />
           <Skeleton className="h-3 w-full max-w-md" />
         </div>
-        <div className="flex items-center justify-end gap-3 border-t pt-4">
+        <div className="flex flex-col-reverse flex-wrap gap-3 border-t pt-4 sm:flex-row sm:items-center sm:justify-between">
+          <Skeleton className="h-8 w-20" />
           <Skeleton className="h-8 w-36" />
         </div>
       </div>
@@ -185,25 +193,26 @@ export function SettingsVoiceSkeleton() {
   );
 }
 
-/** Mirrors WorkspaceSection: three stacked fields plus the save footer. */
+/** Mirrors WorkspaceSection: three stacked fields plus Cancel + save footer. */
 export function SettingsWorkspaceSkeleton() {
   return (
     <SettingsSectionFrame>
       <div className="grid max-w-xl gap-5">
         <div className="flex flex-col gap-2">
           <Skeleton className="h-4 w-28" />
-          <Skeleton className="h-8 w-full" />
+          <Skeleton className="h-8 w-full max-w-md" />
         </div>
         <div className="flex flex-col gap-2">
           <Skeleton className="h-4 w-20" />
-          <Skeleton className="h-8 w-full" />
+          <Skeleton className="h-8 w-full max-w-xs" />
         </div>
         <div className="flex flex-col gap-2">
           <Skeleton className="h-4 w-36" />
-          <Skeleton className="h-8 w-full" />
+          <Skeleton className="h-8 w-full max-w-xs" />
           <Skeleton className="h-3 w-full max-w-md" />
         </div>
-        <div className="flex items-center justify-end gap-3 border-t pt-4">
+        <div className="flex flex-col-reverse flex-wrap gap-3 border-t pt-4 sm:flex-row sm:items-center sm:justify-between">
+          <Skeleton className="h-8 w-20" />
           <Skeleton className="h-8 w-32" />
         </div>
       </div>
@@ -292,12 +301,21 @@ export function SettingsServicesSkeleton() {
   );
 }
 
-/** Mirrors AppearanceSection: the theme control is one icon-only toggle. */
+/** Mirrors AppearanceSection: theme toggle + hint, then preview copy. */
 export function SettingsAppearanceSkeleton() {
   return (
-    <SettingsSectionFrame>
-      <Skeleton className="size-8" />
-    </SettingsSectionFrame>
+    <div className="flex flex-col gap-6">
+      <SettingsSectionFrame>
+        <div className="flex max-w-xl flex-col gap-3">
+          <Skeleton className="size-8" />
+          <Skeleton className="h-3 w-full max-w-md" />
+        </div>
+      </SettingsSectionFrame>
+      <Separator className="my-8" />
+      <SettingsSectionFrame>
+        <Skeleton className="h-3 w-full max-w-md" />
+      </SettingsSectionFrame>
+    </div>
   );
 }
 

@@ -27,6 +27,7 @@ import {
 } from "@/components/ui/field";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { FormCard, FormSection, FormSectionHeading } from "@/components/wizard/form-layout";
+import { Separator } from "@/components/ui/separator";
 import {
   Select,
   SelectContent,
@@ -267,6 +268,7 @@ export function PhoneNumbers({
                   <FieldLabel htmlFor="new-number">Number</FieldLabel>
                   <Input
                     id="new-number"
+                    className="max-w-xs"
                     value={newNumber}
                     onChange={(e) => setNewNumber(e.target.value)}
                     placeholder="+971 4 123 4567"
@@ -285,6 +287,7 @@ export function PhoneNumbers({
                   <FieldLabel htmlFor="new-label">Label</FieldLabel>
                   <Input
                     id="new-label"
+                    className="max-w-md"
                     value={newLabel}
                     onChange={(e) => setNewLabel(e.target.value)}
                     placeholder="Marina office line"
@@ -296,7 +299,7 @@ export function PhoneNumbers({
                     value={newAgent}
                     onValueChange={(v) => setNewAgent(v ?? UNBOUND)}
                   >
-                    <SelectTrigger id="new-agent" aria-label="Answered by" className="w-full">
+                    <SelectTrigger id="new-agent" aria-label="Answered by" className="w-full max-w-md">
                       <SelectValue>{agentLabel}</SelectValue>
                     </SelectTrigger>
                     <SelectContent>
@@ -320,11 +323,25 @@ export function PhoneNumbers({
                 </Field>
               </FieldGroup>
               <div>
-                <LoadingButton
-                  disabled={!newNumber.trim()}
-                  pending={pendingId === "add"}
-                  pendingText="Adding…"
-                  icon={<Plus />}
+                <Separator />
+                <div className="flex flex-col-reverse flex-wrap gap-3 pt-4 sm:flex-row sm:items-center sm:justify-between">
+                  <Button
+                    variant="outline"
+                    type="button"
+                    disabled={!newNumber.trim() && !newLabel.trim() && newAgent === UNBOUND}
+                    onClick={() => {
+                      setNewNumber("");
+                      setNewLabel("");
+                      setNewAgent(UNBOUND);
+                    }}
+                  >
+                    Cancel
+                  </Button>
+                  <LoadingButton
+                    disabled={!newNumber.trim()}
+                    pending={pendingId === "add"}
+                    pendingText="Adding…"
+                    icon={<Plus />}
                   onClick={() =>
                     run(
                       "add",
@@ -348,6 +365,7 @@ export function PhoneNumbers({
                   Add number
                 </LoadingButton>
               </div>
+            </div>
             </div>
           </FormSection>
         </>

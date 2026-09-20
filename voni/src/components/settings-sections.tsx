@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useActionState, useEffect, useState, useTransition } from "react";
 import { useFormStatus } from "react-dom";
 import { useRouter } from "next/navigation";
@@ -16,12 +17,25 @@ import { SiGmail, SiGoogledocs, SiZoho } from "react-icons/si";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { LoadingButton } from "@/components/loading-button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
+import {
+  Field,
+  FieldDescription,
+  FieldError,
+  FieldGroup,
+  FieldLabel,
+} from "@/components/ui/field";
 import { ModeToggle } from "@/components/mode-toggle";
 import { Separator } from "@/components/ui/separator";
+import {
+  FormCard,
+  FormSection,
+  FormSectionHeading,
+  FormSectionSeparator,
+} from "@/components/wizard/form-layout";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { TIMEZONE_OPTIONS } from "@/lib/timezones";
 import { signOut } from "@/lib/auth-client";
@@ -57,7 +71,6 @@ import {
   type VoiceDraft,
   type WorkspaceDraft,
 } from "@/components/settings-draft";
-import { cn } from "@/lib/utils";
 
 const INITIAL: SettingsActionState = { ok: false };
 
@@ -80,41 +93,58 @@ export interface ServiceReadiness {
   configured: boolean;
 }
 
-/**
- * Flat settings section — the form-layout-03 idiom: side h2 + muted
- * description, fields right, no Card backgrounds. Sections are separated by
- * `<Separator className="my-8" />` at the caller.
- */
-function SettingsSection({
-  title,
-  description,
-  children,
-  className,
-}: {
-  title: string;
-  description: string;
-  children: React.ReactNode;
-  className?: string;
-}) {
-  return (
-    <section className={cn("grid grid-cols-1 gap-10 md:grid-cols-3", className)}>
-      <div>
-        <h2 className="text-balance font-semibold text-foreground">{title}</h2>
-        <p className="mt-1 text-pretty text-muted-foreground text-sm leading-6">
-          {description}
-        </p>
-      </div>
-      <div className="sm:max-w-3xl md:col-span-2">{children}</div>
-    </section>
-  );
-}
-
 function SubmitButton({ children, variant = "default" }: { children: React.ReactNode; variant?: "default" | "outline" | "destructive" }) {
   const { pending } = useFormStatus();
   return (
     <LoadingButton type="submit" variant={variant} pending={pending}>
       {children}
     </LoadingButton>
+  );
+}
+
+function CancelLink({ href, dirty }: { href: string; dirty: boolean }) {
+  return (
+    <Button
+      nativeButton={false}
+      variant="outline"
+      render={
+        <Link
+          href={href}
+          onClick={(e) => {
+            if (
+              dirty &&
+              !window.confirm(
+                "Leave without saving? Your entries will be lost.",
+              )
+            ) {
+              e.preventDefault();
+            }
+          }}
+        />
+      }
+    >
+      Cancel
+    </Button>
+  );
+}
+
+function SettingsFormFooter({
+  cancelHref,
+  dirty,
+  children,
+}: {
+  cancelHref: string;
+  dirty: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <div>
+      <Separator />
+      <div className="flex flex-col-reverse flex-wrap gap-3 pt-4 sm:flex-row sm:items-center sm:justify-between">
+        <CancelLink href={cancelHref} dirty={dirty} />
+        <span className="flex justify-end">{children}</span>
+      </div>
+    </div>
   );
 }
 
@@ -133,23 +163,31 @@ function WorkspaceNameField({
   value,
   onChange,
   canEdit,
+  invalid,
+  error,
 }: {
   value: string;
   onChange: (value: string) => void;
   canEdit: boolean;
+  invalid?: boolean;
+  error?: string | null;
 }) {
   return (
-    <Field>
+    <Field data-invalid={invalid}>
       <FieldLabel htmlFor="workspace-name">
         Workspace name
       </FieldLabel>
       <Input
         id="workspace-name"
         name="name"
+        className="max-w-md"
         value={value}
         onChange={(event) => onChange(event.target.value)}
         disabled={!canEdit}
+        aria-invalid={invalid ? true : undefined}
+        aria-describedby={error ? "workspace-name-error" : undefined}
       />
+      {error ? <FieldError id="workspace-name-error">{error}</FieldError> : null}
     </Field>
   );
 }
@@ -183,7 +221,7 @@ function WorkspaceTimezoneField({
       >
         <SelectTrigger
           id="workspace-timezone"
-          className="w-full"
+          className="w-full max-w-xs"
         >
           <SelectValue />
         </SelectTrigger>
@@ -205,6 +243,35 @@ function serviceInitials(label: string) {
   return label.split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase();
 }
 
+function serviceHint(service: ServiceReadiness): string {
+  if (service.configured) {
+    switch (service.id) {
+      case "voice":
+        return "Speech-to-text for voice agents is configured.";
+      case "phone":
+        return "Telnyx connection and caller number are set for inbound and outbound calls.";
+      case "llm":
+        return "An LLM account is enabled for generation.";
+      case "voice-note":
+        return "Cartesia voice is set for spoken notes.";
+      default:
+        return "Platform capacity is configured.";
+    }
+  }
+  switch (service.id) {
+    case "voice":
+      return "Add an AssemblyAI key so voice agents can talk.";
+    case "phone":
+      return "Add a Telnyx connection and caller number so numbers can ring.";
+    case "llm":
+      return "Enable an LLM account so generation can run.";
+    case "voice-note":
+      return "Add a Cartesia voice so notes can speak.";
+    default:
+      return "Ask whoever runs your Voni server to finish platform setup.";
+  }
+}
+
 const PROVIDER_ICONS: Record<ProviderId, React.ComponentType<{ className?: string }>> = {
   gmail: SiGmail,
   zoho: SiZoho,
@@ -216,7 +283,8 @@ const PROVIDER_ICONS: Record<ProviderId, React.ComponentType<{ className?: strin
  * The whole card is one atomic unit: header (icon + name + status badge),
  * the tool list it exposes, and its own connect/disconnect form with
  * per-row pending state (`pendingId` pattern — one row's toggle never
- * disables the others).
+ * disables the others). Status reads from the Badge; the action reads from
+ * the Button — never the same family.
  */
 function ProviderCard({
   provider,
@@ -400,69 +468,69 @@ function VoiceCopilotCard({ prefs }: { prefs: CopilotVoicePrefs }) {
     window.dispatchEvent(new CustomEvent("voni:voice-prefs-changed"));
   }, [draftKey, saveState]);
   return (
-    <form action={saveAction} className="grid gap-5 max-w-xl">
-      <Field>
-        <FieldLabel htmlFor="copilot-voice">Voice</FieldLabel>
-        <Select name="voiceId" value={voiceId} onValueChange={(value) => setVoiceId(value ?? prefs.voiceId)}>
-          <SelectTrigger id="copilot-voice" className="w-full">
-            <SelectValue placeholder="Pick a voice" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectGroup>
-              <SelectItem value="ivy">Ivy (default)</SelectItem>
-            </SelectGroup>
-            {voicesByLanguage().map((group) => (
-              <SelectGroup key={group.code}>
-                <SelectLabel>{group.language}</SelectLabel>
-                {group.voices
-                  .filter((voice) => voice.id !== "ivy")
-                  .map((voice) => (
-                    <SelectItem key={voice.id} value={voice.id}>
-                      {voiceLabel(voice.id)} · {ACCENT_LABEL[voice.accent]}
-                    </SelectItem>
-                  ))}
+    <form action={saveAction} className="grid max-w-xl gap-5">
+      <FieldGroup>
+        <Field>
+          <FieldLabel htmlFor="copilot-voice">Voice</FieldLabel>
+          <Select name="voiceId" value={voiceId} onValueChange={(value) => setVoiceId(value ?? prefs.voiceId)}>
+            <SelectTrigger id="copilot-voice" className="w-full max-w-md">
+              <SelectValue placeholder="Pick a voice" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectGroup>
+                <SelectItem value="ivy">Ivy (default)</SelectItem>
               </SelectGroup>
-            ))}
-          </SelectContent>
-        </Select>
-      </Field>
-      <Field>
-        <FieldLabel htmlFor="copilot-language">Language</FieldLabel>
-        <Select name="language" value={language} onValueChange={(value) => setLanguage(value ?? prefs.language)}>
-          <SelectTrigger id="copilot-language" className="w-full">
-            <SelectValue placeholder="Pick a language" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectGroup>
-              <SelectItem value="auto">Auto-detect — understand any language</SelectItem>
-              {INPUT_LANGUAGES.map((lang) => (
-                <SelectItem key={lang.code} value={lang.code}>
-                  {lang.flag} {lang.label}
-                  {lang.canSpeak ? "" : " · understands only"}
-                </SelectItem>
+              {voicesByLanguage().map((group) => (
+                <SelectGroup key={group.code}>
+                  <SelectLabel>{group.language}</SelectLabel>
+                  {group.voices
+                    .filter((voice) => voice.id !== "ivy")
+                    .map((voice) => (
+                      <SelectItem key={voice.id} value={voice.id}>
+                        {voiceLabel(voice.id)} · {ACCENT_LABEL[voice.accent]}
+                      </SelectItem>
+                    ))}
+                </SelectGroup>
               ))}
-            </SelectGroup>
-          </SelectContent>
-        </Select>
-        <p className="text-muted-foreground text-xs">
-          {inputLanguage(language)?.canSpeak === false
-            ? "This language is understood but has no voice yet — the copilot answers in English."
-            : "Pinning a language sharpens recognition for it; auto-detect follows whatever you speak."}
-        </p>
-        {note ? <p className="text-muted-foreground text-xs">{note}</p> : null}
-      </Field>
+            </SelectContent>
+          </Select>
+        </Field>
+        <Field>
+          <FieldLabel htmlFor="copilot-language">Language</FieldLabel>
+          <Select name="language" value={language} onValueChange={(value) => setLanguage(value ?? prefs.language)}>
+            <SelectTrigger id="copilot-language" className="w-full max-w-md">
+              <SelectValue placeholder="Pick a language" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectGroup>
+                <SelectItem value="auto">Auto-detect — understand any language</SelectItem>
+                {INPUT_LANGUAGES.map((lang) => (
+                  <SelectItem key={lang.code} value={lang.code}>
+                    {lang.flag} {lang.label}
+                    {lang.canSpeak ? "" : " · understands only"}
+                  </SelectItem>
+                ))}
+              </SelectGroup>
+            </SelectContent>
+          </Select>
+          <FieldDescription>
+            {inputLanguage(language)?.canSpeak === false
+              ? "This language is understood but has no voice yet — the copilot answers in English."
+              : "Pinning a language sharpens recognition for it; auto-detect follows whatever you speak."}
+          </FieldDescription>
+          {note ? <p className="text-muted-foreground text-xs">{note}</p> : null}
+        </Field>
+      </FieldGroup>
       <ActionFeedback state={saveState} />
+      {saveState.error ? <FieldError>{saveState.error}</FieldError> : null}
       {isDirty ? (
         <p aria-live="polite" className="text-muted-foreground text-xs">
           Unsaved changes — they stay here if you switch sections.
         </p>
       ) : null}
-      <div>
-        <Separator />
-        <div className="flex items-center justify-end gap-3 pt-4">
-          <SubmitButton>Save voice copilot</SubmitButton>
-        </div>
-      </div>
+      <SettingsFormFooter cancelHref="/settings" dirty={isDirty}>
+        <SubmitButton>Save voice copilot</SubmitButton>
+      </SettingsFormFooter>
     </form>
   );
 }
@@ -471,7 +539,10 @@ function VoiceCopilotCard({ prefs }: { prefs: CopilotVoicePrefs }) {
  * Route sections: one component per `/settings/<tab>` route (ticket 02).
  * Each renders inside the shared section shell (`[tab]/layout.tsx`) with
  * data from its own server leaf — no shared tab state, so one section's
- * reload never remounts another section's form.
+ * reload never remounts another section's form. Composition converges on the
+ * campaign-form density: `FormCard > FormSection + FormSectionHeading`,
+ * `FieldGroup + Field + FieldError`, `max-w-*` caps, transparent footers
+ * outside any filled body.
  *
  * Dirty-form protection (ticket 03) is explicit per form: voice + workspace
  * retain unfinished edits in a per-section draft and warn on reload/close
@@ -501,29 +572,64 @@ export function AccountSection({ user }: { user: AccountInfo }) {
   }
 
   return (
-    <SettingsSection
-      title="Account"
-      description="Your Google profile and session."
-    >
-      <div className="flex max-w-xl flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex items-center gap-3">
-          <Avatar size="lg">{user.image ? <AvatarImage src={user.image} alt="" /> : null}<AvatarFallback>{initials || "V"}</AvatarFallback></Avatar>
-          <div><p className="font-medium">{user.name}</p><p className="text-muted-foreground text-sm">{user.email}</p></div>
+    <FormCard>
+      <FormSection
+        aria-labelledby="account-profile-heading"
+        heading={
+          <FormSectionHeading
+            id="account-profile-heading"
+            title="Profile"
+            description="Your Google profile and session."
+          />
+        }
+      >
+        <div className="flex max-w-xl flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-center gap-3">
+            <Avatar size="lg">{user.image ? <AvatarImage src={user.image} alt="" /> : null}<AvatarFallback>{initials || "V"}</AvatarFallback></Avatar>
+            <div><p className="font-medium">{user.name}</p><p className="text-muted-foreground text-sm">{user.email}</p></div>
+          </div>
         </div>
-        <LoadingButton variant="outline" onClick={handleSignOut} pending={signingOut} pendingText="Signing out…" icon={<LogOut data-icon="inline-start" />}>Sign out</LoadingButton>
-      </div>
-    </SettingsSection>
+      </FormSection>
+      <FormSectionSeparator />
+      <FormSection
+        aria-labelledby="account-session-heading"
+        heading={
+          <FormSectionHeading
+            id="account-session-heading"
+            title="Session"
+            description="Sign out of this browser. Other sessions stay signed in."
+          />
+        }
+      >
+        <div className="flex max-w-xl flex-col gap-3">
+          <p className="text-muted-foreground text-sm">
+            Signed in as {user.email} via Google.
+          </p>
+          <div className="flex justify-start">
+            <LoadingButton variant="outline" onClick={handleSignOut} pending={signingOut} pendingText="Signing out…" icon={<LogOut data-icon="inline-start" />}>Sign out</LoadingButton>
+          </div>
+        </div>
+      </FormSection>
+    </FormCard>
   );
 }
 
 export function VoiceSection({ prefs }: { prefs: CopilotVoicePrefs }) {
   return (
-    <SettingsSection
-      title="Voice copilot"
-      description="Who talks back when you tap the mic. Only affects your conversations — nothing here changes what callers hear on the phone."
-    >
-      <VoiceCopilotCard prefs={prefs} />
-    </SettingsSection>
+    <FormCard>
+      <FormSection
+        aria-labelledby="voice-copilot-heading"
+        heading={
+          <FormSectionHeading
+            id="voice-copilot-heading"
+            title="Voice copilot"
+            description="Who talks back when you tap the mic. Only affects your conversations — nothing here changes what callers hear on the phone."
+          />
+        }
+      >
+        <VoiceCopilotCard prefs={prefs} />
+      </FormSection>
+    </FormCard>
   );
 }
 
@@ -550,6 +656,14 @@ export function WorkspaceSection({ workspace }: { workspace: WorkspaceInfo }) {
   const [transferNumber, setTransferNumber] = useState(
     () => readSettingsDraft<WorkspaceDraft>(draftKey)?.humanTransferNumber ?? saved.humanTransferNumber,
   );
+  const nameError =
+    name.trim().length > 0 && name.trim().length < 2
+      ? "Use at least 2 characters."
+      : null;
+  const transferError =
+    transferNumber.trim().length > 0 && !/^\+[1-9]\d{7,14}$/.test(transferNumber.trim())
+      ? "Use an E.164 number such as +971501234567."
+      : null;
   const isDirty =
     workspace.canEdit && isWorkspaceDirty({ name, timezone, humanTransferNumber: transferNumber }, saved);
   useBeforeUnloadGuard(isDirty);
@@ -564,41 +678,66 @@ export function WorkspaceSection({ workspace }: { workspace: WorkspaceInfo }) {
     if (workspaceState.ok) writeSettingsDraft(draftKey, null);
   }, [draftKey, workspaceState]);
   return (
-    <SettingsSection
-      title="Workspace"
-      description="Customer-facing defaults for this organization."
-    >
-      <form action={workspaceAction} className="grid max-w-xl gap-5">
-        <FieldGroup>
-          <WorkspaceNameField
-            value={name}
-            onChange={setName}
-            canEdit={workspace.canEdit}
+    <FormCard>
+      <FormSection
+        aria-labelledby="workspace-defaults-heading"
+        heading={
+          <FormSectionHeading
+            id="workspace-defaults-heading"
+            title="Workspace"
+            description="Customer-facing defaults for this organization."
           />
-          <WorkspaceTimezoneField
-            value={timezone}
-            onChange={setTimezone}
-            canEdit={workspace.canEdit}
-          />
-          <Field><FieldLabel htmlFor="transfer-number">Human transfer number</FieldLabel><Input id="transfer-number" name="humanTransferNumber" type="tel" value={transferNumber} onChange={(event) => setTransferNumber(event.target.value)} placeholder="+971501234567" disabled={!workspace.canEdit} /><p className="text-muted-foreground text-xs">Used only for this workspace when an agent transfers a live call.</p></Field>
-        </FieldGroup>
-        {!workspace.canEdit ? <Alert><ShieldCheck /><AlertTitle>Owner access required</AlertTitle><AlertDescription>Only a workspace owner can change these values.</AlertDescription></Alert> : null}
-        <ActionFeedback state={workspaceState} />
-        {isDirty ? (
-          <p aria-live="polite" className="text-muted-foreground text-xs">
-            Unsaved changes — they stay here if you switch sections.
-          </p>
-        ) : null}
-        {workspace.canEdit ? (
-          <div>
-            <Separator />
-            <div className="flex items-center justify-end gap-3 pt-4">
+        }
+      >
+        <form action={workspaceAction} className="grid max-w-xl gap-5">
+          <FieldGroup>
+            <WorkspaceNameField
+              value={name}
+              onChange={setName}
+              canEdit={workspace.canEdit}
+              invalid={Boolean(nameError)}
+              error={nameError}
+            />
+            <WorkspaceTimezoneField
+              value={timezone}
+              onChange={setTimezone}
+              canEdit={workspace.canEdit}
+            />
+            <Field data-invalid={Boolean(transferError)}>
+              <FieldLabel htmlFor="transfer-number">Human transfer number</FieldLabel>
+              <Input
+                id="transfer-number"
+                name="humanTransferNumber"
+                type="tel"
+                className="max-w-xs"
+                value={transferNumber}
+                onChange={(event) => setTransferNumber(event.target.value)}
+                placeholder="+971501234567"
+                disabled={!workspace.canEdit}
+                aria-invalid={transferError ? true : undefined}
+                aria-describedby={transferError ? "transfer-number-error" : undefined}
+              />
+              {transferError ? (
+                <FieldError id="transfer-number-error">{transferError}</FieldError>
+              ) : null}
+              <FieldDescription>Used only for this workspace when an agent transfers a live call.</FieldDescription>
+            </Field>
+          </FieldGroup>
+          {!workspace.canEdit ? <Alert><ShieldCheck /><AlertTitle>Owner access required</AlertTitle><AlertDescription>Only a workspace owner can change these values.</AlertDescription></Alert> : null}
+          <ActionFeedback state={workspaceState} />
+          {isDirty ? (
+            <p aria-live="polite" className="text-muted-foreground text-xs">
+              Unsaved changes — they stay here if you switch sections.
+            </p>
+          ) : null}
+          {workspace.canEdit ? (
+            <SettingsFormFooter cancelHref="/settings" dirty={isDirty}>
               <SubmitButton>Save workspace</SubmitButton>
-            </div>
-          </div>
-        ) : null}
-      </form>
-    </SettingsSection>
+            </SettingsFormFooter>
+          ) : null}
+        </form>
+      </FormSection>
+    </FormCard>
   );
 }
 
@@ -612,17 +751,29 @@ export function ServicesSection({
   connectedProviderIds: string[];
 }) {
   return (
-    <div className="flex flex-col gap-6">
-      <SettingsSection
-        title="Providers"
-        description="Connect the tools your agents can use — email, CRM, and docs. Connections are stored server-side for this workspace."
+    <FormCard>
+      <FormSection
+        aria-labelledby="services-providers-heading"
+        heading={
+          <FormSectionHeading
+            id="services-providers-heading"
+            title="Providers"
+            description="Connect the tools your agents can use — email, CRM, and docs. Connections are stored server-side for this workspace."
+          />
+        }
       >
         <ProvidersSection catalog={providerCatalog} connectedIds={connectedProviderIds} />
-      </SettingsSection>
-      <Separator className="my-8" />
-      <SettingsSection
-        title="Service readiness"
-        description="Voni-managed platform capacity. Finished by whoever runs your Voni server."
+      </FormSection>
+      <FormSectionSeparator />
+      <FormSection
+        aria-labelledby="services-readiness-heading"
+        heading={
+          <FormSectionHeading
+            id="services-readiness-heading"
+            title="Service readiness"
+            description="Voni-managed platform capacity. Finished by whoever runs your Voni server."
+          />
+        }
       >
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
           {services.map((service) => (
@@ -639,28 +790,54 @@ export function ServicesSection({
                     </Badge>
                   </p>
                   <p className="text-muted-foreground text-sm">
-                    {service.configured
-                      ? "Voni-managed capacity is configured."
-                      : "Ask your workspace admin, or whoever runs " +
-                        "your Voni server, to finish platform setup."}
+                    {serviceHint(service)}
                   </p>
                 </div>
               </CardContent>
             </Card>
           ))}
         </div>
-      </SettingsSection>
-    </div>
+      </FormSection>
+    </FormCard>
   );
 }
 
 export function AppearanceSection() {
   return (
-    <SettingsSection
-      title="Appearance"
-      description="Use light, dark, or your system setting."
-    >
-      <ModeToggle />
-    </SettingsSection>
+    <FormCard>
+      <FormSection
+        aria-labelledby="appearance-theme-heading"
+        heading={
+          <FormSectionHeading
+            id="appearance-theme-heading"
+            title="Theme"
+            description="Use light, dark, or your system setting. Applies to this browser immediately."
+          />
+        }
+      >
+        <div className="flex max-w-xl flex-col gap-3">
+          <ModeToggle />
+          <p className="text-muted-foreground text-sm">
+            System follows your OS. Pick light or dark to override it here.
+          </p>
+        </div>
+      </FormSection>
+      <FormSectionSeparator />
+      <FormSection
+        aria-labelledby="appearance-preview-heading"
+        heading={
+          <FormSectionHeading
+            id="appearance-preview-heading"
+            title="Preview"
+            description="Tiles and scenes stay readable in either theme."
+          />
+        }
+      >
+        <p className="text-muted-foreground max-w-xl text-sm">
+          The settings landing previews each area with its scene. Theme changes
+          apply instantly with no save step.
+        </p>
+      </FormSection>
+    </FormCard>
   );
 }
