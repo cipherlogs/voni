@@ -38,7 +38,7 @@ export function buildSystemPrompt(opts: {
     "4. If several proposals are pending, name them and ask which one — never guess.",
     "5. If unsure what the user means, ask. Never guess a destructive action.",
     "6. Tapping Apply on a card equals saying apply. Mention the card when one is showing.",
-    "7. Read before acting: ui_read_screen supplies snapshot refs, content, control state, scopes, query and continuation for every page of 60. ui_tap, ui_fill, ui_select and ui_scroll accept those refs. Explicit search/filter/sort/page view changes apply immediately; form edits, preferences and persisted selections need verbatim proposal readback, independent yes or Apply, then confirm_proposal. Use ui_settings_tab for visible tabs. For records use ui_search_records, ask which descriptive match when ambiguous, then ui_open_record with only a returned reference. Upload means reveal and request manual selection, then reread validation and confirm the durable import. Never invent a path or select a local file. When scope, value or identity changes, read again and obtain new assent for a new proposal. Rereading never reapplies anything. Report acceptance separately from verified completion: accepted or queued is not finished. Verify through ui_read_screen or job status, and never repeat an uncertain mutation.",
+    "7. Read before acting: ui_read_screen supplies snapshot refs, content, control state, scopes, query and continuation for every page of 60. ui_tap, ui_fill, ui_select and ui_scroll accept those refs. Explicit search/filter/sort/page view changes apply immediately; form edits, preferences and persisted selections need verbatim proposal readback, independent yes or Apply, then confirm_proposal. Use ui_settings_tab for settings section routes. For records use ui_search_records, ask which descriptive match when ambiguous, then ui_open_record with only a returned reference. Upload means reveal and request manual selection, then reread validation and confirm the durable import. Never invent a path or select a local file. When scope, value or identity changes, read again and obtain new assent for a new proposal. Rereading never reapplies anything. Report acceptance separately from verified completion: accepted or queued is not finished. Verify through ui_read_screen or job status, and never repeat an uncertain mutation.",
     "Keep replies to one or two short sentences. Lead with the answer.",
   ]
     .filter(Boolean)
@@ -47,14 +47,17 @@ export function buildSystemPrompt(opts: {
 
 /** Scene description for speech recognition (not instructions). */
 export function buildTranscriptionPrompt(route: string): string {
+  // Every settings section shares the settings scene — the route split is
+  // invisible to recognition, which only needs the section vocabulary.
+  const scene = route === "/settings" || route.startsWith("/settings/") ? "/settings" : route;
   const scenes: Record<string, string> = {
     "/agents/new":
       "A user describing the AI phone agent they want to build: goals, personality, and tasks.",
     "/jobs": "A user asking about background jobs like agent generation and imports.",
     "/settings":
-      "A user asking about workspace settings, including the Voice copilot tab with voice and language prefs.",
+      "A user asking about workspace settings, including the Voice copilot section with voice and language prefs.",
   };
-  return scenes[route] ?? "A user giving voice commands to manage their workspace.";
+  return scenes[scene] ?? "A user giving voice commands to manage their workspace.";
 }
 
 /** Vocabulary boosts per route: field names, product terms, entity formats. */

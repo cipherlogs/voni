@@ -118,14 +118,14 @@ export class ScreenTools {
     return success({ accepted: true, completed: false, control: node.label, next: 'The action was accepted. Read the screen or check the job status to verify the result. Do not repeat a mutation.' });
   }
   /**
-   * Section opener (ticket 02): the tab state machine is gone, so a named
-   * section resolves to route navigation at `/settings/<tab>`. Per-route
-   * briefs and vocabulary move in ticket 07; the mechanism moves here
-   * because this ticket removes the tabs it depended on.
+   * Section opener: the tab state machine is gone, so a named section
+   * resolves to route navigation at `/settings/<section>` (ticket 02
+   * mechanism, ticket 07 vocabulary + per-route briefs). The tool keeps its
+   * `ui_settings_tab` name and `tab` param so existing prompts keep working.
    */
   async settingsTab(tab: string): Promise<BusToolResult> {
     const allowed = SETTINGS_TABS_MANIFEST.find((t) => t.value === tab || t.label.toLowerCase() === tab.toLowerCase());
-    if (!allowed) return failure('Unknown settings tab.');
+    if (!allowed) return failure('Unknown settings section.');
     return this.deps.navigate(`/settings/${allowed.value}`);
   }
   tools(): RegisteredTool[] {
@@ -141,7 +141,7 @@ export class ScreenTools {
       definition('ui_fill', 'Fill a snapshot field reference. Explicit view filters/search apply immediately. Form edits propose and need verbatim readback then yes or Apply. Never supply credentials or local file paths.', fillSchema, async (args) => { const a = args as { ref: string; value: string }; return this.act('fill', a.ref, a.value); }),
       definition('ui_select', 'Choose a native option by its value/label, or an exposed Base UI option by reference. Open the trigger and read options first. Persisted selections require confirmation; explicit view filters apply immediately.', selectSchema, async (args) => { const a = args as { ref: string; value?: string }; return this.act('select', a.ref, a.value); }),
       definition('ui_scroll', 'Scroll a returned control into view. Does not activate it or change its value.', refSchema, async (args) => this.act('scroll', (args as { ref: string }).ref)),
-      definition('ui_settings_tab', 'Open a named settings section. Only sections visible to the signed-in account are available.', z.object({ tab: z.string() }), async (args) => this.settingsTab((args as { tab: string }).tab)),
+      definition('ui_settings_tab', 'Open a named settings section route (/settings/<section>). Only sections visible to the signed-in account are available.', z.object({ tab: z.string() }), async (args) => this.settingsTab((args as { tab: string }).tab)),
       { ...common, name: 'ui_control_exec', description: 'Internal confirmed control executor.', parameters: {}, schema: z.unknown(), listed: false, effect: { mutates: true, scope: 'screen', reversible: false }, run: null, executor: async (payload) => {
         const result = await this.execute(payload as Parameters<ScreenTools['execute']>[0]);
         if (!result.ok) throw new ExecutorFailure(result.error, result.retryable);

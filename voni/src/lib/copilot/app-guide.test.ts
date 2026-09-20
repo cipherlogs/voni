@@ -11,11 +11,12 @@ import { NAV_ITEMS } from "@/components/app-sidebar";
 import { SECTION_TITLES } from "@/components/app-sidebar";
 import { SETTINGS_TABS } from "@/lib/settings-tabs";
 
-test("guide names every destination and the voice tab", () => {
+test("guide names every destination and the voice section route", () => {
   const guide = renderAppGuide();
-  assert.match(guide, /\/settings/);
+  assert.match(guide, /\/settings\/voice/);
   assert.match(guide, /Voice copilot/);
   assert.doesNotMatch(guide, /tap-only/);
+  assert.doesNotMatch(guide, /\[tab\]/);
   assert.match(guide, /ui_settings_tab/);
   assert.match(guide, /ui_open_record/);
   for (const destination of APP_DESTINATIONS.filter((d) => d.access === "signed-in")) {
@@ -39,8 +40,17 @@ test("manifest covers every nav item, title, and settings tab", () => {
 
 test("partial speech routes early to settings", () => {
   assert.equal(matchNavIntent("I want to open settings", "/jobs"), "/settings");
-  assert.equal(matchNavIntent("open settings then voice control", "/dashboard"), "/settings");
-  assert.equal(matchNavIntent("take me to the voice copilot", "/agents"), "/settings");
+  assert.equal(matchNavIntent("open settings then voice control", "/dashboard"), "/settings/voice");
+  assert.equal(matchNavIntent("take me to the voice copilot", "/agents"), "/settings/voice");
+});
+
+test("spoken section names land on their section routes", () => {
+  assert.equal(matchNavIntent("open account settings", "/jobs"), "/settings/account");
+  assert.equal(matchNavIntent("show the workspace section", "/dashboard"), "/settings/workspace");
+  assert.equal(matchNavIntent("read the services section", "/agents"), "/settings/services");
+  assert.equal(matchNavIntent("open appearance settings", "/leads"), "/settings/appearance");
+  assert.equal(matchNavIntent("change my voice", "/jobs"), "/settings/voice");
+  assert.equal(matchNavIntent("change my voice", "/settings/voice"), null);
 });
 
 test("longest phrase wins and the current route never re-pushes", () => {
@@ -57,18 +67,33 @@ test("word boundaries guard against false routes", () => {
 test("feature terms stay within the recognition budget", () => {
   assert.ok(APP_FEATURE_TERMS.length > 0 && APP_FEATURE_TERMS.length <= 100);
   assert.ok(APP_FEATURE_TERMS.includes("Voice copilot"));
+  for (const section of ["account", "workspace", "services", "appearance"]) {
+    assert.ok(APP_FEATURE_TERMS.includes(section), `recognition hears ${section}`);
+  }
 });
 
-test("manifest v2 covers all 19 pages without navigating to templates or public routes", () => {
-  assert.equal(APP_DESTINATIONS.length, 19);
+test("manifest v3 covers all 23 pages without navigating to templates or public routes", () => {
+  assert.equal(APP_DESTINATIONS.length, 23);
   for (const route of APP_DESTINATIONS) {
     assert.equal(route.examples.length, 3);
     assert.ok(route.phrases.length > 0);
     assert.equal(NAVIGABLE_ROUTES.includes(route.route), route.navigationKind === "static");
   }
-  assert.equal(APP_DESTINATIONS.filter((r) => r.navigationKind === "record").length, 5);
-  assert.equal(APP_DESTINATIONS.filter((r) => r.access === "signed-in").length, 15);
+  assert.equal(APP_DESTINATIONS.filter((r) => r.navigationKind === "record").length, 4);
+  assert.equal(APP_DESTINATIONS.filter((r) => r.access === "signed-in").length, 19);
   assert.equal(APP_DESTINATIONS.filter((r) => r.access === "platform-admin").length, 1);
+});
+
+test("every settings section is a static destination; no tab template remains", () => {
+  const routes = new Set(APP_DESTINATIONS.map((d) => d.route));
+  assert.ok(!routes.has("/settings/[tab]"), "tab template is expanded, not listed");
+  for (const section of ["account", "voice", "workspace", "services", "appearance"]) {
+    const destination = APP_DESTINATIONS.find((d) => d.route === `/settings/${section}`);
+    assert.ok(destination, `manifest covers /settings/${section}`);
+    assert.equal(destination.navigationKind, "static");
+    assert.equal(destination.access, "signed-in");
+    assert.ok(NAVIGABLE_ROUTES.includes(`/settings/${section}`), `voice may navigate to /settings/${section}`);
+  }
 });
 
 test("operator navigation is offered only with observable authorization", () => {

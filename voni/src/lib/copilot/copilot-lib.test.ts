@@ -38,6 +38,13 @@ test("transcription context stays descriptive per route", () => {
   assert.ok(buildKeyterms("/jobs").includes("job"));
 });
 
+test("every settings section route shares the settings recognition scene", () => {
+  for (const route of ["/settings", "/settings/account", "/settings/voice", "/settings/workspace", "/settings/services", "/settings/appearance"]) {
+    assert.match(buildTranscriptionPrompt(route), /Voice copilot section/);
+    assert.ok(buildKeyterms(route).includes("Voice copilot"), `${route} hears feature names`);
+  }
+});
+
 test("keyterms carry the global feature vocabulary", () => {
   const terms = buildKeyterms("/dashboard");
   assert.ok(terms.includes("Voice copilot"), "feature names are heard, not guessed");

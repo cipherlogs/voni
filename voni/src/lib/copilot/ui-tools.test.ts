@@ -144,3 +144,23 @@ test('explicit view sorting and page controls verify observable state immediatel
   assert.ok(page.ok && page.data.completed);
   assert.equal(h.store.list().length, 0);
 });
+test('named settings sections resolve to route navigation, unknown names are refused', async () => {
+  const h = harness([]);
+  for (const [tab, destination] of [
+    ['account', '/settings/account'],
+    ['Account', '/settings/account'],
+    ['voice', '/settings/voice'],
+    ['Voice copilot', '/settings/voice'],
+    ['workspace', '/settings/workspace'],
+    ['Workspace', '/settings/workspace'],
+    ['services', '/settings/services'],
+    ['Services', '/settings/services'],
+    ['appearance', '/settings/appearance'],
+    ['Appearance', '/settings/appearance'],
+  ] as Array<[string, string]>) {
+    const result = await h.screen.settingsTab(tab);
+    assert.ok(result.ok, `${tab} resolves`);
+    assert.equal((result.data as { destination: string }).destination, destination);
+  }
+  assert.equal((await h.screen.settingsTab('billing')).ok, false);
+});

@@ -69,6 +69,24 @@ test("dynamic section route serves static params and 404s the rest", () => {
   assert.match(page, /RouteBrief route="\/settings\/appearance"/);
 });
 
+test("per-route voice briefs describe their section accurately", () => {
+  const page = source("[tab]/page.tsx");
+  // Account names the session and the sign-out action it owns.
+  assert.match(page, /Signed in as/);
+  assert.match(page, /Sign out here/);
+  // Voice names the live prefs and the confirmed-edits-then-save contract.
+  assert.match(page, /Settings · Voice copilot\. Voice /);
+  assert.match(page, /confirmed edits and a confirmed save/);
+  // Workspace names the org and the owner gate (allowed vs disabled).
+  assert.match(page, /Workspace edits \$\{canEdit \? "allowed" : "disabled"\}/);
+  // Services names readiness counts and the operator boundary.
+  assert.match(page, /services configured/);
+  assert.match(page, /providers connected/);
+  assert.match(page, /operator-managed/);
+  // Appearance names the three options.
+  assert.match(page, /light, dark, or the system setting/);
+});
+
 test("shared section shell carries back-link, heading, skeleton, and tab validation", () => {
   const layout = source("[tab]/layout.tsx");
   assert.match(layout, /BackLink href="\/settings"/);

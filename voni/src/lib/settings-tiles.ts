@@ -9,10 +9,11 @@ import type { SettingsTabValue } from "./settings-tabs";
  * the gallery review; variants may override presentation locally.
  *
  * NOTE: `scripts/generate-app-manifest.mts` parses `settings-tabs.ts`
- * textually — this file is intentionally separate so the registry never
- * disturbs the manifest shape (migration happens in ticket 07).
- * Internal `href`s name the `/settings/<tab>` routes that land in ticket 02;
- * until then the gallery resolves them to the live `/settings` page.
+ * textually and expands the `/settings/[tab]` template into one static
+ * voice destination per section (ticket 07) — this file stays separate so
+ * the tile registry never disturbs the manifest shape.
+ * Internal `href`s name the `/settings/<tab>` routes served by the
+ * section shell (ticket 02).
  */
 /** Every tile value: the five tab values plus the two external destinations. */
 export type TileValue = SettingsTabValue | "numbers" | "operator";
