@@ -19,8 +19,12 @@ test("landing maps the registry to real links with admin gating", () => {
   assert.doesNotMatch(landing, /MOCK/);
   const tile = repoFile("components", "settings-bento", "bento-tile.tsx");
   assert.match(tile, /href={tile\.href}/);
-  // Prefetch stays off until ticket 06 wires hover/focus intent prefetch.
-  assert.match(tile, /prefetch={false}/);
+  // Intent prefetch (ticket 06): dead at rest so viewport entry never
+  // avalanches; hover/focus intent restores default prefetch per tile.
+  assert.match(tile, /HoverPrefetchLink/);
+  assert.match(tile, /enabled=\{prefetchOnIntent\}/);
+  const intent = repoFile("components", "settings-bento", "hover-prefetch-link.tsx");
+  assert.match(intent, /prefetch=\{enabled \? \(active \? null : false\) : false\}/);
   // The operator tile honors the registry's adminOnly flag.
   assert.match(landing, /adminOnly/);
   assert.match(landing, /isPlatformAdmin/);

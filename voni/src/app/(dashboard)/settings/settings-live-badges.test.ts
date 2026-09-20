@@ -37,7 +37,11 @@ test("landing and services section share one readiness source", () => {
 test("badge status stays part of the link announcement", () => {
   const tile = repoFile("components", "settings-bento", "bento-tile.tsx");
   assert.match(tile, /Status: /);
-  assert.match(tile, /aria-label/);
+  // Since ticket 06 the accessible name travels as the island's ariaLabel
+  // prop; the island renders it as the link's aria-label.
+  assert.match(tile, /ariaLabel=\{/);
+  const island = repoFile("components", "settings-bento", "hover-prefetch-link.tsx");
+  assert.match(island, /aria-label=\{ariaLabel\}/);
 });
 
 test("appearance badge is client-live, never a server mock", () => {

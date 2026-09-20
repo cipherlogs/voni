@@ -1,9 +1,9 @@
-import Link from "next/link";
 import { ArrowRight } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import type { SettingsTile } from "@/lib/settings-tiles";
 import type { SettingsTileBadge } from "@/lib/settings-badges";
+import { HoverPrefetchLink } from "./hover-prefetch-link";
 import {
   ConstellationScene,
   ControlScene,
@@ -38,8 +38,13 @@ export type TileBadge = SettingsTileBadge;
  * styled span, never a nested link. Decorative scenes stay aria-hidden;
  * the link announces label, description, and live status.
  *
- * Prefetch stays off until ticket 06 wires hover/focus intent prefetch —
- * the landing must not fetch-avalanche every section on viewport entry.
+ * Intent prefetch (ticket 06): the link is dead at rest
+ * (`prefetch={false}` — viewport entry fetches nothing, so the tile grid
+ * never avalanches) and restores default static prefetch on hover/focus
+ * intent via the `HoverPrefetchLink` client island (keyboard focus arms
+ * exactly like hover). Prefetch-silent venues pass
+ * `prefetchOnIntent={false}` — the throwaway gallery does until ticket 08
+ * deletes it.
  * Motion gating (ticket 05): the scene wrapper carries
  * `bento-scene-viewport` (`content-visibility: auto` in globals.css) so
  * offscreen tiles skip scene rendering; onscreen tiles keep the
@@ -49,18 +54,20 @@ export function BentoTile({
   tile,
   badge,
   className,
+  prefetchOnIntent = true,
 }: {
   tile: SettingsTile;
   badge?: TileBadge;
   className?: string;
+  prefetchOnIntent?: boolean;
 }) {
   const Scene = TILE_SCENES[tile.bgKind];
   const status = badge ? ` Status: ${badge.text}` : "";
   return (
-    <Link
+    <HoverPrefetchLink
       href={tile.href}
-      prefetch={false}
-      aria-label={`${tile.label} — ${tile.description}${status}`}
+      enabled={prefetchOnIntent}
+      ariaLabel={`${tile.label} — ${tile.description}${status}`}
       className={cn(
         "group rounded-xl focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:outline-none",
         className,
@@ -93,6 +100,6 @@ export function BentoTile({
         </div>
         <div className="pointer-events-none absolute inset-0 transition-colors duration-[var(--motion-standard)] group-hover:bg-foreground/[0.03]" />
       </div>
-    </Link>
+    </HoverPrefetchLink>
   );
 }

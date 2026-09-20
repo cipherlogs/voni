@@ -508,6 +508,16 @@ styles as the static frame.
   marquee, orbit, horizon, flat route-pulse, losing B/C grammars) left
   with their deleted scenes per the §10b lists above. No gap-table row:
   no new visual language was introduced, so there is no gap to record.
+- **Intent prefetch (ticket 06, 2026-09-20):** tile links are dead at rest
+  (`prefetch={false}` — viewport entry fetches nothing, so the grid never
+  avalanches) and restore default static prefetch on hover/focus intent
+  via the `HoverPrefetchLink` client island (canonical Next.js
+  hover-triggered pattern: `prefetch={active ? null : false}`; keyboard
+  focus arms exactly like hover; idempotent arming fires once per intent;
+  no hand-rolled `router.prefetch`). Under the project's
+  `partialPrefetching` the intent prefetch resolves the per-route App
+  Shell. The throwaway gallery passes `prefetchOnIntent={false}` (nothing
+  prefetches there until ticket 08 deletes it).
 
 ## Appendix A — Route table (keep vs replace)
 

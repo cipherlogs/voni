@@ -28,6 +28,7 @@ export function BentoTile({
       tile={tile}
       badge={MOCK_BADGES[tile.value] ?? { text: "Preview", variant: "outline" }}
       className={className}
+      prefetchOnIntent={false}
     />
   );
 }

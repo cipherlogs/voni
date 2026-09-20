@@ -43,11 +43,12 @@ test("every surviving scene loop keeps its reduced-motion stop", () => {
   }
 });
 
-test("ticket 05 keeps the 06 prefetch boundary and records its amendment", () => {
+test("ticket 06 keeps the intent-prefetch boundary and records its amendment", () => {
   const tile = repoFile("components", "settings-bento", "bento-tile.tsx");
-  // Hover-intent prefetch arrives in ticket 06 — landing must not
-  // fetch-avalanche sections on viewport entry.
-  assert.match(tile, /prefetch={false}/);
+  // Hover-intent prefetch (ticket 06): dead at rest — the landing never
+  // fetch-avalanches sections on viewport entry; intent arms per tile.
+  assert.match(tile, /HoverPrefetchLink/);
+  assert.match(tile, /prefetchOnIntent = true/);
   const design = repoFile("..", "DESIGN.md");
   assert.match(design, /ticket 05/i);
   assert.match(design, /content-visibility/);
