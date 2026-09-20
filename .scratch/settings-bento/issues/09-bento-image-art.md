@@ -8,9 +8,14 @@ Check each comp against the frozen endpoint grammar and visual gates. After gene
 
 **Blocked by:** 08 (feature complete first; art replates onto the shipped landing).
 
-**Status:** ready-for-agent
+**Status:** needs-info
 
-- [ ] Endpoint-grammar contract frozen (flows + endpoints from 01b winners; rendering open)
-- [ ] `imagegen` comps per tile reviewed; user-picked winners recorded
+- [x] Endpoint-grammar contract frozen (flows + endpoints from 01b winners; rendering open)
+- [x] `imagegen` comps generated and agent-reviewed against the endpoint and signal contracts
+- [ ] User-picked winners recorded
 - [ ] Scenes replated to winning direction; amendment updated with new rendering rules
 - [ ] Same gates: containment, signal grammar (or amended successor), reduced-motion frames, 390px, zero filler words
+
+## Comp review
+
+The seven three-option boards are indexed in [`../comps/README.md`](../comps/README.md). Options `A`, `B`, and `C` are the left, center, and right panels. Record one user pick per tile before returning this ticket to `ready-for-agent` for the production replate.
