@@ -43,6 +43,17 @@ export function generateStaticParams() {
 }
 
 /**
+ * Instant opt-out: most section leaves read per-session data (headers-based
+ * session + org-scoped queries), and the page itself reads `params` — so
+ * these routes are allowed to block. Silences the blocking-prerender and
+ * instant-shell-url-data validation that would otherwise flag each data
+ * leaf. Streaming is unchanged: the section shell still paints instantly
+ * with a shaped skeleton while the leaf streams in. Placed here (not
+ * higher) so the rest of the app keeps validating.
+ */
+export const instant = false;
+
+/**
  * Data-leaf split (ticket 02, dirty safety in 03): each section fetches
  * only its own reads behind the shell's Suspense boundary, so one section
  * resolving never remounts another section's form. Navigating across the

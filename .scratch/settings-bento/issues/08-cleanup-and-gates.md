@@ -23,3 +23,17 @@
 
 - Standards: zero hard violations; one judgement call dismissed (test `join(...)` shape vs `repoFile` helper — forced by `existsSync`/`readFileSync` API difference, extracting would violate the no-shared-helper house rule).
 - Spec: no missing/creep/wrong findings on either axis.
+
+## Comments
+
+- Post-08 follow-up (Next `Instant` insight on `/settings/[tab]`): dev-overlay
+  flagged uncached per-session data (`WorkspaceData` fetch) plus URL data
+  (`params` on appearance) — `use cache` inapplicable, layout Suspense
+  insufficient for per-segment validation. Fixed with `export const instant
+  = false` on `[tab]/page.tsx` (lowest segment; layout deliberately keeps
+  validating), pinned present-on-page + absent-on-layout by
+  `settings-routes.test.ts`. MCP-verified: clean dev-server restart, all 5
+  tabs visited, `get_errors` shows neither insight (one benign pre-existing
+  "Document hidden" abort remains). Gates: tsc/eslint clean, 453/453,
+  two-axis review clean (2 findings fixed: placement guard, comment
+  accuracy).

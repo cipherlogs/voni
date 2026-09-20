@@ -104,6 +104,13 @@ test("shared section shell carries back-link, heading, skeleton, and tab validat
   assert.match(layout, /settingsSectionTile/);
   const page = source("[tab]/page.tsx");
   assert.match(page, /settingsSectionTile/);
+  // Instant insight opt-out: most section leaves read per-session data
+  // (headers + org-scoped queries) and the page itself reads params, so the
+  // blocking-prerender validation allows these routes to block instead of
+  // flagging each data leaf. Lives on the page (lowest segment) — pinned
+  // absent from the layout — so the rest of the app keeps validating.
+  assert.match(page, /export const instant = false/);
+  assert.doesNotMatch(layout, /export const instant/);
 });
 
 test("unknown sections land on a settings-scoped not-found page", () => {
