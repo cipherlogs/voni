@@ -72,7 +72,10 @@ test("shared section shell carries back-link, heading, skeleton, and tab validat
   assert.match(layout, /tile\.description/);
   assert.match(layout, /notFound\(\)/);
   assert.match(layout, /<Suspense/);
-  assert.match(layout, /DetailSkeleton/);
+  // Ticket 03: one skeleton per section shape, picked by tab — never a
+  // single generic fallback for all sections.
+  assert.match(layout, /SettingsSectionSkeleton/);
+  assert.doesNotMatch(layout, /DetailSkeleton/);
   assert.match(layout, /{children}/);
   // Layout and page validate through one shared lookup — heading and
   // content can never disagree on what exists.

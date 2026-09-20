@@ -42,9 +42,12 @@ export function generateStaticParams() {
 }
 
 /**
- * Data-leaf split (ticket 02): each section fetches only its own reads
- * behind this page's single Suspense boundary, so one section resolving
- * never remounts another section's form and dirty inputs survive.
+ * Data-leaf split (ticket 02, dirty safety in 03): each section fetches
+ * only its own reads behind the shell's Suspense boundary, so one section
+ * resolving never remounts another section's form. Navigating across the
+ * route split still unmounts the form — the voice/workspace forms retain
+ * unfinished edits in a per-section draft (see `settings-draft.ts`) and
+ * warn on reload/close while dirty, instead of silently discarding.
  */
 async function AccountData() {
   const ctx = await requireCtxOrRedirect("/settings/account");

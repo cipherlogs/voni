@@ -1,15 +1,17 @@
 import { Suspense } from "react";
 import { notFound } from "next/navigation";
 import { BackLink } from "@/components/back-link";
-import { DetailSkeleton } from "@/components/page-skeletons";
-import { settingsSectionTile } from "@/lib/settings-tiles";
+import { SettingsSectionSkeleton } from "@/components/page-skeletons";
+import { settingsSectionTile, type SettingsTabValue } from "@/lib/settings-tiles";
 
 /**
- * Shared section shell (ticket 02): BackLink + registry heading paint
- * immediately (no data needed — the registry is static) and persist across
- * section-to-section navigation, since this layout stays mounted while only
- * the `[tab]` param changes. Each section's data streams inside the shell's
- * own Suspense boundary below, so the skeleton persists too.
+ * Shared section shell (ticket 02, per-section loading in 03): BackLink +
+ * registry heading paint immediately (no data needed — the registry is
+ * static) and persist across section-to-section navigation, since this
+ * layout stays mounted while only the `[tab]` param changes. Each section's
+ * data streams inside the shell's own Suspense boundary below, with a
+ * skeleton shaped to that section's real layout — so the loading state
+ * reads as the incoming page, never a generic placeholder.
  */
 export default async function SettingsSectionLayout({
   children,
@@ -18,6 +20,9 @@ export default async function SettingsSectionLayout({
   const { tab } = await params;
   const tile = settingsSectionTile(tab);
   if (!tile) notFound();
+  // Same single source as the page guard — after the 404 above, the value
+  // is a known section, so the skeleton switch below is exhaustive.
+  const section = tile.value as SettingsTabValue;
   return (
     <div data-testid="settings-section-shell" className="flex flex-col gap-6">
       <BackLink href="/settings" label="Settings" />
@@ -28,7 +33,7 @@ export default async function SettingsSectionLayout({
       <Suspense
         fallback={
           <div role="status" aria-label="Loading settings section">
-            <DetailSkeleton />
+            <SettingsSectionSkeleton tab={section} />
           </div>
         }
       >

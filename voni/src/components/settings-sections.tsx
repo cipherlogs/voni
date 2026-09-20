@@ -47,6 +47,16 @@ import {
   setProviderConnection,
   type SettingsActionState,
 } from "@/app/(dashboard)/settings/actions";
+import {
+  isVoiceDirty,
+  isWorkspaceDirty,
+  readSettingsDraft,
+  settingsDraftKey,
+  useBeforeUnloadGuard,
+  writeSettingsDraft,
+  type VoiceDraft,
+  type WorkspaceDraft,
+} from "@/components/settings-draft";
 import { cn } from "@/lib/utils";
 
 const INITIAL: SettingsActionState = { ok: false };
@@ -120,10 +130,12 @@ function ActionFeedback({ state }: { state: SettingsActionState }) {
 }
 
 function WorkspaceNameField({
-  name,
+  value,
+  onChange,
   canEdit,
 }: {
-  name: string;
+  value: string;
+  onChange: (value: string) => void;
   canEdit: boolean;
 }) {
   return (
@@ -134,7 +146,8 @@ function WorkspaceNameField({
       <Input
         id="workspace-name"
         name="name"
-        defaultValue={name}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
         disabled={!canEdit}
       />
     </Field>
@@ -144,29 +157,28 @@ function WorkspaceNameField({
 /**
  * Workspace timezone: editable from the named list, defaulting to the
  * stored zone when a legacy value is not in the list. Base UI's Select
- * needs a controlled value, so this mirrors the form-data pattern its
- * sibling voice selects use — with a hidden input carrying the post.
+ * needs a controlled value, so the owning section holds the state and this
+ * field mirrors the form-data pattern its sibling voice selects use —
+ * with a hidden input carrying the post.
  */
 function WorkspaceTimezoneField({
-  timezone,
+  value,
+  onChange,
   canEdit,
 }: {
-  timezone: string;
+  value: string;
+  onChange: (value: string) => void;
   canEdit: boolean;
 }) {
-  const fallback = TIMEZONE_OPTIONS.includes(
-    timezone as (typeof TIMEZONE_OPTIONS)[number],
-  )
-    ? timezone
-    : TIMEZONE_OPTIONS[0];
-  const [zone, setZone] = useState(fallback);
   return (
     <Field>
       <FieldLabel htmlFor="workspace-timezone">Timezone</FieldLabel>
-      <input type="hidden" name="timezone" value={zone} />
+      <input type="hidden" name="timezone" value={value} />
       <Select
-        value={zone}
-        onValueChange={(value) => setZone(value ?? zone)}
+        value={value}
+        onValueChange={(next) => {
+          if (next) onChange(next);
+        }}
         disabled={!canEdit}
       >
         <SelectTrigger
@@ -364,14 +376,29 @@ function ProvidersSection({
 
 function VoiceCopilotCard({ prefs }: { prefs: CopilotVoicePrefs }) {
   const [saveState, saveAction] = useActionState(updateCopilotVoicePrefs, INITIAL);
-  const [voiceId, setVoiceId] = useState(prefs.voiceId);
-  const [language, setLanguage] = useState(prefs.language);
+  const draftKey = settingsDraftKey("voice");
+  // Retain unfinished edits across the route split: a draft left in one
+  // section restores when the user navigates back, instead of silently
+  // discarding. Server props stay authoritative — a corrupt draft reads null.
+  const [voiceId, setVoiceId] = useState(
+    () => readSettingsDraft<VoiceDraft>(draftKey)?.voiceId ?? prefs.voiceId,
+  );
+  const [language, setLanguage] = useState(
+    () => readSettingsDraft<VoiceDraft>(draftKey)?.language ?? prefs.language,
+  );
+  const isDirty = isVoiceDirty({ voiceId, language }, prefs);
+  useBeforeUnloadGuard(isDirty);
+  useEffect(() => {
+    writeSettingsDraft(draftKey, isDirty ? { voiceId, language } : null);
+  }, [draftKey, isDirty, voiceId, language]);
   const note = prefsPairingNote({ voiceId, language });
   // The copilot provider lives outside this tab: tell it to reload prefs so
   // the next conversation uses the saved voice without a page refresh.
   useEffect(() => {
-    if (saveState.ok) window.dispatchEvent(new CustomEvent("voni:voice-prefs-changed"));
-  }, [saveState]);
+    if (!saveState.ok) return;
+    writeSettingsDraft(draftKey, null);
+    window.dispatchEvent(new CustomEvent("voni:voice-prefs-changed"));
+  }, [draftKey, saveState]);
   return (
     <form action={saveAction} className="grid gap-5 max-w-xl">
       <Field>
@@ -425,6 +452,11 @@ function VoiceCopilotCard({ prefs }: { prefs: CopilotVoicePrefs }) {
         {note ? <p className="text-muted-foreground text-xs">{note}</p> : null}
       </Field>
       <ActionFeedback state={saveState} />
+      {isDirty ? (
+        <p aria-live="polite" className="text-muted-foreground text-xs">
+          Unsaved changes — they stay here if you switch sections.
+        </p>
+      ) : null}
       <div>
         <Separator />
         <div className="flex items-center justify-end gap-3 pt-4">
@@ -440,6 +472,13 @@ function VoiceCopilotCard({ prefs }: { prefs: CopilotVoicePrefs }) {
  * Each renders inside the shared section shell (`[tab]/layout.tsx`) with
  * data from its own server leaf — no shared tab state, so one section's
  * reload never remounts another section's form.
+ *
+ * Dirty-form protection (ticket 03) is explicit per form: voice + workspace
+ * retain unfinished edits in a per-section draft and warn on reload/close
+ * while dirty; account has no editable fields (sign-out only); providers
+ * save immediately per toggle (optimistic + server action, nothing to lose);
+ * appearance applies immediately via the theme toggle — so the last three
+ * carry no draft by design, not by omission.
  */
 export function AccountSection({ user }: { user: AccountInfo }) {
   const router = useRouter();
@@ -490,6 +529,40 @@ export function VoiceSection({ prefs }: { prefs: CopilotVoicePrefs }) {
 
 export function WorkspaceSection({ workspace }: { workspace: WorkspaceInfo }) {
   const [workspaceState, workspaceAction] = useActionState(updateWorkspaceSettings, INITIAL);
+  const draftKey = settingsDraftKey("workspace");
+  const coerceZone = (zone: string) =>
+    TIMEZONE_OPTIONS.includes(zone as (typeof TIMEZONE_OPTIONS)[number]) ? zone : TIMEZONE_OPTIONS[0];
+  const saved: WorkspaceDraft = {
+    name: workspace.name,
+    timezone: coerceZone(workspace.timezone),
+    humanTransferNumber: workspace.humanTransferNumber,
+  };
+  // Same retain-across-routes contract as the voice form: unfinished edits
+  // restore when the user navigates back. Non-owners render disabled fields
+  // that can never go dirty, so no draft is ever written for them. A stale
+  // draft outside the zone list falls back the same way a legacy saved value
+  // does, so the Select always holds a listed value.
+  const [name, setName] = useState(() => readSettingsDraft<WorkspaceDraft>(draftKey)?.name ?? saved.name);
+  const [timezone, setTimezone] = useState(() => {
+    const draftZone = readSettingsDraft<WorkspaceDraft>(draftKey)?.timezone;
+    return draftZone ? coerceZone(draftZone) : saved.timezone;
+  });
+  const [transferNumber, setTransferNumber] = useState(
+    () => readSettingsDraft<WorkspaceDraft>(draftKey)?.humanTransferNumber ?? saved.humanTransferNumber,
+  );
+  const isDirty =
+    workspace.canEdit && isWorkspaceDirty({ name, timezone, humanTransferNumber: transferNumber }, saved);
+  useBeforeUnloadGuard(isDirty);
+  useEffect(() => {
+    if (!workspace.canEdit) return;
+    writeSettingsDraft(
+      draftKey,
+      isDirty ? { name, timezone, humanTransferNumber: transferNumber } : null,
+    );
+  }, [draftKey, isDirty, name, timezone, transferNumber, workspace.canEdit]);
+  useEffect(() => {
+    if (workspaceState.ok) writeSettingsDraft(draftKey, null);
+  }, [draftKey, workspaceState]);
   return (
     <SettingsSection
       title="Workspace"
@@ -498,17 +571,24 @@ export function WorkspaceSection({ workspace }: { workspace: WorkspaceInfo }) {
       <form action={workspaceAction} className="grid max-w-xl gap-5">
         <FieldGroup>
           <WorkspaceNameField
-            name={workspace.name}
+            value={name}
+            onChange={setName}
             canEdit={workspace.canEdit}
           />
           <WorkspaceTimezoneField
-            timezone={workspace.timezone}
+            value={timezone}
+            onChange={setTimezone}
             canEdit={workspace.canEdit}
           />
-          <Field><FieldLabel htmlFor="transfer-number">Human transfer number</FieldLabel><Input id="transfer-number" name="humanTransferNumber" type="tel" defaultValue={workspace.humanTransferNumber} placeholder="+971501234567" disabled={!workspace.canEdit} /><p className="text-muted-foreground text-xs">Used only for this workspace when an agent transfers a live call.</p></Field>
+          <Field><FieldLabel htmlFor="transfer-number">Human transfer number</FieldLabel><Input id="transfer-number" name="humanTransferNumber" type="tel" value={transferNumber} onChange={(event) => setTransferNumber(event.target.value)} placeholder="+971501234567" disabled={!workspace.canEdit} /><p className="text-muted-foreground text-xs">Used only for this workspace when an agent transfers a live call.</p></Field>
         </FieldGroup>
         {!workspace.canEdit ? <Alert><ShieldCheck /><AlertTitle>Owner access required</AlertTitle><AlertDescription>Only a workspace owner can change these values.</AlertDescription></Alert> : null}
         <ActionFeedback state={workspaceState} />
+        {isDirty ? (
+          <p aria-live="polite" className="text-muted-foreground text-xs">
+            Unsaved changes — they stay here if you switch sections.
+          </p>
+        ) : null}
         {workspace.canEdit ? (
           <div>
             <Separator />
