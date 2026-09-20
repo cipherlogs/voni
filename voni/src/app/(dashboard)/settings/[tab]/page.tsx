@@ -18,6 +18,7 @@ import {
 import { RouteBrief } from "@/components/copilot/route-brief";
 import { SETTINGS_TABS, type SettingsTabValue } from "@/lib/settings-tabs";
 import { settingsSectionTile } from "@/lib/settings-tiles";
+import { buildServiceReadiness } from "@/lib/settings-badges";
 import {
   AccountSection,
   AppearanceSection,
@@ -104,22 +105,17 @@ async function ServicesData() {
     summaries.map(([name, value]) => [name, { ...value, updatedAt: value.updatedAt?.toISOString() }]),
   ) as Record<CredentialName, CredentialSummary & { updatedAt?: string }>;
   const llmConfigured = llmAccountLists.some((accounts) => accounts.some((account) => account.enabled));
-  const services = [
-    { id: "voice", label: "Voice agents", configured: summaryMap.assemblyai_api_key.configured },
-    {
-      id: "phone",
-      label: "Phone calls",
-      configured:
-        summaryMap.telnyx_api_key.configured &&
-        Boolean(platformConfig.telnyxConnectionId && platformConfig.telnyxCallerNumber),
-    },
-    { id: "llm", label: "AI generation", configured: llmConfigured },
-    {
-      id: "voice-note",
-      label: "Voice notes",
-      configured: summaryMap.cartesia_api_key.configured && Boolean(platformConfig.cartesiaVoiceId),
-    },
-  ];
+  // Readiness rows come from the shared helper (ticket 04) so the services
+  // section and the landing badge can never disagree on what "ready" means.
+  const services = buildServiceReadiness({
+    assemblyaiConfigured: summaryMap.assemblyai_api_key.configured,
+    telnyxConfigured: summaryMap.telnyx_api_key.configured,
+    telnyxConnectionId: platformConfig.telnyxConnectionId,
+    telnyxCallerNumber: platformConfig.telnyxCallerNumber,
+    llmConfigured,
+    cartesiaConfigured: summaryMap.cartesia_api_key.configured,
+    cartesiaVoiceId: platformConfig.cartesiaVoiceId,
+  });
   const ready = services.filter((service) => service.configured).length;
   return (
     <>

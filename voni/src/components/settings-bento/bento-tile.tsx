@@ -3,6 +3,7 @@ import { ArrowRight } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import type { SettingsTile } from "@/lib/settings-tiles";
+import type { SettingsTileBadge } from "@/lib/settings-badges";
 import {
   ConstellationScene,
   ControlScene,
@@ -24,13 +25,10 @@ export const TILE_SCENES: Record<SettingsTile["bgKind"], () => React.JSX.Element
   control: ControlScene,
 };
 
-/** Live badge slot: ticket 04 feeds truthful per-tile status here. Until
- * then the landing passes no badge and tiles render badgeless — never
- * mock data in production. */
-export interface TileBadge {
-  readonly text: string;
-  readonly variant: "secondary" | "outline";
-}
+/** Live badge slot: ticket 04 feeds truthful per-tile status here. The shape
+ * is owned by `lib/settings-badges.ts` (single source with the derivation);
+ * this alias stays so existing importers keep compiling. */
+export type TileBadge = SettingsTileBadge;
 
 /**
  * One faithful bento tile: tall card, full-bleed masked scene,
