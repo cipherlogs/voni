@@ -18,7 +18,7 @@
  * here too, via `dispatchIdleLabel` — the runner logs them to the operator,
  * so the raw shorthand ("no active campaigns", "a call is already in
  * progress") must read as operator sentences for the same reason the dial
- * outcomes do. Campaign-prefixed variants ("Acme: no leads due") map as
+ * outcomes do. Campaign-prefixed variants ("Marina: no leads due") map as
  * well: the prefix names the campaign, the suffix names the state.
  */
 export function dialOutcomeLabel(

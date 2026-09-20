@@ -277,8 +277,8 @@
 }
 
 .bento-fade {
-  -webkit-mask-image: linear-gradient(to top, transparent 40%, #000 100%);
-  mask-image: linear-gradient(to top, transparent 40%, #000 100%);
+  -webkit-mask-image: linear-gradient(to top, transparent 25%, #000 100%);
+  mask-image: linear-gradient(to top, transparent 25%, #000 100%);
 }
 
 /* Ping ring on the constellation agent node. Base is invisible; the loop
@@ -405,24 +405,6 @@
   }
 }
 
-/* Identity orbit: slow 30° sweep that returns. The field companion class
-   (beside each use) sizes/positions the wrapper so its center sits on the
-   avatar center; base rotation holds the dot at the upper-right attachment
-   (the frozen frame). */
-.bento-orbit {
-  animation: bento-orbit 24s ease-in-out infinite;
-}
-
-@keyframes bento-orbit {
-  0%,
-  100% {
-    transform: rotate(-5deg);
-  }
-  50% {
-    transform: rotate(25deg);
-  }
-}
-
 /* Config spine: accent signal travels the rail while each node brightens as
    it passes (shared 4s timeline). Base emphasizes the first node. */
 .bento-spine-dot {
@@ -467,67 +449,6 @@
   }
 }
 
-/* Theme horizon: boundary drifts ±4% (~8% travel) extremely slowly. The
-   markup composes the 55/45 resting split (the frozen frame). */
-.bento-horizon {
-  animation: bento-horizon-drift 14s ease-in-out infinite alternate;
-}
-
-@keyframes bento-horizon-drift {
-  from {
-    transform: translateX(-4%);
-  }
-  to {
-    transform: translateX(4%);
-  }
-}
-
-/* Incoming route: pulse travels number → seal, pauses, completes to agent.
-   Straight-line travel in element percentages (robust at any tile width);
-   the seal sits at the track center. Base parks the pulse just past the
-   seal (the frozen frame). */
-.bento-route-pulse {
-  left: 52%;
-  animation: bento-route-pulse 5s ease-in-out infinite;
-}
-
-@keyframes bento-route-pulse {
-  0% {
-    left: 5%;
-    opacity: 0;
-  }
-  8%,
-  33% {
-    opacity: 1;
-  }
-  33%,
-  48% {
-    left: 48%;
-  }
-  85%,
-  92% {
-    opacity: 1;
-  }
-  92%,
-  100% {
-    left: 90%;
-  }
-  100% {
-    opacity: 0;
-  }
-}
-
-/* Theme horizon: dark layer clipped to a diagonal, drifting with its
-   wrapper. The white mock lines inside the dark layer are the single
-   raw-color exemption (always-light preview lines); everything else token. */
-.bento-horizon-dark {
-  clip-path: polygon(68% 0, 100% 0, 100% 100%, 48% 100%);
-}
-
-.bento-horizon-light {
-  clip-path: polygon(0 0, 68% 0, 48% 100%, 0 100%);
-}
-
 /* Constellation fan resting emphasis: first connector active. Scan branches
    rest fully connected (default opacity). */
 .bento-fan > * {
@@ -538,9 +459,145 @@
   opacity: 1;
 }
 
-/* Orbit resting frame: dot parked at the upper-right attachment. */
-.bento-orbit {
-  transform: rotate(20deg);
+/* Scene round 01b (rework track → final V01): containment + brand-green
+   signal grammar (see DESIGN.md landing-bento amendment + ADR-0001). Key
+   glyphs are never clipped (16px inset floor; only decorative arcs may
+   bleed); scene mass sits in the lower third, just above the
+   bottom-anchored title. Green is the logo-V value via scoped classes
+   ONLY — traveling/moment elements (packets, pulse rings, presence dots,
+   moment glyphs); never structure, never text. Same value light + dark
+   (logo + voice-call precedent). Each family lists its frozen frame here;
+   base styles ARE the frames. */
+.bento-signal-dot {
+  background-color: var(--color-green-600);
+}
+
+.bento-signal-halo {
+  background-color: color-mix(in oklch, var(--color-green-600) 12%, transparent);
+}
+
+.bento-signal-halo-ring {
+  box-shadow: 0 0 0 4px color-mix(in oklch, var(--color-green-600) 18%, transparent);
+}
+
+.bento-signal-ping {
+  box-shadow: 0 0 0 2px var(--color-green-600);
+}
+
+/* Horizontal packet: straight travel with soft ends. Frozen: parked
+   mid-track, visible. */
+.bento-packet-x {
+  left: 45%;
+  animation: bento-packet-x 3.2s ease-in-out infinite;
+}
+
+@keyframes bento-packet-x {
+  0% {
+    left: 4%;
+    opacity: 0;
+  }
+  12%,
+  88% {
+    opacity: 1;
+  }
+  100% {
+    left: 94%;
+    opacity: 0;
+  }
+}
+
+/* Control-plane scan flare: the branch under the emphasis wave flares green.
+   Peak-only keyframes — the frozen frame is the graphite base stroke. */
+.bento-scan-flare {
+  animation: bento-scan-flare 6s ease-in-out infinite;
+}
+
+@keyframes bento-scan-flare {
+  8%,
+  25% {
+    stroke: var(--color-green-600);
+  }
+}
+
+/* Conversation-point breathe: halo swells gently. Frozen: halo visible. */
+.bento-point-breathe {
+  animation: bento-point-breathe 3s ease-in-out infinite;
+}
+
+@keyframes bento-point-breathe {
+  0%,
+  100% {
+    opacity: 0.25;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.45;
+    transform: scale(1.35);
+  }
+}
+
+/* Appearance shuttle: selector travels between the two preview cards.
+   Frozen: parked at the light card. */
+.bento-shuttle-x {
+  left: 8%;
+  animation: bento-shuttle-x 6s ease-in-out infinite;
+}
+
+@keyframes bento-shuttle-x {
+  0%,
+  100% {
+    left: 8%;
+  }
+  50% {
+    left: 92%;
+  }
+}
+
+/* Alternating card emphasis (6s twin of the 3s lane pulse so it can sync
+   with the shuttle). Frozen: both cards fully visible. */
+.bento-pulse-alt {
+  animation: bento-lane 6s ease-in-out infinite;
+}
+
+.bento-pulse-alt-delay {
+  animation: bento-lane 6s ease-in-out infinite;
+  animation-delay: 3s;
+}
+
+/* Option-B descent family (final V01 keeps the seal-route for numbers;
+   the plain packet, vertical shuttle, and row wave left with losing
+   options B/C — ticket 09 re-adds what it needs). */
+/* Descending seal-route: number → seal pause → agent. Frozen: parked just
+   past the seal. */
+.bento-descend-seal {
+  top: 50%;
+  animation: bento-descend-seal 5s ease-in-out infinite;
+}
+
+@keyframes bento-descend-seal {
+  0% {
+    top: 4%;
+    opacity: 0;
+  }
+  8%,
+  33% {
+    opacity: 1;
+  }
+  33%,
+  48% {
+    top: 44%;
+  }
+  85%,
+  92% {
+    opacity: 1;
+  }
+  92%,
+  100% {
+    top: 90%;
+  }
+  100% {
+    opacity: 0;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -578,21 +635,27 @@
     background-image: none !important;
   }
 
-  /* Bento amendment 2026-09-16 (landing track): every tile-scene loop
-     stops outright; each class's own base styles are the resting frame
-     (no ping ring, lanes both visible with response emphasized, orbit dot
-     upper-right, first spine node emphasized, horizon at 55/45, route pulse
-     past the seal, branches connected with one accent segment). Retired
-     round-1 families (beam-flow, list-cycle) and the mark-wall marquee left
-     with deleted variants V02 and round 1. */
+  /* Bento amendment (landing track): every tile-scene loop stops outright;
+     each class's own base styles are the resting frame (no ping ring, fans
+     and scans at resting emphasis, lanes both visible with response
+     emphasized, spine first node emphasized, packet parked mid-track, scan
+     branches graphite, point halo visible, shuttle at the light card, both
+     preview cards visible, seal-route past the seal). Retired families —
+     round-1 beam-flow/list-cycle, mark-wall marquee, orbit, horizon, flat
+     route-pulse, and the losing B/C grammars — left with their deleted
+     scenes. */
   .bento-node-ping,
   .bento-branch-cycle,
   .bento-lane,
-  .bento-orbit,
   .bento-spine-dot,
   .bento-spine-nodes > *,
-  .bento-horizon,
-  .bento-route-pulse {
+  .bento-scan-flare,
+  .bento-packet-x,
+  .bento-point-breathe,
+  .bento-shuttle-x,
+  .bento-pulse-alt,
+  .bento-pulse-alt-delay,
+  .bento-descend-seal {
     animation: none !important;
   }
 }

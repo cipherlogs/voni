@@ -102,7 +102,7 @@ export async function getCtx(): Promise<Ctx | null> {
   // First sign-in: mint the org and make this user its owner.
   const orgId = crypto.randomUUID();
   // Slug has a unique index, so derive from the id rather than the name —
-  // two users called "Acme" signing up must not collide.
+  // two users with the same name signing up must not collide.
   const slug = `org-${orgId.slice(0, 8)}`;
   const orgName = session.user.name
     ? `${session.user.name}'s workspace`

@@ -10,11 +10,12 @@ export const metadata: Metadata = {
 const HERO_SPAN = "lg:col-span-2";
 
 /**
- * Throwaway gallery v4 (ticket 01, deleted in ticket 08): the winning V01
- * layout carrying the approved second-round scenes. Static mock data;
- * nothing prefetches. Section tiles point at the live `/settings` page until
- * ticket 02 makes the planned `/settings/<tab>` routes real; numbers and
- * operator link for real.
+ * Throwaway gallery v6 (ticket 01b final, deleted in ticket 08): the
+ * recombined V01 winners — services A, voice A, account C, workspace A,
+ * appearance A (placeholder until ticket 09), numbers B, operator A.
+ * Static mock data; nothing prefetches. Section tiles point at the live
+ * `/settings` page until ticket 02 makes the planned `/settings/<tab>`
+ * routes real; numbers and operator link for real.
  */
 const ORDER: ReadonlyArray<SettingsTile["value"]> = [
   "services",
@@ -29,12 +30,15 @@ const ORDER: ReadonlyArray<SettingsTile["value"]> = [
 export default function SettingsGalleryPage() {
   const byValue = new Map<string, SettingsTile>(SETTINGS_TILES.map((tile) => [tile.value, tile]));
   return (
-    <div className="flex flex-col gap-6">
+    // Same content container as the dashboard shell (`(dashboard)/layout`):
+    // the settings landing inherits max-w-6xl + responsive padding, so the
+    // gallery reviews tile widths at production geometry instead of
+    // stretching across the viewport.
+    <div className="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-6 p-4 md:p-6 lg:p-8">
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">Settings bento gallery</h1>
         <p className="text-sm text-muted-foreground">
-          Winning V01 layout with the approved scene round. Pick-level review per tile;
-          this whole route is deleted in ticket 08.
+          Final V01: recombined per-tile winners. This whole route is deleted in ticket 08.
         </p>
       </div>
       <div className="bento-grid-rows grid w-full grid-cols-1 gap-4 lg:grid-cols-3">

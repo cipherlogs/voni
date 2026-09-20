@@ -13,6 +13,7 @@ import {
   SpineScene,
 } from "./scenes";
 
+/** Final V01 scene set (ticket 01b winners). */
 export const TILE_SCENES: Record<SettingsTile["bgKind"], () => React.JSX.Element> = {
   constellation: ConstellationScene,
   lanes: LanesScene,

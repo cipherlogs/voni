@@ -38,7 +38,7 @@ export default function FormLayout03() {
               Personal information
             </h2>
             <p className="mt-1 text-pretty text-muted-foreground text-sm leading-6">
-              Lorem ipsum dolor sit amet, consetetur sadipscing elitr.
+              How your name and contact details appear across the product.
             </p>
           </div>
           <div className="sm:max-w-3xl md:col-span-2">
@@ -115,7 +115,7 @@ export default function FormLayout03() {
               Workspace settings
             </h2>
             <p className="mt-1 text-pretty text-muted-foreground text-sm leading-6">
-              Lorem ipsum dolor sit amet, consetetur sadipscing elitr.
+              Defaults shared by everyone in this workspace.
             </p>
           </div>
           <div className="sm:max-w-3xl md:col-span-2">
@@ -178,7 +178,7 @@ export default function FormLayout03() {
               Notification settings
             </h2>
             <p className="mt-1 text-pretty text-muted-foreground text-sm leading-6">
-              Lorem ipsum dolor sit amet, consetetur sadipscing elitr.
+              Choose which updates reach you, and where.
             </p>
           </div>
           <div className="sm:max-w-3xl md:col-span-2">

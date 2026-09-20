@@ -24,19 +24,19 @@ test("dispatcher idle states map to operator sentences", () => {
 
 test("campaign-qualified fragments keep the campaign name as subject", () => {
   assert.equal(
-    dispatchIdleLabel("Acme: no leads due"),
-    "Acme — No leads due right now — the queue refills when backoff or the calling window opens",
+    dispatchIdleLabel("Marina: no leads due"),
+    "Marina — No leads due right now — the queue refills when backoff or the calling window opens",
   );
   assert.equal(
-    dispatchIdleLabel("Acme: no leads due; Beta: agent is not deployed"),
-    "Acme — No leads due right now — the queue refills when backoff or the calling window opens; Beta — The agent is not deployed — publish it before dialling",
+    dispatchIdleLabel("Marina: no leads due; Palm: agent is not deployed"),
+    "Marina — No leads due right now — the queue refills when backoff or the calling window opens; Palm — The agent is not deployed — publish it before dialling",
   );
 });
 
 test("campaign-qualified calling-window verdicts map through the same table", () => {
   assert.equal(
-    dispatchIdleLabel('Acme: 08:00 in Asia/Dubai is outside 09:00-18:00'),
-    "Acme — Outside calling hours (08:00, window 09:00-18:00) — will retry when the window opens",
+    dispatchIdleLabel('Marina: 08:00 in Asia/Dubai is outside 09:00-18:00'),
+    "Marina — Outside calling hours (08:00, window 09:00-18:00) — will retry when the window opens",
   );
 });
 
@@ -44,7 +44,7 @@ test("unknown idle shapes pass through as null", () => {
   assert.equal(dispatchIdleLabel(null), null);
   assert.equal(dispatchIdleLabel(""), null);
   assert.equal(
-    dispatchIdleLabel("Acme: something entirely new"),
+    dispatchIdleLabel("Marina: something entirely new"),
     null,
   );
 });

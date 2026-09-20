@@ -249,7 +249,8 @@ label (Collapse/Expand sidebar + ⌘B) with aria-expanded.
   machine, 429 countdown, and distinct failure states stay; all styling
   goes Blocks idiom. The inline test uses chat-01's conversation layout
   inside a full-screen Base UI dialog. One re-derived call green, scoped to live-call
-  affordances only — never a general token. Everything slow stays a
+  affordances plus the §10b bento signal scope (packets, pulse rings,
+  presence dots, moment glyphs) — never a general token. Everything slow stays a
   durable job + JobCenter (async protocol §8).
 - **Feedback:** loading.tsx boundaries stay, skeleton markup rewritten
   in-style (no skeleton block exists — retires the skeleton split);
@@ -298,6 +299,11 @@ or be cut — or be a DESIGN.md-listed exception.
 - `sonner` references must be zero (Base UI toast is canonical).
   `grep -rni 'sonner' src package.json`
 - `asChild` must be zero (`render=` everywhere). `grep -rn 'asChild' src`
+- Template-filler words (Acme/lorem-ipsum-class placeholders, fake-brand
+  names) must be zero in user-visible design and copy; mock data uses
+  functional labels (`Main workspace`) or RFC-reserved domains
+  (`example.com`). Fixtures must read as plausible product data.
+  `grep -rni 'acme\|lorem\|john doe\|foo bar' src scripts`
 - `data-copilot-*` instrumentation: allowed to remain (functional), but
   new bespoke data-attribute styling is banned.
 
@@ -322,7 +328,7 @@ or be cut — or be a DESIGN.md-listed exception.
 | Shell sidebar+header / dialogs / command menu / file upload | blocks-has | sidebar-02/03, dialog-01…12, command-menu, file-upload |
 | Landing `/` | build-in-style | No marketing group; minimal composed entry |
 | `/prototypes/*` + strategy.module.css + prototype.css | cut | Dev-only, light-only; delete page+content+CSS together |
-| Settings bento landing (amendment 2026-09-16, landing track) | build-in-style | No bento block exists; faithful Magic UI bento-grid structure (tall 22rem rows, full-bleed masked scenes, bottom-anchored name/description with no icon — the scene carries the meaning, hover-reveal CTA) rebuilt from Card tokens + lucide + CSS-only scenes. Variant D row idiom stays production until tickets 02–08 cut over; the throwaway gallery that proves the language lives under `prototypes/` and dies in ticket 08 |
+| Settings bento landing (amendment 2026-09-16, landing track) | build-in-style | No bento block exists; faithful Magic UI bento-grid structure (tall 22rem rows, full-bleed masked scenes, bottom-anchored name/description with no icon — the scene carries the meaning, hover-reveal CTA) rebuilt from Card tokens + lucide + CSS-only scenes. Variant D row idiom stays production until tickets 02–08 cut over; the throwaway gallery that proves the language lives under `prototypes/` and dies in ticket 08. Containment reframe 2026-09-20 (ticket 01b): scenes are contained with a 16px inset floor (key glyphs never clipped; only decorative arcs may bleed) and the mask rebalanced to a 25% stop — see §10b |
 
 ## 7. Composition rules
 
@@ -406,8 +412,12 @@ styles as the static frame.
   + `ring-1 ring-foreground/10` (Card tokens, plain div — the reference
   content pads itself, so the `Card` primitive's spacing fights it).
   Content is bottom-anchored (`justify-between` + `mt-auto`); scenes are
-  absolute, oversized, cropped top/right.
-- **Mask fades:** `.bento-fade` (40% stop) replaces the reference
+  contained, never bled — key glyphs fully inside a 16px inset floor, only
+  decorative arcs/halos may bleed (containment reframe 2026-09-20, ticket
+  01b — the round-2 "oversized, cropped top/right" rule is retired).
+- **Mask fades:** `.bento-fade` (25% stop, rebalanced 2026-09-20 for the
+  lower-third composition: scene mass sits just above the bottom-anchored
+  title and dissolves into it) replaces the reference
   `[mask-image:...]` arbitrary properties; every scene root carries it so the
   mask eats the bottom into the content.
 - **New keyframes (allowed):** `bento-node-ping` — one breath per cycle on
@@ -423,6 +433,18 @@ styles as the static frame.
   `bento-route-pulse` — 5s number→seal pause→agent travel in element
   percentages (base parks just past the seal). The mark-wall marquee left
   with deleted variant V02.
+  Round 01b (rework track, final V01): `bento-orbit`, `bento-horizon`
+  (+ its clip classes and always-light exemption), and flat
+  `bento-route-pulse` retire with the losing options; survivors add
+  `bento-packet-x` (3.2s straight travel, parks mid-track),
+  `bento-scan-flare` (branch flares green at the emphasis peak; graphite
+  base is the frame), `bento-point-breathe` (3s halo swell),
+  `bento-shuttle-x` (6s card-to-card selector, parks at light),
+  `bento-pulse-alt`/`-delay` (6s alternating emphasis, both visible at
+  rest), `bento-descend-seal` (5s vertical seal-route, parks past the
+  seal). Losing-option families (descend-pulse, shuttle-y, row-wave,
+  seal-breathe, underline-sweep, stamp-in, caret-travel, xfade, flash)
+  left with deleted options B/C — ticket 09 re-adds what it needs.
 - **Provider scene tokens:** `--provider-*` fills (Gmail/Calendar/Slack/
   Drive official sets, Notion uses `currentColor`) are glyph fills ONLY
   inside the Services constellation — never UI chrome. They are the single
@@ -431,8 +453,11 @@ styles as the static frame.
   fills (PD-textlogo, trademark nominative use — sources noted beside the
   components); any mark failing small-size legibility falls back to its
   single-color si glyph, stated plainly. The theme-horizon dark layer
-  carries always-light mock lines (`bg-white/xx`, `text-white`) — the
-  single raw-color exemption, scoped to that layer; everything else token.
+  carried always-light mock lines (`bg-white/xx`, `text-white`) — that
+  raw-color exemption retired with the horizon in round 01b; the winning
+  Appearance scene builds its dark preview from `bg-foreground` +
+  `bg-primary-foreground` shapes (tokens, no exemption). Everything else
+  token.
 - **Scene categories:** A flow diagrams, B event streams, C interface
   miniatures, D signal scenes, E state transformations. New concept rounds
   name their category; cross-category repeats need a reason.
@@ -449,6 +474,18 @@ styles as the static frame.
 - **Badges:** one deliberate deviation — a live status badge floats
   top-right per tile (the reference has none; settings tiles need live
   state without disturbing the bottom content silhouette).
+- **Signal green (round 01b):** the logo-V brand green
+  (`--color-green-600`, the `.voni-arc-accent` value) is permitted inside
+  scenes as narrowly-scoped `.bento-signal-*` classes for traveling/moment
+  elements only (packets, pulse rings, presence dots, moment glyphs such
+  as checks and carets) — never structure, never body text. Same value in
+  light and dark, following the voice-call live-green precedent (see
+  ADR-0001).
+- **Final V01 (round 01b, user picks 2026-09-20):** services A, voice A,
+  account C, workspace A, appearance A (placeholder — no option won, first
+  replate in ticket 09), numbers B, operator A. Gallery width-capped to
+  the dashboard container (`max-w-6xl`) so tiles review at production
+  geometry.
 
 ## Appendix A — Route table (keep vs replace)
 
