@@ -5,8 +5,8 @@ import { CalendarMark, DriveMark, GmailMark, NotionMark, SlackMark } from "./pro
 
 /**
  * Final V01 scenes (ticket 01b winners, graduated to production in ticket
- * 02; the throwaway gallery imports them until ticket 08 deletes it — see
- * DESIGN.md §10b + ADR-0001).
+ * 02; the throwaway gallery that also consumed them was deleted in ticket
+ * 08 — see DESIGN.md §10b + ADR-0001).
  * Winners: services A, voice A, account C, workspace A, appearance A
  * (placeholder — first replate in ticket 09), numbers B, operator A.
  * Lower-third composition: scene mass sits just above the bottom-anchored

@@ -268,8 +268,8 @@ or be cut — or be a DESIGN.md-listed exception.
 - `text-[` / `bg-[` arbitrary values (~35 + ~9 hits) → map to scale/tokens.
   `grep -rn 'text-\[\|bg-\[' src | grep -v 'src/components/ui/'`
 - Hardcoded palette: `emerald|amber|#[0-9a-fA-F]{3,6}` outside comments
-  (~20 hits; prototypes carry 12) → map to tokens; prototypes CUT with
-  their CSS. `grep -rniE 'emerald|amber|#[0-9a-f]{3,6}\b' src | grep -v 'provider-'`
+  → map to tokens; prototypes (which carried 12 hits) CUT with their CSS
+  in ticket 08. `grep -rniE 'emerald|amber|#[0-9a-f]{3,6}\b' src | grep -v 'provider-'`
   (the `--provider-*` scene-glyph exception in §10b is the only exemption).
 - `dark:` outside `src/components/ui/` generated code (3 remaining bespoke
   sites: connection emerald, bubble, mode-toggle mechanics — logo hex retired
@@ -283,9 +283,9 @@ or be cut — or be a DESIGN.md-listed exception.
 - Non-`size-*` icon squares. `grep -rn 'h-[0-9].*w-\[0-9\]' src`
 - Extra CSS files / keyframes: only `globals.css` survives; prototype
   CSS deleted with the routes. `ls src/app/prototypes` must 404-think → empty
-  (exception: the ticket-01 `settings-gallery` throwaway lives under
-  `prototypes/` until ticket 08 deletes it — the manifest generator already
-  excludes that path, so voice files see zero churn).
+  (DONE ticket 08 — the `settings-gallery` throwaway is deleted, so the
+  exception is retired; the manifest generator's `prototypes/` exclusion
+  stays for future throwaways, with zero voice churn).
 - `cn` imports unify to `@/lib/utils` (remove `from "cn"` specifiers).
   `grep -rn 'from "cn"' src`
   (DONE 2026-09-13 — 13 ui/ files unified. The `"cn"` npm dep remains
@@ -328,7 +328,7 @@ or be cut — or be a DESIGN.md-listed exception.
 | Shell sidebar+header / dialogs / command menu / file upload | blocks-has | sidebar-02/03, dialog-01…12, command-menu, file-upload |
 | Landing `/` | build-in-style | No marketing group; minimal composed entry |
 | `/prototypes/*` + strategy.module.css + prototype.css | cut | Dev-only, light-only; delete page+content+CSS together |
-| Settings bento landing (amendment 2026-09-16, landing track) | build-in-style | No bento block exists; faithful Magic UI bento-grid structure (tall 22rem rows, full-bleed masked scenes, bottom-anchored name/description with no icon — the scene carries the meaning, hover-reveal CTA) rebuilt from Card tokens + lucide + CSS-only scenes. Variant D row idiom stood production until the ticket-02 cutover (see the Settings in-page nav row); the throwaway gallery that proves the language lives under `prototypes/` and dies in ticket 08. Containment reframe 2026-09-20 (ticket 01b): scenes are contained with a 16px inset floor (key glyphs never clipped; only decorative arcs may bleed) and the mask rebalanced to a 25% stop — see §10b |
+| Settings bento landing (amendment 2026-09-16, landing track) | build-in-style | No bento block exists; faithful Magic UI bento-grid structure (tall 22rem rows, full-bleed masked scenes, bottom-anchored name/description with no icon — the scene carries the meaning, hover-reveal CTA) rebuilt from Card tokens + lucide + CSS-only scenes. Variant D row idiom stood production until the ticket-02 cutover (see the Settings in-page nav row); the throwaway gallery that proved the language lived under `prototypes/` and died in ticket 08. Containment reframe 2026-09-20 (ticket 01b): scenes are contained with a 16px inset floor (key glyphs never clipped; only decorative arcs may bleed) and the mask rebalanced to a 25% stop — see §10b |
 
 ## 7. Composition rules
 
@@ -516,8 +516,8 @@ styles as the static frame.
   focus arms exactly like hover; idempotent arming fires once per intent;
   no hand-rolled `router.prefetch`). Under the project's
   `partialPrefetching` the intent prefetch resolves the per-route App
-  Shell. The throwaway gallery passes `prefetchOnIntent={false}` (nothing
-  prefetches there until ticket 08 deletes it).
+  Shell. Prefetch-silent venues pass `prefetchOnIntent={false}` (the
+  throwaway gallery did until ticket 08 deleted it).
 
 ## Appendix A — Route table (keep vs replace)
 

@@ -6,7 +6,7 @@ import type { SettingsTabValue } from "./settings-tabs";
  * `lib/settings-tabs.ts`. `icon` is a key resolved to a lucide component by
  * client renderers — never a component reference here, so this module stays
  * server-safe. `span`/`bgKind` record the v1 composition recommendation from
- * the gallery review; variants may override presentation locally.
+ * the 01b review; variants may override presentation locally.
  *
  * NOTE: `scripts/generate-app-manifest.mts` parses `settings-tabs.ts`
  * textually and expands the `/settings/[tab]` template into one static

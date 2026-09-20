@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -28,7 +28,7 @@ test("intent link can be disabled for prefetch-silent venues", () => {
   assert.match(island, /prefetch=\{enabled \? \(active \? null : false\) : false\}/);
 });
 
-test("production tile prefetches on intent; gallery stays silent", () => {
+test("production tile prefetches on intent; throwaway gallery is gone", () => {
   const tile = repoFile("components", "settings-bento", "bento-tile.tsx");
   assert.match(tile, /HoverPrefetchLink/);
   assert.doesNotMatch(tile, /from "next\/link"/);
@@ -40,7 +40,6 @@ test("production tile prefetches on intent; gallery stays silent", () => {
   assert.match(tile, /ariaLabel=\{/);
   const island = repoFile("components", "settings-bento", "hover-prefetch-link.tsx");
   assert.match(island, /aria-label=\{ariaLabel\}/);
-  const gallery = repoFile("app", "prototypes", "settings-gallery", "tiles.tsx");
-  // Throwaway gallery (deleted in 08): nothing prefetches, even on intent.
-  assert.match(gallery, /prefetchOnIntent=\{false\}/);
+  // Throwaway gallery (ticket 08): route files deleted, no dead imports.
+  assert.equal(existsSync(join(here, "..", "..", "..", "app", "prototypes", "settings-gallery")), false);
 });

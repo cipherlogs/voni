@@ -18,8 +18,7 @@ import { useState } from "react";
  * invalidation).
  *
  * `enabled={false}` keeps prefetching off entirely, even on intent — for
- * prefetch-silent venues like the throwaway settings gallery (deleted in
- * ticket 08).
+ * prefetch-silent venues.
  */
 export function HoverPrefetchLink({
   href,

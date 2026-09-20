@@ -25,11 +25,6 @@ export const TILE_SCENES: Record<SettingsTile["bgKind"], () => React.JSX.Element
   control: ControlScene,
 };
 
-/** Live badge slot: ticket 04 feeds truthful per-tile status here. The shape
- * is owned by `lib/settings-badges.ts` (single source with the derivation);
- * this alias stays so existing importers keep compiling. */
-export type TileBadge = SettingsTileBadge;
-
 /**
  * One faithful bento tile: tall card, full-bleed masked scene,
  * bottom-anchored name/description (no icon — the scene carries the
@@ -43,8 +38,7 @@ export type TileBadge = SettingsTileBadge;
  * never avalanches) and restores default static prefetch on hover/focus
  * intent via the `HoverPrefetchLink` client island (keyboard focus arms
  * exactly like hover). Prefetch-silent venues pass
- * `prefetchOnIntent={false}` — the throwaway gallery does until ticket 08
- * deletes it.
+ * `prefetchOnIntent={false}` to stay silent even on intent.
  * Motion gating (ticket 05): the scene wrapper carries
  * `bento-scene-viewport` (`content-visibility: auto` in globals.css) so
  * offscreen tiles skip scene rendering; onscreen tiles keep the
@@ -57,7 +51,7 @@ export function BentoTile({
   prefetchOnIntent = true,
 }: {
   tile: SettingsTile;
-  badge?: TileBadge;
+  badge?: SettingsTileBadge;
   className?: string;
   prefetchOnIntent?: boolean;
 }) {

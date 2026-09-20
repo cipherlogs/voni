@@ -1,7 +1,6 @@
 /**
  * Provider brand marks for the Services constellation scene ONLY
- * (production since ticket 02; the throwaway gallery imports them until
- * ticket 08 deletes it — see DESIGN.md §10b).
+ * (production since ticket 02 — see DESIGN.md §10b).
  *
  * Geometry: Wikimedia Commons canonical shapes (PD-textlogo; trademark
  * nominative use — Gmail 2020, Google Calendar 2020, Google Drive 2020,
