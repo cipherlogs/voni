@@ -61,7 +61,9 @@ a Blocks token system exists.
 - **Dark mode:** class-based + `next-themes` (as today). `dark:` utilities
   inside generated `ui/` primitives stay; the bespoke `dark:` sites
   (`connection-test-button` emerald, `bubble`, mode-toggle mechanics —
-  logo hex retired 2026-09-16) are fixed per §5.
+  logo hex retired 2026-09-16) are fixed per §5. Ticket 09 adds one narrow
+  exception inside `AppearancePreview`: paired `dark:` token utilities keep
+  its illustrative light and dark halves fixed when the host theme changes.
 
 ## 3. Components (pinned allow-list)
 
@@ -273,7 +275,9 @@ or be cut — or be a DESIGN.md-listed exception.
   (the `--provider-*` scene-glyph exception in §10b is the only exemption).
 - `dark:` outside `src/components/ui/` generated code (3 remaining bespoke
   sites: connection emerald, bubble, mode-toggle mechanics — logo hex retired
-  2026-09-16 with the animated Classic slot) → fix.
+  2026-09-16 with the animated Classic slot) → fix. The paired token classes
+  inside ticket 09's `AppearancePreview` are the sole scene exception because
+  the miniature must keep light and dark semantics under either host theme.
   `grep -rn 'dark:' src | grep -v 'src/components/ui/'`
 - `style={{` (6 sites: voice-call avatar px → exception restyle;
   voice-avatar `hsl()` hash gradient → rebuild in-style;
@@ -420,31 +424,15 @@ styles as the static frame.
   title and dissolves into it) replaces the reference
   `[mask-image:...]` arbitrary properties; every scene root carries it so the
   mask eats the bottom into the content.
-- **New keyframes (allowed):** `bento-node-ping` — one breath per cycle on
-  the constellation agent node (invisible base is the resting frame).
-  Round-1 families (`bento-beam-flow`, `bento-list-cycle`, `bento-marquee`)
-  retired with deleted variants V02 and round 1.
-  Scene round 2 (approved concepts) adds: `bento-branch-cycle` — shared
-  6s sequential-emphasis wave for the constellation fan (1.2s apart) and
-  the control-plane scan (2s apart); `bento-lane` — 3s duplex alternation
-  (response lane delayed 1.5s); `bento-orbit` — 24s ±30° sweep with return;
-  `bento-spine-travel` + `bento-spine-node` — 4s shared-timeline rail signal
-  and node windows; `bento-horizon-drift` — 14s ±4% alternate;
-  `bento-route-pulse` — 5s number→seal pause→agent travel in element
-  percentages (base parks just past the seal). The mark-wall marquee left
-  with deleted variant V02.
-  Round 01b (rework track, final V01): `bento-orbit`, `bento-horizon`
-  (+ its clip classes and always-light exemption), and flat
-  `bento-route-pulse` retire with the losing options; survivors add
-  `bento-packet-x` (3.2s straight travel, parks mid-track),
-  `bento-scan-flare` (branch flares green at the emphasis peak; graphite
-  base is the frame), `bento-point-breathe` (3s halo swell),
-  `bento-shuttle-x` (6s card-to-card selector, parks at light),
-  `bento-pulse-alt`/`-delay` (6s alternating emphasis, both visible at
-  rest), `bento-descend-seal` (5s vertical seal-route, parks past the
-  seal). Losing-option families (descend-pulse, shuttle-y, row-wave,
-  seal-breathe, underline-sweep, stamp-in, caret-travel, xfade, flash)
-  left with deleted options B/C — ticket 09 re-adds what it needs.
+- **Scene motion:** ticket 09 keeps `bento-node-ping`,
+  `bento-branch-cycle`, `bento-lane`, `bento-packet-x`, and
+  `bento-point-breathe`. It adds `bento-account-orbit` (7s identity-dot
+  orbit), `bento-theme-dark` + `bento-theme-seam` (one synchronized 8s
+  light/dark reveal), `bento-route-pulse` (3.2s route-node breath), and
+  `bento-operator-packet` (3.3s staggered capacity packets). The graphite
+  structures never change color. Each family has a useful base frame and
+  an explicit `animation: none` entry under reduced motion. Earlier scene
+  families remain historical only and have no production selectors.
 - **Provider scene tokens:** `--provider-*` fills (Gmail/Calendar/Slack/
   Drive official sets, Notion uses `currentColor`) are glyph fills ONLY
   inside the Services constellation — never UI chrome. They are the single
@@ -454,10 +442,10 @@ styles as the static frame.
   components); any mark failing small-size legibility falls back to its
   single-color si glyph, stated plainly. The theme-horizon dark layer
   carried always-light mock lines (`bg-white/xx`, `text-white`) — that
-  raw-color exemption retired with the horizon in round 01b; the winning
-  Appearance scene builds its dark preview from `bg-foreground` +
-  `bg-primary-foreground` shapes (tokens, no exemption). Everything else
-  token.
+  raw-color exemption retired with the horizon in round 01b. The winning
+  Appearance scene uses paired light/dark semantic-token classes so its
+  preview meaning stays fixed when the host theme changes. Everything else
+  stays token-based.
 - **Scene categories:** A flow diagrams, B event streams, C interface
   miniatures, D signal scenes, E state transformations. New concept rounds
   name their category; cross-category repeats need a reason.
@@ -467,10 +455,8 @@ styles as the static frame.
   `group-focus-visible` (keyboard parity the reference lacks), always
   visible below `lg`. Interactive feedback (shadow, wash, CTA reveal) uses
   `duration-[var(--motion-standard)]`; scene choreography keeps
-  `duration-300` hover breaths plus the round-2 loop constants (`6s`/`3s`/
-  `24s`/`4s`/`14s`/`5s`, `2400ms` ping) exactly like the `22rem` rows above —
-  no new palette. Overlay wash via token `bg-foreground/[0.03]`-style
-  tints only.
+  `duration-300` hover breaths plus the ticket 09 loop constants documented
+  under Scene motion. Overlay washes use token tints only.
 - **Badges:** one deliberate deviation — a live status badge floats
   top-right per tile (the reference has none; settings tiles need live
   state without disturbing the bottom content silhouette).
@@ -481,33 +467,28 @@ styles as the static frame.
   as checks and carets) — never structure, never body text. Same value in
   light and dark, following the voice-call live-green precedent (see
   ADR-0001).
-- **Final V01 (round 01b, user picks 2026-09-20):** services A, voice A,
-  account C, workspace A, appearance A (placeholder — no option won, first
-  replate in ticket 09), numbers B, operator A. Gallery width-capped to
-  the dashboard container (`max-w-6xl`) so tiles review at production
-  geometry.
-- **Motion gating (ticket 05, 2026-09-20):** the V01 loops ship as-is —
-  the ticket's "beam/equalizer" text named retired round-1 scenes, so per
-  the ticket-01b/02 handoff notes this ticket carries the winners to a
-  shippable landing instead of redesigning scenes. Onscreen tiles loop at
+- **Ticket 09 V02 (image-art replate, user picks 2026-09-20):** Appearance B
+  is one card crossing a light/dark seam; Services A is a haloed agent with
+  a contained provider fan; Voice A is a waveform bridge through Ivy;
+  Account B is an identity seal opening into two session receipts;
+  Workspace A is a defaults ledger feeding Sara and Jonas; Phone numbers A
+  is a number-to-route-to-Sara switchboard; Platform operator C braids the
+  Voice, Phone, and AI lanes through one operator into capacity bars. The
+  generated WebP boards are design references only. Production uses React,
+  SVG, CSS, semantic tokens, and the existing provider-mark exception.
+- **Motion gating (ticket 05, amended by ticket 09 on 2026-09-20):**
+  onscreen tiles loop at
   rest (rest-playing; hover/focus only breathes `scale-90`→`scale-95` plus
   the CTA reveal — no play-state gating, so `animation-play-state: paused`
   must not appear). Offscreen tiles skip scene rendering via
   `.bento-scene-viewport` (`content-visibility: auto` +
-  `contain-intrinsic-size: auto 22rem`, mirroring the tile rhythm) — the
+  `contain-intrinsic-size: auto 18rem`, matching the scene slice) — the
   CSS-only pause-offscreen, no IntersectionObserver island. Loop durations
-  stay raw (`6s`/`3s`/`4s`/`5s`, `2400ms` ping) as the documented
+  stay raw (`2400ms`, `3s`, `3.2s`, `3.3s`, `6s`, `7s`, and `8s`) as the documented
   `22rem`-style dimensional exception, not `--motion-*` tokens.
-  Reduced-motion frames are unchanged (every survivor keeps its
-  `animation: none` line with base styles as the static frame). Survivor
-  keyframes closed out by this ticket: `bento-node-ping`,
-  `bento-branch-cycle`, `bento-lane`, `bento-spine-travel` +
-  `bento-spine-node`, `bento-packet-x`, `bento-scan-flare`,
-  `bento-point-breathe`, `bento-shuttle-x`, `bento-pulse-alt` / `-delay`,
-  `bento-descend-seal` — retired families (round-1 beam-flow/list-cycle,
-  marquee, orbit, horizon, flat route-pulse, losing B/C grammars) left
-  with their deleted scenes per the §10b lists above. No gap-table row:
-  no new visual language was introduced, so there is no gap to record.
+  Ticket 09 preserves that gating contract while replacing the scene
+  choreography. The current survivor list is documented in the scene-motion
+  bullet above and checked by `settings-motion.test.ts`.
 - **Intent prefetch (ticket 06, 2026-09-20):** tile links are dead at rest
   (`prefetch={false}` — viewport entry fetches nothing, so the grid never
   avalanches) and restore default static prefetch on hover/focus intent

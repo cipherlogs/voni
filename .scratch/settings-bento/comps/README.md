@@ -2,7 +2,11 @@
 
 Each board contains three scene options. `A` is left, `B` is center, and `C` is right.
 
-The boards are art-direction references, not raster assets for production. The winning scenes will be rebuilt with React, SVG, and CSS.
+The boards are art-direction references, not raster assets for production. The selected scenes were rebuilt with React, SVG, and CSS.
+
+## Selected
+
+Appearance B, Services A, Voice copilot A, Account B, Workspace A, Phone numbers A, Platform operator C.
 
 ## Shared prompt contract
 
@@ -25,7 +29,7 @@ The boards are art-direction references, not raster assets for production. The w
 | Phone numbers | [09-phone-numbers.webp](09-phone-numbers.webp) | Linear switchboard from number to route to Sara | Curved call ribbon around a routing hub | Diagonal three-stage routing receipt |
 | Platform operator | [09-platform-operator.webp](09-platform-operator.webp) | Control tower feeding three capacity rails | Three gauges gathered around the operator | Braided Voice, Phone, and AI control bus |
 
-Reply with one letter per tile, for example: `appearance B, services C, voice A, account A, workspace C, numbers B, operator B`.
+The selected directions are recorded above and in ticket 09.
 
 ## Rendering note
 

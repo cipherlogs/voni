@@ -11,7 +11,7 @@ test("tile scenes skip offscreen rendering, keep looping onscreen at rest", () =
   const tile = repoFile("components", "settings-bento", "bento-tile.tsx");
   // The decorative scene wrapper carries the offscreen-skip hook so
   // offscreen tiles skip scene rendering; onscreen tiles keep the
-  // V01-reviewed rest-playing loops (ticket 05 rest-playing decision).
+  // Ticket 09 rest-playing loops (ticket 05 rest-playing decision).
   assert.match(tile, /bento-scene-viewport/);
   const css = repoFile("app", "globals.css");
   assert.match(css, /\.bento-scene-viewport/);
@@ -30,14 +30,13 @@ test("every surviving scene loop keeps its reduced-motion stop", () => {
     "bento-node-ping",
     "bento-branch-cycle",
     "bento-lane",
-    "bento-spine-dot",
-    "bento-scan-flare",
     "bento-packet-x",
     "bento-point-breathe",
-    "bento-shuttle-x",
-    "bento-pulse-alt",
-    "bento-pulse-alt-delay",
-    "bento-descend-seal",
+    "bento-account-orbit",
+    "bento-theme-dark",
+    "bento-theme-seam",
+    "bento-route-pulse",
+    "bento-operator-packet",
   ]) {
     assert.match(reduced, new RegExp(family.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }

@@ -1,19 +1,25 @@
-import { Activity, ArrowRight, Bot, Building2, Cpu, Globe, Mic, Monitor, Phone, Smartphone, User } from "lucide-react";
+import {
+  ArrowRight,
+  Bot,
+  Building2,
+  Cpu,
+  Globe,
+  Mic,
+  Monitor,
+  Moon,
+  Phone,
+  Smartphone,
+  Sun,
+  User,
+} from "lucide-react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { cn } from "@/lib/utils";
 import { CalendarMark, DriveMark, GmailMark, NotionMark, SlackMark } from "./provider-marks";
 
 /**
- * Final V01 scenes (ticket 01b winners, graduated to production in ticket
- * 02; the throwaway gallery that also consumed them was deleted in ticket
- * 08 — see DESIGN.md §10b + ADR-0001).
- * Winners: services A, voice A, account C, workspace A, appearance A
- * (placeholder — first replate in ticket 09), numbers B, operator A.
- * Lower-third composition: scene mass sits just above the bottom-anchored
- * title and dissolves into it via the rebalanced `bento-fade`. Containment
- * grammar: key glyphs never clipped (16px inset floor). Brand green ONLY
- * via `.bento-signal-*` on traveling/moment elements. No template-filler
- * words anywhere (DESIGN.md Appendix C).
+ * Ticket 09 image-art replate. The generated comps are composition references;
+ * these production scenes stay token-driven React, SVG, and CSS. Green is
+ * reserved for traveling packets, live presence, and momentary emphasis.
  */
 
 const PROVIDERS = [
@@ -24,31 +30,23 @@ const PROVIDERS = [
   { label: "Notion", Mark: NotionMark },
 ];
 
-/** Services — provider constellation (A): user enters left, agent
- * center-left, five brand marks fan right. Green: node ping + halo +
- * packet on the you→agent connector. */
+/** Services A: a haloed agent contains the provider fan. */
 export function ConstellationScene() {
   return (
     <div className="bento-fade absolute inset-0 origin-top-right scale-90 transition-transform duration-300 group-hover:scale-95">
-      <svg
-        viewBox="0 0 400 288"
-        fill="none"
-        preserveAspectRatio="none"
-        aria-hidden
-        className="absolute inset-0 size-full"
-      >
+      <svg viewBox="0 0 400 288" fill="none" preserveAspectRatio="none" aria-hidden className="absolute inset-0 size-full">
         <path
-          d="M 30 164 C 90 164, 130 164, 184 164"
+          d="M 44 142 C 105 142, 128 142, 183 142"
           strokeWidth={1.5}
           vectorEffect="non-scaling-stroke"
           className="stroke-muted-foreground/50"
           strokeDasharray="5 6"
         />
         <g className="bento-fan">
-          {[94, 118, 142, 166, 190].map((y) => (
+          {[76, 108, 140, 172, 204].map((y) => (
             <path
               key={y}
-              d={`M 218 164 C 270 164, 300 ${y}, 368 ${y}`}
+              d={`M 215 142 C 264 142, 292 ${y}, 348 ${y}`}
               strokeWidth={1.5}
               vectorEffect="non-scaling-stroke"
               className="bento-branch-cycle stroke-muted-foreground/60"
@@ -57,29 +55,29 @@ export function ConstellationScene() {
           ))}
         </g>
       </svg>
-      <div className="absolute top-[57%] left-4 -translate-y-1/2">
-        <span className="flex size-12 items-center justify-center rounded-full bg-card text-muted-foreground shadow-sm ring-1 ring-border">
-          <User className="size-5" />
-        </span>
-      </div>
-      <div className="absolute top-[57%] left-[46%] -translate-x-1/2 -translate-y-1/2">
-        <span aria-hidden className="bento-node-ping bento-signal-ping absolute inset-0 rounded-full" />
-        <span className="bento-signal-halo absolute -inset-4 rounded-full blur-xl" aria-hidden />
-        <span className="relative flex size-20 items-center justify-center rounded-full bg-card text-foreground shadow-md ring-1 ring-border">
-          <Bot className="size-8" />
-        </span>
-      </div>
-      <span aria-hidden className="absolute top-[57%] right-[54%] left-[9%] h-0 -translate-y-1/2">
-        <span className="bento-packet-x absolute top-0 size-2 -translate-x-1/2 -translate-y-1/2 rounded-full bento-signal-dot" />
+
+      <span className="absolute top-[142px] left-4 flex -translate-y-1/2 items-center gap-1.5 rounded-full border bg-card px-2.5 py-1.5 text-xs text-muted-foreground shadow-sm">
+        <User className="size-3.5" />
+        You
       </span>
-      <div className="absolute top-[80px] right-4 flex flex-col">
+
+      <div className="absolute top-[142px] left-1/2 -translate-x-1/2 -translate-y-1/2">
+        <span aria-hidden className="bento-node-ping bento-signal-ping absolute inset-0 rounded-full" />
+        <span aria-hidden className="bento-signal-halo absolute -inset-5 rounded-full blur-xl" />
+        <span className="relative flex size-16 items-center justify-center rounded-2xl border bg-card text-foreground shadow-md">
+          <Bot className="size-7" />
+        </span>
+      </div>
+
+      <span aria-hidden className="absolute top-[142px] right-1/2 left-[18%] h-0">
+        <span className="bento-packet-x absolute size-2 -translate-x-1/2 -translate-y-1/2 rounded-full bento-signal-dot" />
+      </span>
+
+      <div className="absolute top-[61px] right-4 flex flex-col gap-1.5">
         {PROVIDERS.map(({ label, Mark }) => (
-          <span
-            key={label}
-            title={label}
-            className="-mb-1 flex size-7 items-center justify-center rounded-full bg-card shadow-sm ring-1 ring-border last:mb-0"
-          >
-            <Mark className="size-4" />
+          <span key={label} className="flex w-[5.75rem] items-center gap-2 rounded-lg border bg-card px-2 py-1 shadow-sm">
+            <Mark className="size-4 shrink-0" />
+            <span className="truncate text-xs text-muted-foreground">{label}</span>
           </span>
         ))}
       </div>
@@ -87,298 +85,312 @@ export function ConstellationScene() {
   );
 }
 
-/** Voice — request → Ivy voice card → answer (A): caller lane left, Ivy
- * identity center, response lane right. Green: halo breathing behind Ivy,
- * selection dot on the rail, traveling packet. */
+/** Voice A: one waveform passes through Ivy's identity. */
 export function LanesScene() {
+  const bars = ["h-2", "h-4", "h-3", "h-5", "h-3.5", "h-6", "h-3", "h-4.5", "h-2.5", "h-4", "h-2"];
+
   return (
     <div className="bento-fade absolute inset-0 origin-top scale-90 transition-transform duration-300 group-hover:scale-95">
-      <div aria-hidden className="absolute top-[136px] right-4 left-4 border-t border-dashed border-border" />
-      <span aria-hidden className="absolute top-[136px] right-4 left-4 h-0">
-        <span className="bento-packet-x absolute top-0 size-2 -translate-x-1/2 -translate-y-1/2 rounded-full bento-signal-dot" />
+      <svg viewBox="0 0 400 288" fill="none" preserveAspectRatio="none" aria-hidden className="absolute inset-0 size-full">
+        <path
+          d="M 28 142 C 50 142, 58 118, 78 118 S 104 168, 126 168 S 150 110, 174 110 S 201 172, 226 172 S 248 118, 274 118 S 306 158, 330 158 S 350 142, 372 142"
+          strokeWidth={2}
+          strokeLinecap="round"
+          vectorEffect="non-scaling-stroke"
+          className="stroke-muted-foreground/55"
+        />
+      </svg>
+
+      <span className="bento-lane bento-lane-user absolute top-[130px] left-4 flex items-center gap-1.5 rounded-full border bg-card px-2.5 py-1 text-xs shadow-sm">
+        <Mic className="size-3.5 text-muted-foreground" />
+        You
       </span>
-      <div className="bento-lane bento-lane-user absolute top-[52px] left-4 w-[34%]">
-        <p className="mb-1 inline-block max-w-44 rounded-xl rounded-tl-sm border bg-card px-2.5 py-1 text-xs text-muted-foreground shadow-sm">
-          <span className="font-medium text-foreground">You</span> · Set my voice to Ivy
-        </p>
-        <svg viewBox="0 0 300 70" fill="none" preserveAspectRatio="none" aria-hidden className="h-10 w-full">
-          <path
-            d="M 0 35 C 30 35, 35 10, 65 10 C 95 10, 100 60, 130 60 C 160 60, 165 15, 195 15 C 225 15, 235 55, 265 55 C 280 55, 290 35, 300 35"
-            strokeWidth={2.5}
-            strokeLinecap="round"
-            vectorEffect="non-scaling-stroke"
-            className="stroke-primary/70"
-          />
-        </svg>
-      </div>
-      <div className="absolute top-[52px] left-1/2 w-32 -translate-x-1/2">
-        <span aria-hidden className="bento-point-breathe bento-signal-halo absolute -inset-3 rounded-2xl blur-md" />
-        <div className="relative flex items-center gap-2 rounded-xl border bg-card px-2.5 py-2 shadow-sm">
-          <Avatar className="size-8">
-            <AvatarFallback>I</AvatarFallback>
-          </Avatar>
-          <span className="min-w-0">
-            <span className="block truncate text-sm font-medium">Ivy</span>
-            <span className="block text-xs text-muted-foreground">US · English</span>
+      <span className="bento-lane bento-lane-voni absolute top-[130px] right-4 flex items-center gap-1.5 rounded-full border bg-card px-2.5 py-1 text-xs shadow-sm">
+        Voni
+        <ArrowRight className="size-3.5 text-muted-foreground" />
+      </span>
+
+      <div className="absolute top-[91px] left-1/2 w-36 -translate-x-1/2">
+        <span aria-hidden className="bento-point-breathe bento-signal-halo absolute -inset-4 rounded-3xl blur-lg" />
+        <div className="relative rounded-2xl border bg-card p-2.5 shadow-md">
+          <div className="flex items-center gap-2">
+            <Avatar className="size-9">
+              <AvatarFallback>I</AvatarFallback>
+            </Avatar>
+            <span className="min-w-0">
+              <span className="block truncate text-sm font-semibold">Ivy</span>
+              <span className="block text-xs text-muted-foreground">US English</span>
+            </span>
+          </div>
+          <span className="mt-2 flex h-7 items-center justify-center gap-0.5" aria-hidden>
+            {bars.map((height, index) => (
+              <span key={index} className={cn("w-0.5 rounded-full bg-primary/70", height)} />
+            ))}
           </span>
         </div>
-        <span className="mt-1.5 flex items-end justify-center gap-0.5" aria-hidden>
-          {["h-2", "h-3.5", "h-2.5", "h-4", "h-3"].map((bar, i) => (
-            <span key={i} className={`w-1 rounded-full bg-primary/60 ${bar}`} />
-          ))}
-        </span>
       </div>
-      <span aria-hidden className="bento-signal-dot absolute top-[136px] left-1/2 size-2 -translate-x-1/2 -translate-y-1/2 rounded-full" />
-      <div className="bento-lane bento-lane-voni absolute top-[80px] right-4 w-[34%]">
-        <p className="mb-1 ml-auto max-w-44 rounded-xl rounded-tr-sm border bg-card px-2.5 py-1 text-right text-xs text-muted-foreground shadow-sm">
-          <span className="font-medium text-foreground">Voni</span> · Done — playing Ivy
-        </p>
-        <svg viewBox="0 0 300 70" fill="none" preserveAspectRatio="none" aria-hidden className="h-10 w-full">
-          <path
-            d="M 0 35 C 30 35, 35 60, 65 60 C 95 60, 100 10, 130 10 C 160 10, 165 55, 195 55 C 225 55, 235 20, 265 20 C 280 20, 290 35, 300 35"
-            strokeWidth={2.5}
-            strokeLinecap="round"
-            vectorEffect="non-scaling-stroke"
-            className="stroke-primary"
-          />
-        </svg>
-      </div>
+
+      <span aria-hidden className="absolute top-[142px] right-[17%] left-[17%] h-0">
+        <span className="bento-packet-x absolute size-2 -translate-x-1/2 -translate-y-1/2 rounded-full bento-signal-dot" />
+      </span>
     </div>
   );
 }
 
-/** Account — centered identity card with flanking device dots (C). Green:
- * session-pill dot breathing. */
+/** Account B: an identity seal opens into two recent sessions. */
 export function OrbitScene() {
+  const sessions = [
+    { icon: Monitor, device: "MacBook Pro", detail: "Active now", live: true },
+    { icon: Smartphone, device: "iPhone", detail: "2 hours ago", live: false },
+  ];
+
   return (
     <div className="bento-fade absolute inset-0 origin-top scale-90 transition-transform duration-300 group-hover:scale-95">
-      <div className="absolute top-[76px] left-1/2 w-56 -translate-x-1/2 rounded-xl border bg-card px-3 py-2 text-center shadow-sm">
-        <div className="flex items-center gap-2.5 text-left">
+      <svg viewBox="0 0 400 288" fill="none" preserveAspectRatio="none" aria-hidden className="absolute inset-0 size-full">
+        <path
+          d="M 127 142 C 174 142, 183 108, 224 108"
+          strokeWidth={1.5}
+          vectorEffect="non-scaling-stroke"
+          className="stroke-muted-foreground/50"
+          strokeDasharray="5 6"
+        />
+        <path
+          d="M 127 142 C 174 142, 183 176, 224 176"
+          strokeWidth={1.5}
+          vectorEffect="non-scaling-stroke"
+          className="stroke-muted-foreground/50"
+          strokeDasharray="5 6"
+        />
+      </svg>
+
+      <div className="absolute top-[142px] left-5 -translate-y-1/2">
+        <span aria-hidden className="absolute -inset-3 rounded-full border border-muted-foreground/25" />
+        <span aria-hidden className="bento-account-orbit absolute -inset-3 rounded-full">
+          <span className="bento-signal-dot absolute top-1/2 -right-1 size-2 -translate-y-1/2 rounded-full" />
+        </span>
+        <div className="relative flex size-24 flex-col items-center justify-center rounded-full border bg-card shadow-md">
           <Avatar className="size-9">
             <AvatarFallback>A</AvatarFallback>
           </Avatar>
-          <span className="min-w-0">
-            <span className="block truncate text-sm font-medium">Amara</span>
-            <span className="block truncate text-xs text-muted-foreground">amara@example.com</span>
-          </span>
+          <span className="mt-1 text-xs font-semibold">Amara</span>
+          <span className="text-xs text-muted-foreground">Owner</span>
         </div>
-        <p className="mt-2 inline-flex items-center gap-1.5 rounded-full border bg-card px-2.5 py-1 text-xs shadow-sm">
-          <span className="relative flex size-1.5" aria-hidden>
-            <span className="bento-point-breathe bento-signal-halo absolute inline-flex size-full rounded-full" />
-            <span className="bento-signal-dot relative inline-flex size-1.5 rounded-full" />
-          </span>
-          Voni session · active
-        </p>
       </div>
-      <span className="absolute top-[108px] left-4 flex size-9 items-center justify-center rounded-full bg-card text-muted-foreground shadow-sm ring-1 ring-border">
-        <Monitor className="size-4" />
-      </span>
-      <span className="absolute top-[108px] right-4 flex size-9 items-center justify-center rounded-full bg-card text-muted-foreground shadow-sm ring-1 ring-border">
-        <Smartphone className="size-4" />
-      </span>
-    </div>
-  );
-}
 
-/** Workspace — defaults rail + receiving agents (A): compact default rows
- * on a left rail, agent chips right. Green: traveling rail dot + Sara
- * presence. */
-export function SpineScene() {
-  const rows = [
-    { top: "top-[24%]", icon: Building2, label: "Workspace", value: "Main workspace", strong: true },
-    { top: "top-[39%]", icon: Globe, label: "Timezone", value: "Asia/Dubai", strong: false },
-    { top: "top-[54%]", icon: Phone, label: "Transfer number", value: "+971 50 123 4567", strong: false },
-  ];
-  return (
-    <div className="bento-fade absolute inset-0 origin-top scale-90 transition-transform duration-300 group-hover:scale-95">
-      <div className="absolute top-[60px] bottom-[38%] left-6 w-0">
-        <span aria-hidden className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-muted-foreground/50" />
-        <span aria-hidden className="bento-spine-dot bento-signal-dot absolute left-1/2 size-2.5 -translate-x-1/2 rounded-full" />
-      </div>
-      <div className="bento-spine-nodes absolute inset-0" aria-hidden>
-        {rows.map((row) => (
-          <span
-            key={row.label}
-            className={cn(
-              "absolute left-6 size-2 -translate-x-1/2 -translate-y-1/2 rounded-full bg-primary ring-2 ring-primary/20",
-              row.top,
-            )}
-          />
+      <div className="absolute top-[79px] right-4 flex w-40 flex-col gap-2">
+        {sessions.map((session) => (
+          <div key={session.device} className="flex items-center gap-2 rounded-xl border bg-card px-2.5 py-2 shadow-sm">
+            <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
+              <session.icon className="size-4" />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-xs font-medium">{session.device}</span>
+              <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                {session.live ? <span aria-hidden className="bento-signal-dot size-1.5 rounded-full" /> : null}
+                {session.detail}
+              </span>
+            </span>
+          </div>
         ))}
       </div>
-      {rows.map((row) => (
-        <div key={row.label} className={cn("absolute right-[6.25rem] -translate-y-1/2", row.top, "left-10")}>
-          <div className="flex items-center gap-2 rounded-xl border bg-card px-2 py-1.5 shadow-sm">
-            <row.icon className="size-4 shrink-0 text-muted-foreground" />
-            <div className="min-w-0">
-              <p className="truncate text-xs text-muted-foreground">{row.label}</p>
-              <p className={cn("truncate text-xs", row.strong ? "font-semibold" : "font-medium text-muted-foreground")}>
-                {row.value}
-              </p>
-            </div>
+    </div>
+  );
+}
+
+/** Workspace A: a defaults ledger feeds Sara and Jonas. */
+export function SpineScene() {
+  const defaults = [
+    { icon: Building2, label: "Workspace", value: "Main" },
+    { icon: Globe, label: "Timezone", value: "Dubai" },
+    { icon: Phone, label: "Transfer", value: "+971 50" },
+  ];
+
+  return (
+    <div className="bento-fade absolute inset-0 origin-top scale-90 transition-transform duration-300 group-hover:scale-95">
+      <svg viewBox="0 0 400 288" fill="none" preserveAspectRatio="none" aria-hidden className="absolute inset-0 size-full">
+        <path
+          d="M 214 142 C 254 142, 260 112, 300 112"
+          strokeWidth={1.5}
+          vectorEffect="non-scaling-stroke"
+          className="stroke-muted-foreground/50"
+          strokeDasharray="5 6"
+        />
+        <path
+          d="M 214 142 C 254 142, 260 174, 300 174"
+          strokeWidth={1.5}
+          vectorEffect="non-scaling-stroke"
+          className="stroke-muted-foreground/50"
+          strokeDasharray="5 6"
+        />
+      </svg>
+
+      <div className="absolute top-[72px] left-4 w-48 overflow-hidden rounded-2xl border bg-card shadow-md">
+        <div className="border-b bg-muted/50 px-3 py-2 text-xs font-semibold">Workspace defaults</div>
+        {defaults.map((item) => (
+          <div key={item.label} className="flex items-center gap-2 border-b px-3 py-2 last:border-b-0">
+            <item.icon className="size-3.5 shrink-0 text-muted-foreground" />
+            <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{item.label}</span>
+            <span className="truncate text-xs font-medium">{item.value}</span>
           </div>
-        </div>
-      ))}
-      <div className="absolute top-[39%] right-4 flex w-[5.5rem] -translate-y-1/2 flex-col gap-2">
-        <div className="flex items-center gap-1.5 rounded-lg border bg-card px-2 py-1.5 shadow-sm">
-          <span className="relative shrink-0">
-            <Avatar className="size-6">
-              <AvatarFallback className="text-xs">S</AvatarFallback>
-            </Avatar>
-            <span aria-hidden className="bento-signal-dot absolute -right-0 -bottom-0 size-2 rounded-full ring-2 ring-card" />
-          </span>
-          <span className="min-w-0 flex-1 truncate text-xs font-medium">Sara</span>
-        </div>
-        <div className="flex items-center gap-1.5 rounded-lg border bg-card px-2 py-1.5 shadow-sm">
-          <Avatar className="size-6">
-            <AvatarFallback className="text-xs">J</AvatarFallback>
-          </Avatar>
-          <span className="min-w-0 flex-1 truncate text-xs font-medium">Jonas</span>
-        </div>
+        ))}
+      </div>
+
+      <span aria-hidden className="absolute top-[142px] left-[50%] h-0 w-[20%]">
+        <span className="bento-packet-x absolute size-2 -translate-x-1/2 -translate-y-1/2 rounded-full bento-signal-dot" />
+      </span>
+
+      <div className="absolute top-[86px] right-4 flex w-[5.75rem] flex-col gap-2">
+        {["Sara", "Jonas"].map((name, index) => (
+          <div key={name} className="flex items-center gap-1.5 rounded-xl border bg-card px-2 py-2 shadow-sm">
+            <span className="relative shrink-0">
+              <Avatar className="size-7">
+                <AvatarFallback className="text-xs">{name[0]}</AvatarFallback>
+              </Avatar>
+              {index === 0 ? <span aria-hidden className="bento-signal-dot absolute -right-0.5 -bottom-0.5 size-2 rounded-full ring-2 ring-card" /> : null}
+            </span>
+            <span className="truncate text-xs font-medium">{name}</span>
+          </div>
+        ))}
       </div>
     </div>
   );
 }
 
-/** Appearance — light + dark preview cards (A, placeholder until ticket 09):
- * real control shapes on both cards, selector shuttling between them with
- * alternating selection rings. Green: the traveling selector + rings. */
+function AppearancePreview({ dark = false }: { dark?: boolean }) {
+  const strong = dark ? "bg-background/65 dark:bg-foreground/65" : "bg-foreground/65 dark:bg-background/65";
+  const muted = dark ? "bg-background/10 dark:bg-foreground/10" : "bg-muted dark:bg-background/10";
+
+  return (
+    <div
+      className={cn(
+        "absolute inset-0 p-3",
+        dark
+          ? "bg-foreground text-background dark:bg-background dark:text-foreground"
+          : "bg-background text-foreground dark:bg-foreground dark:text-background",
+      )}
+    >
+      <div className="flex items-center justify-between">
+        <span className={cn("h-2 w-16 rounded-full", strong)} />
+        {dark ? <Moon className="size-4" /> : <Sun className="size-4" />}
+      </div>
+      <div className={cn("mt-3 h-8 rounded-lg", muted)} />
+      <div className="mt-2 flex gap-2">
+        <div className={cn("h-12 flex-1 rounded-lg", muted)} />
+        <div className={cn("h-12 flex-1 rounded-lg", muted)} />
+      </div>
+      <div className="mt-3 flex items-center justify-between">
+        <span className={cn("h-2 w-20 rounded-full", dark ? "bg-background/30 dark:bg-foreground/30" : "bg-foreground/20 dark:bg-background/20")} />
+        <span
+          className={cn(
+            "h-6 w-14 rounded-md",
+            dark ? "bg-background text-foreground dark:bg-foreground dark:text-background" : "bg-foreground dark:bg-background",
+          )}
+        />
+      </div>
+    </div>
+  );
+}
+
+/** Appearance B: one surface crosses a moving light/dark seam. */
 export function HorizonScene() {
   return (
     <div className="bento-fade absolute inset-0 origin-top scale-90 transition-transform duration-300 group-hover:scale-95">
-      <span aria-hidden className="absolute top-[48px] right-8 left-8 h-0">
-        <span className="bento-shuttle-x absolute top-0 size-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full bento-signal-dot" />
-      </span>
-      <div className="absolute top-[84px] left-4 w-[calc(50%-1.25rem)] rounded-xl border bg-card p-2.5 shadow-sm">
-        <span aria-hidden className="bento-pulse-alt bento-signal-halo-ring absolute -inset-1 rounded-2xl" />
-        <p className="relative mb-2 text-xs font-medium">Light</p>
-        <div className="relative flex items-center gap-2">
-          <span className="flex h-5 w-9 items-center justify-end rounded-full bg-primary px-0.5">
-            <span className="size-3.5 rounded-full bg-primary-foreground" />
-          </span>
-          <span className="h-6 w-16 rounded-md bg-primary/90" />
+      <div className="absolute top-[60px] right-5 left-5 h-40 overflow-hidden rounded-2xl border bg-card shadow-md">
+        <AppearancePreview />
+        <div className="bento-theme-dark absolute inset-0 overflow-hidden" aria-hidden>
+          <AppearancePreview dark />
         </div>
-        <div className="relative mt-2.5 flex items-center gap-2">
-          <span className="relative h-1 flex-1 rounded-full bg-muted">
-            <span className="absolute top-1/2 left-[60%] size-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-primary" />
-          </span>
-        </div>
+        <span aria-hidden className="bento-theme-seam absolute inset-y-0 w-px bento-signal-dot" />
       </div>
-      <div className="absolute top-[84px] right-4 w-[calc(50%-1.25rem)] rounded-xl bg-foreground p-2.5 shadow-sm">
-        <span aria-hidden className="bento-pulse-alt-delay bento-signal-halo-ring absolute -inset-1 rounded-2xl" />
-        <p className="relative mb-2 text-xs font-medium text-primary-foreground">Dark</p>
-        <div className="relative flex items-center gap-2">
-          <span className="flex h-5 w-9 items-center justify-end rounded-full bg-primary-foreground/30 px-0.5">
-            <span className="size-3.5 rounded-full bg-primary-foreground" />
-          </span>
-          <span className="h-6 w-16 rounded-md bg-primary-foreground/90" />
-        </div>
-        <div className="relative mt-2.5 flex items-center gap-2">
-          <span className="relative h-1 flex-1 rounded-full bg-primary-foreground/30">
-            <span className="absolute top-1/2 left-[60%] size-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-primary-foreground" />
-          </span>
-        </div>
+      <div className="absolute top-[218px] left-1/2 flex -translate-x-1/2 items-center gap-2 rounded-full border bg-card px-2.5 py-1 text-xs text-muted-foreground shadow-sm">
+        <Sun className="size-3.5" />
+        Preview
+        <Moon className="size-3.5" />
       </div>
     </div>
   );
 }
 
-/** Numbers — vertical route (B): number chip → seal → agent chip down a
- * center rail, packet pausing at the seal. Green: seal-route packet +
- * agent presence. */
+/** Phone numbers A: number to route to Sara in one linear switchboard. */
 export function IncomingScene() {
   return (
     <div className="bento-fade absolute inset-0 origin-top scale-90 transition-transform duration-300 group-hover:scale-95">
-      <span aria-hidden className="absolute top-[48px] bottom-[95px] left-1/2 w-px -translate-x-1/2 border-l border-dashed border-border" />
-      <span aria-hidden className="absolute top-[48px] bottom-[95px] left-1/2 w-0 -translate-x-1/2">
-        <span className="bento-descend-seal absolute left-1/2 size-2 -translate-x-1/2 rounded-full bento-signal-dot" />
+      <span aria-hidden className="absolute top-[142px] right-5 left-5 border-t border-dashed border-muted-foreground/50" />
+      <span aria-hidden className="absolute top-[142px] right-5 left-5 h-0">
+        <span className="bento-packet-x absolute size-2 -translate-x-1/2 -translate-y-1/2 rounded-full bento-signal-dot" />
       </span>
-      <div className="absolute top-[48px] left-1/2 -translate-x-1/2">
-        <span className="block rounded-xl border bg-card px-3 py-1.5 font-mono text-xs font-semibold tracking-tight whitespace-nowrap shadow-sm">
-          +971 50 123 4567
+
+      <span className="absolute top-[142px] left-4 -translate-y-1/2 rounded-xl border bg-card px-3 py-2 font-mono text-xs font-semibold tracking-tight shadow-sm">
+        +971 50 123 4567
+      </span>
+
+      <div className="absolute top-[142px] left-[61%] -translate-x-1/2 -translate-y-1/2">
+        <span aria-hidden className="bento-route-pulse bento-signal-halo-ring absolute -inset-1 rounded-full" />
+        <span className="relative flex size-11 items-center justify-center rounded-full border bg-card text-muted-foreground shadow-sm">
+          <ArrowRight className="size-4" />
         </span>
       </div>
-      <div className="absolute top-[100px] left-1/2 -translate-x-1/2">
-        <span className="flex size-6 items-center justify-center rounded-full bg-card text-muted-foreground shadow-sm ring-1 ring-border">
-          <ArrowRight className="size-3.5 rotate-90" />
-        </span>
-      </div>
-      <div className="absolute top-[132px] left-1/2 -translate-x-1/2">
-        <span className="flex items-center gap-2 rounded-xl border bg-card px-3 py-1.5 shadow-sm">
+
+      <span className="absolute top-[142px] right-4 flex -translate-y-1/2 items-center gap-2 rounded-xl border bg-card px-2.5 py-2 shadow-sm">
+        <span className="relative">
           <Avatar className="size-7">
             <AvatarFallback>S</AvatarFallback>
           </Avatar>
-          <span className="text-sm font-medium">Sara</span>
-          <span aria-hidden className="bento-signal-dot size-1.5 rounded-full" />
+          <span aria-hidden className="bento-signal-dot absolute -right-0.5 -bottom-0.5 size-2 rounded-full ring-2 ring-card" />
         </span>
-      </div>
+        <span className="text-xs font-medium">Sara</span>
+      </span>
     </div>
   );
 }
 
-/** Operator — control plane (A): node over compact rails, branches scanned
- * in sequence. Green: node presence + the scanning branch flare. */
+/** Platform operator C: three service lanes braid through one operator. */
 export function ControlScene() {
-  const rows = [
-    { icon: Mic, label: "Voice agents", filled: 4, fraction: "4/5" },
-    { icon: Phone, label: "Phone calls", filled: 3, fraction: "3/5" },
-    { icon: Cpu, label: "AI services", filled: 4, fraction: "4/5" },
+  const lanes = [
+    { icon: Mic, label: "Voice", width: "w-[82%]" },
+    { icon: Phone, label: "Phone", width: "w-[64%]" },
+    { icon: Cpu, label: "AI", width: "w-[74%]" },
   ];
+
   return (
     <div className="bento-fade absolute inset-0 origin-top-right scale-90 transition-transform duration-300 group-hover:scale-95">
-      <span aria-hidden className="absolute -top-16 -right-16 size-56 rounded-full border border-border/60" />
-      <span aria-hidden className="absolute -top-8 -right-8 size-40 rounded-full border border-border/60" />
-      <svg
-        viewBox="0 0 400 288"
-        fill="none"
-        preserveAspectRatio="none"
-        aria-hidden
-        className="absolute inset-0 size-full"
-      >
-        <g className="bento-scan">
+      <svg viewBox="0 0 400 288" fill="none" preserveAspectRatio="none" aria-hidden className="absolute inset-0 size-full">
+        {[96, 142, 188].map((y) => (
           <path
-            d="M 348 88 C 300 90, 220 90, 150 90"
+            key={y}
+            d={`M 91 ${y} C 132 ${y}, 142 142, 181 142 S 228 ${y}, 266 ${y}`}
             strokeWidth={1.5}
             vectorEffect="non-scaling-stroke"
-            className="bento-branch-cycle bento-scan-flare stroke-muted-foreground/50"
-            strokeDasharray="4 6"
+            className="stroke-muted-foreground/50"
+            strokeDasharray="5 6"
           />
-          <path
-            d="M 348 88 C 300 102, 220 114, 150 122"
-            strokeWidth={1.5}
-            vectorEffect="non-scaling-stroke"
-            className="bento-branch-cycle bento-scan-flare stroke-muted-foreground/50"
-            strokeDasharray="4 6"
-          />
-          <path
-            d="M 348 88 C 300 124, 220 144, 150 154"
-            strokeWidth={1.5}
-            vectorEffect="non-scaling-stroke"
-            className="bento-branch-cycle bento-scan-flare stroke-muted-foreground/50"
-            strokeDasharray="4 6"
-          />
-        </g>
+        ))}
       </svg>
-      <div className="absolute top-[64px] right-4">
-        <span className="relative flex size-12 items-center justify-center rounded-full bg-card text-foreground shadow-md ring-1 ring-border">
-          <Activity className="size-5" />
-          <span aria-hidden className="bento-signal-dot absolute -top-0.5 -right-0.5 size-2.5 rounded-full ring-2 ring-card" />
+
+      <div className="absolute top-[78px] left-4 flex w-20 flex-col gap-3">
+        {lanes.map((lane) => (
+          <span key={lane.label} className="flex items-center gap-1.5 rounded-lg border bg-card px-2 py-1.5 text-xs shadow-sm">
+            <lane.icon className="size-3.5 text-muted-foreground" />
+            {lane.label}
+          </span>
+        ))}
+      </div>
+
+      <div className="absolute top-[142px] left-1/2 -translate-x-1/2 -translate-y-1/2">
+        <span aria-hidden className="absolute -inset-4 rounded-2xl bg-muted/70 blur-lg" />
+        <span className="relative flex size-16 flex-col items-center justify-center rounded-2xl border bg-card shadow-md">
+          <Bot className="size-6" />
+          <span className="mt-1 text-xs font-medium">Operator</span>
         </span>
       </div>
-      <div className="absolute top-[78px] left-4 flex flex-col gap-2">
-        {rows.map((row) => (
-          <div key={row.label} className="flex items-center gap-2.5 rounded-xl border bg-card px-2.5 py-1 shadow-sm">
-            <row.icon className="size-4 shrink-0 text-muted-foreground" />
-            <span className="w-[4.5rem] truncate text-xs">{row.label}</span>
-            <span className="flex gap-1" aria-hidden>
-              {[0, 1, 2, 3, 4].map((i) => (
-                <span
-                  key={i}
-                  className={cn("h-1.5 w-3 rounded-full", i < row.filled ? "bg-primary" : "bg-muted")}
-                />
-              ))}
+
+      <div className="bento-operator-stack absolute top-[82px] right-4 flex w-28 flex-col gap-[1.125rem]">
+        {lanes.map((lane) => (
+          <div key={lane.label} className="relative h-6 rounded-md border bg-card p-1.5 shadow-sm">
+            <span className="block h-full rounded-sm bg-muted">
+              <span className={cn("block h-full rounded-sm bg-primary/70", lane.width)} />
             </span>
-            <span className="text-xs text-muted-foreground tabular-nums">{row.fraction}</span>
+            <span aria-hidden className="bento-operator-packet bento-signal-dot absolute top-1/2 size-1.5 -translate-y-1/2 rounded-full" />
           </div>
         ))}
       </div>
