@@ -39,6 +39,7 @@ from pipecat.runner.utils import parse_telephony_websocket
 
 from voni_db import recorder
 from tool_coordinator import ToolCoordinator
+from voice_judge import classify_user_turn, judge_enabled, sample_judge
 from bridge_config import BridgeConfig, bridge_config
 from campaign_runner import decode_client_state, dispatch, telnyx_stream_params
 
@@ -563,6 +564,7 @@ async def agent_to_telnyx(
 
         if event_type == "reply.audio":
             now = time.monotonic()
+            stats["speaking"] = True
             pcm = base64.b64decode(event["data"])
             stats["reply_bytes"] += len(pcm)
             if stats["first_audio_at"] is None:
@@ -626,6 +628,7 @@ async def agent_to_telnyx(
             # voice break up mid-sentence. Wait for the confirmed interruption.
             stats["speech_started"] += 1
         elif event_type == "reply.done":
+            stats["speaking"] = False
             await send_frames(telnyx_ws, stats, flush=True)
             if stats["first_audio_at"] is not None:
                 elapsed = time.monotonic() - stats["first_audio_at"]
@@ -658,6 +661,26 @@ async def agent_to_telnyx(
                 stats["cleared"] += 1
         elif event_type == "transcript.user":
             logger.info(f"caller: {event.get('text')!r}")
+            # Jev barge-in classification, synchronous only: backchannel vs
+            # real interruption while the agent holds the floor. Fire-and-
+            # forget Jev sampling when configured — never awaited here, so
+            # the 2.5s reply latency this loop was tuned for is untouched.
+            text = event.get("text") or ""
+            if stats.get("speaking") and stats.get("speech_at") is not None:
+                agent_ms = (time.monotonic() - stats["speech_at"]) * 1000.0
+                decision, prob = classify_user_turn(text, agent_ms)
+                if decision == "yield":
+                    stats["user_yields"] += 1
+                else:
+                    stats["backchannels"] += 1
+                logger.debug(f"judge barge-in={decision} p={prob:.2f} text={text!r}")
+                if judge_enabled():
+                    asyncio.create_task(
+                        sample_judge(
+                            "barge-in",
+                            {"partialText": text, "agentSpeakingMs": agent_ms},
+                        )
+                    )
             # Enqueued, never awaited: this loop forwards 20 ms frames and the
             # reply latency was tuned from 3.5s to 2.5s over five real calls.
             # A round trip to Frankfurt here would give part of that back.
@@ -724,7 +747,8 @@ async def media_stream(websocket: WebSocket):
     # the agent never produced any.
     stats = {"call_control_id": call_control_id,
              "to_agent": 0, "to_caller": 0, "skipped_track": 0,
-             "speech_started": 0, "cleared": 0,
+              "speech_started": 0, "cleared": 0,
+              "backchannels": 0, "user_yields": 0, "speaking": False,
              "reply_started_at": None, "first_audio_at": None, "speech_at": None,
              "last_audio_at": None, "reply_bytes": 0, "ttfa_seen": [],
              "stalls": 0, "worst_stall": 0.0,
@@ -819,6 +843,7 @@ async def media_stream(websocket: WebSocket):
             # happen on the same event. A large gap between it and
             # speech_started means most detected speech was back-channel.
             f"confirmed_interruptions={stats['cleared']} {lead_summary} "
+            f"judge_yields={stats['user_yields']} judge_backchannels={stats['backchannels']} "
             f"{stall_summary} "
             f"inbound_span={(stats['last_in'] - stats['first_in']) if stats['first_in'] else 0:.1f}s"
         )

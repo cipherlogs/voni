@@ -15,6 +15,8 @@ from typing import Any
 import aiohttp
 from loguru import logger
 
+from voice_judge import allow_tool_call
+
 SENSITIVE_CAPTURE_TOOL = "prepare_sensitive_capture"
 HOLD_TOOLS = {
     "book_viewing",
@@ -86,6 +88,12 @@ class ToolCoordinator:
         name = event.get("name")
         if not isinstance(call_id, str) or not isinstance(name, str):
             logger.warning(f"invalid tool.call event: {event}")
+            return
+        # Verify-before-apply (fail-closed): malformed tool names never
+        # execute. Mirrors the browser judge gate.
+        allowed, prob = allow_tool_call(name)
+        if not allowed:
+            logger.warning(f"tool.call denied by judge (p={prob:.2f}): {event}")
             return
         self.pending[call_id] = PendingTool(
             call_id=call_id,
