@@ -82,7 +82,14 @@ def allow_tool_call(name: Any) -> tuple[bool, float]:
 
 
 def judge_url() -> Optional[str]:
-    return os.environ.get("VOICE_JUDGE_URL") or None
+    """Where Jev samples go. Explicit URL wins; otherwise derive it from the
+    bridge's Voni base URL, so dev/prod falls out of the existing VONI_API_URL
+    per host — local dev URL on a dev machine, the deployed Worker in prod."""
+    explicit = os.environ.get("VOICE_JUDGE_URL")
+    if explicit:
+        return explicit
+    base = (os.environ.get("VONI_API_URL") or "").rstrip("/")
+    return f"{base}/api/voice-judge" if base else None
 
 
 def judge_enabled() -> bool:
@@ -97,16 +104,25 @@ async def sample_judge(
     kind: str,
     state: dict[str, Any],
     url: Optional[str] = None,
+    service_token: Optional[str] = None,
     timeout_s: float = JUDGE_TIMEOUT_S,
 ) -> Optional[dict[str, Any]]:
-    """Fire-and-forget Jev sample. Returns parsed JSON or None. Never raises."""
+    """Fire-and-forget Jev sample. Returns parsed JSON or None. Never raises.
+
+    Authenticates with the bridge bearer secret (VONI_TOOL_SECRET, same shape
+    as the internal bridge routes) since the bridge holds no user session.
+    """
     target = url or judge_url()
     if not target:
         return None
+    token = service_token or os.environ.get("VONI_TOOL_SECRET")
+    headers = {"authorization": f"Bearer {token}"} if token else None
     try:
         timeout = aiohttp.ClientTimeout(total=timeout_s)
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.post(target, json=judge_payload(kind, state)) as res:
+            async with session.post(
+                target, json=judge_payload(kind, state), headers=headers
+            ) as res:
                 if res.status != 200:
                     return None
                 data = await res.json()

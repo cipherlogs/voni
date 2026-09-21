@@ -5,7 +5,11 @@ same fail-closed rule — backchannels must never read as interruptions.
 """
 
 import asyncio
+import os
 import unittest
+from unittest.mock import patch
+
+import aiohttp
 
 from voice_judge import (
     BARGE_IN_THRESHOLD,
@@ -15,6 +19,7 @@ from voice_judge import (
     heuristic_barge_in_score,
     judge_enabled,
     judge_payload,
+    judge_url,
 )
 
 
@@ -86,13 +91,77 @@ class PayloadTests(unittest.TestCase):
         self.assertIn("partialText", payload["state"])
 
     def test_sampler_returns_none_without_url(self):
-        import os
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("VOICE_JUDGE_URL", None)
+            os.environ.pop("VONI_API_URL", None)
+            self.assertFalse(judge_enabled())
+            from voice_judge import sample_judge
 
-        os.environ.pop("VOICE_JUDGE_URL", None)
-        self.assertFalse(judge_enabled())
-        from voice_judge import sample_judge
+            self.assertIsNone(asyncio.run(sample_judge("barge-in", {"x": 1})))
 
-        self.assertIsNone(asyncio.run(sample_judge("barge-in", {"x": 1})))
+
+class JudgeUrlTests(unittest.TestCase):
+    def test_explicit_url_wins(self):
+        with patch.dict(
+            os.environ,
+            {"VOICE_JUDGE_URL": "https://x/judge", "VONI_API_URL": "https://y"},
+        ):
+            self.assertEqual(judge_url(), "https://x/judge")
+
+    def test_derives_from_voni_api_url(self):
+        with patch.dict(os.environ, {"VONI_API_URL": "https://voni.example.com/"}, clear=False):
+            os.environ.pop("VOICE_JUDGE_URL", None)
+            self.assertEqual(judge_url(), "https://voni.example.com/api/voice-judge")
+
+    def test_none_without_either(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("VOICE_JUDGE_URL", None)
+            os.environ.pop("VONI_API_URL", None)
+            self.assertIsNone(judge_url())
+
+    def test_sampler_sends_bridge_bearer(self):
+        seen: dict = {}
+
+        class FakeResp:
+            status = 200
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def json(self):
+                return {"decision": "yield", "probability": 0.9}
+
+        class FakeSession:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            def post(self, url, json=None, headers=None):
+                seen["url"] = url
+                seen["headers"] = headers
+                return FakeResp()
+
+        original = aiohttp.ClientSession
+        aiohttp.ClientSession = FakeSession  # type: ignore[assignment]
+        try:
+            with patch.dict(os.environ, {"VONI_TOOL_SECRET": "tok"}):
+                from voice_judge import sample_judge
+
+                out = asyncio.run(
+                    sample_judge("barge-in", {"x": 1}, url="https://v/judge")
+                )
+        finally:
+            aiohttp.ClientSession = original  # type: ignore[assignment]
+        self.assertEqual(seen["headers"], {"authorization": "Bearer tok"})
+        self.assertEqual(out, {"decision": "yield", "probability": 0.9})
 
 
 if __name__ == "__main__":

@@ -79,6 +79,28 @@ export function judgeQuestions(kind: JudgeKind): {
   };
 }
 
+/** Vercel AI Gateway evaluate endpoint. Override with VOICE_JUDGE_GATEWAY_URL. */
+export const JUDGE_GATEWAY_URL = "https://ai-gateway.vercel.sh/v1/evaluate";
+/** Jev model id on the gateway. Override with VOICE_JUDGE_MODEL. */
+export const JUDGE_MODEL = "typesafe-ai/jev";
+
+/**
+ * The user's existing `AI_GATEWAY_API_KEY` wins; `VOICE_JUDGE_API_KEY` is the
+ * judge-specific fallback. Callers running on the Worker should resolve via
+ * `secret()` and pass the result as `deps.apiKey` instead.
+ */
+export function resolveJudgeApiKey(env: Record<string, string | undefined> = process.env): string | undefined {
+  return env.AI_GATEWAY_API_KEY ?? env.VOICE_JUDGE_API_KEY;
+}
+
+export function resolveJudgeGatewayUrl(env: Record<string, string | undefined> = process.env): string {
+  return env.VOICE_JUDGE_GATEWAY_URL ?? JUDGE_GATEWAY_URL;
+}
+
+export function resolveJudgeModel(env: Record<string, string | undefined> = process.env): string {
+  return env.VOICE_JUDGE_MODEL ?? JUDGE_MODEL;
+}
+
 /**
  * Attempt a Jev judgment through the Vercel AI Gateway evaluate endpoint.
  * Throws on any failure so the caller falls back to `decideVoiceJudge`.
@@ -94,9 +116,9 @@ export async function tryJevGateway(
     timeoutMs?: number;
   } = {},
 ): Promise<VoiceJudgeResult> {
-  const gatewayUrl = deps.gatewayUrl ?? process.env.VOICE_JUDGE_GATEWAY_URL;
-  const apiKey = deps.apiKey ?? process.env.VOICE_JUDGE_API_KEY;
-  if (!gatewayUrl || !apiKey) throw new Error("voice judge gateway not configured");
+  const gatewayUrl = deps.gatewayUrl ?? resolveJudgeGatewayUrl();
+  const apiKey = deps.apiKey ?? resolveJudgeApiKey();
+  if (!apiKey) throw new Error("voice judge gateway not configured");
   const fetchImpl = deps.fetchImpl ?? fetch;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), deps.timeoutMs ?? 1500);
@@ -109,7 +131,7 @@ export async function tryJevGateway(
         authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model: deps.model ?? process.env.VOICE_JUDGE_MODEL ?? "typesafe-ai/jev",
+        model: deps.model ?? resolveJudgeModel(),
         state: JSON.stringify({ kind, ...state }).slice(0, 4000),
         questions: { judge: question },
       }),

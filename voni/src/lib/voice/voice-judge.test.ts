@@ -1,6 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { decideVoiceJudge, parseVoiceJudgeRequest } from "./voice-judge";
+import {
+  decideVoiceJudge,
+  JUDGE_GATEWAY_URL,
+  JUDGE_MODEL,
+  parseVoiceJudgeRequest,
+  resolveJudgeApiKey,
+  resolveJudgeGatewayUrl,
+  resolveJudgeModel,
+} from "./voice-judge";
 
 test("rejects unknown kinds and bad bodies", () => {
   assert.equal(parseVoiceJudgeRequest(null).ok, false);
@@ -37,4 +45,26 @@ test("heuristic decide plays filler while tools are active", () => {
 test("heuristic decide denies empty tool names", () => {
   const r = decideVoiceJudge("tool", { name: "", transcriptTail: "" });
   assert.equal(r.decision, "deny");
+});
+
+test("gateway URL defaults to the Vercel AI Gateway evaluate endpoint", () => {
+  assert.equal(resolveJudgeGatewayUrl({}), JUDGE_GATEWAY_URL);
+  assert.match(JUDGE_GATEWAY_URL, /ai-gateway\.vercel\.sh\/v1\/evaluate/);
+  assert.equal(
+    resolveJudgeGatewayUrl({ VOICE_JUDGE_GATEWAY_URL: "https://x/y" }),
+    "https://x/y",
+  );
+});
+
+test("the existing AI gateway key wins over the judge-specific one", () => {
+  assert.equal(
+    resolveJudgeApiKey({ AI_GATEWAY_API_KEY: "a", VOICE_JUDGE_API_KEY: "b" }),
+    "a",
+  );
+  assert.equal(resolveJudgeApiKey({ VOICE_JUDGE_API_KEY: "b" }), "b");
+  assert.equal(resolveJudgeApiKey({}), undefined);
+});
+
+test("judge model defaults to typesafe-ai/jev", () => {
+  assert.equal(resolveJudgeModel({}), JUDGE_MODEL);
 });

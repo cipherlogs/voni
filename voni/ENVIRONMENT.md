@@ -45,6 +45,21 @@ local save and shows a retryable deployment warning on the agent page.
   credential. The Call Control connection and caller number are selected in
   `/operator`.
 
+## Voice judge (Jev fast judgments for test calls + PSTN bridge)
+
+- `AI_GATEWAY_API_KEY` — Vercel dashboard → AI Gateway → API Keys. Powers live
+  Jev probabilities in `/api/voice-judge`; without it the route serves the
+  offline heuristic (`source: "heuristic"`), so calls work either way. Set by
+  hand in `.dev.vars` (and prod Worker secrets) — never committed.
+- `VOICE_JUDGE_MODEL` (optional) — defaults to `typesafe-ai/jev`.
+- `VOICE_JUDGE_GATEWAY_URL` (optional) — defaults to the AI Gateway evaluate
+  endpoint (`https://ai-gateway.vercel.sh/v1/evaluate`).
+- The bridge needs no new config: it derives the judge URL from its existing
+  `VONI_API_URL` (`{VONI_API_URL}/api/voice-judge` — local dev URL on a dev
+  machine, Worker URL in prod) and authenticates with the existing
+  `VONI_TOOL_SECRET` bearer. Sampling is fire-and-forget and off by default
+  until the URL resolves.
+
 ## Async TTS (WhatsApp voice-note replies — AssemblyAI has no standalone TTS API, plan Section I)
 - `CARTESIA_API_KEY` — cartesia.ai → sign up → dashboard → API Keys. Free plan
   (20K credits/mo, ~27 min TTS) is fine for dev/testing but explicitly
