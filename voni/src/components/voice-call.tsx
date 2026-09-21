@@ -21,6 +21,11 @@ import {
   type VoiceError,
   type VoiceState,
 } from "@/lib/voice/session";
+import { CallTimings } from "@/lib/voice/call-timings";
+import {
+  FILLER_POOL,
+  requestVoiceJudge,
+} from "@/lib/voice/jev-judges";
 import { compileSystemPrompt } from "@/lib/agents/compile";
 import type { AgentConfig } from "@/lib/agents/config";
 import { compileVoiceTools } from "@/lib/tools/definitions";
@@ -228,6 +233,12 @@ export function VoiceCall({
   const [retryIn, setRetryIn] = useState<number | null>(null);
   const [toolActive, setToolActive] = useState(false);
   const [elapsed, setElapsed] = useState(0);
+  /** Jev-gated filler line shown while the reply is being prepared. */
+  const [filler, setFiller] = useState<string | null>(null);
+  const timingsRef = useRef<CallTimings | null>(null);
+  const agentSpeechStartRef = useRef(0);
+  const fillerIdxRef = useRef(0);
+  const partialTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Pending flags mirror the startingRef single-flight (start) and the async
   // stop() (hang-up) so both buttons show disabled + spinner + pending text
   // instead of silently dropping clicks (visual feedback protocol).
@@ -344,18 +355,57 @@ export function VoiceCall({
     setTurns([]);
     setElapsed(0);
     setToolActive(false);
+    setFiller(null);
+    timingsRef.current = new CallTimings();
+    timingsRef.current.mark("startRequested");
     window.dispatchEvent(
       new CustomEvent("voni:voice-preempt", { detail: { owner: "voice-call" } }),
     );
 
     const session = new VoiceSession({
-      onStateChange: setState,
-      onTranscript: (turn) => setTurns((prev) => [...prev, turn]),
+      onStateChange: (next) => {
+        if (next === "speaking") agentSpeechStartRef.current = Date.now();
+        if (next === "connecting" || next === "listening" || next === "speaking" || next === "ended")
+          timingsRef.current?.mark(next);
+        if (next === "listening") setFiller(null);
+        setState(next);
+      },
+      onTranscript: (turn) => {
+        if (turn.role === "user") timingsRef.current?.mark("firstUserTurn");
+        else timingsRef.current?.mark("firstAgentTurn");
+        if (turn.role === "agent") setFiller(null);
+        setTurns((prev) => [...prev, turn]);
+      },
+      onUserPartial: (partial) => {
+        // Jev barge-in gate (fail-closed): backchannels must not flicker the
+        // UI or drop the filler; real interruptions take the floor.
+        if (partialTimerRef.current) clearTimeout(partialTimerRef.current);
+        const text = partial.text;
+        partialTimerRef.current = setTimeout(() => {
+          void requestVoiceJudge("barge-in", {
+            partialText: text,
+            agentSpeakingMs: Date.now() - agentSpeechStartRef.current,
+          }).then((r) => {
+            if (r.decision === "yield") setFiller(null);
+          });
+        }, 150);
+      },
       onError: (e) => {
         setError(e);
         setRetryIn(e.retryAfterSeconds ?? null);
       },
-      onToolActivity: setToolActive,
+      onToolActivity: (active) => {
+        setToolActive(active);
+        if (active) {
+          // Cover the tool-latency pause with a Jev-gated filler line.
+          const line = FILLER_POOL[fillerIdxRef.current % FILLER_POOL.length];
+          fillerIdxRef.current += 1;
+          setFiller(line);
+          timingsRef.current?.mark("fillerShown");
+        } else {
+          setFiller(null);
+        }
+      },
     });
     sessionRef.current = session;
 
@@ -571,8 +621,9 @@ export function VoiceCall({
             ? "Calling…"
             : connected
               ? toolActive
-                ? "Looking that up…"
-                : `${formatCallStatus(elapsed)} · ${state === "speaking" ? "speaking" : "listening"}`
+                ? (filler ?? "Looking that up…")
+                : (filler ??
+                  `${formatCallStatus(elapsed)} · ${state === "speaking" ? "speaking" : "listening"}`)
               : quotaExceeded
                 ? "Free demo time is up"
                 : `Call ended · ${formatCallStatus(elapsed)}`}
