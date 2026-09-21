@@ -343,6 +343,24 @@ const SENSITIVE_TURN_DETECTION: TurnDetection = {
   interruption_delay: 0,
 };
 
+/**
+ * Session-level turn detection for natural test calls.
+ *
+ * The 350ms interruption delay is the anti-rudeness knob: backchannels
+ * ("uh-huh", "yeah"), echo, and noise bursts end before it elapses, so they
+ * never cut the agent off — sustained real interruptions still barge in
+ * (fail-closed, matching the Jev gate). Tighter VAD windows than the
+ * sensitive preset also shorten the reply gap. The sensitive preset is
+ * untouched and still takes over for card-field capture turns via
+ * `prepareSensitiveCapture`, which restores this preset afterwards.
+ */
+export const NATURAL_TURN_DETECTION: TurnDetection = {
+  min_silence: 900,
+  max_silence: 3000,
+  interrupt_response: true,
+  interruption_delay: 350,
+};
+
 /** One scheduled reply chunk. Direct source -> destination per AssemblyAI docs. */
 type QueuedVoice = {
   node: AudioBufferSourceNode;

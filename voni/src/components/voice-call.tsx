@@ -17,6 +17,7 @@ import {
   VoiceSession,
   authedToken,
   demoToken,
+  NATURAL_TURN_DETECTION,
   type Transcript,
   type VoiceError,
   type VoiceState,
@@ -239,6 +240,8 @@ export function VoiceCall({
   const agentSpeechStartRef = useRef(0);
   const fillerIdxRef = useRef(0);
   const partialTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Native barge-in/reply-cut count this call (dev-visible via console). */
+  const interruptionsRef = useRef(0);
   // Pending flags mirror the startingRef single-flight (start) and the async
   // stop() (hang-up) so both buttons show disabled + spinner + pending text
   // instead of silently dropping clicks (visual feedback protocol).
@@ -356,6 +359,7 @@ export function VoiceCall({
     setElapsed(0);
     setToolActive(false);
     setFiller(null);
+    interruptionsRef.current = 0;
     timingsRef.current = new CallTimings();
     timingsRef.current.mark("startRequested");
     window.dispatchEvent(
@@ -406,6 +410,14 @@ export function VoiceCall({
           setFiller(null);
         }
       },
+      onAudioProbe: (event) => {
+        // Native interruption telemetry: with the 350ms interruption delay
+        // these should be rare real barges, not backchannels.
+        if (event.kind === "barge-in" || event.kind === "reply-cut") {
+          interruptionsRef.current += 1;
+          console.debug("[voice-call] interruption", event.kind, interruptionsRef.current);
+        }
+      },
     });
     sessionRef.current = session;
 
@@ -429,6 +441,9 @@ export function VoiceCall({
             languageCodes: config.languageCodes,
             tools: compileVoiceTools(config),
             testAgentId: mode.agentId,
+            // Natural turn-taking: 350ms barge-in delay waits out
+            // backchannels/echo; tighter VAD shortens the reply gap.
+            turnDetection: { ...NATURAL_TURN_DETECTION },
           },
           authedToken,
         );
