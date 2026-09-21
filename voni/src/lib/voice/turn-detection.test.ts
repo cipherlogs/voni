@@ -12,11 +12,12 @@ test("natural turn detection waits out backchannels but keeps barge-in", () => {
   assert.equal(NATURAL_TURN_DETECTION.interruption_delay, 350);
 });
 
-test("natural endpointing is tighter than the sensitive capture preset", () => {
-  // Shorter VAD windows shorten the reply gap; the sensitive preset stays
-  // scoped to card-field capture turns.
-  assert.ok(NATURAL_TURN_DETECTION.min_silence < 1400);
-  assert.ok(NATURAL_TURN_DETECTION.max_silence <= 3000);
+test("natural endpointing caps the uncertain-turn wait at 1200ms", () => {
+  // Uncertain turns used to wait out a 3000ms ceiling before finalizing —
+  // the bulk of the reply gap. Tighter windows reply sooner; slow speakers
+  // who get split are the known cost, and the ceiling is one number to raise.
+  assert.equal(NATURAL_TURN_DETECTION.min_silence, 900);
+  assert.equal(NATURAL_TURN_DETECTION.max_silence, 1200);
 });
 
 test("inline session update carries the natural preset to the server", () => {

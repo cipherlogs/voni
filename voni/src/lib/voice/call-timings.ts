@@ -19,6 +19,7 @@ export type CallTimingMark =
   | "speaking"
   | "firstUserTurn"
   | "firstAgentTurn"
+  | "firstPartial"
   | "fillerShown"
   | "ended";
 
@@ -37,6 +38,8 @@ export type CallTimingSummary = {
     startToListening: number | null;
     startToFirstAgentTurn: number | null;
     listeningToFirstAgentTurn: number | null;
+    startToFirstPartial: number | null;
+    userFinalToFirstAgentTurn: number | null;
   };
 };
 
@@ -79,6 +82,8 @@ export class CallTimings {
         startToListening: gap(marks, "startRequested", "listening"),
         startToFirstAgentTurn: gap(marks, "startRequested", "firstAgentTurn"),
         listeningToFirstAgentTurn: gap(marks, "listening", "firstAgentTurn"),
+        startToFirstPartial: gap(marks, "startRequested", "firstPartial"),
+        userFinalToFirstAgentTurn: gap(marks, "firstUserTurn", "firstAgentTurn"),
       },
     };
   }

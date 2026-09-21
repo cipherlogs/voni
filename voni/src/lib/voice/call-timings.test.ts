@@ -40,3 +40,20 @@ test("ignores marks before startRequested except it anchors them", () => {
   assert.equal(summary.gapsMs.startToListening, null);
   assert.equal(summary.marks.listening, 500);
 });
+
+test("screen latency and reply gap are measurable", () => {
+  let now = 0;
+  const timings = new CallTimings(() => now);
+  timings.mark("startRequested");
+  now += 400;
+  timings.mark("firstPartial");
+  now += 1600;
+  timings.mark("firstUserTurn");
+  now += 900;
+  timings.mark("firstAgentTurn");
+  const summary = timings.summary();
+  // Words visible 400ms after tap instead of waiting for the final turn.
+  assert.equal(summary.gapsMs.startToFirstPartial, 400);
+  // The reply gap: user final -> agent audio.
+  assert.equal(summary.gapsMs.userFinalToFirstAgentTurn, 900);
+});

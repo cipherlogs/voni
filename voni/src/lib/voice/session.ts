@@ -132,6 +132,16 @@ export function buildResumeMessage(sessionId: string): Record<string, unknown> {
  * recognition-related ships here — not post-start — so the opening turn runs
  * tuned: fast endpointing, the screen's vocabulary, the screen's scene.
  */
+/**
+ * Test-call language lock. The agent's own picker stays authoritative and
+ * passes through untouched; when it is left on Automatic (empty), the test
+ * call locks to English instead of paying 18-language auto-detection on
+ * every turn. PSTN/provision paths keep passing the raw config untouched.
+ */
+export function effectiveInlineLanguages(codes: string[] | undefined): string[] {
+  return codes && codes.length > 0 ? [...codes] : ["en"];
+}
+
 export function buildInlineSessionUpdate(
   config: Extract<SessionConfig, { mode: "inline" }>,
 ): Record<string, unknown> {
@@ -356,7 +366,7 @@ const SENSITIVE_TURN_DETECTION: TurnDetection = {
  */
 export const NATURAL_TURN_DETECTION: TurnDetection = {
   min_silence: 900,
-  max_silence: 3000,
+  max_silence: 1200,
   interrupt_response: true,
   interruption_delay: 350,
 };
@@ -466,15 +476,64 @@ export class VoiceSession {
     };
 
     try {
-      let token: string;
-      let agentId: string | undefined;
-      try {
-        ({ token, agentId } = await getToken());
-      } catch (e) {
+      // Fail fast on a held mic before spending a single-use token, then run
+      // the token fetch and mic acquisition concurrently: they are
+      // independent and together dominate call-startup latency. Error mapping
+      // preserves the sequential version exactly (auth/rate-limit rethrown,
+      // mic failures coded); a superseded generation releases silently.
+      if (!acquireMic(this.micOwner)) {
+        throw new VoiceStartError(
+          "busy-mic",
+          "Another voice session is already using the microphone. Stop it first, then try again.",
+        );
+      }
+      type Settled<T> = { ok: true; value: T } | { ok: false; error: unknown };
+      // ES2017-safe allSettled: never rejects, so one failure cannot mask the
+      // other and partial acquisitions always reach the cleanup below.
+      const settle = async <T>(promise: Promise<T>): Promise<Settled<T>> => {
+        try {
+          return { ok: true, value: await promise };
+        } catch (error) {
+          return { ok: false, error };
+        }
+      };
+      const tokenPromise = settle(getToken());
+      const micPromise = settle(
+        navigator.mediaDevices.getUserMedia({
+          // See note 2 above — both of these matter.
+          audio: VOICE_MIC_CONSTRAINTS,
+        }),
+      );
+      const [tokenSettled, micSettled] = await Promise.all([tokenPromise, micPromise]);
+      // Park a won mic stream where abandon() releases it (stops tracks,
+      // releases the mic) instead of leaking it on the failure paths below.
+      const parkMicStream = () => {
+        if (micSettled.ok) acquiredStream = micSettled.value;
+      };
+      if (!alive()) {
+        parkMicStream();
+        abandon();
+        return;
+      }
+      if (!tokenSettled.ok) {
+        parkMicStream();
+        abandon();
+        const e = tokenSettled.error;
         if (e instanceof RateLimitError || e instanceof VoiceStartError) throw e;
         throw new VoiceStartError("network", "Could not get a call token.");
       }
-      if (!alive()) return;
+      if (!micSettled.ok) {
+        abandon();
+        // Rethrown as a coded error so the UI reports the friendly text and
+        // routes recovery rather than showing the DOMException's bare name.
+        throw new VoiceStartError("mic", micErrorMessage(micSettled.error));
+      }
+      const { token, agentId } = tokenSettled.value;
+      acquiredStream = micSettled.value;
+      if (!alive()) {
+        abandon();
+        return;
+      }
       this.tokenFetcher = getToken;
 
       // In agent mode the id is the server's to choose, not the caller's — so
@@ -489,27 +548,8 @@ export class VoiceSession {
           : null;
       this.pendingTurnDetectionRestore = undefined;
 
-      if (!acquireMic(this.micOwner)) {
-        throw new VoiceStartError(
-          "busy-mic",
-          "Another voice session is already using the microphone. Stop it first, then try again.",
-        );
-      }
-      try {
-        acquiredStream = await navigator.mediaDevices.getUserMedia({
-          // See note 2 above — both of these matter.
-          audio: VOICE_MIC_CONSTRAINTS,
-        });
-      } catch (e) {
-        releaseMic(this.micOwner);
-        // Rethrown as a coded error so the UI reports the friendly text and
-        // routes recovery rather than showing the DOMException's bare name.
-        throw new VoiceStartError("mic", micErrorMessage(e));
-      }
-      if (!alive()) {
-        abandon();
-        return;
-      }
+      // Mic stream and token were acquired concurrently above; the stream is
+      // already parked in acquiredStream for the handoff below.
       this.stream = acquiredStream;
       acquiredStream = null;
 

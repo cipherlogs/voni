@@ -18,6 +18,7 @@ import {
   authedToken,
   demoToken,
   NATURAL_TURN_DETECTION,
+  effectiveInlineLanguages,
   type Transcript,
   type VoiceError,
   type VoiceState,
@@ -236,6 +237,10 @@ export function VoiceCall({
   const [elapsed, setElapsed] = useState(0);
   /** Jev-gated filler line shown while the reply is being prepared. */
   const [filler, setFiller] = useState<string | null>(null);
+  /** Live caption from server partials — cleared when the final turn lands. */
+  const [liveCaption, setLiveCaption] = useState<{ role: "user" | "agent"; text: string } | null>(
+    null,
+  );
   const timingsRef = useRef<CallTimings | null>(null);
   const agentSpeechStartRef = useRef(0);
   const fillerIdxRef = useRef(0);
@@ -359,6 +364,7 @@ export function VoiceCall({
     setElapsed(0);
     setToolActive(false);
     setFiller(null);
+    setLiveCaption(null);
     interruptionsRef.current = 0;
     timingsRef.current = new CallTimings();
     timingsRef.current.mark("startRequested");
@@ -378,11 +384,16 @@ export function VoiceCall({
         if (turn.role === "user") timingsRef.current?.mark("firstUserTurn");
         else timingsRef.current?.mark("firstAgentTurn");
         if (turn.role === "agent") setFiller(null);
+        setLiveCaption(null);
         setTurns((prev) => [...prev, turn]);
       },
       onUserPartial: (partial) => {
-        // Jev barge-in gate (fail-closed): backchannels must not flicker the
-        // UI or drop the filler; real interruptions take the floor.
+        // Live caption first: the screen shows words while they are spoken.
+        // The judge debounce below stays untouched (fail-closed barge-in).
+        if (partial.text) {
+          setLiveCaption({ role: "user", text: partial.text });
+          timingsRef.current?.mark("firstPartial");
+        }
         if (partialTimerRef.current) clearTimeout(partialTimerRef.current);
         const text = partial.text;
         partialTimerRef.current = setTimeout(() => {
@@ -393,6 +404,14 @@ export function VoiceCall({
             if (r.decision === "yield") setFiller(null);
           });
         }, 150);
+      },
+      onAgentPartial: (partial) => {
+        // Agent captions stream word-by-word while it speaks — same live
+        // caption line, cleared when the final agent turn lands.
+        if (partial.text) {
+          setLiveCaption({ role: "agent", text: partial.text });
+          timingsRef.current?.mark("firstPartial");
+        }
       },
       onError: (e) => {
         setError(e);
@@ -438,7 +457,10 @@ export function VoiceCall({
             systemPrompt: compileSystemPrompt(config),
             greeting: config.greeting,
             voiceId: config.voiceId,
-            languageCodes: config.languageCodes,
+            // The agent's own language picker stays authoritative; Automatic
+            // (empty) locks to English so the test call skips 18-language
+            // auto-detection every turn.
+            languageCodes: effectiveInlineLanguages(config.languageCodes),
             tools: compileVoiceTools(config),
             testAgentId: mode.agentId,
             // Natural turn-taking: 350ms barge-in delay waits out
@@ -797,6 +819,11 @@ export function VoiceCall({
                       className="w-32"
                     />
                   </>
+                ) : liveCaption ? (
+                  <p className="text-xs italic" aria-live="polite">
+                    {liveCaption.role === "user" ? "You: " : `${displayName}: `}
+                    {liveCaption.text}
+                  </p>
                 ) : (
                   <p className="text-muted-foreground text-xs">{micHint}</p>
                 )}
@@ -825,11 +852,18 @@ export function VoiceCall({
                 keeps its scenario line. Chromeless ai-05 hosts own the
                 footer hint, so the card stays identity + transcript only. */}
             {connected ? (
-              <p className="text-muted-foreground text-xs leading-relaxed">
-                {remaining <= 30
-                  ? `${remaining}s left on this call`
-                  : "Just talk — it speaks first."}
-              </p>
+              liveCaption ? (
+                <p className="text-xs italic" aria-live="polite">
+                  {liveCaption.role === "user" ? "You: " : `${displayName}: `}
+                  {liveCaption.text}
+                </p>
+              ) : (
+                <p className="text-muted-foreground text-xs leading-relaxed">
+                  {remaining <= 30
+                    ? `${remaining}s left on this call`
+                    : "Just talk — it speaks first."}
+                </p>
+              )
             ) : isDemo && state === "idle" ? (
               <p className="text-muted-foreground text-xs leading-relaxed">
                 {persona.yourRole}
