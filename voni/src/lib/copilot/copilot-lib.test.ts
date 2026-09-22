@@ -151,3 +151,16 @@ test("check-in fires once in the lead window", () => {
   assert.equal(shouldCheckIn({ ...base, now: 51_000, checkInSent: true }), false);
   assert.equal(shouldCheckIn({ ...base, now: 61_000 }), false);
 });
+
+test("system prompt names the draft gate and binds last voice text", () => {
+  const gated = buildSystemPrompt({
+    route: "/agents/new",
+    screenBrief: "Building a phone agent.",
+    dialogState: { draftGateOpen: true, pendingProposals: 0, lastVoiceText: "call it mantra" },
+  });
+  assert.match(gated, /draft gate OPEN/);
+  assert.match(gated, /Continue previous draft or start fresh/);
+  assert.match(gated, /mantra/);
+  const sighted = buildSystemPrompt({ route: "/agents/new", screenBrief: "x" });
+  assert.match(sighted, /ui_read_screen before the first spoken sentence/);
+});

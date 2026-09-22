@@ -597,16 +597,20 @@ function NewAgentInner({
   );
   const wizardBrief = useMemo(() => {
     const current = wiz.draft;
+    const nameValue = current.agentName.trim().slice(0, 40);
     return [
       `step ${wiz.step + 1} of 2 (${WIZARD_STEPS[wiz.step]})`,
-      `${current.goals.length} goals`,
+      `${current.goals.length} goals${current.goals.length > 0 ? `: ${current.goals.slice(0, 3).join(", ")}` : ""}`,
       `${current.tasks.length} tasks`,
-      `name ${current.agentName ? "set" : "empty"}`,
+      nameValue ? `name "${nameValue}"` : "name empty — name field ref agentName is visible and empty",
       `${current.styleTraits.length} style tags`,
       `voice ${current.voiceId || "unset"}`,
       `language ${current.conversationLanguage}`,
+      draftGateOpen
+        ? "draft gate OPEN: Continue draft? (Continue draft / Discard and start fresh) is showing INSTEAD of the wizard — say Continue previous draft or start fresh, never 'what should we call it'"
+        : "draft gate closed: wizard fields visible (agentName, goals, tasks, voice, language); Continue/Discard not showing",
     ].join("; ");
-  }, [wiz.step, wiz.draft]);
+  }, [wiz.step, wiz.draft, draftGateOpen]);
   useEffect(() => {
     registerRoute("/agents/new", {
       tools: wizardCopilotTools,

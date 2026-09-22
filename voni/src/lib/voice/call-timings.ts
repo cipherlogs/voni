@@ -1,20 +1,23 @@
 /**
- * UI-observable timing marks for the browser test call.
+ * UI-observable timing marks for the browser test call + WS internals.
  *
- * The audio/WS internals live in `session.ts`; this recorder only tracks what
- * the UI layer (`voice-call.tsx`) can see: user gesture, VoiceState
- * transitions, first transcripts, and filler display. That keeps the hot audio
- * path untouched while still measuring the pause the user feels
- * (startRequested -> firstAgentTurn) and where it goes.
- *
- * WS-level marks (token fetch, session.ready, first audio frame) are a
- * follow-up inside `VoiceSession`; the gaps here tell us whether that is
- * worth the risk.
+ * The audio/WS internals live in `session.ts` and report through
+ * `VoiceHandlers.onTiming`: token fetch, mic grant, socket open,
+ * session.ready, first config ack, first agent audio. The UI layer
+ * (`voice-call.tsx`, copilot rail) records the same marks here so the
+ * Hi->Hi gap splits into network vs model vs playback segments.
  */
 
 export type CallTimingMark =
   | "startRequested"
   | "connecting"
+  | "tokenDone"
+  | "micDone"
+  | "wsOpen"
+  | "sessionReady"
+  | "firstUpdateAck"
+  | "greetingAudio"
+  | "instantAckShown"
   | "listening"
   | "speaking"
   | "firstUserTurn"
@@ -46,6 +49,11 @@ export type CallTimingSummary = {
     partialToSpeculativeNav: number | null;
     speculativeToConfirmed: number | null;
     partialToConfirmed: number | null;
+    startToSessionReady: number | null;
+    sessionReadyToFirstAgentTurn: number | null;
+    startToFirstUpdateAck: number | null;
+    wsOpenToSessionReady: number | null;
+    startToGreetingAudio: number | null;
   };
 };
 
@@ -93,6 +101,11 @@ export class CallTimings {
         partialToSpeculativeNav: gap(marks, "firstPartial", "speculativeNav"),
         speculativeToConfirmed: gap(marks, "speculativeNav", "confirmedNav"),
         partialToConfirmed: gap(marks, "firstPartial", "confirmedNav"),
+        startToSessionReady: gap(marks, "startRequested", "sessionReady"),
+        sessionReadyToFirstAgentTurn: gap(marks, "sessionReady", "firstAgentTurn"),
+        startToFirstUpdateAck: gap(marks, "startRequested", "firstUpdateAck"),
+        wsOpenToSessionReady: gap(marks, "wsOpen", "sessionReady"),
+        startToGreetingAudio: gap(marks, "startRequested", "greetingAudio"),
       },
     };
   }

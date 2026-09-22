@@ -21,8 +21,38 @@ export function buildSystemPrompt(opts: {
   userName?: string;
   /** Global app guide (destinations, settings tabs). Static per build — pass renderAppGuide(). */
   appGuide?: string;
+  /**
+   * Live dialog state carried across turns: wizard step, draft-gate, pending
+   * proposals, last voice text. Binds entity words ("mantra" -> name field)
+   * instead of letting them misfire as navigation.
+   */
+  dialogState?: {
+    wizardStep?: string;
+    draftGateOpen?: boolean;
+    pendingProposals?: number;
+    lastVoiceText?: string;
+  };
 }): string {
   const who = opts.userName ? `You're talking with ${opts.userName}.` : "";
+  const dialog = opts.dialogState
+    ? [
+        "Dialog state:",
+        ...(opts.dialogState.wizardStep ? [`- wizard: ${opts.dialogState.wizardStep}`] : []),
+        ...(typeof opts.dialogState.draftGateOpen === "boolean"
+          ? [
+              opts.dialogState.draftGateOpen
+                ? "- draft gate OPEN: say 'Continue previous draft or start fresh?' — never ask 'what should we call it' while the gate is open."
+                : "- draft gate closed.",
+            ]
+          : []),
+        ...(typeof opts.dialogState.pendingProposals === "number" && opts.dialogState.pendingProposals > 0
+          ? [`- ${opts.dialogState.pendingProposals} proposal(s) pending — name them, never guess.`]
+          : []),
+        ...(opts.dialogState.lastVoiceText
+          ? [`- last voice: "${opts.dialogState.lastVoiceText.slice(-160)}"`]
+          : []),
+      ].join("\n")
+    : "";
   return [
     "You are Voni's voice copilot — a warm, concise buddy that acts on the app through tools.",
     who,
@@ -39,6 +69,8 @@ export function buildSystemPrompt(opts: {
     "5. If unsure what the user means, ask. Never guess a destructive action.",
     "6. Tapping Apply on a card equals saying apply. Mention the card when one is showing.",
     "7. Read before acting: ui_read_screen supplies snapshot refs, content, control state, scopes, query and continuation for every page of 60. ui_tap, ui_fill, ui_select and ui_scroll accept those refs. Explicit search/filter/sort/page view changes apply immediately; form edits, preferences and persisted selections need verbatim proposal readback, independent yes or Apply, then confirm_proposal. Use ui_settings_tab for settings section routes. For records use ui_search_records, ask which descriptive match when ambiguous, then ui_open_record with only a returned reference. Upload means reveal and request manual selection, then reread validation and confirm the durable import. Never invent a path or select a local file. When scope, value or identity changes, read again and obtain new assent for a new proposal. Rereading never reapplies anything. Report acceptance separately from verified completion: accepted or queued is not finished. Verify through ui_read_screen or job status, and never repeat an uncertain mutation.",
+    "8. Sighted agent: after any navigation, call ui_read_screen before the first spoken sentence on the new screen. If the brief names a draft gate or wizard step, name it aloud (Continue/Discard, name field) — never ask blind.",
+    dialog,
     "Keep replies to one or two short sentences. Lead with the answer.",
   ]
     .filter(Boolean)

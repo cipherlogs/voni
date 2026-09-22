@@ -425,3 +425,18 @@ test("muted mic drops frames without tearing down the call", () => {
   ingest(new ArrayBuffer(4));
   assert.equal(sent.length, 2);
 });
+
+test("WS timing marks fire once per start", () => {
+  const marks: string[] = [];
+  const { handle, internals } = makeSession({ onTiming: (m) => marks.push(m) });
+  handle({ type: "session.ready", session_id: "sess_timing" });
+  const session = internals as unknown as { resolveUpdate: () => void; updateInFlight: unknown };
+  // Simulate an in-flight config update acking once.
+  session.updateInFlight = { session: {}, coalescible: false, started: true, timer: null, resolve: () => undefined, reject: () => undefined };
+  (internals as unknown as { resolveUpdate: () => void }).resolveUpdate?.();
+  handle({ type: "reply.audio", data: "AAAA" });
+  handle({ type: "reply.audio", data: "BBBB" });
+  assert.ok(marks.includes("sessionReady"), `got ${JSON.stringify(marks)}`);
+  assert.equal(marks.filter((m) => m === "firstUpdateAck").length, 1);
+  assert.equal(marks.filter((m) => m === "greetingAudio").length, 1);
+});

@@ -2,6 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   classifyPartialNav,
+  isCorrectionRetarget,
+  isFlowLockedRoute,
   matchNavIntent,
   rankNavPrefix,
   renderAppGuide,
@@ -133,4 +135,28 @@ test("prefix ranking keeps word-boundary guards", () => {
   assert.deepEqual(rankNavPrefix("nothing to do here", "/jobs"), []);
   assert.equal(classifyPartialNav("the leaders called back", "/jobs").action, "none");
   assert.equal(classifyPartialNav("open settings", "/jobs").action, "navigate");
+});
+
+test("bare call-it-mantra never yanks to /calls", () => {
+  // Short entity word without a nav verb: no navigate, at most prefetch.
+  const action = classifyPartialNav("let's call it mantra", "/agents/new");
+  assert.notEqual(action.action, "navigate", `got ${JSON.stringify(action)}`);
+  assert.equal(matchNavIntent("let's call it mantra", "/agents/new"), null);
+  // Verb adjacency still navigates.
+  assert.equal(matchNavIntent("open calls", "/agents/new"), "/calls");
+  assert.equal(classifyPartialNav("open calls", "/agents").action, "navigate");
+});
+
+test("flow-locked wizard prefetches instead of navigating", () => {
+  const locked = classifyPartialNav("open calls", "/agents/new", false, { flowLocked: true });
+  assert.equal(locked.action, "prefetch");
+  const free = classifyPartialNav("open calls", "/agents", false, { flowLocked: false });
+  assert.equal(free.action, "navigate");
+  assert.equal(isFlowLockedRoute("/agents/new"), true);
+  assert.equal(isFlowLockedRoute("/agents"), false);
+});
+
+test("correction cue authorizes a second nav in one utterance", () => {
+  assert.equal(isCorrectionRetarget("no, actually go to calls"), true);
+  assert.equal(isCorrectionRetarget("let's call it mantra"), false);
 });

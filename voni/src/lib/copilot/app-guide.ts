@@ -69,6 +69,49 @@ export function matchNavIntent(spoken: string, currentRoute: string, platformAdm
 
 export type NavPrefixCandidate = { route: string; confidence: number };
 
+/**
+ * Navigation verbs that authorize a short entity word (call/calls) to route.
+ * Bare "call it mantra" (no verb) must never yank to /calls — only
+ * "open/show/go to calls" navigates. Longer phrases ("call history") still
+ * match on their own through the full-phrase path.
+ */
+const NAV_VERBS = new Set([
+  "open",
+  "show",
+  "go",
+  "take",
+  "view",
+  "display",
+  "list",
+  "navigate",
+  "back",
+]);
+
+const CALL_TOKENS = new Set(["call", "calls"]);
+
+function hasNavVerb(spokenWords: string[]): boolean {
+  return spokenWords.some((w) => NAV_VERBS.has(w));
+}
+
+/**
+ * Wizard / draft-gate flows where speculative pushes must stay prefetch-only.
+ * The model binds entity words ("call it mantra" -> name=mantra) instead of
+ * navigating away mid-flow. The provider also locks while readbacks or
+ * proposals are pending — this covers the route half.
+ */
+export function isFlowLockedRoute(route: string): boolean {
+  return route === "/agents/new" || route.startsWith("/agents/new?");
+}
+
+/**
+ * Explicit correction cue that authorizes a second speculative nav inside one
+ * utterance ("no, actually go to calls"). Without this, one utterance may
+ * navigate at most once.
+ */
+export function isCorrectionRetarget(text: string): boolean {
+  return /\b(no[,.]?|actually|instead|sorry|correction|i meant)\b/i.test(text);
+}
+
 function tokenizeWords(text: string): string[] {
   return text
     .toLowerCase()
@@ -107,6 +150,9 @@ export function rankNavPrefix(
       for (const phraseWord of tokenizeWords(phrase)) {
         if (phraseWord.length <= 4) {
           if (spokenWords.includes(phraseWord)) {
+            // Short entity words (call/calls) need a nav verb next to them —
+            // "call it mantra" must not route to /calls.
+            if (CALL_TOKENS.has(phraseWord) && !hasNavVerb(spokenWords)) continue;
             matchedWords.add(phraseWord);
             if (0.9 > best) {
               best = 0.9;
@@ -155,21 +201,28 @@ export type PartialNavAction =
  * Single decision point for onUserPartial: full match navigates now,
  * strong prefix (>=0.8) navigates to the top candidate, weaker prefix
  * prefetches the top-2 so the final turn paints instantly with no loading
- * flash.
+ * flash. When flowLocked (wizard / draft-gate / proposal pending), navigate
+ * downgrades to prefetch — the confirmed model turn stays authoritative.
  */
 export function classifyPartialNav(
   spoken: string,
   currentRoute: string,
   platformAdmin = false,
+  opts: { flowLocked?: boolean } = {},
 ): PartialNavAction {
   const cleaned = stripWakePhrase(spoken);
   if (cleaned.length < 4) return { action: "none" };
   const full = matchNavIntent(cleaned, currentRoute, platformAdmin);
-  if (full) return { action: "navigate", route: full, confidence: 0.95 };
+  if (full) {
+    if (opts.flowLocked) return { action: "prefetch", candidates: [full] };
+    return { action: "navigate", route: full, confidence: 0.95 };
+  }
   const ranked = rankNavPrefix(cleaned, currentRoute, platformAdmin);
   if (ranked.length === 0) return { action: "none" };
-  if (ranked[0].confidence >= 0.8)
+  if (ranked[0].confidence >= 0.8) {
+    if (opts.flowLocked) return { action: "prefetch", candidates: [ranked[0].route] };
     return { action: "navigate", route: ranked[0].route, confidence: ranked[0].confidence };
+  }
   if (ranked[0].confidence >= 0.6)
     return { action: "prefetch", candidates: ranked.slice(0, 2).map((r) => r.route) };
   return { action: "none" };

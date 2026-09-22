@@ -73,3 +73,29 @@ test("speculative nav gaps measure partial-to-paint", () => {
   assert.equal(summary.gapsMs.speculativeToConfirmed, 900);
   assert.equal(summary.gapsMs.partialToConfirmed, 1020);
 });
+
+test("WS startup marks split the Hi gap into segments", () => {
+  let now = 0;
+  const timings = new CallTimings(() => now);
+  timings.mark("startRequested");
+  now += 80;
+  timings.mark("tokenDone");
+  now += 40;
+  timings.mark("micDone");
+  now += 60;
+  timings.mark("wsOpen");
+  now += 120;
+  timings.mark("sessionReady");
+  now += 50;
+  timings.mark("firstUpdateAck");
+  now += 700;
+  timings.mark("greetingAudio");
+  now += 100;
+  timings.mark("firstAgentTurn");
+  const summary = timings.summary();
+  assert.equal(summary.gapsMs.startToSessionReady, 300);
+  assert.equal(summary.gapsMs.wsOpenToSessionReady, 120);
+  assert.equal(summary.gapsMs.startToFirstUpdateAck, 350);
+  assert.equal(summary.gapsMs.sessionReadyToFirstAgentTurn, 850);
+  assert.equal(summary.gapsMs.startToGreetingAudio, 1050);
+});

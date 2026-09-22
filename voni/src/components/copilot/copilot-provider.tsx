@@ -31,6 +31,7 @@ import {
 import { usePathname, useRouter } from "next/navigation";
 import { z } from "zod";
 import {
+  COPILOT_TURN_DETECTION,
   RateLimitError,
   VoiceSession,
   type TranscriptPartial,
@@ -61,12 +62,13 @@ import {
   prefsLanguageCodes,
   type CopilotVoicePrefs,
 } from "@/lib/copilot/voice-prefs";
-import { classifyPartialNav, renderAppGuide } from "@/lib/copilot/app-guide";
+import { classifyPartialNav, isCorrectionRetarget, isFlowLockedRoute, renderAppGuide } from "@/lib/copilot/app-guide";
 import {
   getSessionPrefetchRoutes,
   prefetchCandidates,
 } from "@/lib/copilot/voice-prefetch";
-import { requestVoiceJudge } from "@/lib/voice/jev-judges";
+import { FILLER_POOL, requestVoiceJudge } from "@/lib/voice/jev-judges";
+import { CallTimings } from "@/lib/voice/call-timings";
 import { NAVIGABLE_ROUTES } from "@/lib/copilot/app-manifest";
 import { useJobs } from "@/components/jobs/jobs-provider";
 import { toast } from "@/components/ui/toast";
@@ -221,6 +223,14 @@ export function CopilotProvider({
   const speculativeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const prefetchSeenRef = useRef(new Set<string>());
   const lastSpeculativeNavRef = useRef<string | null>(null);
+  /** One speculative push per utterance unless an explicit correction lands. */
+  const utteranceNavDoneRef = useRef(false);
+  /** Last finalized voice text — binds entity words into the system prompt. */
+  const lastVoiceTextRef = useRef("");
+  /** Instant ack timer: local Hey! replaced when the server turn lands <800ms. */
+  const instantAckTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** WS-level timing splits the Hi gap into token/mic/socket/ready segments. */
+  const timingsRef = useRef<CallTimings | null>(null);
   const routerRef = useRef(router);
   useEffect(() => {
     routerRef.current = router;
@@ -302,10 +312,31 @@ export function CopilotProvider({
       if (!session) return;
       const brief =
         routeConfigs.current.get(route)?.brief ?? "(no screen details available)";
+      // Sighted agent: fold a fresh screen read into the brief when available
+      // so the model speaks from what is actually visible, not a stale brief.
+      let screenBrief = brief;
+      try {
+        const read = screenTools.current?.read();
+        if (read && read.ok) {
+          const content = String((read.data.content ?? "") as unknown as string).slice(0, 2000);
+          if (content.trim()) screenBrief = `${brief}\nFresh read:\n${content}`;
+        }
+      } catch {
+        /* Best-effort: stale brief still beats no update. */
+      }
+      const pendingCount = proposalStore.list().filter((p) => p.status === "pending" || p.status === "armed").length;
       void session
         .updateConfig(
           {
-            system_prompt: buildSystemPrompt({ route, screenBrief: brief, appGuide: renderAppGuide(platformAdmin) }),
+            system_prompt: buildSystemPrompt({
+              route,
+              screenBrief,
+              appGuide: renderAppGuide(platformAdmin),
+              dialogState: {
+                pendingProposals: pendingCount,
+                lastVoiceText: lastVoiceTextRef.current || undefined,
+              },
+            }),
             input: {
               transcription_prompt: buildTranscriptionPrompt(route),
               keyterms: buildKeyterms(route),
@@ -318,7 +349,7 @@ export function CopilotProvider({
           /* Uncertainty surfaces via onConfigUncertainty; tools stay gated. */
         });
     },
-    [sessionToolsFor, platformAdmin],
+    [sessionToolsFor, platformAdmin, proposalStore],
   );
 
   const clearTimers = useCallback(() => {
@@ -333,6 +364,10 @@ export function CopilotProvider({
     if (speculativeTimerRef.current) clearTimeout(speculativeTimerRef.current);
     speculativeTimerRef.current = null;
     lastSpeculativeNavRef.current = null;
+    utteranceNavDoneRef.current = false;
+    lastVoiceTextRef.current = "";
+    if (instantAckTimerRef.current) clearTimeout(instantAckTimerRef.current);
+    instantAckTimerRef.current = null;
     const session = sessionRef.current;
     sessionRef.current = null;
     micMutedRef.current = false;
@@ -364,6 +399,15 @@ export function CopilotProvider({
       const timer = setTimeout(() => stop(), 0);
       return () => clearTimeout(timer);
     }
+    // Pre-warm on auth-ready (no mic, no token, no billable session): warm
+    // every static destination so the first speculative push paints instantly.
+    // The session itself stays mounted in the layout across nav — never torn
+    // down on route change — so Hi->Hi reuses a warm socket when live.
+    void prefetchCandidates(
+      (r) => routerRef.current.prefetch(r),
+      getSessionPrefetchRoutes(platformAdminRef.current),
+      prefetchSeenRef.current,
+    );
   }, [enabled, stop]);
 
   const start = useCallback(() => {
@@ -403,22 +447,36 @@ export function CopilotProvider({
           // Mid-sentence speculation: heuristic executes now (<1ms), Jev
           // validates async. Final `ui_navigate` stays authoritative and
           // corrects any misfire. Skipped while a proposal awaits confirm
-          // so the page never yanks mid-readback.
+          // so the page never yanks mid-readback; wizard/draft-gate flows
+          // prefetch only; one push per utterance unless corrected.
           const text = partial.text || "";
           if (speculativeTimerRef.current) clearTimeout(speculativeTimerRef.current);
           speculativeTimerRef.current = setTimeout(() => {
             if (pendingReadbacks.current.size > 0) return;
             const current = routeRef.current;
-            const decision = classifyPartialNav(text, current, platformAdminRef.current);
+            const flowLocked = isFlowLockedRoute(current);
+            const decision = classifyPartialNav(text, current, platformAdminRef.current, { flowLocked });
             const liveRouter = routerRef.current;
             if (decision.action === "navigate") {
               if (lastSpeculativeNavRef.current === decision.route) return;
+              if (utteranceNavDoneRef.current && !isCorrectionRetarget(text)) return;
               lastSpeculativeNavRef.current = decision.route;
+              utteranceNavDoneRef.current = true;
               try {
                 liveRouter.push(decision.route);
               } catch {
                 /* Reversible speculation — the confirmed turn retries. */
               }
+              // Sighted agent: warm the fresh screen so the model speaks
+              // from ui_read_screen, not a stale brief.
+              setTimeout(() => {
+                try {
+                  screenTools.current?.read();
+                } catch {
+                  /* Best-effort warm. */
+                }
+                if (routeRef.current !== current) pushScreenContext(routeRef.current);
+              }, 350);
               void prefetchCandidates(
                 (r) => liveRouter.prefetch(r),
                 [decision.route],
@@ -449,10 +507,25 @@ export function CopilotProvider({
         },
         onUserTurn: (turn) => {
           setUserPartial(null);
+          // New finalized utterance: allow one fresh speculative nav.
+          utteranceNavDoneRef.current = false;
+          lastSpeculativeNavRef.current = null;
+          lastVoiceTextRef.current = turn.text;
+          timingsRef.current?.mark("firstUserTurn");
           setCaptions((prev) =>
             [...prev, { id: nextCaptionId(), role: "user" as const, text: turn.text }].slice(-30),
           );
           noteActivity();
+          // Instant ack (Doherty 250ms): short greetings show Hey! now while
+          // the server turn runs; the real reply replaces it <800ms.
+          if (/^\s*(hi|hey|hello|yo|sup)\s*[!.,]?\s*$/i.test(turn.text)) {
+            setAgentPartial("Hey!");
+            timingsRef.current?.mark("instantAckShown");
+            if (instantAckTimerRef.current) clearTimeout(instantAckTimerRef.current);
+            instantAckTimerRef.current = setTimeout(() => {
+              instantAckTimerRef.current = null;
+            }, 800);
+          }
           const heard = copilotBus.recordVoiceTurn(
             turn.itemId ?? nextCaptionId(),
             turn.text,
@@ -465,7 +538,13 @@ export function CopilotProvider({
           }
         },
         onAgentTurn: (turn) => {
+          // Server reply lands: instant ack served its purpose, clear it.
+          if (instantAckTimerRef.current) {
+            clearTimeout(instantAckTimerRef.current);
+            instantAckTimerRef.current = null;
+          }
           setAgentPartial(null);
+          timingsRef.current?.mark("firstAgentTurn");
           setCaptions((prev) =>
             [...prev, { id: nextCaptionId(), role: "agent" as const, text: turn.text }].slice(-30),
           );
@@ -504,7 +583,13 @@ export function CopilotProvider({
         },
         onToolActivity: (active) => {
           setToolActive(active);
-          if (active) noteActivity();
+          if (active) {
+            noteActivity();
+            // Tool turns feel dead without audio: show a filler so the
+            // 350ms ceiling holds perceptually while the tool runs.
+            setAgentPartial((prev) => prev ?? FILLER_POOL[0]);
+            timingsRef.current?.mark("fillerShown");
+          }
         },
         onConfigUncertainty: () => {
         },
@@ -513,7 +598,14 @@ export function CopilotProvider({
             setSessionSeconds(info.audioSeconds);
           }
         },
-        onSessionReady: (id) => setSessionId(id),
+        onSessionReady: (id) => {
+          setSessionId(id);
+          timingsRef.current?.mark("sessionReady");
+        },
+        onTiming: (mark) => {
+          timingsRef.current?.mark(mark);
+          if (mark === "greetingAudio") timingsRef.current?.mark("firstAgentTurn");
+        },
         onAudioProbe: (event) => {
           // Owner device runs read these to pin each pop to its cut.
           console.debug("[voice-audio]", event);
@@ -557,6 +649,8 @@ export function CopilotProvider({
     // Prefs snapshot for this conversation: the voice is immutable once the
     // session opens, so mid-call saves wait for the next start.
     const prefs = prefsRef.current;
+    timingsRef.current = new CallTimings();
+    timingsRef.current.mark("startRequested");
     const fetcher = async () => {
       const tok = await copilotToken();
       if (typeof tok.maxSessionSeconds === "number") {
@@ -577,17 +671,12 @@ export function CopilotProvider({
           greeting: COPILOT_GREETING,
           voiceId: prefs.voiceId,
           languageCodes: prefsLanguageCodes(prefs) ?? undefined,
-          // First-utterance tuning: VAD windows, STT mode, scene, and
-          // vocabulary ship in the opening update, not after it.
+          // First-utterance tuning: copilot backchannel VAD (~350ms) so Hi
+          // endpoints inside the Doherty budget; test calls keep NATURAL.
           transcriptionPrompt: buildTranscriptionPrompt(route),
           keyterms: buildKeyterms(route),
           transcriptionMode: "min_latency",
-          turnDetection: {
-            min_silence: 500,
-            max_silence: 2000,
-            interrupt_response: true,
-            interruption_delay: 0,
-          },
+          turnDetection: { ...COPILOT_TURN_DETECTION },
           tools: sessionToolsFor(route),
         },
         fetcher,
@@ -601,6 +690,7 @@ export function CopilotProvider({
         // instantly instead of flashing a loading skeleton.
         prefetchSeenRef.current = new Set();
         lastSpeculativeNavRef.current = null;
+        utteranceNavDoneRef.current = false;
         void prefetchCandidates(
           (r) => routerRef.current.prefetch(r),
           getSessionPrefetchRoutes(platformAdminRef.current),

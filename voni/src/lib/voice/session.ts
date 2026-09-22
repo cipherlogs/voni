@@ -283,6 +283,12 @@ export type VoiceHandlers = {
   onSessionEnded?: (info: SessionEndedInfo) => void;
   /** Fires on `session.ready` with the id AssemblyAI needs for support. */
   onSessionReady?: (sessionId: string) => void;
+  /**
+   * WS-level timing hook for CallTimings. Fires for tokenDone, micDone,
+   * wsOpen, sessionReady, firstUpdateAck, greetingAudio. Observation only —
+   * never blocks the audio path.
+   */
+  onTiming?: (mark: "tokenDone" | "micDone" | "wsOpen" | "sessionReady" | "firstUpdateAck" | "greetingAudio") => void;
   /** Audio-glitch probe (see AudioProbeEvent). Observation only. */
   onAudioProbe?: (event: AudioProbeEvent) => void;
   /** Finalized turns with ids (assent/readback binding). Partials stay separate. */
@@ -333,6 +339,18 @@ export const NATURAL_TURN_DETECTION: TurnDetection = {
   interruption_delay: 350,
 };
 
+/**
+ * Copilot backchannel VAD: tighter than the test-call preset so short
+ * "Hi" turns endpoint in ~350ms (Doherty budget), not 500ms+. Test calls
+ * keep NATURAL_TURN_DETECTION with its 350ms anti-rudeness delay.
+ */
+export const COPILOT_TURN_DETECTION: TurnDetection = {
+  min_silence: 350,
+  max_silence: 1200,
+  interrupt_response: true,
+  interruption_delay: 0,
+};
+
 /** One scheduled reply chunk. Direct source -> destination per AssemblyAI docs. */
 type QueuedVoice = {
   node: AudioBufferSourceNode;
@@ -371,6 +389,9 @@ export class VoiceSession {
   private updateInFlight: QueuedUpdate | null = null;
   private updateQueue: QueuedUpdate[] = [];
   private configSynced = true;
+  /** First config ack + first agent audio fire timing marks once per start. */
+  private firstUpdateAcked = false;
+  private greetingAudioSent = false;
 
   constructor(
     private handlers: VoiceHandlers = {},
@@ -419,6 +440,8 @@ export class VoiceSession {
     this.sessionId = null;
     this.micReleased = false;
     this.inputMuted = false;
+    this.firstUpdateAcked = false;
+    this.greetingAudioSent = false;
     if (!this.configSynced) {
       this.configSynced = true;
       this.handlers.onConfigUncertainty?.(false);
@@ -454,8 +477,14 @@ export class VoiceSession {
           return { ok: false, error };
         }
       };
-      const tokenPromise = settle(getToken());
-      const micPromise = settle(acquireMicStream(this.micOwner));
+      const tokenPromise = settle(getToken()).then((r) => {
+        if (r.ok) this.handlers.onTiming?.("tokenDone");
+        return r;
+      });
+      const micPromise = settle(acquireMicStream(this.micOwner)).then((r) => {
+        if (r.ok) this.handlers.onTiming?.("micDone");
+        return r;
+      });
       const [tokenSettled, micSettled] = await Promise.all([tokenPromise, micPromise]);
       // Park a won mic stream where abandon() releases it (stops tracks,
       // releases the mic) instead of leaking it on the failure paths below.
@@ -603,6 +632,7 @@ export class VoiceSession {
 
     ws.addEventListener("open", () => {
       if (!this.generation.isCurrent(gen)) return;
+      this.handlers.onTiming?.("wsOpen");
       const session =
         config.mode === "agent"
           ? // Stored agent: the browser supplies nothing but the binding.
@@ -714,6 +744,7 @@ export class VoiceSession {
           this.sessionId = id;
           this.handlers.onSessionReady?.(id);
         }
+        this.handlers.onTiming?.("sessionReady");
         this.probe("ready");
         this.resumeAttempts = 0;
         this.setState("listening");
@@ -721,6 +752,10 @@ export class VoiceSession {
 
       case "reply.audio":
         this.setState("speaking");
+        if (!this.greetingAudioSent) {
+          this.greetingAudioSent = true;
+          this.handlers.onTiming?.("greetingAudio");
+        }
         this.schedule(msg.data as string);
         break;
 
@@ -957,6 +992,10 @@ export class VoiceSession {
     const item = this.updateInFlight;
     if (item.timer) clearTimeout(item.timer);
     this.updateInFlight = null;
+    if (!this.firstUpdateAcked) {
+      this.firstUpdateAcked = true;
+      this.handlers.onTiming?.("firstUpdateAck");
+    }
     const input = item.session.input;
     if (input && typeof input === "object" && "turn_detection" in input) {
       const turnDetection = (input as { turn_detection?: unknown })
