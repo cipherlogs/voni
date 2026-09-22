@@ -1,0 +1,33 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "voni/**"
+      - ".github/workflows/deploy.yml"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: voni
+        shell: bash
+    env:
+      # Stock Node heap OOMs the Next build (seen locally); 8 GB fits runners.
+      NODE_OPTIONS: --max-old-space-size=8192
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: voni/package-lock.json
+      - run: npm ci
+      # opennextjs-cloudflare build + `wrangler deploy` (uses local wrangler 4).
+      # Worker secrets (DATABASE_URL, auth, API keys) live on the Worker and
+      # persist across deploys — this job never touches secret values.
+      - run: npm run deploy
