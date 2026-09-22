@@ -81,3 +81,27 @@ test("detail page deletes from the footer, no danger zone", () => {
   assert.ok(!editSource.includes("danger-zone-heading"));
   assert.ok(!editSource.includes("Done with this agent?"));
 });
+
+test("error replaces the consequence note instead of stacking", () => {
+  // Regression for the double-Alert bug (agent assigned to a campaign showed
+  // both the consequence copy and the campaign-blocker error): the error
+  // Alert is the if-branch, the consequence copy is the else-branch.
+  assert.ok(buttonSource.includes("{error ? ("));
+  const errorIdx = buttonSource.indexOf("AlertDescription>{error}");
+  const consequenceIdx = buttonSource.indexOf(
+    "This removes the voice agent from AssemblyAI",
+  );
+  assert.ok(errorIdx !== -1 && consequenceIdx !== -1);
+  assert.ok(
+    errorIdx < consequenceIdx,
+    "error Alert must be the if-branch, consequence the else-branch",
+  );
+  const errorBlock = buttonSource.slice(
+    buttonSource.indexOf("{error ? ("),
+    consequenceIdx + 80,
+  );
+  assert.ok(
+    errorBlock.includes(") : ("),
+    "error must have an else-branch rendering the consequence",
+  );
+});

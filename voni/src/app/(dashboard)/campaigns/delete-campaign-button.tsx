@@ -20,57 +20,40 @@ import {
 } from "@/components/ui/dialog";
 import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { deleteAgentAction } from "./actions";
+import { deleteCampaignAction } from "./actions";
 
 /**
- * Delete an agent with a GitHub-style confirm step, from the list row or the
- * detail footer next to Save.
+ * Delete a campaign with a GitHub-style confirm step, from the list row or
+ * the detail header next to Activate/Pause.
  *
- * Destructive actions get intentional friction, not a fire-and-forget icon:
- * the dialog restates the consequences in a destructive alert and requires
- * typing the agent's name (exact match) before the confirm enables.
- * Deleting removes the stored AssemblyAI voice agent, unbinds numbers, and
- * erases job history. Call history is kept.
+ * Same friction as deleting an agent: the dialog restates the consequences
+ * in a destructive alert and requires typing the campaign's name (exact
+ * match) before the confirm enables. Deleting removes the queue and job
+ * history. Leads and past call records are kept.
  */
-export function AgentDeleteButton({
+export function CampaignDeleteButton({
   id,
   name,
   layout = "icon",
   redirectTo,
-  neverProvisioned = false,
   className,
-  label = "Delete agent",
+  label = "Delete campaign",
   showIcon = true,
-  isBridgeAgent = false,
 }: {
   id: string;
   name: string;
-  /** "icon" for list rows, "full" for the detail footer next to Save. */
+  /** "icon" for list rows, "full" for the detail header next to Activate. */
   layout?: "icon" | "full";
   /**
-   * Extra classes for the `layout="full"` trigger. The agent detail page
-   * dresses it as the mockup's ghost-danger pill; every other caller keeps
-   * the default solid destructive button.
+   * Extra classes for the `layout="full"` trigger.
    */
   className?: string;
   /** Trigger label for `layout="full"`. The dialog's own copy is unaffected. */
   label?: string;
-  /** `layout="full"` only. The mockup's ghost-danger pill is text alone. */
+  /** `layout="full"` only. */
   showIcon?: boolean;
-  /** Where to go after a successful delete (detail page uses "/agents"). */
+  /** Where to go after a successful delete (detail page uses "/campaigns"). */
   redirectTo?: string;
-  /**
-   * True when the agent was never provisioned (no assemblyaiAgentId and
-   * deploymentStatus is draft / never deployed). Only shortens the copy —
-   * the typed-name gate and delete flow are unchanged.
-   */
-  neverProvisioned?: boolean;
-  /**
-   * True when this agent is the platform bridge default. Deleting it clears
-   * the bridge default (onDelete: set null), so the dialog carries a blocking
-   * note — the bridge has no agent until an operator picks a new one.
-   */
-  isBridgeAgent?: boolean;
 }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
@@ -78,18 +61,18 @@ export function AgentDeleteButton({
   const [error, setError] = useState<string | null>(null);
   const [confirmation, setConfirmation] = useState("");
   // The typed name is UI friction only — ownership is still enforced
-  // server-side by deleteAgentAction. Trimmed, not case-folded: names are
+  // server-side by deleteCampaignAction. Trimmed, not case-folded: names are
   // echoed verbatim, so folding would weaken the "read it carefully" effect.
   const confirmed = confirmation.trim() === name;
 
   const confirm = () =>
     startDelete(async () => {
       setError(null);
-      const result = await deleteAgentAction(id);
+      const result = await deleteCampaignAction(id);
       if (!result.ok) {
-        // Stay in the dialog so the reason (e.g. owns a campaign) is
-        // readable next to the action. Inline-only: the dialog stays open
-        // with the typed-name gate intact, so no duplicate toast.
+        // Stay in the dialog so the reason (e.g. still active) is readable
+        // next to the action. Inline-only: the dialog stays open with the
+        // typed-name gate intact, so no duplicate toast.
         setError(result.message);
         return;
       }
@@ -113,11 +96,7 @@ export function AgentDeleteButton({
       <DialogTrigger
         render={
           layout === "icon" ? (
-            <Button
-              variant="ghost"
-              size="icon"
-              aria-label={`Delete ${name}`}
-            />
+            <Button variant="ghost" size="icon" aria-label={`Delete ${name}`} />
           ) : (
             <Button variant="destructive" className={className} />
           )
@@ -137,24 +116,9 @@ export function AgentDeleteButton({
           <DestructiveDialogIcon />
           <DialogTitle>Delete “{name}”?</DialogTitle>
           <DialogDescription>
-            This is permanent.{" "}
-            {neverProvisioned
-              ? "No voice agent exists yet, so only the draft is removed."
-              : null}{" "}
-            Type the agent&apos;s name to confirm.
+            This is permanent. Type the campaign&apos;s name to confirm.
           </DialogDescription>
         </DialogHeader>
-        {isBridgeAgent ? (
-          <Alert variant="destructive">
-            <TriangleAlert />
-            <AlertDescription>
-              This agent is the platform bridge default. Deleting it clears
-              the bridge default — the voice bridge has no agent until an
-              operator picks a new one in Settings → Platform. Delete only if
-              a replacement is ready.
-            </AlertDescription>
-          </Alert>
-        ) : null}
         {error ? (
           <Alert variant="destructive">
             <TriangleAlert />
@@ -164,25 +128,14 @@ export function AgentDeleteButton({
           <Alert variant="destructive">
             <TriangleAlert />
             <AlertDescription>
-              {neverProvisioned ? (
-                <>
-                  This agent was not yet provisioned: only the draft and its
-                  job history are removed. Past call records are kept. This
-                  cannot be undone.
-                </>
-              ) : (
-                <>
-                  This removes the voice agent from AssemblyAI, unbinds its
-                  phone numbers, and erases its job history. Past call records
-                  are kept. This cannot be undone.
-                </>
-              )}
+              This removes the campaign, its queue, and its job history. Past
+              call records and leads are kept. This cannot be undone.
             </AlertDescription>
           </Alert>
         )}
         <Field>
           <FieldLabel htmlFor={`delete-confirm-${id}`}>
-            Agent name
+            Campaign name
           </FieldLabel>
           <FieldDescription>
             Type <span className="font-medium text-foreground">{name}</span>{" "}
@@ -195,7 +148,9 @@ export function AgentDeleteButton({
             onChange={(e) => setConfirmation(e.target.value)}
             placeholder={name}
             autoComplete="off"
-            aria-invalid={confirmation.length > 0 && !confirmed ? true : undefined}
+            aria-invalid={
+              confirmation.length > 0 && !confirmed ? true : undefined
+            }
           />
         </Field>
         <DialogFooter>
@@ -209,7 +164,7 @@ export function AgentDeleteButton({
             disabled={!confirmed}
             onClick={confirm}
           >
-            Delete agent
+            Delete campaign
           </LoadingButton>
         </DialogFooter>
       </DialogContent>

@@ -21,6 +21,7 @@ import {
 import { Megaphone, Plus } from "lucide-react";
 import { CardListSkeleton } from "@/components/page-skeletons";
 import { listCampaigns } from "./actions";
+import { CampaignDeleteButton } from "./delete-campaign-button";
 import {
   describeCallingWindow,
   parseCallingWindow,
@@ -105,14 +106,20 @@ async function CampaignsList() {
                     {campaign.reached} reached
                   </TableCell>
                   <TableCell>
-                    <Button
-                      nativeButton={false}
-                      variant="outline"
-                      size="sm"
-                      render={<Link href={`/campaigns/${campaign.id}`} />}
-                    >
-                      Open
-                    </Button>
+                    <div className="flex items-center gap-1">
+                      <Button
+                        nativeButton={false}
+                        variant="outline"
+                        size="sm"
+                        render={<Link href={`/campaigns/${campaign.id}`} />}
+                      >
+                        Open
+                      </Button>
+                      <CampaignDeleteButton
+                        id={campaign.id}
+                        name={campaign.name}
+                      />
+                    </div>
                   </TableCell>
                 </TableRow>
               ))}

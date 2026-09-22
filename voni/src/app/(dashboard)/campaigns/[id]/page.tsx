@@ -9,6 +9,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { BackLink } from "@/components/back-link";
 import { BookOpen, PhoneOutgoing, Clock } from "lucide-react";
 import { CampaignControls } from "@/components/campaign-controls";
+import { CampaignDeleteButton } from "../delete-campaign-button";
 import { CampaignQueue } from "@/components/campaign-queue";
 import { LeadImport } from "@/components/lead-import";
 import { describeCallingWindow } from "@/lib/campaigns/policy";
@@ -119,11 +120,19 @@ async function CampaignDetail({
               {campaign.maxAttempts === 1 ? "" : "s"} per lead
             </p>
           </div>
-          <CampaignControls
-            id={campaign.id}
-            status={campaign.status}
-            activationBlocker={activationBlocker}
-          />
+          <div className="flex flex-wrap items-center gap-2">
+            <CampaignControls
+              id={campaign.id}
+              status={campaign.status}
+              activationBlocker={activationBlocker}
+            />
+            <CampaignDeleteButton
+              id={campaign.id}
+              name={campaign.name}
+              layout="full"
+              redirectTo="/campaigns"
+            />
+          </div>
         </div>
       </div>
 

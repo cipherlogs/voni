@@ -1,10 +1,17 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { and, count, desc, eq, sql } from "drizzle-orm";
+import { and, count, desc, eq, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/lib/db";
-import { agents, campaignLeads, campaigns, leads } from "@/lib/db/schema";
+import {
+  agents,
+  backgroundJobs,
+  calls,
+  campaignLeads,
+  campaigns,
+  leads,
+} from "@/lib/db/schema";
 import { requireCtx, requireCtxOrRedirect } from "@/lib/session";
 import {
   allowedConsentStatuses,
@@ -407,4 +414,136 @@ export async function getCampaignDispatchStatus(id: string) {
   if (dueNow === 0) blockers.push("no leads are due");
 
   return { window, dueNow, windowOpen: verdict.allowed, blockers };
+}
+
+/**
+ * Delete a campaign with the same friction as deleting an agent.
+ *
+ * What survives, mirroring `deleteAgentAction`:
+ *  1. Queue rows (`campaign_leads`) cascade with the row — no code needed.
+ *  2. Numbers (`phone_numbers.campaign_id`) park via onDelete: set null.
+ *  3. Call history is kept: `calls.campaign_id` is nulled first (the FK has
+ *     no onDelete, so the delete would block otherwise).
+ *  4. Leads are never deleted — they are shared across campaigns.
+ *  5. In-flight `lead_csv_import` jobs are cancelled first so workers
+ *     converge instead of failing on a missing campaign. Only terminal rows
+ *     are hard-deleted, by id — never by title.
+ * Active campaigns refuse with the reason so the runner never loses work
+ * mid-claim; pause first, then delete.
+ */
+export async function deleteCampaignAction(
+  id: string,
+): Promise<CampaignResult> {
+  let ctx;
+  try {
+    ctx = await requireCtx();
+  } catch {
+    return { ok: false, message: "Sign in again to delete this campaign." };
+  }
+
+  const [campaign] = await db
+    .select({ id: campaigns.id, name: campaigns.name, status: campaigns.status })
+    .from(campaigns)
+    .where(
+      and(eq(campaigns.id, id), eq(campaigns.organizationId, ctx.organizationId)),
+    )
+    .limit(1);
+  if (!campaign) return { ok: false, message: "Campaign not found." };
+  if (campaign.status === "active") {
+    return {
+      ok: false,
+      message: "Pause the campaign first, then delete it.",
+    };
+  }
+
+  // Imports never set relatedId (see import-upload route) — they carry the
+  // campaign in input.campaignId. Match both so future callers that set
+  // relatedId are covered too.
+  const linkedJobs = await db
+    .select({ id: backgroundJobs.id, status: backgroundJobs.status })
+    .from(backgroundJobs)
+    .where(
+      and(
+        eq(backgroundJobs.organizationId, ctx.organizationId),
+        or(
+          eq(backgroundJobs.relatedId, id),
+          sql`(${backgroundJobs.input} ->> 'campaignId') = ${id}`,
+        ),
+      ),
+    );
+
+  const cancelOneLinkedJob = async (
+    jobId: string,
+    status: string,
+  ): Promise<void> => {
+    if (status === "queued") {
+      const updated = await db
+        .update(backgroundJobs)
+        .set({
+          status: "cancelled",
+          errorCode: "cancelled",
+          errorMessage: "Cancelled: the campaign was deleted.",
+          completedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(
+          and(eq(backgroundJobs.id, jobId), eq(backgroundJobs.status, "queued")),
+        )
+        .returning({ id: backgroundJobs.id });
+      if (updated.length > 0) return;
+      await db
+        .update(backgroundJobs)
+        .set({ cancelRequested: true, updatedAt: new Date() })
+        .where(
+          and(
+            eq(backgroundJobs.id, jobId),
+            eq(backgroundJobs.status, "running"),
+          ),
+        );
+    } else if (status === "running") {
+      await db
+        .update(backgroundJobs)
+        .set({ cancelRequested: true, updatedAt: new Date() })
+        .where(eq(backgroundJobs.id, jobId));
+    }
+  };
+  for (const job of linkedJobs) {
+    await cancelOneLinkedJob(job.id, job.status);
+  }
+
+  // Preserve call history; the FK has no onDelete so this must run first.
+  await db
+    .update(calls)
+    .set({ campaignId: null })
+    .where(eq(calls.campaignId, id));
+
+  for (const job of linkedJobs) {
+    await db
+      .delete(backgroundJobs)
+      .where(
+        and(
+          eq(backgroundJobs.id, job.id),
+          eq(backgroundJobs.organizationId, ctx.organizationId),
+          or(
+            eq(backgroundJobs.status, "succeeded"),
+            eq(backgroundJobs.status, "failed"),
+            eq(backgroundJobs.status, "cancelled"),
+          ),
+        ),
+      );
+  }
+
+  const deleted = await db
+    .delete(campaigns)
+    .where(
+      and(eq(campaigns.id, id), eq(campaigns.organizationId, ctx.organizationId)),
+    )
+    .returning({ id: campaigns.id });
+  if (deleted.length === 0) {
+    return { ok: false, message: "Campaign not found." };
+  }
+
+  revalidatePath("/campaigns");
+  revalidatePath(`/campaigns/${id}`);
+  return { ok: true, id };
 }
