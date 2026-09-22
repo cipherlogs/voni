@@ -1,0 +1,185 @@
+"""Tests for the AssemblyAI streaming STT backend.
+
+The socket is injected, so no network or credentials are needed: the fake
+replays a scripted session (Begin, partial Turns, final Turn, Termination)
+and records everything the backend sent for framing assertions.
+
+Wire-format assumptions under test are marked LIVE-VERIFY in
+backends/assemblyai_stt.py — a 30-second live run with real credits is the
+P1 exit gate for each of them.
+"""
+
+import asyncio
+import base64
+import json
+import unittest
+from urllib.parse import parse_qs, urlparse
+
+from backends.assemblyai_stt import AssemblyAIStreamingSTT
+
+
+class FakeSocket:
+    """Scripted stand-in for a websockets client connection."""
+
+    def __init__(self, inbound: list[dict]) -> None:
+        self._inbound = list(inbound)
+        self.sent: list[str] = []
+        self.closed = False
+        self.extra_headers: dict | None = None
+        self.url: str | None = None
+
+    async def send(self, message: str) -> None:
+        self.sent.append(message)
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self) -> str:
+        if not self._inbound:
+            raise StopAsyncIteration
+        return json.dumps(self._inbound.pop(0))
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+def make_backend(inbound: list[dict], api_key: str = "test-key", **kwargs):
+    holder: dict = {}
+
+    async def factory(url: str, extra_headers: dict):
+        sock = FakeSocket(inbound)
+        sock.url = url
+        sock.extra_headers = extra_headers
+        holder["sock"] = sock
+        return sock
+
+    backend = AssemblyAIStreamingSTT(api_key=api_key, socket_factory=factory, **kwargs)
+    return backend, holder
+
+
+TURN_PARTIAL = {"type": "Turn", "transcript": "hi", "end_of_turn": False, "turn_order": 0}
+TURN_PARTIAL_2 = {"type": "Turn", "transcript": "hi there", "end_of_turn": False, "turn_order": 0}
+TURN_FINAL = {"type": "Turn", "transcript": "hi there", "end_of_turn": True, "turn_order": 0}
+
+
+class AssemblyAISTTTests(unittest.TestCase):
+    def test_auth_header_and_sample_rate_in_handshake(self):
+        async def run():
+            backend, holder = make_backend([{"type": "Begin", "id": "s1"}], api_key="k")
+            await backend.open(language_codes=["en"], sample_rate=24000)
+            await backend.close()
+            return holder["sock"]
+
+        sock = asyncio.run(run())
+        assert sock.extra_headers is not None
+        self.assertEqual(sock.extra_headers.get("Authorization"), "k")
+        assert sock.url is not None
+        query = parse_qs(urlparse(sock.url).query)
+        self.assertEqual(query.get("sample_rate"), ["24000"])
+        self.assertIn("streaming.assemblyai.com", sock.url)
+
+    def test_pinned_language_sent_as_code(self):
+        async def run():
+            backend, holder = make_backend([{"type": "Begin", "id": "s1"}])
+            await backend.open(language_codes=["en"], sample_rate=16000)
+            await backend.close()
+            return holder["sock"]
+
+        sock = asyncio.run(run())
+        query = parse_qs(urlparse(sock.url or "").query)
+        self.assertEqual(query.get("language_code"), ["en"])
+
+    def test_empty_languages_enable_detection(self):
+        async def run():
+            backend, holder = make_backend([{"type": "Begin", "id": "s1"}])
+            await backend.open(language_codes=[], sample_rate=16000)
+            await backend.close()
+            return holder["sock"]
+
+        sock = asyncio.run(run())
+        query = parse_qs(urlparse(sock.url or "").query)
+        self.assertEqual(query.get("language_detection"), ["true"])
+
+    def test_audio_framed_as_base64(self):
+        async def run():
+            backend, holder = make_backend([{"type": "Begin", "id": "s1"}])
+            await backend.open(language_codes=["en"], sample_rate=16000)
+            await backend.send_audio(b"\x00\x01\x02\x03")
+            await backend.close()
+            return holder["sock"]
+
+        sock = asyncio.run(run())
+        frames = [json.loads(m) for m in sock.sent]
+        self.assertEqual(
+            frames[0]["audio_data"], base64.b64encode(b"\x00\x01\x02\x03").decode()
+        )
+
+    def test_partials_then_final(self):
+        from providers import FinalTranscript, PartialTranscript
+
+        async def run():
+            backend, _ = make_backend([TURN_PARTIAL, TURN_PARTIAL_2, TURN_FINAL])
+            await backend.open(language_codes=["en"], sample_rate=16000)
+            out = [e async for e in backend.events()]
+            await backend.close()
+            return out
+
+        out = asyncio.run(run())
+        self.assertIsInstance(out[0], PartialTranscript)
+        self.assertEqual(out[0].text, "hi")
+        self.assertIsInstance(out[1], PartialTranscript)
+        self.assertIsInstance(out[2], FinalTranscript)
+        self.assertEqual(out[2].text, "hi there")
+
+    def test_empty_transcript_turns_skipped(self):
+        async def run():
+            backend, _ = make_backend(
+                [
+                    {"type": "Turn", "transcript": "", "end_of_turn": False, "turn_order": 0},
+                    TURN_FINAL,
+                ]
+            )
+            await backend.open(language_codes=["en"], sample_rate=16000)
+            out = [e async for e in backend.events()]
+            await backend.close()
+            return out
+
+        out = asyncio.run(run())
+        self.assertEqual(len(out), 1)
+
+    def test_termination_ends_stream(self):
+        async def run():
+            backend, _ = make_backend([TURN_FINAL, {"type": "Termination"}])
+            await backend.open(language_codes=["en"], sample_rate=16000)
+            out = [e async for e in backend.events()]
+            await backend.close()
+            return out
+
+        out = asyncio.run(run())
+        self.assertEqual(len(out), 1)
+
+    def test_unknown_message_types_ignored(self):
+        async def run():
+            backend, _ = make_backend([{"type": "SomethingNew", "x": 1}, TURN_FINAL])
+            await backend.open(language_codes=["en"], sample_rate=16000)
+            out = [e async for e in backend.events()]
+            await backend.close()
+            return out
+
+        out = asyncio.run(run())
+        self.assertEqual(len(out), 1)
+
+    def test_close_is_idempotent(self):
+        async def run():
+            backend, holder = make_backend([{"type": "Begin", "id": "s1"}])
+            await backend.open(language_codes=["en"], sample_rate=16000)
+            await backend.close()
+            await backend.close()
+            return holder["sock"]
+
+        sock = asyncio.run(run())
+        self.assertTrue(sock.closed)
+
+
+if __name__ == "__main__":
+    unittest.main()
