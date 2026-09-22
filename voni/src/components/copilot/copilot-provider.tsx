@@ -96,6 +96,14 @@ export type RouteToolConfig = {
   tools: RegisteredTool[];
   targets: Map<string, () => { value: unknown; version: number | string } | null>;
   brief: string;
+  /**
+   * Live dialog state the route owns (wizard step, draft gate). Merged into
+   * the system prompt on every push — routes that have none omit it.
+   */
+  dialogState?: {
+    wizardStep?: string;
+    draftGateOpen?: boolean;
+  };
 };
 
 export type ProposeChangeInput = {
@@ -172,6 +180,16 @@ async function copilotToken(): Promise<{ token: string; maxSessionSeconds?: numb
 
 let captionSeq = 0;
 const nextCaptionId = () => `cap-${(captionSeq += 1)}`;
+
+/** One caption appended, history capped — shared by user/agent turns. */
+const appendCaption = (
+  prev: CaptionTurn[],
+  role: CaptionTurn["role"],
+  text: string,
+): CaptionTurn[] => [...prev, { id: nextCaptionId(), role, text }].slice(-30);
+
+/** Hold line while a tool runs — the pool's most neutral filler. */
+const TOOL_FILLER = FILLER_POOL[0];
 
 /**
  * Destinations voice may open: registered result pages only. Anything else
@@ -333,6 +351,7 @@ export function CopilotProvider({
               screenBrief,
               appGuide: renderAppGuide(platformAdmin),
               dialogState: {
+                ...routeConfigs.current.get(route)?.dialogState,
                 pendingProposals: pendingCount,
                 lastVoiceText: lastVoiceTextRef.current || undefined,
               },
@@ -513,7 +532,7 @@ export function CopilotProvider({
           lastVoiceTextRef.current = turn.text;
           timingsRef.current?.mark("firstUserTurn");
           setCaptions((prev) =>
-            [...prev, { id: nextCaptionId(), role: "user" as const, text: turn.text }].slice(-30),
+            appendCaption(prev, "user", turn.text),
           );
           noteActivity();
           // Instant ack (Doherty 250ms): short greetings show Hey! now while
@@ -524,6 +543,10 @@ export function CopilotProvider({
             if (instantAckTimerRef.current) clearTimeout(instantAckTimerRef.current);
             instantAckTimerRef.current = setTimeout(() => {
               instantAckTimerRef.current = null;
+              // Server turn is late: drop the stale local ack instead of
+              // leaving Hey! on screen until the reply lands. Only our own
+              // ack is ever exactly "Hey!" — a real partial is preserved.
+              setAgentPartial((prev) => (prev === "Hey!" ? null : prev));
             }, 800);
           }
           const heard = copilotBus.recordVoiceTurn(
@@ -546,7 +569,7 @@ export function CopilotProvider({
           setAgentPartial(null);
           timingsRef.current?.mark("firstAgentTurn");
           setCaptions((prev) =>
-            [...prev, { id: nextCaptionId(), role: "agent" as const, text: turn.text }].slice(-30),
+            appendCaption(prev, "agent", turn.text),
           );
           noteActivity();
           const candidates = copilotBus.recordAgentTurn(turn.itemId ?? nextCaptionId(), turn.text);
@@ -587,7 +610,7 @@ export function CopilotProvider({
             noteActivity();
             // Tool turns feel dead without audio: show a filler so the
             // 350ms ceiling holds perceptually while the tool runs.
-            setAgentPartial((prev) => prev ?? FILLER_POOL[0]);
+            setAgentPartial((prev) => prev ?? TOOL_FILLER);
             timingsRef.current?.mark("fillerShown");
           }
         },
@@ -603,8 +626,9 @@ export function CopilotProvider({
           timingsRef.current?.mark("sessionReady");
         },
         onTiming: (mark) => {
+          // No aliasing: firstAgentTurn comes only from onAgentTurn, so the
+          // sessionReady/first-turn gaps measure the real reply, not audio.
           timingsRef.current?.mark(mark);
-          if (mark === "greetingAudio") timingsRef.current?.mark("firstAgentTurn");
         },
         onAudioProbe: (event) => {
           // Owner device runs read these to pin each pop to its cut.
@@ -667,6 +691,7 @@ export function CopilotProvider({
             screenBrief:
               routeConfigs.current.get(route)?.brief ?? "(no screen details available)",
             appGuide: renderAppGuide(platformAdmin),
+            dialogState: routeConfigs.current.get(route)?.dialogState,
           }),
           greeting: COPILOT_GREETING,
           voiceId: prefs.voiceId,

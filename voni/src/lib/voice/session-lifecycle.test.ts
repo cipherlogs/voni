@@ -426,6 +426,15 @@ test("muted mic drops frames without tearing down the call", () => {
   assert.equal(sent.length, 2);
 });
 
+test("session.ready marks timing once per start", () => {
+  const marks: string[] = [];
+  const { handle } = makeSession({ onTiming: (m) => marks.push(m) });
+  // A resume re-emits session.ready on the same conversation — still one mark.
+  handle({ type: "session.ready", session_id: "sess_timing" });
+  handle({ type: "session.ready", session_id: "sess_timing" });
+  assert.equal(marks.filter((m) => m === "sessionReady").length, 1);
+});
+
 test("WS timing marks fire once per start", () => {
   const marks: string[] = [];
   const { handle, internals } = makeSession({ onTiming: (m) => marks.push(m) });

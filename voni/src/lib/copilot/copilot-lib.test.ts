@@ -163,4 +163,11 @@ test("system prompt names the draft gate and binds last voice text", () => {
   assert.match(gated, /mantra/);
   const sighted = buildSystemPrompt({ route: "/agents/new", screenBrief: "x" });
   assert.match(sighted, /ui_read_screen before the first spoken sentence/);
+  // An empty state object renders no bare header.
+  const empty = buildSystemPrompt({
+    route: "/agents/new",
+    screenBrief: "x",
+    dialogState: { pendingProposals: 0 },
+  });
+  assert.ok(!empty.includes("Dialog state"));
 });

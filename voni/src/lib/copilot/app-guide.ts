@@ -52,11 +52,18 @@ export function stripWakePhrase(spoken: string): string {
  */
 export function matchNavIntent(spoken: string, currentRoute: string, platformAdmin = false): string | null {
   const hits: Array<{ route: string; length: number }> = [];
+  const words = tokenizeWords(spoken);
+  const verbAdjacency = hasNavVerb(words);
   for (const destination of APP_DESTINATIONS) {
     if (destination.navigationKind !== "static" || destination.route === currentRoute) continue;
     if (destination.access === "platform-admin" && !platformAdmin) continue;
     let best = 0;
     for (const phrase of destination.phrases) {
+      // call/calls needs nav-verb adjacency: a phrase built on the entity
+      // word ("call list", "call history") scores nothing without a verb,
+      // so "call it mantra" never yanks to /calls. Manifest examples all
+      // carry verbs, so none are lost.
+      if (!verbAdjacency && tokenizeWords(phrase).some((w) => CALL_TOKENS.has(w))) continue;
       const pattern = new RegExp(`\\b${escapeRegExp(phrase)}\\b`, "i");
       if (pattern.test(spoken) && phrase.length > best) best = phrase.length;
     }
@@ -85,6 +92,9 @@ const NAV_VERBS = new Set([
   "list",
   "navigate",
   "back",
+  // "Read the call list" is a manifest example — read counts as a nav verb
+  // for call-phrase adjacency, nowhere else.
+  "read",
 ]);
 
 const CALL_TOKENS = new Set(["call", "calls"]);
@@ -106,10 +116,15 @@ export function isFlowLockedRoute(route: string): boolean {
 /**
  * Explicit correction cue that authorizes a second speculative nav inside one
  * utterance ("no, actually go to calls"). Without this, one utterance may
- * navigate at most once.
+ * navigate at most once. Bare "no" answers ("no thanks", "no, the name
+ * is…") are not corrections — only a lone "no" or "no" + a nav verb /
+ * correction word retargets.
  */
 export function isCorrectionRetarget(text: string): boolean {
-  return /\b(no[,.]?|actually|instead|sorry|correction|i meant)\b/i.test(text);
+  if (/\b(actually|instead|sorry|correction|i meant)\b/i.test(text)) return true;
+  const trimmed = text.trim();
+  if (/^\s*no[,.!]?\s*$/i.test(trimmed)) return true;
+  return /\bno[,.]?\s+(go|open|show|take|view|to|actually|instead)\b/i.test(text);
 }
 
 function tokenizeWords(text: string): string[] {
@@ -134,7 +149,8 @@ export function rankNavPrefix(
   platformAdmin = false,
 ): NavPrefixCandidate[] {
   const cleaned = stripWakePhrase(spoken);
-  const spokenWords = tokenizeWords(cleaned).filter((w) => w.length >= 3);
+  const allWords = tokenizeWords(cleaned);
+  const spokenWords = allWords.filter((w) => w.length >= 3);
   if (spokenWords.length === 0) return [];
   // Full-phrase hits are authoritative — prefix ranking stays silent then.
   if (matchNavIntent(cleaned, currentRoute, platformAdmin)) return [];
@@ -147,12 +163,16 @@ export function rankNavPrefix(
     let bestPhraseLen = 0;
     const matchedWords = new Set<string>();
     for (const phrase of destination.phrases) {
+      // Same verb-adjacency rule as matchNavIntent: a call-built phrase
+      // scores nothing without a nav verb, so verb-less partials can
+      // neither navigate nor prefetch /calls.
+      if (!hasNavVerb(allWords) && tokenizeWords(phrase).some((w) => CALL_TOKENS.has(w))) continue;
       for (const phraseWord of tokenizeWords(phrase)) {
         if (phraseWord.length <= 4) {
           if (spokenWords.includes(phraseWord)) {
             // Short entity words (call/calls) need a nav verb next to them —
             // "call it mantra" must not route to /calls.
-            if (CALL_TOKENS.has(phraseWord) && !hasNavVerb(spokenWords)) continue;
+            if (CALL_TOKENS.has(phraseWord) && !hasNavVerb(allWords)) continue;
             matchedWords.add(phraseWord);
             if (0.9 > best) {
               best = 0.9;

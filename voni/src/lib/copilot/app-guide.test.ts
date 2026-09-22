@@ -159,4 +159,22 @@ test("flow-locked wizard prefetches instead of navigating", () => {
 test("correction cue authorizes a second nav in one utterance", () => {
   assert.equal(isCorrectionRetarget("no, actually go to calls"), true);
   assert.equal(isCorrectionRetarget("let's call it mantra"), false);
+  // Bare "no" answers are not corrections.
+  assert.equal(isCorrectionRetarget("no"), true);
+  assert.equal(isCorrectionRetarget("no, go to calls"), true);
+  assert.equal(isCorrectionRetarget("no thanks"), false);
+  assert.equal(isCorrectionRetarget("no, the name is mantra"), false);
+});
+
+test("call phrases need nav-verb adjacency in full matches", () => {
+  assert.equal(matchNavIntent("call history", "/jobs"), null);
+  assert.equal(matchNavIntent("read the call list", "/jobs"), "/calls");
+  assert.equal(matchNavIntent("show my call history", "/jobs"), "/calls");
+  assert.equal(matchNavIntent("open calls", "/jobs"), "/calls");
+  assert.equal(matchNavIntent("go to calls", "/jobs"), "/calls");
+});
+
+test("call prefix partials without a verb never navigate", () => {
+  const action = classifyPartialNav("call hist", "/jobs");
+  assert.notEqual(action.action, "navigate", `got ${JSON.stringify(action)}`);
 });

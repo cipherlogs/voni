@@ -611,14 +611,19 @@ function NewAgentInner({
         : "draft gate closed: wizard fields visible (agentName, goals, tasks, voice, language); Continue/Discard not showing",
     ].join("; ");
   }, [wiz.step, wiz.draft, draftGateOpen]);
+  const wizardDialogState = useMemo(
+    () => ({ wizardStep: WIZARD_STEPS[wiz.step], draftGateOpen }),
+    [wiz.step, draftGateOpen],
+  );
   useEffect(() => {
     registerRoute("/agents/new", {
       tools: wizardCopilotTools,
       targets: createWizardTargetReader(() => draftRef.current),
       brief: `Building a phone agent. Now on ${wizardBrief}.`,
+      dialogState: wizardDialogState,
     });
     return () => unregisterRoute("/agents/new");
-  }, [registerRoute, unregisterRoute, wizardCopilotTools, wizardBrief, draftRef]);
+  }, [registerRoute, unregisterRoute, wizardCopilotTools, wizardBrief, wizardDialogState, draftRef]);
 
   // Minimal generation wait: while submitting/restoring/backgrounded, the
   // entire wizard hides — steps, timeline, progress, footer, status-card

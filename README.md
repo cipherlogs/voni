@@ -24,7 +24,7 @@ An AI employee with a mission, not another chatbot. Voni runs phone and WhatsApp
 voni/            # Next.js app (source of truth for product work)
 telephony-bot/   # Telnyx media-stream bridge + campaign runner (Python)
 docs/            # design specs + implementation plans
-HANDOFF.md       # session handoff notes (status lives here)
+PROGRESS.md     # current progress + frontier
 ```
 
 ## Quickstart

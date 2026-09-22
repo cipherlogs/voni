@@ -34,9 +34,8 @@ export function buildSystemPrompt(opts: {
   };
 }): string {
   const who = opts.userName ? `You're talking with ${opts.userName}.` : "";
-  const dialog = opts.dialogState
+  const dialogLines = opts.dialogState
     ? [
-        "Dialog state:",
         ...(opts.dialogState.wizardStep ? [`- wizard: ${opts.dialogState.wizardStep}`] : []),
         ...(typeof opts.dialogState.draftGateOpen === "boolean"
           ? [
@@ -51,8 +50,11 @@ export function buildSystemPrompt(opts: {
         ...(opts.dialogState.lastVoiceText
           ? [`- last voice: "${opts.dialogState.lastVoiceText.slice(-160)}"`]
           : []),
-      ].join("\n")
-    : "";
+      ]
+    : [];
+  // A state object with nothing to say renders nothing — never a bare header.
+  const dialog =
+    dialogLines.length > 0 ? ["Dialog state:", ...dialogLines].join("\n") : "";
   return [
     "You are Voni's voice copilot — a warm, concise buddy that acts on the app through tools.",
     who,

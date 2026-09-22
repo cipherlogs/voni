@@ -392,6 +392,8 @@ export class VoiceSession {
   /** First config ack + first agent audio fire timing marks once per start. */
   private firstUpdateAcked = false;
   private greetingAudioSent = false;
+  /** session.ready re-fires on resume — timing still marks once per start. */
+  private sessionReadySent = false;
 
   constructor(
     private handlers: VoiceHandlers = {},
@@ -442,6 +444,7 @@ export class VoiceSession {
     this.inputMuted = false;
     this.firstUpdateAcked = false;
     this.greetingAudioSent = false;
+    this.sessionReadySent = false;
     if (!this.configSynced) {
       this.configSynced = true;
       this.handlers.onConfigUncertainty?.(false);
@@ -478,11 +481,13 @@ export class VoiceSession {
         }
       };
       const tokenPromise = settle(getToken()).then((r) => {
-        if (r.ok) this.handlers.onTiming?.("tokenDone");
+        // Late arrivals from a superseded start must not mark the new
+        // conversation's timings — check the generation, not just ok.
+        if (r.ok && alive()) this.handlers.onTiming?.("tokenDone");
         return r;
       });
       const micPromise = settle(acquireMicStream(this.micOwner)).then((r) => {
-        if (r.ok) this.handlers.onTiming?.("micDone");
+        if (r.ok && alive()) this.handlers.onTiming?.("micDone");
         return r;
       });
       const [tokenSettled, micSettled] = await Promise.all([tokenPromise, micPromise]);
@@ -744,7 +749,12 @@ export class VoiceSession {
           this.sessionId = id;
           this.handlers.onSessionReady?.(id);
         }
-        this.handlers.onTiming?.("sessionReady");
+        // Once per start: a resume re-emits session.ready on the same
+        // conversation, and CallTimings must see a single sessionReady.
+        if (!this.sessionReadySent) {
+          this.sessionReadySent = true;
+          this.handlers.onTiming?.("sessionReady");
+        }
         this.probe("ready");
         this.resumeAttempts = 0;
         this.setState("listening");

@@ -36,7 +36,7 @@ Name: Voni. Voice: "An AI employee with a mission, not another chatbot." No furt
 
 ## Evidence on Hand
 
-Real and citable: `voni/` (Next.js 16 App Router source of truth), `telephony-bot/` (Telnyx bridge + campaign runner), `docs/` (specs + plans), root `README.md` product claims, `HANDOFF.md` session state. Absences future work must not fabricate: no testimonials, named customers, benchmarks, pricing, or licensing claims exist.
+Real and citable: `voni/` (Next.js 16 App Router source of truth), `telephony-bot/` (Telnyx bridge + campaign runner), `docs/` (specs + plans), root `README.md` product claims, `PROGRESS.md` session state. Absences future work must not fabricate: no testimonials, named customers, benchmarks, pricing, or licensing claims exist.
 
 ## Product Principles
 
