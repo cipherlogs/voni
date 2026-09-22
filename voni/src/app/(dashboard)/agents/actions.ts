@@ -25,6 +25,11 @@ import {
 } from "@/lib/agents/wizard";
 import { JobStartError, startJob } from "@/lib/jobs/start";
 import type { JobErrorCode } from "@/lib/jobs/kinds";
+import {
+  cancelFreshLinkedJobs,
+  cancelLinkedJobs,
+  deleteTerminalLinkedJobs,
+} from "@/lib/jobs/cancel-linked";
 
 /**
  * Server actions for the agent compiler (plan Day 3-4).
@@ -555,46 +560,10 @@ export async function deleteAgentAction(id: string): Promise<DeleteResult> {
   // zero affected rows when it loses that race, so read the rows back and
   // flag anything that flipped to running — without the flag the worker would
   // run against an agent row that no longer exists.
-  const cancelOneLinkedJob = async (
-    jobId: string,
-    status: string,
-  ): Promise<void> => {
-    if (status === "queued") {
-      const updated = await db
-        .update(backgroundJobs)
-        .set({
-          status: "cancelled",
-          errorCode: "cancelled",
-          errorMessage: "Cancelled: the agent was deleted.",
-          completedAt: new Date(),
-          updatedAt: new Date(),
-        })
-        .where(
-          and(eq(backgroundJobs.id, jobId), eq(backgroundJobs.status, "queued")),
-        )
-        .returning({ id: backgroundJobs.id });
-      if (updated.length > 0) return;
-      // Lost a claim race: the job is running now. Flag it so the worker
-      // observes the cancel at its next boundary and converges to cancelled.
-      await db
-        .update(backgroundJobs)
-        .set({ cancelRequested: true, updatedAt: new Date() })
-        .where(
-          and(
-            eq(backgroundJobs.id, jobId),
-            eq(backgroundJobs.status, "running"),
-          ),
-        );
-    } else if (status === "running") {
-      await db
-        .update(backgroundJobs)
-        .set({ cancelRequested: true, updatedAt: new Date() })
-        .where(eq(backgroundJobs.id, jobId));
-    }
-  };
-  for (const job of linkedJobs) {
-    await cancelOneLinkedJob(job.id, job.status);
-  }
+  // Shared delete rail (see lib/jobs/cancel-linked): cancel queued/running
+  // linked jobs so their processors converge instead of failing on a
+  // missing agent row.
+  await cancelLinkedJobs(linkedJobs, "Cancelled: the agent was deleted.");
 
   // Remote first: a failed remote delete keeps the local row so retry repairs
   // the state instead of orphaning a live AssemblyAI agent.
@@ -675,34 +644,11 @@ export async function deleteAgentAction(id: string): Promise<DeleteResult> {
         ),
       ),
     );
-  for (const job of freshRows) {
-    if (job.status === "queued") {
-      await cancelOneLinkedJob(job.id, job.status);
-    } else if (job.status === "running" && !job.cancelRequested) {
-      await db
-        .update(backgroundJobs)
-        .set({ cancelRequested: true, updatedAt: new Date() })
-        .where(eq(backgroundJobs.id, job.id));
-    }
-  }
+  await cancelFreshLinkedJobs(freshRows, "Cancelled: the agent was deleted.");
   const sweepIds = new Set(jobIds);
   for (const job of freshRows) sweepIds.add(job.id);
   if (freshAgent?.generationJobId) sweepIds.add(freshAgent.generationJobId);
-  for (const jobId of sweepIds) {
-    await db
-      .delete(backgroundJobs)
-      .where(
-        and(
-          eq(backgroundJobs.id, jobId),
-          eq(backgroundJobs.organizationId, ctx.organizationId),
-          or(
-            eq(backgroundJobs.status, "succeeded"),
-            eq(backgroundJobs.status, "failed"),
-            eq(backgroundJobs.status, "cancelled"),
-          ),
-        ),
-      );
-  }
+  await deleteTerminalLinkedJobs(sweepIds, ctx.organizationId);
 
   const deletedAgents = await db
     .delete(agents)

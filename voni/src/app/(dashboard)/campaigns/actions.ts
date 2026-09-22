@@ -14,6 +14,11 @@ import {
 } from "@/lib/db/schema";
 import { requireCtx, requireCtxOrRedirect } from "@/lib/session";
 import {
+  cancelFreshLinkedJobs,
+  cancelLinkedJobs,
+  deleteTerminalLinkedJobs,
+} from "@/lib/jobs/cancel-linked";
+import {
   allowedConsentStatuses,
   callingWindowSchema,
   consentPolicySchema,
@@ -426,7 +431,8 @@ export async function getCampaignDispatchStatus(id: string) {
  *     no onDelete, so the delete would block otherwise).
  *  4. Leads are never deleted — they are shared across campaigns.
  *  5. In-flight `lead_csv_import` jobs are cancelled first so workers
- *     converge instead of failing on a missing campaign. Only terminal rows
+ *     converge instead of failing on a missing campaign, with a fresh
+ *     re-discovery sweep before the row disappears. Only terminal rows
  *     are hard-deleted, by id — never by title.
  * Active campaigns refuse with the reason so the runner never loses work
  * mid-claim; pause first, then delete.
@@ -458,13 +464,15 @@ export async function deleteCampaignAction(
 
   // Imports never set relatedId (see import-upload route) — they carry the
   // campaign in input.campaignId. Match both so future callers that set
-  // relatedId are covered too.
+  // relatedId are covered too. Scoped to lead_csv_import so an unrelated
+  // kind that happens to reference the campaign is never touched.
   const linkedJobs = await db
     .select({ id: backgroundJobs.id, status: backgroundJobs.status })
     .from(backgroundJobs)
     .where(
       and(
         eq(backgroundJobs.organizationId, ctx.organizationId),
+        eq(backgroundJobs.kind, "lead_csv_import"),
         or(
           eq(backgroundJobs.relatedId, id),
           sql`(${backgroundJobs.input} ->> 'campaignId') = ${id}`,
@@ -472,44 +480,10 @@ export async function deleteCampaignAction(
       ),
     );
 
-  const cancelOneLinkedJob = async (
-    jobId: string,
-    status: string,
-  ): Promise<void> => {
-    if (status === "queued") {
-      const updated = await db
-        .update(backgroundJobs)
-        .set({
-          status: "cancelled",
-          errorCode: "cancelled",
-          errorMessage: "Cancelled: the campaign was deleted.",
-          completedAt: new Date(),
-          updatedAt: new Date(),
-        })
-        .where(
-          and(eq(backgroundJobs.id, jobId), eq(backgroundJobs.status, "queued")),
-        )
-        .returning({ id: backgroundJobs.id });
-      if (updated.length > 0) return;
-      await db
-        .update(backgroundJobs)
-        .set({ cancelRequested: true, updatedAt: new Date() })
-        .where(
-          and(
-            eq(backgroundJobs.id, jobId),
-            eq(backgroundJobs.status, "running"),
-          ),
-        );
-    } else if (status === "running") {
-      await db
-        .update(backgroundJobs)
-        .set({ cancelRequested: true, updatedAt: new Date() })
-        .where(eq(backgroundJobs.id, jobId));
-    }
-  };
-  for (const job of linkedJobs) {
-    await cancelOneLinkedJob(job.id, job.status);
-  }
+  // Shared delete rail (see lib/jobs/cancel-linked): cancel in-flight
+  // imports first so workers converge instead of failing on a missing
+  // campaign.
+  await cancelLinkedJobs(linkedJobs, "Cancelled: the campaign was deleted.");
 
   // Preserve call history; the FK has no onDelete so this must run first.
   await db
@@ -517,21 +491,36 @@ export async function deleteCampaignAction(
     .set({ campaignId: null })
     .where(eq(calls.campaignId, id));
 
-  for (const job of linkedJobs) {
-    await db
-      .delete(backgroundJobs)
-      .where(
-        and(
-          eq(backgroundJobs.id, job.id),
-          eq(backgroundJobs.organizationId, ctx.organizationId),
-          or(
-            eq(backgroundJobs.status, "succeeded"),
-            eq(backgroundJobs.status, "failed"),
-            eq(backgroundJobs.status, "cancelled"),
-          ),
+  // Fresh re-discovery before the row disappears: an import can be enqueued
+  // (or a queued one claimed) between the first cancel pass and the row
+  // delete. The frozen linkedJobs set sees neither, so re-discover with the
+  // same predicate and cancel first; only then hard-delete terminal rows.
+  // Residual micro-window between this sweep and the row delete is accepted
+  // — an orphan there fails terminal and the retention sweeper cleans it.
+  const freshRows = await db
+    .select({
+      id: backgroundJobs.id,
+      status: backgroundJobs.status,
+      cancelRequested: backgroundJobs.cancelRequested,
+    })
+    .from(backgroundJobs)
+    .where(
+      and(
+        eq(backgroundJobs.organizationId, ctx.organizationId),
+        eq(backgroundJobs.kind, "lead_csv_import"),
+        or(
+          eq(backgroundJobs.relatedId, id),
+          sql`(${backgroundJobs.input} ->> 'campaignId') = ${id}`,
         ),
-      );
-  }
+      ),
+    );
+  await cancelFreshLinkedJobs(
+    freshRows,
+    "Cancelled: the campaign was deleted.",
+  );
+  const sweepIds = new Set(linkedJobs.map((job) => job.id));
+  for (const job of freshRows) sweepIds.add(job.id);
+  await deleteTerminalLinkedJobs(sweepIds, ctx.organizationId);
 
   const deleted = await db
     .delete(campaigns)

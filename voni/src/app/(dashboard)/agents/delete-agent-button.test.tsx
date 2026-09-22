@@ -4,50 +4,36 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-// Source-text assertions (see actions.delete.test.ts for why): the confirm
-// dialog contract, trigger composition, and house feedback patterns are
-// checked on the real component source.
+// The dialog contract (typed-name gate, trigger composition, feedback
+// patterns, error-replaces-consequence) lives in the shared
+// DeleteConfirmDialog and is tested in
+// src/components/delete-confirm-dialog.test.tsx. This file asserts the agent
+// wrapper's copy and wiring — plus the list/detail page integration.
 const dir = dirname(fileURLToPath(import.meta.url));
 const buttonSource = readFileSync(join(dir, "delete-agent-button.tsx"), "utf8");
 const pageSource = readFileSync(join(dir, "page.tsx"), "utf8");
 const editSource = readFileSync(join(dir, "[id]", "edit-agent.tsx"), "utf8");
 
+test("delete delegates to the shared confirm dialog", () => {
+  assert.ok(buttonSource.includes("DeleteConfirmDialog"));
+  assert.ok(buttonSource.includes("confirmAction={deleteAgentAction}"));
+  // Contract lives in the shared component, not the wrapper.
+  assert.ok(!buttonSource.includes("DialogContent"));
+  assert.ok(!buttonSource.includes("useTransition"));
+});
+
 test("delete dialog names the agent and states the consequences", () => {
-  assert.ok(buttonSource.includes("DialogTitle"));
-  assert.ok(buttonSource.includes("DialogDescription"));
   assert.ok(buttonSource.includes("AssemblyAI"));
   assert.ok(buttonSource.includes("cannot be undone"));
+  assert.ok(buttonSource.includes('fieldLabel="Agent name"'));
+  assert.ok(buttonSource.includes('confirmLabel="Delete agent"'));
 });
 
-test("delete requires typing the agent name (GitHub-style gate)", () => {
-  // Type-to-confirm: an Input bound to a confirmation string gates the
-  // destructive confirm until it exactly matches the agent name.
-  assert.ok(buttonSource.includes("confirmation"));
-  assert.ok(buttonSource.includes("Type"));
-  assert.ok(buttonSource.includes("to enable deletion"));
-  assert.ok(buttonSource.includes("trim() === name"));
-  assert.ok(buttonSource.includes("disabled={!confirmed}"));
-  assert.ok(buttonSource.includes("setConfirmation(\"\")"));
-});
-
-test("delete trigger composes via render= (Base UI), never asChild", () => {
-  assert.ok(buttonSource.includes("render="));
-  assert.ok(!buttonSource.includes("asChild"));
-});
-
-test("delete icon uses no sizing class and destructive confirm uses LoadingButton", () => {
-  assert.match(buttonSource, /<Trash2( data-icon="inline-start")? \/>/);
-  assert.ok(buttonSource.includes("LoadingButton"));
-  assert.ok(buttonSource.includes('pendingText="Deleting…"'));
-});
-
-test("delete failures stay visible in-dialog, inline-only (no error toast)", () => {
-  assert.ok(buttonSource.includes('variant="destructive"'));
-  assert.ok(buttonSource.includes("AlertDescription"));
-  // Success still toasts (dialog closes + navigation); failures render only
-  // in the inline Alert while the dialog stays open with the gate intact.
-  assert.ok(buttonSource.includes('type: "success"'));
-  assert.ok(!buttonSource.includes('type: "error"'));
+test("delete trigger supports list and detail layouts", () => {
+  assert.ok(buttonSource.includes("layout"));
+  assert.ok(buttonSource.includes('label = "Delete agent"'));
+  assert.ok(buttonSource.includes("redirectTo"));
+  assert.ok(buttonSource.includes("triggerLabel={label}"));
 });
 
 test("list row renders delete beside Open in the action cell, no stretched link", () => {
@@ -62,12 +48,19 @@ test("list row renders delete beside Open in the action cell, no stretched link"
   assert.ok(!pageSource.includes("gen ? null"));
 });
 
-test("never-provisioned delete shortens copy but keeps the typed-name gate", () => {
+test("never-provisioned delete shortens copy but keeps the delete flow", () => {
   assert.ok(buttonSource.includes("neverProvisioned"));
   assert.ok(buttonSource.includes("No voice agent exists yet"));
   assert.ok(buttonSource.includes("not yet provisioned"));
-  // Short copy only — the destructive confirm still requires typing the name.
-  assert.ok(buttonSource.includes("disabled={!confirmed}"));
+  // Short copy only — the destructive confirm still goes through the shared
+  // typed-name gate.
+  assert.ok(buttonSource.includes("DeleteConfirmDialog"));
+});
+
+test("bridge default carries a blocking note", () => {
+  assert.ok(buttonSource.includes("isBridgeAgent"));
+  assert.ok(buttonSource.includes("platform bridge default"));
+  assert.ok(buttonSource.includes("notice={"));
 });
 
 test("detail page deletes from the footer, no danger zone", () => {
@@ -80,28 +73,4 @@ test("detail page deletes from the footer, no danger zone", () => {
   assert.ok(!editSource.includes("Danger zone"));
   assert.ok(!editSource.includes("danger-zone-heading"));
   assert.ok(!editSource.includes("Done with this agent?"));
-});
-
-test("error replaces the consequence note instead of stacking", () => {
-  // Regression for the double-Alert bug (agent assigned to a campaign showed
-  // both the consequence copy and the campaign-blocker error): the error
-  // Alert is the if-branch, the consequence copy is the else-branch.
-  assert.ok(buttonSource.includes("{error ? ("));
-  const errorIdx = buttonSource.indexOf("AlertDescription>{error}");
-  const consequenceIdx = buttonSource.indexOf(
-    "This removes the voice agent from AssemblyAI",
-  );
-  assert.ok(errorIdx !== -1 && consequenceIdx !== -1);
-  assert.ok(
-    errorIdx < consequenceIdx,
-    "error Alert must be the if-branch, consequence the else-branch",
-  );
-  const errorBlock = buttonSource.slice(
-    buttonSource.indexOf("{error ? ("),
-    consequenceIdx + 80,
-  );
-  assert.ok(
-    errorBlock.includes(") : ("),
-    "error must have an else-branch rendering the consequence",
-  );
 });

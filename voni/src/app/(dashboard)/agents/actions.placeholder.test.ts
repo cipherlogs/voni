@@ -51,6 +51,6 @@ test("retries demote terminal placeholders instead of twinning rows", () => {
   assert.ok(updateFn.includes("updated.length === 0"));
   assert.ok(updateFn.includes("Agent not found"));
   assert.ok(source.includes("deleteAgentAction"));
-  assert.ok(source.includes("delete(backgroundJobs)"));
+  assert.ok(source.includes("deleteTerminalLinkedJobs"));
   assert.ok(source.includes("delete(agents)"));
 });

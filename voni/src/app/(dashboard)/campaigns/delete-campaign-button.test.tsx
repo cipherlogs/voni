@@ -4,9 +4,11 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-// Source-text assertions (see agents/delete-agent-button.test.tsx for why):
-// the confirm dialog contract, trigger composition, and house feedback
-// patterns are checked on the real component source.
+// The dialog contract (typed-name gate, trigger composition, feedback
+// patterns, error-replaces-consequence) lives in the shared
+// DeleteConfirmDialog and is tested in
+// src/components/delete-confirm-dialog.test.tsx. This file asserts the
+// campaign wrapper's copy and wiring — plus the list/detail page integration.
 const dir = dirname(fileURLToPath(import.meta.url));
 const buttonSource = readFileSync(
   join(dir, "delete-campaign-button.tsx"),
@@ -15,57 +17,29 @@ const buttonSource = readFileSync(
 const listSource = readFileSync(join(dir, "page.tsx"), "utf8");
 const detailSource = readFileSync(join(dir, "[id]", "page.tsx"), "utf8");
 
+test("delete delegates to the shared confirm dialog", () => {
+  assert.ok(buttonSource.includes("DeleteConfirmDialog"));
+  assert.ok(buttonSource.includes("confirmAction={deleteCampaignAction}"));
+  // Contract lives in the shared component, not the wrapper.
+  assert.ok(!buttonSource.includes("DialogContent"));
+  assert.ok(!buttonSource.includes("useTransition"));
+});
+
 test("delete dialog names the campaign and states the consequences", () => {
-  assert.ok(buttonSource.includes("DialogTitle"));
-  assert.ok(buttonSource.includes("DialogDescription"));
   assert.ok(buttonSource.includes("Delete campaign"));
   assert.ok(buttonSource.includes("cannot be undone"));
-  assert.ok(buttonSource.includes("Past"));
-  assert.ok(buttonSource.includes("call records and leads are kept"));
+  assert.ok(buttonSource.includes("its queue, and its job history"));
+  assert.ok(buttonSource.includes("Past call"));
+  assert.ok(buttonSource.includes("records and leads are kept"));
+  assert.ok(buttonSource.includes('fieldLabel="Campaign name"'));
+  assert.ok(buttonSource.includes('confirmLabel="Delete campaign"'));
 });
 
-test("delete requires typing the campaign name (GitHub-style gate)", () => {
-  assert.ok(buttonSource.includes("confirmation"));
-  assert.ok(buttonSource.includes("Type"));
-  assert.ok(buttonSource.includes("to enable deletion"));
-  assert.ok(buttonSource.includes("trim() === name"));
-  assert.ok(buttonSource.includes("disabled={!confirmed}"));
-  assert.ok(buttonSource.includes('setConfirmation("")'));
-});
-
-test("delete trigger composes via render= (Base UI), never asChild", () => {
-  assert.ok(buttonSource.includes("render="));
-  assert.ok(!buttonSource.includes("asChild"));
-});
-
-test("delete icon uses no sizing class and destructive confirm uses LoadingButton", () => {
-  assert.match(buttonSource, /<Trash2( data-icon="inline-start")? \/>/);
-  assert.ok(buttonSource.includes("LoadingButton"));
-  assert.ok(buttonSource.includes('pendingText="Deleting…"'));
-});
-
-test("delete failures stay visible in-dialog, inline-only (no error toast)", () => {
-  assert.ok(buttonSource.includes('variant="destructive"'));
-  assert.ok(buttonSource.includes("AlertDescription"));
-  assert.ok(buttonSource.includes('type: "success"'));
-  assert.ok(!buttonSource.includes('type: "error"'));
-});
-
-test("error replaces the consequence note instead of stacking", () => {
-  // Regression for the double-Alert bug: the error Alert is the if-branch,
-  // the consequence copy is the else-branch — never two red boxes at once.
-  assert.ok(buttonSource.includes("{error ? ("));
-  const errorIdx = buttonSource.indexOf("AlertDescription>{error}");
-  const consequenceIdx = buttonSource.indexOf("its queue, and its job history");
-  assert.ok(errorIdx !== -1 && consequenceIdx !== -1);
-  assert.ok(
-    errorIdx < consequenceIdx,
-    "error Alert must be the if-branch, consequence the else-branch",
-  );
-  assert.ok(
-    !buttonSource.includes(") : null}"),
-    "error must have an else-branch, not render null",
-  );
+test("delete trigger supports list and detail layouts", () => {
+  assert.ok(buttonSource.includes("layout"));
+  assert.ok(buttonSource.includes('label = "Delete campaign"'));
+  assert.ok(buttonSource.includes("redirectTo"));
+  assert.ok(buttonSource.includes("triggerLabel={label}"));
 });
 
 test("list row renders delete beside Open", () => {

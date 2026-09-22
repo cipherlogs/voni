@@ -24,6 +24,20 @@ const deploymentSource = readFileSync(
   ),
   "utf8",
 );
+// Cancel guard-rail semantics live in the shared rail module; the action
+// tests below only assert wiring and ordering.
+const cancelLinkedSource = readFileSync(
+  join(
+    dirname(fileURLToPath(import.meta.url)),
+    "..",
+    "..",
+    "..",
+    "lib",
+    "jobs",
+    "cancel-linked.ts",
+  ),
+  "utf8",
+);
 
 test("delete refuses when a campaign owns the agent", () => {
   assert.ok(source.includes("deleteAgentAction"));
@@ -33,14 +47,16 @@ test("delete refuses when a campaign owns the agent", () => {
 
 test("delete cancels in-flight jobs before touching anything remote", () => {
   const fn = source.slice(source.indexOf("export async function deleteAgentAction"));
-  assert.ok(fn.includes("cancelRequested"));
+  assert.ok(fn.includes("cancelLinkedJobs"));
   assert.ok(fn.includes("relatedId"));
   assert.ok(fn.includes("generationJobId"));
-  // Cancel-before-remote ordering: the job-cancel block precedes deleteRemoteAgent.
+  // Cancel-before-remote ordering: the shared cancel call precedes deleteRemoteAgent.
   assert.ok(
-    fn.indexOf("cancelRequested") < fn.indexOf("deleteRemoteAgent"),
+    fn.indexOf("cancelLinkedJobs") < fn.indexOf("deleteRemoteAgent"),
     "jobs must be cancelled before the remote delete",
   );
+  // Guard-rail semantics (cancelRequested flags) live in the shared rail.
+  assert.ok(cancelLinkedSource.includes("cancelRequested"));
 });
 
 test("remote failure keeps the local row (retry-safe)", () => {
@@ -61,7 +77,7 @@ test("local hygiene nulls FKs, never deletes history or numbers", () => {
 
 test("job cleanup is by id, never by title", () => {
   const fn = source.slice(source.indexOf("export async function deleteAgentAction"));
-  assert.ok(fn.includes("delete(backgroundJobs)"));
+  assert.ok(fn.includes("deleteTerminalLinkedJobs"));
   assert.ok(!fn.includes("ilike"), "title-ILIKE would erase other agents' jobs");
 });
 
@@ -74,35 +90,37 @@ test("delete is org-scoped and revalidates both routes", () => {
 
 test("delete keeps running job rows so workers see the cancel signal", () => {
   const fn = source.slice(source.indexOf("export async function deleteAgentAction"));
-  // Hard-delete is terminal-only: queued/running rows (with cancelRequested
-  // set above) survive so throwIfCancelled / isCancelRequested still fire.
-  const cleanup = fn.slice(
-    fn.indexOf("delete(backgroundJobs)"),
-    fn.indexOf("resweepRows"),
-  );
-  assert.ok(cleanup.includes('"cancelled"'), "cancelled tombstones are deletable");
-  assert.ok(cleanup.includes('"succeeded"'), "succeeded rows are deletable");
-  assert.ok(cleanup.includes('"failed"'), "failed rows are deletable");
+  // Terminal-only hard delete lives in the shared rail (asserted in
+  // cancel-linked.test.ts): the action must pass the sweep union (frozen ids
+  // + fresh re-discovery) after the fresh cancel pass.
+  const sweepIdx = fn.indexOf("freshRows");
+  const hardDeleteIdx = fn.indexOf("deleteTerminalLinkedJobs");
+  assert.ok(sweepIdx !== -1, "sweep must re-discover linked jobs");
   assert.ok(
-    !cleanup.includes('"running"') && !cleanup.includes('"queued"'),
-    "running/queued rows must not be hard-deleted",
+    hardDeleteIdx > sweepIdx,
+    "terminal hard-delete must run after the fresh cancel pass",
   );
+  assert.ok(fn.includes("sweepIds"), "hard-delete runs over the sweep union");
 });
 
 test("delete catches a claim between select and queued-cancel", () => {
-  const fn = source.slice(source.indexOf("export async function deleteAgentAction"));
-  const cancel = fn.slice(fn.indexOf("cancelOneLinkedJob"));
-  // The queued-cancel update is guarded on status='queued'; it must read back
-  // affected rows (.returning) so a claimJob that flipped the row to running
-  // is detected instead of silently escaping with no cancelRequested flag.
+  // The guarded queued-cancel with affected-row readback lives in the shared
+  // rail; the action must use it instead of a local copy.
   assert.ok(
-    cancel.includes(".returning("),
+    cancelLinkedSource.includes(".returning("),
     "queued-cancel must check affected rows",
   );
   assert.ok(
-    cancel.includes('"running"') && cancel.includes("cancelRequested"),
+    cancelLinkedSource.includes('"running"') &&
+      cancelLinkedSource.includes("cancelRequested"),
     "zero affected rows must fall back to flagging the now-running row",
   );
+  const fn = source.slice(source.indexOf("export async function deleteAgentAction"));
+  assert.ok(
+    !source.includes("const cancelOneLinkedJob"),
+    "no local cancel copy — use the shared rail",
+  );
+  assert.ok(fn.includes("cancelLinkedJobs"));
 });
 
 test("delete re-discovers linked jobs by relatedId before removing the agent row", () => {
@@ -126,12 +144,14 @@ test("delete re-discovers linked jobs by relatedId before removing the agent row
     sweep.includes("freshAgent"),
     "sweep must re-read generationJobId fresh",
   );
-  assert.ok(sweep.includes('"queued"'), "sweep must re-cancel still-queued jobs");
+  assert.ok(
+    sweep.includes("cancelFreshLinkedJobs"),
+    "sweep must re-cancel through the shared rail",
+  );
   assert.ok(sweep.includes("cancelRequested"), "sweep must flag unflagged running jobs");
-  // Terminal hard-delete runs over the union after the cancel pass — the old
-  // frozen-inArray-only resweep shape is gone.
-  const hardDeleteIdx = sweep.indexOf("delete(backgroundJobs)");
-  const cancelIdx = sweep.indexOf("cancelOneLinkedJob");
+  // Terminal hard-delete runs over the union after the cancel pass.
+  const hardDeleteIdx = sweep.indexOf("deleteTerminalLinkedJobs");
+  const cancelIdx = sweep.indexOf("cancelFreshLinkedJobs");
   assert.ok(
     hardDeleteIdx > cancelIdx,
     "terminal hard-delete must run after the fresh cancel pass",
