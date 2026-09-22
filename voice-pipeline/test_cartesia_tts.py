@@ -16,7 +16,7 @@ from backends.cartesia_tts import CartesiaTTS, split_sentences
 
 
 def sse_audio(b64: str) -> bytes:
-    return (("data: " + json.dumps({"audio": b64}) + "\n\n").encode())
+    return (("data: " + json.dumps({"type": "chunk", "data": b64}) + "\n\n").encode())
 
 
 def sse_done() -> bytes:
@@ -70,7 +70,8 @@ AUDIO_B = base64.b64encode(b"\x02" * 320).decode()
 
 
 def make_tts(chunks_by_call, **kwargs):
-    def factory(**_kwargs):
+    def factory(*, timeout_s: float):
+        assert timeout_s > 0
         return FakeSession(chunks_by_call)
 
     kwargs.setdefault("api_key", "test-key")
@@ -147,6 +148,17 @@ class CartesiaTTSTests(unittest.TestCase):
         self.assertEqual(out[0].pcm, b"\x01" * 320)
         self.assertEqual(out[1].pcm, b"\x02" * 320)
 
+    def test_real_adapter_constructs_post(self):
+        from backends.cartesia_tts import _AiohttpSession
+
+        async def run():
+            session = _AiohttpSession(timeout_s=5)
+            async with session:
+                post = session.post("https://x", headers={}, json={})
+                self.assertIsNotNone(post)
+
+        asyncio.run(run())
+
     def test_missing_key_or_voice_raises(self):
         async def run_missing_key():
             tts = make_tts([[sse_audio(AUDIO_A)]], api_key=None)
@@ -166,7 +178,8 @@ class CartesiaTTSTests(unittest.TestCase):
         async def run():
             tts = make_tts([[]], **{})
             # Force error status via fresh factory
-            def err_factory(**_kwargs):
+            def err_factory(*, timeout_s: float):
+                assert timeout_s > 0
                 return FakeSession([[]], status=402)
 
             tts_err = CartesiaTTS(

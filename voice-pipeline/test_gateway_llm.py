@@ -66,7 +66,8 @@ class FakeSession:
 def make_llm(chunks: list[bytes], status: int = 200, **kwargs):
     holder: dict = {}
 
-    def factory(**_kwargs):
+    def factory(*, timeout_s: float):
+        assert timeout_s > 0
         session = FakeSession(FakeResponse(status, chunks))
         holder["session"] = session
         return session
@@ -203,6 +204,19 @@ class GatewayLLMTests(unittest.TestCase):
         self.assertEqual(len(session.posts), 1)
         texts = [e.text for e in out if isinstance(e, TokenDelta)]
         self.assertEqual("".join(texts), "abcd")
+
+    def test_real_adapter_constructs_post(self):
+        # Guards the injected-seam signatures: fakes accept anything, so a
+        # kwarg rename here would otherwise only explode against live HTTP.
+        from backends.gateway_llm import _AiohttpSession
+
+        async def run():
+            session = _AiohttpSession(timeout_s=5)
+            async with session:
+                post = session.post("https://x", headers={}, json={})
+                self.assertIsNotNone(post)
+
+        asyncio.run(run())
 
     def test_prefetch_cancel_starts_fresh(self):
         async def run():

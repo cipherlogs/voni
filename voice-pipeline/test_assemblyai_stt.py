@@ -10,7 +10,6 @@ P1 exit gate for each of them.
 """
 
 import asyncio
-import base64
 import json
 import unittest
 from urllib.parse import parse_qs, urlparse
@@ -78,7 +77,8 @@ class AssemblyAISTTTests(unittest.TestCase):
         self.assertEqual(query.get("sample_rate"), ["24000"])
         self.assertIn("streaming.assemblyai.com", sock.url)
 
-    def test_pinned_language_sent_as_code(self):
+    def test_pinned_language_sends_no_language_params(self):
+        # v3 universal auto-detects; the handshake carries sample_rate only.
         async def run():
             backend, holder = make_backend([{"type": "Begin", "id": "s1"}])
             await backend.open(language_codes=["en"], sample_rate=16000)
@@ -87,20 +87,11 @@ class AssemblyAISTTTests(unittest.TestCase):
 
         sock = asyncio.run(run())
         query = parse_qs(urlparse(sock.url or "").query)
-        self.assertEqual(query.get("language_code"), ["en"])
+        self.assertEqual(query.get("sample_rate"), ["16000"])
+        self.assertNotIn("language_code", query)
+        self.assertNotIn("language_detection", query)
 
-    def test_empty_languages_enable_detection(self):
-        async def run():
-            backend, holder = make_backend([{"type": "Begin", "id": "s1"}])
-            await backend.open(language_codes=[], sample_rate=16000)
-            await backend.close()
-            return holder["sock"]
-
-        sock = asyncio.run(run())
-        query = parse_qs(urlparse(sock.url or "").query)
-        self.assertEqual(query.get("language_detection"), ["true"])
-
-    def test_audio_framed_as_base64(self):
+    def test_audio_sent_as_raw_binary_frames(self):
         async def run():
             backend, holder = make_backend([{"type": "Begin", "id": "s1"}])
             await backend.open(language_codes=["en"], sample_rate=16000)
@@ -109,10 +100,32 @@ class AssemblyAISTTTests(unittest.TestCase):
             return holder["sock"]
 
         sock = asyncio.run(run())
-        frames = [json.loads(m) for m in sock.sent]
-        self.assertEqual(
-            frames[0]["audio_data"], base64.b64encode(b"\x00\x01\x02\x03").decode()
-        )
+        # Docs: binary frames of raw PCM — never JSON, never base64.
+        self.assertIn(b"\x00\x01\x02\x03", sock.sent)
+
+    def test_force_endpoint_sends_turn_end(self):
+        async def run():
+            backend, holder = make_backend([{"type": "Begin", "id": "s1"}])
+            await backend.open(language_codes=["en"], sample_rate=16000)
+            await backend.force_endpoint()
+            await backend.close()
+            return holder["sock"]
+
+        sock = asyncio.run(run())
+        frames = [json.loads(m) for m in sock.sent if isinstance(m, str)]
+        self.assertIn({"type": "ForceEndpoint"}, frames)
+
+    def test_close_terminates_session(self):
+        async def run():
+            backend, holder = make_backend([{"type": "Begin", "id": "s1"}])
+            await backend.open(language_codes=["en"], sample_rate=16000)
+            await backend.close()
+            return holder["sock"]
+
+        sock = asyncio.run(run())
+        frames = [json.loads(m) for m in sock.sent if isinstance(m, str)]
+        self.assertIn({"type": "Terminate"}, frames)
+        self.assertTrue(sock.closed)
 
     def test_partials_then_final(self):
         from providers import FinalTranscript, PartialTranscript

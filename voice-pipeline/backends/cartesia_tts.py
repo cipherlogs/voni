@@ -6,8 +6,9 @@ yielded strictly in sentence order — first-sentence audio arrives after one
 round trip plus short-text synthesis (the first-playout metric), with no
 per-sentence gaps afterwards.
 
-Wire-format assumptions are marked LIVE-VERIFY (endpoint path, version
-header, output shape, audio field, done signal) for the keyed live run.
+Wire protocol verified live (Sep 2026): /tts/sse with X-API-Key and
+Cartesia-Version 2024-06-10, raw s16le output shape, chunk events carrying
+base64 PCM in "data". First audio 0.91s on a two-sentence reply.
 Key management: CARTESIA_API_KEY from host env, passed in for tests, never
 logged. HTTP seam mirrors gateway_llm.py (injected session factory).
 """
@@ -25,7 +26,7 @@ from typing import Any, Optional
 from providers import SentenceAudio, StreamingTTS
 
 CARTESIA_BASE_URL = "https://api.cartesia.ai"
-# LIVE-VERIFY: SSE endpoint path and API version header value.
+# Verified live Sep 2026.
 TTS_PATH = "/tts/sse"
 CARTESIA_VERSION = "2024-06-10"
 
@@ -85,7 +86,7 @@ class _AiohttpSession:
         await self._session.close()
 
     def post(self, url: str, *, headers: dict, json: dict) -> _AiohttpPost:
-        return _AiohttpPost(self._session, url, headers=headers, json=json)
+        return _AiohttpPost(self._session, url, headers=headers, payload=json)
 
 
 class CartesiaTTS(StreamingTTS):
@@ -125,7 +126,7 @@ class CartesiaTTS(StreamingTTS):
             return
         # One session for all sentences: no per-sentence handshake latency.
         # Requests fire together; results yield strictly in sentence order.
-        session = self._session_factory(timeout=self._timeout_s)
+        session = self._session_factory(timeout_s=self._timeout_s)
         async with session as active:
             tasks = [
                 asyncio.get_running_loop().create_task(self._fetch_sentence(active, s))
@@ -147,7 +148,7 @@ class CartesiaTTS(StreamingTTS):
             "model_id": self._model_id,
             "transcript": sentence,
             "voice": {"mode": "id", "id": self._voice_id},
-            # LIVE-VERIFY: output_format shape for raw PCM at the given rate.
+            # Verified live: raw s16le container at the requested rate.
             "output_format": {
                 "container": "raw",
                 "encoding": "pcm_s16le",
@@ -157,7 +158,7 @@ class CartesiaTTS(StreamingTTS):
         }
         headers = {
             "X-API-Key": self._api_key or "",
-            # LIVE-VERIFY: version header name/value.
+            # Verified live Sep 2026.
             "Cartesia-Version": CARTESIA_VERSION,
             "content-type": "application/json",
         }
@@ -186,8 +187,12 @@ class CartesiaTTS(StreamingTTS):
                     payload = json.loads(data)
                 except (json.JSONDecodeError, UnicodeDecodeError):
                     continue
-                # LIVE-VERIFY: audio field name for SSE audio events.
-                audio_b64 = payload.get("audio")
+                # Verified live: chunk events carry base64 PCM in "data"
+                # ({"type": "chunk", "done": false, ...}). Done markers and
+                # any event without audio bytes are skipped.
+                if payload.get("done") is True:
+                    continue
+                audio_b64 = payload.get("data")
                 if audio_b64:
                     try:
                         yield base64.b64decode(audio_b64)

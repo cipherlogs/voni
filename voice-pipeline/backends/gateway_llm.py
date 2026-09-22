@@ -1,5 +1,8 @@
 """Gateway LLM backend: OpenAI-compatible SSE token streaming (P1).
 
+Token streaming verified live (Sep 2026) against the gateway; tool-call
+accumulation is covered by fakes only (no live tool-call run yet).
+
 Implements the P0 LLMStream contract against the Vercel AI Gateway
 ({base}/chat/completions, Bearer AI_GATEWAY_API_KEY). Tokens stream so TTS
 can start on the first sentence while the model still generates; tool calls
@@ -104,7 +107,7 @@ class _AiohttpSession:
         await self._session.close()
 
     def post(self, url: str, *, headers: dict, json: dict) -> _AiohttpPost:
-        return _AiohttpPost(self._session, url, headers=headers, json=json)
+        return _AiohttpPost(self._session, url, headers=headers, payload=json)
 
 
 class GatewayLLM(LLMStream):
@@ -221,7 +224,7 @@ class GatewayLLM(LLMStream):
             "content-type": "application/json",
         }
         url = f"{self._base_url}/chat/completions"
-        session = self._session_factory(timeout=self._timeout_s)
+        session = self._session_factory(timeout_s=self._timeout_s)
         async with session as active:
             async with active.post(url, headers=headers, json=payload) as response:
                 if response.status != 200:
