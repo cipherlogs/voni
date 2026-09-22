@@ -57,3 +57,19 @@ test("screen latency and reply gap are measurable", () => {
   // The reply gap: user final -> agent audio.
   assert.equal(summary.gapsMs.userFinalToFirstAgentTurn, 900);
 });
+
+test("speculative nav gaps measure partial-to-paint", () => {
+  let now = 0;
+  const timings = new CallTimings(() => now);
+  timings.mark("startRequested");
+  now += 400;
+  timings.mark("firstPartial");
+  now += 120;
+  timings.mark("speculativeNav");
+  now += 900;
+  timings.mark("confirmedNav");
+  const summary = timings.summary();
+  assert.equal(summary.gapsMs.partialToSpeculativeNav, 120);
+  assert.equal(summary.gapsMs.speculativeToConfirmed, 900);
+  assert.equal(summary.gapsMs.partialToConfirmed, 1020);
+});

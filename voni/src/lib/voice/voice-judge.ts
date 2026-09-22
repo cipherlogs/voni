@@ -11,11 +11,13 @@
 
 import {
   chooseReplyAction,
+  shouldAllowSpeculativeNav,
   shouldAllowToolCall,
   shouldYieldToBargeIn,
   type BargeInState,
   type JudgeDecision,
   type JudgeKind,
+  type NavSpeculativeState,
   type ReplyState,
   type ToolCallState,
 } from "./jev-judges";
@@ -35,7 +37,7 @@ export function parseVoiceJudgeRequest(body: unknown): {
 } {
   if (!body || typeof body !== "object") return { ok: false };
   const { kind, state } = body as { kind: unknown; state: unknown };
-  if (kind !== "barge-in" && kind !== "reply" && kind !== "tool") return { ok: false };
+  if (kind !== "barge-in" && kind !== "reply" && kind !== "tool" && kind !== "nav-speculative") return { ok: false };
   if (!state || typeof state !== "object") return { ok: false };
   return { ok: true, kind, state: state as Record<string, unknown> };
 }
@@ -49,6 +51,10 @@ export function decideVoiceJudge(kind: JudgeKind, state: unknown): VoiceJudgeRes
   if (kind === "reply") {
     const { action, probability } = chooseReplyAction(state as ReplyState);
     return { decision: action, probability, source: "heuristic" };
+  }
+  if (kind === "nav-speculative") {
+    const { allow, probability } = shouldAllowSpeculativeNav(state as NavSpeculativeState);
+    return { decision: allow ? "allow" : "deny", probability, source: "heuristic" };
   }
   const { allow, probability } = shouldAllowToolCall(state as ToolCallState);
   return { decision: allow ? "allow" : "deny", probability, source: "heuristic" };
@@ -71,6 +77,12 @@ export function judgeQuestions(kind: JudgeKind): {
       instructions:
         "Given transcript finality, silence duration, and whether a business tool call is in flight, what should the voice agent do next?",
       options: ["reply_now", "wait_300ms", "play_filler"],
+    };
+  if (kind === "nav-speculative")
+    return {
+      type: "boolean",
+      instructions:
+        "Does this partial-utterance navigation candidate match what the user is starting to say? Only allow when the candidate route clearly matches the spoken prefix; suppress on ambiguous or unrelated partials.",
     };
   return {
     type: "boolean",
@@ -155,6 +167,12 @@ export async function tryJevGateway(
     if (kind === "barge-in")
       return {
         decision: probability >= 0.65 ? "yield" : "keep-speaking",
+        probability,
+        source: "jev",
+      };
+    if (kind === "nav-speculative")
+      return {
+        decision: probability >= 0.6 ? "allow" : "deny",
         probability,
         source: "jev",
       };

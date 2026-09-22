@@ -20,6 +20,9 @@ export type CallTimingMark =
   | "firstUserTurn"
   | "firstAgentTurn"
   | "firstPartial"
+  | "speculativePrefetch"
+  | "speculativeNav"
+  | "confirmedNav"
   | "fillerShown"
   | "ended";
 
@@ -40,6 +43,9 @@ export type CallTimingSummary = {
     listeningToFirstAgentTurn: number | null;
     startToFirstPartial: number | null;
     userFinalToFirstAgentTurn: number | null;
+    partialToSpeculativeNav: number | null;
+    speculativeToConfirmed: number | null;
+    partialToConfirmed: number | null;
   };
 };
 
@@ -84,6 +90,9 @@ export class CallTimings {
         listeningToFirstAgentTurn: gap(marks, "listening", "firstAgentTurn"),
         startToFirstPartial: gap(marks, "startRequested", "firstPartial"),
         userFinalToFirstAgentTurn: gap(marks, "firstUserTurn", "firstAgentTurn"),
+        partialToSpeculativeNav: gap(marks, "firstPartial", "speculativeNav"),
+        speculativeToConfirmed: gap(marks, "speculativeNav", "confirmedNav"),
+        partialToConfirmed: gap(marks, "firstPartial", "confirmedNav"),
       },
     };
   }

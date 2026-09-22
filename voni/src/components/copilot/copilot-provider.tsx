@@ -61,7 +61,12 @@ import {
   prefsLanguageCodes,
   type CopilotVoicePrefs,
 } from "@/lib/copilot/voice-prefs";
-import { renderAppGuide } from "@/lib/copilot/app-guide";
+import { classifyPartialNav, renderAppGuide } from "@/lib/copilot/app-guide";
+import {
+  getSessionPrefetchRoutes,
+  prefetchCandidates,
+} from "@/lib/copilot/voice-prefetch";
+import { requestVoiceJudge } from "@/lib/voice/jev-judges";
 import { NAVIGABLE_ROUTES } from "@/lib/copilot/app-manifest";
 import { useJobs } from "@/components/jobs/jobs-provider";
 import { toast } from "@/components/ui/toast";
@@ -212,6 +217,18 @@ export function CopilotProvider({
   const wrapTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingReadbacks = useRef(new Map<string, string>());
   const lastBargeRef = useRef(0);
+  /** Mid-sentence speculation: debounce timer, warmed routes, last push. */
+  const speculativeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const prefetchSeenRef = useRef(new Set<string>());
+  const lastSpeculativeNavRef = useRef<string | null>(null);
+  const routerRef = useRef(router);
+  useEffect(() => {
+    routerRef.current = router;
+  }, [router]);
+  const platformAdminRef = useRef(platformAdmin);
+  useEffect(() => {
+    platformAdminRef.current = platformAdmin;
+  }, [platformAdmin]);
   /**
    * Last known voice prefs, refreshed on mount, navigation, and save.
    * start() reads this synchronously so the mic never waits on a fetch;
@@ -313,6 +330,9 @@ export function CopilotProvider({
 
   const stop = useCallback(() => {
     clearTimers();
+    if (speculativeTimerRef.current) clearTimeout(speculativeTimerRef.current);
+    speculativeTimerRef.current = null;
+    lastSpeculativeNavRef.current = null;
     const session = sessionRef.current;
     sessionRef.current = null;
     micMutedRef.current = false;
@@ -380,8 +400,49 @@ export function CopilotProvider({
           setUserPartial(partial.text || null);
           lastBargeRef.current = Date.now();
           noteActivity();
-          // Navigation runs through tools after the finalized user instruction.
-
+          // Mid-sentence speculation: heuristic executes now (<1ms), Jev
+          // validates async. Final `ui_navigate` stays authoritative and
+          // corrects any misfire. Skipped while a proposal awaits confirm
+          // so the page never yanks mid-readback.
+          const text = partial.text || "";
+          if (speculativeTimerRef.current) clearTimeout(speculativeTimerRef.current);
+          speculativeTimerRef.current = setTimeout(() => {
+            if (pendingReadbacks.current.size > 0) return;
+            const current = routeRef.current;
+            const decision = classifyPartialNav(text, current, platformAdminRef.current);
+            const liveRouter = routerRef.current;
+            if (decision.action === "navigate") {
+              if (lastSpeculativeNavRef.current === decision.route) return;
+              lastSpeculativeNavRef.current = decision.route;
+              try {
+                liveRouter.push(decision.route);
+              } catch {
+                /* Reversible speculation — the confirmed turn retries. */
+              }
+              void prefetchCandidates(
+                (r) => liveRouter.prefetch(r),
+                [decision.route],
+                prefetchSeenRef.current,
+              );
+              // Jev validates in the background; result is telemetry only —
+              // never blocks the push, final turn corrects misfires.
+              void requestVoiceJudge(
+                "nav-speculative",
+                {
+                  partialText: text.slice(-200),
+                  candidateRoute: decision.route,
+                  confidence: decision.confidence,
+                },
+                { timeoutMs: 120 },
+              ).catch(() => undefined);
+            } else if (decision.action === "prefetch") {
+              void prefetchCandidates(
+                (r) => liveRouter.prefetch(r),
+                decision.candidates,
+                prefetchSeenRef.current,
+              );
+            }
+          }, 80);
         },
         onAgentPartial: (partial: TranscriptPartial) => {
           setAgentPartial(partial.text || null);
@@ -535,6 +596,16 @@ export function CopilotProvider({
         // The server gives no closing warning, so run our own timers: wrap
         // up gracefully before the cap, then stop on it.
         clearTimers();
+        // Fresh speculation state per conversation; warm every static
+        // destination in the background so a mid-sentence push paints
+        // instantly instead of flashing a loading skeleton.
+        prefetchSeenRef.current = new Set();
+        lastSpeculativeNavRef.current = null;
+        void prefetchCandidates(
+          (r) => routerRef.current.prefetch(r),
+          getSessionPrefetchRoutes(platformAdminRef.current),
+          prefetchSeenRef.current,
+        );
         const wrapAt = Math.max(0, (sessionCapSeconds - 30) * 1000);
         wrapTimerRef.current = setTimeout(() => {
           sessionRef.current?.requestReply("We're nearly at time — one last thing?");

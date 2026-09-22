@@ -44,7 +44,13 @@ export type ToolCallState = {
   transcriptTail: string;
 };
 
-export type JudgeKind = "barge-in" | "reply" | "tool";
+export type NavSpeculativeState = {
+  partialText: string;
+  candidateRoute: string;
+  confidence: number;
+};
+
+export type JudgeKind = "barge-in" | "reply" | "tool" | "nav-speculative";
 export type JudgeSource = "jev" | "fallback";
 
 const BACKCHANNEL_RE =
@@ -104,18 +110,38 @@ export function shouldAllowToolCall(state: ToolCallState): {
   return { allow: true, probability: 0.55 };
 }
 
+/**
+ * Heuristic gate for speculative voice navigation. High-confidence partials
+ * (>=0.8) proceed; mid-confidence (>=0.6) proceeds as prefetch-only; anything
+ * without a well-formed route is suppressed. Fail-closed toward suppression
+ * on malformed input — the confirmed final turn stays authoritative.
+ */
+export function shouldAllowSpeculativeNav(state: NavSpeculativeState): {
+  allow: boolean;
+  probability: number;
+} {
+  const route = state?.candidateRoute ?? "";
+  if (!route || !route.startsWith("/")) return { allow: false, probability: 0.9 };
+  const confidence = typeof state.confidence === "number" ? state.confidence : 0;
+  if (confidence >= 0.8) return { allow: true, probability: 0.85 };
+  if (confidence >= 0.6) return { allow: true, probability: 0.65 };
+  return { allow: false, probability: 0.7 };
+}
+
 export type JudgeDecision = "yield" | "keep-speaking" | "reply_now" | "wait_300ms" | "play_filler" | "allow" | "deny";
 
 function fallbackDecision(kind: JudgeKind, state: unknown): JudgeDecision {
   if (kind === "barge-in")
     return shouldYieldToBargeIn(state as BargeInState).yield ? "yield" : "keep-speaking";
   if (kind === "reply") return chooseReplyAction(state as ReplyState).action;
+  if (kind === "nav-speculative")
+    return shouldAllowSpeculativeNav(state as NavSpeculativeState).allow ? "allow" : "deny";
   return shouldAllowToolCall(state as ToolCallState).allow ? "allow" : "deny";
 }
 
 export async function requestVoiceJudge(
   kind: JudgeKind,
-  state: BargeInState | ReplyState | ToolCallState,
+  state: BargeInState | ReplyState | ToolCallState | NavSpeculativeState,
   opts: {
     fetchImpl?: typeof fetch;
     timeoutMs?: number;

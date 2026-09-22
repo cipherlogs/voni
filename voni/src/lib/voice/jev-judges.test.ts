@@ -100,3 +100,23 @@ test("filler pool is non-empty and agent-voiced", () => {
   assert.ok(FILLER_POOL.length >= 3);
   for (const line of FILLER_POOL) assert.ok(line.length <= 60);
 });
+
+test("speculative nav allows confident routes, suppresses weak ones", async () => {
+  const { shouldAllowSpeculativeNav } = await import("./jev-judges");
+  assert.equal(
+    shouldAllowSpeculativeNav({ partialText: "open settin", candidateRoute: "/settings", confidence: 0.85 }).allow,
+    true,
+  );
+  assert.equal(
+    shouldAllowSpeculativeNav({ partialText: "open sett", candidateRoute: "/settings", confidence: 0.65 }).allow,
+    true,
+  );
+  assert.equal(
+    shouldAllowSpeculativeNav({ partialText: "uh", candidateRoute: "/settings", confidence: 0.3 }).allow,
+    false,
+  );
+  assert.equal(
+    shouldAllowSpeculativeNav({ partialText: "open settin", candidateRoute: "", confidence: 0.9 }).allow,
+    false,
+  );
+});

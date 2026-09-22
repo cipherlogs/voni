@@ -68,3 +68,13 @@ test("the existing AI gateway key wins over the judge-specific one", () => {
 test("judge model defaults to typesafe-ai/jev", () => {
   assert.equal(resolveJudgeModel({}), JUDGE_MODEL);
 });
+
+test("accepts nav-speculative kind and decides offline", async () => {
+  const { parseVoiceJudgeRequest, decideVoiceJudge, judgeQuestions } = await import("./voice-judge");
+  assert.equal(parseVoiceJudgeRequest({ kind: "nav-speculative", state: {} }).ok, true);
+  const allow = decideVoiceJudge("nav-speculative", { partialText: "open settin", candidateRoute: "/settings", confidence: 0.85 });
+  assert.equal(allow.decision, "allow");
+  const deny = decideVoiceJudge("nav-speculative", { partialText: "uh", candidateRoute: "", confidence: 0.2 });
+  assert.equal(deny.decision, "deny");
+  assert.equal(judgeQuestions("nav-speculative").type, "boolean");
+});

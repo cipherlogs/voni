@@ -1,6 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { matchNavIntent, renderAppGuide } from "./app-guide";
+import {
+  classifyPartialNav,
+  matchNavIntent,
+  rankNavPrefix,
+  renderAppGuide,
+  stripWakePhrase,
+} from "./app-guide";
 import {
   APP_DESTINATIONS,
   APP_FEATURE_TERMS,
@@ -101,4 +107,30 @@ test("operator navigation is offered only with observable authorization", () => 
   assert.ok(renderAppGuide(true).includes("Platform operator (/operator"));
   assert.equal(matchNavIntent("open the operator area", "/dashboard"), null);
   assert.equal(matchNavIntent("open the operator area", "/dashboard", true), "/operator");
+});
+
+
+test("wake phrase strips leading Hi Michael", () => {
+  assert.equal(stripWakePhrase("Hi, Michael open the settings page"), "open the settings page");
+  assert.equal(stripWakePhrase("hey michael show my jobs"), "show my jobs");
+  assert.equal(stripWakePhrase("open settings"), "open settings");
+  assert.equal(stripWakePhrase("tell michael hi"), "tell michael hi");
+});
+
+test("prefix partials route before the word completes", () => {
+  const top = rankNavPrefix("open settin", "/dashboard");
+  assert.ok(top.length > 0 && top[0].route === "/settings", `got ${JSON.stringify(top)}`);
+  const action = classifyPartialNav("Hi, Michael open the settin", "/dashboard");
+  assert.ok(
+    (action.action === "navigate" && action.route === "/settings") ||
+      (action.action === "prefetch" && action.candidates.includes("/settings")),
+    `got ${JSON.stringify(action)}`,
+  );
+});
+
+test("prefix ranking keeps word-boundary guards", () => {
+  assert.deepEqual(rankNavPrefix("the leaders called back", "/jobs"), []);
+  assert.deepEqual(rankNavPrefix("nothing to do here", "/jobs"), []);
+  assert.equal(classifyPartialNav("the leaders called back", "/jobs").action, "none");
+  assert.equal(classifyPartialNav("open settings", "/jobs").action, "navigate");
 });
