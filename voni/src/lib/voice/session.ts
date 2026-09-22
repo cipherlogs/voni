@@ -27,15 +27,16 @@ import {
 } from "@/lib/tools/definitions";
 import type { ToolResponse } from "@/lib/tools/execute";
 import { ToolCoordinator } from "./tool-coordinator";
-import { acquireMic, releaseMic } from "./mic-owner";
+import { releaseMic } from "./mic-owner";
+import {
+  acquireMicStream,
+  startAudioGraph,
+  TARGET_SAMPLE_RATE,
+  VoiceStartError,
+  type VoiceErrorCode,
+} from "./mic-capture";
 
-const TARGET_SAMPLE_RATE = 24000;
-
-export const VOICE_MIC_CONSTRAINTS: MediaTrackConstraints = {
-  echoCancellation: true,
-  noiseSuppression: false,
-  autoGainControl: true,
-};
+export { TARGET_SAMPLE_RATE, VOICE_MIC_CONSTRAINTS } from "./mic-capture";
 
 /**
  * Two mutually exclusive ways to configure a session, matching the API:
@@ -91,16 +92,7 @@ export type SessionConfig =
  */
 export type TokenFetcher = () => Promise<{ token: string; agentId?: string }>;
 
-/** Thrown by token fetchers so start() can report a structured error code. */
-export class VoiceStartError extends Error {
-  constructor(
-    public code: VoiceErrorCode,
-    message: string,
-  ) {
-    super(message);
-    this.name = "VoiceStartError";
-  }
-}
+/** VoiceStartError lives in ./mic-capture (shared with the cascade client). */
 
 /**
  * Single-use generation tokens. Every start/resume mints one; stale async
@@ -247,13 +239,7 @@ export type AgentTurn = { itemId: string | null; text: string };
 export type TranscriptPartial = { itemId: string | null; text: string };
 
 /** Machine-readable failure kind so the UI can route recovery, not just text. */
-export type VoiceErrorCode =
-  | "mic"
-  | "busy-mic"
-  | "auth"
-  | "config"
-  | "network"
-  | "expired";
+export type { VoiceErrorCode } from "./mic-capture";
 
 /** Structured so the UI can tell a rate limit (with a countdown) from any other failure. */
 export type VoiceError = {
@@ -312,30 +298,6 @@ export type VoiceState =
   | "listening"
   | "speaking"
   | "ended";
-
-/**
- * Turn a getUserMedia failure into something a person can act on.
- *
- * The raw errors are useless to a visitor — Chrome says "Permission denied",
- * which names the problem but not the fix. Every branch here ends with the
- * action that resolves it, because an error the user cannot recover from is a
- * dead end, not feedback.
- */
-function micErrorMessage(e: unknown): string {
-  const name = e instanceof DOMException ? e.name : "";
-  switch (name) {
-    case "NotAllowedError":
-    case "SecurityError":
-      return "Voni needs your microphone for the call. Allow mic access in your browser — usually the icon in the address bar — then try again.";
-    case "NotFoundError":
-    case "OverconstrainedError":
-      return "No microphone found. Connect one, or pick a different input device, then try again.";
-    case "NotReadableError":
-      return "Your microphone is busy in another app. Close it and try again.";
-    default:
-      return e instanceof Error ? e.message : "Could not start the call.";
-  }
-}
 
 type QueuedUpdate = {
   session: Record<string, unknown>;
@@ -481,12 +443,7 @@ export class VoiceSession {
       // independent and together dominate call-startup latency. Error mapping
       // preserves the sequential version exactly (auth/rate-limit rethrown,
       // mic failures coded); a superseded generation releases silently.
-      if (!acquireMic(this.micOwner)) {
-        throw new VoiceStartError(
-          "busy-mic",
-          "Another voice session is already using the microphone. Stop it first, then try again.",
-        );
-      }
+      // Shared capture lives in ./mic-capture (also used by the cascade client).
       type Settled<T> = { ok: true; value: T } | { ok: false; error: unknown };
       // ES2017-safe allSettled: never rejects, so one failure cannot mask the
       // other and partial acquisitions always reach the cleanup below.
@@ -498,12 +455,7 @@ export class VoiceSession {
         }
       };
       const tokenPromise = settle(getToken());
-      const micPromise = settle(
-        navigator.mediaDevices.getUserMedia({
-          // See note 2 above — both of these matter.
-          audio: VOICE_MIC_CONSTRAINTS,
-        }),
-      );
+      const micPromise = settle(acquireMicStream(this.micOwner));
       const [tokenSettled, micSettled] = await Promise.all([tokenPromise, micPromise]);
       // Park a won mic stream where abandon() releases it (stops tracks,
       // releases the mic) instead of leaking it on the failure paths below.
@@ -524,9 +476,8 @@ export class VoiceSession {
       }
       if (!micSettled.ok) {
         abandon();
-        // Rethrown as a coded error so the UI reports the friendly text and
-        // routes recovery rather than showing the DOMException's bare name.
-        throw new VoiceStartError("mic", micErrorMessage(micSettled.error));
+        // acquireMicStream throws already-coded VoiceStartError.
+        throw micSettled.error;
       }
       const { token, agentId } = tokenSettled.value;
       acquiredStream = micSettled.value;
@@ -553,43 +504,24 @@ export class VoiceSession {
       this.stream = acquiredStream;
       acquiredStream = null;
 
+      let graph;
       try {
-        // Default rate on purpose; the worklet resamples. Forcing 24 kHz here is
-        // Chromium-only and breaks Firefox's echo canceller and Safari outright.
-        acquiredCtx = new AudioContext();
-        await acquiredCtx.resume();
-        await acquiredCtx.audioWorklet.addModule("/pcm-processor.js");
-      } catch {
-        this.stream?.getTracks().forEach((t) => t.stop());
+        graph = await startAudioGraph(this.micOwner, this.stream, (data) => {
+          this.ingestAudio(data);
+        });
+      } catch (e) {
         this.stream = null;
-        releaseMic(this.micOwner);
-        throw new Error("Could not start audio. Check your browser and try again.");
+        throw e;
       }
       if (!alive()) {
-        abandon();
+        graph.stop();
+        releaseMic(this.micOwner);
         this.stream?.getTracks().forEach((t) => t.stop());
         this.stream = null;
         return;
       }
-      this.audioCtx = acquiredCtx;
-      acquiredCtx = null;
-
-      const source = this.audioCtx.createMediaStreamSource(this.stream);
-      this.worklet = new AudioWorkletNode(this.audioCtx, "pcm-processor", {
-        processorOptions: {
-          inputSampleRate: this.audioCtx.sampleRate,
-          targetSampleRate: TARGET_SAMPLE_RATE,
-        },
-      });
-
-      this.worklet.port.onmessage = (e: MessageEvent<ArrayBuffer>) => {
-        this.ingestAudio(e.data);
-      };
-
-      // Note the worklet is NOT connected to destination: it only taps the mic.
-      // Routing it to the speakers would play the caller's own voice back at
-      // them and feed the echo canceller a signal it should never see.
-      source.connect(this.worklet);
+      this.audioCtx = graph.audioCtx;
+      this.worklet = graph.worklet;
 
       this.playhead = this.audioCtx.currentTime;
       this.connect(token, resolved, gen);

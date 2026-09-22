@@ -93,6 +93,10 @@ export function TestAgentDialog({
 }) {
   const [open, setOpen] = useState(false);
   const [status, setStatus] = useState<VoiceCallStatus>(IDLE_STATUS);
+  // Voice engine for the test call. Managed is the AssemblyAI session;
+  // cascade drives the Python pipeline service (dev slice). Switching
+  // remounts VoiceCall below, so no stale managed state can leak across.
+  const [engine, setEngine] = useState<"managed" | "cascade">("managed");
   // Call-control state mirrored up from VoiceCall's chromeless presentation
   // so the ai-05 header owns the start/hang-up buttons and the footer owns
   // the countdown. Single-flight still lives in VoiceCall's startingRef;
@@ -199,6 +203,26 @@ export function TestAgentDialog({
                 variant="ghost"
                 size="sm"
                 className="h-8 gap-1.5 px-2.5 text-xs"
+                onClick={() => {
+                  if (callActive) return;
+                  setEngine((prev) => (prev === "managed" ? "cascade" : "managed"));
+                  setStatus(IDLE_STATUS);
+                  setHangUpError(null);
+                }}
+                disabled={!canTest || callActive}
+                title={
+                  engine === "managed"
+                    ? "Test call runs on the managed voice session. Switch to the cascade pipeline."
+                    : "Test call runs on the cascade pipeline. Switch back to managed."
+                }
+              >
+                {engine === "managed" ? "Managed" : "Cascade"}
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-8 gap-1.5 px-2.5 text-xs"
                 onClick={resetCall}
                 disabled={!canTest}
               >
@@ -213,9 +237,10 @@ export function TestAgentDialog({
               <>
                 <div className="min-h-0 flex-1">
                   <VoiceCall
-                    key={config.voiceId}
+                    key={`${config.voiceId}-${engine}`}
                     ref={callRef}
                     mode={{ kind: "inline", config, agentId, isDirty }}
+                    engine={engine}
                     presentation="dialog"
                     chromeless
                     onStatusChange={setStatus}

@@ -60,6 +60,23 @@ local save and shows a retryable deployment warning on the agent page.
   `VONI_TOOL_SECRET` bearer. Sampling is fire-and-forget and off by default
   until the URL resolves.
 
+## Cascade test-call client (dev slice)
+
+`NEXT_PUBLIC_*` because the browser reads them (set in `.env.local` for
+`next dev`; never secrets — the browser must never hold vendor keys):
+
+- `NEXT_PUBLIC_VOICE_PIPELINE_URL` — pipeline service WS URL. Default
+  `ws://127.0.0.1:8766/v1/browser-call` (see `voice-pipeline/README.md`).
+- `NEXT_PUBLIC_CASCADE_LLM_MODEL` — gateway model id (default
+  `alibaba/qwen3.5-flash`, verified live).
+- `NEXT_PUBLIC_CASCADE_TTS_MODEL` — Cartesia model (default `sonic-2`).
+- `NEXT_PUBLIC_CASCADE_TTS_VOICE` — Cartesia voice ID from the dashboard
+  (no default — the service errors clearly without it). Distinct from the
+  AssemblyAI `voiceId` on the agent; voice identity does not carry across.
+
+The Test dialog's Managed/Cascade toggle switches engines per call;
+managed stays the default and demo calls always use managed.
+
 ## Async TTS (WhatsApp voice-note replies — AssemblyAI has no standalone TTS API, plan Section I)
 - `CARTESIA_API_KEY` — cartesia.ai → sign up → dashboard → API Keys. Free plan
   (20K credits/mo, ~27 min TTS) is fine for dev/testing but explicitly

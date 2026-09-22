@@ -24,6 +24,7 @@ import {
   type VoiceState,
 } from "@/lib/voice/session";
 import { CallTimings } from "@/lib/voice/call-timings";
+import { CascadeSession } from "@/lib/voice/cascade-session";
 import {
   FILLER_POOL,
   requestVoiceJudge,
@@ -208,6 +209,8 @@ export function VoiceCall({
   onPendingChange,
   presentation = "card",
   chromeless = false,
+  engine = "managed",
+  cascadeUrl,
   ref,
 }: {
   mode: Mode;
@@ -218,6 +221,13 @@ export function VoiceCall({
   /** ai-05 dialog host: the host header owns the call buttons and the host
       footer owns status, so the card renders identity + transcript only. */
   chromeless?: boolean;
+  /**
+   * Voice engine. "managed" is the AssemblyAI session; "cascade" drives the
+   * Python pipeline service (dev slice over WebSocket). Demo mode always
+   * uses managed; all UI states are shared so indicators work unchanged.
+   */
+  engine?: "managed" | "cascade";
+  cascadeUrl?: string;
   ref?: React.Ref<VoiceCallHandle>;
 }) {
   const isDemo = mode.kind === "demo";
@@ -253,7 +263,7 @@ export function VoiceCall({
   const [starting, setStarting] = useState(false);
   const [hangingUp, setHangingUp] = useState(false);
 
-  const sessionRef = useRef<VoiceSession | null>(null);
+  const sessionRef = useRef<VoiceSession | CascadeSession | null>(null);
   const startingRef = useRef(false);
 
   // Synchronous pending mirror for the host footer: the onPendingChange
@@ -372,6 +382,83 @@ export function VoiceCall({
       new CustomEvent("voni:voice-preempt", { detail: { owner: "voice-call" } }),
     );
 
+    if (engine === "cascade" && mode.kind === "inline") {
+      // Cascade slice: Python pipeline service over WebSocket. Same UI
+      // states as managed (connecting/listening/speaking/ended) so every
+      // indicator, timer, caption, and the countdown below works unchanged.
+      // Tools are not executed on the cascade path yet — the agent answers
+      // from knowledge, so tool-heavy agents should stay on managed.
+      const agentConfig = mode.config;
+      const cascade = new CascadeSession({
+        onCaption: (caption) => {
+          if (caption.final) {
+            timingsRef.current?.mark(
+              caption.role === "user" ? "firstUserTurn" : "firstAgentTurn",
+            );
+            if (caption.role === "agent") {
+              setFiller(null);
+              setState("listening");
+            }
+            setLiveCaption(null);
+            setTurns((prev) => [...prev, { role: caption.role, text: caption.text }]);
+          } else {
+            if (caption.role === "user") timingsRef.current?.mark("firstPartial");
+            setLiveCaption({ role: caption.role, text: caption.text });
+          }
+        },
+        onAudio: () => {
+          setState("speaking");
+        },
+        onInterrupted: () => {
+          setFiller(null);
+          setState("listening");
+        },
+        onMetrics: (metrics, turns) => {
+          console.debug("[voice-call] cascade metrics", { turns, metrics });
+        },
+        onError: (message) => {
+          setError({ message });
+        },
+        onEnd: () => {
+          setState("ended");
+        },
+      });
+      sessionRef.current = cascade;
+      setState("connecting");
+      try {
+        await cascade.start(
+          {
+            serviceUrl:
+              cascadeUrl ??
+              process.env.NEXT_PUBLIC_VOICE_PIPELINE_URL ??
+              "ws://127.0.0.1:8766/v1/browser-call",
+            pipeline: {
+              llm_model:
+                process.env.NEXT_PUBLIC_CASCADE_LLM_MODEL ?? "alibaba/qwen3.5-flash",
+              tts_voice: process.env.NEXT_PUBLIC_CASCADE_TTS_VOICE ?? "",
+              tts_model: process.env.NEXT_PUBLIC_CASCADE_TTS_MODEL ?? "sonic-2",
+              fallback_mode: "cascade",
+              language_codes: effectiveInlineLanguages(agentConfig.languageCodes),
+            },
+            systemPrompt: compileSystemPrompt(agentConfig),
+            tools: [],
+          },
+          "voice-call",
+        );
+        setState("listening");
+      } catch (e) {
+        setError({
+          message: e instanceof Error ? e.message : "Could not start the call.",
+        });
+        setState("ended");
+      } finally {
+        startingRef.current = false;
+        setStarting(false);
+        notifyPending({ ...pendingRef.current, starting: false });
+      }
+      return;
+    }
+
     const session = new VoiceSession({
       onStateChange: (next) => {
         if (next === "speaking") agentSpeechStartRef.current = Date.now();
@@ -475,7 +562,7 @@ export function VoiceCall({
       setStarting(false);
       notifyPending({ ...pendingRef.current, starting: false });
     }
-  }, [mode, notifyPending, persona.id, voiceId, config]);
+  }, [mode, notifyPending, persona.id, voiceId, config, engine, cascadeUrl]);
 
   const hangUp = useCallback(async () => {
     if (hangingUp) return;
