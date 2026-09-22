@@ -279,5 +279,38 @@ class ToolGateTests(unittest.TestCase):
         self.assertEqual(results[0].tool_calls, ["lookupLead"])
 
 
+class EventHookTests(unittest.TestCase):
+    def test_partial_final_agent_sequence_emitted(self):
+        async def run():
+            events: list[tuple[str, dict]] = []
+
+            async def on_event(kind: str, payload: dict) -> None:
+                events.append((kind, payload))
+
+            stt = FakeSTT(
+                [PartialTranscript(text="hi"), FinalTranscript(text="hi there")]
+            )
+            llm = FakeLLM(tokens=["Hey!"])
+            orch, _ = make_orchestrator(stt, llm, FakeTTS(), on_event=on_event)
+            results = await orch.run(frames(b"\x00"))
+            return events, results
+
+        events, results = asyncio.run(run())
+        kinds = [kind for kind, _ in events]
+        self.assertEqual(kinds, ["user_partial", "user_final", "agent_final"])
+        self.assertEqual(events[0][1], {"text": "hi"})
+        self.assertEqual(events[2][1], {"text": "Hey!"})
+        self.assertEqual(len(results), 1)
+
+    def test_no_hook_no_failure(self):
+        async def run():
+            stt = FakeSTT([FinalTranscript(text="hi")])
+            orch, _ = make_orchestrator(stt, FakeLLM(tokens=["yo"]), FakeTTS())
+            return await orch.run(frames(b"\x00"))
+
+        results = asyncio.run(run())
+        self.assertEqual(results[0].reply_text, "yo")
+
+
 if __name__ == "__main__":
     unittest.main()

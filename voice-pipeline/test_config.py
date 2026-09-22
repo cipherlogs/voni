@@ -56,7 +56,12 @@ class ValidationTests(unittest.TestCase):
 class DictTests(unittest.TestCase):
     def test_from_dict_applies_overrides(self):
         config = pipeline_config_from_dict(
-            {"stt_provider": "deepgram", "fallback_mode": "cascade", "llm_model": "m"}
+            {
+                "stt_provider": "deepgram",
+                "fallback_mode": "cascade",
+                "llm_model": "m",
+                "tts_model": "t",
+            }
         )
         self.assertEqual(config.stt_provider, "deepgram")
         self.assertEqual(config.fallback_mode, "cascade")
@@ -68,8 +73,14 @@ class DictTests(unittest.TestCase):
             pipeline_config_from_dict({"telepathy": True})
 
     def test_explicit_cascade_opt_in(self):
-        config = pipeline_config_from_dict({"fallback_mode": "cascade", "llm_model": "m"})
+        config = pipeline_config_from_dict(
+            {"fallback_mode": "cascade", "llm_model": "m", "tts_model": "t"}
+        )
         self.assertTrue(config.routes_to_cascade)
+
+    def test_cascade_requires_tts_model(self):
+        with self.assertRaises(ValueError):
+            pipeline_config_from_dict({"fallback_mode": "cascade", "llm_model": "m"})
 
     def test_managed_default_does_not_route_to_cascade(self):
         self.assertFalse(PipelineConfig(llm_model="m").routes_to_cascade)

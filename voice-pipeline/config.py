@@ -27,6 +27,7 @@ class PipelineConfig:
     stt_model: str = ""
     llm_model: str = ""
     tts_voice: str = ""
+    tts_model: str = ""
     transport: str = "browser"
     language_codes: tuple[str, ...] = ("en",)
     min_silence_ms: int = 900
@@ -73,6 +74,8 @@ def validate_pipeline_config(config: PipelineConfig) -> list[str]:
         errors.append("interruption_delay_ms must be non-negative")
     if not config.llm_model:
         errors.append("llm_model is required")
+    if config.fallback_mode == "cascade" and not config.tts_model:
+        errors.append("tts_model is required to route at the cascade pipeline")
     return errors
 
 
@@ -83,6 +86,7 @@ def pipeline_config_from_dict(data: dict) -> PipelineConfig:
         "stt_model",
         "llm_model",
         "tts_voice",
+        "tts_model",
         "transport",
         "language_codes",
         "min_silence_ms",

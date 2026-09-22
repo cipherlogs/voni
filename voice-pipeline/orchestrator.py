@@ -89,6 +89,7 @@ class TurnOrchestrator:
         tool_gate: Callable[[Any], tuple[bool, float]] | None = None,
         ledger: TimingLedger | None = None,
         clock: Callable[[], float] | None = None,
+        on_event: Callable[[str, dict], Awaitable[None]] | None = None,
     ) -> None:
         self._stt = stt
         self._llm = llm
@@ -99,6 +100,7 @@ class TurnOrchestrator:
         self._sample_rate = sample_rate
         self._scorer = scorer or _default_scorer
         self._tool_gate = tool_gate or _default_tool_gate
+        self._on_event = on_event
         self.ledger = ledger or TimingLedger(now=clock)
         self._clock = clock or time.monotonic
         self.history: list[dict] = (
@@ -167,11 +169,21 @@ class TurnOrchestrator:
                 first = False
             await self._stt.send_audio(frame)
 
+    async def _emit(self, kind: str, payload: dict) -> None:
+        # Observability only: a failing sink must never break the turn.
+        if self._on_event is None:
+            return
+        try:
+            await self._on_event(kind, payload)
+        except Exception:
+            pass
+
     async def _handle_partial(self, text: str) -> None:
         if not text or text == self._last_partial:
             return
         self._last_partial = text
         self.ledger.mark("first_partial")
+        await self._emit("user_partial", {"text": text})
         turn_active = self._turn_task is not None and not self._turn_task.done()
         if self._speaking or turn_active:
             # Gate path: the agent holds the floor (speaking, thinking, or
@@ -202,6 +214,7 @@ class TurnOrchestrator:
 
     async def _handle_final(self, text: str) -> TurnResult:
         self.ledger.mark("final")
+        await self._emit("user_final", {"text": text})
         self._last_partial = ""
         result = TurnResult(user_text=text)
         messages = self.history + [{"role": "user", "content": text}]
@@ -215,8 +228,10 @@ class TurnOrchestrator:
         self.history.append({"role": "user", "content": text})
         if result.reply_text:
             self.history.append({"role": "assistant", "content": result.reply_text})
+            await self._emit("agent_final", {"text": result.reply_text})
         if self._interrupted:
             result.interrupted = True
+            await self._emit("interrupted", {"user_text": text})
         return result
 
     async def _produce_reply(
@@ -282,6 +297,13 @@ class TurnOrchestrator:
                         self._speaking = True
                         self._speech_start = self._clock()
                     self.ledger.mark("first_playout")
+            # A failed producer must fail the turn, not vanish: retrieve its
+            # exception (also silences "never retrieved") and re-raise it so
+            # the run task — and the transport's end message — carry it.
+            if producer.done() and not producer.cancelled():
+                exc = producer.exception()
+                if exc is not None:
+                    raise exc
         finally:
             if not producer.done():
                 producer.cancel()
