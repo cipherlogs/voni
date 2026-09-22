@@ -115,6 +115,19 @@ class AssemblyAISTTTests(unittest.TestCase):
         frames = [json.loads(m) for m in sock.sent if isinstance(m, str)]
         self.assertIn({"type": "ForceEndpoint"}, frames)
 
+    def test_session_error_raises_loudly(self):
+        async def run():
+            backend, _ = make_backend(
+                [{"type": "Error", "error": "boom", "error_code": 3006}]
+            )
+            await backend.open(language_codes=["en"], sample_rate=16000)
+            out = [e async for e in backend.events()]
+            await backend.close()
+            return out
+
+        with self.assertRaisesRegex(RuntimeError, "3006"):
+            asyncio.run(run())
+
     def test_close_terminates_session(self):
         async def run():
             backend, holder = make_backend([{"type": "Begin", "id": "s1"}])

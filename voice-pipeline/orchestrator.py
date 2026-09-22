@@ -112,9 +112,9 @@ class TurnOrchestrator:
         self._last_partial = ""
         self._turn_task: Optional[asyncio.Task] = None
         self._floor_held = False
+        self.turn_results: list[TurnResult] = []
 
     async def run(self, audio: AsyncIterator[bytes]) -> list[TurnResult]:
-        results: list[TurnResult] = []
         turn_tasks: list[asyncio.Task] = []
         await self._stt.open(
             language_codes=self._language_codes, sample_rate=self._sample_rate
@@ -130,26 +130,40 @@ class TurnOrchestrator:
                         # means the gate already fired (or should have): let
                         # the old turn settle so replies never overlap. The
                         # timeout is a stall guard, not a latency knob — turn
-                        # tasks never need loop input to finish.
+                        # tasks never need loop input to finish. TimeoutError
+                        # only: outer cancellation must propagate, never be
+                        # swallowed here, or hangup stops working.
                         if self._turn_task is not None and not self._turn_task.done():
                             try:
                                 await asyncio.wait_for(self._turn_task, timeout=120.0)
-                            except (asyncio.TimeoutError, asyncio.CancelledError):
+                            except asyncio.TimeoutError:
                                 if not self._turn_task.done():
                                     self._turn_task.cancel()
+                            except asyncio.CancelledError:
+                                raise
+                            except Exception:
+                                pass  # already emitted by the watcher
                         task = asyncio.get_running_loop().create_task(
                             self._handle_final(event.text)
                         )
+                        task.add_done_callback(self._watch_turn_task)
                         self._turn_task = task
                         turn_tasks.append(task)
-                if self._turn_task is not None and not self._turn_task.done():
-                    try:
-                        await asyncio.wait_for(self._turn_task, timeout=120.0)
-                    except (asyncio.TimeoutError, asyncio.CancelledError):
-                        if not self._turn_task.done():
-                            self._turn_task.cancel()
+                # Results already collected by the watcher; here we only make
+                # sure no task is left dangling. Turn failures were emitted
+                # as events when they happened — the drain must not re-raise
+                # them (but run cancellation always propagates).
                 for task in turn_tasks:
-                    results.append(task.result())
+                    if task.done():
+                        continue
+                    try:
+                        await asyncio.wait_for(task, timeout=120.0)
+                    except asyncio.TimeoutError:
+                        task.cancel()
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        pass
             finally:
                 if not pump.done():
                     pump.cancel()
@@ -159,7 +173,7 @@ class TurnOrchestrator:
                     pass
         finally:
             await self._stt.close()
-        return results
+        return self.turn_results
 
     async def _pump_audio(self, audio: AsyncIterator[bytes]) -> None:
         first = True
@@ -211,6 +225,21 @@ class TurnOrchestrator:
                 self.ledger.count("prefetch_started")
             except Exception:
                 pass
+
+    def _watch_turn_task(self, task: asyncio.Task) -> None:
+        # A failed turn must surface while the call is still live: STT events
+        # never end on their own, so without this a backend failure reads as
+        # eternal silence instead of an error. Successful turns collect here
+        # so results survive even when the run loop is cancelled (hangup).
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            asyncio.get_running_loop().create_task(
+                self._emit("turn_failed", {"error": f"{type(exc).__name__}: {exc}"})
+            )
+        else:
+            self.turn_results.append(task.result())
 
     async def _handle_final(self, text: str) -> TurnResult:
         self.ledger.mark("final")

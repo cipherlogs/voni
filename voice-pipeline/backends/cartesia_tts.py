@@ -110,6 +110,7 @@ class CartesiaTTS(StreamingTTS):
         self._base_url = base_url.rstrip("/")
         self._session_factory = session_factory or _AiohttpSession
         self._timeout_s = timeout_s
+        self._check_config()
 
     def _check_config(self) -> None:
         if not self._api_key:
@@ -189,9 +190,12 @@ class CartesiaTTS(StreamingTTS):
                     continue
                 # Verified live: chunk events carry base64 PCM in "data"
                 # ({"type": "chunk", "done": false, ...}). Done markers and
-                # any event without audio bytes are skipped.
+                # events without audio bytes are skipped — except error
+                # events, which fail loudly instead of synthesizing silence.
                 if payload.get("done") is True:
                     continue
+                if "error" in payload:
+                    raise RuntimeError(f"cartesia stream error: {payload['error']}")
                 audio_b64 = payload.get("data")
                 if audio_b64:
                     try:

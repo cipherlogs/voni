@@ -123,6 +123,10 @@ async def handle_browser_call(
             )
         elif kind == "interrupted":
             await _send(ws, {"type": "interrupted"})
+        elif kind == "turn_failed":
+            await _send(
+                ws, {"type": "error", "message": f"turn failed: {payload.get('error', '')}"}
+            )
 
     orchestrator = TurnOrchestrator(
         stt=stt,
@@ -153,14 +157,18 @@ async def handle_browser_call(
             elif kind == "stop":
                 break
     finally:
+        cancelled_by_us = False
         if not run_task.done():
             run_task.cancel()
-        results: list = []
+            cancelled_by_us = True
         run_error: Optional[str] = None
         try:
-            results = await run_task
+            await run_task
         except asyncio.CancelledError:
-            pass
+            # Ours (hangup path above) is swallowed; server shutdown must
+            # propagate or connections never drain.
+            if not cancelled_by_us:
+                raise
         except Exception as exc:
             # Backend failures (bad key, provider outage) must be visible in
             # the transcript, not silent turns=0.
@@ -168,7 +176,9 @@ async def handle_browser_call(
         end_message: dict[str, Any] = {
             "type": "end",
             "metrics": orchestrator.ledger.summary(),
-            "turns": len(results),
+            # Collected incrementally by the orchestrator so a hangup
+            # mid-call still reports finished turns.
+            "turns": len(orchestrator.turn_results),
         }
         if run_error is not None:
             end_message["error"] = run_error

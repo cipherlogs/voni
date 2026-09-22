@@ -86,6 +86,12 @@ class AssemblyAIStreamingSTT(StreamingSTT):
         except (json.JSONDecodeError, TypeError):
             return None
         msg_type = msg.get("type")
+        if msg_type == "Error":
+            # Session errors must fail loudly: the server closes right after,
+            # and a silent skip would read as "no speech detected".
+            raise RuntimeError(
+                f"assemblyai session error {msg.get('error_code')}: {msg.get('error')}"
+            )
         # Verified live: Turn carries transcript/end_of_turn; Termination ends.
         if msg_type == "Turn":
             text = msg.get("transcript") or ""

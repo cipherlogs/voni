@@ -52,3 +52,22 @@ bridge venv (stdlib-only otherwise):
 ```
 ../telephony-bot/.venv/bin/python -m unittest discover -s . -p "test_*.py"
 ```
+
+## Running the service (P1 talking slice)
+
+```
+sh scripts/local_server.sh   # dev only: loads ../voni/.dev.vars, serves :8766
+```
+
+- `GET /healthz` — liveness, no vendors touched.
+- `WS /v1/browser-call` — one cascade call per socket; protocol in
+  `transport.py`. Requires `ASSEMBLYAI_API_KEY`, `AI_GATEWAY_API_KEY`,
+  `CARTESIA_API_KEY` in host env (production runs with real host env,
+  never this script).
+- `scripts/smoke_call.py` — end-to-end dev check: streams a voice sample
+  through STT → LLM → TTS over the wire and prints captions, audio stats,
+  and ledger gaps. Needs no arguments with the dev launcher running.
+
+Measured P1 baselines (2.4s sample, qwen3.5-flash, sonic-2): screen latency
+~0.8s, think ~5s, reply gap ~7s. The think leg dominates — a faster gateway
+model is the biggest remaining lever.

@@ -311,6 +311,32 @@ class EventHookTests(unittest.TestCase):
         results = asyncio.run(run())
         self.assertEqual(results[0].reply_text, "yo")
 
+    def test_failed_turn_emits_turn_failed(self):
+        async def run():
+            events: list[tuple[str, dict]] = []
+
+            async def on_event(kind: str, payload: dict) -> None:
+                events.append((kind, payload))
+
+            class BrokenLLM(FakeLLM):
+                async def complete(self, *, messages, tools=None):
+                    raise RuntimeError("gateway exploded")
+                    yield
+
+            stt = FakeSTT([FinalTranscript(text="hi")])
+            orch, _ = make_orchestrator(
+                stt, BrokenLLM(tokens=[]), FakeTTS(), on_event=on_event
+            )
+            try:
+                await orch.run(frames(b"\x00"))
+            except RuntimeError:
+                pass
+            return events
+
+        events = asyncio.run(run())
+        kinds = [kind for kind, _ in events]
+        self.assertIn("turn_failed", kinds)
+
 
 if __name__ == "__main__":
     unittest.main()

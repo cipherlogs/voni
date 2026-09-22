@@ -192,9 +192,13 @@ class BrowserCallTests(unittest.TestCase):
             return ws
 
         ws = asyncio.run(run())
+        # The failure surfaces mid-call as an error message (turn_failed);
+        # the call still ends normally with metrics.
+        errors = [m for m in ws.sent if m["type"] == "error"]
+        self.assertTrue(errors, "expected a failure error message")
+        self.assertIn("gateway exploded", errors[0].get("message", ""))
         end = [m for m in ws.sent if m["type"] == "end"]
         self.assertEqual(len(end), 1)
-        self.assertIn("gateway exploded", end[0].get("error", ""))
 
     def test_managed_fallback_rejected_with_error(self):
         ws = run_call(
