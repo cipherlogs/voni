@@ -10,6 +10,9 @@
  *   the real signIn.social handler via props.
  * - flex-col gap stack instead of space-y; Label replaced with paragraph
  *   copy (no form fields remain); terms line dropped (no email form).
+ * - Ticket 02: the root fills its page (`flex-1`) instead of locking the
+ *   viewport (`min-h-dvh`), so the shared SiteFooter sits at the bottom of
+ *   short auth pages without pushing past the viewport.
  */
 
 import Link from 'next/link';
@@ -45,7 +48,7 @@ export default function Login01({
   switchLabel: string;
 }) {
   return (
-    <div className="flex min-h-dvh items-center justify-center">
+    <div className="flex w-full flex-1 items-center justify-center">
       <div className="flex flex-1 flex-col justify-center px-4 py-10 lg:px-6">
         <div className="sm:mx-auto sm:w-full sm:max-w-sm">
           <div className="flex flex-col gap-2 text-center">

@@ -34,7 +34,7 @@ export function AuthForm({
   }
 
   return (
-    <div className="flex w-full flex-col items-center">
+    <div className="flex w-full flex-1 flex-col items-center">
       {error ? (
         <Alert variant="destructive" className="mb-6 w-full sm:max-w-sm">
           <AlertCircle />

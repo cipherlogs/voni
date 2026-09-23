@@ -5,7 +5,7 @@ import { LandingDemo } from "@/components/landing-demo";
 import { LandingHeader } from "@/components/landing-header";
 import { GridListShowcase } from "@/components/landing-grid-list";
 import { headers } from "next/headers";
-import { VoniLogo } from "@/components/voni-logo";
+import { SiteFooter } from "@/components/site-footer";
 import { auth } from "@/lib/auth";
 import { devBypassEnabled } from "@/lib/dev-bypass";
 
@@ -48,7 +48,7 @@ export default function LandingPage() {
         <LandingHeaderGate />
       </Suspense>
 
-      <section data-testid="landing-shell" className={`${CONTAINER} flex flex-col items-center gap-7 py-24 text-center md:py-32`}>
+      <section data-testid="landing-shell" className={`${CONTAINER} flex flex-col items-center gap-7 py-16 text-center md:py-24`}>
         <Badge variant="secondary">Live voice calls</Badge>
         <h1 className="max-w-3xl font-editorial text-4xl font-medium tracking-tight text-balance md:text-5xl md:leading-tight">
           An AI employee with a mission, not another chatbot
@@ -62,8 +62,10 @@ export default function LandingPage() {
         {/* Live-demo widget: Vapi's pattern (mic + scenario + one-click call)
             — see plan Section E. Public and unauthenticated, so it runs in
             demo mode against a server-owned stored agent, behind per-IP and
-            per-day rate limits. */}
-        <div className="w-full pt-4">
+            per-day rate limits. Constrained to the document measure so the
+            widget reads as part of the hero composition, not a bolted-on
+            embed. */}
+        <div className="mx-auto w-full max-w-2xl pt-4">
           <LandingDemo />
         </div>
       </section>
@@ -74,19 +76,13 @@ export default function LandingPage() {
         </div>
       </section>
 
-      <footer className="border-t">
-        <div
-          className={`${CONTAINER} text-muted-foreground flex flex-col items-center justify-between gap-4 py-8 text-sm sm:flex-row`}
-        >
-          <span className="flex items-center gap-2">
-            <VoniLogo size="sm" />
-            <span>It sees the lead. It seals the deal.</span>
-          </span>
+      <SiteFooter
+        year={
           <Suspense fallback={<span>© Voni</span>}>
             <FooterYear />
           </Suspense>
-        </div>
-      </footer>
+        }
+      />
     </div>
   );
 }
