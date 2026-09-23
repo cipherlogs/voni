@@ -4,11 +4,11 @@
 
 **Blocked by:** 01: Native arrow cursor on shared button (this ticket's render-level test asserts the arrow cursor on both actions alongside frame parity).
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Both draft prompt actions render boxed at one shared size with matching hovered frames on wide and narrow layouts
-- [ ] Hovering either action does not make it appear smaller than its neighbor
-- [ ] Both actions show the native arrow cursor
-- [ ] Continue resumes the saved draft; discard clears it and restarts clean
-- [ ] A render-level test covers cursor styling, size/style parity, and the preserved continue and discard behaviors
-- [ ] Focus indicators, touch targets, and accessible names/roles are unchanged
+- [x] Both draft prompt actions render boxed at one shared size with matching hovered frames on wide and narrow layouts
+- [x] Hovering either action does not make it appear smaller than its neighbor
+- [x] Both actions show the native arrow cursor
+- [x] Continue resumes the saved draft; discard clears it and restarts clean
+- [x] A render-level test covers cursor styling, size/style parity, and the preserved continue and discard behaviors
+- [x] Focus indicators, touch targets, and accessible names/roles are unchanged

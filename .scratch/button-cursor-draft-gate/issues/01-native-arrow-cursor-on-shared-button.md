@@ -4,10 +4,10 @@
 
 **Blocked by:** None (can start immediately).
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Hovering buttons across all variants shows the native arrow cursor, never the hand
-- [ ] Disabled buttons are dimmed and non-interactive with no hand cursor
-- [ ] Underlined links and expandable disclosure rows still show the hand cursor
-- [ ] The pre-existing shared-variant assertions are updated to the new expectation and the suite is green
-- [ ] A newly added button gets the arrow cursor with no extra styling work
+- [x] Hovering buttons across all variants shows the native arrow cursor, never the hand
+- [x] Disabled buttons are dimmed and non-interactive with no hand cursor
+- [x] Underlined links and expandable disclosure rows still show the hand cursor
+- [x] The pre-existing shared-variant assertions are updated to the new expectation and the suite is green
+- [x] A newly added button gets the arrow cursor with no extra styling work

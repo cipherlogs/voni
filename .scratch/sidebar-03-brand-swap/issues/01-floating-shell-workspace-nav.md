@@ -4,12 +4,12 @@
 
 **Blocked by:** None (can start immediately).
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Rail uses floating icon-collapsible shape with block gaps and paddings
-- [ ] Row hover and active states use the existing accent token (no muted token exists)
-- [ ] Collapsed rail uses the default icon width (no wide override)
-- [ ] Every existing destination renders with icon, label, and active state
-- [ ] Collapse trigger and keyboard toggle work; first visit open, choice remembered
-- [ ] No motion dependency added; no demo commerce routes or notifications
-- [ ] Shared navigation source still feeds rail, command menu, and voice guide
+- [x] Rail uses floating icon-collapsible shape with block gaps and paddings
+- [x] Row hover and active states use the existing accent token (no muted token exists)
+- [x] Collapsed rail uses the default icon width (no wide override)
+- [x] Every existing destination renders with icon, label, and active state
+- [x] Collapse trigger and keyboard toggle work; first visit open, choice remembered
+- [x] No motion dependency added; no demo commerce routes or notifications
+- [x] Shared navigation source still feeds rail, command menu, and voice guide
