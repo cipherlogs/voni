@@ -89,10 +89,13 @@ async function DashboardOutcomes() {
         route="/dashboard"
         brief={`Dashboard: ${summary.leadsWorked} leads worked, ${summary.connectedCalls} connected calls, ${summary.appointmentsBooked} booked leads, ${summary.needsHandoff} needing handoff. Voice reads here.`}
       />
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+      <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-4">
         {cards.map((card) => (
-          <Card key={card.label} className="gap-0 p-0">
-            <CardContent className="flex flex-col gap-1 p-6">
+          <Card
+            key={card.label}
+            className="h-full gap-0 py-0 transition-shadow duration-[var(--motion-standard)] hover:shadow-md focus-within:shadow-md"
+          >
+            <CardContent className="flex flex-1 flex-col gap-3 p-8">
               <span className="text-muted-foreground text-sm">
                 {card.label}
               </span>
@@ -103,12 +106,12 @@ async function DashboardOutcomes() {
               ) : null}
               <span
                 aria-label={`${card.label}: ${card.value}`}
-                className="mt-1 text-3xl font-semibold tabular-nums"
+                className="mt-1 text-3xl font-semibold tracking-tight tabular-nums"
               >
                 {card.value}
               </span>
             </CardContent>
-            <CardFooter className="justify-end p-0">
+            <CardFooter className="mt-auto justify-end p-0">
               <Link
                 href={card.href}
                 aria-label={card.linkLabel}
@@ -122,11 +125,11 @@ async function DashboardOutcomes() {
         ))}
       </div>
       {summary.emptyCampaigns.length > 0 ? (
-        <Card className="gap-0 p-0">
-          <CardHeader className="p-6 pb-2">
+        <Card className="gap-0 py-0">
+          <CardHeader className="p-8 pb-2">
             <CardTitle className="text-base">Next action</CardTitle>
           </CardHeader>
-          <CardContent className="text-muted-foreground p-6 pt-4 text-sm">
+          <CardContent className="text-muted-foreground p-8 pt-4 text-sm">
             {summary.emptyCampaigns.map((campaign) => (
               <span
                 key={campaign.id}
@@ -152,21 +155,24 @@ async function DashboardOutcomes() {
             list (`?stage=` + chip + Clear, same as the outcome cards above).
             The link carries the DB's own stage casing; the shared filter
             normalizes and matches case-insensitively. */}
-        <div className="mt-4 grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-5">
+        <div className="mt-4 grid grid-cols-1 gap-6 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5">
           {summary.stages.map((stage) => (
-            <Card key={stage.stage} className="gap-0 p-0">
-              <CardContent className="flex flex-col gap-1 p-6">
+            <Card
+              key={stage.stage}
+              className="h-full gap-0 py-0 transition-shadow duration-[var(--motion-standard)] hover:shadow-md focus-within:shadow-md"
+            >
+              <CardContent className="flex flex-1 flex-col gap-3 p-8">
                 <span className="text-muted-foreground text-sm">
                   {pipelineStateLabel(stage.stage)}
                 </span>
                 <span
                   aria-label={`${pipelineStateLabel(stage.stage)}: ${stage.value}`}
-                  className="mt-1 text-3xl font-semibold tabular-nums"
+                  className="mt-1 text-3xl font-semibold tracking-tight tabular-nums"
                 >
                   {stage.value}
                 </span>
               </CardContent>
-              <CardFooter className="justify-end p-0">
+              <CardFooter className="mt-auto justify-end p-0">
                 <Link
                   href={`/leads?stage=${encodeURIComponent(stage.stage)}`}
                   aria-label={`View ${pipelineStateLabel(stage.stage)} leads`}
