@@ -4,7 +4,9 @@
 
 **Blocked by:** 01 (needs the header slot).
 
-**Status:** ready-for-agent
+**Status:** wontfix
+
+**Resolution:** retired by user pick recorded in DESIGN.md amendment 2026-09-16 — the header bell was removed outright (`sidebar-03/notifications-bell.tsx` deleted, test-pinned in `sidebar-redesign.test.ts`). Jobs status lives solely in the utility-group row with seen-marking preserved. Do not re-add the bell.
 
 - [ ] Bell shows a text count with accessible naming and tooltip in both densities
 - [ ] Jobs section lists running and newly finished jobs with status and links

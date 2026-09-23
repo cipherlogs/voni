@@ -4,12 +4,12 @@
 
 **Blocked by:** 01 (needs the new shell).
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Dashboard layout renders no top bar on any route
-- [ ] Search opens from the sidebar in both densities with shortcut intact
-- [ ] Voice starts and stops from the sidebar with live state visible in both densities
-- [ ] Jobs running and results-ready states stay globally visible from the sidebar
-- [ ] Voice panel anchors clear of content on desktop and narrow screens
-- [ ] Copilot manifest check stays green with titles resolved from their new home
-- [ ] Orphaned top-bar module and its tests are updated or removed
+- [x] Dashboard layout renders no top bar on any route
+- [x] Search opens from the sidebar in both densities with shortcut intact
+- [x] Voice starts and stops from the sidebar with live state visible in both densities
+- [x] Jobs running and results-ready states stay globally visible from the sidebar
+- [x] Voice panel anchors clear of content on desktop and narrow screens
+- [x] Copilot manifest check stays green with titles resolved from their new home
+- [x] Orphaned top-bar module and its tests are updated or removed
