@@ -1,4 +1,6 @@
-Status: ready-for-agent
+Status: done
+
+**Resolution:** no ticket breakdown needed — every story verified already implemented and test-pinned, so decomposing would manufacture dead work. Single-identity footer (`SidebarAccount` or session-note text, `team-switcher.tsx` deleted), collapsed avatar centered with email tooltip, account menu (name/email once, settings, conditional `/operator`, sign-out with pending state + failure toast that leaves the session intact), labels-inside-groups with the `MenuGroupContext` rationale comment, unified last-resort error delegating to `RouteError` with `retry`, bell stories retired with ticket 05 (wontfix — bell deleted by user pick). Pins live in `voni/src/components/sidebar-redesign.test.ts` (13/13 green).
 
 ## Problem Statement
 
