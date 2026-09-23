@@ -178,13 +178,11 @@ export default function Ai05({
                         {[0, 1, 2].map((dot) => (
                           <span
                             key={dot}
-                            className={
-                              dot === 0
-                                ? "size-1.5 animate-bounce rounded-full bg-muted-foreground/60"
-                                : dot === 1
-                                  ? "size-1.5 animate-bounce rounded-full bg-muted-foreground/60 [animation-delay:150ms]"
-                                  : "size-1.5 animate-bounce rounded-full bg-muted-foreground/60 [animation-delay:300ms]"
-                            }
+                            className={cn(
+                              "size-1.5 animate-bounce rounded-full bg-muted-foreground/60",
+                              dot === 1 && "[animation-delay:150ms]",
+                              dot === 2 && "[animation-delay:300ms]",
+                            )}
                           />
                         ))}
                       </output>

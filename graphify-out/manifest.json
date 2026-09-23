@@ -1,0 +1,2602 @@
+{
+  ".agents/skills/assemblyai/evals/evals.json": {
+    "mtime": 1789859955.8287492,
+    "ast_hash": "507fe89717769ae8572c16804f82b54c",
+    "semantic_hash": "507fe89717769ae8572c16804f82b54c"
+  },
+  ".opencode/opencode.json": {
+    "mtime": 1789866066.319703,
+    "ast_hash": "e5f74d14a81702b55bdf53b33ec991d7",
+    "semantic_hash": "e5f74d14a81702b55bdf53b33ec991d7"
+  },
+  ".opencode/plugins/graphify.js": {
+    "mtime": 1789863566.307486,
+    "ast_hash": "3ea725724bc8ebe483c9f13d6aa1124f",
+    "semantic_hash": "3ea725724bc8ebe483c9f13d6aa1124f"
+  },
+  "opencode.json": {
+    "mtime": 1789865190.3939788,
+    "ast_hash": "78974b0d437e660f1db83f252a365ef6",
+    "semantic_hash": "78974b0d437e660f1db83f252a365ef6"
+  },
+  "package.json": {
+    "mtime": 1789864867.317232,
+    "ast_hash": "fd19ebf3b4c7bd8d5534d44ed81de17e",
+    "semantic_hash": "fd19ebf3b4c7bd8d5534d44ed81de17e"
+  },
+  "skills-lock.json": {
+    "mtime": 1789859964.425504,
+    "ast_hash": "4965952e065463f81ce506bd44e08633",
+    "semantic_hash": "4965952e065463f81ce506bd44e08633"
+  },
+  "telephony-bot/bridge_config.py": {
+    "mtime": 1788647687.0548632,
+    "ast_hash": "d7e0cf516a9b57d20f2a6d624c315b37",
+    "semantic_hash": "d7e0cf516a9b57d20f2a6d624c315b37"
+  },
+  "telephony-bot/campaign_runner.py": {
+    "mtime": 1788654428.4137237,
+    "ast_hash": "57cda3104b5fcea8fa4be1f371c77aad",
+    "semantic_hash": "57cda3104b5fcea8fa4be1f371c77aad"
+  },
+  "telephony-bot/place_call.py": {
+    "mtime": 1788648078.8923604,
+    "ast_hash": "60998d5ced027bb1ca55818e9fee2666",
+    "semantic_hash": "60998d5ced027bb1ca55818e9fee2666"
+  },
+  "telephony-bot/place_call.sh": {
+    "mtime": 1788648078.8923604,
+    "ast_hash": "14d9e0c04db282bab219d0110c1034fd",
+    "semantic_hash": "14d9e0c04db282bab219d0110c1034fd"
+  },
+  "telephony-bot/pull_session.py": {
+    "mtime": 1788556317.9174206,
+    "ast_hash": "3625d529893d7c9ecbff21894943f96f",
+    "semantic_hash": "3625d529893d7c9ecbff21894943f96f"
+  },
+  "telephony-bot/server.py": {
+    "mtime": 1788654705.389149,
+    "ast_hash": "725436c87c63765977d7ade8f3edcdc8",
+    "semantic_hash": "725436c87c63765977d7ade8f3edcdc8"
+  },
+  "telephony-bot/test_bridge_config.py": {
+    "mtime": 1788647687.0548632,
+    "ast_hash": "e43db26b7f1e261734adab4eb787ae09",
+    "semantic_hash": "e43db26b7f1e261734adab4eb787ae09"
+  },
+  "telephony-bot/test_campaign_runner.py": {
+    "mtime": 1788654545.747904,
+    "ast_hash": "7ee074b7006d1f2aa2c13c47a159fe2a",
+    "semantic_hash": "7ee074b7006d1f2aa2c13c47a159fe2a"
+  },
+  "telephony-bot/test_tool_coordinator.py": {
+    "mtime": 1788616058.0764604,
+    "ast_hash": "43e0e5f1c3caf6f40358e65d90e571a5",
+    "semantic_hash": "43e0e5f1c3caf6f40358e65d90e571a5"
+  },
+  "telephony-bot/tool_coordinator.py": {
+    "mtime": 1788616417.7668817,
+    "ast_hash": "5b564dff55a777f6c5f0832842ef4fa4",
+    "semantic_hash": "5b564dff55a777f6c5f0832842ef4fa4"
+  },
+  "telephony-bot/voni_db.py": {
+    "mtime": 1788654448.1071944,
+    "ast_hash": "70a4a931efdaafbd26a08fe78a43076b",
+    "semantic_hash": "70a4a931efdaafbd26a08fe78a43076b"
+  },
+  "voni/components.json": {
+    "mtime": 1789317001.3135374,
+    "ast_hash": "95c1a3e50a933c7e6d76d7ad0d9cc84b",
+    "semantic_hash": "95c1a3e50a933c7e6d76d7ad0d9cc84b"
+  },
+  "voni/docs/copilot-coverage-evidence.json": {
+    "mtime": 1788986392.721129,
+    "ast_hash": "99871d4b8252c6a8534bdaff9802cada",
+    "semantic_hash": "99871d4b8252c6a8534bdaff9802cada"
+  },
+  "voni/docs/voice-session-evidence-100-500.json": {
+    "mtime": 1788986392.721129,
+    "ast_hash": "e00a536f7ba3a27ad765775fc6043cef",
+    "semantic_hash": "e00a536f7ba3a27ad765775fc6043cef"
+  },
+  "voni/docs/voice-session-evidence-300-1000.json": {
+    "mtime": 1788986392.721129,
+    "ast_hash": "c66515e7ee8b378c45b4fef3d22b6bfc",
+    "semantic_hash": "c66515e7ee8b378c45b4fef3d22b6bfc"
+  },
+  "voni/docs/voice-session-evidence.json": {
+    "mtime": 1788986392.721129,
+    "ast_hash": "81699ea850d072eb6def003f107c32d4",
+    "semantic_hash": "81699ea850d072eb6def003f107c32d4"
+  },
+  "voni/drizzle.config.ts": {
+    "mtime": 1788359471.0032687,
+    "ast_hash": "5640c5c8ad3a7041fa342d5f792cc2d6",
+    "semantic_hash": "5640c5c8ad3a7041fa342d5f792cc2d6"
+  },
+  "voni/drizzle/0000_charming_raider.sql": {
+    "mtime": 1788600261.1774187,
+    "ast_hash": "6ddcb3657361ae2f139aa2596e0ade02",
+    "semantic_hash": "6ddcb3657361ae2f139aa2596e0ade02"
+  },
+  "voni/drizzle/0001_wealthy_wendell_vaughn.sql": {
+    "mtime": 1788600350.664779,
+    "ast_hash": "46359bcad1096df5243daaf7f0cbb19e",
+    "semantic_hash": "46359bcad1096df5243daaf7f0cbb19e"
+  },
+  "voni/drizzle/0002_daffy_jetstream.sql": {
+    "mtime": 1788604878.2661026,
+    "ast_hash": "a60ff5dd725172cf8270cd60daee7efd",
+    "semantic_hash": "a60ff5dd725172cf8270cd60daee7efd"
+  },
+  "voni/drizzle/0003_last_vulcan.sql": {
+    "mtime": 1788615433.129913,
+    "ast_hash": "39d87553d7861f5942d97d9432e8dcca",
+    "semantic_hash": "39d87553d7861f5942d97d9432e8dcca"
+  },
+  "voni/drizzle/0004_sour_blizzard.sql": {
+    "mtime": 1788647605.8373337,
+    "ast_hash": "c005219d1d28afbbaaba5d849d1c26bc",
+    "semantic_hash": "c005219d1d28afbbaaba5d849d1c26bc"
+  },
+  "voni/drizzle/0005_robust_forge.sql": {
+    "mtime": 1788653747.4737406,
+    "ast_hash": "f814f3f5866040619e01cc3eb1d850af",
+    "semantic_hash": "f814f3f5866040619e01cc3eb1d850af"
+  },
+  "voni/drizzle/0006_dusty_ultron.sql": {
+    "mtime": 1788698874.7386827,
+    "ast_hash": "141135011aabf9c052fbac30b7c118a0",
+    "semantic_hash": "141135011aabf9c052fbac30b7c118a0"
+  },
+  "voni/drizzle/0007_dapper_gargoyle.sql": {
+    "mtime": 1788788442.4589612,
+    "ast_hash": "8febcf4b9311394a370a23be2b512f7f",
+    "semantic_hash": "8febcf4b9311394a370a23be2b512f7f"
+  },
+  "voni/drizzle/0008_round_devos.sql": {
+    "mtime": 1788810838.9529264,
+    "ast_hash": "9d0a54573df251a46f4d4f00fe9dc7ad",
+    "semantic_hash": "9d0a54573df251a46f4d4f00fe9dc7ad"
+  },
+  "voni/drizzle/0009_bright_nehzno.sql": {
+    "mtime": 1789061333.3665383,
+    "ast_hash": "0c0c7fdf26dacdcdb11fc2a19d6a2af3",
+    "semantic_hash": "0c0c7fdf26dacdcdb11fc2a19d6a2af3"
+  },
+  "voni/drizzle/0010_provider-connections.sql": {
+    "mtime": 1789419907.1390793,
+    "ast_hash": "5608a7e0b54e646f758266cc446c4196",
+    "semantic_hash": "5608a7e0b54e646f758266cc446c4196"
+  },
+  "voni/drizzle/meta/0000_snapshot.json": {
+    "mtime": 1788600261.1774187,
+    "ast_hash": "a9d960efaf9c852aca0135e634e9c8ef",
+    "semantic_hash": "a9d960efaf9c852aca0135e634e9c8ef"
+  },
+  "voni/drizzle/meta/0001_snapshot.json": {
+    "mtime": 1788600350.664779,
+    "ast_hash": "1dd06a9300fbaabcfb29c2064b22499f",
+    "semantic_hash": "1dd06a9300fbaabcfb29c2064b22499f"
+  },
+  "voni/drizzle/meta/0002_snapshot.json": {
+    "mtime": 1788604878.2661026,
+    "ast_hash": "7be1a021f0713d8dffc7177cdbfa78f1",
+    "semantic_hash": "7be1a021f0713d8dffc7177cdbfa78f1"
+  },
+  "voni/drizzle/meta/0003_snapshot.json": {
+    "mtime": 1788615410.5730093,
+    "ast_hash": "3948a880f592da6f57d6a60cff04c034",
+    "semantic_hash": "3948a880f592da6f57d6a60cff04c034"
+  },
+  "voni/drizzle/meta/0004_snapshot.json": {
+    "mtime": 1788647605.8373337,
+    "ast_hash": "5d5d1e81e476007e64d9a52f9d70ff15",
+    "semantic_hash": "5d5d1e81e476007e64d9a52f9d70ff15"
+  },
+  "voni/drizzle/meta/0005_snapshot.json": {
+    "mtime": 1788653747.4737406,
+    "ast_hash": "a2a606edf4ef8eb403f32521be5b63f5",
+    "semantic_hash": "a2a606edf4ef8eb403f32521be5b63f5"
+  },
+  "voni/drizzle/meta/0006_snapshot.json": {
+    "mtime": 1788698874.7386827,
+    "ast_hash": "9033127f0f8601f8cc2f96c59f0419ce",
+    "semantic_hash": "9033127f0f8601f8cc2f96c59f0419ce"
+  },
+  "voni/drizzle/meta/0007_snapshot.json": {
+    "mtime": 1788788436.4888968,
+    "ast_hash": "184123b92f7c6a07f4c8d9ef95266cdc",
+    "semantic_hash": "184123b92f7c6a07f4c8d9ef95266cdc"
+  },
+  "voni/drizzle/meta/0008_snapshot.json": {
+    "mtime": 1788810838.9529264,
+    "ast_hash": "5b1b1ac01e67582c50cd12a127c1f04c",
+    "semantic_hash": "5b1b1ac01e67582c50cd12a127c1f04c"
+  },
+  "voni/drizzle/meta/0009_snapshot.json": {
+    "mtime": 1789061333.3665383,
+    "ast_hash": "8b93f3b5a78b74b621070d405b113d67",
+    "semantic_hash": "8b93f3b5a78b74b621070d405b113d67"
+  },
+  "voni/drizzle/meta/0010_snapshot.json": {
+    "mtime": 1789419907.1390793,
+    "ast_hash": "17a226c97e0d9972475886797f810be4",
+    "semantic_hash": "17a226c97e0d9972475886797f810be4"
+  },
+  "voni/drizzle/meta/_journal.json": {
+    "mtime": 1789420845.4000788,
+    "ast_hash": "e2c00a144e1e403612ff82d0193e8d62",
+    "semantic_hash": "e2c00a144e1e403612ff82d0193e8d62"
+  },
+  "voni/eslint.config.mjs": {
+    "mtime": 1788789760.2036593,
+    "ast_hash": "fd4acea4d878ca7f9813b01b4ff5d542",
+    "semantic_hash": "fd4acea4d878ca7f9813b01b4ff5d542"
+  },
+  "voni/neon.ts": {
+    "mtime": 1788367793.8283696,
+    "ast_hash": "ba2309dece9a73067cffb67089bc94d3",
+    "semantic_hash": "ba2309dece9a73067cffb67089bc94d3"
+  },
+  "voni/next.config.ts": {
+    "mtime": 1788986392.721129,
+    "ast_hash": "6316576676b20370492df12d1faa28ec",
+    "semantic_hash": "6316576676b20370492df12d1faa28ec"
+  },
+  "voni/open-next.config.ts": {
+    "mtime": 1788359331.8503513,
+    "ast_hash": "ac98a5a9700031077ae1a6687d6d2471",
+    "semantic_hash": "ac98a5a9700031077ae1a6687d6d2471"
+  },
+  "voni/package.json": {
+    "mtime": 1789579120.8929968,
+    "ast_hash": "d396374324f9d2f289a99ace00499c10",
+    "semantic_hash": "d396374324f9d2f289a99ace00499c10"
+  },
+  "voni/playwright.config.ts": {
+    "mtime": 1788986392.7244625,
+    "ast_hash": "e50af106a22f2520ec41d8d9d66dfa94",
+    "semantic_hash": "e50af106a22f2520ec41d8d9d66dfa94"
+  },
+  "voni/postcss.config.mjs": {
+    "mtime": 1788359173.8414054,
+    "ast_hash": "239f3ebf717465dc636818a1a619398d",
+    "semantic_hash": "239f3ebf717465dc636818a1a619398d"
+  },
+  "voni/public/pcm-processor.js": {
+    "mtime": 1788604056.6380494,
+    "ast_hash": "e268075ae8b2502aa9240c169b7935ef",
+    "semantic_hash": "e268075ae8b2502aa9240c169b7935ef"
+  },
+  "voni/scripts/cleanup-loop-test-agent.mts": {
+    "mtime": 1789070474.4411707,
+    "ast_hash": "c76e0a0caa2aef4c72721a815b06cae6",
+    "semantic_hash": "c76e0a0caa2aef4c72721a815b06cae6"
+  },
+  "voni/scripts/e2e-run.mjs": {
+    "mtime": 1788986392.7244625,
+    "ast_hash": "4f999dcbe1f695308f52e08091d1e576",
+    "semantic_hash": "4f999dcbe1f695308f52e08091d1e576"
+  },
+  "voni/scripts/generate-app-manifest.mts": {
+    "mtime": 1789576020.4469051,
+    "ast_hash": "30ab1d66e0a0c96f261f4be6d509421d",
+    "semantic_hash": "30ab1d66e0a0c96f261f4be6d509421d"
+  },
+  "voni/scripts/press-raster.mts": {
+    "mtime": 1789572163.1200402,
+    "ast_hash": "bbb982d133c64e5767eb8633fc43046f",
+    "semantic_hash": "bbb982d133c64e5767eb8633fc43046f"
+  },
+  "voni/scripts/press-wordmark-shots.mts": {
+    "mtime": 1789572772.3734481,
+    "ast_hash": "e0316b2ba528ea8788e6c14db2164f47",
+    "semantic_hash": "e0316b2ba528ea8788e6c14db2164f47"
+  },
+  "voni/scripts/qa-voice-session.mts": {
+    "mtime": 1788986392.7244625,
+    "ast_hash": "3caa0c3a773579d161776865c04b6152",
+    "semantic_hash": "3caa0c3a773579d161776865c04b6152"
+  },
+  "voni/scripts/rotate-platform-credential.mts": {
+    "mtime": 1788986392.7244625,
+    "ast_hash": "db94c59fd45a9b1e93582a7c8959512b",
+    "semantic_hash": "db94c59fd45a9b1e93582a7c8959512b"
+  },
+  "voni/scripts/seed-properties.mjs": {
+    "mtime": 1788615371.7126,
+    "ast_hash": "8708e14430e701f7774c52101b56306c",
+    "semantic_hash": "8708e14430e701f7774c52101b56306c"
+  },
+  "voni/scripts/verify-agent-provisioning.mts": {
+    "mtime": 1789231848.3970566,
+    "ast_hash": "c98605757947ffa64317e181a63ed9c4",
+    "semantic_hash": "c98605757947ffa64317e181a63ed9c4"
+  },
+  "voni/scripts/verify-copilot-records.mts": {
+    "mtime": 1788856459.632226,
+    "ast_hash": "556e047b5ef6de6db5f6e54354373536",
+    "semantic_hash": "556e047b5ef6de6db5f6e54354373536"
+  },
+  "voni/scripts/verify-delete-race.mts": {
+    "mtime": 1789146159.0061793,
+    "ast_hash": "7d4ea44a5fce691dba439fab7f73021b",
+    "semantic_hash": "7d4ea44a5fce691dba439fab7f73021b"
+  },
+  "voni/scripts/verify-dispatch.mts": {
+    "mtime": 1789300229.1082122,
+    "ast_hash": "b91d7a6c4c90921d8f7a582111d4bae8",
+    "semantic_hash": "b91d7a6c4c90921d8f7a582111d4bae8"
+  },
+  "voni/scripts/verify-jobs.mts": {
+    "mtime": 1788986392.7244625,
+    "ast_hash": "13799ec918e20450c94c8b67b6213148",
+    "semantic_hash": "13799ec918e20450c94c8b67b6213148"
+  },
+  "voni/scripts/verify-tools.mts": {
+    "mtime": 1789396249.0487397,
+    "ast_hash": "c782319de148e2f7821f7cbbf6cd158f",
+    "semantic_hash": "c782319de148e2f7821f7cbbf6cd158f"
+  },
+  "voni/skills-lock.json": {
+    "mtime": 1788366672.6729758,
+    "ast_hash": "26d900f444b24c276c0512cf0247c0fc",
+    "semantic_hash": "26d900f444b24c276c0512cf0247c0fc"
+  },
+  "voni/src/app/(dashboard)/agents/[id]/edit-agent.tsx": {
+    "mtime": 1789503160.995019,
+    "ast_hash": "8363953d6418eecb753e1793a65ce10c",
+    "semantic_hash": "8363953d6418eecb753e1793a65ce10c"
+  },
+  "voni/src/app/(dashboard)/agents/[id]/error.tsx": {
+    "mtime": 1788699474.6280205,
+    "ast_hash": "a83657daa7d833be988fee4c27714640",
+    "semantic_hash": "a83657daa7d833be988fee4c27714640"
+  },
+  "voni/src/app/(dashboard)/agents/[id]/loading.tsx": {
+    "mtime": 1788818519.258565,
+    "ast_hash": "2429ac73040b02cf1e190898dd0d5ce8",
+    "semantic_hash": "2429ac73040b02cf1e190898dd0d5ce8"
+  },
+  "voni/src/app/(dashboard)/agents/[id]/page.tsx": {
+    "mtime": 1789420845.4000788,
+    "ast_hash": "2ab603aafb84b90f9758a94ff11f6c39",
+    "semantic_hash": "2ab603aafb84b90f9758a94ff11f6c39"
+  },
+  "voni/src/app/(dashboard)/agents/actions.delete.test.ts": {
+    "mtime": 1789142705.2020922,
+    "ast_hash": "0a86fcbd131aef649e47617ff618c637",
+    "semantic_hash": "0a86fcbd131aef649e47617ff618c637"
+  },
+  "voni/src/app/(dashboard)/agents/actions.placeholder.test.ts": {
+    "mtime": 1789137787.028679,
+    "ast_hash": "233b2ab1dd51296f9e4dd017d1f51652",
+    "semantic_hash": "233b2ab1dd51296f9e4dd017d1f51652"
+  },
+  "voni/src/app/(dashboard)/agents/actions.ts": {
+    "mtime": 1789503160.995019,
+    "ast_hash": "ec31da3891bb1c71cd5bd87be6e230ef",
+    "semantic_hash": "ec31da3891bb1c71cd5bd87be6e230ef"
+  },
+  "voni/src/app/(dashboard)/agents/delete-agent-button.test.tsx": {
+    "mtime": 1789503160.995019,
+    "ast_hash": "1f3e3900715ddb7ff7c2af84686fc589",
+    "semantic_hash": "1f3e3900715ddb7ff7c2af84686fc589"
+  },
+  "voni/src/app/(dashboard)/agents/delete-agent-button.tsx": {
+    "mtime": 1789503160.995019,
+    "ast_hash": "bd861a8289b1d5b7a018cd4239c648b1",
+    "semantic_hash": "bd861a8289b1d5b7a018cd4239c648b1"
+  },
+  "voni/src/app/(dashboard)/agents/error.tsx": {
+    "mtime": 1788699463.5679033,
+    "ast_hash": "a83657daa7d833be988fee4c27714640",
+    "semantic_hash": "a83657daa7d833be988fee4c27714640"
+  },
+  "voni/src/app/(dashboard)/agents/live-agents-refresh.tsx": {
+    "mtime": 1789480759.6311355,
+    "ast_hash": "14d0942b1ed99716677950ae3d6287bf",
+    "semantic_hash": "14d0942b1ed99716677950ae3d6287bf"
+  },
+  "voni/src/app/(dashboard)/agents/loading.tsx": {
+    "mtime": 1788818519.2552316,
+    "ast_hash": "1c0403f4b5a2e8feb0e9ba7893b0dabf",
+    "semantic_hash": "1c0403f4b5a2e8feb0e9ba7893b0dabf"
+  },
+  "voni/src/app/(dashboard)/agents/new/page.test.ts": {
+    "mtime": 1789503160.995019,
+    "ast_hash": "949a5db2210fe2fa4b67816cdfcef066",
+    "semantic_hash": "949a5db2210fe2fa4b67816cdfcef066"
+  },
+  "voni/src/app/(dashboard)/agents/new/page.tsx": {
+    "mtime": 1789505587.129245,
+    "ast_hash": "9d3164130f4b761d0ab48c30f5591105",
+    "semantic_hash": "9d3164130f4b761d0ab48c30f5591105"
+  },
+  "voni/src/app/(dashboard)/agents/page.tsx": {
+    "mtime": 1789503160.995019,
+    "ast_hash": "d3ec5f7871eaaaedfa8646c5ce5f7103",
+    "semantic_hash": "d3ec5f7871eaaaedfa8646c5ce5f7103"
+  },
+  "voni/src/app/(dashboard)/calls/[id]/error.tsx": {
+    "mtime": 1789396249.0487397,
+    "ast_hash": "a83657daa7d833be988fee4c27714640",
+    "semantic_hash": "a83657daa7d833be988fee4c27714640"
+  },
+  "voni/src/app/(dashboard)/calls/[id]/loading.tsx": {
+    "mtime": 1788818519.2552316,
+    "ast_hash": "9e17baca1f212733e290d85fd5248b27",
+    "semantic_hash": "9e17baca1f212733e290d85fd5248b27"
+  },
+  "voni/src/app/(dashboard)/calls/[id]/page.tsx": {
+    "mtime": 1789396249.0487397,
+    "ast_hash": "c83b4a95ba58edec9c45fe0dbec6e432",
+    "semantic_hash": "c83b4a95ba58edec9c45fe0dbec6e432"
+  },
+  "voni/src/app/(dashboard)/calls/calls-filter-chips.test.ts": {
+    "mtime": 1789314911.4703255,
+    "ast_hash": "a146ab90f790c13d08db2d69cf53d62d",
+    "semantic_hash": "a146ab90f790c13d08db2d69cf53d62d"
+  },
+  "voni/src/app/(dashboard)/calls/calls-index.test.ts": {
+    "mtime": 1789312538.6110065,
+    "ast_hash": "6fd63cf2221bc10553a86786388d98ac",
+    "semantic_hash": "6fd63cf2221bc10553a86786388d98ac"
+  },
+  "voni/src/app/(dashboard)/calls/calls-pagination.test.ts": {
+    "mtime": 1789269337.1195714,
+    "ast_hash": "ffd023e4910b0bd6123c45ae170d2e7f",
+    "semantic_hash": "ffd023e4910b0bd6123c45ae170d2e7f"
+  },
+  "voni/src/app/(dashboard)/calls/error.tsx": {
+    "mtime": 1789396249.0487397,
+    "ast_hash": "a83657daa7d833be988fee4c27714640",
+    "semantic_hash": "a83657daa7d833be988fee4c27714640"
+  },
+  "voni/src/app/(dashboard)/calls/loading.tsx": {
+    "mtime": 1789396249.0487397,
+    "ast_hash": "e6feff0209fbe9af7c2ef90ae89051dc",
+    "semantic_hash": "e6feff0209fbe9af7c2ef90ae89051dc"
+  },
+  "voni/src/app/(dashboard)/calls/page.tsx": {
+    "mtime": 1789396249.0487397,
+    "ast_hash": "619207e104400df441469f285c94dd45",
+    "semantic_hash": "619207e104400df441469f285c94dd45"
+  },
+  "voni/src/app/(dashboard)/campaigns/[id]/error.tsx": {
+    "mtime": 1788699474.6313539,
+    "ast_hash": "a83657daa7d833be988fee4c27714640",
+    "semantic_hash": "a83657daa7d833be988fee4c27714640"
+  },
+  "voni/src/app/(dashboard)/campaigns/[id]/loading.tsx": {
+    "mtime": 1788818519.258565,
+    "ast_hash": "420ac6e4a9b87e890eaf052b132a669a",
+    "semantic_hash": "420ac6e4a9b87e890eaf052b132a669a"
+  },
+  "voni/src/app/(dashboard)/campaigns/[id]/page.tsx": {
+    "mtime": 1789420845.4000788,
+    "ast_hash": "26b4bf408e8e93fd60f6205c1f1b2d3d",
+    "semantic_hash": "26b4bf408e8e93fd60f6205c1f1b2d3d"
+  },
+  "voni/src/app/(dashboard)/campaigns/actions.ts": {
+    "mtime": 1789284255.8475091,
+    "ast_hash": "9d7a72c3a37827beaed8fe631586020a",
+    "semantic_hash": "9d7a72c3a37827beaed8fe631586020a"
+  },
+  "voni/src/app/(dashboard)/campaigns/error.tsx": {
+    "mtime": 1788699474.6213539,
+    "ast_hash": "a83657daa7d833be988fee4c27714640",
+    "semantic_hash": "a83657daa7d833be988fee4c27714640"
+  },
+  "voni/src/app/(dashboard)/campaigns/loading.tsx": {
+    "mtime": 1788818519.258565,
+    "ast_hash": "15ed69aba84a83a5ea55803280baa464",
+    "semantic_hash": "15ed69aba84a83a5ea55803280baa464"
+  },
+  "voni/src/app/(dashboard)/campaigns/new/error.tsx": {
+    "mtime": 1789474402.099422,
+    "ast_hash": "a83657daa7d833be988fee4c27714640",
+    "semantic_hash": "a83657daa7d833be988fee4c27714640"
+  },
+  "voni/src/app/(dashboard)/campaigns/new/loading.tsx": {
+    "mtime": 1788818519.2552316,
+    "ast_hash": "79e5618546f55c1d88a505e2a7370ae4",
+    "semantic_hash": "79e5618546f55c1d88a505e2a7370ae4"
+  },
+  "voni/src/app/(dashboard)/campaigns/new/page.tsx": {
+    "mtime": 1789396249.0487397,
+    "ast_hash": "a010123cda6f2984e787c41b7e20cdf1",
+    "semantic_hash": "a010123cda6f2984e787c41b7e20cdf1"
+  },
+  "voni/src/app/(dashboard)/campaigns/page.tsx": {
+    "mtime": 1789410694.7107418,
+    "ast_hash": "d96bbdc4184f29c91b5973509fdd088c",
+    "semantic_hash": "d96bbdc4184f29c91b5973509fdd088c"
+  },
+  "voni/src/app/(dashboard)/dashboard/actions.ts": {
+    "mtime": 1789396249.0487397,
+    "ast_hash": "6483a40392c59b050c4f2a9f95ebcb93",
+    "semantic_hash": "6483a40392c59b050c4f2a9f95ebcb93"
+  },
+  "voni/src/app/(dashboard)/dashboard/error.tsx": {
+    "mtime": 1788699458.2145133,
+    "ast_hash": "a83657daa7d833be988fee4c27714640",
+    "semantic_hash": "a83657daa7d833be988fee4c27714640"
+  },
+  "voni/src/app/(dashboard)/dashboard/loading.tsx": {
+    "mtime": 1789160381.3279123,
+    "ast_hash": "52d9d2f4a414f96cabf9b202e760b27b",
+    "semantic_hash": "52d9d2f4a414f96cabf9b202e760b27b"
+  },
+  "voni/src/app/(dashboard)/dashboard/page.tsx": {
+    "mtime": 1789396249.0487397,
+    "ast_hash": "be9fcc77e06717afa95e019784ad2112",
+    "semantic_hash": "be9fcc77e06717afa95e019784ad2112"
+  },
+  "voni/src/app/(dashboard)/error.tsx": {
+    "mtime": 1788818510.0018084,
+    "ast_hash": "679b1685ace5c41770a00588effd8499",
+    "semantic_hash": "679b1685ace5c41770a00588effd8499"
+  },
+  "voni/src/app/(dashboard)/jobs/actions.ts": {
+    "mtime": 1789284276.0743132,
+    "ast_hash": "92cd95274579cbfeb962679c5577591d",
+    "semantic_hash": "92cd95274579cbfeb962679c5577591d"
+  },
+  "voni/src/app/(dashboard)/jobs/error.tsx": {
+    "mtime": 1788793506.346717,
+    "ast_hash": "a83657daa7d833be988fee4c27714640",
+    "semantic_hash": "a83657daa7d833be988fee4c27714640"
+  },
+  "voni/src/app/(dashboard)/jobs/loading.tsx": {
+    "mtime": 1788793506.346717,
+    "ast_hash": "0bcf9adb1decc5f972fb7be62eb3b13b",
+    "semantic_hash": "0bcf9adb1decc5f972fb7be62eb3b13b"
+  },
+  "voni/src/app/(dashboard)/jobs/page.tsx": {
+    "mtime": 1789503160.995019,
+    "ast_hash": "1eb31dc5cbc22e10829a215bedfd646d",
+    "semantic_hash": "1eb31dc5cbc22e10829a215bedfd646d"
+  },
+  "voni/src/app/(dashboard)/layout.tsx": {
+    "mtime": 1789505564.7656937,
+    "ast_hash": "9068dfc12dcfdfa5bd29930d71d87246",
+    "semantic_hash": "9068dfc12dcfdfa5bd29930d71d87246"
+  },
+  "voni/src/app/(dashboard)/leads/[id]/error.tsx": {
+    "mtime": 1789474402.2527568,
+    "ast_hash": "a83657daa7d833be988fee4c27714640",
+    "semantic_hash": "a83657daa7d833be988fee4c27714640"
+  },
+  "voni/src/app/(dashboard)/leads/[id]/loading.tsx": {
+    "mtime": 1788818519.2552316,
+    "ast_hash": "d5d52e288b7b0776a694e92a9e0f6df1",
+    "semantic_hash": "d5d52e288b7b0776a694e92a9e0f6df1"
+  },
+  "voni/src/app/(dashboard)/leads/[id]/page.tsx": {
+    "mtime": 1789396249.052073,
+    "ast_hash": "827efb20b9f6c5deac95f8a291243890",
+    "semantic_hash": "827efb20b9f6c5deac95f8a291243890"
+  },
+  "voni/src/app/(dashboard)/leads/actions.ts": {
+    "mtime": 1789300327.2193797,
+    "ast_hash": "27c32126acf6a46a19678981b872f6ce",
+    "semantic_hash": "27c32126acf6a46a19678981b872f6ce"
+  },
+  "voni/src/app/(dashboard)/leads/error.tsx": {
+    "mtime": 1788699474.6246872,
+    "ast_hash": "a83657daa7d833be988fee4c27714640",
+    "semantic_hash": "a83657daa7d833be988fee4c27714640"
+  },
+  "voni/src/app/(dashboard)/leads/lead-state-cell.test.ts": {
+    "mtime": 1789269323.472775,
+    "ast_hash": "b5a51906d91eead13629dc12a96a868a",
+    "semantic_hash": "b5a51906d91eead13629dc12a96a868a"
+  },
+  "voni/src/app/(dashboard)/leads/leads-filters-bulk.test.ts": {
+    "mtime": 1789396249.052073,
+    "ast_hash": "750d798252c909080bb08f0e73ed63e9",
+    "semantic_hash": "750d798252c909080bb08f0e73ed63e9"
+  },
+  "voni/src/app/(dashboard)/leads/loading.tsx": {
+    "mtime": 1788818519.258565,
+    "ast_hash": "b3eb4f73d51cbf6dbb13d1ea1791d73f",
+    "semantic_hash": "b3eb4f73d51cbf6dbb13d1ea1791d73f"
+  },
+  "voni/src/app/(dashboard)/leads/page.tsx": {
+    "mtime": 1789410694.7107418,
+    "ast_hash": "c71fa363f222a6a05c62e5a0b8c93df6",
+    "semantic_hash": "c71fa363f222a6a05c62e5a0b8c93df6"
+  },
+  "voni/src/app/(dashboard)/loading.tsx": {
+    "mtime": 1788818510.0018084,
+    "ast_hash": "22ed00ab3875e7f96d9a87e589350375",
+    "semantic_hash": "22ed00ab3875e7f96d9a87e589350375"
+  },
+  "voni/src/app/(dashboard)/numbers/actions.ts": {
+    "mtime": 1788654616.9451144,
+    "ast_hash": "c208f485c38e9611819e4cdc7e2f1bc8",
+    "semantic_hash": "c208f485c38e9611819e4cdc7e2f1bc8"
+  },
+  "voni/src/app/(dashboard)/numbers/error.tsx": {
+    "mtime": 1788699474.6246872,
+    "ast_hash": "a83657daa7d833be988fee4c27714640",
+    "semantic_hash": "a83657daa7d833be988fee4c27714640"
+  },
+  "voni/src/app/(dashboard)/numbers/loading.tsx": {
+    "mtime": 1788818519.2618983,
+    "ast_hash": "9f593d03510e104cbc67bc962949ad49",
+    "semantic_hash": "9f593d03510e104cbc67bc962949ad49"
+  },
+  "voni/src/app/(dashboard)/numbers/page.tsx": {
+    "mtime": 1789396249.052073,
+    "ast_hash": "e7e11773f1945591ad9cba7d89689d0a",
+    "semantic_hash": "e7e11773f1945591ad9cba7d89689d0a"
+  },
+  "voni/src/app/(dashboard)/operator/error.tsx": {
+    "mtime": 1789474482.096845,
+    "ast_hash": "a83657daa7d833be988fee4c27714640",
+    "semantic_hash": "a83657daa7d833be988fee4c27714640"
+  },
+  "voni/src/app/(dashboard)/operator/page.tsx": {
+    "mtime": 1789396249.052073,
+    "ast_hash": "ef85739377984f1337cb63d9aeea0ed9",
+    "semantic_hash": "ef85739377984f1337cb63d9aeea0ed9"
+  },
+  "voni/src/app/(dashboard)/settings/actions.ts": {
+    "mtime": 1789420845.4000788,
+    "ast_hash": "f15d68c77ebaf63c7065bd0c61541f75",
+    "semantic_hash": "f15d68c77ebaf63c7065bd0c61541f75"
+  },
+  "voni/src/app/(dashboard)/settings/error.tsx": {
+    "mtime": 1789474401.9660873,
+    "ast_hash": "a83657daa7d833be988fee4c27714640",
+    "semantic_hash": "a83657daa7d833be988fee4c27714640"
+  },
+  "voni/src/app/(dashboard)/settings/loading.tsx": {
+    "mtime": 1788818519.2552316,
+    "ast_hash": "4a7a5fab87c0d112355b2511f1ecd1e6",
+    "semantic_hash": "4a7a5fab87c0d112355b2511f1ecd1e6"
+  },
+  "voni/src/app/(dashboard)/settings/page.tsx": {
+    "mtime": 1789420845.4000788,
+    "ast_hash": "1fb9e215cb534c61bb3a626d08021340",
+    "semantic_hash": "1fb9e215cb534c61bb3a626d08021340"
+  },
+  "voni/src/app/api/activity/recent/route.test.ts": {
+    "mtime": 1789505702.6870337,
+    "ast_hash": "f01ecead72ba2b799276077abb77ffcf",
+    "semantic_hash": "f01ecead72ba2b799276077abb77ffcf"
+  },
+  "voni/src/app/api/activity/recent/route.ts": {
+    "mtime": 1789505714.2104785,
+    "ast_hash": "194763f92ce0f6749b204a0398635851",
+    "semantic_hash": "194763f92ce0f6749b204a0398635851"
+  },
+  "voni/src/app/api/auth/[...all]/route.ts": {
+    "mtime": 1788359479.0925298,
+    "ast_hash": "1904de94f5362beedc269759cad175f0",
+    "semantic_hash": "1904de94f5362beedc269759cad175f0"
+  },
+  "voni/src/app/api/copilot/records/route.ts": {
+    "mtime": 1788825832.4140797,
+    "ast_hash": "09aa33916a9ccf947c82050c4017e482",
+    "semantic_hash": "09aa33916a9ccf947c82050c4017e482"
+  },
+  "voni/src/app/api/copilot/token/route.ts": {
+    "mtime": 1788986392.7244625,
+    "ast_hash": "58e3de324e1a5c6b31fe95398abc7a75",
+    "semantic_hash": "58e3de324e1a5c6b31fe95398abc7a75"
+  },
+  "voni/src/app/api/demo/token/route.ts": {
+    "mtime": 1788986392.7277958,
+    "ast_hash": "13ef80ce84212868bd2efd1142a14d0f",
+    "semantic_hash": "13ef80ce84212868bd2efd1142a14d0f"
+  },
+  "voni/src/app/api/internal/bridge-config/route.test.ts": {
+    "mtime": 1788648105.112639,
+    "ast_hash": "3e20265f410f97c55cda95e8a87c9270",
+    "semantic_hash": "3e20265f410f97c55cda95e8a87c9270"
+  },
+  "voni/src/app/api/internal/bridge-config/route.ts": {
+    "mtime": 1788647405.6685407,
+    "ast_hash": "a6fdedb2f20ed27042572fa6ed151b35",
+    "semantic_hash": "a6fdedb2f20ed27042572fa6ed151b35"
+  },
+  "voni/src/app/api/internal/dispatch/outcome/route.ts": {
+    "mtime": 1788654054.5834234,
+    "ast_hash": "de4e1ed0db5c338affece675e58575a1",
+    "semantic_hash": "de4e1ed0db5c338affece675e58575a1"
+  },
+  "voni/src/app/api/internal/dispatch/route.ts": {
+    "mtime": 1788654045.4399998,
+    "ast_hash": "e3513e9304a5f21095fd49d9fdc93376",
+    "semantic_hash": "e3513e9304a5f21095fd49d9fdc93376"
+  },
+  "voni/src/app/api/internal/inbound-agent/route.ts": {
+    "mtime": 1788986392.7277958,
+    "ast_hash": "76cdc119c4b4a26f8adb6f7f6dc9ae96",
+    "semantic_hash": "76cdc119c4b4a26f8adb6f7f6dc9ae96"
+  },
+  "voni/src/app/api/internal/jobs/consume/route.ts": {
+    "mtime": 1788789411.360442,
+    "ast_hash": "3495aebf3deaf8d27ccc3db408176918",
+    "semantic_hash": "3495aebf3deaf8d27ccc3db408176918"
+  },
+  "voni/src/app/api/internal/jobs/sweep/route.ts": {
+    "mtime": 1788986392.7277958,
+    "ast_hash": "1a38719fac1c1450f6081e153ebe5b60",
+    "semantic_hash": "1a38719fac1c1450f6081e153ebe5b60"
+  },
+  "voni/src/app/api/jobs/[id]/route.ts": {
+    "mtime": 1788788686.1915898,
+    "ast_hash": "2be89975cc15ea091a4e009439d35610",
+    "semantic_hash": "2be89975cc15ea091a4e009439d35610"
+  },
+  "voni/src/app/api/jobs/[id]/wake/route.ts": {
+    "mtime": 1788986392.7277958,
+    "ast_hash": "7cbcbbfc3aedfc5da7123f196ff54f56",
+    "semantic_hash": "7cbcbbfc3aedfc5da7123f196ff54f56"
+  },
+  "voni/src/app/api/jobs/by-key/route.ts": {
+    "mtime": 1788807737.9952536,
+    "ast_hash": "e7dce47e6e207e2e0e4792a94100d4c1",
+    "semantic_hash": "e7dce47e6e207e2e0e4792a94100d4c1"
+  },
+  "voni/src/app/api/jobs/import-upload/route.ts": {
+    "mtime": 1788789274.1259058,
+    "ast_hash": "7de52ddd9423ce6e04a567754a66ac1a",
+    "semantic_hash": "7de52ddd9423ce6e04a567754a66ac1a"
+  },
+  "voni/src/app/api/jobs/route.ts": {
+    "mtime": 1788986392.7277958,
+    "ast_hash": "7a4cf88515eed8eb6ab7a406bd3df3c5",
+    "semantic_hash": "7a4cf88515eed8eb6ab7a406bd3df3c5"
+  },
+  "voni/src/app/api/tools/[name]/route.ts": {
+    "mtime": 1788616465.5407133,
+    "ast_hash": "d219c1845c157ae445da6c2073cac267",
+    "semantic_hash": "d219c1845c157ae445da6c2073cac267"
+  },
+  "voni/src/app/api/voice-preview/route.ts": {
+    "mtime": 1788871333.2737446,
+    "ast_hash": "fc0145ba47364464088b07cc296c1fbf",
+    "semantic_hash": "fc0145ba47364464088b07cc296c1fbf"
+  },
+  "voni/src/app/api/voice-token/route.ts": {
+    "mtime": 1788986392.7277958,
+    "ast_hash": "5d1daadb944a08cd43e5b6de42f70ad7",
+    "semantic_hash": "5d1daadb944a08cd43e5b6de42f70ad7"
+  },
+  "voni/src/app/global-error.tsx": {
+    "mtime": 1789506951.49557,
+    "ast_hash": "d1c86b757727f241e6c5bdf1e06cd41d",
+    "semantic_hash": "d1c86b757727f241e6c5bdf1e06cd41d"
+  },
+  "voni/src/app/layout.tsx": {
+    "mtime": 1788986392.7277958,
+    "ast_hash": "e9abdc22d2f6e5a8051eda2e9ec763b6",
+    "semantic_hash": "e9abdc22d2f6e5a8051eda2e9ec763b6"
+  },
+  "voni/src/app/login/page.tsx": {
+    "mtime": 1789396249.052073,
+    "ast_hash": "00ef7fa8f4d72a3082cf7c049bc7d196",
+    "semantic_hash": "00ef7fa8f4d72a3082cf7c049bc7d196"
+  },
+  "voni/src/app/page.tsx": {
+    "mtime": 1789396249.052073,
+    "ast_hash": "8473ff109ce406f0aad9713d30a01312",
+    "semantic_hash": "8473ff109ce406f0aad9713d30a01312"
+  },
+  "voni/src/app/prototypes/settings-gallery/page.tsx": {
+    "mtime": 1789585948.201528,
+    "ast_hash": "08b46f0bee3354a66cca0746480c6377",
+    "semantic_hash": "08b46f0bee3354a66cca0746480c6377"
+  },
+  "voni/src/app/prototypes/settings-gallery/provider-marks.tsx": {
+    "mtime": 1789587537.9325306,
+    "ast_hash": "cadb830cf15590ca2d0d56a41c3cf6f2",
+    "semantic_hash": "cadb830cf15590ca2d0d56a41c3cf6f2"
+  },
+  "voni/src/app/prototypes/settings-gallery/scenes.tsx": {
+    "mtime": 1789587854.7295756,
+    "ast_hash": "77c49088263424bc0b158bdf9399f426",
+    "semantic_hash": "77c49088263424bc0b158bdf9399f426"
+  },
+  "voni/src/app/prototypes/settings-gallery/tiles.tsx": {
+    "mtime": 1789587532.7024674,
+    "ast_hash": "b8eef8f13c758c6245a19ebe62dec573",
+    "semantic_hash": "b8eef8f13c758c6245a19ebe62dec573"
+  },
+  "voni/src/app/signup/page.tsx": {
+    "mtime": 1789396249.052073,
+    "ast_hash": "cb6ab97679875b1b04423929f404c8a4",
+    "semantic_hash": "cb6ab97679875b1b04423929f404c8a4"
+  },
+  "voni/src/components/agent-config-form.tsx": {
+    "mtime": 1789503160.9983523,
+    "ast_hash": "78f4ca5f28e6d1cdd43f3b6288bc251a",
+    "semantic_hash": "78f4ca5f28e6d1cdd43f3b6288bc251a"
+  },
+  "voni/src/components/agent-wizard/generation-notice.tsx": {
+    "mtime": 1789503160.9983523,
+    "ast_hash": "78eef966f225363c5a9809b4640bb986",
+    "semantic_hash": "78eef966f225363c5a9809b4640bb986"
+  },
+  "voni/src/components/agent-wizard/guide-mascot.tsx": {
+    "mtime": 1788801686.3221009,
+    "ast_hash": "0ce0a08377c518103b798f00cdebe43d",
+    "semantic_hash": "0ce0a08377c518103b798f00cdebe43d"
+  },
+  "voni/src/components/agent-wizard/starters.ts": {
+    "mtime": 1789423666.7218308,
+    "ast_hash": "4b9d00f98d00963c5e11f7c528e203c2",
+    "semantic_hash": "4b9d00f98d00963c5e11f7c528e203c2"
+  },
+  "voni/src/components/agent-wizard/use-wizard-draft.ts": {
+    "mtime": 1789503160.9983523,
+    "ast_hash": "c672ce4859c749d3da669439b0a70871",
+    "semantic_hash": "c672ce4859c749d3da669439b0a70871"
+  },
+  "voni/src/components/agent-wizard/wizard-reset.test.ts": {
+    "mtime": 1789425367.8029873,
+    "ast_hash": "d304f8c3b26a2df36bca6869be8d68d6",
+    "semantic_hash": "d304f8c3b26a2df36bca6869be8d68d6"
+  },
+  "voni/src/components/agent-wizard/wizard-step-bodies.tsx": {
+    "mtime": 1789503160.9983523,
+    "ast_hash": "d7df2dd0931f5a6c470dfe8ce24acbc9",
+    "semantic_hash": "d7df2dd0931f5a6c470dfe8ce24acbc9"
+  },
+  "voni/src/components/agent-wizard/wizard-timeline.test.tsx": {
+    "mtime": 1789501990.4262288,
+    "ast_hash": "34bfc5effbcb2af9b03e11c434408de9",
+    "semantic_hash": "34bfc5effbcb2af9b03e11c434408de9"
+  },
+  "voni/src/components/agent-wizard/wizard-timeline.tsx": {
+    "mtime": 1789396249.052073,
+    "ast_hash": "a9d6982915b6e30d2f4f8992496e2484",
+    "semantic_hash": "a9d6982915b6e30d2f4f8992496e2484"
+  },
+  "voni/src/components/agent-wizard/wizard.test.ts": {
+    "mtime": 1789503160.9983523,
+    "ast_hash": "e7a8b9341d287a1c894c5f764532e91b",
+    "semantic_hash": "e7a8b9341d287a1c894c5f764532e91b"
+  },
+  "voni/src/components/ai-01/ai-01.tsx": {
+    "mtime": 1789396249.052073,
+    "ast_hash": "9a5a9e6cdd5943e01df31ed1f63d454d",
+    "semantic_hash": "9a5a9e6cdd5943e01df31ed1f63d454d"
+  },
+  "voni/src/components/ai-05/ai-05.tsx": {
+    "mtime": 1789486347.5563512,
+    "ast_hash": "0456d00a6394604a1e7fec3625c02307",
+    "semantic_hash": "0456d00a6394604a1e7fec3625c02307"
+  },
+  "voni/src/components/app-sidebar.tsx": {
+    "mtime": 1789507772.3766313,
+    "ast_hash": "803d55830fd87a69c1aa4dd14f02a6cc",
+    "semantic_hash": "803d55830fd87a69c1aa4dd14f02a6cc"
+  },
+  "voni/src/components/auth-form.tsx": {
+    "mtime": 1789396249.052073,
+    "ast_hash": "7aa2cb64ae2be980fe8398ac328cca1a",
+    "semantic_hash": "7aa2cb64ae2be980fe8398ac328cca1a"
+  },
+  "voni/src/components/authenticated-redirect.tsx": {
+    "mtime": 1789302777.7075744,
+    "ast_hash": "8f117a3083e7d1b6d8b9e4b12a53847f",
+    "semantic_hash": "8f117a3083e7d1b6d8b9e4b12a53847f"
+  },
+  "voni/src/components/back-link.tsx": {
+    "mtime": 1789396249.052073,
+    "ast_hash": "9eb5f5240870e49a781a261c819130f1",
+    "semantic_hash": "9eb5f5240870e49a781a261c819130f1"
+  },
+  "voni/src/components/calls/recent-calls.tsx": {
+    "mtime": 1789083170.0067878,
+    "ast_hash": "d66a012e5bfb7a88d612cf0371eaa5dd",
+    "semantic_hash": "d66a012e5bfb7a88d612cf0371eaa5dd"
+  },
+  "voni/src/components/campaign-controls.tsx": {
+    "mtime": 1789396249.052073,
+    "ast_hash": "40920303b9a449d4b0ed6c405804d2a4",
+    "semantic_hash": "40920303b9a449d4b0ed6c405804d2a4"
+  },
+  "voni/src/components/campaign-form.tsx": {
+    "mtime": 1789443740.7564962,
+    "ast_hash": "1037144be4a537425038220fefd4af65",
+    "semantic_hash": "1037144be4a537425038220fefd4af65"
+  },
+  "voni/src/components/campaign-queue.test.ts": {
+    "mtime": 1789410694.7107418,
+    "ast_hash": "0d36a460e0e38b01210aee9551b924ba",
+    "semantic_hash": "0d36a460e0e38b01210aee9551b924ba"
+  },
+  "voni/src/components/campaign-queue.tsx": {
+    "mtime": 1789443740.7564962,
+    "ast_hash": "aea6ede7bdf80817533cb1596aa0637a",
+    "semantic_hash": "aea6ede7bdf80817533cb1596aa0637a"
+  },
+  "voni/src/components/chat-01/chat-01.tsx": {
+    "mtime": 1789396249.052073,
+    "ast_hash": "47f46c5219b5a722b3e016635a0cb389",
+    "semantic_hash": "47f46c5219b5a722b3e016635a0cb389"
+  },
+  "voni/src/components/command-menu-03/command-menu-03.tsx": {
+    "mtime": 1789505538.0187657,
+    "ast_hash": "af76a1c09953fa51e2651c586886ca79",
+    "semantic_hash": "af76a1c09953fa51e2651c586886ca79"
+  },
+  "voni/src/components/connection-test-button.tsx": {
+    "mtime": 1789396249.052073,
+    "ast_hash": "17b25f56c9b890c2442ccf68c9a8a2ad",
+    "semantic_hash": "17b25f56c9b890c2442ccf68c9a8a2ad"
+  },
+  "voni/src/components/copilot/copilot-provider.tsx": {
+    "mtime": 1789505583.0325384,
+    "ast_hash": "b21721d42dad1a7255c691450f5b79bd",
+    "semantic_hash": "b21721d42dad1a7255c691450f5b79bd"
+  },
+  "voni/src/components/copilot/copilot-shell.tsx": {
+    "mtime": 1789505571.875763,
+    "ast_hash": "711adfeab715265f7a4295c500725d6c",
+    "semantic_hash": "711adfeab715265f7a4295c500725d6c"
+  },
+  "voni/src/components/copilot/record-results.tsx": {
+    "mtime": 1789503161.0016859,
+    "ast_hash": "4cc2eeb1d571295ec4dd589a74c345bb",
+    "semantic_hash": "4cc2eeb1d571295ec4dd589a74c345bb"
+  },
+  "voni/src/components/copilot/route-brief.tsx": {
+    "mtime": 1788807954.394513,
+    "ast_hash": "7c7ff7d108df3684ec9d85986e23fecf",
+    "semantic_hash": "7c7ff7d108df3684ec9d85986e23fecf"
+  },
+  "voni/src/components/copilot/voice-bars.tsx": {
+    "mtime": 1789396249.052073,
+    "ast_hash": "f0bd499877a54757005608d7ef2a9c59",
+    "semantic_hash": "f0bd499877a54757005608d7ef2a9c59"
+  },
+  "voni/src/components/dialog-11/dialog-11.tsx": {
+    "mtime": 1789396249.052073,
+    "ast_hash": "3264f5dc9486293a5d418f4cdc105749",
+    "semantic_hash": "3264f5dc9486293a5d418f4cdc105749"
+  },
+  "voni/src/components/filter-chips.tsx": {
+    "mtime": 1789410694.7107418,
+    "ast_hash": "42bf2f97b40b2f7eb60785e2ee80e568",
+    "semantic_hash": "42bf2f97b40b2f7eb60785e2ee80e568"
+  },
+  "voni/src/components/form-layout-01/form-layout-01.tsx": {
+    "mtime": 1789396249.052073,
+    "ast_hash": "e5a02fee492558e8093f319c187abd24",
+    "semantic_hash": "e5a02fee492558e8093f319c187abd24"
+  },
+  "voni/src/components/form-layout-02/form-layout-02.tsx": {
+    "mtime": 1789396249.052073,
+    "ast_hash": "350bd97ee686ac8894935f814a554c6b",
+    "semantic_hash": "350bd97ee686ac8894935f814a554c6b"
+  },
+  "voni/src/components/form-layout-03/form-layout-03.tsx": {
+    "mtime": 1789396249.052073,
+    "ast_hash": "fabc3c789f5e636b6fd42ee99c104a5e",
+    "semantic_hash": "fabc3c789f5e636b6fd42ee99c104a5e"
+  },
+  "voni/src/components/generation-retry-card.test.ts": {
+    "mtime": 1789503161.0016859,
+    "ast_hash": "d967e0c9ef55cd98ac4440502ada7cdb",
+    "semantic_hash": "d967e0c9ef55cd98ac4440502ada7cdb"
+  },
+  "voni/src/components/generation-retry-card.tsx": {
+    "mtime": 1789503161.0016859,
+    "ast_hash": "aa254f0d4ab365e4219648a2dad23ddc",
+    "semantic_hash": "aa254f0d4ab365e4219648a2dad23ddc"
+  },
+  "voni/src/components/grid-list-02/grid-list-02.tsx": {
+    "mtime": 1789396249.052073,
+    "ast_hash": "b05705b7d44104004f1e5970ed13700e",
+    "semantic_hash": "b05705b7d44104004f1e5970ed13700e"
+  },
+  "voni/src/components/jobs/job-row.tsx": {
+    "mtime": 1789503161.0016859,
+    "ast_hash": "394e837c635fa1c4244da91b18b7b21f",
+    "semantic_hash": "394e837c635fa1c4244da91b18b7b21f"
+  },
+  "voni/src/components/jobs/jobs-provider.test.ts": {
+    "mtime": 1789144922.8608582,
+    "ast_hash": "59353ecdad7ac9d3156c02fc50f48c5a",
+    "semantic_hash": "59353ecdad7ac9d3156c02fc50f48c5a"
+  },
+  "voni/src/components/jobs/jobs-provider.tsx": {
+    "mtime": 1789396249.052073,
+    "ast_hash": "629d4afd3255d9fe6ccff65fadd175f6",
+    "semantic_hash": "629d4afd3255d9fe6ccff65fadd175f6"
+  },
+  "voni/src/components/jobs/use-optimistic-job.ts": {
+    "mtime": 1788807738.0252538,
+    "ast_hash": "4ed4580c00fd93407b1e6e2ec2a5145a",
+    "semantic_hash": "4ed4580c00fd93407b1e6e2ec2a5145a"
+  },
+  "voni/src/components/landing-demo.tsx": {
+    "mtime": 1789250160.7081742,
+    "ast_hash": "8c9930a6980d0c08363d31a323dea1f0",
+    "semantic_hash": "8c9930a6980d0c08363d31a323dea1f0"
+  },
+  "voni/src/components/landing-grid-list.tsx": {
+    "mtime": 1789396249.052073,
+    "ast_hash": "7045b75aae3adc3ad76b5fb501d3c275",
+    "semantic_hash": "7045b75aae3adc3ad76b5fb501d3c275"
+  },
+  "voni/src/components/landing-header.tsx": {
+    "mtime": 1788986392.7277958,
+    "ast_hash": "d43867ef857a8aa648e46130cd39336d",
+    "semantic_hash": "d43867ef857a8aa648e46130cd39336d"
+  },
+  "voni/src/components/lead-import.tsx": {
+    "mtime": 1789420845.403412,
+    "ast_hash": "8a99a52c8995596e2b572eddeb23d85e",
+    "semantic_hash": "8a99a52c8995596e2b572eddeb23d85e"
+  },
+  "voni/src/components/leads-bulk-bar.tsx": {
+    "mtime": 1789443740.7564962,
+    "ast_hash": "13c5f1c53b26fba2b8241220cfc7c25d",
+    "semantic_hash": "13c5f1c53b26fba2b8241220cfc7c25d"
+  },
+  "voni/src/components/loading-button.tsx": {
+    "mtime": 1788699055.503787,
+    "ast_hash": "1eed32bd8a60df5181a869f47aa023ba",
+    "semantic_hash": "1eed32bd8a60df5181a869f47aa023ba"
+  },
+  "voni/src/components/login-01.tsx": {
+    "mtime": 1789396249.0554066,
+    "ast_hash": "8da80b05f6a0e09765848ebfe051a105",
+    "semantic_hash": "8da80b05f6a0e09765848ebfe051a105"
+  },
+  "voni/src/components/manual-llm-guidance.tsx": {
+    "mtime": 1788986392.7277958,
+    "ast_hash": "fc7bddbdd7eba33fb978c2340b986460",
+    "semantic_hash": "fc7bddbdd7eba33fb978c2340b986460"
+  },
+  "voni/src/components/mode-toggle.tsx": {
+    "mtime": 1788986392.7277958,
+    "ast_hash": "fad845adc23ed6ca71f0a83b3e34ae8e",
+    "semantic_hash": "fad845adc23ed6ca71f0a83b3e34ae8e"
+  },
+  "voni/src/components/onboarding-01/onboarding-01.tsx": {
+    "mtime": 1789443740.7564962,
+    "ast_hash": "69bf9aa7d864623148cbd2e6285f3792",
+    "semantic_hash": "69bf9aa7d864623148cbd2e6285f3792"
+  },
+  "voni/src/components/onboarding-05/onboarding-05.tsx": {
+    "mtime": 1789396249.0554066,
+    "ast_hash": "29ee5c156b2e34b575160d94ce279389",
+    "semantic_hash": "29ee5c156b2e34b575160d94ce279389"
+  },
+  "voni/src/components/onboarding-06/onboarding-06.tsx": {
+    "mtime": 1789396249.0554066,
+    "ast_hash": "81f6571d9ca990b12cd057a302e24af0",
+    "semantic_hash": "81f6571d9ca990b12cd057a302e24af0"
+  },
+  "voni/src/components/onboarding-07/onboarding-07.test.tsx": {
+    "mtime": 1789396249.0554066,
+    "ast_hash": "c16cdc46c3c1909dbd9c1acead0c2f0c",
+    "semantic_hash": "c16cdc46c3c1909dbd9c1acead0c2f0c"
+  },
+  "voni/src/components/onboarding-07/onboarding-07.tsx": {
+    "mtime": 1789396249.0554066,
+    "ast_hash": "5dfc11aa77354d90ee7ed76c8b7fd622",
+    "semantic_hash": "5dfc11aa77354d90ee7ed76c8b7fd622"
+  },
+  "voni/src/components/operator-view.tsx": {
+    "mtime": 1789396249.0554066,
+    "ast_hash": "8e2c12faca64b3523fb92f2000b27cd8",
+    "semantic_hash": "8e2c12faca64b3523fb92f2000b27cd8"
+  },
+  "voni/src/components/page-skeletons.tsx": {
+    "mtime": 1789410694.7107418,
+    "ast_hash": "68534a732ed390e67746ca57af4f3d66",
+    "semantic_hash": "68534a732ed390e67746ca57af4f3d66"
+  },
+  "voni/src/components/phone-numbers-labels.test.ts": {
+    "mtime": 1789505666.8633535,
+    "ast_hash": "f376942179adc96f51ade901e70b5802",
+    "semantic_hash": "f376942179adc96f51ade901e70b5802"
+  },
+  "voni/src/components/phone-numbers.tsx": {
+    "mtime": 1789503161.0016859,
+    "ast_hash": "3a2245928ff26863db5137259926fe62",
+    "semantic_hash": "3a2245928ff26863db5137259926fe62"
+  },
+  "voni/src/components/route-error.tsx": {
+    "mtime": 1789396249.0554066,
+    "ast_hash": "b7859ae248d251a5d7988d7f9c3ba85a",
+    "semantic_hash": "b7859ae248d251a5d7988d7f9c3ba85a"
+  },
+  "voni/src/components/settings-view.tsx": {
+    "mtime": 1789568135.5967674,
+    "ast_hash": "53ca8c66cd70029f768b4ca8b17f6793",
+    "semantic_hash": "53ca8c66cd70029f768b4ca8b17f6793"
+  },
+  "voni/src/components/shell-auth.tsx": {
+    "mtime": 1788986392.7277958,
+    "ast_hash": "868b459038982ccd43d09e8ab7103a00",
+    "semantic_hash": "868b459038982ccd43d09e8ab7103a00"
+  },
+  "voni/src/components/shell-frame.tsx": {
+    "mtime": 1789505558.062295,
+    "ast_hash": "612e9a546a9b89c721fcfc350b39a16d",
+    "semantic_hash": "612e9a546a9b89c721fcfc350b39a16d"
+  },
+  "voni/src/components/sidebar-03/app-sidebar.tsx": {
+    "mtime": 1789571831.819325,
+    "ast_hash": "f2938b8e577d06229059d2e80d3d761c",
+    "semantic_hash": "f2938b8e577d06229059d2e80d3d761c"
+  },
+  "voni/src/components/sidebar-03/logo.tsx": {
+    "mtime": 1789571951.147476,
+    "ast_hash": "ae1d53f3825db59bb25864f328e530a5",
+    "semantic_hash": "ae1d53f3825db59bb25864f328e530a5"
+  },
+  "voni/src/components/sidebar-03/nav-main.tsx": {
+    "mtime": 1789576012.5801556,
+    "ast_hash": "7614510ba74e1031437fd4ed22658f11",
+    "semantic_hash": "7614510ba74e1031437fd4ed22658f11"
+  },
+  "voni/src/components/sidebar-03/utility-rows.tsx": {
+    "mtime": 1789507784.776748,
+    "ast_hash": "5541fdc9dc015ebbea9581fb9dc9626a",
+    "semantic_hash": "5541fdc9dc015ebbea9581fb9dc9626a"
+  },
+  "voni/src/components/sidebar-redesign.test.ts": {
+    "mtime": 1789571831.819325,
+    "ast_hash": "adaa6a559ff64adc48a13e5a6ae2ceef",
+    "semantic_hash": "adaa6a559ff64adc48a13e5a6ae2ceef"
+  },
+  "voni/src/components/stats-11/progress-idiom.tsx": {
+    "mtime": 1789396249.0554066,
+    "ast_hash": "7f455af7924780632f753afbe2f7192a",
+    "semantic_hash": "7f455af7924780632f753afbe2f7192a"
+  },
+  "voni/src/components/table-02.tsx": {
+    "mtime": 1789396249.0554066,
+    "ast_hash": "648bf98bfdb4de689ee7da770354426a",
+    "semantic_hash": "648bf98bfdb4de689ee7da770354426a"
+  },
+  "voni/src/components/table-03.tsx": {
+    "mtime": 1789396249.0554066,
+    "ast_hash": "bcfd766525a5d46c505ef18eb64aadcc",
+    "semantic_hash": "bcfd766525a5d46c505ef18eb64aadcc"
+  },
+  "voni/src/components/table-04.tsx": {
+    "mtime": 1789396249.0554066,
+    "ast_hash": "3f7148dee5c7f0ed68190e4ce7b530ca",
+    "semantic_hash": "3f7148dee5c7f0ed68190e4ce7b530ca"
+  },
+  "voni/src/components/table-05.tsx": {
+    "mtime": 1789443740.7564962,
+    "ast_hash": "dd76e9a56ae36948483847e68c22aff6",
+    "semantic_hash": "dd76e9a56ae36948483847e68c22aff6"
+  },
+  "voni/src/components/test-agent-dialog.tsx": {
+    "mtime": 1789503161.0016859,
+    "ast_hash": "50bcd9ef4a17f35c8cd2aba3e862c562",
+    "semantic_hash": "50bcd9ef4a17f35c8cd2aba3e862c562"
+  },
+  "voni/src/components/theme-provider.tsx": {
+    "mtime": 1789443740.7564962,
+    "ast_hash": "02036c52ea205ad3982a6b33dbf7a35a",
+    "semantic_hash": "02036c52ea205ad3982a6b33dbf7a35a"
+  },
+  "voni/src/components/ui/accordion.tsx": {
+    "mtime": 1789396249.0554066,
+    "ast_hash": "c027d4761e7d6ad788a8ca674cdd11a3",
+    "semantic_hash": "c027d4761e7d6ad788a8ca674cdd11a3"
+  },
+  "voni/src/components/ui/alert.tsx": {
+    "mtime": 1788615474.2136786,
+    "ast_hash": "1b898a1314f4efb0de0106cfb99b5c67",
+    "semantic_hash": "1b898a1314f4efb0de0106cfb99b5c67"
+  },
+  "voni/src/components/ui/attachment.tsx": {
+    "mtime": 1789396249.0554066,
+    "ast_hash": "a2dc70881a20731b30ed0a2b782f16b9",
+    "semantic_hash": "a2dc70881a20731b30ed0a2b782f16b9"
+  },
+  "voni/src/components/ui/avatar.tsx": {
+    "mtime": 1788359231.8389122,
+    "ast_hash": "8b41492907a73176027427a3f0fd2302",
+    "semantic_hash": "8b41492907a73176027427a3f0fd2302"
+  },
+  "voni/src/components/ui/badge.tsx": {
+    "mtime": 1788359231.7422442,
+    "ast_hash": "e4ec840217040d5630ee6ed7213a1d72",
+    "semantic_hash": "e4ec840217040d5630ee6ed7213a1d72"
+  },
+  "voni/src/components/ui/breadcrumb.tsx": {
+    "mtime": 1788359232.1389165,
+    "ast_hash": "930d294d904c67a97eadeb26f5ac6cb1",
+    "semantic_hash": "930d294d904c67a97eadeb26f5ac6cb1"
+  },
+  "voni/src/components/ui/bubble.tsx": {
+    "mtime": 1789396249.0554066,
+    "ast_hash": "9632b3ce84a02c3629da543eb6484f06",
+    "semantic_hash": "9632b3ce84a02c3629da543eb6484f06"
+  },
+  "voni/src/components/ui/button.tsx": {
+    "mtime": 1789501995.8529449,
+    "ast_hash": "e04ce5251d6b0dd04020988126c905e9",
+    "semantic_hash": "e04ce5251d6b0dd04020988126c905e9"
+  },
+  "voni/src/components/ui/card.tsx": {
+    "mtime": 1789284255.8508425,
+    "ast_hash": "b76abd84917046d2abb2a9b13de03d1b",
+    "semantic_hash": "b76abd84917046d2abb2a9b13de03d1b"
+  },
+  "voni/src/components/ui/carousel.tsx": {
+    "mtime": 1789396249.0554066,
+    "ast_hash": "02bef3043e9edc0ea3fbe04981703e20",
+    "semantic_hash": "02bef3043e9edc0ea3fbe04981703e20"
+  },
+  "voni/src/components/ui/checkbox.tsx": {
+    "mtime": 1789443740.7564962,
+    "ast_hash": "fea5ce2615af44c8fd47bfc65384f985",
+    "semantic_hash": "fea5ce2615af44c8fd47bfc65384f985"
+  },
+  "voni/src/components/ui/collapsible.tsx": {
+    "mtime": 1789396249.0554066,
+    "ast_hash": "bc00817a4471ae1d76774aa4c50a7c31",
+    "semantic_hash": "bc00817a4471ae1d76774aa4c50a7c31"
+  },
+  "voni/src/components/ui/command.tsx": {
+    "mtime": 1789396249.0554066,
+    "ast_hash": "ead8984ffa90ab9e4db14c4f9b8fec72",
+    "semantic_hash": "ead8984ffa90ab9e4db14c4f9b8fec72"
+  },
+  "voni/src/components/ui/dialog.tsx": {
+    "mtime": 1789410694.7107418,
+    "ast_hash": "e914958b5c15aad88cdb737f0b82b2d0",
+    "semantic_hash": "e914958b5c15aad88cdb737f0b82b2d0"
+  },
+  "voni/src/components/ui/dropdown-menu.tsx": {
+    "mtime": 1789410694.7107418,
+    "ast_hash": "f5604f5672cea0a7e272dbcacc3a649d",
+    "semantic_hash": "f5604f5672cea0a7e272dbcacc3a649d"
+  },
+  "voni/src/components/ui/empty.tsx": {
+    "mtime": 1789410694.7107418,
+    "ast_hash": "b0443de6524fa95db23cd920a965c74b",
+    "semantic_hash": "b0443de6524fa95db23cd920a965c74b"
+  },
+  "voni/src/components/ui/field.tsx": {
+    "mtime": 1789443740.7564962,
+    "ast_hash": "4d66a81a496140317f4ea4e3501628b6",
+    "semantic_hash": "4d66a81a496140317f4ea4e3501628b6"
+  },
+  "voni/src/components/ui/input-group.tsx": {
+    "mtime": 1789396249.0554066,
+    "ast_hash": "e017f124d1e8aa92e1d3441f4d936025",
+    "semantic_hash": "e017f124d1e8aa92e1d3441f4d936025"
+  },
+  "voni/src/components/ui/input.tsx": {
+    "mtime": 1788984308.5885684,
+    "ast_hash": "0607b02d99a2e92f9509223f36ccc6ec",
+    "semantic_hash": "0607b02d99a2e92f9509223f36ccc6ec"
+  },
+  "voni/src/components/ui/kbd.tsx": {
+    "mtime": 1789396249.0554066,
+    "ast_hash": "eed19093e94300c9fe2dff7f03567310",
+    "semantic_hash": "eed19093e94300c9fe2dff7f03567310"
+  },
+  "voni/src/components/ui/label.tsx": {
+    "mtime": 1788984308.5885684,
+    "ast_hash": "a70440da86bfc6a07f15197cca48cb08",
+    "semantic_hash": "a70440da86bfc6a07f15197cca48cb08"
+  },
+  "voni/src/components/ui/marker.tsx": {
+    "mtime": 1789396249.0554066,
+    "ast_hash": "07b894375a5145f31f1d4ee697d4e108",
+    "semantic_hash": "07b894375a5145f31f1d4ee697d4e108"
+  },
+  "voni/src/components/ui/message-scroller.tsx": {
+    "mtime": 1789396249.0554066,
+    "ast_hash": "93f4e8c2f7fb443a52c3870659f3ba49",
+    "semantic_hash": "93f4e8c2f7fb443a52c3870659f3ba49"
+  },
+  "voni/src/components/ui/message.tsx": {
+    "mtime": 1789396249.0554066,
+    "ast_hash": "5be640bc07cae803ccf20af29ac7da45",
+    "semantic_hash": "5be640bc07cae803ccf20af29ac7da45"
+  },
+  "voni/src/components/ui/progress.tsx": {
+    "mtime": 1788700215.268985,
+    "ast_hash": "25524c305dafcaaa8db5d30e59fc40fe",
+    "semantic_hash": "25524c305dafcaaa8db5d30e59fc40fe"
+  },
+  "voni/src/components/ui/select.tsx": {
+    "mtime": 1789443740.7564962,
+    "ast_hash": "27b7007cda15a0e553e2445b4e874bdb",
+    "semantic_hash": "27b7007cda15a0e553e2445b4e874bdb"
+  },
+  "voni/src/components/ui/separator.tsx": {
+    "mtime": 1788984308.5885684,
+    "ast_hash": "3de2dca3e47ab29c4b1f632671545628",
+    "semantic_hash": "3de2dca3e47ab29c4b1f632671545628"
+  },
+  "voni/src/components/ui/sheet.tsx": {
+    "mtime": 1788856563.126505,
+    "ast_hash": "3c26400c77b4f42eca794dd437860e2a",
+    "semantic_hash": "3c26400c77b4f42eca794dd437860e2a"
+  },
+  "voni/src/components/ui/sidebar.tsx": {
+    "mtime": 1788870034.439183,
+    "ast_hash": "6811a33df487201b891b6874dcd8514a",
+    "semantic_hash": "6811a33df487201b891b6874dcd8514a"
+  },
+  "voni/src/components/ui/skeleton.tsx": {
+    "mtime": 1789410694.7107418,
+    "ast_hash": "76ed9475b88ce988d34a252226494325",
+    "semantic_hash": "76ed9475b88ce988d34a252226494325"
+  },
+  "voni/src/components/ui/switch.tsx": {
+    "mtime": 1789443740.7564962,
+    "ast_hash": "d735669d1aa491ae8e93005b58babf2a",
+    "semantic_hash": "d735669d1aa491ae8e93005b58babf2a"
+  },
+  "voni/src/components/ui/table.tsx": {
+    "mtime": 1788359231.6922433,
+    "ast_hash": "44f87727e60080863edb00fdd2fcd8da",
+    "semantic_hash": "44f87727e60080863edb00fdd2fcd8da"
+  },
+  "voni/src/components/ui/tabs.tsx": {
+    "mtime": 1788870136.8302813,
+    "ast_hash": "dcbf0183c8434a39d2cd71abaf85f7e1",
+    "semantic_hash": "dcbf0183c8434a39d2cd71abaf85f7e1"
+  },
+  "voni/src/components/ui/textarea.tsx": {
+    "mtime": 1788984308.5885684,
+    "ast_hash": "d448d2a90e48542e51b93a1189127bf2",
+    "semantic_hash": "d448d2a90e48542e51b93a1189127bf2"
+  },
+  "voni/src/components/ui/toast.tsx": {
+    "mtime": 1789396249.0554066,
+    "ast_hash": "5c519e0385b5e748bf83bc6593ab107c",
+    "semantic_hash": "5c519e0385b5e748bf83bc6593ab107c"
+  },
+  "voni/src/components/ui/toggle-group.tsx": {
+    "mtime": 1789396249.0554066,
+    "ast_hash": "b8c91f254a21e245bdc680c281981dce",
+    "semantic_hash": "b8c91f254a21e245bdc680c281981dce"
+  },
+  "voni/src/components/ui/toggle.tsx": {
+    "mtime": 1789396249.0554066,
+    "ast_hash": "407aac5570a232ece9137242a70a69c8",
+    "semantic_hash": "407aac5570a232ece9137242a70a69c8"
+  },
+  "voni/src/components/ui/tooltip.tsx": {
+    "mtime": 1788359232.2355845,
+    "ast_hash": "6566a444ce6c0a87d6611903430534fa",
+    "semantic_hash": "6566a444ce6c0a87d6611903430534fa"
+  },
+  "voni/src/components/unsaved-pill.test.ts": {
+    "mtime": 1789430488.1113524,
+    "ast_hash": "da19446d0dc2fb740baa3b4155b8655a",
+    "semantic_hash": "da19446d0dc2fb740baa3b4155b8655a"
+  },
+  "voni/src/components/unsaved-pill.tsx": {
+    "mtime": 1789430367.2169042,
+    "ast_hash": "2e25063d212e09de63a4db50887d71a3",
+    "semantic_hash": "2e25063d212e09de63a4db50887d71a3"
+  },
+  "voni/src/components/voice-call.tsx": {
+    "mtime": 1789503161.0016859,
+    "ast_hash": "4f5a43028b4fe422d949baf28c6c1b1a",
+    "semantic_hash": "4f5a43028b4fe422d949baf28c6c1b1a"
+  },
+  "voni/src/components/voni-logo.tsx": {
+    "mtime": 1789396249.05874,
+    "ast_hash": "80dca7fde518b8c671b081e600eed059",
+    "semantic_hash": "80dca7fde518b8c671b081e600eed059"
+  },
+  "voni/src/components/wizard/conversation-picker.tsx": {
+    "mtime": 1789081524.364806,
+    "ast_hash": "8297cdf960a53f1dc37ef6bf390dc1b8",
+    "semantic_hash": "8297cdf960a53f1dc37ef6bf390dc1b8"
+  },
+  "voni/src/components/wizard/form-layout.tsx": {
+    "mtime": 1789420845.403412,
+    "ast_hash": "a51ae03e2b6ef5ffd7dd7da936c938ba",
+    "semantic_hash": "a51ae03e2b6ef5ffd7dd7da936c938ba"
+  },
+  "voni/src/components/wizard/shared-ui.test.ts": {
+    "mtime": 1789501990.4595625,
+    "ast_hash": "aad13386d0acd080d89d7b9ace06de56",
+    "semantic_hash": "aad13386d0acd080d89d7b9ace06de56"
+  },
+  "voni/src/components/wizard/tag-field.tsx": {
+    "mtime": 1789443740.7564962,
+    "ast_hash": "66f51db43a2d1b5aa2af073e0b2087fe",
+    "semantic_hash": "66f51db43a2d1b5aa2af073e0b2087fe"
+  },
+  "voni/src/components/wizard/tag-helpers.ts": {
+    "mtime": 1788991303.9574766,
+    "ast_hash": "66620cbaf0da31e58c48bf219a8bd58d",
+    "semantic_hash": "66620cbaf0da31e58c48bf219a8bd58d"
+  },
+  "voni/src/components/wizard/voice-field.tsx": {
+    "mtime": 1789503161.0016859,
+    "ast_hash": "77c6e47346dbaa1372f7961dd4e9ec40",
+    "semantic_hash": "77c6e47346dbaa1372f7961dd4e9ec40"
+  },
+  "voni/src/hooks/use-mobile.ts": {
+    "mtime": 1788647856.8600008,
+    "ast_hash": "7efeea1d71d2503b4d8907051c90a2fe",
+    "semantic_hash": "7efeea1d71d2503b4d8907051c90a2fe"
+  },
+  "voni/src/lib/agent-status/build-entries.test.ts": {
+    "mtime": 1789396249.05874,
+    "ast_hash": "dab25e98e374b47b3bd21b90ac8cb734",
+    "semantic_hash": "dab25e98e374b47b3bd21b90ac8cb734"
+  },
+  "voni/src/lib/agent-status/build-entries.ts": {
+    "mtime": 1789396249.05874,
+    "ast_hash": "39e01e41d45720945b4c1a3f28cf15a0",
+    "semantic_hash": "39e01e41d45720945b4c1a3f28cf15a0"
+  },
+  "voni/src/lib/agents/compile.ts": {
+    "mtime": 1789396249.05874,
+    "ast_hash": "7320b1c8cf955ecc58f52631158e34c4",
+    "semantic_hash": "7320b1c8cf955ecc58f52631158e34c4"
+  },
+  "voni/src/lib/agents/config.test.ts": {
+    "mtime": 1789421297.2672837,
+    "ast_hash": "09816d3b938f9a62fffbb443ead2e7c3",
+    "semantic_hash": "09816d3b938f9a62fffbb443ead2e7c3"
+  },
+  "voni/src/lib/agents/config.ts": {
+    "mtime": 1789421228.7133455,
+    "ast_hash": "a85f4cbf6dce07b74070d603b285c311",
+    "semantic_hash": "a85f4cbf6dce07b74070d603b285c311"
+  },
+  "voni/src/lib/agents/generate.ts": {
+    "mtime": 1789396249.05874,
+    "ast_hash": "31e18e846e4248e143eb581ff74c5256",
+    "semantic_hash": "31e18e846e4248e143eb581ff74c5256"
+  },
+  "voni/src/lib/agents/personas.ts": {
+    "mtime": 1789396249.05874,
+    "ast_hash": "aa249d1e04b5495d131865b3fe96c2d7",
+    "semantic_hash": "aa249d1e04b5495d131865b3fe96c2d7"
+  },
+  "voni/src/lib/agents/provision.test.ts": {
+    "mtime": 1789073213.2020233,
+    "ast_hash": "4a36192063210f588a12d1e6cff9adaf",
+    "semantic_hash": "4a36192063210f588a12d1e6cff9adaf"
+  },
+  "voni/src/lib/agents/provision.ts": {
+    "mtime": 1789077899.5238829,
+    "ast_hash": "60e014f7a96e55a9c59f6da07e202299",
+    "semantic_hash": "60e014f7a96e55a9c59f6da07e202299"
+  },
+  "voni/src/lib/agents/voices.ts": {
+    "mtime": 1789081415.553452,
+    "ast_hash": "029df126647e5ddf7636b796b208ca7c",
+    "semantic_hash": "029df126647e5ddf7636b796b208ca7c"
+  },
+  "voni/src/lib/agents/wizard.test.ts": {
+    "mtime": 1789061333.3832052,
+    "ast_hash": "e5bbade6f38cb23a4be86b6e5b68f00e",
+    "semantic_hash": "e5bbade6f38cb23a4be86b6e5b68f00e"
+  },
+  "voni/src/lib/agents/wizard.ts": {
+    "mtime": 1789061333.3832052,
+    "ast_hash": "85f531f33eb78d51e75fffd7dd737c98",
+    "semantic_hash": "85f531f33eb78d51e75fffd7dd737c98"
+  },
+  "voni/src/lib/auth-client.ts": {
+    "mtime": 1788359479.5924854,
+    "ast_hash": "89e6418a2c0dba26e8e44fb0435df918",
+    "semantic_hash": "89e6418a2c0dba26e8e44fb0435df918"
+  },
+  "voni/src/lib/auth-redirect.test.ts": {
+    "mtime": 1788647903.877167,
+    "ast_hash": "3ebb44ed57980b77ba3a93b1dc0ff051",
+    "semantic_hash": "3ebb44ed57980b77ba3a93b1dc0ff051"
+  },
+  "voni/src/lib/auth-redirect.ts": {
+    "mtime": 1788647903.877167,
+    "ast_hash": "46081f99c4e26e6bbefe45fed8e7b1f0",
+    "semantic_hash": "46081f99c4e26e6bbefe45fed8e7b1f0"
+  },
+  "voni/src/lib/auth.ts": {
+    "mtime": 1788600256.0640457,
+    "ast_hash": "63b9aa6e6294833caade8bdfed743708",
+    "semantic_hash": "63b9aa6e6294833caade8bdfed743708"
+  },
+  "voni/src/lib/calls/call-status.ts": {
+    "mtime": 1789302748.6473281,
+    "ast_hash": "602b173ad5218538380ec39daea0a4a5",
+    "semantic_hash": "602b173ad5218538380ec39daea0a4a5"
+  },
+  "voni/src/lib/calls/format.ts": {
+    "mtime": 1789302748.820663,
+    "ast_hash": "0ecadc7ac56bc0dda9a830b2a8a5c27d",
+    "semantic_hash": "0ecadc7ac56bc0dda9a830b2a8a5c27d"
+  },
+  "voni/src/lib/calls/outcome-filter.test.ts": {
+    "mtime": 1789284387.3417556,
+    "ast_hash": "3f05a4424ad4586b0a3dab50d815acba",
+    "semantic_hash": "3f05a4424ad4586b0a3dab50d815acba"
+  },
+  "voni/src/lib/calls/outcome-filter.ts": {
+    "mtime": 1789284100.2665,
+    "ast_hash": "a7e7d79dc54dce03224d4bf7047f234d",
+    "semantic_hash": "a7e7d79dc54dce03224d4bf7047f234d"
+  },
+  "voni/src/lib/campaigns/bridge-auth.ts": {
+    "mtime": 1788986392.7311292,
+    "ast_hash": "96e48077ae1908dbf0957f5e3a697569",
+    "semantic_hash": "96e48077ae1908dbf0957f5e3a697569"
+  },
+  "voni/src/lib/campaigns/dispatch.ts": {
+    "mtime": 1789300161.7610092,
+    "ast_hash": "3b3e89eddb607b732e123b26f60f6324",
+    "semantic_hash": "3b3e89eddb607b732e123b26f60f6324"
+  },
+  "voni/src/lib/campaigns/outcome-label.test.ts": {
+    "mtime": 1789300388.5905898,
+    "ast_hash": "988692d8bdf24c883040a551e0f333f8",
+    "semantic_hash": "988692d8bdf24c883040a551e0f333f8"
+  },
+  "voni/src/lib/campaigns/outcome-label.ts": {
+    "mtime": 1789300719.2527478,
+    "ast_hash": "d917c65f800f32604e10ecf1a3dd3727",
+    "semantic_hash": "d917c65f800f32604e10ecf1a3dd3727"
+  },
+  "voni/src/lib/campaigns/policy.test.ts": {
+    "mtime": 1789284255.8508425,
+    "ast_hash": "56bac18c561cc0294864d4455bec8c7a",
+    "semantic_hash": "56bac18c561cc0294864d4455bec8c7a"
+  },
+  "voni/src/lib/campaigns/policy.ts": {
+    "mtime": 1789284255.8508425,
+    "ast_hash": "563adde1c92d71ce67be339d903fa483",
+    "semantic_hash": "563adde1c92d71ce67be339d903fa483"
+  },
+  "voni/src/lib/copilot/app-guide.test.ts": {
+    "mtime": 1789505532.9553828,
+    "ast_hash": "c811049ed8a74778cd66e2b6c3d4eb76",
+    "semantic_hash": "c811049ed8a74778cd66e2b6c3d4eb76"
+  },
+  "voni/src/lib/copilot/app-guide.ts": {
+    "mtime": 1788986392.7311292,
+    "ast_hash": "684a4c98e079ad7ec7556ff31549fdcb",
+    "semantic_hash": "684a4c98e079ad7ec7556ff31549fdcb"
+  },
+  "voni/src/lib/copilot/app-manifest.ts": {
+    "mtime": 1789576083.914241,
+    "ast_hash": "6f32624b536e7bb8d7d720369da70949",
+    "semantic_hash": "6f32624b536e7bb8d7d720369da70949"
+  },
+  "voni/src/lib/copilot/bus.test.ts": {
+    "mtime": 1788806927.7747402,
+    "ast_hash": "d634a166e6ed254c696edc9a13e6b313",
+    "semantic_hash": "d634a166e6ed254c696edc9a13e6b313"
+  },
+  "voni/src/lib/copilot/bus.ts": {
+    "mtime": 1788825651.1056833,
+    "ast_hash": "3e1f732bbb35b1d8645aa290a89b5dc8",
+    "semantic_hash": "3e1f732bbb35b1d8645aa290a89b5dc8"
+  },
+  "voni/src/lib/copilot/copilot-lib.test.ts": {
+    "mtime": 1789061333.3832052,
+    "ast_hash": "0354ff812217d6728a965a9599aba5bf",
+    "semantic_hash": "0354ff812217d6728a965a9599aba5bf"
+  },
+  "voni/src/lib/copilot/detail-data.ts": {
+    "mtime": 1789284255.8508425,
+    "ast_hash": "be568c779d90b261852de60834029fe1",
+    "semantic_hash": "be568c779d90b261852de60834029fe1"
+  },
+  "voni/src/lib/copilot/element-catalog.test.ts": {
+    "mtime": 1788826365.0823646,
+    "ast_hash": "1084fc0312affdde07ad3bdd7316e5fe",
+    "semantic_hash": "1084fc0312affdde07ad3bdd7316e5fe"
+  },
+  "voni/src/lib/copilot/element-catalog.ts": {
+    "mtime": 1788857406.6309505,
+    "ast_hash": "ef9835058bc8922dfd4b435ce4608e9e",
+    "semantic_hash": "ef9835058bc8922dfd4b435ce4608e9e"
+  },
+  "voni/src/lib/copilot/idle.ts": {
+    "mtime": 1788806807.8568876,
+    "ast_hash": "3bc9dcd2cf889054892f699ba75224cc",
+    "semantic_hash": "3bc9dcd2cf889054892f699ba75224cc"
+  },
+  "voni/src/lib/copilot/jobs-tools.test.ts": {
+    "mtime": 1788808088.1727269,
+    "ast_hash": "486272f33dcbadb313dba25f9bab3a17",
+    "semantic_hash": "486272f33dcbadb313dba25f9bab3a17"
+  },
+  "voni/src/lib/copilot/jobs-tools.ts": {
+    "mtime": 1788856018.77825,
+    "ast_hash": "e737aa72f82bf23d2466bdb35f298354",
+    "semantic_hash": "e737aa72f82bf23d2466bdb35f298354"
+  },
+  "voni/src/lib/copilot/prompt.ts": {
+    "mtime": 1788871323.9769888,
+    "ast_hash": "6c1186f01aefc15c7e00da4e7c19b0ee",
+    "semantic_hash": "6c1186f01aefc15c7e00da4e7c19b0ee"
+  },
+  "voni/src/lib/copilot/proposals.test.ts": {
+    "mtime": 1788806627.0117626,
+    "ast_hash": "bc4f10f61ad8972e34ef64715ddb6d81",
+    "semantic_hash": "bc4f10f61ad8972e34ef64715ddb6d81"
+  },
+  "voni/src/lib/copilot/proposals.ts": {
+    "mtime": 1788807746.39869,
+    "ast_hash": "254c0057b747ef3014017fd89b29b530",
+    "semantic_hash": "254c0057b747ef3014017fd89b29b530"
+  },
+  "voni/src/lib/copilot/record-contracts.ts": {
+    "mtime": 1788825832.407413,
+    "ast_hash": "fa664c371e90af413dcfc4004847a95f",
+    "semantic_hash": "fa664c371e90af413dcfc4004847a95f"
+  },
+  "voni/src/lib/copilot/record-discovery.test.ts": {
+    "mtime": 1788826432.466316,
+    "ast_hash": "486ca33508dc361c65c84fda0ef39a77",
+    "semantic_hash": "486ca33508dc361c65c84fda0ef39a77"
+  },
+  "voni/src/lib/copilot/record-discovery.ts": {
+    "mtime": 1788825832.407413,
+    "ast_hash": "79cdf6ce065a2b2f3b2878ffa70cc5f7",
+    "semantic_hash": "79cdf6ce065a2b2f3b2878ffa70cc5f7"
+  },
+  "voni/src/lib/copilot/record-repository.ts": {
+    "mtime": 1788856459.632226,
+    "ast_hash": "8586fa201837fb864bb0a8ec7058b4ab",
+    "semantic_hash": "8586fa201837fb864bb0a8ec7058b4ab"
+  },
+  "voni/src/lib/copilot/record-tools.ts": {
+    "mtime": 1788856327.1910214,
+    "ast_hash": "06db5b433a1d6f33349676c06a27095f",
+    "semantic_hash": "06db5b433a1d6f33349676c06a27095f"
+  },
+  "voni/src/lib/copilot/ui-actuation.test.ts": {
+    "mtime": 1788826365.0823646,
+    "ast_hash": "f69f75002dc38672c4861f7bcda84bc0",
+    "semantic_hash": "f69f75002dc38672c4861f7bcda84bc0"
+  },
+  "voni/src/lib/copilot/ui-actuation.ts": {
+    "mtime": 1788857406.6309505,
+    "ast_hash": "f44c5e88f3f215936c79a3edc5edcf04",
+    "semantic_hash": "f44c5e88f3f215936c79a3edc5edcf04"
+  },
+  "voni/src/lib/copilot/ui-tools.test.ts": {
+    "mtime": 1788857406.6942844,
+    "ast_hash": "f984981b31282eeae9ad3dd11a84945d",
+    "semantic_hash": "f984981b31282eeae9ad3dd11a84945d"
+  },
+  "voni/src/lib/copilot/ui-tools.ts": {
+    "mtime": 1788857406.6276171,
+    "ast_hash": "fe6633e6c6ec3894bb8115156746ec4e",
+    "semantic_hash": "fe6633e6c6ec3894bb8115156746ec4e"
+  },
+  "voni/src/lib/copilot/voice-prefs.test.ts": {
+    "mtime": 1788810829.0628278,
+    "ast_hash": "1fd9490a349069a27c2db21aa09a4c76",
+    "semantic_hash": "1fd9490a349069a27c2db21aa09a4c76"
+  },
+  "voni/src/lib/copilot/voice-prefs.ts": {
+    "mtime": 1788810829.099495,
+    "ast_hash": "f007a3da0936e45ee6e71314768f40d9",
+    "semantic_hash": "f007a3da0936e45ee6e71314768f40d9"
+  },
+  "voni/src/lib/copilot/wizard-tools.ts": {
+    "mtime": 1789061333.3832052,
+    "ast_hash": "b50901febaca4fb24f7eae160a7a834f",
+    "semantic_hash": "b50901febaca4fb24f7eae160a7a834f"
+  },
+  "voni/src/lib/dashboard/setup.ts": {
+    "mtime": 1789396249.05874,
+    "ast_hash": "2b03cdf3f8003b7e22c3d67bb7ab072a",
+    "semantic_hash": "2b03cdf3f8003b7e22c3d67bb7ab072a"
+  },
+  "voni/src/lib/db/auth-schema.ts": {
+    "mtime": 1788600238.273908,
+    "ast_hash": "b20dae0d6e59f3df8215de6f0414cce7",
+    "semantic_hash": "b20dae0d6e59f3df8215de6f0414cce7"
+  },
+  "voni/src/lib/db/index.ts": {
+    "mtime": 1788359701.5884957,
+    "ast_hash": "8db31addcf50af3669d0a89e6eaa27ae",
+    "semantic_hash": "8db31addcf50af3669d0a89e6eaa27ae"
+  },
+  "voni/src/lib/db/schema.ts": {
+    "mtime": 1789420845.403412,
+    "ast_hash": "7b24df9d080f10c53da682efa4930717",
+    "semantic_hash": "7b24df9d080f10c53da682efa4930717"
+  },
+  "voni/src/lib/demo/rate-limit.ts": {
+    "mtime": 1788806728.4761016,
+    "ast_hash": "fbab785ba666c29e427367bef8009106",
+    "semantic_hash": "fbab785ba666c29e427367bef8009106"
+  },
+  "voni/src/lib/demo/stored-agents.ts": {
+    "mtime": 1788986392.7311292,
+    "ast_hash": "c82299f6d73914323b32fde0f7d5b0a2",
+    "semantic_hash": "c82299f6d73914323b32fde0f7d5b0a2"
+  },
+  "voni/src/lib/dev-bypass.ts": {
+    "mtime": 1788690357.9489372,
+    "ast_hash": "1f1cbfc4c42edcd2f0edc2ebff1620a3",
+    "semantic_hash": "1f1cbfc4c42edcd2f0edc2ebff1620a3"
+  },
+  "voni/src/lib/env.ts": {
+    "mtime": 1788605253.3713484,
+    "ast_hash": "0efd5eef4feeaa872e155d20e840a10a",
+    "semantic_hash": "0efd5eef4feeaa872e155d20e840a10a"
+  },
+  "voni/src/lib/jobs/consumer.ts": {
+    "mtime": 1788789182.6051323,
+    "ast_hash": "166ae2f6211623f74b17e34bb860c3f9",
+    "semantic_hash": "166ae2f6211623f74b17e34bb860c3f9"
+  },
+  "voni/src/lib/jobs/contracts.ts": {
+    "mtime": 1788986392.7311292,
+    "ast_hash": "99788dac2c31458dc692c590782b7394",
+    "semantic_hash": "99788dac2c31458dc692c590782b7394"
+  },
+  "voni/src/lib/jobs/jobs.test.ts": {
+    "mtime": 1789503161.0016859,
+    "ast_hash": "f6d46430e03f0aeb4bd54d1f64581fe5",
+    "semantic_hash": "f6d46430e03f0aeb4bd54d1f64581fe5"
+  },
+  "voni/src/lib/jobs/kinds.ts": {
+    "mtime": 1789043338.446672,
+    "ast_hash": "45f8adbf4aa2cbb4936926b03a932e1d",
+    "semantic_hash": "45f8adbf4aa2cbb4936926b03a932e1d"
+  },
+  "voni/src/lib/jobs/processor.ts": {
+    "mtime": 1789503161.0016859,
+    "ast_hash": "5003559cd0cf2702f95d61c75fe93998",
+    "semantic_hash": "5003559cd0cf2702f95d61c75fe93998"
+  },
+  "voni/src/lib/jobs/processors/csv-import.ts": {
+    "mtime": 1788788732.1151855,
+    "ast_hash": "4802631d1eccaaab1b822d7f4f7fa9a8",
+    "semantic_hash": "4802631d1eccaaab1b822d7f4f7fa9a8"
+  },
+  "voni/src/lib/jobs/processors/deployment.ts": {
+    "mtime": 1789137787.028679,
+    "ast_hash": "0e97f393fa4068e70945498d9909af65",
+    "semantic_hash": "0e97f393fa4068e70945498d9909af65"
+  },
+  "voni/src/lib/jobs/processors/generation.ts": {
+    "mtime": 1789137787.028679,
+    "ast_hash": "152eafb66434e6e424edc8d6fdda4e1c",
+    "semantic_hash": "152eafb66434e6e424edc8d6fdda4e1c"
+  },
+  "voni/src/lib/jobs/processors/integration-test.ts": {
+    "mtime": 1788788633.4043546,
+    "ast_hash": "a36d9601d97860730de49a0c7ea4bc19",
+    "semantic_hash": "a36d9601d97860730de49a0c7ea4bc19"
+  },
+  "voni/src/lib/jobs/processors/record-search.ts": {
+    "mtime": 1788825832.4107463,
+    "ast_hash": "2bd0e234f94e4980062995bfb999542d",
+    "semantic_hash": "2bd0e234f94e4980062995bfb999542d"
+  },
+  "voni/src/lib/jobs/queue.test.ts": {
+    "mtime": 1788986392.7311292,
+    "ast_hash": "234adc1451bf6281c4c6d40bed8da58b",
+    "semantic_hash": "234adc1451bf6281c4c6d40bed8da58b"
+  },
+  "voni/src/lib/jobs/queue.ts": {
+    "mtime": 1788986392.7311292,
+    "ast_hash": "5457fe751b327d871ebc4404183c4b96",
+    "semantic_hash": "5457fe751b327d871ebc4404183c4b96"
+  },
+  "voni/src/lib/jobs/revalidate.ts": {
+    "mtime": 1788788723.401801,
+    "ast_hash": "8dbaff1c17ea73cb67b9b9f261410721",
+    "semantic_hash": "8dbaff1c17ea73cb67b9b9f261410721"
+  },
+  "voni/src/lib/jobs/serialize.ts": {
+    "mtime": 1788825832.4474132,
+    "ast_hash": "0c3f350e471e1b5f14350a9164703fe5",
+    "semantic_hash": "0c3f350e471e1b5f14350a9164703fe5"
+  },
+  "voni/src/lib/jobs/start.ts": {
+    "mtime": 1789503161.0016859,
+    "ast_hash": "c307858cf2ccc94dc999bfbbceb5a2e0",
+    "semantic_hash": "c307858cf2ccc94dc999bfbbceb5a2e0"
+  },
+  "voni/src/lib/jobs/store.ts": {
+    "mtime": 1789139902.2939918,
+    "ast_hash": "02347ed99f4d1041fc9e4b6fc11fdf46",
+    "semantic_hash": "02347ed99f4d1041fc9e4b6fc11fdf46"
+  },
+  "voni/src/lib/jobs/sweep.ts": {
+    "mtime": 1788986392.7311292,
+    "ast_hash": "cba0e08ff359233936fa51c91d1e87e9",
+    "semantic_hash": "cba0e08ff359233936fa51c91d1e87e9"
+  },
+  "voni/src/lib/jobs/ui-helpers.test.ts": {
+    "mtime": 1789503161.0016859,
+    "ast_hash": "1c3c0a42b1ca9e0a15c14afb134c3f7b",
+    "semantic_hash": "1c3c0a42b1ca9e0a15c14afb134c3f7b"
+  },
+  "voni/src/lib/jobs/ui-helpers.ts": {
+    "mtime": 1789503161.0016859,
+    "ast_hash": "bb4bf1d1a957bfa54cd08098949b9816",
+    "semantic_hash": "bb4bf1d1a957bfa54cd08098949b9816"
+  },
+  "voni/src/lib/jobs/worker-auth.ts": {
+    "mtime": 1788789411.353775,
+    "ast_hash": "829a26ca1057553dafac94e9fba4f6d3",
+    "semantic_hash": "829a26ca1057553dafac94e9fba4f6d3"
+  },
+  "voni/src/lib/leads/csv.test.ts": {
+    "mtime": 1788653881.6517203,
+    "ast_hash": "62a1e20d24f6b46dab8cbfd13abd2e8e",
+    "semantic_hash": "62a1e20d24f6b46dab8cbfd13abd2e8e"
+  },
+  "voni/src/lib/leads/csv.ts": {
+    "mtime": 1788653898.0285478,
+    "ast_hash": "42a340b37c2786a153f45373b7bbc454",
+    "semantic_hash": "42a340b37c2786a153f45373b7bbc454"
+  },
+  "voni/src/lib/leads/import.ts": {
+    "mtime": 1788789274.135906,
+    "ast_hash": "de783a3ab7a9fae0eb75cffb47a281b3",
+    "semantic_hash": "de783a3ab7a9fae0eb75cffb47a281b3"
+  },
+  "voni/src/lib/leads/stage-filter.test.ts": {
+    "mtime": 1789396249.05874,
+    "ast_hash": "9b92c57d3bbb2b0fa0a247fe76ec92d8",
+    "semantic_hash": "9b92c57d3bbb2b0fa0a247fe76ec92d8"
+  },
+  "voni/src/lib/leads/stage-filter.ts": {
+    "mtime": 1789284112.769911,
+    "ast_hash": "ae4c0d9a9c3475814971032f4ad21d7f",
+    "semantic_hash": "ae4c0d9a9c3475814971032f4ad21d7f"
+  },
+  "voni/src/lib/llm/index.test.ts": {
+    "mtime": 1788789146.4881678,
+    "ast_hash": "ca0ebd532229e36f380b00ba4904fed2",
+    "semantic_hash": "ca0ebd532229e36f380b00ba4904fed2"
+  },
+  "voni/src/lib/llm/index.ts": {
+    "mtime": 1788986392.7311292,
+    "ast_hash": "fd35f8d49eea314f9f390a164985b3aa",
+    "semantic_hash": "fd35f8d49eea314f9f390a164985b3aa"
+  },
+  "voni/src/lib/llm/providers.ts": {
+    "mtime": 1788783546.734907,
+    "ast_hash": "c2d9dcdc29a4232a24a6ae06514116fb",
+    "semantic_hash": "c2d9dcdc29a4232a24a6ae06514116fb"
+  },
+  "voni/src/lib/outcomes/predicates.ts": {
+    "mtime": 1789300233.608248,
+    "ast_hash": "7ad156dcd333d6dd8a3800ea13c126fb",
+    "semantic_hash": "7ad156dcd333d6dd8a3800ea13c126fb"
+  },
+  "voni/src/lib/platform/admin.test.ts": {
+    "mtime": 1788648022.6317625,
+    "ast_hash": "57d6ffc94903caa605014679bab2abcb",
+    "semantic_hash": "57d6ffc94903caa605014679bab2abcb"
+  },
+  "voni/src/lib/platform/admin.ts": {
+    "mtime": 1788648022.6317625,
+    "ast_hash": "04e9f5da8d9d70544ea47cf0c3b33e1a",
+    "semantic_hash": "04e9f5da8d9d70544ea47cf0c3b33e1a"
+  },
+  "voni/src/lib/platform/checks.test.ts": {
+    "mtime": 1788647979.0612993,
+    "ast_hash": "f931f16d8880aaa8f8b5653709f1933d",
+    "semantic_hash": "f931f16d8880aaa8f8b5653709f1933d"
+  },
+  "voni/src/lib/platform/checks.ts": {
+    "mtime": 1788789982.5291195,
+    "ast_hash": "9fde3dca1476aaae890afc90b1aa274e",
+    "semantic_hash": "9fde3dca1476aaae890afc90b1aa274e"
+  },
+  "voni/src/lib/platform/config.ts": {
+    "mtime": 1788647643.3877325,
+    "ast_hash": "dbc629e530a544c949b5529e53c1f931",
+    "semantic_hash": "dbc629e530a544c949b5529e53c1f931"
+  },
+  "voni/src/lib/platform/credentials.ts": {
+    "mtime": 1788646980.7640307,
+    "ast_hash": "f8e540413c3d264b98846b7faa682579",
+    "semantic_hash": "f8e540413c3d264b98846b7faa682579"
+  },
+  "voni/src/lib/platform/encryption.test.ts": {
+    "mtime": 1788647903.883834,
+    "ast_hash": "7d3a41ce7f432a4f098cd37d2bcecfef",
+    "semantic_hash": "7d3a41ce7f432a4f098cd37d2bcecfef"
+  },
+  "voni/src/lib/platform/encryption.ts": {
+    "mtime": 1788647570.430291,
+    "ast_hash": "96a4570fd99fdbbcf9f7aa1df6be4dde",
+    "semantic_hash": "96a4570fd99fdbbcf9f7aa1df6be4dde"
+  },
+  "voni/src/lib/platform/llm-accounts.test.ts": {
+    "mtime": 1788698950.779427,
+    "ast_hash": "5bd04a122e6441000c01661092f36868",
+    "semantic_hash": "5bd04a122e6441000c01661092f36868"
+  },
+  "voni/src/lib/platform/llm-accounts.ts": {
+    "mtime": 1788986392.7311292,
+    "ast_hash": "87955907054635d005b1fe913ab6d895",
+    "semantic_hash": "87955907054635d005b1fe913ab6d895"
+  },
+  "voni/src/lib/platform/types.ts": {
+    "mtime": 1788698359.1370125,
+    "ast_hash": "3990bfd764c165bf98b5803fd0e19587",
+    "semantic_hash": "3990bfd764c165bf98b5803fd0e19587"
+  },
+  "voni/src/lib/providers/registry.ts": {
+    "mtime": 1789419826.1082773,
+    "ast_hash": "ef6f25f8d0bb17dbd65b004507434dc2",
+    "semantic_hash": "ef6f25f8d0bb17dbd65b004507434dc2"
+  },
+  "voni/src/lib/providers/store.ts": {
+    "mtime": 1789420119.0478373,
+    "ast_hash": "00f0707ba5f0aaaf9fa4abc6b616d34a",
+    "semantic_hash": "00f0707ba5f0aaaf9fa4abc6b616d34a"
+  },
+  "voni/src/lib/session.ts": {
+    "mtime": 1788690372.875742,
+    "ast_hash": "0f1dea5435efd71ed23852ae98e3e602",
+    "semantic_hash": "0f1dea5435efd71ed23852ae98e3e602"
+  },
+  "voni/src/lib/settings-tabs.ts": {
+    "mtime": 1788986392.7311292,
+    "ast_hash": "48bc117a730d406ca836e6aa5647abd0",
+    "semantic_hash": "48bc117a730d406ca836e6aa5647abd0"
+  },
+  "voni/src/lib/settings-tiles.test.ts": {
+    "mtime": 1789587495.658684,
+    "ast_hash": "726069be592968021b4d0fe2a4aacc4a",
+    "semantic_hash": "726069be592968021b4d0fe2a4aacc4a"
+  },
+  "voni/src/lib/settings-tiles.ts": {
+    "mtime": 1789586130.6833389,
+    "ast_hash": "4566baefa9ad06c5149ba6634b4a1954",
+    "semantic_hash": "4566baefa9ad06c5149ba6634b4a1954"
+  },
+  "voni/src/lib/timezones.ts": {
+    "mtime": 1789156953.7396338,
+    "ast_hash": "4d8dc8f8bd7d1db9db8e2e0018293f3b",
+    "semantic_hash": "4d8dc8f8bd7d1db9db8e2e0018293f3b"
+  },
+  "voni/src/lib/tools/definitions.test.ts": {
+    "mtime": 1789421304.6706824,
+    "ast_hash": "8358629dd4b70223fa9fae455dec6d32",
+    "semantic_hash": "8358629dd4b70223fa9fae455dec6d32"
+  },
+  "voni/src/lib/tools/definitions.ts": {
+    "mtime": 1789421282.1871502,
+    "ast_hash": "99dfd629e8f07dae1e820f527355ba57",
+    "semantic_hash": "99dfd629e8f07dae1e820f527355ba57"
+  },
+  "voni/src/lib/tools/execute.ts": {
+    "mtime": 1789396249.05874,
+    "ast_hash": "f5b96a81530032f512a4f72be8488946",
+    "semantic_hash": "f5b96a81530032f512a4f72be8488946"
+  },
+  "voni/src/lib/utils.ts": {
+    "mtime": 1788359216.4786906,
+    "ast_hash": "5a6fd53fdcf2be529e9cc0b718fde352",
+    "semantic_hash": "5a6fd53fdcf2be529e9cc0b718fde352"
+  },
+  "voni/src/lib/voice/mic-owner.test.ts": {
+    "mtime": 1788806410.412943,
+    "ast_hash": "4aa2abc1d4a0c3b2cf210da87e8ae22e",
+    "semantic_hash": "4aa2abc1d4a0c3b2cf210da87e8ae22e"
+  },
+  "voni/src/lib/voice/mic-owner.ts": {
+    "mtime": 1788806292.1150956,
+    "ast_hash": "ead0b6deb7236c2fa17b16add853b1ea",
+    "semantic_hash": "ead0b6deb7236c2fa17b16add853b1ea"
+  },
+  "voni/src/lib/voice/preview.test.ts": {
+    "mtime": 1788871245.672907,
+    "ast_hash": "dbd4fbec699148ae560cb9628c915fd3",
+    "semantic_hash": "dbd4fbec699148ae560cb9628c915fd3"
+  },
+  "voni/src/lib/voice/preview.ts": {
+    "mtime": 1788871158.9820852,
+    "ast_hash": "039cdeda70b789b4fe5667f352f5722a",
+    "semantic_hash": "039cdeda70b789b4fe5667f352f5722a"
+  },
+  "voni/src/lib/voice/session-lifecycle.test.ts": {
+    "mtime": 1789231840.136978,
+    "ast_hash": "cf814c2f771218065f8bbd90aa25eb54",
+    "semantic_hash": "cf814c2f771218065f8bbd90aa25eb54"
+  },
+  "voni/src/lib/voice/session.ts": {
+    "mtime": 1789231840.136978,
+    "ast_hash": "ea1baf0cc5408daf8055b64c202d90b8",
+    "semantic_hash": "ea1baf0cc5408daf8055b64c202d90b8"
+  },
+  "voni/src/lib/voice/tool-coordinator.test.ts": {
+    "mtime": 1788616430.0003426,
+    "ast_hash": "c11e78c8757cb216949158fead6699e7",
+    "semantic_hash": "c11e78c8757cb216949158fead6699e7"
+  },
+  "voni/src/lib/voice/tool-coordinator.ts": {
+    "mtime": 1788699689.5769396,
+    "ast_hash": "dd8ece62552a7c78cc9ad3d950dbe757",
+    "semantic_hash": "dd8ece62552a7c78cc9ad3d950dbe757"
+  },
+  "voni/src/proxy.ts": {
+    "mtime": 1788986392.7311292,
+    "ast_hash": "3c95a57d8f718ac18098347956a26fbd",
+    "semantic_hash": "3c95a57d8f718ac18098347956a26fbd"
+  },
+  "voni/tests/e2e/instant-shell.spec.ts": {
+    "mtime": 1788986392.7311292,
+    "ast_hash": "43be8e38ccfcff1137bd5442f98b8c4b",
+    "semantic_hash": "43be8e38ccfcff1137bd5442f98b8c4b"
+  },
+  "voni/tests/e2e/rig-liveness.spec.ts": {
+    "mtime": 1788986392.7311292,
+    "ast_hash": "97cd5b555b84ce6ad6d667557b963279",
+    "semantic_hash": "97cd5b555b84ce6ad6d667557b963279"
+  },
+  "voni/tsconfig.json": {
+    "mtime": 1788359173.8447387,
+    "ast_hash": "ee17fd1c97c735e9f3564e3f5251f125",
+    "semantic_hash": "ee17fd1c97c735e9f3564e3f5251f125"
+  },
+  "voni/worker.ts": {
+    "mtime": 1788789779.7905116,
+    "ast_hash": "42b6d5f3fee49e85111955dcd90715e4",
+    "semantic_hash": "42b6d5f3fee49e85111955dcd90715e4"
+  },
+  ".agents/skills/assemblyai/SKILL.md": {
+    "mtime": 1789859955.8287492,
+    "ast_hash": "514b7da046f7874dde158e323b8e43cb",
+    "semantic_hash": "514b7da046f7874dde158e323b8e43cb"
+  },
+  ".agents/skills/assemblyai/references/api-reference.md": {
+    "mtime": 1789859955.8287492,
+    "ast_hash": "e19f1c0220c726059d79f19a70fc37ca",
+    "semantic_hash": "e19f1c0220c726059d79f19a70fc37ca"
+  },
+  ".agents/skills/assemblyai/references/audio-intelligence.md": {
+    "mtime": 1789859955.8287492,
+    "ast_hash": "5f4b4003c3c628d2fc122f34c6a367dd",
+    "semantic_hash": "5f4b4003c3c628d2fc122f34c6a367dd"
+  },
+  ".agents/skills/assemblyai/references/dictation.md": {
+    "mtime": 1789859955.8287492,
+    "ast_hash": "01afeed65cf7add08cd956d9db622dfc",
+    "semantic_hash": "01afeed65cf7add08cd956d9db622dfc"
+  },
+  ".agents/skills/assemblyai/references/js-sdk.md": {
+    "mtime": 1789859955.8287492,
+    "ast_hash": "a5db321c2cf6691a127291a3582f5de1",
+    "semantic_hash": "a5db321c2cf6691a127291a3582f5de1"
+  },
+  ".agents/skills/assemblyai/references/llm-gateway.md": {
+    "mtime": 1789859955.8287492,
+    "ast_hash": "3db97b9ad776bdaebf87f429811fb404",
+    "semantic_hash": "3db97b9ad776bdaebf87f429811fb404"
+  },
+  ".agents/skills/assemblyai/references/python-sdk.md": {
+    "mtime": 1789859955.8287492,
+    "ast_hash": "118ec9d0eb7ece0bfceeb2f60eee995e",
+    "semantic_hash": "118ec9d0eb7ece0bfceeb2f60eee995e"
+  },
+  ".agents/skills/assemblyai/references/speech-understanding.md": {
+    "mtime": 1789859955.8287492,
+    "ast_hash": "273310f02d88f5b97be12d1f0d0310ff",
+    "semantic_hash": "273310f02d88f5b97be12d1f0d0310ff"
+  },
+  ".agents/skills/assemblyai/references/streaming.md": {
+    "mtime": 1789859955.8287492,
+    "ast_hash": "f6cc8f91aa95cfd4b1abe2950955562d",
+    "semantic_hash": "f6cc8f91aa95cfd4b1abe2950955562d"
+  },
+  ".agents/skills/assemblyai/references/voice-agents.md": {
+    "mtime": 1789859955.8287492,
+    "ast_hash": "70b9a091c847d7dd4fdf158353772f64",
+    "semantic_hash": "70b9a091c847d7dd4fdf158353772f64"
+  },
+  ".agents/skills/next-dev-loop/SKILL.md": {
+    "mtime": 1789859964.425504,
+    "ast_hash": "af4d352600e0e574123b778e1850f992",
+    "semantic_hash": "af4d352600e0e574123b778e1850f992"
+  },
+  ".github/workflows/ci.yml": {
+    "mtime": 1788986392.721129,
+    "ast_hash": "56ce7cec77d4e7a8f0952c7be08235f7",
+    "semantic_hash": "56ce7cec77d4e7a8f0952c7be08235f7"
+  },
+  ".scratch/button-cursor-draft-gate/issues/01-native-arrow-cursor-on-shared-button.md": {
+    "mtime": 1789501889.4053087,
+    "ast_hash": "fcedfc756869c92b52f50d340742f5e6",
+    "semantic_hash": "fcedfc756869c92b52f50d340742f5e6"
+  },
+  ".scratch/button-cursor-draft-gate/issues/02-equal-weight-discard-action-on-draft-prompt.md": {
+    "mtime": 1789501889.4053087,
+    "ast_hash": "610f0816c18b2c589233ee9c516a39ff",
+    "semantic_hash": "610f0816c18b2c589233ee9c516a39ff"
+  },
+  ".scratch/button-cursor-draft-gate/spec.md": {
+    "mtime": 1789501147.1120372,
+    "ast_hash": "8c050f25dfe349b3f7d93fcf43b452d1",
+    "semantic_hash": "8c050f25dfe349b3f7d93fcf43b452d1"
+  },
+  ".scratch/settings-bento/issues/01-registry-and-gallery.md": {
+    "mtime": 1789587895.8667107,
+    "ast_hash": "0a0b31e45566b72031b82322e0d24300",
+    "semantic_hash": "0a0b31e45566b72031b82322e0d24300"
+  },
+  ".scratch/settings-bento/issues/02-landing-and-shell.md": {
+    "mtime": 1789578865.2881098,
+    "ast_hash": "28350e71df6267cc52303b3de9dd80b1",
+    "semantic_hash": "28350e71df6267cc52303b3de9dd80b1"
+  },
+  ".scratch/settings-bento/issues/03-section-pages.md": {
+    "mtime": 1789578865.2881098,
+    "ast_hash": "f0728141497ce81d5efa72b9ba04951e",
+    "semantic_hash": "f0728141497ce81d5efa72b9ba04951e"
+  },
+  ".scratch/settings-bento/issues/04-badges-and-conditional-tiles.md": {
+    "mtime": 1789578865.2881098,
+    "ast_hash": "793e4edb093dee029f1661ffd4d15a6c",
+    "semantic_hash": "793e4edb093dee029f1661ffd4d15a6c"
+  },
+  ".scratch/settings-bento/issues/05-animated-backgrounds.md": {
+    "mtime": 1789578865.2881098,
+    "ast_hash": "15f9b17815b1cddb86787e55af024046",
+    "semantic_hash": "15f9b17815b1cddb86787e55af024046"
+  },
+  ".scratch/settings-bento/issues/06-hover-prefetch.md": {
+    "mtime": 1789578865.2881098,
+    "ast_hash": "3f89fef8b2489f086f7da81abe66df43",
+    "semantic_hash": "3f89fef8b2489f086f7da81abe66df43"
+  },
+  ".scratch/settings-bento/issues/07-voice-contract.md": {
+    "mtime": 1789578865.2914429,
+    "ast_hash": "24ba9a3ba63e883f85f56df6f80197f0",
+    "semantic_hash": "24ba9a3ba63e883f85f56df6f80197f0"
+  },
+  ".scratch/settings-bento/issues/08-cleanup-and-gates.md": {
+    "mtime": 1789578865.2914429,
+    "ast_hash": "842d72b6b2728b682f08e3e540fe2cdf",
+    "semantic_hash": "842d72b6b2728b682f08e3e540fe2cdf"
+  },
+  ".scratch/settings-bento/spec.md": {
+    "mtime": 1789578854.4854414,
+    "ast_hash": "a84371ae2df3bcb74d4a57e21c11272b",
+    "semantic_hash": "a84371ae2df3bcb74d4a57e21c11272b"
+  },
+  ".scratch/sidebar-03-brand-swap/issues/01-floating-shell-workspace-nav.md": {
+    "mtime": 1789505394.254018,
+    "ast_hash": "aee5423afe34a60d83b5017162ccaec4",
+    "semantic_hash": "aee5423afe34a60d83b5017162ccaec4"
+  },
+  ".scratch/sidebar-03-brand-swap/issues/02-four-state-brand-swap.md": {
+    "mtime": 1789504191.3638468,
+    "ast_hash": "2c656efebb30212f58c12d14770c829b",
+    "semantic_hash": "2c656efebb30212f58c12d14770c829b"
+  },
+  ".scratch/sidebar-03-brand-swap/issues/03-footer-jobs-session.md": {
+    "mtime": 1789504191.3638468,
+    "ast_hash": "33c492c5e9d7073f0bc8240906bc54e8",
+    "semantic_hash": "33c492c5e9d7073f0bc8240906bc54e8"
+  },
+  ".scratch/sidebar-03-brand-swap/issues/04-suite-governance-runtime.md": {
+    "mtime": 1789505394.2573514,
+    "ast_hash": "758e8a31bfc2b544ed38efe9f9c4ca1c",
+    "semantic_hash": "758e8a31bfc2b544ed38efe9f9c4ca1c"
+  },
+  ".scratch/sidebar-03-brand-swap/issues/05-notifications-bell.md": {
+    "mtime": 1789505394.2473514,
+    "ast_hash": "ab7da0058d6494a93e7439c5548085e2",
+    "semantic_hash": "ab7da0058d6494a93e7439c5548085e2"
+  },
+  ".scratch/sidebar-03-brand-swap/issues/06-top-bar-removal.md": {
+    "mtime": 1789505394.2473514,
+    "ast_hash": "7a0e6b26efb9c24438f9f0fe671ef240",
+    "semantic_hash": "7a0e6b26efb9c24438f9f0fe671ef240"
+  },
+  ".scratch/sidebar-03-brand-swap/spec.md": {
+    "mtime": 1789505386.5406084,
+    "ast_hash": "203eb6f1c0ef10d2bde84f9bb8ebb8e3",
+    "semantic_hash": "203eb6f1c0ef10d2bde84f9bb8ebb8e3"
+  },
+  ".scratch/sidebar-avatar-menugroup-fix/spec.md": {
+    "mtime": 1789506706.559926,
+    "ast_hash": "d35bf0f5c0ced3d85e2146c9a6812b6d",
+    "semantic_hash": "d35bf0f5c0ced3d85e2146c9a6812b6d"
+  },
+  "AGENTS.md": {
+    "mtime": 1789865648.1954281,
+    "ast_hash": "79590d8871d33048b50a760bee8b5f86",
+    "semantic_hash": "79590d8871d33048b50a760bee8b5f86"
+  },
+  "CLAUDE.md": {
+    "mtime": 1789865648.1954281,
+    "ast_hash": "79590d8871d33048b50a760bee8b5f86",
+    "semantic_hash": "79590d8871d33048b50a760bee8b5f86"
+  },
+  "HANDOFF.md": {
+    "mtime": 1789587906.3134959,
+    "ast_hash": "ce95f2cb31efc5de375587f478c542fd",
+    "semantic_hash": "ce95f2cb31efc5de375587f478c542fd"
+  },
+  "PRODUCT.md": {
+    "mtime": 1789149202.709363,
+    "ast_hash": "db7ce132eb02c6542200d1959d61bf2c",
+    "semantic_hash": "db7ce132eb02c6542200d1959d61bf2c"
+  },
+  "README.md": {
+    "mtime": 1788872623.1604753,
+    "ast_hash": "39b5ef3b94e7739342a2d5d93035d14a",
+    "semantic_hash": "39b5ef3b94e7739342a2d5d93035d14a"
+  },
+  "docs/agents/assemblyai.md": {
+    "mtime": 1789864904.0409312,
+    "ast_hash": "ef4a51773c67dfa5dc8e23dc46b8bd47",
+    "semantic_hash": "ef4a51773c67dfa5dc8e23dc46b8bd47"
+  },
+  "docs/agents/async-work.md": {
+    "mtime": 1789864904.1742659,
+    "ast_hash": "ba34f9abb290e53c894cc7b80541848b",
+    "semantic_hash": "ba34f9abb290e53c894cc7b80541848b"
+  },
+  "docs/agents/domain.md": {
+    "mtime": 1789500679.0082169,
+    "ast_hash": "5c554b97de22d1765176bc82093ca190",
+    "semantic_hash": "5c554b97de22d1765176bc82093ca190"
+  },
+  "docs/agents/handoff.md": {
+    "mtime": 1789864904.4409354,
+    "ast_hash": "1f2108e8aa9a5da0758255b1b12cfb64",
+    "semantic_hash": "1f2108e8aa9a5da0758255b1b12cfb64"
+  },
+  "docs/agents/issue-tracker.md": {
+    "mtime": 1789500679.0082169,
+    "ast_hash": "f6ea6281af476a211243069a6cd171f8",
+    "semantic_hash": "f6ea6281af476a211243069a6cd171f8"
+  },
+  "docs/agents/nextjs.md": {
+    "mtime": 1789864904.3042672,
+    "ast_hash": "044a7c8dc36cb0fc6555799af8fa3918",
+    "semantic_hash": "044a7c8dc36cb0fc6555799af8fa3918"
+  },
+  "docs/agents/triage-labels.md": {
+    "mtime": 1789500679.0082169,
+    "ast_hash": "22add54cb98451c55b20e6b7992d4a85",
+    "semantic_hash": "22add54cb98451c55b20e6b7992d4a85"
+  },
+  "docs/agents/voice.md": {
+    "mtime": 1789864904.57427,
+    "ast_hash": "8ec70933f642d371d8fc0e76a611ba37",
+    "semantic_hash": "8ec70933f642d371d8fc0e76a611ba37"
+  },
+  "docs/superpowers/plans/2026-09-08-agent-ux-seven-fixes.md": {
+    "mtime": 1788869511.8469098,
+    "ast_hash": "ae9c445905432a9d9a9c12721ac696dc",
+    "semantic_hash": "ae9c445905432a9d9a9c12721ac696dc"
+  },
+  "docs/superpowers/specs/2026-09-08-agent-ux-seven-fixes-design.md": {
+    "mtime": 1788869493.8333833,
+    "ast_hash": "6ac5b5c3fb30553d3eac2de0eaf24ee9",
+    "semantic_hash": "6ac5b5c3fb30553d3eac2de0eaf24ee9"
+  },
+  "voni/AGENTS.md": {
+    "mtime": 1789396249.0454063,
+    "ast_hash": "359346e29df36f5f664de3adc02ecb76",
+    "semantic_hash": "359346e29df36f5f664de3adc02ecb76"
+  },
+  "voni/CLAUDE.md": {
+    "mtime": 1788359194.5683737,
+    "ast_hash": "5c27369b226fcf2be8a6cfe52224e767",
+    "semantic_hash": "5c27369b226fcf2be8a6cfe52224e767"
+  },
+  "voni/DESIGN.md": {
+    "mtime": 1789865918.7215335,
+    "ast_hash": "1d9f5346a8b82e647410f963eaddc762",
+    "semantic_hash": "1d9f5346a8b82e647410f963eaddc762"
+  },
+  "voni/ENVIRONMENT.md": {
+    "mtime": 1788986392.721129,
+    "ast_hash": "ab20cc5b00e6524a843152219c5b95b6",
+    "semantic_hash": "ab20cc5b00e6524a843152219c5b95b6"
+  },
+  "voni/README.md": {
+    "mtime": 1788359173.8414054,
+    "ast_hash": "f15aaa42d5d299d091b1171097ea56ad",
+    "semantic_hash": "f15aaa42d5d299d091b1171097ea56ad"
+  },
+  "voni/THIRD-PARTY-NOTICES.md": {
+    "mtime": 1789505419.5342681,
+    "ast_hash": "4bc580cef8d5b6261058e5dd463159f5",
+    "semantic_hash": "4bc580cef8d5b6261058e5dd463159f5"
+  },
+  "voni/docs/copilot-coverage.md": {
+    "mtime": 1788986392.721129,
+    "ast_hash": "b08c7f1ea2a23a1a5158d437fbff7010",
+    "semantic_hash": "b08c7f1ea2a23a1a5158d437fbff7010"
+  },
+  "voni/docs/next-skills-adoption.md": {
+    "mtime": 1789865048.6857913,
+    "ast_hash": "151e8a770240b5d3161d86ab80e21271",
+    "semantic_hash": "151e8a770240b5d3161d86ab80e21271"
+  },
+  "voni/docs/shadcn-audit.md": {
+    "mtime": 1788986392.721129,
+    "ast_hash": "960ae00fe8c2f5fcab0dbabbeb201dd4",
+    "semantic_hash": "960ae00fe8c2f5fcab0dbabbeb201dd4"
+  },
+  "voni/instant-nav.rig.md": {
+    "mtime": 1788986392.721129,
+    "ast_hash": "6574e1e3a9152c68a640948a3eb084b6",
+    "semantic_hash": "6574e1e3a9152c68a640948a3eb084b6"
+  },
+  "voni/public/personas/README.md": {
+    "mtime": 1788606008.2928627,
+    "ast_hash": "1408b4d16c2da56b8950a8ff2e43d4e0",
+    "semantic_hash": "1408b4d16c2da56b8950a8ff2e43d4e0"
+  },
+  "voni/public/press/README.md": {
+    "mtime": 1789572964.6353087,
+    "ast_hash": "53da1f94ae1f0f919d2b7e7d41742952",
+    "semantic_hash": "53da1f94ae1f0f919d2b7e7d41742952"
+  },
+  "voni/docs/voni-strategy.pdf": {
+    "mtime": 1789396249.0454063,
+    "ast_hash": "ec392fc277daebe4da9186dccc50f4a8",
+    "semantic_hash": "ec392fc277daebe4da9186dccc50f4a8"
+  },
+  "voni/public/file.svg": {
+    "mtime": 1788359173.8447387,
+    "ast_hash": "d09f95206c3fa0bb9bd9fefabfd0ea71",
+    "semantic_hash": "d09f95206c3fa0bb9bd9fefabfd0ea71"
+  },
+  "voni/public/globe.svg": {
+    "mtime": 1788359173.8414054,
+    "ast_hash": "2aaafa6a49b6563925fe440891e32717",
+    "semantic_hash": "2aaafa6a49b6563925fe440891e32717"
+  },
+  "voni/public/next.svg": {
+    "mtime": 1788359173.8447387,
+    "ast_hash": "8e061864f388b47f33a1c3780831193e",
+    "semantic_hash": "8e061864f388b47f33a1c3780831193e"
+  },
+  "voni/public/personas/car-dealership.jpg": {
+    "mtime": 1788606008.2828624,
+    "ast_hash": "6a09b010f389d9c0dd0c98f8f442416e",
+    "semantic_hash": "6a09b010f389d9c0dd0c98f8f442416e"
+  },
+  "voni/public/personas/dental.jpg": {
+    "mtime": 1788606008.2861958,
+    "ast_hash": "01210ca1ad982c82d224178e9eea2096",
+    "semantic_hash": "01210ca1ad982c82d224178e9eea2096"
+  },
+  "voni/public/personas/real-estate.jpg": {
+    "mtime": 1788606008.2828624,
+    "ast_hash": "d3242f33eac843990c0aebd858f20894",
+    "semantic_hash": "d3242f33eac843990c0aebd858f20894"
+  },
+  "voni/public/personas/reception.jpg": {
+    "mtime": 1788606008.2895293,
+    "ast_hash": "8224ff561c35a897d7b119c2a2c24c98",
+    "semantic_hash": "8224ff561c35a897d7b119c2a2c24c98"
+  },
+  "voni/public/personas/restaurant.jpg": {
+    "mtime": 1788606008.2861958,
+    "ast_hash": "1e96c7e5885a0da44e92e3dcdad67b56",
+    "semantic_hash": "1e96c7e5885a0da44e92e3dcdad67b56"
+  },
+  "voni/public/press/png/avatar-1024.png": {
+    "mtime": 1789572173.483497,
+    "ast_hash": "92599bd189c247fcc21ea85b3629961e",
+    "semantic_hash": "92599bd189c247fcc21ea85b3629961e"
+  },
+  "voni/public/press/png/avatar-400.png": {
+    "mtime": 1789572173.493497,
+    "ast_hash": "7a24c06f2b76ce9ec4cae8d44c534ea2",
+    "semantic_hash": "7a24c06f2b76ce9ec4cae8d44c534ea2"
+  },
+  "voni/public/press/png/avatar-500.png": {
+    "mtime": 1789572173.4901636,
+    "ast_hash": "eb9f0e701c42bad6cbb70c7711c6ac35",
+    "semantic_hash": "eb9f0e701c42bad6cbb70c7711c6ac35"
+  },
+  "voni/public/press/png/og-cover-1200x630.png": {
+    "mtime": 1789572794.7869935,
+    "ast_hash": "8212d44a92f390a03533054d9456f040",
+    "semantic_hash": "8212d44a92f390a03533054d9456f040"
+  },
+  "voni/public/press/png/voni-chip-dark-1024.png": {
+    "mtime": 1789572173.4501631,
+    "ast_hash": "76d9bf1af5735bf58db3cbcb27f1ad1b",
+    "semantic_hash": "76d9bf1af5735bf58db3cbcb27f1ad1b"
+  },
+  "voni/public/press/png/voni-chip-dark-512.png": {
+    "mtime": 1789572173.4568298,
+    "ast_hash": "6befc3d9e8f440fcf165305edf73f49a",
+    "semantic_hash": "6befc3d9e8f440fcf165305edf73f49a"
+  },
+  "voni/public/press/png/voni-chip-light-1024.png": {
+    "mtime": 1789572173.430163,
+    "ast_hash": "92599bd189c247fcc21ea85b3629961e",
+    "semantic_hash": "92599bd189c247fcc21ea85b3629961e"
+  },
+  "voni/public/press/png/voni-chip-light-512.png": {
+    "mtime": 1789572173.4401631,
+    "ast_hash": "ab14f6211cd8a1f1fb0181fa4147aaf6",
+    "semantic_hash": "ab14f6211cd8a1f1fb0181fa4147aaf6"
+  },
+  "voni/public/press/png/voni-mark-dark-1024.png": {
+    "mtime": 1789572173.4734967,
+    "ast_hash": "59cb82cdc17d531f84d8928f7bc5ba38",
+    "semantic_hash": "59cb82cdc17d531f84d8928f7bc5ba38"
+  },
+  "voni/public/press/png/voni-mark-light-1024.png": {
+    "mtime": 1789572173.46683,
+    "ast_hash": "774706fae5bf5fac271e60c66f897db8",
+    "semantic_hash": "774706fae5bf5fac271e60c66f897db8"
+  },
+  "voni/public/press/png/voni-wordmark-dark-2048.png": {
+    "mtime": 1789572792.1036346,
+    "ast_hash": "4acf19df45074d72db592c791a77787b",
+    "semantic_hash": "4acf19df45074d72db592c791a77787b"
+  },
+  "voni/public/press/png/voni-wordmark-light-2048.png": {
+    "mtime": 1789572788.500267,
+    "ast_hash": "23ada8124e985867c0f7dcc7032bb8c5",
+    "semantic_hash": "23ada8124e985867c0f7dcc7032bb8c5"
+  },
+  "voni/public/press/voni-chip-dark.svg": {
+    "mtime": 1789572071.9356134,
+    "ast_hash": "bb71b98774fde7e1b80f85f39901289c",
+    "semantic_hash": "bb71b98774fde7e1b80f85f39901289c"
+  },
+  "voni/public/press/voni-chip-light.svg": {
+    "mtime": 1789572071.9356134,
+    "ast_hash": "bf929247fa4f95740b0fa48e9564585a",
+    "semantic_hash": "bf929247fa4f95740b0fa48e9564585a"
+  },
+  "voni/public/press/voni-mark-dark.svg": {
+    "mtime": 1789572114.4761252,
+    "ast_hash": "74a4ac5153d4a6cda661970250f28e5c",
+    "semantic_hash": "74a4ac5153d4a6cda661970250f28e5c"
+  },
+  "voni/public/press/voni-mark-light.svg": {
+    "mtime": 1789572114.4761252,
+    "ast_hash": "5363e19c85bb1334f86d34ed91ee9979",
+    "semantic_hash": "5363e19c85bb1334f86d34ed91ee9979"
+  },
+  "voni/public/press/voni-mono-black.svg": {
+    "mtime": 1789572114.4727917,
+    "ast_hash": "ca9d84e52088db29dd2dce2e7cb3fa7f",
+    "semantic_hash": "ca9d84e52088db29dd2dce2e7cb3fa7f"
+  },
+  "voni/public/press/voni-mono-white.svg": {
+    "mtime": 1789572114.4761252,
+    "ast_hash": "d59514100b64351dc887d566cfab8801",
+    "semantic_hash": "d59514100b64351dc887d566cfab8801"
+  },
+  "voni/public/press/voni-wordmark-dark.svg": {
+    "mtime": 1789572114.4727917,
+    "ast_hash": "73f74dad8980fde53e4bddf186f34038",
+    "semantic_hash": "73f74dad8980fde53e4bddf186f34038"
+  },
+  "voni/public/press/voni-wordmark-light.svg": {
+    "mtime": 1789572114.4694583,
+    "ast_hash": "8fd74fde138522a535ae449dec6048b6",
+    "semantic_hash": "8fd74fde138522a535ae449dec6048b6"
+  },
+  "voni/public/vercel.svg": {
+    "mtime": 1788359173.8447387,
+    "ast_hash": "c0af2f507b369b085b35ef4bbe3bcf1e",
+    "semantic_hash": "c0af2f507b369b085b35ef4bbe3bcf1e"
+  },
+  "voni/public/window.svg": {
+    "mtime": 1788359173.8447387,
+    "ast_hash": "a2760511c65806022ad20adf74370ff3",
+    "semantic_hash": "a2760511c65806022ad20adf74370ff3"
+  },
+  "voni/src/app/apple-icon.png": {
+    "mtime": 1788649368.4748247,
+    "ast_hash": "0468597321038f8150167b010d5d0600",
+    "semantic_hash": "0468597321038f8150167b010d5d0600"
+  },
+  "voni/src/app/icon.svg": {
+    "mtime": 1788696181.3328068,
+    "ast_hash": "8f40698a1659062c713fff2c0bee960b",
+    "semantic_hash": "8f40698a1659062c713fff2c0bee960b"
+  },
+  "voni/public/voices/alba.mp3": {
+    "mtime": 1789061333.3698716,
+    "ast_hash": "bf5249157518ec0041cc91e6178e1006",
+    "semantic_hash": "bf5249157518ec0041cc91e6178e1006"
+  },
+  "voni/public/voices/anna.mp3": {
+    "mtime": 1789061333.3698716,
+    "ast_hash": "f184025099a18a0d52f56004b86c7587",
+    "semantic_hash": "f184025099a18a0d52f56004b86c7587"
+  },
+  "voni/public/voices/charles.mp3": {
+    "mtime": 1789061333.3698716,
+    "ast_hash": "aacd0d8be5a7b26f8a899bdae0a4d390",
+    "semantic_hash": "aacd0d8be5a7b26f8a899bdae0a4d390"
+  },
+  "voni/public/voices/estelle.mp3": {
+    "mtime": 1789061333.3698716,
+    "ast_hash": "ee7e5ca1384d68029be7cf29900c14a6",
+    "semantic_hash": "ee7e5ca1384d68029be7cf29900c14a6"
+  },
+  "voni/public/voices/eve.mp3": {
+    "mtime": 1789061333.3698716,
+    "ast_hash": "ab66ea9c80ea74d3ea205a9ce42d3981",
+    "semantic_hash": "ab66ea9c80ea74d3ea205a9ce42d3981"
+  },
+  "voni/public/voices/george.mp3": {
+    "mtime": 1789061333.373205,
+    "ast_hash": "83846197f824aedad3ab6eb87f87fac4",
+    "semantic_hash": "83846197f824aedad3ab6eb87f87fac4"
+  },
+  "voni/public/voices/giovanni.mp3": {
+    "mtime": 1789061333.373205,
+    "ast_hash": "eff963d6f473549795be87168a4e3ddd",
+    "semantic_hash": "eff963d6f473549795be87168a4e3ddd"
+  },
+  "voni/public/voices/jane.mp3": {
+    "mtime": 1789061333.373205,
+    "ast_hash": "774e9ae5f1e9e6bad1c9755862f656c9",
+    "semantic_hash": "774e9ae5f1e9e6bad1c9755862f656c9"
+  },
+  "voni/public/voices/jean.mp3": {
+    "mtime": 1789061333.373205,
+    "ast_hash": "d1440f71d80f555e42cbd418224d2574",
+    "semantic_hash": "d1440f71d80f555e42cbd418224d2574"
+  },
+  "voni/public/voices/juergen.mp3": {
+    "mtime": 1789061333.373205,
+    "ast_hash": "98bfbb6f377fae772f215461e6fa7a21",
+    "semantic_hash": "98bfbb6f377fae772f215461e6fa7a21"
+  },
+  "voni/public/voices/lola.mp3": {
+    "mtime": 1789061333.373205,
+    "ast_hash": "c2ac2ad5bdd6f49edfcc787435c567e7",
+    "semantic_hash": "c2ac2ad5bdd6f49edfcc787435c567e7"
+  },
+  "voni/public/voices/mary.mp3": {
+    "mtime": 1789061333.373205,
+    "ast_hash": "cdfe2db57a6aa9d5cd5b9cda46c9dea1",
+    "semantic_hash": "cdfe2db57a6aa9d5cd5b9cda46c9dea1"
+  },
+  "voni/public/voices/michael.mp3": {
+    "mtime": 1789061333.373205,
+    "ast_hash": "8ab98c7a3bed36c7b518afaae4df22fe",
+    "semantic_hash": "8ab98c7a3bed36c7b518afaae4df22fe"
+  },
+  "voni/public/voices/paul.mp3": {
+    "mtime": 1789061333.373205,
+    "ast_hash": "d09d3bc975c542346048ec71ecb2e72e",
+    "semantic_hash": "d09d3bc975c542346048ec71ecb2e72e"
+  },
+  "voni/public/voices/rafael.mp3": {
+    "mtime": 1789061333.3765385,
+    "ast_hash": "a277447bc1f346a2a873f60d60de773f",
+    "semantic_hash": "a277447bc1f346a2a873f60d60de773f"
+  },
+  "voni/public/voices/vera.mp3": {
+    "mtime": 1789061333.3765385,
+    "ast_hash": "f88de55444cd8575b7ab8e211b0387a0",
+    "semantic_hash": "f88de55444cd8575b7ab8e211b0387a0"
+  }
+}

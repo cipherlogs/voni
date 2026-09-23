@@ -69,6 +69,21 @@ test("shell preserves the sidebar-03 idiom with resolver, ordering, and collapse
   // Jobs status lives solely in the utility group — the nav list filters
   // the duplicate row but keeps /jobs as the command-menu + manifest source.
   assert.match(entry, /\.filter\(/, "nav filters the jobs duplicate");
+  // Active-link highlight: the URL-reading leaf flows the pathname as the
+  // nav's active path, with a null-path prerender fallback.
+  assert.match(entry, /usePathname/, "active link reads the URL");
+  assert.match(entry, /SidebarNavSelf/, "active-state leaf stays");
+  assert.match(entry, /activePath=\{pathname\}/, "pathname flows to the nav");
+  assert.match(entry, /activePath=\{null\}/, "prerender keeps a null fallback");
+
+  const nav = readRepo("components/sidebar-03/nav-main.tsx");
+  assert.match(nav, /isActive/, "nav computes active state");
+  assert.match(
+    nav,
+    /activePath\.startsWith\(route\.link\)/,
+    "highlight matches by route prefix",
+  );
+  assert.match(nav, /isActive=\{isActive\}/, "highlight reaches the row");
 
   const shell = readRepo("components/sidebar-03/app-sidebar.tsx");
   assert.match(shell, /collapsible="icon"/, "icon rail stays");
@@ -83,6 +98,17 @@ test("shell preserves the sidebar-03 idiom with resolver, ordering, and collapse
   assert.match(utility, /useCopilot/, "voice row stays");
   assert.match(utility, /useJobs/, "jobs row stays");
   assert.match(utility, /getJobProgressPercent/, "jobs percent stays");
+  // Jobs count badge semantics: running count aggregates active +
+  // optimistic rows, unseen results keep their ready copy, opening jobs
+  // settles the unread count, and the row stays labelled for assistive tech.
+  assert.match(utility, /activeJobs/, "running source stays");
+  assert.match(utility, /unreadJobs/, "unseen-results source stays");
+  assert.match(utility, /activeCount/, "running count aggregates both queues");
+  assert.match(utility, /running/, "running copy stays");
+  assert.match(utility, /results ready/, "results-ready copy stays");
+  assert.match(utility, /View background jobs/, "jobs row stays labelled");
+  assert.match(utility, /aria-label=\{ariaLabel\}/, "label stays announced");
+  assert.match(utility, /markSeen/, "opening jobs settles the unread count");
   assert.match(
     utility,
     /group-data-\[collapsible=icon\]:hidden/,
@@ -142,9 +168,33 @@ test("dashboard outcome Tiles speak the editorial Tile grammar with honest drill
     "no hype surfaces on stat Tiles",
   );
   // Frozen shell: suspense stays around the outcomes, loading reads as the
-  // stat grid, errors read as the shared route card.
+  // stat grid, errors read as the shared route card — pinned against the
+  // segment files that ship, not just the page's inline fallback.
   assert.match(page, /<Suspense/, "outcomes stay behind their boundary");
   assert.match(page, /StatGridSkeleton/, "loading stays the stat grid");
+
+  const dashboardLoading = readRepo("app/(dashboard)/dashboard/loading.tsx");
+  assert.match(
+    dashboardLoading,
+    /StatGridSkeleton/,
+    "segment loading stays the stat grid",
+  );
+  assert.match(
+    dashboardLoading,
+    /cards=\{4\}/,
+    "segment loading keeps the four-card shape",
+  );
+  assert.match(
+    dashboardLoading,
+    /PageHeaderSkeleton/,
+    "segment loading keeps the header shape",
+  );
+
+  const dashboardError = readRepo("app/(dashboard)/dashboard/error.tsx");
+  assert.match(dashboardError, /"use client"/, "segment error stays client");
+  assert.match(dashboardError, /RouteError/, "segment error stays shared");
+  assert.match(dashboardError, /<RouteError/, "segment error renders the card");
+  assert.match(dashboardError, /retry/, "segment error keeps retry");
 
   const card = readRepo("components/ui/card.tsx");
   assert.match(card, /bg-card/, "Tile surface stays the card token");

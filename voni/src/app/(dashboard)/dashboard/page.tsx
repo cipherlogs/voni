@@ -15,6 +15,19 @@ import { Onboarding01 } from "@/components/onboarding-01/onboarding-01";
 import { getDashboardSetupSteps } from "@/lib/dashboard/setup";
 import { getDashboardSummary } from "./actions";
 
+// Shared outcome/funnel Tile language: one class source for both grids so
+// the two densities cannot drift into a second visual language. Literals
+// stay inline below in spirit — these constants render the identical
+// strings, markup-only.
+const TILE_CARD_CLASS =
+  "h-full gap-0 py-0 transition-shadow duration-[var(--motion-standard)] hover:shadow-md focus-within:shadow-md";
+const TILE_BODY_CLASS = "flex flex-1 flex-col gap-3 p-8";
+const TILE_NUMBER_CLASS =
+  "mt-1 text-3xl font-semibold tracking-tight tabular-nums";
+const TILE_FOOTER_CLASS = "mt-auto justify-end p-0";
+const TILE_LINK_CLASS =
+  "inline-flex cursor-pointer items-center gap-1 rounded-sm px-6 py-3 text-sm font-medium text-primary outline-none hover:text-primary/90 focus-visible:ring-2 focus-visible:ring-ring";
+
 /**
  * Conversion view: four outcome totals backed by recorded rows. Each card
  * links to its filtered list (`?stage=` / `?outcome=`) so the drill-down
@@ -91,11 +104,8 @@ async function DashboardOutcomes() {
       />
       <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-4">
         {cards.map((card) => (
-          <Card
-            key={card.label}
-            className="h-full gap-0 py-0 transition-shadow duration-[var(--motion-standard)] hover:shadow-md focus-within:shadow-md"
-          >
-            <CardContent className="flex flex-1 flex-col gap-3 p-8">
+          <Card key={card.label} className={TILE_CARD_CLASS}>
+            <CardContent className={TILE_BODY_CLASS}>
               <span className="text-muted-foreground text-sm">
                 {card.label}
               </span>
@@ -106,16 +116,16 @@ async function DashboardOutcomes() {
               ) : null}
               <span
                 aria-label={`${card.label}: ${card.value}`}
-                className="mt-1 text-3xl font-semibold tracking-tight tabular-nums"
+                className={TILE_NUMBER_CLASS}
               >
                 {card.value}
               </span>
             </CardContent>
-            <CardFooter className="mt-auto justify-end p-0">
+            <CardFooter className={TILE_FOOTER_CLASS}>
               <Link
                 href={card.href}
                 aria-label={card.linkLabel}
-                className="inline-flex cursor-pointer items-center gap-1 rounded-sm px-6 py-3 text-sm font-medium text-primary outline-none hover:text-primary/90 focus-visible:ring-2 focus-visible:ring-ring"
+                className={TILE_LINK_CLASS}
               >
                 View
                 <ArrowUpRight aria-hidden="true" className="size-3.5" />
@@ -157,26 +167,23 @@ async function DashboardOutcomes() {
             normalizes and matches case-insensitively. */}
         <div className="mt-4 grid grid-cols-1 gap-6 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5">
           {summary.stages.map((stage) => (
-            <Card
-              key={stage.stage}
-              className="h-full gap-0 py-0 transition-shadow duration-[var(--motion-standard)] hover:shadow-md focus-within:shadow-md"
-            >
-              <CardContent className="flex flex-1 flex-col gap-3 p-8">
+            <Card key={stage.stage} className={TILE_CARD_CLASS}>
+              <CardContent className={TILE_BODY_CLASS}>
                 <span className="text-muted-foreground text-sm">
                   {pipelineStateLabel(stage.stage)}
                 </span>
                 <span
                   aria-label={`${pipelineStateLabel(stage.stage)}: ${stage.value}`}
-                  className="mt-1 text-3xl font-semibold tracking-tight tabular-nums"
+                  className={TILE_NUMBER_CLASS}
                 >
                   {stage.value}
                 </span>
               </CardContent>
-              <CardFooter className="mt-auto justify-end p-0">
+              <CardFooter className={TILE_FOOTER_CLASS}>
                 <Link
                   href={`/leads?stage=${encodeURIComponent(stage.stage)}`}
                   aria-label={`View ${pipelineStateLabel(stage.stage)} leads`}
-                  className="inline-flex cursor-pointer items-center gap-1 rounded-sm px-6 py-3 text-sm font-medium text-primary outline-none hover:text-primary/90 focus-visible:ring-2 focus-visible:ring-ring"
+                  className={TILE_LINK_CLASS}
                 >
                   View
                   <ArrowUpRight aria-hidden="true" className="size-3.5" />

@@ -44,8 +44,10 @@ a Blocks token system exists.
   self-hosted so no third-party fetch) — for hero headings and quotes only.
   Rationale: the calm editorial document feel needs a serif for display
   moments; body, UI, buttons, and metadata stay on the blessed sans and mono
-  so no second visual language leaks in. Scope: landing hero `h1` opts in via
-  the `font-editorial` utility (tight tracking + balanced wrapping kept);
+  so no second visual language leaks in.   Scope: landing hero `h1` opts in via
+  the `font-editorial` utility (tight tracking + balanced wrapping kept,
+  weight `font-medium` for serif optical sizing — sans `font-semibold`
+  would render too heavy in Newsreader);
   `blockquote`/`q` render editorial via the base layer without per-site
   classes. No other typeface additions without their own amendment.
 - **Spacing:** Tailwind defaults only. No custom scale.
@@ -184,7 +186,7 @@ label (Collapse/Expand sidebar + ⌘B) with aria-expanded.
   `FieldGroup` + `Field` + labels/descriptions + `data-invalid` /
   `aria-invalid` per Base UI. Width caps only: names/roles `max-w-md`, short
   selectors `max-w-xs`, time/numeric `max-w-40`, prose full width.
-  `grep -rn 'CONTROL' src/components/` must be empty.
+  `grep -rn 'CONTROL' src/components/ | grep -v '\.test\.'` must be empty.
 - **Transparent footers** (amendment 2026-09-14): page-form footers sit
   outside filled bodies with a separator and consistent spacing
   (`Separator` + `pt-4`, secondary-left / primary-right, wrapping on narrow
@@ -274,11 +276,14 @@ label (Collapse/Expand sidebar + ⌘B) with aria-expanded.
 ## 5. Banned styles + enforcement greps
 
 Run from `voni/`. Every hit must map to a token, be rebuilt in-style,
-or be cut — or be a DESIGN.md-listed exception.
+or be cut — or be a DESIGN.md-listed exception. Enforcement mirrors
+(`design-foundation.test.ts`) skip `*.test.*` pins, so every grep below
+excludes test files (`grep -v '\.test\.' or `--exclude='*.test.*'`) —
+pins assert absence and therefore contain the banned strings as literals.
 
 - `text-[` / `bg-[` arbitrary values (mapped ticket 01; now zero outside
   generated code except one listed survivor) → map to scale/tokens.
-  `grep -rn 'text-\[\|bg-\[' src | grep -v 'src/components/ui/'`
+  `grep -rn 'text-\[\|bg-\[' src | grep -v 'src/components/ui/' | grep -v '\.test\.'`
   Listed survivor: `voice-call.tsx` error body
   (`text-[color-mix(in_oklch,var(--destructive),var(--foreground)_45%)]`) —
   no token expresses destructive mixed toward foreground, and a new token for
@@ -288,7 +293,7 @@ or be cut — or be a DESIGN.md-listed exception.
   comments reworded off the palette words; `&#8729;` entities replaced with
   the `·` char (the hex grep false-positived on the entity); the bento mask
   uses the `black` keyword. `grep -rniE 'emerald|amber|#[0-9a-f]{3,6}\b' src
-  | grep -v 'provider-'` Listed sites: `--provider-*` scene-glyph fills
+  | grep -v 'provider-' | grep -v '\.test\.'` Listed sites: `--provider-*` scene-glyph fills
   (§10b, the only hex exemption) and `src/app/icon.svg` fixed paper `#fafafa`
   + ink `#0a0a0a` (favicon stays light paper with an ink mark regardless of
   theme, matching the in-app chip — not theme-reactive by design).
@@ -299,9 +304,9 @@ or be cut — or be a DESIGN.md-listed exception.
   generated `ui/`). The paired token classes inside ticket 09's
   `AppearancePreview` (`settings-bento/scenes.tsx`) are the sole remaining
   exception because the miniature must keep light and dark semantics under
-  either host theme. `grep -rn 'dark:' src | grep -v 'src/components/ui/'`
+  either host theme. `grep -rn 'dark:' src | grep -v 'src/components/ui/' | grep -v '\.test\.'`
 - `style={{` / `style={` (cleared ticket 01 except listed dynamics).
-  `grep -rn 'style={{' src` plus `style={` review. Listed dynamics (all
+  `grep -rn 'style={{' src | grep -v '\.test\.'` plus `style={` review. Listed dynamics (all
   token-only, transform/opacity or CSS-variable plumbing, no new palette):
   `stats-11` + `jobs/job-row` progress fill (`transform: scaleX`, the blessed
   progress idiom); generated `ui/` primitives (`toggle-group --gap`,
@@ -312,18 +317,18 @@ or be cut — or be a DESIGN.md-listed exception.
   typing dots moved to arbitrary `[animation-delay:...]` properties (the
   `test-agent-dialog` precedent).
 - `space-x-|space-y-` (zero outside generated code ticket 01; use flex+gap).
-  `grep -rn 'space-[xy]-' src` Generated exception: `ui/avatar.tsx`
+  `grep -rn 'space-[xy]-' src | grep -v '\.test\.'` Generated exception: `ui/avatar.tsx`
   overlap group (`-space-x-2`). Vendored-block comments reworded off the
   spaced-stack names so the grep stays clean.
 - Non-`size-*` icon squares (cleared ticket 01: `mode-toggle`
-  `h-[1.2rem]` pair unified to `size-5`). `grep -rn 'h-[0-9].*w-\[0-9\]' src`
+  `h-[1.2rem]` pair unified to `size-5`). `grep -rn 'h-[0-9].*w-\[0-9\]' src | grep -v '\.test\.'`
 - Extra CSS files / keyframes: only `globals.css` survives; prototype
   CSS deleted with the routes. `ls src/app/prototypes` must 404-think → empty
   (DONE ticket 08 — the `settings-gallery` throwaway is deleted, so the
   exception is retired; the manifest generator's `prototypes/` exclusion
   stays for future throwaways, with zero voice churn).
 - `cn` imports unify to `@/lib/utils` (remove `from "cn"` specifiers).
-  `grep -rn 'from "cn"' src`
+  `grep -rn 'from "cn"' src | grep -v '\.test\.'`
   (DONE 2026-09-13 — 13 ui/ files unified. The `"cn"` npm dep remains
   installed; remove it when no specifier references it.)
 - Vendored Blocks files live under `src/components/<block-id>/` (NOT
@@ -333,13 +338,13 @@ or be cut — or be a DESIGN.md-listed exception.
   (same exclusion pattern for the other greps; table-05 is the first
   reference vendoring, more block dirs follow).
 - `sonner` references must be zero (Base UI toast is canonical).
-  `grep -rni 'sonner' src package.json`
-- `asChild` must be zero (`render=` everywhere). `grep -rn 'asChild' src`
+  `grep -rni 'sonner' src package.json | grep -v '\.test\.'`
+- `asChild` must be zero (`render=` everywhere). `grep -rn 'asChild' src | grep -v '\.test\.'`
 - Template-filler words (Acme/lorem-ipsum-class placeholders, fake-brand
   names) must be zero in user-visible design and copy; mock data uses
   functional labels (`Main workspace`) or RFC-reserved domains
   (`example.com`). Fixtures must read as plausible product data.
-  `grep -rni 'acme\|lorem\|john doe\|foo bar' src scripts`
+  `grep -rni 'acme\|lorem\|john doe\|foo bar' src scripts | grep -v '\.test\.'`
 - `data-copilot-*` instrumentation: allowed to remain (functional), but
   new bespoke data-attribute styling is banned.
 
@@ -414,7 +419,9 @@ loops. One-shot enters are covered by the squash alone.
   `.status-enter` (`content-enter`); no new keyframe.
 - **Overlay timing unification:** `dialog` / `select` / `dropdown-menu`
   move `duration-100` → `duration-[var(--motion-standard)]` (180ms, one
-  shared enter language). `sheet`, toast transitions, and all §2 survivors
+  shared enter language). Interactive card hovers (`grid-list-02`,
+  `wizard/voice-field`) speak the same standard per hover language below.
+  `sheet`, toast transitions, and all §2 survivors
   untouched.
 - **Transient job-completion beat:** when `activeCount` drops to zero from
   nonzero, `JobPill` may render a time-bound (~4s), self-clearing

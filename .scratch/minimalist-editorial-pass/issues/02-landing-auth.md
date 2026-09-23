@@ -21,9 +21,13 @@
   Login01 + Google social + narrow width, shared SiteFooter language).
   Wired into `voni/package.json` test script; full suite 537 pass.
 - `voni/src/components/site-footer.tsx` (new): shared brand mark + tagline
-  + year slot on the landing gutter; landing/auth render the same language.
-  Auth year leaves copy the landing FooterYear request-time pattern, so the
-  PPR shell stays prerenderable (build lists /login + /signup as PPR).
+  + year slot on the shared PUBLIC_CONTAINER gutter; landing/auth render
+  the same language. Auth screens import the shared FooterYear
+  request-time leaf (no per-route copy), so the PPR shell stays
+  prerenderable (build lists /login + /signup as PPR).
+- `voni/src/components/auth-decision.tsx` (new): single session decision
+  for login + signup (session, next-path, bypass, redirect, OAuth error
+  mapping); routes stay thin frames behind their Suspense boundaries.
 - Card primitive already speaks ring-1 ring-foreground/10 with no border
   class, so the explicit Tile ring dedupes via cn() to one crisp hairline.
 - `tsc --noEmit` clean; `npm run lint` 0 errors (2 pre-existing table-05
@@ -31,6 +35,6 @@
   survivors; production build green (exited 0 with 8GB heap; default 2GB
   heap OOMs in the TS phase on this repo).
 - Running app: dev :3000 `/` desktop + 390px snapshots clean, zero console
-  errors, no overflow; prod `next start :3100` (bypass off) `/login` +
+  errors, no overflow; prod preview (`npm run preview` from `voni/`, bypass off) `/login` +
   `/signup` render AuthForm + shared footer with zero errors, forced error
   states via ?error= show the Alert copy, 390px signup no overflow.

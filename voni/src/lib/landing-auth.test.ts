@@ -31,8 +31,16 @@ test("landing hero reads as one document composition with logic frozen", () => {
   assert.match(landing, /LandingDemo/, "live-demo widget stays in the hero");
   // Demo widget sits in the same composition measure, not full-bleed.
   assert.match(landing, /max-w-2xl/, "demo wrapper shares the document measure");
-  // Section-whitespace rhythm: hero and feature sections share one gutter.
-  assert.match(landing, /max-w-6xl px-6/, "one gutter for header, hero, and grid");
+  // Section-whitespace rhythm: hero and feature sections share one gutter
+  // literal (PUBLIC_CONTAINER in site-footer.tsx), not a copy per file.
+  assert.match(landing, /PUBLIC_CONTAINER/, "hero shares the public gutter");
+  assert.doesNotMatch(landing, /max-w-6xl px-6/, "gutter literal lives in one module");
+  const footerGutter = readRepo("components/site-footer.tsx");
+  assert.match(
+    footerGutter,
+    /max-w-6xl px-6/,
+    "one gutter literal for header, hero, grid, and footer"
+  );
   assert.match(landing, /py-16/, "hero on the section-whitespace rhythm");
   assert.match(landing, /md:py-24/, "hero keeps its generous desktop rhythm");
   // Frozen logic: session gate, suspense boundaries, demo-mode wiring.
@@ -67,17 +75,38 @@ test("feature Tile grid uses flat card tokens with ring hairlines", () => {
 });
 
 test("auth screens keep the login idiom with shared footer language", () => {
-  for (const route of ["app/login/page.tsx", "app/signup/page.tsx"]) {
+  const decision = readRepo("components/auth-decision.tsx");
+  // Frozen session decisions: byte-identical semantics in one module.
+  assert.match(decision, /auth\.api\.getSession/, "shared decision keeps the session check");
+  assert.match(decision, /safeNextPath/, "shared decision keeps next-path sanitizing");
+  assert.match(decision, /devBypassEnabled/, "shared decision keeps the dev bypass");
+  assert.match(decision, /AuthenticatedRedirect/, "shared decision keeps the client redirect");
+  assert.match(decision, /AuthForm/, "shared decision keeps the single-sign-on form");
+  assert.match(decision, /mode === "login"/, "shared decision branches on mode");
+  assert.match(
+    decision,
+    /Google access was cancelled/,
+    "login OAuth copy stays"
+  );
+  assert.match(
+    decision,
+    /Google could not complete account creation/,
+    "signup OAuth copy stays"
+  );
+
+  for (const [route, mode] of [
+    ["app/login/page.tsx", "login"],
+    ["app/signup/page.tsx", "signup"],
+  ] as const) {
     const page = readRepo(route);
-    // Frozen session decisions: byte-identical semantics, only frame moves.
-    assert.match(page, /auth\.api\.getSession/, `${route} keeps the session decision`);
-    assert.match(page, /safeNextPath/, `${route} keeps next-path sanitizing`);
-    assert.match(page, /devBypassEnabled/, `${route} keeps the dev bypass`);
-    assert.match(page, /AuthenticatedRedirect/, `${route} keeps the client redirect`);
-    assert.match(page, /AuthForm/, `${route} keeps the single-sign-on form`);
+    // Thin frames: delegate to the shared decision, keep boundaries + footer.
+    assert.match(page, /AuthDecision/, `${route} delegates to the shared decision`);
+    assert.match(page, new RegExp(`mode="${mode}"`), `${route} passes its mode`);
     assert.match(page, /Suspense/, `${route} keeps its suspense boundary`);
     // Shared footer language with the landing document.
-    assert.match(page, /SiteFooter|It sees the lead/, `${route} shares the footer language`);
+    assert.match(page, /SiteFooter/, `${route} shares the footer language`);
+    assert.match(page, /FooterYear/, `${route} shares the request-time year leaf`);
+    assert.doesNotMatch(page, /auth\.api\.getSession/, `${route} does not duplicate the session check`);
   }
 
   const form = readRepo("components/auth-form.tsx");

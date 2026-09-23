@@ -1,10 +1,24 @@
 import type { ReactNode } from "react";
+import { connection } from "next/server";
 import { VoniLogo } from "@/components/voni-logo";
 
 /* One gutter for the whole public surface, so the landing header, hero,
-   feature grid, and auth frames all sit on the same measure. Matches the
-   landing CONTAINER. */
-const CONTAINER = "mx-auto w-full max-w-6xl px-6";
+   feature grid, and auth frames all sit on the same measure. Imported by
+   the landing page instead of redeclaring the literal. */
+export const PUBLIC_CONTAINER = "mx-auto w-full max-w-6xl px-6";
+
+/**
+ * Request-time footer leaf: isolates the current-year read so each
+ * public-page frame prerenders without awaiting request data. Shared by
+ * the landing document and the auth screens behind their own Suspense
+ * boundaries — see LandingPage.
+ */
+export async function FooterYear() {
+  // Request-time leaf: runs per request behind its boundary, never in the
+  // static shell.
+  await connection();
+  return <>© {new Date().getFullYear()} Voni</>;
+}
 
 /**
  * Shared public footer language (ticket 02): the landing document and the
@@ -16,7 +30,7 @@ export function SiteFooter({ year }: { year: ReactNode }) {
   return (
     <footer className="border-t">
       <div
-        className={`${CONTAINER} text-muted-foreground flex flex-col items-center justify-between gap-4 py-8 text-sm sm:flex-row`}
+        className={`${PUBLIC_CONTAINER} text-muted-foreground flex flex-col items-center justify-between gap-4 py-8 text-sm sm:flex-row`}
       >
         <span className="flex items-center gap-2">
           <VoniLogo size="sm" />

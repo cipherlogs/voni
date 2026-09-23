@@ -1,17 +1,15 @@
 import { Suspense } from "react";
-import { connection } from "next/server";
 import { Badge } from "@/components/ui/badge";
 import { LandingDemo } from "@/components/landing-demo";
 import { LandingHeader } from "@/components/landing-header";
 import { GridListShowcase } from "@/components/landing-grid-list";
 import { headers } from "next/headers";
-import { SiteFooter } from "@/components/site-footer";
+import { FooterYear, PUBLIC_CONTAINER, SiteFooter } from "@/components/site-footer";
 import { auth } from "@/lib/auth";
 import { devBypassEnabled } from "@/lib/dev-bypass";
 
-/* One gutter for the whole page, so the header logo, the hero, and the feature
-   grid all sit on the same left edge instead of each finding its own. */
-const CONTAINER = "mx-auto w-full max-w-6xl px-6";
+/* Public gutter is shared from site-footer.tsx (PUBLIC_CONTAINER) so the landing
+   document and the shared footer cannot drift apart. */
 
 /**
  * Session-dependent header controls behind their own boundary (Task 9): the
@@ -30,16 +28,7 @@ async function LandingHeaderGate() {
   );
 }
 
-/**
- * Request-time footer leaf (Task 9): isolates the current-year read so the
- * rest of the landing page stays prerenderable. No fixed year invented.
- */
-async function FooterYear() {
-  // Request-time leaf: runs per request behind its boundary, never in the
-  // static shell.
-  await connection();
-  return <>© {new Date().getFullYear()} Voni</>;
-}
+
 
 export default function LandingPage() {
   return (
@@ -48,7 +37,7 @@ export default function LandingPage() {
         <LandingHeaderGate />
       </Suspense>
 
-      <section data-testid="landing-shell" className={`${CONTAINER} flex flex-col items-center gap-7 py-16 text-center md:py-24`}>
+      <section data-testid="landing-shell" className={`${PUBLIC_CONTAINER} flex flex-col items-center gap-7 py-16 text-center md:py-24`}>
         <Badge variant="secondary">Live voice calls</Badge>
         <h1 className="max-w-3xl font-editorial text-4xl font-medium tracking-tight text-balance md:text-5xl md:leading-tight">
           An AI employee with a mission, not another chatbot
@@ -71,7 +60,7 @@ export default function LandingPage() {
       </section>
 
       <section className="border-t">
-        <div className={`${CONTAINER} py-16 md:py-20`}>
+        <div className={`${PUBLIC_CONTAINER} py-16 md:py-20`}>
           <GridListShowcase />
         </div>
       </section>

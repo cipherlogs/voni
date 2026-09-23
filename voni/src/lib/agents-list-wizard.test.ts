@@ -19,7 +19,7 @@ function readRepo(relative: string): string {
   return readFileSync(join(srcRoot, relative), "utf8");
 }
 
-test("agents list rows match the shared table language with frozen query and badge derivation", () => {
+test("agents list keeps the bordered table idiom with frozen query and badge derivation", () => {
   const page = readRepo("app/(dashboard)/agents/page.tsx");
   const actions = readRepo("app/(dashboard)/agents/actions.ts");
   // Frozen query + badge derivation: the list resolves through the
@@ -39,34 +39,33 @@ test("agents list rows match the shared table language with frozen query and bad
   assert.match(page, /neverProvisioned=\{!agent\.assemblyaiAgentId\}/, "delete copy keys off provisioning");
   assert.match(page, /LiveAgentsRefresh/, "settled-job refresh stays");
 
-  // Shared table language (leads/calls idiom): flat Card surface with zero
-  // content padding, one scroll container, sticky identity column, visible
-  // count with status role, Empty idiom, and the shared shortcut hint.
-  assert.match(page, /<Card>/, "list sits on the flat Card surface");
-  assert.match(page, /<CardContent className="p-0">/, "content padding stays zero so columns size as one");
+  // Bordered table idiom (user pick, rollback 2026-09-23): the plain
+  // `overflow-x-auto rounded-lg border` wrapper with no Card chrome, no
+  // sticky columns, no visible count row, and no shortcut hint. Pinned so
+  // future passes don't re-restyle it into the Card language.
+  assert.match(page, /overflow-x-auto rounded-lg border/, "list keeps the bordered wrapper");
+  assert.doesNotMatch(page, /<Card>/, "no Card chrome on the list");
+  assert.doesNotMatch(page, /sticky left-0/, "no sticky columns on the list");
+  assert.doesNotMatch(page, /Results: /, "no visible count row on the list");
   assert.match(page, /overflow-x-auto/, "narrow scroll containment stays");
-  assert.match(page, /sticky left-0/, "identity column stays visible while state scrolls");
-  assert.match(page, /bg-card sticky left-0/, "sticky cell keeps the card token behind scrolled text");
-  assert.match(page, /role="status"/, "visible count stays a status");
-  assert.match(page, /agents/, "count names its grain");
   assert.match(page, /<Empty>/, "empty stays the shared idiom");
   assert.match(page, /variant="feature"/, "first-run empty keeps the feature disc");
   assert.match(page, /No agents yet/, "empty title stays");
   assert.match(page, /variant="outline"/, "empty action stays the boxed pair");
-  assert.match(page, /<kbd/, "shortcut discovery stays one inert line");
-  assert.match(page, /for keyboard shortcuts/, "shortcut hint names its key");
+  assert.doesNotMatch(page, /<kbd/, "no shortcut hint on the list");
   assert.doesNotMatch(page, /cursor-pointer/, "row buttons keep the native arrow like every shared Button");
   assert.doesNotMatch(page, /bg-primary/, "no primary-color fills on the list");
 
-  // Frozen shell: suspense stays around the rows, loading reads as the table
-  // grid, errors read as the shared route card — pinned against the segment
-  // files that ship, not just the page's inline fallback.
+  // Frozen shell: suspense stays around the rows, the inline fallback reads
+  // as the table grid, the segment loading reads as cards, and errors read
+  // as the shared route card — pinned against the segment files that ship,
+  // not just the page's inline fallback.
   assert.match(page, /<Suspense/, "rows stay behind their boundary");
-  assert.match(page, /TableSkeleton/, "loading stays the table shape");
+  assert.match(page, /TableSkeleton/, "inline fallback stays the table shape");
   const agentsLoading = readRepo("app/(dashboard)/agents/loading.tsx");
-  assert.match(agentsLoading, /TableSkeleton/, "segment loading stays the table shape");
+  assert.match(agentsLoading, /CardListSkeleton/, "segment loading stays the card stack");
   assert.match(agentsLoading, /PageHeaderSkeleton/, "segment loading keeps the header shape");
-  assert.doesNotMatch(agentsLoading, /CardListSkeleton/, "segment loading never reads as cards");
+  assert.doesNotMatch(agentsLoading, /TableSkeleton/, "segment loading never reads as a table");
   const agentsError = readRepo("app/(dashboard)/agents/error.tsx");
   assert.match(agentsError, /"use client"/, "segment error stays client");
   assert.match(agentsError, /RouteError/, "segment error stays shared");
