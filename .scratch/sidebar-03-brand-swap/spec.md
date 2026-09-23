@@ -1,4 +1,6 @@
-Status: ready-for-agent
+Status: done
+
+**Resolution:** all six tickets resolved — 01/03/06 done, 02 done-superseded (Classic logo amendment), 05 wontfix (bell removed by user pick), 04 done with runtime loop. See issue notes.
 
 ## Problem Statement
 

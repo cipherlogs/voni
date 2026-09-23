@@ -1,4 +1,6 @@
-Status: ready-for-agent
+Status: done
+
+**Resolution:** both tickets closed — 01 implemented (`ba2896de`, suite green), 02 pre-existing and verified. See issue notes.
 
 ## Problem Statement
 
