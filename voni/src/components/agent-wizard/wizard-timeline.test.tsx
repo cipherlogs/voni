@@ -33,10 +33,10 @@ test("TimelineBar buttons are 56px minimum with one centered row", () => {
     /min-h-14/,
     "step buttons must be at least 56px tall",
   );
-  assert.match(
+  assert.doesNotMatch(
     timelineBarSource,
     /cursor-pointer/,
-    "TimelineBar Button className must include cursor-pointer",
+    "TimelineBar Button must not request the hand cursor; hover shows the native arrow like every shared Button",
   );
   assert.match(
     timelineBarSource,

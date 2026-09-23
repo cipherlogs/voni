@@ -35,7 +35,7 @@ export function TimelineBar({
               onClick={() => onSelect(i)}
               aria-current={active ? "step" : undefined}
               aria-label={`Step ${i + 1}: ${label}${done ? " (done)" : active ? " (current)" : ""}`}
-              className="flex h-auto flex-1 cursor-pointer items-center justify-center rounded-md px-1 py-2 text-center pointer-coarse:min-h-14"
+              className="flex h-auto flex-1 items-center justify-center rounded-md px-1 py-2 text-center pointer-coarse:min-h-14"
             >
               <span className="relative flex min-w-0 flex-1 items-center gap-2">
                 {i > 0 ? (

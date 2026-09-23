@@ -155,7 +155,7 @@ export function TestAgentDialog({
     >
       <DialogTrigger
         render={
-          <Button type="button" variant="outline" className="cursor-pointer" />
+          <Button type="button" variant="outline" />
         }
       >
         <Mic aria-hidden="true" />
