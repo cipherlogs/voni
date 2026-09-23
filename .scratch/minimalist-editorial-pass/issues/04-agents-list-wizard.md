@@ -58,13 +58,16 @@
 ## Rollback (2026-09-23, user review)
 
 - The Card-table restyle of the agents list was rejected on looks: the
-  user prefers the old bordered table. `agents/page.tsx` and
-  `agents/loading.tsx` are restored byte-identical to pre-ticket-04
-  (verified via `git diff 970f5839 -- <file>`, empty), and pin test 1
-  now guards the bordered idiom (`overflow-x-auto rounded-lg border`,
-  no Card chrome, no sticky columns, no visible count, no shortcut
-  hint, `CardListSkeleton` segment loading) so future passes don't
-  re-restyle it. Wizard, voice, and tag work from this ticket stands.
+  user prefers the old bordered table. `agents/page.tsx` is restored
+  byte-identical to pre-ticket-04 (verified via `git diff 970f5839 --
+  <file>`, empty); `agents/loading.tsx` reads `TableSkeleton` to match
+  the table shape like the inline fallback (fix 2026-09-23: pre-ticket-04
+  `CardListSkeleton` never matched a table page — see Voni AGENTS.md
+  loading-shapes-match-layout), and pin test 1 now guards the bordered
+  idiom (`overflow-x-auto rounded-lg border`, no Card chrome, no sticky
+  columns, no visible count, no shortcut hint, `TableSkeleton` segment
+  loading) so future passes don't re-restyle it. Wizard, voice, and tag
+  work from this ticket stands.
 
 ## Comments
 

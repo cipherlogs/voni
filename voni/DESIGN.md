@@ -44,7 +44,7 @@ a Blocks token system exists.
   self-hosted so no third-party fetch) — for hero headings and quotes only.
   Rationale: the calm editorial document feel needs a serif for display
   moments; body, UI, buttons, and metadata stay on the blessed sans and mono
-  so no second visual language leaks in.   Scope: landing hero `h1` opts in via
+  so no second visual language leaks in. Scope: landing hero `h1` opts in via
   the `font-editorial` utility (tight tracking + balanced wrapping kept,
   weight `font-medium` for serif optical sizing — sans `font-semibold`
   would render too heavy in Newsreader);
@@ -174,6 +174,13 @@ label (Collapse/Expand sidebar + ⌘B) with aria-expanded.
   dialog-11 + onboarding steps + form-layout (draft machine,
   validation, payloads, idempotency, copilot tools byte-identical);
   **tag field** is `build-in-style` (badge + input-group idiom).
+  List-chrome exception (2026-09-23 user pick, ticket 04 rollback): the
+  agents list keeps the plain `overflow-x-auto rounded-lg border`
+  wrapper with no Card chrome, no sticky columns, no visible count —
+  leads/calls keep the Card-table language. Pinned by
+  `agents-list-wizard.test.ts` so future passes don't re-restyle it.
+  Segment `loading.tsx` reads `TableSkeleton` to match the table shape
+  like the inline fallback.
 - **Settings/operator/numbers:** form-layout-02/03; numbers list from
   table-05 or grid-list-02.
 - **Form reference: campaign/new density** (amendment 2026-09-14,

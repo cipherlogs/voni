@@ -46,7 +46,7 @@ export function PageHeaderSkeleton({ withAction = true }: { withAction?: boolean
   );
 }
 
-/** Matches the agents/campaigns list shape: a stack of cards, each one row. */
+/** Matches card-list shapes (e.g. campaigns): a stack of cards, each one row. */
 export function CardListSkeleton({ rows = 4 }: { rows?: number }) {
   return (
     <div className="flex flex-col gap-3">
