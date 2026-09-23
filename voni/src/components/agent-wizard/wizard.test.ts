@@ -109,7 +109,9 @@ test("PersonalityStep orders name, style, language, voice with the style helper"
   assert.ok(nameAt < styleAt && styleAt < pickerAt);
   assert.ok(stepBodiesSource.includes("Shapes how the agent responds"));
   assert.ok(stepBodiesSource.includes("STYLE_SUGGESTIONS"));
-  assert.ok(stepBodiesSource.includes("max-w-sm"));
+  // Names converge on the medium width cap per the campaign-form density
+  // (ticket 04); the auth-width cap stays retired.
+  assert.ok(stepBodiesSource.includes("max-w-md"));
   assert.ok(!stepBodiesSource.includes("speechSynthesis"));
   assert.ok(!stepBodiesSource.includes("Languages it listens for"));
 });

@@ -2,6 +2,7 @@ import { Suspense } from "react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Card, CardContent } from "@/components/ui/card";
 import {
   Empty,
   EmptyContent,
@@ -26,6 +27,8 @@ import { LiveAgentsRefresh } from "./live-agents-refresh";
 import { AgentDeleteButton } from "./delete-agent-button";
 import type { AgentConfig } from "@/lib/agents/config";
 import { RouteBrief } from "@/components/copilot/route-brief";
+
+const AGENT_TABLE_COLUMNS = 4;
 
 /**
  * Authorized list leaf: count-based brief and rows resolve after the shell.
@@ -62,16 +65,35 @@ async function AgentsList() {
           </EmptyContent>
         </Empty>
       ) : (
-        <div className="overflow-x-auto rounded-lg border">
+        <Card>
+          <CardContent className="p-0">
+            {/* Scroll containment: the mission + config columns overflow at
+                390px without this — same wrapper as leads/calls. */}
+            <div className="overflow-x-auto">
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Agent</TableHead>
+                <TableHead className="bg-card sticky left-0 z-10">Agent</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead>Config</TableHead>
                 <TableHead className="w-12" />
               </TableRow>
             </TableHeader>
+            <TableBody>
+              <TableRow>
+                <TableCell colSpan={AGENT_TABLE_COLUMNS} className="py-3">
+                  <div className="flex items-center gap-2 text-sm">
+                    <span
+                      role="status"
+                      aria-label={`Results: ${rows.length} ${rows.length === 1 ? "agent" : "agents"}`}
+                      className="text-muted-foreground"
+                    >
+                      {rows.length} {rows.length === 1 ? "agent" : "agents"}
+                    </span>
+                  </div>
+                </TableCell>
+              </TableRow>
+            </TableBody>
             <TableBody>
               {rows.map((agent) => {
                 const config = agent.config as AgentConfig;
@@ -90,7 +112,9 @@ async function AgentsList() {
                 const openLabel = `${gen ? "Review" : "Edit"} ${agent.name}`;
                 return (
                   <TableRow key={agent.id}>
-                    <TableCell>
+                    {/* Frozen identity column: keeps the who visible while the
+                        config column scrolls away on narrow screens. */}
+                    <TableCell className="bg-card sticky left-0 z-10">
                       <div className="flex min-w-0 flex-col gap-1">
                         <span className="text-pretty text-sm font-medium">
                           {agent.name}
@@ -207,7 +231,9 @@ async function AgentsList() {
               })}
             </TableBody>
           </Table>
-        </div>
+            </div>
+          </CardContent>
+        </Card>
       )}
     </>
   );
@@ -238,6 +264,18 @@ export default function AgentsPage() {
       </Suspense>
       {/* Refreshes the RSC rows when a generation/deployment settles. */}
       <LiveAgentsRefresh />
+      {/* Shortcut discovery: one line, inert text — the global handler reads
+          the ? key; this hint only names it. */}
+      <p className="text-muted-foreground text-xs">
+        Press{" "}
+        <kbd
+          data-slot="kbd"
+          className="rounded border bg-muted px-1 font-mono text-xs font-medium"
+        >
+          ?
+        </kbd>{" "}
+        for keyboard shortcuts.
+      </p>
     </div>
   );
 }

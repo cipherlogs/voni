@@ -152,9 +152,14 @@ export function FormSectionSeparator({
 
 /**
  * One consistent wizard footer: Back left, primary action right (primary
- * takes remaining width on mobile via `w-full md:w-auto` on the button).
+ * takes remaining width on mobile via `w-full sm:w-auto` on the button).
  * Normal document flow at the end of the form — a floating bar covered
  * scrolled content on this short 2-step form instead of helping.
+ *
+ * Paired-action order per the design-system amendment: secondary-left /
+ * primary-right on desktop (`sm:flex-row sm:justify-between`), primary on
+ * top when stacked (`flex-col-reverse`), wrapping instead of squeezing
+ * (`flex-wrap`) so narrow rows never clip.
  *
  * App-wide button rule: secondary/tertiary actions left, primary action
  * right (`justify-between` / `justify-end`). ConfigFormFooter in
@@ -177,18 +182,18 @@ export function WizardFooter({
   return (
     <div data-slot="wizard-footer" className={cn(className)}>
       <Separator />
-      <div className="flex items-center justify-between gap-3 pt-4">
+      <div className="flex flex-col-reverse flex-wrap gap-3 pt-4 sm:flex-row sm:items-center sm:justify-between">
         <Button
           type="button"
           variant="outline"
-          className="pointer-coarse:min-h-11"
+          className="pointer-coarse:min-h-11 w-full sm:w-auto"
           disabled={backDisabled}
           onClick={onBack}
         >
           <ArrowLeft data-icon="inline-start" aria-hidden />
           {backLabel}
         </Button>
-        <span className="flex min-w-0 flex-1 justify-end md:flex-none">
+        <span className="flex min-w-0 flex-wrap items-center justify-end gap-3">
           {primary}
         </span>
       </div>

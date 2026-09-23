@@ -903,7 +903,7 @@ function NewAgentInner({
               wiz.step === 0 ? (
                 <Button
                   type="button"
-                  className="w-full md:w-auto pointer-coarse:min-h-11"
+                  className="w-full sm:w-auto pointer-coarse:min-h-11"
                   data-copilot-effect="view"
                   onClick={goNext}
                 >
@@ -913,7 +913,7 @@ function NewAgentInner({
               ) : (
                 <Button
                   type="button"
-                  className="w-full md:w-auto pointer-coarse:min-h-11"
+                  className="w-full sm:w-auto pointer-coarse:min-h-11"
                   data-copilot-effect="view"
                   onClick={() => void generate()}
                 >

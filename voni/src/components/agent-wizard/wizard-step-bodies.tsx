@@ -130,7 +130,7 @@ export function PersonalityStep({
           title="Who should your agent be?"
           description="A name plus a vibe — type it, or tell the voice copilot."
         />
-        <div className="max-w-sm">
+        <div className="max-w-md">
           <Field data-invalid={nameError ? true : undefined}>
             <FieldLabel htmlFor={`${idPrefix}-name`}>Agent name</FieldLabel>
             <Input
