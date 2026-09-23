@@ -9,7 +9,7 @@
  * (DropdownMenuItems in DropdownMenuGroups, per-item pending state —
  * tooltip primitive not vendored); notes cell renders as truncated text
  * (notes-tooltip cut with tooltip); status tints remapped from hardcoded
- * amber/blue/green/rose + dark: utilities to oklch semantic tokens
+ * hardcoded hues + dark-mode utilities to oklch semantic tokens
  * (DESIGN.md §5); unrendered upstream `priority` field cut; `w-[95%]`
  * wrapper remapped to w-full; `getStatusBadge` switch reshaped to the
  * table-05 statusConfig Record idiom.

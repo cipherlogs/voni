@@ -253,8 +253,7 @@ export function TestAgentDialog({
                 {/* Typing indicator <- toolActive: upstream ai-05's dot
                     markup as a pinned row under the transcript (VoiceCall
                     owns its internal scroller, so the slot can't live
-                    inside it). Stagger via arbitrary properties — no
-                    style={{}} per DESIGN.md §5. */}
+                    inside it). Stagger via arbitrary properties — no inline style prop per DESIGN.md §5. */}
                 {status.toolActive && live ? (
                   <div className="px-5 pt-1">
                     <output

@@ -5,7 +5,7 @@
  * Adaptations for this project: remote blocks.so avatar PNGs cut —
  * AvatarFallback initials only (no AvatarImage, no external fetch);
  * upstream documenso sample people replaced with neutral placeholder
- * entries; CardContent space-x-4 rebuilt as flex+gap; shadow-2xs base +
+ * entries; CardContent spaced stack rebuilt as flex+gap; shadow-2xs base +
  * hover:shadow-sm replaced with default token shadows (shadow-sm /
  * hover:shadow-md); avatar h-10 w-10 unified to size-10.
  */
@@ -51,7 +51,7 @@ export default function GridList02() {
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         {people.map((person) => (
           <Card
-            className="relative border py-0 shadow-sm transition-[border-color,box-shadow] duration-100 ease-out focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2 hover:border-muted-foreground hover:shadow-md"
+            className="relative border py-0 shadow-sm transition-[border-color,box-shadow] duration-[var(--motion-standard)] ease-out focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2 hover:border-muted-foreground hover:shadow-md"
             key={person.email}
           >
             <CardContent className="flex items-center gap-4 p-4">

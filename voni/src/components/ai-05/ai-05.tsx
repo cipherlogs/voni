@@ -26,9 +26,9 @@
  * InputGroupButton CSS auto-sizes); ai-SDK ChatStatus REJECTED -> local
  * Ai05Status union ('submitted' | 'streaming' | 'ready' | 'error'),
  * SDK-parity with NO provider / hook / transport logic and no `ai`
- * dependency; presence dot emerald-500 ->
+ * dependency; presence dot hardcoded tint ->
  * bg-primary (table-04 success-dot precedent); layered oklch card shadow
- * + dark: shadow -> border + shadow-lg token; suggestion chips rebuilt as
+ * + dark-mode shadow -> border + shadow-lg token; suggestion chips rebuilt as
  * Button outline sm rounded-full (house composition rule).
  * NOT wired into any page — integration is a separate step.
  */
@@ -177,9 +177,14 @@ export default function Ai05({
                       >
                         {[0, 1, 2].map((dot) => (
                           <span
-                            className="size-1.5 animate-bounce rounded-full bg-muted-foreground/60"
                             key={dot}
-                            style={{ animationDelay: `${dot * 150}ms` }}
+                            className={
+                              dot === 0
+                                ? "size-1.5 animate-bounce rounded-full bg-muted-foreground/60"
+                                : dot === 1
+                                  ? "size-1.5 animate-bounce rounded-full bg-muted-foreground/60 [animation-delay:150ms]"
+                                  : "size-1.5 animate-bounce rounded-full bg-muted-foreground/60 [animation-delay:300ms]"
+                            }
                           />
                         ))}
                       </output>

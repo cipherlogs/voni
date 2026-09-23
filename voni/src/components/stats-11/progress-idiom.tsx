@@ -7,9 +7,9 @@
  * track + origin-left fill scaled via inline style percent/100 — this
  * single style={{ transform }} is the DESIGN.md-blessed re-homed
  * exception). BudgetDialog NOT vendored (no budget feature; label
- * primitive stays uninstalled). Upstream emerald/blue/orange fill colors
- * + amber warning text replaced with semantic tokens (fill defaults to
- * bg-primary, overridable via fillClassName). dark: duplicates stripped.
+ * primitive stays uninstalled). Upstream hardcoded hue fills
+ * + warning text replaced with semantic tokens (fill defaults to
+ * bg-primary, overridable via fillClassName). dark-mode duplicates stripped.
  * No lucide / card / dialog / input imports — progress markup only.
  */
 

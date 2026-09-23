@@ -5,9 +5,9 @@
  * `@blocks-so/table-03` (https://blocks.so/r/table-03.json).
  * See voni/THIRD-PARTY-NOTICES.md. Pinned per voni/DESIGN.md §3.
  * Adaptations for this project: SelectGroup wrapper added around the
- * category SelectItems (house composition rule); outer `space-y-6`
+ * category SelectItems (house composition rule); outer stacked gap
  * stack converted to flex-col gap; status tints remapped from hardcoded
- * green/amber/rose/blue + dark: utilities to oklch semantic tokens
+ * hardcoded hues + dark-mode utilities to oklch semantic tokens
  * (DESIGN.md §5); upstream `items=` prop on Select dropped (not in this
  * project's Select primitive — items declared via SelectItem children);
  * `getStatusBadge` switch reshaped to the table-05 statusConfig Record

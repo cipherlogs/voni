@@ -13,6 +13,11 @@
   --font-mono: var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo,
     Consolas, "Liberation Mono", monospace;
   --font-heading: var(--font-sans);
+  /* Amendment A (ticket 01): one bundled editorial serif. The variable is
+     owned by next/font in layout.tsx; this theme key exposes the
+     `font-editorial` utility for hero headings and quotes only. Body, UI,
+     buttons, and metadata stay on the blessed sans and mono. */
+  --font-editorial: var(--font-editorial), Georgia, "Times New Roman", serif;
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -277,8 +282,8 @@
 }
 
 .bento-fade {
-  -webkit-mask-image: linear-gradient(to top, transparent 25%, #000 100%);
-  mask-image: linear-gradient(to top, transparent 25%, #000 100%);
+  -webkit-mask-image: linear-gradient(to top, transparent 25%, black 100%);
+  mask-image: linear-gradient(to top, transparent 25%, black 100%);
 }
 
 /* Ticket 05 motion gating (landing track): offscreen tiles skip scene
@@ -665,5 +670,11 @@
   }
   html {
     @apply font-sans;
+  }
+  /* Amendment A scope: quotes render in the editorial serif without
+     per-site classes. Heroes opt in via the `font-editorial` utility. */
+  blockquote,
+  q {
+    font-family: var(--font-editorial);
   }
 }

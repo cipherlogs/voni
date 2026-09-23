@@ -66,26 +66,25 @@ interface Item {
   amount: string;
 }
 
+// Status tints use semantic tokens only (DESIGN.md §5): solid primary for
+// terminal success, primary tint for in-progress, muted for pending, and
+// destructive tint for cancelled. No hardcoded hues, no dark-mode duplicates.
 const statusConfig: Record<Status, { label: string; className: string }> = {
   completed: {
     label: 'Completed',
-    className:
-      'bg-emerald-500/15 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400',
+    className: 'bg-primary text-primary-foreground',
   },
   pending: {
     label: 'Pending',
-    className:
-      'bg-amber-500/15 text-amber-700 dark:bg-amber-500/10 dark:text-amber-400',
+    className: 'bg-muted text-muted-foreground',
   },
   processing: {
     label: 'Processing',
-    className:
-      'bg-blue-500/15 text-blue-700 dark:bg-blue-500/10 dark:text-blue-400',
+    className: 'bg-primary/10 text-primary',
   },
   cancelled: {
     label: 'Cancelled',
-    className:
-      'bg-rose-500/15 text-rose-700 dark:bg-rose-500/10 dark:text-rose-400',
+    className: 'bg-destructive/10 text-destructive',
   },
 };
 

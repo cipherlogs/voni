@@ -39,6 +39,15 @@ a Blocks token system exists.
   = sans alias stays. Scale is Tailwind defaults only: `text-xs`/`text-sm`
   for UI; the `text-[11px]`/`text-[13px]` micro-type split is banned
   (~35 hits → map to scale).
+- **Amendment A (2026-09-23, ticket 01):** one bundled editorial serif —
+  Newsreader via `next/font/google` (`--font-editorial`, normal + italic,
+  self-hosted so no third-party fetch) — for hero headings and quotes only.
+  Rationale: the calm editorial document feel needs a serif for display
+  moments; body, UI, buttons, and metadata stay on the blessed sans and mono
+  so no second visual language leaks in. Scope: landing hero `h1` opts in via
+  the `font-editorial` utility (tight tracking + balanced wrapping kept);
+  `blockquote`/`q` render editorial via the base layer without per-site
+  classes. No other typeface additions without their own amendment.
 - **Spacing:** Tailwind defaults only. No custom scale.
 - **Radius:** adopt Blocks `--radius: 0.625rem` (currently `0.5rem`) with
   the same `sm–4xl` derivation. One-line change, whole-app effect.
@@ -267,24 +276,47 @@ label (Collapse/Expand sidebar + ⌘B) with aria-expanded.
 Run from `voni/`. Every hit must map to a token, be rebuilt in-style,
 or be cut — or be a DESIGN.md-listed exception.
 
-- `text-[` / `bg-[` arbitrary values (~35 + ~9 hits) → map to scale/tokens.
+- `text-[` / `bg-[` arbitrary values (mapped ticket 01; now zero outside
+  generated code except one listed survivor) → map to scale/tokens.
   `grep -rn 'text-\[\|bg-\[' src | grep -v 'src/components/ui/'`
-- Hardcoded palette: `emerald|amber|#[0-9a-fA-F]{3,6}` outside comments
-  → map to tokens; prototypes (which carried 12 hits) CUT with their CSS
-  in ticket 08. `grep -rniE 'emerald|amber|#[0-9a-f]{3,6}\b' src | grep -v 'provider-'`
-  (the `--provider-*` scene-glyph exception in §10b is the only exemption).
-- `dark:` outside `src/components/ui/` generated code (3 remaining bespoke
-  sites: connection emerald, bubble, mode-toggle mechanics — logo hex retired
-  2026-09-16 with the animated Classic slot) → fix. The paired token classes
-  inside ticket 09's `AppearancePreview` are the sole scene exception because
-  the miniature must keep light and dark semantics under either host theme.
-  `grep -rn 'dark:' src | grep -v 'src/components/ui/'`
-- `style={{` (6 sites: voice-call avatar px → exception restyle;
-  voice-avatar `hsl()` hash gradient → rebuild in-style;
-  toggle-group `--gap`, layout `--sidebar-width-icon` → re-home to
-  tokens). `grep -rn 'style={{' src`
-- `space-x-|space-y-` (must be zero; use flex+gap). `grep -rn 'space-[xy]-' src`
-- Non-`size-*` icon squares. `grep -rn 'h-[0-9].*w-\[0-9\]' src`
+  Listed survivor: `voice-call.tsx` error body
+  (`text-[color-mix(in_oklch,var(--destructive),var(--foreground)_45%)]`) —
+  no token expresses destructive mixed toward foreground, and a new token for
+  one error line would be worse.
+- Hardcoded palette (mapped ticket 01; now zero code hits outside listed
+  sites): `table-05` status tints rebuilt on semantic tokens; vendored-block
+  comments reworded off the palette words; `&#8729;` entities replaced with
+  the `·` char (the hex grep false-positived on the entity); the bento mask
+  uses the `black` keyword. `grep -rniE 'emerald|amber|#[0-9a-f]{3,6}\b' src
+  | grep -v 'provider-'` Listed sites: `--provider-*` scene-glyph fills
+  (§10b, the only hex exemption) and `src/app/icon.svg` fixed paper `#fafafa`
+  + ink `#0a0a0a` (favicon stays light paper with an ink mark regardless of
+  theme, matching the in-app chip — not theme-reactive by design).
+- `dark:` outside `src/components/ui/` generated code (cleared ticket 01:
+  `table-05` tints rebuilt token-only with no dark-mode duplicates,
+  `mode-toggle` rebuilt on resolved-theme conditional render with no
+  dark-mode variants, connection emerald long fixed, bubble lives in
+  generated `ui/`). The paired token classes inside ticket 09's
+  `AppearancePreview` (`settings-bento/scenes.tsx`) are the sole remaining
+  exception because the miniature must keep light and dark semantics under
+  either host theme. `grep -rn 'dark:' src | grep -v 'src/components/ui/'`
+- `style={{` / `style={` (cleared ticket 01 except listed dynamics).
+  `grep -rn 'style={{' src` plus `style={` review. Listed dynamics (all
+  token-only, transform/opacity or CSS-variable plumbing, no new palette):
+  `stats-11` + `jobs/job-row` progress fill (`transform: scaleX`, the blessed
+  progress idiom); generated `ui/` primitives (`toggle-group --gap`,
+  `sidebar --sidebar-width`); `wizard/voice-field.tsx` VoiceMotif
+  (hash-derived semantic-token gradient, no static equivalent);
+  `voni-logo.tsx` static stroke (`currentColor` so the resting mark follows
+  the theme without a presentation attribute). Fixed in ticket 01: `ai-05`
+  typing dots moved to arbitrary `[animation-delay:...]` properties (the
+  `test-agent-dialog` precedent).
+- `space-x-|space-y-` (zero outside generated code ticket 01; use flex+gap).
+  `grep -rn 'space-[xy]-' src` Generated exception: `ui/avatar.tsx`
+  overlap group (`-space-x-2`). Vendored-block comments reworded off the
+  spaced-stack names so the grep stays clean.
+- Non-`size-*` icon squares (cleared ticket 01: `mode-toggle`
+  `h-[1.2rem]` pair unified to `size-5`). `grep -rn 'h-[0-9].*w-\[0-9\]' src`
 - Extra CSS files / keyframes: only `globals.css` survives; prototype
   CSS deleted with the routes. `ls src/app/prototypes` must 404-think → empty
   (DONE ticket 08 — the `settings-gallery` throwaway is deleted, so the

@@ -50,7 +50,7 @@ export default function LandingPage() {
 
       <section data-testid="landing-shell" className={`${CONTAINER} flex flex-col items-center gap-7 py-24 text-center md:py-32`}>
         <Badge variant="secondary">Live voice calls</Badge>
-        <h1 className="max-w-3xl text-4xl font-semibold tracking-tight text-balance md:text-5xl md:leading-tight">
+        <h1 className="max-w-3xl font-editorial text-4xl font-medium tracking-tight text-balance md:text-5xl md:leading-tight">
           An AI employee with a mission, not another chatbot
         </h1>
         <p className="text-muted-foreground max-w-xl text-lg leading-relaxed text-balance">

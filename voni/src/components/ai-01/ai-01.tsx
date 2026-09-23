@@ -10,7 +10,7 @@
  * render controlled-by-parent via optional props); ai-SDK install
  * REJECTED (+0 npm); @tabler/icons-react REJECTED -> lucide
  * (Mic/Paperclip/Send/AudioLines/Plus); DropdownMenuGroup wrapper
- * added (house composition rule); dark: + oklch shadow arithmetic
+ * added (house composition rule); dark-mode + oklch shadow arithmetic
  * stripped to tokens; space-x rebuilt as flex+gap.
  */
 

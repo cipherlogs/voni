@@ -6,8 +6,8 @@
  * actor/action/time sentence kept as a deployment/generation
  * statusline pattern; static steps data model NOT adopted (live job
  * state drives entries in the real page — entries arrive via props);
- * per-user avatar palette (violet/orange/emerald/fuchsia/blue) +
- * gray-300 marker borders remapped to semantic tokens (muted avatar,
+ * per-user avatar hues +
+ * marker borders remapped to semantic tokens (muted avatar,
  * primary/active dots); space-x/space-y stacks rebuilt as flex+gap;
  * min-h-dvh centered wrapper NOT adopted (statusline renders inline).
  * +0 npm deps; cn from @/lib/utils.
@@ -80,7 +80,7 @@ export default function Onboarding05({
                 </span>
                 <span className="font-normal text-muted-foreground/60">
                   {' '}
-                  &#8729; {entry.time}
+                  · {entry.time}
                 </span>
               </p>
             </div>

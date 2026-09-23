@@ -7,7 +7,7 @@
  * Adaptations for this project: visibility Select rewired from upstream
  * items={} to house controlled Select + SelectGroup + function-child
  * SelectValue; checkbox rows gap-x-3 rebuilt as flex+gap (gap-3);
- * footer space-x-4 rebuilt as flex+gap; dark: duplicates stripped.
+ * footer spaced stack rebuilt as flex+gap; dark-mode duplicates stripped.
  */
 
 import { useState } from 'react';

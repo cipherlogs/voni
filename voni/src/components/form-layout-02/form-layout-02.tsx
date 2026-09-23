@@ -8,7 +8,7 @@
  * entirely (no radios in settings/operator; radio-group primitive stays
  * uninstalled); visibility Select rewired from upstream items={} to house
  * controlled Select + SelectGroup + function-child SelectValue; footer
- * space-x-4 rebuilt as flex+gap; dark: duplicates stripped.
+ * spaced stack rebuilt as flex+gap; dark-mode duplicates stripped.
  */
 
 import { useState } from 'react';

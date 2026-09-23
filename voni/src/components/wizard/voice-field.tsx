@@ -343,7 +343,7 @@ export function VoiceField({
                         // hover border + shadow; the pressed state layers the
                         // primary border + ring on top. The toggle itself is
                         // the control — no stretched-link <a>.
-                        className="relative h-auto w-full rounded-xl border border-input bg-card p-0 text-left text-card-foreground text-sm shadow-sm transition-[border-color,box-shadow] duration-100 ease-out hover:border-muted-foreground hover:shadow-md data-[state=on]:border-primary data-[state=on]:ring-1 data-[state=on]:ring-primary/30"
+                        className="relative h-auto w-full rounded-xl border border-input bg-card p-0 text-left text-card-foreground text-sm shadow-sm transition-[border-color,box-shadow] duration-[var(--motion-standard)] ease-out hover:border-muted-foreground hover:shadow-md data-[state=on]:border-primary data-[state=on]:ring-1 data-[state=on]:ring-primary/30"
                       >
                         <CardContent className="flex w-full items-center gap-4 p-4">
                           <VoiceMotif voiceId={v.id} playing={playing} />

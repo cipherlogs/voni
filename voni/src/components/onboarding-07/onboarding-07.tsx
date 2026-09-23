@@ -158,7 +158,7 @@ export default function Onboarding07({
               {latestTitle ? (
                 <span className="font-normal text-muted-foreground">
                   {" "}
-                  &#8729; {latestTitle}
+                  · {latestTitle}
                 </span>
               ) : null}
             </span>
@@ -186,7 +186,7 @@ export default function Onboarding07({
                           {entry.time ? (
                             <span className="font-normal text-muted-foreground/60">
                               {" "}
-                              &#8729; {entry.time}
+                              · {entry.time}
                             </span>
                           ) : null}
                         </p>

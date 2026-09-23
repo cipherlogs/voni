@@ -9,7 +9,7 @@
  * replaced by agent name/role/greeting fields; red * required marks
  * replaced with FieldError slots (house data-invalid/aria-invalid
  * invalid-state pattern, errors wired to required-field validation);
- * footer space-x-4 rebuilt as flex+gap; dark: duplicates stripped.
+ * footer spaced stack rebuilt as flex+gap; dark-mode duplicates stripped.
  * Deps: button/field/input/separator Base UI variants; +0 npm.
  */
 

@@ -14,15 +14,28 @@ import {
 } from "@/components/ui/dropdown-menu"
 
 export function ModeToggle() {
-  const { setTheme } = useTheme()
+  const { setTheme, resolvedTheme } = useTheme();
+  // Mounted via the house `useSyncExternalStore` idiom (see
+  // `appearance-tile.tsx`): false on the server, true after hydration.
+  const mounted = React.useSyncExternalStore(
+    () => () => {},
+    () => true,
+    () => false,
+  );
+  // Token-only theme icon: resolved theme picks one icon, so no dark-mode
+  // variant classes and no arbitrary sizes (DESIGN.md §5).
+  const isDark = mounted && resolvedTheme === "dark";
 
   return (
     <DropdownMenu>
       <DropdownMenuTrigger
         render={
           <Button variant="outline" size="icon">
-            <Sun className="h-[1.2rem] w-[1.2rem] scale-100 rotate-0 transition-all dark:scale-0 dark:-rotate-90" />
-            <Moon className="absolute h-[1.2rem] w-[1.2rem] scale-0 rotate-90 transition-all dark:scale-100 dark:rotate-0" />
+            {isDark ? (
+              <Moon className="size-5" aria-hidden />
+            ) : (
+              <Sun className="size-5" aria-hidden />
+            )}
             <span className="sr-only">Toggle theme</span>
           </Button>
         }

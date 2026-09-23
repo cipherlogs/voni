@@ -8,8 +8,8 @@
  * idiom (name + count) + task rows + dot-pill StatusBadge vendored —
  * AvatarStack NOT adopted (no assignees in scope; avatar primitive not
  * installed; Assigned column cut); status tints remapped from hardcoded
- * emerald/amber/blue + dark: utilities to oklch semantic tokens
- * (DESIGN.md §5); `-space-x-2` overlap + `text-[10px]` avatar micro-type
+ * hardcoded hues + dark-mode utilities to oklch semantic tokens
+ * (DESIGN.md §5); overlap + 10px avatar micro-type
  * cut with AvatarStack.
  */
 

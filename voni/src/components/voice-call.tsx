@@ -112,7 +112,7 @@ const LANGUAGE_TABS: { code: string; label: string }[] = [
  * this scaffold's `destructive` is a TINT (`bg-destructive/10` with red
  * text), not the solid red fill a hang-up button needs. The solid fill still
  * comes from the `destructive` token (both themes) with white text — no raw
- * red shade and no manual dark: overrides.
+ * red shade and no manual dark-mode overrides.
  */
 const CALL_GREEN = "voice-call-live-fill";
 export { CALL_GREEN };
@@ -127,7 +127,7 @@ const DEMO_CAP_SECONDS = 120;
 /**
  * The error body copy sits a long way darker than `--destructive` itself.
  * Mixing toward `--foreground` reaches it in light mode AND inverts
- * correctly in dark, which a literal `#7f1d1d` would not. Token-derived
+ * correctly in dark, which a literal dark-red hex would not. Token-derived
  * color-mix is the one surviving arbitrary-value use (DESIGN.md §5
  * listed exception — no token expresses "destructive mixed toward
  * foreground", and a new token for one error line would be worse).

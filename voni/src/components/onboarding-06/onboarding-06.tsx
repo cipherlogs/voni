@@ -73,7 +73,7 @@ export default function Onboarding06({
                   {entry.title}
                   {entry.time ? (
                     <span className="font-normal text-muted-foreground/60">
-                      {' '}&#8729; {entry.time}
+                      {' '}· {entry.time}
                     </span>
                   ) : null}
                 </p>
