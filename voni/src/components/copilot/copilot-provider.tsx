@@ -31,7 +31,6 @@ import {
 import { usePathname, useRouter } from "next/navigation";
 import { z } from "zod";
 import {
-  COPILOT_TURN_DETECTION,
   RateLimitError,
   VoiceSession,
   type TranscriptPartial,
@@ -696,12 +695,10 @@ export function CopilotProvider({
           greeting: COPILOT_GREETING,
           voiceId: prefs.voiceId,
           languageCodes: prefsLanguageCodes(prefs) ?? undefined,
-          // First-utterance tuning: copilot backchannel VAD (~350ms) so Hi
-          // endpoints inside the Doherty budget; test calls keep NATURAL.
+          // First-utterance tuning; turn-taking comes from TURN_PRESET.
           transcriptionPrompt: buildTranscriptionPrompt(route),
           keyterms: buildKeyterms(route),
           transcriptionMode: "min_latency",
-          turnDetection: { ...COPILOT_TURN_DETECTION },
           tools: sessionToolsFor(route),
         },
         fetcher,

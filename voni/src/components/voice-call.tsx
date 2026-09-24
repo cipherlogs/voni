@@ -27,7 +27,6 @@ import {
   VoiceSession,
   authedToken,
   demoToken,
-  NATURAL_TURN_DETECTION,
   effectiveInlineLanguages,
   type Transcript,
   type VoiceError,
@@ -597,9 +596,6 @@ export function VoiceCall({
             languageCodes: effectiveInlineLanguages(config.languageCodes),
             tools: compileVoiceTools(config),
             testAgentId: mode.agentId,
-            // Natural turn-taking: 350ms barge-in delay waits out
-            // backchannels/echo; tighter VAD shortens the reply gap.
-            turnDetection: { ...NATURAL_TURN_DETECTION },
           },
           authedToken,
         );

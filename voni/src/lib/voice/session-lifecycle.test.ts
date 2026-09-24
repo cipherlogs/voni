@@ -294,14 +294,14 @@ test("interrupted reply probes the cut before flushing", () => {
   assert.deepEqual(kinds, ["reply-cut", "flush"]);
 });
 
-test("flush stops and disconnects immediately per docs pattern", () => {
+test("flush with no reply gain stops and disconnects at once", () => {
   const order: string[] = [];
   const stopAt = { at: -1 };
   const { handle, internals } = makeSession();
   internals["queued"] = [fakeVoice(order, stopAt)];
   handle({ type: "input.speech.started" });
-  // Docs: disconnect the source and reset the cursor immediately so stale
-  // speech never overlaps the next reply. No per-chunk fade, no deferred stop.
+  // No audio context yet, so no reply gain to fade: hard stop. The fade path
+  // is covered in turn-detection.test.ts.
   assert.deepEqual(order, ["stop", "disconnect"]);
   assert.equal(stopAt.at, 0);
 });

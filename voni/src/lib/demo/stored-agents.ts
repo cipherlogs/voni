@@ -69,12 +69,10 @@ export async function getOrCreateDemoAgent(
       system_prompt: compileSystemPrompt(config),
       greeting: config.greeting,
       voice: { voice_id: voiceId },
-      // Omitted when empty: absent means automatic detection across all 18
-      // recognised languages, which is what a public demo wants — a visitor
-      // may open in any language and the agent should follow.
-      ...(config.languageCodes.length > 0
-        ? { input: { language_codes: config.languageCodes } }
-        : {}),
+      // Locked to the voice's language: detecting across all 18 languages
+      // every turn is slow. Language codes apply at speech-to-text connect,
+      // so they live on the stored agent, not in the post-ready preset.
+      input: { language_codes: [voice.languageCode] },
     }),
   });
 

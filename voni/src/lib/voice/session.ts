@@ -76,7 +76,7 @@ export type SessionConfig =
       keyterms?: string[];
       /** STT speed/accuracy. The copilot runs min_latency; entity capture can widen later. */
       transcriptionMode?: TranscriptionMode;
-      /** VAD windows. Explicit values disable adaptive endpointing for the session. */
+      /** VAD windows. Defaults to TURN_PRESET; override only in tests. */
       turnDetection?: TurnDetection;
       /** Compiled from the selected on-screen tools, including pacing. */
       tools?: VoiceTool[];
@@ -151,7 +151,7 @@ export function buildInlineSessionUpdate(
       ...(config.languageCodes && config.languageCodes.length > 0
         ? { language_codes: config.languageCodes }
         : {}),
-      ...(config.turnDetection ? { turn_detection: { ...config.turnDetection } } : {}),
+      turn_detection: { ...(config.turnDetection ?? TURN_PRESET) },
     },
     ...(config.tools && config.tools.length > 0 ? { tools: config.tools } : {}),
   };
@@ -322,34 +322,30 @@ const SENSITIVE_TURN_DETECTION: TurnDetection = {
 };
 
 /**
- * Session-level turn detection for natural test calls.
+ * The turn preset: the ONE turn-taking dial for demo calls, test calls, and
+ * the copilot. Tune speed here and every surface follows.
  *
- * The 350ms interruption delay is the anti-rudeness knob: backchannels
- * ("uh-huh", "yeah"), echo, and noise bursts end before it elapses, so they
- * never cut the agent off — sustained real interruptions still barge in
- * (fail-closed, matching the Jev gate). Tighter VAD windows than the
- * sensitive preset also shorten the reply gap. The sensitive preset is
- * untouched and still takes over for card-field capture turns via
- * `prepareSensitiveCapture`, which restores this preset afterwards.
+ * - `min_silence` 150: after a sentence that clearly ended (terminal
+ *   punctuation), reply almost at once. The punctuation check is what keeps
+ *   an unfinished "I was thinking…" from being answered.
+ * - `max_silence` 450: an unclear ending waits at most this long.
+ * - `interruption_delay` 200: "uh-huh", coughs, and echo end before it
+ *   elapses, so they don't cut the agent off; real barge-in still does.
+ *
+ * Only `prepareSensitiveCapture` departs from it, for one card-field turn.
  */
-export const NATURAL_TURN_DETECTION: TurnDetection = {
-  min_silence: 900,
-  max_silence: 1200,
+export const TURN_PRESET: TurnDetection = {
+  min_silence: 150,
+  max_silence: 450,
   interrupt_response: true,
-  interruption_delay: 350,
+  interruption_delay: 200,
 };
 
 /**
- * Copilot backchannel VAD: tighter than the test-call preset so short
- * "Hi" turns endpoint in ~350ms (Doherty budget), not 500ms+. Test calls
- * keep NATURAL_TURN_DETECTION with its 350ms anti-rudeness delay.
+ * Barge-in fade. One gain node per reply ramps to silence over this long
+ * instead of a hard `stop(0)` click; short enough to still feel instant.
  */
-export const COPILOT_TURN_DETECTION: TurnDetection = {
-  min_silence: 350,
-  max_silence: 1200,
-  interrupt_response: true,
-  interruption_delay: 0,
-};
+const FADE_OUT_S = 0.04;
 
 /** One scheduled reply chunk. Direct source -> destination per AssemblyAI docs. */
 type QueuedVoice = {
@@ -372,6 +368,10 @@ export class VoiceSession {
   private pendingTurnDetectionRestore: TurnDetection | null | undefined;
   /** Last server-acknowledged turn-detection state. Null means adaptive defaults. */
   private activeTurnDetection: TurnDetection | null = null;
+  /** Bound to a stored agent (demo): the preset is pushed after session.ready. */
+  private boundAgent = false;
+  /** Current reply's volume. Replaced after every barge-in fade. */
+  private voiceGain: GainNode | null = null;
   /** Resume handle from `session.ready`. Null until the first ready. */
   private sessionId: string | null = null;
   private tokenFetcher: TokenFetcher | null = null;
@@ -528,9 +528,10 @@ export class VoiceSession {
           ? { mode: "agent", agentId }
           : config;
       this.activeTurnDetection =
-        resolved.mode === "inline" && resolved.turnDetection
-          ? { ...resolved.turnDetection }
+        resolved.mode === "inline"
+          ? { ...(resolved.turnDetection ?? TURN_PRESET) }
           : null;
+      this.boundAgent = resolved.mode === "agent";
       this.pendingTurnDetectionRestore = undefined;
 
       // Mic stream and token were acquired concurrently above; the stream is
@@ -754,6 +755,17 @@ export class VoiceSession {
         if (!this.sessionReadySent) {
           this.sessionReadySent = true;
           this.handlers.onTiming?.("sessionReady");
+          // A stored agent can't carry input fields in its binding update, and
+          // its cached server copy would go stale — so the turn preset rides a
+          // follow-up update instead (verified to ack on a bound session).
+          if (this.boundAgent) {
+            this.updateConfig({
+              input: {
+                transcription_mode: "min_latency",
+                turn_detection: { ...TURN_PRESET },
+              },
+            }).catch(() => undefined);
+          }
         }
         this.probe("ready");
         this.resumeAttempts = 0;
@@ -1093,16 +1105,19 @@ export class VoiceSession {
     const buffer = this.audioCtx.createBuffer(1, samples, TARGET_SAMPLE_RATE);
     buffer.getChannelData(0).set(float32);
 
-    // Per AssemblyAI docs (voice-agent-api/browser-integration + audio-format):
-    // write each reply.audio chunk straight to the destination and let the
-    // OS drain it. No per-chunk GainNode / fade-in — starting every ~50ms
-    // chunk at gain 0 amplitude-modulates continuous speech at chunk rate
-    // and sounds chopped. Back-to-back scheduling on the AudioContext clock
-    // keeps chunk boundaries continuous; the context resamples 24kHz -> device
-    // rate on output (correct for Firefox/Safari default-rate contexts).
+    // No per-chunk GainNode / fade-in — starting every ~50ms chunk at gain 0
+    // amplitude-modulates continuous speech at chunk rate and sounds chopped.
+    // Chunks share ONE reply-level gain at unity, which only moves when a
+    // barge-in fades it out (see flush). Back-to-back scheduling on the
+    // AudioContext clock keeps chunk boundaries continuous; the context
+    // resamples 24kHz -> device rate on output.
+    if (!this.voiceGain) {
+      this.voiceGain = this.audioCtx.createGain();
+      this.voiceGain.connect(this.audioCtx.destination);
+    }
     const node = this.audioCtx.createBufferSource();
     node.buffer = buffer;
-    node.connect(this.audioCtx.destination);
+    node.connect(this.voiceGain);
 
     // Never schedule in the past: if the network stalled, currentTime has
     // moved past the cursor and starting at the old value plays instantly,
@@ -1117,23 +1132,37 @@ export class VoiceSession {
     };
   }
 
-  /** Drop everything queued. Used on barge-in and teardown. */
+  /**
+   * Drop everything queued. Used on barge-in and teardown. The current
+   * reply's gain ramps to 0 over FADE_OUT_S and every source stops at the
+   * ramp's end, so the cut trails off instead of clicking. The next reply
+   * gets a fresh unity gain and starts no earlier than the fade's end, so
+   * stale speech never overlaps it.
+   */
   private flush() {
     const dropped = this.queued.length;
+    const ctx = this.audioCtx;
+    const gain = this.voiceGain;
+    this.voiceGain = null;
+    const end = ctx && gain ? ctx.currentTime + FADE_OUT_S : 0;
+    if (ctx && gain) {
+      gain.gain.setValueAtTime(gain.gain.value, ctx.currentTime);
+      gain.gain.linearRampToValueAtTime(0, end);
+      setTimeout(() => gain.disconnect(), FADE_OUT_S * 1000 + 50);
+    }
     for (const { node } of this.queued) {
       try {
-        // Per docs: disconnect the source and reset the cursor immediately
-        // so stale speech never plays over the next reply. A deferred/ramped
-        // stop overlaps the incoming reply and reads as echo/chop.
         node.onended = null;
-        node.stop(0);
-        node.disconnect();
+        // Sources scheduled past `end` never start; the gain disconnect
+        // above releases the rest once they fall silent.
+        node.stop(end);
+        if (!gain) node.disconnect();
       } catch {
         // Already finished — stop() on a stopped node throws; harmless.
       }
     }
     this.queued = [];
-    if (this.audioCtx) this.playhead = this.audioCtx.currentTime;
+    if (ctx) this.playhead = Math.max(ctx.currentTime, end);
     this.probe("flush", dropped);
   }
 
@@ -1208,7 +1237,10 @@ export class VoiceSession {
     if (typeof window !== "undefined") {
       window.removeEventListener("pagehide", this.onPageHide);
     }
+    const wasSpeaking = this.queued.length > 0;
     this.flush();
+    // Hang-up mid-reply: let the fade finish before the context closes.
+    if (wasSpeaking) await new Promise((r) => setTimeout(r, FADE_OUT_S * 1000));
 
     try {
       this.worklet?.port.close();
