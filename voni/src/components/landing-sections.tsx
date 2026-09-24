@@ -85,8 +85,8 @@ function WizardCell() {
       <div className="flex flex-col gap-2.5 md:w-65 md:shrink-0">
         <h3 className="text-lg leading-[normal] font-semibold tracking-[-0.01em]">A wizard that builds the agent</h3>
         <p className="text-muted-foreground text-sm leading-[1.55]">
-          Goal, personality, voice and language with a live sample, then the
-          tasks it should handle.
+          Pick the goal, personality, voice and language, hear a sample, then
+          choose what it does after each call.
         </p>
       </div>
       <div aria-hidden="true" className="bg-muted/50 flex flex-1 flex-col gap-3 rounded-lg border p-4">
@@ -133,7 +133,7 @@ export function LandingBento() {
       <WizardCell />
       <Cell
         title="Remembers across channels"
-        description="A call on Tuesday, a WhatsApp on Thursday, one record."
+        description="Tuesday's call and Thursday's WhatsApp reply are on the same record."
       >
         <div className="text-ui flex flex-col gap-1.5 leading-[normal]">
           <span className="landing-seq bg-muted self-start rounded-[10px] rounded-bl-[3px] px-3 py-2">
@@ -150,7 +150,7 @@ export function LandingBento() {
       </Cell>
       <Cell
         title="Dry run by default"
-        description="Consent policy and calling windows on every campaign. Live calls take an explicit action."
+        description="Every campaign has a consent policy and calling windows. It makes no real calls until you switch it to live."
       >
         <div className="flex flex-col gap-3">
           <div className="flex justify-between text-xs">
@@ -172,8 +172,8 @@ export function LandingBento() {
         </div>
       </Cell>
       <Cell
-        title="Hands off with a brief"
-        description="When it gets stuck, a teammate takes the call already knowing the story."
+        title="Transfers with a summary"
+        description="When the agent can't answer, it transfers the call and gives your teammate a written summary."
       >
         <div className="bg-muted/50 text-ui text-foreground/70 rounded-lg border p-3">
           <span className="text-foreground/60 text-2xs block pb-1 font-mono tracking-[0.06em]">
@@ -185,8 +185,8 @@ export function LandingBento() {
       </Cell>
       <Cell
         inverted
-        title="A copilot that drives it"
-        description="Say it, confirm it. It navigates, fills the wizard, and runs jobs."
+        title="Voice copilot"
+        description="Speak a command and confirm it. The copilot opens pages, fills in the wizard and runs actions like pausing a campaign."
       >
         <div className="border-background/15 text-ui text-background/85 flex h-11 items-center gap-2.5 rounded-full border px-1.5">
           <span className="relative size-8 shrink-0">
@@ -195,7 +195,7 @@ export function LandingBento() {
               <Mic className="size-3.5" />
             </span>
           </span>
-          <span className="flex-1 truncate">&ldquo;Pause Maple Street&rdquo;</span>
+          <span className="flex-1 truncate">&quot;Pause Maple Street&quot;</span>
           <span className="landing-glow bg-background text-foreground flex h-8 items-center rounded-full px-3 font-medium">
             Confirm
           </span>
@@ -213,7 +213,7 @@ const JOURNEY = [
   ["Tue 10:05", "Voni calls inside your calling window", "Budget and moving date confirmed on the call.", ["update_lead"]],
   ["Tue 10:08", "Viewing booked", "Saturday 10:30, checked against your calendar.", ["check_availability", "book_viewing"]],
   ["Tue 10:09", "WhatsApp follow-up scheduled", "Thursday evening, with the address and time.", ["schedule_follow_up"]],
-  ["Thu 18:40", "The lead writes back on WhatsApp", "“Can I bring my partner?” Answered with Tuesday’s call in view.", []],
+  ["Thu 18:40", "The lead writes back on WhatsApp", "\"Can I bring my partner?\" The agent answers using notes from Tuesday's call.", []],
 ] as const;
 
 export function LandingJourney() {
@@ -251,9 +251,9 @@ export function LandingJourney() {
 }
 
 const STEPS = [
-  ["01", "Describe the outcome", "Tell the wizard what a good call looks like. It builds the agent and its tools."],
-  ["02", "Rehearse in dry run", "Every campaign previews its calls first. Review, adjust, save."],
-  ["03", "Go live, stay in control", "Flip to live inside your calling windows. Stuck calls come to your team."],
+  ["01", "Describe the outcome", "Tell the wizard what a good call looks like and what should happen after it. It builds the agent and its tools."],
+  ["02", "Rehearse in dry run", "Each campaign previews its calls before any go out. You review them and adjust the agent."],
+  ["03", "Go live", "Switch the campaign to live. It calls only inside your calling windows and transfers stuck calls to your team."],
 ] as const;
 
 export function LandingSteps() {
@@ -288,9 +288,9 @@ export function LandingSteps() {
 }
 
 const FAQ = [
-  ["replace", "Does Voni replace my team?", "No. It takes the volume: first calls, qualifying, booking, follow-ups. When a conversation needs a person, it transfers with a brief."],
-  ["consent", "Will it call people who haven't agreed to it?", "Campaigns follow your consent policy and calling windows, and start as dry runs. Nothing goes live until you say so."],
-  ["field", "Is it only for property?", "Property is where we prove it. The same loop works for any team that sells or serves over the phone."],
+  ["replace", "Does Voni replace my team?", "No. It handles the calls and the work after them. When a caller needs a person, it transfers the call with a written summary."],
+  ["consent", "Will it call people who haven't agreed to it?", "Campaigns follow your consent policy and calling windows, and start as dry runs. Nothing goes live until you switch it on."],
+  ["field", "What kinds of calls can it handle?", "Any call that ends in a clear next step: checking availability, booking, updating a record, scheduling a follow-up or transferring to your team. The example on this page is property."],
   ["languages", "Which languages can it speak?", "English, Spanish, French, German, Italian, and Portuguese. You pick the language and voice in the wizard."],
 ] as const;
 

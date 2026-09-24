@@ -70,11 +70,12 @@ export default function LandingPage() {
                 Phone and WhatsApp voice agents
               </span>
               <h1 className="font-editorial text-hero-sm md:text-hero max-w-225 font-medium tracking-[-0.03em] text-balance">
-                An AI employee with a mission, <em>not another chatbot</em>
+                Every call ends with the work <em>already done</em>
               </h1>
-              <p className="text-muted-foreground max-w-140 text-base leading-[1.6] text-pretty md:text-lg md:leading-[1.6]">
-                Describe the outcome. Your agent calls leads, remembers every
-                conversation, and shows you why it made each decision.
+              <p className="text-muted-foreground max-w-140 text-base leading-[1.6] text-balance md:text-lg md:leading-[1.6]">
+                Voni answers and places your calls, then books the slot, updates
+                the record and sends the <span className="whitespace-nowrap">follow-up</span>. You decide what happens
+                after each call.
               </p>
             </div>
 
@@ -95,10 +96,11 @@ export default function LandingPage() {
         <section id="journey" className="scroll-mt-16">
           <div className={`${SECTION} flex flex-col gap-8 py-16 md:gap-12 md:py-24`}>
             <div className="flex flex-col gap-3 md:gap-3.5">
-              <h2 className={SECTION_HEADING}>From first call to booked viewing.</h2>
-              <p className="text-muted-foreground max-w-140 text-base leading-[1.6]">
-                One example lead, the way Voni records it: the call, the booking
-                and the WhatsApp follow-up land on the same record.
+              <h2 className={SECTION_HEADING}>One call, and everything after it.</h2>
+              <p className="text-muted-foreground max-w-140 text-base leading-[1.6] text-balance">
+                One example from a property team. Voni books the viewing and
+                schedules the WhatsApp follow-up, and nobody on the team updates
+                the record by hand.
               </p>
             </div>
             <LandingJourney />
@@ -108,7 +110,7 @@ export default function LandingPage() {
         <section id="features" data-play className="bg-muted/50 scroll-mt-16 border-t">
           <div className={`${SECTION} flex flex-col gap-8 py-16 md:gap-12 md:py-24`}>
             <h2 className={`${SECTION_HEADING} md:max-w-200 md:self-center md:text-center md:text-balance`}>
-              Set up in a wizard. Remembers every lead. Asks before going live.
+              A wizard builds the agent, and nothing goes live until you switch it on.
             </h2>
             <LandingBento />
           </div>
@@ -116,7 +118,7 @@ export default function LandingPage() {
 
         <section id="how" data-play className="scroll-mt-16 border-t">
           <div className={`${SECTION} flex flex-col gap-8 py-16 md:gap-14 md:py-24`}>
-            <h2 className={SECTION_HEADING}>Rehearse every campaign before a real call.</h2>
+            <h2 className={SECTION_HEADING}>Test every campaign in dry run before it makes a real call.</h2>
             <LandingSteps />
           </div>
         </section>
@@ -124,11 +126,11 @@ export default function LandingPage() {
         <section id="faq" className="scroll-mt-16 border-t">
           <div className={`${SECTION} flex flex-col gap-6 py-16 md:flex-row md:gap-24 md:py-24`}>
             <div className="flex shrink-0 flex-col gap-3.5 md:w-90">
-              <h2 className={SECTION_HEADING}>Before you let it call your leads</h2>
+              <h2 className={SECTION_HEADING}>Before you let it make calls for you</h2>
               <p className="text-muted-foreground text-base leading-[1.6]">
-                Rather hear it?{" "}
+                Rather listen?{" "}
                 <a href="#demo" className="text-foreground underline underline-offset-3">
-                  Hear it handle a real enquiry
+                  Call the demo agent
                 </a>
                 .
               </p>
@@ -143,7 +145,7 @@ export default function LandingPage() {
           <div className={`${SECTION} flex flex-col items-center gap-5 py-16 text-center md:gap-6 md:py-28`}>
             <LandingOrb size="sm" />
             <h2 className="font-editorial text-display-sm md:text-display max-w-180 font-medium tracking-[-0.025em] md:text-balance">
-              Hear it before you build it.
+              Call the demo agent, then build your own.
             </h2>
           </div>
         </section>
