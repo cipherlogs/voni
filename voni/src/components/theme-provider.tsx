@@ -1,6 +1,7 @@
 "use client"
 
 import * as React from "react"
+import { Suspense } from "react"
 import { usePathname } from "next/navigation"
 import { ThemeProvider as NextThemesProvider, useTheme } from "next-themes"
 
@@ -34,6 +35,29 @@ function ThemeMigration({ storageKey }: { storageKey: string }) {
 }
 
 export function ThemeProvider({
+  children,
+  ...props
+}: React.ComponentProps<typeof NextThemesProvider>) {
+  const storageKey =
+    (props as { storageKey?: string }).storageKey ?? "theme"
+  return (
+    // usePathname() blocks prerendering without a boundary (Cache
+    // Components): the fallback paints without the landing override, the
+    // light-forced leaf streams in. Same pattern as app-sidebar.
+    <Suspense
+      fallback={
+        <NextThemesProvider {...props}>
+          <ThemeMigration storageKey={storageKey} />
+          {children}
+        </NextThemesProvider>
+      }
+    >
+      <ThemedProvider {...props}>{children}</ThemedProvider>
+    </Suspense>
+  )
+}
+
+function ThemedProvider({
   children,
   ...props
 }: React.ComponentProps<typeof NextThemesProvider>) {
