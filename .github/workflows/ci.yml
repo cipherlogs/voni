@@ -21,6 +21,10 @@ jobs:
           cache: npm
           cache-dependency-path: voni/package-lock.json
       - run: npm ci
+      # PageProps/LayoutProps/RouteContext live in .next/types, which is
+      # gitignored — generate them before tsc on a fresh checkout.
+      - name: Generate Next.js route types
+        run: npx next typegen
       - name: TypeScript
         run: npx tsc --noEmit
       - name: ESLint
