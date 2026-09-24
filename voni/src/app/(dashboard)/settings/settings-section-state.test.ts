@@ -142,8 +142,9 @@ test("operator sections use FormCard and ship a loading boundary", () => {
   assert.match(view, /FormSection/);
   assert.match(view, /FormSectionSeparator/);
   assert.match(view, /Cancel/);
-  assert.match(view, /max-w-md/);
-  assert.match(view, /max-w-xs/);
+  // Controls fill the field column; status reads as StatusDot, not badges.
+  assert.doesNotMatch(view, /max-w-(md|xs)/);
+  assert.match(view, /<StatusDot/);
   assert.ok(existsSync(join(here, "..", "operator", "loading.tsx")), "operator/loading.tsx exists");
 });
 

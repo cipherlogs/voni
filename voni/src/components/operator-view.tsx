@@ -7,7 +7,7 @@ import { RouteBrief } from "@/components/copilot/route-brief";
 import { ConnectionTestButton } from "@/components/connection-test-button";
 import { LoadingButton } from "@/components/loading-button";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
+import { StatusDot } from "@/components/status-dot";
 import {
   Empty,
   EmptyDescription,
@@ -108,9 +108,17 @@ export function OperatorView({ data }: { data: OperatorData }) {
             />
           }
         >
-          <div className="grid gap-2 sm:grid-cols-2">
-            {data.bootstrap.map((item) => <div key={item.name} className="flex items-center justify-between rounded-lg border p-4 text-sm"><span className="font-mono text-xs">{item.name}</span><Badge variant={item.configured ? "secondary" : "outline"}>{item.configured ? "Set" : "Missing"}</Badge></div>)}
-          </div>
+          {/* One bordered list (dashboard-01 detail idiom), not a card per value. */}
+          <ul className="divide-y rounded-lg border">
+            {data.bootstrap.map((item) => (
+              <li key={item.name} className="flex items-center justify-between gap-3 px-4 py-3 text-sm">
+                <span className="font-mono text-xs break-all">{item.name}</span>
+                <StatusDot tone={item.configured ? "success" : "warning"} className="shrink-0 text-xs">
+                  {item.configured ? "Set" : "Missing"}
+                </StatusDot>
+              </li>
+            ))}
+          </ul>
         </FormSection>
 
         <FormSectionSeparator />
@@ -128,7 +136,7 @@ export function OperatorView({ data }: { data: OperatorData }) {
           <div className="grid gap-3 md:grid-cols-3">
             {(Object.keys(CREDENTIAL_LABELS) as CredentialName[]).map((name) => (
               <div key={name} className="grid gap-3 rounded-lg border p-4">
-                <div className="flex items-center justify-between gap-2"><span className="font-medium">{CREDENTIAL_LABELS[name]}</span><Badge variant={data.credentials[name].configured ? "secondary" : "outline"}>{data.credentials[name].configured ? "Ready" : "Missing"}</Badge></div>
+                <div className="flex items-center justify-between gap-2"><span className="font-medium">{CREDENTIAL_LABELS[name]}</span><StatusDot tone={data.credentials[name].configured ? "success" : "warning"} className="text-xs">{data.credentials[name].configured ? "Ready" : "Missing"}</StatusDot></div>
                 <p className="text-muted-foreground text-xs">Source: {data.credentials[name].source}</p>
                 <ConnectionTestButton service={CREDENTIAL_SERVICES[name]} />
               </div>
@@ -155,7 +163,7 @@ export function OperatorView({ data }: { data: OperatorData }) {
                 {data.llmAccounts[providerId].length ? data.llmAccounts[providerId].map((account) => (
                   <div key={account.id} className="flex flex-wrap items-center justify-between gap-2 rounded-md border px-3 py-2 text-sm">
                     <span>{account.label}</span>
-                    <div className="flex items-center gap-2"><Badge variant={account.status === "ok" ? "secondary" : "outline"}>{account.status === "cooldown" && account.cooldownUntil ? `Cooling until ${new Date(account.cooldownUntil).toLocaleTimeString()}` : account.status === "ok" ? "Ready" : "Disabled"}</Badge><ConnectionTestButton service={providerId} accountId={account.id} /></div>
+                    <div className="flex items-center gap-2"><StatusDot tone={account.status === "ok" ? "success" : account.status === "cooldown" ? "warning" : "neutral"} className="text-xs">{account.status === "cooldown" && account.cooldownUntil ? `Cooling until ${new Date(account.cooldownUntil).toLocaleTimeString()}` : account.status === "ok" ? "Ready" : "Disabled"}</StatusDot><ConnectionTestButton service={providerId} accountId={account.id} /></div>
                   </div>
                 )) : <p className="text-muted-foreground text-sm">No accounts configured.</p>}
               </div>
@@ -177,10 +185,10 @@ export function OperatorView({ data }: { data: OperatorData }) {
         >
           <form action={action} className="grid gap-5">
             <FieldGroup className="grid gap-4 md:grid-cols-2">
-              {(["groq", "cerebras", "gemini", "openrouter"] as const).map((provider) => <Field key={provider}><FieldLabel htmlFor={`${provider}-model`}>{PROVIDER_LABELS[provider]} model</FieldLabel><Input id={`${provider}-model`} name={`${provider}Model`} className="max-w-md" defaultValue={data.config[`${provider}Model`]} /></Field>)}
+              {(["groq", "cerebras", "gemini", "openrouter"] as const).map((provider) => <Field key={provider}><FieldLabel htmlFor={`${provider}-model`}>{PROVIDER_LABELS[provider]} model</FieldLabel><Input id={`${provider}-model`} name={`${provider}Model`} defaultValue={data.config[`${provider}Model`]} /></Field>)}
             </FieldGroup>
-            <Field><FieldLabel htmlFor="llm-order">LLM fallback order</FieldLabel><Input id="llm-order" name="llmProviderOrder" className="max-w-md" defaultValue={data.config.llmProviderOrder.join(", ")} /><FieldDescription>Use each provider once, separated by commas.</FieldDescription></Field>
-            <FieldGroup className="grid gap-4 md:grid-cols-2"><Field><FieldLabel htmlFor="connection-id">Telnyx Call Control connection ID</FieldLabel><Input id="connection-id" name="telnyxConnectionId" className="max-w-xs" defaultValue={data.config.telnyxConnectionId ?? ""} /></Field><Field><FieldLabel htmlFor="caller-number">Default caller number</FieldLabel><Input id="caller-number" name="telnyxCallerNumber" type="tel" className="max-w-xs" defaultValue={data.config.telnyxCallerNumber ?? ""} /></Field><Field><FieldLabel htmlFor="cartesia-voice">Cartesia voice ID</FieldLabel><Input id="cartesia-voice" name="cartesiaVoiceId" className="max-w-xs" defaultValue={data.config.cartesiaVoiceId ?? ""} /></Field></FieldGroup>
+            <Field><FieldLabel htmlFor="llm-order">LLM fallback order</FieldLabel><Input id="llm-order" name="llmProviderOrder" defaultValue={data.config.llmProviderOrder.join(", ")} /><FieldDescription>Use each provider once, separated by commas.</FieldDescription></Field>
+            <FieldGroup className="grid gap-4 md:grid-cols-2"><Field><FieldLabel htmlFor="connection-id">Telnyx Call Control connection ID</FieldLabel><Input id="connection-id" name="telnyxConnectionId" defaultValue={data.config.telnyxConnectionId ?? ""} /></Field><Field><FieldLabel htmlFor="caller-number">Default caller number</FieldLabel><Input id="caller-number" name="telnyxCallerNumber" type="tel" defaultValue={data.config.telnyxCallerNumber ?? ""} /></Field><Field><FieldLabel htmlFor="cartesia-voice">Cartesia voice ID</FieldLabel><Input id="cartesia-voice" name="cartesiaVoiceId" defaultValue={data.config.cartesiaVoiceId ?? ""} /></Field></FieldGroup>
             <FieldGroup className="grid gap-4 md:grid-cols-2">
               <Field><FieldLabel htmlFor="bridge-workspace">Bridge workspace</FieldLabel><Select name="bridgeOrganizationId" items={{ none: "Not selected", ...Object.fromEntries(data.organizations.map((item) => [item.id, item.name])) }} defaultValue={data.config.bridgeOrganizationId ?? "none"}><SelectTrigger id="bridge-workspace" aria-label="Bridge workspace" className="w-full"><SelectValue placeholder="Select workspace" /></SelectTrigger><SelectContent><SelectGroup><SelectItem value="none">Not selected</SelectItem>{data.organizations.map((item) => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectGroup></SelectContent></Select></Field>
               <Field><FieldLabel htmlFor="bridge-agent">Saved Voni agent</FieldLabel><Select name="bridgeAgentId" items={{ none: "Not selected", ...Object.fromEntries(data.agents.map((item) => [item.id, item.name])) }} defaultValue={data.config.bridgeAgentId ?? "none"}><SelectTrigger id="bridge-agent" aria-label="Saved Voni agent" className="w-full"><SelectValue placeholder="Select agent" /></SelectTrigger><SelectContent><SelectGroup><SelectItem value="none">Not selected</SelectItem>{data.agents.map((item) => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectGroup></SelectContent></Select></Field>
