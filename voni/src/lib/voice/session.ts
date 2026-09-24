@@ -16,9 +16,10 @@
  * 2. Echo cancellation ON, noise suppression OFF. Without AEC the agent hears
  *    its own voice through the speakers and interrupts every reply. A second
  *    denoiser on top of the server's own costs more accuracy than it buys.
- * 3. Playback scheduled on the AudioContext clock, never with setTimeout.
- *    Sleep durations aren't exact, so a timer-driven schedule drifts against
- *    the hardware clock and turns into pops and gaps.
+ * 3. Playback through one continuous worklet stream (playout.ts), never one
+ *    AudioBufferSourceNode per chunk as in AssemblyAI's browser sample. That
+ *    sample has no jitter buffer and resamples each chunk alone, so late
+ *    chunks and chunk joins pop. Never schedule with setTimeout either.
  */
 
 import {
@@ -35,6 +36,7 @@ import {
   VoiceStartError,
   type VoiceErrorCode,
 } from "./mic-capture";
+import type { WorkletPlayout } from "./playout";
 
 export { TARGET_SAMPLE_RATE, VOICE_MIC_CONSTRAINTS } from "./mic-capture";
 
@@ -260,10 +262,10 @@ export type SessionEndedInfo = {
  * caused it (barge-in flush, interrupted-reply flush, or something else).
  */
 export type AudioProbeEvent = {
-  kind: "ready" | "barge-in" | "reply-cut" | "flush";
+  kind: "ready" | "barge-in" | "reply-cut" | "flush" | "underrun";
   /** Wall-clock ms of the event. */
   at: number;
-  /** Playback sources queued at that moment. */
+  /** Ms of agent audio buffered at that moment (worklet's last report). */
   queued: number;
   sessionId: string | null;
 };
@@ -342,25 +344,18 @@ export const TURN_PRESET: TurnDetection = {
 };
 
 /**
- * Barge-in fade. One gain node per reply ramps to silence over this long
- * instead of a hard `stop(0)` click; short enough to still feel instant.
+ * Barge-in fade. The playout ramps what is sounding to silence over this long
+ * instead of a hard-stop click; short enough to still feel instant.
  */
 const FADE_OUT_S = 0.04;
-
-/** One scheduled reply chunk. Direct source -> destination per AssemblyAI docs. */
-type QueuedVoice = {
-  node: AudioBufferSourceNode;
-};
 
 export class VoiceSession {
   private ws: WebSocket | null = null;  private audioCtx: AudioContext | null = null;
   private stream: MediaStream | null = null;
   private worklet: AudioWorkletNode | null = null;
   private ready = false;
-  /** Next free moment on the audio clock. The playback schedule cursor. */
-  private playhead = 0;
-  /** Sources scheduled but not yet played, so barge-in can cancel them. */
-  private queued: QueuedVoice[] = [];
+  /** Agent-voice output; lives on the mic's context. */
+  private playout: WorkletPlayout | null = null;
   private state: VoiceState = "idle";
   private onPageHide = () => this.sendEnd();
   private toolCoordinator: ToolCoordinator | null = null;
@@ -370,8 +365,6 @@ export class VoiceSession {
   private activeTurnDetection: TurnDetection | null = null;
   /** Bound to a stored agent (demo): the preset is pushed after session.ready. */
   private boundAgent = false;
-  /** Current reply's volume. Replaced after every barge-in fade. */
-  private voiceGain: GainNode | null = null;
   /** Resume handle from `session.ready`. Null until the first ready. */
   private sessionId: string | null = null;
   private tokenFetcher: TokenFetcher | null = null;
@@ -557,8 +550,11 @@ export class VoiceSession {
       }
       this.audioCtx = graph.audioCtx;
       this.worklet = graph.worklet;
-
-      this.playhead = this.audioCtx.currentTime;
+      this.playout = graph.playout;
+      // Ran dry before reply.done: the network stalled mid-reply.
+      this.playout.onDrained = () => {
+        if (this.state === "speaking") this.probe("underrun");
+      };
       this.connect(token, resolved, gen);
       if (typeof window !== "undefined") {
         window.addEventListener("pagehide", this.onPageHide);
@@ -1047,7 +1043,7 @@ export class VoiceSession {
 
   /** True when no agent audio is queued or still playing (queue drains on end). */
   playbackSettled(): boolean {
-    return this.queued.length === 0;
+    return this.playout?.settled() ?? true;
   }
 
   /** True while the user muted their mic: frames are dropped, the call stays up. */
@@ -1085,89 +1081,24 @@ export class VoiceSession {
     }
   }
 
-  /** Decode one PCM16 chunk and queue it on the audio clock. */
+  /** Queue one base64 PCM16 chunk on the playout worklet. */
   private schedule(base64: string) {
-    if (!this.audioCtx) return;
-
-    const bytes = fromBase64(base64);
-    const samples = bytes.length >> 1;
-    if (samples === 0) return;
-    const float32 = new Float32Array(samples);
-    // Little-endian int16 -> float. A DataView would be clearer but this runs
-    // on every chunk of every reply.
-    for (let i = 0; i < samples; i++) {
-      const lo = bytes[i * 2];
-      const hi = bytes[i * 2 + 1];
-      const int16 = ((hi << 8) | lo) << 16 >> 16; // sign-extend
-      float32[i] = int16 / 32768;
-    }
-
-    const buffer = this.audioCtx.createBuffer(1, samples, TARGET_SAMPLE_RATE);
-    buffer.getChannelData(0).set(float32);
-
-    // No per-chunk GainNode / fade-in — starting every ~50ms chunk at gain 0
-    // amplitude-modulates continuous speech at chunk rate and sounds chopped.
-    // Chunks share ONE reply-level gain at unity, which only moves when a
-    // barge-in fades it out (see flush). Back-to-back scheduling on the
-    // AudioContext clock keeps chunk boundaries continuous; the context
-    // resamples 24kHz -> device rate on output.
-    if (!this.voiceGain) {
-      this.voiceGain = this.audioCtx.createGain();
-      this.voiceGain.connect(this.audioCtx.destination);
-    }
-    const node = this.audioCtx.createBufferSource();
-    node.buffer = buffer;
-    node.connect(this.voiceGain);
-
-    // Never schedule in the past: if the network stalled, currentTime has
-    // moved past the cursor and starting at the old value plays instantly,
-    // overlapping whatever is already sounding.
-    const startAt = Math.max(this.playhead, this.audioCtx.currentTime);
-    node.start(startAt);
-    this.playhead = startAt + buffer.duration;
-
-    this.queued.push({ node });
-    node.onended = () => {
-      this.queued = this.queued.filter((q) => q.node !== node);
-    };
+    this.playout?.play(fromBase64(base64), TARGET_SAMPLE_RATE);
   }
 
   /**
-   * Drop everything queued. Used on barge-in and teardown. The current
-   * reply's gain ramps to 0 over FADE_OUT_S and every source stops at the
-   * ramp's end, so the cut trails off instead of clicking. The next reply
-   * gets a fresh unity gain and starts no earlier than the fade's end, so
-   * stale speech never overlaps it.
+   * Drop everything queued. Used on barge-in and teardown. The worklet fades
+   * what is sounding over FADE_OUT_S instead of a hard-stop click, and the
+   * next reply starts from a clean buffer.
    */
   private flush() {
-    const dropped = this.queued.length;
-    const ctx = this.audioCtx;
-    const gain = this.voiceGain;
-    this.voiceGain = null;
-    const end = ctx && gain ? ctx.currentTime + FADE_OUT_S : 0;
-    if (ctx && gain) {
-      gain.gain.setValueAtTime(gain.gain.value, ctx.currentTime);
-      gain.gain.linearRampToValueAtTime(0, end);
-      setTimeout(() => gain.disconnect(), FADE_OUT_S * 1000 + 50);
-    }
-    for (const { node } of this.queued) {
-      try {
-        node.onended = null;
-        // Sources scheduled past `end` never start; the gain disconnect
-        // above releases the rest once they fall silent.
-        node.stop(end);
-        if (!gain) node.disconnect();
-      } catch {
-        // Already finished — stop() on a stopped node throws; harmless.
-      }
-    }
-    this.queued = [];
-    if (ctx) this.playhead = Math.max(ctx.currentTime, end);
+    const dropped = this.playout?.queuedMs() ?? 0;
+    this.playout?.flush(FADE_OUT_S);
     this.probe("flush", dropped);
   }
 
   /** Emit one probe event. Never throws, never affects playback. */
-  private probe(kind: AudioProbeEvent["kind"], queued = this.queued.length) {
+  private probe(kind: AudioProbeEvent["kind"], queued = this.playout?.queuedMs() ?? 0) {
     try {
       this.handlers.onAudioProbe?.({
         kind,
@@ -1237,7 +1168,7 @@ export class VoiceSession {
     if (typeof window !== "undefined") {
       window.removeEventListener("pagehide", this.onPageHide);
     }
-    const wasSpeaking = this.queued.length > 0;
+    const wasSpeaking = !this.playbackSettled();
     this.flush();
     // Hang-up mid-reply: let the fade finish before the context closes.
     if (wasSpeaking) await new Promise((r) => setTimeout(r, FADE_OUT_S * 1000));
@@ -1266,6 +1197,7 @@ export class VoiceSession {
     this.worklet = null;
     this.stream = null;
     this.audioCtx = null;
+    this.playout = null;
   }
 }
 

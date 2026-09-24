@@ -112,36 +112,24 @@ test("delta transcripts are scoped by item, never concatenated", () => {
   assert.deepEqual(finalized, [{ role: "user", text: "hello there" }]);
 });
 
-function fakeVoice(notifications: string[] = [], stopAt = { at: -1 }) {
-  return {
-    node: {
-      onended: () => undefined,
-      stop: (at?: number) => {
-        notifications.push("stop");
-        stopAt.at = at ?? -1;
-      },
-      disconnect: () => notifications.push("disconnect"),
-    },
+function fakePlayout(queuedMs = 0) {
+  const flushes: number[] = [];
+  const playout = {
+    play: () => undefined,
+    flush: (fadeS?: number) => flushes.push(fadeS ?? -1),
+    settled: () => flushes.length > 0,
+    queuedMs: () => queuedMs,
+    onDrained: undefined as (() => void) | undefined,
   };
+  return { playout, flushes };
 }
 
 test("barge-in flushes queued speech immediately", () => {
   const { handle, internals } = makeSession();
-  let stopped = 0;
-  let disconnected = 0;
-  internals["queued"] = [
-    {
-      node: {
-        onended: null as unknown,
-        stop: () => (stopped += 1),
-        disconnect: () => (disconnected += 1),
-      },
-    },
-  ];
+  const { playout, flushes } = fakePlayout(200);
+  internals["playout"] = playout;
   handle({ type: "input.speech.started" });
-  assert.equal(stopped, 1);
-  assert.equal(disconnected, 1);
-  assert.deepEqual(internals["queued"], []);
+  assert.deepEqual(flushes, [0.04]);
 });
 
 test("session.ended reports durations for acceptance tracking", () => {
@@ -264,21 +252,13 @@ test("barge-in probes the cut before flushing", () => {
       queuedCounts.push(event.queued);
     },
   });
-  let stopped = 0;
-  internals["queued"] = [fakeVoice(), fakeVoice()];
-  const counter = internals["queued"] as { node: { stop: () => void } }[];
-  for (const entry of counter) {
-    const stop = entry.node.stop;
-    entry.node.stop = () => {
-      stopped += 1;
-      return (stop as () => void).call(entry.node);
-    };
-  }
+  const { playout, flushes } = fakePlayout(120);
+  internals["playout"] = playout;
   handle({ type: "input.speech.started" });
-  assert.equal(stopped, 2);
-  // The cut is observed first (2 queued), then the flush reports the drop.
+  assert.equal(flushes.length, 1);
+  // The cut is observed first (120ms buffered), then the flush reports the drop.
   assert.deepEqual(kinds, ["barge-in", "flush"]);
-  assert.deepEqual(queuedCounts, [2, 2]);
+  assert.deepEqual(queuedCounts, [120, 120]);
 });
 
 test("interrupted reply probes the cut before flushing", () => {
@@ -286,7 +266,7 @@ test("interrupted reply probes the cut before flushing", () => {
   const { handle, internals } = makeSession({
     onAudioProbe: (event) => kinds.push(event.kind),
   });
-  internals["queued"] = [fakeVoice()];
+  internals["playout"] = fakePlayout().playout;
   handle({ type: "reply.done", status: "interrupted", reply_id: "r1" });
   assert.deepEqual(kinds, ["reply-cut", "flush"]);
   // A completed reply probes nothing — no cut happened.
@@ -294,16 +274,15 @@ test("interrupted reply probes the cut before flushing", () => {
   assert.deepEqual(kinds, ["reply-cut", "flush"]);
 });
 
-test("flush with no reply gain stops and disconnects at once", () => {
-  const order: string[] = [];
-  const stopAt = { at: -1 };
+test("reply audio goes to the playout at 24 kHz", () => {
   const { handle, internals } = makeSession();
-  internals["queued"] = [fakeVoice(order, stopAt)];
-  handle({ type: "input.speech.started" });
-  // No audio context yet, so no reply gain to fade: hard stop. The fade path
-  // is covered in turn-detection.test.ts.
-  assert.deepEqual(order, ["stop", "disconnect"]);
-  assert.equal(stopAt.at, 0);
+  const played: [number, number][] = [];
+  internals["playout"] = {
+    ...fakePlayout().playout,
+    play: (pcm: Uint8Array, rate: number) => played.push([pcm.length, rate]),
+  };
+  handle({ type: "reply.audio", data: Buffer.from(new Uint8Array(480)).toString("base64") });
+  assert.deepEqual(played, [[480, 24000]]);
 });
 
 test("first session.update ships recognition tuning, not defaults", () => {

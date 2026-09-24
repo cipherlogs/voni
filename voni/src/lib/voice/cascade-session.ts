@@ -13,6 +13,7 @@
 
 import { acquireMicStream, startAudioGraph } from "./mic-capture";
 import { releaseMic } from "./mic-owner";
+import type { Playout } from "./playout";
 
 export type CascadeCaption = {
   role: "user" | "agent";
@@ -142,52 +143,9 @@ export function decodeAudioMessage(raw: string): {
 export type MicHandle = {
   stop: () => void;
   audioCtx?: AudioContext | null;
+  /** Default output: the shared worklet playout on the mic's context. */
+  playout?: Playout;
 };
-
-export type Playout = {
-  play: (pcm: Uint8Array, sampleRate: number) => void;
-  flush: () => void;
-};
-
-/** Default playout: back-to-back scheduling on the mic context clock. */
-export function createBrowserPlayout(audioCtx: AudioContext | null | undefined): Playout {
-  if (!audioCtx) return { play: () => {}, flush: () => {} };
-  const ctx = audioCtx;
-  let playhead = 0;
-  let queued: AudioBufferSourceNode[] = [];
-  return {
-    play(pcm: Uint8Array, sampleRate: number) {
-      const frames = Math.floor(pcm.length / 2);
-      if (frames === 0) return;
-      const buffer = ctx.createBuffer(1, frames, sampleRate);
-      const channel = buffer.getChannelData(0);
-      const view = new DataView(pcm.buffer, pcm.byteOffset, pcm.byteLength);
-      for (let i = 0; i < frames; i++) channel[i] = view.getInt16(i * 2, true) / 32768;
-      const node = ctx.createBufferSource();
-      node.buffer = buffer;
-      node.connect(ctx.destination);
-      const startAt = Math.max(playhead, ctx.currentTime);
-      node.start(startAt);
-      playhead = startAt + buffer.duration;
-      queued.push(node);
-      node.onended = () => {
-        queued = queued.filter((q) => q !== node);
-      };
-    },
-    flush() {
-      const dropped = queued;
-      queued = [];
-      for (const node of dropped) {
-        try {
-          node.stop();
-        } catch {
-          // Already ended between scheduling and flush.
-        }
-      }
-      playhead = ctx.currentTime;
-    },
-  };
-}
 
 export type CascadeDeps = {
   socketFactory?: (url: string) => WebSocket;
@@ -206,6 +164,7 @@ async function defaultStartMic(
   });
   return {
     audioCtx: graph.audioCtx,
+    playout: graph.playout,
     stop: () => {
       stream.getTracks().forEach((t) => t.stop());
       graph.stop();
@@ -252,8 +211,7 @@ export class CascadeSession {
       if (this.started && ws.readyState === ws.OPEN) this.send(encodeAudioFrame(data));
     });
     this.micStop = handle.stop;
-    const createPlayout = this.deps.createPlayout ?? createBrowserPlayout;
-    this.playout = createPlayout(handle.audioCtx);
+    this.playout = this.deps.createPlayout?.(handle.audioCtx) ?? handle.playout ?? null;
     this.started = true;
     // Socket may already be open (fake sockets, fast localhost): flush config now.
     if (ws.readyState === ws.OPEN) this.sendConfig(config);

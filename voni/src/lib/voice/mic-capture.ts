@@ -12,6 +12,7 @@
  */
 
 import { acquireMic, releaseMic } from "./mic-owner";
+import { createWorkletPlayout, PLAYOUT_MODULE, type WorkletPlayout } from "./playout";
 
 export type VoiceErrorCode =
   | "mic"
@@ -92,6 +93,8 @@ export async function acquireMicStream(owner: string): Promise<MediaStream> {
 export type AudioGraph = {
   audioCtx: AudioContext;
   worklet: AudioWorkletNode;
+  /** Agent-voice output on the same context (see playout.ts). */
+  playout: WorkletPlayout;
   /** Stop playback plumbing: close the worklet port, disconnect, close context. */
   stop: () => void;
 };
@@ -113,7 +116,10 @@ export async function startAudioGraph(
     // Chromium-only and breaks Firefox's echo canceller and Safari outright.
     audioCtx = new AudioContext();
     await audioCtx.resume();
-    await audioCtx.audioWorklet.addModule("/pcm-processor.js");
+    await Promise.all([
+      audioCtx.audioWorklet.addModule("/pcm-processor.js"),
+      audioCtx.audioWorklet.addModule(PLAYOUT_MODULE),
+    ]);
   } catch {
     stream.getTracks().forEach((t) => t.stop());
     releaseMic(owner);
@@ -134,6 +140,11 @@ export async function startAudioGraph(
   // Routing it to the speakers would play the caller's own voice back at
   // them and feed the echo canceller a signal it should never see.
   source.connect(worklet);
+  const output = new AudioWorkletNode(ctx, "playout-processor", {
+    numberOfInputs: 0,
+    outputChannelCount: [1],
+  });
+  output.connect(ctx.destination);
   const stop = () => {
     try {
       worklet.port.close();
@@ -141,7 +152,9 @@ export async function startAudioGraph(
       // Already closed on teardown paths that race stop().
     }
     worklet.disconnect();
+    output.port.close();
+    output.disconnect();
     void ctx.close().catch(() => undefined);
   };
-  return { audioCtx: ctx, worklet, stop };
+  return { audioCtx: ctx, worklet, playout: createWorkletPlayout(output), stop };
 }
