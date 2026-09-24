@@ -82,9 +82,3 @@ export async function listCalls(
   ]);
   return { rows, page: safePage, pageSize: safeSize, total, outcome };
 }
-
-/** The 5 most recent calls, for the secondary section on /agents. */
-export async function recentCalls() {
-  const { rows } = await listCalls(1, 5);
-  return rows;
-}

@@ -116,8 +116,8 @@ test("funnel stage cards link to their filtered leads view", () => {
     "funnel links name their stage for assistive tech",
   );
   assert.ok(
-    page.includes("CardFooter"),
-    "funnel cards use the stats-05 card shape (DESIGN.md §4)",
+    page.includes("<StatStrip"),
+    "funnel uses the shared dashboard-01 KPI strip",
   );
 });
 
@@ -388,8 +388,8 @@ test("dashboard outcome cards link to their filtered lists", () => {
     "the de-linking comment is gone — links exist now",
   );
   assert.ok(
-    page.includes("CardFooter"),
-    "linked cards use the stats-05 card shape (DESIGN.md §4)",
+    page.includes("<StatStrip"),
+    "linked figures use the shared dashboard-01 KPI strip",
   );
 });
 
@@ -405,7 +405,8 @@ test("leads list reads ?stage= inside the Suspense leaf with a clear path", () =
     page.indexOf("await searchParams") > page.indexOf("function LeadsRows"),
     "params resolve inside the rows leaf, not the shell (E1439)",
   );
-  assert.ok(page.includes('href="/leads"'), "filter chip clears to /leads");
+  // The Filter menu's "All" option is the clear target (its pill × links there).
+  assert.ok(page.includes('{ label: "All", href: "/leads"'), "filter clears to /leads");
   assert.ok(
     page.includes("No leads match this filter"),
     "filtered empty state differs from the unfiltered one",

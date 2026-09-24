@@ -29,12 +29,15 @@ import { cn } from "@/lib/utils";
 
 export function PageHeading({
   title,
+  meta,
   description,
   actions,
   className,
 }: {
   title: string;
-  description?: string;
+  /** Inline status beside the title (e.g. a StatusDot). */
+  meta?: ReactNode;
+  description?: ReactNode;
   actions?: ReactNode;
   className?: string;
 }) {
@@ -42,7 +45,10 @@ export function PageHeading({
     <div className={cn("mb-6 md:mb-8", className)}>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="flex min-w-0 flex-col gap-2">
-          <h1 className="text-2xl font-semibold tracking-tight">{title}</h1>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+            <h1 className="text-2xl font-semibold tracking-tight">{title}</h1>
+            {meta}
+          </div>
           {description ? (
             <p className="text-muted-foreground text-sm">{description}</p>
           ) : null}
@@ -104,7 +110,7 @@ export function FormSection({
       {...props}
     >
       <div>{heading}</div>
-      <div className="sm:max-w-3xl md:col-span-2">{children}</div>
+      <div className="flex flex-col gap-6 sm:max-w-3xl md:col-span-2">{children}</div>
     </section>
   );
 }
@@ -151,20 +157,41 @@ export function FormSectionSeparator({
 }
 
 /**
- * One consistent wizard footer: Back left, primary action right (primary
- * takes remaining width on mobile via `w-full sm:w-auto` on the button).
- * Normal document flow at the end of the form — a floating bar covered
- * scrolled content on this short 2-step form instead of helping.
- *
- * Paired-action order per the design-system amendment: secondary-left /
- * primary-right on desktop (`sm:flex-row sm:justify-between`), primary on
- * top when stacked (`flex-col-reverse`), wrapping instead of squeezing
- * (`flex-wrap`) so narrow rows never clip.
- *
- * App-wide button rule: secondary/tertiary actions left, primary action
- * right (`justify-between` / `justify-end`). ConfigFormFooter in
- * agent-config-form.tsx follows the same rule: secondary left, primary right
- * (and `justify-end` when there is no secondary).
+ * The one form action row (blocks.so form-layout-01/02/03): a ruled line,
+ * then Cancel/Back and the primary action grouped at the bottom right.
+ * On mobile the group stacks full width with the primary on top
+ * (`flex-col-reverse`). `start` is only for a destructive action (Delete),
+ * kept on the far left so it never sits next to Save.
+ */
+export function FormActions({
+  start,
+  children,
+  className,
+}: {
+  start?: ReactNode;
+  children: ReactNode;
+  className?: string;
+}) {
+  return (
+    <div data-slot="form-actions" className={cn(className)}>
+      <Separator />
+      <div className="flex flex-col-reverse gap-3 pt-4 sm:flex-row sm:items-center">
+        {start ? (
+          <div className="flex flex-col gap-3 sm:mr-auto sm:flex-row [&>*]:w-full sm:[&>*]:w-auto">
+            {start}
+          </div>
+        ) : null}
+        <div className="flex flex-col-reverse gap-3 sm:ml-auto sm:flex-row sm:items-center [&>*]:w-full sm:[&>*]:w-auto">
+          {children}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Wizard footer: FormActions with Back beside the primary action. Back is
+ * hidden (not just disabled) where there is nowhere to go back to.
  */
 export function WizardFooter({
   onBack,
@@ -180,23 +207,19 @@ export function WizardFooter({
   className?: string;
 }) {
   return (
-    <div data-slot="wizard-footer" className={cn(className)}>
-      <Separator />
-      <div className="flex flex-col-reverse flex-wrap gap-3 pt-4 sm:flex-row sm:items-center sm:justify-between">
+    <FormActions className={className}>
+      {backDisabled ? null : (
         <Button
           type="button"
           variant="outline"
-          className="pointer-coarse:min-h-11 w-full sm:w-auto"
-          disabled={backDisabled}
+          className="pointer-coarse:min-h-11"
           onClick={onBack}
         >
           <ArrowLeft data-icon="inline-start" aria-hidden />
           {backLabel}
         </Button>
-        <span className="flex min-w-0 flex-wrap items-center justify-end gap-3">
-          {primary}
-        </span>
-      </div>
-    </div>
+      )}
+      {primary}
+    </FormActions>
   );
 }

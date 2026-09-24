@@ -1,4 +1,5 @@
 import { Suspense } from "react";
+import { PageHeading } from "@/components/wizard/form-layout";
 import { notFound } from "next/navigation";
 import { BackLink } from "@/components/back-link";
 import { SettingsSectionSkeleton } from "@/components/page-skeletons";
@@ -26,10 +27,7 @@ export default async function SettingsSectionLayout({
   return (
     <div data-testid="settings-section-shell" className="flex flex-col gap-6">
       <BackLink href="/settings" label="Settings" />
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">{tile.label}</h1>
-        <p className="text-muted-foreground text-sm">{tile.description}</p>
-      </div>
+      <PageHeading title={tile.label} description={tile.description} />
       <Suspense
         fallback={
           <div role="status" aria-label="Loading settings section">

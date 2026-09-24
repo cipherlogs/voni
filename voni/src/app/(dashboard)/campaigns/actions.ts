@@ -185,6 +185,8 @@ export async function listCampaigns() {
 
 export async function getCampaign(id: string) {
   const ctx = await requireCtxOrRedirect("/campaigns");
+  // A malformed id is "not found", not a Postgres uuid-cast error on screen.
+  if (!z.string().uuid().safeParse(id).success) return null;
   const [row] = await db
     .select({
       id: campaigns.id,
@@ -378,6 +380,8 @@ export async function listAgentOptions() {
  */
 export async function getCampaignDispatchStatus(id: string) {
   const ctx = await requireCtxOrRedirect("/campaigns");
+  // A malformed id is "not found", not a Postgres uuid-cast error on screen.
+  if (!z.string().uuid().safeParse(id).success) return null;
 
   const [row] = await db
     .select({

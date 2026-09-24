@@ -1,22 +1,38 @@
 "use client";
 
 import Link from "next/link";
-import { useActionState, useEffect, useState, useTransition } from "react";
+import {
+  useActionState,
+  useEffect,
+  useState,
+  useSyncExternalStore,
+  useTransition,
+} from "react";
+import { useTheme } from "next-themes";
+import { StatusDot } from "@/components/status-dot";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { useFormStatus } from "react-dom";
 import { useRouter } from "next/navigation";
 import { toast } from "@/components/ui/toast";
 import {
   AlertCircle,
+  AudioLines,
   CheckCircle2,
   LogOut,
+  type LucideIcon,
+  Monitor,
+  Moon,
+  Phone,
   Plug,
   ShieldCheck,
+  Sparkles,
+  Sun,
   Unplug,
+  Volume2,
 } from "lucide-react";
 import { SiGmail, SiGoogledocs, SiZoho } from "react-icons/si";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { LoadingButton } from "@/components/loading-button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -28,15 +44,22 @@ import {
   FieldGroup,
   FieldLabel,
 } from "@/components/ui/field";
-import { ModeToggle } from "@/components/mode-toggle";
-import { Separator } from "@/components/ui/separator";
 import {
   FormCard,
   FormSection,
   FormSectionHeading,
+  FormActions,
   FormSectionSeparator,
 } from "@/components/wizard/form-layout";
-import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectLabel,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { TIMEZONE_OPTIONS } from "@/lib/timezones";
 import { signOut } from "@/lib/auth-client";
 import {
@@ -51,10 +74,7 @@ import type {
   ProviderMeta,
   ProviderId,
 } from "@/lib/providers/registry";
-import {
-  overlapLabels,
-  providerToolKey,
-} from "@/lib/providers/registry";
+import { overlapLabels, providerToolKey } from "@/lib/providers/registry";
 import {
   updateCopilotVoicePrefs,
   updateWorkspaceSettings,
@@ -138,13 +158,10 @@ function SettingsFormFooter({
   children: React.ReactNode;
 }) {
   return (
-    <div>
-      <Separator />
-      <div className="flex flex-col-reverse flex-wrap gap-3 pt-4 sm:flex-row sm:items-center sm:justify-between">
-        <CancelLink href={cancelHref} dirty={dirty} />
-        <span className="flex justify-end">{children}</span>
-      </div>
-    </div>
+    <FormActions>
+      <CancelLink href={cancelHref} dirty={dirty} />
+      {children}
+    </FormActions>
   );
 }
 
@@ -180,7 +197,7 @@ function WorkspaceNameField({
       <Input
         id="workspace-name"
         name="name"
-        className="max-w-md"
+        className="w-full"
         value={value}
         onChange={(event) => onChange(event.target.value)}
         disabled={!canEdit}
@@ -221,7 +238,7 @@ function WorkspaceTimezoneField({
       >
         <SelectTrigger
           id="workspace-timezone"
-          className="w-full max-w-xs"
+          className="w-full"
         >
           <SelectValue />
         </SelectTrigger>
@@ -239,8 +256,20 @@ function WorkspaceTimezoneField({
   );
 }
 
-function serviceInitials(label: string) {
-  return label.split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase();
+const SERVICE_ICONS: Record<string, LucideIcon> = {
+  voice: AudioLines,
+  phone: Phone,
+  llm: Sparkles,
+  "voice-note": Volume2,
+};
+
+function ServiceIcon({ id }: { id: string }) {
+  const Icon = SERVICE_ICONS[id] ?? Plug;
+  return (
+    <span className="bg-muted flex size-10 shrink-0 items-center justify-center rounded-full">
+      <Icon aria-hidden className="size-5" />
+    </span>
+  );
 }
 
 function serviceHint(service: ServiceReadiness): string {
@@ -319,20 +348,23 @@ function ProviderCard({
           <div className="min-w-0 flex-1">
             <p className="flex items-center justify-between gap-3 font-medium">
               {provider.label}
-              <Badge variant={connected ? "secondary" : "outline"}>
+              <StatusDot
+                tone={connected ? "success" : status === "error" ? "danger" : "neutral"}
+                className="text-xs font-normal"
+              >
                 {connected ? "Connected" : status === "error" ? "Error" : "Not connected"}
-              </Badge>
+              </StatusDot>
             </p>
             <p className="truncate text-pretty text-muted-foreground text-sm">
               {provider.description}
             </p>
           </div>
         </div>
-        <ul className="flex flex-col gap-2" aria-label={`${provider.label} tools`}>
+        <ul className="flex flex-col gap-3 border-t pt-4" aria-label={`${provider.label} tools`}>
           {provider.tools.map((tool) => {
             const overlaps = overlapLabels(tool);
             return (
-              <li key={providerToolKey(provider.id, tool.id)} className="flex flex-col gap-0.5 rounded-lg bg-muted/50 px-3 py-2">
+              <li key={providerToolKey(provider.id, tool.id)} className="flex flex-col gap-0.5">
                 <span className="font-medium text-sm">{tool.label}</span>
                 <span className="text-muted-foreground text-xs">{tool.description}</span>
                 {overlaps.length > 0 ? (
@@ -468,12 +500,27 @@ function VoiceCopilotCard({ prefs }: { prefs: CopilotVoicePrefs }) {
     window.dispatchEvent(new CustomEvent("voni:voice-prefs-changed"));
   }, [draftKey, saveState]);
   return (
-    <form action={saveAction} className="grid max-w-xl gap-5">
+    <form action={saveAction} className="flex flex-col gap-6">
       <FieldGroup>
         <Field>
           <FieldLabel htmlFor="copilot-voice">Voice</FieldLabel>
-          <Select name="voiceId" value={voiceId} onValueChange={(value) => setVoiceId(value ?? prefs.voiceId)}>
-            <SelectTrigger id="copilot-voice" className="w-full max-w-md">
+          <Select
+            name="voiceId"
+            items={{
+              ivy: "Ivy (default)",
+              ...Object.fromEntries(
+                voicesByLanguage().flatMap((group) =>
+                  group.voices.map((voice) => [
+                    voice.id,
+                    `${voiceLabel(voice.id)} · ${ACCENT_LABEL[voice.accent]}`,
+                  ]),
+                ),
+              ),
+            }}
+            value={voiceId}
+            onValueChange={(value) => setVoiceId(value ?? prefs.voiceId)}
+          >
+            <SelectTrigger id="copilot-voice" className="w-full">
               <SelectValue placeholder="Pick a voice" />
             </SelectTrigger>
             <SelectContent>
@@ -497,8 +544,21 @@ function VoiceCopilotCard({ prefs }: { prefs: CopilotVoicePrefs }) {
         </Field>
         <Field>
           <FieldLabel htmlFor="copilot-language">Language</FieldLabel>
-          <Select name="language" value={language} onValueChange={(value) => setLanguage(value ?? prefs.language)}>
-            <SelectTrigger id="copilot-language" className="w-full max-w-md">
+          <Select
+            name="language"
+            items={{
+              auto: "Auto-detect — understand any language",
+              ...Object.fromEntries(
+                INPUT_LANGUAGES.map((lang) => [
+                  lang.code,
+                  `${lang.flag} ${lang.label}${lang.canSpeak ? "" : " · understands only"}`,
+                ]),
+              ),
+            }}
+            value={language}
+            onValueChange={(value) => setLanguage(value ?? prefs.language)}
+          >
+            <SelectTrigger id="copilot-language" className="w-full">
               <SelectValue placeholder="Pick a language" />
             </SelectTrigger>
             <SelectContent>
@@ -579,11 +639,11 @@ export function AccountSection({ user }: { user: AccountInfo }) {
           <FormSectionHeading
             id="account-profile-heading"
             title="Profile"
-            description="Your Google profile and session."
+            description="The Google account you signed in with."
           />
         }
       >
-        <div className="flex max-w-xl flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-center gap-3">
             <Avatar size="lg">{user.image ? <AvatarImage src={user.image} alt="" /> : null}<AvatarFallback>{initials || "V"}</AvatarFallback></Avatar>
             <div><p className="font-medium">{user.name}</p><p className="text-muted-foreground text-sm">{user.email}</p></div>
@@ -601,7 +661,7 @@ export function AccountSection({ user }: { user: AccountInfo }) {
           />
         }
       >
-        <div className="flex max-w-xl flex-col gap-3">
+        <div className="flex flex-col gap-3">
           <p className="text-muted-foreground text-sm">
             Signed in as {user.email} via Google.
           </p>
@@ -622,8 +682,8 @@ export function VoiceSection({ prefs }: { prefs: CopilotVoicePrefs }) {
         heading={
           <FormSectionHeading
             id="voice-copilot-heading"
-            title="Voice copilot"
-            description="Who talks back when you tap the mic. Only affects your conversations — nothing here changes what callers hear on the phone."
+            title="Voice and language"
+            description="Only affects your conversations — nothing here changes what callers hear on the phone."
           />
         }
       >
@@ -684,12 +744,12 @@ export function WorkspaceSection({ workspace }: { workspace: WorkspaceInfo }) {
         heading={
           <FormSectionHeading
             id="workspace-defaults-heading"
-            title="Workspace"
-            description="Customer-facing defaults for this organization."
+            title="Defaults"
+            description="Name, timezone, and the number agents transfer live calls to."
           />
         }
       >
-        <form action={workspaceAction} className="grid max-w-xl gap-5">
+        <form action={workspaceAction} className="flex flex-col gap-6">
           <FieldGroup>
             <WorkspaceNameField
               value={name}
@@ -709,7 +769,7 @@ export function WorkspaceSection({ workspace }: { workspace: WorkspaceInfo }) {
                 id="transfer-number"
                 name="humanTransferNumber"
                 type="tel"
-                className="max-w-xs"
+                className="w-full"
                 value={transferNumber}
                 onChange={(event) => setTransferNumber(event.target.value)}
                 placeholder="+971501234567"
@@ -758,7 +818,7 @@ export function ServicesSection({
           <FormSectionHeading
             id="services-providers-heading"
             title="Providers"
-            description="Connect the tools your agents can use — email, CRM, and docs. Connections are stored server-side for this workspace."
+            description="Email, CRM, and docs. Connections are stored server-side for this workspace."
           />
         }
       >
@@ -779,15 +839,16 @@ export function ServicesSection({
           {services.map((service) => (
             <Card key={service.id}>
               <CardContent className="flex items-center gap-4 p-4">
-                <Avatar className="size-10">
-                  <AvatarFallback>{serviceInitials(service.label)}</AvatarFallback>
-                </Avatar>
+                <ServiceIcon id={service.id} />
                 <div className="min-w-0 flex-1">
                   <p className="flex items-center justify-between gap-3 font-medium">
                     {service.label}
-                    <Badge variant={service.configured ? "secondary" : "outline"}>
+                    <StatusDot
+                      tone={service.configured ? "success" : "warning"}
+                      className="text-xs font-normal"
+                    >
                       {service.configured ? "Ready" : "Needs setup"}
-                    </Badge>
+                    </StatusDot>
                   </p>
                   <p className="text-muted-foreground text-sm">
                     {serviceHint(service)}
@@ -802,6 +863,41 @@ export function ServicesSection({
   );
 }
 
+function ThemeChoice() {
+  const { theme, setTheme } = useTheme();
+  // Theme lives in client storage: render no selection until hydrated rather
+  // than announcing the server default as the user's choice.
+  const mounted = useSyncExternalStore(
+    () => () => {},
+    () => true,
+    () => false,
+  );
+  return (
+    <ToggleGroup
+      variant="outline"
+      value={mounted && theme ? [theme] : []}
+      onValueChange={(values) => {
+        const next = Array.isArray(values) ? values[0] : undefined;
+        if (next) setTheme(next);
+      }}
+      aria-label="Theme"
+    >
+      <ToggleGroupItem value="light">
+        <Sun data-icon="inline-start" />
+        Light
+      </ToggleGroupItem>
+      <ToggleGroupItem value="dark">
+        <Moon data-icon="inline-start" />
+        Dark
+      </ToggleGroupItem>
+      <ToggleGroupItem value="system">
+        <Monitor data-icon="inline-start" />
+        System
+      </ToggleGroupItem>
+    </ToggleGroup>
+  );
+}
+
 export function AppearanceSection() {
   return (
     <FormCard>
@@ -811,32 +907,16 @@ export function AppearanceSection() {
           <FormSectionHeading
             id="appearance-theme-heading"
             title="Theme"
-            description="Use light, dark, or your system setting. Applies to this browser immediately."
+            description="Applies to this browser immediately; no save step."
           />
         }
       >
-        <div className="flex max-w-xl flex-col gap-3">
-          <ModeToggle />
+        <div className="flex flex-col gap-3">
+          <ThemeChoice />
           <p className="text-muted-foreground text-sm">
-            System follows your OS. Pick light or dark to override it here.
+            System follows your OS setting.
           </p>
         </div>
-      </FormSection>
-      <FormSectionSeparator />
-      <FormSection
-        aria-labelledby="appearance-preview-heading"
-        heading={
-          <FormSectionHeading
-            id="appearance-preview-heading"
-            title="Preview"
-            description="Tiles and scenes stay readable in either theme."
-          />
-        }
-      >
-        <p className="text-muted-foreground max-w-xl text-sm">
-          The settings landing previews each area with its scene. Theme changes
-          apply instantly with no save step.
-        </p>
       </FormSection>
     </FormCard>
   );

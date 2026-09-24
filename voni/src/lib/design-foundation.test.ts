@@ -141,9 +141,6 @@ test("inline style objects survive only as listed dynamic exceptions", () => {
     lines.forEach((line, idx) => {
       if (!line.includes("style={{") && !line.includes("style={")) return;
       const rel = full.slice(srcRoot.length + 1);
-      // Blessed progress idiom (transform-only scaleX, token fill).
-      if (rel === join("components", "stats-11", "progress-idiom.tsx")) return;
-      if (rel === join("components", "jobs", "job-row.tsx")) return;
       // Generated primitives own their CSS variables.
       if (rel.startsWith(join("components", "ui") + "/")) return;
       // Deterministic voice motif: hash-derived token gradient, no static
@@ -239,15 +236,6 @@ test("overlay and interactive durations unify on the shared standard token", () 
   for (const family of [
     "voni-arc",
     "voni-shimmer",
-    "bento-node-ping",
-    "bento-branch-cycle",
-    "bento-lane",
-    "bento-packet-x",
-    "bento-point-breathe",
-    "bento-account-orbit",
-    "bento-theme-dark",
-    "bento-route-pulse",
-    "bento-operator-packet",
   ]) {
     assert.match(reduced, new RegExp(family), `${family} keeps its reduced-motion stop`);
   }

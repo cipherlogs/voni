@@ -16,6 +16,8 @@ import { deleteCampaignAction } from "./actions";
  * history. Leads and past call records are kept.
  */
 export function CampaignDeleteButton({
+  open,
+  onOpenChange,
   id,
   name,
   layout = "icon",
@@ -24,6 +26,9 @@ export function CampaignDeleteButton({
   label = "Delete campaign",
   showIcon = true,
 }: {
+  /** Controlled open state, for `layout="none"` (row "…" menus). */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
   id: string;
   name: string;
   /** "icon" for list rows, "full" for the detail header next to Activate. */
@@ -41,6 +46,8 @@ export function CampaignDeleteButton({
 }) {
   return (
     <DeleteConfirmDialog
+      open={open}
+      onOpenChange={onOpenChange}
       id={id}
       name={name}
       layout={layout}

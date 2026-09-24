@@ -48,3 +48,6 @@ next-env.d.ts
 
 # local design artifacts (prototype screenshots and similar)
 /artifacts/
+
+# next dev --experimental-https (dev:phone) self-signed cert + private key
+/certificates

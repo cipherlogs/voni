@@ -1,5 +1,8 @@
 "use client";
 
+import { Progress } from "@/components/ui/progress";
+import { StatusDot, type StatusTone } from "@/components/status-dot";
+import { cn } from "@/lib/utils";
 import { useEffect, useRef, useState } from "react";
 import {
   CircleCheck,
@@ -146,6 +149,13 @@ function JobStatusBadge({
   );
 }
 
+function jobTone(status: JobJson["status"]): StatusTone {
+  if (status === "succeeded") return "success";
+  if (status === "failed") return "danger";
+  if (status === "running") return "info";
+  return "neutral";
+}
+
 function JobFailureLines({ job }: { job: JobJson }) {
   if (job.status !== "failed") return null;
   return (
@@ -276,19 +286,7 @@ export function JobRow({ job, selected, onToggle }: JobRowProps) {
         ) : null}
       </div>
       {percent != null && !terminal ? (
-        <div
-          role="progressbar"
-          aria-label={`${job.title} progress`}
-          aria-valuemin={0}
-          aria-valuemax={100}
-          aria-valuenow={percent}
-          className="relative h-1 overflow-hidden rounded-full bg-muted"
-        >
-          <div
-            className="h-full origin-left bg-primary"
-            style={{ transform: `scaleX(${percent / 100})` }}
-          />
-        </div>
+        <Progress value={percent} aria-label={`${job.title} progress`} />
       ) : null}
       <JobFailureLines job={job} />
       <div className="flex flex-wrap gap-2">
@@ -310,7 +308,7 @@ export function JobTableRow({ job, selected, onToggle }: JobRowProps) {
 
   return (
     <TableRow data-copilot-key={job.id} data-copilot-version={job.updatedAt} data-copilot-scope="jobs">
-      <TableCell>
+      <TableCell className="w-10">
         {onToggle ? (
           <Checkbox
             checked={selected ?? false}
@@ -320,50 +318,33 @@ export function JobTableRow({ job, selected, onToggle }: JobRowProps) {
         ) : null}
       </TableCell>
       <TableCell className="whitespace-normal">
-        <div className="flex min-w-0 flex-col gap-1">
+        {/* Status, stage, and elapsed share one dot line and a running job
+            carries its bar here — no separate Status/Progress columns, so the
+            row fits a phone without scrolling its actions away. */}
+        <div className="flex min-w-0 flex-col gap-1.5">
           <p className="font-medium">{job.title}</p>
-          <p className="text-muted-foreground text-xs" aria-live="polite">
-            {statusLabel}
-            {job.stage && !job.stage.startsWith("waiting-") && job.stage !== "recovery-started"
-              ? ` · ${job.stage}`
-              : ""}
-            {` · ${elapsed} elapsed`}
-          </p>
+          <StatusDot
+            tone={jobTone(job.status)}
+            className={cn("text-muted-foreground text-xs", justSucceeded && "voni-done-pop")}
+          >
+            <span aria-live="polite">
+              {statusLabel}
+              {job.stage && !job.stage.startsWith("waiting-") && job.stage !== "recovery-started"
+                ? ` · ${job.stage}`
+                : ""}
+              {percent != null && !terminal
+                ? ` · ${percent}%`
+                : job.progressTotal != null && job.progressDone != null
+                  ? ` · ${job.progressDone} of ${job.progressTotal}`
+                  : ""}
+              {` · ${elapsed} elapsed`}
+            </span>
+          </StatusDot>
+          {percent != null && !terminal ? (
+            <Progress value={percent} aria-label={`${job.title} progress`} className="max-w-xs" />
+          ) : null}
           <JobFailureLines job={job} />
         </div>
-      </TableCell>
-      <TableCell>
-        <JobStatusBadge job={job} statusLabel={statusLabel} justSucceeded={justSucceeded} />
-      </TableCell>
-      <TableCell>
-        {percent != null ? (
-          <div className="flex min-w-28 flex-col gap-1">
-            <span className="text-muted-foreground text-xs tabular-nums">
-              {percent}%
-            </span>
-            {!terminal ? (
-              <div
-                role="progressbar"
-                aria-label={`${job.title} progress`}
-                aria-valuemin={0}
-                aria-valuemax={100}
-                aria-valuenow={percent}
-                className="relative h-1 w-full overflow-hidden rounded-full bg-muted"
-              >
-                <div
-                  className="h-full origin-left bg-primary"
-                  style={{ transform: `scaleX(${percent / 100})` }}
-                />
-              </div>
-            ) : null}
-          </div>
-        ) : job.progressTotal != null && job.progressDone != null ? (
-          <span className="text-muted-foreground text-xs tabular-nums">
-            {job.progressDone} of {job.progressTotal}
-          </span>
-        ) : (
-          <span className="text-muted-foreground text-xs">—</span>
-        )}
       </TableCell>
       <TableCell>
         <div className="flex flex-wrap justify-end gap-1">

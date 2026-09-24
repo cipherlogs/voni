@@ -1,5 +1,5 @@
-import { DetailSkeleton } from "@/components/page-skeletons";
+import { CampaignFormPageSkeleton } from "@/components/page-skeletons";
 
 export default function CampaignNewLoading() {
-  return <DetailSkeleton />;
+  return <CampaignFormPageSkeleton />;
 }

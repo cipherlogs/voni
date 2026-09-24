@@ -35,7 +35,7 @@ test("agents list keeps the bordered table idiom with frozen query and badge der
   assert.match(page, /Generation failed/, "failed copy stays");
   assert.match(page, /Draft — not yet deployed/, "draft copy stays");
   assert.match(page, /Deployed and ready/, "deployed copy stays");
-  assert.match(page, /gen\?\.running \? null/, "running generation owns the row");
+  assert.match(page, /gen\?\.running \? null/, "running generation owns the row (no row menu)");
   assert.match(page, /neverProvisioned=\{!agent\.assemblyaiAgentId\}/, "delete copy keys off provisioning");
   assert.match(page, /LiveAgentsRefresh/, "settled-job refresh stays");
 
@@ -44,11 +44,10 @@ test("agents list keeps the bordered table idiom with frozen query and badge der
   // sticky columns, no visible count row, and no shortcut hint. Pinned so
   // future passes don't re-restyle it into the Card language. Segment
   // loading reads as the table shape like the inline fallback.
-  assert.match(page, /overflow-x-auto rounded-lg border/, "list keeps the bordered wrapper");
+  assert.match(page, /<DataTable>/, "list sits in the shared bordered DataTable frame");
   assert.doesNotMatch(page, /<Card>/, "no Card chrome on the list");
   assert.doesNotMatch(page, /sticky left-0/, "no sticky columns on the list");
   assert.doesNotMatch(page, /Results: /, "no visible count row on the list");
-  assert.match(page, /overflow-x-auto/, "narrow scroll containment stays");
   assert.match(page, /<Empty>/, "empty stays the shared idiom");
   assert.match(page, /variant="feature"/, "first-run empty keeps the feature disc");
   assert.match(page, /No agents yet/, "empty title stays");

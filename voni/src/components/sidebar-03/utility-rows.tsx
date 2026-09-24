@@ -111,7 +111,6 @@ function SidebarVoiceButton() {
     <SidebarMenuButton
       tooltip={authReady ? label : `Voice copilot unavailable: ${authNote}`}
       aria-label={authReady ? label : `Voice copilot unavailable: ${authNote}`}
-      title={authReady ? undefined : authNote}
       disabled={starting || !authReady}
       onClick={() => {
         noteInteraction();

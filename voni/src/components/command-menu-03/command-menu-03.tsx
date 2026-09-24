@@ -168,11 +168,10 @@ export function CommandMenu03() {
         className="h-8 w-full cursor-pointer justify-start gap-2 px-2 text-sm group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:gap-0 group-data-[collapsible=icon]:px-0"
         aria-label="Search Voni"
         aria-keyshortcuts="Meta+K Control+K /"
-        title="Search Voni (Cmd/Ctrl+K)"
         onClick={() => setOpen(true)}
       >
         <Search aria-hidden="true" />
-        <span className="hidden flex-1 text-left font-medium sm:inline group-data-[collapsible=icon]:hidden">
+        <span className="flex-1 text-left font-medium group-data-[collapsible=icon]:hidden">
           Search
         </span>
         <Kbd className="hidden lg:inline-flex group-data-[collapsible=icon]:hidden">⌘ K</Kbd>

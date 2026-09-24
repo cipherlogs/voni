@@ -1,7 +1,7 @@
 import { Suspense } from "react";
 import { desc, isNotNull } from "drizzle-orm";
 import { OperatorDenied, OperatorView, type OperatorData } from "@/components/operator-view";
-import { DetailSkeleton, PageHeaderSkeleton } from "@/components/page-skeletons";
+import { FlatFormSkeleton, PageHeaderSkeleton } from "@/components/page-skeletons";
 import { db } from "@/lib/db";
 import { agents, integrationChecks } from "@/lib/db/schema";
 import { organization } from "@/lib/db/auth-schema";
@@ -23,7 +23,7 @@ function OperatorFrame() {
     <div data-testid="operator-shell" className="flex flex-col gap-6">
       <PageHeaderSkeleton />
       <div role="status" aria-label="Loading operator console">
-        <DetailSkeleton />
+        <FlatFormSkeleton sections={5} />
       </div>
     </div>
   );

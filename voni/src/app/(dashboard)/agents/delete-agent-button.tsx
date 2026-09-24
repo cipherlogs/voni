@@ -19,6 +19,8 @@ import { deleteAgentAction } from "./actions";
  * erases job history. Call history is kept.
  */
 export function AgentDeleteButton({
+  open,
+  onOpenChange,
   id,
   name,
   layout = "icon",
@@ -29,6 +31,9 @@ export function AgentDeleteButton({
   showIcon = true,
   isBridgeAgent = false,
 }: {
+  /** Controlled open state, for `layout="none"` (row "…" menus). */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
   id: string;
   name: string;
   /** "icon" for list rows, "full" for the detail footer next to Save. */
@@ -60,6 +65,8 @@ export function AgentDeleteButton({
 }) {
   return (
     <DeleteConfirmDialog
+      open={open}
+      onOpenChange={onOpenChange}
       id={id}
       name={name}
       layout={layout}

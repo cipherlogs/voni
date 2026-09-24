@@ -626,7 +626,7 @@ export function VoiceCall({
       data-voice-state={state}
       className={cn(
         "bg-card flex w-full flex-col items-center rounded-2xl border p-4 text-center md:p-5",
-        isDemo ? "h-120 max-w-sm" : "h-full min-h-0",
+        isDemo ? "h-128 max-w-sm" : "h-full min-h-0",
         className,
       )}
     >
@@ -657,14 +657,14 @@ export function VoiceCall({
                     setVoiceId(p.voiceId);
                   }
                 }}
-                className="cursor-pointer rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-card)] disabled:pointer-events-none disabled:opacity-50"
+                className="cursor-pointer rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-card disabled:pointer-events-none disabled:opacity-50"
               >
                 <Portrait
                   persona={p}
                   size={36}
                   className={
                     selected
-                      ? "ring-primary ring-2 ring-offset-2 ring-offset-[var(--color-card)]"
+                      ? "ring-primary ring-2 ring-offset-2 ring-offset-card"
                       : "opacity-50 transition-opacity hover:opacity-100"
                   }
                 />
@@ -681,13 +681,13 @@ export function VoiceCall({
       {presentation === "card" ? (
         <>
           <h2 className="text-base font-semibold">{callTitle}</h2>
-          <p className="text-muted-foreground mt-1 text-sm leading-[1.5]">
+          <p className="text-muted-foreground mt-1 text-sm leading-normal">
             {isDemo
               ? persona.vertical
               : "Talks to the version on screen, including unsaved edits. No phone number involved."}
           </p>
           {versionStrip ? (
-            <p className="text-foreground/75 bg-muted/50 mt-2.5 inline-flex items-center rounded-full border px-3 py-[5px] text-xs">
+            <p className="text-foreground/75 bg-muted/50 mt-2.5 inline-flex items-center rounded-full border px-3 py-1.25 text-xs">
               {versionStrip}
             </p>
           ) : null}
@@ -720,7 +720,7 @@ export function VoiceCall({
         )}
       </div>
 
-      <div className="mt-2.5 text-lg font-semibold tracking-[-0.01em]">
+      <div className="mt-2.5 text-lg font-semibold tracking-tight">
         {displayName}
       </div>
       {/* Role line: always present, matching the mockup even mid-call. */}
@@ -824,8 +824,8 @@ export function VoiceCall({
           {active ? (
             <LoadingButton
               pending={hangingUp}
-              icon={<PhoneOff className="size-[22px]" />}
-              className={`size-[52px] rounded-full p-0 ${HANGUP_RED}`}
+              icon={<PhoneOff className="size-5.5" />}
+              className={`size-13 rounded-full p-0 ${HANGUP_RED}`}
               onClick={hangUp}
               aria-label="End test call"
             >
@@ -835,7 +835,7 @@ export function VoiceCall({
             <LoadingButton
               pending={starting}
               pendingText="Calling…"
-              icon={<Phone className="size-[18px]" aria-hidden />}
+              icon={<Phone className="size-4.5" aria-hidden />}
               className={cn(
                 "h-11 gap-2 rounded-full px-7 text-sm font-semibold",
                 presentation === "card" && CALL_GREEN,
@@ -858,7 +858,7 @@ export function VoiceCall({
       <div
         className={cn(
           "mt-3 min-h-0 w-full flex-1",
-          turns.length === 0 && !error && "flex items-center justify-center",
+          turns.length === 0 && !error && "flex items-center-safe justify-center",
           isDemo ? "overflow-y-auto" : "overflow-hidden",
         )}
       >

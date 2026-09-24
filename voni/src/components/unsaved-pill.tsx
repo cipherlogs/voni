@@ -1,36 +1,34 @@
 "use client";
 
 import { Badge } from "@/components/ui/badge";
+import { StatusDot } from "@/components/status-dot";
 import { cn } from "@/lib/utils";
 
 /**
  * Floating dirty indicator for the agent editor (Goal 5).
  *
- * The pill sticks below the dashboard header (`h-14` = 3.5rem, sticky
- * `z-30`) while the user scrolls a long form, so the dirty state stays
- * visible from anywhere. `z-20` keeps it under the header; the row reserves
- * its height whether visible or not so the footer below never shifts.
+ * A zero-height sticky layer: it takes no room in the column (no gap to
+ * reserve, nothing shifts when it appears) and pins the pill to the top-right
+ * of the viewport while a long form scrolls — under the phone header
+ * (`top-14`), at `top-4` on desktop where there is no top bar.
  *
- * Bound to an `isDirty` boolean only — informational text plus a dot, never
- * actions. Save/Discard stay in the form footer. `aria-live="polite"` so
- * screen readers announce the state change without stealing focus.
+ * Bound to an `isDirty` boolean only — informational, never actions.
+ * `aria-live="polite"` announces the change without stealing focus.
  */
 export function UnsavedPill({ isDirty }: { isDirty: boolean }) {
   return (
     <div
       aria-live="polite"
-      className="sticky top-14 z-20 flex min-h-7 items-center justify-start"
+      className="sticky top-14 z-20 flex h-0 justify-end md:top-4"
     >
       <Badge
         variant="secondary"
-        className={cn(!isDirty && "invisible")}
+        className={cn("shadow-sm", !isDirty && "invisible")}
         data-testid="unsaved-pill"
       >
-        <span
-          aria-hidden
-          className="inline-block size-2 rounded-full bg-chart-2"
-        />
-        Unsaved changes
+        <StatusDot tone="warning" className="text-xs">
+          Unsaved changes
+        </StatusDot>
       </Badge>
     </div>
   );

@@ -1,10 +1,13 @@
 "use client";
 
 import Link from "next/link";
+import { BulkBar } from "@/components/bulk-bar";
 import { useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { RotateCcw, Trash2, Users } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
+import { DataTable } from "@/components/data-table";
+import { StatusDot } from "@/components/status-dot";
+import { consentStatus, queueStatus } from "@/lib/campaigns/status";
 import { Button } from "@/components/ui/button";
 import {
   Empty,
@@ -52,32 +55,9 @@ export type QueueMember = {
   consentStatus: string;
 };
 
-const LEAD_STATUS_LABEL: Record<string, string> = {
-  queued: "Queued",
-  dialing: "Dialing",
-  reached: "Reached",
-  exhausted: "No answer",
-  skipped: "Skipped",
-};
-
-// table-05 StatusBadge shape with semantic tokens (no raw palette): each
-// human label from LEAD_STATUS_LABEL maps to a tone, matching the campaigns
-// list's STATUS_VARIANT badge idiom. No table-02/03/04 reference exists yet,
-// so this follows the only vendored status-badge shape in the repo.
-const LEAD_STATUS_TONE: Record<string, "default" | "secondary" | "outline"> = {
-  queued: "secondary",
-  dialing: "default",
-  reached: "default",
-  exhausted: "outline",
-  skipped: "outline",
-};
-
-function LeadStatusBadge({ status }: { status: string }) {
-  return (
-    <Badge variant={LEAD_STATUS_TONE[status] ?? "outline"}>
-      {LEAD_STATUS_LABEL[status] ?? status}
-    </Badge>
-  );
+function LeadStatus({ status }: { status: string }) {
+  const { tone, label } = queueStatus(status);
+  return <StatusDot tone={tone}>{label}</StatusDot>;
 }
 
 function formatWhen(value: Date | null) {
@@ -216,140 +196,123 @@ export function CampaignQueue({
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex flex-col gap-4 p-4 pb-0 sm:flex-row sm:items-center sm:justify-between sm:p-6 sm:pb-0">
-        <Input
-          type="search"
-          placeholder="Search by name or phone"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          className="h-8 w-full sm:w-64"
-          aria-label="Search queue"
-        />
-      </div>
-      <div className="overflow-x-auto">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              {selectable ? (
-                <TableHead className="w-10">
-                  <Checkbox
-                    checked={allVisibleSelected}
-                    indeterminate={someVisibleSelected && !allVisibleSelected}
-                    onCheckedChange={toggleVisible}
-                    aria-label={`Select all ${visible.length} leads in this view`}
-                  />
-                </TableHead>
-              ) : null}
-              <TableHead>Lead</TableHead>
-              <TableHead>Phone</TableHead>
-              <TableHead>Consent</TableHead>
-              <TableHead>State</TableHead>
-              <TableHead>Attempts</TableHead>
-              <TableHead>Last attempt</TableHead>
-              <TableHead>Outcome</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {members.length === 0 ? (
+      <DataTable
+        toolbar={
+          members.length > 0 ? (
+            <Input
+              type="search"
+              placeholder="Search by name or phone"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              className="h-8 w-full sm:w-64"
+              aria-label="Search queue"
+            />
+          ) : undefined
+        }
+      >
+        {members.length === 0 ? (
+          <Empty>
+            <EmptyHeader>
+              <EmptyMedia variant="feature">
+                <Users />
+              </EmptyMedia>
+              <EmptyTitle>No leads in this campaign yet</EmptyTitle>
+              <EmptyDescription>
+                Import a CSV above — imported leads queue here for the dialer.
+              </EmptyDescription>
+            </EmptyHeader>
+          </Empty>
+        ) : visible.length === 0 ? (
+          <Empty>
+            <EmptyHeader>
+              <EmptyMedia variant="icon">
+                <Users />
+              </EmptyMedia>
+              <EmptyTitle>No matches in this view</EmptyTitle>
+              <EmptyDescription>No leads match “{query.trim()}”.</EmptyDescription>
+            </EmptyHeader>
+          </Empty>
+        ) : (
+          <Table>
+            <TableHeader>
               <TableRow>
-                <TableCell colSpan={selectable ? 8 : 7} className="h-32 text-center">
-                  <Empty>
-                    <EmptyHeader>
-                      <EmptyMedia variant="feature">
-                        <Users />
-                      </EmptyMedia>
-                      <EmptyTitle>No leads in this campaign yet</EmptyTitle>
-                      <EmptyDescription>
-                        Import a CSV above — imported leads queue here for
-                        the dialer.
-                      </EmptyDescription>
-                    </EmptyHeader>
-                  </Empty>
-                </TableCell>
+                {selectable ? (
+                  <TableHead className="w-10">
+                    <Checkbox
+                      checked={allVisibleSelected}
+                      indeterminate={someVisibleSelected && !allVisibleSelected}
+                      onCheckedChange={toggleVisible}
+                      aria-label={`Select all ${visible.length} leads in this view`}
+                    />
+                  </TableHead>
+                ) : null}
+                <TableHead>Lead</TableHead>
+                <TableHead className="hidden md:table-cell">Phone</TableHead>
+                <TableHead className="hidden lg:table-cell">Consent</TableHead>
+                <TableHead className="hidden sm:table-cell">State</TableHead>
+                <TableHead className="hidden sm:table-cell">Attempts</TableHead>
+                <TableHead className="hidden lg:table-cell">Last attempt</TableHead>
+                <TableHead className="hidden md:table-cell">Outcome</TableHead>
               </TableRow>
-            ) : visible.length === 0 ? (
-              <TableRow>
-                <TableCell colSpan={selectable ? 8 : 7} className="h-32 text-center">
-                  <Empty>
-                    <EmptyHeader>
-                      <EmptyMedia variant="icon">
-                        <Users />
-                      </EmptyMedia>
-                      <EmptyTitle>No matches in this view</EmptyTitle>
-                      <EmptyDescription>
-                        No leads match “{query.trim()}”.
-                      </EmptyDescription>
-                    </EmptyHeader>
-                  </Empty>
-                </TableCell>
-              </TableRow>
-            ) : (
-              visible.map((member) => (
-                <TableRow key={member.id} data-copilot-key={member.id}>
-                  {selectable ? (
+            </TableHeader>
+            <TableBody>
+              {visible.map((member) => {
+                const consent = consentStatus(member.consentStatus);
+                return (
+                  <TableRow key={member.id} data-copilot-key={member.id}>
+                    {selectable ? (
+                      <TableCell>
+                        <Checkbox
+                          checked={selected.has(member.id)}
+                          onCheckedChange={(checked) => toggle(member.id, checked)}
+                          aria-label={`Select ${member.leadName ?? member.phone}`}
+                        />
+                      </TableCell>
+                    ) : null}
                     <TableCell>
-                      <Checkbox
-                        checked={selected.has(member.id)}
-                        onCheckedChange={(checked) => toggle(member.id, checked)}
-                        aria-label={`Select ${member.leadName ?? member.phone}`}
-                      />
+                      <div className="flex min-w-0 flex-col gap-1">
+                        <Link
+                          href={`/leads/${member.leadId}`}
+                          className="w-fit rounded-sm font-medium underline-offset-4 outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring"
+                        >
+                          {member.leadName ?? "Unnamed"}
+                        </Link>
+                        {/* Phones: phone and state fold under the lead. */}
+                        <span className="text-muted-foreground font-mono text-xs md:hidden">
+                          {member.phone}
+                        </span>
+                        <span className="sm:hidden">
+                          <LeadStatus status={member.status} />
+                        </span>
+                      </div>
                     </TableCell>
-                  ) : null}
-                  <TableCell>
-                    <Link
-                      href={`/leads/${member.leadId}`}
-                      className="cursor-pointer rounded-sm underline-offset-4 outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring"
-                    >
-                      {member.leadName ?? "Unnamed"}
-                    </Link>
-                  </TableCell>
-                  <TableCell className="font-mono text-xs">
-                    {member.phone}
-                  </TableCell>
-                  <TableCell>
-                    <Badge
-                      variant={
-                        member.consentStatus === "granted"
-                          ? "default"
-                          : member.consentStatus === "revoked"
-                            ? "destructive"
-                            : "secondary"
-                      }
-                    >
-                      {member.consentStatus === "granted"
-                        ? "Consented"
-                        : member.consentStatus === "revoked"
-                          ? "Opted out"
-                          : "Unknown"}
-                    </Badge>
-                  </TableCell>
-                  <TableCell>
-                    <LeadStatusBadge status={member.status} />
-                  </TableCell>
-                  <TableCell>
-                    {member.attempts} / {maxAttempts}
-                  </TableCell>
-                  <TableCell className="text-muted-foreground text-sm">
-                    {formatWhen(member.lastAttemptAt)}
-                  </TableCell>
-                  <TableCell className="text-muted-foreground text-sm">
-                    {dialOutcomeLabel(member.lastOutcome)}
-                  </TableCell>
-                </TableRow>
-              ))
-            )}
-          </TableBody>
-        </Table>
-      </div>
+                    <TableCell className="hidden font-mono text-xs md:table-cell">
+                      {member.phone}
+                    </TableCell>
+                    <TableCell className="hidden lg:table-cell">
+                      <StatusDot tone={consent.tone}>{consent.label}</StatusDot>
+                    </TableCell>
+                    <TableCell className="hidden sm:table-cell">
+                      <LeadStatus status={member.status} />
+                    </TableCell>
+                    <TableCell className="hidden tabular-nums sm:table-cell">
+                      {member.attempts} / {maxAttempts}
+                    </TableCell>
+                    <TableCell className="text-muted-foreground hidden text-sm lg:table-cell">
+                      {formatWhen(member.lastAttemptAt)}
+                    </TableCell>
+                    <TableCell className="text-muted-foreground hidden text-sm md:table-cell">
+                      {dialOutcomeLabel(member.lastOutcome)}
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
+            </TableBody>
+          </Table>
+        )}
+      </DataTable>
       {selectable && selected.size > 0 ? (
-        <div
-          role="toolbar"
-          aria-label="Bulk queue actions"
-          className="bg-card status-enter sticky bottom-4 z-10 mx-4 mb-4 flex flex-wrap items-center gap-2 rounded-lg border p-3 shadow-lg sm:mx-6"
-        >
-          <span className="text-sm font-medium" aria-live="polite">
-            {selected.size} selected
-          </span>
+        <BulkBar label="Bulk queue actions" count={selected.size}>
           <LoadingButton
             size="sm"
             variant="outline"
@@ -380,7 +343,7 @@ export function CampaignQueue({
           >
             Clear
           </Button>
-        </div>
+        </BulkBar>
       ) : null}
     </div>
   );

@@ -14,16 +14,17 @@ import {
   EmptyHeader,
   EmptyMedia,
 } from "@/components/ui/empty";
-import { Separator } from "@/components/ui/separator";
 import { Button } from "@/components/ui/button";
 import Link from "next/link";
 import { Input } from "@/components/ui/input";
 import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
 import {
+  FormActions,
   FormCard,
   FormSection,
   FormSectionHeading,
   FormSectionSeparator,
+  PageHeading,
 } from "@/components/wizard/form-layout";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { updatePlatformConfiguration, type SettingsActionState } from "@/app/(dashboard)/settings/actions";
@@ -71,9 +72,9 @@ export type OperatorData = {
 
 export function OperatorDenied() {
   return (
-    <div className="mx-auto flex w-full max-w-2xl flex-col gap-6">
+    <div className="flex flex-col gap-6">
       <RouteBrief route="/operator" brief="Operator access denied. This account is not allowlisted as a platform administrator. Do not report navigation as completed." />
-      <h1 className="text-2xl font-semibold tracking-tight">Operator access</h1>
+      <PageHeading title="Operator access" />
       <Alert variant="destructive">
         <KeyRound />
         <AlertTitle>Access denied</AlertTitle>
@@ -86,12 +87,9 @@ export function OperatorDenied() {
 export function OperatorView({ data }: { data: OperatorData }) {
   const [state, action] = useActionState(updatePlatformConfiguration, INITIAL);
   return (
-    <div className="mx-auto flex w-full max-w-2xl flex-col gap-6">
+    <div className="flex flex-col gap-6">
       <RouteBrief route="/operator" brief={`Platform operator area. Access granted. ${data.bootstrap.filter((item) => item.configured).length} of ${data.bootstrap.length} deployment values are set. Credential values are never available here. Provider and bridge default changes require confirmation.`} />
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Platform operator</h1>
-        <p className="text-muted-foreground text-sm">Readiness, connection health, and non-secret platform defaults.</p>
-      </div>
+      <PageHeading title="Platform operator" description="Readiness, connection health, and non-secret platform defaults." />
 
       <Alert>
         <KeyRound />
@@ -184,21 +182,16 @@ export function OperatorView({ data }: { data: OperatorData }) {
             <Field><FieldLabel htmlFor="llm-order">LLM fallback order</FieldLabel><Input id="llm-order" name="llmProviderOrder" className="max-w-md" defaultValue={data.config.llmProviderOrder.join(", ")} /><FieldDescription>Use each provider once, separated by commas.</FieldDescription></Field>
             <FieldGroup className="grid gap-4 md:grid-cols-2"><Field><FieldLabel htmlFor="connection-id">Telnyx Call Control connection ID</FieldLabel><Input id="connection-id" name="telnyxConnectionId" className="max-w-xs" defaultValue={data.config.telnyxConnectionId ?? ""} /></Field><Field><FieldLabel htmlFor="caller-number">Default caller number</FieldLabel><Input id="caller-number" name="telnyxCallerNumber" type="tel" className="max-w-xs" defaultValue={data.config.telnyxCallerNumber ?? ""} /></Field><Field><FieldLabel htmlFor="cartesia-voice">Cartesia voice ID</FieldLabel><Input id="cartesia-voice" name="cartesiaVoiceId" className="max-w-xs" defaultValue={data.config.cartesiaVoiceId ?? ""} /></Field></FieldGroup>
             <FieldGroup className="grid gap-4 md:grid-cols-2">
-              <Field><FieldLabel htmlFor="bridge-workspace">Bridge workspace</FieldLabel><Select name="bridgeOrganizationId" defaultValue={data.config.bridgeOrganizationId ?? "none"}><SelectTrigger id="bridge-workspace" aria-label="Bridge workspace" className="w-full max-w-md"><SelectValue placeholder="Select workspace" /></SelectTrigger><SelectContent><SelectGroup><SelectItem value="none">Not selected</SelectItem>{data.organizations.map((item) => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectGroup></SelectContent></Select></Field>
-              <Field><FieldLabel htmlFor="bridge-agent">Saved Voni agent</FieldLabel><Select name="bridgeAgentId" defaultValue={data.config.bridgeAgentId ?? "none"}><SelectTrigger id="bridge-agent" aria-label="Saved Voni agent" className="w-full max-w-md"><SelectValue placeholder="Select agent" /></SelectTrigger><SelectContent><SelectGroup><SelectItem value="none">Not selected</SelectItem>{data.agents.map((item) => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectGroup></SelectContent></Select></Field>
+              <Field><FieldLabel htmlFor="bridge-workspace">Bridge workspace</FieldLabel><Select name="bridgeOrganizationId" items={{ none: "Not selected", ...Object.fromEntries(data.organizations.map((item) => [item.id, item.name])) }} defaultValue={data.config.bridgeOrganizationId ?? "none"}><SelectTrigger id="bridge-workspace" aria-label="Bridge workspace" className="w-full"><SelectValue placeholder="Select workspace" /></SelectTrigger><SelectContent><SelectGroup><SelectItem value="none">Not selected</SelectItem>{data.organizations.map((item) => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectGroup></SelectContent></Select></Field>
+              <Field><FieldLabel htmlFor="bridge-agent">Saved Voni agent</FieldLabel><Select name="bridgeAgentId" items={{ none: "Not selected", ...Object.fromEntries(data.agents.map((item) => [item.id, item.name])) }} defaultValue={data.config.bridgeAgentId ?? "none"}><SelectTrigger id="bridge-agent" aria-label="Saved Voni agent" className="w-full"><SelectValue placeholder="Select agent" /></SelectTrigger><SelectContent><SelectGroup><SelectItem value="none">Not selected</SelectItem>{data.agents.map((item) => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectGroup></SelectContent></Select></Field>
             </FieldGroup>
             {state.error || state.message ? <Alert variant={state.error ? "destructive" : "default"}><AlertTitle>{state.error ? "Could not save" : "Done"}</AlertTitle><AlertDescription>{state.error ?? state.message}</AlertDescription></Alert> : null}
-            <div>
-              <Separator />
-              <div className="flex flex-col-reverse flex-wrap gap-3 pt-4 sm:flex-row sm:items-center sm:justify-between">
-                <Button nativeButton={false} variant="outline" render={<Link href="/settings" />}>
-                  Cancel
-                </Button>
-                <span className="flex justify-end">
-                  <SaveDefaultsButton />
-                </span>
-              </div>
-            </div>
+            <FormActions>
+              <Button nativeButton={false} variant="outline" render={<Link href="/settings" />}>
+                Cancel
+              </Button>
+              <SaveDefaultsButton />
+            </FormActions>
           </form>
         </FormSection>
 

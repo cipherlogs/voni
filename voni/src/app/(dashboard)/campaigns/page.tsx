@@ -1,7 +1,11 @@
 import { Suspense } from "react";
+import { PageHeading } from "@/components/wizard/form-layout";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
+import { DataTable } from "@/components/data-table";
+import { StatusDot } from "@/components/status-dot";
+import { CAMPAIGN_STATUS } from "@/lib/campaigns/status";
+import { RecordRowActions } from "@/components/record-row-actions";
 import {
   Empty,
   EmptyContent,
@@ -19,21 +23,14 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Megaphone, Plus } from "lucide-react";
-import { CardListSkeleton } from "@/components/page-skeletons";
+import { TableSkeleton } from "@/components/page-skeletons";
 import { listCampaigns } from "./actions";
-import { CampaignDeleteButton } from "./delete-campaign-button";
 import {
   describeCallingWindow,
   parseCallingWindow,
 } from "@/lib/campaigns/policy";
 import { RouteBrief } from "@/components/copilot/route-brief";
 
-const STATUS_VARIANT = {
-  active: "default",
-  draft: "secondary",
-  paused: "outline",
-  completed: "outline",
-} as const;
 
 /**
  * Authorized campaign list leaf: rows and states resolve after the shell.
@@ -69,63 +66,77 @@ async function CampaignsList() {
           </EmptyContent>
         </Empty>
       ) : (
-        <div className="overflow-x-auto rounded-lg border">
+        <DataTable>
           <Table>
             <TableHeader>
               <TableRow>
                 <TableHead>Campaign</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Calling window</TableHead>
-                <TableHead>Leads</TableHead>
-                <TableHead className="w-12" />
+                <TableHead className="hidden sm:table-cell">Status</TableHead>
+                <TableHead className="hidden lg:table-cell">Calling window</TableHead>
+                <TableHead className="hidden md:table-cell">Leads</TableHead>
+                <TableHead className="w-12">
+                  <span className="sr-only">Actions</span>
+                </TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {rows.map((campaign) => (
-                <TableRow key={campaign.id}>
-                  <TableCell className="font-medium">{campaign.name}</TableCell>
-                  <TableCell>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <Badge variant={STATUS_VARIANT[campaign.status]}>
-                        {campaign.status}
-                      </Badge>
-                      {/* An unpublished agent is the most common reason a
-                          campaign silently never dials, so it is called out in
-                          the list rather than only on the detail page. */}
-                      {campaign.agentDeployed ? null : (
-                        <Badge variant="outline">agent is a draft</Badge>
-                      )}
-                    </div>
-                  </TableCell>
-                  <TableCell className="text-muted-foreground text-sm">
-                    {campaign.agentName} ·{" "}
-                    {describeCallingWindow(parseCallingWindow(campaign.callingWindow))}
-                  </TableCell>
-                  <TableCell className="text-muted-foreground text-sm">
-                    {campaign.total} leads · {campaign.queued} queued ·{" "}
-                    {campaign.reached} reached
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex items-center gap-1">
-                      <Button
-                        nativeButton={false}
-                        variant="outline"
-                        size="sm"
-                        render={<Link href={`/campaigns/${campaign.id}`} />}
-                      >
-                        Open
-                      </Button>
-                      <CampaignDeleteButton
+              {rows.map((campaign) => {
+                const status = CAMPAIGN_STATUS[campaign.status];
+                // An unpublished agent is the most common reason a campaign
+                // silently never dials, so the list calls it out rather than
+                // only the detail page.
+                const agentNote = campaign.agentDeployed ? null : (
+                  <StatusDot tone="warning" className="text-muted-foreground">
+                    Agent is a draft
+                  </StatusDot>
+                );
+                return (
+                  <TableRow key={campaign.id}>
+                    <TableCell>
+                      <div className="flex min-w-0 flex-col gap-1">
+                        <Link
+                          href={`/campaigns/${campaign.id}`}
+                          className="w-fit text-sm font-medium underline-offset-4 hover:underline"
+                        >
+                          {campaign.name}
+                        </Link>
+                        <span className="text-muted-foreground text-sm">
+                          {campaign.agentName}
+                        </span>
+                        {/* Phones: status folds under the name. */}
+                        <div className="flex flex-col gap-1 sm:hidden">
+                          <StatusDot tone={status.tone}>{status.label}</StatusDot>
+                          {agentNote}
+                        </div>
+                      </div>
+                    </TableCell>
+                    <TableCell className="hidden sm:table-cell">
+                      <div className="flex flex-col gap-1">
+                        <StatusDot tone={status.tone}>{status.label}</StatusDot>
+                        {agentNote}
+                      </div>
+                    </TableCell>
+                    <TableCell className="text-muted-foreground hidden text-sm lg:table-cell">
+                      {describeCallingWindow(parseCallingWindow(campaign.callingWindow))}
+                    </TableCell>
+                    <TableCell className="text-muted-foreground hidden text-sm tabular-nums md:table-cell">
+                      {campaign.total} leads · {campaign.queued} queued ·{" "}
+                      {campaign.reached} reached
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <RecordRowActions
+                        kind="campaign"
                         id={campaign.id}
                         name={campaign.name}
+                        openHref={`/campaigns/${campaign.id}`}
                       />
-                    </div>
-                  </TableCell>
-                </TableRow>
-              ))}
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
             </TableBody>
           </Table>
-        </div>
+        </DataTable>
       )}
     </>
   );
@@ -134,24 +145,21 @@ async function CampaignsList() {
 export default function CampaignsPage() {
   return (
     <div data-testid="campaigns-shell" className="flex flex-col gap-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Campaigns</h1>
-          <p className="text-muted-foreground text-sm">
-            Which leads an agent should call, when it may call, and what
-            happens if no one answers.
-          </p>
-        </div>
-        <Button nativeButton={false} render={<Link href="/campaigns/new" />}>
-          <Plus />
-          New campaign
-        </Button>
-      </div>
+      <PageHeading
+        title="Campaigns"
+        description="Which leads an agent should call, when it may call, and what happens if no one answers."
+        actions={
+          <Button nativeButton={false} render={<Link href="/campaigns/new" />}>
+            <Plus data-icon="inline-start" />
+            New campaign
+          </Button>
+        }
+      />
 
       <Suspense
         fallback={
           <div role="status" aria-label="Loading campaigns">
-            <CardListSkeleton />
+            <TableSkeleton rows={4} columns={5} />
           </div>
         }
       >

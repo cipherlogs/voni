@@ -10,27 +10,26 @@ const repoFile = (...parts: string[]) => readFileSync(join(here, "..", "..", "..
 
 test("landing maps the registry to real links with admin gating", () => {
   const landing = source("page.tsx");
-  // Registry-driven: every tile renders through the production BentoTile.
+  // Registry-driven: every tile renders through the production SettingsCard.
   assert.match(landing, /SETTINGS_TILES/);
-  assert.match(landing, /BentoTile/);
+  assert.match(landing, /SettingsCard/);
   // Real shareable URLs come from the tile itself, never a mock href.
   assert.match(landing, /tile={tile}/);
   assert.doesNotMatch(landing, /galleryHref/);
   assert.doesNotMatch(landing, /MOCK/);
-  const tile = repoFile("components", "settings-bento", "bento-tile.tsx");
+  const tile = repoFile("components", "settings-card.tsx");
   assert.match(tile, /href={tile\.href}/);
   // Intent prefetch (ticket 06): dead at rest so viewport entry never
   // avalanches; hover/focus intent restores default prefetch per tile.
   assert.match(tile, /HoverPrefetchLink/);
   assert.match(tile, /enabled=\{prefetchOnIntent\}/);
-  const intent = repoFile("components", "settings-bento", "hover-prefetch-link.tsx");
+  const intent = repoFile("components", "hover-prefetch-link.tsx");
   assert.match(intent, /prefetch=\{enabled \? \(active \? null : false\) : false\}/);
   // The operator tile honors the registry's adminOnly flag.
   assert.match(landing, /adminOnly/);
   assert.match(landing, /isPlatformAdmin/);
-  // Single column on mobile, heroes span two on desktop.
+  // Single column on mobile.
   assert.match(landing, /grid-cols-1/);
-  assert.match(landing, /lg:col-span-2/);
   // Legacy hashes redirect client-side (fragments never reach the server).
   assert.match(landing, /SettingsHashRedirect/);
   const island = source("settings-hash-redirect.tsx");

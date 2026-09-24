@@ -1,23 +1,15 @@
 "use client";
 
+import { DataTable } from "@/components/data-table";
+import { StatusDot } from "@/components/status-dot";
+import { DeleteConfirmDialog } from "@/components/delete-confirm-dialog";
+import { RowActions } from "@/components/row-actions";
+import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 import { toast } from "@/components/ui/toast";
 import { LoadingButton } from "@/components/loading-button";
-import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
-import {
-  DestructiveDialogIcon,
-  Dialog,
-  DialogClose,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog";
 import {
   Field,
   FieldDescription,
@@ -26,8 +18,12 @@ import {
   FieldLabel,
 } from "@/components/ui/field";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { FormCard, FormSection, FormSectionHeading } from "@/components/wizard/form-layout";
-import { Separator } from "@/components/ui/separator";
+import {
+  FormCard,
+  FormSection,
+  FormSectionHeading,
+  FormActions,
+} from "@/components/wizard/form-layout";
 import {
   Select,
   SelectContent,
@@ -44,7 +40,12 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Phone, Plus, TriangleAlert, Trash2 } from "lucide-react";
+import {
+  Phone,
+  Plus,
+  TriangleAlert,
+  Trash2,
+} from "lucide-react";
 import {
   Empty,
   EmptyDescription,
@@ -52,11 +53,7 @@ import {
   EmptyMedia,
   EmptyTitle,
 } from "@/components/ui/empty";
-import {
-  addPhoneNumberAction,
-  bindPhoneNumberAction,
-  removePhoneNumberAction,
-} from "@/app/(dashboard)/numbers/actions";
+import { addPhoneNumberAction, bindPhoneNumberAction, removePhoneNumberAction } from "@/app/(dashboard)/numbers/actions";
 
 type PhoneNumber = {
   id: string;
@@ -71,112 +68,46 @@ type PhoneNumber = {
 const UNBOUND = "__unbound__";
 
 /**
- * Number removal with a typed-name confirm step, mirroring AgentDeleteButton:
- * inbound calls route through these numbers, so deleting one is destructive —
- * the dialog restates the consequence and requires typing the number before
- * the confirm enables. No size class on the icon (house rule).
+ * Row "…" menu for a number. Remove opens the shared typed-confirm dialog
+ * (the gate is the label when set, else the number); ownership stays
+ * enforced server-side by removePhoneNumberAction.
  */
-function NumberRemoveButton({ number }: { number: PhoneNumber }) {
-  const router = useRouter();
-  const [open, setOpen] = useState(false);
-  const [deleting, startDelete] = useTransition();
-  const [error, setError] = useState<string | null>(null);
-  const [confirmation, setConfirmation] = useState("");
-  const trimmed =
-    number.label && number.label.trim() ? number.label.trim() : null;
-  const gateValue = trimmed ?? number.e164;
-  // The typed confirmation is UI friction only — ownership stays enforced
-  // server-side by removePhoneNumberAction.
-  const confirmed = confirmation.trim() === gateValue;
-
-  const confirm = () =>
-    startDelete(async () => {
-      setError(null);
-      const result = await removePhoneNumberAction(number.id);
-      if (!result.ok) {
-        // Stay in the dialog so the reason is readable next to the action.
-        // Inline-only: the dialog stays open, so no duplicate toast.
-        setError(result.message ?? "That did not work.");
-        return;
-      }
-      setOpen(false);
-      setConfirmation("");
-      toast.add({ type: "success", title: "Number removed." });
-      router.refresh();
-    });
-
+function NumberRowActions({ number }: { number: PhoneNumber }) {
+  const [removeOpen, setRemoveOpen] = useState(false);
+  const label = number.label?.trim() || null;
   return (
-    <Dialog
-      open={open}
-      onOpenChange={(next) => {
-        setOpen(next);
-        if (!next) {
-          setError(null);
-          setConfirmation("");
+    <>
+      <RowActions label={`Actions for ${number.e164}`}>
+        <DropdownMenuItem variant="destructive" onClick={() => setRemoveOpen(true)}>
+          <Trash2 />
+          Remove number
+        </DropdownMenuItem>
+      </RowActions>
+      <DeleteConfirmDialog
+        layout="none"
+        open={removeOpen}
+        onOpenChange={setRemoveOpen}
+        id={number.id}
+        name={label ?? number.e164}
+        triggerLabel="Remove number"
+        description="This is permanent. Type the number's label to confirm."
+        consequence={
+          <>
+            This number stops answering inbound calls
+            {number.agentName ? ` for ${number.agentName}` : ""}. Call history is
+            kept. This cannot be undone.
+          </>
         }
-      }}
-    >
-      <DialogTrigger
-        render={<Button variant="ghost" size="icon" aria-label={`Remove ${number.e164}`} />}
-      >
-        <Trash2 />
-      </DialogTrigger>
-      <DialogContent>
-        <DialogHeader>
-          <DestructiveDialogIcon />
-          <DialogTitle>Remove {number.e164}?</DialogTitle>
-          <DialogDescription>
-            This is permanent. Type{" "}
-            <span className="font-medium text-foreground">{gateValue}</span>{" "}
-            to confirm.
-          </DialogDescription>
-        </DialogHeader>
-        <Alert variant="destructive">
-          <TriangleAlert />
-          <AlertDescription>
-            This number stops answering inbound calls{number.agentName ? ` for ${number.agentName}` : ""}.
-            Call history is kept. This cannot be undone.
-          </AlertDescription>
-        </Alert>
-        <Field>
-          <FieldLabel htmlFor={`remove-confirm-${number.id}`}>
-            {trimmed ? "Number label" : "Number"}
-          </FieldLabel>
-          <FieldDescription>
-            Type <span className="font-medium text-foreground">{gateValue}</span>{" "}
-            to enable removal.
-          </FieldDescription>
-          <Input
-            id={`remove-confirm-${number.id}`}
-            value={confirmation}
-            onChange={(e) => setConfirmation(e.target.value)}
-            placeholder={gateValue}
-            autoComplete="off"
-            aria-invalid={confirmation.length > 0 && !confirmed ? true : undefined}
-          />
-        </Field>
-        {error ? (
-          <Alert variant="destructive">
-            <TriangleAlert />
-            <AlertDescription>{error}</AlertDescription>
-          </Alert>
-        ) : null}
-        <DialogFooter>
-          <DialogClose render={<Button variant="outline" />}>
-            Cancel
-          </DialogClose>
-          <LoadingButton
-            variant="destructive"
-            pending={deleting}
-            pendingText="Removing…"
-            disabled={!confirmed}
-            onClick={confirm}
-          >
-            Remove number
-          </LoadingButton>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        fieldLabel={label ? "Number label" : "Number"}
+        confirmLabel="Remove number"
+        confirmAction={async (id) => {
+          const result = await removePhoneNumberAction(id);
+          return result.ok
+            ? { ok: true }
+            : { ok: false, message: result.message ?? "That did not work." };
+        }}
+      />
+    </>
   );
 }
 
@@ -221,10 +152,11 @@ export function PhoneNumbers({
   // inbound calls, not an anonymous answering machine — so the unbound
   // option names it. __unbound__ stays internal: it is the Select value,
   // never rendered text.
-  const agentLabel = (id: string | null) => {
-    if (id === null || id === UNBOUND)
-      return "Main reception agent answers";
-    return agents.find((agent) => agent.id === id)?.name ?? "Unknown agent";
+  const agentItems: Record<string, string> = {
+    [UNBOUND]: "Main reception agent answers",
+    ...Object.fromEntries(
+      agents.map((agent) => [agent.id, `${agent.name}${agent.deployed ? "" : " (draft)"}`]),
+    ),
   };
 
   // Tracked per-action (not one shared boolean) so clicking one row's remove
@@ -258,7 +190,7 @@ export function PhoneNumbers({
               <FormSectionHeading
                 id="add-number-heading"
                 title="Add a number"
-                description="Which agent picks up when someone calls one of your numbers."
+                description="Numbers must be in international format. Unassigned numbers go to the main reception agent."
               />
             }
           >
@@ -268,7 +200,6 @@ export function PhoneNumbers({
                   <FieldLabel htmlFor="new-number">Number</FieldLabel>
                   <Input
                     id="new-number"
-                    className="max-w-xs"
                     value={newNumber}
                     onChange={(e) => setNewNumber(e.target.value)}
                     placeholder="+971 4 123 4567"
@@ -287,7 +218,6 @@ export function PhoneNumbers({
                   <FieldLabel htmlFor="new-label">Label</FieldLabel>
                   <Input
                     id="new-label"
-                    className="max-w-md"
                     value={newLabel}
                     onChange={(e) => setNewLabel(e.target.value)}
                     placeholder="Marina office line"
@@ -296,11 +226,12 @@ export function PhoneNumbers({
                 <Field className="sm:col-span-2">
                   <FieldLabel htmlFor="new-agent">Answered by</FieldLabel>
                   <Select
+                    items={agentItems}
                     value={newAgent}
                     onValueChange={(v) => setNewAgent(v ?? UNBOUND)}
                   >
-                    <SelectTrigger id="new-agent" aria-label="Answered by" className="w-full max-w-md">
-                      <SelectValue>{agentLabel}</SelectValue>
+                    <SelectTrigger id="new-agent" aria-label="Answered by" className="w-full">
+                      <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
                       <SelectGroup>
@@ -322,21 +253,7 @@ export function PhoneNumbers({
                   </FieldDescription>
                 </Field>
               </FieldGroup>
-              <div>
-                <Separator />
-                <div className="flex flex-col-reverse flex-wrap gap-3 pt-4 sm:flex-row sm:items-center sm:justify-between">
-                  <Button
-                    variant="outline"
-                    type="button"
-                    disabled={!newNumber.trim() && !newLabel.trim() && newAgent === UNBOUND}
-                    onClick={() => {
-                      setNewNumber("");
-                      setNewLabel("");
-                      setNewAgent(UNBOUND);
-                    }}
-                  >
-                    Cancel
-                  </Button>
+              <FormActions>
                   <LoadingButton
                     disabled={!newNumber.trim()}
                     pending={pendingId === "add"}
@@ -364,8 +281,7 @@ export function PhoneNumbers({
                 >
                   Add number
                 </LoadingButton>
-              </div>
-            </div>
+              </FormActions>
             </div>
           </FormSection>
         </>
@@ -378,45 +294,50 @@ export function PhoneNumbers({
         </Alert>
       ) : null}
 
-      <div className="rounded-lg border">
-        <div className="overflow-x-auto">
+      <DataTable>
+        {numbers.length === 0 ? (
+          <Empty>
+            <EmptyHeader>
+              <EmptyMedia variant="feature">
+                <Phone />
+              </EmptyMedia>
+              <EmptyTitle>No numbers registered</EmptyTitle>
+              <EmptyDescription>
+                Inbound calls are answered by the main reception agent.
+              </EmptyDescription>
+            </EmptyHeader>
+          </Empty>
+        ) : (
           <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Number</TableHead>
-                  <TableHead>Label</TableHead>
-                  <TableHead>Answered by</TableHead>
-                  <TableHead className="w-12" />
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {numbers.length === 0 ? (
-                  <TableRow>
-                    <TableCell colSpan={4} className="h-24 text-center">
-                      <Empty>
-                        <EmptyHeader>
-                          <EmptyMedia variant="feature">
-                            <Phone />
-                          </EmptyMedia>
-                          <EmptyTitle>No numbers registered</EmptyTitle>
-                          <EmptyDescription>
-                            Inbound calls are answered by the main reception
-                            agent.
-                          </EmptyDescription>
-                        </EmptyHeader>
-                      </Empty>
-                    </TableCell>
-                  </TableRow>
-                ) : (
-                  numbers.map((number) => (
+            <TableHeader>
+              <TableRow>
+                <TableHead>Number</TableHead>
+                <TableHead className="hidden sm:table-cell">Label</TableHead>
+                <TableHead>Answered by</TableHead>
+                <TableHead className="w-12">
+                  <span className="sr-only">Actions</span>
+                </TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {numbers.map((number) => (
                     <TableRow key={number.id} data-copilot-key={number.id}>
-                      <TableCell className="font-mono text-xs">
-                        {number.e164}
-                      </TableCell>
-                      <TableCell>{number.label ?? "—"}</TableCell>
                       <TableCell>
-                        <div className="flex items-center gap-2">
+                        <div className="flex flex-col gap-1">
+                          <span className="font-mono text-xs">{number.e164}</span>
+                          {/* Phones: the label folds under the number. */}
+                          {number.label ? (
+                            <span className="text-muted-foreground text-xs sm:hidden">
+                              {number.label}
+                            </span>
+                          ) : null}
+                        </div>
+                      </TableCell>
+                      <TableCell className="hidden sm:table-cell">{number.label ?? "—"}</TableCell>
+                      <TableCell>
+                        <div className="flex flex-wrap items-center gap-2">
                           <Select
+                            items={agentItems}
                             value={number.agentId ?? UNBOUND}
                             disabled={pendingId === `bind:${number.id}`}
                             onValueChange={(v) =>
@@ -435,8 +356,8 @@ export function PhoneNumbers({
                                 32px — min-h-11 lifts it toward the 44px floor
                                 (WCAG 2.5.8) without widening the row trigger
                                 past the row's own padding. */}
-                            <SelectTrigger aria-label={`Agent for ${number.e164}`} className="min-h-11 w-56">
-                              <SelectValue>{agentLabel}</SelectValue>
+                            <SelectTrigger aria-label={`Agent for ${number.e164}`} className="min-h-11 w-44 sm:w-56">
+                              <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
                               <SelectGroup>
@@ -455,20 +376,21 @@ export function PhoneNumbers({
                               to the default, which looks like the binding was
                               ignored — so say so here. */}
                           {number.agentId && !number.agentDeployed ? (
-                            <Badge variant="outline">draft — default used</Badge>
+                            <StatusDot tone="warning" className="text-muted-foreground text-xs">
+                              Draft agent — default answers
+                            </StatusDot>
                           ) : null}
                         </div>
                       </TableCell>
-                      <TableCell>
-                        <NumberRemoveButton number={number} />
+                      <TableCell className="text-right">
+                        <NumberRowActions number={number} />
                       </TableCell>
                     </TableRow>
-                  ))
-                )}
-              </TableBody>
-            </Table>
-        </div>
-      </div>
+              ))}
+            </TableBody>
+          </Table>
+        )}
+      </DataTable>
     </div>
   );
 }

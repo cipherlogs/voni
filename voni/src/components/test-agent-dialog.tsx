@@ -1,14 +1,15 @@
 "use client";
 
+import { Tip } from "@/components/tip";
+
 /**
  * Adapted from Blocks `@blocks-so/ai-05` ("AI Elements Chat", MIT,
  * Ephraim Duncan — see THIRD-PARTY-NOTICES.md).
  *
  * ai-05's AI-SDK provider logic is NOT adopted (DESIGN.md §3: markup idiom
  * only, no `ai`-SDK addition without amendment). What this keeps is the
- * vendored card as-is: the fixed-height constrained card (`h-[560px]
- * max-w-2xl rounded-3xl`, centered in a transparent dialog shell), the
- * header with the presence line + the "New chat" action, and the transcript
+ * layout: a fixed-height card (restyled to the standard Dialog surface in
+ * the 2026-09-24 audit), the header with the presence line + the "New chat" action, and the transcript
  * scroll region with a scroll button. The transcript itself is Voni's
  * `Chat01` idiom (Base UI
  * MessageScroller + Bubble, no text composer — a voice call has nothing to
@@ -20,8 +21,8 @@
  * `startingRef` single-flight, `voni:voice-preempt` mutual exclusion,
  * unmount `stop()`, `key={config.voiceId}` remount, the 180s cap, the 429
  * countdown vs mic vs drop vs hang-up error taxonomy, and the fixed-height
- * no-jump card. This dialog owns only the chrome: the upstream constrained
- * ai-05 card as-is (`h-[560px] max-w-2xl rounded-3xl`, centered), its header
+ * no-jump card. This dialog owns only the chrome: the fixed-height
+ * standard Dialog surface (`h-140 sm:max-w-2xl`), its header
  * (title + dirty/saved version line + live presence), the "New call" reset,
  * the not-ready state inside the conversation region, and the composer-slot
  * call footer. The old DialogHeader badges and standalone Empty are merged
@@ -161,43 +162,49 @@ export function TestAgentDialog({
         <Mic aria-hidden="true" />
         Test agent
       </DialogTrigger>
-      {/* Upstream card wins: the dialog shell goes transparent and the
-          vendored ai-05 card renders as-is (h-[560px] max-w-2xl
-          rounded-3xl), centered by the primitive. The max-h guard only
-          binds on short viewports; the flex-1 transcript absorbs it. */}
+      {/* Standard Dialog surface (audit 2026-09-24): same radius, ring, and
+          fill as every other dialog. Fixed 35rem height keeps the
+          transcript from jumping as turns arrive; the max-h guard binds only
+          on short viewports and the flex-1 transcript absorbs it. */}
       <DialogContent
         data-testid="test-agent-dialog"
-        className="max-w-[calc(100%-2rem)] gap-0 border-0 bg-transparent p-0 shadow-none ring-0 sm:max-w-2xl"
+        className="flex h-140 max-h-[calc(100dvh-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-2xl"
       >
-        <div className="mx-auto flex h-[560px] max-h-[calc(100dvh-2rem)] w-full max-w-2xl flex-col overflow-hidden rounded-3xl border bg-card shadow-lg">
-          <header className="flex items-center justify-between gap-4 px-5 py-4">
-            <div className="flex min-w-0 flex-col">
-              {/* DialogTitle keeps the modal labelled for AT; visually it
-                  is ai-05's name line, not a stacked dialog header. */}
-              <DialogTitle className="truncate text-sm leading-tight font-semibold">
-                Test {name}
-              </DialogTitle>
-              <DialogDescription className="sr-only">
-                {config.identity.role || "Voice agent"}
-              </DialogDescription>
-              <span className="text-muted-foreground truncate text-xs">
-                {isDirty ? "Testing unsaved edits" : "Testing saved version"}
-              </span>
+        <header className="flex items-center justify-between gap-4 py-4 pr-12 pl-5">
+          <div className="flex min-w-0 flex-col">
+            {/* DialogTitle keeps the modal labelled for AT; visually it
+                is ai-05's name line, not a stacked dialog header. */}
+            <DialogTitle className="truncate text-sm leading-tight font-semibold">
+              Test {name}
+            </DialogTitle>
+            <DialogDescription className="sr-only">
+              {config.identity.role || "Voice agent"}
+            </DialogDescription>
+            <span className="text-muted-foreground truncate text-xs">
+              {isDirty ? "Testing unsaved edits" : "Testing saved version"}
+            </span>
+            <span
+              className="text-muted-foreground inline-flex items-center gap-1.5 text-xs"
+              aria-live="polite"
+            >
               <span
-                className="text-muted-foreground inline-flex items-center gap-1.5 text-xs"
-                aria-live="polite"
-              >
-                <span
-                  aria-hidden
-                  className={cn(
-                    "size-1.5 rounded-full",
-                    live ? "voice-call-live-dot" : "bg-muted-foreground/40",
-                  )}
-                />
-                {presence}
-              </span>
-            </div>
-            <div className="flex shrink-0 items-center gap-1">
+                aria-hidden
+                className={cn(
+                  "size-1.5 rounded-full",
+                  live ? "voice-call-live-dot" : "bg-muted-foreground/40",
+                )}
+              />
+              {presence}
+            </span>
+          </div>
+          <div className="flex shrink-0 items-center gap-1">
+            <Tip
+              label={
+                engine === "managed"
+                  ? "Test call runs on the managed voice session. Switch to the cascade pipeline."
+                  : "Test call runs on the cascade pipeline. Switch back to managed."
+              }
+            >
               <Button
                 type="button"
                 variant="ghost"
@@ -210,171 +217,169 @@ export function TestAgentDialog({
                   setHangUpError(null);
                 }}
                 disabled={!canTest || callActive}
-                title={
-                  engine === "managed"
-                    ? "Test call runs on the managed voice session. Switch to the cascade pipeline."
-                    : "Test call runs on the cascade pipeline. Switch back to managed."
-                }
               >
                 {engine === "managed" ? "Managed" : "Cascade"}
               </Button>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                className="h-8 gap-1.5 px-2.5 text-xs"
-                onClick={resetCall}
-                disabled={!canTest}
-              >
-                <Plus className="size-4" aria-hidden />
-                New call
-              </Button>
-            </div>
-          </header>
-
-          <div className="border-border/60 flex min-h-0 flex-1 flex-col border-t">
-            {canTest && open ? (
-              <>
-                <div className="min-h-0 flex-1">
-                  <VoiceCall
-                    key={`${config.voiceId}-${engine}`}
-                    ref={callRef}
-                    mode={{ kind: "inline", config, agentId, isDirty }}
-                    engine={engine}
-                    presentation="dialog"
-                    chromeless
-                    onStatusChange={setStatus}
-                    onPendingChange={(next) => {
-                      setCallStarting(next.starting);
-                      setCallHangingUp(next.hangingUp);
-                    }}
-                  />
-                </div>
-                {/* Typing indicator <- toolActive: upstream ai-05's dot
-                    markup as a pinned row under the transcript (VoiceCall
-                    owns its internal scroller, so the slot can't live
-                    inside it). Stagger via arbitrary properties — no inline style prop per DESIGN.md §5. */}
-                {status.toolActive && live ? (
-                  <div className="px-5 pt-1">
-                    <output
-                      aria-label="Agent is looking something up"
-                      className="flex h-7 items-center gap-1"
-                    >
-                      {[0, 1, 2].map((dot) => (
-                        <span
-                          key={dot}
-                          className={cn(
-                            "size-1.5 animate-bounce rounded-full bg-muted-foreground/60",
-                            dot === 1 && "[animation-delay:150ms]",
-                            dot === 2 && "[animation-delay:300ms]",
-                          )}
-                        />
-                      ))}
-                    </output>
-                  </div>
-                ) : null}
-              </>
-            ) : (
-              /* ai-05's conversation region with the not-ready state inside
-                 it (not a second Empty visual language): transcript area
-                 carries the message, footer carries the Jobs link. */
-              <div className="flex h-full min-h-0 flex-col">
-                <MessageScrollerProvider autoScroll defaultScrollPosition="end">
-                  <MessageScroller className="min-h-0 flex-1">
-                    <MessageScrollerViewport aria-label="Call transcript">
-                      <MessageScrollerContent className="gap-5 px-5 py-5">
-                        <div className="flex flex-col items-center gap-1.5 px-2 py-8 text-center">
-                          <Mic
-                            className="text-muted-foreground size-5"
-                            aria-hidden
-                          />
-                          <p className="text-sm font-semibold">
-                            Test call not ready
-                          </p>
-                          <p className="text-muted-foreground max-w-sm text-xs leading-relaxed">
-                            The generated voice and language are still
-                            placeholders. Start a call after generation
-                            finishes.
-                          </p>
-                        </div>
-                      </MessageScrollerContent>
-                    </MessageScrollerViewport>
-                    <MessageScrollerButton />
-                  </MessageScroller>
-                </MessageScrollerProvider>
-                <div className="flex flex-col gap-3 p-3">
-                  <div className="flex justify-center px-1">
-                    <Button
-                      nativeButton={false}
-                      size="sm"
-                      variant="outline"
-                      render={<Link href="/jobs" />}
-                    >
-                      View progress in Jobs
-                    </Button>
-                  </div>
-                </div>
-              </div>
-            )}
+            </Tip>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-8 gap-1.5 px-2.5 text-xs"
+              onClick={resetCall}
+              disabled={!canTest}
+            >
+              <Plus className="size-4" aria-hidden />
+              New call
+            </Button>
           </div>
+        </header>
 
-          {/* ai-05's composer slot, rebuilt as the call control: status +
-              countdown / mic-hint, then start/hang-up LoadingButtons. */}
+        <div className="border-border/60 flex min-h-0 flex-1 flex-col border-t">
           {canTest && open ? (
-            <div className="flex flex-col gap-3 p-3">
-              <div className="flex flex-col items-center gap-1.5 px-2 text-center">
-                {live && remaining <= 30 ? (
-                  <>
-                    <p className="text-muted-foreground text-xs leading-relaxed">
-                      {`${remaining}s left on this call`}
-                    </p>
-                    <Progress
-                      value={Math.max(0, (remaining / 30) * 100)}
-                      aria-label="Time left on this call"
-                      className="w-32"
-                    />
-                  </>
-                ) : (
-                  <p className="text-muted-foreground text-xs">
-                    Uses your microphone · {INLINE_CAP_SECONDS / 60} min max
-                    · Just talk — it speaks first.
-                  </p>
-                )}
+            <>
+              <div className="min-h-0 flex-1">
+                <VoiceCall
+                  key={`${config.voiceId}-${engine}`}
+                  ref={callRef}
+                  mode={{ kind: "inline", config, agentId, isDirty }}
+                  engine={engine}
+                  presentation="dialog"
+                  chromeless
+                  // The dialog is the surface; the embedded card drops its
+                  // own border so the edges never double.
+                  className="rounded-none border-0"
+                  onStatusChange={setStatus}
+                  onPendingChange={(next) => {
+                    setCallStarting(next.starting);
+                    setCallHangingUp(next.hangingUp);
+                  }}
+                />
               </div>
-              <div className="flex justify-center px-1">
-                {callActive ? (
-                  <LoadingButton
-                    pending={callHangingUp}
-                    pendingText="Hanging up…"
-                    icon={<PhoneOff className="size-[18px]" aria-hidden />}
-                    className={`h-11 gap-2 rounded-full px-7 text-sm font-semibold ${HANGUP_RED}`}
-                    onClick={handleHangUp}
-                    aria-label="End test call"
+              {/* Typing indicator <- toolActive: upstream ai-05's dot
+                  markup as a pinned row under the transcript (VoiceCall
+                  owns its internal scroller, so the slot can't live
+                  inside it). Stagger via arbitrary properties — no inline style prop per DESIGN.md §5. */}
+              {status.toolActive && live ? (
+                <div className="px-5 pt-1">
+                  <output
+                    aria-label="Agent is looking something up"
+                    className="flex h-7 items-center gap-1"
                   >
-                    End call
-                  </LoadingButton>
-                ) : (
-                  <LoadingButton
-                    pending={callStarting}
-                    pendingText="Calling…"
-                    icon={<Phone className="size-[18px]" aria-hidden />}
-                    className={`h-11 gap-2 rounded-full px-7 text-sm font-semibold ${CALL_GREEN}`}
-                    onClick={handleStart}
-                    aria-label={`Call ${name}`}
-                  >
-                    {status.state === "ended" ? "Call again" : `Call ${name}`}
-                  </LoadingButton>
-                )}
-              </div>
-              {hangUpError && callActive ? (
-                <Alert variant="destructive" className="mx-1">
-                  <TriangleAlert />
-                  <AlertDescription>{hangUpError}</AlertDescription>
-                </Alert>
+                    {[0, 1, 2].map((dot) => (
+                      <span
+                        key={dot}
+                        className={cn(
+                          "size-1.5 animate-bounce rounded-full bg-muted-foreground/60",
+                          dot === 1 && "[animation-delay:150ms]",
+                          dot === 2 && "[animation-delay:300ms]",
+                        )}
+                      />
+                    ))}
+                  </output>
+                </div>
               ) : null}
+            </>
+          ) : (
+            /* ai-05's conversation region with the not-ready state inside
+               it (not a second Empty visual language): transcript area
+               carries the message, footer carries the Jobs link. */
+            <div className="flex h-full min-h-0 flex-col">
+              <MessageScrollerProvider autoScroll defaultScrollPosition="end">
+                <MessageScroller className="min-h-0 flex-1">
+                  <MessageScrollerViewport aria-label="Call transcript">
+                    <MessageScrollerContent className="gap-5 px-5 py-5">
+                      <div className="flex flex-col items-center gap-1.5 px-2 py-8 text-center">
+                        <Mic
+                          className="text-muted-foreground size-5"
+                          aria-hidden
+                        />
+                        <p className="text-sm font-semibold">
+                          Test call not ready
+                        </p>
+                        <p className="text-muted-foreground max-w-sm text-xs leading-relaxed">
+                          The generated voice and language are still
+                          placeholders. Start a call after generation
+                          finishes.
+                        </p>
+                      </div>
+                    </MessageScrollerContent>
+                  </MessageScrollerViewport>
+                  <MessageScrollerButton />
+                </MessageScroller>
+              </MessageScrollerProvider>
+              <div className="flex flex-col gap-3 p-3">
+                <div className="flex justify-center px-1">
+                  <Button
+                    nativeButton={false}
+                    size="sm"
+                    variant="outline"
+                    render={<Link href="/jobs" />}
+                  >
+                    View progress in Jobs
+                  </Button>
+                </div>
+              </div>
             </div>
-          ) : null}
+          )}
         </div>
+
+        {/* ai-05's composer slot, rebuilt as the call control: status +
+            countdown / mic-hint, then start/hang-up LoadingButtons. */}
+        {canTest && open ? (
+          <div className="flex flex-col gap-3 p-3">
+            <div className="flex flex-col items-center gap-1.5 px-2 text-center">
+              {live && remaining <= 30 ? (
+                <>
+                  <p className="text-muted-foreground text-xs leading-relaxed">
+                    {`${remaining}s left on this call`}
+                  </p>
+                  <Progress
+                    value={Math.max(0, (remaining / 30) * 100)}
+                    aria-label="Time left on this call"
+                    className="w-32"
+                  />
+                </>
+              ) : (
+                <p className="text-muted-foreground text-xs">
+                  Uses your microphone · {INLINE_CAP_SECONDS / 60} min max
+                  · Just talk — it speaks first.
+                </p>
+              )}
+            </div>
+            <div className="flex justify-center px-1">
+              {callActive ? (
+                <LoadingButton
+                  pending={callHangingUp}
+                  pendingText="Hanging up…"
+                  icon={<PhoneOff className="size-4.5" aria-hidden />}
+                  className={`h-11 gap-2 rounded-full px-7 text-sm font-semibold ${HANGUP_RED}`}
+                  onClick={handleHangUp}
+                  aria-label="End test call"
+                >
+                  End call
+                </LoadingButton>
+              ) : (
+                <LoadingButton
+                  pending={callStarting}
+                  pendingText="Calling…"
+                  icon={<Phone className="size-4.5" aria-hidden />}
+                  className={`h-11 gap-2 rounded-full px-7 text-sm font-semibold ${CALL_GREEN}`}
+                  onClick={handleStart}
+                  aria-label={`Call ${name}`}
+                >
+                  {status.state === "ended" ? "Call again" : `Call ${name}`}
+                </LoadingButton>
+              )}
+            </div>
+            {hangUpError && callActive ? (
+              <Alert variant="destructive" className="mx-1">
+                <TriangleAlert />
+                <AlertDescription>{hangUpError}</AlertDescription>
+              </Alert>
+            ) : null}
+          </div>
+        ) : null}
       </DialogContent>
     </Dialog>
   );

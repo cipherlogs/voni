@@ -31,22 +31,19 @@ test("UnsavedPill is informational only — Save/Discard stay in the footer", ()
   assert.ok(!pillSource.includes("render="));
 });
 
-test("UnsavedPill composes installed Badge + Button primitives with blocks.so tokens", () => {
+test("UnsavedPill composes installed Badge + the shared StatusDot", () => {
   assert.ok(pillSource.includes("Badge"));
   assert.ok(pillSource.includes('variant="secondary"'));
-  // Dot marker keeps the footer chip's chart-2 token so both read the same.
-  assert.ok(pillSource.includes("bg-chart-2"));
-  assert.ok(pillSource.includes("size-2 rounded-full"));
+  // One status idiom app-wide: the dot comes from StatusDot, not a hand-built span.
+  assert.ok(pillSource.includes('<StatusDot tone="warning"'));
 });
 
-test("UnsavedPill reserves space so the footer never shifts", () => {
-  // The pill sticks below the dashboard header while scrolling a long form
-  // (sticky top-14 = header h-14, z-20 under the header's z-30), and keeps
-  // its row height when clean (invisible, not removed) so the footer never
-  // shifts. Never viewport-fixed (would cover header/bottom nav).
-  assert.ok(pillSource.includes("min-h-7"));
+test("UnsavedPill floats without reserving space", () => {
+  // Zero-height sticky layer: never shifts the column, never viewport-fixed.
+  // Under the phone header (top-14); top-4 on desktop, which has no top bar.
+  assert.ok(pillSource.includes("sticky top-14 z-20 flex h-0"));
+  assert.ok(pillSource.includes("md:top-4"));
   assert.ok(pillSource.includes("invisible"));
-  assert.ok(pillSource.includes("sticky top-14 z-20"));
   assert.doesNotMatch(pillSource, /"(?:[^"]*\s)?fixed(?:\s[^"]*)?"/);
 });
 

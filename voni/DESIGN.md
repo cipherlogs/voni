@@ -157,6 +157,57 @@ label (Collapse/Expand sidebar + ⌘B) with aria-expanded.
 
 ## 4. Patterns (one canonical composition per area)
 
+> **Audit amendment (2026-09-24) — overrides anything below that disagrees.**
+> The whole app was re-audited against blocks.so (screenshots + source).
+> These are the canonical compositions; each lives in one shared component.
+>
+> - **Page header:** `PageHeading` (`wizard/form-layout.tsx`) on every route,
+>   with `meta` (inline status) and `actions`. `BackLink` is a direct child of
+>   the page's `gap-6` column, rendered in the static shell; it is muted and
+>   its chevron ink sits on the title's left edge (`-ml-4`), 12px above the h1.
+> - **Page edge:** every page starts at the shell's content edge. Forms keep
+>   `max-w-3xl` but are never centered (`mx-auto` banned on page columns).
+> - **List table:** `DataTable` (`components/data-table.tsx`, dashboard-01
+>   customers table) — bordered frame on the page background, optional
+>   toolbar (search, **Filter** menu, removable active-filter pill, bulk
+>   actions) and `border-t` footer (count, pagination). Zero rows render an
+>   `Empty` *instead of* a header-only table. `TableHead` is muted `text-xs`;
+>   first/last cells pad `pl-4`/`pr-4`. Never wrap a table in a Card.
+> - **Phones:** tables never scroll sideways. Secondary columns get
+>   `hidden sm:/md:/lg:table-cell` and fold under the primary cell.
+> - **Row actions:** one "…" `RowActions` menu (`components/row-actions.tsx`);
+>   destructive items open their typed-confirm dialog through controlled
+>   state (`DeleteConfirmDialog layout="none"`). Agents/campaigns use
+>   `RecordRowActions`. Job rows keep inline pending-aware buttons.
+> - **Status:** `StatusDot` (dot + label) with `--success/--warning/--info`
+>   tokens — no status badges in tables. Shared maps: `lib/campaigns/status.ts`
+>   (`CAMPAIGN_STATUS`, `queueStatus`, `consentStatus`).
+> - **Filters:** `FilterChips` renders the Filter menu of link options + pill
+>   (URL params stay the source of truth); jobs uses the same look with a
+>   radio group over client state.
+> - **Bulk actions:** `BulkBar` (`components/bulk-bar.tsx`), one copy.
+> - **Forms:** form-layout-02/03 side-label `FormSection`s (their field column
+>   stacks children `gap-6`); controls fill the field column — only paired
+>   short inputs (times, numbers) share a grid row. Two-to-three exclusive
+>   choices are a `RadioGroup`, not a Select. Every Base UI `Select` passes
+>   `items` so a closed trigger shows the label, never the raw value.
+> - **Action row:** `FormActions` — Cancel/Back grouped with the primary at the
+>   bottom right (form-layout-01/02/03); stacks full width with the primary on
+>   top on phones; a destructive action (Delete) sits in `start`, far left.
+>   No Back button where there is nothing to go back to.
+> - **File import:** blocks.so `file-upload-05` — dashed drop zone, rules
+>   line, chosen-file row with status, action appears once a file is chosen.
+> - **Detail pages:** side-label `FormSection`s with `FormSectionSeparator`;
+>   facts are a `dl` grid (dashboard-01 detail idiom), never grids of Cards.
+> - **Dashboard:** outcome and funnel figures are one bordered `StatStrip`
+>   (dashboard-01 KPI row); each cell is its drill-down link.
+> - **Settings landing:** `SettingsCard` (grid-list-02 idiom: icon disc,
+>   title + live status, description). The bento scenes are retired (§10b).
+> - **Tooltips:** `Tip` (`components/tip.tsx`) instead of native `title=` on
+>   controls.
+> - **Not found:** `app/(dashboard)/not-found.tsx` (inside the shell) and
+>   `app/not-found.tsx`; loaders treat a malformed id as not found.
+
 - **Auth** (`/login`, `/signup`): `login-01`/`login-07` idiom around the
   existing Better Auth Google-only logic (session-decision leaves stay).
 - **Landing** (`/`): minimal composed entry — hero + demo + feature grid
@@ -165,45 +216,39 @@ label (Collapse/Expand sidebar + ⌘B) with aria-expanded.
 - **Shell:** sidebar-02/-03 idiom; preserve Suspense resolver, static
   shell, sidebar cookie. `JobPill`/`JobRow` keep durable-job semantics,
   restyled from table-05 rows + stats-11 progress idiom.
-- **Tables** (leads/calls/campaigns + details): table-05 base;
-  pagination from table-05; stage/outcome cells from table-02/03 status
-  badges; **filter chips + bulk-action bar** are `build-in-style`
-  compositions (badge + toggle-group idiom; bar on table-05 selection) —
-  no chip block exists.
+- **Tables:** see the audit amendment above (`DataTable`, `StatusDot`,
+  Filter menu, `BulkBar`, `RowActions`).
 - **Agents:** list from grid-list/table-02 idiom; `agents/new` wizard from
   dialog-11 + onboarding steps + form-layout (draft machine,
   validation, payloads, idempotency, copilot tools byte-identical);
   **tag field** is `build-in-style` (badge + input-group idiom).
-  List-chrome exception (2026-09-23 user pick, ticket 04 rollback): the
-  agents list keeps the plain `overflow-x-auto rounded-lg border`
-  wrapper with no Card chrome, no sticky columns, no visible count —
-  leads/calls keep the Card-table language. Pinned by
-  `agents-list-wizard.test.ts` so future passes don't re-restyle it.
-  Segment `loading.tsx` reads `TableSkeleton` to match the table shape
-  like the inline fallback.
-- **Settings/operator/numbers:** form-layout-02/03; numbers list from
-  table-05 or grid-list-02.
+  List chrome (2026-09-23 user pick): the agents list is the reference
+  for every table — now the shared `DataTable` frame. Sticky cells use
+  `bg-background`. Segment `loading.tsx` reads `TableSkeleton`.
+- **Settings/operator/numbers:** form-layout-02/03 sections; numbers list
+  in `DataTable`; settings landing in `SettingsCard`s.
 - **Form reference: campaign/new density** (amendment 2026-09-14,
   supersedes the same-day `CONTROL` blessing): every form converges on the
-  `campaign-form.tsx` composition — base `h-8` controls from `ui/` with width
-  caps only (no per-form `CONTROL` geometry overrides), `FormCard` >
-  `FormCardSections` bodies (16px mobile / 24px desktop padding), sections as
-  stacked heading + description + fields at `gap-3`, then the page footer in
-  normal document flow outside any filled body. Fields compose with
+  actual Blocks `form-layout-02` / `form-layout-03` composition: base `h-8`
+  controls from `ui/` with width caps only (no per-form `CONTROL` geometry
+  overrides), flat `grid grid-cols-1 gap-10 md:grid-cols-3` side-label
+  sections, `sm:max-w-3xl md:col-span-2` field columns, `Separator my-8`
+  boundaries, responsive stacking, and a final action row in normal document
+  flow. Forms do not gain Card chrome, filled bodies, or body padding. Fields compose with
   `FieldGroup` + `Field` + labels/descriptions + `data-invalid` /
-  `aria-invalid` per Base UI. Width caps only: names/roles `max-w-md`, short
-  selectors `max-w-xs`, time/numeric `max-w-40`, prose full width.
+  `aria-invalid` per Base UI. Controls fill the field column (the audit
+  amendment 2026-09-24 retired per-control `max-w-*` caps: ragged edges).
   `grep -rn 'CONTROL' src/components/ | grep -v '\.test\.'` must be empty.
 - **Transparent footers** (amendment 2026-09-14): page-form footers sit
-  outside filled bodies with a separator and consistent spacing
-  (`Separator` + `pt-4`, secondary-left / primary-right, wrapping on narrow
-  screens). The new-agent footer is no longer wrapped in its own filled
-  card. Dialog footers carry no contrasting fill (`DialogFooter` is
+  after the last flat section with a separator and consistent spacing
+  (`FormActions`: `Separator` + `pt-4`, actions grouped right — see the
+  audit amendment). The new-agent footer is not wrapped in a Card. Dialog footers carry no contrasting fill (`DialogFooter` is
   border-top only; the dialog surface itself stays opaque). Data-card
   footers (dashboard stat cards) are excluded from this rule.
 - **Paired-action order + right alignment** (amendment 2026-09-15):
-  every paired action row follows secondary-left / primary-right on
-  desktop, not just footers — draft gate, alert rows, retry cards,
+  (superseded for form footers by `FormActions`, 2026-09-24: secondary
+  and primary sit together on the right) every paired action row keeps
+  secondary before primary on desktop, not just footers — draft gate, alert rows, retry cards,
   copilot proposal cards, dialog footers. Primary = `variant="default"`
   (or `destructive` for destructive confirms); secondary = `outline`;
   `ghost` is tertiary/borderless and never the boxed pair of a primary.
@@ -448,7 +493,13 @@ loops. One-shot enters are covered by the squash alone.
   filtered-result empties keep the compact `icon` variant. `Empty*` API
   unchanged.
 
-## 10b. Bento amendment (2026-09-16, landing track)
+## 10b. Bento amendment (2026-09-16, landing track) — RETIRED 2026-09-24
+
+> Retired by the audit amendment (§4): the illustrated scenes showed invented
+> people and devices and read as a second product next to the rest of the
+> app. The landing is `SettingsCard`s (grid-list-02 idiom); the
+> `settings-bento/` components, scene keyframes, and provider brand tokens
+> were deleted. The text below is history only.
 
 Faithful-structure bento tiles for the settings landing, proven in the
 throwaway gallery before cutover. Everything below reuses the `--motion-*` /

@@ -1,6 +1,13 @@
 "use client";
 
-import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { z } from "zod";
 import { useRouter, useSearchParams } from "next/navigation";
 import { toast } from "@/components/ui/toast";
@@ -38,25 +45,13 @@ import {
 } from "@/components/agent-wizard/use-wizard-draft";
 import { GenerationRetryCard } from "@/components/generation-retry-card";
 import { jobErrorCopy } from "@/lib/jobs/ui-helpers";
-import {
-  composeBrief,
-  generationIdempotencyKey,
-} from "@/components/agent-wizard/starters";
+import { composeBrief, generationIdempotencyKey } from "@/components/agent-wizard/starters";
 import { TimelineBar } from "@/components/agent-wizard/wizard-timeline";
-import {
-  FormSectionSeparator,
-  PageHeading,
-  WizardFooter,
-} from "@/components/wizard/form-layout";
-import { Progress } from "@/components/ui/progress";
+import { FormSectionSeparator, PageHeading, WizardFooter } from "@/components/wizard/form-layout";
 import type { TagFieldHandle } from "@/components/wizard/tag-field";
 import { BackLink } from "@/components/back-link";
 import { NewAgentSkeleton } from "@/components/page-skeletons";
-import {
-  GenerationStatus,
-  PersonalityStep,
-  PlanStep,
-} from "@/components/agent-wizard/wizard-step-bodies";
+import { GenerationStatus, PersonalityStep, PlanStep } from "@/components/agent-wizard/wizard-step-bodies";
 import { GenerationStatusCard } from "@/components/agent-wizard/generation-notice";
 import { WIZARD_STEPS } from "@/components/agent-wizard/use-wizard-draft";
 import { DEFAULT_WIZARD_VOICE_ID } from "@/lib/agents/wizard";
@@ -685,7 +680,7 @@ function NewAgentInner({
       <>
         <PageHeading
           title="New agent"
-          description="Answer two quick steps and we'll generate a starting mission and rules, editable afterward. Prefer talking? The Voice copilot button in the sidebar fills in every field with you."
+          description="Two quick steps, then we generate a starting mission and rules you can edit. Prefer talking? Voice copilot in the sidebar can fill every field."
         />
         <GenerationStatusCard
           phase={backgrounded ? "backgrounded" : "working"}
@@ -738,46 +733,43 @@ function NewAgentInner({
           submitLabel="Deploy agent"
           onSubmit={save}
           footerSecondary={
-            <span className="flex flex-wrap items-center gap-2">
-              {placeholderId ? (
-                <AgentDeleteButton
-                  id={placeholderId}
-                  name={placeholderName || draft.identity.name}
-                  layout="full"
-                  redirectTo="/agents"
-                  neverProvisioned
-                />
-              ) : null}
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                onClick={() => {
-                  clearWizardDraftCache();
-                  // Dismiss first: the render window before the URL strip
-                  // propagates would otherwise re-seed from the same job.
-                  setDismissedJobId(generation.jobId ?? restoreJobId);
-                  setDraft(null);
-                  // Drop the job pointer too: otherwise the ?job= restore
-                  // effect re-seeds the just-cleared review on next render.
-                  // (PR4 keeps ?job= in the URL after submit, so this path is
-                  // now the default, not just a restore-visit edge.) This is
-                  // a local view-dismiss only — the placeholder row stays and
-                  // is removed via the delete button above.
-                  router.replace("/agents/new");
-                }}
-              >
-                Back to editing
-              </Button>
-            </span>
+            placeholderId ? (
+              <AgentDeleteButton
+                id={placeholderId}
+                name={placeholderName || draft.identity.name}
+                layout="full"
+                redirectTo="/agents"
+                neverProvisioned
+              />
+            ) : null
+          }
+          footerPrimaryActions={
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                clearWizardDraftCache();
+                // Dismiss first: the render window before the URL strip
+                // propagates would otherwise re-seed from the same job.
+                setDismissedJobId(generation.jobId ?? restoreJobId);
+                setDraft(null);
+                // Drop the job pointer too: otherwise the ?job= restore
+                // effect re-seeds the just-cleared review on next render.
+                // (PR4 keeps ?job= in the URL after submit, so this path is
+                // now the default, not just a restore-visit edge.) This is
+                // a local view-dismiss only — the placeholder row stays and
+                // is removed via the delete button above.
+                router.replace("/agents/new");
+              }}
+            >
+              Back to editing
+            </Button>
           }
         />
       </div>
     );
   }
 
-  const stepLabel = WIZARD_STEPS[wiz.step] ?? "";
-  const progressValue = ((wiz.step + 1) / WIZARD_STEPS.length) * 100;
   // Below this point `running` is always false: the minimal-wait early return
   // above owns every submitting/restoring/backgrounded render, so the wizard
   // here is the plain two-step flow (plus terminal retry/error states). The
@@ -786,23 +778,9 @@ function NewAgentInner({
     <>
       <PageHeading
         title="New agent"
-        description="Answer two quick steps and we'll generate a starting mission and rules, editable afterward. Prefer talking? The Voice copilot button in the sidebar fills in every field with you."
+        description="Two quick steps, then we generate a starting mission and rules you can edit. Prefer talking? Voice copilot in the sidebar can fill every field."
       />
 
-        <div className="flex flex-col gap-2">
-          <div className="flex flex-wrap items-baseline justify-between gap-2">
-            <p className="text-sm font-medium">{stepLabel}</p>
-            <p className="text-muted-foreground text-xs">
-              Step {wiz.step + 1} of {WIZARD_STEPS.length}
-            </p>
-          </div>
-          <p className="text-muted-foreground text-sm">
-            {wiz.step === 0
-              ? "Start with the big picture, then break it into directions."
-              : "A name plus a vibe — type it, or tell the voice copilot."}
-          </p>
-          <Progress value={progressValue} aria-label="Creation progress" />
-        </div>
         <TimelineBar current={wiz.step} completed={wiz.completed} onSelect={wiz.setStep} />
         <FormSectionSeparator />
         {wiz.step === 0 ? (
@@ -949,7 +927,7 @@ function flattenResolved(
  */
 export default function NewAgentPage() {
   return (
-    <div data-testid="agents-new-shell" className="mx-auto flex w-full max-w-3xl flex-col gap-6">
+    <div data-testid="agents-new-shell" className="flex w-full max-w-3xl flex-col gap-6">
       <BackLink href="/agents" label="Agents" />
       <Suspense
         fallback={

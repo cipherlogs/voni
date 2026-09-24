@@ -1,11 +1,19 @@
 import type { NextConfig } from "next";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { networkInterfaces } from "node:os";
 
 const nextConfig: NextConfig = {
   turbopack: {
     root: process.cwd(),
   },
+  // Phones on the LAN open the dev server by this machine's IP; without this
+  // Next blocks /_next dev resources, the page never hydrates, and no button
+  // works. Dev-only: production ignores it.
+  allowedDevOrigins: Object.values(networkInterfaces())
+    .flat()
+    .filter((i) => i && i.family === "IPv4" && !i.internal)
+    .map((i) => i!.address),
   // Cache Components adoption (myplan.md Task 7, direct one-branch):
   // Partial Prefetching enabled in Task 12 after a clean flag-off audit
   // (Task 11: zero prefetch props / router.prefetch calls — no legacy

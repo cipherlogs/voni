@@ -14,6 +14,7 @@
 
 "use client";
 
+import { Tip } from "@/components/tip";
 import { useEffect, useState } from "react";
 import {
   ChevronDown,
@@ -221,53 +222,57 @@ export function CopilotShell() {
           <span className="text-muted-foreground font-mono text-xs tabular-nums" aria-live="off">
             {status === "starting" ? "…" : formatElapsed(elapsed)}
           </span>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            className="rounded-full"
-            data-copilot-effect="view" onClick={toggleMicMute}
-            aria-pressed={micMuted}
-            aria-label={micMuted ? "Unmute your mic" : "Mute your mic"}
-            title={micMuted ? "Unmute mic" : "Mute mic"}
-          >
-            {micMuted ? <MicOff aria-hidden /> : <Mic aria-hidden />}
-          </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            className="rounded-full"
-            data-copilot-effect="view" onClick={toggleSpeakerMute}
-            aria-pressed={speakerMuted}
-            aria-label={speakerMuted ? "Unmute copilot voice" : "Mute copilot voice"}
-            title={speakerMuted ? "Unmute speaker" : "Mute speaker"}
-          >
-            {speakerMuted ? <VolumeX aria-hidden /> : <Volume2 aria-hidden />}
-          </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            className="rounded-full"
-            data-copilot-effect="view" onClick={() => setExpanded((open) => !open)}
-            aria-expanded={showPanel}
-            aria-label={showPanel ? "Collapse voice panel" : "Expand voice panel"}
-            title={showPanel ? "Collapse panel" : "Expand panel"}
-          >
-            {showPanel ? <ChevronDown aria-hidden /> : <ChevronUp aria-hidden />}
-          </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            className="text-destructive hover:text-destructive rounded-full"
-            data-copilot-effect="view" onClick={stop}
-            aria-label="End voice call"
-            title="End call"
-          >
-            <PhoneOff aria-hidden />
-          </Button>
+          <Tip label={micMuted ? "Unmute mic" : "Mute mic"}>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              className="rounded-full"
+              data-copilot-effect="view" onClick={toggleMicMute}
+              aria-pressed={micMuted}
+              aria-label={micMuted ? "Unmute your mic" : "Mute your mic"}
+            >
+              {micMuted ? <MicOff aria-hidden /> : <Mic aria-hidden />}
+            </Button>
+          </Tip>
+          <Tip label={speakerMuted ? "Unmute speaker" : "Mute speaker"}>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              className="rounded-full"
+              data-copilot-effect="view" onClick={toggleSpeakerMute}
+              aria-pressed={speakerMuted}
+              aria-label={speakerMuted ? "Unmute copilot voice" : "Mute copilot voice"}
+            >
+              {speakerMuted ? <VolumeX aria-hidden /> : <Volume2 aria-hidden />}
+            </Button>
+          </Tip>
+          <Tip label={showPanel ? "Collapse panel" : "Expand panel"}>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              className="rounded-full"
+              data-copilot-effect="view" onClick={() => setExpanded((open) => !open)}
+              aria-expanded={showPanel}
+              aria-label={showPanel ? "Collapse voice panel" : "Expand voice panel"}
+            >
+              {showPanel ? <ChevronDown aria-hidden /> : <ChevronUp aria-hidden />}
+            </Button>
+          </Tip>
+          <Tip label={"End call"}>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              className="text-destructive hover:text-destructive rounded-full"
+              data-copilot-effect="view" onClick={stop}
+              aria-label="End voice call"
+            >
+              <PhoneOff aria-hidden />
+            </Button>
+          </Tip>
         </div>
       ) : null}
     </div>

@@ -46,7 +46,7 @@ export function PageHeaderSkeleton({ withAction = true }: { withAction?: boolean
   );
 }
 
-/** Matches card-list shapes (e.g. campaigns): a stack of cards, each one row. */
+/** Matches the few remaining card-list shapes: a stack of cards, each one row. */
 export function CardListSkeleton({ rows = 4 }: { rows?: number }) {
   return (
     <div className="flex flex-col gap-3">
@@ -124,6 +124,142 @@ export function DetailSkeleton() {
           <Skeleton className="h-4 w-full max-w-md" />
         </CardContent>
       </Card>
+    </div>
+  );
+}
+
+/**
+ * One loading section in the exact form-layout-02/03 shape: flat side label,
+ * responsive field column, and no Card body. The final render decides how
+ * many rows its section needs.
+ */
+export function FlatFormSectionSkeleton({ rows = 3 }: { rows?: number }) {
+  return (
+    <div className="grid grid-cols-1 gap-10 md:grid-cols-3">
+      <div className="flex flex-col gap-2">
+        <Skeleton className="h-5 w-36" />
+        <Skeleton className="h-4 w-full max-w-xs" />
+      </div>
+      <div className="flex flex-col gap-4 sm:max-w-3xl md:col-span-2">
+        {Array.from({ length: rows }, (_, index) => (
+          <div className="flex flex-col gap-2" key={index}>
+            <Skeleton className={`h-4 ${CARD_META_WIDTHS[index % CARD_META_WIDTHS.length]} ${SHIMMER_DELAYS[index % SHIMMER_DELAYS.length]}`} />
+            <Skeleton className={`h-8 w-full max-w-md ${SHIMMER_DELAYS[(index + 1) % SHIMMER_DELAYS.length]}`} />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** A complete flat form with ruled sections and the shared wrapping action row. */
+export function FlatFormSkeleton({ sections = 3 }: { sections?: number }) {
+  return (
+    <div>
+      {Array.from({ length: sections }, (_, index) => (
+        <div key={index}>
+          {index > 0 ? <Separator className="my-8" /> : null}
+          <FlatFormSectionSkeleton rows={index === 0 ? 2 : 3} />
+        </div>
+      ))}
+      <Separator className="my-8" />
+      <div className="flex flex-col-reverse flex-wrap gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <Skeleton className="h-8 w-full sm:w-24" />
+        <Skeleton className="h-8 w-full sm:w-32" />
+      </div>
+    </div>
+  );
+}
+
+/** Mirrors the agent editor: heading, deployment meters, then four flat sections. */
+export function AgentDetailSkeleton() {
+  return (
+    <div className="flex w-full max-w-3xl flex-col gap-6">
+      <div className="flex flex-col gap-2">
+        <Skeleton className="h-7 w-48" />
+        <Skeleton className="h-4 w-full max-w-md" />
+      </div>
+      <div className="flex flex-col gap-3">
+        <Skeleton className="h-5 w-32" />
+        <div className="grid grid-cols-3 gap-2">
+          {Array.from({ length: 3 }, (_, index) => (
+            <div className="flex flex-col gap-2" key={index}>
+              <Skeleton className={`h-1.5 w-full ${SHIMMER_DELAYS[index]}`} />
+              <Skeleton className={`h-3 w-full ${SHIMMER_DELAYS[(index + 1) % SHIMMER_DELAYS.length]}`} />
+            </div>
+          ))}
+        </div>
+      </div>
+      <FlatFormSkeleton sections={4} />
+    </div>
+  );
+}
+
+/** Mirrors campaign/new: its page heading plus the three flat form sections. */
+export function CampaignFormPageSkeleton({ withHeader = true }: { withHeader?: boolean }) {
+  return (
+    <div className="flex w-full max-w-3xl flex-col gap-6">
+      {withHeader ? <PageHeaderSkeleton withAction={false} /> : null}
+      <FlatFormSkeleton sections={3} />
+    </div>
+  );
+}
+
+/** Mirrors campaign detail: heading, dialer/import sections, and queue table. */
+export function CampaignDetailSkeleton() {
+  return (
+    <div className="flex flex-col gap-6">
+      <div className="flex flex-col gap-2">
+        <Skeleton className="h-7 w-56" />
+        <Skeleton className="h-4 w-full max-w-lg" />
+      </div>
+      <div className="flex flex-col gap-3">
+        <Skeleton className="h-5 w-24" />
+        <Skeleton className="h-4 w-full max-w-lg" />
+        <Skeleton className="h-8 w-40" />
+      </div>
+      <Separator />
+      <div className="flex flex-col gap-3">
+        <Skeleton className="h-5 w-32" />
+        <Skeleton className="h-28 w-full max-w-3xl" />
+      </div>
+      <Separator />
+      <div className="flex flex-col gap-3">
+        <Skeleton className="h-5 w-28" />
+        <TableSkeleton rows={5} columns={7} />
+      </div>
+    </div>
+  );
+}
+
+/** Mirrors lead detail: six summary Tiles followed by record tables/cards. */
+export function LeadDetailSkeleton() {
+  return (
+    <div className="flex flex-col gap-6">
+      <PageHeaderSkeleton withAction={false} />
+      <div className="grid gap-4 md:grid-cols-3">
+        {Array.from({ length: 6 }, (_, index) => (
+          <Card key={index}>
+            <CardContent className="flex flex-col gap-3 py-6">
+              <Skeleton className={`h-4 w-24 ${SHIMMER_DELAYS[index % SHIMMER_DELAYS.length]}`} />
+              <Skeleton className={`h-6 w-32 ${SHIMMER_DELAYS[(index + 1) % SHIMMER_DELAYS.length]}`} />
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+      <TableSkeleton rows={4} columns={5} />
+      <TableSkeleton rows={4} columns={4} />
+      <CardListSkeleton rows={1} />
+    </div>
+  );
+}
+
+/** Mirrors call detail: the heading and four stacked information cards. */
+export function CallDetailSkeleton() {
+  return (
+    <div className="flex flex-col gap-6">
+      <PageHeaderSkeleton withAction={false} />
+      <CardListSkeleton rows={4} />
     </div>
   );
 }
@@ -323,8 +459,8 @@ export function SettingsAppearanceSkeleton() {
  * Mirrors the settings landing: heading pair plus one tile frame per
  * registry entry (order + hero spans from the same source as the landing,
  * so a new tile can never stream the wrong grid). Each frame echoes the
- * production tile anatomy — scene slice, bottom-anchored title/description,
- * live badge nub — without interactivity.
+ * production card anatomy — icon disc, title, one-line description —
+ * without interactivity.
  */
 export function SettingsLandingSkeleton() {
   return (
@@ -333,16 +469,13 @@ export function SettingsLandingSkeleton() {
         <Skeleton className="h-8 w-40" />
         <Skeleton className="h-4 w-72" />
       </div>
-      <div className="bento-grid-rows grid w-full grid-cols-1 gap-4 lg:grid-cols-3">
+      <div className="grid w-full grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {SETTINGS_TILES.map((tile) => (
-          <div key={tile.value} className={tile.span === "hero" ? "lg:col-span-2" : undefined}>
-            <div className="relative flex h-full flex-col justify-between overflow-hidden rounded-xl bg-card ring-1 ring-foreground/10">
-              <Skeleton className="h-72 w-full rounded-none" />
-              <div className="relative flex flex-col gap-2 p-6">
-                <Skeleton className="h-5 w-32" />
-                <Skeleton className="h-4 w-full max-w-md" />
-              </div>
-              <Skeleton className="absolute top-4 right-4 h-5 w-16" />
+          <div key={tile.value} className="flex items-center gap-4 rounded-xl border p-4">
+            <Skeleton className="size-10 shrink-0 rounded-full" />
+            <div className="flex flex-1 flex-col gap-2">
+              <Skeleton className="h-4 w-28" />
+              <Skeleton className="h-4 w-full max-w-48" />
             </div>
           </div>
         ))}
@@ -385,28 +518,7 @@ export function NewAgentSkeleton() {
         <Skeleton className="h-4 w-full max-w-md" />
       </div>
       <Skeleton className="h-2 w-full" />
-      <Card>
-        <CardContent className="flex flex-col gap-6 py-6">
-          <div className="flex flex-col gap-2">
-            <Skeleton className="h-5 w-48" />
-            <Skeleton className="h-4 w-full max-w-sm" />
-          </div>
-          <div className="flex flex-col gap-2">
-            <Skeleton className="h-4 w-24" />
-            <Skeleton className="h-4 w-full max-w-xs" />
-            <Skeleton className="h-16 w-full" />
-          </div>
-          <div className="flex flex-col gap-2">
-            <Skeleton className="h-4 w-24" />
-            <Skeleton className="h-4 w-full max-w-xs" />
-            <Skeleton className="h-16 w-full" />
-          </div>
-        </CardContent>
-      </Card>
-      <div className="flex items-center justify-between gap-3 border-t pt-4">
-        <Skeleton className="h-9 w-20" />
-        <Skeleton className="h-9 w-32" />
-      </div>
+      <FlatFormSkeleton sections={2} />
     </div>
   );
 }

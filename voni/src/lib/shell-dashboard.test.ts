@@ -138,26 +138,11 @@ test("dashboard outcome Tiles speak the editorial Tile grammar with honest drill
   assert.match(actions, /liveAppointmentExists/, "booked predicate stays");
   assert.match(actions, /latestBlockersNonEmpty/, "handoff predicate stays");
 
-  // Editorial Tile grammar (shared with the landing Tile grid): generous
-  // grid rhythm that starts single-column on narrow screens, flat card
-  // tokens with ring hairlines (via the Card primitive), generous card
-  // padding, hover breath on the shared standard, full-height Tiles with
-  // bottom-anchored drill-down footers, tight-tracking tabular numbers,
-  // token-only text with no primary-color fills.
-  assert.match(
-    page,
-    /grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-4/,
-    "outcome grid starts calm on narrow with generous rhythm",
-  );
-  assert.match(page, /h-full/, "Tiles stretch to equal height");
-  assert.match(page, /p-8/, "Tiles keep generous card padding");
-  assert.match(
-    page,
-    /duration-\[var\(--motion-standard\)\]/,
-    "Tiles breathe on the shared standard",
-  );
-  assert.match(page, /hover:shadow-md/, "Tiles keep the quiet hover breath");
-  assert.match(page, /mt-auto/, "drill-down footers anchor to the bottom");
+  // One KPI strip (blocks.so dashboard-01): a single bordered grid of linked
+  // figures, one column on narrow screens, shared by outcomes and funnel.
+  assert.match(page, /function StatStrip/, "outcomes and funnel share one strip");
+  assert.match(page, /<StatStrip stats=\{cards\} columns="lg:grid-cols-4" \/>/, "four outcome figures");
+  assert.match(page, /grid grid-cols-1 overflow-hidden rounded-lg border sm:grid-cols-2/, "strip starts single-column");
   assert.match(page, /tracking-tight/, "display numbers stay tight-tracked");
   assert.match(page, /tabular-nums/, "display numbers stay tabular");
   assert.match(page, /text-muted-foreground/, "labels stay on the muted token");
@@ -196,11 +181,6 @@ test("dashboard outcome Tiles speak the editorial Tile grammar with honest drill
   assert.match(dashboardError, /<RouteError/, "segment error renders the card");
   assert.match(dashboardError, /retry/, "segment error keeps retry");
 
-  const card = readRepo("components/ui/card.tsx");
-  assert.match(card, /bg-card/, "Tile surface stays the card token");
-  assert.match(card, /ring-1/, "Tile hairline stays a ring");
-  assert.match(card, /ring-foreground\/10/, "hairline stays on the foreground token");
-  assert.match(card, /rounded-xl/, "Tiles stay on the standard radius");
 });
 
 test("first-run setup stays text-focused with shared step states and retargeted indent", () => {
@@ -244,17 +224,12 @@ test("empty campaigns surface a next action and funnel links match their lists",
   assert.match(page, /has no leads yet/, "empty state states the truth");
   assert.match(page, /Import leads/, "empty state links the import");
   assert.match(page, /#import/, "import link lands on the import section");
-  // One Tile language: the next-action panel shares the generous card
-  // padding with the outcome and funnel grids, not a second density.
-  assert.match(
-    page,
-    /<CardHeader className="p-8 pb-2">/,
-    "next-action header shares the generous padding",
-  );
+  // The next action is a notice, so it uses the Alert primitive.
+  assert.match(page, /<AlertTitle>Next action<\/AlertTitle>/, "next action is an Alert");
   // Funnel: collapsed secondary view where each stage links to its
   // filtered leads list on the DB's own casing, named for assistive tech.
   assert.match(page, /Pipeline funnel by stage/, "funnel stays collapsed");
-  assert.match(page, /<details/, "funnel stays a disclosure");
+  assert.match(page, /<DisclosureTrigger>Pipeline funnel by stage/, "funnel stays a disclosure (shared Collapsible trigger)");
   assert.match(
     page,
     /encodeURIComponent\(stage\.stage\)/,
@@ -266,11 +241,6 @@ test("empty campaigns surface a next action and funnel links match their lists",
     /View \${pipelineStateLabel\(stage\.stage\)} leads/,
     "funnel links name their stage",
   );
-  // Funnel cards share the outcome Tile grammar, not a second language.
-  assert.match(
-    page,
-    /grid grid-cols-1 gap-6 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5/,
-    "funnel grid shares the generous rhythm",
-  );
-  assert.match(page, /CardFooter/, "funnel cards share the stat shape");
+  // The funnel reuses the outcome strip, not a second language.
+  assert.match(page, /columns="md:grid-cols-3 lg:grid-cols-5"/, "funnel is a five-up strip");
 });

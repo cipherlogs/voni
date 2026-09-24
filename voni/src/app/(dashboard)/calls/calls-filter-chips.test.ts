@@ -39,14 +39,11 @@ test("calls chips resolve inside a Suspense leaf above the Card, never the shell
 });
 
 test("Connected filter names its grain (calls, not leads)", () => {
-  assert.ok(
-    pageSource.includes("Connected counts calls, not leads"),
-    "chip row carries the one-line grain hint",
-  );
+  assert.ok(pageSource.includes('label: "Connected calls"'), "grain lives in the filter label");
 });
 
-test("existing Badge+Clear row and Empty states stay unchanged", () => {
-  assert.ok(pageSource.includes("<Badge>{callOutcomeLabel(outcome)}</Badge>"), "active-filter Badge stays");
+test("active filter shows once (toolbar pill) and Empty states stay", () => {
+  assert.ok(!pageSource.includes("<Badge>{callOutcomeLabel(outcome)}</Badge>"), "no second filter badge");
   assert.ok(pageSource.includes("Clear the filter"), "empty-state clear action stays");
   assert.ok(pageSource.includes("No calls match this filter"), "filtered empty title stays");
 });

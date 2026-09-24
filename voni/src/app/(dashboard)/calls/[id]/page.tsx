@@ -1,18 +1,22 @@
 import { Suspense } from "react";
+import { DisclosureTrigger } from "@/components/disclosure";
+import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible";
+import { StatusDot } from "@/components/status-dot";
+import { consentStatus, goalLabel } from "@/lib/campaigns/status";
+import { FormSection, FormSectionHeading, FormSectionSeparator } from "@/components/wizard/form-layout";
+import { PageHeading } from "@/components/wizard/form-layout";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { and, asc, desc, eq } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+} from "drizzle-orm";
 import { Phone, Wrench } from "lucide-react";
 import { BackLink } from "@/components/back-link";
 import { RouteBrief } from "@/components/copilot/route-brief";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 import {
   Empty,
   EmptyDescription,
@@ -20,13 +24,9 @@ import {
   EmptyMedia,
   EmptyTitle,
 } from "@/components/ui/empty";
-import { Separator } from "@/components/ui/separator";
-import { DetailSkeleton } from "@/components/page-skeletons";
+import { CallDetailSkeleton } from "@/components/page-skeletons";
 import type { ReactNode } from "react";
-import {
-  callDuration,
-  relativeCallTime,
-} from "@/lib/calls/format";
+import { callDuration, relativeCallTime } from "@/lib/calls/format";
 import { callDetail } from "@/lib/copilot/detail-data";
 import { db } from "@/lib/db";
 import {
@@ -49,29 +49,6 @@ function formatWhen(value: Date | null) {
   }).format(value);
 }
 
-/** Human consent label in the shared list badge shape. */
-function ConsentBadge({ status }: { status: string }) {
-  const label =
-    status === "granted"
-      ? "Consented"
-      : status === "revoked"
-        ? "Opted out"
-        : "Unknown";
-  return (
-    <Badge
-      variant={
-        status === "granted"
-          ? "default"
-          : status === "revoked"
-            ? "destructive"
-            : "secondary"
-      }
-    >
-      {label}
-    </Badge>
-  );
-}
-
 /**
  * House link treatment (same string as the campaign page and the
  * list rows), hoisted so no edited line exceeds the 80-col cap.
@@ -88,12 +65,10 @@ function Fact({
   children: ReactNode;
 }) {
   return (
-    <div className="flex items-baseline justify-between gap-4 py-2">
-      <dt className="text-muted-foreground shrink-0 text-sm">
-        {label}
-      </dt>
-      <dd className="min-w-0 text-right text-sm">{children}</dd>
-    </div>
+    <>
+      <dt className="text-muted-foreground">{label}</dt>
+      <dd className="min-w-0">{children}</dd>
+    </>
   );
 }
 
@@ -199,21 +174,18 @@ async function CallDetail({
   return (
     <>
       <RouteBrief route={`/calls/${id}`} brief={brief} />
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">
-          Call with {leadLabel}
-        </h1>
-        <p className="text-muted-foreground text-sm">{sub}</p>
-      </div>
+      <PageHeading title={`Call with ${leadLabel}`} description={sub} />
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">
-            Call details
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <dl className="flex flex-col">
+      <FormSection
+        aria-labelledby="call-details-heading"
+        heading={
+          <FormSectionHeading
+            id="call-details-heading"
+            title="Call details"
+          />
+        }
+      >
+          <dl className="grid grid-cols-[7rem_1fr] gap-x-4 gap-y-3 text-sm sm:grid-cols-[9rem_1fr]">
             <Fact label="Lead">
               <Link
                 href={`/leads/${link.leadId}`}
@@ -223,29 +195,17 @@ async function CallDetail({
                 {leadLabel}
               </Link>
             </Fact>
-            <Separator />
             <Fact label="Phone">
               <span className="font-mono text-xs">
                 {call.phone}
               </span>
             </Fact>
-            <Separator />
             <Fact label="Direction">
-              <Badge
-                variant={
-                  call.direction === "inbound"
-                    ? "default"
-                    : "secondary"
-                }
-              >
-                {directionLabel}
-              </Badge>
+              {directionLabel}
             </Fact>
-            <Separator />
             <Fact label="Started">
               {formatWhen(call.startedAt)}
             </Fact>
-            <Separator />
             <Fact label="Ended">
               {call.endedAt
                 ? formatWhen(call.endedAt)
@@ -253,20 +213,22 @@ async function CallDetail({
                   ? "Ongoing"
                   : "—"}
             </Fact>
-            <Separator />
             <Fact label="Duration">{duration}</Fact>
           </dl>
-        </CardContent>
-      </Card>
+      </FormSection>
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">
-            Call setup
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <dl className="flex flex-col">
+      <FormSectionSeparator className="my-2" />
+
+      <FormSection
+        aria-labelledby="call-setup-heading"
+        heading={
+          <FormSectionHeading
+            id="call-setup-heading"
+            title="Call setup"
+          />
+        }
+      >
+          <dl className="grid grid-cols-[7rem_1fr] gap-x-4 gap-y-3 text-sm sm:grid-cols-[9rem_1fr]">
             <Fact label="Campaign">
               {link.campaignId ? (
                 <Link
@@ -280,7 +242,6 @@ async function CallDetail({
                 "—"
               )}
             </Fact>
-            <Separator />
             <Fact label="Agent">
               {link.agentId ? (
                 <Link
@@ -294,32 +255,29 @@ async function CallDetail({
                 "—"
               )}
             </Fact>
-            <Separator />
             <Fact label="Consent">
-              <ConsentBadge status={link.consent} />
+              <StatusDot tone={consentStatus(link.consent).tone}>
+                {consentStatus(link.consent).label}
+              </StatusDot>
             </Fact>
-            <Separator />
             <Fact label="Pipeline">
-              <Badge variant="secondary">
-                {pipelineStateLabel(link.pipeline)}
-              </Badge>
+              {pipelineStateLabel(link.pipeline)}
             </Fact>
           </dl>
-        </CardContent>
-      </Card>
+      </FormSection>
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">
-            Conversation
-            {spoken.length >= 100 ? (
-              <span className="text-muted-foreground ml-2 align-middle text-xs font-normal">
-                Showing the first 100 turns
-              </span>
-            ) : null}
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
+      <FormSectionSeparator className="my-2" />
+
+      <FormSection
+        aria-labelledby="call-conversation-heading"
+        heading={
+          <FormSectionHeading
+            id="call-conversation-heading"
+            title="Conversation"
+            description={spoken.length >= 100 ? "Showing the first 100 turns." : undefined}
+          />
+        }
+      >
           {spoken.length === 0 ? (
             <Empty>
               <EmptyHeader>
@@ -358,21 +316,20 @@ async function CallDetail({
               ))}
             </ul>
           )}
-        </CardContent>
-      </Card>
+      </FormSection>
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">
-            Actions taken during this call
-            {tools.length >= 50 ? (
-              <span className="text-muted-foreground ml-2 align-middle text-xs font-normal">
-                Showing the first 50
-              </span>
-            ) : null}
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
+      <FormSectionSeparator className="my-2" />
+
+      <FormSection
+        aria-labelledby="call-actions-heading"
+        heading={
+          <FormSectionHeading
+            id="call-actions-heading"
+            title="Actions taken"
+            description={tools.length >= 50 ? "Showing the first 50." : "Tools the agent used during this call."}
+          />
+        }
+      >
           {tools.length === 0 ? (
             <Empty>
               <EmptyHeader>
@@ -414,10 +371,11 @@ async function CallDetail({
                   </div>
                   {tool.arguments != null ||
                   tool.result != null ? (
-                    <details className="group">
-                      <summary className="text-muted-foreground w-fit cursor-pointer rounded-sm text-xs outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring">
+                    <Collapsible>
+                      <DisclosureTrigger className="text-xs">
                         Arguments and result
-                      </summary>
+                      </DisclosureTrigger>
+                      <CollapsibleContent>
                       <pre className="bg-muted/50 mt-1 max-h-48 overflow-auto rounded-lg p-2 font-mono text-xs leading-relaxed whitespace-pre-wrap">
                         {JSON.stringify(
                           {
@@ -428,78 +386,46 @@ async function CallDetail({
                           2,
                         )}
                       </pre>
-                    </details>
+                      </CollapsibleContent>
+                    </Collapsible>
                   ) : null}
                 </li>
               ))}
             </ul>
           )}
-        </CardContent>
-      </Card>
+      </FormSection>
 
       {outcome ? (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">
-              Outcome
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <dl className="flex flex-col">
-              <Fact label="Goal">{outcome.goalStatus}</Fact>
-              <Separator />
+        <>
+        <FormSectionSeparator className="my-2" />
+        <FormSection
+        aria-labelledby="call-outcome-heading"
+        heading={
+          <FormSectionHeading
+            id="call-outcome-heading"
+            title="Outcome"
+          />
+        }
+      >
+            <dl className="grid grid-cols-[7rem_1fr] gap-x-4 gap-y-3 text-sm sm:grid-cols-[9rem_1fr]">
+              <Fact label="Goal">{goalLabel(outcome.goalStatus)}</Fact>
               <Fact label="Intent">
                 {outcome.intent ?? "Not recorded"}
               </Fact>
-              <Separator />
               <Fact label="Blockers">
                 {Array.isArray(outcome.blockers)
                   ? outcome.blockers.join(", ") ||
                     "None recorded"
                   : "Not recorded"}
               </Fact>
-              <Separator />
               <Fact label="Next action">
                 {outcome.nextAction ?? "Not recorded"}
               </Fact>
             </dl>
-          </CardContent>
-        </Card>
+        </FormSection>
+        </>
       ) : null}
 
-      <nav
-        aria-label="Related records"
-        className="flex flex-wrap gap-2"
-      >
-        <Button
-          nativeButton={false}
-          render={<Link href={`/leads/${link.leadId}`} />}
-          variant="outline"
-          size="sm"
-        >
-          View lead
-        </Button>
-        {link.campaignId ? (
-          <Button
-            nativeButton={false}
-            render={
-              <Link href={`/campaigns/${link.campaignId}`} />
-            }
-            variant="outline"
-            size="sm"
-          >
-            View campaign
-          </Button>
-        ) : null}
-        <Button
-          nativeButton={false}
-          render={<Link href="/jobs" />}
-          variant="outline"
-          size="sm"
-        >
-          Job center
-        </Button>
-      </nav>
     </>
   );
 }
@@ -515,7 +441,7 @@ export default function CallDetailPage({
       <Suspense
         fallback={
           <div role="status" aria-label="Loading call">
-            <DetailSkeleton />
+            <CallDetailSkeleton />
           </div>
         }
       >

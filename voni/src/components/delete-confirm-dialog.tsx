@@ -21,7 +21,7 @@ import {
 import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 
-export type DeleteDialogLayout = "icon" | "full";
+export type DeleteDialogLayout = "icon" | "full" | "none";
 
 /** Structural result both delete actions already return. */
 export type DeleteActionResult =
@@ -51,10 +51,15 @@ export function DeleteConfirmDialog({
   fieldLabel,
   confirmLabel,
   confirmAction,
+  open: controlledOpen,
+  onOpenChange,
 }: {
   id: string;
   name: string;
-  /** "icon" for list rows, "full" for the detail header/footer. */
+  /**
+   * "icon" for a bare row button, "full" for a labelled button, "none" when
+   * something else (a row "…" menu) opens it through `open`/`onOpenChange`.
+   */
   layout?: DeleteDialogLayout;
   /** Where to go after a successful delete (detail pages pass their list). */
   redirectTo?: string;
@@ -76,9 +81,17 @@ export function DeleteConfirmDialog({
   confirmLabel: string;
   /** Server-side delete; ownership is enforced there, not by the gate. */
   confirmAction: (id: string) => Promise<DeleteActionResult>;
+  /** Controlled open state, for `layout="none"`. */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }) {
   const router = useRouter();
-  const [open, setOpen] = useState(false);
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
+  const open = controlledOpen ?? uncontrolledOpen;
+  const setOpen = (next: boolean) => {
+    setUncontrolledOpen(next);
+    onOpenChange?.(next);
+  };
   const [pending, startDelete] = useTransition();
   const [error, setError] = useState<string | null>(null);
   const [confirmation, setConfirmation] = useState("");
@@ -115,24 +128,26 @@ export function DeleteConfirmDialog({
         }
       }}
     >
-      <DialogTrigger
-        render={
-          layout === "icon" ? (
-            <Button variant="ghost" size="icon" aria-label={`Delete ${name}`} />
+      {layout === "none" ? null : (
+        <DialogTrigger
+          render={
+            layout === "icon" ? (
+              <Button variant="ghost" size="icon" aria-label={`Delete ${name}`} />
+            ) : (
+              <Button variant="destructive" className={className} />
+            )
+          }
+        >
+          {layout === "icon" ? (
+            <Trash2 />
           ) : (
-            <Button variant="destructive" className={className} />
-          )
-        }
-      >
-        {layout === "icon" ? (
-          <Trash2 />
-        ) : (
-          <>
-            {showIcon ? <Trash2 data-icon="inline-start" /> : null}
-            {triggerLabel}
-          </>
-        )}
-      </DialogTrigger>
+            <>
+              {showIcon ? <Trash2 data-icon="inline-start" /> : null}
+              {triggerLabel}
+            </>
+          )}
+        </DialogTrigger>
+      )}
       <DialogContent>
         <DialogHeader>
           <DestructiveDialogIcon />

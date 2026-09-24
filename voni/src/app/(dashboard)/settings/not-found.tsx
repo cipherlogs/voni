@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { PageHeading } from "@/components/wizard/form-layout";
 import { Button } from "@/components/ui/button";
 
 /**
@@ -9,12 +10,7 @@ import { Button } from "@/components/ui/button";
 export default function SettingsNotFound() {
   return (
     <div data-testid="settings-not-found" className="flex flex-col gap-4">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Unknown settings section</h1>
-        <p className="text-muted-foreground text-sm">
-          That settings page does not exist. Pick a section from the landing instead.
-        </p>
-      </div>
+      <PageHeading title="Unknown settings section" description="That settings page does not exist. Pick a section from the landing instead." />
       <Button
         nativeButton={false}
         render={<Link href="/settings" />}

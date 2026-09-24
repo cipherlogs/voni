@@ -1,13 +1,29 @@
 "use client";
 
 import Link from "next/link";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 import { Button } from "@/components/ui/button";
 import { LoadingButton } from "@/components/loading-button";
-import { Card, CardContent } from "@/components/ui/card";
+import {
+  Empty,
+  EmptyContent,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from "@/components/ui/empty";
 import { Input } from "@/components/ui/input";
-import { Field, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
+import {
+  Field,
+  FieldDescription,
+  FieldError,
+  FieldGroup,
+  FieldLabel,
+  FieldLegend,
+  FieldSet,
+} from "@/components/ui/field";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
   Select,
@@ -17,10 +33,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Separator } from "@/components/ui/separator";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import { FormCard, FormSection, FormSectionHeading, FormSectionSeparator } from "@/components/wizard/form-layout";
-import { TriangleAlert } from "lucide-react";
+import { FormCard, FormSection, FormSectionHeading, FormSectionSeparator, FormActions } from "@/components/wizard/form-layout";
+import { Bot, TriangleAlert } from "lucide-react";
 import {
   DEFAULT_CALLING_WINDOW,
   DEFAULT_CONSENT_POLICY,
@@ -169,18 +184,23 @@ export function CampaignForm({
 
   if (agents.length === 0) {
     return (
-      <Card>
-        <CardContent className="flex flex-col items-center gap-3 py-16 text-center">
-          <p className="font-medium">You need an agent first</p>
-          <p className="text-muted-foreground max-w-sm text-sm">
+      <Empty className="border">
+        <EmptyHeader>
+          <EmptyMedia variant="icon">
+            <Bot />
+          </EmptyMedia>
+          <EmptyTitle>You need an agent first</EmptyTitle>
+          <EmptyDescription>
             A campaign is the work you give an agent. Create one, publish it, then
             come back and point a campaign at it.
-          </p>
+          </EmptyDescription>
+        </EmptyHeader>
+        <EmptyContent>
           <Button nativeButton={false} render={<Link href="/agents/new" />}>
             Create an agent
           </Button>
-        </CardContent>
-      </Card>
+        </EmptyContent>
+      </Empty>
     );
   }
 
@@ -203,7 +223,6 @@ export function CampaignForm({
                 <FieldLabel htmlFor="campaign-name">Campaign name</FieldLabel>
                 <Input
                   id="campaign-name"
-                  className="max-w-md"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   placeholder="Marina 2BR enquiries — September"
@@ -211,8 +230,17 @@ export function CampaignForm({
               </Field>
               <Field>
                 <FieldLabel htmlFor="campaign-agent">Agent</FieldLabel>
-                <Select value={agentId} onValueChange={(v) => setAgentId(v ?? "")}>
-                  <SelectTrigger id="campaign-agent" aria-label="Agent" className="w-full max-w-md">
+                <Select
+                  items={Object.fromEntries(
+                    agents.map((agent) => [
+                      agent.id,
+                      `${agent.name}${agent.deployed ? "" : " (draft)"}`,
+                    ]),
+                  )}
+                  value={agentId}
+                  onValueChange={(v) => setAgentId(v ?? "")}
+                >
+                  <SelectTrigger id="campaign-agent" aria-label="Agent" className="w-full">
                     <SelectValue placeholder="Select an agent" />
                   </SelectTrigger>
                   <SelectContent>
@@ -254,7 +282,6 @@ export function CampaignForm({
                 <Input
                   id="window-start"
                   type="time"
-                  className="max-w-40"
                   value={start}
                   onChange={(e) => setStart(e.target.value)}
                 />
@@ -264,7 +291,6 @@ export function CampaignForm({
                 <Input
                   id="window-end"
                   type="time"
-                  className="max-w-40"
                   value={end}
                   onChange={(e) => setEnd(e.target.value)}
                 />
@@ -272,7 +298,7 @@ export function CampaignForm({
               <Field>
                 <FieldLabel htmlFor="window-timezone">Timezone</FieldLabel>
                 <Select value={timezone} onValueChange={(v) => setTimezone(v ?? timezone)}>
-                  <SelectTrigger id="window-timezone" aria-label="Timezone" className="w-full max-w-xs">
+                  <SelectTrigger id="window-timezone" aria-label="Timezone" className="w-full">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -327,30 +353,29 @@ export function CampaignForm({
               ) : null}
             </Field>
 
-            <Field>
-              <FieldLabel htmlFor="consent-policy">Consent</FieldLabel>
-              <Select
+            <FieldSet>
+              <FieldLegend variant="label">Consent</FieldLegend>
+              <FieldDescription>
+                Leads marked as opted out are never called, under either setting.
+              </FieldDescription>
+              <RadioGroup
                 value={consent}
                 onValueChange={(v) => setConsent(v as typeof consent)}
               >
-                <SelectTrigger id="consent-policy" aria-label="Consent" className="w-full max-w-md">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectGroup>
-                    <SelectItem value="granted">
-                      Only leads who explicitly consented
-                    </SelectItem>
-                    <SelectItem value="not_revoked">
-                      Anyone who has not opted out
-                    </SelectItem>
-                  </SelectGroup>
-                </SelectContent>
-              </Select>
-              <p className="text-muted-foreground text-xs">
-                Leads marked as opted out are never called, under either setting.
-              </p>
-            </Field>
+                <Field orientation="horizontal">
+                  <RadioGroupItem value="granted" id="consent-granted" />
+                  <FieldLabel htmlFor="consent-granted" className="font-normal">
+                    Only leads who explicitly consented
+                  </FieldLabel>
+                </Field>
+                <Field orientation="horizontal">
+                  <RadioGroupItem value="not_revoked" id="consent-not-revoked" />
+                  <FieldLabel htmlFor="consent-not-revoked" className="font-normal">
+                    Anyone who has not opted out
+                  </FieldLabel>
+                </Field>
+              </RadioGroup>
+            </FieldSet>
           </FormSection>
 
           <FormSectionSeparator />
@@ -373,7 +398,6 @@ export function CampaignForm({
                   type="number"
                   min={MAX_ATTEMPTS_MIN}
                   max={MAX_ATTEMPTS_MAX}
-                  className="max-w-40"
                   value={maxAttempts}
                   onChange={(e) => setMaxAttempts(e.target.value)}
                   aria-invalid={attemptsInvalid ? true : undefined}
@@ -396,7 +420,6 @@ export function CampaignForm({
                   type="number"
                   min={RETRY_MINUTES_MIN}
                   max={RETRY_MINUTES_MAX}
-                  className="max-w-40"
                   value={retryAfterMinutes}
                   onChange={(e) => setRetryAfterMinutes(e.target.value)}
                   aria-invalid={retryInvalid ? true : undefined}
@@ -423,8 +446,7 @@ export function CampaignForm({
       ) : null}
 
       <div>
-        <Separator />
-        <div className="flex flex-wrap items-center justify-between gap-3 pt-4">
+        <FormActions>
           <Button
             nativeButton={false}
             render={
@@ -442,14 +464,14 @@ export function CampaignForm({
                 }}
               />
             }
-            variant="ghost"
+            variant="outline"
           >
             Cancel
           </Button>
           <LoadingButton onClick={submit} disabled={blocked} pending={pending} pendingText="Creating…">
             Create campaign
           </LoadingButton>
-        </div>
+        </FormActions>
         <p className="text-muted-foreground mt-3 w-full text-sm">
           You will import leads on the next screen. Nothing is called until you
           activate the campaign.

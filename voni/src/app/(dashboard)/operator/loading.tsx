@@ -1,11 +1,11 @@
-import { DetailSkeleton, PageHeaderSkeleton } from "@/components/page-skeletons";
+import { FlatFormSkeleton, PageHeaderSkeleton } from "@/components/page-skeletons";
 
 export default function OperatorLoading() {
   return (
-    <div data-testid="operator-shell" className="mx-auto flex w-full max-w-2xl flex-col gap-6">
+    <div data-testid="operator-shell" className="flex flex-col gap-6">
       <PageHeaderSkeleton />
       <div role="status" aria-label="Loading operator console">
-        <DetailSkeleton />
+        <FlatFormSkeleton sections={5} />
       </div>
     </div>
   );

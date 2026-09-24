@@ -1,5 +1,5 @@
-import { DetailSkeleton } from "@/components/page-skeletons";
+import { AgentDetailSkeleton } from "@/components/page-skeletons";
 
 export default function AgentDetailLoading() {
-  return <DetailSkeleton />;
+  return <AgentDetailSkeleton />;
 }

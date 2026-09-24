@@ -2,7 +2,8 @@ import { Suspense } from "react";
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { CopilotShell } from "@/components/copilot/copilot-shell";
-import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
+import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
+import { VoniLogo } from "@/components/voni-logo";
 import { ShellAuthBridge, ShellAuthProvider } from "@/components/shell-auth";
 import { SidebarStateRestore } from "@/components/app-sidebar";
 import { ShellCopilotProvider, ShellJobsProvider, ShellSidebar } from "@/components/shell-frame";
@@ -80,8 +81,10 @@ export default function DashboardLayout({
     // The icon rail keeps the default width: sidebar-03 rows are standard
     // height, so the demo's 3rem geometry holds without an override.
     //
-    // No top bar: search, voice, and jobs status live in the rail, and
-    // every page renders its own title. Provider order is load-bearing —
+    // No desktop top bar: search, voice, and jobs status live in the rail,
+    // and every page renders its own title. Below md the sidebar is a closed
+    // Sheet whose own trigger is hidden, so a mobile-only strip carries the
+    // trigger — without it phones have no way to navigate. Provider order is load-bearing —
     // auth first, then jobs, then voice — because the sidebar reads all
     // three (account menu, jobs badge and bell, voice row) and each
     // provider gates on the snapshot above it.
@@ -92,6 +95,10 @@ export default function DashboardLayout({
           <ShellCopilotProvider>
             <ShellSidebar />
             <SidebarInset>
+              <header className="bg-background sticky top-0 z-20 flex h-12 items-center gap-2 border-b px-4 md:hidden">
+                <SidebarTrigger className="-ml-1" />
+                <VoniLogo size="sm" wordmark />
+              </header>
               <ViewTransition name="dashboard-content" default="dashboard-route">
                 <div className="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-6 p-4 md:p-6 lg:p-8">
                   {children}

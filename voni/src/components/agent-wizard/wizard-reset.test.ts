@@ -49,7 +49,7 @@ test("wizard mount starts at step 1 when the cache is post-terminal", () => {
   // Post-terminal caches are dropped by resetWizardForNewCreation, so any
   // cache present at mount is live — and no cache starts fresh.
   assert.ok(helperSource.includes("WIZARD_FRESH_STEP"));
-  assert.ok(helperSource.includes("readCachedDraft()?.step ?? WIZARD_FRESH_STEP"));
+  assert.ok(helperSource.includes("cached.step ?? WIZARD_FRESH_STEP"));
 });
 
 test("in-memory undo stack (max 20) is untouched by the durable reset", () => {

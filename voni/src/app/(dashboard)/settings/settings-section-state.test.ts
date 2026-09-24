@@ -114,15 +114,13 @@ test("settings sections converge on the campaign form density", () => {
   assert.match(sections, /FormSectionHeading/);
   assert.match(sections, /FormSectionSeparator/);
   assert.doesNotMatch(sections, /function SettingsSection/);
-  // FieldGroup + Field + FieldError, max-w caps on controls.
+  // FieldGroup + Field + FieldError; controls fill the field column
+  // (form-layout-02), so no per-control max-w caps.
   assert.match(sections, /FieldGroup/);
   assert.match(sections, /FieldError/);
-  assert.match(sections, /max-w-md/);
-  assert.match(sections, /max-w-xs/);
-  // Paired-action footers: ghost Cancel left, primary right, mobile primary on top.
+  // Shared action row: Cancel beside the primary, right-aligned.
   assert.match(sections, /Cancel/);
-  assert.match(sections, /flex-col-reverse/);
-  assert.match(sections, /sm:justify-between/);
+  assert.match(sections, /<FormActions>/);
   // Services readiness copy is distinct per service, not one repeated line.
   assert.match(sections, /serviceHint/);
   assert.doesNotMatch(sections, /Voni-managed capacity is configured\./);
@@ -132,10 +130,10 @@ test("numbers add form carries the transparent footer", () => {
   const numbers = repoFile("components", "phone-numbers.tsx");
   assert.match(numbers, /FormCard/);
   assert.match(numbers, /FormSection/);
-  assert.match(numbers, /Cancel/);
-  assert.match(numbers, /flex-col-reverse/);
-  assert.match(numbers, /max-w-md/);
-  assert.match(numbers, /max-w-xs/);
+  // Always-open add form: the shared action row holds only "Add number"
+  // (a Cancel on a form that is never dismissed had nothing to cancel).
+  assert.match(numbers, /<FormActions>/);
+  assert.doesNotMatch(numbers, />\s*Cancel\s*</);
 });
 
 test("operator sections use FormCard and ship a loading boundary", () => {

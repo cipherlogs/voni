@@ -20,12 +20,10 @@ test("no raw sentinel ships in the Answered-by options", () => {
 
 test("closed triggers render the human label, not the raw value", () => {
   // Base UI resolves <SelectValue /> text from mounted items; popup items
-  // only mount while open, so a bare <SelectValue /> falls back to the raw
-  // value on the closed trigger (verified live: "__unbound__"). A
-  // value-to-label function child renders the label with no mounted items.
-  const valueRenders = source.match(/<SelectValue>\{agentLabel\}<\/SelectValue>/g) ?? [];
-  assert.equal(valueRenders.length, 2, "add-form and row triggers both use agentLabel");
-  assert.ok(!source.includes("<SelectValue />"), "no bare SelectValue left");
+  // only mount while open, so the Select needs its `items` map to label a
+  // closed trigger (verified live: "__unbound__" without it).
+  const withItems = source.match(/items=\{agentItems\}/g) ?? [];
+  assert.equal(withItems.length, 2, "add-form and row Selects both pass the items map");
 });
 
 test("add-number form hints when the default is the right choice", () => {
@@ -38,18 +36,14 @@ test("add-number form hints when the default is the right choice", () => {
   );
 });
 
-test("numbers empty state has breathing room", () => {
-  // table-05 idiom (DESIGN.md §4): tall centered empty row, not a padded cell.
-  assert.ok(source.includes("h-24 text-center"), "table-05 empty row shape");
-  assert.ok(
-    !source.includes("h-32 text-center"),
-    "no fixed-height cramped empty cell",
-  );
+test("numbers empty state replaces the table, never a header-only table", () => {
+  // DataTable idiom: with zero rows the frame holds the Empty on its own.
+  assert.ok(source.includes("numbers.length === 0 ? (\n          <Empty>"), "Empty stands in for the table");
 });
 
 test("row Answered-by trigger meets the touch-target floor", () => {
   assert.ok(
-    source.includes("min-h-11 w-56"),
+    source.includes("min-h-11 w-44 sm:w-56"),
     "row trigger lifts h-8 toward the 44px floor",
   );
 });

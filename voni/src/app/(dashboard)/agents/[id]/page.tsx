@@ -1,9 +1,10 @@
 import { Suspense } from "react";
+import { BackLink } from "@/components/back-link";
 import { RouteBrief } from "@/components/copilot/route-brief";
 import { notFound } from "next/navigation";
 import { getAgentWithGeneration } from "../actions";
 import { EditAgent } from "./edit-agent";
-import { DetailSkeleton } from "@/components/page-skeletons";
+import { AgentDetailSkeleton } from "@/components/page-skeletons";
 import { agentConfigSchema, normalizeConfig } from "@/lib/agents/config";
 import type { AgentConfig } from "@/lib/agents/config";
 
@@ -80,12 +81,13 @@ export default function AgentPage({
 }: PageProps<"/agents/[id]">) {
   return (
     <div data-testid="agent-shell" className="flex flex-col gap-6">
-      {/* Generic detail frame: no invented record title — the resolved leaf
-          renders backlink, heading, and sub inside the config column. */}
+      <BackLink href="/agents" label="Agents" />
+      {/* Generic detail frame: backlink paints with the shell; the resolved
+          leaf renders the heading and sub inside the config column. */}
       <Suspense
         fallback={
           <div role="status" aria-label="Loading agent">
-            <DetailSkeleton />
+            <AgentDetailSkeleton />
           </div>
         }
       >

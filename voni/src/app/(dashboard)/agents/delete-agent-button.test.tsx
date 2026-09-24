@@ -36,8 +36,8 @@ test("delete trigger supports list and detail layouts", () => {
   assert.ok(buttonSource.includes("triggerLabel={label}"));
 });
 
-test("list row renders delete beside Open in the action cell, no stretched link", () => {
-  assert.ok(pageSource.includes("AgentDeleteButton"));
+test("list row puts Open and Delete in the row menu, no stretched link", () => {
+  assert.ok(pageSource.includes("<RecordRowActions"));
   // The table idiom has no stretched-link overlay — rows navigate only via
   // the explicit Open button — so the Card-era stacking workaround is gone.
   assert.ok(!pageSource.includes("before:absolute before:inset-0"));

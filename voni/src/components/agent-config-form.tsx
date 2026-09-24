@@ -25,6 +25,11 @@ import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import {
+  FormActions,
+  FormSection,
+  FormSectionHeading,
+} from "@/components/wizard/form-layout";
+import {
   Table,
   TableBody,
   TableCell,
@@ -32,7 +37,6 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { cn } from "@/lib/utils";
 import {
   Select,
   SelectContent,
@@ -109,45 +113,6 @@ const CHANNEL_META = [
 ] as const;
 
 /**
- * A flat form-layout-03 section: h2 + muted description left, fields right.
- * Adapted from blocks.so form-layout-03 (MIT ©2025 Ephraim Duncan), whose
- * block renders sections in `grid grid-cols-1 gap-10 md:grid-cols-3` with a
- * `sm:max-w-3xl md:col-span-2` field column, minus its centered demo shell
- * (the host page owns page chrome) and its demo footer buttons (ours lives
- * in ConfigFormFooter).
- */
-function FormLayoutSection({
-  id,
-  title,
-  description,
-  children,
-}: {
-  id: string;
-  title: string;
-  description: string;
-  children: ReactNode;
-}) {
-  return (
-    <section aria-labelledby={id}>
-      <div className="grid grid-cols-1 gap-10 md:grid-cols-3">
-        <div>
-          <h2
-            id={id}
-            className="text-balance font-semibold text-foreground"
-          >
-            {title}
-          </h2>
-          <p className="mt-1 text-pretty text-muted-foreground text-sm leading-6">
-            {description}
-          </p>
-        </div>
-        <div className="sm:max-w-3xl md:col-span-2">{children}</div>
-      </div>
-    </section>
-  );
-}
-
-/**
  * Picker over connected-provider tools (GOAL 4B): checkbox rows grouped by
  * provider with overlap hints where the catalog says tools achieve the same
  * thing ("X and Y achieve the same thing — pick one"), plus a "Connect
@@ -191,7 +156,7 @@ function ProviderToolPicker({
                 return (
                   <div
                     key={tool.id}
-                    className="flex min-w-0 flex-1 items-center gap-2.5 rounded-[10px] border px-3 py-2.5"
+                    className="flex min-w-0 flex-1 items-center gap-2.5 rounded-lg border px-3 py-2.5"
                   >
                     <Checkbox
                       id={id}
@@ -228,7 +193,7 @@ function ProviderToolPicker({
         ).map((provider) => (
           <div
             key={provider.id}
-            className="flex items-center justify-between gap-3 rounded-[10px] border px-3 py-2.5"
+            className="flex items-center justify-between gap-3 rounded-lg border px-3 py-2.5"
           >
             <div className="flex min-w-0 flex-col gap-0.5">
               <strong className="text-sm font-medium">
@@ -346,14 +311,8 @@ function ToolTableRow({
 }
 
 /**
- * Form footer (form-layout-01 terminal bar idiom): a Separator plus a
- * right-aligned action row following the house rule — secondary actions left,
- * primary save right — matching WizardFooter's secondary-left/primary-right
- * layout (`justify-between` with both slots, `justify-end` when there is no
- * secondary).
- *
- * The footer is normal document flow everywhere — the bar renders inline
- * after the last section on all screen sizes, never fixed or sticky.
+ * Config form footer: the shared FormActions row. `secondary` is the
+ * destructive Delete (far left); `primary` groups Test/Back with Save.
  */
 export function ConfigFormFooter({
   secondary,
@@ -365,24 +324,9 @@ export function ConfigFormFooter({
   className?: string;
 }) {
   return (
-    <div className={className}>
-      <Separator />
-      <div
-        className={cn(
-          "flex flex-wrap items-center gap-3 pt-4",
-          secondary ? "justify-between" : "justify-end",
-        )}
-      >
-        {secondary ? (
-          <span className="flex min-w-0 flex-wrap items-center gap-3">
-            {secondary}
-          </span>
-        ) : null}
-        <span className="flex min-w-0 flex-wrap items-center justify-end gap-3">
-          {primary}
-        </span>
-      </div>
-    </div>
+    <FormActions start={secondary} className={className}>
+      {primary}
+    </FormActions>
   );
 }
 
@@ -426,7 +370,7 @@ export function AgentConfigForm({
    * here — the floating pill owns the unsaved indicator.
    */
   isDirty?: boolean;
-  /** Optional secondary action rendered left of the primary save (e.g. Delete). */
+  /** Optional destructive action rendered far left of the action row (Delete). */
   footerSecondary?: ReactNode;
   /** Optional actions composed immediately before Save (e.g. Test agent). */
   footerPrimaryActions?: ReactNode;
@@ -633,10 +577,15 @@ export function AgentConfigForm({
 
   return (
     <div className="flex flex-col gap-3">
-      <FormLayoutSection
-        id="config-identity-heading"
-        title="Identity"
-        description="Name, voice, and language callers hear."
+      <FormSection
+        aria-labelledby="config-identity-heading"
+        heading={
+          <FormSectionHeading
+            id="config-identity-heading"
+            title="Identity"
+            description="Name, voice, and language callers hear."
+          />
+        }
       >
         <FieldGroup>
           <Field>
@@ -757,13 +706,18 @@ export function AgentConfigForm({
             </FieldDescription>
           </Field>
         </FieldGroup>
-      </FormLayoutSection>
+      </FormSection>
 
       <Separator className="my-8" />
-      <FormLayoutSection
-        id="config-mission-heading"
-        title="Mission"
-        description={`What ${agentLabel} is trying to accomplish on every call.`}
+      <FormSection
+        aria-labelledby="config-mission-heading"
+        heading={
+          <FormSectionHeading
+            id="config-mission-heading"
+            title="Mission"
+            description={`What ${agentLabel} is trying to accomplish on every call.`}
+          />
+        }
       >
         <FieldGroup>
           <Field>
@@ -788,18 +742,23 @@ export function AgentConfigForm({
               onChange={(e) => set("greeting", e.target.value)}
             />
           </Field>
-          <p className="rounded-[10px] border border-border bg-muted/50 px-3 py-2.5 text-xs text-muted-foreground">
+          <p className="rounded-lg border border-border bg-muted/50 px-3 py-2.5 text-xs text-muted-foreground">
             Suggested first line to test: “Hi, I&apos;m looking for a 2-bedroom
             near Riverside under $2,400.”
           </p>
         </FieldGroup>
-      </FormLayoutSection>
+      </FormSection>
 
       <Separator className="my-8" />
-      <FormLayoutSection
-        id="config-conversation-heading"
-        title="Conversation"
-        description={`Details ${agentLabel} listens for before booking.`}
+      <FormSection
+        aria-labelledby="config-conversation-heading"
+        heading={
+          <FormSectionHeading
+            id="config-conversation-heading"
+            title="Conversation"
+            description={`Details ${agentLabel} listens for before booking.`}
+          />
+        }
       >
         <FieldGroup>
           <Field>
@@ -815,7 +774,7 @@ export function AgentConfigForm({
                 return (
                   <div
                     key={field.key || i}
-                    className="flex items-center justify-between gap-3 rounded-[10px] border px-3 py-2.5"
+                    className="flex items-center justify-between gap-3 rounded-lg border px-3 py-2.5"
                   >
                     <div className="flex min-w-0 flex-1 items-center gap-2.5">
                       <Checkbox
@@ -854,11 +813,6 @@ export function AgentConfigForm({
                             ? `Turn off slow read-back for ${field.label}`
                             : `Turn on slow read-back for ${field.label}`
                         }
-                        title={
-                          fieldSensitive
-                            ? `Read back slowly for ${field.label} is on — the agent spells it out digit by digit`
-                            : `Read back slowly for ${field.label} is off`
-                        }
                         size="sm"
                         className="w-40"
                       >
@@ -893,13 +847,18 @@ export function AgentConfigForm({
             />
           </Field>
         </FieldGroup>
-      </FormLayoutSection>
+      </FormSection>
 
       <Separator className="my-8" />
-      <FormLayoutSection
-        id="config-tools-heading"
-        title="Tools and channels"
-        description={`What ${agentLabel} can do, and where it answers.`}
+      <FormSection
+        aria-labelledby="config-tools-heading"
+        heading={
+          <FormSectionHeading
+            id="config-tools-heading"
+            title="Tools and channels"
+            description={`What ${agentLabel} can do, and where it answers.`}
+          />
+        }
       >
         <Collapsible
           open={toolsOpen}
@@ -942,7 +901,7 @@ export function AgentConfigForm({
                   {(config.toolIdeas ?? []).map((idea) => (
                     <div
                       key={idea.name}
-                      className="flex items-center justify-between gap-3 rounded-[10px] border px-3 py-2.5"
+                      className="flex items-center justify-between gap-3 rounded-lg border px-3 py-2.5"
                     >
                       <div className="flex min-w-0 flex-col gap-0.5">
                         <strong className="text-sm font-medium">
@@ -1127,7 +1086,7 @@ export function AgentConfigForm({
             })}
           </CollapsibleContent>
         </Collapsible>
-      </FormLayoutSection>
+      </FormSection>
 
       <ConfigFormFooter
         secondary={footerSecondary}

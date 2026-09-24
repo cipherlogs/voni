@@ -118,6 +118,16 @@ export function SidebarStateRestore() {
  *  covers exactly the active-state computation. */
 function SidebarNavSelf({ routes }: { routes: Route[] }) {
   const pathname = usePathname();
+  const { setOpenMobile } = useSidebar();
+  // The mobile Sheet stays open across client navigation; close it on any
+  // route change (nav link, command menu, or copilot-driven navigation).
+  // This leaf mounts inside the Sheet, so only a real path change closes it.
+  const lastPath = useRef(pathname);
+  useEffect(() => {
+    if (lastPath.current === pathname) return;
+    lastPath.current = pathname;
+    setOpenMobile(false);
+  }, [pathname, setOpenMobile]);
   return <SidebarNav routes={routes} pathname={pathname} />;
 }
 

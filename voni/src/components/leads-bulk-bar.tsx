@@ -1,5 +1,6 @@
 "use client";
 
+import { BulkBar } from "@/components/bulk-bar";
 import {
   createContext,
   useCallback,
@@ -155,15 +156,8 @@ export function LeadsSelection({ children }: { children: ReactNode }) {
         // Mount-only arrival via status-enter; unmount stays instant —
         // a true exit transition would keep the bar mounted through
         // dismissal and risk stale-selection bugs.
-        <div
-          role="toolbar"
-          aria-label="Bulk lead actions"
-          className="bg-card status-enter sticky bottom-4 z-10 flex flex-wrap items-center gap-2 rounded-lg border p-3 shadow-lg"
-        >
-          <span className="text-sm font-medium" aria-live="polite">
-            {selected.size} selected
-          </span>
-          <Select value={stage} onValueChange={(v) => setStage(v)}>
+        <BulkBar label="Bulk lead actions" count={selected.size}>
+          <Select items={RAW_STAGE_LABEL} value={stage} onValueChange={(v) => setStage(v)}>
             <SelectTrigger
               size="sm"
               aria-label="Stage to move selected leads to"
@@ -207,7 +201,7 @@ export function LeadsSelection({ children }: { children: ReactNode }) {
               <AlertDescription>{error}</AlertDescription>
             </Alert>
           ) : null}
-        </div>
+        </BulkBar>
       ) : null}
     </LeadsSelectionContext.Provider>
   );

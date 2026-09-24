@@ -1,4 +1,5 @@
 import { eq } from "drizzle-orm";
+import { PageHeading } from "@/components/wizard/form-layout";
 import { requireCtxOrRedirect } from "@/lib/session";
 import { isPlatformAdmin } from "@/lib/platform/admin";
 import { db } from "@/lib/db";
@@ -14,18 +15,15 @@ import {
 import { getConnectedProviderIds } from "@/lib/providers/store";
 import { SETTINGS_TILES } from "@/lib/settings-tiles";
 import { buildServiceReadiness, settingsTileBadges } from "@/lib/settings-badges";
-import { BentoTile } from "@/components/settings-bento/bento-tile";
+import { SettingsCard } from "@/components/settings-card";
 import { AppearanceTile } from "./appearance-tile";
 import { SettingsHashRedirect } from "./settings-hash-redirect";
 import { getCopilotVoicePrefs } from "./actions";
 
-const HERO_SPAN = "lg:col-span-2";
-
 /**
- * Settings bento landing (tickets 02 + 04): registry-driven tile grid where
- * every tile is a real route link with a shareable URL, plus a truthful live
- * badge derived from existing data. Single column on mobile; heroes span two
- * columns on desktop. The operator tile honors the registry's `adminOnly`
+ * Settings landing (grid-list-02 idiom): registry-driven card grid where
+ * every card is a real route link with a shareable URL, plus a truthful live
+ * status derived from existing data. One column on mobile, up to three. The operator tile honors the registry's `adminOnly`
  * flag (hidden for non-admins, never a disabled dead end).
  *
  * One batched round serves all badges (voice prefs, provider connections,
@@ -77,24 +75,15 @@ export default async function SettingsPage() {
   return (
     <div data-testid="settings-landing" className="flex flex-col gap-6">
       <SettingsHashRedirect />
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Settings</h1>
-        <p className="text-muted-foreground text-sm">Manage your account, workspace, and service readiness.</p>
-      </div>
-      <div className="bento-grid-rows grid w-full grid-cols-1 gap-4 lg:grid-cols-3">
-        {tiles.map((tile) => {
-          const spanClassName = tile.span === "hero" ? HERO_SPAN : undefined;
-          return tile.value === "appearance" ? (
-            <AppearanceTile key={tile.value} tile={tile} className={spanClassName} />
+      <PageHeading title="Settings" description="Manage your account, workspace, and service readiness." />
+      <div className="grid w-full grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        {tiles.map((tile) =>
+          tile.value === "appearance" ? (
+            <AppearanceTile key={tile.value} tile={tile} />
           ) : (
-            <BentoTile
-              key={tile.value}
-              tile={tile}
-              badge={badges[tile.value]}
-              className={spanClassName}
-            />
-          );
-        })}
+            <SettingsCard key={tile.value} tile={tile} badge={badges[tile.value]} />
+          ),
+        )}
       </div>
     </div>
   );

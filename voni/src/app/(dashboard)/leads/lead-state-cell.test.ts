@@ -10,8 +10,10 @@ import test from "node:test";
 const dir = dirname(fileURLToPath(import.meta.url));
 const pageSource = readFileSync(join(dir, "page.tsx"), "utf8");
 
+const cellStart = pageSource.indexOf("export function LeadStateCell");
 const cellSource = pageSource.slice(
-  pageSource.indexOf("export function LeadStateCell"),
+  cellStart,
+  pageSource.indexOf("\n}\n", cellStart) + 3,
 );
 
 test("lead State cell reads without hover: two lines, no truncation tooltip", () => {
@@ -27,8 +29,8 @@ test("lead State cell is not an extra tab stop: no tabIndex on static text", () 
 });
 
 test("overlong blockers get a real expander, not a silent clip", () => {
-  assert.ok(cellSource.includes("<details"), "long context collapses behind a disclosure");
-  assert.ok(cellSource.includes("<summary"), "disclosure has a real summary affordance");
+  assert.ok(cellSource.includes("<Collapsible"), "long context collapses behind a disclosure");
+  assert.ok(cellSource.includes("<DisclosureTrigger"), "disclosure uses the shared trigger");
   assert.ok(cellSource.includes("Show full context"), "expander names the action");
   assert.ok(cellSource.includes("Show less"), "open state offers collapse");
   assert.ok(!cellSource.includes("title="), "no title-tooltip-only text");
@@ -61,9 +63,8 @@ test("leads empty state uses the padded Empty composition", () => {
 });
 
 test("import button names where the import happens", () => {
+  // The label carries the whole message; the extra hint line under the
+  // button repeated it and was removed in the audit.
   assert.ok(pageSource.includes("Import via a campaign"));
-  assert.ok(
-    pageSource.includes("each campaign imports its own CSV"),
-    "one clause of hint text beside the button",
-  );
+  assert.ok(!pageSource.includes("each campaign imports its own CSV"));
 });

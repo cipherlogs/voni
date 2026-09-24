@@ -244,7 +244,8 @@ test("agent detail is one column with a constrained-card test dialog", () => {
   assert.doesNotMatch(edit, /test-rail|lg:grid-cols-\[minmax/);
   assert.match(edit, /<TestAgentDialog/);
   // Upstream card wins: constrained ai-05 card, not fullscreen chrome.
-  assert.match(dialog, /h-\[560px\].*max-w-2xl.*rounded-3xl/);
+  // Standard Dialog surface since the 2026-09-24 audit; fixed height stays.
+  assert.match(dialog, /h-140 max-h-\[calc\(100dvh-2rem\)\]/);
   assert.doesNotMatch(dialog, /h-dvh w-screen max-w-none/);
   assert.match(dialog, /canTest && open/);
   assert.match(dialog, /presentation="dialog"/);

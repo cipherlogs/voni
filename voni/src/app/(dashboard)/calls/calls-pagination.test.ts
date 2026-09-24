@@ -58,8 +58,8 @@ test("pagination buttons meet the touch-target floor", () => {
   );
 });
 
-test("each calls row has an explicit Open call affordance", () => {
-  const matches = pageSource.match(/Open call/g) ?? [];
-  assert.ok(matches.length >= 2, "visible Open call link plus sr-only header");
-  assert.ok(pageSource.includes("sr-only"), "action column header stays screen-reader-only");
+test("each calls row opens from its lead link (one affordance, not two)", () => {
+  // The separate "Open call" column linked to the same page as the lead name.
+  assert.ok(!pageSource.includes(">Open call<"));
+  assert.ok(pageSource.includes("href={`/calls/${call.id}`}"), "lead name links to the call");
 });

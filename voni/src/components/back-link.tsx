@@ -5,10 +5,13 @@ import { Button } from "@/components/ui/button";
 /**
  * The detail-page backlink, shared by every "/thing/[id]" screen.
  *
- * Metrics come from the approved agent-detail mockup's `.backlink`: 14px/500
- * in the foreground colour, 6px gap, 8px/4px padding, an 8px radius, and an
- * underline on hover rather than a filled ghost-button hover. Kept here rather
- * than inlined on one page so the five callers cannot drift apart.
+ * Always a direct child of the page's `flex flex-col gap-6` column, rendered
+ * in the static shell (outside Suspense) so it paints before the record
+ * streams. `-mb-3` pulls the heading up so backlink → h1 is 12px on every
+ * page; `-ml-4` (measured) cancels the button's inline-start icon padding
+ * plus the 6px side bearing inside Lucide's chevron path, so the glyph's
+ * ink — not its box — sits on the title's left edge. Muted, because it is a
+ * breadcrumb, not a heading.
  */
 export function BackLink({ href, label }: { href: string; label: string }) {
   return (
@@ -16,7 +19,7 @@ export function BackLink({ href, label }: { href: string; label: string }) {
       nativeButton={false}
       render={<Link href={href} aria-label={`Back to ${label}`} />}
       variant="link"
-      className="h-auto w-fit cursor-pointer gap-1.5 rounded-lg px-1 py-2 text-sm font-medium text-foreground no-underline hover:underline [&>svg]:size-4"
+      className="text-muted-foreground hover:text-foreground -mb-3 -ml-4 h-auto w-fit gap-1 px-1 py-1 text-sm font-medium no-underline hover:no-underline [&>svg]:size-4"
     >
       <ChevronLeft data-icon="inline-start" aria-hidden />
       {label}

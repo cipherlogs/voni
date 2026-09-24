@@ -42,12 +42,13 @@ test("delete trigger supports list and detail layouts", () => {
   assert.ok(buttonSource.includes("triggerLabel={label}"));
 });
 
-test("list row renders delete beside Open", () => {
-  assert.ok(listSource.includes("CampaignDeleteButton"));
-  assert.ok(listSource.includes("Open"));
+test("list row puts Open and Delete in the row menu", () => {
+  assert.ok(listSource.includes("<RecordRowActions"));
+  assert.ok(listSource.includes('kind="campaign"'));
 });
 
 test("detail page deletes with a redirect back to the list", () => {
-  assert.ok(detailSource.includes("CampaignDeleteButton"));
+  // Delete lives in the header "…" menu, which opens CampaignDeleteButton.
+  assert.ok(detailSource.includes("<RecordRowActions"));
   assert.ok(detailSource.includes('redirectTo="/campaigns"'));
 });

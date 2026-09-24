@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { z } from "zod";
 import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import {
@@ -718,6 +719,8 @@ export async function listAgentsWithGeneration(): Promise<AgentListRow[]> {
 
 export async function getAgent(id: string) {
   const ctx = await requireCtxOrRedirect();
+  // A malformed id is "not found", not a Postgres uuid-cast error on screen.
+  if (!z.string().uuid().safeParse(id).success) return null;
   const rows = await db
     .select()
     .from(agents)

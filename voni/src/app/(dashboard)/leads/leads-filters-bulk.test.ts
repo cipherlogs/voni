@@ -47,17 +47,19 @@ test("leads chips resolve inside a Suspense leaf above the Card, never the shell
   assert.ok(!rowsLeaf.includes("<FilterChips"), "rows leaf carries no nav");
 });
 
-test("chips are shadcn Button outline/ghost with render=<Link>, active gets aria-current + Badge dot", () => {
-  assert.ok(chipsSource.includes('render={<Link href='), "Base UI render= composition");
-  assert.ok(chipsSource.includes('"outline"'), "active chip is outline");
-  assert.ok(chipsSource.includes('"ghost"'), "inactive chips are ghost");
-  assert.ok(chipsSource.includes('aria-current'), "active chip exposes aria-current");
-  assert.ok(chipsSource.includes("<Badge"), "active chip carries a Badge dot");
-  assert.ok(chipsSource.includes("<nav"), "chips live in labelled nav land");
+test("filter is a dashboard-01 Filter menu of links plus a removable active pill", () => {
+  // Options stay links so the filter lives in the URL (?stage=).
+  assert.ok(chipsSource.includes("render={<Link href={chip.href}"), "menu items are links");
+  assert.ok(chipsSource.includes("<DropdownMenu"), "options live in a Filter menu");
+  assert.ok(chipsSource.includes("aria-current"), "active option exposes aria-current");
+  assert.ok(chipsSource.includes("Clear filter:"), "active pill carries a labelled clear link");
+  assert.ok(chipsSource.includes("href={all.href}"), "clearing returns to the All option");
 });
 
-test("existing Badge+Clear row and Empty states stay unchanged", () => {
-  assert.ok(pageSource.includes("<Badge>{stageFilterLabel(stage)}</Badge>"), "active-filter Badge stays");
+test("active filter shows once (toolbar pill) and Empty states stay", () => {
+  // The Filter menu's pill owns the active-filter + clear affordance; the
+  // count row no longer repeats it as a Badge + Clear pair.
+  assert.ok(!pageSource.includes("<Badge>{stageFilterLabel(stage)}</Badge>"), "no second filter badge");
   assert.ok(pageSource.includes("Clear the filter"), "empty-state clear action stays");
   assert.ok(pageSource.includes("No leads match this filter"), "filtered empty title stays");
 });
@@ -81,7 +83,7 @@ test("leads table has a Checkbox first column with select-all over visible rows"
 });
 
 test("bulk bar: count + raw-stage Select + LoadingButton Apply, alert on failure, toast + refresh on success", () => {
-  assert.ok(bulkSource.includes("} selected"), "bar shows N selected");
+  assert.ok(bulkSource.includes("<BulkBar"), "shared BulkBar renders the N selected count");
   assert.ok(bulkSource.includes("<Select"), "stage Select present");
   const selectBlock = bulkSource.slice(bulkSource.indexOf("<Select"));
   assert.ok(!selectBlock.includes("worked"), "derived aliases excluded from the Select options");

@@ -35,12 +35,12 @@ test("landing and services section share one readiness source", () => {
 });
 
 test("badge status stays part of the link announcement", () => {
-  const tile = repoFile("components", "settings-bento", "bento-tile.tsx");
+  const tile = repoFile("components", "settings-card.tsx");
   assert.match(tile, /Status: /);
   // Since ticket 06 the accessible name travels as the island's ariaLabel
   // prop; the island renders it as the link's aria-label.
   assert.match(tile, /ariaLabel=\{/);
-  const island = repoFile("components", "settings-bento", "hover-prefetch-link.tsx");
+  const island = repoFile("components", "hover-prefetch-link.tsx");
   assert.match(island, /aria-label=\{ariaLabel\}/);
 });
 
@@ -50,7 +50,7 @@ test("appearance badge is client-live, never a server mock", () => {
   const island = source("appearance-tile.tsx");
   assert.match(island, /"use client"/);
   assert.match(island, /useTheme/);
-  assert.match(island, /BentoTile/);
+  assert.match(island, /SettingsCard/);
   assert.match(island, /badge/);
   // No pre-hydration placeholder: the badge renders after mount so the link
   // never announces the default as the user's live preference.

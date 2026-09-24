@@ -1,5 +1,5 @@
-import { DetailSkeleton } from "@/components/page-skeletons";
+import { LeadDetailSkeleton } from "@/components/page-skeletons";
 
 export default function LeadDetailLoading() {
-  return <DetailSkeleton />;
+  return <LeadDetailSkeleton />;
 }

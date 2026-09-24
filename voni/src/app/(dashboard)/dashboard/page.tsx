@@ -1,13 +1,10 @@
 import { Suspense } from "react";
+import { DisclosureTrigger } from "@/components/disclosure";
+import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible";
+import { PageHeading } from "@/components/wizard/form-layout";
 import Link from "next/link";
-import { ArrowUpRight } from "lucide-react";
-import {
-  Card,
-  CardContent,
-  CardFooter,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { ArrowUpRight, CircleAlert } from "lucide-react";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { StatGridSkeleton } from "@/components/page-skeletons";
 import { pipelineStateLabel } from "@/lib/leads/stage-filter";
 import { RouteBrief } from "@/components/copilot/route-brief";
@@ -15,18 +12,45 @@ import { Onboarding01 } from "@/components/onboarding-01/onboarding-01";
 import { getDashboardSetupSteps } from "@/lib/dashboard/setup";
 import { getDashboardSummary } from "./actions";
 
-// Shared outcome/funnel Tile language: one class source for both grids so
-// the two densities cannot drift into a second visual language. Literals
-// stay inline below in spirit — these constants render the identical
-// strings, markup-only.
-const TILE_CARD_CLASS =
-  "h-full gap-0 py-0 transition-shadow duration-[var(--motion-standard)] hover:shadow-md focus-within:shadow-md";
-const TILE_BODY_CLASS = "flex flex-1 flex-col gap-3 p-8";
-const TILE_NUMBER_CLASS =
-  "mt-1 text-3xl font-semibold tracking-tight tabular-nums";
-const TILE_FOOTER_CLASS = "mt-auto justify-end p-0";
-const TILE_LINK_CLASS =
-  "inline-flex cursor-pointer items-center gap-1 rounded-sm px-6 py-3 text-sm font-medium text-primary outline-none hover:text-primary/90 focus-visible:ring-2 focus-visible:ring-ring";
+type Stat = {
+  label: string;
+  value: number;
+  href: string;
+  linkLabel: string;
+  hint?: string;
+};
+
+/**
+ * One bordered strip of linked figures (blocks.so dashboard-01 KPI row):
+ * shared by the outcome totals and the funnel so both read as one language.
+ * Each cell is the whole link, so the drill-down the number implies exists.
+ */
+function StatStrip({ stats, columns }: { stats: Stat[]; columns: string }) {
+  return (
+    <div className={`grid grid-cols-1 overflow-hidden rounded-lg border sm:grid-cols-2 ${columns}`}>
+      {stats.map((stat) => (
+        <Link
+          key={stat.label}
+          href={stat.href}
+          aria-label={`${stat.label}: ${stat.value}. ${stat.linkLabel}`}
+          className="group hover:bg-muted/50 focus-visible:ring-ring -mt-px -ml-px flex flex-col gap-1 border-t border-l p-5 outline-none transition-colors focus-visible:ring-2 focus-visible:ring-inset"
+        >
+          <span className="text-muted-foreground flex items-center justify-between gap-2 text-sm">
+            {stat.label}
+            <ArrowUpRight
+              aria-hidden="true"
+              className="size-3.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100"
+            />
+          </span>
+          <span className="text-3xl font-semibold tracking-tight tabular-nums">{stat.value}</span>
+          {stat.hint ? (
+            <span className="text-muted-foreground text-xs">{stat.hint}</span>
+          ) : null}
+        </Link>
+      ))}
+    </div>
+  );
+}
 
 /**
  * Conversion view: four outcome totals backed by recorded rows. Each card
@@ -102,97 +126,46 @@ async function DashboardOutcomes() {
         route="/dashboard"
         brief={`Dashboard: ${summary.leadsWorked} leads worked, ${summary.connectedCalls} connected calls, ${summary.appointmentsBooked} booked leads, ${summary.needsHandoff} needing handoff. Voice reads here.`}
       />
-      <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-4">
-        {cards.map((card) => (
-          <Card key={card.label} className={TILE_CARD_CLASS}>
-            <CardContent className={TILE_BODY_CLASS}>
-              <span className="text-muted-foreground text-sm">
-                {card.label}
-              </span>
-              {card.hint ? (
-                <span className="text-muted-foreground text-sm">
-                  {card.hint}
-                </span>
-              ) : null}
-              <span
-                aria-label={`${card.label}: ${card.value}`}
-                className={TILE_NUMBER_CLASS}
-              >
-                {card.value}
-              </span>
-            </CardContent>
-            <CardFooter className={TILE_FOOTER_CLASS}>
-              <Link
-                href={card.href}
-                aria-label={card.linkLabel}
-                className={TILE_LINK_CLASS}
-              >
-                View
-                <ArrowUpRight aria-hidden="true" className="size-3.5" />
-              </Link>
-            </CardFooter>
-          </Card>
-        ))}
-      </div>
+      <StatStrip stats={cards} columns="lg:grid-cols-4" />
       {summary.emptyCampaigns.length > 0 ? (
-        <Card className="gap-0 py-0">
-          <CardHeader className="p-8 pb-2">
-            <CardTitle className="text-base">Next action</CardTitle>
-          </CardHeader>
-          <CardContent className="text-muted-foreground p-8 pt-4 text-sm">
+        <Alert>
+          <CircleAlert />
+          <AlertTitle>Next action</AlertTitle>
+          <AlertDescription>
             {summary.emptyCampaigns.map((campaign) => (
-              <span
-                key={campaign.id}
-                className="flex flex-wrap items-center gap-2"
-              >
+              <span key={campaign.id} className="flex flex-wrap items-center gap-2">
                 <span>{campaign.name} has no leads yet.</span>
                 <Link
                   href={`/campaigns/${campaign.id}#import`}
-                  className="cursor-pointer rounded-sm font-medium text-foreground underline underline-offset-4 outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  className="text-foreground focus-visible:ring-ring rounded-sm font-medium underline underline-offset-4 outline-none focus-visible:ring-2"
                 >
                   Import leads
                 </Link>
               </span>
             ))}
-          </CardContent>
-        </Card>
+          </AlertDescription>
+        </Alert>
       ) : null}
-      <details className="group">
-        <summary className="text-muted-foreground w-fit cursor-pointer rounded-sm text-sm outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring">
-          Pipeline funnel by stage
-        </summary>
+      <Collapsible>
+        <DisclosureTrigger>Pipeline funnel by stage</DisclosureTrigger>
+        <CollapsibleContent>
         {/* Funnel drill-down: each stage card links to its filtered leads
             list (`?stage=` + chip + Clear, same as the outcome cards above).
             The link carries the DB's own stage casing; the shared filter
             normalizes and matches case-insensitively. */}
-        <div className="mt-4 grid grid-cols-1 gap-6 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5">
-          {summary.stages.map((stage) => (
-            <Card key={stage.stage} className={TILE_CARD_CLASS}>
-              <CardContent className={TILE_BODY_CLASS}>
-                <span className="text-muted-foreground text-sm">
-                  {pipelineStateLabel(stage.stage)}
-                </span>
-                <span
-                  aria-label={`${pipelineStateLabel(stage.stage)}: ${stage.value}`}
-                  className={TILE_NUMBER_CLASS}
-                >
-                  {stage.value}
-                </span>
-              </CardContent>
-              <CardFooter className={TILE_FOOTER_CLASS}>
-                <Link
-                  href={`/leads?stage=${encodeURIComponent(stage.stage)}`}
-                  aria-label={`View ${pipelineStateLabel(stage.stage)} leads`}
-                  className={TILE_LINK_CLASS}
-                >
-                  View
-                  <ArrowUpRight aria-hidden="true" className="size-3.5" />
-                </Link>
-              </CardFooter>
-            </Card>
-          ))}
+        <div className="mt-4">
+          <StatStrip
+            columns="md:grid-cols-3 lg:grid-cols-5"
+            stats={summary.stages.map((stage) => ({
+              label: pipelineStateLabel(stage.stage),
+              value: stage.value,
+              href: `/leads?stage=${encodeURIComponent(stage.stage)}`,
+              linkLabel: `View ${pipelineStateLabel(stage.stage)} leads`,
+            }))}
+          />
         </div>
-      </details>
+        </CollapsibleContent>
+      </Collapsible>
     </>
   );
 }
@@ -200,12 +173,7 @@ async function DashboardOutcomes() {
 export default function DashboardPage() {
   return (
     <div data-testid="dashboard-shell" className="flex flex-col gap-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Dashboard</h1>
-        <p className="text-muted-foreground text-sm">
-          Outcomes across all active campaigns.
-        </p>
-      </div>
+      <PageHeading title="Dashboard" description="Outcomes across your campaigns, and what to do next." />
       <Suspense
         fallback={
           <div role="status" aria-label="Loading dashboard">

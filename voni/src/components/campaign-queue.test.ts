@@ -39,9 +39,11 @@ test("queue keeps the empty state and adds a no-match state", () => {
   assert.ok(queueSource.includes("No matches in this view"));
 });
 
-test("queue labels states in human words", () => {
+test("queue labels states in human words (shared with lead detail)", () => {
+  assert.ok(queueSource.includes("queueStatus("), "queue reads the shared status helper");
+  const statusSource = readFileSync(join(componentsDir, "..", "lib", "campaigns", "status.ts"), "utf8");
   for (const label of ["Queued", "Dialing", "Reached", "No answer", "Skipped"]) {
-    assert.ok(queueSource.includes(label), `missing ${label}`);
+    assert.ok(statusSource.includes(label), `missing ${label}`);
   }
 });
 
@@ -53,7 +55,9 @@ test("campaign detail uses the shared BackLink, queue, and no bespoke table", ()
 });
 
 test("activation blocker is associated with the disabled Activate button", () => {
+  // The note renders in the page's Dialer section; the button points at it.
   assert.ok(controlsSource.includes("campaign-blocker-"));
   assert.ok(controlsSource.includes("aria-describedby"));
-  assert.ok(controlsSource.includes('role="note"'));
+  assert.ok(pageSource.includes("campaign-blocker-${campaign.id}"));
+  assert.ok(pageSource.includes('role="note"'));
 });

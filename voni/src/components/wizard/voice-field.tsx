@@ -30,7 +30,7 @@ import {
 } from "@/lib/agents/wizard";
 /**
  * Voice cards in the `@blocks-so/grid-list-02` idiom (reference
- * `src/components/grid-list-02/grid-list-02.tsx`): Card surface
+ * https://blocks.so/grid-list): Card surface
  * (border + shadow-sm, hover:border-muted-foreground + hover:shadow-md),
  * CardContent-equivalent row (flex items-center gap-4 p-4), Avatar size-10.
  * Carousel interaction below is byte-identical to the previous revision: Embla

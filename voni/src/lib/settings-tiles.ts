@@ -1,12 +1,11 @@
 import type { SettingsTabValue } from "./settings-tabs";
 
 /**
- * Tile registry for the settings bento landing (`.scratch/settings-bento`).
+ * Tile registry for the settings landing cards (grid-list-02 idiom).
  * Plain module (no "use client") so server components can import it, mirroring
  * `lib/settings-tabs.ts`. `icon` is a key resolved to a lucide component by
  * client renderers — never a component reference here, so this module stays
- * server-safe. `span`/`bgKind` record the v1 composition recommendation from
- * the 01b review; variants may override presentation locally.
+ * server-safe.
  *
  * NOTE: `scripts/generate-app-manifest.mts` parses `settings-tabs.ts`
  * textually and expands the `/settings/[tab]` template into one static
@@ -32,27 +31,12 @@ export function settingsSectionTile(tab: string): SettingsTile | undefined {
 
 export type TileIcon = "user" | "mic" | "building" | "plug" | "sun" | "phone" | "shield";
 
-export type TileSpan = "standard" | "hero";
-
-export type TileBgKind =
-  | "constellation"
-  | "lanes"
-  | "orbit"
-  | "spine"
-  | "horizon"
-  | "incoming"
-  | "control";
-
 export interface SettingsTile {
   readonly value: TileValue;
   readonly label: string;
   readonly description: string;
-  /** Per-tile action verb for the hover-reveal CTA row (e.g. "Manage services"). */
-  readonly cta: string;
   readonly href: string;
   readonly icon: TileIcon;
-  readonly span: TileSpan;
-  readonly bgKind: TileBgKind;
   readonly external?: true;
   readonly adminOnly?: true;
 }
@@ -62,72 +46,51 @@ export const SETTINGS_TILES: ReadonlyArray<SettingsTile> = [
     value: "account",
     label: "Account",
     description: "Your Google profile and session.",
-    cta: "Manage account",
     href: "/settings/account",
     icon: "user",
-    span: "standard",
-    bgKind: "orbit",
   },
   {
     value: "voice",
     label: "Voice copilot",
     description: "Who talks back when you tap the mic.",
-    cta: "Configure voice copilot",
     href: "/settings/voice",
     icon: "mic",
-    span: "hero",
-    bgKind: "lanes",
   },
   {
     value: "workspace",
     label: "Workspace",
     description: "Customer-facing defaults for this organization.",
-    cta: "Manage workspace",
     href: "/settings/workspace",
     icon: "building",
-    span: "standard",
-    bgKind: "spine",
   },
   {
     value: "services",
     label: "Services",
     description: "Connect the tools your agents can use.",
-    cta: "Manage services",
     href: "/settings/services",
     icon: "plug",
-    span: "hero",
-    bgKind: "constellation",
   },
   {
     value: "appearance",
     label: "Appearance",
     description: "Use light, dark, or your system setting.",
-    cta: "Manage appearance",
     href: "/settings/appearance",
     icon: "sun",
-    span: "standard",
-    bgKind: "horizon",
   },
   {
     value: "numbers",
     label: "Phone numbers",
     description: "Which agent picks up when someone calls.",
-    cta: "Manage numbers",
     href: "/numbers",
     icon: "phone",
-    span: "standard",
-    bgKind: "incoming",
     external: true,
   },
   {
     value: "operator",
     label: "Platform operator",
     description: "Voni-managed platform capacity.",
-    cta: "View status",
     href: "/operator",
     icon: "shield",
-    span: "standard",
-    bgKind: "control",
     external: true,
     adminOnly: true,
   },

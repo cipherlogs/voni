@@ -202,24 +202,37 @@ export function markJobConsumed(jobId: string) {
  * internally (the visible Review undo button is gone; voice undo remains).
  */
 export function useWizardDraft() {
-  const [draft, setDraft] = useState<WizardDraft>(
-    () => readCachedDraft()?.draft ?? EMPTY_DRAFT,
-  );
+  // The server and the first client render must agree. Restore localStorage
+  // after hydration, while the page's explicit Continue/Discard gate hides
+  // the restored fields, instead of reading browser state in an initializer.
+  const [draft, setDraft] = useState<WizardDraft>(EMPTY_DRAFT);
   /** Ref mirror so delayed callbacks (voice patches) resolve against the
    * latest draft instead of a send-time snapshot. */
   const draftRef = useRef<WizardDraft>(draft);
-  const [step, setStepState] = useState(() => {
-    // Post-terminal caches are dropped by resetWizardForNewCreation, so any
-    // cache present here is a live pre-submit draft — restore its step. No
-    // cache (fresh or post-terminal creation) starts at WIZARD_FRESH_STEP.
-    const cached = readCachedDraft()?.step ?? WIZARD_FRESH_STEP;
-    return Math.min(Math.max(cached, 0), WIZARD_STEPS.length - 1);
-  });
+  const [step, setStepState] = useState(WIZARD_FRESH_STEP);
+  const [cacheHydrated, setCacheHydrated] = useState(false);
   const [flashed, setFlashed] = useState<FlashKey>(null);
   const [undoLabel, setUndoLabel] = useState<string | null>(null);
   const [historyLen, setHistoryLen] = useState(0);
   const history = useRef<WizardDraft[]>([]);
   const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
+
+  useEffect(() => {
+    const cached = readCachedDraft();
+    if (cached) {
+      const restoredStep = Math.min(
+        Math.max(cached.step ?? WIZARD_FRESH_STEP, 0),
+        WIZARD_STEPS.length - 1,
+      );
+      draftRef.current = cached.draft;
+      // Browser persistence is an external store. The first render stays on
+      // the server snapshot; this post-mount update restores its client value.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setDraft(cached.draft);
+      setStepState(restoredStep);
+    }
+    setCacheHydrated(true);
+  }, []);
 
   useEffect(
     () => () => {
@@ -231,7 +244,7 @@ export function useWizardDraft() {
   // Persist every committed state so reload/navigation restores the wizard.
   // Best-effort: quota or private-mode failures never break the wizard.
   useEffect(() => {
-    if (typeof window === "undefined") return;
+    if (!cacheHydrated) return;
     try {
       window.localStorage.setItem(
         DRAFT_CACHE_KEY,
@@ -240,7 +253,7 @@ export function useWizardDraft() {
     } catch {
       // Ignore write failures; in-memory state stays authoritative.
     }
-  }, [draft, step]);
+  }, [cacheHydrated, draft, step]);
 
   const setStep = useCallback((next: number) => {
     setStepState(next);

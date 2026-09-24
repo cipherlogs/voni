@@ -1,9 +1,9 @@
 import { Fragment, Suspense } from "react";
+import { DataTable } from "@/components/data-table";
+import { PageHeading } from "@/components/wizard/form-layout";
 import Link from "next/link";
-import { ChevronLeft, ChevronRight, Phone, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, Phone } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { Card, CardContent } from "@/components/ui/card";
 import {
   Table,
   TableBody,
@@ -31,14 +31,16 @@ import {
 import { callDuration, relativeCallTime } from "@/lib/calls/format";
 
 const CALLS_PAGE_SIZE = 20;
-const CALL_TABLE_COLUMNS = 5;
+const CALL_TABLE_COLUMNS = 4;
 
 /** Curated filter chips: All + the dashboard outcomes (?outcome=). */
 function callsChips(active: string | undefined) {
   return [
     { label: "All", href: "/calls", active: !active },
     {
-      label: "Connected",
+      // Grain lives in the label: the dashboard's other cards count leads,
+      // this one counts calls, so "Connected" alone read as a mismatch.
+      label: "Connected calls",
       href: "/calls?outcome=connected",
       active: active === "connected",
     },
@@ -117,7 +119,7 @@ async function CallsRows({
   // URL data is read here, inside the Suspense boundary below — not in the
   // page shell above it. Awaiting searchParams in the shell would tie the
   // App Shell to one URL and break instant navigation (E1439); the shell
-  // (h1, Card, table header) stays static and only these rows stream.
+  // (h1, table frame, header) stays static and only these rows stream.
   const params = await searchParams;
   const raw = Array.isArray(params.page) ? params.page[0] : params.page;
   const parsed = Number(raw);
@@ -150,10 +152,10 @@ async function CallsRows({
   return (
     <>
       <CallsBrief page={safePage} />
-      <TableBody>
-        <TableRow>
-          <TableCell colSpan={CALL_TABLE_COLUMNS} className="py-3">
-            <div className="flex items-center gap-2 text-sm">
+      {rows.length > 0 ? (
+        <TableBody>
+          <TableRow className="hover:bg-transparent">
+            <TableCell colSpan={CALL_TABLE_COLUMNS} className="py-2">
               <span
                 role="status"
                 aria-label={
@@ -161,28 +163,14 @@ async function CallsRows({
                     ? `Filtered results: ${countLabel}`
                     : `Results: ${countLabel}`
                 }
-                className="text-muted-foreground"
+                className="text-muted-foreground text-xs"
               >
                 {countLabel}
               </span>
-              {outcome ? (
-                <>
-                  <Badge>{callOutcomeLabel(outcome)}</Badge>
-                  <Button
-                    nativeButton={false}
-                    render={<Link href="/calls" />}
-                    variant="ghost"
-                    size="sm"
-                  >
-                    <X data-icon="inline-start" />
-                    Clear
-                  </Button>
-                </>
-              ) : null}
-            </div>
-          </TableCell>
-        </TableRow>
-      </TableBody>
+            </TableCell>
+          </TableRow>
+        </TableBody>
+      ) : null}
       {rows.length === 0 ? (
         <TableBody>
           <TableRow>
@@ -237,45 +225,36 @@ async function CallsRows({
               return (
                 <TableRow key={call.id}>
                   <TableCell>
-                    <Link
-                      href={`/calls/${call.id}`}
-                      aria-label={`${directionLabel} call with ${label}, started ${absolute}`}
-                      className="cursor-pointer rounded-sm underline-offset-4 outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring"
-                    >
-                      {label}
-                    </Link>
+                    <div className="flex min-w-0 flex-col gap-1">
+                      <Link
+                        href={`/calls/${call.id}`}
+                        aria-label={`${directionLabel} call with ${label}, started ${absolute}`}
+                        className="w-fit rounded-sm font-medium underline-offset-4 outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring"
+                      >
+                        {label}
+                      </Link>
+                      {/* Phones: direction and time fold under the lead so
+                          the table never scrolls sideways. */}
+                      <span className="text-muted-foreground text-xs sm:hidden">
+                        {directionLabel} · {relativeCallTime(call.startedAt)} ·{" "}
+                        {callDuration(call.startedAt, call.endedAt)}
+                      </span>
+                    </div>
                   </TableCell>
-                  <TableCell>
-                    <Badge
-                      variant={
-                        call.direction === "inbound" ? "default" : "secondary"
-                      }
-                    >
-                      {directionLabel}
-                    </Badge>
+                  <TableCell className="text-muted-foreground hidden text-sm sm:table-cell">
+                    {directionLabel}
                   </TableCell>
                   {/* Relative first, absolute beneath: the full timestamp
                       reads without hover, and the link text carries it for
                       screen readers — no title-tooltip-only time. */}
-                  <TableCell className="text-sm">
-                    <span className="text-muted-foreground block">
-                      {relativeCallTime(call.startedAt)}
-                    </span>
-                    <span className="text-muted-foreground/80 block text-xs">
+                  <TableCell className="hidden text-sm sm:table-cell">
+                    <span className="block">{relativeCallTime(call.startedAt)}</span>
+                    <span className="text-muted-foreground block text-xs">
                       {absolute}
                     </span>
                   </TableCell>
-                  <TableCell className="text-muted-foreground font-mono text-xs">
+                  <TableCell className="text-muted-foreground hidden font-mono text-xs tabular-nums sm:table-cell">
                     {callDuration(call.startedAt, call.endedAt)}
-                  </TableCell>
-                  <TableCell>
-                    <Link
-                      href={`/calls/${call.id}`}
-                      aria-label={`Open call with ${label}, started ${absolute}`}
-                      className="text-muted-foreground cursor-pointer rounded-sm text-xs whitespace-nowrap underline-offset-4 outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring"
-                    >
-                      Open call
-                    </Link>
                   </TableCell>
                 </TableRow>
               );
@@ -374,7 +353,7 @@ async function CallsRows({
 
 /**
  * Curated filter chips resolve here — this leaf awaits searchParams, so the
- * shell stays URL-free (E1439). It renders above the Card, never inside the
+ * shell stays URL-free (E1439). It renders above the table, never inside the
  * <table>: a <nav> child of <table> is invalid HTML and logs a hydration
  * error on every visit.
  */
@@ -385,87 +364,56 @@ async function CallsChips({
 }) {
   const params = await searchParams;
   const active = normalizeCallOutcome(params.outcome);
-  return (
-    <div className="flex flex-col gap-1">
-      <FilterChips label="Call filters" chips={callsChips(active)} />
-      {/* Grain hint: Connected counts calls (ended), not leads — the other
-          two cards count leads. Without this a clicked Connected card looks
-          like a smaller number than the dashboard promised. */}
-      <p className="text-muted-foreground text-xs">
-        Connected counts calls, not leads.
-      </p>
-    </div>
-  );
+  return <FilterChips label="Call filters" chips={callsChips(active)} />;
 }
 
 export default function CallsPage({ searchParams }: PageProps<"/calls">) {
   return (
     <div data-testid="calls-shell" className="flex flex-col gap-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Calls</h1>
-          <p className="text-muted-foreground text-sm">
-            Every phone call, newest first, with who it was with and how long
-            it ran.
-          </p>
-        </div>
-      </div>
-      <Suspense fallback={null}>
-        <CallsChips searchParams={searchParams} />
-      </Suspense>
-      <Card>
-        <CardContent className="p-0">
-          <div className="overflow-x-auto">
-            <Table>
-              <TableHeader>
+      <PageHeading
+        title="Calls"
+        description="Every phone call, newest first, with who it was with and how long it ran."
+      />
+      <DataTable
+        toolbar={
+          <Suspense fallback={null}>
+            <CallsChips searchParams={searchParams} />
+          </Suspense>
+        }
+      >
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Lead</TableHead>
+              <TableHead className="hidden sm:table-cell">Direction</TableHead>
+              <TableHead className="hidden sm:table-cell">Started</TableHead>
+              <TableHead className="hidden sm:table-cell">Duration</TableHead>
+            </TableRow>
+          </TableHeader>
+          <Suspense
+            fallback={
+              <TableBody>
                 <TableRow>
-                  <TableHead>Lead</TableHead>
-                  <TableHead>Direction</TableHead>
-                  <TableHead>Started</TableHead>
-                  <TableHead>Duration</TableHead>
-                  <TableHead>
-                    <span className="sr-only">Open call detail</span>
-                  </TableHead>
+                  <TableCell
+                    colSpan={CALL_TABLE_COLUMNS}
+                    className="h-40 text-center"
+                  >
+                    <span
+                      role="status"
+                      aria-label="Loading calls"
+                      className="text-muted-foreground text-sm"
+                    >
+                      Loading calls…
+                    </span>
+                  </TableCell>
                 </TableRow>
-              </TableHeader>
-              <Suspense
-                fallback={
-                  <TableBody>
-                    <TableRow>
-                      <TableCell
-                        colSpan={CALL_TABLE_COLUMNS}
-                        className="h-40 text-center"
-                      >
-                        <span
-                          role="status"
-                          aria-label="Loading calls"
-                          className="text-muted-foreground text-sm"
-                        >
-                          Loading calls…
-                        </span>
-                      </TableCell>
-                    </TableRow>
-                  </TableBody>
-                }
-              >
-                <CallsRows searchParams={searchParams} />
-              </Suspense>
-            </Table>
-          </div>
-        </CardContent>
-      </Card>
-      {/* Shortcut discovery: one line, inert text — the global handler reads
-          the ? key; this hint only names it. */}
-      <p className="text-muted-foreground text-xs">
-        Press{" "}
-        <kbd
-          data-slot="kbd"
-          className="rounded border bg-muted px-1 font-mono text-xs font-medium"
-        >
-          ?
-        </kbd>{" "}
-        for keyboard shortcuts.
-      </p>
+              </TableBody>
+            }
+          >
+            <CallsRows searchParams={searchParams} />
+          </Suspense>
+        </Table>
+      </DataTable>
     </div>
   );
 }

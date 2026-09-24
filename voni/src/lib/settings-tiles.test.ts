@@ -21,9 +21,7 @@ test("tiles carry unique values, labels, descriptions, and allowed icons", () =>
   for (const tile of SETTINGS_TILES) {
     assert.ok(tile.label.trim().length > 0);
     assert.ok(tile.description.trim().length > 0);
-    assert.ok(tile.cta.trim().length > 0, `tile ${tile.value} names its action`);
     assert.ok(icons.has(tile.icon), `tile ${tile.value} uses an allowed icon key`);
-    assert.ok(tile.span === "standard" || tile.span === "hero");
   }
 });
 
@@ -38,29 +36,4 @@ test("externals are real routes and admin-only implies external", () => {
   }
   const operator = SETTINGS_TILES.find((t) => t.value === "operator");
   assert.ok(operator?.adminOnly, "operator tile is admin-gated");
-});
-
-test("v1 heroes are voice and services", () => {
-  const heroes = SETTINGS_TILES.filter((t) => t.span === "hero").map((t) => t.value).sort();
-  assert.deepEqual(heroes, ["services", "voice"]);
-});
-
-test("bgKinds are exactly the seven approved scene-round-2 kinds", () => {
-  const kinds = SETTINGS_TILES.map((t) => t.bgKind).sort();
-  assert.deepEqual(kinds, [
-    "constellation",
-    "control",
-    "horizon",
-    "incoming",
-    "lanes",
-    "orbit",
-    "spine",
-  ]);
-});
-
-test("every tile maps its bgKind to a distinct scene", () => {
-  const byKind = new Map(SETTINGS_TILES.map((t) => [t.bgKind, t.value]));
-  assert.equal(byKind.size, SETTINGS_TILES.length);
-  assert.equal(byKind.get("constellation"), "services");
-  assert.equal(byKind.get("lanes"), "voice");
 });

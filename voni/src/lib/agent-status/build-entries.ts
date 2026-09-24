@@ -1,5 +1,5 @@
 import type { JobJson } from "@/lib/jobs/serialize";
-import type { TimelineEntry } from "@/components/onboarding-06/onboarding-06";
+import type { TimelineEntry } from "./timeline";
 
 /**
  * Agent status timeline entries, derived from existing record/job data.

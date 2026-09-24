@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { PageHeading } from "@/components/wizard/form-layout";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState, useTransition } from "react";
 import { toast } from "@/components/ui/toast";
@@ -17,7 +18,6 @@ import {
   AlertDescription,
   AlertTitle,
 } from "@/components/ui/alert";
-import { BackLink } from "@/components/back-link";
 import { AgentConfigForm } from "@/components/agent-config-form";
 import { TestAgentDialog } from "@/components/test-agent-dialog";
 import type { AgentConfig } from "@/lib/agents/config";
@@ -435,14 +435,11 @@ export function EditAgent(props: {
   // The editor is a single reading column. Voice testing opens from the form
   // footer in a full-screen dialog, so the form keeps its full working width.
   return (
-    <div className="mx-auto flex w-full max-w-3xl flex-col gap-6">
-      {/* Config stream. The column is a block with per-child margins rather
-          than a flex gap: backlink → h1 (8/4) → sub (16) → each banner
-          (16) → form. */}
-      <div className="min-w-0">
-        <BackLink href="/agents" label="Agents" />
+    <div className="flex w-full max-w-3xl flex-col gap-6">
+      {/* Config stream: pill, heading, then each banner, 16px apart. */}
+      <div className="flex min-w-0 flex-col gap-4">
         {restoredDraft ? (
-          <Alert className="mb-4 rounded-xl text-sm">
+          <Alert>
             <RotateCw />
             <AlertTitle>Unsaved edits restored</AlertTitle>
             <AlertDescription className="flex flex-wrap items-center justify-between gap-3">
@@ -471,17 +468,15 @@ export function EditAgent(props: {
             </AlertDescription>
           </Alert>
         ) : null}
+        <PageHeading
+          title={name}
+          description="Changes take effect on the next call this agent takes."
+        />
         <UnsavedPill isDirty={isDirty} />
-        <h1 className="mt-2 mb-1 text-2xl font-semibold tracking-[-0.02em]">
-          {name}
-        </h1>
-        <p className="text-muted-foreground mb-4 text-sm">
-          Changes take effect on the next call this agent takes.
-        </p>
 
         {isGenerationStub ? (
           generationRunning ? (
-            <Alert className="mb-4 rounded-xl text-sm">
+            <Alert>
               <LoaderCircle className="animate-spin" />
               <AlertTitle>Configuration generating</AlertTitle>
               <AlertDescription>
@@ -496,7 +491,7 @@ export function EditAgent(props: {
               </AlertDescription>
             </Alert>
           ) : generationReady ? (
-            <Alert className="mb-4 rounded-xl text-sm">
+            <Alert>
               <CircleCheck />
               <AlertTitle>Ready to review</AlertTitle>
               <AlertDescription>
@@ -522,7 +517,7 @@ export function EditAgent(props: {
             // here for review. Failure copy is jobErrorCopy(live code), never
             // generic; the server-rendered message covers the aged-out case
             // where no job row (and no code) exists.
-            <div className="mb-4">
+            <div>
               <GenerationRetryCard
                 title="Generation didn't finish"
                 description={`${liveGenerationErrorCode ? jobErrorCopy(liveGenerationErrorCode) : (generationError ?? "The generated configuration isn't available.")} Retry to start a fresh attempt — a completed draft appears here for review.`}
@@ -606,7 +601,6 @@ export function EditAgent(props: {
         {needsAttention && editorError ? (
           <Alert
             variant="destructive"
-            className="mb-4 rounded-xl text-sm"
           >
             <TriangleAlert />
             <AlertTitle>{editorError.title}</AlertTitle>
@@ -687,7 +681,7 @@ export function EditAgent(props: {
             while the user was dirty-editing, so the fresh config waits here
             instead of silently overwriting their edits. */}
         {pendingJobResult ? (
-          <Alert className="mb-4 rounded-xl border-primary/30 bg-primary/5 text-sm">
+          <Alert className="border-primary/30 bg-primary/5">
             <CircleCheck />
             <AlertTitle>Regenerated configuration ready</AlertTitle>
             <AlertDescription className="flex flex-wrap items-center justify-between gap-3">
@@ -727,7 +721,7 @@ export function EditAgent(props: {
           </Alert>
         ) : null}
         {appliedJobResult && !isDirty ? (
-          <Alert className="mb-4 rounded-xl text-sm">
+          <Alert>
             <CircleCheck />
             <AlertTitle>Regenerated configuration applied</AlertTitle>
             <AlertDescription>
@@ -828,10 +822,8 @@ export function EditAgent(props: {
             }
             toast.add({ type: "success", title: "Agent saved — voice deployment is running" });
           }}
-          // Delete lives in the footer secondary slot (left on desktop,
-          // full-width above Save on mobile) opening the same typed-name
-          // dialog. The footer uses ConfigFormFooter's default document-flow
-          // layout — no sticky positioning.
+          // Delete sits in FormActions' far-left destructive slot (stacked
+          // below Save on mobile) and opens the same typed-name dialog.
           footerSecondary={
             <AgentDeleteButton
               id={id}

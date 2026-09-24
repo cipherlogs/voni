@@ -2,7 +2,7 @@
 
 import { useSyncExternalStore } from "react";
 import { useTheme } from "next-themes";
-import { BentoTile } from "@/components/settings-bento/bento-tile";
+import { SettingsCard } from "@/components/settings-card";
 import type { SettingsTile } from "@/lib/settings-tiles";
 
 /**
@@ -11,7 +11,7 @@ import type { SettingsTile } from "@/lib/settings-tiles";
  * The theme lives in client storage (`next-themes`, default `system` with a
  * one-time migration — see `theme-provider.tsx`), so the server landing must
  * not invent it. This island reads the live preference and feeds it into the
- * production `BentoTile`, whose link announcement already includes
+ * production `SettingsCard`, whose link announcement already includes
  * `Status: <badge>` for screen readers. Before hydration the tile renders
  * badgeless (the badge is absolute-positioned, so withholding it shifts no
  * layout) rather than announcing the default as the user's preference.
@@ -28,7 +28,7 @@ export function AppearanceTile({ tile, className }: { tile: SettingsTile; classN
   const text =
     theme === "light" ? "Light" : theme === "dark" ? "Dark" : theme === "system" ? "System" : undefined;
   return (
-    <BentoTile
+    <SettingsCard
       tile={tile}
       badge={mounted && text ? { text, variant: "secondary" } : undefined}
       className={className}

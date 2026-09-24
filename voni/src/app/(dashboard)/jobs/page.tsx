@@ -1,12 +1,15 @@
 "use client";
 
 import { useSearchParams } from "next/navigation";
+import { BulkBar } from "@/components/bulk-bar";
+import { PageHeading } from "@/components/wizard/form-layout";
 import { Suspense, useMemo, useState } from "react";
-import { BellRing, CircleCheck, History, LoaderCircle, RotateCw, X } from "lucide-react";
+import { CircleCheck, ListFilter, RotateCw, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
   Empty,
+  EmptyContent,
   EmptyDescription,
   EmptyHeader,
   EmptyMedia,
@@ -23,7 +26,14 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { DataTable } from "@/components/data-table";
 import { LoadingButton } from "@/components/loading-button";
 import { TableSkeleton } from "@/components/page-skeletons";
 import { toast } from "@/components/ui/toast";
@@ -200,66 +210,85 @@ function JobsContent() {
         route="/jobs"
         brief={`Background jobs: ${activeJobs.length} active, ${unreadJobs.length} need review, ${jobs.length} total.`}
       />
-      {finished.length > 0 ? (
-        <div className="flex justify-end">
-          <LoadingButton
-            variant="outline"
-            size="sm"
-            pending={dismissing}
-            pendingText="Dismissing…"
-            onClick={() => void dismissAllFinished()}
-          >
-            Dismiss all finished
-          </LoadingButton>
-        </div>
-      ) : null}
 
       <Suspense fallback={null}>
         <RecordSearchReader />
       </Suspense>
       <div className="flex flex-col gap-4">
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <Tabs
-            value={filter}
-            onValueChange={(value) => setFilter(value as Filter)}
-          >
-            <TabsList>
-              <TabsTrigger value="active">
-                <LoaderCircle />
-                Active{activeJobs.length > 0 ? ` · ${activeJobs.length}` : ""}
-              </TabsTrigger>
-              <TabsTrigger value="review">
-                <BellRing />
-                Needs review{unreadJobs.length > 0 ? ` · ${unreadJobs.length}` : ""}
-              </TabsTrigger>
-              <TabsTrigger value="all">
-                <History />
-                All
-              </TabsTrigger>
-            </TabsList>
-          </Tabs>
-          <Input
-            type="search"
-            data-copilot-effect="view"
-            placeholder="Search jobs"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            className="h-8 w-full sm:w-64"
-            aria-label="Search jobs"
-          />
-          {filtersActive ? (
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              onClick={clearFilters}
-            >
-              <X data-icon="inline-start" />
-              Clear
-            </Button>
-          ) : null}
-        </div>
-
+        <DataTable
+          aria-live="polite"
+          toolbar={
+            <>
+              <div className="flex flex-wrap items-center gap-2">
+                <DropdownMenu>
+                  <DropdownMenuTrigger
+                    render={<Button variant="outline" size="sm" aria-label="Job filters" />}
+                  >
+                    <ListFilter data-icon="inline-start" />
+                    Filter
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="start" className="min-w-48">
+                    <DropdownMenuRadioGroup
+                      value={filter}
+                      onValueChange={(value) => setFilter(value as Filter)}
+                    >
+                      <DropdownMenuRadioItem value="active">
+                        Active{activeJobs.length > 0 ? ` · ${activeJobs.length}` : ""}
+                      </DropdownMenuRadioItem>
+                      <DropdownMenuRadioItem value="review">
+                        Needs review{unreadJobs.length > 0 ? ` · ${unreadJobs.length}` : ""}
+                      </DropdownMenuRadioItem>
+                      <DropdownMenuRadioItem value="all">All</DropdownMenuRadioItem>
+                    </DropdownMenuRadioGroup>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+                {filter !== "all" ? (
+                  <span className="bg-muted inline-flex h-7 items-center gap-1 rounded-md pr-1 pl-2.5 text-sm">
+                    {filter === "active" ? "Active" : "Needs review"}
+                    <button
+                      type="button"
+                      onClick={() => setFilter("all")}
+                      aria-label="Clear filter"
+                      className="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 inline-flex size-5 items-center justify-center rounded-sm outline-none focus-visible:ring-3"
+                    >
+                      <X className="size-3.5" />
+                    </button>
+                  </span>
+                ) : null}
+              </div>
+              <div className="flex flex-col gap-2 sm:ml-auto sm:flex-row sm:items-center">
+                <Input
+                  type="search"
+                  data-copilot-effect="view"
+                  placeholder="Search jobs"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  className="h-8 w-full sm:w-64"
+                  aria-label="Search jobs"
+                />
+                {finished.length > 0 ? (
+                  <LoadingButton
+                    variant="outline"
+                    size="sm"
+                    pending={dismissing}
+                    pendingText="Dismissing…"
+                    onClick={() => void dismissAllFinished()}
+                  >
+                    Dismiss all finished
+                  </LoadingButton>
+                ) : null}
+              </div>
+            </>
+          }
+          footer={
+            visible.length > pageJobs.length ? (
+              <span>
+                Showing the newest {pageJobs.length} of {visible.length} jobs.
+                Search or filter to find older ones.
+              </span>
+            ) : undefined
+          }
+        >
         {visible.length === 0 ? (
           <Empty>
             <EmptyHeader>
@@ -277,13 +306,19 @@ function JobsContent() {
                   : "Try a different filter or search."}
               </EmptyDescription>
             </EmptyHeader>
+            {jobs.length > 0 && filtersActive ? (
+              <EmptyContent>
+                <Button type="button" variant="outline" size="sm" onClick={clearFilters}>
+                  Clear filters
+                </Button>
+              </EmptyContent>
+            ) : null}
           </Empty>
         ) : (
-          <div className="overflow-x-auto rounded-lg border" aria-live="polite">
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>
+                  <TableHead className="w-10">
                     <Checkbox
                       checked={allPageSelected}
                       indeterminate={somePageSelected && !allPageSelected}
@@ -292,8 +327,6 @@ function JobsContent() {
                     />
                   </TableHead>
                   <TableHead>Job</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Progress</TableHead>
                   <TableHead>
                     <span className="sr-only">Actions</span>
                   </TableHead>
@@ -310,18 +343,11 @@ function JobsContent() {
                 ))}
               </TableBody>
             </Table>
-          </div>
         )}
+        </DataTable>
 
         {selected.size > 0 ? (
-          <div
-            role="toolbar"
-            aria-label="Bulk job actions"
-            className="bg-card status-enter sticky bottom-4 flex flex-wrap gap-2 rounded-lg border p-3"
-          >
-            <span className="text-sm font-medium" aria-live="polite">
-              {selected.size} selected
-            </span>
+          <BulkBar label="Bulk job actions" count={selected.size}>
             <LoadingButton
               size="sm"
               variant="outline"
@@ -352,7 +378,7 @@ function JobsContent() {
             >
               Clear
             </Button>
-          </div>
+          </BulkBar>
         ) : null}
       </div>
 
@@ -390,13 +416,10 @@ function JobsContent() {
 export default function JobsPage() {
   return (
     <div data-testid="jobs-shell" className="flex flex-col gap-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Background jobs</h1>
-        <p className="text-muted-foreground text-sm">
-          Slow work keeps running while you browse Voni. Results stay here
-          for 30 days unless dismissed.
-        </p>
-      </div>
+      <PageHeading
+        title="Background jobs"
+        description="Slow work keeps running while you browse Voni. Results stay here for 30 days unless dismissed."
+      />
       {/* Ordinary filtering/navigation paints with the shell; the
           URL-selected record search resolves in its own leaf above. */}
       <Suspense

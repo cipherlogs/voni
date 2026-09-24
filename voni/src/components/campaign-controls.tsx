@@ -45,8 +45,9 @@ export function CampaignControls({
 
   const running = status === "active";
 
-  // table-02 row-action idiom: the action sits at the row's end with its
-  // precondition note inline, matching the list row's Open-button column.
+  // The precondition note (`campaign-blocker-${id}`) renders in the page's
+  // Dialer section, where "why isn't this calling" is answered; the button
+  // still points at it via aria-describedby.
   return (
     <div className="flex flex-col items-end gap-2">
       <div className="flex flex-wrap items-center justify-end gap-3">
@@ -72,15 +73,6 @@ export function CampaignControls({
           </LoadingButton>
         )}
       </div>
-      {!running && activationBlocker ? (
-        <p
-          id={`campaign-blocker-${id}`}
-          role="note"
-          className="text-muted-foreground text-right text-sm"
-        >
-          {activationBlocker}
-        </p>
-      ) : null}
       {error ? (
         <Alert variant="destructive">
           <TriangleAlert />

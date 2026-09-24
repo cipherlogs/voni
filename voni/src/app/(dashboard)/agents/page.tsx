@@ -1,7 +1,8 @@
 import { Suspense } from "react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
+import { DataTable } from "@/components/data-table";
+import { StatusDot } from "@/components/status-dot";
 import {
   Empty,
   EmptyContent,
@@ -23,7 +24,7 @@ import { Bot, Plus } from "lucide-react";
 import { TableSkeleton } from "@/components/page-skeletons";
 import { listAgentsWithGeneration } from "./actions";
 import { LiveAgentsRefresh } from "./live-agents-refresh";
-import { AgentDeleteButton } from "./delete-agent-button";
+import { RecordRowActions } from "@/components/record-row-actions";
 import type { AgentConfig } from "@/lib/agents/config";
 import { RouteBrief } from "@/components/copilot/route-brief";
 
@@ -62,21 +63,23 @@ async function AgentsList() {
           </EmptyContent>
         </Empty>
       ) : (
-        <div className="overflow-x-auto rounded-lg border">
+        <DataTable>
           <Table>
             <TableHeader>
               <TableRow>
                 <TableHead>Agent</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Config</TableHead>
-                <TableHead className="w-12" />
+                <TableHead className="hidden sm:table-cell">Status</TableHead>
+                <TableHead className="hidden md:table-cell">Config</TableHead>
+                <TableHead className="w-12">
+                  <span className="sr-only">Actions</span>
+                </TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {rows.map((agent) => {
                 const config = agent.config as AgentConfig;
-                // The badge derives from the live job, never a stored flag. A
-                // placeholder whose job aged out reads as a plain draft.
+                // The status derives from the live job, never a stored flag.
+                // A placeholder whose job aged out reads as a plain draft.
                 const gen =
                   agent.generationJobId && agent.generationStatus
                     ? {
@@ -87,53 +90,53 @@ async function AgentsList() {
                         ready: agent.generationStatus === "succeeded",
                       }
                     : null;
-                const openLabel = `${gen ? "Review" : "Edit"} ${agent.name}`;
+                // Ready to review opens the /agents/new?job= review; failed
+                // rows open the detail page's review state, not the stub.
+                const openHref = gen?.ready
+                  ? `/agents/new?job=${gen.jobId}`
+                  : `/agents/${agent.id}`;
+                // Until an agent is registered with AssemblyAI it can't take
+                // a call, so the list never implies everything is live.
+                const status = gen
+                  ? gen.running
+                    ? { tone: "info" as const, label: "Generating…" }
+                    : gen.ready
+                      ? { tone: "info" as const, label: "Ready to review" }
+                      : { tone: "danger" as const, label: "Generation failed" }
+                  : agent.assemblyaiAgentId
+                    ? { tone: "success" as const, label: "Deployed and ready" }
+                    : { tone: "neutral" as const, label: "Draft — not yet deployed" };
                 return (
                   <TableRow key={agent.id}>
                     <TableCell>
                       <div className="flex min-w-0 flex-col gap-1">
-                        <span className="text-pretty text-sm font-medium">
-                          {agent.name}
-                        </span>
-                        <span className="text-muted-foreground max-w-xs truncate text-sm">
+                        {/* A running generation owns the row: its stub config
+                            would open a broken editor, so the name is plain
+                            text (no link) until the job settles. */}
+                        {gen?.running ? (
+                          <span className="text-sm font-medium">{agent.name}</span>
+                        ) : (
+                          <Link
+                            href={openHref}
+                            className="w-fit text-sm font-medium underline-offset-4 hover:underline"
+                          >
+                            {agent.name}
+                          </Link>
+                        )}
+                        <span className="text-muted-foreground max-w-56 truncate text-sm sm:max-w-xs">
                           {config.mission}
                         </span>
+                        {/* Phones: status folds under the name so the row
+                            never scrolls sideways. */}
+                        <StatusDot tone={status.tone} className="sm:hidden">
+                          {status.label}
+                        </StatusDot>
                       </div>
                     </TableCell>
-                    <TableCell>
-                      {gen ? (
-                        <Badge
-                          variant={
-                            gen.ready
-                              ? "default"
-                              : agent.generationStatus === "failed" ||
-                                  agent.generationStatus === "cancelled"
-                                ? "destructive"
-                                : "secondary"
-                          }
-                        >
-                          {gen.running
-                            ? "Generating…"
-                            : gen.ready
-                              ? "Ready to review"
-                              : "Generation failed"}
-                        </Badge>
-                      ) : (
-                        /* Until an agent is registered with AssemblyAI it can't
-                           take a call, so surface that state rather than
-                           letting the list imply everything is live. */
-                        <Badge
-                          variant={
-                            agent.assemblyaiAgentId ? "secondary" : "outline"
-                          }
-                        >
-                          {agent.assemblyaiAgentId
-                            ? "Deployed and ready"
-                            : "Draft — not yet deployed"}
-                        </Badge>
-                      )}
+                    <TableCell className="hidden sm:table-cell">
+                      <StatusDot tone={status.tone}>{status.label}</StatusDot>
                     </TableCell>
-                    <TableCell className="text-muted-foreground text-sm">
+                    <TableCell className="text-muted-foreground hidden text-sm md:table-cell">
                       {gen && !gen.ready ? (
                         gen.running ? (
                           "Configuration generating…"
@@ -150,64 +153,30 @@ async function AgentsList() {
                         </span>
                       )}
                     </TableCell>
-                    <TableCell>
-                      <div className="flex items-center gap-1">
-                        {/* A running generation owns the row: its stub config
-                            would open a broken editor, so Open stays disabled
-                            (no link) until the job settles. Ready to review
-                            opens the /agents/new?job= review; failed rows link
-                            to the detail page's review state, not the stub. */}
-                        {gen?.running ? (
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            disabled
-                            aria-disabled="true"
-                            aria-label={openLabel}
-                          >
-                            Open
-                          </Button>
-                        ) : (
-                          <Button
-                            nativeButton={false}
-                            variant="outline"
-                            size="sm"
-                            render={
-                              <Link
-                                href={
-                                  gen?.ready
-                                    ? `/agents/new?job=${gen.jobId}`
-                                    : `/agents/${agent.id}`
-                                }
-                                aria-label={openLabel}
-                              />
-                            }
-                          >
-                            Open
-                          </Button>
-                        )}
-                        {/* The job owns the row only while active — terminal
-                            placeholders and drafts can be deleted. Each row's
-                            button owns its own pending state. */}
-                        {gen?.running ? null : (
-                          <AgentDeleteButton
-                            id={agent.id}
-                            name={agent.name}
-                            // Keyed off assemblyaiAgentId presence, not
-                            // deploymentStatus: queued/deploying/failed
-                            // first-deploys have no remote agent yet, so they
-                            // get the short copy too.
-                            neverProvisioned={!agent.assemblyaiAgentId}
-                          />
-                        )}
-                      </div>
+                    <TableCell className="text-right">
+                      {/* The job owns the row only while active — terminal
+                          placeholders and drafts can be opened and deleted. */}
+                      {gen?.running ? null : (
+                        <RecordRowActions
+                          kind="agent"
+                          id={agent.id}
+                          name={agent.name}
+                          openHref={openHref}
+                          openLabel={gen ? "Review" : "Edit"}
+                          // Keyed off assemblyaiAgentId presence, not
+                          // deploymentStatus: queued/deploying/failed
+                          // first-deploys have no remote agent yet, so they
+                          // get the short copy too.
+                          neverProvisioned={!agent.assemblyaiAgentId}
+                        />
+                      )}
                     </TableCell>
                   </TableRow>
                 );
               })}
             </TableBody>
           </Table>
-        </div>
+        </DataTable>
       )}
     </>
   );

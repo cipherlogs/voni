@@ -11,10 +11,6 @@ import test from "node:test";
 const dir = dirname(fileURLToPath(import.meta.url));
 const indexSource = readFileSync(join(dir, "page.tsx"), "utf8");
 const agentsSource = readFileSync(join(dir, "..", "agents", "page.tsx"), "utf8");
-const sectionSource = readFileSync(
-  join(dir, "..", "..", "..", "components", "calls", "recent-calls.tsx"),
-  "utf8",
-);
 const dataSource = readFileSync(
   join(dir, "..", "..", "..", "lib", "copilot", "detail-data.ts"),
   "utf8",
@@ -60,22 +56,9 @@ test("calls index empty states distinguish no-calls from overshot pages", () => 
   assert.ok(indexSource.includes("No calls on this page"));
 });
 
-test("recent-calls section lives outside the agents list, with its own empty state", () => {
-  // Recent calls was removed from /agents (not useful there) — calls live
-  // under /calls. The section component contract itself is unchanged.
+test("recent calls are not duplicated on the agents list", () => {
+  // Calls live under /calls; the unused RecentCalls section was deleted.
   assert.ok(!agentsSource.includes("RecentCalls"));
-  assert.ok(sectionSource.includes("Recent calls"));
-  assert.ok(sectionSource.includes('href="/calls"'));
-  assert.ok(sectionSource.includes("View all"));
-  assert.ok(sectionSource.includes("Empty"));
-  assert.ok(sectionSource.includes("No calls yet"));
-  // Section cap: 5 rows, lead + relative time + direction badge each.
-  assert.ok(dataSource.includes("limit(5)") || dataSource.includes(", 5)"));
-  assert.ok(sectionSource.includes("/calls/${call.id}"));
-  assert.ok(sectionSource.includes("relativeCallTime"));
-  // Composes via render= (Base UI), never asChild.
-  assert.ok(sectionSource.includes("render="));
-  assert.ok(!sectionSource.includes("asChild"));
 });
 
 test("call list data stays org-scoped on the proven join", () => {

@@ -1,17 +1,14 @@
 "use client";
 
 import Link from "next/link";
-import { Input } from "@/components/ui/input";
-import { Field, FieldLabel } from "@/components/ui/field";
+import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { useJobs } from "@/components/jobs/jobs-provider";
 import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { LoadingButton } from "@/components/loading-button";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { MascotAvatar } from "@/components/agent-wizard/guide-mascot";
-import { FormCard, FormSection, FormSectionHeading } from "@/components/wizard/form-layout";
-import { Upload, TriangleAlert, X } from "lucide-react";
+import { CircleCheck, FileSpreadsheet, Upload, TriangleAlert, X } from "lucide-react";
 import type { JobJson } from "@/lib/jobs/serialize";
 import { useOptimisticJob } from "@/components/jobs/use-optimistic-job";
 import { parseCsv, mapHeaders } from "@/lib/leads/csv";
@@ -80,11 +77,15 @@ function preflightCsv(text: string): Preflight {
  * already present, duplicated in-file, or rejected with spreadsheet line
  * numbers — once the job finishes.
  */
+const INITIAL_COPILOT_VERSION = "unselected";
+
 export function LeadImport({ campaignId }: { campaignId: string }) {
   const router = useRouter();
   const inputRef = useRef<HTMLInputElement>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [copilotVersion, setCopilotVersion] = useState(() => crypto.randomUUID());
+  // The first server and client renders share a stable token. Selecting or
+  // clearing a file still rotates to a fresh UUID before any request can run.
+  const [copilotVersion, setCopilotVersion] = useState(INITIAL_COPILOT_VERSION);
   const requestKey = useRef(copilotVersion);
   const { addOptimistic, removeOptimistic, refresh, cancelJob } = useJobs();
   const tracking = useOptimisticJob("lead_csv_import");
@@ -96,6 +97,7 @@ export function LeadImport({ campaignId }: { campaignId: string }) {
   // and header sniff, shown before the import starts.
   const [preflight, setPreflight] = useState<Preflight | null>(null);
   const [preflighting, setPreflighting] = useState(false);
+  const [dragging, setDragging] = useState(false);
 
   const running =
     starting ||
@@ -107,6 +109,11 @@ export function LeadImport({ campaignId }: { campaignId: string }) {
   function applyTerminal(job: JobJson) {
     if (job.status === "succeeded") {
       setResult(job.result as ImportSummary);
+      // Done: clear the picker so the finished file can't read as pending.
+      setSelectedFile(null);
+      setFileName(null);
+      setPreflight(null);
+      if (inputRef.current) inputRef.current.value = "";
       router.refresh();
       return;
     }
@@ -187,145 +194,150 @@ export function LeadImport({ campaignId }: { campaignId: string }) {
     }
   }
 
+  function pickFile(file: File | null) {
+    requestKey.current = crypto.randomUUID();
+    setCopilotVersion(requestKey.current);
+    setResult(null);
+    setPreflight(null);
+    if (!file) {
+      setSelectedFile(null);
+      setFileName(null);
+      setError(null);
+      return;
+    }
+    if (file.size > MAX_CSV_BYTES) {
+      setSelectedFile(null);
+      setFileName(file.name);
+      setError("That file is larger than 2 MB. Split it and try again.");
+      return;
+    }
+    if (file.size === 0) {
+      setSelectedFile(null);
+      setFileName(file.name);
+      setError("That file is empty — nothing to import.");
+      return;
+    }
+    // Header-row sniff + row-count estimate before the import starts.
+    setPreflighting(true);
+    setSelectedFile(null);
+    setFileName(file.name);
+    setError(null);
+    void file
+      .text()
+      .then((text) => {
+        const snap = preflightCsv(text);
+        if (!snap.ok) {
+          setError(snap.message ?? "That file cannot be imported.");
+          return;
+        }
+        setSelectedFile(file);
+        setPreflight(snap);
+      })
+      .catch(() => {
+        setError("That file could not be read. Try selecting it again.");
+      })
+      .finally(() => setPreflighting(false));
+  }
+
   const pending = starting || running;
 
   return (
     <div className="flex flex-col gap-4" data-copilot-form="csv-import" data-copilot-version={copilotVersion}>
-      <FormCard>
-        <>
-          <FormSection
-            aria-labelledby="csv-import-heading"
-            heading={
-              <FormSectionHeading
-                level={3}
-                id="csv-import-heading"
-                title="CSV file"
-                description="Pick a file with a phone column; rows are validated in the import job."
-              />
-            }
-          >
-          <div className="flex flex-wrap items-end gap-3">
-            <Field className="w-auto">
-          <FieldLabel htmlFor={`csv-${campaignId}`}>Choose CSV file</FieldLabel>
-          <Input
+      {/* blocks.so file-upload-05: dashed drop zone, file rules, the
+          chosen file with its status, then the action. Drop and the
+          picker both route through pickFile (same validation). */}
+      <div className="flex flex-col gap-3">
+        <label
+          htmlFor={`csv-${campaignId}`}
+          onDragOver={(e) => {
+            e.preventDefault();
+            setDragging(true);
+          }}
+          onDragLeave={() => setDragging(false)}
+          onDrop={(e) => {
+            e.preventDefault();
+            setDragging(false);
+            if (pending || preflighting) return;
+            pickFile(e.dataTransfer.files?.[0] ?? null);
+          }}
+          className={cn(
+            "border-input has-focus-visible:ring-ring/50 flex cursor-pointer flex-col items-center justify-center gap-2 rounded-lg border border-dashed px-6 py-8 text-center text-sm transition-colors has-focus-visible:ring-3 sm:flex-row sm:gap-3",
+            dragging && "border-primary bg-muted/50",
+            (pending || preflighting) && "pointer-events-none opacity-50",
+          )}
+        >
+          <Upload aria-hidden className="text-muted-foreground size-5" />
+          <span>
+            Drag and drop or{" "}
+            <span className="font-medium underline underline-offset-4">choose a CSV</span>{" "}
+            to import
+          </span>
+          <input
             ref={inputRef}
             id={`csv-${campaignId}`}
             type="file"
             accept=".csv,text/csv"
+            className="sr-only"
             disabled={pending || preflighting}
-            onChange={(e) => {
-              const file = e.target.files?.[0] ?? null;
-              requestKey.current = crypto.randomUUID();
-              setCopilotVersion(requestKey.current);
-              setResult(null);
-              setPreflight(null);
-              if (!file) {
-                setSelectedFile(null);
-                setFileName(null);
-                setError(null);
-                return;
-              }
-              if (file.size > MAX_CSV_BYTES) {
-                setSelectedFile(null);
-                setFileName(file.name);
-                setError("That file is larger than 2 MB. Split it and try again.");
-                return;
-              }
-              if (file.size === 0) {
-                setSelectedFile(null);
-                setFileName(file.name);
-                setError("That file is empty — nothing to import.");
-                return;
-              }
-              // Header-row sniff + row-count estimate before the import starts.
-              setPreflighting(true);
-              setSelectedFile(null);
-              setFileName(file.name);
-              setError(null);
-              void file
-                .text()
-                .then((text) => {
-                  const snap = preflightCsv(text);
-                  if (!snap.ok) {
-                    setError(snap.message ?? "That file cannot be imported.");
-                    return;
-                  }
-                  setSelectedFile(file);
-                  setPreflight(snap);
-                })
-                .catch(() => {
-                  setError("That file could not be read. Try selecting it again.");
-                })
-                .finally(() => setPreflighting(false));
-            }}
+            onChange={(e) => pickFile(e.target.files?.[0] ?? null)}
           />
-        </Field>
-        <div className="grid gap-2">
-          <FieldLabel aria-hidden="true" className="invisible select-none">Import</FieldLabel>
-          <LoadingButton
-            variant="outline"
-            data-copilot-effect="mutation"
-            aria-label={selectedFile ? `Import ${selectedFile.name}` : "Import selected CSV"}
-            onClick={() => { if (selectedFile) void onFile(selectedFile); }}
-            disabled={!selectedFile || pending}
-            pending={pending && !backgrounded}
-            pendingText="Importing…"
-            icon={<Upload />}
-          >
-            Import selected CSV
-          </LoadingButton>
-        </div>
-        {selectedFile && !pending ? (
-          <div className="grid gap-2">
-            <FieldLabel aria-hidden="true" className="invisible select-none">Remove</FieldLabel>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              aria-label={`Remove ${selectedFile.name}`}
-              onClick={() => {
-                setSelectedFile(null);
-                setFileName(null);
-                setError(null);
-                setPreflight(null);
-                requestKey.current = crypto.randomUUID();
-                setCopilotVersion(requestKey.current);
-                if (inputRef.current) inputRef.current.value = "";
-              }}
-            >
-              <X />
-            </Button>
-          </div>
-        ) : null}
-        <p className="w-full text-muted-foreground text-sm" aria-live="polite">
-          {fileName && pending && !backgrounded
-            ? fileName
-            : running && backgrounded
-              ? "This is continuing in the background. You can browse Voni and return when it is ready — the jobs pill tracks progress."
-              : preflighting
-                ? "Checking the file…"
-                : selectedFile && preflight?.ok
-                  ? `${selectedFile.name} selected — about ${preflight.rowCount ?? 0} ${(preflight.rowCount ?? 0) === 1 ? "row" : "rows"} with a phone column. Rows are validated in the import job.`
-                  : selectedFile ? `${selectedFile.name} selected (${selectedFile.size} bytes). Ready to import. A phone header is required; rows are validated in the import job.` : "Needs a header row with a phone column. Name, source, consent and notes are used if present."}
-        </p>
-        <p className="w-full text-sm">
+        </label>
+        <p className="text-muted-foreground text-xs">
+          Needs a header row with a phone column; name, source, consent and
+          notes are used if present. Max 2 MB.{" "}
           <a
             href="/templates/leads.csv"
             download="leads-template.csv"
-            className="focus-visible:ring-ring cursor-pointer rounded-sm underline underline-offset-4 outline-none focus-visible:ring-2"
+            className="text-foreground focus-visible:ring-ring rounded-sm underline underline-offset-4 outline-none focus-visible:ring-2"
           >
-            Download the CSV template
+            Download the template
           </a>
-          <span className="text-muted-foreground"> — phone, name, source, consent, notes.</span>
         </p>
+        {fileName ? (
+          <div className="bg-muted relative flex items-center gap-3 rounded-lg p-3">
+            <span className="bg-background ring-input flex size-10 shrink-0 items-center justify-center rounded-md shadow-sm ring-1 ring-inset">
+              <FileSpreadsheet aria-hidden className="size-5" />
+            </span>
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-xs font-medium">{fileName}</p>
+              <p className="text-muted-foreground mt-0.5 text-xs" aria-live="polite">
+                {running && backgrounded
+                  ? "Importing in the background — the jobs pill tracks progress."
+                  : pending
+                    ? "Importing…"
+                    : preflighting
+                      ? "Checking the file…"
+                      : selectedFile && preflight?.ok
+                        ? `About ${preflight.rowCount ?? 0} ${(preflight.rowCount ?? 0) === 1 ? "row" : "rows"} with a phone column · validated in the import job`
+                        : selectedFile
+                          ? "Ready to import · validated in the import job"
+                          : "Can't import this file"}
+              </p>
+            </div>
+            {!pending && !preflighting ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                aria-label={`Remove ${fileName}`}
+                onClick={() => {
+                  setSelectedFile(null);
+                  setFileName(null);
+                  setError(null);
+                  setPreflight(null);
+                  requestKey.current = crypto.randomUUID();
+                  setCopilotVersion(requestKey.current);
+                  if (inputRef.current) inputRef.current.value = "";
+                }}
+              >
+                <X />
+              </Button>
+            ) : null}
+          </div>
+        ) : null}
         {running && backgrounded && tracking.jobId ? (
-          <p className="flex w-full flex-wrap items-center gap-x-3 gap-y-1 text-sm">
-            <Button
-              nativeButton={false}
-              render={<Link href="/jobs" />}
-              variant="link"
-              className="h-auto w-fit px-0"
-            >
+          <div className="flex flex-wrap items-center gap-2">
+            <Button nativeButton={false} render={<Link href="/jobs" />} variant="outline" size="sm">
               View in Jobs
             </Button>
             <Button
@@ -339,12 +351,24 @@ export function LeadImport({ campaignId }: { campaignId: string }) {
             >
               Cancel import
             </Button>
-          </p>
-        ) : null}
           </div>
-          </FormSection>
-        </>
-      </FormCard>
+        ) : selectedFile || pending ? (
+          <div className="flex justify-end">
+            <LoadingButton
+              data-copilot-effect="mutation"
+              aria-label={selectedFile ? `Import ${selectedFile.name}` : "Import selected CSV"}
+              onClick={() => { if (selectedFile) void onFile(selectedFile); }}
+              disabled={!selectedFile || pending}
+              pending={pending && !backgrounded}
+              pendingText="Importing…"
+              icon={<Upload />}
+              className="w-full sm:w-auto"
+            >
+              Import leads
+            </LoadingButton>
+          </div>
+        ) : null}
+      </div>
 
       {error ? (
         <Alert variant="destructive">
@@ -355,7 +379,7 @@ export function LeadImport({ campaignId }: { campaignId: string }) {
 
       {result ? (
         <Alert>
-          <MascotAvatar mood="celebrating" size="sm" />
+          <CircleCheck />
           <AlertTitle>
             {result.queued}{" "}
             {result.queued === 1 ? "lead" : "leads"} added
