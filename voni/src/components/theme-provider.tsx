@@ -1,6 +1,7 @@
 "use client"
 
 import * as React from "react"
+import { usePathname } from "next/navigation"
 import { ThemeProvider as NextThemesProvider, useTheme } from "next-themes"
 
 const MIGRATION_FLAG = "voni-theme-migrated-v1"
@@ -38,8 +39,11 @@ export function ThemeProvider({
 }: React.ComponentProps<typeof NextThemesProvider>) {
   const storageKey =
     (props as { storageKey?: string }).storageKey ?? "theme"
+  // The public landing is light-only (DESIGN.md §10c): forced, not persisted,
+  // so every other route keeps the visitor's own pick.
+  const forcedTheme = usePathname() === "/" ? "light" : props.forcedTheme
   return (
-    <NextThemesProvider {...props}>
+    <NextThemesProvider {...props} forcedTheme={forcedTheme}>
       <ThemeMigration storageKey={storageKey} />
       {children}
     </NextThemesProvider>

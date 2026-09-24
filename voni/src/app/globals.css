@@ -48,6 +48,27 @@
   --color-popover: var(--popover);
   --color-card-foreground: var(--card-foreground);
   --color-card: var(--card);
+  /* Landing amendment §10c: the approved mockup's exact type steps and card
+     shadow, as tokens (never arbitrary values at usage sites). */
+  --text-2xs: 0.6875rem;
+  --text-2xs--line-height: 1.4;
+  --text-ui: 0.8125rem;
+  --text-ui--line-height: 1.5;
+  --text-md: 0.9375rem;
+  --text-md--line-height: 1.6;
+  --text-lead: 1.0625rem;
+  --text-lead--line-height: 1.4;
+  --text-title: 2.5rem;
+  --text-title--line-height: 1.12;
+  --text-hero-sm: 2.625rem;
+  --text-hero-sm--line-height: 1.04;
+  --text-hero: 4.75rem;
+  --text-hero--line-height: 1.02;
+  --text-display-sm: 2.375rem;
+  --text-display-sm--line-height: 1.08;
+  --text-display: 3.5rem;
+  --text-display--line-height: 1.06;
+  --shadow-landing: 0 1px 3px rgb(0 0 0 / 0.06), 0 24px 48px -24px rgb(0 0 0 / 0.18);
   --radius-sm: calc(var(--radius) * 0.6);
   --radius-md: calc(var(--radius) * 0.8);
   --radius-lg: var(--radius);
@@ -62,6 +83,8 @@
   --motion-standard: 180ms;
   --motion-slow: 220ms;
   --motion-loop: 6500ms;
+  /* The landing call card opening from the lone orb (DESIGN.md §10c). */
+  --motion-reveal: 850ms;
   --ease-draw: cubic-bezier(0.65, 0, 0.35, 1);
   --ease-out-soft: cubic-bezier(0.16, 1, 0.3, 1);
   --background: oklch(1 0 0);
@@ -100,18 +123,21 @@
   --sidebar-ring: oklch(0.708 0 0);
 }
 
-/* Live-call green — NARROWLY SCOPED, not a token. Only voice-call.tsx may
-   reference these three classes (fill for the call button, ring for the live
+/* Live-call green — NARROWLY SCOPED, not a token. Only voice-call.tsx and
+   the landing call CTAs + badge dot (DESIGN.md §10c) may reference these
+   three classes (fill for the call button, ring for the live
    portrait, dot for the state line). Same value in light and dark; the fill
    pairs with white text, never body text. Never reintroduce as --brand or
    under any other global name. */
+/* Fill is green-700: white on green-600 measured 3.22:1, under AA for the
+   14px button label; green-700 clears 4.5:1 (audit 2026-09-24). */
 .voice-call-live-fill {
-  background-color: var(--color-green-600);
+  background-color: var(--color-green-700);
   color: oklch(1 0 0);
 }
 
 .voice-call-live-fill:hover {
-  background-color: color-mix(in oklch, var(--color-green-600), black 12%);
+  background-color: color-mix(in oklch, var(--color-green-700), black 12%);
 }
 
 .voice-call-live-ring {
@@ -151,13 +177,15 @@
 }
 
 /* The chip settles once on mount — arrival still reads as arrival. The mark
-   itself then loops for as long as it stays mounted: the resting arc
-   (`voni-arc`) folds into a V and back — both are the same kind of curve
-   (one quadratic bezier, control point mirrored across y=12), so animating
-   the `d` property directly morphs one into the other with no separate
-   drawings. A second copy of the same path in the brand green
-   (`voni-arc-accent`) tracks the identical shape and only fades in for the V
-   phase, landing the color change on the moment of recognition. */
+   itself then loops for as long as it stays mounted: the V (`voni-arc`)
+   opens into the arc and folds back. Both are the same kind of curve (one
+   quadratic bezier, control point mirrored across y=12), so animating the
+   `d` property directly morphs one into the other with no separate drawings.
+   A second copy of the same path in the brand green (`voni-arc-accent`)
+   tracks the identical shape and is visible only in the V phase. The V holds
+   for most of the loop (the arc is a brief wink), and it is where the loop
+   starts, ends, and rests under reduced motion, so the lockup reads "Voni"
+   (audit 2026-09-24). */
 .voni-chip-in {
   animation: voni-chip-in var(--motion-slow) var(--ease-out-soft) both;
 }
@@ -188,29 +216,29 @@
 
 @keyframes voni-arc-morph {
   0%,
-  35% {
-    d: path("M5 15Q12 5 19 15");
-  }
-  50%,
-  70% {
+  55% {
     d: path("M5 9Q12 24 19 9");
   }
-  85%,
-  100% {
+  67%,
+  78% {
     d: path("M5 15Q12 5 19 15");
+  }
+  90%,
+  100% {
+    d: path("M5 9Q12 24 19 9");
   }
 }
 
 @keyframes voni-arc-fade {
   0%,
-  35%,
-  85%,
+  55%,
+  90%,
   100% {
-    opacity: 0;
-  }
-  50%,
-  70% {
     opacity: 1;
+  }
+  67%,
+  78% {
+    opacity: 0;
   }
 }
 
@@ -277,6 +305,309 @@
   }
 }
 
+/* Landing amendment 2026-09-24 (DESIGN.md §10c, B1 "orb" direction): the
+   public landing page only. Token-only color; the signal green is the same
+   narrowly-scoped `--color-green-600` as the live-call affordance, used for
+   moving/moment elements (orb ring, step traveller) and never structure. Loop
+   durations stay raw, like the §10b precedent. Every looping class below has
+   its own `animation: none` line in the reduced-motion block, with the base
+   styles as the resting frame. */
+.landing-grid-bg {
+  background-image:
+    linear-gradient(color-mix(in oklch, var(--border) 60%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in oklch, var(--border) 60%, transparent) 1px, transparent 1px);
+  background-size: 3rem 3rem;
+  mask-image: radial-gradient(ellipse 60% 55% at 50% 30%, black 30%, transparent 100%);
+}
+
+.landing-edge-mask {
+  mask-image: linear-gradient(90deg, transparent, black 12%, black 88%, transparent);
+}
+
+.landing-orb {
+  --orb: 9.375rem;
+  position: relative;
+  flex-shrink: 0;
+  width: var(--orb);
+  height: var(--orb);
+  perspective: 44rem;
+}
+
+.landing-orb[data-size="sm"] {
+  --orb: 6.25rem;
+}
+
+@media (min-width: 48rem) {
+  .landing-orb {
+    --orb: 11.25rem;
+  }
+
+  .landing-orb[data-size="sm"] {
+    --orb: 7.5rem;
+  }
+}
+
+.landing-orb-tilt,
+.landing-orb-spin {
+  position: absolute;
+  inset: 0;
+  transform-style: preserve-3d;
+}
+
+.landing-orb-tilt {
+  transform: rotateX(-16deg) rotateZ(10deg);
+}
+
+.landing-orb-spin {
+  animation: landing-orb-spin 16s linear infinite;
+}
+
+.landing-orb-ring {
+  position: absolute;
+  border-radius: 9999px;
+  border: 1px solid color-mix(in oklch, var(--foreground) 28%, transparent);
+}
+
+/* Children 1–9: meridians, 20° apart around the vertical axis. */
+.landing-orb-ring:nth-child(-n + 9) { inset: 0; }
+.landing-orb-ring:nth-child(2) { transform: rotateY(20deg); }
+.landing-orb-ring:nth-child(3) { transform: rotateY(40deg); }
+.landing-orb-ring:nth-child(4) { transform: rotateY(60deg); }
+.landing-orb-ring:nth-child(5) { transform: rotateY(80deg); }
+.landing-orb-ring:nth-child(6) { transform: rotateY(100deg); }
+.landing-orb-ring:nth-child(7) { transform: rotateY(120deg); }
+.landing-orb-ring:nth-child(8) { transform: rotateY(140deg); }
+.landing-orb-ring:nth-child(9) { transform: rotateY(160deg); }
+
+/* Children 10–14: latitudes at y = ±0.66, ±0.33, 0 of the radius; each
+   diameter is √(1 − y²) of the sphere's. */
+.landing-orb-ring:nth-child(n + 10) {
+  left: 50%;
+  top: 50%;
+  width: calc(var(--orb) * var(--d));
+  height: calc(var(--orb) * var(--d));
+  margin: calc(var(--orb) * var(--d) / -2) 0 0 calc(var(--orb) * var(--d) / -2);
+  transform: translateY(calc(var(--orb) * var(--y))) rotateX(90deg);
+  border-color: color-mix(in oklch, var(--foreground) 20%, transparent);
+}
+.landing-orb-ring:nth-child(10) { --d: 0.751; --y: -0.33; }
+.landing-orb-ring:nth-child(11) { --d: 0.944; --y: -0.165; }
+.landing-orb-ring:nth-child(12) { --d: 1; --y: 0; border-color: color-mix(in oklch, var(--foreground) 45%, transparent); }
+.landing-orb-ring:nth-child(13) { --d: 0.944; --y: 0.165; }
+.landing-orb-ring:nth-child(14) { --d: 0.751; --y: 0.33; }
+
+.landing-orb-core {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: calc(var(--orb) * 0.34);
+  height: calc(var(--orb) * 0.34);
+  translate: -50% -50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9999px;
+  background: var(--foreground);
+  color: var(--background);
+}
+
+.landing-orb-ping {
+  position: absolute;
+  inset: 14%;
+  border-radius: 9999px;
+  border: 2px solid var(--color-green-600);
+  opacity: 0;
+  animation: landing-ping 2.4s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+
+.landing-ping {
+  animation: landing-ping 2.4s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+
+.landing-marquee {
+  animation: landing-marquee 45s linear infinite;
+}
+
+/* WCAG 2.2.2: the ticker is the one ambient loop beside readable content, so
+   pointing at it (or focusing anything inside its band) holds it still. */
+.landing-edge-mask:hover .landing-marquee,
+.landing-edge-mask:focus-within .landing-marquee {
+  animation-play-state: paused;
+}
+
+/* The closing orb spins far below the fold; skip its rendering until it is
+   near the viewport (the §10b `content-visibility` precedent). */
+.landing-lazy {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 32rem;
+}
+
+/* Bento and steps pictures (audit 2026-09-24): each plays once when its
+   section scrolls into view — `LandingPlay` stamps `data-inview` on every
+   `[data-play]` section — instead of looping forever. The base styles are the
+   finished frame, so the page reads complete at rest, under reduced motion,
+   and before the observer fires; each animation fills backwards from its
+   start frame. Only the orb, the live dot and the ticker still loop. */
+[data-inview] .landing-seq {
+  animation: landing-rise 0.6s var(--ease-out-soft) 0.5s backwards;
+}
+[data-inview] .landing-seq-2 { animation-delay: 1.8s; }
+[data-inview] .landing-seq-3 { animation-delay: 3s; }
+
+.landing-bars {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 0.875rem;
+}
+.landing-bars > span {
+  width: 2px;
+  border-radius: 2px;
+  background: var(--foreground);
+  transform-origin: center;
+}
+[data-inview] .landing-bars > span {
+  animation: landing-bar 1.1s ease-in-out 3;
+}
+/* The mockup's ten bar heights (fractions of 14px) and staggered phases. */
+.landing-bars > span:nth-child(1) { height: 6px; animation-delay: 0s; }
+.landing-bars > span:nth-child(2) { height: 11px; animation-delay: -0.13s; }
+.landing-bars > span:nth-child(3) { height: 14px; animation-delay: -0.26s; }
+.landing-bars > span:nth-child(4) { height: 8px; animation-delay: -0.39s; }
+.landing-bars > span:nth-child(5) { height: 13px; animation-delay: -0.52s; }
+.landing-bars > span:nth-child(6) { height: 7px; animation-delay: -0.65s; }
+.landing-bars > span:nth-child(7) { height: 11px; animation-delay: -0.78s; }
+.landing-bars > span:nth-child(8) { height: 5px; animation-delay: -0.91s; }
+.landing-bars > span:nth-child(9) { height: 9px; animation-delay: -1.04s; }
+.landing-bars > span:nth-child(10) { height: 13px; animation-delay: -0.07s; }
+
+/* FAQ uses its own plus/minus glyphs (mockup), not the primitive's chevrons. */
+.landing-faq [data-slot="accordion-trigger-icon"] {
+  display: none;
+}
+
+.landing-fill {
+  transform-origin: left;
+}
+[data-inview] .landing-fill {
+  animation: landing-fill 1.8s var(--ease-draw) 0.4s backwards;
+}
+
+/* The "now" marker: a track-wide wrapper slides, so the move is a transform
+   (percent of the track) rather than a `left` relayout every frame. */
+.landing-now {
+  transform: translateX(46%);
+}
+[data-inview] .landing-now {
+  animation: landing-now 2.4s ease-in-out 0.4s backwards;
+}
+
+[data-inview] .landing-caret {
+  animation: landing-caret 1s steps(1) 5;
+}
+
+[data-inview] .landing-glow {
+  animation: landing-glow 2.4s ease-in-out 2;
+}
+
+.landing-pulse {
+  opacity: 0;
+}
+[data-inview] .landing-pulse {
+  animation: landing-ping 2.4s cubic-bezier(0, 0, 0.2, 1) 2;
+}
+
+/* The steps traveller: a line-long wrapper carries the green dot to the last
+   step once and rests there ("go live"). */
+.landing-travel {
+  position: absolute;
+  inset: 0;
+  transform: translateY(100%);
+}
+.landing-travel::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 0;
+  width: 0.5rem;
+  height: 0.5rem;
+  translate: -50% -50%;
+  border-radius: 9999px;
+  background: var(--color-green-600);
+}
+[data-inview] .landing-travel {
+  animation: landing-travel-y 2.4s var(--ease-draw) 0.3s backwards;
+}
+
+@media (min-width: 48rem) {
+  .landing-travel {
+    transform: translateX(100%);
+  }
+  .landing-travel::before {
+    left: 0;
+    top: 50%;
+  }
+  [data-inview] .landing-travel {
+    animation-name: landing-travel-x;
+  }
+}
+
+/* Landing focus (audit 2026-09-24): the shared 50% grey ring measured about
+   1.5:1 on white. Every link and button on the page takes one solid 2px
+   outline in the foreground ink instead. */
+.landing-page :is(a, button):focus-visible {
+  outline: 2px solid var(--foreground);
+  outline-offset: 2px;
+  box-shadow: none;
+}
+
+@keyframes landing-orb-spin {
+  to { transform: rotateY(360deg); }
+}
+
+@keyframes landing-ping {
+  0% { transform: scale(1); opacity: 0.5; }
+  100% { transform: scale(1.8); opacity: 0; }
+}
+
+@keyframes landing-marquee {
+  to { transform: translateX(-50%); }
+}
+
+@keyframes landing-rise {
+  from { opacity: 0; transform: translateY(6px); }
+}
+
+@keyframes landing-bar {
+  0%, 100% { transform: scaleY(1); }
+  50% { transform: scaleY(0.3); }
+}
+
+@keyframes landing-fill {
+  from { transform: scaleX(0); }
+}
+
+@keyframes landing-now {
+  from { transform: translateX(0); }
+}
+
+@keyframes landing-caret {
+  50% { opacity: 0; }
+}
+
+@keyframes landing-glow {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in oklch, var(--background) 0%, transparent); }
+  50% { box-shadow: 0 0 0 6px color-mix(in oklch, var(--background) 18%, transparent); }
+}
+
+@keyframes landing-travel-y {
+  from { transform: translateY(0); }
+}
+
+@keyframes landing-travel-x {
+  from { transform: translateX(0); }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -304,11 +635,16 @@
 
   /* The blanket 1ms override above still leaves `infinite` iterating forever,
      just too fast to see cleanly — for a looping mark that reads as flicker,
-     not stillness. Stop it outright and let each class's own base styles
-     (resting arc, no accent) stand as the resting frame. */
+     not stillness. Stop it outright and park it on the V. */
   .voni-arc,
   .voni-arc-accent {
     animation: none !important;
+    d: path("M5 9Q12 24 19 9");
+  }
+
+  /* Rest on the green V, not the arc: the wordmark must read "Voni". */
+  .voni-arc-accent {
+    opacity: 1;
   }
 
   /* Delight amendment 2026-09-14: the shimmer is infinite, so it needs the
@@ -317,6 +653,24 @@
   .voni-shimmer {
     animation: none !important;
     background-image: none !important;
+  }
+
+  /* Landing amendment 2026-09-24 (§10c): every landing animation stops
+     outright; base styles are the finished frame (orb at rest, bubbles
+     visible, marquee parked, traveller on the last step). */
+  .landing-orb-spin,
+  .landing-orb-ping,
+  .landing-ping,
+  .landing-marquee,
+  .landing-seq,
+  .landing-bars > span,
+  .landing-fill,
+  .landing-now,
+  .landing-caret,
+  .landing-glow,
+  .landing-pulse,
+  .landing-travel {
+    animation: none !important;
   }
 }
 

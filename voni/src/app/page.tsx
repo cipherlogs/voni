@@ -1,15 +1,26 @@
-import { Suspense } from "react";
-import { Badge } from "@/components/ui/badge";
+import { Suspense, type ReactNode } from "react";
+import { Button } from "@/components/ui/button";
 import { LandingDemo } from "@/components/landing-demo";
 import { LandingHeader } from "@/components/landing-header";
-import { GridListShowcase } from "@/components/landing-grid-list";
+import { LandingOrb } from "@/components/landing-orb";
+import { LandingPlay } from "@/components/landing-play";
+import {
+  LandingBento,
+  LandingFaq,
+  LandingFooter,
+  LandingJourney,
+  LandingMarquee,
+  LandingSteps,
+} from "@/components/landing-sections";
 import { headers } from "next/headers";
-import { FooterYear, PUBLIC_CONTAINER, SiteFooter } from "@/components/site-footer";
+import { FooterYear, PUBLIC_CONTAINER } from "@/components/site-footer";
 import { auth } from "@/lib/auth";
 import { devBypassEnabled } from "@/lib/dev-bypass";
 
-/* Public gutter is shared from site-footer.tsx (PUBLIC_CONTAINER) so the landing
-   document and the shared footer cannot drift apart. */
+/* Measured to the approved B1 mockup (DESIGN.md §10c): 1152px measure on
+   desktop, 16px gutters on phones. The public gutter literal lives in
+   site-footer.tsx (PUBLIC_CONTAINER) so nothing drifts. */
+const SECTION = `${PUBLIC_CONTAINER} max-md:px-4`;
 
 /**
  * Session-dependent header controls behind their own boundary (Task 9): the
@@ -28,44 +39,133 @@ async function LandingHeaderGate() {
   );
 }
 
+function DemoLink({ children }: { children: ReactNode }) {
+  return (
+    <Button
+      nativeButton={false}
+      variant="outline"
+      render={<a href="#demo" />}
+      className="h-11 rounded-md px-4.5"
+    >
+      {children}
+    </Button>
+  );
+}
 
+/* The mockup balances section headings on desktop only; phones wrap naturally. */
+const H2 = "text-3xl md:text-title leading-[1.15] font-semibold tracking-[-0.025em] md:leading-[1.12]";
 
 export default function LandingPage() {
   return (
-    <div className="flex flex-1 flex-col">
-      <Suspense fallback={null}>
+    <div className="landing-page bg-background flex flex-1 flex-col">
+      <a
+        href="#main"
+        className="bg-background sr-only z-50 rounded-md border px-3 py-2 text-sm focus:not-sr-only focus:fixed focus:top-3 focus:left-3"
+      >
+        Skip to content
+      </a>
+      {/* Same-height placeholder: when the session check streams in late,
+          the header no longer pushes the hero down (measured CLS 0.045). */}
+      <Suspense fallback={<div className="h-14 border-b md:h-16" />}>
         <LandingHeaderGate />
       </Suspense>
+      <LandingPlay />
 
-      <section data-testid="landing-shell" className={`${PUBLIC_CONTAINER} flex flex-col items-center gap-7 py-16 text-center md:py-24`}>
-        <Badge variant="secondary">Live voice calls</Badge>
-        <h1 className="max-w-3xl font-editorial text-4xl font-medium tracking-tight text-balance md:text-5xl md:leading-tight">
-          An AI employee with a mission, not another chatbot
-        </h1>
-        <p className="text-muted-foreground max-w-xl text-lg leading-relaxed text-balance">
-          Describe the outcome you want. Your agent calls leads, remembers
-          every conversation across phone and WhatsApp, and shows you exactly
-          why it made each decision.
-        </p>
+      <main id="main" className="flex flex-col">
+        {/* One-column B1 hero (DESIGN.md §10c): claim on top, the live call
+            card beneath it at the mockup's 880px. The card's green Start call
+            is the page's only call to action. */}
+        <section data-testid="landing-shell" className="relative">
+          <div aria-hidden="true" className="landing-grid-bg absolute inset-0" />
+          <div className={`${SECTION} relative flex flex-col items-center gap-8 pt-10 pb-14 md:gap-14 md:pt-22 md:pb-24`}>
+            <div className="flex flex-col items-center gap-4.5 text-center md:gap-6">
+              <span className="bg-background inline-flex h-7 items-center rounded-full border px-2.5 text-xs font-medium">
+                Phone and WhatsApp voice agents
+              </span>
+              <h1 className="font-editorial text-hero-sm md:text-hero max-w-225 font-medium tracking-[-0.03em] text-balance">
+                An AI employee with a mission, <em>not another chatbot</em>
+              </h1>
+              <p className="text-muted-foreground max-w-140 text-base leading-[1.6] text-pretty md:text-lg md:leading-[1.6]">
+                Describe the outcome. Your agent calls leads, remembers every
+                conversation, and shows you why it made each decision.
+              </p>
+            </div>
 
-        {/* Live-demo widget: Vapi's pattern (mic + scenario + one-click call)
-            — see plan Section E. Public and unauthenticated, so it runs in
-            demo mode against a server-owned stored agent, behind per-IP and
-            per-day rate limits. Constrained to the document measure so the
-            widget reads as part of the hero composition, not a bolted-on
-            embed. */}
-        <div className="mx-auto w-full max-w-2xl pt-4">
-          <LandingDemo />
-        </div>
-      </section>
+            {/* The call card is VoiceCall's demo layout (orb portrait inside,
+                §10c). Public and unauthenticated, so it runs in demo mode
+                against a server-owned stored agent, behind per-IP and per-day
+                limits. */}
+            <div id="demo" className="w-full scroll-mt-24 md:max-w-220">
+              <LandingDemo />
+            </div>
+          </div>
+        </section>
 
-      <section className="border-t">
-        <div className={`${PUBLIC_CONTAINER} py-16 md:py-20`}>
-          <GridListShowcase />
-        </div>
-      </section>
+        <section aria-label="What the agent can do" className="bg-background border-y py-4.5 md:py-6">
+          <LandingMarquee />
+        </section>
 
-      <SiteFooter
+        <section id="journey" className="scroll-mt-16">
+          <div className={`${SECTION} flex flex-col gap-8 py-16 md:gap-12 md:py-24`}>
+            <div className="flex flex-col gap-3 md:gap-3.5">
+              <h2 className={H2}>From first call to booked viewing.</h2>
+              <p className="text-muted-foreground max-w-140 text-base leading-[1.6]">
+                One example lead, the way Voni records it: the call, the booking
+                and the WhatsApp follow-up land on the same record.
+              </p>
+            </div>
+            <LandingJourney />
+          </div>
+        </section>
+
+        <section id="features" data-play className="bg-muted/50 scroll-mt-16 border-t">
+          <div className={`${SECTION} flex flex-col gap-8 py-16 md:gap-12 md:py-24`}>
+            <h2 className={`${H2} md:max-w-200 md:self-center md:text-center md:text-balance`}>
+              Set up in a wizard. Remembers every lead. Asks before going live.
+            </h2>
+            <LandingBento />
+          </div>
+        </section>
+
+        <section id="how" data-play className="scroll-mt-16 border-t">
+          <div className={`${SECTION} flex flex-col gap-8 py-16 md:gap-14 md:py-24`}>
+            <h2 className={H2}>Rehearse every campaign before a real call.</h2>
+            <LandingSteps />
+          </div>
+        </section>
+
+        <section id="faq" className="scroll-mt-16 border-t">
+          <div className={`${SECTION} flex flex-col gap-6 py-16 md:flex-row md:gap-24 md:py-24`}>
+            <div className="flex shrink-0 flex-col gap-3.5 md:w-90">
+              <h2 className={H2}>Before you let it call your leads</h2>
+              <p className="text-muted-foreground text-base leading-[1.6]">
+                Rather hear it?{" "}
+                <a href="#demo" className="text-foreground underline underline-offset-3">
+                  Hear it handle a real enquiry
+                </a>
+                .
+              </p>
+            </div>
+            <div className="flex-1">
+              <LandingFaq />
+            </div>
+          </div>
+        </section>
+
+        <section className="landing-lazy border-t">
+          <div className={`${SECTION} flex flex-col items-center gap-5 py-16 text-center md:gap-6 md:py-28`}>
+            <LandingOrb size="sm" />
+            <h2 className="font-editorial text-display-sm md:text-display max-w-180 font-medium tracking-[-0.025em] md:text-balance">
+              Hear it before you build it.
+            </h2>
+            <div className="flex w-full flex-col gap-2 md:w-auto md:flex-row md:gap-2.5">
+              <DemoLink>Try the live demo</DemoLink>
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <LandingFooter
         year={
           <Suspense fallback={<span>© Voni</span>}>
             <FooterYear />

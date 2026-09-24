@@ -597,6 +597,108 @@ styles as the static frame.
   Shell. Prefetch-silent venues pass `prefetchOnIntent={false}` (the
   throwaway gallery did until ticket 08 deleted it).
 
+## 10c. Landing orb amendment (2026-09-24, landing track)
+
+User-approved direction "B1 · Orb" (three-round mockup review on the Design
+canvas, 2026-09-24), then a pixel-parity pass against that mockup. Scope: the
+public landing page (`app/page.tsx`, `landing-orb.tsx`,
+`landing-sections.tsx`, `landing-header.tsx`) and `voice-call.tsx`'s **demo**
+branch. Nothing here applies inside the app shell.
+
+> **Audit amendment (2026-09-24, user-approved landing audit, all items but
+> #21) — overrides anything below that disagrees.** Measured in the running
+> app (headless Chromium, 1440/1280/1024/390/320, keyboard, reduced motion);
+> report: https://claude.ai/artifact/2hfPCeJGCAhCgmX1tud91y.
+>
+> - **Contrast:** the live-call fill is `--color-green-700` (white on
+>   green-600 was 3.22:1). Caption grey is `foreground/60` (55% was 4.4:1).
+>   Dots, rings and the traveller keep green-600 (non-text).
+> - **One call action (hero pass, 2026-09-24, overrides the audit):** the demo
+>   card's Start call is the page's only CTA and only green button. The hero
+>   has no buttons; the closing keeps only an outline "Try the live demo"
+>   link. "Build your agent" is gone; the header's `/signup` link says "Get
+>   started". The hero pill has no badge or dot.
+> - **Composition:** one-column B1 hero at every width (hero pass,
+>   2026-09-24, reverts the audit's split): pill, `text-hero` h1, subtitle,
+>   then the call card at `max-w-220` (880px). New "From first call to booked viewing" section after the
+>   ticker: one example lead as a record log using the real tool names,
+>   labelled as an example. Eyebrows are cut (craft floor ban); section `h2`s
+>   make claims. Bento rows size to content; closing padding `md:py-28`.
+> - **Motion:** only the orb, the live ping and the ticker loop. Bento and
+>   steps pictures play once when their section enters the viewport
+>   (`LandingPlay` stamps `data-inview` on `[data-play]` sections); base styles
+>   are the finished frame. The ticker pauses on hover/focus. No animation
+>   moves `left`/`top`. The closing section is `content-visibility: auto`.
+> - **Mark:** the logo loop holds the V for most of its cycle and rests on the
+>   green V under reduced motion, so the lockup reads "Voni"; the orb core
+>   uses the same animated mark.
+> - **Demo card (orb first, round 3 of the canvas, 2026-09-24):** at rest
+>   there is no card, only the orb, a scenario switcher (‹ › buttons around
+>   the persona name and role, locked during a call), a green Start call and
+>   the disclosure line. Starting opens the card over `--motion-reveal`
+>   (850ms) on `--ease-out-soft`. From `lg` up, **A · Unfold**: the 360px
+>   portrait widens into the 880px card, a header strip slides down and the
+>   transcript fades in. Below `lg`, **B · Rise**: the orb flies into the
+>   header's corner, the name, status and Hang up fade in beside it, and the
+>   transcript drops open underneath. Both are rendered and one is hidden per
+>   breakpoint. A finished call stays open with Call again and Close; Close
+>   folds it back to the orb. No mute button. Tool chips (plain-English
+>   label, dashed while working, then a green check and result) land in the
+>   transcript after the agent's 2nd and 4th replies. They are scripted per
+>   persona until the demo agents carry real function tools.
+> - **Landmarks and focus:** content sits in `<main id="main">` behind a skip
+>   link; landing links and buttons take a 2px foreground outline on
+>   `:focus-visible`. The header Suspense fallback is a same-height
+>   placeholder (a late session check shifted the hero, CLS 0.045).
+> - **Terms/Privacy:** not shipped yet. The "real anchors" line below is
+>   pending pages with confirmed content; do not link to routes that don't
+>   exist.
+
+- **Pixel parity is the contract.** The B1 artboards (1440 desktop, 390
+  mobile) are the spec; section heights and element positions were diffed
+  numerically against a static render of them. Change the mockup first, then
+  the code.
+- **Light-only.** `ThemeProvider` forces `light` on `/` (not persisted, so
+  other routes keep the visitor's pick); the landing header has no toggle.
+- **Measure:** `PUBLIC_CONTAINER` is `max-w-300 px-6` (1152px content, the
+  mockup's measure; auth frames share it), 16px gutters below `md`.
+- **Type tokens (in `@theme`, never arbitrary `text-[…]`):** `text-2xs` 11px,
+  `text-ui` 13px, `text-md` 15px, `text-lead` 17px, `text-title` 40px,
+  `text-hero-sm`/`text-hero` 42/76px, `text-display-sm`/`text-display`
+  38/56px, plus `shadow-landing` for the call card. Serif (Amendment A) on
+  the hero `h1` and the closing CTA `h2`; section `h2`s stay sans.
+- **Composition:** centered hero → demo call card → tool marquee → bento
+  (wizard spans two columns; copilot cell inverts) → three steps → FAQ
+  (`Accordion`, plus/minus glyphs) → closing CTA with the small orb →
+  `LandingFooter` (mono year + real links only). Auth screens keep
+  `SiteFooter`.
+- **Demo call card (`voice-call.tsx`, demo mode only):** three scenario tabs
+  (the first three personas, labelled by vertical), the orb portrait, name,
+  live state (`landing-ping` dot), a working mute (`setInputMuted`) and
+  hang-up, and a flat live transcript on `MessageScroller`. Each caller keeps
+  its default voice; the language/voice pickers are cut (the mockup has
+  none). The demo disclosure (2 minutes, microphone, daily cap) sits in the
+  idle state. This lifts §10's motion-free rule for the demo branch only;
+  the inline test-call card stays motion-free (pinned).
+- **The orb:** CSS-3D only (`preserve-3d`, nine meridians + five latitudes as
+  `nth-child` rules off one `--orb` variable: 150/180px, small 100/120px),
+  no WebGL, no new dependency.
+- **Motion (landing only):** `landing-orb-spin`, `landing-ping`,
+  `landing-marquee`, `landing-seq`, `landing-bar`, `landing-fill`,
+  `landing-now`, `landing-pick`, `landing-caret`, `landing-glow`,
+  `landing-travel-x`/`-y`. Raw loop durations (§10b precedent). Every
+  looping class has its own `animation: none` line under reduced motion with
+  the base styles as the resting frame; `landing-auth.test.ts` enforces it.
+- **Color:** token-only (`color-mix`, `foreground/55` for the mockup's
+  caption grey). The live-call green scope widens to the landing call CTAs
+  (`.voice-call-live-fill`) and dots (`.voice-call-live-dot`); inside
+  landing CSS `--color-green-600` marks moving/moment elements only.
+- **Content:** decorative visuals are `aria-hidden`; no invented people (the
+  mockup's "Brief for Sam" ships as "Handoff brief"), no pricing, stats, or
+  testimonials (PRODUCT.md). The mockup's pricing FAQ row ships as a true
+  languages row; its Terms/Privacy links ship as real anchors.
+- **Retired with it:** `landing-grid-list.tsx` and its ticket-02 pin.
+
 ## Appendix A — Route table (keep vs replace)
 
 Markup replaced, logic kept, unless noted:

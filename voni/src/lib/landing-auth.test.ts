@@ -20,26 +20,32 @@ function readRepo(relative: string): string {
 
 test("landing hero reads as one document composition with logic frozen", () => {
   const landing = readRepo("app/page.tsx");
-  // Composition: badge, serif headline, subcopy, integrated demo widget.
-  assert.match(landing, /Live voice calls/, "hero badge stays");
+  // Composition (DESIGN.md §10c): badge, serif headline, subcopy, call CTA,
+  // then the orb beside the live-demo widget.
+  assert.match(landing, /Phone and WhatsApp voice agents/, "hero badge stays");
   assert.match(landing, /font-editorial/, "serif headline stays");
-  assert.match(landing, /tracking-tight/, "tight tracking stays");
+  assert.match(landing, /tracking-\[-0\.03em\]/, "hero keeps the mockup's tight tracking");
   assert.match(landing, /text-balance/, "balanced wrapping stays");
   assert.match(landing, /text-muted-foreground/, "plain-language subcopy tone stays");
-  assert.match(landing, /max-w-3xl/, "headline keeps its constrained measure");
-  assert.match(landing, /max-w-xl/, "subcopy keeps its constrained measure");
+  assert.match(landing, /max-w-225/, "headline keeps the mockup's 900px measure");
+  assert.match(landing, /max-w-140/, "subcopy keeps the mockup's 560px measure");
   assert.match(landing, /LandingDemo/, "live-demo widget stays in the hero");
-  // Demo widget sits in the same composition measure, not full-bleed.
-  assert.match(landing, /max-w-2xl/, "demo wrapper shares the document measure");
-  // Section-whitespace rhythm: hero and feature sections share one gutter
-  // literal (PUBLIC_CONTAINER in site-footer.tsx), not a copy per file.
+  assert.match(landing, /LandingOrb/, "closing CTA carries the small orb");
+  assert.match(landing, /id="demo"/, "demo links have an anchor to land on");
+  // Audit 2026-09-24: one call action. The demo card's Start call is the only
+  // green on the page; hero and closing CTAs sign up or link to the demo.
+  assert.doesNotMatch(landing, /voice-call-live-fill/, "no scroll-only green call button");
+  assert.match(landing, /<main id="main"/, "page content sits in a main landmark");
+  assert.match(landing, /href="#main"/, "skip link targets the main landmark");
+  // Section-whitespace rhythm: every section shares one gutter literal
+  // (PUBLIC_CONTAINER in site-footer.tsx), not a copy per file.
   assert.match(landing, /PUBLIC_CONTAINER/, "hero shares the public gutter");
-  assert.doesNotMatch(landing, /max-w-6xl px-6/, "gutter literal lives in one module");
+  assert.doesNotMatch(landing, /max-w-300 px-6/, "gutter literal lives in one module");
   const footerGutter = readRepo("components/site-footer.tsx");
   assert.match(
     footerGutter,
-    /max-w-6xl px-6/,
-    "one gutter literal for header, hero, grid, and footer"
+    /max-w-300 px-6/,
+    "one gutter literal (1152px measure) for hero, sections, and footer"
   );
   assert.match(landing, /py-16/, "hero on the section-whitespace rhythm");
   assert.match(landing, /md:py-24/, "hero keeps its generous desktop rhythm");
@@ -53,25 +59,52 @@ test("landing hero reads as one document composition with logic frozen", () => {
   const demo = readRepo("components/landing-demo.tsx");
   assert.match(demo, /VoiceCall/, "demo widget keeps the voice surface");
   assert.match(demo, /kind: "demo"/, "demo-mode wiring stays");
+
+  // The orb is the demo card's portrait (§10c); inline test calls stay
+  // motion-free, so landing motion appears only inside the demo branch.
+  const call = readRepo("components/voice-call.tsx");
+  assert.match(call, /<LandingOrb \/>/, "demo card uses the orb portrait");
+  const inline = call.slice(call.indexOf("// Fills its host rail"));
+  assert.doesNotMatch(inline, /landing-|LandingOrb/, "inline call card stays motion-free");
+
+  // Light-only landing (§10c): forced on "/", no theme toggle in its header.
+  const theme = readRepo("components/theme-provider.tsx");
+  assert.match(theme, /usePathname\(\) === "\/" \? "light"/, "landing forces the light theme");
+  const header = readRepo("components/landing-header.tsx");
+  assert.doesNotMatch(header, /ModeToggle/, "landing header has no theme toggle");
 });
 
-test("feature Tile grid uses flat card tokens with ring hairlines", () => {
-  const grid = readRepo("components/landing-grid-list.tsx");
-  assert.match(grid, /bg-card/, "flat card token surface");
-  assert.match(grid, /ring-1/, "crisp ring hairline");
-  assert.match(grid, /ring-foreground\/10/, "hairline on the foreground token");
-  assert.match(grid, /p-8/, "generous card padding");
-  assert.match(grid, /gap-6/, "generous grid rhythm");
-  assert.match(grid, /mt-auto|min-h-/, "bottom-anchored content");
-  assert.match(grid, /duration-\[var\(--motion-standard\)\]/, "hover breath on the shared standard");
-  // No primary-color fills, gradients, neon, or glass on the marketing grid.
-  assert.doesNotMatch(grid, /bg-primary/, "no primary-color fills");
-  assert.doesNotMatch(grid, /gradient|neon|glass|backdrop-blur/, "no hype surfaces");
+test("landing motion is decorative, token-only, and stops under reduced motion", () => {
+  const sections = readRepo("components/landing-sections.tsx");
+  const orb = readRepo("components/landing-orb.tsx");
+  assert.match(orb, /aria-hidden="true"/, "orb is decorative");
+  assert.match(sections, /aria-hidden="true"/, "bento visuals are decorative");
+  assert.doesNotMatch(sections + orb, /style=\{/, "no inline style objects");
   // Plain-language copy: no carnival verbs, no placeholder names.
-  assert.doesNotMatch(grid, /revolutionize|supercharge|unlock|seamless|powerful/i, "no hype copy");
-  assert.doesNotMatch(grid, /acme|lorem|john doe/i, "no placeholder names");
-  // Icon sizing stays primitive-owned.
-  assert.match(grid, /size-4/, "icon keeps its primitive size");
+  assert.doesNotMatch(sections, /revolutionize|supercharge|unlock|seamless|powerful/i, "no hype copy");
+  assert.doesNotMatch(sections, /acme|lorem|john doe/i, "no placeholder names");
+
+  const css = readRepo("app/globals.css");
+  const reduced = css.slice(css.indexOf("@media (prefers-reduced-motion: reduce)"));
+  const loops = [...css.matchAll(/^\.(landing-[a-z-]+)\s*\{[^}]*infinite/gm)].map((m) => m[1]);
+  assert.ok(loops.length > 0, "landing loops exist");
+  for (const cls of loops) {
+    assert.match(reduced, new RegExp(`\\.${cls}\\b`), `${cls} stops under reduced motion`);
+  }
+  // Audit 2026-09-24: bento and steps pictures play once when seen; only the
+  // orb, the pings and the ticker may loop, and every played class stops
+  // under reduced motion too.
+  assert.deepEqual(
+    loops.sort(),
+    ["landing-marquee", "landing-orb-ping", "landing-orb-spin", "landing-ping"],
+    "only the orb, the live ping and the ticker loop"
+  );
+  const played = [...css.matchAll(/^\[data-inview\] \.(landing-[a-z-]+)[^{]*\{\s*animation:/gm)].map((m) => m[1]);
+  assert.ok(played.length > 0, "in-view animations exist");
+  for (const cls of played) {
+    assert.match(reduced, new RegExp(`\\.${cls}\\b`), `${cls} stops under reduced motion`);
+  }
+  assert.doesNotMatch(css, /@keyframes landing-[a-z-]+\s*\{[^}]*\b(left|top):/, "landing motion never animates left/top");
 });
 
 test("auth screens keep the login idiom with shared footer language", () => {

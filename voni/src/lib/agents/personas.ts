@@ -83,7 +83,7 @@ export const PERSONAS: Persona[] = [
     name: "Layla",
     vertical: "Real estate",
     pitch: "Qualifies a property lead and books a viewing.",
-    yourRole: "You enquired about a 2-bedroom apartment in Abu Dhabi.",
+    yourRole: "You enquired about a 2\u2011bedroom apartment in Abu Dhabi.",
     voiceId: "anna",
     config: {
       ...REAL_ESTATE_TEMPLATE,

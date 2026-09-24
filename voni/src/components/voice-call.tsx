@@ -1,15 +1,24 @@
 "use client";
 
 import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
-import Image from "next/image";
 import {
-  Phone,
-  PhoneOff,
+  Check,
   ChevronLeft,
   ChevronRight,
+  Phone,
+  PhoneOff,
   TriangleAlert,
 } from "lucide-react";
+import { LandingOrb } from "@/components/landing-orb";
 import { Button } from "@/components/ui/button";
+import {
+  MessageScroller,
+  MessageScrollerButton,
+  MessageScrollerContent,
+  MessageScrollerItem,
+  MessageScrollerProvider,
+  MessageScrollerViewport,
+} from "@/components/ui/message-scroller";
 import { LoadingButton } from "@/components/loading-button";
 import { Chat01 } from "@/components/chat-01/chat-01";
 import { Progress } from "@/components/ui/progress";
@@ -33,14 +42,7 @@ import { compileSystemPrompt } from "@/lib/agents/compile";
 import type { AgentConfig } from "@/lib/agents/config";
 import { compileVoiceTools } from "@/lib/tools/definitions";
 import { formatCallStatus } from "@/lib/calls/call-status";
-import { PERSONAS, personaConfig, type Persona } from "@/lib/agents/personas";
-import {
-  VOICES,
-  getVoice,
-  voiceLabel,
-  ACCENT_LABEL,
-  type Voice,
-} from "@/lib/agents/voices";
+import { PERSONAS, personaConfig } from "@/lib/agents/personas";
 import { cn } from "@/lib/utils";
 
 /**
@@ -54,22 +56,11 @@ import { cn } from "@/lib/utils";
  *    mode and letting a single flexing region absorb every variable-length
  *    thing inside it. Nothing outside the card can move now.
  *
- * 2. **"Pick an agent" / "pick a voice" were separate screens of long lists.**
- *    Two failures in one: navigating away from the call to configure it broke
- *    the model people came in with, and sixteen voice names is a lot of reading
- *    for a choice nobody has an opinion about yet.
- *
- *    Replaced with direct manipulation, all on the one card:
- *      - a row of faces. Tap a face and that person calls you. Nothing to read
- *        and no screen to return from — the selection IS the portrait you are
- *        already looking at.
- *      - a language row, because "what language does it speak" is the thing a
- *        visitor does have an opinion about. Which of eleven English voices is
- *        not, so that collapses to a small ‹ name › cycler.
- *
- *    Both are disabled, not hidden, during a call: the geometry stays put, and
- *    the voice genuinely is immutable once a session starts, so disabling it
- *    prevents an error rather than merely discouraging one.
+ * 2. **Demo mode is its own layout.** The landing call card (DESIGN.md §10c):
+ *    three scenario tabs, the orb portrait with live state, mute and hang-up,
+ *    and a flat live transcript. Each caller keeps its own default voice; the
+ *    tabs are disabled, not hidden, during a call because the voice genuinely
+ *    is immutable once a session starts.
  *
  * The rest follows the phone-call model people already have — portrait, name,
  * one pill to call, a timer while connected, a red circle to hang up, captions
@@ -90,15 +81,6 @@ type Mode =
     }
   | { kind: "demo" };
 
-/** Output languages, in the order the row shows them. */
-const LANGUAGE_TABS: { code: string; label: string }[] = [
-  { code: "en", label: "English" },
-  { code: "es", label: "Español" },
-  { code: "fr", label: "Français" },
-  { code: "de", label: "Deutsch" },
-  { code: "it", label: "Italiano" },
-  { code: "pt", label: "Português" },
-];
 
 /**
  * Call = green solid fill, hang up = red solid fill. Universal across every
@@ -143,46 +125,135 @@ const ERROR_BODY =
  * dot + state text + hang-up affordance.
  */
 
-function voicesFor(code: string): Voice[] {
-  return VOICES.filter((v) => v.languageCode === code);
+
+
+
+/** The landing demo's three scenario tabs (mockup B1). */
+const DEMO_PERSONAS = PERSONAS.slice(0, 3);
+
+type DemoChip = { afterReply: number; pending: string; done: string };
+
+// ponytail: scripted chips keyed to the agent's reply count, not real tool
+// calls. Replace with tool.call events once the demo agents carry function
+// tools (stored agents' HTTP tools never reach the browser).
+const DEMO_CHIPS: Record<string, DemoChip[]> = {
+  "real-estate": [
+    { afterReply: 2, pending: "Checking availability…", done: "2 viewings open" },
+    { afterReply: 4, pending: "Booking a viewing…", done: "Booked Sat 10:30" },
+  ],
+  "car-dealership": [
+    { afterReply: 2, pending: "Checking the calendar…", done: "3 test-drive slots" },
+    { afterReply: 4, pending: "Booking a test drive…", done: "Booked Thu 17:00" },
+  ],
+  restaurant: [
+    { afterReply: 2, pending: "Checking tables…", done: "Table for 4 free" },
+    { afterReply: 4, pending: "Booking the table…", done: "Booked Fri 20:00" },
+  ],
+};
+
+/** A tool chip: dashed while "running", then settles to a checked result. */
+function DemoChipRow({ chip }: { chip: DemoChip }) {
+  const [done, setDone] = useState(false);
+  useEffect(() => {
+    const id = setTimeout(() => setDone(true), 1500);
+    return () => clearTimeout(id);
+  }, []);
+  return (
+    <div
+      className={cn(
+        "flex h-9 items-center justify-between gap-3 rounded-lg border px-3 text-xs",
+        done ? "bg-muted/50" : "border-foreground/20 text-foreground/70 border-dashed",
+      )}
+    >
+      <span>{chip.pending.replace("…", "")}</span>
+      {done ? (
+        <span className="flex items-center gap-1.5 font-medium">
+          <Check aria-hidden className="size-3.5 text-green-600" />
+          {chip.done}
+        </span>
+      ) : (
+        <span className="text-muted-foreground">Working…</span>
+      )}
+    </div>
+  );
 }
 
-
-function Portrait({
-  persona,
-  size,
-  className = "",
+/**
+ * Demo transcript in the mockup's flat idiom: a small speaker label over
+ * each line, the live caption as the trailing muted line, a dashed row while
+ * a tool runs. Scrolling and follow stay on MessageScroller.
+ */
+function DemoTranscript({
+  turns,
+  agentName,
+  liveCaption,
+  toolActive,
+  chips,
+  footer,
 }: {
-  persona: Persona;
-  size: number;
-  className?: string;
+  turns: Transcript[];
+  agentName: string;
+  liveCaption: { role: "user" | "agent"; text: string } | null;
+  toolActive: boolean;
+  chips: DemoChip[];
+  footer: React.ReactNode;
 }) {
-  const [failed, setFailed] = useState(false);
-
-  // Portrait sizes are known branches only (36 picker, 84 card, 84 inline)
-  // so geometry stays on the scale — never a computed px style.
-  const sizeClass = size <= 36 ? "size-9 text-sm" : "size-21 text-3xl";
-  if (!persona.portrait || failed) {
-    return (
-      <div
-        className={`bg-muted text-muted-foreground flex shrink-0 items-center justify-center rounded-full font-medium ${sizeClass} ${className}`}
-        aria-hidden
-      >
-        {persona.name.charAt(0)}
-      </div>
-    );
-  }
-
+  const lines = liveCaption ? [...turns, { ...liveCaption, live: true }] : turns;
+  let replies = 0;
   return (
-    <Image
-      src={persona.portrait}
-      alt=""
-      width={size}
-      height={size}
-      className={`shrink-0 rounded-full object-cover ${sizeClass} ${className}`}
-      onError={() => setFailed(true)}
-      priority
-    />
+    <MessageScrollerProvider autoScroll defaultScrollPosition="end">
+      <MessageScroller className="min-h-0 flex-1">
+        <MessageScrollerViewport aria-label="Call transcript" aria-live="polite">
+          <MessageScrollerContent className="flex flex-col gap-3">
+            {lines.flatMap((line, index) => {
+              // A chip follows the finalized agent reply that triggers it.
+              const chip =
+                line.role === "agent" && !("live" in line)
+                  ? chips.find((c) => c.afterReply === ++replies)
+                  : undefined;
+              const row = (
+                <MessageScrollerItem
+                  key={`${index}-${line.role}`}
+                  messageId={`${index}-${line.role}`}
+                  className="flex flex-col gap-1"
+                >
+                  <span className="text-foreground/60 text-xs leading-[normal]">
+                    {line.role === "user" ? "You" : agentName}
+                  </span>
+                  <span
+                    className={cn(
+                      "text-sm leading-[1.55]",
+                      "live" in line && "text-foreground/70",
+                    )}
+                  >
+                    {line.text}
+                  </span>
+                </MessageScrollerItem>
+              );
+              return chip
+                ? [
+                    row,
+                    <MessageScrollerItem key={`chip-${index}`} messageId={`chip-${index}`}>
+                      <DemoChipRow chip={chip} />
+                    </MessageScrollerItem>,
+                  ]
+                : [row];
+            })}
+            {toolActive ? (
+              <MessageScrollerItem
+                messageId="tool"
+                className="border-foreground/20 text-foreground/70 flex h-9 items-center justify-between rounded-md border border-dashed px-3 font-mono text-xs"
+              >
+                <span>Using a tool</span>
+                <span className="text-muted-foreground">running</span>
+              </MessageScrollerItem>
+            ) : null}
+          </MessageScrollerContent>
+        </MessageScrollerViewport>
+        <MessageScrollerButton />
+      </MessageScroller>
+      {footer ? <div className="flex flex-col items-center gap-1.5 pt-2">{footer}</div> : null}
+    </MessageScrollerProvider>
   );
 }
 
@@ -262,6 +333,8 @@ export function VoiceCall({
   // instead of silently dropping clicks (visual feedback protocol).
   const [starting, setStarting] = useState(false);
   const [hangingUp, setHangingUp] = useState(false);
+  /** Demo: Close folds a finished call back to the lone orb. */
+  const [closed, setClosed] = useState(false);
 
   const sessionRef = useRef<VoiceSession | CascadeSession | null>(null);
   const startingRef = useRef(false);
@@ -292,11 +365,6 @@ export function VoiceCall({
     [mode, persona, voiceId],
   );
 
-  const effectiveVoiceId = mode.kind === "inline" ? config.voiceId : voiceId;
-  const voice = getVoice(effectiveVoiceId);
-  const langCode = voice?.languageCode ?? "en";
-  const siblings = voicesFor(langCode);
-  const voiceIndex = siblings.findIndex((v) => v.id === effectiveVoiceId);
 
   const displayName = config.identity.name;
   const remaining = capSeconds - elapsed;
@@ -375,6 +443,7 @@ export function VoiceCall({
     setToolActive(false);
     setFiller(null);
     setLiveCaption(null);
+    setClosed(false);
     interruptionsRef.current = 0;
     timingsRef.current = new CallTimings();
     timingsRef.current.mark("startRequested");
@@ -580,18 +649,7 @@ export function VoiceCall({
   // ai-05 dialog host drives start/hang-up from its own header buttons.
   useImperativeHandle(ref, () => ({ start, hangUp }), [start, hangUp]);
 
-  const pickLanguage = (code: string) => {
-    const next = voicesFor(code)[0];
-    if (next) setVoiceId(next.id);
-  };
 
-  const cycleVoice = (delta: number) => {
-    const next =
-      siblings[(voiceIndex + delta + siblings.length) % siblings.length];
-    if (next) setVoiceId(next.id);
-  };
-
-  const frozen = active ? "pointer-events-none opacity-35" : "";
 
   // The heading the rail's aside is labelled by: in inline mode the host
   // page provides it via aria-label, but a bare card still needs its own
@@ -613,78 +671,356 @@ export function VoiceCall({
   // Mockup mic-hint: the speaks-first instruction, not a repeat of the lede
   // above it. Shared by the empty-state block and the transcript footer below
   // so the hint survives once captions appear mid-call.
-  const micHint = isDemo
-    ? `Uses your microphone · ${capSeconds / 60} min max · Just talk — it speaks first.`
-    : `Uses your microphone · ${capSeconds / 60} min max · Just talk — it speaks first.`;
+  const micHint = `Uses your microphone · ${capSeconds / 60} min max · Just talk — it speaks first.`;
+
+  // "What is happening right now" — shared by both layouts; only rendered
+  // off-idle.
+  const statusText =
+    state === "connecting"
+      ? "Calling…"
+      : connected
+        ? toolActive
+          ? (filler ?? "Looking that up…")
+          : (filler ??
+            `${formatCallStatus(elapsed)} · ${state === "speaking" ? "speaking" : "listening"}`)
+        : quotaExceeded
+          ? "Free demo time is up"
+          : `Call ended · ${formatCallStatus(elapsed)}`;
+
+  const errorAlert = error ? (
+    <div
+      role="alert"
+      className="border-destructive/25 bg-destructive/5 flex w-full gap-2.5 rounded-xl border px-3 py-2.5 text-left"
+    >
+      <TriangleAlert className="text-destructive mt-px size-4 shrink-0" />
+      <div>
+        {retryIn !== null ? (
+          <>
+            <strong className="block text-sm font-semibold">
+              Too many calls right now
+            </strong>
+            <p className={`mt-0.5 text-xs leading-snug ${ERROR_BODY}`}>
+              {retryIn > 0
+                ? `Try again in ${retryIn}s. The ${isDemo ? "demo" : "test call"} limit resets automatically.`
+                : "You can try again now."}
+            </p>
+          </>
+        ) : (
+          <p className={`text-xs leading-snug ${ERROR_BODY}`}>{error.message}</p>
+        )}
+      </div>
+    </div>
+  ) : null;
+
+  const countdown =
+    connected && remaining <= 30 ? (
+      <>
+        <p className="text-muted-foreground text-xs">{`${remaining}s left on this call`}</p>
+        <Progress
+          value={Math.max(0, (remaining / 30) * 100)}
+          aria-label="Time left on this call"
+          className="w-32"
+        />
+      </>
+    ) : null;
+
+  const liveCaptionLine = liveCaption ? (
+    <p className="text-xs italic" aria-live="polite">
+      {liveCaption.role === "user" ? "You: " : `${displayName}: `}
+      {liveCaption.text}
+    </p>
+  ) : null;
+
+  // ── Demo layout ────────────────────────────────────────────────────────
+  // The landing call (DESIGN.md §10c, round 3 "orb first"): at rest only the
+  // orb, a scenario switcher and Start call show. Starting opens the card
+  // around them: from lg it unfolds sideways into the portrait + transcript
+  // card (A · Unfold); below lg the orb rises into a compact header and the
+  // transcript drops open beneath it (B · Rise). Both layouts are rendered and
+  // one is display:none per breakpoint, so neither ever measures the window.
+  if (isDemo) {
+    const open = (starting || state !== "idle" || error !== null) && !closed;
+    const reveal = "duration-(--motion-reveal) ease-(--ease-out-soft)";
+    const personaIndex = DEMO_PERSONAS.findIndex((p) => p.id === persona.id);
+    const cycle = (step: number) => {
+      const next = DEMO_PERSONAS[(personaIndex + step + DEMO_PERSONAS.length) % DEMO_PERSONAS.length];
+      setPersonaId(next.id);
+      setVoiceId(next.voiceId);
+    };
+    const demoStatus = error
+      ? "Call didn't connect"
+      : connected && !toolActive && !filler
+        ? `${state === "speaking" ? "Speaking" : "Listening"} · ${formatCallStatus(elapsed)}`
+        : statusText;
+
+    const arrow = (step: number) => (
+      <button
+        type="button"
+        aria-label={step < 0 ? "Previous scenario" : "Next scenario"}
+        disabled={open}
+        onClick={() => cycle(step)}
+        className={cn(
+          "text-foreground/70 hover:bg-muted hover:text-foreground flex size-11 cursor-pointer items-center justify-center rounded-full outline-none transition-opacity focus-visible:ring-2 focus-visible:ring-ring",
+          open && "invisible opacity-0",
+        )}
+      >
+        {step < 0 ? <ChevronLeft className="size-4" aria-hidden /> : <ChevronRight className="size-4" aria-hidden />}
+      </button>
+    );
+    const switcher = (
+      <div className="flex items-center gap-0.5">
+        {arrow(-1)}
+        <div aria-live="polite" className="flex min-w-49 flex-col items-center gap-0.75">
+          <p className="text-base leading-tight font-semibold">{displayName}</p>
+          <p className="text-foreground/70 text-ui leading-tight">
+            {config.identity.role} · {persona.vertical}
+          </p>
+        </div>
+        {arrow(1)}
+      </div>
+    );
+    const statusLine = (
+      <>
+        {connected ? (
+          <span aria-hidden className="relative size-1.5 shrink-0">
+            <span className="landing-ping voice-call-live-dot absolute inset-0 rounded-full" />
+            <span className="voice-call-live-dot absolute inset-0 rounded-full" />
+          </span>
+        ) : null}
+        <span className="truncate">{demoStatus}</span>
+      </>
+    );
+    const startButton = (size: string) => (
+      <LoadingButton
+        pending={starting}
+        pendingText="Calling…"
+        icon={<Phone className="size-4" aria-hidden />}
+        className={`${size} gap-2 rounded-full px-4.5 text-sm font-medium ${CALL_GREEN}`}
+        onClick={start}
+      >
+        {open && state === "ended" ? "Call again" : "Start call"}
+      </LoadingButton>
+    );
+    const callButtons = (size: string) =>
+      active ? (
+        <LoadingButton
+          pending={hangingUp}
+          className={`${size} rounded-full px-4.5 text-sm font-medium ${HANGUP_RED}`}
+          onClick={hangUp}
+        >
+          Hang up
+        </LoadingButton>
+      ) : (
+        <>
+          {startButton(size)}
+          {open ? (
+            <Button
+              variant="outline"
+              className={`${size} rounded-full px-4 text-sm font-medium`}
+              onClick={() => {
+                setClosed(true);
+                setError(null);
+              }}
+            >
+              Close
+            </Button>
+          ) : null}
+        </>
+      );
+    const disclosure = (
+      <p
+        className={cn(
+          "text-muted-foreground text-ui max-w-75 overflow-hidden text-center leading-relaxed transition-[max-height,opacity]",
+          reveal,
+          open ? "max-h-0 opacity-0" : "max-h-12",
+        )}
+      >
+        {displayName} speaks first. A {capSeconds / 60}-minute call on your
+        microphone, no sign-up, limited per day.
+      </p>
+    );
+    const transcript = !open
+      ? null
+      : (errorAlert ??
+        (turns.length > 0 || connected ? (
+          <DemoTranscript
+            turns={turns}
+            agentName={displayName}
+            liveCaption={liveCaption}
+            toolActive={toolActive}
+            chips={DEMO_CHIPS[persona.id] ?? []}
+            footer={countdown}
+          />
+        ) : state === "ended" ? (
+          <p className="text-base leading-snug text-balance">
+            {quotaExceeded
+              ? "That's the free demo time for today."
+              : "Call again, or close to try another scenario."}
+          </p>
+        ) : (
+          <p className="text-muted-foreground text-ui">Connecting…</p>
+        )));
+    const shell = cn(
+      "mx-auto overflow-hidden rounded-[1rem] border transition-[width,border-color,background-color,box-shadow]",
+      reveal,
+      open ? "bg-card shadow-landing" : "border-transparent shadow-none",
+    );
+
+    return (
+      <div
+        role="region"
+        aria-label={callTitle}
+        data-voice-state={state}
+        data-open={open}
+        className={cn("w-full text-left", className)}
+      >
+        {/* A · Unfold (lg and up): the 360px portrait column widens into
+            the 880px card; the transcript panel was there all along,
+            clipped, and fades in once there is room. */}
+        <div className={cn(shell, "hidden lg:block", open ? "w-220" : "w-90")}>
+          <div
+            className={cn(
+              "bg-muted/50 grid border-b transition-[grid-template-rows,opacity,border-color]",
+              reveal,
+              open ? "grid-rows-[1fr]" : "grid-rows-[0fr] border-transparent opacity-0",
+            )}
+          >
+            <div className="flex min-h-0 items-center justify-between overflow-hidden px-4">
+              <span className="text-foreground/60 flex h-11 items-center font-mono text-xs">
+                LIVE DEMO · {persona.vertical.toUpperCase()}
+              </span>
+              <span className="text-foreground/60 font-mono text-xs">BROWSER CALL · NO SIGN-UP</span>
+            </div>
+          </div>
+          <div className="flex w-220">
+            <div
+              className={cn(
+                "flex w-90 shrink-0 flex-col items-center justify-center gap-3.5 border-r px-6 transition-[padding,border-color]",
+                reveal,
+                open ? "py-7" : "border-transparent py-2",
+              )}
+            >
+              <div className={cn("transition-[scale]", reveal, open ? "scale-100" : "scale-[1.12]")}>
+                <LandingOrb />
+              </div>
+              {switcher}
+              <p
+                role="status"
+                className={cn(
+                  "text-foreground/70 text-ui flex items-center gap-1.5 overflow-hidden leading-[normal] tabular-nums transition-[height,opacity]",
+                  reveal,
+                  open ? "h-4.5" : "h-0 opacity-0",
+                )}
+              >
+                {statusLine}
+              </p>
+              <div className="flex gap-2">{callButtons("h-11")}</div>
+              {disclosure}
+            </div>
+            <div
+              className={cn(
+                "flex h-110 w-130 min-w-0 flex-col gap-3 p-6 transition-opacity",
+                open ? "delay-300" : "opacity-0",
+              )}
+            >
+              <span className="text-foreground/60 font-mono text-xs tracking-[0.08em]">
+                LIVE TRANSCRIPT
+              </span>
+              {transcript}
+            </div>
+          </div>
+        </div>
+
+        {/* B · Rise (below lg): the orb flies into the header's corner (a
+            container-query offset keeps it centred at any width), the rest
+            controls fade out, the call bar fades in, and the transcript
+            drops open underneath. */}
+        <div className={cn(shell, "@container max-w-160 lg:hidden")}>
+          <div
+            className={cn(
+              "relative overflow-hidden border-b transition-[height,border-color]",
+              reveal,
+              open ? "h-19" : "h-105 border-transparent",
+            )}
+          >
+            <div
+              className={cn(
+                "absolute top-0 left-0 origin-top-left transition-[translate,scale]",
+                reveal,
+                open
+                  ? "translate-x-3.5 translate-y-3.5 scale-[0.32] md:scale-[0.2667]"
+                  : "translate-x-[calc(50cqw-4.6875rem)] translate-y-5.5 md:translate-x-[calc(50cqw-5.625rem)]",
+              )}
+            >
+              <LandingOrb />
+            </div>
+            <div
+              inert={open}
+              className={cn(
+                "absolute inset-x-0 top-47 flex flex-col items-center gap-3.5 transition-[opacity,translate] md:top-54",
+                reveal,
+                open && "-translate-y-6 opacity-0",
+              )}
+            >
+              {switcher}
+              {startButton("h-11")}
+              {disclosure}
+            </div>
+            <div
+              inert={!open}
+              className={cn(
+                "absolute top-3.5 right-3.5 left-18.5 flex h-12 items-center justify-between gap-3 transition-opacity",
+                open ? "delay-400" : "opacity-0",
+              )}
+            >
+              <div className="flex min-w-0 flex-col gap-0.75">
+                <p className="text-md truncate leading-tight font-semibold">
+                  {displayName} <span className="text-muted-foreground font-normal">· {persona.vertical}</span>
+                </p>
+                <p role="status" className="text-foreground/70 text-ui flex items-center gap-1.5 leading-[normal] tabular-nums">
+                  {statusLine}
+                </p>
+              </div>
+              {active ? <div className="shrink-0">{callButtons("h-11")}</div> : null}
+            </div>
+          </div>
+          <div
+            className={cn(
+              "flex flex-col overflow-hidden px-4.5 transition-[height,opacity] md:px-6",
+              reveal,
+              open ? "h-100" : "h-0 opacity-0",
+            )}
+          >
+            <div className="flex min-h-0 flex-1 flex-col py-4.5">{transcript}</div>
+            {/* Phones: after the call its buttons sit under the transcript so
+                the header keeps room for the caller's name. */}
+            {open && !active ? <div className="flex gap-2 pb-4.5">{callButtons("h-11")}</div> : null}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
-    // Fixed height — the single reason this component can never move the page.
-    // The flexing region near the bottom absorbs every state change internally.
+    // Fills its host rail; the flexing region near the bottom absorbs every
+    // state change internally.
     <div
       role="region"
       aria-label={callTitle}
       data-voice-state={state}
       className={cn(
-        "bg-card flex w-full flex-col items-center rounded-2xl border p-4 text-center md:p-5",
-        isDemo ? "h-128 max-w-sm" : "h-full min-h-0",
+        "bg-card flex h-full min-h-0 w-full flex-col items-center rounded-2xl border p-4 text-center md:p-5",
         className,
       )}
     >
-
-      {/* The agent picker: a row of faces. Tap one and that person calls you.
-          The selection is the portrait directly below, so there is nothing to
-          read, nothing to learn, and no screen to come back from. */}
-      {isDemo ? (
-        <div
-          className={`flex items-center justify-center gap-2 transition-opacity ${frozen}`}
-        >
-          {PERSONAS.map((p) => {
-            const selected = p.id === persona.id;
-            return (
-              <button
-                key={p.id}
-                type="button"
-                disabled={active}
-                title={`${p.name} · ${p.vertical}`}
-                aria-label={`${p.name}, ${p.vertical}`}
-                aria-pressed={selected}
-                onClick={() => {
-                  setPersonaId(p.id);
-                  // Keep the caller's chosen language across a switch; only
-                  // adopt the new persona's default voice if they haven't
-                  // expressed a preference this language can honour.
-                  if (!voicesFor(langCode).some((v) => v.id === voiceId)) {
-                    setVoiceId(p.voiceId);
-                  }
-                }}
-                className="cursor-pointer rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-card disabled:pointer-events-none disabled:opacity-50"
-              >
-                <Portrait
-                  persona={p}
-                  size={36}
-                  className={
-                    selected
-                      ? "ring-primary ring-2 ring-offset-2 ring-offset-card"
-                      : "opacity-50 transition-opacity hover:opacity-100"
-                  }
-                />
-              </button>
-            );
-          })}
-        </div>
-      ) : null}
-
-      {/* Callcard header: title, then the lede answering "what is this".
-          Inline mirrors the on-screen config including unsaved edits — say
-          so, or users leave believing the test covered the deployed version.
-          Demo keeps its vertical; each mode says what IT does. */}
+      {/* Callcard header: inline mirrors the on-screen config including
+          unsaved edits — say so, or users leave believing the test covered
+          the deployed version. */}
       {presentation === "card" ? (
         <>
           <h2 className="text-base font-semibold">{callTitle}</h2>
           <p className="text-muted-foreground mt-1 text-sm leading-normal">
-            {isDemo
-              ? persona.vertical
-              : "Talks to the version on screen, including unsaved edits. No phone number involved."}
+            Talks to the version on screen, including unsaved edits. No phone number involved.
           </p>
           {versionStrip ? (
             <p className="text-foreground/75 bg-muted/50 mt-2.5 inline-flex items-center rounded-full border px-3 py-1.25 text-xs">
@@ -694,42 +1030,29 @@ export function VoiceCall({
         </>
       ) : null}
 
-      {/* Identity. The role stays put under the name in every state; while
-          the call is live a second line answers "what is happening right
-          now" — timer plus a brand-green live dot, matching the mockup's
-          stacked role + `0:42 · listening` lines. */}
+      {/* Identity. Static scoped-green ring while the call is live: identical
+          in every live sub-state, so the geometry never shifts. */}
       <div className="relative mt-4">
-        {/* Static scoped-green ring while the call is live: identical in every
-            live sub-state, so the card's geometry never shifts between
-            connecting, listening and speaking. */}
         {active ? (
           <span
             aria-hidden
             className="voice-call-live-ring absolute -inset-1.5 rounded-full border-2"
           />
         ) : null}
-        {isDemo ? (
-          <Portrait persona={persona} size={84} className="relative" />
-        ) : (
-          <div
-            aria-hidden
-            className="bg-primary text-primary-foreground relative flex size-21 items-center justify-center rounded-full text-3xl font-semibold"
-          >
-            {displayName.charAt(0)}
-          </div>
-        )}
+        <div
+          aria-hidden
+          className="bg-primary text-primary-foreground relative flex size-21 items-center justify-center rounded-full text-3xl font-semibold"
+        >
+          {displayName.charAt(0)}
+        </div>
       </div>
 
       <div className="mt-2.5 text-lg font-semibold tracking-tight">
         {displayName}
       </div>
-      {/* Role line: always present, matching the mockup even mid-call. */}
       <div className="text-muted-foreground mt-0.5 text-sm tabular-nums">
         {config.identity.role}
       </div>
-      {/* State line: only off-idle, answering "what is happening right now".
-          text-sm semibold tabular in every state, live dot only while connected —
-          the ended recap line is the same treatment minus the dot. */}
       {state !== "idle" ? (
         <p
           className="mt-2 inline-flex items-center gap-2 text-sm font-semibold tabular-nums"
@@ -741,84 +1064,12 @@ export function VoiceCall({
               className="voice-call-live-dot inline-block size-2 shrink-0 rounded-full"
             />
           ) : null}
-          {state === "connecting"
-            ? "Calling…"
-            : connected
-              ? toolActive
-                ? (filler ?? "Looking that up…")
-                : (filler ??
-                  `${formatCallStatus(elapsed)} · ${state === "speaking" ? "speaking" : "listening"}`)
-              : quotaExceeded
-                ? "Free demo time is up"
-                : `Call ended · ${formatCallStatus(elapsed)}`}
+          {statusText}
         </p>
       ) : null}
 
-      {/* Language first, then voice. Language is the choice a visitor actually
-          has an opinion about; which of eleven English voices is not, so it
-          collapses to a cycler that shows one name and hides the rest. */}
-      {isDemo ? (
-        <div
-          className={`mt-3 flex flex-col items-center gap-1.5 transition-opacity ${frozen}`}
-        >
-          {/* One row, never wrapping: a second line would both look broken and
-              change the card's height, which is what this revision exists to
-              prevent. Sized so all six fit the 384px card. */}
-          <div className="flex items-center justify-center gap-0.5">
-            {LANGUAGE_TABS.map((lang) => (
-              <button
-                key={lang.code}
-                type="button"
-                disabled={active}
-                aria-pressed={lang.code === langCode}
-                onClick={() => pickLanguage(lang.code)}
-                className={`cursor-pointer rounded-full px-2 py-1 text-xs whitespace-nowrap outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 ${
-                  lang.code === langCode
-                    ? "bg-primary text-primary-foreground"
-                    : "text-muted-foreground hover:bg-accent"
-                }`}
-              >
-                {lang.label}
-              </button>
-            ))}
-          </div>
-
-          <div className="text-muted-foreground flex items-center gap-0.5 text-xs">
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              className="size-11"
-              disabled={active || siblings.length < 2}
-              aria-label="Previous voice"
-              onClick={() => cycleVoice(-1)}
-            >
-              <ChevronLeft className="size-4" />
-            </Button>
-            <span className="w-36 text-center">
-              {voiceLabel(effectiveVoiceId)}
-              {voice ? ` · ${ACCENT_LABEL[voice.accent]}` : ""}
-            </span>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              className="size-11"
-              disabled={active || siblings.length < 2}
-              aria-label="Next voice"
-              onClick={() => cycleVoice(1)}
-            >
-              <ChevronRight className="size-4" />
-            </Button>
-          </div>
-        </div>
-      ) : null}
-
-      {/* Primary action, shaped like the button on every phone ever made.
-          LoadingButton: the pending call/hang-up shows disabled + spinner +
-          pending text (call) or spinner (icon-only hang-up) rather than
-          silently dropping the click. Chromeless ai-05 hosts render these in
-          their own header/footer instead. */}
+      {/* Primary action. Chromeless ai-05 hosts render these in their own
+          header/footer instead. */}
       {chromeless ? null : (
         <div className="mt-3.5 flex justify-center">
           {active ? (
@@ -849,125 +1100,47 @@ export function VoiceCall({
         </div>
       )}
 
-      {/* The one flexing region. Every variable-length thing lives here — the
-          scenario hint, the countdown, errors, captions — so the card's outer
-          height never changes and nothing on the page below it moves. On
-          small screens the inline (unstuck) card grows taller so a live
-          transcript shows more than ~2 bubbles; on desktop the sticky rail
-          scrolls internally instead (`lg:max-h` on the aside above). */}
+      {/* The one flexing region: countdown, errors, captions. */}
       <div
         className={cn(
-          "mt-3 min-h-0 w-full flex-1",
+          "mt-3 min-h-0 w-full flex-1 overflow-hidden",
           turns.length === 0 && !error && "flex items-center-safe justify-center",
-          isDemo ? "overflow-y-auto" : "overflow-hidden",
         )}
       >
-        {error ? (
-          <div
-            role="alert"
-            className="border-destructive/25 bg-destructive/5 flex w-full gap-2.5 rounded-xl border px-3 py-2.5 text-left"
-          >
-            <TriangleAlert className="text-destructive mt-px size-4 shrink-0" />
-            <div>
-              {retryIn !== null ? (
-                <>
-                  <strong className="block text-sm font-semibold">
-                    Too many calls right now
-                  </strong>
-                  <p className={`mt-0.5 text-xs leading-snug ${ERROR_BODY}`}>
-                    {retryIn > 0
-                      ? `Try again in ${retryIn}s. The test call limit resets automatically.`
-                      : "You can try again now."}
-                  </p>
-                </>
-              ) : (
-                <p className={`text-xs leading-snug ${ERROR_BODY}`}>
-                  {error.message}
-                </p>
-              )}
+        {errorAlert ??
+          (turns.length > 0 ? (
+            <div className="mt-0.5 flex size-full min-h-0 flex-col text-left">
+              <Chat01 turns={turns} agentName={displayName} />
+              {connected ? (
+                <div className="flex flex-col items-center gap-1.5 px-2 pt-2 text-center">
+                  {countdown ??
+                    liveCaptionLine ?? (
+                      <p className="text-muted-foreground text-xs">{micHint}</p>
+                    )}
+                </div>
+              ) : null}
             </div>
-          </div>
-        ) : turns.length > 0 ? (
-          <div className="mt-0.5 flex size-full min-h-0 flex-col text-left">
-            <Chat01 turns={turns} agentName={displayName} />
-            {/* Live footer under the transcript: the countdown (+ progress)
-                inside the last 30s, else the speaks-first hint — the same
-                content the empty state shows while connected. */}
-            {connected ? (
-              <div className="flex flex-col items-center gap-1.5 px-2 pt-2 text-center">
-                {remaining <= 30 ? (
-                  <>
+          ) : state === "ended" ? (
+            <div className="w-full rounded-xl border px-3 py-2.5 text-left text-sm">
+              {quotaExceeded
+                ? "The test call limit was reached — it resets automatically, so you can try again in a bit."
+                : "Call again anytime within the test call limit."}
+            </div>
+          ) : (
+            <div className="flex flex-col items-center gap-1.5 px-2 text-center">
+              {connected
+                ? (countdown ??
+                  liveCaptionLine ?? (
                     <p className="text-muted-foreground text-xs leading-relaxed">
-                      {`${remaining}s left on this call`}
+                      Just talk — it speaks first.
                     </p>
-                    <Progress
-                      value={Math.max(0, (remaining / 30) * 100)}
-                      aria-label="Time left on this call"
-                      className="w-32"
-                    />
-                  </>
-                ) : liveCaption ? (
-                  <p className="text-xs italic" aria-live="polite">
-                    {liveCaption.role === "user" ? "You: " : `${displayName}: `}
-                    {liveCaption.text}
-                  </p>
-                ) : (
-                  <p className="text-muted-foreground text-xs">{micHint}</p>
-                )}
-              </div>
-            ) : null}
-          </div>
-        ) : state === "ended" ? (
-          /* The mockup's `.recap`: a full-width, left-aligned bordered box
-             sitting under the "Call ended · m:ss" line. Nothing in the session
-             produces a call summary, so it carries the one thing the component
-             can truthfully say about the call that just finished rather than a
-             fabricated outcome. */
-          <div className="w-full rounded-xl border px-3 py-2.5 text-left text-sm">
-            {quotaExceeded
-              ? isDemo
-                ? "Sign up to keep talking past the free demo limit."
-                : "The test call limit was reached — it resets automatically, so you can try again in a bit."
-              : "Call again anytime within the test call limit."}
-          </div>
-        ) : (
-          <div className="flex flex-col items-center gap-1.5 px-2 text-center">
-            {/* Idle inline shows only the mic-hint below: the lede, the
-                version strip, and the hint already say "unsaved edits" three
-                ways, so a fourth "Just talk" paragraph is pure repetition.
-                Connected keeps it (the speaks-first transient); demo idle
-                keeps its scenario line. Chromeless ai-05 hosts own the
-                footer hint, so the card stays identity + transcript only. */}
-            {connected ? (
-              liveCaption ? (
-                <p className="text-xs italic" aria-live="polite">
-                  {liveCaption.role === "user" ? "You: " : `${displayName}: `}
-                  {liveCaption.text}
-                </p>
-              ) : (
-                <p className="text-muted-foreground text-xs leading-relaxed">
-                  {remaining <= 30
-                    ? `${remaining}s left on this call`
-                    : "Just talk — it speaks first."}
-                </p>
-              )
-            ) : isDemo && state === "idle" ? (
-              <p className="text-muted-foreground text-xs leading-relaxed">
-                {persona.yourRole}
-              </p>
-            ) : null}
-            {connected && remaining <= 30 ? (
-              <Progress
-                value={Math.max(0, (remaining / 30) * 100)}
-                aria-label="Time left on this call"
-                className="w-32"
-              />
-            ) : null}
-            {!connected && !chromeless ? (
-              <p className="text-muted-foreground text-xs">{micHint}</p>
-            ) : null}
-          </div>
-        )}
+                  ))
+                : null}
+              {!connected && !chromeless ? (
+                <p className="text-muted-foreground text-xs">{micHint}</p>
+              ) : null}
+            </div>
+          ))}
       </div>
     </div>
   );
