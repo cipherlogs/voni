@@ -12,11 +12,9 @@ import {
 } from "@/components/ui/sheet";
 import { VoniLogo } from "@/components/voni-logo";
 import { useSession } from "@/lib/auth-client";
+import { PUBLIC_CONTAINER } from "@/lib/public-container";
 
-/* The landing is light-only (DESIGN.md §10c), so it carries no theme toggle.
-   Same gutter as PUBLIC_CONTAINER (site-footer.tsx is server-only, so the
-   literal is repeated here rather than imported into a client bundle). */
-const CONTAINER = "mx-auto w-full max-w-300 px-6";
+/* The landing is light-only (DESIGN.md §10c), so it carries no theme toggle. */
 
 const SECTIONS = [
   ["#demo", "Live demo"],
@@ -42,7 +40,7 @@ export function LandingHeader({
 
   return (
     <header className="bg-background/95 sticky top-0 z-40 border-b backdrop-blur-md">
-      <div className={`${CONTAINER} flex h-14 items-center justify-between max-md:px-4 md:h-16`}>
+      <div className={`${PUBLIC_CONTAINER} flex h-14 items-center justify-between max-md:px-4 md:h-16`}>
         <Link
           href="/"
           aria-label="Voni home"
@@ -70,6 +68,7 @@ export function LandingHeader({
           )}
           <Button
             nativeButton={false}
+            variant="outline"
             render={<Link href={primary.href} />}
             className="h-9 rounded-md px-3 md:h-10 md:px-4"
           >

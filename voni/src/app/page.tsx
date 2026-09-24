@@ -1,5 +1,4 @@
-import { Suspense, type ReactNode } from "react";
-import { Button } from "@/components/ui/button";
+import { Suspense } from "react";
 import { LandingDemo } from "@/components/landing-demo";
 import { LandingHeader } from "@/components/landing-header";
 import { LandingOrb } from "@/components/landing-orb";
@@ -39,21 +38,9 @@ async function LandingHeaderGate() {
   );
 }
 
-function DemoLink({ children }: { children: ReactNode }) {
-  return (
-    <Button
-      nativeButton={false}
-      variant="outline"
-      render={<a href="#demo" />}
-      className="h-11 rounded-md px-4.5"
-    >
-      {children}
-    </Button>
-  );
-}
-
 /* The mockup balances section headings on desktop only; phones wrap naturally. */
-const H2 = "text-3xl md:text-title leading-[1.15] font-semibold tracking-[-0.025em] md:leading-[1.12]";
+/* Phones set their own leading; md:text-title brings its token line-height. */
+const SECTION_HEADING = "text-3xl leading-[1.15] font-semibold tracking-[-0.025em] md:text-title md:leading-(--text-title--line-height)";
 
 export default function LandingPage() {
   return (
@@ -108,7 +95,7 @@ export default function LandingPage() {
         <section id="journey" className="scroll-mt-16">
           <div className={`${SECTION} flex flex-col gap-8 py-16 md:gap-12 md:py-24`}>
             <div className="flex flex-col gap-3 md:gap-3.5">
-              <h2 className={H2}>From first call to booked viewing.</h2>
+              <h2 className={SECTION_HEADING}>From first call to booked viewing.</h2>
               <p className="text-muted-foreground max-w-140 text-base leading-[1.6]">
                 One example lead, the way Voni records it: the call, the booking
                 and the WhatsApp follow-up land on the same record.
@@ -120,7 +107,7 @@ export default function LandingPage() {
 
         <section id="features" data-play className="bg-muted/50 scroll-mt-16 border-t">
           <div className={`${SECTION} flex flex-col gap-8 py-16 md:gap-12 md:py-24`}>
-            <h2 className={`${H2} md:max-w-200 md:self-center md:text-center md:text-balance`}>
+            <h2 className={`${SECTION_HEADING} md:max-w-200 md:self-center md:text-center md:text-balance`}>
               Set up in a wizard. Remembers every lead. Asks before going live.
             </h2>
             <LandingBento />
@@ -129,7 +116,7 @@ export default function LandingPage() {
 
         <section id="how" data-play className="scroll-mt-16 border-t">
           <div className={`${SECTION} flex flex-col gap-8 py-16 md:gap-14 md:py-24`}>
-            <h2 className={H2}>Rehearse every campaign before a real call.</h2>
+            <h2 className={SECTION_HEADING}>Rehearse every campaign before a real call.</h2>
             <LandingSteps />
           </div>
         </section>
@@ -137,7 +124,7 @@ export default function LandingPage() {
         <section id="faq" className="scroll-mt-16 border-t">
           <div className={`${SECTION} flex flex-col gap-6 py-16 md:flex-row md:gap-24 md:py-24`}>
             <div className="flex shrink-0 flex-col gap-3.5 md:w-90">
-              <h2 className={H2}>Before you let it call your leads</h2>
+              <h2 className={SECTION_HEADING}>Before you let it call your leads</h2>
               <p className="text-muted-foreground text-base leading-[1.6]">
                 Rather hear it?{" "}
                 <a href="#demo" className="text-foreground underline underline-offset-3">
@@ -158,9 +145,6 @@ export default function LandingPage() {
             <h2 className="font-editorial text-display-sm md:text-display max-w-180 font-medium tracking-[-0.025em] md:text-balance">
               Hear it before you build it.
             </h2>
-            <div className="flex w-full flex-col gap-2 md:w-auto md:flex-row md:gap-2.5">
-              <DemoLink>Try the live demo</DemoLink>
-            </div>
           </div>
         </section>
       </main>

@@ -38,10 +38,10 @@ test("landing hero reads as one document composition with logic frozen", () => {
   assert.match(landing, /<main id="main"/, "page content sits in a main landmark");
   assert.match(landing, /href="#main"/, "skip link targets the main landmark");
   // Section-whitespace rhythm: every section shares one gutter literal
-  // (PUBLIC_CONTAINER in site-footer.tsx), not a copy per file.
+  // (PUBLIC_CONTAINER in lib/public-container.ts), not a copy per file.
   assert.match(landing, /PUBLIC_CONTAINER/, "hero shares the public gutter");
   assert.doesNotMatch(landing, /max-w-300 px-6/, "gutter literal lives in one module");
-  const footerGutter = readRepo("components/site-footer.tsx");
+  const footerGutter = readRepo("lib/public-container.ts");
   assert.match(
     footerGutter,
     /max-w-300 px-6/,

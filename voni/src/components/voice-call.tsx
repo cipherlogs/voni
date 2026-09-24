@@ -10,6 +10,7 @@ import {
   TriangleAlert,
 } from "lucide-react";
 import { LandingOrb } from "@/components/landing-orb";
+import { chipSlots, DEMO_CHIPS, type DemoChip } from "@/lib/demo/chips";
 import { Button } from "@/components/ui/button";
 import {
   MessageScroller,
@@ -56,11 +57,11 @@ import { cn } from "@/lib/utils";
  *    mode and letting a single flexing region absorb every variable-length
  *    thing inside it. Nothing outside the card can move now.
  *
- * 2. **Demo mode is its own layout.** The landing call card (DESIGN.md §10c):
- *    three scenario tabs, the orb portrait with live state, mute and hang-up,
- *    and a flat live transcript. Each caller keeps its own default voice; the
- *    tabs are disabled, not hidden, during a call because the voice genuinely
- *    is immutable once a session starts.
+ * 2. **Demo mode is its own layout.** The landing call (DESIGN.md §10c): the
+ *    orb with a ‹ › scenario switcher and Start call at rest, opening into the
+ *    call card with live state, hang-up and a flat live transcript. Each
+ *    caller keeps its own default voice; the switcher locks during a call
+ *    because the voice genuinely is immutable once a session starts.
  *
  * The rest follows the phone-call model people already have — portrait, name,
  * one pill to call, a timer while connected, a red circle to hang up, captions
@@ -131,26 +132,6 @@ const ERROR_BODY =
 /** The landing demo's three scenario tabs (mockup B1). */
 const DEMO_PERSONAS = PERSONAS.slice(0, 3);
 
-type DemoChip = { afterReply: number; pending: string; done: string };
-
-// ponytail: scripted chips keyed to the agent's reply count, not real tool
-// calls. Replace with tool.call events once the demo agents carry function
-// tools (stored agents' HTTP tools never reach the browser).
-const DEMO_CHIPS: Record<string, DemoChip[]> = {
-  "real-estate": [
-    { afterReply: 2, pending: "Checking availability…", done: "2 viewings open" },
-    { afterReply: 4, pending: "Booking a viewing…", done: "Booked Sat 10:30" },
-  ],
-  "car-dealership": [
-    { afterReply: 2, pending: "Checking the calendar…", done: "3 test-drive slots" },
-    { afterReply: 4, pending: "Booking a test drive…", done: "Booked Thu 17:00" },
-  ],
-  restaurant: [
-    { afterReply: 2, pending: "Checking tables…", done: "Table for 4 free" },
-    { afterReply: 4, pending: "Booking the table…", done: "Booked Fri 20:00" },
-  ],
-};
-
 /** A tool chip: dashed while "running", then settles to a checked result. */
 function DemoChipRow({ chip }: { chip: DemoChip }) {
   const [done, setDone] = useState(false);
@@ -199,7 +180,7 @@ function DemoTranscript({
   footer: React.ReactNode;
 }) {
   const lines = liveCaption ? [...turns, { ...liveCaption, live: true }] : turns;
-  let replies = 0;
+  const slots = chipSlots(lines, chips);
   return (
     <MessageScrollerProvider autoScroll defaultScrollPosition="end">
       <MessageScroller className="min-h-0 flex-1">
@@ -207,10 +188,7 @@ function DemoTranscript({
           <MessageScrollerContent className="flex flex-col gap-3">
             {lines.flatMap((line, index) => {
               // A chip follows the finalized agent reply that triggers it.
-              const chip =
-                line.role === "agent" && !("live" in line)
-                  ? chips.find((c) => c.afterReply === ++replies)
-                  : undefined;
+              const chip = slots[index];
               const row = (
                 <MessageScrollerItem
                   key={`${index}-${line.role}`}
@@ -790,37 +768,33 @@ export function VoiceCall({
         <span className="truncate">{demoStatus}</span>
       </>
     );
-    const startButton = (size: string) => (
+    const startButton = (
       <LoadingButton
         pending={starting}
         pendingText="Calling…"
         icon={<Phone className="size-4" aria-hidden />}
-        className={`${size} gap-2 rounded-full px-4.5 text-sm font-medium ${CALL_GREEN}`}
+        className={`h-11 gap-2 rounded-full px-4.5 text-sm font-medium ${CALL_GREEN}`}
         onClick={start}
       >
         {open && state === "ended" ? "Call again" : "Start call"}
       </LoadingButton>
     );
-    const callButtons = (size: string) =>
-      active ? (
+    const callButtons = active ? (
         <LoadingButton
           pending={hangingUp}
-          className={`${size} rounded-full px-4.5 text-sm font-medium ${HANGUP_RED}`}
+          className={`h-11 rounded-full px-4.5 text-sm font-medium ${HANGUP_RED}`}
           onClick={hangUp}
         >
           Hang up
         </LoadingButton>
       ) : (
         <>
-          {startButton(size)}
+          {startButton}
           {open ? (
             <Button
               variant="outline"
-              className={`${size} rounded-full px-4 text-sm font-medium`}
-              onClick={() => {
-                setClosed(true);
-                setError(null);
-              }}
+              className="h-11 rounded-full px-4 text-sm font-medium"
+              onClick={() => setClosed(true)}
             >
               Close
             </Button>
@@ -829,6 +803,7 @@ export function VoiceCall({
       );
     const disclosure = (
       <p
+        aria-hidden={open}
         className={cn(
           "text-muted-foreground text-ui max-w-75 overflow-hidden text-center leading-relaxed transition-[max-height,opacity]",
           reveal,
@@ -839,9 +814,10 @@ export function VoiceCall({
         microphone, no sign-up, limited per day.
       </p>
     );
-    const transcript = !open
-      ? null
-      : (errorAlert ??
+    // Kept rendered after Close so the card folds shut over its content
+    // instead of cutting to empty; the hidden panels are inert at rest.
+    const transcript =
+      errorAlert ??
         (turns.length > 0 || connected ? (
           <DemoTranscript
             turns={turns}
@@ -857,9 +833,9 @@ export function VoiceCall({
               ? "That's the free demo time for today."
               : "Call again, or close to try another scenario."}
           </p>
-        ) : (
+        ) : starting || state === "connecting" ? (
           <p className="text-muted-foreground text-ui">Connecting…</p>
-        )));
+        ) : null);
     const shell = cn(
       "mx-auto overflow-hidden rounded-[1rem] border transition-[width,border-color,background-color,box-shadow]",
       reveal,
@@ -879,6 +855,7 @@ export function VoiceCall({
             clipped, and fades in once there is room. */}
         <div className={cn(shell, "hidden lg:block", open ? "w-220" : "w-90")}>
           <div
+            inert={!open}
             className={cn(
               "bg-muted/50 grid border-b transition-[grid-template-rows,opacity,border-color]",
               reveal,
@@ -900,12 +877,13 @@ export function VoiceCall({
                 open ? "py-7" : "border-transparent py-2",
               )}
             >
-              <div className={cn("transition-[scale]", reveal, open ? "scale-100" : "scale-[1.12]")}>
+              <div className={cn("transition-[scale]", reveal, open ? "scale-100" : "scale-110")}>
                 <LandingOrb />
               </div>
               {switcher}
               <p
                 role="status"
+                aria-hidden={!open}
                 className={cn(
                   "text-foreground/70 text-ui flex items-center gap-1.5 overflow-hidden leading-[normal] tabular-nums transition-[height,opacity]",
                   reveal,
@@ -914,10 +892,11 @@ export function VoiceCall({
               >
                 {statusLine}
               </p>
-              <div className="flex gap-2">{callButtons("h-11")}</div>
+              <div className="flex gap-2">{callButtons}</div>
               {disclosure}
             </div>
             <div
+              inert={!open}
               className={cn(
                 "flex h-110 w-130 min-w-0 flex-col gap-3 p-6 transition-opacity",
                 open ? "delay-300" : "opacity-0",
@@ -934,7 +913,8 @@ export function VoiceCall({
         {/* B · Rise (below lg): the orb flies into the header's corner (a
             container-query offset keeps it centred at any width), the rest
             controls fade out, the call bar fades in, and the transcript
-            drops open underneath. */}
+            drops open underneath. Orb size, dock scale and centring offset
+            all come from --landing-orb* in globals.css. */}
         <div className={cn(shell, "@container max-w-160 lg:hidden")}>
           <div
             className={cn(
@@ -948,8 +928,8 @@ export function VoiceCall({
                 "absolute top-0 left-0 origin-top-left transition-[translate,scale]",
                 reveal,
                 open
-                  ? "translate-x-3.5 translate-y-3.5 scale-[0.32] md:scale-[0.2667]"
-                  : "translate-x-[calc(50cqw-4.6875rem)] translate-y-5.5 md:translate-x-[calc(50cqw-5.625rem)]",
+                  ? "translate-x-3.5 translate-y-3.5 scale-(--landing-orb-docked)"
+                  : "translate-x-(--landing-orb-center) translate-y-5.5",
               )}
             >
               <LandingOrb />
@@ -963,7 +943,7 @@ export function VoiceCall({
               )}
             >
               {switcher}
-              {startButton("h-11")}
+              {startButton}
               {disclosure}
             </div>
             <div
@@ -981,10 +961,11 @@ export function VoiceCall({
                   {statusLine}
                 </p>
               </div>
-              {active ? <div className="shrink-0">{callButtons("h-11")}</div> : null}
+              {active ? <div className="shrink-0">{callButtons}</div> : null}
             </div>
           </div>
           <div
+            inert={!open}
             className={cn(
               "flex flex-col overflow-hidden px-4.5 transition-[height,opacity] md:px-6",
               reveal,
@@ -994,7 +975,9 @@ export function VoiceCall({
             <div className="flex min-h-0 flex-1 flex-col py-4.5">{transcript}</div>
             {/* Phones: after the call its buttons sit under the transcript so
                 the header keeps room for the caller's name. */}
-            {open && !active ? <div className="flex gap-2 pb-4.5">{callButtons("h-11")}</div> : null}
+            {!active && (state === "ended" || error) ? (
+              <div className="flex gap-2 pb-4.5">{callButtons}</div>
+            ) : null}
           </div>
         </div>
       </div>

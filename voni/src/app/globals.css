@@ -85,6 +85,11 @@
   --motion-loop: 6500ms;
   /* The landing call card opening from the lone orb (DESIGN.md §10c). */
   --motion-reveal: 850ms;
+  /* Landing orb size (phones; md below). The Rise call docks it at 3rem and
+     centres it with a container-query offset, both derived from this size. */
+  --landing-orb: 9.375rem;
+  --landing-orb-docked: 0.32; /* 3rem / 9.375rem */
+  --landing-orb-center: calc(50cqw - var(--landing-orb) / 2);
   --ease-draw: cubic-bezier(0.65, 0, 0.35, 1);
   --ease-out-soft: cubic-bezier(0.16, 1, 0.3, 1);
   --background: oklch(1 0 0);
@@ -325,7 +330,7 @@
 }
 
 .landing-orb {
-  --orb: 9.375rem;
+  --orb: var(--landing-orb);
   position: relative;
   flex-shrink: 0;
   width: var(--orb);
@@ -338,8 +343,9 @@
 }
 
 @media (min-width: 48rem) {
-  .landing-orb {
-    --orb: 11.25rem;
+  :root {
+    --landing-orb: 11.25rem;
+    --landing-orb-docked: 0.2667; /* 3rem / 11.25rem */
   }
 
   .landing-orb[data-size="sm"] {
@@ -616,6 +622,7 @@
     animation-duration: 1ms !important;
     animation-delay: 0ms !important;
     transition-duration: 1ms !important;
+    transition-delay: 0ms !important;
   }
 
   /* Base UI panels must use either an animation or a transition, not both.

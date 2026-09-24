@@ -2,10 +2,9 @@ import type { ReactNode } from "react";
 import { connection } from "next/server";
 import { VoniLogo } from "@/components/voni-logo";
 
-/* One gutter for the whole public surface, so the landing header, hero,
-   feature grid, and auth frames all sit on the same measure. Imported by
-   the landing page instead of redeclaring the literal. */
-export const PUBLIC_CONTAINER = "mx-auto w-full max-w-300 px-6";
+import { PUBLIC_CONTAINER } from "@/lib/public-container";
+
+export { PUBLIC_CONTAINER };
 
 /**
  * Request-time footer leaf: isolates the current-year read so each

@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { PUBLIC_CONTAINER } from "@/lib/public-container";
 import { Mic, Minus, Phone, Plus } from "lucide-react";
 import {
   Accordion,
@@ -322,7 +323,7 @@ const FOOTER_LINKS = [
 export function LandingFooter({ year }: { year: ReactNode }) {
   return (
     <footer className="border-t">
-      <div className="text-foreground/60 mx-auto flex w-full max-w-300 items-center justify-between px-4 py-6 md:h-20 md:px-6 md:py-0">
+      <div className={`text-foreground/60 ${PUBLIC_CONTAINER} flex items-center justify-between py-6 max-md:px-4 md:h-20 md:py-0`}>
         <span className="font-mono text-xs tracking-[0.06em] uppercase">{year}</span>
         <nav aria-label="Footer" className="text-ui flex gap-4 leading-[normal] md:gap-6">
           {FOOTER_LINKS.map(([href, label, visibility]) => (

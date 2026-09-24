@@ -615,9 +615,9 @@ branch. Nothing here applies inside the app shell.
 >   Dots, rings and the traveller keep green-600 (non-text).
 > - **One call action (hero pass, 2026-09-24, overrides the audit):** the demo
 >   card's Start call is the page's only CTA and only green button. The hero
->   has no buttons; the closing keeps only an outline "Try the live demo"
->   link. "Build your agent" is gone; the header's `/signup` link says "Get
->   started". The hero pill has no badge or dot.
+>   and the closing section have no buttons (the FAQ keeps an inline text
+>   link to `#demo`). "Build your agent" is gone; the header's `/signup` link
+>   is a quiet outline "Get started". The hero pill has no badge or dot.
 > - **Composition:** one-column B1 hero at every width (hero pass,
 >   2026-09-24, reverts the audit's split): pill, `text-hero` h1, subtitle,
 >   then the call card at `max-w-220` (880px). New "From first call to booked viewing" section after the
@@ -672,16 +672,18 @@ branch. Nothing here applies inside the app shell.
   (`Accordion`, plus/minus glyphs) → closing CTA with the small orb →
   `LandingFooter` (mono year + real links only). Auth screens keep
   `SiteFooter`.
-- **Demo call card (`voice-call.tsx`, demo mode only):** three scenario tabs
-  (the first three personas, labelled by vertical), the orb portrait, name,
-  live state (`landing-ping` dot), a working mute (`setInputMuted`) and
-  hang-up, and a flat live transcript on `MessageScroller`. Each caller keeps
+- **Demo call card (`voice-call.tsx`, demo mode only):** superseded in
+  layout by the "orb first" amendment above (switcher, no mute). Still true:
+  the first three personas, the orb portrait, name, live state
+  (`landing-ping` dot), hang-up, and a flat live transcript on
+  `MessageScroller`. Each caller keeps
   its default voice; the language/voice pickers are cut (the mockup has
   none). The demo disclosure (2 minutes, microphone, daily cap) sits in the
   idle state. This lifts §10's motion-free rule for the demo branch only;
   the inline test-call card stays motion-free (pinned).
 - **The orb:** CSS-3D only (`preserve-3d`, nine meridians + five latitudes as
-  `nth-child` rules off one `--orb` variable: 150/180px, small 100/120px),
+  `nth-child` rules off one `--orb` variable, fed by the root
+  `--landing-orb` token: 150/180px, small 100/120px),
   no WebGL, no new dependency.
 - **Motion (landing only):** `landing-orb-spin`, `landing-ping`,
   `landing-marquee`, `landing-seq`, `landing-bar`, `landing-fill`,
