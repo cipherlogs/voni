@@ -12,7 +12,7 @@ Rate limits stay as they are.
 
 **Blocked by:** None (can start immediately).
 
-**Status:** done, awaiting manual test (steps 2–6 need a live voice call)
+**Status:** ready-for-human (implementation done, manual live-voice test steps 2–6 pending)
 
 ## Manual test (approve / reject)
 
@@ -38,3 +38,12 @@ Rate limits stay as they are.
 - Call-scoped tools: `/api/demo/token` mints an HMAC `callToken` (`lib/demo/call-token.ts`). The session relays tool calls to `/api/demo/tools/[name]` using it as the bearer. `end_call` is the first tool (`lib/demo/demo-tools.ts`). Later tools need a case there and on the stored body.
 - Talk clock: `lib/demo/talk-clock.ts`, 120s base, paused on mute, one check-in 20s into each mute. The server cap is 720s via the token; the client starts its close at 700s. Later tickets extend it here.
 - Stakes ladder: `lib/demo/stakes-ladder.ts`. Strikes are cumulative. `ReplyQueue` delivers each rung by `reply.create` once the current reply or caller turn is done. The judge is `off-track` on `/api/voice-judge` (demo callToken auth, off-track only), with a lexical heuristic fallback. The beat goal is `OPEN_BEAT_GOAL` until later beats land.
+
+### Manual test round 1 (2026-09-25): rejected, then fixed
+
+- **Invented fake businesses.** Voni offered a "fake business to play around with", driven by our own nudge/warning `reply.create`. Fixed with a real-businesses-only rule in the demo prompt and in the rungs.
+- **Queued rung after the goodbye.** A rung was spoken after a real `end_call`. The session now fires `onEndCall` on the tool call, and the UI latches closing and clears the queue.
+- **Tool name spoken instead of called.** Voni said "Bye! end_call(...)" and never called the tool.
+  - Root cause: the prose "call end_call" in `compileSystemPrompt`. Live eval: 0/12 when the tool is named, 18/19 once the tool is described without its name.
+  - Safety net: a spoken tool name is stripped from captions and still hangs up.
+- **Eval.** `npm run eval:demo-agent` drives real audio into the demo prompt (hang-up and refusal-ladder scenarios).

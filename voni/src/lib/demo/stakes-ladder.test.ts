@@ -62,14 +62,16 @@ test("caller speech holds delivery until the agent answers them", () => {
   }
 });
 
-test("a newer instruction replaces an undelivered one", () => {
+test("queued rungs deliver in order, none skipped by a later one", () => {
   const delivered: string[] = [];
   const queue = new ReplyQueue((text) => delivered.push(text));
   queue.onReplyStarted();
   queue.enqueue("nudge");
   queue.enqueue("warning");
   queue.onReplyDone();
-  assert.deepEqual(delivered, ["warning"]);
+  assert.deepEqual(delivered, ["nudge"], "one rung per settled reply");
+  queue.onReplyDone();
+  assert.deepEqual(delivered, ["nudge", "warning"]);
 });
 
 test("clear drops anything pending", () => {

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildEndCallSuccess } from "./execute";
+import { buildEndCallSuccess } from "./definitions";
 
 /**
  * The end_call result is pure signal, never speakable text: the model reads

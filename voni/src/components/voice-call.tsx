@@ -409,13 +409,25 @@ export function VoiceCall({
     return () => clearTimeout(id);
   }, [retryIn]);
 
-  /** Ask Voni to close the call, once; stop it ourselves if it never does. */
-  const closeCall = useCallback((instructions: string) => {
-    if (closingRef.current) return;
+  /**
+   * Latch the call as closing, once: no rung, check-in, or time-up line may
+   * follow a goodbye. Stops the session ourselves if it never ends.
+   */
+  const markClosing = useCallback((): boolean => {
+    if (closingRef.current) return false;
     closingRef.current = true;
-    replyQueueRef.current?.enqueue(instructions);
+    replyQueueRef.current?.clear();
     closeTimerRef.current = setTimeout(() => void sessionRef.current?.stop(), CLOSE_FALLBACK_MS);
+    return true;
   }, []);
+
+  /** Ask Voni to close the call, once. */
+  const closeCall = useCallback(
+    (instructions: string) => {
+      if (markClosing()) replyQueueRef.current?.enqueue(instructions);
+    },
+    [markClosing],
+  );
 
   useEffect(() => {
     if (!connected) return;
@@ -760,6 +772,11 @@ export function VoiceCall({
         }
       },
       onReplyStarted: () => replyQueueRef.current?.onReplyStarted(),
+      // Demo: Voni is saying goodbye on its own (caller asked, or it
+      // decided). Test calls keep their plain session-level hangup.
+      onEndCall: () => {
+        if (mode.kind === "demo") markClosing();
+      },
       onInputSpeechStarted: () => replyQueueRef.current?.onCallerSpeech(),
       onReplyDone: () => replyQueueRef.current?.onReplyDone(),
       onAgentTurn: (turn) => {
@@ -828,7 +845,7 @@ export function VoiceCall({
       setStarting(false);
       notifyPending({ ...pendingRef.current, starting: false });
     }
-  }, [mode, notifyPending, voiceId, config, engine, cascadeUrl, setCallState, closeCall]);
+  }, [mode, notifyPending, voiceId, config, engine, cascadeUrl, setCallState, closeCall, markClosing]);
 
   const hangUp = useCallback(async () => {
     if (hangingUp) return;

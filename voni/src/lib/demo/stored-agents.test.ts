@@ -12,6 +12,13 @@ test("demo agent names are deterministic per voice", () => {
   assert.equal(demoAgentName("anna"), "demo:voni:anna");
 });
 
+test("Voni never invents a business and leaves when asked", () => {
+  const prompt = buildDemoAgentBody("anna").system_prompt;
+  assert.match(prompt, /only for real businesses/);
+  assert.match(prompt, /Never suggest, invent, or role-play a fake/);
+  assert.match(prompt, /asks to end, hang up, or says goodbye/);
+});
+
 test("Voni opens as itself, in the picked voice's language", () => {
   const english = buildDemoAgentBody("anna");
   assert.equal(english.greeting, VONI_GREETINGS.en);
@@ -38,7 +45,9 @@ test("demo body carries call control, tuning, and per-agent vocabulary", () => {
   });
   assert.equal(body.input.voice_focus, "near-field");
   assert.ok(body.input.keyterms.includes("Voni"), "agent's own name is heard");
-  assert.match(body.system_prompt, /end_call/, "the hang-up rule ships on demo");
+  assert.match(body.system_prompt, /use your hang-up tool/, "the hang-up rule ships on demo");
+  // Naming the tool in prose makes the model speak it instead of calling it.
+  assert.doesNotMatch(body.system_prompt, /end_call/);
   // REST shape: the Agents API tool object has no `type` field. Sending it
   // risks the tool being dropped while the prompt still mentions it — the
   // model then improvises the call as speech (`end_call{...}` out loud).
@@ -58,4 +67,17 @@ test("fingerprints are stable and move with platform content", () => {
     input: { ...buildDemoAgentBody("anna").input, transcription_mode: "balanced" },
   };
   assert.notEqual(demoAgentFingerprint(changed), a);
+});
+
+test("ladder and time-up instructions describe hanging up without naming the tool", async () => {
+  const { rungInstructions, TIME_UP_INSTRUCTIONS, OPEN_BEAT_GOAL } = await import("./voni-agent");
+  for (const text of [
+    rungInstructions("nudge", OPEN_BEAT_GOAL),
+    rungInstructions("warning", OPEN_BEAT_GOAL),
+    rungInstructions("end", OPEN_BEAT_GOAL),
+    TIME_UP_INSTRUCTIONS,
+  ]) {
+    assert.doesNotMatch(text, /end_call/);
+  }
+  assert.match(rungInstructions("end", OPEN_BEAT_GOAL), /hang up/);
 });

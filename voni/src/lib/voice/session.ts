@@ -29,6 +29,7 @@ import {
   type VoiceTool,
 } from "@/lib/tools/definitions";
 import type { ToolResponse } from "@/lib/tools/execute";
+import { executeDemoTool } from "@/lib/demo/demo-tools";
 import { ToolCoordinator, type ToolCoordinatorOptions } from "./tool-coordinator";
 import {
   buildConversationMessage,
@@ -124,6 +125,16 @@ export class SessionGeneration {
   isCurrent(id: number): boolean {
     return id === this.current;
   }
+}
+
+/**
+ * The model sometimes speaks the hang-up tool instead of calling it
+ * ("Goodbye! end_call"). Strip the trailing tool name (and any argument
+ * blob) from captions, and report it so the session can still hang up.
+ */
+export function stripSpokenToolCall(text: string): { text: string; endCall: boolean } {
+  const match = /\s*\bend_call\b\s*(?:\{[\s\S]*\}|\([\s\S]*\))?\s*$/.exec(text);
+  return match ? { text: text.slice(0, match.index), endCall: true } : { text, endCall: false };
 }
 
 /** Pure builder so the resume hello is unit-testable without a socket. */
@@ -311,6 +322,11 @@ export type VoiceHandlers = {
   onUserTurn?: (turn: UserTurn) => void;
   onAgentTurn?: (turn: AgentTurn) => void;
   onReplyStarted?: () => void;
+  /**
+   * The agent is ending the call: an end_call tool call arrived, or it spoke
+   * the tool name instead. Fires before the hangup, so pacing can stop.
+   */
+  onEndCall?: () => void;
   /** The caller started speaking (VAD), before any transcript. */
   onInputSpeechStarted?: () => void;
   onReplyDone?: (info: { replyId: string | null; interrupted: boolean }) => void;
@@ -407,9 +423,13 @@ export class VoiceSession {
   /** Last `reply.audio` arrival: the drain handshake waits out fresh audio. */
   private lastAudioAt = 0;
 
+  /** end_call was signaled for the current goodbye (tool call or spoken). */
+  private endCallSignaled = false;
+
   /** Disarm an agent-initiated hangup: the caller took the floor back. */
   private disarmHangup(): void {
     this.pendingHangup = false;
+    this.endCallSignaled = false;
     if (this.hangupTimer) {
       clearInterval(this.hangupTimer);
       this.hangupTimer = null;
@@ -491,6 +511,7 @@ export class VoiceSession {
     this.sessionId = null;
     this.micReleased = false;
     this.inputMuted = false;
+    this.endCallSignaled = false;
     this.firstUpdateAcked = false;
     this.greetingAudioSent = false;
     this.sessionReadySent = false;
@@ -654,6 +675,8 @@ export class VoiceSession {
       });
     } else if (this.callToken) {
       this.installDemoTools();
+    } else {
+      this.installLocalEndCall();
     }
 
     ws.addEventListener("open", () => {
@@ -864,11 +887,17 @@ export class VoiceSession {
               : typeof msg.item_id === "string"
                 ? msg.item_id
                 : null,
-          text: typeof msg.text === "string" ? msg.text : "",
+          text: stripSpokenToolCall(typeof msg.text === "string" ? msg.text : "").text,
         });
         break;
 
       case "tool.call":
+        if (msg.name === END_CALL_TOOL && this.toolCoordinator) {
+          // A real call supersedes a spoken one: its result re-arms the
+          // hangup, so the session never closes before the result is sent.
+          this.pendingHangup = false;
+          if (!this.endCallSignaled) this.signalEndCall();
+        }
         this.toolCoordinator?.onToolCall(msg);
         break;
 
@@ -897,8 +926,15 @@ export class VoiceSession {
         }
         break;
 
-      case "transcript.agent":
-        this.handlers.onTranscript?.({ role: "agent", text: msg.text });
+      case "transcript.agent": {
+        const spoken = stripSpokenToolCall(typeof msg.text === "string" ? msg.text : "");
+        if (spoken.endCall && !this.endCallSignaled) {
+          // Spoken, not called: hang up anyway on this reply's settled
+          // reply.done (transcript.agent precedes it).
+          this.pendingHangup = true;
+          this.signalEndCall();
+        }
+        this.handlers.onTranscript?.({ role: "agent", text: spoken.text });
         this.handlers.onAgentTurn?.({
           itemId:
             typeof msg.reply_id === "string"
@@ -906,9 +942,10 @@ export class VoiceSession {
               : typeof msg.item_id === "string"
                 ? msg.item_id
                 : null,
-          text: typeof msg.text === "string" ? msg.text : "",
+          text: spoken.text,
         });
         break;
+      }
 
       case "session.error":
       case "error":
@@ -1085,6 +1122,11 @@ export class VoiceSession {
     return this.playout?.settled() ?? true;
   }
 
+  private signalEndCall(): void {
+    this.endCallSignaled = true;
+    this.handlers.onEndCall?.();
+  }
+
   /**
    * One coordinator per connection, for either mode: it times results
    * against replies, and an end_call result arms the drain-then-hangup.
@@ -1102,6 +1144,17 @@ export class VoiceSession {
       },
       execute,
     });
+  }
+
+  /**
+   * Agent mode without a demo call token (stored test calls): answer call
+   * control locally through the same executor as the demo route, so end_call
+   * still hangs up instead of falling through unanswered.
+   */
+  private installLocalEndCall(): void {
+    this.installTools([END_CALL_VOICE_TOOL], (call) =>
+      executeDemoTool(call.name, call.arguments),
+    );
   }
 
   /**

@@ -81,8 +81,13 @@ export function compileSystemPrompt(config: AgentConfig): string {
   // execution layer refuses it while another tool is still running, and
   // post-call work queues as jobs — so the rule here is judgment only:
   // when the call is genuinely over, and the closing line comes first.
+  // The tool is never NAMED here: with "call end_call" in the prose the
+  // managed model wrote the call out as speech ("Bye! end_call(...)") in
+  // 12 of 12 live hang-up evals; describing the act without the name
+  // called the tool 6 of 6 (scripts/eval-demo-agent.mts). The tool's own
+  // definition carries the name.
   sections.push(
-    "End the call with end_call only when the task is complete, the caller asks to end, consent is denied, or the conversation loops with no progress. Fire any follow-up tools first, speak a brief natural goodbye, call end_call, and say nothing after it returns. Never narrate the mechanics — no 'the call has ended', 'I'm hanging up now'. The sound and the screen tell the caller. Never end mid-task.",
+    "Hang up only when the task is complete, the caller asks to end, consent is denied, or the conversation loops with no progress. Fire any follow-up tools first, speak a brief natural goodbye, then use your hang-up tool, and say nothing after it returns. Never narrate the mechanics — no 'the call has ended', 'I'm hanging up now'. The sound and the screen tell the caller. Never end mid-task.",
   );
 
   // Language handling. The agent hears 18 languages but speaks 6, so a caller

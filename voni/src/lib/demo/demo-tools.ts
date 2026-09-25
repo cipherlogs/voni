@@ -1,5 +1,5 @@
-import { END_CALL_TOOL, validateToolArguments } from "@/lib/tools/definitions";
-import { buildEndCallSuccess, type ToolResponse } from "@/lib/tools/execute";
+import { buildEndCallSuccess, END_CALL_TOOL, validateToolArguments } from "@/lib/tools/definitions";
+import type { ToolResponse } from "@/lib/tools/execute";
 
 /**
  * The demo agent's tools, run server-side for one verified demo call (the

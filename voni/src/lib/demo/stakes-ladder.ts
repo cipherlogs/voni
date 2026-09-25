@@ -31,11 +31,12 @@ export const REPLY_GRACE_MS = 1200;
 
 /**
  * Delivers one-shot instructions (`reply.create`) without talking over a
- * reply that is still in progress. Latest instruction wins.
+ * reply that is still in progress. First in, first out: every rung is spoken
+ * in order, never skipped by a later one.
  */
 export class ReplyQueue {
   private replyActive = false;
-  private pending: string | null = null;
+  private pending: string[] = [];
   private timer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(private readonly deliver: (instructions: string) => void) {}
@@ -55,22 +56,38 @@ export class ReplyQueue {
   }
 
   enqueue(instructions: string): void {
-    this.pending = instructions;
+    this.pending.push(instructions);
     if (this.replyActive) return;
-    if (this.timer) clearTimeout(this.timer);
-    this.timer = setTimeout(() => this.flush(), REPLY_GRACE_MS);
+    this.arm();
   }
 
   clear(): void {
-    this.pending = null;
+    this.pending = [];
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
   }
 
+  private arm(): void {
+    if (this.timer) return;
+    this.timer = setTimeout(() => {
+      this.timer = null;
+      this.flush();
+    }, REPLY_GRACE_MS);
+  }
+
   private flush(): void {
-    if (this.replyActive || this.pending === null) return;
-    const instructions = this.pending;
-    this.clear();
+    if (this.replyActive || this.pending.length === 0) return;
+    // A grace timer may still be armed (reply finished before it fired):
+    // cancel it so a later enqueue gets its own full grace.
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
+    const instructions = this.pending.shift() as string;
     this.deliver(instructions);
+    // The reply to this one may still be starting (grace covers that); if
+    // more is queued, re-arm so it follows without stalling when no reply
+    // ever starts, and waits for it to finish when one does.
+    if (this.pending.length > 0) this.arm();
   }
 }

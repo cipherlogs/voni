@@ -5,6 +5,7 @@ import {
   buildResumeMessage,
   decideReconnectOnClose,
   SessionGeneration,
+  stripSpokenToolCall,
   VOICE_MIC_CONSTRAINTS,
   VoiceSession,
   type TranscriptPartial,
@@ -194,8 +195,23 @@ test("demo end_call relays to the call-scoped route and hangs up on the settled 
   assert.equal(internals["explicitStop"], true);
 });
 
-test("a refused demo end_call keeps the caller on the line", async () => {
+test("agent mode without a call token answers end_call locally", async () => {
   const { session, sent, handle, internals } = makeSession();
+  // No callToken set: the local fallback answers through the same executor
+  // as the demo route, so the tool call is not left unanswered.
+  (internals["installLocalEndCall"] as () => void).call(session);
+  handle({ type: "session.ready", session_id: "s0" });
+  endCall(handle, "e0");
+  await settle();
+  const result = sent
+    .map((raw) => JSON.parse(raw) as Record<string, unknown>)
+    .find((message) => message.type === "tool.result");
+  assert.equal(result?.call_id, "e0");
+  assert.equal(result?.is_error, false);
+  assert.equal(internals["pendingHangup"], true);
+});
+
+test("a refused demo end_call keeps the caller on the line", async () => {  const { session, sent, handle, internals } = makeSession();
   withDemoTools(internals, session, { ok: false, error: "Say the closing line first.", retryable: true });
   handle({ type: "session.ready", session_id: "s1" });
   endCall(handle, "e2", {});
@@ -592,4 +608,74 @@ test("WS timing marks fire once per start", () => {
   assert.ok(marks.includes("sessionReady"), `got ${JSON.stringify(marks)}`);
   assert.equal(marks.filter((m) => m === "firstUpdateAck").length, 1);
   assert.equal(marks.filter((m) => m === "greetingAudio").length, 1);
+});
+
+test("stripSpokenToolCall removes a spoken tool name and flags the hangup", () => {
+  assert.deepEqual(stripSpokenToolCall("Understood. Goodbye! end_call"), {
+    text: "Understood. Goodbye!",
+    endCall: true,
+  });
+  assert.deepEqual(stripSpokenToolCall('Bye now! end_call{"closing_line": "Bye now!"}'), {
+    text: "Bye now!",
+    endCall: true,
+  });
+  assert.deepEqual(stripSpokenToolCall("We can end the call whenever you like."), {
+    text: "We can end the call whenever you like.",
+    endCall: false,
+  });
+});
+
+test("a spoken end_call arms the hangup and never reaches the caption", () => {
+  const captions: string[] = [];
+  const partials: string[] = [];
+  let ended = 0;
+  const { handle, internals } = makeSession({
+    onTranscript: (turn) => captions.push(turn.text),
+    onAgentPartial: (partial) => partials.push(partial.text),
+    onEndCall: () => (ended += 1),
+  });
+  internals["playout"] = {
+    play: () => undefined,
+    flush: () => undefined,
+    settled: () => true,
+    queuedMs: () => 0,
+  };
+  handle({ type: "session.ready", session_id: "s1" });
+  handle({ type: "transcript.agent.delta", reply_id: "r1", text: "Goodbye! end_call" });
+  handle({ type: "transcript.agent", reply_id: "r1", text: "Goodbye! end_call" });
+  assert.deepEqual(partials, ["Goodbye!"]);
+  assert.deepEqual(captions, ["Goodbye!"]);
+  assert.equal(ended, 1);
+  assert.equal(internals["pendingHangup"], true);
+  handle({ type: "reply.done", reply_id: "r1", status: "completed" });
+  assert.equal(internals["explicitStop"], true);
+});
+
+test("an end_call tool call signals the end before its result lands", () => {
+  let ended = 0;
+  const { session, handle, internals } = makeSession({ onEndCall: () => (ended += 1) });
+  withDemoTools(internals, session);
+  handle({ type: "session.ready", session_id: "s1" });
+  endCall(handle, "e6");
+  assert.equal(ended, 1, "fires synchronously on tool.call");
+  // A later spoken echo of the same goodbye must not double-signal.
+  handle({ type: "transcript.agent", reply_id: "r1", text: "Goodbye! end_call" });
+  assert.equal(ended, 1);
+});
+
+test("spoken name then a real end_call waits for the tool result", async () => {
+  let ended = 0;
+  const { session, sent, handle, internals } = makeSession({ onEndCall: () => (ended += 1) });
+  internals["playout"] = { play: () => undefined, flush: () => undefined, settled: () => true, queuedMs: () => 0 };
+  withDemoTools(internals, session);
+  handle({ type: "session.ready", session_id: "s1" });
+  handle({ type: "transcript.agent", reply_id: "r1", text: "Bye! end_call" });
+  endCall(handle, "e7");
+  handle({ type: "reply.done", reply_id: "r1", status: "completed" });
+  assert.equal(internals["explicitStop"], false, "never closes before the result is sent");
+  await settle();
+  assert.ok(sent.some((raw) => JSON.parse(raw).type === "tool.result"));
+  handle({ type: "reply.done", reply_id: "fc-e7", status: "completed" });
+  assert.equal(internals["explicitStop"], true);
+  assert.equal(ended, 1);
 });

@@ -25,6 +25,7 @@ import {
 import { resolveCredential } from "@/lib/platform/credentials";
 import { isCredentialName } from "@/lib/platform/types";
 import {
+  buildEndCallSuccess,
   customToolId,
   END_CALL_TOOL,
   validateToolArguments,
@@ -566,20 +567,8 @@ async function runValidatedTool(
  *   those arrive as their own tool calls first and queue as durable jobs,
  *   so hanging up never strands them.
  *
- * The success result is pure signal (`ended: true`) with NO speakable text:
- * the model reads tool results as things to say, so any confirmation
- * sentence here gets parroted as narration ("the call has ended"). The
- * goodbye itself is the `closing_line`, already spoken before the call —
- * the hang-up sound and the screen say the rest.
+ * The success result itself is `buildEndCallSuccess` (definitions.ts).
  */
-export function buildEndCallSuccess(dryRun: boolean): ToolResponse {
-  return {
-    ok: true,
-    ...(dryRun ? { dryRun: true as const } : {}),
-    hangup: true,
-    data: { ended: true, ...(dryRun ? { simulated: true } : {}) },
-  };
-}
 
 async function runEndCall(
   context: ResolvedToolContext,

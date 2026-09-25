@@ -36,3 +36,8 @@ test("the signed-out demo judges off-track only, with its call token", () => {
   assert.match(source, /demoOnly && parsed\.kind !== "off-track"/);
   assert.match(source, /status: 403/);
 });
+
+test("demo Jev spend is capped per call", () => {
+  assert.match(source, /judge:call:/);
+  assert.match(source, /status: 429/);
+});

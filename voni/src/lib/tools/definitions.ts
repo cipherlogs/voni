@@ -3,6 +3,7 @@ import type { AgentConfig, CustomTool } from "@/lib/agents/config";
 import { TOOL_NAMES } from "@/lib/agents/config";
 import { sensitiveCaptureFields } from "@/lib/agents/compile";
 import { findCatalogTool } from "@/lib/providers/registry";
+import type { ToolResponse } from "./execute";
 
 export const SENSITIVE_CAPTURE_TOOL = "prepare_sensitive_capture";
 
@@ -287,6 +288,24 @@ export const END_CALL_VOICE_TOOL: VoiceTool = {  type: "function",
     error: "Stay on the call and finish the pending task first.",
   },
 };
+
+/**
+ * end_call's success result: pure signal (`ended: true`) with NO speakable
+ * text. The model reads tool results as things to say, so any confirmation
+ * sentence here gets parroted as narration ("the call has ended"). The
+ * goodbye itself is the `closing_line`, already spoken before the call —
+ * the hang-up sound and the screen say the rest. Lives here, not in
+ * execute.ts, so browser code (the voice session) can use it without
+ * bundling the database.
+ */
+export function buildEndCallSuccess(dryRun: boolean): ToolResponse {
+  return {
+    ok: true,
+    ...(dryRun ? { dryRun: true as const } : {}),
+    hangup: true,
+    data: { ended: true, ...(dryRun ? { simulated: true } : {}) },
+  };
+}
 
 /**
  * Compile one user-added webhook tool into a voice-callable function tool.

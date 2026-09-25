@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { getCtx } from "@/lib/session";
 import { secret } from "@/lib/env";
 import { demoCallFromRequest } from "@/lib/demo/call-token";
+import { bumpRateBucket } from "@/lib/demo/rate-limit";
 import {
   decideVoiceJudge,
   parseVoiceJudgeRequest,
@@ -20,18 +21,24 @@ import {
  * org-agnostic, so unlike the internal routes there is deliberately no
  * workspace-selection gate here.
  *
- * ponytail: a demo call token can hit Jev freely until it expires (~13 min);
- * add a per-call counter if judge spend ever shows up.
- *
  * The gateway key stays server-side; callers only send a small state blob
  * (`kind` + partial transcript / timing / tool name) and get back one
  * decision + probability. Any gateway failure falls back to the offline
  * heuristic with `source: "heuristic"` — the audio path never blocks on this.
+ *
+ * A demo call token may only ask the off-track question, and its Jev spend
+ * is capped per call (Postgres bucket, Worker-safe like the token limits):
+ * about one judgment per visitor turn fits comfortably, while a lifted token
+ * cannot burn Jev indefinitely.
  */
+const JUDGE_MAX_PER_CALL = 150;
+const JUDGE_WINDOW_S = 15 * 60;
+
 export async function POST(req: NextRequest): Promise<NextResponse> {
   const ctx = await getCtx();
   const demoOnly = !ctx && !(await hasBridgeBearer(req));
-  if (demoOnly && !(await demoCallFromRequest(req)))
+  const demoCall = demoOnly ? await demoCallFromRequest(req) : null;
+  if (demoOnly && !demoCall)
     return NextResponse.json({ error: "signed-in, bridge, or demo call only" }, { status: 401 });
 
   let body: unknown;
@@ -45,6 +52,19 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ error: "invalid judge request" }, { status: 400 });
   if (demoOnly && parsed.kind !== "off-track")
     return NextResponse.json({ error: "demo calls judge off-track only" }, { status: 403 });
+  if (demoOnly && demoCall) {
+    const budget = await bumpRateBucket(
+      `judge:call:${demoCall.callId}`,
+      JUDGE_MAX_PER_CALL,
+      JUDGE_WINDOW_S,
+    );
+    if (!budget.ok) {
+      return NextResponse.json(
+        { error: "demo judge budget spent" },
+        { status: 429, headers: { "Retry-After": "60" } },
+      );
+    }
+  }
 
   // secret() reads process.env first (tests, CI, plain Node) with the
   // Cloudflare context as fallback, so this works under `next dev` (where
