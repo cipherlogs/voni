@@ -25,9 +25,22 @@ from voice_judge import (
 
 class BargeInTests(unittest.TestCase):
     def test_backchannel_never_yields(self):
-        for text in ["uh-huh", "yeah", "mhm", "okay", "right"]:
+        for text in ["uh-huh", "um", "uhm", "mhm", "okay", "right", "got it"]:
             decision, _ = classify_user_turn(text, agent_speaking_ms=3000)
             self.assertEqual(decision, "keep-speaking", text)
+
+    def test_bare_assent_never_hard_cuts(self):
+        # Soft-confirm path: the settled final pivots gracefully instead.
+        for text in ["yes", "yeah"]:
+            decision, _ = classify_user_turn(text, agent_speaking_ms=3000)
+            self.assertEqual(decision, "keep-speaking", text)
+
+    def test_command_words_yield_even_as_single_words(self):
+        # Steering bypasses the word-count floor: the LLM steers in context.
+        for text in ["no", "stop", "wait", "repeat", "hold on", "nope"]:
+            decision, prob = classify_user_turn(text, agent_speaking_ms=3000)
+            self.assertEqual(decision, "yield", text)
+            self.assertGreaterEqual(prob, BARGE_IN_THRESHOLD)
 
     def test_real_interruption_yields_when_agent_established(self):
         decision, prob = classify_user_turn(

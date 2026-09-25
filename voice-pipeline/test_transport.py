@@ -53,7 +53,11 @@ class FakeSTT:
 
 
 class FakeLLM:
+    def __init__(self) -> None:
+        self.messages_seen: list[list[dict]] = []
+
     async def complete(self, *, messages, tools=None):
+        self.messages_seen.append(messages)
         yield TokenDelta(text="Hey there.")
 
     def prefetch(self, *, messages, tools=None):
@@ -136,6 +140,10 @@ class BrowserCallTests(unittest.TestCase):
         self.assertTrue(
             any(c["role"] == "agent" and c["final"] is True for c in captions),
             "agent final caption",
+        )
+        self.assertTrue(
+            any(c["role"] == "agent" and c["final"] is False for c in captions),
+            "agent partial caption streams instantly",
         )
         audio = by_type.get("audio", [])
         self.assertTrue(audio, "expected playout audio")
@@ -236,6 +244,46 @@ class BrowserCallTests(unittest.TestCase):
         ws = run_call([audio_message()], [])
         errors = [m for m in ws.sent if m["type"] == "error"]
         self.assertEqual(len(errors), 1)
+
+    def test_context_is_accepted_after_config_and_not_captioned(self):
+        async def run():
+            ws = FakeWebSocket(
+                [
+                    {
+                        "type": "context",
+                        "role": "system",
+                        "content": "The user's microphone is muted.",
+                    },
+                    audio_message(),
+                ]
+                + [audio_message() for _ in range(40)]
+            )
+            llm = FakeLLM()
+
+            def factory(config):
+                return (
+                    FakeSTT([FinalTranscript(text="next turn")]),
+                    llm,
+                    FakeTTS(),
+                )
+
+            await handle_browser_call(
+                ws, config_message=cascade_config(), backend_factory=factory
+            )
+            return ws, llm
+
+        ws, llm = asyncio.run(run())
+        self.assertEqual(
+            llm.messages_seen[0][1],
+            {"role": "system", "content": "The user's microphone is muted."},
+        )
+        self.assertFalse(
+            any(
+                message.get("type") == "caption"
+                and "microphone is muted" in message.get("text", "")
+                for message in ws.sent
+            )
+        )
 
 
 if __name__ == "__main__":

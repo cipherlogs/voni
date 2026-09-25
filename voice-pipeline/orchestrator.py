@@ -32,7 +32,7 @@ from providers import (
     TokenDelta,
     ToolCallRequest,
 )
-from turns import BARGE_IN_THRESHOLD, commit_decision
+from turns import BARGE_IN_THRESHOLD, commit_decision, is_command_overlap
 
 
 @dataclass
@@ -109,10 +109,33 @@ class TurnOrchestrator:
         self._speaking = False
         self._speech_start = 0.0
         self._interrupted = False
+        # Soft-yield: a committed barge-in finishes the current sentence
+        # before pivoting (no mid-word cut), so the gate stashes the
+        # interrupting text here instead of stopping audio immediately.
+        self._pending_redirect: str | None = None
+        # Agent-initiated hangup: end_call is call control, not a backend
+        # tool. The closing line goes through TTS like any sentence, then
+        # the turn emits call_end and the browser lets playback drain before
+        # closing. Cleared if the caller barges during the goodbye (they
+        # took the floor back — the hangup is disarmed, like every path).
+        self._end_requested: str | None = None
         self._last_partial = ""
         self._turn_task: Optional[asyncio.Task] = None
         self._floor_held = False
+        # Counted once per turn: a partial arrived while the agent held the
+        # floor. Heard-but-not-committed overlap still registers, even when
+        # the gate waits and the reply continues.
+        self._overheard_counted = False
         self.turn_results: list[TurnResult] = []
+
+    def add_context(self, content: str) -> None:
+        """Append hidden system context for the next generated turn.
+
+        Context never enters the caption event stream and does not touch the
+        current reply task, so a mute transition cannot interrupt playback.
+        """
+        if content:
+            self.history.append({"role": "system", "content": content})
 
     async def run(self, audio: AsyncIterator[bytes]) -> list[TurnResult]:
         turn_tasks: list[asyncio.Task] = []
@@ -203,6 +226,9 @@ class TurnOrchestrator:
             # Gate path: the agent holds the floor (speaking, thinking, or
             # reply winding down). A live-but-silent turn counts as
             # established — its final was already committed.
+            if not self._overheard_counted:
+                self._overheard_counted = True
+                self.ledger.count("overheard")
             if self._speaking:
                 ms = (self._clock() - self._speech_start) * 1000.0
             else:
@@ -211,7 +237,10 @@ class TurnOrchestrator:
             decision = commit_decision(text, ms, prob)
             if decision == "commit":
                 self.ledger.count("yield")
-                self._interrupted = True
+                # Graceful, not abrupt: the consumer finishes the sentence
+                # it is speaking, then pivots. The producer stops at once
+                # so no more gateway spend goes into the stale reply.
+                self._pending_redirect = text
             elif decision == "backchannel":
                 self.ledger.count("backchannel")
         else:
@@ -245,8 +274,27 @@ class TurnOrchestrator:
         self.ledger.mark("final")
         await self._emit("user_final", {"text": text})
         self._last_partial = ""
+        self._overheard_counted = False
+        # A committed overlap redirected this turn: the caller steered while
+        # the agent held the floor. Steering goes to the LLM in context so
+        # IT chooses transition-vs-continue — the gate only guarantees it
+        # is heard, with a human pivot (acknowledge briefly first, never
+        # resume the cut-off sentence).
+        had_redirect = self._pending_redirect is not None
+        self._pending_redirect = None
         result = TurnResult(user_text=text)
         messages = self.history + [{"role": "user", "content": text}]
+        if had_redirect and is_command_overlap(text):
+            messages.append(
+                {
+                    "role": "system",
+                    "content": (
+                        f"The caller interrupted with: {text!r}. Acknowledge "
+                        "it briefly first (e.g. 'Sorry — ...'), then follow "
+                        "their new direction. Do not resume the cut-off sentence."
+                    ),
+                }
+            )
         self._interrupted = False
         sentence_queue: asyncio.Queue = asyncio.Queue()
         producer = asyncio.get_running_loop().create_task(
@@ -254,13 +302,24 @@ class TurnOrchestrator:
         )
         await self._consume_sentences(sentence_queue, producer)
         self._speaking = False
+        if self._pending_redirect is not None:
+            # Soft-yield settled: the floor changed hands even when there
+            # was no sentence left to finish (producer already stopped).
+            self._pending_redirect = None
+            self._interrupted = True
         self.history.append({"role": "user", "content": text})
         if result.reply_text:
             self.history.append({"role": "assistant", "content": result.reply_text})
             await self._emit("agent_final", {"text": result.reply_text})
         if self._interrupted:
             result.interrupted = True
+            # The caller barged during the goodbye: the hangup disarms, the
+            # pivot wins, and the agent re-decides with the floor back.
+            self._end_requested = None
             await self._emit("interrupted", {"user_text": text})
+        elif self._end_requested is not None:
+            closing_line, self._end_requested = self._end_requested, None
+            await self._emit("call_end", {"closing_line": closing_line})
         return result
 
     async def _produce_reply(
@@ -270,7 +329,7 @@ class TurnOrchestrator:
         try:
             buffer = ""
             async for event in self._llm.complete(messages=messages, tools=self._tools):
-                if self._interrupted:
+                if self._interrupted or self._pending_redirect is not None:
                     break
                 if isinstance(event, TokenDelta):
                     if not event.text:
@@ -283,7 +342,28 @@ class TurnOrchestrator:
                     buffer = remainder
                     for sentence in complete:
                         sentence_queue.put_nowait(sentence)
+                    if complete:
+                        # LLM-authored text: stream instantly at zero STT cost
+                        # (cascade equivalent of transcript.agent.delta).
+                        await self._emit("agent_partial", {"text": result.reply_text})
                 elif isinstance(event, ToolCallRequest):
+                    if event.name == "end_call":
+                        closing = event.arguments.get("closing_line")
+                        if isinstance(closing, str) and closing.strip():
+                            result.tool_calls.append(event.name)
+                            self.ledger.count("end_call")
+                            # Speak the goodbye through the normal sentence
+                            # path, then end after this turn. Stop the LLM
+                            # here so no more spend goes into a closing call.
+                            closing = closing.strip()
+                            sentence_queue.put_nowait(closing)
+                            result.reply_text = (result.reply_text + " " + closing).strip()
+                            await self._emit("agent_partial", {"text": result.reply_text})
+                            self._end_requested = closing
+                            break
+                        result.denied_tools.append(event.name)
+                        self.ledger.count("tool_denied")
+                        continue
                     allowed, _ = self._tool_gate(event.name)
                     if allowed:
                         result.tool_calls.append(event.name)
@@ -291,8 +371,9 @@ class TurnOrchestrator:
                         result.denied_tools.append(event.name)
                         self.ledger.count("tool_denied")
             tail = buffer.strip()
-            if tail and not self._interrupted:
+            if tail and not self._interrupted and self._pending_redirect is None:
                 sentence_queue.put_nowait(tail)
+                await self._emit("agent_partial", {"text": result.reply_text})
         finally:
             sentence_queue.put_nowait(None)
 
@@ -308,7 +389,7 @@ class TurnOrchestrator:
     async def _consume_sentences(
         self, sentence_queue: asyncio.Queue, producer: asyncio.Task
     ) -> None:
-        """Synthesize sentences in order; stop early on barge-in."""
+        """Synthesize sentences in order; pivot gracefully on barge-in."""
         try:
             while True:
                 sentence = await sentence_queue.get()
@@ -326,6 +407,12 @@ class TurnOrchestrator:
                         self._speaking = True
                         self._speech_start = self._clock()
                     self.ledger.mark("first_playout")
+                # Soft-yield lands here: the sentence just finished instead
+                # of being cut mid-word. Stop the stale reply now so the
+                # interrupting turn owns the floor next.
+                if self._pending_redirect is not None:
+                    self._interrupted = True
+                    break
             # A failed producer must fail the turn, not vanish: retrieve its
             # exception (also silences "never retrieved") and re-raise it so
             # the run task — and the transport's end message — carry it.

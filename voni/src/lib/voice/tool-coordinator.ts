@@ -9,6 +9,7 @@ type ToolCall = {
 
 type Pending = {
   callId: string;
+  name: string;
   replyId: string | null;
   mode: "interactive" | "hold";
   result?: ToolResponse;
@@ -22,6 +23,12 @@ export type ToolCoordinatorOptions = {
     arguments: Record<string, unknown>;
   }) => Promise<ToolResponse>;
   modeFor: (name: string) => "interactive" | "hold";
+  /**
+   * Fires with every tool result as it is sent back to the agent — so the
+   * session can react to call-control tools (end_call arms the hangup) as
+   * well as show activity. Fires before the pending entry is dropped.
+   */
+  onResult?: (name: string, result: ToolResponse) => void;
   /**
    * Fires when a tool call goes from none-in-flight to at-least-one, and back
    * to none — so the UI can show something ("Looking that up…") during a
@@ -85,6 +92,7 @@ export class ToolCoordinator {
     const mode = this.options.modeFor(event.name);
     this.pending.set(event.call_id, {
       callId: event.call_id,
+      name: event.name,
       replyId: this.currentReplyId,
       mode,
     });
@@ -147,6 +155,7 @@ export class ToolCoordinator {
       result: JSON.stringify(item.result),
       is_error: !item.result.ok,
     });
+    this.options.onResult?.(item.name, item.result);
     this.pending.delete(item.callId);
     this.notifyActivity();
   }

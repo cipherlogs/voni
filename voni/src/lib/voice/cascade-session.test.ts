@@ -5,9 +5,14 @@ import {
   CascadeSession,
   decodeAudioMessage,
   encodeAudioFrame,
+  encodeContextMessage,
   parseServerMessage,
   type CascadeCallConfig,
 } from "./cascade-session";
+import {
+  MICROPHONE_MUTED_CONTEXT,
+  MICROPHONE_UNMUTED_CONTEXT,
+} from "./context";
 
 const CONFIG: CascadeCallConfig = {
   serviceUrl: "ws://127.0.0.1:8766/v1/browser-call",
@@ -29,6 +34,14 @@ test("audio frames encode to base64 data messages", () => {
   const parsed = JSON.parse(encodeAudioFrame(bytes));
   assert.equal(parsed.type, "audio");
   assert.equal(Buffer.from(parsed.data, "base64").length, 4);
+});
+
+test("context messages serialize as hidden system events", () => {
+  assert.deepEqual(JSON.parse(encodeContextMessage("context")), {
+    type: "context",
+    role: "system",
+    content: "context",
+  });
 });
 
 test("server messages parse to typed events", () => {
@@ -156,5 +169,41 @@ test("mic frames are forwarded as audio messages", async () => {
   const frame = JSON.parse(socket.sent[1]);
   assert.equal(frame.type, "audio");
   assert.equal(Buffer.from(frame.data, "base64").length, 2);
+  await session.stop();
+});
+
+test("muting cascade drops mic frames and sends context without stopping playback", async () => {
+  const socket = makeSocket();
+  const mic: { onFrame: ((data: ArrayBuffer) => void) | null } = { onFrame: null };
+  const session = new CascadeSession(
+    {},
+    {
+      socketFactory: () => socket as unknown as WebSocket,
+      startMic: async (_owner, onFrame) => {
+        mic.onFrame = onFrame;
+        return { stop: () => {} };
+      },
+      createPlayout: () => ({ play: () => {}, flush: () => {} }),
+    },
+  );
+  await session.start(CONFIG, "test-owner");
+  socket.readyState = socket.OPEN;
+  socket.onopen?.();
+  mic.onFrame?.(new Uint8Array([1]).buffer);
+  session.setInputMuted(true);
+  mic.onFrame?.(new Uint8Array([2]).buffer);
+  session.setInputMuted(false);
+  mic.onFrame?.(new Uint8Array([3]).buffer);
+
+  const messages = socket.sent.map((raw) => JSON.parse(raw));
+  assert.equal(messages.filter((message) => message.type === "audio").length, 2);
+  assert.deepEqual(
+    messages.filter((message) => message.type === "context"),
+    [
+      { type: "context", role: "system", content: MICROPHONE_MUTED_CONTEXT },
+      { type: "context", role: "system", content: MICROPHONE_UNMUTED_CONTEXT },
+    ],
+  );
+  assert.ok(!socket.sent.some((message) => message.includes("reply.create")));
   await session.stop();
 });

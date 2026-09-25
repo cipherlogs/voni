@@ -1,6 +1,7 @@
 import { compileSystemPrompt } from "./compile";
 import type { AgentConfig } from "./config";
-import { compileVoiceTools } from "@/lib/tools/definitions";
+import { compileVoiceTools, toRestTool } from "@/lib/tools/definitions";
+import { buildAgentKeyterms, buildAgentTranscriptionPrompt } from "@/lib/voice/transcription";
 import { resolveCredential } from "@/lib/platform/credentials";
 
 const AGENTS_URL = "https://agents.assemblyai.com/v1/agents";
@@ -17,12 +18,18 @@ export function storedAgentBody(name: string, config: AgentConfig) {
     voice: { voice_id: config.voiceId },
     input: {
       format: { encoding: "audio/pcmu", sample_rate: 8000 },
-      transcription_mode: "min_latency",
+      transcription_mode: "balanced",
+      // Scene + vocabulary for the opening turn; PSTN callers are on
+      // handsets/speakerphone, so far-field isolation fits the mic.
+      transcription_prompt: buildAgentTranscriptionPrompt(config),
+      keyterms: buildAgentKeyterms(config),
+      voice_focus: "far-field",
+      voice_focus_threshold: 0.8,
       turn_detection: {
         min_silence: 100,
-        max_silence: 500,
+        max_silence: 1000,
         interrupt_response: true,
-        interruption_delay: 0,
+        interruption_delay: 500,
       },
       ...(config.languageCodes.length > 0
         ? { language_codes: config.languageCodes }
@@ -32,7 +39,10 @@ export function storedAgentBody(name: string, config: AgentConfig) {
       voice: config.voiceId,
       format: { encoding: "audio/pcmu", sample_rate: 8000 },
     },
-    tools: compileVoiceTools(config),
+    // REST shape (no `type`): the Agents API tool object has no such field —
+    // sending it risks the tool being dropped while the prompt still
+    // mentions it. See `toRestTool`.
+    tools: compileVoiceTools(config).map(toRestTool),
   };
 }
 
@@ -56,6 +66,10 @@ function comparableAgent(value: Record<string, unknown>) {
     input: {
       format: input.format,
       transcription_mode: input.transcription_mode,
+      transcription_prompt: input.transcription_prompt ?? null,
+      keyterms: input.keyterms ?? [],
+      voice_focus: input.voice_focus ?? null,
+      voice_focus_threshold: input.voice_focus_threshold ?? null,
       turn_detection: input.turn_detection ?? null,
       language_codes: input.language_codes ?? [],
     },
@@ -68,8 +82,8 @@ function comparableAgent(value: Record<string, unknown>) {
   };
 }
 
-function stableJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+/** Canonical JSON for fingerprints. Exported for demo-agent parity. */
+export function stableJson(value: unknown): string {  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
   if (value && typeof value === "object") {
     return `{${Object.entries(value as Record<string, unknown>)
       .filter(([, item]) => item !== undefined)

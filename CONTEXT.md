@@ -45,9 +45,49 @@ Silence between the end of the caller's speech and the first sound of the agent'
 _Avoid_: latency (unqualified), lag
 
 **Barge-in**:
-The caller speaking over the agent, which cuts the agent's reply short.
+The caller speaking over the agent. The agent keeps listening in the background: steering (stop, wait, no, repeat) yields a human pivot, junk keeps it talking.
 _Avoid_: interruption (unqualified), cut
+
+**Overheard speech**:
+Caller speech that lands while the agent holds the floor. It renders marked in the transcript, counts in the call ledger, and steers the reply — even when the agent does not yield.
+_Avoid_: lost audio, missed interruption
+
+**End call**:
+The agent ending the call itself: it speaks a closing line, then a built-in tool closes the session. Refused while another tool is still running.
+_Avoid_: hangup (as a noun for the agent's action), drop
+
+**Words to listen for**:
+Owner-supplied vocabulary on the agent (jargon, product and place names) merged with the words the agent derives from its own name, fields, and tools for speech recognition.
+_Avoid_: keywords (SEO connotation), keyterms (STT parameter name)
 
 **Turn preset**:
 The single turn-taking setting (silence windows, barge-in delay) shared by every demo call, test call, and copilot session.
 _Avoid_: VAD config, turn detection (as a noun for the setting)
+
+**Input mute**:
+Microphone-only mute for a connected demo call or test call. It drops outbound microphone frames, keeps the call and agent playback alive, and sends hidden system context on mute and unmute; it never creates an automatic reply or transcript row.
+_Avoid_: call mute (when the agent audio is still playing), pause
+
+**Context message**:
+Hidden system instruction attached to the next generated turn. Managed sessions serialize it as AssemblyAI `conversation.message`; cascade browser sessions serialize `{ type: "context", role: "system", content }`. Context is not a caption and does not interrupt current playback.
+_Avoid_: transcript message, system caption
+
+**Prospect**:
+A demo-call visitor who has shared at least one contact channel; Voni's own potential customer.
+_Avoid_: lead (a customer's pipeline record), visitor (once contact is shared)
+
+**Work-email gate**:
+The rule that a demo call continues only with a business-domain email address.
+_Avoid_: filter, qualification
+
+**Code check**:
+The short code in Voni's reply email that the visitor reads back to prove they own the inbox, framed as a test rather than a security step.
+_Avoid_: OTP (in visitor-facing copy)
+
+**Provisional extension**:
+Extra demo-call time unlocked by a claimed business address, before the code check.
+_Avoid_: trial time
+
+**Verified extension**:
+The full demo-call time unlocked by a passed code check.
+_Avoid_: unlock, upgrade

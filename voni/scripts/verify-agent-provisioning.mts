@@ -39,6 +39,9 @@ try {
     input?: {
       format?: { encoding?: string; sample_rate?: number };
       transcription_mode?: string;
+      transcription_prompt?: string;
+      keyterms?: string[];
+      voice_focus?: string;
       turn_detection?: { min_silence?: number; max_silence?: number };
     };
     output?: { format?: { encoding?: string } };
@@ -50,9 +53,10 @@ try {
     [
       ...REAL_ESTATE_TEMPLATE.tools,
       "prepare_sensitive_capture",
+      "end_call",
     ],
   );
-  assert.equal(tools.length, 9);
+  assert.equal(tools.length, 10);
   assert.equal(
     tools.find((tool) => tool.name === "search_properties")?.execution_mode,
     "interactive",
@@ -68,9 +72,12 @@ try {
   );
   assert.equal(agent.input?.format?.encoding, "audio/pcmu");
   assert.equal(agent.input?.format?.sample_rate, 8000);
-  assert.equal(agent.input?.transcription_mode, "min_latency");
+  assert.equal(agent.input?.transcription_mode, "balanced");
+  assert.match(agent.input?.transcription_prompt ?? "", /property leads/);
+  assert.ok((agent.input?.keyterms ?? []).includes("Voni"));
+  assert.equal(agent.input?.voice_focus, "far-field");
   assert.equal(agent.input?.turn_detection?.min_silence, 100);
-  assert.equal(agent.input?.turn_detection?.max_silence, 500);
+  assert.equal(agent.input?.turn_detection?.max_silence, 1000);
   assert.equal(agent.output?.format?.encoding, "audio/pcmu");
   assert.match(agent.system_prompt, /prepare_sensitive_capture/);
   console.log(
@@ -78,7 +85,7 @@ try {
       storedAgent: "created, updated, and read back",
       businessTools: 8,
       pacingTools: 1,
-      input: "PCMU 8000 Hz min_latency",
+      input: "PCMU 8000 Hz balanced",
       output: "PCMU 8000 Hz",
       promptRequiresSensitivePacing: true,
     }),

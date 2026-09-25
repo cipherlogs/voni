@@ -371,7 +371,23 @@
 .landing-orb-ring {
   position: absolute;
   border-radius: 9999px;
-  border: 1px solid color-mix(in oklch, var(--foreground) 28%, transparent);
+  border: 1px solid color-mix(in oklch, var(--orb-tint, var(--foreground)) 28%, transparent);
+}
+
+/* Call-state tint: idle inherits monochrome; live states go green. Set via
+   data-state from the call surfaces — landing idle never sets one. */
+.landing-orb[data-state="connecting"],
+.landing-orb[data-state="listening"] {
+  --orb-tint: var(--color-green-600);
+}
+.landing-orb[data-state="speaking"] {
+  --orb-tint: var(--color-green-600);
+}
+.landing-orb[data-state="speaking"] .landing-orb-ring {
+  border-width: 1.5px;
+}
+.landing-orb[data-state="speaking"] .landing-orb-ping {
+  animation-duration: 1.2s;
 }
 
 /* Children 1–9: meridians, 20° apart around the vertical axis. */
@@ -402,21 +418,6 @@
 .landing-orb-ring:nth-child(13) { --d: 0.944; --y: 0.165; }
 .landing-orb-ring:nth-child(14) { --d: 0.751; --y: 0.33; }
 
-.landing-orb-core {
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  width: calc(var(--orb) * 0.34);
-  height: calc(var(--orb) * 0.34);
-  translate: -50% -50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 9999px;
-  background: var(--foreground);
-  color: var(--background);
-}
-
 .landing-orb-ping {
   position: absolute;
   inset: 14%;
@@ -428,6 +429,35 @@
 
 .landing-ping {
   animation: landing-ping 2.4s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+
+/* Streaming caption word reveal (voice-call StreamingText): settled words
+   stay mounted so only newly arrived words animate. Delays are classes, not
+   inline styles, per the design-foundation ban. */
+.stream-word {
+  animation: stream-word-in 150ms ease-out both;
+}
+@keyframes stream-word-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.stream-delay-0 { animation-delay: 0ms; }
+.stream-delay-1 { animation-delay: 25ms; }
+.stream-delay-2 { animation-delay: 50ms; }
+.stream-delay-3 { animation-delay: 75ms; }
+.stream-delay-4 { animation-delay: 100ms; }
+.stream-delay-5 { animation-delay: 125ms; }
+.stream-delay-6 { animation-delay: 150ms; }
+.stream-delay-7 { animation-delay: 175ms; }
+.stream-delay-8 { animation-delay: 200ms; }
+.stream-delay-9 { animation-delay: 225ms; }
+.stream-delay-10 { animation-delay: 250ms; }
+.stream-delay-11 { animation-delay: 275ms; }
+.stream-delay-12 { animation-delay: 300ms; }
+@media (prefers-reduced-motion: reduce) {
+  .stream-word {
+    animation: none;
+  }
 }
 
 .landing-marquee {

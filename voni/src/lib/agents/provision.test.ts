@@ -74,3 +74,14 @@ test("deleteRemoteAgent encodes the remote id", async () => {
   });
   assert.equal(url, "https://agents.assemblyai.com/v1/agents/a%2Fb%3Fc");
 });
+
+test("storedAgentBody ships REST-shaped tools without `type`", async () => {
+  const { storedAgentBody } = await import("./provision");
+  const { REAL_ESTATE_TEMPLATE } = await import("./config");
+  const body = storedAgentBody("test-agent", REAL_ESTATE_TEMPLATE);
+  assert.ok(body.tools.length > 0, "tools ship on stored agents");
+  assert.equal(body.tools.at(-1)?.name, "end_call", "call control last");
+  for (const tool of body.tools as Array<Record<string, unknown>>) {
+    assert.ok(!("type" in tool), "Agents REST API has no `type` field");
+  }
+});

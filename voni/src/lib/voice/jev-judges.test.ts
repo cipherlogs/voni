@@ -11,9 +11,24 @@ import {
 } from "./jev-judges";
 
 test("backchannel never yields (fail-closed)", () => {
-  for (const text of ["uh-huh", "yeah", "mhm", "okay", "right"]) {
+  for (const text of ["uh-huh", "um", "uhm", "mhm", "okay", "right", "got it"]) {
     const r = shouldYieldToBargeIn({ partialText: text, agentSpeakingMs: 3000 });
     assert.equal(r.yield, false, text);
+  }
+});
+
+test("bare yes/yeah never hard-cuts at partial stage (soft-confirm on the final)", () => {
+  for (const text of ["yes", "yeah"]) {
+    const r = shouldYieldToBargeIn({ partialText: text, agentSpeakingMs: 3000 });
+    assert.equal(r.yield, false, text);
+  }
+});
+
+test("command words yield even as single words (steering must be heard)", () => {
+  for (const text of ["no", "stop", "wait", "repeat", "hold on", "nope"]) {
+    const r = shouldYieldToBargeIn({ partialText: text, agentSpeakingMs: 3000 });
+    assert.equal(r.yield, true, text);
+    assert.ok(r.probability >= BARGE_IN_THRESHOLD, text);
   }
 });
 

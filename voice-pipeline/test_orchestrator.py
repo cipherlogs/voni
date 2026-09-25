@@ -64,8 +64,10 @@ class FakeLLM:
         self.cancels = 0
         self.completions = 0
         self.tokens_seen = 0
+        self.messages_seen: list[list[dict]] = []
 
     async def complete(self, *, messages, tools=None):
+        self.messages_seen.append(messages)
         self.completions += 1
         for token in self._tokens:
             self.tokens_seen += 1
@@ -198,6 +200,30 @@ class TurnLoopTests(unittest.TestCase):
         roles = [m["role"] for m in orch.history]
         self.assertEqual(roles, ["system", "user", "assistant", "user", "assistant"])
 
+    def test_hidden_context_is_history_only_and_applies_to_next_turn(self):
+        async def run():
+            stt = FakeSTT([FinalTranscript(text="one")])
+            llm = FakeLLM(tokens=["reply"])
+            orch, _ = make_orchestrator(stt, llm, FakeTTS())
+            orch.add_context("The user's microphone is muted.")
+            events: list[tuple[str, dict]] = []
+            orch._on_event = lambda kind, payload: events.append((kind, payload))  # type: ignore[assignment]
+            results = await orch.run(frames(b"\x00"))
+            return orch, llm, events, results
+
+        orch, llm, events, results = asyncio.run(run())
+        self.assertEqual(results[0].reply_text, "reply")
+        self.assertEqual(
+            llm.messages_seen[0],
+            [
+                {"role": "system", "content": "sys"},
+                {"role": "system", "content": "The user's microphone is muted."},
+                {"role": "user", "content": "one"},
+            ],
+        )
+        self.assertNotIn("context", [kind for kind, _ in events])
+        self.assertEqual(orch.history[1]["role"], "system")
+
 
 class BargeInTests(unittest.TestCase):
     def test_real_interruption_stops_audio(self):
@@ -222,6 +248,31 @@ class BargeInTests(unittest.TestCase):
         counts = orch.ledger.summary()["counts"]
         self.assertGreaterEqual(counts["yield"] + counts["interruption"], 1)
 
+    def test_soft_yield_suppresses_stale_reply(self):
+        # Commit arrives while the reply is still one held sentence: no
+        # stale audio plays, the turn still records the yield, and the
+        # interrupting turn speaks normally.
+        async def run():
+            stt = LiveFakeSTT()
+            llm = FakeLLM(tokens=["Hello", " there."], token_delay=0.02)
+            orch, audio_out = make_orchestrator(
+                stt, llm, FakeTTS(), scorer=lambda text, ms: 0.9
+            )
+            task = asyncio.create_task(orch.run(frames(b"\x00")))
+            await stt.push(FinalTranscript(text="tell me"))
+            await wait_until(lambda: llm.tokens_seen >= 1)
+            await stt.push(PartialTranscript(text="stop now please"))
+            await stt.push(FinalTranscript(text="stop now please"))
+            await stt.finish()
+            results = await task
+            return orch, results, audio_out
+
+        orch, results, audio_out = asyncio.run(run())
+        self.assertEqual(len(results), 2)
+        self.assertTrue(results[0].interrupted, "yielded turn marked")
+        self.assertFalse(results[1].interrupted)
+        self.assertEqual([c.text for c in audio_out], ["Hello there."])
+
     def test_backchannel_does_not_interrupt(self):
         async def run():
             stt = LiveFakeSTT()
@@ -242,6 +293,52 @@ class BargeInTests(unittest.TestCase):
         orch, results, audio_out = asyncio.run(run())
         self.assertFalse(any(r.interrupted for r in results))
         self.assertTrue(audio_out)
+
+    def test_overlap_registers_even_when_uncommitted(self):
+        # Heard-but-not-committed still counts: one "overheard" per
+        # floor-holding episode, no matter how many partials streamed.
+        async def run():
+            stt = FakeSTT([])
+            orch, _ = make_orchestrator(
+                stt, FakeLLM(tokens=[]), FakeTTS(), scorer=lambda text, ms: 0.12
+            )
+            # Established agent speech, then overlapping partials.
+            orch._speaking = True
+            orch._speech_start = orch._clock() - 2.0
+            await orch._handle_partial("mhm")
+            await orch._handle_partial("mhm yeah")
+            return orch
+
+        orch = asyncio.run(run())
+        counts = orch.ledger.summary()["counts"]
+        self.assertEqual(counts["overheard"], 1)
+        self.assertEqual(counts["yield"], 0)
+
+    def test_command_overlap_steers_the_llm_in_context(self):
+        # A committed "stop" reaches the model with a pivot note appended,
+        # so IT chooses transition-vs-continue instead of resuming.
+        async def run():
+            stt = FakeSTT([FinalTranscript(text="stop that")])
+            llm = FakeLLM(tokens=["Sure, stopping."])
+            orch, _ = make_orchestrator(
+                stt, llm, FakeTTS(), scorer=lambda text, ms: 0.9
+            )
+            # Established agent speech, then the steering overlap.
+            orch._speaking = True
+            orch._speech_start = orch._clock() - 2.0
+            await orch._handle_partial("stop")
+            results = await orch.run(frames(b"\x00"))
+            return orch, llm, results
+
+        orch, llm, results = asyncio.run(run())
+        pivot_notes = [
+            m
+            for messages in llm.messages_seen
+            for m in messages
+            if m.get("role") == "system" and "interrupted with" in m.get("content", "")
+        ]
+        self.assertTrue(pivot_notes, "expected a pivot note in LLM context")
+        self.assertIn("stop that", pivot_notes[0]["content"])
 
 
 class ToolGateTests(unittest.TestCase):
@@ -279,6 +376,55 @@ class ToolGateTests(unittest.TestCase):
         self.assertEqual(results[0].tool_calls, ["lookupLead"])
 
 
+class EndCallTests(unittest.TestCase):
+    def test_end_call_speaks_goodbye_then_emits_call_end(self):
+        async def run():
+            events: list[tuple[str, dict]] = []
+
+            async def on_event(kind: str, payload: dict) -> None:
+                events.append((kind, payload))
+
+            stt = FakeSTT([FinalTranscript(text="bye then")])
+            tts = FakeTTS()
+            llm = FakeLLM(
+                tokens=[],
+                tool_calls=[
+                    ToolCallRequest(
+                        name="end_call",
+                        arguments={"closing_line": "Thanks, goodbye!"},
+                        call_id="e1",
+                    )
+                ],
+            )
+            orch, _ = make_orchestrator(stt, llm, tts, on_event=on_event)
+            results = await orch.run(frames(b"\x00"))
+            return events, results, tts
+
+        events, results, tts = asyncio.run(run())
+        kinds = [kind for kind, _ in events]
+        self.assertEqual(results[0].tool_calls, ["end_call"])
+        # The goodbye goes through TTS like any sentence and lands in the
+        # transcript — the caller hears it before the line drops.
+        self.assertIn("Thanks, goodbye!", tts.spoken)
+        self.assertIn("Thanks, goodbye!", results[0].reply_text)
+        self.assertEqual(kinds[-1], "call_end")
+        self.assertEqual(events[-1][1], {"closing_line": "Thanks, goodbye!"})
+
+    def test_end_call_without_closing_line_is_denied(self):
+        async def run():
+            stt = FakeSTT([FinalTranscript(text="bye")])
+            llm = FakeLLM(
+                tokens=["later"],
+                tool_calls=[ToolCallRequest(name="end_call", arguments={}, call_id="e2")],
+            )
+            orch, _ = make_orchestrator(stt, llm, FakeTTS())
+            return await orch.run(frames(b"\x00"))
+
+        results = asyncio.run(run())
+        self.assertEqual(results[0].tool_calls, [])
+        self.assertEqual(results[0].denied_tools, ["end_call"])
+
+
 class EventHookTests(unittest.TestCase):
     def test_partial_final_agent_sequence_emitted(self):
         async def run():
@@ -297,9 +443,12 @@ class EventHookTests(unittest.TestCase):
 
         events, results = asyncio.run(run())
         kinds = [kind for kind, _ in events]
-        self.assertEqual(kinds, ["user_partial", "user_final", "agent_final"])
+        self.assertEqual(
+            kinds, ["user_partial", "user_final", "agent_partial", "agent_final"]
+        )
         self.assertEqual(events[0][1], {"text": "hi"})
         self.assertEqual(events[2][1], {"text": "Hey!"})
+        self.assertEqual(events[3][1], {"text": "Hey!"})
         self.assertEqual(len(results), 1)
 
     def test_no_hook_no_failure(self):

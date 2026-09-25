@@ -351,17 +351,32 @@ def build_session_update(
             "greeting": GREETING,
             "input": {
                 "format": {"encoding": in_encoding, "sample_rate": 8000},
-                # Was unset, so the session ran on `balanced`. The docs call
-                # this "the cleanest single knob" for the speed/accuracy
-                # tradeoff and say `min_latency` "ends turns fastest and is
-                # least patient in silence" — which is the whole complaint.
+                # `balanced` is the docs' voice-agent default: finals the
+                # screen and the LLM can trust, without max_accuracy's
+                # endpointing wait. User captions render final-only now, so
+                # the extra STT patience buys accuracy for free.
                 #
                 # The first real call measured time-to-first-audio at 382 ms
                 # for the pre-scripted greeting but 0.5-15.4 s (mean 4.8 s)
                 # for every reply the model had to think about, and the agent
                 # streams that wait to us as real-time SILENCE inside
                 # `reply.audio`. 59% of the agent's airtime was dead air.
-                "transcription_mode": "min_latency",
+                "transcription_mode": "balanced",
+                # Scene + vocabulary for the opening turn, which would
+                # otherwise run on generic recognition. Neutral: Voni is
+                # vertical-agnostic, and the no-binding fallback has no
+                # agent config to derive from. Stored-agent bindings carry
+                # the per-agent list from provision.
+                "transcription_prompt": (
+                    "A business phone call. The caller may mention names, "
+                    "places, dates, times, amounts, and reference numbers."
+                ),
+                "keyterms": ["Voni", "WhatsApp"],
+                # PSTN callers are on handsets/speakerphone: far-field
+                # isolation fits the mic. Applied at connect, before the
+                # speech-to-text connection opens.
+                "voice_focus": "far-field",
+                "voice_focus_threshold": 0.8,
                 #
                 # These were left unset for the first two calls, which meant
                 # the *adaptive* endpointer decided when the caller had
@@ -373,10 +388,9 @@ def build_session_update(
                 #
                 # The streaming best-practices guide gives the voice-agent
                 # starting point outright: `min_turn_silence=100`,
-                # `max_turn_silence=1000`, and "Set `interruption_delay=0` for
-                # the fastest possible time to first token (~300ms effective).
-                # The default of 500ms produces a first partial at ~800ms."
-                # Same three knobs, named `min_silence`/`max_silence`/
+                # `max_turn_silence=1000`, `interruption_delay=500` (the mode
+                # default; first partial at ~800ms effective). Same three
+                # knobs, named `min_silence`/`max_silence`/
                 # `interruption_delay` on this API.
                 #
                 # KNOWN COST, accepted deliberately: setting min/max silence
@@ -386,26 +400,19 @@ def build_session_update(
                 # raise these mid-call for an entity-capture step — do that
                 # when the qualification flow starts asking for numbers, via a
                 # `session.update` (both fields are mutable mid-session).
-                # Call 4 measured the end-of-turn wait at 0.70-1.14s, mean
-                # 0.91s — i.e. it was mostly running into the `max_silence`
-                # ceiling rather than firing early on confident punctuation, so
-                # the ceiling was the thing costing time. Halved it. This is
-                # below the guide's suggested 1000 floor and is a deliberate
-                # trade: the agent will now cut in sooner when a caller pauses
-                # mid-thought. The caller asked for exactly this ("when I
-                # finish a sentence, I want you to reply immediately... these
-                # things need to be changed from the config"). Raise it back
-                # toward 1000 if it starts talking over people.
+                # The 1000 ceiling (not the 500 we ran before) is what keeps
+                # mid-thought pauses from being cut: call 4 measured the
+                # end-of-turn wait at 0.70-1.14s, mean 0.91s.
                 "turn_detection": {
                     "min_silence": 100,
-                    "max_silence": 500,
+                    "max_silence": 1000,
                     "interrupt_response": True,
-                    # 0 is also the snappiest barge-in. Safe here: we forward
-                    # only the inbound track, so the agent never hears itself,
-                    # and barge-in is semantic rather than raw VAD. Call 2 had
-                    # 13 speech starts and 0 confirmed interruptions, so there
-                    # is a lot of headroom before this becomes twitchy.
-                    "interruption_delay": 0,
+                    # 500 is the balanced-mode default: coughs, breath, and
+                    # "uh-huh" end before the first partial fires, so junk
+                    # rarely cuts the agent off. We forward only the inbound
+                    # track, so the agent never hears itself, and barge-in
+                    # stays semantic rather than raw VAD.
+                    "interruption_delay": 500,
                 },
             },
             "output": {
@@ -659,6 +666,24 @@ async def agent_to_telnyx(
                 stats["pending"].clear()
                 await telnyx_ws.send_text(json.dumps({"event": "clear"}))
                 stats["cleared"] += 1
+            elif tools.take_hangup_request():
+                # Agent-initiated hangup: generation settled and the flush
+                # above pushed the last frames, but Telnyx still has to PLAY
+                # the goodbye at 1x. Estimate the unplayed tail from pushed
+                # audio vs elapsed wall-clock and wait it out (bounded), or
+                # the teardown below cuts the closing line off mid-word.
+                if stats["first_audio_at"] is not None:
+                    pushed_secs = stats["reply_bytes"] / 8000.0
+                    played_secs = time.monotonic() - stats["first_audio_at"]
+                    tail = min(8.0, max(0.0, pushed_secs - played_secs))
+                else:
+                    tail = 0.0
+                if tail > 0:
+                    logger.info(f"agent ended the call; draining {tail:.1f}s of goodbye audio")
+                    await asyncio.sleep(tail)
+                else:
+                    logger.info("agent ended the call; tearing down both legs")
+                return
         elif event_type == "transcript.user":
             logger.info(f"caller: {event.get('text')!r}")
             # Jev barge-in classification, synchronous only: backchannel vs
@@ -669,6 +694,10 @@ async def agent_to_telnyx(
             if stats.get("speaking") and stats.get("speech_at") is not None:
                 agent_ms = (time.monotonic() - stats["speech_at"]) * 1000.0
                 decision, prob = classify_user_turn(text, agent_ms)
+                # Overheard either way: caller speech that landed while the
+                # agent held the floor registers even when the judge keeps
+                # the agent talking.
+                stats["overheard"] += 1
                 if decision == "yield":
                     stats["user_yields"] += 1
                 else:
@@ -748,7 +777,7 @@ async def media_stream(websocket: WebSocket):
     stats = {"call_control_id": call_control_id,
              "to_agent": 0, "to_caller": 0, "skipped_track": 0,
               "speech_started": 0, "cleared": 0,
-              "backchannels": 0, "user_yields": 0, "speaking": False,
+              "backchannels": 0, "user_yields": 0, "overheard": 0, "speaking": False,
              "reply_started_at": None, "first_audio_at": None, "speech_at": None,
              "last_audio_at": None, "reply_bytes": 0, "ttfa_seen": [],
              "stalls": 0, "worst_stall": 0.0,
@@ -842,8 +871,9 @@ async def media_stream(websocket: WebSocket):
             # buffer_clears is also the confirmed-interruption count: the two
             # happen on the same event. A large gap between it and
             # speech_started means most detected speech was back-channel.
-            f"confirmed_interruptions={stats['cleared']} {lead_summary} "
-            f"judge_yields={stats['user_yields']} judge_backchannels={stats['backchannels']} "
+             f"confirmed_interruptions={stats['cleared']} {lead_summary} "
+             f"judge_yields={stats['user_yields']} judge_backchannels={stats['backchannels']} "
+             f"overheard={stats['overheard']} "
             f"{stall_summary} "
             f"inbound_span={(stats['last_in'] - stats['first_in']) if stats['first_in'] else 0:.1f}s"
         )

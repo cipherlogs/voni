@@ -1,16 +1,26 @@
 "use client";
 
-import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import {
-  Check,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
+import {
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
+  Mic,
+  MicOff,
   Phone,
   PhoneOff,
   TriangleAlert,
 } from "lucide-react";
+import { Dialog as BaseDialog } from "@base-ui/react/dialog";
 import { LandingOrb } from "@/components/landing-orb";
-import { chipSlots, DEMO_CHIPS, type DemoChip } from "@/lib/demo/chips";
 import { Button } from "@/components/ui/button";
 import {
   MessageScroller,
@@ -40,6 +50,8 @@ import {
 } from "@/lib/voice/jev-judges";
 import { compileSystemPrompt } from "@/lib/agents/compile";
 import type { AgentConfig } from "@/lib/agents/config";
+import { buildAgentKeyterms, buildAgentTranscriptionPrompt } from "@/lib/voice/transcription";
+import { CallSounds } from "@/lib/voice/call-sounds";
 import { compileVoiceTools } from "@/lib/tools/definitions";
 import { formatCallStatus } from "@/lib/calls/call-status";
 import { PERSONAS, personaConfig } from "@/lib/agents/personas";
@@ -130,101 +142,90 @@ const ERROR_BODY =
 
 /** The landing demo's three scenario tabs (mockup B1). */
 const DEMO_PERSONAS = PERSONAS.slice(0, 3);
+const MOBILE_DEMO_QUERY = "(max-width: 1023px)";
 
-/** A tool chip: dashed while "running", then settles to a checked result. */
-function DemoChipRow({ chip }: { chip: DemoChip }) {
-  const [done, setDone] = useState(false);
-  useEffect(() => {
-    const id = setTimeout(() => setDone(true), 1500);
-    return () => clearTimeout(id);
-  }, []);
+function useIsBelowLg() {
+  return useSyncExternalStore(
+    (onChange) => {
+      const query = window.matchMedia(MOBILE_DEMO_QUERY);
+      query.addEventListener("change", onChange);
+      return () => query.removeEventListener("change", onChange);
+    },
+    () => window.matchMedia(MOBILE_DEMO_QUERY).matches,
+    () => false,
+  );
+}
+
+/**
+ * Word-by-word reveal for streaming captions. Deltas arrive cumulative, so
+ * React reconciles by index: settled words stay mounted (no re-animation),
+ * only newly arrived words mount with the fade. Delays are classes
+ * (`.stream-delay-*` in globals.css), never inline styles — the design
+ * foundation bans style objects outside listed exceptions. Dead under
+ * `prefers-reduced-motion` — then it is plain text.
+ */
+function StreamingText({ text }: { text: string }) {
+  const parts = text.split(/(\s+)/);
   return (
-    <div
-      className={cn(
-        "flex h-9 items-center justify-between gap-3 rounded-lg border px-3 text-xs",
-        done ? "bg-muted/50" : "border-foreground/20 text-foreground/70 border-dashed",
+    <>
+      {parts.map((part, index) =>
+        part === "" || /^\s+$/.test(part) ? (
+          <span key={index}>{part}</span>
+        ) : (
+          // Part index (not word ordinal) still staggers monotonically and
+          // is cap-safe; spaces merely shift later words a step.
+          <span key={index} className={`stream-word stream-delay-${Math.min(index, 12)}`}>
+            {part}
+          </span>
+        ),
       )}
-    >
-      <span>{chip.pending.replace("…", "")}</span>
-      {done ? (
-        <span className="flex items-center gap-1.5 font-medium">
-          <Check aria-hidden className="size-3.5 text-green-600" />
-          {chip.done}
-        </span>
-      ) : (
-        <span className="text-muted-foreground">Working…</span>
-      )}
-    </div>
+    </>
   );
 }
 
 /**
  * Demo transcript in the mockup's flat idiom: a small speaker label over
- * each line, the live caption as the trailing muted line, a dashed row while
- * a tool runs. Scrolling and follow stay on MessageScroller.
+ * each line and the live caption as the trailing muted line. Scrolling and
+ * follow stay on MessageScroller; tool latency remains in the status line.
  */
 function DemoTranscript({
   turns,
   agentName,
   liveCaption,
-  toolActive,
-  chips,
   footer,
 }: {
   turns: Transcript[];
   agentName: string;
-  liveCaption: { role: "user" | "agent"; text: string } | null;
-  toolActive: boolean;
-  chips: DemoChip[];
+  liveCaption: { role: "user" | "agent"; text: string; overheard?: boolean } | null;
   footer: React.ReactNode;
 }) {
   const lines = liveCaption ? [...turns, { ...liveCaption, live: true }] : turns;
-  const slots = chipSlots(lines, chips);
   return (
     <MessageScrollerProvider autoScroll defaultScrollPosition="end">
       <MessageScroller className="min-h-0 flex-1">
         <MessageScrollerViewport aria-label="Call transcript" aria-live="polite">
           <MessageScrollerContent className="flex flex-col gap-3">
-            {lines.flatMap((line, index) => {
-              // A chip follows the finalized agent reply that triggers it.
-              const chip = slots[index];
-              const row = (
-                <MessageScrollerItem
-                  key={`${index}-${line.role}`}
-                  messageId={`${index}-${line.role}`}
-                  className="flex flex-col gap-1"
-                >
-                  <span className="text-foreground/60 text-xs leading-[normal]">
-                    {line.role === "user" ? "You" : agentName}
-                  </span>
-                  <span
-                    className={cn(
-                      "text-sm leading-[1.55]",
-                      "live" in line && "text-foreground/70",
-                    )}
-                  >
-                    {line.text}
-                  </span>
-                </MessageScrollerItem>
-              );
-              return chip
-                ? [
-                    row,
-                    <MessageScrollerItem key={`chip-${index}`} messageId={`chip-${index}`}>
-                      <DemoChipRow chip={chip} />
-                    </MessageScrollerItem>,
-                  ]
-                : [row];
-            })}
-            {toolActive ? (
+            {lines.map((line, index) => (
               <MessageScrollerItem
-                messageId="tool"
-                className="border-foreground/20 text-foreground/70 flex h-9 items-center justify-between rounded-md border border-dashed px-3 font-mono text-xs"
+                key={`${index}-${line.role}`}
+                messageId={`${index}-${line.role}`}
+                className="flex flex-col gap-1"
               >
-                <span>Using a tool</span>
-                <span className="text-muted-foreground">running</span>
+                <span className="text-foreground/60 text-xs leading-[normal]">
+                  {line.role === "user" ? "You" : agentName}
+                  {"overheard" in line && line.overheard ? " · overheard" : ""}
+                </span>
+                <span
+                  className={cn(
+                    "text-sm leading-[1.55]",
+                    "live" in line && "text-foreground/70",
+                    "overheard" in line && line.overheard && "italic",
+                  )}
+                >
+                  {"live" in line ? <StreamingText text={line.text} /> : line.text}
+                </span>
               </MessageScrollerItem>
-            ) : null}
+            ))}
           </MessageScrollerContent>
         </MessageScrollerViewport>
         <MessageScrollerButton />
@@ -238,6 +239,7 @@ export type VoiceCallStatus = {
   state: VoiceState;
   elapsed: number;
   toolActive: boolean;
+  muted: boolean;
 };
 
 export type VoiceCallPending = {
@@ -248,6 +250,8 @@ export type VoiceCallPending = {
 export type VoiceCallHandle = {
   start: () => void;
   hangUp: () => void;
+  setMuted: (muted: boolean) => void;
+  toggleMute: () => void;
 };
 
 export function VoiceCall({
@@ -279,6 +283,8 @@ export function VoiceCall({
   ref?: React.Ref<VoiceCallHandle>;
 }) {
   const isDemo = mode.kind === "demo";
+  const isBelowLg = useIsBelowLg();
+  const mobileTriggerRef = useRef<HTMLButtonElement | null>(null);
 
   const [personaId, setPersonaId] = useState(PERSONAS[0].id);
   const persona = PERSONAS.find((p) => p.id === personaId) ?? PERSONAS[0];
@@ -296,9 +302,13 @@ export function VoiceCall({
   /** Jev-gated filler line shown while the reply is being prepared. */
   const [filler, setFiller] = useState<string | null>(null);
   /** Live caption from server partials — cleared when the final turn lands. */
-  const [liveCaption, setLiveCaption] = useState<{ role: "user" | "agent"; text: string } | null>(
-    null,
-  );
+  const [liveCaption, setLiveCaption] = useState<
+    { role: "user" | "agent"; text: string; overheard?: boolean } | null
+  >(null);
+  /** Whether the agent currently holds the floor (drives overheard display). */
+  const speakingRef = useRef(false);
+  /** Whether the live caption is an overheard partial (read in stale closures). */
+  const overheardRef = useRef(false);
   const timingsRef = useRef<CallTimings | null>(null);
   const agentSpeechStartRef = useRef(0);
   const fillerIdxRef = useRef(0);
@@ -310,11 +320,21 @@ export function VoiceCall({
   // instead of silently dropping clicks (visual feedback protocol).
   const [starting, setStarting] = useState(false);
   const [hangingUp, setHangingUp] = useState(false);
+  const [muted, setMutedState] = useState(false);
   /** Demo: Close folds a finished call back to the lone orb. */
   const [closed, setClosed] = useState(false);
+  /** Mobile call screen: full transcript hides behind a Captions toggle. */
+  const [captionsOpen, setCaptionsOpen] = useState(false);
 
   const sessionRef = useRef<VoiceSession | CascadeSession | null>(null);
   const startingRef = useRef(false);
+  /** Per-call sound player (lazy: Audio only exists in the browser). */
+  const soundsRef = useRef<CallSounds | null>(null);
+  const sounds = () => (soundsRef.current ??= new CallSounds());
+  /** Connected chime fires once per call; reset every time we dial. */
+  const connectedChimeRef = useRef(false);
+  /** Last live caption's speaker + word count: new words strike the tick. */
+  const captionWordsRef = useRef<{ role: string; words: number } | null>(null);
 
   // Synchronous pending mirror for the host footer: the onPendingChange
   // effect below only runs after paint, so the click handler also notifies
@@ -333,7 +353,11 @@ export function VoiceCall({
 
   const capSeconds = isDemo ? DEMO_CAP_SECONDS : INLINE_CAP_SECONDS;
   const connected = state === "listening" || state === "speaking";
+  /** Orb tint follows the call (reconnecting reads as connecting: alive). */
+  const orbState = state === "reconnecting" ? "connecting" : state;
   const active = connected || state === "connecting";
+  const demoOpen = isDemo && (starting || state !== "idle" || error !== null) && !closed;
+  const mobileOpen = isBelowLg && demoOpen;
 
   // In inline mode the edit form below owns the config, voice included; the
   // card only mirrors it. In demo mode the card owns both choices.
@@ -372,8 +396,56 @@ export function VoiceCall({
   }, [connected]);
 
   useEffect(() => {
-    onStatusChange?.({ state, elapsed, toolActive });
-  }, [elapsed, onStatusChange, state, toolActive]);
+    onStatusChange?.({ state, elapsed, toolActive, muted });
+  }, [elapsed, muted, onStatusChange, state, toolActive]);
+
+  // Call earcons, driven by call state (see public/sounds/README.md — a
+  // missing file is silence, never an error). Ringback loops from
+  // connecting; the connected chime fires once per call on the first live
+  // state; ended plays hangup unless an error already played its tone.
+  useEffect(() => {
+    if (state === "connecting") {
+      connectedChimeRef.current = false;
+      sounds().startRingback();
+    } else if (state === "listening" || state === "speaking") {
+      if (!connectedChimeRef.current) {
+        connectedChimeRef.current = true;
+        sounds().stopRingback();
+        sounds().play("connected");
+      }
+    } else if (state === "ended") {
+      sounds().stopRingback();
+      if (!error) sounds().play("hangup");
+    }
+  }, [state, error]);
+
+  // Failure tone, independent of the state effect above (an error mid-call
+  // must sound even though the call has not ended).
+  useEffect(() => {
+    if (error) {
+      sounds().stopRingback();
+      sounds().play("error");
+    }
+  }, [error]);
+
+  // Caption tick: each word landing in the live caption (either speaker,
+  // managed or cascade — both write liveCaption) strikes the humanized tick.
+  useEffect(() => {
+    if (!liveCaption) {
+      captionWordsRef.current = null;
+      return;
+    }
+    const words = liveCaption.text.split(/\s+/).filter(Boolean).length;
+    const prev = captionWordsRef.current;
+    const grown = prev?.role === liveCaption.role ? words - prev.words : words;
+    captionWordsRef.current = { role: liveCaption.role, words };
+    if (grown > 0) sounds().tick(grown);
+  }, [liveCaption]);
+
+  const setCallState = useCallback((next: VoiceState) => {
+    setState(next);
+    if (next === "idle" || next === "ended") setMutedState(false);
+  }, []);
 
   useEffect(() => {
     notifyPending({ starting, hangingUp });
@@ -387,6 +459,7 @@ export function VoiceCall({
     () => () => {
       void sessionRef.current?.stop();
       sessionRef.current = null;
+      soundsRef.current?.stopAll();
     },
     [],
   );
@@ -418,9 +491,14 @@ export function VoiceCall({
     setTurns([]);
     setElapsed(0);
     setToolActive(false);
+    setMutedState(false);
     setFiller(null);
     setLiveCaption(null);
     setClosed(false);
+    // Captions default open on phones (the toggle only exists below lg —
+    // desktop always shows the transcript panel). The user can still close
+    // them mid-call; this only sets the opening state.
+    setCaptionsOpen(true);
     interruptionsRef.current = 0;
     timingsRef.current = new CallTimings();
     timingsRef.current.mark("startRequested");
@@ -442,22 +520,45 @@ export function VoiceCall({
               caption.role === "user" ? "firstUserTurn" : "firstAgentTurn",
             );
             if (caption.role === "agent") {
+              speakingRef.current = false;
               setFiller(null);
-              setState("listening");
+              setCallState("listening");
             }
+            // A final that resolves an overheard partial keeps its mark in
+            // history: speech the agent talked over still registered. The
+            // mark clears only on the user final it belongs to, so an
+            // agent final mid-overlap never eats it.
+            setTurns((prev) => {
+              const overheard =
+                caption.role === "user" && overheardRef.current;
+              if (overheard) overheardRef.current = false;
+              return [...prev, { role: caption.role, text: caption.text, ...(overheard ? { overheard: true } : {}) }];
+            });
             setLiveCaption(null);
-            setTurns((prev) => [...prev, { role: caption.role, text: caption.text }]);
           } else {
-            if (caption.role === "user") timingsRef.current?.mark("firstPartial");
-            setLiveCaption({ role: caption.role, text: caption.text });
+            // Live user caption (the heard-indicator): the running partial
+            // renders in the transient subtitle line, marked overheard
+            // while the agent holds the floor. Agent partials are
+            // LLM-authored so they stream instantly at zero STT cost.
+            if (caption.role === "user") {
+              timingsRef.current?.mark("firstPartial");
+              if (caption.text) {
+                const overheard = speakingRef.current;
+                overheardRef.current = overheard;
+                setLiveCaption({ role: "user", text: caption.text, ...(overheard ? { overheard: true } : {}) });
+              }
+            } else setLiveCaption({ role: caption.role, text: caption.text });
           }
         },
         onAudio: () => {
-          setState("speaking");
+          speakingRef.current = true;
+          setCallState("speaking");
         },
         onInterrupted: () => {
+          speakingRef.current = false;
+          overheardRef.current = false;
           setFiller(null);
-          setState("listening");
+          setCallState("listening");
         },
         onMetrics: (metrics, turns) => {
           console.debug("[voice-call] cascade metrics", { turns, metrics });
@@ -466,11 +567,13 @@ export function VoiceCall({
           setError({ message });
         },
         onEnd: () => {
-          setState("ended");
+          speakingRef.current = false;
+          overheardRef.current = false;
+          setCallState("ended");
         },
       });
       sessionRef.current = cascade;
-      setState("connecting");
+      setCallState("connecting");
       try {
         await cascade.start(
           {
@@ -485,18 +588,23 @@ export function VoiceCall({
               tts_model: process.env.NEXT_PUBLIC_CASCADE_TTS_MODEL ?? "sonic-2",
               fallback_mode: "cascade",
               language_codes: effectiveInlineLanguages(agentConfig.languageCodes),
+              transcription_prompt: buildAgentTranscriptionPrompt(agentConfig),
+              keyterms_prompt: buildAgentKeyterms(agentConfig),
+              // Seed the STT with the opening line so the first caller
+              // reply transcribes against the right question.
+              agent_context: agentConfig.greeting,
             },
             systemPrompt: compileSystemPrompt(agentConfig),
             tools: [],
           },
           "voice-call",
         );
-        setState("listening");
+        setCallState("listening");
       } catch (e) {
         setError({
           message: e instanceof Error ? e.message : "Could not start the call.",
         });
-        setState("ended");
+        setCallState("ended");
       } finally {
         startingRef.current = false;
         setStarting(false);
@@ -508,24 +616,35 @@ export function VoiceCall({
     const session = new VoiceSession({
       onStateChange: (next) => {
         if (next === "speaking") agentSpeechStartRef.current = Date.now();
+        speakingRef.current = next === "speaking";
         if (next === "connecting" || next === "listening" || next === "speaking" || next === "ended")
           timingsRef.current?.mark(next);
         if (next === "listening") setFiller(null);
-        setState(next);
+        setCallState(next);
       },
       onTranscript: (turn) => {
         if (turn.role === "user") timingsRef.current?.mark("firstUserTurn");
         else timingsRef.current?.mark("firstAgentTurn");
         if (turn.role === "agent") setFiller(null);
+        // Consumed only by the user final it belongs to: an agent final
+        // mid-overlap must not clear the mark before the user final lands.
+        if (turn.role === "user" && overheardRef.current) {
+          turn = { ...turn, overheard: true };
+          overheardRef.current = false;
+        }
         setLiveCaption(null);
         setTurns((prev) => [...prev, turn]);
       },
       onUserPartial: (partial) => {
-        // Live caption first: the screen shows words while they are spoken.
-        // The judge debounce below stays untouched (fail-closed barge-in).
+        // Live user caption: the running partial renders in the transient
+        // subtitle line the moment it arrives (the heard-indicator), marked
+        // overheard while the agent holds the floor. History still waits
+        // for the settled final, so early guesses never flicker as speech.
         if (partial.text) {
-          setLiveCaption({ role: "user", text: partial.text });
           timingsRef.current?.mark("firstPartial");
+          const overheard = speakingRef.current;
+          overheardRef.current = overheard;
+          setLiveCaption({ role: "user", text: partial.text, ...(overheard ? { overheard: true } : {}) });
         }
         if (partialTimerRef.current) clearTimeout(partialTimerRef.current);
         const text = partial.text;
@@ -534,7 +653,15 @@ export function VoiceCall({
             partialText: text,
             agentSpeakingMs: Date.now() - agentSpeechStartRef.current,
           }).then((r) => {
-            if (r.decision === "yield") setFiller(null);
+            if (r.decision !== "yield") return;
+            setFiller(null);
+            sounds().tick(1, 0.9);
+            // The gate committed: route the overlap to the LLM in context
+            // so IT steers (transition-vs-continue) instead of resuming a
+            // cut-off sentence over words it never addressed.
+            sessionRef.current?.sendContext?.(
+              `The caller said over your reply: "${text.slice(0, 200)}". Acknowledge it briefly first, then follow their direction. Do not resume the cut-off sentence.`,
+            );
           });
         }, 150);
       },
@@ -563,7 +690,7 @@ export function VoiceCall({
         }
       },
       onAudioProbe: (event) => {
-        // Native interruption telemetry: with the 350ms interruption delay
+        // Native interruption telemetry: with the 500ms interruption delay
         // these should be rare real barges, not backchannels.
         if (event.kind === "barge-in" || event.kind === "reply-cut") {
           interruptionsRef.current += 1;
@@ -594,6 +721,10 @@ export function VoiceCall({
             // (empty) locks to English so the test call skips 18-language
             // auto-detection every turn.
             languageCodes: effectiveInlineLanguages(config.languageCodes),
+            // First-utterance STT tuning: scene + vocabulary for the opening
+            // turn, which would otherwise run on generic recognition.
+            transcriptionPrompt: buildAgentTranscriptionPrompt(config),
+            keyterms: buildAgentKeyterms(config),
             tools: compileVoiceTools(config),
             testAgentId: mode.agentId,
           },
@@ -605,7 +736,7 @@ export function VoiceCall({
       setStarting(false);
       notifyPending({ ...pendingRef.current, starting: false });
     }
-  }, [mode, notifyPending, persona.id, voiceId, config, engine, cascadeUrl]);
+  }, [mode, notifyPending, persona.id, voiceId, config, engine, cascadeUrl, setCallState]);
 
   const hangUp = useCallback(async () => {
     if (hangingUp) return;
@@ -620,8 +751,26 @@ export function VoiceCall({
     }
   }, [hangingUp, notifyPending]);
 
+  const setMuted = useCallback(
+    (nextMuted: boolean) => {
+      if (!connected) return;
+      setMutedState(nextMuted);
+      sessionRef.current?.setInputMuted(nextMuted);
+    },
+    [connected],
+  );
+
+  const toggleMute = useCallback(() => {
+    setMuted(!muted);
+  }, [muted, setMuted]);
+
   // ai-05 dialog host drives start/hang-up from its own header buttons.
-  useImperativeHandle(ref, () => ({ start, hangUp }), [start, hangUp]);
+  useImperativeHandle(ref, () => ({ start, hangUp, setMuted, toggleMute }), [
+    hangUp,
+    setMuted,
+    start,
+    toggleMute,
+  ]);
 
 
 
@@ -701,7 +850,8 @@ export function VoiceCall({
   const liveCaptionLine = liveCaption ? (
     <p className="text-xs italic" aria-live="polite">
       {liveCaption.role === "user" ? "You: " : `${displayName}: `}
-      {liveCaption.text}
+      <StreamingText text={liveCaption.text} />
+      {liveCaption.overheard ? " · overheard" : ""}
     </p>
   ) : null;
 
@@ -713,7 +863,7 @@ export function VoiceCall({
   // transcript drops open beneath it (B · Rise). Both layouts are rendered and
   // one is display:none per breakpoint, so neither ever measures the window.
   if (isDemo) {
-    const open = (starting || state !== "idle" || error !== null) && !closed;
+    const open = demoOpen;
     const reveal = "duration-(--motion-reveal) ease-(--ease-out-soft)";
     const personaIndex = DEMO_PERSONAS.findIndex((p) => p.id === persona.id);
     const cycle = (step: number) => {
@@ -776,6 +926,19 @@ export function VoiceCall({
       </LoadingButton>
     );
     const callButtons = active ? (
+      <div className="flex gap-2">
+        {connected ? (
+          <Button
+            type="button"
+            variant="outline"
+            className="h-11 gap-2 rounded-full px-3.5 text-sm font-medium"
+            aria-pressed={muted}
+            onClick={toggleMute}
+          >
+            {muted ? <MicOff className="size-4" aria-hidden /> : <Mic className="size-4" aria-hidden />}
+            {muted ? "Unmute" : "Mute"}
+          </Button>
+        ) : null}
         <LoadingButton
           pending={hangingUp}
           className={`h-11 rounded-full px-4.5 text-sm font-medium ${HANGUP_RED}`}
@@ -783,6 +946,7 @@ export function VoiceCall({
         >
           Hang up
         </LoadingButton>
+      </div>
       ) : (
         <>
           {startButton}
@@ -819,8 +983,6 @@ export function VoiceCall({
             turns={turns}
             agentName={displayName}
             liveCaption={liveCaption}
-            toolActive={toolActive}
-            chips={DEMO_CHIPS[persona.id] ?? []}
             footer={countdown}
           />
         ) : state === "ended" ? (
@@ -837,6 +999,104 @@ export function VoiceCall({
       reveal,
       open ? "bg-card shadow-landing" : "border-transparent shadow-none",
     );
+    const mobileTrigger = (
+      <BaseDialog.Trigger
+        onClick={start}
+        render={
+          <Button
+            ref={mobileTriggerRef}
+            type="button"
+            data-testid="landing-demo-start"
+            className={`h-11 gap-2 rounded-full px-4.5 text-sm font-medium ${CALL_GREEN}`}
+          />
+        }
+      >
+        <Phone className="size-4" aria-hidden />
+        Start call
+      </BaseDialog.Trigger>
+    );
+    // WhatsApp idiom: circular icon controls docked at the bottom, the red
+    // hang-up prominent at center. Mute stays connected-only with the same
+    // hidden-context wiring; icon-only buttons keep accessible names so the
+    // verifier and screen readers query them unchanged.
+    const mobileDock = active || starting ? (
+      <div
+        data-testid="landing-demo-mobile-dock"
+        className="flex items-center justify-center gap-5"
+      >
+        {connected ? (
+          <Button
+            type="button"
+            variant="outline"
+            aria-label={muted ? "Unmute" : "Mute"}
+            aria-pressed={muted}
+            onClick={toggleMute}
+            className="size-14 rounded-full p-0"
+          >
+            {muted ? <MicOff className="size-5" aria-hidden /> : <Mic className="size-5" aria-hidden />}
+          </Button>
+        ) : null}
+        <LoadingButton
+          pending={hangingUp}
+          aria-label="Hang up"
+          icon={<PhoneOff className="size-6" aria-hidden />}
+          className={`size-16 rounded-full p-0 ${HANGUP_RED}`}
+          onClick={hangUp}
+        >
+          {null}
+        </LoadingButton>
+      </div>
+    ) : (
+      <div
+        data-testid="landing-demo-mobile-dock"
+        className="flex items-center justify-center gap-2"
+      >
+        {startButton}
+        {open ? (
+          <BaseDialog.Close
+            render={
+              <Button
+                variant="outline"
+                className="h-11 rounded-full px-4 text-sm font-medium"
+              />
+            }
+          >
+            Close
+          </BaseDialog.Close>
+        ) : null}
+      </div>
+    );
+    const captionsToggle =
+      turns.length > 0 || connected ? (
+        <div className="flex w-full flex-col items-center">
+          <Button
+            type="button"
+            variant="ghost"
+            aria-expanded={captionsOpen}
+            onClick={() => setCaptionsOpen((v) => !v)}
+            className="h-8 gap-1 rounded-full px-3 text-xs font-medium text-foreground/70"
+          >
+            <ChevronDown
+              className={cn("size-3.5 transition-transform", captionsOpen && "rotate-180")}
+              aria-hidden
+            />
+            Captions
+          </Button>
+          {captionsOpen ? (
+            <div
+              data-testid="landing-demo-mobile-transcript"
+              className="max-h-[36dvh] w-full overflow-y-auto overscroll-contain px-1 pt-1"
+            >
+              <DemoTranscript
+                turns={turns}
+                agentName={displayName}
+                liveCaption={null}
+                footer={countdown}
+              />
+            </div>
+          ) : null}
+        </div>
+      ) : null;
 
     return (
       <div
@@ -874,7 +1134,7 @@ export function VoiceCall({
               )}
             >
               <div className={cn("transition-[scale]", reveal, open ? "scale-100" : "scale-110")}>
-                <LandingOrb />
+                <LandingOrb state={orbState} />
               </div>
               {switcher}
               <p
@@ -906,76 +1166,130 @@ export function VoiceCall({
           </div>
         </div>
 
-        {/* B · Rise (below lg): the orb flies into the header's corner (a
-            container-query offset keeps it centred at any width), the rest
-            controls fade out, the call bar fades in, and the transcript
-            drops open underneath. Orb size, dock scale and centring offset
-            all come from --landing-orb* in globals.css. */}
-        <div className={cn(shell, "@container max-w-160 lg:hidden")}>
+        {/* B · Rise (below lg): the idle orb stays the controlled dialog
+            trigger. Once a call starts, Base UI owns a full-viewport modal
+            with the orb docked into its header and the transcript taking the
+            remaining height. The root is explicitly modal so focus is trapped
+            and page scrolling is locked; only the finished-call Close action
+            is allowed to dismiss it. */}
+        <BaseDialog.Root
+          open={mobileOpen}
+          modal
+          disablePointerDismissal
+          onOpenChange={(nextOpen, details) => {
+            if (nextOpen) return;
+            if (details.reason === "close-press" && !active) {
+              setClosed(true);
+              return;
+            }
+            details.cancel();
+          }}
+        >
           <div
+            inert={open}
+            aria-hidden={open}
             className={cn(
-              "relative overflow-hidden border-b transition-[height,border-color]",
-              reveal,
-              open ? "h-19" : "h-105 border-transparent",
+              shell,
+              "@container max-w-160 lg:hidden",
+              open && "pointer-events-none opacity-0",
             )}
           >
-            <div
-              className={cn(
-                "absolute top-0 left-0 origin-top-left transition-[translate,scale]",
-                reveal,
-                open
-                  ? "translate-x-3.5 translate-y-3.5 scale-(--landing-orb-docked)"
-                  : "translate-x-(--landing-orb-center) translate-y-5.5",
-              )}
-            >
-              <LandingOrb />
-            </div>
-            <div
-              inert={open}
-              className={cn(
-                "absolute inset-x-0 top-47 flex flex-col items-center gap-3.5 transition-[opacity,translate] md:top-54",
-                reveal,
-                open && "-translate-y-6 opacity-0",
-              )}
-            >
-              {switcher}
-              {startButton}
-              {disclosure}
-            </div>
-            <div
-              inert={!open}
-              className={cn(
-                "absolute top-3.5 right-3.5 left-18.5 flex h-12 items-center justify-between gap-3 transition-opacity",
-                open ? "delay-400" : "opacity-0",
-              )}
-            >
-              <div className="flex min-w-0 flex-col gap-0.75">
-                <p className="text-md truncate leading-tight font-semibold">
-                  {displayName} <span className="text-muted-foreground font-normal">· {persona.vertical}</span>
-                </p>
-                <p role="status" className="text-foreground/70 text-ui flex items-center gap-1.5 leading-[normal] tabular-nums">
-                  {statusLine}
-                </p>
+            <div className="relative h-105 overflow-hidden">
+              <div className="absolute top-0 left-0 translate-x-(--landing-orb-center) translate-y-5.5">
+                <LandingOrb />
               </div>
-              {active ? <div className="shrink-0">{callButtons}</div> : null}
+              <div className="absolute inset-x-0 top-47 flex flex-col items-center gap-3.5 md:top-54">
+                {switcher}
+                {mobileTrigger}
+                {disclosure}
+              </div>
             </div>
           </div>
-          <div
-            inert={!open}
-            className={cn(
-              "flex flex-col overflow-hidden px-4.5 transition-[height,opacity] md:px-6",
-              reveal,
-              open ? "h-100" : "h-0 opacity-0",
-            )}
-          >
-            <div className="flex min-h-0 flex-1 flex-col py-4.5">{transcript}</div>
-            {/* Phones: after the call its buttons sit under the transcript so
-                the header keeps room for the caller's name. */}
-            {!active && (state === "ended" || error) ? (
-              <div className="flex gap-2 pb-4.5">{callButtons}</div>
-            ) : null}
-          </div>
-        </div>
+
+          <BaseDialog.Portal>
+            <BaseDialog.Backdrop
+              data-testid="landing-demo-mobile-backdrop"
+              className="fixed inset-0 z-50 m-0 h-[100dvh] w-[100dvw] bg-background/80 [transform:none] duration-[var(--motion-standard)] data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0"
+            />
+            <BaseDialog.Popup
+              data-testid="landing-demo-mobile-dialog"
+              finalFocus={mobileTriggerRef}
+              className="fixed inset-0 z-50 m-0 flex h-[100dvh] max-h-[100dvh] w-[100dvw] max-w-none translate-x-0 translate-y-0 flex-col gap-0 overflow-hidden overscroll-contain rounded-none border-0 bg-background p-0 pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] [transform:none] duration-[var(--motion-standard)] data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0 lg:hidden"
+            >
+              <BaseDialog.Title className="sr-only">Call {displayName}</BaseDialog.Title>
+              <BaseDialog.Description className="sr-only">
+              Live demo call with {displayName}.
+              </BaseDialog.Description>
+              {/* WhatsApp call screen: slim name + state header, orb hero,
+                  one-line subtitle caption, Captions toggle, bottom dock.
+                  The transcript never takes the screen — history lives
+                  behind the toggle, bounded to 36dvh. */}
+              <div className="flex min-h-0 flex-1 flex-col">
+                <header className="flex shrink-0 flex-col items-center gap-1 px-6 pt-6 text-center">
+                  <p className="text-lg leading-tight font-semibold">{displayName}</p>
+                  <p className="text-foreground/70 text-ui leading-tight">
+                    {persona.vertical} · {config.identity.role}
+                  </p>
+                  <p
+                    role="status"
+                    className="text-foreground/70 text-ui flex items-center gap-1.5 leading-[normal] tabular-nums"
+                  >
+                    {statusLine}
+                  </p>
+                </header>
+                <div
+                  data-testid="landing-demo-mobile-hero"
+                  className="flex min-h-0 flex-1 flex-col items-center justify-center gap-4 px-6"
+                >
+                  {/* The transcript caps at 36dvh; when captions open the
+                      orb shrinks instead of being squeezed out, staying
+                      visible at every height. */}
+                  <div
+                    className={cn(
+                      "relative transition-transform duration-[var(--motion-standard)]",
+                      captionsOpen && "scale-75",
+                    )}
+                  >
+                    {active ? (
+                      <span
+                        aria-hidden
+                        className="voice-call-live-ring absolute -inset-2 rounded-full border-2"
+                      />
+                    ) : null}
+                    <LandingOrb state={orbState} />
+                  </div>
+                  <div
+                    data-testid="landing-demo-mobile-caption"
+                    aria-live="polite"
+                    className="flex h-10 w-full max-w-75 items-center justify-center"
+                  >
+                    {liveCaption ? (
+                      <p className="line-clamp-2 text-center text-sm text-foreground/80">
+                        {liveCaption.role === "user" ? "You: " : `${displayName}: `}
+                        <StreamingText text={liveCaption.text} />
+                        {liveCaption.overheard ? " · overheard" : ""}
+                      </p>
+                    ) : state === "ended" && turns.length === 0 && !error ? (
+                      <p className="text-center text-sm text-balance text-foreground/70">
+                        {quotaExceeded
+                          ? "That's the free demo time for today."
+                          : "Call again, or close to try another scenario."}
+                      </p>
+                    ) : countdown ? (
+                      <span className="flex flex-col items-center gap-1">{countdown}</span>
+                    ) : null}
+                  </div>
+                </div>
+                <div className="flex shrink-0 flex-col items-center gap-2 px-6">
+                  {errorAlert ?? captionsToggle}
+                </div>
+                <div className="shrink-0 px-6 pt-3 pb-[max(1.5rem,env(safe-area-inset-bottom))]">
+                  {mobileDock}
+                </div>
+              </div>
+            </BaseDialog.Popup>
+          </BaseDialog.Portal>
+        </BaseDialog.Root>
       </div>
     );
   }
@@ -1050,17 +1364,31 @@ export function VoiceCall({
       {/* Primary action. Chromeless ai-05 hosts render these in their own
           header/footer instead. */}
       {chromeless ? null : (
-        <div className="mt-3.5 flex justify-center">
+        <div className="mt-3.5 flex justify-center gap-2">
           {active ? (
-            <LoadingButton
-              pending={hangingUp}
-              icon={<PhoneOff className="size-5.5" />}
-              className={`size-13 rounded-full p-0 ${HANGUP_RED}`}
-              onClick={hangUp}
-              aria-label="End test call"
-            >
-              {null}
-            </LoadingButton>
+            <>
+              {connected ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="h-11 gap-2 rounded-full px-3.5 text-sm font-medium"
+                  aria-pressed={muted}
+                  onClick={toggleMute}
+                >
+                  {muted ? <MicOff className="size-4" aria-hidden /> : <Mic className="size-4" aria-hidden />}
+                  {muted ? "Unmute" : "Mute"}
+                </Button>
+              ) : null}
+              <LoadingButton
+                pending={hangingUp}
+                icon={<PhoneOff className="size-5.5" />}
+                className={`size-13 rounded-full p-0 ${HANGUP_RED}`}
+                onClick={hangUp}
+                aria-label="End test call"
+              >
+                {null}
+              </LoadingButton>
+            </>
           ) : (
             <LoadingButton
               pending={starting}

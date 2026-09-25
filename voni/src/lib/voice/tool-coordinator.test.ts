@@ -73,8 +73,7 @@ test("returns hold-mode results immediately and marks errors", async () => {
   assert.equal(sent[0].is_error, true);
 });
 
-test("discards a pending result when its reply is interrupted", async () => {
-  const sent: Record<string, unknown>[] = [];
+test("discards a pending result when its reply is interrupted", async () => {  const sent: Record<string, unknown>[] = [];
   const result = deferred<ToolResponse>();
   const coordinator = new ToolCoordinator({
     send: (message) => sent.push(message),
@@ -116,4 +115,25 @@ test("holds a late result through a newer user turn", async () => {
   assert.equal(sent.length, 0);
   coordinator.onReplyDone("reply-6", false);
   assert.equal(sent.length, 1);
+});
+
+test("reports every sent result with its tool name", async () => {
+  const seen: { name: string; result: ToolResponse }[] = [];
+  const coordinator = new ToolCoordinator({
+    send: () => {},
+    execute: async () => ({ ok: true, hangup: true, data: { ended: true } }),
+    modeFor: () => "hold",
+    onResult: (name, result) => seen.push({ name, result }),
+  });
+  coordinator.onReplyStarted("reply-7");
+  coordinator.onToolCall({
+    type: "tool.call",
+    call_id: "tool-7",
+    name: "end_call",
+    arguments: { closing_line: "Goodbye!" },
+  });
+  await tick();
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].name, "end_call");
+  assert.equal(seen[0].result.ok, true);
 });

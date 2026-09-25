@@ -2,9 +2,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { REAL_ESTATE_TEMPLATE } from "@/lib/agents/config";
 import {
+  END_CALL_TOOL,
+  END_CALL_VOICE_TOOL,
   SENSITIVE_CAPTURE_TOOL,
   compileProviderTool,
   compileVoiceTools,
+  toRestTool,
   validateToolArguments,
 } from "./definitions";
 import { isWithinRecurringAvailability } from "./execute";
@@ -20,15 +23,18 @@ test("compiles only selected business tools plus sensitive pacing", () => {
   });
   assert.deepEqual(
     tools.map((tool) => tool.name),
-    ["search_properties", "book_viewing", SENSITIVE_CAPTURE_TOOL],
+    ["search_properties", "book_viewing", SENSITIVE_CAPTURE_TOOL, END_CALL_TOOL],
   );
-  assert.equal(tools.at(-1)?.execution_mode, "hold");
+  const pacing = tools.find((tool) => tool.name === SENSITIVE_CAPTURE_TOOL);
+  assert.equal(pacing?.execution_mode, "hold");
   assert.deepEqual(
-    (tools.at(-1)?.parameters.properties as Record<string, { enum: string[] }>)[
+    (pacing?.parameters.properties as Record<string, { enum: string[] }>)[
       "field_key"
     ].enum,
     ["phone"],
   );
+  // Call control always rides last.
+  assert.equal(tools.at(-1)?.name, END_CALL_TOOL);
 });
 
 test("compiles catalog provider tools to hold stubs without breaking built-ins", () => {
@@ -50,6 +56,7 @@ test("compiles catalog provider tools to hold stubs without breaking built-ins",
       "gmail.send_email",
       "zoho.log_call",
       "book_viewing",
+      END_CALL_TOOL,
     ],
   );
   const stub = tools.find((tool) => tool.name === "gmail.send_email");
@@ -68,7 +75,24 @@ test("does not register pacing without a sensitive field", () => {
     tools: ["check_calendar"],
     detect: [],
   });
-  assert.deepEqual(tools.map((tool) => tool.name), ["check_calendar"]);
+  assert.deepEqual(tools.map((tool) => tool.name), ["check_calendar", END_CALL_TOOL]);
+});
+
+test("end_call is built in: always compiled, hold-mode, closing line required", () => {
+  const tools = compileVoiceTools({
+    ...REAL_ESTATE_TEMPLATE,
+    tools: [],
+    detect: [],
+  });
+  assert.deepEqual(tools.map((tool) => tool.name), [END_CALL_TOOL]);
+  const endCall = tools[0];
+  assert.equal(endCall?.execution_mode, "hold");
+  assert.equal(
+    validateToolArguments("end_call", { closing_line: "Goodbye!" }).ok,
+    true,
+  );
+  assert.equal(validateToolArguments("end_call", {}).ok, false);
+  assert.equal(validateToolArguments("end_call", "bye").ok, false);
 });
 
 test("validates strict tool arguments", () => {
@@ -112,7 +136,7 @@ test("compiles enabled custom webhook tools with permissive arguments", () => {
     ],
     detect: [],
   });
-  assert.deepEqual(tools.map((tool) => tool.name), ["custom_order_status"]);
+  assert.deepEqual(tools.map((tool) => tool.name), ["custom_order_status", END_CALL_TOOL]);
   assert.equal(tools[0]?.execution_mode, "hold");
   assert.equal(tools[0]?.timeout_seconds, 20);
   assert.equal(
@@ -158,3 +182,28 @@ test("applies Dubai recurring viewing boundaries", () => {
   );
 });
 
+
+test("toRestTool strips the inline `type` but keeps the stored-agent fields", () => {
+  const rest = toRestTool({ ...END_CALL_VOICE_TOOL });
+  assert.ok(!("type" in rest), "Agents REST API has no `type` field");
+  assert.equal(rest.name, END_CALL_TOOL);
+  assert.equal(rest.execution_mode, "hold");
+  assert.ok(rest.description.length > 0);
+  assert.deepEqual(Object.keys(rest).sort(), [
+    "description",
+    "execution_mode",
+    "name",
+    "parameters",
+    "response_instructions",
+    "timeout_seconds",
+  ]);
+});
+
+test("end_call orders silence after the hang-up", () => {
+  // The result auto-fires the next reply; without this the model fills the
+  // turn by narrating ("the call has ended"). Humans just go silent.
+  const instructions = { ...END_CALL_VOICE_TOOL }.response_instructions;
+  assert.ok(instructions, "end_call carries response_instructions");
+  assert.match(instructions.success, /nothing/i, "success orders silence");
+  assert.match(instructions.error, /stay on the call/i, "error keeps the call alive");
+});

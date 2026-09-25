@@ -4,6 +4,7 @@ Wire protocol (JSON text frames):
   browser -> server: {"type": "config", "pipeline": {...}, "system_prompt": str,
                       "tools": [...], "agent_name": str}
                       {"type": "audio", "data": base64 pcm16 mono}
+                      {"type": "context", "role": "system", "content": str}
                       {"type": "stop"}
   server -> browser: {"type": "caption", "role": "user"|"agent",
                       "text": str, "final": bool}
@@ -34,7 +35,27 @@ def default_backends(config: PipelineConfig) -> tuple[Any, Any, Any]:
     if config.stt_provider == "assemblyai":
         from backends.assemblyai_stt import AssemblyAIStreamingSTT
 
-        stt: Any = AssemblyAIStreamingSTT()
+        # voice_focus follows the mic, not the model: browser callers are
+        # close-talking, PSTN callers are on handsets/speakerphone.
+        voice_focus = config.voice_focus or (
+            "far-field" if config.transport == "telnyx" else "near-field"
+        )
+        stt: Any = AssemblyAIStreamingSTT(
+            speech_model=config.stt_model or "universal-3-6-pro",
+            mode=config.stt_mode,
+            min_turn_silence=config.min_silence_ms,
+            max_turn_silence=config.max_silence_ms,
+            interruption_delay=config.interruption_delay_ms,
+            vad_threshold=config.vad_threshold,
+            voice_focus=voice_focus,
+            voice_focus_threshold=(
+                config.voice_focus_threshold
+                or (0.8 if config.transport == "telnyx" else 0.0)
+            ),
+            prompt=config.transcription_prompt,
+            keyterms_prompt=config.keyterms_prompt,
+            agent_context=config.agent_context,
+        )
     elif config.stt_provider == "deepgram":
         raise RuntimeError("deepgram STT is not implemented yet (P3)")
     else:  # validated upstream; defensive only
@@ -121,8 +142,14 @@ async def handle_browser_call(
             await _send(
                 ws, {"type": "caption", "role": "agent", "text": payload.get("text", ""), "final": True}
             )
+        elif kind == "agent_partial":
+            await _send(
+                ws, {"type": "caption", "role": "agent", "text": payload.get("text", ""), "final": False}
+            )
         elif kind == "interrupted":
             await _send(ws, {"type": "interrupted"})
+        elif kind == "call_end":
+            await _send(ws, {"type": "end_call"})
         elif kind == "turn_failed":
             await _send(
                 ws, {"type": "error", "message": f"turn failed: {payload.get('error', '')}"}
@@ -154,6 +181,12 @@ async def handle_browser_call(
                     audio_queue.put_nowait(base64.b64decode(message["data"]))
                 except Exception:
                     continue
+            elif (
+                kind == "context"
+                and message.get("role") == "system"
+                and isinstance(message.get("content"), str)
+            ):
+                orchestrator.add_context(message["content"])
             elif kind == "stop":
                 break
     finally:

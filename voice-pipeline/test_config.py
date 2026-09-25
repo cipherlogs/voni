@@ -20,13 +20,15 @@ class DefaultsTests(unittest.TestCase):
         config = PipelineConfig(llm_model="test-model")
         self.assertEqual(config.fallback_mode, "managed")
         self.assertEqual(config.stt_provider, "assemblyai")
+        self.assertEqual(config.stt_model, "universal-3-6-pro")
+        self.assertEqual(config.stt_mode, "balanced")
         self.assertEqual(list(config.language_codes), ["en"])
 
     def test_browser_natural_endpointing_defaults(self):
         config = PipelineConfig(llm_model="test-model")
-        self.assertEqual(config.min_silence_ms, 900)
-        self.assertEqual(config.max_silence_ms, 1200)
-        self.assertEqual(config.interruption_delay_ms, 350)
+        self.assertEqual(config.min_silence_ms, 100)
+        self.assertEqual(config.max_silence_ms, 1000)
+        self.assertEqual(config.interruption_delay_ms, 500)
 
 
 class ValidationTests(unittest.TestCase):

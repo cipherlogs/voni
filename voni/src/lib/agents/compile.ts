@@ -68,6 +68,23 @@ export function compileSystemPrompt(config: AgentConfig): string {
     );
   }
 
+  // Interruption grace: the bridge only cuts audio on a confirmed
+  // interruption, but the words still land mid-thought — and a sudden stop
+  // mid-word reads as a glitch, not a human. Finish the current phrase,
+  // pivot naturally, then follow. The pivot line is yours to phrase; the
+  // shape (acknowledge first, never resume the cut-off sentence) is not.
+  sections.push(
+    "If the caller steers mid-reply — a correction, no, stop, wait, hold on, repeat: finish your current phrase (never stop mid-word), acknowledge it briefly like 'Sorry — did you want me to stop?', then follow their new direction. Never talk over them, and never resume the cut-off sentence.",
+  );
+
+  // Call control: end_call is always available (built-in, not picked). The
+  // execution layer refuses it while another tool is still running, and
+  // post-call work queues as jobs — so the rule here is judgment only:
+  // when the call is genuinely over, and the closing line comes first.
+  sections.push(
+    "End the call with end_call only when the task is complete, the caller asks to end, consent is denied, or the conversation loops with no progress. Fire any follow-up tools first, speak a brief natural goodbye, call end_call, and say nothing after it returns. Never narrate the mechanics — no 'the call has ended', 'I'm hanging up now'. The sound and the screen tell the caller. Never end mid-task.",
+  );
+
   // Language handling. The agent hears 18 languages but speaks 6, so a caller
   // can address it in one it cannot answer in — Arabic being the case that
   // matters most for the UAE launch. Left unsaid, the model tries to reply in
@@ -93,8 +110,8 @@ export function compileSystemPrompt(config: AgentConfig): string {
 /**
  * Fields that need the endpointer relaxed while they're being captured.
  *
- * The bridge runs with `min_silence: 100` / `max_silence: 500` (HANDOFF 1t) to
- * buy back roughly a second of reply latency. The documented cost is that
+ * The bridge runs with `min_silence: 100` / `max_silence: 1000` (balanced
+ * voice-agent endpointing) to keep replies snappy. The documented cost is that
  * adaptive pacing and entity-aware waiting are off for the whole session, so
  * the agent *will* cut a caller off partway through a phone number, budget or
  * date. Both fields are mutable mid-session; this is the list the bridge should

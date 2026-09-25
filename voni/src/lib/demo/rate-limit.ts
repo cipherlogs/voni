@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import { db } from "@/lib/db";
+import { secret } from "@/lib/env";
 import { rateLimits } from "@/lib/db/schema";
 
 /**
@@ -29,10 +30,20 @@ export type LimitDecision =
   | { allowed: true }
   | { allowed: false; reason: string; retryAfterSeconds: number };
 
-function envInt(name: string, fallback: number): number {
-  const raw = process.env[name];
+function parseLimit(raw: string | undefined, fallback: number): number {
   const n = raw ? Number.parseInt(raw, 10) : NaN;
   return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+
+/**
+ * Limit override, from wherever this runtime keeps env: plain deploys and
+ * CI populate `process.env`, while `next dev` loads `.dev.vars` into the
+ * Cloudflare context instead (see `src/lib/env.ts`). Reading only
+ * `process.env` silently ignores local overrides.
+ */
+async function envInt(name: string, fallback: number): Promise<number> {
+  if (process.env[name] !== undefined) return parseLimit(process.env[name], fallback);
+  return parseLimit(await secret(name), fallback);
 }
 
 /**
@@ -104,8 +115,8 @@ export async function bumpRateBucket(
 
 /** Check both ceilings. Called once per demo token request. */
 export async function checkDemoLimits(headers: Headers): Promise<LimitDecision> {
-  const perIp = envInt("DEMO_MAX_PER_IP_PER_HOUR", DEFAULTS.perIpPerHour);
-  const perDay = envInt("DEMO_MAX_PER_DAY", DEFAULTS.perDayGlobal);
+  const perIp = await envInt("DEMO_MAX_PER_IP_PER_HOUR", DEFAULTS.perIpPerHour);
+  const perDay = await envInt("DEMO_MAX_PER_DAY", DEFAULTS.perDayGlobal);
 
   // A zero limit is a deliberate kill switch for the public demo.
   if (perIp === 0 || perDay === 0) {

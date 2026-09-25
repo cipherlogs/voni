@@ -29,7 +29,7 @@ leg now, which is why this is back.
 - `audio_in_to_first_partial` — screen latency
 - `final_to_first_token` — think start
 - `final_to_first_playout` / `commit_to_first_playout` — reply gap
-- counts: `backchannel`, `yield`, `interruption`, `prefetch_*`, `tool_denied`
+- counts: `backchannel`, `yield`, `interruption`, `prefetch_*`, `tool_denied`, `end_call`, `overheard` (partials heard while the agent held the floor, committed or not)
 
 ## Safety invariant
 
@@ -61,7 +61,10 @@ sh scripts/local_server.sh   # dev only: loads ../voni/.dev.vars, serves :8766
 
 - `GET /healthz` — liveness, no vendors touched.
 - `WS /v1/browser-call` — one cascade call per socket; protocol in
-  `transport.py`. Requires `ASSEMBLYAI_API_KEY`, `AI_GATEWAY_API_KEY`,
+  `transport.py`. Browser sends a `context` message after `config` for hidden
+  system context (`role: "system"`, `content`); the server appends it to
+  orchestrator history for the next turn, never emits it as a caption, and
+  never interrupts current audio. Requires `ASSEMBLYAI_API_KEY`, `AI_GATEWAY_API_KEY`,
   `CARTESIA_API_KEY` in host env (production runs with real host env,
   never this script).
 - `scripts/smoke_call.py` — end-to-end dev check: streams a voice sample

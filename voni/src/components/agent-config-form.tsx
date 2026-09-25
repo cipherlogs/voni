@@ -846,6 +846,30 @@ export function AgentConfigForm({
               onChange={(e) => set("knowledge", e.target.value)}
             />
           </Field>
+
+          <Field>
+            <FieldLabel htmlFor="keyterms">Words to listen for</FieldLabel>
+            <Input
+              id="keyterms"
+              value={(config.keyterms ?? []).join(", ")}
+              placeholder="Ozempic, Sheikh Zayed Road, aloo paratha"
+              onChange={(e) =>
+                set(
+                  "keyterms",
+                  e.target.value
+                    .split(",")
+                    .map((term) => term.trim())
+                    .filter(Boolean)
+                    .slice(0, 50),
+                )
+              }
+            />
+            <FieldDescription>
+              Jargon, product and place names {agentLabel} should hear
+              correctly — merged with the words it already derives from its
+              name, fields, and tools. Comma-separated, up to 50.
+            </FieldDescription>
+          </Field>
         </FieldGroup>
       </FormSection>
 

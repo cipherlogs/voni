@@ -4,8 +4,10 @@ import {
   eq,
   gte,
   ilike,
+  isNull,
   lte,
   lt,
+  ne,
   or,
   type SQL,
 } from "drizzle-orm";
@@ -24,12 +26,13 @@ import { resolveCredential } from "@/lib/platform/credentials";
 import { isCredentialName } from "@/lib/platform/types";
 import {
   customToolId,
+  END_CALL_TOOL,
   validateToolArguments,
   type ToolName,
 } from "./definitions";
 
 export type ToolResponse =
-  | { ok: true; data: Record<string, unknown>; dryRun?: boolean }
+  | { ok: true; data: Record<string, unknown>; dryRun?: boolean; hangup?: true }
   | { ok: false; error: string; retryable: boolean };
 
 export type ResolvedToolContext =
@@ -555,6 +558,56 @@ async function runValidatedTool(
   }
 }
 
+/**
+ * Built-in call control. Two tiers, per the end_call contract:
+ * - Refuse while another tool is still running (a booking mid-flight must
+ *   resolve before the line drops, or the caller is promised the unconfirmed).
+ * - Post-call work (summaries, CRM writes, follow-ups) is NOT gated here:
+ *   those arrive as their own tool calls first and queue as durable jobs,
+ *   so hanging up never strands them.
+ *
+ * The success result is pure signal (`ended: true`) with NO speakable text:
+ * the model reads tool results as things to say, so any confirmation
+ * sentence here gets parroted as narration ("the call has ended"). The
+ * goodbye itself is the `closing_line`, already spoken before the call —
+ * the hang-up sound and the screen say the rest.
+ */
+export function buildEndCallSuccess(dryRun: boolean): ToolResponse {
+  return {
+    ok: true,
+    ...(dryRun ? { dryRun: true as const } : {}),
+    hangup: true,
+    data: { ended: true, ...(dryRun ? { simulated: true } : {}) },
+  };
+}
+
+async function runEndCall(
+  context: ResolvedToolContext,
+  externalCallId: string,
+): Promise<ToolResponse> {
+  if (context.kind === "test") {
+    return buildEndCallSuccess(true);
+  }
+  const inFlight = await db
+    .select({ toolName: toolCallLogs.toolName })
+    .from(toolCallLogs)
+    .where(
+      and(
+        eq(toolCallLogs.callId, context.callId),
+        isNull(toolCallLogs.result),
+        ne(toolCallLogs.externalCallId, externalCallId),
+      ),
+    )
+    .limit(1);
+  if (inFlight.length > 0) {
+    return fail(
+      `Finish the ${inFlight[0].toolName} task first — the caller is still waiting on its result. Then say the closing line and end the call.`,
+      true,
+    );
+  }
+  return buildEndCallSuccess(false);
+}
+
 export async function executeTool(
   name: string,
   rawArguments: unknown,
@@ -596,6 +649,8 @@ export async function executeTool(
   let result: ToolResponse;
   if (!parsed.ok) {
     result = fail(parsed.error);
+  } else if (name === END_CALL_TOOL) {
+    result = await runEndCall(context, externalCallId);
   } else {
     try {
       result = await runValidatedTool(

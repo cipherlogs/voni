@@ -1,23 +1,31 @@
-import { VoniMark } from "@/components/voni-logo";
-
 /**
- * The landing orb (DESIGN.md §10c): a CSS-3D wireframe sphere, nine meridians
- * and five latitudes spinning around the animated Voni mark (it rests on the V), with one green signal ring
- * breathing outward. Pure CSS (globals.css `.landing-orb*`), so it renders on
- * the server and stops dead under `prefers-reduced-motion`. Decorative only.
+ * The landing orb (DESIGN.md §10c): a CSS-3D wireframe sphere — nine
+ * meridians and five latitudes, nothing at the center — with one signal
+ * ring breathing outward. Pure CSS (globals.css `.landing-orb*`), so it
+ * renders on the server and stops dead under `prefers-reduced-motion`.
+ * Decorative only.
+ *
+ * `state` tints the wireframe by call state (idle monochrome, live states
+ * green): the call surfaces pass their voice state, everything else stays
+ * idle. Color lives in `--orb-tint` so no component ever names a shade.
  */
-export function LandingOrb({ size = "lg" }: { size?: "sm" | "lg" }) {
+export type OrbState = "idle" | "connecting" | "listening" | "speaking" | "ended";
+
+export function LandingOrb({
+  size = "lg",
+  state = "idle",
+}: {
+  size?: "sm" | "lg";
+  state?: OrbState;
+}) {
   return (
-    <div aria-hidden="true" data-size={size} className="landing-orb">
+    <div aria-hidden="true" data-size={size} data-state={state} className="landing-orb">
       <span className="landing-orb-ping" />
       <div className="landing-orb-tilt">
         <div className="landing-orb-spin">
           {Array.from({ length: 14 }, (_, i) => (
             <span key={i} className="landing-orb-ring" />
           ))}
-        </div>
-        <div className="landing-orb-core">
-          <VoniMark animate className="size-1/2" />
         </div>
       </div>
     </div>

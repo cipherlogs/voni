@@ -31,6 +31,7 @@ import {
   cancelLinkedJobs,
   deleteTerminalLinkedJobs,
 } from "@/lib/jobs/cancel-linked";
+import { healStaleDeployments } from "@/lib/jobs/platform-refresh";
 
 /**
  * Server actions for the agent compiler (plan Day 3-4).
@@ -687,8 +688,7 @@ export type AgentListRow = Awaited<ReturnType<typeof listAgents>>[number] & {
 
 /** List rows plus live generation state for placeholder badges/links. */
 export async function listAgentsWithGeneration(): Promise<AgentListRow[]> {
-  const ctx = await requireCtxOrRedirect();
-  const rows = await db
+  const ctx = await requireCtxOrRedirect();  const rows = await db
     .select()
     .from(agents)
     .where(eq(agents.organizationId, ctx.organizationId))
@@ -715,6 +715,24 @@ export async function listAgentsWithGeneration(): Promise<AgentListRow[]> {
       ? (statusByJob.get(row.generationJobId) ?? null)
       : null,
   }));
+}
+
+/**
+ * Platform refresh trigger. Called by the agents list on every visit: any
+ * deployed agent the platform moved under (new tools, prompt rules, tuning)
+ * gets its normal deployment job re-queued under the visiting operator, so
+ * upgrades heal with zero per-agent clicking. Safe to run always — healed
+ * agents compare equal and it becomes a single cheap SELECT. Never throws:
+ * a refresh failure must not break the list it runs beside.
+ */
+export async function healAgentsIfStale(): Promise<{ healed: number }> {
+  try {
+    const ctx = await requireCtxOrRedirect();
+    const outcome = await healStaleDeployments(ctx);
+    return { healed: outcome.healed.length };
+  } catch {
+    return { healed: 0 };
+  }
 }
 
 export async function getAgent(id: string) {

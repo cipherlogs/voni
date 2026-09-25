@@ -164,6 +164,17 @@ export const agentConfigSchema = z.object({
    */
   languageCodes: z.array(z.string()).default([]),
   /**
+   * Owner-supplied vocabulary: jargon, product and place names the agent's
+   * own config cannot see (drug names, menu items, transliterated business
+   * names). Merged into STT keyterms by `buildAgentKeyterms`. Optional so
+   * legacy configurations keep parsing; stored in existing JSON config
+   * storage — no column migration.
+   */
+  keyterms: z
+    .array(z.string().trim().min(1).max(60))
+    .max(50)
+    .optional(),
+  /**
    * The first thing the caller hears. Kept as its own field because it is the
    * one utterance with no thinking latency in front of it (HANDOFF 1p measured
    * 382ms vs seconds for everything after), which is why callers consistently
@@ -253,6 +264,29 @@ export const REAL_ESTATE_TEMPLATE: AgentConfig = {
   tools: [...TOOL_NAMES],
   toolIdeas: [],
   customTools: [],
+  // Vertical flavor lives HERE, in the template — never in platform
+  // defaults. The keyterms builder only sees this list because this agent
+  // carries it, like any owner-supplied list on any agent.
+  keyterms: [
+    "Layla",
+    "Abu Dhabi",
+    "Dubai",
+    "Yas Island",
+    "Saadiyat",
+    "Dubai Marina",
+    "JBR",
+    "Downtown Dubai",
+    "Business Bay",
+    "Palm Jumeirah",
+    "VONI-AUH",
+    "VONI-DXB",
+    "AED",
+    "dirham",
+    "mortgage",
+    "viewing",
+    "Bayut",
+    "Property Finder",
+  ],
   knowledge:
     "Never invent property information — every property fact must come from a tool result. Respect the campaign's calling-hours window. Never proceed without recorded consent. If asked whether this is a recording or an AI, say so plainly and continue.",
   channels: ["phone", "whatsapp"],

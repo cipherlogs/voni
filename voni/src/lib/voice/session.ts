@@ -23,11 +23,17 @@
  */
 
 import {
+  END_CALL_TOOL,
   SENSITIVE_CAPTURE_TOOL,
   type VoiceTool,
 } from "@/lib/tools/definitions";
 import type { ToolResponse } from "@/lib/tools/execute";
 import { ToolCoordinator } from "./tool-coordinator";
+import {
+  buildConversationMessage,
+  MICROPHONE_MUTED_CONTEXT,
+  MICROPHONE_UNMUTED_CONTEXT,
+} from "./context";
 import { releaseMic } from "./mic-owner";
 import {
   acquireMicStream,
@@ -76,7 +82,8 @@ export type SessionConfig =
       transcriptionPrompt?: string;
       /** Vocabulary boosts (≤100). Mutable mid-session via updateConfig. */
       keyterms?: string[];
-      /** STT speed/accuracy. The copilot runs min_latency; entity capture can widen later. */
+      /** STT speed/accuracy. Balanced is the voice-agent default: finals the
+      screen can trust without paying max_accuracy's endpointing wait. */
       transcriptionMode?: TranscriptionMode;
       /** VAD windows. Defaults to TURN_PRESET; override only in tests. */
       turnDetection?: TurnDetection;
@@ -144,7 +151,11 @@ export function buildInlineSessionUpdate(
     greeting: config.greeting,
     output: { voice: config.voiceId },
     input: {
-      transcription_mode: config.transcriptionMode ?? "min_latency",
+      transcription_mode: config.transcriptionMode ?? "balanced",
+      // Close-talking browser mic: isolate the caller with the near-field
+      // model. Server default is the same; explicit beats implicit when a
+      // second path (stored agents on PSTN) wants far-field.
+      voice_focus: "near-field",
       // Omit the key entirely when empty — an empty array and an absent
       // field both mean "detect automatically", but sending the key at all
       // is a needless difference from the default.
@@ -226,7 +237,7 @@ export const demoToken =
     return res.json();
   };
 
-export type Transcript = { role: "user" | "agent"; text: string };
+export type Transcript = { role: "user" | "agent"; text: string; overheard?: boolean };
 
 /** Finalized user turn with its id for assent binding. */
 export type UserTurn = { itemId: string | null; text: string };
@@ -327,20 +338,23 @@ const SENSITIVE_TURN_DETECTION: TurnDetection = {
  * The turn preset: the ONE turn-taking dial for demo calls, test calls, and
  * the copilot. Tune speed here and every surface follows.
  *
- * - `min_silence` 150: after a sentence that clearly ended (terminal
+ * - `min_silence` 100: after a sentence that clearly ended (terminal
  *   punctuation), reply almost at once. The punctuation check is what keeps
  *   an unfinished "I was thinking…" from being answered.
- * - `max_silence` 450: an unclear ending waits at most this long.
- * - `interruption_delay` 200: "uh-huh", coughs, and echo end before it
- *   elapses, so they don't cut the agent off; real barge-in still does.
+ * - `max_silence` 1000: an unclear ending waits at most this long — the docs'
+ *   voice-agent starting point. Lower splits phone numbers and emails across
+ *   turns; raise mid-call for entity capture instead.
+ * - `interruption_delay` 500: the mode default. Coughs, breath, and "uh-huh"
+ *   end before the first partial fires, so junk rarely cuts the agent off;
+ *   real barge-in still does.
  *
  * Only `prepareSensitiveCapture` departs from it, for one card-field turn.
  */
 export const TURN_PRESET: TurnDetection = {
-  min_silence: 150,
-  max_silence: 450,
+  min_silence: 100,
+  max_silence: 1000,
   interrupt_response: true,
-  interruption_delay: 200,
+  interruption_delay: 500,
 };
 
 /**
@@ -348,6 +362,21 @@ export const TURN_PRESET: TurnDetection = {
  * instead of a hard-stop click; short enough to still feel instant.
  */
 const FADE_OUT_S = 0.04;
+
+/**
+ * Goodbye drain handshake. `settled` only means the worklet's buffer is
+ * momentarily empty — which also happens between chunks on a jittery link,
+ * during the pre-roll wait, and while the resampler tail still holds sound —
+ * so a single settled poll can stop mid-word (the caller hears the goodbye
+ * chopped). Stop requires HANGUP_SETTLE_POLLS consecutive settled polls AND
+ * HANGUP_AUDIO_GRACE_MS since the last audio arrived (covers audio still
+ * traveling to the worklet plus output latency, Bluetooth included).
+ * HANGUP_DRAIN_TIMEOUT_MS stays the fail-safe: never hold the line longer.
+ */
+const HANGUP_POLL_MS = 250;
+const HANGUP_SETTLE_POLLS = 3;
+const HANGUP_AUDIO_GRACE_MS = 500;
+const HANGUP_DRAIN_TIMEOUT_MS = 10000;
 
 export class VoiceSession {
   private ws: WebSocket | null = null;  private audioCtx: AudioContext | null = null;
@@ -361,6 +390,25 @@ export class VoiceSession {
   private toolCoordinator: ToolCoordinator | null = null;
   /** Exact turn-detection state to restore after one sensitive value turn. */
   private pendingTurnDetectionRestore: TurnDetection | null | undefined;
+  /**
+   * Agent-initiated hangup, armed by an end_call result and acted on at the
+   * next settled reply — so the spoken closing line finishes playing before
+   * the session tears down. Disarmed the moment the caller speaks again
+   * (they took the floor back; the agent re-decides).
+   */
+  private pendingHangup = false;
+  private hangupTimer: ReturnType<typeof setInterval> | null = null;
+  /** Last `reply.audio` arrival: the drain handshake waits out fresh audio. */
+  private lastAudioAt = 0;
+
+  /** Disarm an agent-initiated hangup: the caller took the floor back. */
+  private disarmHangup(): void {
+    this.pendingHangup = false;
+    if (this.hangupTimer) {
+      clearInterval(this.hangupTimer);
+      this.hangupTimer = null;
+    }
+  }
   /** Last server-acknowledged turn-detection state. Null means adaptive defaults. */
   private activeTurnDetection: TurnDetection | null = null;
   /** Bound to a stored agent (demo): the preset is pushed after session.ready. */
@@ -583,6 +631,11 @@ export class VoiceSession {
         send: (message) => this.send(message),
         modeFor: (name) => modes.get(name) ?? "interactive",
         onActivityChange: (active) => this.handlers.onToolActivity?.(active),
+        onResult: (name, result) => {
+          if (name === END_CALL_TOOL && result.ok && result.hangup === true) {
+            this.pendingHangup = true;
+          }
+        },
         execute: async (call) => {
           if (this.injectedExecutor) return this.injectedExecutor(call);
           if (call.name === SENSITIVE_CAPTURE_TOOL) {
@@ -757,7 +810,8 @@ export class VoiceSession {
           if (this.boundAgent) {
             this.updateConfig({
               input: {
-                transcription_mode: "min_latency",
+                transcription_mode: "balanced",
+                voice_focus: "near-field",
                 turn_detection: { ...TURN_PRESET },
               },
             }).catch(() => undefined);
@@ -770,6 +824,7 @@ export class VoiceSession {
 
       case "reply.audio":
         this.setState("speaking");
+        this.lastAudioAt = Date.now();
         if (!this.greetingAudioSent) {
           this.greetingAudioSent = true;
           this.handlers.onTiming?.("greetingAudio");
@@ -784,6 +839,9 @@ export class VoiceSession {
           // cursor, or it plays on top of the next reply.
           this.probe("reply-cut");
           this.flush();
+          // A caller talking over the goodbye takes the floor back — the
+          // agent re-decides instead of hanging up under them.
+          this.disarmHangup();
         }
         this.toolCoordinator?.onReplyDone(
           msg.reply_id ?? null,
@@ -794,8 +852,14 @@ export class VoiceSession {
           interrupted: msg.status === "interrupted",
         });
         this.setState("listening");
+        if (this.pendingHangup && msg.status !== "interrupted") {
+          this.pendingHangup = false;
+          // The closing line is scheduled but may still be playing —
+          // reply.done only means generation finished. Let it drain first
+          // (bounded: never hold the line more than ~10s for a goodbye).
+          this.settleThenStop();
+        }
         break;
-
       case "reply.started":
         this.toolCoordinator?.onReplyStarted(msg.reply_id ?? null);
         break;
@@ -805,6 +869,7 @@ export class VoiceSession {
         // audio. The interrupted `reply.done` flush below stays as a backstop.
         this.probe("barge-in");
         this.flush();
+        this.disarmHangup();
         this.toolCoordinator?.onInputSpeechStarted();
         break;
 
@@ -830,6 +895,15 @@ export class VoiceSession {
         break;
 
       case "tool.call":
+        if (!this.toolCoordinator && msg.name === END_CALL_TOOL) {
+          // Agent mode (demo, stored test calls) executes no tools
+          // client-side — except call control. Answer end_call locally so
+          // the agent can hang up by itself; the closing line was already
+          // spoken before the call. Anything malformed fails closed: the
+          // agent stays on the line instead of dropping the caller.
+          this.answerAgentModeEndCall(msg);
+          break;
+        }
         this.toolCoordinator?.onToolCall(msg);
         break;
 
@@ -1046,6 +1120,101 @@ export class VoiceSession {
     return this.playout?.settled() ?? true;
   }
 
+  /**
+   * Agent-initiated hangup for agent-mode sessions (demo, stored test
+   * calls), where no tool coordinator runs. Validates the closing line,
+   * answers the tool call, and arms the hangup for the settled reply —
+   * the same drain-then-stop as inline mode.
+   */
+  private answerAgentModeEndCall(msg: {
+    call_id?: unknown;
+    arguments?: unknown;
+  }): void {
+    const callId = typeof msg.call_id === "string" ? msg.call_id : null;
+    if (!callId) return;
+    let args: Record<string, unknown> | null = null;
+    if (msg.arguments && typeof msg.arguments === "object" && !Array.isArray(msg.arguments)) {
+      args = msg.arguments as Record<string, unknown>;
+    } else if (typeof msg.arguments === "string") {
+      try {
+        const parsed: unknown = JSON.parse(msg.arguments);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          args = parsed as Record<string, unknown>;
+        }
+      } catch {
+        args = null;
+      }
+    }
+    const closingLine = args?.closing_line;
+    if (typeof closingLine !== "string" || closingLine.trim().length === 0) {
+      this.send({
+        type: "tool.result",
+        call_id: callId,
+        result: JSON.stringify({ ok: false, error: "Say the closing line first, then end the call.", retryable: true }),
+        is_error: true,
+      });
+      return;
+    }
+    this.send({
+      type: "tool.result",
+      call_id: callId,
+      result: JSON.stringify({ ok: true, data: { ended: true }, hangup: true }),
+      is_error: false,
+    });
+    this.pendingHangup = true;
+  }
+
+  /**
+   * Let the goodbye finish playing, then hang up. Polls playback (bounded
+   * ~10s) because reply.done only means generation finished — the closing
+   * line may still be draining through the worklet. See HANGUP_SETTLE_POLLS:
+   * one settled poll is not proof of silence, so stop needs a streak.
+   */
+  private settleThenStop(): void {
+    if (!this.ready || this.state === "ended") return;
+    this.disarmHangupTimer();
+    const audioQuiet = () =>
+      Date.now() - this.lastAudioAt >= HANGUP_AUDIO_GRACE_MS;
+    if (this.playbackSettled() && audioQuiet()) {
+      void this.stop();
+      return;
+    }
+    const started = Date.now();
+    let settledPolls = 0;
+    this.hangupTimer = setInterval(() => {
+      // Disarmed mid-drain (caller spoke) or already ended: stand down.
+      if (this.hangupTimer === null || !this.ready || this.isEnded()) {
+        this.disarmHangupTimer();
+        return;
+      }
+      settledPolls =
+        this.playbackSettled() && audioQuiet() ? settledPolls + 1 : 0;
+      if (
+        settledPolls >= HANGUP_SETTLE_POLLS ||
+        Date.now() - started > HANGUP_DRAIN_TIMEOUT_MS
+      ) {
+        this.disarmHangupTimer();
+        this.stopIfLive();
+      }
+    }, HANGUP_POLL_MS);
+  }
+
+  /** Stop only while the session is still live (narrowing-safe). */
+  private stopIfLive(): void {
+    if (this.ready && !this.isEnded()) void this.stop();
+  }
+
+  private isEnded(): boolean {
+    return this.state === "ended";
+  }
+
+  private disarmHangupTimer(): void {
+    if (this.hangupTimer) {
+      clearInterval(this.hangupTimer);
+      this.hangupTimer = null;
+    }
+  }
+
   /** True while the user muted their mic: frames are dropped, the call stays up. */
   private inputMuted = false;
 
@@ -1055,7 +1224,21 @@ export class VoiceSession {
    * frames are simply dropped while muted.
    */
   setInputMuted(muted: boolean): void {
+    if (this.inputMuted === muted) return;
     this.inputMuted = muted;
+    if (this.ready) {
+      this.sendContext(muted ? MICROPHONE_MUTED_CONTEXT : MICROPHONE_UNMUTED_CONTEXT);
+    }
+  }
+
+  /** Send hidden context without asking the agent to generate a reply. */
+  sendContext(content: string): void {
+    if (!this.ready || this.ws?.readyState !== WebSocket.OPEN) return;
+    try {
+      this.send(buildConversationMessage(content));
+    } catch {
+      // Context is best-effort if the session has already ended.
+    }
   }
 
   /** Single choke point for mic frames, so mute is unit-testable. */
@@ -1155,9 +1338,11 @@ export class VoiceSession {
 
   private async cleanup(): Promise<void> {
     if (this.state === "ended") return;
+    this.disarmHangup();
     this.setState("ended");
     this.ready = false;
     this.sessionId = null;
+    this.lastAudioAt = 0;
     this.inputMuted = false;
     this.releaseMicNow();
     this.toolCoordinator?.clear();

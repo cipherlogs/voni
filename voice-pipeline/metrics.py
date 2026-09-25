@@ -36,6 +36,8 @@ COUNTERS = (
     "prefetch_cancelled",
     "prefetch_used",
     "tool_denied",
+    "end_call",
+    "overheard",
 )
 
 

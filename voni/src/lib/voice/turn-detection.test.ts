@@ -6,10 +6,10 @@ import { buildInlineSessionUpdate, TURN_PRESET, VoiceSession } from "./session";
 
 test("turn preset: fast confident endpoint, capped unclear wait, backchannel-proof barge-in", () => {
   assert.deepEqual(TURN_PRESET, {
-    min_silence: 150,
-    max_silence: 450,
+    min_silence: 100,
+    max_silence: 1000,
     interrupt_response: true,
-    interruption_delay: 200,
+    interruption_delay: 500,
   });
 });
 
@@ -38,7 +38,13 @@ test("bound demo agents get the turn preset right after session.ready", () => {
   handle({ type: "session.ready", session_id: "sess_1" });
   assert.deepEqual(JSON.parse(sent[0]), {
     type: "session.update",
-    session: { input: { transcription_mode: "min_latency", turn_detection: TURN_PRESET } },
+    session: {
+      input: {
+        transcription_mode: "balanced",
+        voice_focus: "near-field",
+        turn_detection: TURN_PRESET,
+      },
+    },
   });
   handle({ type: "session.updated" });
   // A resume re-emits session.ready; the server keeps config, so no resend.

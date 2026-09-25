@@ -6,6 +6,21 @@ import { findCatalogTool } from "@/lib/providers/registry";
 
 export const SENSITIVE_CAPTURE_TOOL = "prepare_sensitive_capture";
 
+/**
+ * Built-in call control. Every agent gets it — it is appended by
+ * `compileVoiceTools`, never picked in the tool picker, so it stays out of
+ * TOOL_REGISTRY/TOOL_NAMES (which drive the picker and the normalize
+ * filter). Hold-mode: the agent speaks `closing_line`, then each path tears
+ * down its own leg after the goodbye lands.
+ */
+export const END_CALL_TOOL = "end_call";
+
+export const endCallSchema = z
+  .object({
+    closing_line: z.string().trim().min(1).max(300),
+  })
+  .strict();
+
 const isoDateTime = z
   .string()
   .datetime({ offset: true })
@@ -84,6 +99,23 @@ export type VoiceTool = {
   timeout_seconds: number;
   response_instructions?: { success: string; error: string };
 };
+
+/**
+ * Stored-agent (REST) tool shape. The Agents API tool object is
+ * `{name, description, parameters, http, timeout_seconds, execution_mode}` —
+ * it has NO `type` field (`type: "function"` belongs only to the inline
+ * `session.update` format). Sending `type` risks the tool being rejected or
+ * dropped, which leaves the prompt talking about tools the model cannot
+ * call — the model then improvises the call as speech
+ * (`end_call{closing_line: ...}` out loud). Strip it at the boundary.
+ */
+export type RestTool = Omit<VoiceTool, "type">;
+
+export function toRestTool(tool: VoiceTool): RestTool {
+  const { type: _type, ...rest } = tool;
+  void _type;
+  return rest;
+}
 
 const ref = {
   type: "string",
@@ -223,6 +255,39 @@ const BUSINESS_TOOLS: Record<ToolName, VoiceTool> = {
   },
 };
 
+/** Built-in call control, exported for paths that compile tools piecemeal (demo agents). */
+export const END_CALL_VOICE_TOOL: VoiceTool = {  type: "function",
+  name: END_CALL_TOOL,
+  description:
+    "End the call when the task is complete, the caller asked to end, consent was denied, or the conversation loops with no progress — only after every other tool has returned and you have spoken a brief natural goodbye such as 'Okay, bye!'. Never announce the hang-up itself.",
+  parameters: {
+    type: "object",
+    properties: {
+      closing_line: {
+        type: "string",
+        maxLength: 300,
+        examples: ["Thanks for your time — I'll send the details on WhatsApp. Goodbye!"],
+        description: "The brief natural goodbye you just spoke to the caller. Just the goodbye.",
+      },
+    },
+    required: ["closing_line"],
+    additionalProperties: false,
+  },
+  execution_mode: "hold",
+  timeout_seconds: 5,
+  // The result auto-fires the next reply, and without guidance the model
+  // fills that turn by narrating the hang-up ("the call has ended").
+  // Humans just go silent — the sound and the screen say the rest — so the
+  // success instruction orders silence in exactly that turn. The error
+  // instruction covers the refusal path (another tool still running): stay
+  // on the call and finish the pending task instead of hanging up.
+  response_instructions: {
+    success:
+      "The goodbye was already spoken — do not say goodbye again. Say nothing further. Do not speak after this call — it is over.",
+    error: "Stay on the call and finish the pending task first.",
+  },
+};
+
 /**
  * Compile one user-added webhook tool into a voice-callable function tool.
  * Permissive object schema: the agent sends whatever JSON the webhook
@@ -305,10 +370,25 @@ export function compileVoiceTools(config: AgentConfig): VoiceTool[] {
       timeout_seconds: 5,
     });
   }
+  // Built-in call control, always last: every agent can end its own call.
+  // Appended, never picked — the picker only offers TOOL_REGISTRY names.
+  selected.push({ ...END_CALL_VOICE_TOOL });
   return selected;
 }
 
 export function validateToolArguments(name: string, value: unknown) {
+  // Built-in call control lives outside the registry (never picked, always
+  // compiled), so it validates against its own schema here.
+  if (name === END_CALL_TOOL) {
+    const parsed = endCallSchema.safeParse(value);
+    if (!parsed.success) {
+      return {
+        ok: false as const,
+        error: parsed.error.issues[0]?.message ?? "Invalid tool arguments.",
+      };
+    }
+    return { ok: true as const, data: parsed.data as Record<string, unknown> };
+  }
   // Custom webhook tools accept any object-shaped arguments — the webhook
   // owns its contract, and strictness here would reject valid payloads.
   if (customToolId(name) !== null) {

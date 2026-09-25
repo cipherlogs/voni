@@ -215,6 +215,14 @@ export const agents = pgTable("agents", {
   deploymentLease: text("deployment_lease"),
   lastDeployedAt: timestamp("last_deployed_at", { withTimezone: true }),
   /**
+   * Fingerprint of the exact remote body the last successful deployment
+   * published (`deploymentFingerprint`). Recomputed locally on read: a
+   * mismatch means the platform moved under a deployed agent (new tools,
+   * prompt rules, tuning) and it is owed a redeploy — no server round trip
+   * needed to notice. Null = deployed before fingerprints existed: stale.
+   */
+  deployedFingerprint: text("deployed_fingerprint"),
+  /**
    * Wizard placeholder linkage: set when /agents/new creates the list row up
    * front at Generate time, cleared when the reviewed config is saved over
    * it. The list derives the badge from the live job row (never a stored
@@ -551,6 +559,13 @@ export const demoAgents = pgTable(
     voiceId: text("voice_id").notNull(),
     assemblyaiAgentId: text("assemblyai_agent_id").notNull(),
     createdAt: timestamp("created_at").notNull().defaultNow(),
+    /**
+     * Fingerprint of the exact remote body published (`demoAgentFingerprint`).
+     * Recomputed on every token request: a mismatch PUT-updates the cached
+     * demo agent in place, so platform upgrades propagate without wiping
+     * rows. Null = provisioned before fingerprints existed: refresh once.
+     */
+    fingerprint: text("fingerprint"),
   },
   (table) => [
     uniqueIndex("demo_agents_persona_voice_uidx").on(

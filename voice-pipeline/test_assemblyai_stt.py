@@ -77,8 +77,11 @@ class AssemblyAISTTTests(unittest.TestCase):
         self.assertEqual(query.get("sample_rate"), ["24000"])
         self.assertIn("streaming.assemblyai.com", sock.url)
 
-    def test_pinned_language_sends_no_language_params(self):
-        # v3 universal auto-detects; the handshake carries sample_rate only.
+    def test_accuracy_tuning_in_handshake(self):
+        # Balanced U3 Pro with patient endpointing is the default; the
+        # handshake carries the full tuning, not just the sample rate.
+        # LIVE-VERIFY: list params are JSON-encoded per the documented
+        # keyterms_prompt pattern — confirm on the next live run.
         async def run():
             backend, holder = make_backend([{"type": "Begin", "id": "s1"}])
             await backend.open(language_codes=["en"], sample_rate=16000)
@@ -88,8 +91,68 @@ class AssemblyAISTTTests(unittest.TestCase):
         sock = asyncio.run(run())
         query = parse_qs(urlparse(sock.url or "").query)
         self.assertEqual(query.get("sample_rate"), ["16000"])
+        self.assertEqual(query.get("speech_model"), ["universal-3-6-pro"])
+        self.assertEqual(query.get("mode"), ["balanced"])
+        self.assertEqual(query.get("min_turn_silence"), ["100"])
+        self.assertEqual(query.get("max_turn_silence"), ["1000"])
+        self.assertEqual(query.get("interruption_delay"), ["500"])
+        self.assertEqual(query.get("language_codes"), [json.dumps(["en"])])
         self.assertNotIn("language_code", query)
         self.assertNotIn("language_detection", query)
+
+    def test_prompt_keyterms_and_voice_focus_in_handshake(self):
+        async def run():
+            backend, holder = make_backend(
+                [{"type": "Begin", "id": "s1"}],
+                prompt="A property viewing call.",
+                keyterms_prompt=["Yas Island", "Voni"],
+                voice_focus="far-field",
+                voice_focus_threshold=0.8,
+                agent_context="Sure, what date works?",
+            )
+            await backend.open(language_codes=[], sample_rate=8000)
+            await backend.close()
+            return holder["sock"]
+
+        sock = asyncio.run(run())
+        query = parse_qs(urlparse(sock.url or "").query)
+        self.assertEqual(query.get("prompt"), ["A property viewing call."])
+        self.assertEqual(
+            query.get("keyterms_prompt"), [json.dumps(["Yas Island", "Voni"])]
+        )
+        self.assertEqual(query.get("voice_focus"), ["far-field"])
+        self.assertEqual(query.get("voice_focus_threshold"), ["0.8"])
+        self.assertEqual(query.get("agent_context"), ["Sure, what date works?"])
+        # Empty language list means auto-detect: the key stays absent.
+        self.assertNotIn("language_codes", query)
+
+    def test_update_configuration_sends_allowlisted_fields(self):
+        async def run():
+            backend, holder = make_backend([{"type": "Begin", "id": "s1"}])
+            await backend.open(language_codes=["en"], sample_rate=16000)
+            await backend.update_configuration(min_turn_silence=1000)
+            await backend.update_configuration(mode="balanced")
+            await backend.close()
+            return holder["sock"]
+
+        sock = asyncio.run(run())
+        frames = [json.loads(m) for m in sock.sent if isinstance(m, str)]
+        self.assertIn(
+            {"type": "UpdateConfiguration", "min_turn_silence": 1000}, frames
+        )
+        self.assertIn({"type": "UpdateConfiguration", "mode": "balanced"}, frames)
+
+    def test_update_configuration_rejects_unknown_fields(self):
+        async def run():
+            backend, _ = make_backend([{"type": "Begin", "id": "s1"}])
+            await backend.open(language_codes=["en"], sample_rate=16000)
+            try:
+                with self.assertRaises(ValueError):
+                    await backend.update_configuration(speech_model="x")
+            finally:
+                await backend.close()
+
+        asyncio.run(run())
 
     def test_audio_sent_as_raw_binary_frames(self):
         async def run():

@@ -1,7 +1,7 @@
 import { and, eq, isNull } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { agents } from "@/lib/db/schema";
-import { deleteRemoteAgent, provisionAgent } from "@/lib/agents/provision";
+import { deleteRemoteAgent, deploymentFingerprint, provisionAgent } from "@/lib/agents/provision";
 import { CancelledJobError, throwIfCancelled } from "../processor";
 import { isCancelRequested, sanitizeJobError, type JobRow } from "../store";
 import type { JobInput } from "../kinds";
@@ -102,6 +102,11 @@ export async function runDeploymentJob(
       deploymentStatus: "ready",
       deploymentError: null,
       lastDeployedAt: deployedAt,
+      // What the remote now runs, byte-for-byte. The platform-refresh
+      // check recomputes this locally: a mismatch (or a pre-fingerprint
+      // null) means the platform moved under a deployed agent and it is
+      // owed a redeploy — noticed with zero server round trips.
+      deployedFingerprint: deploymentFingerprint(input.name, input.config),
     });
     return {
       agentId: input.agentId,

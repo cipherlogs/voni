@@ -53,25 +53,79 @@ export type NavSpeculativeState = {
 export type JudgeKind = "barge-in" | "reply" | "tool" | "nav-speculative";
 export type JudgeSource = "jev" | "fallback";
 
-const BACKCHANNEL_RE =
-  /^(uh[\s-]?huh|yeah?|yep|nope?|mhm+|mm+|ok(ay)?|right|sure|got it|thanks?|ah?[\s.,!?]*)[\s.,!?]*$/i;
+/**
+ * Filler-only tokens that must never yield while the agent holds the floor
+ * (breath mishears, hmm, got-it continuers). "yes"/"yeah" are deliberately
+ * ABSENT from filler but are NOT commands either: assent waits for the
+ * settled final's soft-confirm path instead of cutting in. Mirrors
+ * voice-pipeline/turns.py and telephony-bot/voice_judge.py.
+ */
+const FILLER_TOKENS = new Set([
+  "uh", "huh", "uhhuh", "um", "umm", "uhm", "er", "erm",
+  "hmm", "hm", "ah", "oh", "mhm", "mmhm", "mmhmm", "mm",
+  "yup", "okay", "ok", "right", "alright", "sure",
+  "gotcha", "got", "it", "thanks",
+]);
+
+/**
+ * Steering that always yields once established, bypassing the word-count
+ * floor and the probability threshold: stop/wait/no/repeat. The LLM (which
+ * sees the overlap in context) decides transition-vs-continue; the gate
+ * only guarantees steering is heard. Mirrors turns.COMMAND_*.
+ */
+const COMMAND_PHRASES = ["hold on", "hang on", "excuse me"];
+const COMMAND_TOKENS = new Set([
+  "stop", "wait", "no", "nope", "repeat", "again", "sorry", "listen",
+]);
+
+function isAllFiller(text: string): boolean {
+  const words = text
+    .toLowerCase()
+    .replace(/[!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~]/g, "")
+    .split(/\s+/)
+    .filter(Boolean);
+  return words.length > 0 && words.every((token) => FILLER_TOKENS.has(token));
+}
 
 function wordCount(text: string): number {
   const words = text.trim().split(/\s+/).filter(Boolean);
   return words.length === 1 && words[0] === "" ? 0 : words.length;
 }
 
+function cleanTokens(text: string): string[] {
+  return text
+    .toLowerCase()
+    .replace(/[!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~]/g, "")
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+/** True when the overlap carries steering (stop/wait/no/repeat...). */
+export function isCommandBargeIn(text: string): boolean {
+  const tokens = cleanTokens(text);
+  if (tokens.length === 0) return false;
+  const padded = ` ${tokens.join(" ")} `;
+  if (COMMAND_PHRASES.some((phrase) => padded.includes(` ${phrase} `))) {
+    return true;
+  }
+  return tokens.some((token) => COMMAND_TOKENS.has(token));
+}
+
 /**
  * Offline probability that `partialText` is a real interruption.
- * Backchannels score near 0; multi-word content while the agent is
+ * Filler-only speech scores near 0; multi-word content while the agent is
  * established scores high. Speech in the first 800ms of a reply is treated
- * as talk-over/echo and scores low (fail-closed).
+ * as talk-over/echo and scores low (fail-closed). Steering ("no", "stop",
+ * "hold on") bypasses the floor and scores 0.9 — it must be heard even as
+ * a single word. Bare yes/yeah score like any other single content word:
+ * no hard cut — the settled final takes the soft-confirm path instead.
  */
 export function heuristicBargeInScore(state: BargeInState): number {
   const text = state.partialText.trim();
   if (!text) return 0;
-  if (BACKCHANNEL_RE.test(text)) return 0.12;
+  if (isAllFiller(text)) return 0.12;
   if (state.agentSpeakingMs < 800) return 0.3;
+  if (isCommandBargeIn(text)) return 0.9;
   const words = wordCount(text);
   if (words >= 4) return 0.88;
   if (words >= 2) return 0.72;

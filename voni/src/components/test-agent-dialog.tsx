@@ -31,7 +31,7 @@ import { Tip } from "@/components/tip";
 
 import Link from "next/link";
 import { useRef, useState } from "react";
-import { Mic, Phone, PhoneOff, Plus, TriangleAlert } from "lucide-react";
+import { Mic, MicOff, Phone, PhoneOff, Plus, TriangleAlert } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { LoadingButton } from "@/components/loading-button";
@@ -66,6 +66,7 @@ const IDLE_STATUS: VoiceCallStatus = {
   state: "idle",
   elapsed: 0,
   toolActive: false,
+  muted: false,
 };
 
 function presenceCopy(status: VoiceCallStatus, canTest: boolean): string {
@@ -144,6 +145,10 @@ export function TestAgentDialog({
     } catch {
       setHangUpError("Couldn't end the call. Try again.");
     }
+  };
+
+  const handleToggleMute = () => {
+    callRef.current?.toggleMute();
   };
 
   return (
@@ -349,16 +354,34 @@ export function TestAgentDialog({
             </div>
             <div className="flex justify-center px-1">
               {callActive ? (
-                <LoadingButton
-                  pending={callHangingUp}
-                  pendingText="Hanging up…"
-                  icon={<PhoneOff className="size-4.5" aria-hidden />}
-                  className={`h-11 gap-2 rounded-full px-7 text-sm font-semibold ${HANGUP_RED}`}
-                  onClick={handleHangUp}
-                  aria-label="End test call"
-                >
-                  End call
-                </LoadingButton>
+                <div className="flex gap-2">
+                  {live ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="h-11 gap-2 rounded-full px-3.5 text-sm font-semibold"
+                      aria-pressed={status.muted}
+                      onClick={handleToggleMute}
+                    >
+                      {status.muted ? (
+                        <MicOff className="size-4.5" aria-hidden />
+                      ) : (
+                        <Mic className="size-4.5" aria-hidden />
+                      )}
+                      {status.muted ? "Unmute" : "Mute"}
+                    </Button>
+                  ) : null}
+                  <LoadingButton
+                    pending={callHangingUp}
+                    pendingText="Hanging up…"
+                    icon={<PhoneOff className="size-4.5" aria-hidden />}
+                    className={`h-11 gap-2 rounded-full px-7 text-sm font-semibold ${HANGUP_RED}`}
+                    onClick={handleHangUp}
+                    aria-label="End test call"
+                  >
+                    End call
+                  </LoadingButton>
+                </div>
               ) : (
                 <LoadingButton
                   pending={callStarting}

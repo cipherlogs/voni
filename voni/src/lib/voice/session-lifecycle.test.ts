@@ -9,6 +9,11 @@ import {
   VoiceSession,
   type TranscriptPartial,
 } from "./session";
+import {
+  buildConversationMessage,
+  MICROPHONE_MUTED_CONTEXT,
+  MICROPHONE_UNMUTED_CONTEXT,
+} from "./context";
 
 // Minimal WebSocket shape: updateConfig only touches readyState + send.
 (globalThis as unknown as { WebSocket: unknown }).WebSocket = { OPEN: 1 };
@@ -130,6 +135,132 @@ test("barge-in flushes queued speech immediately", () => {
   internals["playout"] = playout;
   handle({ type: "input.speech.started" });
   assert.deepEqual(flushes, [0.04]);
+});
+
+test("agent-mode end_call answers locally and hangs up on the settled reply", () => {
+  const { sent, handle, internals } = makeSession();
+  internals["playout"] = {
+    play: () => undefined,
+    flush: () => undefined,
+    settled: () => true,
+    queuedMs: () => 0,
+  };
+  handle({ type: "session.ready", session_id: "s1" });
+  // Agent mode runs no tool coordinator — end_call is answered locally.
+  handle({
+    type: "tool.call",
+    call_id: "e1",
+    name: "end_call",
+    arguments: { closing_line: "Goodbye!" },
+  });
+  const result = sent
+    .map((raw) => JSON.parse(raw) as Record<string, unknown>)
+    .find((message) => message.type === "tool.result");
+  assert.equal(result?.call_id, "e1");
+  assert.equal(result?.is_error, false);
+  assert.equal(
+    (JSON.parse(String(result?.result)) as Record<string, unknown>).hangup,
+    true,
+  );
+  assert.equal(internals["pendingHangup"], true);
+  // Playback already settled: the goodbye lands, then the session stops.
+  handle({ type: "reply.done", reply_id: "r1", status: "completed" });
+  assert.equal(internals["explicitStop"], true);
+});
+
+test("agent-mode end_call without a closing line fails closed", () => {
+  const { sent, handle, internals } = makeSession();
+  handle({ type: "session.ready", session_id: "s1" });
+  handle({
+    type: "tool.call",
+    call_id: "e2",
+    name: "end_call",
+    arguments: {},
+  });
+  const result = sent
+    .map((raw) => JSON.parse(raw) as Record<string, unknown>)
+    .find((message) => message.type === "tool.result");
+  assert.equal(result?.is_error, true);
+  assert.equal(internals["pendingHangup"], false);
+  assert.equal(internals["explicitStop"], false);
+});
+
+test("caller speech over the goodbye disarms the hangup", () => {
+  const { handle, internals } = makeSession();
+  internals["playout"] = {
+    play: () => undefined,
+    flush: () => undefined,
+    settled: () => true,
+    queuedMs: () => 0,
+  };
+  handle({ type: "session.ready", session_id: "s1" });
+  handle({
+    type: "tool.call",
+    call_id: "e3",
+    name: "end_call",
+    arguments: { closing_line: "Goodbye!" },
+  });
+  assert.equal(internals["pendingHangup"], true);
+  handle({ type: "input.speech.started" });
+  handle({ type: "reply.done", reply_id: "r1", status: "interrupted" });
+  assert.equal(internals["explicitStop"], false);
+});
+
+test("hangup waits through flapping playback instead of one settled poll", async () => {
+  // A momentary dry gap between chunks reports settled once — stopping on
+  // that alone chops the goodbye mid-word (heard on jittery mobile links).
+  const { handle, internals } = makeSession();
+  let settled = false;
+  internals["playout"] = {
+    play: () => undefined,
+    flush: () => undefined,
+    settled: () => settled,
+    queuedMs: () => 0,
+  };
+  internals["lastAudioAt"] = 0;
+  handle({ type: "session.ready", session_id: "s1" });
+  handle({
+    type: "tool.call",
+    call_id: "e4",
+    name: "end_call",
+    arguments: { closing_line: "Goodbye!" },
+  });
+  handle({ type: "reply.done", reply_id: "r1", status: "completed" });
+  assert.equal(internals["explicitStop"], false);
+  settled = true; // dry gap: must not stop on this alone
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  assert.equal(internals["explicitStop"], false);
+  settled = false; // more audio arrived: the streak resets
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  assert.equal(internals["explicitStop"], false);
+  settled = true; // genuinely drained now
+  await new Promise((resolve) => setTimeout(resolve, 1200));
+  assert.equal(internals["explicitStop"], true);
+});
+
+test("hangup waits out fresh audio even when playback reports settled", async () => {
+  // Audio still traveling to the worklet (pre-roll, output/Bluetooth
+  // latency) sounds after the settled report — stop too early and the last
+  // word is cut.
+  const { handle, internals } = makeSession();
+  internals["playout"] = {
+    play: () => undefined,
+    flush: () => undefined,
+    settled: () => true,
+    queuedMs: () => 0,
+  };
+  handle({ type: "session.ready", session_id: "s1" });
+  handle({
+    type: "tool.call",
+    call_id: "e5",
+    name: "end_call",
+    arguments: { closing_line: "Goodbye!" },
+  });
+  handle({ type: "reply.audio", reply_id: "r1", data: "" });
+  handle({ type: "reply.done", reply_id: "r1", status: "completed" });
+  assert.equal(internals["explicitStop"], false);
+  await new Promise((resolve) => setTimeout(resolve, 2000));
+  assert.equal(internals["explicitStop"], true);
 });
 
 test("session.ended reports durations for acceptance tracking", () => {
@@ -322,7 +453,8 @@ test("first session.update omits empty recognition keys", () => {
     tools: [],
   });
   const input = update["input"] as Record<string, unknown>;
-  assert.equal(input["transcription_mode"], "min_latency");
+  assert.equal(input["transcription_mode"], "balanced");
+  assert.equal(input["voice_focus"], "near-field");
   assert.ok(!("keyterms" in input));
   assert.ok(!("language_codes" in input));
   assert.ok(!("tools" in (update as Record<string, unknown>)));
@@ -398,11 +530,30 @@ test("muted mic drops frames without tearing down the call", () => {
   assert.equal(sent.length, 1);
   session.setInputMuted(true);
   ingest(new ArrayBuffer(4));
-  assert.equal(sent.length, 1);
+  assert.deepEqual(JSON.parse(sent[1]), {
+    type: "conversation.message",
+    role: "system",
+    content: MICROPHONE_MUTED_CONTEXT,
+  });
+  assert.equal(sent.length, 2);
   // Unmuting resumes the same session — no reconnect, no new greeting.
   session.setInputMuted(false);
   ingest(new ArrayBuffer(4));
-  assert.equal(sent.length, 2);
+  assert.deepEqual(JSON.parse(sent[2]), {
+    type: "conversation.message",
+    role: "system",
+    content: MICROPHONE_UNMUTED_CONTEXT,
+  });
+  assert.equal(sent.length, 4);
+  assert.ok(!sent.some((message) => message.includes("reply.create")));
+});
+
+test("managed context serializes as a hidden system conversation message", () => {
+  assert.deepEqual(buildConversationMessage("context"), {
+    type: "conversation.message",
+    role: "system",
+    content: "context",
+  });
 });
 
 test("session.ready marks timing once per start", () => {

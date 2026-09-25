@@ -18,18 +18,21 @@ from loguru import logger
 from voice_judge import allow_tool_call
 
 SENSITIVE_CAPTURE_TOOL = "prepare_sensitive_capture"
+END_CALL_TOOL = "end_call"
 HOLD_TOOLS = {
     "book_viewing",
     "schedule_follow_up",
     "update_lead",
     "transfer_to_human",
     SENSITIVE_CAPTURE_TOOL,
+    END_CALL_TOOL,
 }
 
 
 @dataclass
 class PendingTool:
     call_id: str
+    name: str
     reply_id: str | None
     mode: str
     result: dict[str, Any] | None = None
@@ -49,6 +52,18 @@ class ToolCoordinator:
         self.send_lock = asyncio.Lock()
         self.update_waiter: asyncio.Future | None = None
         self.restore_fast_pacing = False
+        # Agent-initiated hangup, armed by an end_call result and acted on
+        # at the next settled reply — the spoken closing line finishes
+        # first. Disarmed the moment the caller speaks again.
+        self.end_call_armed = False
+
+    def take_hangup_request(self) -> bool:
+        """Consume an armed agent hangup (one-shot)."""
+        armed, self.end_call_armed = self.end_call_armed, False
+        return armed
+
+    def disarm_hangup(self) -> None:
+        self.end_call_armed = False
 
     async def handle_event(self, event: dict[str, Any]) -> bool:
         """Update sequencing state. True means a session.error was tool-local."""
@@ -64,6 +79,8 @@ class ToolCoordinator:
                 for call_id, item in list(self.pending.items()):
                     self.pending.pop(call_id, None)
                     self.discarded.add(call_id)
+                # A caller talking over the goodbye takes the floor back.
+                self.disarm_hangup()
             else:
                 await self._flush_interactive()
         elif event_type == "tool.call":
@@ -97,6 +114,7 @@ class ToolCoordinator:
             return
         self.pending[call_id] = PendingTool(
             call_id=call_id,
+            name=name,
             reply_id=self.current_reply_id,
             mode="hold" if name in HOLD_TOOLS else "interactive",
         )
@@ -227,6 +245,13 @@ class ToolCoordinator:
                 "is_error": not item.result.get("ok", False),
             }
         )
+        if (
+            item.name == END_CALL_TOOL
+            and item.result.get("ok") is True
+            and item.result.get("hangup") is True
+        ):
+            logger.info("agent requested hangup; arming for the settled reply")
+            self.end_call_armed = True
         self.pending.pop(item.call_id, None)
 
     async def _send(self, message: dict[str, Any]) -> None:

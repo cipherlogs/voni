@@ -41,35 +41,45 @@ export function ThemeProvider({
   const storageKey =
     (props as { storageKey?: string }).storageKey ?? "theme"
   return (
-    // usePathname() blocks prerendering without a boundary (Cache
-    // Components): the fallback paints without the landing override, the
-    // light-forced leaf streams in. Same pattern as app-sidebar.
-    <Suspense
-      fallback={
-        <NextThemesProvider {...props}>
-          <ThemeMigration storageKey={storageKey} />
-          {children}
-        </NextThemesProvider>
-      }
-    >
-      <ThemedProvider {...props}>{children}</ThemedProvider>
-    </Suspense>
-  )
-}
-
-function ThemedProvider({
-  children,
-  ...props
-}: React.ComponentProps<typeof NextThemesProvider>) {
-  const storageKey =
-    (props as { storageKey?: string }).storageKey ?? "theme"
-  // The public landing is light-only (DESIGN.md §10c): forced, not persisted,
-  // so every other route keeps the visitor's own pick.
-  const forcedTheme = usePathname() === "/" ? "light" : props.forcedTheme
-  return (
-    <NextThemesProvider {...props} forcedTheme={forcedTheme}>
+    // NextThemesProvider injects an inline <script> (no-FOUC init). It must
+    // render unconditionally: a provider inside a Suspense fallback renders
+    // its <script> on the client, which React 19 rejects ("Encountered a
+    // script tag while rendering React component"). So the provider stays
+    // outside and only the usePathname() leaf suspends — same pattern as
+    // app-sidebar and copilot-provider. The fallback is null (no script).
+    <NextThemesProvider {...props}>
       <ThemeMigration storageKey={storageKey} />
+      <Suspense fallback={null}>
+        <LandingLightEnforcer />
+      </Suspense>
       {children}
     </NextThemesProvider>
   )
+}
+
+/**
+ * Light-only public landing (DESIGN.md §10c), ephemeral — never persisted.
+ *
+ * The previous `forcedTheme` prop needed `usePathname()` in the provider
+ * itself, which forced the provider inside a Suspense boundary (see above).
+ * Instead this leaf strips the `dark` class while on "/" and restores it on
+ * navigation away, so every other route keeps the visitor's own pick and
+ * nothing is written to storage. Attribute mode is `class`, so light is the
+ * absence of `dark` (root vars in globals.css).
+ */
+function LandingLightEnforcer() {
+  const pathname = usePathname()
+  React.useEffect(() => {
+    if (pathname !== "/") return
+    const root = document.documentElement
+    const hadDark = root.classList.contains("dark")
+    const prevColorScheme = root.style.colorScheme
+    root.classList.remove("dark")
+    root.style.colorScheme = "light"
+    return () => {
+      if (hadDark) root.classList.add("dark")
+      root.style.colorScheme = prevColorScheme
+    }
+  }, [pathname])
+  return null
 }

@@ -1,0 +1,376 @@
+<title>Voni Call Sounds</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&family=Newsreader:ital,opsz,wght@1,6..72,500&display=swap">
+<style>
+  :root {
+    --bg: #ffffff;
+    --card: #ffffff;
+    --fg: #171717;
+    --muted: #737373;
+    --soft: #f5f5f5;
+    --border: #e5e5e5;
+    --accent: #16a34a;
+    --accent-soft: #f0fdf4;
+    --sans: "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: "Geist Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+    --serif: "Newsreader", Georgia, "Times New Roman", serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0a0a0a; --card: #171717; --fg: #fafafa; --muted: #a3a3a3;
+      --soft: #262626; --border: #ffffff24; --accent: #22c55e; --accent-soft: #22c55e14;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0a0a0a; --card: #171717; --fg: #fafafa; --muted: #a3a3a3;
+    --soft: #262626; --border: #ffffff24; --accent: #22c55e; --accent-soft: #22c55e14;
+    color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    background: var(--bg); color: var(--fg); font: 14px/1.5 var(--sans);
+    padding-inline: 16px; -webkit-font-smoothing: antialiased;
+  }
+  main { max-width: 60rem; margin: 0 auto; padding-block: 48px 96px; display: grid; gap: 40px; }
+
+  header.intro { display: grid; gap: 10px; max-width: 42rem; }
+  .eyebrow { font: 500 12px/1 var(--mono); color: var(--muted); letter-spacing: .04em; }
+  h1 { font: italic 500 clamp(30px, 5vw, 42px)/1.1 var(--serif); letter-spacing: -.01em; margin: 0; text-wrap: balance; }
+  .intro p { margin: 0; color: var(--muted); max-width: 62ch; }
+
+  .bar {
+    position: sticky; top: env(safe-area-inset-top, 0px); z-index: 2;
+    display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px;
+    padding: 12px 14px; background: color-mix(in srgb, var(--bg) 88%, transparent);
+    backdrop-filter: blur(8px); border: 1px solid var(--border); border-radius: 10px;
+  }
+  .bar .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  .status { font: 500 12px var(--mono); color: var(--muted); min-width: 9ch; }
+  .status.live { color: var(--accent); }
+  .pickline { margin-left: auto; display: flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; }
+  .pickline code {
+    font: 12px var(--mono); color: var(--muted); background: var(--soft);
+    padding: 6px 8px; border-radius: 6px; overflow-x: auto; white-space: nowrap; min-width: 0;
+  }
+
+  button {
+    font: 500 13px var(--sans); color: var(--fg); background: var(--card);
+    border: 1px solid var(--border); border-radius: 8px; padding: 7px 12px; cursor: pointer;
+    display: inline-flex; align-items: center; gap: 8px; transition: background .12s, border-color .12s;
+  }
+  button:hover { background: var(--soft); }
+  button:focus-visible, input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
+  button.primary { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+  button.primary:hover { opacity: .88; }
+  svg.icon { width: 12px; height: 12px; fill: currentColor; flex: none; }
+
+  section.sound { display: grid; grid-template-columns: 13rem 1fr; gap: 20px; padding-top: 28px; border-top: 1px solid var(--border); }
+  .meta { display: grid; gap: 6px; align-content: start; }
+  .meta h2 { font: 500 15px var(--mono); margin: 0; }
+  .meta p { margin: 0; color: var(--muted); font-size: 13px; }
+  .meta .spec { font: 12px var(--mono); color: var(--muted); }
+
+  .variants { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+  .variant {
+    display: grid; grid-template-rows: auto auto 1fr auto; gap: 10px; padding: 14px;
+    background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+    transition: border-color .15s, background .15s;
+  }
+  .variant.picked { border-color: var(--accent); background: var(--accent-soft); }
+  .variant .top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .variant h3 { font: 600 14px var(--sans); margin: 0; }
+  .variant h3 span { font: 500 12px var(--mono); color: var(--muted); margin-right: 6px; }
+  .variant p { margin: 0; color: var(--muted); font-size: 13px; }
+  .wave { width: 100%; height: 40px; color: var(--muted); display: block; }
+  .variant.picked .wave, .variant.playing .wave { color: var(--accent); }
+  .stats { font: 11px var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+  .foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+
+  .pick { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; }
+  .pick input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+  .pick span {
+    width: 16px; height: 16px; border-radius: 50%; border: 1.5px solid var(--border);
+    display: inline-grid; place-items: center; transition: border-color .12s;
+  }
+  .pick input:checked + span { border-color: var(--accent); }
+  .pick input:checked + span::after { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
+  .play[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+
+  .tick { display: grid; gap: 14px; padding: 16px; border: 1px solid var(--border); border-radius: 10px; background: var(--card); }
+  .tick .row { display: flex; flex-wrap: wrap; gap: 8px; }
+  .caption { font: 15px/1.5 var(--sans); min-height: 3em; margin: 0; padding: 10px 12px; background: var(--soft); border-radius: 8px; }
+  .caption:empty::before { content: "Caption appears here as words land."; color: var(--muted); }
+  .knobs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 20px; }
+  .knob { display: grid; gap: 4px; font-size: 13px; }
+  .knob label { display: flex; justify-content: space-between; gap: 8px; }
+  .knob output { font: 12px var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+  .knob small { color: var(--muted); font-size: 12px; }
+  .knob input { width: 100%; accent-color: var(--accent); }
+  .feelline { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .feelline code { font: 12px var(--mono); color: var(--muted); background: var(--soft); padding: 6px 8px; border-radius: 6px; overflow-x: auto; white-space: nowrap; min-width: 0; }
+
+  @media (max-width: 760px) {
+    .knobs { grid-template-columns: 1fr; }
+    section.sound { grid-template-columns: 1fr; gap: 14px; }
+    .variants { grid-template-columns: 1fr; }
+    .pickline { margin-left: 0; width: 100%; }
+  }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+<main>
+  <header class="intro">
+    <div class="eyebrow">VONI · CALL EARCONS</div>
+    <h1>Pick the sounds of a call</h1>
+    <p>Three takes on each call sound, rendered from the generator script and encoded exactly as they will ship. Previews play at the app's volumes (ringback 0.25, the rest 0.4), so use the speakers or headphones you normally use. Choose one per sound, try the whole call, then send me the pick line.</p>
+  </header>
+
+  <div class="bar" role="region" aria-label="Call preview">
+    <div class="actions">
+      <button class="primary" id="seq-call" type="button"><svg class="icon" viewBox="0 0 12 12"><path d="M2 1l9 5-9 5z"/></svg>Play a call</button>
+      <button id="seq-fail" type="button">Play a failed call</button>
+      <button id="stop" type="button">Stop</button>
+    </div>
+    <span class="status" id="status" aria-live="polite">Ready</span>
+    <div class="pickline">
+      <code id="pickline"></code>
+      <button id="copy" type="button">Copy</button>
+    </div>
+  </div>
+
+  <div id="sounds"></div>
+
+  <section class="sound" aria-labelledby="tick-title">
+    <div class="meta">
+      <h2 id="tick-title">caption tick</h2>
+      <p>Strikes as each word lands in the live caption, for you and the agent. A single firmer strike marks the agent yielding.</p>
+      <div class="spec">synthesized per strike · wooden knock · ≤ 3 per burst</div>
+    </div>
+    <div class="tick">
+      <p style="margin:0;color:var(--muted);font-size:13px">Each strike is a soft wooden knock hit by a hand: velocity drifts from hit to hit, and harder hits come out louder, clickier, brighter and a hair sharp. “Flat” plays every strike identically, like a sample on repeat, for comparison.</p>
+      <p class="caption" id="caption" aria-live="polite"></p>
+      <div class="row">
+        <button class="primary" id="tick-play" type="button"><svg class="icon" viewBox="0 0 12 12"><path d="M2 1l9 5-9 5z"/></svg>Play a caption</button>
+        <button id="tick-flat" type="button">Play flat</button>
+        <button id="tick-yield" type="button">Yield strike</button>
+      </div>
+      <div class="knobs">
+        <div class="knob">
+          <label for="k-spread">Hand <output id="o-spread"></output></label>
+          <input type="range" id="k-spread" min="0" max="0.8" step="0.05">
+          <small>How much velocity changes between hits.</small>
+        </div>
+        <div class="knob">
+          <label for="k-detune">Detune <output id="o-detune"></output></label>
+          <input type="range" id="k-detune" min="0" max="30" step="1">
+          <small>Random pitch drift per hit, in cents.</small>
+        </div>
+        <div class="knob">
+          <label for="k-bright">Hammer <output id="o-bright"></output></label>
+          <input type="range" id="k-bright" min="0" max="2" step="0.1">
+          <small>How much harder hits brighten and click.</small>
+        </div>
+        <div class="knob">
+          <label for="k-pitch">Pitch <output id="o-pitch"></output></label>
+          <input type="range" id="k-pitch" min="180" max="700" step="10">
+          <small>The knock's note. Lower sinks further under speech.</small>
+        </div>
+      </div>
+      <div class="feelline">
+        <code id="feelline"></code>
+        <button id="feel-copy" type="button">Copy</button>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script>
+const DATA = /*DATA*/null;
+const TICK_FEEL = /*TICK_FEEL*/null;
+// Shipped tick code, embedded verbatim from src/lib/voice/call-sounds.ts.
+/*TICK*/
+const VOLUME = { ringback: 0.25 };
+const PLAY = '<svg class="icon" viewBox="0 0 12 12"><path d="M2 1l9 5-9 5z"/></svg>';
+const STOP = '<svg class="icon" viewBox="0 0 12 12"><rect x="2" y="2" width="8" height="8" rx="1"/></svg>';
+
+let picks = Object.fromEntries(DATA.map((s) => [s.name, "a"]));
+try { Object.assign(picks, JSON.parse(localStorage.getItem("call-sound-picks") || "{}")); } catch {}
+
+const $ = (id) => document.getElementById(id);
+const variant = (name, key) => DATA.find((s) => s.name === name).variants.find((v) => v.key === key);
+
+function wave(points) {
+  const w = points.length, bars = points.map((p, i) => {
+    const h = Math.max(0.6, p * 18);
+    return `<rect x="${i + 0.2}" y="${(20 - h).toFixed(2)}" width="0.6" height="${(2 * h).toFixed(2)}" rx="0.3"/>`;
+  }).join("");
+  return `<svg class="wave" viewBox="0 0 ${w} 40" preserveAspectRatio="none" fill="currentColor" aria-hidden="true">${bars}</svg>`;
+}
+
+$("sounds").innerHTML = DATA.map((s) => `
+  <section class="sound">
+    <div class="meta">
+      <h2>${s.name}</h2>
+      <p>${s.when}</p>
+      <div class="spec">${s.spec} · vol ${VOLUME[s.name] ?? 0.4}</div>
+    </div>
+    <div class="variants">
+      ${s.variants.map((v) => `
+        <div class="variant" id="card-${s.name}-${v.key}">
+          <div class="top"><h3><span>${v.key.toUpperCase()}</span>${v.label}</h3></div>
+          ${wave(v.wave)}
+          <p>${v.note}</p>
+          <div class="foot">
+            <button class="play" type="button" aria-pressed="false" data-name="${s.name}" data-key="${v.key}">${PLAY}Play</button>
+            <span class="stats">${v.sec.toFixed(2)} s · ${v.kb.toFixed(1)} KB${v.lufs != null && v.lufs > -60 ? ` · ${v.lufs} LUFS` : ""}</span>
+            <label class="pick"><input type="radio" id="pick-${s.name}-${v.key}" name="pick-${s.name}" value="${v.key}"><span></span>Pick</label>
+          </div>
+        </div>`).join("")}
+    </div>
+  </section>`).join("");
+
+function renderPicks() {
+  for (const s of DATA) for (const v of s.variants) {
+    const on = picks[s.name] === v.key;
+    $(`pick-${s.name}-${v.key}`).checked = on;
+    $(`card-${s.name}-${v.key}`).classList.toggle("picked", on);
+  }
+  $("pickline").textContent = "--pick " + DATA.map((s) => `${s.name}=${picks[s.name]}`).join(",");
+  try { localStorage.setItem("call-sound-picks", JSON.stringify(picks)); } catch {}
+}
+
+// One voice at a time, like a real call.
+let current = null;
+function stop() {
+  if (!current) return;
+  current.audio.pause();
+  if (current.btn) { current.btn.setAttribute("aria-pressed", "false"); current.btn.innerHTML = PLAY + "Play"; }
+  current.card?.classList.remove("playing");
+  current = null;
+}
+function play(name, key, btn) {
+  stop();
+  const audio = new Audio(variant(name, key).src);
+  audio.volume = VOLUME[name] ?? 0.4;
+  audio.loop = name === "ringback";
+  const card = $(`card-${name}-${key}`);
+  current = { audio, btn, card };
+  card.classList.add("playing");
+  if (btn) { btn.setAttribute("aria-pressed", "true"); btn.innerHTML = STOP + "Stop"; }
+  audio.onended = () => { if (current?.audio === audio) stop(); };
+  audio.play().catch(() => stop());
+}
+
+document.addEventListener("click", (e) => {
+  const btn = e.target.closest("button.play");
+  if (!btn) return;
+  runId++; setStatus("Ready");
+  if (current?.btn === btn) return stop();
+  play(btn.dataset.name, btn.dataset.key, btn);
+});
+document.addEventListener("change", (e) => {
+  if (!e.target.name?.startsWith("pick-")) return;
+  picks[e.target.name.slice(5)] = e.target.value;
+  renderPicks();
+});
+
+let runId = 0;
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+function setStatus(text, live = false) { $("status").textContent = text; $("status").classList.toggle("live", live); }
+
+// Steps: [status, sound name or function, ms to wait after].
+async function sequence(steps) {
+  const run = ++runId;
+  for (const [label, act, ms] of steps) {
+    if (run !== runId) return;
+    setStatus(label, true);
+    if (typeof act === "function") await act(run);
+    else if (act) play(act, picks[act], null);
+    await wait(ms);
+  }
+  if (run === runId) { stop(); setStatus("Ready"); }
+}
+
+// ---- Caption tick ----
+const feel = { ...TICK_FEEL };
+const tickState = { nextFree: 0, velocity: 0.6 };
+let actx = null;
+function audio() {
+  actx ??= new AudioContext();
+  if (actx.state === "suspended") actx.resume();
+  return actx;
+}
+const GREETING = "Hi, this is Maya from Oakline Realty. I saw you asked about the two bedroom on Hayes Street, do you have a minute?".split(" ");
+const REPLY = "Sure, I can move your viewing to Thursday at four. Does that still work for you?".split(" ");
+
+// Words arrive in partial bursts of 1–3 at speech-like gaps, as STT partials do.
+async function caption(words, f, run) {
+  const ctx = audio();
+  let shown = 0;
+  $("caption").textContent = "";
+  while (shown < words.length) {
+    if (run !== runId) return;
+    const n = Math.min(1 + Math.floor(Math.random() * 3), words.length - shown);
+    shown += n;
+    $("caption").textContent = words.slice(0, shown).join(" ");
+    scheduleTicks(ctx, ctx.destination, tickState, n, f);
+    await wait(140 + Math.random() * 220);
+  }
+}
+const FLAT = () => ({ ...feel, spread: 0, detune: 0 });
+function yieldStrike() {
+  const ctx = audio();
+  scheduleTicks(ctx, ctx.destination, tickState, 1, feel, 0.9);
+}
+
+$("tick-play").onclick = () => sequence([["Captioning…", (run) => caption(REPLY, feel, run), 0]]);
+$("tick-flat").onclick = () => {
+  tickState.velocity = 0.6;
+  sequence([["Captioning (flat)…", (run) => caption(REPLY, FLAT(), run), 0]]);
+};
+$("tick-yield").onclick = yieldStrike;
+
+for (const k of ["spread", "detune", "bright", "pitch"]) {
+  const input = $(`k-${k}`);
+  input.value = feel[k];
+  input.oninput = () => { feel[k] = Number(input.value); renderFeel(); };
+}
+function renderFeel() {
+  $("o-spread").textContent = feel.spread.toFixed(2);
+  $("o-detune").textContent = `±${feel.detune}¢`;
+  $("o-bright").textContent = feel.bright.toFixed(1);
+  $("o-pitch").textContent = `${feel.pitch} Hz`;
+  $("feelline").textContent = `TICK_FEEL = ${JSON.stringify(feel).replace(/"/g, "").replace(/,/g, ", ").replace(/:/g, ": ")}`;
+}
+$("feel-copy").onclick = async () => {
+  try { await navigator.clipboard.writeText($("feelline").textContent); $("feel-copy").textContent = "Copied"; }
+  catch { getSelection().selectAllChildren($("feelline")); $("feel-copy").textContent = "Selected"; }
+  setTimeout(() => { $("feel-copy").textContent = "Copy"; }, 1500);
+};
+renderFeel();
+
+$("seq-call").onclick = () => sequence([
+  ["Ringing…", "ringback", 6000],
+  ["Connected", "connected", 500],
+  ["Agent speaking", (run) => caption(GREETING, feel, run), 700],
+  ["Agent yields", yieldStrike, 900],
+  ["Agent speaking", (run) => caption(REPLY, feel, run), 1200],
+  ["Hung up", "hangup", 1000],
+]);
+$("seq-fail").onclick = () => sequence([
+  ["Ringing…", "ringback", 3000],
+  ["Failed", "error", 1200],
+]);
+$("stop").onclick = () => { runId++; stop(); setStatus("Ready"); };
+$("copy").onclick = async () => {
+  const text = $("pickline").textContent;
+  try { await navigator.clipboard.writeText(text); $("copy").textContent = "Copied"; }
+  catch { getSelection().selectAllChildren($("pickline")); $("copy").textContent = "Selected"; }
+  setTimeout(() => { $("copy").textContent = "Copy"; }, 1500);
+};
+
+renderPicks();
+</script>

@@ -22,7 +22,7 @@ import {
 import { PageHeading } from "@/components/wizard/form-layout";
 import { Bot, Plus } from "lucide-react";
 import { TableSkeleton } from "@/components/page-skeletons";
-import { listAgentsWithGeneration } from "./actions";
+import { listAgentsWithGeneration, healAgentsIfStale } from "./actions";
 import { LiveAgentsRefresh } from "./live-agents-refresh";
 import { RecordRowActions } from "@/components/record-row-actions";
 import type { AgentConfig } from "@/lib/agents/config";
@@ -33,6 +33,9 @@ import { RouteBrief } from "@/components/copilot/route-brief";
  */
 async function AgentsList() {
   const rows = await listAgentsWithGeneration();
+  // Platform self-heal: redeploys agents the platform moved under (see
+  // healAgentsIfStale — idempotent, user-visible jobs, never throws).
+  const { healed } = await healAgentsIfStale();
 
   return (
     <>
@@ -40,6 +43,14 @@ async function AgentsList() {
         route="/agents"
         brief={`Agent library: ${rows.length} saved agents. New agents are built on the creation screen.`}
       />
+      {healed > 0 ? (
+        <p role="status" className="text-muted-foreground text-sm">
+          {healed === 1
+            ? "One agent is updating to the latest platform in the background."
+            : `${healed} agents are updating to the latest platform in the background.`}{" "}
+          No action needed — watch the job center.
+        </p>
+      ) : null}
       {rows.length === 0 ? (
         <Empty>
           <EmptyHeader>

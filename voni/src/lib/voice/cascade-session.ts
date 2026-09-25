@@ -14,6 +14,11 @@
 import { acquireMicStream, startAudioGraph } from "./mic-capture";
 import { releaseMic } from "./mic-owner";
 import type { Playout } from "./playout";
+import {
+  buildCascadeContextMessage,
+  MICROPHONE_MUTED_CONTEXT,
+  MICROPHONE_UNMUTED_CONTEXT,
+} from "./context";
 
 export type CascadeCaption = {
   role: "user" | "agent";
@@ -29,6 +34,9 @@ export type CascadeCallConfig = {
     tts_model: string;
     fallback_mode: "cascade";
     language_codes?: string[];
+    transcription_prompt?: string;
+    keyterms_prompt?: string[];
+    agent_context?: string;
   };
   systemPrompt: string;
   tools?: unknown[];
@@ -47,6 +55,7 @@ export type CascadeHandlers = {
 export type ServerEvent =
   | { kind: "caption"; role: "user" | "agent"; text: string; final: boolean }
   | { kind: "interrupted" }
+  | { kind: "end_call" }
   | { kind: "end"; turns: number; metrics: unknown }
   | { kind: "error"; message: string };
 
@@ -84,6 +93,10 @@ export function encodeAudioFrame(data: ArrayBuffer): string {
   return JSON.stringify({ type: "audio", data: base64Encode(new Uint8Array(data)) });
 }
 
+export function encodeContextMessage(content: string): string {
+  return JSON.stringify(buildCascadeContextMessage(content));
+}
+
 export function parseServerMessage(raw: string): ServerEvent | null {
   let message: unknown;
   try {
@@ -105,6 +118,8 @@ export function parseServerMessage(raw: string): ServerEvent | null {
       };
     case "interrupted":
       return { kind: "interrupted" };
+    case "end_call":
+      return { kind: "end_call" };
     case "end":
       return {
         kind: "end",
@@ -180,6 +195,14 @@ export class CascadeSession {
   private started = false;
   private ended = false;
   private configSent = false;
+  private inputMuted = false;
+  /**
+   * Agent-initiated hangup, armed by the server's end_call event. The
+   * closing line may still be draining through the worklet, so stop waits
+   * for playback to settle (bounded ~10s). Disarmed by caller speech or
+   * interruption — the floor changed hands back.
+   */
+  private endCallArmed = false;
 
   constructor(
     private handlers: CascadeHandlers = {},
@@ -191,6 +214,9 @@ export class CascadeSession {
    * startup are gated behind one in every major browser.
    */
   async start(config: CascadeCallConfig, micOwner = "voice-call"): Promise<void> {
+    this.ended = false;
+    this.inputMuted = false;
+    this.configSent = false;
     const socketFactory = this.deps.socketFactory ?? ((url: string) => new WebSocket(url));
     const ws = socketFactory(config.serviceUrl);
     this.ws = ws;
@@ -208,13 +234,30 @@ export class CascadeSession {
     };
     const startMic = this.deps.startMic ?? defaultStartMic;
     const handle = await startMic(micOwner, (data) => {
-      if (this.started && ws.readyState === ws.OPEN) this.send(encodeAudioFrame(data));
+      if (this.started && !this.inputMuted && ws.readyState === ws.OPEN) {
+        this.send(encodeAudioFrame(data));
+      }
     });
     this.micStop = handle.stop;
     this.playout = this.deps.createPlayout?.(handle.audioCtx) ?? handle.playout ?? null;
     this.started = true;
     // Socket may already be open (fake sockets, fast localhost): flush config now.
     if (ws.readyState === ws.OPEN) this.sendConfig(config);
+  }
+
+  /** Drop only microphone frames; keep the socket and agent playback alive. */
+  setInputMuted(muted: boolean): void {
+    if (this.inputMuted === muted) return;
+    this.inputMuted = muted;
+    if (this.started && this.configSent && this.ws?.readyState === this.ws?.OPEN) {
+      this.sendContext(muted ? MICROPHONE_MUTED_CONTEXT : MICROPHONE_UNMUTED_CONTEXT);
+    }
+  }
+
+  /** Hidden context is applied to the next generated turn and never captioned. */
+  sendContext(content: string): void {
+    if (!this.started || !this.configSent || this.ws?.readyState !== this.ws?.OPEN) return;
+    this.send(encodeContextMessage(content));
   }
 
   private sendConfig(config: CascadeCallConfig): void {
@@ -236,11 +279,17 @@ export class CascadeSession {
     if (!event) return;
     switch (event.kind) {
       case "caption":
+        if (event.role === "user") this.endCallArmed = false;
         this.handlers.onCaption?.({ role: event.role, text: event.text, final: event.final });
         break;
       case "interrupted":
+        this.endCallArmed = false;
         this.playout?.flush();
         this.handlers.onInterrupted?.();
+        break;
+      case "end_call":
+        this.endCallArmed = true;
+        this.drainThenStop();
         break;
       case "end":
         this.handlers.onMetrics?.(event.metrics, event.turns);
@@ -252,8 +301,38 @@ export class CascadeSession {
     }
   }
 
-  async stop(): Promise<void> {
-    if (!this.started) return;
+  /**
+   * Let the goodbye finish playing, then hang up. The worklet reports
+   * settled() when nothing is queued or sounding; without that signal
+   * there is nothing to drain toward, so stop at once. Bounded ~10s —
+   * never hold the line for a goodbye.
+   */
+  private drainThenStop(): void {
+    const settled = (
+      this.playout as { settled?: () => boolean } | null
+    )?.settled;
+    const isSettled = () => (settled ? settled.call(this.playout) : true);
+    if (!this.started || this.ended || isSettled()) {
+      this.endCallArmed = false;
+      if (this.started && !this.ended) void this.stop();
+      return;
+    }
+    const started = Date.now();
+    const timer = setInterval(() => {
+      // Disarmed mid-drain (caller spoke) or already ended: stand down.
+      if (!this.endCallArmed || !this.started || this.ended) {
+        clearInterval(timer);
+        return;
+      }
+      if (isSettled() || Date.now() - started > 10000) {
+        clearInterval(timer);
+        this.endCallArmed = false;
+        if (this.started && !this.ended) void this.stop();
+      }
+    }, 250);
+  }
+
+  async stop(): Promise<void> {    if (!this.started) return;
     this.started = false;
     try {
       if (this.ws?.readyState === this.ws?.OPEN) this.send(JSON.stringify({ type: "stop" }));

@@ -134,5 +134,65 @@ class ToolCoordinatorTests(unittest.IsolatedAsyncioTestCase):
         await coordinator.close()
 
 
+    async def test_end_call_arms_hangup_one_shot(self):
+        websocket = FakeWebSocket()
+        coordinator = StubCoordinator(
+            websocket, {"ok": True, "hangup": True, "data": {"ended": True}}
+        )
+        await coordinator.handle_event({"type": "reply.started", "reply_id": "r6"})
+        await coordinator.handle_event(
+            {
+                "type": "tool.call",
+                "call_id": "t6",
+                "name": "end_call",
+                "arguments": {"closing_line": "Goodbye!"},
+            }
+        )
+        await asyncio.sleep(0)
+        self.assertEqual(websocket.messages[0]["type"], "tool.result")
+        self.assertTrue(coordinator.take_hangup_request())
+        # One-shot: the server loop consumes it exactly once.
+        self.assertFalse(coordinator.take_hangup_request())
+        await coordinator.close()
+
+    async def test_end_call_refused_or_interrupted_never_arms(self):
+        websocket = FakeWebSocket()
+        coordinator = StubCoordinator(
+            websocket, {"ok": False, "error": "busy", "retryable": True}
+        )
+        await coordinator.handle_event({"type": "reply.started", "reply_id": "r7"})
+        await coordinator.handle_event(
+            {
+                "type": "tool.call",
+                "call_id": "t7",
+                "name": "end_call",
+                "arguments": {"closing_line": "Goodbye!"},
+            }
+        )
+        await asyncio.sleep(0)
+        self.assertFalse(coordinator.take_hangup_request())
+
+        armed = StubCoordinator(
+            FakeWebSocket(), {"ok": True, "hangup": True, "data": {}}
+        )
+        await armed.handle_event({"type": "reply.started", "reply_id": "r8"})
+        await armed.handle_event(
+            {
+                "type": "tool.call",
+                "call_id": "t8",
+                "name": "end_call",
+                "arguments": {"closing_line": "Goodbye!"},
+            }
+        )
+        await asyncio.sleep(0)
+        # Caller talks over the goodbye: disarmed, the agent re-decides.
+        await armed.handle_event(
+            {"type": "reply.done", "reply_id": "r8", "status": "interrupted"}
+        )
+        self.assertFalse(armed.take_hangup_request())
+        await coordinator.close()
+        await armed.close()
+
+
 if __name__ == "__main__":
     unittest.main()

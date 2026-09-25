@@ -630,8 +630,10 @@ branch. Nothing here applies inside the app shell.
 >   are the finished frame. The ticker pauses on hover/focus. No animation
 >   moves `left`/`top`. The closing section is `content-visibility: auto`.
 > - **Mark:** the logo loop holds the V for most of its cycle and rests on the
->   green V under reduced motion, so the lockup reads "Voni"; the orb core
->   uses the same animated mark.
+>   green V under reduced motion, so the lockup reads "Voni"; the orb is bare
+>   wireframe, no core and no mark. The wireframe tints green by call state
+>   (`data-state` on the orb: connecting/listening soft green, speaking
+>   brighter with a quicker ping, idle/ended monochrome).
 > - **Demo card (orb first, round 3 of the canvas, 2026-09-24):** at rest
 >   there is no card, only the orb, a scenario switcher (‹ › buttons around
 >   the persona name and role, locked during a call), a green Start call and
@@ -642,10 +644,20 @@ branch. Nothing here applies inside the app shell.
 >   header's corner, the name, status and Hang up fade in beside it, and the
 >   transcript drops open underneath. Both are rendered and one is hidden per
 >   breakpoint. A finished call stays open with Call again and Close; Close
->   folds it back to the orb. No mute button. Tool chips (plain-English
->   label, dashed while working, then a green check and result) land in the
->   transcript after the agent's 2nd and 4th replies. They are scripted per
->   persona until the demo agents carry real function tools.
+>   folds it back to the orb. Once connected, a labeled Mute/Unmute control
+>   sits beside Hang up and changes microphone input only. The public demo is
+>   transcript-only: scripted tool chips and a dedicated visible tool-status
+>   row are not part of the landing surface. Tool execution and the existing
+>   latency/filler status feedback remain available to signed-in test calls.
+> - **Mobile demo takeover (amendment 2026-09-25):** below `lg`, an open demo
+>   call is rendered through a controlled Base UI modal with explicit
+>   `Backdrop` and `Popup` geometry. Both fill `100dvw × 100dvh`, include
+>   safe-area padding where content needs it, trap focus, lock document
+>   scrolling, and have no default close button or implicit backdrop/Escape
+>   dismissal. Hang up is the only exit while the call is active; after the
+>   call ends, Call again and Close remain available. Close returns focus to the
+>   Start call trigger and restores the orb view. The desktop A · Unfold card
+>   is unchanged.
 > - **Landmarks and focus:** content sits in `<main id="main">` behind a skip
 >   link; landing links and buttons take a 2px foreground outline on
 >   `:focus-visible`. The header Suspense fallback is a same-height

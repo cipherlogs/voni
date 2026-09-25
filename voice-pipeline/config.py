@@ -17,22 +17,31 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 STT_PROVIDERS = ("assemblyai", "deepgram")
+STT_MODES = ("min_latency", "balanced", "max_accuracy")
 TRANSPORTS = ("browser", "telnyx")
 FALLBACK_MODES = ("managed", "cascade")
+VOICE_FOCUS_MODES = ("", "near-field", "far-field")
 
 
 @dataclass(frozen=True)
 class PipelineConfig:
     stt_provider: str = "assemblyai"
-    stt_model: str = ""
+    stt_model: str = "universal-3-6-pro"
+    stt_mode: str = "balanced"
     llm_model: str = ""
     tts_voice: str = ""
     tts_model: str = ""
     transport: str = "browser"
     language_codes: tuple[str, ...] = ("en",)
-    min_silence_ms: int = 900
-    max_silence_ms: int = 1200
-    interruption_delay_ms: int = 350
+    min_silence_ms: int = 100
+    max_silence_ms: int = 1000
+    interruption_delay_ms: int = 500
+    vad_threshold: float = 0.3
+    voice_focus: str = ""
+    voice_focus_threshold: float = 0.0
+    transcription_prompt: str = ""
+    keyterms_prompt: tuple[str, ...] = ()
+    agent_context: str = ""
     fallback_mode: str = "managed"
 
     def __post_init__(self) -> None:
@@ -63,6 +72,16 @@ def validate_pipeline_config(config: PipelineConfig) -> list[str]:
             f"unknown fallback_mode {config.fallback_mode!r} "
             f"(expected one of {', '.join(FALLBACK_MODES)})"
         )
+    if config.stt_mode not in STT_MODES:
+        errors.append(
+            f"unknown stt_mode {config.stt_mode!r} "
+            f"(expected one of {', '.join(STT_MODES)})"
+        )
+    if config.voice_focus not in VOICE_FOCUS_MODES:
+        errors.append(
+            f"unknown voice_focus {config.voice_focus!r} "
+            "(expected '' (off), 'near-field' or 'far-field')"
+        )
     if config.min_silence_ms < 0 or config.max_silence_ms < 0:
         errors.append("silence windows must be non-negative")
     elif config.min_silence_ms > config.max_silence_ms:
@@ -72,6 +91,12 @@ def validate_pipeline_config(config: PipelineConfig) -> list[str]:
         )
     if config.interruption_delay_ms < 0:
         errors.append("interruption_delay_ms must be non-negative")
+    if not 0.0 <= config.vad_threshold <= 1.0:
+        errors.append("vad_threshold must be between 0.0 and 1.0")
+    if config.voice_focus_threshold < 0.0 or config.voice_focus_threshold > 1.0:
+        errors.append("voice_focus_threshold must be between 0.0 and 1.0")
+    if len(config.keyterms_prompt) > 100:
+        errors.append("keyterms_prompt holds at most 100 terms")
     if not config.llm_model:
         errors.append("llm_model is required")
     if config.fallback_mode == "cascade" and not config.tts_model:
@@ -84,6 +109,7 @@ def pipeline_config_from_dict(data: dict) -> PipelineConfig:
     allowed = {
         "stt_provider",
         "stt_model",
+        "stt_mode",
         "llm_model",
         "tts_voice",
         "tts_model",
@@ -92,6 +118,12 @@ def pipeline_config_from_dict(data: dict) -> PipelineConfig:
         "min_silence_ms",
         "max_silence_ms",
         "interruption_delay_ms",
+        "vad_threshold",
+        "voice_focus",
+        "voice_focus_threshold",
+        "transcription_prompt",
+        "keyterms_prompt",
+        "agent_context",
         "fallback_mode",
     }
     unknown = sorted(set(data) - allowed)
@@ -100,4 +132,6 @@ def pipeline_config_from_dict(data: dict) -> PipelineConfig:
     kwargs = dict(data)
     if "language_codes" in kwargs:
         kwargs["language_codes"] = tuple(kwargs["language_codes"])
+    if "keyterms_prompt" in kwargs:
+        kwargs["keyterms_prompt"] = tuple(kwargs["keyterms_prompt"])
     return PipelineConfig(**kwargs)
