@@ -54,7 +54,17 @@ import { buildAgentKeyterms, buildAgentTranscriptionPrompt } from "@/lib/voice/t
 import { CallSounds } from "@/lib/voice/call-sounds";
 import { compileVoiceTools } from "@/lib/tools/definitions";
 import { formatCallStatus } from "@/lib/calls/call-status";
-import { PERSONAS, personaConfig } from "@/lib/agents/personas";
+import { ACCENT_FLAG, getVoice, voiceLabel } from "@/lib/agents/voices";
+import {
+  DEMO_VOICE_IDS,
+  MUTE_CHECK_IN_INSTRUCTIONS,
+  OPEN_BEAT_GOAL,
+  TIME_UP_INSTRUCTIONS,
+  rungInstructions,
+  voniConfig,
+} from "@/lib/demo/voni-agent";
+import { TALK_BASE_S, TalkClock } from "@/lib/demo/talk-clock";
+import { ReplyQueue, StakesLadder } from "@/lib/demo/stakes-ladder";
 import { cn } from "@/lib/utils";
 
 /**
@@ -69,10 +79,10 @@ import { cn } from "@/lib/utils";
  *    thing inside it. Nothing outside the card can move now.
  *
  * 2. **Demo mode is its own layout.** The landing call (DESIGN.md §10c): the
- *    orb with a ‹ › scenario switcher and Start call at rest, opening into the
- *    call card with live state, hang-up and a flat live transcript. Each
- *    caller keeps its own default voice; the switcher locks during a call
- *    because the voice genuinely is immutable once a session starts.
+ *    orb with a ‹ › voice/language switcher and Start call at rest, opening
+ *    into the call card with live state, hang-up and a flat live transcript.
+ *    Voni always talks as itself; the switcher locks during a call because
+ *    the voice genuinely is immutable once a session starts.
  *
  * The rest follows the phone-call model people already have — portrait, name,
  * one pill to call, a timer while connected, a red circle to hang up, captions
@@ -115,7 +125,10 @@ export { HANGUP_RED };
 
 /** Session caps, in seconds. The server enforces them; the UI only mirrors. */
 export const INLINE_CAP_SECONDS = 180;
-const DEMO_CAP_SECONDS = 120;
+/** Demo: talk-clock seconds (paused on mute); the server holds the wall cap. */
+const DEMO_CAP_SECONDS = TALK_BASE_S;
+/** After asking Voni to close, stop the session ourselves if it never does. */
+const CLOSE_FALLBACK_MS = 20000;
 
 
 /**
@@ -140,8 +153,6 @@ const ERROR_BODY =
 
 
 
-/** The landing demo's three scenario tabs (mockup B1). */
-const DEMO_PERSONAS = PERSONAS.slice(0, 3);
 const MOBILE_DEMO_QUERY = "(max-width: 1023px)";
 
 function useIsBelowLg() {
@@ -286,11 +297,8 @@ export function VoiceCall({
   const isBelowLg = useIsBelowLg();
   const mobileTriggerRef = useRef<HTMLButtonElement | null>(null);
 
-  const [personaId, setPersonaId] = useState(PERSONAS[0].id);
-  const persona = PERSONAS.find((p) => p.id === personaId) ?? PERSONAS[0];
-
-  const [voiceId, setVoiceId] = useState(
-    mode.kind === "inline" ? mode.config.voiceId : persona.voiceId,
+  const [voiceId, setVoiceId] = useState<string>(
+    mode.kind === "inline" ? mode.config.voiceId : DEMO_VOICE_IDS[0],
   );
 
   const [state, setState] = useState<VoiceState>("idle");
@@ -335,6 +343,19 @@ export function VoiceCall({
   const connectedChimeRef = useRef(false);
   /** Last live caption's speaker + word count: new words strike the tick. */
   const captionWordsRef = useRef<{ role: string; words: number } | null>(null);
+  /**
+   * Demo call pacing (per call): the talk clock, the stakes ladder, the
+   * queue that speaks their instructions between replies, and the call
+   * token that scopes the judge. `closing` latches once Voni is asked to
+   * end the call; the fallback timer stops it if Voni never does.
+   */
+  const clockRef = useRef<TalkClock | null>(null);
+  const ladderRef = useRef<StakesLadder | null>(null);
+  const replyQueueRef = useRef<ReplyQueue | null>(null);
+  const callTokenRef = useRef<string | null>(null);
+  const lastAgentLineRef = useRef("");
+  const closingRef = useRef(false);
+  const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Synchronous pending mirror for the host footer: the onPendingChange
   // effect below only runs after paint, so the click handler also notifies
@@ -362,13 +383,17 @@ export function VoiceCall({
   // In inline mode the edit form below owns the config, voice included; the
   // card only mirrors it. In demo mode the card owns both choices.
   const config: AgentConfig = useMemo(
-    () => (mode.kind === "inline" ? mode.config : personaConfig(persona, voiceId)),
-    [mode, persona, voiceId],
+    () => (mode.kind === "inline" ? mode.config : voniConfig(voiceId)),
+    [mode, voiceId],
   );
+  const voice = getVoice(voiceId);
+  const voiceLine = voice
+    ? `${ACCENT_FLAG[voice.accent]} ${voice.language} · ${voiceLabel(voiceId)}`
+    : voiceLabel(voiceId);
 
 
   const displayName = config.identity.name;
-  const remaining = capSeconds - elapsed;
+  const remaining = Math.max(0, capSeconds - elapsed);
   // The server enforces the session cap; this is only a client-side guess
   // used to tell "your free time ran out" apart from a voluntary hang-up,
   // since both otherwise land in the identical "ended" state.
@@ -384,8 +409,30 @@ export function VoiceCall({
     return () => clearTimeout(id);
   }, [retryIn]);
 
+  /** Ask Voni to close the call, once; stop it ourselves if it never does. */
+  const closeCall = useCallback((instructions: string) => {
+    if (closingRef.current) return;
+    closingRef.current = true;
+    replyQueueRef.current?.enqueue(instructions);
+    closeTimerRef.current = setTimeout(() => void sessionRef.current?.stop(), CLOSE_FALLBACK_MS);
+  }, []);
+
   useEffect(() => {
     if (!connected) return;
+    if (isDemo) {
+      // The demo shows talk time: it freezes while muted (talk-clock.ts).
+      const clock = (clockRef.current ??= new TalkClock(Date.now()));
+      const id = setInterval(() => {
+        const now = Date.now();
+        setElapsed(clock.talkSeconds(now));
+        // Never let a check-in replace a pending goodbye (the queue is latest-wins).
+        if (clock.takeCheckIn(now) && !closingRef.current) {
+          replyQueueRef.current?.enqueue(MUTE_CHECK_IN_INSTRUCTIONS);
+        }
+        if (clock.isOver(now)) closeCall(TIME_UP_INSTRUCTIONS);
+      }, 500);
+      return () => clearInterval(id);
+    }
     const startedAt = Date.now() - elapsed * 1000;
     const id = setInterval(
       () => setElapsed(Math.floor((Date.now() - startedAt) / 1000)),
@@ -394,6 +441,14 @@ export function VoiceCall({
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connected]);
+
+  // A finished call drops its pending pacing work.
+  useEffect(() => {
+    if (state !== "ended") return;
+    replyQueueRef.current?.clear();
+    if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
+    closeTimerRef.current = null;
+  }, [state]);
 
   useEffect(() => {
     onStatusChange?.({ state, elapsed, toolActive, muted });
@@ -460,6 +515,8 @@ export function VoiceCall({
       void sessionRef.current?.stop();
       sessionRef.current = null;
       soundsRef.current?.stopAll();
+      replyQueueRef.current?.clear();
+      if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
     },
     [],
   );
@@ -500,6 +557,11 @@ export function VoiceCall({
     // them mid-call; this only sets the opening state.
     setCaptionsOpen(true);
     interruptionsRef.current = 0;
+    clockRef.current = null;
+    ladderRef.current = new StakesLadder();
+    callTokenRef.current = null;
+    lastAgentLineRef.current = "";
+    closingRef.current = false;
     timingsRef.current = new CallTimings();
     timingsRef.current.mark("startRequested");
     window.dispatchEvent(
@@ -697,8 +759,34 @@ export function VoiceCall({
           console.debug("[voice-call] interruption", event.kind, interruptionsRef.current);
         }
       },
+      onReplyStarted: () => replyQueueRef.current?.onReplyStarted(),
+      onInputSpeechStarted: () => replyQueueRef.current?.onCallerSpeech(),
+      onReplyDone: () => replyQueueRef.current?.onReplyDone(),
+      onAgentTurn: (turn) => {
+        lastAgentLineRef.current = turn.text;
+      },
+      // Demo stakes ladder: Jev scores every visitor turn against the beat's
+      // goal (heuristic fallback when Jev is down); each off-track verdict
+      // climbs nudge → warning → polite end.
+      onUserTurn: (turn) => {
+        if (mode.kind !== "demo" || closingRef.current || !turn.text.trim()) return;
+        const token = callTokenRef.current;
+        void requestVoiceJudge(
+          "off-track",
+          { goal: OPEN_BEAT_GOAL, agentLine: lastAgentLineRef.current, userText: turn.text },
+          { timeoutMs: 2500, headers: token ? { Authorization: `Bearer ${token}` } : undefined },
+        ).then((verdict) => {
+          if (sessionRef.current !== session || closingRef.current) return;
+          const rung = ladderRef.current?.onVerdict(verdict.decision === "off-track");
+          if (!rung) return;
+          console.debug("[voice-call] off-track", rung, verdict.source);
+          if (rung === "end") closeCall(rungInstructions(rung, OPEN_BEAT_GOAL));
+          else replyQueueRef.current?.enqueue(rungInstructions(rung, OPEN_BEAT_GOAL));
+        });
+      },
     });
     sessionRef.current = session;
+    replyQueueRef.current = new ReplyQueue((instructions) => session.requestReply(instructions));
 
     // Straight from the click handler: getUserMedia and AudioContext startup
     // are gated behind a user gesture in every major browser.
@@ -708,7 +796,11 @@ export function VoiceCall({
           // Placeholder id — the token endpoint returns the real one and `start`
           // prefers it, so the browser cannot choose which agent it reaches.
           { mode: "agent", agentId: "" },
-          demoToken(persona.id, voiceId),
+          async () => {
+            const minted = await demoToken(voiceId)();
+            callTokenRef.current = minted.callToken ?? null;
+            return minted;
+          },
         );
       } else {
         await session.start(
@@ -736,7 +828,7 @@ export function VoiceCall({
       setStarting(false);
       notifyPending({ ...pendingRef.current, starting: false });
     }
-  }, [mode, notifyPending, persona.id, voiceId, config, engine, cascadeUrl, setCallState]);
+  }, [mode, notifyPending, voiceId, config, engine, cascadeUrl, setCallState, closeCall]);
 
   const hangUp = useCallback(async () => {
     if (hangingUp) return;
@@ -755,6 +847,7 @@ export function VoiceCall({
     (nextMuted: boolean) => {
       if (!connected) return;
       setMutedState(nextMuted);
+      clockRef.current?.setMuted(nextMuted, Date.now());
       sessionRef.current?.setInputMuted(nextMuted);
     },
     [connected],
@@ -857,7 +950,7 @@ export function VoiceCall({
 
   // ── Demo layout ────────────────────────────────────────────────────────
   // The landing call (DESIGN.md §10c, round 3 "orb first"): at rest only the
-  // orb, a scenario switcher and Start call show. Starting opens the card
+  // orb, a voice switcher and Start call show. Starting opens the card
   // around them: from lg it unfolds sideways into the portrait + transcript
   // card (A · Unfold); below lg the orb rises into a compact header and the
   // transcript drops open beneath it (B · Rise). Both layouts are rendered and
@@ -865,11 +958,9 @@ export function VoiceCall({
   if (isDemo) {
     const open = demoOpen;
     const reveal = "duration-(--motion-reveal) ease-(--ease-out-soft)";
-    const personaIndex = DEMO_PERSONAS.findIndex((p) => p.id === persona.id);
+    const voiceIndex = Math.max(0, DEMO_VOICE_IDS.indexOf(voiceId as (typeof DEMO_VOICE_IDS)[number]));
     const cycle = (step: number) => {
-      const next = DEMO_PERSONAS[(personaIndex + step + DEMO_PERSONAS.length) % DEMO_PERSONAS.length];
-      setPersonaId(next.id);
-      setVoiceId(next.voiceId);
+      setVoiceId(DEMO_VOICE_IDS[(voiceIndex + step + DEMO_VOICE_IDS.length) % DEMO_VOICE_IDS.length]);
     };
     const demoStatus = error
       ? "Call didn't connect"
@@ -880,7 +971,7 @@ export function VoiceCall({
     const arrow = (step: number) => (
       <button
         type="button"
-        aria-label={step < 0 ? "Previous scenario" : "Next scenario"}
+        aria-label={step < 0 ? "Previous voice" : "Next voice"}
         disabled={open}
         onClick={() => cycle(step)}
         className={cn(
@@ -896,9 +987,7 @@ export function VoiceCall({
         {arrow(-1)}
         <div aria-live="polite" className="flex min-w-49 flex-col items-center gap-0.75">
           <p className="text-base leading-tight font-semibold">{displayName}</p>
-          <p className="text-foreground/70 text-ui leading-tight">
-            {config.identity.role} · {persona.vertical}
-          </p>
+          <p className="text-foreground/70 text-ui leading-tight">{voiceLine}</p>
         </div>
         {arrow(1)}
       </div>
@@ -988,8 +1077,8 @@ export function VoiceCall({
         ) : state === "ended" ? (
           <p className="text-base leading-snug text-balance">
             {quotaExceeded
-              ? "That's the free demo time for today."
-              : "Call again, or close to try another scenario."}
+              ? "That's the demo time for this call."
+              : "Call again, or close to try another voice."}
           </p>
         ) : starting || state === "connecting" ? (
           <p className="text-muted-foreground text-ui">Connecting…</p>
@@ -1120,7 +1209,7 @@ export function VoiceCall({
           >
             <div className="flex min-h-0 items-center justify-between overflow-hidden px-4">
               <span className="text-foreground/60 flex h-11 items-center font-mono text-xs">
-                LIVE DEMO · {persona.vertical.toUpperCase()}
+                LIVE DEMO · {(voice?.language ?? "English").toUpperCase()}
               </span>
               <span className="text-foreground/60 font-mono text-xs">BROWSER CALL · NO SIGN-UP</span>
             </div>
@@ -1227,9 +1316,7 @@ export function VoiceCall({
               <div className="flex min-h-0 flex-1 flex-col">
                 <header className="flex shrink-0 flex-col items-center gap-1 px-6 pt-6 text-center">
                   <p className="text-lg leading-tight font-semibold">{displayName}</p>
-                  <p className="text-foreground/70 text-ui leading-tight">
-                    {persona.vertical} · {config.identity.role}
-                  </p>
+                  <p className="text-foreground/70 text-ui leading-tight">{voiceLine}</p>
                   <p
                     role="status"
                     className="text-foreground/70 text-ui flex items-center gap-1.5 leading-[normal] tabular-nums"
@@ -1280,8 +1367,8 @@ export function VoiceCall({
                     ) : state === "ended" && turns.length === 0 && !error ? (
                       <p className="text-center text-sm text-balance text-foreground/70">
                         {quotaExceeded
-                          ? "That's the free demo time for today."
-                          : "Call again, or close to try another scenario."}
+                          ? "That's the demo time for this call."
+                          : "Call again, or close to try another voice."}
                       </p>
                     ) : countdown ? (
                       <span className="flex flex-col items-center gap-1">{countdown}</span>

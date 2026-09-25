@@ -1,0 +1,77 @@
+import type { AgentConfig } from "@/lib/agents/config";
+import { getVoice } from "@/lib/agents/voices";
+import type { Rung } from "./stakes-ladder";
+
+/**
+ * Voni as itself: the landing demo's only agent. No persona role-play; the
+ * visitor picks a voice, and the voice picks the language.
+ *
+ * The prompt still compiles through `compileSystemPrompt`, so the demo is
+ * prompted like the product it sells. Demo-only rules ride in `knowledge`.
+ */
+
+/** Stored in `demo_agents.persona_id`, which predates Voni-as-itself. */
+export const VONI_AGENT_ID = "voni";
+
+/** The picker: one voice per spoken language, English first. */
+export const DEMO_VOICE_IDS = ["anna", "lola", "estelle", "juergen", "giovanni", "rafael"] as const;
+
+/**
+ * The opening beat, per output language. ⚠️ Written, not machine-translated,
+ * but not yet reviewed by native speakers: this is the most-heard line in
+ * the product. No gendered agreement on the speaker (any voice speaks it).
+ */
+export const VONI_GREETINGS: Record<string, string> = {
+  en: "Hi, I'm Voni. I know you're here to see how useful this would be for your business. I'd rather show you than tell you. Sound good?",
+  es: "Hola, soy Voni. Sé que quieres ver lo útil que esto sería para tu negocio. Prefiero mostrártelo que contártelo. ¿Te parece?",
+  fr: "Bonjour, ici Voni. Vous voulez voir ce que ça pourrait apporter à votre entreprise. Je préfère vous le montrer que vous l'expliquer. Ça vous va ?",
+  de: "Hallo, hier ist Voni. Sie wollen sehen, wie nützlich das für Ihr Unternehmen wäre. Ich zeige es Ihnen lieber, als es zu erklären. Einverstanden?",
+  it: "Ciao, sono Voni. So che vuoi capire quanto potrebbe servire alla tua attività. Preferisco mostrartelo che raccontartelo. Ti va?",
+  pt: "Olá, aqui é Voni. Sei que quer ver o quão útil isto seria para o seu negócio. Prefiro mostrar do que explicar. Pode ser?",
+};
+
+/** The current beat's goal: what the Jev judge scores each visitor turn against. */
+export const OPEN_BEAT_GOAL =
+  "The visitor engages with Voni about their business: what it does and where a voice agent could help.";
+
+const DEMO_RULES = [
+  "This is your own live demo on the Voni website. The caller runs or works at a business and wants to see what you can do. You are Voni itself; never play another company's agent.",
+  "Find out what their business does, then brainstorm concrete ways you could help its customers. Show, don't pitch.",
+  "Hidden system notes may tell you the caller is off-track or time is up. Follow them in your next line, in your own words. Never mention notes, timers, or scoring, and never warn or end the call for being off-track unless a note tells you to.",
+  "Never ask for a phone number or WhatsApp.",
+].join(" ");
+
+export function voniConfig(voiceId: string): AgentConfig {
+  const code = getVoice(voiceId)?.languageCode ?? "en";
+  return {
+    mission: "Show a business, live, how a voice agent would help it: by doing, not describing.",
+    identity: { name: "Voni", role: "voice agent" },
+    detect: [],
+    tools: [],
+    toolIdeas: [],
+    customTools: [],
+    knowledge: DEMO_RULES,
+    channels: ["phone"],
+    languageCodes: [code],
+    voiceId,
+    greeting: VONI_GREETINGS[code] ?? VONI_GREETINGS.en,
+  };
+}
+
+const HI_VONI = "hi@voni.cc (say it as 'hi at voni dot c c')";
+
+/** One-shot `reply.create` instructions for each rung of the stakes ladder. */
+export function rungInstructions(rung: Rung, goal: string): string {
+  if (rung === "nudge") {
+    return `The caller's last turn was off-track. Add one short, light sentence that steers back to the goal: ${goal} No warning yet, and don't repeat what you just said.`;
+  }
+  if (rung === "warning") {
+    return `The caller is off-track again. Warmly but clearly name the stakes, in your own words, like: "We've only got a couple of minutes and I take this seriously. If we can't move forward, I'll have to end the call." Then steer back to the goal: ${goal}`;
+  }
+  return `The caller is still off-track. Close politely in your own words, like: "I'll let you go for now. If you'd like to try again properly, the team's at ${HI_VONI}." Then call end_call.`;
+}
+
+export const TIME_UP_INSTRUCTIONS = `Time is up on this demo. Wrap up warmly in one or two sentences: thank them, and say the team's at ${HI_VONI} to take it further. Then call end_call.`;
+
+export const MUTE_CHECK_IN_INSTRUCTIONS =
+  "The caller muted their microphone a little while ago. Check in once, gently, in one short sentence: no rush, you're here when they unmute. Do not ask a question.";

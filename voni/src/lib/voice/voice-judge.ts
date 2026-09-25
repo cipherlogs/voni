@@ -12,12 +12,15 @@
 import {
   chooseReplyAction,
   shouldAllowSpeculativeNav,
+  OFF_TRACK_THRESHOLD,
   shouldAllowToolCall,
+  shouldFlagOffTrack,
   shouldYieldToBargeIn,
   type BargeInState,
   type JudgeDecision,
   type JudgeKind,
   type NavSpeculativeState,
+  type OffTrackState,
   type ReplyState,
   type ToolCallState,
 } from "./jev-judges";
@@ -37,7 +40,14 @@ export function parseVoiceJudgeRequest(body: unknown): {
 } {
   if (!body || typeof body !== "object") return { ok: false };
   const { kind, state } = body as { kind: unknown; state: unknown };
-  if (kind !== "barge-in" && kind !== "reply" && kind !== "tool" && kind !== "nav-speculative") return { ok: false };
+  if (
+    kind !== "barge-in" &&
+    kind !== "reply" &&
+    kind !== "tool" &&
+    kind !== "nav-speculative" &&
+    kind !== "off-track"
+  )
+    return { ok: false };
   if (!state || typeof state !== "object") return { ok: false };
   return { ok: true, kind, state: state as Record<string, unknown> };
 }
@@ -55,6 +65,10 @@ export function decideVoiceJudge(kind: JudgeKind, state: unknown): VoiceJudgeRes
   if (kind === "nav-speculative") {
     const { allow, probability } = shouldAllowSpeculativeNav(state as NavSpeculativeState);
     return { decision: allow ? "allow" : "deny", probability, source: "heuristic" };
+  }
+  if (kind === "off-track") {
+    const { offTrack, probability } = shouldFlagOffTrack(state as OffTrackState);
+    return { decision: offTrack ? "off-track" : "on-track", probability, source: "heuristic" };
   }
   const { allow, probability } = shouldAllowToolCall(state as ToolCallState);
   return { decision: allow ? "allow" : "deny", probability, source: "heuristic" };
@@ -83,6 +97,12 @@ export function judgeQuestions(kind: JudgeKind): {
       type: "boolean",
       instructions:
         "Does this partial-utterance navigation candidate match what the user is starting to say? Only allow when the candidate route clearly matches the spoken prefix; suppress on ambiguous or unrelated partials.",
+    };
+  if (kind === "off-track")
+    return {
+      type: "boolean",
+      instructions:
+        "On a live sales demo call, is the visitor's latest turn (userText) off-track: jokes, nonsense, trolling, or deliberately stalling instead of engaging with the goal? Genuine short answers, questions about Voni or the demo, hesitation, and small talk that still answers the agent are ON-track. Judge the turn against the goal and the agent's last line.",
     };
   return {
     type: "boolean",
@@ -173,6 +193,12 @@ export async function tryJevGateway(
     if (kind === "nav-speculative")
       return {
         decision: probability >= 0.6 ? "allow" : "deny",
+        probability,
+        source: "jev",
+      };
+    if (kind === "off-track")
+      return {
+        decision: probability >= OFF_TRACK_THRESHOLD ? "off-track" : "on-track",
         probability,
         source: "jev",
       };

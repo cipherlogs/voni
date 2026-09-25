@@ -30,3 +30,9 @@ test("voice judge reads secrets Worker-safe", () => {
   // process.env read would be undefined on the deployed Worker.
   assert.match(source, /secret\("AI_GATEWAY_API_KEY"\)/);
 });
+
+test("the signed-out demo judges off-track only, with its call token", () => {
+  assert.match(source, /demoCallFromRequest/);
+  assert.match(source, /demoOnly && parsed\.kind !== "off-track"/);
+  assert.match(source, /status: 403/);
+});

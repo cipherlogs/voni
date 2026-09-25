@@ -137,20 +137,50 @@ test("barge-in flushes queued speech immediately", () => {
   assert.deepEqual(flushes, [0.04]);
 });
 
-test("agent-mode end_call answers locally and hangs up on the settled reply", () => {
-  const { sent, handle, internals } = makeSession();
+/**
+ * Demo tools: the session relays each tool call to the call-scoped demo
+ * route. `fetch` is stubbed to answer like the route would.
+ */
+function withDemoTools(
+  internals: Record<string, unknown>,
+  session: VoiceSession,
+  reply: Record<string, unknown> = { ok: true, data: { ended: true }, hangup: true },
+) {
+  const requests: { url: string; init: RequestInit }[] = [];
+  globalThis.fetch = (async (url: string, init: RequestInit) => {
+    requests.push({ url, init });
+    return new Response(JSON.stringify(reply));
+  }) as typeof fetch;
+  internals["callToken"] = "call-tok";
+  (internals["installDemoTools"] as () => void).call(session);
+  return requests;
+}
+
+const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+function endCall(handle: (message: Record<string, unknown>) => void, callId: string, args: Record<string, unknown> = { closing_line: "Goodbye!" }) {
+  handle({ type: "tool.call", call_id: callId, name: "end_call", arguments: args });
+}
+
+test("demo end_call relays to the call-scoped route and hangs up on the settled reply", async () => {
+  const { session, sent, handle, internals } = makeSession();
   internals["playout"] = {
     play: () => undefined,
     flush: () => undefined,
     settled: () => true,
     queuedMs: () => 0,
   };
+  const requests = withDemoTools(internals, session);
   handle({ type: "session.ready", session_id: "s1" });
-  // Agent mode runs no tool coordinator — end_call is answered locally.
-  handle({
-    type: "tool.call",
-    call_id: "e1",
-    name: "end_call",
+  endCall(handle, "e1");
+  await settle();
+  assert.equal(requests[0]?.url, "/api/demo/tools/end_call");
+  assert.equal(
+    (requests[0]?.init.headers as Record<string, string>).Authorization,
+    "Bearer call-tok",
+  );
+  assert.deepEqual(JSON.parse(String(requests[0]?.init.body)), {
+    toolCallId: "e1",
     arguments: { closing_line: "Goodbye!" },
   });
   const result = sent
@@ -158,25 +188,18 @@ test("agent-mode end_call answers locally and hangs up on the settled reply", ()
     .find((message) => message.type === "tool.result");
   assert.equal(result?.call_id, "e1");
   assert.equal(result?.is_error, false);
-  assert.equal(
-    (JSON.parse(String(result?.result)) as Record<string, unknown>).hangup,
-    true,
-  );
   assert.equal(internals["pendingHangup"], true);
   // Playback already settled: the goodbye lands, then the session stops.
   handle({ type: "reply.done", reply_id: "r1", status: "completed" });
   assert.equal(internals["explicitStop"], true);
 });
 
-test("agent-mode end_call without a closing line fails closed", () => {
-  const { sent, handle, internals } = makeSession();
+test("a refused demo end_call keeps the caller on the line", async () => {
+  const { session, sent, handle, internals } = makeSession();
+  withDemoTools(internals, session, { ok: false, error: "Say the closing line first.", retryable: true });
   handle({ type: "session.ready", session_id: "s1" });
-  handle({
-    type: "tool.call",
-    call_id: "e2",
-    name: "end_call",
-    arguments: {},
-  });
+  endCall(handle, "e2", {});
+  await settle();
   const result = sent
     .map((raw) => JSON.parse(raw) as Record<string, unknown>)
     .find((message) => message.type === "tool.result");
@@ -185,8 +208,9 @@ test("agent-mode end_call without a closing line fails closed", () => {
   assert.equal(internals["explicitStop"], false);
 });
 
-test("caller speech over the goodbye disarms the hangup", () => {
-  const { handle, internals } = makeSession();
+test("caller speech over the goodbye disarms the hangup", async () => {
+  const { session, handle, internals } = makeSession();
+  withDemoTools(internals, session);
   internals["playout"] = {
     play: () => undefined,
     flush: () => undefined,
@@ -194,12 +218,8 @@ test("caller speech over the goodbye disarms the hangup", () => {
     queuedMs: () => 0,
   };
   handle({ type: "session.ready", session_id: "s1" });
-  handle({
-    type: "tool.call",
-    call_id: "e3",
-    name: "end_call",
-    arguments: { closing_line: "Goodbye!" },
-  });
+  endCall(handle, "e3");
+  await settle();
   assert.equal(internals["pendingHangup"], true);
   handle({ type: "input.speech.started" });
   handle({ type: "reply.done", reply_id: "r1", status: "interrupted" });
@@ -209,7 +229,8 @@ test("caller speech over the goodbye disarms the hangup", () => {
 test("hangup waits through flapping playback instead of one settled poll", async () => {
   // A momentary dry gap between chunks reports settled once — stopping on
   // that alone chops the goodbye mid-word (heard on jittery mobile links).
-  const { handle, internals } = makeSession();
+  const { session, handle, internals } = makeSession();
+  withDemoTools(internals, session);
   let settled = false;
   internals["playout"] = {
     play: () => undefined,
@@ -219,12 +240,8 @@ test("hangup waits through flapping playback instead of one settled poll", async
   };
   internals["lastAudioAt"] = 0;
   handle({ type: "session.ready", session_id: "s1" });
-  handle({
-    type: "tool.call",
-    call_id: "e4",
-    name: "end_call",
-    arguments: { closing_line: "Goodbye!" },
-  });
+  endCall(handle, "e4");
+  await settle();
   handle({ type: "reply.done", reply_id: "r1", status: "completed" });
   assert.equal(internals["explicitStop"], false);
   settled = true; // dry gap: must not stop on this alone
@@ -242,7 +259,8 @@ test("hangup waits out fresh audio even when playback reports settled", async ()
   // Audio still traveling to the worklet (pre-roll, output/Bluetooth
   // latency) sounds after the settled report — stop too early and the last
   // word is cut.
-  const { handle, internals } = makeSession();
+  const { session, handle, internals } = makeSession();
+  withDemoTools(internals, session);
   internals["playout"] = {
     play: () => undefined,
     flush: () => undefined,
@@ -250,12 +268,8 @@ test("hangup waits out fresh audio even when playback reports settled", async ()
     queuedMs: () => 0,
   };
   handle({ type: "session.ready", session_id: "s1" });
-  handle({
-    type: "tool.call",
-    call_id: "e5",
-    name: "end_call",
-    arguments: { closing_line: "Goodbye!" },
-  });
+  endCall(handle, "e5");
+  await settle();
   handle({ type: "reply.audio", reply_id: "r1", data: "" });
   handle({ type: "reply.done", reply_id: "r1", status: "completed" });
   assert.equal(internals["explicitStop"], false);

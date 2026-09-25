@@ -7,6 +7,7 @@ import {
   heuristicBargeInScore,
   requestVoiceJudge,
   shouldAllowToolCall,
+  shouldFlagOffTrack,
   shouldYieldToBargeIn,
 } from "./jev-judges";
 
@@ -134,4 +135,42 @@ test("speculative nav allows confident routes, suppresses weak ones", async () =
     shouldAllowSpeculativeNav({ partialText: "open settin", candidateRoute: "", confidence: 0.9 }).allow,
     false,
   );
+});
+
+test("off-track fallback flags nonsense, never a genuine short answer", () => {
+  const goal = "Talk about their business.";
+  const flag = (userText: string) =>
+    shouldFlagOffTrack({ goal, agentLine: "Sound good?", userText }).offTrack;
+  for (const text of ["hahaha lol", "asdfgh qwrtz", "blah blah blah blah", "poop poop"]) {
+    assert.equal(flag(text), true, text);
+  }
+  for (const text of ["Sure", "yes", "Hi", "ha", "We run a dental clinic in Dubai.", "haha okay, we sell cars", "", "Hmm, let me think", "hmmm", "since 2019"]) {
+    assert.equal(flag(text), false, text);
+  }
+});
+
+test("off-track judge falls back to the heuristic when Jev is unreachable", async () => {
+  const r = await requestVoiceJudge(
+    "off-track",
+    { goal: "Talk about their business.", agentLine: "", userText: "lol lol lol" },
+    { fetchImpl: (async () => { throw new Error("down"); }) as typeof fetch },
+  );
+  assert.equal(r.source, "fallback");
+  assert.equal(r.decision, "off-track");
+});
+
+test("off-track judge sends the demo call bearer", async () => {
+  let auth: string | null = null;
+  await requestVoiceJudge(
+    "off-track",
+    { goal: "g", agentLine: "", userText: "hi" },
+    {
+      headers: { Authorization: "Bearer call-tok" },
+      fetchImpl: (async (_url: string, init: RequestInit) => {
+        auth = new Headers(init.headers).get("authorization");
+        return new Response(JSON.stringify({ decision: "on-track", probability: 0.1 }));
+      }) as typeof fetch,
+    },
+  );
+  assert.equal(auth, "Bearer call-tok");
 });

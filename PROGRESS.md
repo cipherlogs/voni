@@ -7,7 +7,7 @@ Current frontier for this repo. Read this at the start of a session; keep `Now` 
 - `sidebar-03-brand-swap` — all tickets resolved (01/03/06 done, 02 done-superseded, 05 wontfix, 04 done with runtime loop).
 - `sidebar-avatar-menugroup-fix` — spec done, no tickets needed (all stories verified shipped + test-pinned; `.scratch/sidebar-avatar-menugroup-fix/spec.md`).
 - `minimalist-editorial-pass` — spec published, `ready-for-agent` (`.scratch/minimalist-editorial-pass/spec.md`; serif amendment + big-bang, seams confirmed); tickets 01–09 published (`.scratch/minimalist-editorial-pass/issues/`, 01–04 done, frontier: 05).
-- `demo-prospect-capture` — conversation spec `needs-triage` (`.scratch/demo-prospect-capture/spec.md`); implementation not yet chosen.
+- `demo-prospect-capture` — tickets 01–06 published (`.scratch/demo-prospect-capture/issues/`); 01 done (Voni as itself, call-scoped demo tools, talk clock, Jev stakes ladder), awaiting manual test; frontier: 02.
 - `mobile-takeover` — fullscreen verifier green 3× + phone PASS (`.scratch/mobile-takeover/issues/01-verifier.md`, resolved; gate: `npm run test:mobile:takeover`).
 - `mobile-takeover/02-whatsapp-layout` — hero + subtitle + dock built, verifier green 4×, awaiting phone PASS (`.scratch/mobile-takeover/issues/02-whatsapp-layout.md`).
 - `transcription-accuracy` — balanced STT + final-only user captions + instant agent captions + widened filler filter + cascade soft-yield, uncommitted; suites green (voni 558, voice-pipeline 87, telephony-bot 35).

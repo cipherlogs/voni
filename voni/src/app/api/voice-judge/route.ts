@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { getCtx } from "@/lib/session";
 import { secret } from "@/lib/env";
+import { demoCallFromRequest } from "@/lib/demo/call-token";
 import {
   decideVoiceJudge,
   parseVoiceJudgeRequest,
@@ -12,10 +13,15 @@ import {
 /**
  * Jev fast-judge for the browser test call and the PSTN bridge.
  *
- * Auth is either a signed-in session (browser) or the bridge bearer secret
+ * Auth is a signed-in session (browser), the bridge bearer secret
  * (`VONI_TOOL_SECRET`, same shape as `/api/internal/bridge-config`) — the
- * bridge holds no session cookie. Judging is org-agnostic, so unlike the
- * internal routes there is deliberately no workspace-selection gate here.
+ * bridge holds no session cookie — or, for the signed-out landing demo, its
+ * call token, which may only ask the off-track question. Judging is
+ * org-agnostic, so unlike the internal routes there is deliberately no
+ * workspace-selection gate here.
+ *
+ * ponytail: a demo call token can hit Jev freely until it expires (~13 min);
+ * add a per-call counter if judge spend ever shows up.
  *
  * The gateway key stays server-side; callers only send a small state blob
  * (`kind` + partial transcript / timing / tool name) and get back one
@@ -24,8 +30,9 @@ import {
  */
 export async function POST(req: NextRequest): Promise<NextResponse> {
   const ctx = await getCtx();
-  if (!ctx && !(await hasBridgeBearer(req)))
-    return NextResponse.json({ error: "signed-in or bridge only" }, { status: 401 });
+  const demoOnly = !ctx && !(await hasBridgeBearer(req));
+  if (demoOnly && !(await demoCallFromRequest(req)))
+    return NextResponse.json({ error: "signed-in, bridge, or demo call only" }, { status: 401 });
 
   let body: unknown;
   try {
@@ -36,6 +43,8 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   const parsed = parseVoiceJudgeRequest(body);
   if (!parsed.ok || !parsed.kind || !parsed.state)
     return NextResponse.json({ error: "invalid judge request" }, { status: 400 });
+  if (demoOnly && parsed.kind !== "off-track")
+    return NextResponse.json({ error: "demo calls judge off-track only" }, { status: 403 });
 
   // secret() reads process.env first (tests, CI, plain Node) with the
   // Cloudflare context as fallback, so this works under `next dev` (where

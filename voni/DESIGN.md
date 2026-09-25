@@ -685,13 +685,14 @@ branch. Nothing here applies inside the app shell.
   `LandingFooter` (mono year + real links only). Auth screens keep
   `SiteFooter`.
 - **Demo call card (`voice-call.tsx`, demo mode only):** superseded in
-  layout by the "orb first" amendment above (switcher, no mute). Still true:
-  the first three personas, the orb portrait, name, live state
+  layout by the "orb first" amendment above (switcher, no mute). Amended
+  2026-09-25 (demo-prospect-capture ticket 01): the persona scenarios are
+  gone; Voni talks as itself, and the ‹ › switcher now cycles one voice per
+  spoken language (`🇬🇧 English · Anna`), with the header strip reading
+  `LIVE DEMO · <LANGUAGE>`. Still true: the orb portrait, name, live state
   (`landing-ping` dot), hang-up, and a flat live transcript on
-  `MessageScroller`. Each caller keeps
-  its default voice; the language/voice pickers are cut (the mockup has
-  none). The demo disclosure (2 minutes, microphone, daily cap) sits in the
-  idle state. This lifts §10's motion-free rule for the demo branch only;
+  `MessageScroller`. The demo disclosure (2 minutes of talk, microphone,
+  daily cap) sits in the idle state. This lifts §10's motion-free rule for the demo branch only;
   the inline test-call card stays motion-free (pinned).
 - **The orb:** CSS-3D only (`preserve-3d`, nine meridians + five latitudes as
   `nth-child` rules off one `--orb` variable, fed by the root

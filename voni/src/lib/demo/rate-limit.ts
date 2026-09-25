@@ -16,9 +16,10 @@ import { rateLimits } from "@/lib/db/schema";
  *   - global  stops a distributed crowd (or a botnet) draining the credit,
  *             which the per-IP limit alone cannot
  *
- * The global cap is the one that actually bounds the bill. At a 120s session
- * cap and $0.075/min, each demo costs at most $0.15, so the default 60/day
- * ceiling is about $9/day worst case.
+ * The global cap is the one that actually bounds the bill. At the 12-minute
+ * wall-clock cap (talk-clock.ts) and $0.075/min, each demo costs at most
+ * $0.90, so the default 60/day ceiling is about $54/day worst case; a
+ * typical call ends at 2 minutes of talk.
  */
 
 const DEFAULTS = {

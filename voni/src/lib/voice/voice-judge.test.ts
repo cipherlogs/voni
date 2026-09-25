@@ -78,3 +78,22 @@ test("accepts nav-speculative kind and decides offline", async () => {
   assert.equal(deny.decision, "deny");
   assert.equal(judgeQuestions("nav-speculative").type, "boolean");
 });
+
+test("off-track: parses, decides offline, and reads Jev's probability", async () => {
+  const { tryJevGateway } = await import("./voice-judge");
+  const state = { goal: "Talk about their business.", agentLine: "Sound good?", userText: "lol lol lol" };
+  assert.equal(parseVoiceJudgeRequest({ kind: "off-track", state }).ok, true);
+  assert.equal(decideVoiceJudge("off-track", state).decision, "off-track");
+  assert.equal(
+    decideVoiceJudge("off-track", { ...state, userText: "We run a bakery." }).decision,
+    "on-track",
+  );
+  const jev = (probability: number) =>
+    tryJevGateway("off-track", state, {
+      apiKey: "k",
+      fetchImpl: (async () =>
+        new Response(JSON.stringify({ answers: { judge: { probability } } }))) as typeof fetch,
+    });
+  assert.equal((await jev(0.9)).decision, "off-track");
+  assert.equal((await jev(0.2)).decision, "on-track");
+});

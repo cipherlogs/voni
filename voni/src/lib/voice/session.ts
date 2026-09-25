@@ -24,11 +24,12 @@
 
 import {
   END_CALL_TOOL,
+  END_CALL_VOICE_TOOL,
   SENSITIVE_CAPTURE_TOOL,
   type VoiceTool,
 } from "@/lib/tools/definitions";
 import type { ToolResponse } from "@/lib/tools/execute";
-import { ToolCoordinator } from "./tool-coordinator";
+import { ToolCoordinator, type ToolCoordinatorOptions } from "./tool-coordinator";
 import {
   buildConversationMessage,
   MICROPHONE_MUTED_CONTEXT,
@@ -98,9 +99,10 @@ export type SessionConfig =
 /**
  * Where the token comes from. The two endpoints differ in more than their URL:
  * the authed one returns a bare token for an inline session, the public one
- * returns a token *and* the stored `agent_id` it is allowed to bind to.
+ * returns a token, the stored `agent_id` it is allowed to bind to, and the
+ * `callToken` that scopes the demo's tool route to this call.
  */
-export type TokenFetcher = () => Promise<{ token: string; agentId?: string }>;
+export type TokenFetcher = () => Promise<{ token: string; agentId?: string; callToken?: string }>;
 
 /** VoiceStartError lives in ./mic-capture (shared with the cascade client). */
 
@@ -213,14 +215,14 @@ export class RateLimitError extends Error {
   }
 }
 
-/** Public demo: the server picks the prompt, we only name persona and voice. */
+/** Public demo: the server picks the prompt (Voni's own), we only name the voice. */
 export const demoToken =
-  (personaId: string, voiceId: string): TokenFetcher =>
+  (voiceId: string): TokenFetcher =>
   async () => {
     const res = await fetch("/api/demo/token", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ personaId, voiceId }),
+      body: JSON.stringify({ voiceId }),
     });
     if (!res.ok) {
       const { error } = await res.json().catch(() => ({ error: null }));
@@ -308,6 +310,9 @@ export type VoiceHandlers = {
   /** Finalized turns with ids (assent/readback binding). Partials stay separate. */
   onUserTurn?: (turn: UserTurn) => void;
   onAgentTurn?: (turn: AgentTurn) => void;
+  onReplyStarted?: () => void;
+  /** The caller started speaking (VAD), before any transcript. */
+  onInputSpeechStarted?: () => void;
   onReplyDone?: (info: { replyId: string | null; interrupted: boolean }) => void;
 };
 
@@ -417,6 +422,8 @@ export class VoiceSession {
   /** Resume handle from `session.ready`. Null until the first ready. */
   private sessionId: string | null = null;
   private tokenFetcher: TokenFetcher | null = null;
+  /** Demo call scope for `/api/demo/tools`; refreshed with every token. */
+  private callToken: string | null = null;
   private generation = new SessionGeneration();
   /** True once the user (or expiry/sign-out/idle) deliberately ends things. */
   private explicitStop = false;
@@ -555,7 +562,8 @@ export class VoiceSession {
         // acquireMicStream throws already-coded VoiceStartError.
         throw micSettled.error;
       }
-      const { token, agentId } = tokenSettled.value;
+      const { token, agentId, callToken } = tokenSettled.value;
+      this.callToken = callToken ?? null;
       acquiredStream = micSettled.value;
       if (!alive()) {
         abandon();
@@ -625,65 +633,27 @@ export class VoiceSession {
     this.ws = ws;
 
     if (config.mode === "inline") {
-      const modes = new Map(
-        (config.tools ?? []).map((tool) => [tool.name, tool.execution_mode]),
-      );
-      this.toolCoordinator = new ToolCoordinator({
-        send: (message) => this.send(message),
-        modeFor: (name) => modes.get(name) ?? "interactive",
-        onActivityChange: (active) => this.handlers.onToolActivity?.(active),
-        onResult: (name, result) => {
-          if (name === END_CALL_TOOL && result.ok && result.hangup === true) {
-            this.pendingHangup = true;
-          }
-        },
-        execute: async (call) => {
-          if (this.injectedExecutor) return this.injectedExecutor(call);
-          if (call.name === SENSITIVE_CAPTURE_TOOL) {
-            return this.prepareSensitiveCapture();
-          }
-          if (!config.testAgentId) {
-            return {
-              ok: false,
-              error: "Save this agent before testing business tools.",
-              retryable: false,
-            };
-          }
-          const controller = new AbortController();
-          const timeout = setTimeout(() => controller.abort(), 12000);
-          try {
-            const response = await fetch(
-              `/api/tools/${encodeURIComponent(call.name)}`,
-              {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  toolCallId: call.callId,
-                  arguments: call.arguments,
-                  context: { kind: "test", agentId: config.testAgentId },
-                }),
-                signal: controller.signal,
-              },
-            );
-            const body = await response.json().catch(() => null);
-            if (!body || typeof body.ok !== "boolean") {
-              throw new Error("The tool server returned an invalid response.");
-            }
-            return body;
-          } catch (error) {
-            return {
-              ok: false,
-              error:
-                error instanceof DOMException && error.name === "AbortError"
-                  ? "The tool timed out."
-                  : "The tool server is unavailable.",
-              retryable: true,
-            };
-          } finally {
-            clearTimeout(timeout);
-          }
-        },
+      const testAgentId = config.testAgentId;
+      this.installTools(config.tools ?? [], async (call) => {
+        if (this.injectedExecutor) return this.injectedExecutor(call);
+        if (call.name === SENSITIVE_CAPTURE_TOOL) {
+          return this.prepareSensitiveCapture();
+        }
+        if (!testAgentId) {
+          return {
+            ok: false,
+            error: "Save this agent before testing business tools.",
+            retryable: false,
+          };
+        }
+        return postTool(`/api/tools/${encodeURIComponent(call.name)}`, {
+          toolCallId: call.callId,
+          arguments: call.arguments,
+          context: { kind: "test", agentId: testAgentId },
+        });
       });
+    } else if (this.callToken) {
+      this.installDemoTools();
     }
 
     ws.addEventListener("open", () => {
@@ -711,8 +681,9 @@ export class VoiceSession {
     const gen = this.generation.begin();
     this.setState("reconnecting");
     try {
-      const { token } = await this.tokenFetcher();
+      const { token, callToken } = await this.tokenFetcher();
       if (!this.generation.isCurrent(gen)) return;
+      if (callToken) this.callToken = callToken;
       const url = new URL("wss://agents.assemblyai.com/v1/ws");
       url.searchParams.set("token", token);
       const ws = new WebSocket(url);
@@ -863,6 +834,7 @@ export class VoiceSession {
         break;
       case "reply.started":
         this.toolCoordinator?.onReplyStarted(msg.reply_id ?? null);
+        this.handlers.onReplyStarted?.();
         break;
 
       case "input.speech.started":
@@ -872,6 +844,7 @@ export class VoiceSession {
         this.flush();
         this.disarmHangup();
         this.toolCoordinator?.onInputSpeechStarted();
+        this.handlers.onInputSpeechStarted?.();
         break;
 
       case "transcript.user.delta":
@@ -896,15 +869,6 @@ export class VoiceSession {
         break;
 
       case "tool.call":
-        if (!this.toolCoordinator && msg.name === END_CALL_TOOL) {
-          // Agent mode (demo, stored test calls) executes no tools
-          // client-side — except call control. Answer end_call locally so
-          // the agent can hang up by itself; the closing line was already
-          // spoken before the call. Anything malformed fails closed: the
-          // agent stays on the line instead of dropping the caller.
-          this.answerAgentModeEndCall(msg);
-          break;
-        }
         this.toolCoordinator?.onToolCall(msg);
         break;
 
@@ -1122,47 +1086,37 @@ export class VoiceSession {
   }
 
   /**
-   * Agent-initiated hangup for agent-mode sessions (demo, stored test
-   * calls), where no tool coordinator runs. Validates the closing line,
-   * answers the tool call, and arms the hangup for the settled reply —
-   * the same drain-then-stop as inline mode.
+   * One coordinator per connection, for either mode: it times results
+   * against replies, and an end_call result arms the drain-then-hangup.
    */
-  private answerAgentModeEndCall(msg: {
-    call_id?: unknown;
-    arguments?: unknown;
-  }): void {
-    const callId = typeof msg.call_id === "string" ? msg.call_id : null;
-    if (!callId) return;
-    let args: Record<string, unknown> | null = null;
-    if (msg.arguments && typeof msg.arguments === "object" && !Array.isArray(msg.arguments)) {
-      args = msg.arguments as Record<string, unknown>;
-    } else if (typeof msg.arguments === "string") {
-      try {
-        const parsed: unknown = JSON.parse(msg.arguments);
-        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-          args = parsed as Record<string, unknown>;
+  private installTools(tools: VoiceTool[], execute: ToolCoordinatorOptions["execute"]): void {
+    const modes = new Map(tools.map((tool) => [tool.name, tool.execution_mode]));
+    this.toolCoordinator = new ToolCoordinator({
+      send: (message) => this.send(message),
+      modeFor: (name) => modes.get(name) ?? "interactive",
+      onActivityChange: (active) => this.handlers.onToolActivity?.(active),
+      onResult: (name, result) => {
+        if (name === END_CALL_TOOL && result.ok && result.hangup === true) {
+          this.pendingHangup = true;
         }
-      } catch {
-        args = null;
-      }
-    }
-    const closingLine = args?.closing_line;
-    if (typeof closingLine !== "string" || closingLine.trim().length === 0) {
-      this.send({
-        type: "tool.result",
-        call_id: callId,
-        result: JSON.stringify({ ok: false, error: "Say the closing line first, then end the call.", retryable: true }),
-        is_error: true,
-      });
-      return;
-    }
-    this.send({
-      type: "tool.result",
-      call_id: callId,
-      result: JSON.stringify({ ok: true, data: { ended: true }, hangup: true }),
-      is_error: false,
+      },
+      execute,
     });
-    this.pendingHangup = true;
+  }
+
+  /**
+   * Demo: the stored agent's tools run on the call-scoped demo route, with
+   * the latest call token (a resume mints a new one). The prompt is
+   * server-owned; the browser only relays.
+   */
+  private installDemoTools(): void {
+    this.installTools([END_CALL_VOICE_TOOL], (call) =>
+      postTool(
+        `/api/demo/tools/${encodeURIComponent(call.name)}`,
+        { toolCallId: call.callId, arguments: call.arguments },
+        { Authorization: `Bearer ${this.callToken}` },
+      ),
+    );
   }
 
   /**
@@ -1384,6 +1338,40 @@ export class VoiceSession {
     this.stream = null;
     this.audioCtx = null;
     this.playout = null;
+  }
+}
+
+/** POST one tool call to a tool route; transport failures become retryable errors. */
+async function postTool(
+  url: string,
+  body: Record<string, unknown>,
+  headers: Record<string, string> = {},
+): Promise<ToolResponse> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 12000);
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...headers },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    const result = await response.json().catch(() => null);
+    if (!result || typeof result.ok !== "boolean") {
+      throw new Error("The tool server returned an invalid response.");
+    }
+    return result;
+  } catch (error) {
+    return {
+      ok: false,
+      error:
+        error instanceof DOMException && error.name === "AbortError"
+          ? "The tool timed out."
+          : "The tool server is unavailable.",
+      retryable: true,
+    };
+  } finally {
+    clearTimeout(timeout);
   }
 }
 

@@ -18,6 +18,8 @@
 export const BARGE_IN_THRESHOLD = 0.65;
 export const REPLY_NOW_THRESHOLD = 0.6;
 export const FILLER_THRESHOLD = 0.6;
+/** Off-track leans lenient: a false strike on a real visitor costs a Prospect. */
+export const OFF_TRACK_THRESHOLD = 0.6;
 /** Budget per judgment; the audio path must never wait on the network. */
 export const JUDGE_TIMEOUT_MS = 120;
 
@@ -50,7 +52,14 @@ export type NavSpeculativeState = {
   confidence: number;
 };
 
-export type JudgeKind = "barge-in" | "reply" | "tool" | "nav-speculative";
+/** One visitor turn on the demo call, scored against the current beat's goal. */
+export type OffTrackState = {
+  goal: string;
+  agentLine: string;
+  userText: string;
+};
+
+export type JudgeKind = "barge-in" | "reply" | "tool" | "nav-speculative" | "off-track";
 export type JudgeSource = "jev" | "fallback";
 
 /**
@@ -182,7 +191,51 @@ export function shouldAllowSpeculativeNav(state: NavSpeculativeState): {
   return { allow: false, probability: 0.7 };
 }
 
-export type JudgeDecision = "yield" | "keep-speaking" | "reply_now" | "wait_300ms" | "play_filler" | "allow" | "deny";
+/** Laughter only when repeated: a lone "hi" or "ha" is a greeting, not a joke. */
+const LAUGH = /^(?:(?:ha|he|hi|ja|je){2,}h?|lol+|lmf?ao+|rofl|xd+)$/;
+const TROLL_TOKENS = new Set(["poop", "fart", "penis", "butt", "fuck", "shit", "boobs"]);
+
+/**
+ * Offline probability that a visitor turn is off-track: laughter-only,
+ * keyboard mash, a looped word, or trolling words. Silence and short genuine
+ * answers score low.
+ *
+ * ponytail: lexical only, it cannot tell a joke from an answer. Jev owns
+ * that; this is the fallback that keeps the ladder alive when Jev is down.
+ */
+export function heuristicOffTrackScore(text: string): number {
+  const tokens = cleanTokens(text);
+  if (tokens.length === 0) return 0;
+  if (tokens.every((t) => LAUGH.test(t))) return 0.8;
+  if (tokens.some((t) => TROLL_TOKENS.has(t))) return 0.75;
+  // Keyboard mash: letters-only words with no vowel ("qwrtz"), never hums
+  // ("hmmm") or numbers ("2019").
+  const mashed = tokens.filter(
+    (t) => t.length >= 4 && /^\p{L}+$/u.test(t) && !/^h?m+$/.test(t) && !/[aeiouyàâäéèêëíìîïóòôöúùûü]/.test(t),
+  );
+  if (mashed.length * 2 >= tokens.length) return 0.8;
+  const counts = new Map<string, number>();
+  for (const t of tokens) counts.set(t, (counts.get(t) ?? 0) + 1);
+  const top = Math.max(...counts.values());
+  if (tokens.length >= 3 && top >= 3 && top / tokens.length >= 0.6) return 0.75;
+  return 0.1;
+}
+
+export function shouldFlagOffTrack(state: OffTrackState): { offTrack: boolean; probability: number } {
+  const probability = heuristicOffTrackScore(state?.userText ?? "");
+  return { offTrack: probability >= OFF_TRACK_THRESHOLD, probability };
+}
+
+export type JudgeDecision =
+  | "yield"
+  | "keep-speaking"
+  | "reply_now"
+  | "wait_300ms"
+  | "play_filler"
+  | "allow"
+  | "deny"
+  | "off-track"
+  | "on-track";
 
 function fallbackDecision(kind: JudgeKind, state: unknown): JudgeDecision {
   if (kind === "barge-in")
@@ -190,16 +243,20 @@ function fallbackDecision(kind: JudgeKind, state: unknown): JudgeDecision {
   if (kind === "reply") return chooseReplyAction(state as ReplyState).action;
   if (kind === "nav-speculative")
     return shouldAllowSpeculativeNav(state as NavSpeculativeState).allow ? "allow" : "deny";
+  if (kind === "off-track")
+    return shouldFlagOffTrack(state as OffTrackState).offTrack ? "off-track" : "on-track";
   return shouldAllowToolCall(state as ToolCallState).allow ? "allow" : "deny";
 }
 
 export async function requestVoiceJudge(
   kind: JudgeKind,
-  state: BargeInState | ReplyState | ToolCallState | NavSpeculativeState,
+  state: BargeInState | ReplyState | ToolCallState | NavSpeculativeState | OffTrackState,
   opts: {
     fetchImpl?: typeof fetch;
     timeoutMs?: number;
     signal?: AbortSignal;
+    /** The signed-out demo authenticates with its call token here. */
+    headers?: Record<string, string>;
   } = {},
 ): Promise<{ decision: JudgeDecision; probability: number; source: JudgeSource }> {
   const fetchImpl = opts.fetchImpl ?? fetch;
@@ -211,7 +268,7 @@ export async function requestVoiceJudge(
   try {
     const res = await fetchImpl("/api/voice-judge", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...opts.headers },
       body: JSON.stringify({ kind, state }),
       signal: controller.signal,
     });

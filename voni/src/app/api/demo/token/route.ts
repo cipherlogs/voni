@@ -1,6 +1,8 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { checkDemoLimits } from "@/lib/demo/rate-limit";
 import { getOrCreateDemoAgent } from "@/lib/demo/stored-agents";
+import { demoCallKey, signDemoCall } from "@/lib/demo/call-token";
+import { WALL_CAP_S } from "@/lib/demo/talk-clock";
 import { secret } from "@/lib/env";
 
 /**
@@ -18,13 +20,19 @@ import { secret } from "@/lib/env";
  * 3. **Server-enforced session caps.** `max_session_duration_seconds` and
  *    `expires_in_seconds` are enforced by AssemblyAI, not by our JavaScript,
  *    so a tampered client cannot raise them. Tokens are single-use.
- * 4. **Validated inputs.** persona and voice are checked against our own
- *    catalogs before anything is created (see stored-agents.ts).
+ * 4. **Validated inputs.** the voice is checked against the demo picker
+ *    before anything is created (see stored-agents.ts).
  *
- * Worst case per token: one 120-second call, about $0.15.
+ * The session cap is the talk clock's wall-clock cap: the talk clock itself
+ * (2 min of unmuted talk) runs client-side and pauses on mute, so the server
+ * bounds the worst case instead. Worst case per token: one 12-minute call,
+ * about $0.90.
+ *
+ * Each response also carries a `callToken` (call-token.ts): the bearer that
+ * scopes the demo's tool and judge routes to this one call.
  */
 
-const MAX_SESSION_SECONDS = 120;
+const MAX_SESSION_SECONDS = WALL_CAP_S;
 const TOKEN_TTL_SECONDS = 60;
 
 export async function POST(request: NextRequest) {
@@ -39,23 +47,23 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  let body: { personaId?: unknown; voiceId?: unknown };
+  let body: { voiceId?: unknown };
   try {
     body = await request.json();
   } catch {
     return NextResponse.json({ error: "Bad request." }, { status: 400 });
   }
 
-  const personaId = typeof body.personaId === "string" ? body.personaId : "";
   const voiceId = typeof body.voiceId === "string" ? body.voiceId : "";
 
-  const agent = await getOrCreateDemoAgent(personaId, voiceId);
+  const agent = await getOrCreateDemoAgent(voiceId);
   if (!agent.ok) {
     return NextResponse.json({ error: agent.error }, { status: 400 });
   }
 
   const apiKey = await secret("ASSEMBLYAI_API_KEY");
-  if (!apiKey) {
+  const callKey = await demoCallKey();
+  if (!apiKey || !callKey) {
     return NextResponse.json(
       { error: "The live demo is not available right now." },
       { status: 503 },
@@ -83,7 +91,12 @@ export async function POST(request: NextRequest) {
 
   const { token } = (await res.json()) as { token: string };
   return NextResponse.json(
-    { token, agentId: agent.agentId, maxSessionSeconds: MAX_SESSION_SECONDS },
+    {
+      token,
+      agentId: agent.agentId,
+      callToken: signDemoCall(callKey),
+      maxSessionSeconds: MAX_SESSION_SECONDS,
+    },
     // A single-use token must never be cached by a CDN or the browser.
     { headers: { "Cache-Control": "no-store" } },
   );

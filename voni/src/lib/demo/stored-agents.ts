@@ -4,8 +4,8 @@ import { db } from "@/lib/db";
 import { secret } from "@/lib/env";
 import { demoAgents } from "@/lib/db/schema";
 import { compileSystemPrompt } from "@/lib/agents/compile";
-import { getPersona, personaConfig, type Persona } from "@/lib/agents/personas";
 import { getVoice } from "@/lib/agents/voices";
+import { DEMO_VOICE_IDS, VONI_AGENT_ID, voniConfig } from "./voni-agent";
 import { END_CALL_VOICE_TOOL, toRestTool } from "@/lib/tools/definitions";
 import { TRANSCRIPTION_MODE, buildAgentKeyterms, buildAgentTranscriptionPrompt } from "@/lib/voice/transcription";
 import { stableJson } from "@/lib/agents/provision";
@@ -19,12 +19,12 @@ import { stableJson } from "@/lib/agents/provision";
  * behind auth. On a public endpoint it is a hole: whoever holds a token decides
  * what the model does, which is free LLM inference on our account for anyone
  * who reads the network tab. Binding to a stored agent moves the prompt
- * server-side, so the only thing a caller controls is which persona and voice —
- * both of which we validate against our own lists before creating anything.
+ * server-side, so the only thing a caller controls is which voice — validated
+ * against the demo picker before creating anything.
  *
- * Agents are created lazily per (persona, voice) and cached in `demo_agents`,
- * so a combination costs one API call ever. The upper bound is small and known:
- * personas × voices.
+ * Voni is the only demo agent. One stored agent per voice, created lazily and
+ * cached in `demo_agents` (its `persona_id` column always holds `voni`), so
+ * a voice costs one API call ever.
  *
  * ── Refresh, not just cache ────────────────────────────────────────────────
  * The cache used to be write-once: a platform upgrade (new tools, prompt
@@ -35,12 +35,10 @@ import { stableJson } from "@/lib/agents/provision";
  * minting the token. Demos heal themselves; no row wipe needed.
  *
  * ── Tools on demo ──────────────────────────────────────────────────────────
- * Demo sessions run agent-mode, where the browser executes no tools
- * client-side — except call control (`end_call` is answered locally by the
- * session, see `VoiceSession.answerAgentModeEndCall`). Business tools ship
- * in NEITHER the demo body NOR execution: handing the model tools whose
- * calls are never answered stalls the turn. The prompt's tool-use sections
- * predate this and are unchanged.
+ * Demo sessions run agent-mode. The browser relays each tool call to the
+ * call-scoped `/api/demo/tools/[name]` route (bearer: the demo call token),
+ * so every tool listed here must have a case there: a tool whose calls are
+ * never answered stalls the turn.
  */
 
 const AGENTS_URL = "https://agents.assemblyai.com/v1/agents";
@@ -49,22 +47,21 @@ export type ProvisionResult =
   | { ok: true; agentId: string }
   | { ok: false; error: string };
 
-export function demoAgentName(personaId: string, voiceId: string): string {
-  return `demo:${personaId}:${voiceId}`;
+export function demoAgentName(voiceId: string): string {
+  return `demo:${VONI_AGENT_ID}:${voiceId}`;
 }
 
 /** The exact remote body a demo agent runs. Pure: fingerprint + tests pin it. */
-export function buildDemoAgentBody(persona: Persona, voiceId: string) {
+export function buildDemoAgentBody(voiceId: string) {
   const voice = getVoice(voiceId);
-  const config = personaConfig(persona, voiceId);
+  const config = voniConfig(voiceId);
   return {
-    name: demoAgentName(persona.id, voiceId),
+    name: demoAgentName(voiceId),
     system_prompt: compileSystemPrompt(config),
     greeting: config.greeting,
     voice: { voice_id: voiceId },
-    // Call control only (see module note): the only tool with client-side
-    // execution in agent-mode sessions. REST shape (no `type`) — see
-    // `toRestTool`.
+    // Each one is answered by /api/demo/tools (see module note). REST
+    // shape (no `type`) — see `toRestTool`.
     tools: [toRestTool({ ...END_CALL_VOICE_TOOL })],
     input: {
       // Locked to the voice's language: detecting across all 18 languages
@@ -124,23 +121,20 @@ async function remoteCall(
   return { ok: true, id };
 }
 
-export async function getOrCreateDemoAgent(
-  personaId: string,
-  voiceId: string,
-): Promise<ProvisionResult> {
-  // Validate against our own catalogs first. This is what stops a caller
-  // pushing an arbitrary voice or persona id into an outbound API call.
-  const persona = getPersona(personaId);
-  if (!persona) return { ok: false, error: "Unknown scenario." };
-  const voice = getVoice(voiceId);
-  if (!voice) return { ok: false, error: "Unknown voice." };
+export async function getOrCreateDemoAgent(voiceId: string): Promise<ProvisionResult> {
+  // Validate against the picker first. This is what stops a caller pushing
+  // an arbitrary voice id into an outbound API call.
+  if (!(DEMO_VOICE_IDS as readonly string[]).includes(voiceId)) {
+    return { ok: false, error: "Unknown voice." };
+  }
+  const personaId = VONI_AGENT_ID;
 
   // Via secret(), not process.env: the key lives in .dev.vars, which Next
   // does not load into process.env. See src/lib/env.ts.
   const apiKey = await secret("ASSEMBLYAI_API_KEY");
   if (!apiKey) return { ok: false, error: "Voice is not configured." };
 
-  const body = buildDemoAgentBody(persona, voiceId);
+  const body = buildDemoAgentBody(voiceId);
   const fingerprint = demoAgentFingerprint(body);
 
   const cached = await db
@@ -176,8 +170,6 @@ export async function getOrCreateDemoAgent(
     return { ok: true, agentId: cached[0].agentId };
   }
 
-  // personaConfig, not a manual spread: it also resolves the greeting to the
-  // voice's own language, so a Spanish voice doesn't open in English.
   const created = await remoteCall(apiKey, "POST", body);
   if (!created.ok) {
     console.error(`[demo-agent] create failed ${created.status}: ${created.detail.slice(0, 300)}`);
