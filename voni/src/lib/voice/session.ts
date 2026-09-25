@@ -35,6 +35,7 @@ import {
   MICROPHONE_UNMUTED_CONTEXT,
 } from "./context";
 import { releaseMic } from "./mic-owner";
+import { TRANSCRIPTION_MODE } from "./transcription";
 import {
   acquireMicStream,
   startAudioGraph,
@@ -151,7 +152,7 @@ export function buildInlineSessionUpdate(
     greeting: config.greeting,
     output: { voice: config.voiceId },
     input: {
-      transcription_mode: config.transcriptionMode ?? "balanced",
+      transcription_mode: config.transcriptionMode ?? TRANSCRIPTION_MODE,
       // Close-talking browser mic: isolate the caller with the near-field
       // model. Server default is the same; explicit beats implicit when a
       // second path (stored agents on PSTN) wants far-field.
@@ -810,7 +811,7 @@ export class VoiceSession {
           if (this.boundAgent) {
             this.updateConfig({
               input: {
-                transcription_mode: "balanced",
+                transcription_mode: TRANSCRIPTION_MODE,
                 voice_focus: "near-field",
                 turn_detection: { ...TURN_PRESET },
               },

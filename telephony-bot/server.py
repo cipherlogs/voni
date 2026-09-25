@@ -351,17 +351,16 @@ def build_session_update(
             "greeting": GREETING,
             "input": {
                 "format": {"encoding": in_encoding, "sample_rate": 8000},
-                # `balanced` is the docs' voice-agent default: finals the
-                # screen and the LLM can trust, without max_accuracy's
-                # endpointing wait. User captions render final-only now, so
-                # the extra STT patience buys accuracy for free.
+                # `max_accuracy`: the best finals for the screen and the LLM.
+                # Its longer endpointing wait doesn't apply here — the
+                # explicit min/max_silence below override the mode preset.
                 #
                 # The first real call measured time-to-first-audio at 382 ms
                 # for the pre-scripted greeting but 0.5-15.4 s (mean 4.8 s)
                 # for every reply the model had to think about, and the agent
                 # streams that wait to us as real-time SILENCE inside
                 # `reply.audio`. 59% of the agent's airtime was dead air.
-                "transcription_mode": "balanced",
+                "transcription_mode": "max_accuracy",
                 # Scene + vocabulary for the opening turn, which would
                 # otherwise run on generic recognition. Neutral: Voni is
                 # vertical-agnostic, and the no-binding fallback has no

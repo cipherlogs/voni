@@ -1264,10 +1264,18 @@ export function VoiceCall({
                     className="flex h-10 w-full max-w-75 items-center justify-center"
                   >
                     {liveCaption ? (
-                      <p className="line-clamp-2 text-center text-sm text-foreground/80">
+                      // Partial: an early guess, dimmed until the final lands.
+                      <p className="line-clamp-2 text-center text-sm text-foreground/60">
                         {liveCaption.role === "user" ? "You: " : `${displayName}: `}
                         <StreamingText text={liveCaption.text} />
                         {liveCaption.overheard ? " · overheard" : ""}
+                      </p>
+                    ) : connected && turns.length > 0 ? (
+                      // The settled final stays up, so the corrected words are
+                      // what the caller reads — not the partial that preceded them.
+                      <p className="line-clamp-2 text-center text-sm text-foreground/80">
+                        {turns[turns.length - 1].role === "user" ? "You: " : `${displayName}: `}
+                        {turns[turns.length - 1].text}
                       </p>
                     ) : state === "ended" && turns.length === 0 && !error ? (
                       <p className="text-center text-sm text-balance text-foreground/70">

@@ -453,7 +453,7 @@ test("first session.update omits empty recognition keys", () => {
     tools: [],
   });
   const input = update["input"] as Record<string, unknown>;
-  assert.equal(input["transcription_mode"], "balanced");
+  assert.equal(input["transcription_mode"], "max_accuracy");
   assert.equal(input["voice_focus"], "near-field");
   assert.ok(!("keyterms" in input));
   assert.ok(!("language_codes" in input));

@@ -7,7 +7,7 @@ import { compileSystemPrompt } from "@/lib/agents/compile";
 import { getPersona, personaConfig, type Persona } from "@/lib/agents/personas";
 import { getVoice } from "@/lib/agents/voices";
 import { END_CALL_VOICE_TOOL, toRestTool } from "@/lib/tools/definitions";
-import { buildAgentKeyterms, buildAgentTranscriptionPrompt } from "@/lib/voice/transcription";
+import { TRANSCRIPTION_MODE, buildAgentKeyterms, buildAgentTranscriptionPrompt } from "@/lib/voice/transcription";
 import { stableJson } from "@/lib/agents/provision";
 
 /**
@@ -71,7 +71,7 @@ export function buildDemoAgentBody(persona: Persona, voiceId: string) {
       // every turn is slow. Language codes apply at speech-to-text connect,
       // so they live on the stored agent, not in the post-ready preset.
       language_codes: voice ? [voice.languageCode] : [],
-      transcription_mode: "balanced",
+      transcription_mode: TRANSCRIPTION_MODE,
       transcription_prompt: buildAgentTranscriptionPrompt(config),
       keyterms: buildAgentKeyterms(config),
       voice_focus: "near-field",

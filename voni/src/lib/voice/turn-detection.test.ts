@@ -40,7 +40,7 @@ test("bound demo agents get the turn preset right after session.ready", () => {
     type: "session.update",
     session: {
       input: {
-        transcription_mode: "balanced",
+        transcription_mode: "max_accuracy",
         voice_focus: "near-field",
         turn_detection: TURN_PRESET,
       },

@@ -28,6 +28,13 @@
 
 import type { AgentConfig } from "@/lib/agents/config";
 
+/**
+ * The transcription mode for every call surface. `max_accuracy` gives the
+ * best finals; its extra end-of-turn patience is overridden by TURN_PRESET's
+ * explicit silence windows, so turn timing stays on the preset.
+ */
+export const TRANSCRIPTION_MODE = "max_accuracy";
+
 /** Words every Voni call hears correctly without asking: the product name and the channels it answers on. */
 export const NEUTRAL_KEYTERMS = ["Voni", "WhatsApp"];
 

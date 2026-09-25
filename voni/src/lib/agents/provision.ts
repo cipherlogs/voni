@@ -1,7 +1,7 @@
 import { compileSystemPrompt } from "./compile";
 import type { AgentConfig } from "./config";
 import { compileVoiceTools, toRestTool } from "@/lib/tools/definitions";
-import { buildAgentKeyterms, buildAgentTranscriptionPrompt } from "@/lib/voice/transcription";
+import { TRANSCRIPTION_MODE, buildAgentKeyterms, buildAgentTranscriptionPrompt } from "@/lib/voice/transcription";
 import { resolveCredential } from "@/lib/platform/credentials";
 
 const AGENTS_URL = "https://agents.assemblyai.com/v1/agents";
@@ -18,7 +18,7 @@ export function storedAgentBody(name: string, config: AgentConfig) {
     voice: { voice_id: config.voiceId },
     input: {
       format: { encoding: "audio/pcmu", sample_rate: 8000 },
-      transcription_mode: "balanced",
+      transcription_mode: TRANSCRIPTION_MODE,
       // Scene + vocabulary for the opening turn; PSTN callers are on
       // handsets/speakerphone, so far-field isolation fits the mic.
       transcription_prompt: buildAgentTranscriptionPrompt(config),

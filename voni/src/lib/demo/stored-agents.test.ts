@@ -20,7 +20,7 @@ test("demo body carries call control, tuning, and per-agent vocabulary", () => {
     body.tools.map((tool) => tool.name),
     [END_CALL_TOOL],
   );
-  assert.equal(body.input.transcription_mode, "balanced");
+  assert.equal(body.input.transcription_mode, "max_accuracy");
   assert.deepEqual(body.input.turn_detection, {
     min_silence: 100,
     max_silence: 1000,
@@ -46,7 +46,7 @@ test("fingerprints are stable and move with platform content", () => {
   // invalidate the cache: any body difference flips the fingerprint.
   const changed = {
     ...buildDemoAgentBody(layla, "anna"),
-    input: { ...buildDemoAgentBody(layla, "anna").input, transcription_mode: "max_accuracy" },
+    input: { ...buildDemoAgentBody(layla, "anna").input, transcription_mode: "balanced" },
   };
   assert.notEqual(demoAgentFingerprint(changed), a);
 });

@@ -698,7 +698,6 @@ export function CopilotProvider({
           // First-utterance tuning; turn-taking comes from TURN_PRESET.
           transcriptionPrompt: buildTranscriptionPrompt(route),
           keyterms: buildKeyterms(route),
-          transcriptionMode: "balanced",
           tools: sessionToolsFor(route),
         },
         fetcher,
