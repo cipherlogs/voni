@@ -6,7 +6,7 @@
 
 **Blocked by:** 01 (Voni as itself: tools, talk clock, stakes ladder).
 
-**Status:** ready-for-agent
+**Status:** ready-for-human (implementation done, manual real-device test steps 1–4 pending)
 
 ## Manual test (approve / reject)
 
@@ -25,3 +25,17 @@ Run on a real iPhone (Safari) and a real Android phone (Chrome) with `npm run de
 - [ ] Return resumes. A dropped connection reconnects with the conversation context carried over.
 - [ ] Works on iOS Safari, Android Chrome, and desktop. Verified on real devices.
 - [ ] Tests for the hold state transitions (hidden, visible, cap, reconnect).
+
+## Answer
+
+- Hold state: `voni/src/lib/demo/hold.ts` (`HoldState`, `HOLD_CAP_S = 120`, `buildHoldCarryover`). Pure timestamps; the component owns listeners, mic, and lines.
+- Talk clock: `TalkClock.setHeld` pauses on the union of mute/hold (overlap counts once); hold never arms the mute check-in. Wall cap (`WALL_CLOSE_S`) still never pauses, clock preserved across restarts.
+- Mic: `VoiceSession.setOnHold` drops frames with hidden `HOLD_ON/OFF_CONTEXT` (never a reply or transcript row). `pagehide` still ends true unloads; `visibilitychange` hidden is the only hold signal (blur was cut: false holds from devtools/dialogs).
+- Return paths: live session → un-hold + "Welcome back!" via `ReplyQueue`; in-flight auto-resume → greet on arrival; dead session (post-30s-grace) → fresh transport preserving turns/clock/ladder/mute + hidden carryover context so Voni resumes instead of restarting. Over-cap → polite end + "The call ended while you were away."
+- Automated: full suite green 645/645 (`npm test`), incl. new `hold.test.ts` (in suite), talk-clock union, session hold/mute-overlap, and `voice-call.test.ts` hold wiring. `tsc` + `eslint` clean.
+- Code review: standards clean; spec deltas accepted — inbox/site pre-read stays in 03/05, cap is per-stretch, goodbye may speak while hidden (on-screen copy is the acceptance), dead-session cap end is on-screen-only.
+
+### Manual-test risks to watch (real devices)
+
+- Mic re-acquire without a fresh gesture (iOS AudioContext may stay suspended until a tap; first tap should unstick it).
+- Desktop app-switch without minimize may not fire `visibilitychange` (ticket desktop case is another tab, which does).

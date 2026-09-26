@@ -16,6 +16,8 @@ export const MUTE_CHECK_IN_S = 20;
 export class TalkClock {
   private pausedMs = 0;
   private mutedAt: number | null = null;
+  private heldAt: number | null = null;
+  private pauseStartedAt: number | null = null;
   private checkedIn = false;
 
   constructor(private readonly startedAt: number) {}
@@ -24,14 +26,32 @@ export class TalkClock {
     if (muted && this.mutedAt === null) {
       this.mutedAt = now;
       this.checkedIn = false;
+      if (this.pauseStartedAt === null) this.pauseStartedAt = now;
     } else if (!muted && this.mutedAt !== null) {
-      this.pausedMs += now - this.mutedAt;
       this.mutedAt = null;
+      if (this.heldAt === null && this.pauseStartedAt !== null) {
+        this.pausedMs += now - this.pauseStartedAt;
+        this.pauseStartedAt = null;
+      }
+    }
+  }
+
+  /** Hold pauses the clock like mute, but never arms the mute check-in. */
+  setHeld(held: boolean, now: number): void {
+    if (held && this.heldAt === null) {
+      this.heldAt = now;
+      if (this.pauseStartedAt === null) this.pauseStartedAt = now;
+    } else if (!held && this.heldAt !== null) {
+      this.heldAt = null;
+      if (this.mutedAt === null && this.pauseStartedAt !== null) {
+        this.pausedMs += now - this.pauseStartedAt;
+        this.pauseStartedAt = null;
+      }
     }
   }
 
   talkSeconds(now: number): number {
-    const paused = this.pausedMs + (this.mutedAt === null ? 0 : now - this.mutedAt);
+    const paused = this.pausedMs + (this.pauseStartedAt === null ? 0 : now - this.pauseStartedAt);
     return Math.floor((now - this.startedAt - paused) / 1000);
   }
 

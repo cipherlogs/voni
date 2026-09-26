@@ -48,3 +48,49 @@ test("repeated mute calls do not reset the pause", () => {
   clock.setMuted(false, secToMs(30));
   assert.equal(clock.talkSeconds(secToMs(30)), 10);
 });
+
+test("talk time freezes while on hold", () => {
+  const clock = new TalkClock(0);
+  assert.equal(clock.talkSeconds(secToMs(30)), 30);
+  clock.setHeld(true, secToMs(30));
+  assert.equal(clock.talkSeconds(secToMs(70)), 30, "40s on hold adds nothing");
+  clock.setHeld(false, secToMs(70));
+  assert.equal(clock.talkSeconds(secToMs(80)), 40);
+});
+
+test("mute and hold overlap counts once, not twice", () => {
+  const clock = new TalkClock(0);
+  clock.setMuted(true, secToMs(10));
+  clock.setHeld(true, secToMs(20));
+  clock.setMuted(false, secToMs(30));
+  clock.setHeld(false, secToMs(40));
+  // Paused 10→40 continuously: 30s paused, 10s talk at 40s wall.
+  assert.equal(clock.talkSeconds(secToMs(40)), 10);
+  assert.equal(clock.talkSeconds(secToMs(50)), 20);
+});
+
+test("un-holding while muted stays paused", () => {
+  const clock = new TalkClock(0);
+  clock.setMuted(true, secToMs(10));
+  clock.setHeld(true, secToMs(20));
+  clock.setHeld(false, secToMs(30));
+  assert.equal(clock.talkSeconds(secToMs(40)), 10, "still muted, still paused");
+  clock.setMuted(false, secToMs(40));
+  assert.equal(clock.talkSeconds(secToMs(50)), 20);
+});
+
+test("hold does not arm the mute check-in", () => {
+  const clock = new TalkClock(0);
+  clock.setHeld(true, secToMs(10));
+  assert.equal(clock.takeCheckIn(secToMs(10 + MUTE_CHECK_IN_S)), false);
+  clock.setHeld(false, secToMs(60));
+  assert.equal(clock.takeCheckIn(secToMs(60)), false);
+});
+
+test("repeated hold calls do not reset the pause", () => {
+  const clock = new TalkClock(0);
+  clock.setHeld(true, secToMs(10));
+  clock.setHeld(true, secToMs(20));
+  clock.setHeld(false, secToMs(30));
+  assert.equal(clock.talkSeconds(secToMs(30)), 10);
+});

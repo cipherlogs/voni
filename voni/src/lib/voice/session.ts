@@ -33,6 +33,8 @@ import { executeDemoTool } from "@/lib/demo/demo-tools";
 import { ToolCoordinator, type ToolCoordinatorOptions } from "./tool-coordinator";
 import {
   buildConversationMessage,
+  HOLD_OFF_CONTEXT,
+  HOLD_ON_CONTEXT,
   MICROPHONE_MUTED_CONTEXT,
   MICROPHONE_UNMUTED_CONTEXT,
 } from "./context";
@@ -584,6 +586,7 @@ export class VoiceSession {
     this.sessionId = null;
     this.micReleased = false;
     this.inputMuted = false;
+    this.holdPaused = false;
     this.endCallSignaled = false;
     this.resetBargeIn();
     this.firstUpdateAcked = false;
@@ -1426,6 +1429,23 @@ export class VoiceSession {
     }
   }
 
+  /** True while the demo call is on hold (visitor away from the page). */
+  private holdPaused = false;
+
+  /**
+   * Hold/unhold the call without tearing it down. Like mute it drops mic
+   * frames on the floor, but it sends the hold context (not the mute one)
+   * so the agent waits instead of expecting speech. Never creates a reply
+   * or a transcript row.
+   */
+  setOnHold(held: boolean): void {
+    if (this.holdPaused === held) return;
+    this.holdPaused = held;
+    if (this.ready) {
+      this.sendContext(held ? HOLD_ON_CONTEXT : HOLD_OFF_CONTEXT);
+    }
+  }
+
   /** Send hidden context without asking the agent to generate a reply. */
   sendContext(content: string): void {
     if (!this.ready || this.ws?.readyState !== WebSocket.OPEN) return;
@@ -1438,7 +1458,7 @@ export class VoiceSession {
 
   /** Single choke point for mic frames, so mute is unit-testable. */
   private ingestAudio(data: ArrayBuffer) {
-    if (!this.ready || this.inputMuted || this.ws?.readyState !== WebSocket.OPEN) {
+    if (!this.ready || this.inputMuted || this.holdPaused || this.ws?.readyState !== WebSocket.OPEN) {
       // Was silent: surface the loss so `npm run call:trace` can tell a
       // pre-ready/reconnect/mute gap apart from "the caller said nothing".
       // Throttled to one probe per 2s; the count rides along.
@@ -1580,6 +1600,7 @@ export class VoiceSession {
     this.sessionId = null;
     this.lastAudioAt = 0;
     this.inputMuted = false;
+    this.holdPaused = false;
     this.releaseMicNow();
     this.toolCoordinator?.clear();
     this.toolCoordinator = null;

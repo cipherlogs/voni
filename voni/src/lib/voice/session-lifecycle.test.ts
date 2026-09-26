@@ -13,6 +13,8 @@ import {
 } from "./session";
 import {
   buildConversationMessage,
+  HOLD_OFF_CONTEXT,
+  HOLD_ON_CONTEXT,
   MICROPHONE_MUTED_CONTEXT,
   MICROPHONE_UNMUTED_CONTEXT,
 } from "./context";
@@ -660,6 +662,49 @@ test("muted mic drops frames without tearing down the call", () => {
   });
   assert.equal(sent.length, 4);
   assert.ok(!sent.some((message) => message.includes("reply.create")));
+});
+
+test("held call drops frames with hold context, then resumes on the same session", () => {
+  const { session, sent, handle } = makeSession();
+  handle({ type: "session.ready", session_id: "sess_hold" });
+  const ingest = (session as unknown as { ingestAudio: (data: ArrayBuffer) => void }).ingestAudio.bind(session);
+  ingest(new ArrayBuffer(4));
+  assert.equal(sent.length, 1);
+  session.setOnHold(true);
+  ingest(new ArrayBuffer(4));
+  assert.deepEqual(JSON.parse(sent[1]), {
+    type: "conversation.message",
+    role: "system",
+    content: HOLD_ON_CONTEXT,
+  });
+  assert.equal(sent.length, 2);
+  session.setOnHold(false);
+  ingest(new ArrayBuffer(4));
+  assert.deepEqual(JSON.parse(sent[2]), {
+    type: "conversation.message",
+    role: "system",
+    content: HOLD_OFF_CONTEXT,
+  });
+  assert.equal(sent.length, 4);
+  assert.ok(!sent.some((message) => message.includes("reply.create")));
+});
+
+test("hold and mute overlap: frames flow only when neither is set", () => {
+  const { session, sent, handle } = makeSession();
+  handle({ type: "session.ready", session_id: "sess_overlap" });
+  const ingest = (session as unknown as { ingestAudio: (data: ArrayBuffer) => void }).ingestAudio.bind(session);
+  const audioFrames = () =>
+    sent.filter((raw) => JSON.parse(raw).type === "input.audio").length;
+  ingest(new ArrayBuffer(4));
+  assert.equal(audioFrames(), 1);
+  session.setInputMuted(true);
+  session.setOnHold(true);
+  session.setOnHold(false);
+  ingest(new ArrayBuffer(4));
+  assert.equal(audioFrames(), 1, "still muted: no audio frame reaches the wire");
+  session.setInputMuted(false);
+  ingest(new ArrayBuffer(4));
+  assert.equal(audioFrames(), 2, "unmuted and off hold: frames flow again");
 });
 
 test("managed context serializes as a hidden system conversation message", () => {

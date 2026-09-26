@@ -59,6 +59,9 @@ import { formatCallStatus } from "@/lib/calls/call-status";
 import { ACCENT_FLAG, getVoice, voiceLabel, voicePlaybackGain } from "@/lib/agents/voices";
 import {
   DEMO_VOICE_IDS,
+  HOLD_ENTER_INSTRUCTIONS,
+  HOLD_RETURN_INSTRUCTIONS,
+  HOLD_TIMEOUT_INSTRUCTIONS,
   MUTE_CHECK_IN_INSTRUCTIONS,
   OPEN_BEAT_GOAL,
   TIME_UP_INSTRUCTIONS,
@@ -66,6 +69,7 @@ import {
   voniConfig,
 } from "@/lib/demo/voni-agent";
 import { TALK_BASE_S, TalkClock } from "@/lib/demo/talk-clock";
+import { buildHoldCarryover, HoldState } from "@/lib/demo/hold";
 import { ReplyQueue, StakesLadder } from "@/lib/demo/stakes-ladder";
 import { cn } from "@/lib/utils";
 
@@ -166,6 +170,13 @@ function useIsBelowLg() {
     },
     () => window.matchMedia(MOBILE_DEMO_QUERY).matches,
     () => false,
+  );
+}
+
+/** True while a demo session can still speak and hear (hold entry/exit gate). */
+function demoSessionLive(session: unknown, state: VoiceState): boolean {
+  return (
+    session instanceof VoiceSession && (state === "listening" || state === "speaking")
   );
 }
 
@@ -356,6 +367,39 @@ export function VoiceCall({
   const lastAgentLineRef = useRef("");
   const closingRef = useRef(false);
   const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /**
+   * Demo hold (ticket 02): the visitor left the page. `holding` renders the
+   * on-screen state; the refs are read in socket/visibility callbacks.
+   * `holdEnded` latches the over-cap polite end apart from a time-up one.
+   * `carryover` is the hidden resume cue a post-grace restart whispers so
+   * Voni does not start from scratch; `preserve` keeps turns, clock and
+   * ladder across that restart. `greetOnListen` welcomes back once an
+   * in-flight auto-resume lands.
+   */
+  const holdRef = useRef<HoldState | null>(null);
+  const [holding, setHolding] = useState(false);
+  const holdingRef = useRef(false);
+  const [holdEnded, setHoldEnded] = useState(false);
+  const holdEndedRef = useRef(false);
+  const carryoverRef = useRef<string | null>(null);
+  const preserveRef = useRef(false);
+  const greetOnListenRef = useRef(false);
+  const rejoiningRef = useRef(false);
+  const turnsRef = useRef<Transcript[]>([]);
+  const stateRef = useRef<VoiceState>(state);
+  const mutedRef = useRef(muted);
+  /** Mirrors `start` (defined below) so hold exit can rejoin without
+      re-subscribing listeners every render. */
+  const startRef = useRef<() => void>(() => {});
+  useEffect(() => {
+    turnsRef.current = turns;
+  }, [turns]);
+  useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
+  useEffect(() => {
+    mutedRef.current = muted;
+  }, [muted]);
 
   // Synchronous pending mirror for the host footer: the onPendingChange
   // effect below only runs after paint, so the click handler also notifies
@@ -398,6 +442,8 @@ export function VoiceCall({
   // used to tell "your free time ran out" apart from a voluntary hang-up,
   // since both otherwise land in the identical "ended" state.
   const quotaExceeded = isDemo && state === "ended" && elapsed >= capSeconds - 1;
+  /** Over-cap hold: the call ended while the visitor was away. */
+  const holdExpired = isDemo && state === "ended" && holdEnded;
 
   // Each tick schedules the next rather than running a setInterval off
   // Date.now(): decrementing by one avoids calling an impure clock during
@@ -429,14 +475,84 @@ export function VoiceCall({
     [markClosing],
   );
 
+  /**
+   * Demo hold entry: page hidden mid-call. Mic and talk clock pause, the
+   * session stays up, Voni says it'll hold. Demo-only; inline calls and
+   * non-live states ignore it. `pagehide` (true unload) still ends the
+   * call in the session — this is only for hide-with-page-alive.
+   */
+  const enterHold = useCallback(() => {
+    if (mode.kind !== "demo") return;
+    if (closingRef.current || holdEndedRef.current) return;
+    if (!demoSessionLive(sessionRef.current, stateRef.current)) return;
+    const session = sessionRef.current;
+    if (!(session instanceof VoiceSession)) return;
+    const now = Date.now();
+    const hold = (holdRef.current ??= new HoldState());
+    if (!hold.enter(now)) return;
+    clockRef.current?.setHeld(true, now);
+    session.setOnHold(true);
+    holdingRef.current = true;
+    setHolding(true);
+    replyQueueRef.current?.enqueue(HOLD_ENTER_INSTRUCTIONS);
+  }, [mode]);
+
+  /**
+   * Demo hold exit: page visible again. Three ways out: over the ~2 min
+   * cap (polite end), live session (un-hold + welcome back), or a dead
+   * session (restart with carried context so Voni remembers the call).
+   */
+  const exitHold = useCallback(() => {
+    const hold = holdRef.current;
+    if (!hold || !hold.holding) return;
+    const now = Date.now();
+    if (hold.isExpired(now)) {
+      hold.exit(now);
+      holdingRef.current = false;
+      setHolding(false);
+      holdEndedRef.current = true;
+      setHoldEnded(true);
+      clockRef.current?.setHeld(false, now);
+      const session = sessionRef.current;
+      const live = demoSessionLive(session, stateRef.current);
+      if (live) closeCall(HOLD_TIMEOUT_INSTRUCTIONS);
+      else void sessionRef.current?.stop();
+      return;
+    }
+    hold.exit(now);
+    holdingRef.current = false;
+    setHolding(false);
+    clockRef.current?.setHeld(false, now);
+    const session = sessionRef.current;
+    if (!(session instanceof VoiceSession)) return;
+    if (demoSessionLive(session, stateRef.current)) {
+      session.setOnHold(false);
+      replyQueueRef.current?.enqueue(HOLD_RETURN_INSTRUCTIONS);
+    } else if (stateRef.current === "reconnecting") {
+      // Auto-resume in flight: un-hold the mic now, welcome back on arrival.
+      session.setOnHold(false);
+      greetOnListenRef.current = true;
+    } else {
+      // Session gone (Safari cut it while away): fresh transport, same call.
+      carryoverRef.current = buildHoldCarryover(turnsRef.current);
+      preserveRef.current = true;
+      void startRef.current();
+    }
+  }, [closeCall]);
+
   useEffect(() => {
     if (!connected) return;
     if (isDemo) {
-      // The demo shows talk time: it freezes while muted (talk-clock.ts).
+      // The demo shows talk time: it freezes while muted or on hold.
       const clock = (clockRef.current ??= new TalkClock(Date.now()));
       const id = setInterval(() => {
         const now = Date.now();
         setElapsed(clock.talkSeconds(now));
+        // Hold past its cap ends politely, even with the mic down.
+        if (holdingRef.current && holdRef.current?.isExpired(now) && !closingRef.current) {
+          exitHold();
+          return;
+        }
         // Never let a check-in replace a pending goodbye (the queue is latest-wins).
         if (clock.takeCheckIn(now) && !closingRef.current) {
           replyQueueRef.current?.enqueue(MUTE_CHECK_IN_INSTRUCTIONS);
@@ -452,7 +568,21 @@ export function VoiceCall({
     );
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [connected]);
+  }, [connected, exitHold]);
+
+  // Demo hold wiring: hidden (another app or tab) parks the call on hold,
+  // visible brings it back. Only visibilitychange: blur fires spuriously
+  // (devtools, dialogs) while the page is still visible. `pagehide` is NOT
+  // listened here — true unload still ends the call inside the session.
+  useEffect(() => {
+    if (!isDemo) return;
+    const onChange = () => {
+      if (document.visibilityState === "hidden") enterHold();
+      else exitHold();
+    };
+    document.addEventListener("visibilitychange", onChange);
+    return () => document.removeEventListener("visibilitychange", onChange);
+  }, [isDemo, enterHold, exitHold]);
 
   // A finished call drops its pending pacing work.
   useEffect(() => {
@@ -555,12 +685,31 @@ export function VoiceCall({
     // reads as a stuck click. Cleanup in `finally` restores both.
     setStarting(true);
     notifyPending({ ...pendingRef.current, starting: true });
+    // A hold rejoin keeps the call's memory: turns, talk clock, ladder and
+    // hold markers survive; only the transport is fresh.
+    const preserving = preserveRef.current;
+    preserveRef.current = false;
+    rejoiningRef.current = false;
     setError(null);
     setRetryIn(null);
-    setTurns([]);
-    setElapsed(0);
+    if (preserving) {
+      setElapsed(clockRef.current?.talkSeconds(Date.now()) ?? 0);
+    } else {
+      setTurns([]);
+      setElapsed(0);
+      clockRef.current = null;
+      ladderRef.current = new StakesLadder();
+      lastAgentLineRef.current = "";
+      holdRef.current = null;
+      holdingRef.current = false;
+      setHolding(false);
+      holdEndedRef.current = false;
+      setHoldEnded(false);
+      carryoverRef.current = null;
+      greetOnListenRef.current = false;
+    }
     setToolActive(false);
-    setMutedState(false);
+    setMutedState(preserving ? mutedRef.current : false);
     setFiller(null);
     setLiveCaption(null);
     setClosed(false);
@@ -569,10 +718,14 @@ export function VoiceCall({
     // them mid-call; this only sets the opening state.
     setCaptionsOpen(true);
     interruptionsRef.current = 0;
-    clockRef.current = null;
-    ladderRef.current = new StakesLadder();
+    if (preserving) {
+      if (!ladderRef.current) ladderRef.current = new StakesLadder();
+    } else {
+      clockRef.current = null;
+      ladderRef.current = new StakesLadder();
+      lastAgentLineRef.current = "";
+    }
     callTokenRef.current = null;
-    lastAgentLineRef.current = "";
     closingRef.current = false;
     timingsRef.current = new CallTimings();
     timingsRef.current.mark("startRequested");
@@ -693,6 +846,11 @@ export function VoiceCall({
         if (next === "connecting" || next === "listening" || next === "speaking" || next === "ended")
           timingsRef.current?.mark(next);
         if (next === "listening") setFiller(null);
+        // Hold rejoin via in-flight auto-resume: welcome back on arrival.
+        if ((next === "listening" || next === "speaking") && greetOnListenRef.current) {
+          greetOnListenRef.current = false;
+          replyQueueRef.current?.enqueue(HOLD_RETURN_INSTRUCTIONS);
+        }
         setCallState(next);
       },
       onTranscript: (turn) => {
@@ -727,7 +885,16 @@ export function VoiceCall({
         // A real interjection gets the firm tick: Voni heard you.
         if (event.verdict === "yield") sounds().tick(1, 0.9);
       },
-      onSessionReady: (id) => console.debug("[voice-call] session", id),
+      onSessionReady: (id) => {
+        console.debug("[voice-call] session", id);
+        // Post-grace hold restart: whisper the carried context so Voni
+        // resumes instead of starting over, then welcome the visitor back.
+        if (carryoverRef.current && sessionRef.current instanceof VoiceSession) {
+          sessionRef.current.sendContext(carryoverRef.current);
+          carryoverRef.current = null;
+          replyQueueRef.current?.enqueue(HOLD_RETURN_INSTRUCTIONS);
+        }
+      },
       onAgentPartial: (partial) => {
         // Agent captions stream word-by-word while it speaks — same live
         // caption line, cleared when the final agent turn lands.
@@ -805,6 +972,9 @@ export function VoiceCall({
     sessionRef.current = session;
     session.setOutputGain(voicePlaybackGain(mode.kind === "demo" ? voiceId : config.voiceId));
     replyQueueRef.current = new ReplyQueue((instructions) => session.requestReply(instructions));
+    // A preserved mute sticks to the fresh transport (pre-ready mutes are
+    // held and sent as context on ready, same as a mid-connect mute press).
+    if (preserving && mutedRef.current) session.setInputMuted(true);
 
     // Straight from the click handler: getUserMedia and AudioContext startup
     // are gated behind a user gesture in every major browser.
@@ -848,10 +1018,22 @@ export function VoiceCall({
     }
   }, [mode, notifyPending, voiceId, config, engine, cascadeUrl, setCallState, closeCall, markClosing]);
 
+  useEffect(() => {
+    startRef.current = start;
+  }, [start]);
+
   const hangUp = useCallback(async () => {
     if (hangingUp) return;
     setHangingUp(true);
     notifyPending({ ...pendingRef.current, hangingUp: true });
+    // Leaving hold behind: the call is over, never to be resumed.
+    if (holdingRef.current) {
+      const now = Date.now();
+      holdRef.current?.exit(now);
+      clockRef.current?.setHeld(false, now);
+      holdingRef.current = false;
+      setHolding(false);
+    }
     try {
       await sessionRef.current?.stop();
       sessionRef.current = null;
@@ -984,9 +1166,11 @@ export function VoiceCall({
     };
     const demoStatus = error
       ? "Call didn't connect"
-      : connected && !toolActive && !filler
-        ? `${state === "speaking" ? "Speaking" : "Listening"} · ${formatCallStatus(elapsed)}`
-        : statusText;
+      : holding && connected
+        ? `On hold · ${formatCallStatus(elapsed)}`
+        : connected && !toolActive && !filler
+          ? `${state === "speaking" ? "Speaking" : "Listening"} · ${formatCallStatus(elapsed)}`
+          : statusText;
 
     const arrow = (step: number) => (
       <button
@@ -1083,9 +1267,11 @@ export function VoiceCall({
           />
         ) : state === "ended" ? (
           <p className="text-base leading-snug text-balance">
-            {quotaExceeded
-              ? "That's the demo time for this call."
-              : "Call again, or close to try another voice."}
+            {holdExpired
+              ? "The call ended while you were away."
+              : quotaExceeded
+                ? "That's the demo time for this call."
+                : "Call again, or close to try another voice."}
           </p>
         ) : starting || state === "connecting" ? (
           <p className="text-muted-foreground text-ui">Connecting…</p>
@@ -1200,6 +1386,7 @@ export function VoiceCall({
         aria-label={callTitle}
         data-voice-state={state}
         data-open={open}
+        data-holding={holding}
         className={cn("w-full text-left", className)}
       >
         {/* A · Unfold (lg and up): the 360px portrait column widens into
@@ -1371,9 +1558,11 @@ export function VoiceCall({
                       </p>
                     ) : state === "ended" && turns.length === 0 && !error ? (
                       <p className="text-center text-sm text-balance text-foreground/70">
-                        {quotaExceeded
-                          ? "That's the demo time for this call."
-                          : "Call again, or close to try another voice."}
+                        {holdExpired
+                          ? "The call ended while you were away."
+                          : quotaExceeded
+                            ? "That's the demo time for this call."
+                            : "Call again, or close to try another voice."}
                       </p>
                     ) : countdown ? (
                       <span className="flex flex-col items-center gap-1">{countdown}</span>

@@ -101,6 +101,48 @@ test("the desktop demo keeps the unfold card and transcript structure", () => {
   assert.match(desktop, /<LandingOrb state=\{orbState\} \/>/, "the portrait orb tints by call state");
 });
 
+test("the demo parks on hold when the page hides and resumes on return", () => {
+  const call = readRepo("components/voice-call.tsx");
+  const hold = readRepo("lib/demo/hold.ts");
+  const context = readRepo("lib/voice/context.ts");
+
+  // Entry/exit ride visibilitychange only (blur fires while visible).
+  assert.match(call, /document\.addEventListener\("visibilitychange"/);
+  assert.match(call, /document\.removeEventListener\("visibilitychange"/);
+  assert.doesNotMatch(call, /window\.addEventListener\("blur"/);
+  // Demo-gated: inline test calls never hold.
+  assert.match(call, /if \(mode\.kind !== "demo"\) return;/);
+  // Hold pauses its own way: mic via setOnHold, clock via setHeld.
+  assert.match(call, /session\.setOnHold\(true\)/);
+  assert.match(call, /session\.setOnHold\(false\)/);
+  assert.match(call, /clockRef\.current\?\.setHeld\(true/);
+  assert.match(call, /clockRef\.current\?\.setHeld\(false/);
+  // Spoken lines go through the queue, never over a reply.
+  assert.match(call, /HOLD_ENTER_INSTRUCTIONS/);
+  assert.match(call, /HOLD_RETURN_INSTRUCTIONS/);
+  assert.match(call, /HOLD_TIMEOUT_INSTRUCTIONS/);
+  assert.match(call, /replyQueueRef\.current\?\.enqueue\(HOLD_/);
+  // The hold module owns the cap; the card enforces it off the same clock tick.
+  assert.match(hold, /HOLD_CAP_S = 120/);
+  assert.match(call, /holdRef\.current\?\.isExpired\(now\)/);
+  // Hidden hold context, never a reply or transcript row.
+  assert.match(context, /HOLD_ON_CONTEXT/);
+  assert.match(context, /HOLD_OFF_CONTEXT/);
+  // A post-grace restart carries the conversation, not a blank slate.
+  assert.match(call, /buildHoldCarryover\(turnsRef\.current\)/);
+  assert.match(call, /sessionRef\.current\.sendContext\(carryoverRef\.current\)/);
+  // On-screen state: hold status, holding marker, away-ended copy.
+  assert.match(call, /On hold ·/);
+  assert.match(call, /data-holding=\{holding\}/);
+  assert.match(call, /The call ended while you were away\./);
+});
+
+test("the hold clock union survives mute overlap", () => {
+  const clock = readRepo("lib/demo/talk-clock.ts");
+  assert.match(clock, /setHeld/);
+  assert.match(clock, /pauseStartedAt/);
+});
+
 test("the caption tick is humanized and strikes on caption words and yield", () => {
   const call = readRepo("components/voice-call.tsx");
 

@@ -78,3 +78,11 @@ export const TIME_UP_INSTRUCTIONS = `Time is up on this demo. Wrap up warmly in 
 
 export const MUTE_CHECK_IN_INSTRUCTIONS =
   "The caller muted their microphone a little while ago. Check in once, gently, in one short sentence: no rush, you're here when they unmute. Do not ask a question.";
+
+export const HOLD_ENTER_INSTRUCTIONS =
+  "The visitor just stepped away from the page to fetch something for your test. Say one short line, like: \"Go ahead, I'll hold.\" Then wait quietly for them to return.";
+
+export const HOLD_RETURN_INSTRUCTIONS =
+  "The visitor is back on the page. Greet them back briefly, like: \"Welcome back!\" Then continue where you left off, in your own words.";
+
+export const HOLD_TIMEOUT_INSTRUCTIONS = `The visitor was away too long, so this demo is ending. Say one warm closing line, like: "I'll let you go for now. If you'd like to try again properly, the team's at ${HI_VONI}." Then hang up.`;
