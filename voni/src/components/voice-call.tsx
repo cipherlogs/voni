@@ -374,7 +374,10 @@ export function VoiceCall({
    * `carryover` is the hidden resume cue a post-grace restart whispers so
    * Voni does not start from scratch; `preserve` keeps turns, clock and
    * ladder across that restart. `greetOnListen` welcomes back once an
-   * in-flight auto-resume lands.
+   * in-flight auto-resume lands. `returnPending`/`returning` is the
+   * reconnecting note between a hold exit and landed audio: failures in
+   * that window rejoin silently instead of painting an error, and the
+   * welcome-back fires once per return (`welcomed`).
    */
   const holdRef = useRef<HoldState | null>(null);
   const [holding, setHolding] = useState(false);
@@ -385,6 +388,25 @@ export function VoiceCall({
   const preserveRef = useRef(false);
   const greetOnListenRef = useRef(false);
   const rejoiningRef = useRef(false);
+  const returnPendingRef = useRef(false);
+  /** Brief "Reconnecting…" state while a hold return re-establishes audio. */
+  const [returning, setReturning] = useState(false);
+  const welcomedRef = useRef(false);
+  /**
+   * One window, one setter: the ref is read in socket/visibility callbacks,
+   * the state renders the reconnecting note. Stable, so callbacks can close
+   * over it without re-subscribing.
+   */
+  const setReturnPending = useCallback((value: boolean) => {
+    returnPendingRef.current = value;
+    setReturning(value);
+  }, []);
+  /** The welcome-back speaks once per return, on whichever arrival lands first. */
+  const welcomeBackOnce = useCallback(() => {
+    if (welcomedRef.current) return;
+    welcomedRef.current = true;
+    replyQueueRef.current?.enqueue(HOLD_RETURN_INSTRUCTIONS);
+  }, []);
   /** Holds entered this call: round-robins the rotating hold lines. */
   const holdCountRef = useRef(0);
   const turnsRef = useRef<Transcript[]>([]);
@@ -464,10 +486,12 @@ export function VoiceCall({
   const markClosing = useCallback((): boolean => {
     if (closingRef.current) return false;
     closingRef.current = true;
+    // The call is over: no hold return is pending anymore either.
+    setReturnPending(false);
     replyQueueRef.current?.clear();
     closeTimerRef.current = setTimeout(() => void sessionRef.current?.stop(), CLOSE_FALLBACK_MS);
     return true;
-  }, []);
+  }, [setReturnPending]);
 
   /** Ask Voni to close the call, once. */
   const closeCall = useCallback(
@@ -496,6 +520,8 @@ export function VoiceCall({
     session.setOnHold(true);
     holdingRef.current = true;
     setHolding(true);
+    // A new hold cycle may welcome back once on return.
+    welcomedRef.current = false;
     replyQueueRef.current?.enqueue(holdEnterInstructions(holdCountRef.current));
     holdCountRef.current += 1;
   }, [mode]);
@@ -530,18 +556,20 @@ export function VoiceCall({
     if (!(session instanceof VoiceSession)) return;
     if (demoSessionLive(session, stateRef.current)) {
       session.setOnHold(false);
-      replyQueueRef.current?.enqueue(HOLD_RETURN_INSTRUCTIONS);
+      welcomeBackOnce();
     } else if (stateRef.current === "reconnecting") {
       // Auto-resume in flight: un-hold the mic now, welcome back on arrival.
+      // The return is pending until audio lands: failures rejoin silently.
       session.setOnHold(false);
       greetOnListenRef.current = true;
+      setReturnPending(true);
     } else {
       // Session gone (Safari cut it while away): fresh transport, same call.
       carryoverRef.current = buildHoldCarryover(turnsRef.current);
       preserveRef.current = true;
       void startRef.current();
     }
-  }, [closeCall]);
+  }, [closeCall, setReturnPending, welcomeBackOnce]);
 
   useEffect(() => {
     if (!connected) return;
@@ -557,7 +585,8 @@ export function VoiceCall({
           return;
         }
         // Never let a check-in replace a pending goodbye (the queue is latest-wins).
-        if (clock.takeCheckIn(now) && !closingRef.current) {
+        // …or a pending welcome-back: the return lands undisturbed.
+        if (clock.takeCheckIn(now) && !closingRef.current && !returnPendingRef.current) {
           replyQueueRef.current?.enqueue(MUTE_CHECK_IN_INSTRUCTIONS);
         }
         if (clock.isOver(now)) closeCall(TIME_UP_INSTRUCTIONS);
@@ -683,6 +712,12 @@ export function VoiceCall({
   const start = useCallback(async () => {
     if (startingRef.current) return;
     startingRef.current = true;
+    // A restart never inherits the old transport: detach and stop it first,
+    // so its late socket callbacks (stale error banner, ghost audio) die
+    // with explicitStop instead of painting over the fresh session.
+    const previous = sessionRef.current;
+    sessionRef.current = null;
+    if (previous) void previous.stop().catch(() => undefined);
     // Paint first, await after: state + the host-footter notification both
     // land synchronously here, so a slow token fetch or mic grant never
     // reads as a stuck click. Cleanup in `finally` restores both.
@@ -697,6 +732,9 @@ export function VoiceCall({
     setRetryIn(null);
     if (preserving) {
       setElapsed(clockRef.current?.talkSeconds(Date.now()) ?? 0);
+      // A hold rejoin is pending until audio lands: the reconnecting note
+      // shows, terminal transport failures rejoin silently (see onError).
+      setReturnPending(true);
     } else {
       setTurns([]);
       setElapsed(0);
@@ -711,6 +749,8 @@ export function VoiceCall({
       carryoverRef.current = null;
       greetOnListenRef.current = false;
       holdCountRef.current = 0;
+      setReturnPending(false);
+      welcomedRef.current = false;
     }
     setToolActive(false);
     setMutedState(preserving ? mutedRef.current : false);
@@ -850,10 +890,14 @@ export function VoiceCall({
         if (next === "connecting" || next === "listening" || next === "speaking" || next === "ended")
           timingsRef.current?.mark(next);
         if (next === "listening") setFiller(null);
-        // Hold rejoin via in-flight auto-resume: welcome back on arrival.
-        if ((next === "listening" || next === "speaking") && greetOnListenRef.current) {
-          greetOnListenRef.current = false;
-          replyQueueRef.current?.enqueue(HOLD_RETURN_INSTRUCTIONS);
+        // A hold return has landed: the reconnecting note lifts here.
+        if (next === "listening" || next === "speaking") {
+          if (returnPendingRef.current) setReturnPending(false);
+          // Hold rejoin via in-flight auto-resume: one welcome back per return.
+          if (greetOnListenRef.current) {
+            greetOnListenRef.current = false;
+            welcomeBackOnce();
+          }
         }
         setCallState(next);
       },
@@ -892,11 +936,13 @@ export function VoiceCall({
       onSessionReady: (id) => {
         console.debug("[voice-call] session", id);
         // Post-grace hold restart: whisper the carried context so Voni
-        // resumes instead of starting over, then welcome the visitor back.
+        // resumes instead of starting over, then welcome the visitor back —
+        // once per return. (The resume-variant agent has no greeting, so
+        // this is the single first utterance, not a second one.)
         if (carryoverRef.current && sessionRef.current instanceof VoiceSession) {
           sessionRef.current.sendContext(carryoverRef.current);
           carryoverRef.current = null;
-          replyQueueRef.current?.enqueue(HOLD_RETURN_INSTRUCTIONS);
+          welcomeBackOnce();
         }
       },
       onAgentPartial: (partial) => {
@@ -917,6 +963,11 @@ export function VoiceCall({
           void startRef.current();
           return;
         }
+        // A hold return that fails for a reason the visitor must act on
+        // (mic, auth, config): the reconnecting note lifts and the real
+        // error shows. Stale callbacks from a detached transport never
+        // reach here — start() stops the old session first.
+        setReturnPending(false);
         setError(e);
         setRetryIn(e.retryAfterSeconds ?? null);
       },
@@ -998,7 +1049,9 @@ export function VoiceCall({
           // prefers it, so the browser cannot choose which agent it reaches.
           { mode: "agent", agentId: "" },
           async () => {
-            const minted = await demoToken(voiceId)();
+            // A hold rejoin binds the greeting-less resume agent variant, so
+            // the welcome-back is the single first utterance (see stored-agents).
+            const minted = await demoToken(voiceId, preserving ? { resume: true } : undefined)();
             callTokenRef.current = minted.callToken ?? null;
             return minted;
           },
@@ -1029,7 +1082,7 @@ export function VoiceCall({
       setStarting(false);
       notifyPending({ ...pendingRef.current, starting: false });
     }
-  }, [mode, notifyPending, voiceId, config, engine, cascadeUrl, setCallState, closeCall, markClosing]);
+  }, [mode, notifyPending, voiceId, config, engine, cascadeUrl, setCallState, closeCall, markClosing, setReturnPending, welcomeBackOnce]);
 
   useEffect(() => {
     startRef.current = start;
@@ -1047,6 +1100,7 @@ export function VoiceCall({
       holdingRef.current = false;
       setHolding(false);
     }
+    setReturnPending(false);
     try {
       await sessionRef.current?.stop();
       sessionRef.current = null;
@@ -1054,7 +1108,7 @@ export function VoiceCall({
       setHangingUp(false);
       notifyPending({ ...pendingRef.current, hangingUp: false });
     }
-  }, [hangingUp, notifyPending]);
+  }, [hangingUp, notifyPending, setReturnPending]);
 
   const setMuted = useCallback(
     (nextMuted: boolean) => {
@@ -1118,7 +1172,7 @@ export function VoiceCall({
           ? "Free demo time is up"
           : `Call ended · ${formatCallStatus(elapsed)}`;
 
-  const errorAlert = error ? (
+  const errorAlert = error && !returning ? (
     <div
       role="alert"
       className="border-destructive/25 bg-destructive/5 flex w-full gap-2.5 rounded-xl border px-3 py-2.5 text-left"
@@ -1177,13 +1231,15 @@ export function VoiceCall({
     const cycle = (step: number) => {
       setVoiceId(DEMO_VOICE_IDS[(voiceIndex + step + DEMO_VOICE_IDS.length) % DEMO_VOICE_IDS.length]);
     };
-    const demoStatus = error
+    const demoStatus = error && !returning
       ? "Call didn't connect"
-      : holding && connected
-        ? `On hold · ${formatCallStatus(elapsed)}`
-        : connected && !toolActive && !filler
-          ? `${state === "speaking" ? "Speaking" : "Listening"} · ${formatCallStatus(elapsed)}`
-          : statusText;
+      : returning
+        ? "Reconnecting…"
+        : holding && connected
+          ? `On hold · ${formatCallStatus(elapsed)}`
+          : connected && !toolActive && !filler
+            ? `${state === "speaking" ? "Speaking" : "Listening"} · ${formatCallStatus(elapsed)}`
+            : statusText;
 
     const arrow = (step: number) => (
       <button

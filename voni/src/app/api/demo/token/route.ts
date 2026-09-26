@@ -50,7 +50,7 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  let body: { voiceId?: unknown };
+  let body: { voiceId?: unknown; resume?: unknown };
   try {
     body = await request.json();
   } catch {
@@ -58,8 +58,12 @@ export async function POST(request: NextRequest) {
   }
 
   const voiceId = typeof body.voiceId === "string" ? body.voiceId : "";
+  // Hold rejoin only: bind the fresh transport to the greeting-less resume
+  // variant so the welcome-back is the single first utterance. Strict
+  // `=== true` — anything else mints the regular intro agent.
+  const resume = body.resume === true;
 
-  const agent = await getOrCreateDemoAgent(voiceId);
+  const agent = await getOrCreateDemoAgent(voiceId, { resume });
   if (!agent.ok) {
     return NextResponse.json({ error: agent.error }, { status: 400 });
   }

@@ -4,6 +4,7 @@ import {
   buildDemoAgentBody,
   demoAgentFingerprint,
   demoAgentName,
+  demoAgentStorageKey,
 } from "./stored-agents";
 import { END_CALL_TOOL } from "@/lib/tools/definitions";
 import { VONI_GREETINGS } from "./voni-agent";
@@ -30,6 +31,21 @@ test("Voni opens as itself, in the picked voice's language", () => {
   assert.deepEqual(spanish.input.language_codes, ["es"]);
 });
 
+test("the resume variant drops the greeting but keeps everything else", () => {
+  const resume = buildDemoAgentBody("anna", { resume: true });
+  assert.ok(!("greeting" in resume), "omitted greeting waits silently for the welcome-back reply");
+  assert.equal(resume.name, "demo:voni:anna:resume");
+  assert.equal(resume.system_prompt, buildDemoAgentBody("anna").system_prompt);
+  assert.deepEqual(resume.tools, buildDemoAgentBody("anna").tools);
+  assert.equal(demoAgentName("anna"), "demo:voni:anna", "regular agent unchanged");
+  assert.equal(demoAgentStorageKey("anna", true), "anna:resume");
+  assert.equal(demoAgentStorageKey("anna"), "anna");
+  assert.notEqual(
+    demoAgentFingerprint(resume),
+    demoAgentFingerprint(buildDemoAgentBody("anna")),
+    "the variant refreshes its own cached row, never the intro agent",
+  );
+});
 test("demo body carries call control, tuning, and per-agent vocabulary", () => {
   const body = buildDemoAgentBody("anna");
   assert.deepEqual(

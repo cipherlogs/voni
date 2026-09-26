@@ -40,6 +40,15 @@ Run on a real iPhone (Safari) and a real Android phone (Chrome) with `npm run de
 - Mic re-acquire without a fresh gesture (iOS AudioContext may stay suspended until a tap; first tap should unstick it).
 - Desktop app-switch without minimize may not fire `visibilitychange` (ticket desktop case is another tab, which does).
 
+### Follow-up round 3 (stale error + double greeting on return)
+
+- Root causes, all in the hold-return path: (1) `start()` never stopped the old session, so its late socket failure painted "call ended unexpectedly" over the fresh connecting screen; (2) a fresh transport binds the stored agent whose greeting always plays, then the carryover + HOLD_RETURN spoke a second greeting; (3) the welcome-back had two unguarded enqueue sites.
+- Fixes: stop-then-start in `start()` (stale callbacks die with `explicitStop`); a `returnPending`/`returning` window from hold exit until audio lands — Reconnecting… note shows, no error banner paints, terminal transport failures rejoin silently; `welcomeBackOnce` per return on all three arrival paths.
+- Single greeting needs a server lever: per AssemblyAI docs, `agent_id` is mutually exclusive with inline fields, so the browser cannot suppress the stored greeting. Token route takes strict `resume === true` and binds a `:resume` stored-agent sibling (same prompt/tools, no greeting → waits silently); the carried context + welcome-back reply is the single first utterance. No migration: the variant rides the existing unique index as a `voice:resume` storage key.
+- Deliberately NOT changed: the rejoin predicate still reads the consumed greet flag, not the pending flag — rejoining on every terminal failure of an already-fresh start would loop forever on a dead network. A mute check-in due inside the reconnect window is dropped rather than stomping the welcome-back (queue is latest-wins).
+- Watch-items (no evidence yet, not built): hung resume with zero events; cumulative multi-stretch cap.
+- Verified: `npm test` 652/652, `tsc` + `eslint` clean, dev-server compile + landing render check clean. Real-device re-test (phone Gmail round + desktop tab round) still pending — that is the acceptance that matters.
+
 ### Follow-up round 2 (phone "ended unexpectedly" + hold-line rotation)
 
 - Phone root cause: returning onto an in-flight auto-resume that then fails (1008/exhausted) left the call dead — the greet-on-arrival flag had no failure branch. `onError` now rejoins silently (preserved transport + carryover) on terminal `network`/`expired` only, via pure `shouldRejoinAfterHold` (`voni/src/lib/demo/hold.ts`); mic/auth/config failures still surface.

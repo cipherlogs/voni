@@ -136,10 +136,43 @@ test("the demo parks on hold when the page hides and resumes on return", () => {
   assert.match(call, /buildHoldCarryover\(turnsRef\.current\)/);
   assert.match(call, /sessionRef\.current\.sendContext\(carryoverRef\.current\)/);
   assert.match(call, /shouldRejoinAfterHold\(greetOnListenRef\.current, e\.code\)/);
+  // A restart never inherits the old transport: the ghost session is
+  // detached and stopped first, so its late callbacks can't paint an
+  // error banner or ghost audio over the fresh session.
+  assert.match(call, /const previous = sessionRef\.current;/);
+  assert.match(call, /sessionRef\.current = null;/);
+  assert.match(call, /void previous\.stop\(\)/);
+  // The welcome-back fires once per return, on whichever arrival lands
+  // first — live return included.
+  assert.match(call, /welcomedRef\.current = false/);
+  assert.match(call, /const welcomeBackOnce = useCallback/);
+  assert.match(call, /if \(welcomedRef\.current\) return;/);
   // On-screen state: hold status, holding marker, away-ended copy.
   assert.match(call, /On hold ·/);
   assert.match(call, /data-holding=\{holding\}/);
   assert.match(call, /The call ended while you were away\./);
+});
+
+test("a hold return reconnects visibly, silently, and speaks exactly once", () => {
+  const call = readRepo("components/voice-call.tsx");
+  const agents = readRepo("lib/demo/stored-agents.ts");
+  const token = readRepo("app/api/demo/token/route.ts");
+
+  // Pending from hold exit until audio lands: a reconnecting note shows,
+  // and no error banner can paint over it in that window. One setter owns
+  // the ref/state pair.
+  assert.match(call, /const setReturnPending = useCallback/);
+  assert.match(call, /setReturnPending\(true\)/);
+  assert.match(call, /setReturnPending\(false\)/);
+  assert.match(call, /Reconnecting…/);
+  assert.match(call, /error && !returning/);
+  // A hold rejoin binds the greeting-less resume agent variant, so the
+  // welcome-back is the single first utterance — never a re-introduction
+  // stacked on one.
+  assert.match(call, /demoToken\(voiceId, preserving \? \{ resume: true \} : undefined\)/);
+  assert.match(agents, /demoAgentStorageKey/);
+  assert.match(agents, /resume \? `\$\{voiceId\}:resume` : voiceId/);
+  assert.match(token, /body\.resume === true/);
 });
 
 test("the hold clock union survives mute overlap", () => {

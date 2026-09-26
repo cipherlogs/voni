@@ -233,12 +233,16 @@ export class RateLimitError extends Error {
 
 /** Public demo: the server picks the prompt (Voni's own), we only name the voice. */
 export const demoToken =
-  (voiceId: string): TokenFetcher =>
+  (voiceId: string, opts?: { resume?: boolean }): TokenFetcher =>
   async () => {
     const res = await fetch("/api/demo/token", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ voiceId }),
+      // A hold rejoin binds the greeting-less resume agent variant, so the
+      // welcome-back is the single first utterance. Omitted otherwise.
+      body: JSON.stringify(
+        opts?.resume === true ? { voiceId, resume: true } : { voiceId },
+      ),
     });
     if (!res.ok) {
       const { error } = await res.json().catch(() => ({ error: null }));
