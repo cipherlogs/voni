@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { checkDemoLimits } from "@/lib/demo/rate-limit";
 import { getOrCreateDemoAgent } from "@/lib/demo/stored-agents";
-import { demoCallKey, signDemoCall } from "@/lib/demo/call-token";
+import { carryDemoCall, demoCallKey } from "@/lib/demo/call-token";
 import { WALL_CAP_S } from "@/lib/demo/talk-clock";
 import { secret } from "@/lib/env";
 
@@ -50,7 +50,7 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  let body: { voiceId?: unknown; resume?: unknown };
+  let body: { voiceId?: unknown; resume?: unknown; callToken?: unknown };
   try {
     body = await request.json();
   } catch {
@@ -101,7 +101,7 @@ export async function POST(request: NextRequest) {
     {
       token,
       agentId: agent.agentId,
-      callToken: signDemoCall(callKey),
+      callToken: carryDemoCall(callKey, body.callToken),
       maxSessionSeconds: MAX_SESSION_SECONDS,
     },
     // A single-use token must never be cached by a CDN or the browser.

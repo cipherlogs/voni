@@ -207,6 +207,24 @@ Cost math: demo sessions are capped at 120s by AssemblyAI itself, so at
 $0.075/min one demo costs at most $0.15 and the default daily ceiling is about
 $9/day worst case.
 
+## Demo test inbox
+
+The demo's email test (`.scratch/demo-prospect-capture/issues/03-*`) reads the
+shared test inbox `nedalk.js@gmail.com` through the Gmail REST API
+(`src/lib/demo/inbox.ts`), on the same Google OAuth client as sign-in.
+
+| Variable | Purpose |
+| --- | --- |
+| `DEMO_INBOX_REFRESH_TOKEN` | OAuth refresh token for the inbox account, scope `gmail.modify` (read now, reply in ticket 04). |
+
+One-time setup:
+
+1. Google Cloud Console, same project as `GOOGLE_CLIENT_ID`: enable the **Gmail API**; under the OAuth consent screen add the `gmail.modify` scope and, while the app is in *Testing*, add `nedalk.js@gmail.com` as a test user.
+2. On the OAuth client, add `http://localhost:8765` as an authorized redirect URI.
+3. `node --env-file=.dev.vars --import tsx scripts/mint-demo-inbox-token.mts`, sign in as the inbox account, and put the printed line in `.dev.vars` (and `wrangler secret put DEMO_INBOX_REFRESH_TOKEN` for deploys).
+
+⚠️ While the consent screen is in *Testing*, Google expires refresh tokens after 7 days: re-run step 3, or publish the app. Without the token the demo still runs; every claim just reads as "not landed yet" (logged as `[demo-inbox] read failed`).
+
 ## Cloudflare (deploy target + R2 storage)
 - `CLOUDFLARE_ACCOUNT_ID` / `CLOUDFLARE_API_TOKEN` — only needed for `npm run deploy` / R2 access, not local dev.
 

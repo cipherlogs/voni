@@ -27,3 +27,13 @@ test("tampered, foreign, or malformed tokens are rejected", () => {
   assert.equal(verifyDemoCall(KEY, "a.b", 0), null);
   assert.equal(verifyDemoCall(KEY, `${token}x`, 0), null);
 });
+
+test("a re-mint in the same call keeps its token (start, budgets); a dead one gets a fresh call", async () => {
+  const { carryDemoCall, signDemoCall, verifyDemoCall, CALL_TOKEN_TTL_S } = await import("./call-token");
+  const first = signDemoCall("k", 1_000_000);
+  assert.equal(verifyDemoCall("k", first, 1_000_000)?.startedAt, 1_000_000);
+  assert.equal(carryDemoCall("k", first, 1_000_000 + 60_000), first);
+  assert.notEqual(carryDemoCall("k", first, 1_000_000 + (CALL_TOKEN_TTL_S + 1) * 1000), first, "expired");
+  assert.notEqual(carryDemoCall("k", "forged.1.x", 1_000_000), "forged.1.x");
+  assert.notEqual(carryDemoCall("k", undefined, 1_000_000), undefined);
+});

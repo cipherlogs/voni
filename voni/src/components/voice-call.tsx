@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import { Dialog as BaseDialog } from "@base-ui/react/dialog";
 import { LandingOrb } from "@/components/landing-orb";
+import { DemoAddressChip } from "@/components/demo-address-chip";
 import { Button } from "@/components/ui/button";
 import {
   MessageScroller,
@@ -59,15 +60,27 @@ import { formatCallStatus } from "@/lib/calls/call-status";
 import { ACCENT_FLAG, getVoice, voiceLabel, voicePlaybackGain } from "@/lib/agents/voices";
 import {
   DEMO_VOICE_IDS,
+  HOLD_RETURN_CLAIM_INSTRUCTIONS,
   HOLD_RETURN_INSTRUCTIONS,
   HOLD_TIMEOUT_INSTRUCTIONS,
+  LATE_EMAIL_INSTRUCTIONS,
   MUTE_CHECK_IN_INSTRUCTIONS,
-  OPEN_BEAT_GOAL,
   TIME_UP_INSTRUCTIONS,
+  beatGoal,
+  emailArrivedInstructions,
   rungInstructions,
   voniConfig,
 } from "@/lib/demo/voni-agent";
-import { TALK_BASE_S, TalkClock } from "@/lib/demo/talk-clock";
+import { TalkClock } from "@/lib/demo/talk-clock";
+import {
+  DEMO_INBOX_ADDRESS,
+  EMAIL_TEST_START,
+  checkResultFromData,
+  emailTestAfterCheck,
+  talkLimitS,
+  type EmailTestState,
+} from "@/lib/demo/email-test";
+import { CHECK_EMAIL_TOOL, SHOW_TEST_ADDRESS_TOOL } from "@/lib/demo/demo-tools";
 import {
   buildHoldCarryover,
   clearCallMemory,
@@ -141,8 +154,8 @@ export { HANGUP_RED };
 
 /** Session caps, in seconds. The server enforces them; the UI only mirrors. */
 export const INLINE_CAP_SECONDS = 180;
-/** Demo: talk-clock seconds (paused on mute); the server holds the wall cap. */
-const DEMO_CAP_SECONDS = TALK_BASE_S;
+/** Demo: re-check the inbox this often after a business claim whose email has not landed. */
+const INBOX_POLL_MS = 8000;
 /** After asking Voni to close, stop the session ourselves if it never does. */
 const CLOSE_FALLBACK_MS = 20000;
 
@@ -388,6 +401,17 @@ export function VoiceCall({
   const replyQueueRef = useRef<ReplyQueue | null>(null);
   const callTokenRef = useRef<string | null>(null);
   const lastAgentLineRef = useRef("");
+  /**
+   * Demo email test (ticket 03): invited → claimed → found. The state
+   * renders the address chip and the talk limit; the ref is read in socket
+   * and timer callbacks.
+   */
+  const [emailTest, setEmailTestState] = useState<EmailTestState>(EMAIL_TEST_START);
+  const emailTestRef = useRef<EmailTestState>(EMAIL_TEST_START);
+  const setEmailTest = useCallback((next: EmailTestState) => {
+    emailTestRef.current = next;
+    setEmailTestState(next);
+  }, []);
   const closingRef = useRef(false);
   const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   /**
@@ -428,7 +452,12 @@ export function VoiceCall({
   const welcomeBackOnce = useCallback(() => {
     if (welcomedRef.current) return;
     welcomedRef.current = true;
-    replyQueueRef.current?.enqueue(HOLD_RETURN_INSTRUCTIONS);
+    // Back right after the invite: most likely from sending the email, so
+    // the welcome-back is the claim question.
+    const test = emailTestRef.current;
+    replyQueueRef.current?.enqueue(
+      test.invited && !test.claim ? HOLD_RETURN_CLAIM_INSTRUCTIONS : HOLD_RETURN_INSTRUCTIONS,
+    );
   }, []);
   /** Page hidden right now (demo): a drop then parks instead of resuming. */
   const hiddenRef = useRef(false);
@@ -474,7 +503,8 @@ export function VoiceCall({
     onPendingChangeRef.current?.(next);
   }, []);
 
-  const capSeconds = isDemo ? DEMO_CAP_SECONDS : INLINE_CAP_SECONDS;
+  // Demo: talk-clock seconds (paused on mute), raised by the email test; the server holds the wall cap.
+  const capSeconds = isDemo ? talkLimitS(emailTest) : INLINE_CAP_SECONDS;
   const connected = state === "listening" || state === "speaking";
   /** Orb tint follows the call (reconnecting reads as connecting: alive). */
   const orbState = state === "reconnecting" ? "connecting" : state;
@@ -550,6 +580,8 @@ export function VoiceCall({
       turns: turnsRef.current,
       talkSeconds: clockRef.current.talkSeconds(now),
       strikes: ladderRef.current?.strikes ?? 0,
+      emailTest: emailTestRef.current,
+      callToken: callTokenRef.current,
       sessionId: sessionIdRef.current,
     });
   }, [mode, voiceId]);
@@ -665,7 +697,11 @@ export function VoiceCall({
         if (clock.takeCheckIn(now) && !closingRef.current && !returnPendingRef.current) {
           replyQueueRef.current?.enqueue(MUTE_CHECK_IN_INSTRUCTIONS);
         }
-        if (clock.isOver(now)) closeCall(TIME_UP_INSTRUCTIONS);
+        const test = emailTestRef.current;
+        if (clock.isOver(now, talkLimitS(test))) {
+          // A claimed email that never landed: promise the reply, then close.
+          closeCall(test.claim && !test.found ? LATE_EMAIL_INSTRUCTIONS : TIME_UP_INSTRUCTIONS);
+        }
       }, 500);
       return () => clearInterval(id);
     }
@@ -677,6 +713,40 @@ export function VoiceCall({
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connected]);
+
+  // Demo email test: a claimed business email that had not landed is
+  // re-checked here rather than trusting the model to call again. When it
+  // lands, a hidden note has Voni say so. Paused on hold and while closing.
+  const inboxPending = isDemo && connected && !holding && emailTest.claim !== null && !emailTest.found;
+  useEffect(() => {
+    if (!inboxPending) return;
+    let inFlight = false;
+    const id = setInterval(async () => {
+      const token = callTokenRef.current;
+      const claim = emailTestRef.current.claim;
+      if (inFlight || !token || !claim || closingRef.current || returnPendingRef.current) return;
+      inFlight = true;
+      try {
+        const res = await fetch(`/api/demo/tools/${CHECK_EMAIL_TOOL}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ toolCallId: "inbox-poll", arguments: { address: claim } }),
+        });
+        const body = (await res.json().catch(() => null)) as { ok?: boolean; data?: Record<string, unknown> } | null;
+        if (!body?.ok || !body.data) return;
+        const result = checkResultFromData(body.data);
+        const test = emailTestRef.current;
+        if (result.status !== "found" || !result.exact || test.found || test.claim !== claim || closingRef.current) return;
+        setEmailTest(emailTestAfterCheck(test, result));
+        replyQueueRef.current?.enqueue(emailArrivedInstructions(result));
+      } catch {
+        // Offline for a beat: the next tick tries again.
+      } finally {
+        inFlight = false;
+      }
+    }, INBOX_POLL_MS);
+    return () => clearInterval(id);
+  }, [inboxPending, setEmailTest]);
 
   // Demo hold wiring. `hidden` alone keeps the call live (a flap) but arms
   // parking, so a drop in the background waits for the visitor instead of
@@ -723,6 +793,8 @@ export function VoiceCall({
     setTurns(snap.turns);
     setElapsed(snap.talkSeconds);
     setRestored(true);
+    setEmailTest(snap.emailTest ?? EMAIL_TEST_START);
+    callTokenRef.current = snap.callToken ?? null;
     /* eslint-enable react-hooks/set-state-in-effect */
     turnsRef.current = snap.turns;
     const ladder = new StakesLadder();
@@ -735,7 +807,7 @@ export function VoiceCall({
     greetOnListenRef.current = snap.sessionId !== null;
     carryoverRef.current = snap.sessionId ? null : buildHoldCarryover(snap.turns);
     preserveRef.current = true;
-  }, [isDemo]);
+  }, [isDemo, setEmailTest]);
 
   // A finished call forgets its memory: a goodbye, the time-up or hold cap.
   // Error endings keep it (≤ the hold cap), so a reload can still continue.
@@ -893,6 +965,7 @@ export function VoiceCall({
       clockRef.current = null;
       ladderRef.current = new StakesLadder();
       lastAgentLineRef.current = "";
+      setEmailTest(EMAIL_TEST_START);
       holdRef.current = null;
       holdingRef.current = false;
       setHolding(false);
@@ -920,7 +993,9 @@ export function VoiceCall({
       ladderRef.current = new StakesLadder();
       lastAgentLineRef.current = "";
     }
-    callTokenRef.current = null;
+    // A fresh call gets a fresh scope; a rejoin or reload continue keeps
+    // the call's token (same call on the server: inbox window, budgets).
+    if (!preserving) callTokenRef.current = null;
     closingRef.current = false;
     timingsRef.current = new CallTimings();
     timingsRef.current.mark("startRequested");
@@ -1174,6 +1249,16 @@ export function VoiceCall({
         }
       },
       onReplyStarted: () => replyQueueRef.current?.onReplyStarted(),
+      // Demo email test: the invite shows the address chip; each inbox
+      // check moves invited → claimed (provisional extension) → found.
+      onToolResult: (name, result) => {
+        if (mode.kind !== "demo" || !result.ok) return;
+        if (name === SHOW_TEST_ADDRESS_TOOL) {
+          setEmailTest({ ...emailTestRef.current, invited: true });
+        } else if (name === CHECK_EMAIL_TOOL) {
+          setEmailTest(emailTestAfterCheck(emailTestRef.current, checkResultFromData(result.data)));
+        }
+      },
       // Socket dropped while the page is hidden: hold from the drop moment.
       onParked: () => enterHold(Date.now()),
       // Demo: Voni is saying goodbye on its own (caller asked, or it
@@ -1197,15 +1282,16 @@ export function VoiceCall({
         const token = callTokenRef.current;
         void requestVoiceJudge(
           "off-track",
-          { goal: OPEN_BEAT_GOAL, agentLine: lastAgentLineRef.current, userText: turn.text },
+          { goal: beatGoal(emailTestRef.current), agentLine: lastAgentLineRef.current, userText: turn.text },
           { timeoutMs: 2500, headers: token ? { Authorization: `Bearer ${token}` } : undefined },
         ).then((verdict) => {
           if (sessionRef.current !== session || closingRef.current) return;
           const rung = ladderRef.current?.onVerdict(verdict.decision === "off-track");
           if (!rung) return;
           console.debug("[voice-call] off-track", rung, verdict.source);
-          if (rung === "end") closeCall(rungInstructions(rung, OPEN_BEAT_GOAL));
-          else replyQueueRef.current?.enqueue(rungInstructions(rung, OPEN_BEAT_GOAL));
+          const goal = beatGoal(emailTestRef.current);
+          if (rung === "end") closeCall(rungInstructions(rung, goal));
+          else replyQueueRef.current?.enqueue(rungInstructions(rung, goal));
         });
       },
     }, {
@@ -1235,7 +1321,10 @@ export function VoiceCall({
           async () => {
             // A hold rejoin binds the greeting-less resume agent variant, so
             // the welcome-back is the single first utterance (see stored-agents).
-            const minted = await demoToken(voiceId, preserving ? { resume: true } : undefined)();
+            const minted = await demoToken(voiceId, {
+              resume: preserving,
+              callToken: callTokenRef.current ?? undefined,
+            })();
             callTokenRef.current = minted.callToken ?? null;
             return minted;
           },
@@ -1267,7 +1356,7 @@ export function VoiceCall({
       setStarting(false);
       notifyPending({ ...pendingRef.current, starting: false });
     }
-  }, [mode, notifyPending, voiceId, config, engine, cascadeUrl, setCallState, closeCall, markClosing, setReturnPending, welcomeBackOnce, enterHold]);
+  }, [mode, notifyPending, voiceId, config, engine, cascadeUrl, setCallState, closeCall, markClosing, setReturnPending, welcomeBackOnce, enterHold, setEmailTest]);
 
   useEffect(() => {
     startRef.current = start;
@@ -1463,6 +1552,8 @@ export function VoiceCall({
         <span className="truncate">{demoStatus}</span>
       </>
     );
+    // Shown from Voni's invite until the call ends (the test may need it again).
+    const addressChip = emailTest.invited && active ? <DemoAddressChip address={DEMO_INBOX_ADDRESS} /> : null;
     const startButton = (
       <LoadingButton
         pending={starting}
@@ -1699,6 +1790,7 @@ export function VoiceCall({
               <span className="text-foreground/60 font-mono text-xs tracking-[0.08em]">
                 LIVE TRANSCRIPT
               </span>
+              {addressChip}
               {transcript}
             </div>
           </div>
@@ -1771,6 +1863,7 @@ export function VoiceCall({
                   >
                     {statusLine}
                   </p>
+                  {addressChip ? <div className="pt-2">{addressChip}</div> : null}
                 </header>
                 <div
                   data-testid="landing-demo-mobile-hero"

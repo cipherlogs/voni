@@ -27,14 +27,23 @@ export function verifyDemoCall(
   key: string,
   token: string,
   now = Date.now(),
-): { callId: string } | null {
+): { callId: string; startedAt: number } | null {
   const [callId, exp, sig, ...rest] = token.split(".");
   if (!callId || !exp || !sig || rest.length > 0) return null;
   const expected = Buffer.from(mac(key, `${callId}.${exp}`));
   const given = Buffer.from(sig);
   if (given.length !== expected.length || !timingSafeEqual(given, expected)) return null;
   if (Number(exp) * 1000 <= now) return null;
-  return { callId };
+  return { callId, startedAt: (Number(exp) - CALL_TOKEN_TTL_S) * 1000 };
+}
+
+/**
+ * A re-mint within the same call (hold rejoin, reload continue) keeps the
+ * call's token while it is valid: same call id, start and budgets, so the
+ * inbox check still sees email sent before the rejoin.
+ */
+export function carryDemoCall(key: string, previous: unknown, now = Date.now()): string {
+  return typeof previous === "string" && verifyDemoCall(key, previous, now) ? previous : signDemoCall(key, now);
 }
 
 /** The signing key. Reuses the auth secret; the HMAC label keeps it domain-separated. */
@@ -43,7 +52,7 @@ export function demoCallKey(): Promise<string | undefined> {
 }
 
 /** The demo call a request's `Authorization: Bearer <callToken>` names, or null. */
-export async function demoCallFromRequest(req: Request): Promise<{ callId: string } | null> {
+export async function demoCallFromRequest(req: Request): Promise<{ callId: string; startedAt: number } | null> {
   const key = await demoCallKey();
   const header = req.headers.get("authorization") ?? "";
   if (!key || !header.startsWith("Bearer ")) return null;

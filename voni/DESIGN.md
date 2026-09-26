@@ -649,6 +649,15 @@ branch. Nothing here applies inside the app shell.
 >   transcript-only: scripted tool chips and a dedicated visible tool-status
 >   row are not part of the landing surface. Tool execution and the existing
 >   latency/filler status feedback remain available to signed-in test calls.
+> - **Test-inbox chip (amendment 2026-09-26, demo-prospect-capture ticket 03):**
+>   the one exception to transcript-only. Once Voni invites the email test,
+>   the demo card shows the test inbox address as a tap-to-copy chip
+>   (`demo-address-chip.tsx`): an outline pill, 44px tall, copy icon + the
+>   address, with a screen-reader "Address copied" status. Phones
+>   (`pointer: coarse`) also get a round outline `mailto:` button beside it.
+>   It sits under the LIVE TRANSCRIPT label from `lg` up, and under the status
+>   line in the mobile takeover header, and stays until the call ends. No
+>   other tool chips.
 > - **Mobile demo takeover (amendment 2026-09-25):** below `lg`, an open demo
 >   call is rendered through a controlled Base UI modal with explicit
 >   `Backdrop` and `Popup` geometry. Both fill `100dvw × 100dvh`, include

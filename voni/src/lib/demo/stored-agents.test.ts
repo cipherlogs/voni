@@ -50,7 +50,7 @@ test("demo body carries call control, tuning, and per-agent vocabulary", () => {
   const body = buildDemoAgentBody("anna");
   assert.deepEqual(
     body.tools.map((tool) => tool.name),
-    [END_CALL_TOOL],
+    [END_CALL_TOOL, "show_test_address", "check_email"],
   );
   assert.equal(body.input.transcription_mode, "balanced");
   assert.equal(body.input.turn_detection, null, "adaptive defaults; clears any stored object");
@@ -92,4 +92,24 @@ test("ladder and time-up instructions describe hanging up without naming the too
     assert.doesNotMatch(text, /end_call/);
   }
   assert.match(rungInstructions("end", OPEN_BEAT_GOAL), /hang up/);
+});
+
+test("the email-test lines never name a tool", async () => {
+  const agent = await import("./voni-agent");
+  const found = { status: "found", address: "a@acme.com", from: "a@acme.com", name: "Andres", exact: true, messageId: "m", threadId: "t" } as const;
+  const lines = [
+    agent.checkEmailInstructions({ status: "invalid" }),
+    agent.checkEmailInstructions({ status: "free", address: "a@gmail.com" }),
+    agent.checkEmailInstructions({ status: "not_arrived", address: "a@acme.com", name: null }),
+    agent.checkEmailInstructions(found),
+    agent.checkEmailInstructions({ ...found, exact: false, name: null }),
+    agent.emailArrivedInstructions(found),
+    agent.LATE_EMAIL_INSTRUCTIONS,
+    agent.HOLD_RETURN_CLAIM_INSTRUCTIONS,
+    buildDemoAgentBody("anna").system_prompt,
+  ];
+  for (const text of lines) assert.doesNotMatch(text, /end_call|check_email|show_test_address/);
+  assert.match(agent.checkEmailInstructions({ status: "free", address: "a@gmail.com" }), /hi at voni dot c c/);
+  assert.match(agent.checkEmailInstructions({ status: "free", address: "a@gmail.com" }), /hang up/);
+  assert.match(agent.LATE_EMAIL_INSTRUCTIONS, /reply the moment it lands/);
 });

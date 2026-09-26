@@ -186,7 +186,7 @@ test("a hold return reconnects visibly, silently, and speaks exactly once", () =
   // A hold rejoin binds the greeting-less resume agent variant, so the
   // welcome-back is the single first utterance — never a re-introduction
   // stacked on one.
-  assert.match(call, /demoToken\(voiceId, preserving \? \{ resume: true \} : undefined\)/);
+  assert.match(call, /demoToken\(voiceId, \{\s*resume: preserving,\s*callToken: callTokenRef\.current \?\? undefined,/);
   assert.match(agents, /demoAgentStorageKey/);
   assert.match(agents, /resume \? `\$\{voiceId\}:resume` : voiceId/);
   assert.match(token, /body\.resume === true/);

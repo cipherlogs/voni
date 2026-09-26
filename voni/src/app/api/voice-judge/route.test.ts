@@ -27,8 +27,11 @@ test("voice judge validates the request body", () => {
 
 test("voice judge reads secrets Worker-safe", () => {
   // secret() covers process.env + the Cloudflare context; a plain
-  // process.env read would be undefined on the deployed Worker.
-  assert.match(source, /secret\("AI_GATEWAY_API_KEY"\)/);
+  // process.env read would be undefined on the deployed Worker. The read is
+  // shared with the demo inbox matcher, in voice-judge.ts.
+  assert.match(source, /judgeDepsFromSecrets\(\)/);
+  const shared = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../../../lib/voice/voice-judge.ts"), "utf8");
+  assert.match(shared, /secret\("AI_GATEWAY_API_KEY"\)/);
 });
 
 test("the signed-out demo judges off-track and barge-in only, with its call token", () => {

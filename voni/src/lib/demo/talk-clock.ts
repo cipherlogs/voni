@@ -55,12 +55,13 @@ export class TalkClock {
     return Math.floor((now - this.startedAt - paused) / 1000);
   }
 
-  remainingSeconds(now: number): number {
-    return Math.max(0, TALK_BASE_S - this.talkSeconds(now));
+  remainingSeconds(now: number, limitS = TALK_BASE_S): number {
+    return Math.max(0, limitS - this.talkSeconds(now));
   }
 
-  isOver(now: number): boolean {
-    return this.talkSeconds(now) >= TALK_BASE_S || now - this.startedAt >= WALL_CLOSE_S * 1000;
+  /** `limitS` is the talk allowance: the base, or an extension (email-test.ts). */
+  isOver(now: number, limitS = TALK_BASE_S): boolean {
+    return this.talkSeconds(now) >= limitS || now - this.startedAt >= WALL_CLOSE_S * 1000;
   }
 
   /** True exactly once per mute stretch, once it has lasted MUTE_CHECK_IN_S. */

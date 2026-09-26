@@ -6,7 +6,8 @@ import { demoAgents } from "@/lib/db/schema";
 import { compileSystemPrompt } from "@/lib/agents/compile";
 import { getVoice, VOICE_OUTPUT_VOLUME } from "@/lib/agents/voices";
 import { DEMO_VOICE_IDS, VONI_AGENT_ID, voniConfig } from "./voni-agent";
-import { END_CALL_VOICE_TOOL, toRestTool } from "@/lib/tools/definitions";
+import { toRestTool } from "@/lib/tools/definitions";
+import { DEMO_VOICE_TOOLS } from "./demo-tools";
 import { TRANSCRIPTION_MODE, buildAgentKeyterms, buildAgentTranscriptionPrompt } from "@/lib/voice/transcription";
 import { stableJson } from "@/lib/agents/provision";
 
@@ -83,7 +84,7 @@ export function buildDemoAgentBody(voiceId: string, opts?: { resume?: boolean })
     output: { volume: VOICE_OUTPUT_VOLUME },
     // Each one is answered by /api/demo/tools (see module note). REST
     // shape (no `type`) — see `toRestTool`.
-    tools: [toRestTool({ ...END_CALL_VOICE_TOOL })],
+    tools: DEMO_VOICE_TOOLS.map((tool) => toRestTool({ ...tool })),
     input: {
       // Locked to the voice's language: detecting across all 18 languages
       // every turn is slow. Language codes apply at speech-to-text connect,

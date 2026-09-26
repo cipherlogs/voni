@@ -9,6 +9,7 @@
  * the PSTN path all work offline with fail-closed behavior.
  */
 
+import { secret } from "@/lib/env";
 import {
   chooseReplyAction,
   shouldAllowSpeculativeNav,
@@ -111,6 +112,28 @@ export function judgeQuestions(kind: JudgeKind): {
   };
 }
 
+/** How a Jev call reaches the gateway; every field falls back to process env. */
+export type JevDeps = {
+  fetchImpl?: typeof fetch;
+  gatewayUrl?: string;
+  apiKey?: string;
+  model?: string;
+  timeoutMs?: number;
+};
+
+/**
+ * Gateway settings from secrets: process.env first (tests, CI, plain Node),
+ * the Cloudflare context as fallback, so it works under `next dev` and on the
+ * deployed Worker. The user's `AI_GATEWAY_API_KEY` wins over `VOICE_JUDGE_API_KEY`.
+ */
+export async function judgeDepsFromSecrets(): Promise<JevDeps> {
+  return {
+    apiKey: (await secret("AI_GATEWAY_API_KEY")) ?? (await secret("VOICE_JUDGE_API_KEY")),
+    gatewayUrl: (await secret("VOICE_JUDGE_GATEWAY_URL")) ?? resolveJudgeGatewayUrl(),
+    model: (await secret("VOICE_JUDGE_MODEL")) ?? resolveJudgeModel(),
+  };
+}
+
 /** Vercel AI Gateway evaluate endpoint. Override with VOICE_JUDGE_GATEWAY_URL. */
 export const JUDGE_GATEWAY_URL = "https://ai-gateway.vercel.sh/v1/evaluate";
 /** Jev model id on the gateway. Override with VOICE_JUDGE_MODEL. */
@@ -140,14 +163,52 @@ export function resolveJudgeModel(env: Record<string, string | undefined> = proc
 export async function tryJevGateway(
   kind: JudgeKind,
   state: Record<string, unknown>,
-  deps: {
-    fetchImpl?: typeof fetch;
-    gatewayUrl?: string;
-    apiKey?: string;
-    model?: string;
-    timeoutMs?: number;
-  } = {},
+  deps: JevDeps = {},
 ): Promise<VoiceJudgeResult> {
+  const answer = await jevEvaluate({ kind, ...state }, judgeQuestions(kind), deps);
+  const probability =
+    typeof answer?.probability === "number" ? answer.probability : 0.5;
+  if (kind === "reply") {
+    const pick = answer?.pick;
+    const decision =
+      pick === "reply_now" || pick === "wait_300ms" || pick === "play_filler"
+        ? pick
+        : decideVoiceJudge(kind, state).decision;
+    return { decision, probability, source: "jev" };
+  }
+  if (kind === "barge-in")
+    return {
+      decision: probability >= 0.65 ? "yield" : "keep-speaking",
+      probability,
+      source: "jev",
+    };
+  if (kind === "nav-speculative")
+    return {
+      decision: probability >= 0.6 ? "allow" : "deny",
+      probability,
+      source: "jev",
+    };
+  if (kind === "off-track")
+    return {
+      decision: probability >= OFF_TRACK_THRESHOLD ? "off-track" : "on-track",
+      probability,
+      source: "jev",
+    };
+  return { decision: probability >= 0.5 ? "allow" : "deny", probability, source: "jev" };
+}
+
+export type JevQuestion = ReturnType<typeof judgeQuestions>;
+
+/**
+ * One Jev evaluation through the Vercel AI Gateway: a state blob and one
+ * typed question. Throws on any failure (no key, timeout, HTTP error), so
+ * every caller keeps its own fallback.
+ */
+export async function jevEvaluate(
+  state: Record<string, unknown>,
+  question: JevQuestion,
+  deps: JevDeps = {},
+): Promise<{ probability?: number; pick?: string } | undefined> {
   const gatewayUrl = deps.gatewayUrl ?? resolveJudgeGatewayUrl();
   const apiKey = deps.apiKey ?? resolveJudgeApiKey();
   if (!apiKey) throw new Error("voice judge gateway not configured");
@@ -155,7 +216,6 @@ export async function tryJevGateway(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), deps.timeoutMs ?? 1500);
   try {
-    const question = judgeQuestions(kind);
     const res = await fetchImpl(gatewayUrl, {
       method: "POST",
       headers: {
@@ -164,7 +224,7 @@ export async function tryJevGateway(
       },
       body: JSON.stringify({
         model: deps.model ?? resolveJudgeModel(),
-        state: JSON.stringify({ kind, ...state }).slice(0, 4000),
+        state: JSON.stringify(state).slice(0, 4000),
         questions: { judge: question },
       }),
       signal: controller.signal,
@@ -173,36 +233,7 @@ export async function tryJevGateway(
     const data = (await res.json()) as {
       answers?: { judge?: { probability?: number; pick?: string } };
     };
-    const answer = data?.answers?.judge;
-    const probability =
-      typeof answer?.probability === "number" ? answer.probability : 0.5;
-    if (kind === "reply") {
-      const pick = answer?.pick;
-      const decision =
-        pick === "reply_now" || pick === "wait_300ms" || pick === "play_filler"
-          ? pick
-          : decideVoiceJudge(kind, state).decision;
-      return { decision, probability, source: "jev" };
-    }
-    if (kind === "barge-in")
-      return {
-        decision: probability >= 0.65 ? "yield" : "keep-speaking",
-        probability,
-        source: "jev",
-      };
-    if (kind === "nav-speculative")
-      return {
-        decision: probability >= 0.6 ? "allow" : "deny",
-        probability,
-        source: "jev",
-      };
-    if (kind === "off-track")
-      return {
-        decision: probability >= OFF_TRACK_THRESHOLD ? "off-track" : "on-track",
-        probability,
-        source: "jev",
-      };
-    return { decision: probability >= 0.5 ? "allow" : "deny", probability, source: "jev" };
+    return data?.answers?.judge;
   } finally {
     clearTimeout(timer);
   }

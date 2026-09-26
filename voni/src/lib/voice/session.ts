@@ -31,7 +31,7 @@ import {
   type VoiceTool,
 } from "@/lib/tools/definitions";
 import type { ToolResponse } from "@/lib/tools/execute";
-import { executeDemoTool } from "@/lib/demo/demo-tools";
+import { DEMO_VOICE_TOOLS, executeDemoTool } from "@/lib/demo/demo-tools";
 import { ToolCoordinator, type ToolCoordinatorOptions } from "./tool-coordinator";
 import {
   buildConversationMessage,
@@ -236,16 +236,20 @@ export class RateLimitError extends Error {
 
 /** Public demo: the server picks the prompt (Voni's own), we only name the voice. */
 export const demoToken =
-  (voiceId: string, opts?: { resume?: boolean }): TokenFetcher =>
+  (voiceId: string, opts?: { resume?: boolean; callToken?: string }): TokenFetcher =>
   async () => {
     const res = await fetch("/api/demo/token", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       // A hold rejoin binds the greeting-less resume agent variant, so the
       // welcome-back is the single first utterance. Omitted otherwise.
-      body: JSON.stringify(
-        opts?.resume === true ? { voiceId, resume: true } : { voiceId },
-      ),
+      // The call's token rides along on every re-mint, so the server keeps
+      // the same call (start time, budgets) instead of opening a new one.
+      body: JSON.stringify({
+        voiceId,
+        ...(opts?.resume === true ? { resume: true } : {}),
+        ...(opts?.callToken ? { callToken: opts.callToken } : {}),
+      }),
     });
     if (!res.ok) {
       const { error } = await res.json().catch(() => ({ error: null }));
@@ -322,6 +326,8 @@ export type VoiceHandlers = {
   onError?: (error: VoiceError) => void;
   /** Fires while a `hold`-mode business tool call is in flight during a live call. */
   onToolActivity?: (active: boolean) => void;
+  /** Every tool result as it goes back to the agent (the demo reacts to its email test). */
+  onToolResult?: (name: string, result: ToolResponse) => void;
   /** Fires when a config update times out (true) and when resync succeeds (false). */
   onConfigUncertainty?: (uncertain: boolean) => void;
   onSessionEnded?: (info: SessionEndedInfo) => void;
@@ -1378,6 +1384,7 @@ export class VoiceSession {
       modeFor: (name) => modes.get(name) ?? "interactive",
       onActivityChange: (active) => this.handlers.onToolActivity?.(active),
       onResult: (name, result) => {
+        this.handlers.onToolResult?.(name, result);
         // Hang up as soon as the goodbye drains. Waiting for the model's
         // empty post-result reply added ~2s of dead air.
         if (name === END_CALL_TOOL && result.ok && result.hangup === true) {
@@ -1405,7 +1412,7 @@ export class VoiceSession {
    * server-owned; the browser only relays.
    */
   private installDemoTools(): void {
-    this.installTools([END_CALL_VOICE_TOOL], (call) =>
+    this.installTools(DEMO_VOICE_TOOLS, (call) =>
       postTool(
         `/api/demo/tools/${encodeURIComponent(call.name)}`,
         { toolCallId: call.callId, arguments: call.arguments },

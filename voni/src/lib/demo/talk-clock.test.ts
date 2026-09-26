@@ -94,3 +94,12 @@ test("repeated hold calls do not reset the pause", () => {
   clock.setHeld(false, secToMs(30));
   assert.equal(clock.talkSeconds(secToMs(30)), 10);
 });
+
+test("an extension raises the talk limit, never the wall cap", () => {
+  const clock = new TalkClock(0);
+  assert.equal(clock.isOver(secToMs(TALK_BASE_S), 240), false);
+  assert.equal(clock.remainingSeconds(secToMs(TALK_BASE_S), 240), 240 - TALK_BASE_S);
+  assert.equal(clock.isOver(secToMs(240), 240), true);
+  clock.setMuted(true, secToMs(1));
+  assert.equal(clock.isOver(secToMs(WALL_CLOSE_S), 420), true);
+});

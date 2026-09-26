@@ -6,8 +6,7 @@ import { bumpRateBucket } from "@/lib/demo/rate-limit";
 import {
   decideVoiceJudge,
   parseVoiceJudgeRequest,
-  resolveJudgeGatewayUrl,
-  resolveJudgeModel,
+  judgeDepsFromSecrets,
   tryJevGateway,
 } from "@/lib/voice/voice-judge";
 
@@ -66,18 +65,8 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     }
   }
 
-  // secret() reads process.env first (tests, CI, plain Node) with the
-  // Cloudflare context as fallback, so this works under `next dev` (where
-  // next.config mirrors .dev.vars) and on the deployed Worker.
-  const apiKey =
-    (await secret("AI_GATEWAY_API_KEY")) ?? (await secret("VOICE_JUDGE_API_KEY"));
   try {
-    const result = await tryJevGateway(parsed.kind, parsed.state, {
-      apiKey,
-      gatewayUrl:
-        (await secret("VOICE_JUDGE_GATEWAY_URL")) ?? resolveJudgeGatewayUrl(),
-      model: (await secret("VOICE_JUDGE_MODEL")) ?? resolveJudgeModel(),
-    });
+    const result = await tryJevGateway(parsed.kind, parsed.state, await judgeDepsFromSecrets());
     return NextResponse.json(result);
   } catch {
     return NextResponse.json(decideVoiceJudge(parsed.kind, parsed.state));

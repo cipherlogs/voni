@@ -14,7 +14,7 @@ The server reads the test inbox (nedalk.js@gmail.com for now). A Jev judge picks
 
 **Blocked by:** 01 (Voni as itself: tools, talk clock, stakes ladder).
 
-**Status:** ready-for-agent
+**Status:** ready-for-human (implementation done; needs `DEMO_INBOX_REFRESH_TOKEN` minted, then manual test steps 1–7)
 
 ## Manual test (approve / reject)
 
@@ -37,3 +37,18 @@ Make sure the test inbox has some unrelated emails in it, to simulate other test
 - [ ] Business claim → provisional extension (~4 min talk clock).
 - [ ] Late-email path: "I'll reply the moment it lands," then a polite close.
 - [ ] Tests for the gate classification, the extension transitions, and the matcher fallback.
+
+## Answer
+
+- **Owner decisions (2026-09-26):** Gmail REST + OAuth refresh token (`gmail.modify`, so 04 can reply without re-consent); the browser re-checks every 8s after a business claim and a hidden note announces the arrival; the chip appears via a `show_test_address` tool call on the invite; spoof = Gmail's DMARC/SPF verdict as a hard rule, plus Jev.
+- **Pure core:** `voni/src/lib/demo/email-test.ts` handles claim normalization (spoken "at/dot/dash"), the free-domain list, the name taken from the address, the header spoof rule, the fallback matcher (≤2 edits), `checkEmail` (Jev injected), and the call state (invited → claimed → found) with `talkLimitS` (240s on a business claim).
+- **Server:** `voni/src/lib/demo/inbox.ts` does the Gmail read and Jev match/spoof, and `runCheckEmail` is dispatched by `/api/demo/tools/[name]`. `jevEvaluate` and `judgeDepsFromSecrets` were extracted in `voice-judge.ts` and are shared with `/api/voice-judge`.
+- **Matching rules (after review):**
+  - Only email that arrived during this call counts. The call token carries the start time, and a rejoin or reload keeps the same token.
+  - An exact sender wins without asking Jev. Jev weighs near misses only, bounded to ≤6 edits.
+  - On a near miss, Voni never reads the other sender's address aloud. It asks the visitor to spell theirs, and the call stays in "claimed" until an exact match.
+  - The sender's address and message ids never leave the server.
+- **Client:** `voice-call.tsx` holds the email-test state. It covers the chip (`demo-address-chip.tsx`, DESIGN.md §10c amendment), the talk limit, the beat goal for the off-track judge (`EMAIL_BEAT_GOAL`, so refusing the test climbs the ladder), the claim question on a hold return after the invite, the late-email close (`LATE_EMAIL_INSTRUCTIONS`), and the inbox poll.
+- **Setup:** see `voni/ENVIRONMENT.md` "Demo test inbox" and `scripts/mint-demo-inbox-token.mts`. Without the token, every claim reads as "not landed yet". Refresh tokens expire after 7 days while the consent screen is in Testing.
+- **Verified:** `npm test` 706/706, `tsc` and `eslint` clean (one pre-existing warning in copilot-provider). e2e `tests/e2e/demo-email-test.spec.ts` (chip + copy + phone mailto, poll → note → stop, free never polled, 2-min base vs 4-min extension + late-email close) plus the hold spec with token-carry checks: 24/24 on desktop and Pixel 7, and mutation checks fail as expected. A real route call with a minted call token returned the free gate and not_arrived.
+- **Known ceilings:** one Gmail page (30 messages) per check, marked `ponytail:` in inbox.ts. The Voni lines are English prompts only (the model speaks the picked language).

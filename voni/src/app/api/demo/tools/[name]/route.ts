@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { demoCallFromRequest } from "@/lib/demo/call-token";
-import { executeDemoTool } from "@/lib/demo/demo-tools";
+import { CHECK_EMAIL_TOOL, executeDemoTool } from "@/lib/demo/demo-tools";
+import { runCheckEmail } from "@/lib/demo/inbox";
 
 /**
  * Public demo tools, scoped to one call: the bearer is the `callToken` that
@@ -25,7 +26,13 @@ export async function POST(
     return Response.json({ ok: false, error: "Invalid tool request.", retryable: false }, { status: 400 });
   }
   const { name } = await context.params;
-  return Response.json(await executeDemoTool(name, parsed.data.arguments), {
+  // The inbox check is server-only (Gmail + Jev), so it is dispatched here,
+  // not in the browser-safe executor. The call component also polls it.
+  const result =
+    name === CHECK_EMAIL_TOOL
+      ? await runCheckEmail(call, parsed.data.arguments)
+      : await executeDemoTool(name, parsed.data.arguments);
+  return Response.json(result, {
     headers: { "Cache-Control": "no-store" },
   });
 }

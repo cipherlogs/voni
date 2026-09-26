@@ -1,5 +1,6 @@
 import type { Transcript } from "@/lib/voice/session";
 import type { VoiceErrorCode } from "@/lib/voice/mic-capture";
+import type { EmailTestState } from "./email-test";
 
 /**
  * Hold: the paused state of a demo call after the browser stops the page
@@ -146,6 +147,10 @@ export type CallMemorySnapshot = {
   turns: Transcript[];
   talkSeconds: number;
   strikes: number;
+  /** The email test's progress (optional: snapshots saved before ticket 03 lack it). */
+  emailTest?: EmailTestState;
+  /** The call's scope token, so a reload continues the same call (inbox window, budgets). */
+  callToken?: string | null;
   /** Server session to resume inside the grace; null once it is gone. */
   sessionId: string | null;
 };
