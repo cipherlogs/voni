@@ -9,8 +9,8 @@ import { TALK_BASE_S } from "./talk-clock";
  */
 
 /** The shared test inbox. Moves to test@voni.cc once the domain's email routing exists (spec: deferred). */
-export const DEMO_INBOX_ADDRESS = "nedalk.js@gmail.com";
-export const DEMO_INBOX_SPOKEN = "nedalk dot j s at gmail dot com";
+export const DEMO_INBOX_ADDRESS = "hi@pilotxstudio.com";
+export const DEMO_INBOX_SPOKEN = "hi at pilot x studio dot com";
 
 /** Talk clock after a claimed business address: provisional, until the code check (04). */
 export const PROVISIONAL_TALK_S = 240;
@@ -143,7 +143,8 @@ export type CheckEmailDeps = {
 
 export async function checkEmail(raw: string, deps: CheckEmailDeps): Promise<CheckEmailResult> {
   const address = normalizeClaim(raw);
-  if (!address) return { status: "invalid" };
+  // Our own inbox is never the caller's address (a mishearing of what Voni said).
+  if (!address || address === DEMO_INBOX_ADDRESS) return { status: "invalid" };
   if (isFreeEmailDomain(address.split("@")[1])) return { status: "free", address };
   const notArrived: CheckEmailResult = { status: "not_arrived", address, name: nameFromAddress(address) };
 

@@ -10,7 +10,7 @@ After the visitor says they've sent it (or returns from Hold), Voni asks the cla
 - **Free-email domain** (a plain domain list, no model): the work-email gate. Voni asks "Do you have a work email? We only work with verified businesses." If they have none: "No problem. Reach the team at hi@voni.cc and we'll gladly look into it," then a polite end.
 - **Refusing to send any email:** the stakes ladder from 01.
 
-The server reads the test inbox (nedalk.js@gmail.com for now). A Jev judge picks which recent email belongs to this caller: it compares the spoken address, allowing for speech-to-text near-misses, with each sender and the arrival time. It also flags spoof or spam. If the email hasn't arrived by the provisional limit, Voni says "I'll reply the moment it lands" and closes politely.
+The server reads the test inbox (hi@pilotxstudio.com for now; was nedalk.js@gmail.com until 2026-09-26). A Jev judge picks which recent email belongs to this caller: it compares the spoken address, allowing for speech-to-text near-misses, with each sender and the arrival time. It also flags spoof or spam. If the email hasn't arrived by the provisional limit, Voni says "I'll reply the moment it lands" and closes politely.
 
 **Blocked by:** 01 (Voni as itself: tools, talk clock, stakes ladder).
 

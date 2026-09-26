@@ -69,7 +69,7 @@ async function mockApis(page: Page, tool: ToolHandler) {
   return calls;
 }
 
-const showAddress = { ok: true, data: { shown: true, address: "nedalk.js@gmail.com", instructions: "Say it once." } };
+const showAddress = { ok: true, data: { shown: true, address: "hi@pilotxstudio.com", instructions: "Say it once." } };
 const notArrived = { ok: true, data: { status: "not_arrived", address: "andres@acme.com", name: "Andres", instructions: "Not yet." } };
 const found = {
   ok: true,
@@ -93,14 +93,14 @@ test("the invite shows the address chip; tapping copies it", async ({ page }, te
 
   server.toolCall("show_test_address");
   await expect(chip(page)).toBeVisible();
-  await chip(page).getByRole("button", { name: /copy nedalk\.js@gmail\.com/i }).click();
-  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe("nedalk.js@gmail.com");
+  await chip(page).getByRole("button", { name: /copy hi@pilotxstudio\.com/i }).click();
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe("hi@pilotxstudio.com");
   await expect(page.getByRole("status").filter({ hasText: "Address copied" })).toHaveCount(1);
 
-  const mail = chip(page).getByRole("link", { name: /email nedalk\.js@gmail\.com/i });
+  const mail = chip(page).getByRole("link", { name: /email hi@pilotxstudio\.com/i });
   if (testInfo.project.name === "mobile") {
     await expect(mail).toBeVisible();
-    await expect(mail).toHaveAttribute("href", "mailto:nedalk.js@gmail.com");
+    await expect(mail).toHaveAttribute("href", "mailto:hi@pilotxstudio.com");
   } else {
     await expect(mail).toBeHidden();
   }

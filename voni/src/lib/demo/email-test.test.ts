@@ -170,8 +170,10 @@ test("check: a match Jev flags as spoof/spam is not treated as a match", async (
 });
 
 test("check: our own inbox's mail is never the caller's", async () => {
-  const result = await checkEmail("nedalk.js@gmail.com", { listInbox: listed([]) });
-  assert.equal(result.status, "free");
+  const result = await checkEmail("hi at pilotxstudio dot com", {
+    listInbox: async () => assert.fail("inbox read for our own address"),
+  });
+  assert.deepEqual(result, { status: "invalid" });
 });
 
 test("extension: a business claim is provisional (~4 min), free and invalid change nothing", () => {

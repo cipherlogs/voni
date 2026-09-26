@@ -21,6 +21,6 @@ test("tools the demo agent does not have are refused", async () => {
 test("show_test_address puts the inbox on screen and tells Voni how to say it", async () => {
   const result = await executeDemoTool("show_test_address", {});
   assert.equal(result.ok, true);
-  assert.equal(result.ok && result.data.address, "nedalk.js@gmail.com");
-  assert.match(String(result.ok && result.data.instructions), /nedalk dot j s at gmail dot com/);
+  assert.equal(result.ok && result.data.address, "hi@pilotxstudio.com");
+  assert.match(String(result.ok && result.data.instructions), /hi at pilot x studio dot com/);
 });
