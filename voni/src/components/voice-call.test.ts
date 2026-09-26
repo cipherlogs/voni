@@ -117,11 +117,14 @@ test("the demo parks on hold when the page hides and resumes on return", () => {
   assert.match(call, /session\.setOnHold\(false\)/);
   assert.match(call, /clockRef\.current\?\.setHeld\(true/);
   assert.match(call, /clockRef\.current\?\.setHeld\(false/);
-  // Spoken lines go through the queue, never over a reply.
-  assert.match(call, /HOLD_ENTER_INSTRUCTIONS/);
+  // Spoken lines go through the queue, never over a reply. The hold line
+  // rotates (holdEnterInstructions over HOLD_ENTER_LINES) and stays fenced
+  // to its single sentence.
+  assert.match(call, /holdEnterInstructions\(holdCountRef\.current\)/);
   assert.match(call, /HOLD_RETURN_INSTRUCTIONS/);
   assert.match(call, /HOLD_TIMEOUT_INSTRUCTIONS/);
   assert.match(call, /replyQueueRef\.current\?\.enqueue\(HOLD_/);
+  assert.match(call, /replyQueueRef\.current\?\.enqueue\(holdEnterInstructions/);
   // The hold module owns the cap; the card enforces it off the same clock tick.
   assert.match(hold, /HOLD_CAP_S = 120/);
   assert.match(call, /holdRef\.current\?\.isExpired\(now\)/);
@@ -129,8 +132,10 @@ test("the demo parks on hold when the page hides and resumes on return", () => {
   assert.match(context, /HOLD_ON_CONTEXT/);
   assert.match(context, /HOLD_OFF_CONTEXT/);
   // A post-grace restart carries the conversation, not a blank slate.
+  // A resume that dies after a hold return rejoins on transport failure.
   assert.match(call, /buildHoldCarryover\(turnsRef\.current\)/);
   assert.match(call, /sessionRef\.current\.sendContext\(carryoverRef\.current\)/);
+  assert.match(call, /shouldRejoinAfterHold\(greetOnListenRef\.current, e\.code\)/);
   // On-screen state: hold status, holding marker, away-ended copy.
   assert.match(call, /On hold ·/);
   assert.match(call, /data-holding=\{holding\}/);

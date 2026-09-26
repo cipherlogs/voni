@@ -39,3 +39,9 @@ Run on a real iPhone (Safari) and a real Android phone (Chrome) with `npm run de
 
 - Mic re-acquire without a fresh gesture (iOS AudioContext may stay suspended until a tap; first tap should unstick it).
 - Desktop app-switch without minimize may not fire `visibilitychange` (ticket desktop case is another tab, which does).
+
+### Follow-up round 2 (phone "ended unexpectedly" + hold-line rotation)
+
+- Phone root cause: returning onto an in-flight auto-resume that then fails (1008/exhausted) left the call dead — the greet-on-arrival flag had no failure branch. `onError` now rejoins silently (preserved transport + carryover) on terminal `network`/`expired` only, via pure `shouldRejoinAfterHold` (`voni/src/lib/demo/hold.ts`); mic/auth/config failures still surface.
+- Hold line rotates (`HOLD_ENTER_LINES`, canonical first) and every hold turn is fenced to its single line, so repeats don't sound canned and a hold turn can't smuggle an answer to an earlier question. Desktop extra-reply was not reproducible; trace step dropped.
+- Watch-items (no evidence yet, not built): a resume that hangs with zero events (no error, no ready) has no forced rejoin; cumulative multi-stretch hold has no cap.

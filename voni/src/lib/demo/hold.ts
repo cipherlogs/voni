@@ -1,4 +1,5 @@
 import type { Transcript } from "@/lib/voice/session";
+import type { VoiceErrorCode } from "@/lib/voice/mic-capture";
 
 /**
  * Hold: the paused state of a demo call while the visitor is away from the
@@ -43,6 +44,20 @@ export class HoldState {
   isExpired(now: number): boolean {
     return this.holdSeconds(now) >= HOLD_CAP_S;
   }
+}
+
+/**
+ * A resume that died after a hold return: rejoin silently only when the old
+ * transport is terminally gone (1008 refusal, exhausted attempts, failed
+ * resume fetch). Mic/auth/config/rate-limit failures need the visitor to
+ * act, so those still surface instead of looping a restart they can't hear.
+ */
+export function shouldRejoinAfterHold(
+  returnPending: boolean,
+  code?: VoiceErrorCode,
+): boolean {
+  if (!returnPending) return false;
+  return code === "network" || code === "expired";
 }
 
 /**

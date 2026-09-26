@@ -59,17 +59,17 @@ import { formatCallStatus } from "@/lib/calls/call-status";
 import { ACCENT_FLAG, getVoice, voiceLabel, voicePlaybackGain } from "@/lib/agents/voices";
 import {
   DEMO_VOICE_IDS,
-  HOLD_ENTER_INSTRUCTIONS,
   HOLD_RETURN_INSTRUCTIONS,
   HOLD_TIMEOUT_INSTRUCTIONS,
   MUTE_CHECK_IN_INSTRUCTIONS,
   OPEN_BEAT_GOAL,
   TIME_UP_INSTRUCTIONS,
+  holdEnterInstructions,
   rungInstructions,
   voniConfig,
 } from "@/lib/demo/voni-agent";
 import { TALK_BASE_S, TalkClock } from "@/lib/demo/talk-clock";
-import { buildHoldCarryover, HoldState } from "@/lib/demo/hold";
+import { buildHoldCarryover, HoldState, shouldRejoinAfterHold } from "@/lib/demo/hold";
 import { ReplyQueue, StakesLadder } from "@/lib/demo/stakes-ladder";
 import { cn } from "@/lib/utils";
 
@@ -385,6 +385,8 @@ export function VoiceCall({
   const preserveRef = useRef(false);
   const greetOnListenRef = useRef(false);
   const rejoiningRef = useRef(false);
+  /** Holds entered this call: round-robins the rotating hold lines. */
+  const holdCountRef = useRef(0);
   const turnsRef = useRef<Transcript[]>([]);
   const stateRef = useRef<VoiceState>(state);
   const mutedRef = useRef(muted);
@@ -494,7 +496,8 @@ export function VoiceCall({
     session.setOnHold(true);
     holdingRef.current = true;
     setHolding(true);
-    replyQueueRef.current?.enqueue(HOLD_ENTER_INSTRUCTIONS);
+    replyQueueRef.current?.enqueue(holdEnterInstructions(holdCountRef.current));
+    holdCountRef.current += 1;
   }, [mode]);
 
   /**
@@ -707,6 +710,7 @@ export function VoiceCall({
       setHoldEnded(false);
       carryoverRef.current = null;
       greetOnListenRef.current = false;
+      holdCountRef.current = 0;
     }
     setToolActive(false);
     setMutedState(preserving ? mutedRef.current : false);
@@ -904,6 +908,15 @@ export function VoiceCall({
         }
       },
       onError: (e) => {
+        // A resume that died after a hold return rejoins silently when the
+        // old transport is terminally gone; real failures still surface.
+        if (shouldRejoinAfterHold(greetOnListenRef.current, e.code)) {
+          greetOnListenRef.current = false;
+          carryoverRef.current = buildHoldCarryover(turnsRef.current);
+          preserveRef.current = true;
+          void startRef.current();
+          return;
+        }
         setError(e);
         setRetryIn(e.retryAfterSeconds ?? null);
       },

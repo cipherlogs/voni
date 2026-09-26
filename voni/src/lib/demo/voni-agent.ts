@@ -79,8 +79,30 @@ export const TIME_UP_INSTRUCTIONS = `Time is up on this demo. Wrap up warmly in 
 export const MUTE_CHECK_IN_INSTRUCTIONS =
   "The caller muted their microphone a little while ago. Check in once, gently, in one short sentence: no rush, you're here when they unmute. Do not ask a question.";
 
-export const HOLD_ENTER_INSTRUCTIONS =
-  "The visitor just stepped away from the page to fetch something for your test. Say one short line, like: \"Go ahead, I'll hold.\" Then wait quietly for them to return.";
+/**
+ * Rotating hold lines, so repeat visits don't hear the identical sentence.
+ * Index 0 is the canonical line the hold path was verified against; the
+ * component round-robins by hold count. Each line is wrapped by
+ * `holdEnterInstructions` into a say-only-this-line turn, so a rotated
+ * variant can never smuggle in an answer to an earlier question.
+ */
+export const HOLD_ENTER_LINES = [
+  "Go ahead, I'll hold.",
+  "Take your time — I'll hold.",
+  "No rush, I'll be right here.",
+  "Go right ahead, I'll wait.",
+] as const;
+
+/** One-shot `reply.create` instructions for one hold entry (see above). */
+export function holdEnterInstructions(holdCount: number): string {
+  const line =
+    HOLD_ENTER_LINES[((holdCount % HOLD_ENTER_LINES.length) + HOLD_ENTER_LINES.length) % HOLD_ENTER_LINES.length];
+  return (
+    "The visitor just stepped away from the page to fetch something for " +
+    `your test. Say ONLY this one short line and nothing else: "${line}" ` +
+    "Do not answer any earlier question now; just wait quietly for them to return."
+  );
+}
 
 export const HOLD_RETURN_INSTRUCTIONS =
   "The visitor is back on the page. Greet them back briefly, like: \"Welcome back!\" Then continue where you left off, in your own words.";
