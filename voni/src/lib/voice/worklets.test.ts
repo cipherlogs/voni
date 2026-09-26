@@ -55,8 +55,9 @@ function sineChunk(start: number, n: number) {
 }
 
 /** Drive the playout: `arrivals` are [atSeconds, samples] chunks; returns output. */
-function runPlayout(arrivals: [number, Float32Array][], seconds: number, flushAt?: number) {
+function runPlayout(arrivals: [number, Float32Array][], seconds: number, flushAt?: number, probe = false) {
   const { proc, scope } = load("playout-processor.js", OUT);
+  if (probe) proc.port.onmessage!({ data: { type: "probe", on: true } });
   const out: number[] = [];
   let seq = 0;
   let next = 0;
@@ -75,7 +76,7 @@ function runPlayout(arrivals: [number, Float32Array][], seconds: number, flushAt
     proc.process([], [[buf]]);
     out.push(...buf);
   }
-  return { out, posted: proc.port.posted as { type: string; idle: boolean }[] };
+  return { out, posted: proc.port.posted as { type: string; idle: boolean; kind?: string; size?: number }[] };
 }
 
 /** 1s of sine in chunks of 40–60ms, each up to 70ms late (in order, as over TCP). */
@@ -123,6 +124,35 @@ test("playout: flush fades to silence within 40ms, no click", () => {
   assert.ok(maxStep(out) <= CLEAN_STEP, `max step ${maxStep(out)}`);
   const after = out.slice(Math.ceil((0.3 + 128 / OUT + 0.04) * OUT));
   assert.ok(after.every((y) => y === 0), "silent after the fade");
+});
+
+test("playout: a reply right after a flush waits for the tail, never past full scale", () => {
+  // Barge-in resume: the superseded reply fades while the next one is ready.
+  const loud = (n: number, hz: number) =>
+    new Float32Array(n).map((_, i) => 0.95 * Math.sin((2 * Math.PI * hz * i) / SRC));
+  const { out, posted } = runPlayout([[0, loud(SRC, 180)], [0.3 + 128 / OUT, loud(SRC / 2, 230)]], 1, 0.3, true);
+  const peak = Math.max(...out.map(Math.abs));
+  assert.ok(peak <= 1, `peak ${peak}`);
+  assert.deepEqual(posted.filter((m) => m.type === "pop"), []);
+});
+
+test("pop probe: a clean jittery reply reports nothing", () => {
+  const { posted } = runPlayout(jitteryReply(), 1.4, undefined, true);
+  assert.deepEqual(posted.filter((m) => m.type === "pop"), []);
+});
+
+test("pop probe: a hard discontinuity in the stream is flagged as a jump", () => {
+  const square = new Float32Array(SRC * 0.2).map((_, i) => (Math.floor(i / 12) % 2 ? 0.9 : -0.9));
+  const { posted } = runPlayout([[0, sineChunk(0, SRC * 0.2)], [0.05, square]], 0.6, undefined, true);
+  const pops = posted.filter((m) => m.type === "pop" && m.kind === "jump");
+  assert.ok(pops.length > 0, "the square edge is flagged");
+  assert.ok((pops[0]?.size ?? 0) > 0.3);
+});
+
+test("pop probe: off by default, the worklet posts no pop messages", () => {
+  const square = new Float32Array(SRC * 0.2).map((_, i) => (Math.floor(i / 12) % 2 ? 0.9 : -0.9));
+  const { posted } = runPlayout([[0, square]], 0.4);
+  assert.deepEqual(posted.filter((m) => m.type === "pop"), []);
 });
 
 function runMic(inputRate: number, seconds: number) {

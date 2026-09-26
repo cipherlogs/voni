@@ -97,8 +97,16 @@ The full demo-call time unlocked by a passed code check.
 _Avoid_: unlock, upgrade
 
 **Hold**:
-The paused state of a demo call while the visitor is away from the page; mic and talk clock paused, session kept for resume.
+The paused state of a demo call after the browser stops the page or the connection drops while the visitor is away; the talk clock stops and the call memory is kept for the return.
 _Avoid_: mute (the visitor's own mic toggle), pause
+
+**Flap**:
+An absence from the page where the connection survives; the call stays live and it never becomes a hold.
+_Avoid_: blip, quick switch
+
+**Call memory**:
+The turns of a demo call that Voni keeps across a hold return, so it continues where it stopped instead of starting over.
+_Avoid_: carryover, context (overloaded with context message)
 
 **Talk clock**:
 Demo-call time that counts only while the visitor is present and unmuted.

@@ -80,31 +80,11 @@ export const MUTE_CHECK_IN_INSTRUCTIONS =
   "The caller muted their microphone a little while ago. Check in once, gently, in one short sentence: no rush, you're here when they unmute. Do not ask a question.";
 
 /**
- * Rotating hold lines, so repeat visits don't hear the identical sentence.
- * Index 0 is the canonical line the hold path was verified against; the
- * component round-robins by hold count. Each line is wrapped by
- * `holdEnterInstructions` into a say-only-this-line turn, so a rotated
- * variant can never smuggle in an answer to an earlier question.
+ * The one line on a return from hold (never on a flap). Said once, then
+ * Voni picks up the thread itself; its memory is the resumed session or the
+ * call memory, so it knows where it was.
  */
-export const HOLD_ENTER_LINES = [
-  "Go ahead, I'll hold.",
-  "Take your time — I'll hold.",
-  "No rush, I'll be right here.",
-  "Go right ahead, I'll wait.",
-] as const;
-
-/** One-shot `reply.create` instructions for one hold entry (see above). */
-export function holdEnterInstructions(holdCount: number): string {
-  const line =
-    HOLD_ENTER_LINES[((holdCount % HOLD_ENTER_LINES.length) + HOLD_ENTER_LINES.length) % HOLD_ENTER_LINES.length];
-  return (
-    "The visitor just stepped away from the page to fetch something for " +
-    `your test. Say ONLY this one short line and nothing else: "${line}" ` +
-    "Do not answer any earlier question now; just wait quietly for them to return."
-  );
-}
-
 export const HOLD_RETURN_INSTRUCTIONS =
-  "The visitor is back on the page. Greet them back briefly, like: \"Welcome back!\" Then continue where you left off, in your own words.";
+  'The visitor is back after the call paused. Say one short line to welcome them back, like: "There you are. So, as I was saying…" Then continue exactly where you left off, in your own words. Do not start over, do not re-introduce yourself, and do not mention any reconnection.';
 
 export const HOLD_TIMEOUT_INSTRUCTIONS = `The visitor was away too long, so this demo is ending. Say one warm closing line, like: "I'll let you go for now. If you'd like to try again properly, the team's at ${HI_VONI}." Then hang up.`;

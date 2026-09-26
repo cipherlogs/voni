@@ -20,11 +20,16 @@ export type WorkletPlayout = Playout & {
   queuedMs: () => number;
   /** Fires when playback runs dry. The caller decides if that was an underrun. */
   onDrained?: () => void;
+  /** Dev pop recorder on/off (worklet flags jumps and overloads). */
+  probe: (on: boolean) => void;
+  /** A flagged output discontinuity, while the probe is on. */
+  onPop?: (pop: { kind: "jump" | "overload"; size: number }) => void;
 };
 
 export const PLAYOUT_MODULE = "/playout-processor.js";
 
 type Level = { type: "level"; seq: number; queuedMs: number; idle: boolean };
+type Pop = { type: "pop"; kind: "jump" | "overload"; size: number; at: number };
 
 /** Little-endian PCM16 bytes -> float samples in [-1, 1). */
 export function pcm16ToFloat(pcm: Uint8Array): Float32Array {
@@ -57,8 +62,15 @@ export function createWorkletPlayout(node: AudioWorkletNode): WorkletPlayout {
     },
     settled: () => !busy,
     queuedMs: () => queuedMs,
+    probe(on) {
+      node.port.postMessage({ type: "probe", on });
+    },
   };
-  node.port.onmessage = (e: MessageEvent<Level>) => {
+  node.port.onmessage = (e: MessageEvent<Level | Pop>) => {
+    if (e.data?.type === "pop") {
+      playout.onPop?.({ kind: e.data.kind, size: e.data.size });
+      return;
+    }
     if (e.data?.type !== "level") return;
     queuedMs = e.data.queuedMs;
     // Ignore an idle report that predates the latest chunk still in flight.

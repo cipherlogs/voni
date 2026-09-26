@@ -188,3 +188,18 @@ export class CallSounds {
     this.ctx = null;
   }
 }
+
+/**
+ * The caption tick plays only for the visitor's words and only into silence:
+ * never during an agent reply, nor while its tail still drains from the
+ * playout buffer after `reply.done`.
+ */
+export function tickAllowed(
+  role: "user" | "agent",
+  agentSpeaking: boolean,
+  session: unknown,
+): boolean {
+  if (role !== "user" || agentSpeaking) return false;
+  const settled = (session as { playbackSettled?: () => boolean } | null)?.playbackSettled;
+  return typeof settled === "function" ? settled.call(session) : true;
+}

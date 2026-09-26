@@ -18,13 +18,21 @@
  *
  * Messages in:  {type:"play", seq, rate, samples: Float32Array}
  *               {type:"flush", fadeS}
+ *               {type:"probe", on}  dev pop recorder (see POP_*), off by default
  * Messages out: {type:"level", seq, queuedMs, idle}, posted every few quanta
  *               while sounding and once on going idle. `seq` is the last play
  *               message seen, so the main thread knows the idle report is current.
+ *               {type:"pop", kind, size, at}  only while the probe is on:
+ *               "jump" = adjacent output samples differ by more than POP_JUMP
+ *               (a click the ear hears), "overload" = output beyond ±1 (the
+ *               device clips it). Throttled per kind to one per POP_EVERY_S.
  */
 const PREROLL_S = 0.08;
 const EDGE_S = 0.005;
 const LEVEL_EVERY_QUANTA = 8;
+/** Speech at 48 kHz moves well under this between samples; a click does not. */
+const POP_JUMP = 0.3;
+const POP_EVERY_S = 0.02;
 
 class PlayoutProcessor extends AudioWorkletProcessor {
   constructor() {
@@ -46,6 +54,9 @@ class PlayoutProcessor extends AudioWorkletProcessor {
     this.tailAt = 0;
     this.quanta = 0;
     this.idle = true;
+    this.popProbe = false;
+    this.lastOut = 0;
+    this.popAt = {};
     this.port.onmessage = (e) => this.receive(e.data);
   }
 
@@ -63,6 +74,8 @@ class PlayoutProcessor extends AudioWorkletProcessor {
       this.idle = false;
     } else if (msg.type === "flush") {
       this.flush(msg.fadeS);
+    } else if (msg.type === "probe") {
+      this.popProbe = Boolean(msg.on);
     }
   }
 
@@ -131,9 +144,27 @@ class PlayoutProcessor extends AudioWorkletProcessor {
     this.a = this.b = this.frac = 0;
   }
 
+  /** Dev pop recorder: flag what the speaker is about to click on. */
+  checkPop(y) {
+    const jump = Math.abs(y - this.lastOut);
+    this.lastOut = y;
+    if (jump > POP_JUMP) this.reportPop("jump", jump);
+    if (Math.abs(y) > 1) this.reportPop("overload", Math.abs(y));
+  }
+
+  reportPop(kind, size) {
+    const last = this.popAt[kind];
+    if (last !== undefined && currentTime - last < POP_EVERY_S) return;
+    this.popAt[kind] = currentTime;
+    this.port.postMessage({ type: "pop", kind, size, at: currentTime });
+  }
+
   process(_inputs, outputs) {
     const out = outputs[0][0];
-    if (!this.playing && this.queued > 0) {
+    // Never start under a flush tail: tail + a loud new reply summed past
+    // full scale (measured 1.49), which the device clips into a crackle.
+    // The tail is ≤40ms, so the wait is inaudible.
+    if (!this.playing && this.queued > 0 && !this.tail) {
       const lull = currentTime - this.lastPush >= PREROLL_S;
       if (this.queued >= PREROLL_S * this.rate || lull) this.start();
     }
@@ -144,6 +175,7 @@ class PlayoutProcessor extends AudioWorkletProcessor {
         if (this.tailAt >= this.tail.length) this.tail = null;
       }
       out[i] = y;
+      if (this.popProbe) this.checkPop(y);
     }
     for (let c = 1; c < outputs[0].length; c++) outputs[0][c].set(out);
 

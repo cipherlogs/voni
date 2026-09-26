@@ -6,6 +6,7 @@ import {
   buildResumeMessage,
   decideReconnectOnClose,
   SessionGeneration,
+  softLimit,
   stripSpokenToolCall,
   VOICE_MIC_CONSTRAINTS,
   VoiceSession,
@@ -940,7 +941,7 @@ test("inline session update pins loudest output volume", () => {
   assert.deepEqual(update["output"], { voice: "lola", volume: 100 });
 });
 
-test("playback gain scales agent audio with a hard clamp", () => {
+test("playback gain scales agent audio under a soft knee, never a hard clamp", () => {
   const { handle, internals } = makeSession();
   const played: { len: number; peak: number }[] = [];
   internals["playout"] = {
@@ -961,10 +962,285 @@ test("playback gain scales agent audio with a hard clamp", () => {
     setOutputGain: (gain: number) => void;
   };
   session.setOutputGain(2.0);
-  // 1000 * 2 = 2000; 20000 * 2 clamps to 32767.
+  // 1000 * 2 = 2000 stays linear; 20000 * 2 bends under full scale.
   const pcm = new Uint8Array([0xe8, 0x03, 0x20, 0x4e]);
   const base64 = Buffer.from(pcm).toString("base64");
   handle({ type: "reply.audio", reply_id: "r1", data: base64 });
   assert.equal(played.length, 1);
-  assert.equal(played[0]?.peak, 32767);
+  assert.ok((played[0]?.peak ?? 0) > 30000 && (played[0]?.peak ?? 0) <= 32767, `peak ${played[0]?.peak}`);
+});
+
+test("softLimit: linear below the knee, smooth and bounded above it", () => {
+  assert.equal(softLimit(2000), 2000);
+  assert.equal(softLimit(-2000), -2000);
+  assert.ok(softLimit(40000) < 32767 && softLimit(40000) > 30000);
+  assert.ok(softLimit(1e6) <= 32767);
+  assert.ok(softLimit(-1e6) >= -32767);
+  // Monotonic: louder in never comes out quieter (no fold-back distortion).
+  let last = -Infinity;
+  for (let x = 0; x <= 130000; x += 500) {
+    assert.ok(softLimit(x) >= last);
+    last = softLimit(x);
+  }
+  // Continuous at the knee: no step where the curve changes.
+  const knee = 0.8 * 32767;
+  assert.ok(Math.abs(softLimit(knee + 1) - softLimit(knee)) < 2);
+});
+
+// ── Hold: park, resume, reload resume, background wake ───────────────────
+
+/**
+ * A started demo session over fake sockets. Each `new WebSocket` is kept so
+ * a test can open it, feed it server messages, and close it like a phone
+ * dropping the connection in the background.
+ */
+async function startedSession(
+  handlers: ConstructorParameters<typeof VoiceSession>[0] = {},
+  startOpts: Parameters<VoiceSession["start"]>[2] = {},
+) {
+  const g = globalThis as unknown as Record<string, unknown>;
+  const navigatorDescriptor = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+  const savedWebSocket = g.WebSocket;
+  const savedWindow = g.window;
+  const windowListeners: string[] = [];
+  g.window = { addEventListener: (type: string) => windowListeners.push(type), removeEventListener() {} };
+  Object.defineProperty(globalThis, "navigator", {
+    value: { mediaDevices: { getUserMedia: async () => ({ getTracks: () => [], getAudioTracks: () => [] }) } },
+    configurable: true,
+  });
+  type FakeSocket = {
+    sent: Record<string, unknown>[];
+    readyState: number;
+    emit: (type: string, event?: unknown) => void;
+  };
+  const sockets: FakeSocket[] = [];
+  g.WebSocket = class {
+    static OPEN = 1;
+    readyState = 1;
+    sent: Record<string, unknown>[] = [];
+    private listeners = new Map<string, ((event: unknown) => void)[]>();
+    constructor() {
+      sockets.push(this as unknown as FakeSocket);
+    }
+    addEventListener(type: string, fn: (event: unknown) => void) {
+      this.listeners.set(type, [...(this.listeners.get(type) ?? []), fn]);
+    }
+    emit(type: string, event: unknown = {}) {
+      for (const fn of this.listeners.get(type) ?? []) fn(event);
+    }
+    send(raw: string) {
+      this.sent.push(JSON.parse(raw));
+    }
+    close() {
+      this.readyState = 3;
+    }
+  };
+  const played: string[] = [];
+  const session = new VoiceSession(handlers, {
+    micOwner: `hold-test-${Math.random()}`,
+    startGraph: async () =>
+      ({
+        audioCtx: { state: "running", resume: async () => undefined, close: async () => undefined },
+        worklet: { port: { close() {} }, disconnect() {} },
+        playout: {
+          play: () => played.push("chunk"),
+          flush() {},
+          settled: () => true,
+          queuedMs: () => 0,
+        },
+        stop() {},
+      }) as unknown as AudioGraph,
+  });
+  let tokens = 0;
+  await session.start(
+    { mode: "agent", agentId: "" },
+    async () => ({ token: `tok${(tokens += 1)}`, agentId: "a1", callToken: "call" }),
+    startOpts,
+  );
+  const server = (i: number, message: Record<string, unknown>) =>
+    sockets[i]?.emit("message", { data: JSON.stringify(message) });
+  // Stop first: the mic registry is global, a live session blocks the next test.
+  const restore = async () => {
+    await session.stop().catch(() => undefined);
+    if (navigatorDescriptor) Object.defineProperty(globalThis, "navigator", navigatorDescriptor);
+    g.WebSocket = savedWebSocket;
+    g.window = savedWindow;
+  };
+  return { session, sockets, server, played, windowListeners, restore, tokens: () => tokens };
+}
+
+test("pagehide never ends the call: no listener, no session.end", async () => {
+  const t = await startedSession();
+  try {
+    assert.equal(t.windowListeners.includes("pagehide"), false);
+    t.sockets[0]?.emit("open");
+    t.server(0, { type: "session.ready", session_id: "sess_p" });
+    assert.ok(!t.sockets[0]?.sent.some((m) => m.type === "session.end"));
+  } finally {
+    await t.restore();
+  }
+});
+
+test("a reload inside the grace resumes the saved server session, not a new one", async () => {
+  const t = await startedSession({}, { resumeSessionId: "sess_saved" });
+  try {
+    t.sockets[0]?.emit("open");
+    assert.deepEqual(t.sockets[0]?.sent, [{ type: "session.resume", session_id: "sess_saved" }]);
+  } finally {
+    await t.restore();
+  }
+});
+
+test("a drop while hidden parks: no resume attempts until the visitor is back", async () => {
+  const states: string[] = [];
+  let parked = 0;
+  const t = await startedSession({ onStateChange: (s) => states.push(s), onParked: () => (parked += 1) });
+  try {
+    t.sockets[0]?.emit("open");
+    t.server(0, { type: "session.ready", session_id: "sess_bg" });
+    t.session.setParkOnDrop(true);
+    t.sockets[0]?.emit("close", { code: 1006 });
+    await settle();
+    assert.equal(parked, 1);
+    assert.equal(states.at(-1), "reconnecting");
+    assert.equal(t.sockets.length, 1, "no resume socket while hidden");
+    assert.equal(typeof t.session.parkedForMs(), "number");
+    // Back on the page: resume the SAME server session (its real memory).
+    await t.session.resume();
+    assert.equal(t.sockets.length, 2);
+    t.sockets[1]?.emit("open");
+    assert.deepEqual(t.sockets[1]?.sent, [{ type: "session.resume", session_id: "sess_bg" }]);
+    assert.equal(t.session.parkedForMs(), null, "no longer parked");
+    t.server(1, { type: "session.ready", session_id: "sess_bg" });
+    assert.equal(states.at(-1), "listening");
+  } finally {
+    await t.restore();
+  }
+});
+
+test("a drop on a visible page still auto-resumes at once", async () => {
+  const t = await startedSession();
+  try {
+    t.sockets[0]?.emit("open");
+    t.server(0, { type: "session.ready", session_id: "sess_fg" });
+    t.sockets[0]?.emit("close", { code: 1006 });
+    await settle();
+    assert.equal(t.sockets.length, 2, "resume socket opened");
+    t.sockets[1]?.emit("open");
+    assert.equal(t.sockets[1]?.sent[0]?.type, "session.resume");
+  } finally {
+    await t.restore();
+  }
+});
+
+for (const code of ["session_not_found", "session_forbidden", "session_expired"]) {
+  test(`resume refused with ${code} is terminal and coded expired (rejoin with call memory)`, async () => {
+    const errors: (string | undefined)[] = [];
+    const states: string[] = [];
+    const t = await startedSession({ onError: (e) => errors.push(e.code), onStateChange: (s) => states.push(s) });
+    try {
+      t.sockets[0]?.emit("open");
+      t.server(0, { type: "session.error", code, message: "nope" });
+      await settle();
+      assert.deepEqual(errors, ["expired"]);
+      assert.equal(states.at(-1), "ended");
+    } finally {
+      await t.restore();
+    }
+  });
+}
+
+test("hold mid-reply drops the stale reply: it never plays on return", async () => {
+  const t = await startedSession();
+  try {
+    t.sockets[0]?.emit("open");
+    t.server(0, { type: "session.ready", session_id: "sess_mid" });
+    t.server(0, { type: "reply.started", reply_id: "r1" });
+    t.server(0, { type: "reply.audio", reply_id: "r1", data: "" });
+    assert.equal(t.played.length, 1);
+    t.session.setOnHold(true); // page froze mid-sentence
+    t.session.setOnHold(false);
+    t.server(0, { type: "reply.audio", reply_id: "r1", data: "" }); // late tail after unfreeze
+    assert.equal(t.played.length, 1, "stale tail dropped");
+    t.server(0, { type: "reply.done", reply_id: "r1" });
+    t.server(0, { type: "reply.started", reply_id: "r2" }); // the welcome-back
+    t.server(0, { type: "reply.audio", reply_id: "r2", data: "" });
+    assert.equal(t.played.length, 2, "the welcome plays");
+  } finally {
+    await t.restore();
+  }
+});
+
+test("a parked drop mid-reply drops the stale reply too", async () => {
+  const t = await startedSession();
+  try {
+    t.sockets[0]?.emit("open");
+    t.server(0, { type: "session.ready", session_id: "sess_mid2" });
+    t.server(0, { type: "reply.started", reply_id: "r1" });
+    t.session.setParkOnDrop(true);
+    t.sockets[0]?.emit("close", { code: 1006 });
+    await t.session.resume();
+    t.sockets[1]?.emit("open");
+    t.server(1, { type: "session.ready", session_id: "sess_mid2" });
+    t.server(1, { type: "reply.audio", reply_id: "r1", data: "" });
+    assert.equal(t.played.length, 0);
+  } finally {
+    await t.restore();
+  }
+});
+
+test("requestReply reports a refused send, so the welcome can wait for the socket", () => {
+  const { session, internals } = makeSession();
+  assert.equal(session.requestReply("hi"), true);
+  (internals["ws"] as { readyState: number }).readyState = 3;
+  assert.equal(session.requestReply("hi"), false);
+});
+
+test("wake resumes a suspended audio context and re-acquires an ended mic", async () => {
+  const { session, internals } = makeSession();
+  let resumed = 0;
+  const connected: unknown[] = [];
+  internals["state"] = "listening";
+  internals["audioCtx"] = {
+    state: "suspended",
+    resume: async () => void (resumed += 1),
+    createMediaStreamSource: (stream: unknown) => ({ connect: (node: unknown) => connected.push([stream, node]) }),
+  };
+  const worklet = { port: {} };
+  internals["worklet"] = worklet;
+  internals["stream"] = { getAudioTracks: () => [{ readyState: "ended" }] };
+  const fresh = { getTracks: () => [], getAudioTracks: () => [{ readyState: "live" }] };
+  const navigatorDescriptor = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+  Object.defineProperty(globalThis, "navigator", {
+    value: { mediaDevices: { getUserMedia: async () => fresh } },
+    configurable: true,
+  });
+  try {
+    await session.wake();
+    assert.equal(resumed, 1);
+    assert.deepEqual(connected, [[fresh, worklet]]);
+    assert.equal(internals["stream"], fresh);
+  } finally {
+    if (navigatorDescriptor) Object.defineProperty(globalThis, "navigator", navigatorDescriptor);
+  }
+});
+
+test("wake reports a mic that cannot come back", async () => {
+  const errors: (string | undefined)[] = [];
+  const { session, internals } = makeSession({ onError: (e) => errors.push(e.code) });
+  internals["state"] = "listening";
+  internals["audioCtx"] = { state: "running", resume: async () => undefined };
+  internals["worklet"] = { port: {} };
+  internals["stream"] = { getAudioTracks: () => [{ readyState: "ended" }] };
+  const navigatorDescriptor = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+  Object.defineProperty(globalThis, "navigator", {
+    value: { mediaDevices: { getUserMedia: async () => Promise.reject(new Error("NotAllowedError")) } },
+    configurable: true,
+  });
+  try {
+    await session.wake();
+    assert.deepEqual(errors, ["mic"]);
+  } finally {
+    if (navigatorDescriptor) Object.defineProperty(globalThis, "navigator", navigatorDescriptor);
+  }
 });

@@ -1,7 +1,21 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildHoldCarryover, HOLD_CAP_S, HoldState, shouldRejoinAfterHold } from "./hold";
-import { HOLD_ENTER_LINES, holdEnterInstructions } from "./voni-agent";
+import {
+  buildHoldCarryover,
+  CALL_MEMORY_KEY,
+  clearCallMemory,
+  decideHoldReturn,
+  HOLD_CAP_S,
+  HoldState,
+  loadCallMemory,
+  RESUME_GRACE_MS,
+  saveCallMemory,
+  shouldParkOnDrop,
+  shouldRejoinAfterHold,
+  type CallMemorySnapshot,
+  type HoldReturn,
+  type HoldSessionStatus,
+} from "./hold";
 
 const secToMs = (seconds: number) => seconds * 1000;
 
@@ -95,24 +109,105 @@ test("no hold return pending means no silent rejoin, ever", () => {
   assert.equal(shouldRejoinAfterHold(false, "network"), false);
 });
 
-test("hold lines rotate, starting with the verified canonical line", () => {
-  assert.ok(HOLD_ENTER_LINES.length > 1, "rotation needs variants");
-  assert.equal(HOLD_ENTER_LINES[0], "Go ahead, I'll hold.");
-  const seen = new Set(
-    Array.from({ length: HOLD_ENTER_LINES.length }, (_, i) => holdEnterInstructions(i)),
-  );
-  assert.equal(seen.size, HOLD_ENTER_LINES.length, "each hold sounds different");
-  assert.equal(
-    holdEnterInstructions(HOLD_ENTER_LINES.length),
-    holdEnterInstructions(0),
-    "the pool wraps around",
-  );
+test("return from hold: one path per away time and session state", () => {
+  const cap = secToMs(HOLD_CAP_S);
+  const rows: Array<[string, { heldMs: number; status: HoldSessionStatus; droppedMs?: number }, HoldReturn]> = [
+    ["frozen page, socket survived", { heldMs: 5000, status: "live" }, "unhold"],
+    ["auto-resume already in flight", { heldMs: 5000, status: "reconnecting" }, "await"],
+    ["dropped while hidden, back inside grace", { heldMs: 20000, status: "parked", droppedMs: 20000 }, "resume"],
+    ["dropped while hidden, grace boundary", { heldMs: 30000, status: "parked", droppedMs: RESUME_GRACE_MS }, "rejoin"],
+    ["dropped while hidden, back at 45s", { heldMs: 45000, status: "parked", droppedMs: 45000 }, "rejoin"],
+    ["session gone (1008, exhausted, expired)", { heldMs: 10000, status: "gone" }, "rejoin"],
+    ["away past the cap, live", { heldMs: cap, status: "live" }, "endCapped"],
+    ["away past the cap, parked", { heldMs: cap + 1, status: "parked", droppedMs: 1000 }, "endCapped"],
+    ["away past the cap, gone", { heldMs: cap * 2, status: "gone" }, "endCapped"],
+    ["one tick under the cap, gone", { heldMs: cap - 1, status: "gone" }, "rejoin"],
+  ];
+  for (const [name, input, expected] of rows) {
+    assert.equal(decideHoldReturn(input), expected, name);
+  }
 });
 
-test("every hold turn is fenced to its single line", () => {
-  for (let i = 0; i < HOLD_ENTER_LINES.length; i += 1) {
-    const instructions = holdEnterInstructions(i);
-    assert.match(instructions, /ONLY this one short line/);
-    assert.match(instructions, /Do not answer any earlier question/);
-  }
+test("a drop parks only on a hidden demo page", () => {
+  assert.equal(shouldParkOnDrop(true, true), true, "hidden demo: wait for the visitor");
+  assert.equal(shouldParkOnDrop(true, false), false, "visible demo: auto-resume now");
+  assert.equal(shouldParkOnDrop(false, true), false, "test calls never park");
+});
+
+test("one silent rejoin per return; a second terminal failure surfaces", () => {
+  assert.equal(shouldRejoinAfterHold(true, "expired", false), true);
+  assert.equal(shouldRejoinAfterHold(true, "expired", true), false);
+  assert.equal(shouldRejoinAfterHold(true, "network", true), false);
+});
+
+test("call memory fits a whole demo call before it truncates", () => {
+  // A 2-minute demo is far below 8000 chars: nothing is cut.
+  const turns = Array.from({ length: 30 }, (_, i) => ({
+    role: (i % 2 ? "agent" : "user") as "agent" | "user",
+    text: `Line ${i}: a realistic sentence someone might say on a sales demo call.`,
+  }));
+  const context = buildHoldCarryover(turns);
+  assert.match(context, /Line 0:/, "oldest survives by default");
+  assert.match(context, /Line 29:/);
+  assert.match(context, /do not re-introduce yourself/);
+});
+
+function memoryStore() {
+  const map = new Map<string, string>();
+  return {
+    map,
+    getItem: (k: string) => map.get(k) ?? null,
+    setItem: (k: string, v: string) => void map.set(k, v),
+    removeItem: (k: string) => void map.delete(k),
+  };
+}
+
+const snapshot = (savedAt: number): CallMemorySnapshot => ({
+  savedAt,
+  voiceId: "anna",
+  turns: [{ role: "user", text: "We sell solar panels." }],
+  talkSeconds: 42,
+  strikes: 1,
+  sessionId: "sess_1",
+});
+
+test("call memory survives a reload inside the hold cap", () => {
+  const store = memoryStore();
+  saveCallMemory(snapshot(1000), store);
+  const back = loadCallMemory(1000 + secToMs(60), store);
+  assert.deepEqual(back, snapshot(1000));
+});
+
+test("call memory past the hold cap is dropped and cleared", () => {
+  const store = memoryStore();
+  saveCallMemory(snapshot(0), store);
+  assert.equal(loadCallMemory(secToMs(HOLD_CAP_S), store), null);
+  assert.equal(store.map.has(CALL_MEMORY_KEY), false, "stale entry cleared");
+});
+
+test("corrupt or future call memory is ignored and cleared", () => {
+  const store = memoryStore();
+  store.setItem(CALL_MEMORY_KEY, "{not json");
+  assert.equal(loadCallMemory(0, store), null);
+  assert.equal(store.map.size, 0);
+  saveCallMemory(snapshot(5000), store);
+  assert.equal(loadCallMemory(1000, store), null, "saved in the future (clock skew)");
+});
+
+test("call memory never throws when storage does", () => {
+  const broken = {
+    getItem: () => {
+      throw new Error("SecurityError");
+    },
+    setItem: () => {
+      throw new Error("QuotaExceededError");
+    },
+    removeItem: () => {
+      throw new Error("SecurityError");
+    },
+  };
+  assert.doesNotThrow(() => saveCallMemory(snapshot(0), broken));
+  assert.doesNotThrow(() => clearCallMemory(broken));
+  assert.equal(loadCallMemory(0, broken), null);
+  assert.equal(loadCallMemory(0, null), null, "no storage at all (SSR)");
 });

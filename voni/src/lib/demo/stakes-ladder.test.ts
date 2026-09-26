@@ -83,3 +83,19 @@ test("clear drops anything pending", () => {
   queue.onReplyDone();
   assert.deepEqual(delivered, []);
 });
+
+test("a line the socket refused waits for retry, first in line", () => {
+  const delivered: string[] = [];
+  let up = false;
+  const queue = new ReplyQueue((text) => {
+    if (!up) return false;
+    delivered.push(text);
+    return true;
+  });
+  queue.enqueue("There you are.");
+  queue.onReplyDone(); // flushes now: socket down, refused
+  assert.deepEqual(delivered, []);
+  up = true;
+  queue.onReplyDone();
+  assert.deepEqual(delivered, ["There you are."], "delivered once the session is back");
+});

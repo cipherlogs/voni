@@ -14,6 +14,6 @@ test.describe("rig liveness (unauthenticated)", () => {
 
   test("landing serves branding", async ({ page }) => {
     await page.goto("/");
-    await expect(page.getByRole("heading", { name: /an ai employee with a mission/i })).toBeVisible();
+    await expect(page.getByRole("heading", { name: /every call ends with the work already done/i })).toBeVisible();
   });
 });

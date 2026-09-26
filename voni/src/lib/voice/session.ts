@@ -12,7 +12,9 @@
  * 1. `session.end` before `ws.close()`. A bare close leaves the session in a
  *    30-second resume grace window that still bills. HANDOFF (1b) records two
  *    throwaway scripts that billed 30.87s each for under a second of use.
- *    This is wired to explicit hang-up AND to `pagehide`, synchronously.
+ *    This is wired to explicit hang-up only. NOT to `pagehide`: phones fire
+ *    it when a background tab is discarded, and ending there destroyed the
+ *    call the visitor was coming back to. A closed tab bills the ≤30s grace.
  * 2. Echo cancellation ON, noise suppression OFF. Without AEC the agent hears
  *    its own voice through the speakers and interrupts every reply. A second
  *    denoiser on top of the server's own costs more accuracy than it buys.
@@ -46,6 +48,7 @@ import {
   acquireMicStream,
   startAudioGraph,
   TARGET_SAMPLE_RATE,
+  VOICE_MIC_CONSTRAINTS,
   VoiceStartError,
   type VoiceErrorCode,
 } from "./mic-capture";
@@ -296,7 +299,7 @@ export type SessionEndedInfo = {
  * caused it (barge-in flush, interrupted-reply flush, or something else).
  */
 export type AudioProbeEvent = {
-  kind: "ready" | "barge-in" | "reply-cut" | "flush" | "underrun" | "input-drop";
+  kind: "ready" | "barge-in" | "reply-cut" | "flush" | "underrun" | "input-drop" | "pop" | "clip";
   /** Wall-clock ms of the event. */
   at: number;
   /** Ms of agent audio buffered at that moment (worklet's last report). */
@@ -304,6 +307,9 @@ export type AudioProbeEvent = {
   sessionId: string | null;
   /** Frames dropped since the last input-drop probe (only for input-drop). */
   dropped?: number;
+  /** Pop recorder: "jump"/"overload" for `pop`, clamped samples for `clip`. */
+  detail?: string;
+  size?: number;
 };
 
 export type VoiceHandlers = {
@@ -319,6 +325,8 @@ export type VoiceHandlers = {
   /** Fires when a config update times out (true) and when resync succeeds (false). */
   onConfigUncertainty?: (uncertain: boolean) => void;
   onSessionEnded?: (info: SessionEndedInfo) => void;
+  /** The socket dropped while `parkOnDrop` was set: parked, not resuming. */
+  onParked?: () => void;
   /** Fires on `session.ready` with the id AssemblyAI needs for support. */
   onSessionReady?: (sessionId: string) => void;
   /**
@@ -448,7 +456,14 @@ export class VoiceSession {
   /** Agent-voice output; lives on the mic's context. */
   private playout: WorkletPlayout | null = null;
   private state: VoiceState = "idle";
-  private onPageHide = () => this.sendEnd();
+  /**
+   * Hold (demo): a drop while this is set parks instead of auto-resuming,
+   * so a background page never burns its resume attempts offline. The
+   * component resumes on return (see lib/demo/hold.ts).
+   */
+  private parkOnDrop = false;
+  /** Wall-clock ms the parked socket dropped; null when not parked. */
+  private parkedAt: number | null = null;
   private toolCoordinator: ToolCoordinator | null = null;
   /** Exact turn-detection state to restore after one sensitive value turn. */
   private pendingTurnDetectionRestore: TurnDetection | null | undefined;
@@ -529,6 +544,8 @@ export class VoiceSession {
   private sessionReadySent = false;
   /** Client playback gain for the active voice (1.0 = native). See voices.ts. */
   private outputGain = 1.0;
+  /** Dev pop recorder: worklet jumps/overloads and gain clamps become probes. */
+  private popProbe = false;
   /** Mic frames dropped since the last input-drop probe (ingestAudio gate). */
   private inputDropped = 0;
   private lastInputDropProbe = 0;
@@ -579,6 +596,15 @@ export class VoiceSession {
   async start(
     config: SessionConfig,
     getToken: TokenFetcher = authedToken,
+    opts: {
+      /**
+       * Reload inside the resume grace: rejoin this server session (its real
+       * memory) instead of binding a new one. Refused once the grace is
+       * over (`session_not_found` → code `expired`), which the demo turns
+       * into a fresh session with the call memory.
+       */
+      resumeSessionId?: string;
+    } = {},
   ): Promise<void> {
     // A second start (e.g. immediate restart) invalidates this one: every
     // await below re-checks, so late acquisitions release instead of opening
@@ -588,6 +614,7 @@ export class VoiceSession {
     this.explicitStop = false;
     this.resumeAttempts = 0;
     this.sessionId = null;
+    this.parkedAt = null;
     this.micReleased = false;
     this.inputMuted = false;
     this.holdPaused = false;
@@ -715,10 +742,11 @@ export class VoiceSession {
       this.playout.onDrained = () => {
         if (this.state === "speaking") this.probe("underrun");
       };
-      this.connect(token, resolved, gen);
-      if (typeof window !== "undefined") {
-        window.addEventListener("pagehide", this.onPageHide);
+      if (this.popProbe) {
+        this.playout.probe?.(true);
+        this.playout.onPop = (pop) => this.probe("pop", undefined, { detail: pop.kind, size: pop.size });
       }
+      this.connect(token, resolved, gen, opts.resumeSessionId);
     } catch (e) {
       this.handlers.onError?.({
         message: e instanceof Error ? e.message : "Could not start the call.",
@@ -729,7 +757,7 @@ export class VoiceSession {
     }
   }
 
-  private connect(token: string, config: SessionConfig, gen: number) {
+  private connect(token: string, config: SessionConfig, gen: number, resumeSessionId?: string) {
     const url = new URL("wss://agents.assemblyai.com/v1/ws");
     url.searchParams.set("token", token);
     const ws = new WebSocket(url);
@@ -764,6 +792,10 @@ export class VoiceSession {
     ws.addEventListener("open", () => {
       if (!this.generation.isCurrent(gen)) return;
       this.handlers.onTiming?.("wsOpen");
+      if (resumeSessionId) {
+        ws.send(JSON.stringify(buildResumeMessage(resumeSessionId)));
+        return;
+      }
       const session =
         config.mode === "agent"
           ? // Stored agent: the browser supplies nothing but the binding.
@@ -783,6 +815,7 @@ export class VoiceSession {
    */
   async resume(): Promise<void> {
     if (!this.sessionId || !this.tokenFetcher || this.explicitStop) return;
+    this.parkedAt = null;
     const gen = this.generation.begin();
     this.setState("reconnecting");
     try {
@@ -844,6 +877,15 @@ export class VoiceSession {
         code: "expired",
       });
       void this.cleanup();
+      return;
+    }
+    if (this.parkOnDrop && this.sessionId) {
+      // Hidden demo page: hold the session id and the audio graph, drop any
+      // half-played reply, and wait for the visitor to come back.
+      this.parkedAt = Date.now();
+      this.dropCurrentReply();
+      this.setState("reconnecting");
+      this.handlers.onParked?.();
       return;
     }
     if (
@@ -1062,7 +1104,13 @@ export class VoiceSession {
       case "session.error":
       case "error":
         if (!this.rejectUpdate(msg.message ?? "Could not update call pacing.")) {
-          const expired = msg.code === "session_expired";
+          // Resume refusals are terminal too: `session_not_found` is the
+          // grace running out, `session_forbidden` a foreign id. Coded
+          // `expired` so a hold return rejoins with the call memory.
+          const expired =
+            msg.code === "session_expired" ||
+            msg.code === "session_not_found" ||
+            msg.code === "session_forbidden";
           if (expired) this.explicitStop = true;
           this.handlers.onError?.({
             message: msg.message ?? "The call ended unexpectedly.",
@@ -1445,9 +1493,59 @@ export class VoiceSession {
   setOnHold(held: boolean): void {
     if (this.holdPaused === held) return;
     this.holdPaused = held;
+    // The page froze mid-reply: that audio is stale on return, never replay it.
+    if (held) this.dropCurrentReply();
     if (this.ready) {
       this.sendContext(held ? HOLD_ON_CONTEXT : HOLD_OFF_CONTEXT);
     }
+  }
+
+  /** Set by the demo while the page is hidden (see `parkOnDrop`). */
+  setParkOnDrop(park: boolean): void {
+    this.parkOnDrop = park;
+  }
+
+  /** Parked after a hidden drop: ms since the socket dropped, else null. */
+  parkedForMs(now = Date.now()): number | null {
+    return this.parkedAt === null ? null : now - this.parkedAt;
+  }
+
+  /**
+   * Back from the background: a frozen or interrupted AudioContext stays
+   * silent until resumed, and a mic track the OS ended stays silent until
+   * re-acquired. Both happen without a user gesture on a page that already
+   * had one. Best-effort; a mic that can't come back surfaces as `mic`.
+   */
+  async wake(): Promise<void> {
+    const ctx = this.audioCtx;
+    if (!ctx || this.state === "ended") return;
+    if (ctx.state !== "running") await ctx.resume().catch(() => undefined);
+    const track = this.stream?.getAudioTracks()[0];
+    if (!track || track.readyState !== "ended" || !this.worklet) return;
+    try {
+      const fresh = await navigator.mediaDevices.getUserMedia({ audio: VOICE_MIC_CONSTRAINTS });
+      // Re-read after the await: the call may have ended meanwhile.
+      if ((this.state as VoiceState) === "ended" || this.audioCtx !== ctx || !this.worklet) {
+        fresh.getTracks().forEach((t) => t.stop());
+        return;
+      }
+      this.stream = fresh;
+      ctx.createMediaStreamSource(fresh).connect(this.worklet);
+    } catch {
+      this.handlers.onError?.({
+        message: "Voni lost your microphone while you were away. Hang up and call again.",
+        code: "mic",
+      });
+    }
+  }
+
+  /** Drop the reply in progress: its late audio and the rest of its caption never play. */
+  private dropCurrentReply(): void {
+    if (this.replyActive && this.currentReplyId) {
+      this.droppedReplyId = this.currentReplyId;
+      this.droppedHeard = this.currentAgentText;
+    }
+    this.flush();
   }
 
   /** Send hidden context without asking the agent to generate a reply. */
@@ -1494,6 +1592,11 @@ export class VoiceSession {
     );
   }
 
+  /** Dev pop recorder (`?popprobe=1`): set before `start`. */
+  setPopProbe(on: boolean): void {
+    this.popProbe = on;
+  }
+
   /** Relative playback gain for the active voice (see VOICE_PLAYBACK_GAIN). */
   setOutputGain(gain: number): void {
     this.outputGain = Number.isFinite(gain) && gain > 0 ? gain : 1.0;
@@ -1503,13 +1606,15 @@ export class VoiceSession {
    * Ask the agent to speak right now (idle check-ins, status updates).
    * Best-effort: a dead session just means the idle timer will end things.
    */
-  requestReply(instructions: string): void {
+  requestReply(instructions: string): boolean {
     // Nothing may supersede the goodbye: no rung, check-in or resume.
-    if (this.endCallSignaled) return;
+    if (this.endCallSignaled) return true;
     try {
       this.send({ type: "reply.create", instructions });
+      return true;
     } catch {
-      /* Session gone — nothing to nudge. */
+      /* Session gone or between sockets — the caller may retry on ready. */
+      return false;
     }
   }
 
@@ -1518,14 +1623,17 @@ export class VoiceSession {
     const pcm = fromBase64(base64);
     const gain = this.outputGain;
     if (gain !== 1.0 && pcm.length >= 2) {
-      // ponytail: per-voice linear gain with hard clamp; server volume caps
-      // at 100 so this is the only place the 12 dB native gap can close.
+      // Per-voice linear gain; server volume caps at 100 so this is the only
+      // place the 12 dB native gap can close. Peaks pass a soft knee, never a
+      // hard clamp: squared-off peaks are the crackle on loud voices.
       const view = new DataView(pcm.buffer, pcm.byteOffset, pcm.length);
+      let clamped = 0;
       for (let i = 0; i + 1 < pcm.length; i += 2) {
-        const s = view.getInt16(i, true);
-        const g = Math.round(s * gain);
-        view.setInt16(i, g > 32767 ? 32767 : g < -32768 ? -32768 : g, true);
+        const g = view.getInt16(i, true) * gain;
+        if (g > 32767 || g < -32768) clamped += 1;
+        view.setInt16(i, Math.round(softLimit(g)), true);
       }
+      if (clamped > 0 && this.popProbe) this.probe("clip", undefined, { size: clamped });
     }
     this.playout?.play(pcm, TARGET_SAMPLE_RATE);
   }
@@ -1542,23 +1650,25 @@ export class VoiceSession {
   }
 
   /** Emit one probe event. Never throws, never affects playback. */
-  private probe(kind: AudioProbeEvent["kind"], queued = this.playout?.queuedMs() ?? 0) {
+  private probe(
+    kind: AudioProbeEvent["kind"],
+    queued = this.playout?.queuedMs() ?? 0,
+    extra: Pick<AudioProbeEvent, "detail" | "size"> = {},
+  ) {
     try {
       this.handlers.onAudioProbe?.({
         kind,
         at: Date.now(),
         queued,
         sessionId: this.sessionId,
+        ...extra,
       });
     } catch {
       // Observation must not break the call.
     }
   }
 
-  /**
-   * Synchronous on purpose: this is also called from `pagehide`, where anything
-   * async will not finish before the socket is torn down.
-   */
+  /** Synchronous: hang-up must reach the server before the socket closes. */
   private sendEnd() {
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify({ type: "session.end" }));
@@ -1602,6 +1712,7 @@ export class VoiceSession {
     this.setState("ended");
     this.ready = false;
     this.sessionId = null;
+    this.parkedAt = null;
     this.lastAudioAt = 0;
     this.inputMuted = false;
     this.holdPaused = false;
@@ -1611,9 +1722,6 @@ export class VoiceSession {
     this.rejectUpdate("The call ended before its settings changed.");
     this.invalidatePendingUpdates();
 
-    if (typeof window !== "undefined") {
-      window.removeEventListener("pagehide", this.onPageHide);
-    }
     const wasSpeaking = !this.playbackSettled();
     this.flush();
     // Hang-up mid-reply: let the fade finish before the context closes.
@@ -1679,6 +1787,17 @@ async function postTool(
   } finally {
     clearTimeout(timeout);
   }
+}
+
+/** Above this, gained samples bend toward full scale instead of clipping. */
+const SOFT_KNEE = 0.8 * 32767;
+
+/** Soft limiter for gained PCM16: linear below the knee, tanh above, never past ±32767. */
+export function softLimit(x: number): number {
+  const a = Math.abs(x);
+  if (a <= SOFT_KNEE) return x;
+  const room = 32767 - SOFT_KNEE;
+  return Math.sign(x) * (SOFT_KNEE + room * Math.tanh((a - SOFT_KNEE) / room));
 }
 
 /** Chunk the conversion: String.fromCharCode(...bytes) blows the stack on big inputs. */

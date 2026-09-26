@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { tickAllowed } from "../lib/voice/call-sounds";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -101,56 +102,72 @@ test("the desktop demo keeps the unfold card and transcript structure", () => {
   assert.match(desktop, /<LandingOrb state=\{orbState\} \/>/, "the portrait orb tints by call state");
 });
 
-test("the demo parks on hold when the page hides and resumes on return", () => {
+test("hidden stays live; hold starts only on freeze or a hidden drop", () => {
   const call = readRepo("components/voice-call.tsx");
   const hold = readRepo("lib/demo/hold.ts");
   const context = readRepo("lib/voice/context.ts");
 
-  // Entry/exit ride visibilitychange only (blur fires while visible).
+  // Visibility only arms parking and saves the call memory; never blur.
   assert.match(call, /document\.addEventListener\("visibilitychange"/);
   assert.match(call, /document\.removeEventListener\("visibilitychange"/);
   assert.doesNotMatch(call, /window\.addEventListener\("blur"/);
+  assert.match(call, /setParkOnDrop\(shouldParkOnDrop\(true, hidden\)\)/);
+  // Hold entry: the browser froze the page, or the socket dropped while hidden.
+  assert.match(call, /document\.addEventListener\("freeze", onFreeze\)/);
+  assert.match(call, /onParked: \(\) => enterHold\(Date\.now\(\)\)/);
+  // Silent entry: no hold line exists anymore (a frozen page can't speak).
+  assert.doesNotMatch(call, /holdEnterInstructions|HOLD_DWELL_MS|holdTimerRef/);
+  // `pagehide` saves the call memory, it never ends the call.
+  assert.match(call, /window\.addEventListener\("pagehide", saveMemory\)/);
   // Demo-gated: inline test calls never hold.
   assert.match(call, /if \(mode\.kind !== "demo"\) return;/);
   // Hold pauses its own way: mic via setOnHold, clock via setHeld.
   assert.match(call, /session\.setOnHold\(true\)/);
-  assert.match(call, /session\.setOnHold\(false\)/);
-  assert.match(call, /clockRef\.current\?\.setHeld\(true/);
-  assert.match(call, /clockRef\.current\?\.setHeld\(false/);
-  // Spoken lines go through the queue, never over a reply. The hold line
-  // rotates (holdEnterInstructions over HOLD_ENTER_LINES) and stays fenced
-  // to its single sentence.
-  assert.match(call, /holdEnterInstructions\(holdCountRef\.current\)/);
-  assert.match(call, /HOLD_RETURN_INSTRUCTIONS/);
-  assert.match(call, /HOLD_TIMEOUT_INSTRUCTIONS/);
-  assert.match(call, /replyQueueRef\.current\?\.enqueue\(HOLD_/);
-  assert.match(call, /replyQueueRef\.current\?\.enqueue\(holdEnterInstructions/);
-  // The hold module owns the cap; the card enforces it off the same clock tick.
+  assert.match(call, /voice\?\.setOnHold\(false\)/);
+  assert.match(call, /clockRef\.current\?\.setHeld\(true, at\)/);
+  assert.match(call, /clockRef\.current\?\.setHeld\(false, now\)/);
+  // The return path is the pure decision (table-tested in hold.test.ts).
+  assert.match(call, /decideHoldReturn\(\{/);
+  assert.match(call, /void voice\?\.wake\(\)/);
+  assert.match(call, /if \(next === "resume"\) void voice\?\.resume\(\)/);
+  // The cap fires even while away (a hidden, parked page).
   assert.match(hold, /HOLD_CAP_S = 120/);
-  assert.match(call, /holdRef\.current\?\.isExpired\(now\)/);
+  assert.match(call, /setTimeout\(exitHold, HOLD_CAP_S \* 1000/);
+  assert.match(call, /HOLD_TIMEOUT_INSTRUCTIONS/);
   // Hidden hold context, never a reply or transcript row.
   assert.match(context, /HOLD_ON_CONTEXT/);
   assert.match(context, /HOLD_OFF_CONTEXT/);
-  // A post-grace restart carries the conversation, not a blank slate.
-  // A resume that dies after a hold return rejoins on transport failure.
+  // Past the grace, a fresh session gets the call memory.
   assert.match(call, /buildHoldCarryover\(turnsRef\.current\)/);
   assert.match(call, /sessionRef\.current\.sendContext\(carryoverRef\.current\)/);
-  assert.match(call, /shouldRejoinAfterHold\(greetOnListenRef\.current, e\.code\)/);
-  // A restart never inherits the old transport: the ghost session is
-  // detached and stopped first, so its late callbacks can't paint an
-  // error banner or ghost audio over the fresh session.
+  assert.match(call, /shouldRejoinAfterHold\(/);
+  // A restart never inherits the old transport, and waits for its fade.
   assert.match(call, /const previous = sessionRef\.current;/);
   assert.match(call, /sessionRef\.current = null;/);
-  assert.match(call, /void previous\.stop\(\)/);
-  // The welcome-back fires once per return, on whichever arrival lands
-  // first — live return included.
+  assert.match(call, /await previous\.stop\(\)/);
+  // One welcome per return; a line refused between sockets retries on live.
   assert.match(call, /welcomedRef\.current = false/);
   assert.match(call, /const welcomeBackOnce = useCallback/);
   assert.match(call, /if \(welcomedRef\.current\) return;/);
+  assert.match(call, /replyQueueRef\.current\?\.retry\(\)/);
   // On-screen state: hold status, holding marker, away-ended copy.
   assert.match(call, /On hold ·/);
   assert.match(call, /data-holding=\{holding\}/);
   assert.match(call, /The call ended while you were away\./);
+});
+
+test("a reload or discarded tab continues the same call from sessionStorage", () => {
+  const call = readRepo("components/voice-call.tsx");
+  // Restore on mount; one tap continues (audio needs a gesture on a fresh page).
+  assert.match(call, /loadCallMemory\(Date\.now\(\)\)/);
+  assert.match(call, /Continue call/);
+  // Inside the grace: the same server session; otherwise the call memory.
+  assert.match(call, /resumeIdRef\.current = snap\.sessionId/);
+  assert.match(call, /\{ resumeSessionId \}/);
+  // The talk clock restarts from the saved seconds at the tap, not at mount.
+  assert.match(call, /new TalkClock\(Date\.now\(\) - restoredTalkRef\.current \* 1000\)/);
+  // Forgotten on hang-up and on a finished call; a fresh call clears it.
+  assert.match(call, /clearCallMemory\(\)/);
 });
 
 test("a hold return reconnects visibly, silently, and speaks exactly once", () => {
@@ -173,6 +190,12 @@ test("a hold return reconnects visibly, silently, and speaks exactly once", () =
   assert.match(agents, /demoAgentStorageKey/);
   assert.match(agents, /resume \? `\$\{voiceId\}:resume` : voiceId/);
   assert.match(token, /body\.resume === true/);
+  // A preserving restart that also dies rejoins once more (single-retry
+  // guard): the memory (turns + carryover) survives to the second attempt
+  // instead of painting an error like a new call.
+  assert.match(call, /greetOnListenRef\.current \|\| returnPendingRef\.current,\s*e\.code,\s*rejoiningRef\.current/);
+  assert.match(call, /rejoiningRef\.current = true/);
+  assert.match(call, /rejoiningRef\.current = false/);
 });
 
 test("the hold clock union survives mute overlap", () => {
@@ -181,10 +204,21 @@ test("the hold clock union survives mute overlap", () => {
   assert.match(clock, /pauseStartedAt/);
 });
 
-test("the caption tick is humanized and strikes on caption words and yield", () => {
+test("the caption tick strikes only on the visitor's words, never over the agent", () => {
   const call = readRepo("components/voice-call.tsx");
 
   assert.doesNotMatch(call, /play\("pivot"\)/, "the flat pivot file is retired");
-  assert.match(call, /sounds\(\)\.tick\(1, 0\.9\)/, "the yield keeps one firm strike");
-  assert.match(call, /if \(grown > 0\) sounds\(\)\.tick\(grown\)/, "new caption words strike the tick");
+  assert.match(call, /tickAllowed\("user", false, sessionRef\.current\)\) sounds\(\)\.tick\(1, 0\.9\)/);
+  assert.match(call, /tickAllowed\(liveCaption\.role, speakingRef\.current, sessionRef\.current\)/);
+});
+
+test("tickAllowed: visitor words into silence only", () => {
+  const settled = { playbackSettled: () => true };
+  const draining = { playbackSettled: () => false };
+  assert.equal(tickAllowed("user", false, settled), true, "visitor speaks into silence");
+  assert.equal(tickAllowed("agent", false, settled), false, "agent captions never tick");
+  assert.equal(tickAllowed("user", true, settled), false, "agent is speaking");
+  assert.equal(tickAllowed("user", false, draining), false, "agent tail still draining");
+  assert.equal(tickAllowed("user", false, null), true, "no session (cascade idle)");
+  assert.equal(tickAllowed("user", false, {}), true, "cascade has no playout probe");
 });

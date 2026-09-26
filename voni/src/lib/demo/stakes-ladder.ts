@@ -39,7 +39,8 @@ export class ReplyQueue {
   private pending: string[] = [];
   private timer: ReturnType<typeof setTimeout> | null = null;
 
-  constructor(private readonly deliver: (instructions: string) => void) {}
+  /** `deliver` returns false when the socket is down; the line then waits for `retry`. */
+  constructor(private readonly deliver: (instructions: string) => unknown) {}
 
   onReplyStarted(): void {
     this.replyActive = true;
@@ -59,6 +60,11 @@ export class ReplyQueue {
     this.pending.push(instructions);
     if (this.replyActive) return;
     this.arm();
+  }
+
+  /** The session is live again (resumed or rejoined): deliver what waited. */
+  retry(): void {
+    if (this.pending.length > 0 && !this.replyActive) this.arm();
   }
 
   clear(): void {
@@ -84,7 +90,11 @@ export class ReplyQueue {
       this.timer = null;
     }
     const instructions = this.pending.shift() as string;
-    this.deliver(instructions);
+    if (this.deliver(instructions) === false) {
+      // Between sockets (a hold return racing a late close): keep it first in line.
+      this.pending.unshift(instructions);
+      return;
+    }
     // The reply to this one may still be starting (grace covers that); if
     // more is queued, re-arm so it follows without stalling when no reply
     // ever starts, and waits for it to finish when one does.
