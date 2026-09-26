@@ -2,6 +2,7 @@ import { compileSystemPrompt } from "./compile";
 import type { AgentConfig } from "./config";
 import { compileVoiceTools, toRestTool } from "@/lib/tools/definitions";
 import { TRANSCRIPTION_MODE, buildAgentKeyterms, buildAgentTranscriptionPrompt } from "@/lib/voice/transcription";
+import { VOICE_OUTPUT_VOLUME } from "./voices";
 import { resolveCredential } from "@/lib/platform/credentials";
 
 const AGENTS_URL = "https://agents.assemblyai.com/v1/agents";
@@ -38,6 +39,7 @@ export function storedAgentBody(name: string, config: AgentConfig) {
     output: {
       voice: config.voiceId,
       format: { encoding: "audio/pcmu", sample_rate: 8000 },
+      volume: VOICE_OUTPUT_VOLUME,
     },
     // REST shape (no `type`): the Agents API tool object has no such field —
     // sending it risks the tool being dropped while the prompt still

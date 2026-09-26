@@ -47,6 +47,7 @@ import { CallTimings } from "@/lib/voice/call-timings";
 import { CascadeSession } from "@/lib/voice/cascade-session";
 import {
   FILLER_POOL,
+  isEndCallRequest,
   requestVoiceJudge,
 } from "@/lib/voice/jev-judges";
 import { compileSystemPrompt } from "@/lib/agents/compile";
@@ -55,7 +56,7 @@ import { buildAgentKeyterms, buildAgentTranscriptionPrompt } from "@/lib/voice/t
 import { CallSounds } from "@/lib/voice/call-sounds";
 import { compileVoiceTools } from "@/lib/tools/definitions";
 import { formatCallStatus } from "@/lib/calls/call-status";
-import { ACCENT_FLAG, getVoice, voiceLabel } from "@/lib/agents/voices";
+import { ACCENT_FLAG, getVoice, voiceLabel, voicePlaybackGain } from "@/lib/agents/voices";
 import {
   DEMO_VOICE_IDS,
   MUTE_CHECK_IN_INSTRUCTIONS,
@@ -79,7 +80,7 @@ import { cn } from "@/lib/utils";
  *    mode and letting a single flexing region absorb every variable-length
  *    thing inside it. Nothing outside the card can move now.
  *
- * 2. **Demo mode is its own layout.** The landing call (DESIGN.md §10c): the
+ * 2. **Demo mode is its own layout.** The demo call (DESIGN.md §10c): the
  *    orb with a ‹ › voice/language switcher and Start call at rest, opening
  *    into the call card with live state, hang-up and a flat live transcript.
  *    Voni always talks as itself; the switcher locks during a call because
@@ -758,6 +759,9 @@ export function VoiceCall({
           interruptionsRef.current += 1;
           console.debug("[voice-call] interruption", event.kind, interruptionsRef.current);
         }
+        if (event.kind === "input-drop") {
+          console.debug("[voice-call] input-drop", event.dropped ?? 1);
+        }
       },
       onReplyStarted: () => replyQueueRef.current?.onReplyStarted(),
       // Demo: Voni is saying goodbye on its own (caller asked, or it
@@ -775,6 +779,9 @@ export function VoiceCall({
       // climbs nudge → warning → polite end.
       onUserTurn: (turn) => {
         if (mode.kind !== "demo" || closingRef.current || !turn.text.trim()) return;
+        // Asking to end is never a strike: Voni says goodbye on its own, and
+        // an end rung racing that goodbye repeated it.
+        if (isEndCallRequest(turn.text)) return;
         const token = callTokenRef.current;
         void requestVoiceJudge(
           "off-track",
@@ -796,6 +803,7 @@ export function VoiceCall({
       ),
     });
     sessionRef.current = session;
+    session.setOutputGain(voicePlaybackGain(mode.kind === "demo" ? voiceId : config.voiceId));
     replyQueueRef.current = new ReplyQueue((instructions) => session.requestReply(instructions));
 
     // Straight from the click handler: getUserMedia and AudioContext startup
@@ -855,12 +863,14 @@ export function VoiceCall({
 
   const setMuted = useCallback(
     (nextMuted: boolean) => {
-      if (!connected) return;
+      // No connected gate: a mute pressed during connecting must stick, or
+      // speech after ready leaks through. VoiceSession.setInputMuted already
+      // holds pre-ready mutes and sends context on ready.
       setMutedState(nextMuted);
       clockRef.current?.setMuted(nextMuted, Date.now());
       sessionRef.current?.setInputMuted(nextMuted);
     },
-    [connected],
+    [],
   );
 
   const toggleMute = useCallback(() => {
@@ -959,7 +969,7 @@ export function VoiceCall({
   ) : null;
 
   // ── Demo layout ────────────────────────────────────────────────────────
-  // The landing call (DESIGN.md §10c, round 3 "orb first"): at rest only the
+  // The demo call (DESIGN.md §10c, round 3 "orb first"): at rest only the
   // orb, a voice switcher and Start call show. Starting opens the card
   // around them: from lg it unfolds sideways into the portrait + transcript
   // card (A · Unfold); below lg the orb rises into a compact header and the
@@ -1060,19 +1070,6 @@ export function VoiceCall({
           ) : null}
         </>
       );
-    const disclosure = (
-      <p
-        aria-hidden={open}
-        className={cn(
-          "text-muted-foreground text-ui max-w-75 overflow-hidden text-center leading-relaxed transition-[max-height,opacity]",
-          reveal,
-          open ? "max-h-0 opacity-0" : "max-h-12",
-        )}
-      >
-        {displayName} speaks first. A {capSeconds / 60}-minute call on your
-        microphone, no sign-up, limited per day.
-      </p>
-    );
     // Kept rendered after Close so the card folds shut over its content
     // instead of cutting to empty; the hidden panels are inert at rest.
     const transcript =
@@ -1248,7 +1245,6 @@ export function VoiceCall({
                 {statusLine}
               </p>
               <div className="flex gap-2">{callButtons}</div>
-              {disclosure}
             </div>
             <div
               inert={!open}
@@ -1300,7 +1296,6 @@ export function VoiceCall({
               <div className="absolute inset-x-0 top-47 flex flex-col items-center gap-3.5 md:top-54">
                 {switcher}
                 {mobileTrigger}
-                {disclosure}
               </div>
             </div>
           </div>

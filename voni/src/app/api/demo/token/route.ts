@@ -26,7 +26,10 @@ import { secret } from "@/lib/env";
  * The session cap is the talk clock's wall-clock cap: the talk clock itself
  * (2 min of unmuted talk) runs client-side and pauses on mute, so the server
  * bounds the worst case instead. Worst case per token: one 12-minute call,
- * about $0.90.
+ * about $0.90. The talk clock cannot move server-side: only the browser
+ * knows about mute, and AssemblyAI has no call to end a live session
+ * (`DELETE /v1/sessions/{id}` only soft-deletes a finished one). The one
+ * server lever is this cap; lowering WALL_CAP_S trades away mute allowance.
  *
  * Each response also carries a `callToken` (call-token.ts): the bearer that
  * scopes the demo's tool and judge routes to this one call.

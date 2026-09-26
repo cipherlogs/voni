@@ -4,7 +4,7 @@ import { db } from "@/lib/db";
 import { secret } from "@/lib/env";
 import { demoAgents } from "@/lib/db/schema";
 import { compileSystemPrompt } from "@/lib/agents/compile";
-import { getVoice } from "@/lib/agents/voices";
+import { getVoice, VOICE_OUTPUT_VOLUME } from "@/lib/agents/voices";
 import { DEMO_VOICE_IDS, VONI_AGENT_ID, voniConfig } from "./voni-agent";
 import { END_CALL_VOICE_TOOL, toRestTool } from "@/lib/tools/definitions";
 import { TRANSCRIPTION_MODE, buildAgentKeyterms, buildAgentTranscriptionPrompt } from "@/lib/voice/transcription";
@@ -60,6 +60,10 @@ export function buildDemoAgentBody(voiceId: string) {
     system_prompt: compileSystemPrompt(config),
     greeting: config.greeting,
     voice: { voice_id: voiceId },
+    // Loudest server level on every voice: native levels differ by ~12 dB,
+    // so omitted volume plays each voice at its own level. Client gain in
+    // VoiceSession.schedule applies the relative match per voice.
+    output: { volume: VOICE_OUTPUT_VOLUME },
     // Each one is answered by /api/demo/tools (see module note). REST
     // shape (no `type`) — see `toRestTool`.
     tools: [toRestTool({ ...END_CALL_VOICE_TOOL })],
@@ -72,10 +76,10 @@ export function buildDemoAgentBody(voiceId: string) {
       transcription_prompt: buildAgentTranscriptionPrompt(config),
       keyterms: buildAgentKeyterms(config),
       voice_focus: "near-field",
-      // Mirrors TURN_PRESET (voice/session.ts; a test pins them equal):
-      // adaptive end-of-turn, server barge-in at its maximum delay, which
-      // the browser session adapts per reply (docs/adr/0003-barge-in-recovery.md).
-      turn_detection: { interrupt_response: true, interruption_delay: 1000 },
+      // Null = adaptive defaults. Any turn_detection object switches off
+      // adaptive end-of-turn (ADAPTIVE_TURNS, voice/session.ts); explicit
+      // null clears the object older bodies stored.
+      turn_detection: null,
     },
   };
 }

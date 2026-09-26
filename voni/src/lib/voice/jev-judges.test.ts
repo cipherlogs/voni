@@ -5,6 +5,7 @@ import {
   FILLER_POOL,
   chooseReplyAction,
   heuristicBargeInScore,
+  isEndCallRequest,
   requestVoiceJudge,
   shouldAllowToolCall,
   shouldFlagOffTrack,
@@ -141,7 +142,7 @@ test("off-track fallback flags nonsense, never a genuine short answer", () => {
   const goal = "Talk about their business.";
   const flag = (userText: string) =>
     shouldFlagOffTrack({ goal, agentLine: "Sound good?", userText }).offTrack;
-  for (const text of ["hahaha lol", "asdfgh qwrtz", "blah blah blah blah", "poop poop"]) {
+  for (const text of ["hahaha lol", "asdfgh qwrtz", "blah blah blah blah", "poop poop", "Tell me a joke", "What's the weather like?"]) {
     assert.equal(flag(text), true, text);
   }
   for (const text of ["Sure", "yes", "Hi", "ha", "We run a dental clinic in Dubai.", "haha okay, we sell cars", "", "Hmm, let me think", "hmmm", "since 2019"]) {
@@ -173,4 +174,13 @@ test("off-track judge sends the demo call bearer", async () => {
     },
   );
   assert.equal(auth, "Bearer call-tok");
+});
+
+test("a request to end the call is recognised, in any demo language", () => {
+  for (const text of ["I want you to hang up this call.", "Please end the call", "Okay, bye!", "Goodbye", "I gotta go", "Au revoir", "Tschüss", "Adiós"]) {
+    assert.equal(isEndCallRequest(text), true, text);
+  }
+  for (const text of ["We run a bakery", "Hold on", "Byron Bay is where we are", "", "What's your goal?"]) {
+    assert.equal(isEndCallRequest(text), false, text);
+  }
 });

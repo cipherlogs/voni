@@ -1,30 +1,22 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildInlineSessionUpdate, TURN_PRESET, VoiceSession } from "./session";
+import { buildInlineSessionUpdate, VoiceSession } from "./session";
 
 (globalThis as unknown as { WebSocket: unknown }).WebSocket = { OPEN: 1 };
 
-test("turn preset: adaptive end-of-turn, server barge-in at its maximum delay", () => {
-  // Fixed silence windows switch off AssemblyAI's adaptive, meaning-based
-  // end-of-turn for the whole session. The session adapts the delay per
-  // reply. See docs/adr/0003-barge-in-recovery.md.
-  assert.deepEqual(TURN_PRESET, { interrupt_response: true, interruption_delay: 1000 });
-});
-
-test("inline sessions get the turn preset without passing it", () => {
+test("inline sessions never send turn_detection: it switches off adaptive end-of-turn", () => {
+  // Any turn_detection object, even interruption_delay alone, measured
+  // ~2s slower per reply. See ADAPTIVE_TURNS in ./session.ts.
   const update = buildInlineSessionUpdate({
     mode: "inline",
     systemPrompt: "p",
     greeting: "hi",
     voiceId: "v",
-  });
-  assert.deepEqual(
-    (update as { input: { turn_detection: unknown } }).input.turn_detection,
-    TURN_PRESET,
-  );
+  }) as { input: Record<string, unknown> };
+  assert.equal("turn_detection" in update.input, false);
 });
 
-test("bound demo agents get the turn preset right after session.ready", () => {
+test("bound demo agents get recognition tuning, never turn_detection, after session.ready", () => {
   const session = new VoiceSession();
   const sent: string[] = [];
   const internals = session as unknown as Record<string, unknown>;
@@ -38,9 +30,8 @@ test("bound demo agents get the turn preset right after session.ready", () => {
     type: "session.update",
     session: {
       input: {
-        transcription_mode: "max_accuracy",
+        transcription_mode: "balanced",
         voice_focus: "near-field",
-        turn_detection: TURN_PRESET,
       },
     },
   });

@@ -24,6 +24,8 @@
  *   filler-over   "Okaay so" over a long reply → not cut, or cut and resumed.
  *   stop-over     "Wait, stop." over a long reply → cut within ~1.5s, answered.
  *   over-talk     a short answer over the reply → heard (never lost).
+ *   hang-up-over  "I want you to hang up this call." over a long reply →
+ *                 the call ends, never resumed ("as I was saying").
  *   greeting-cut  "Wait, stop." 1s into the greeting → the greeting is cut.
  */
 import { buildDemoAgentBody } from "../src/lib/demo/stored-agents";
@@ -420,6 +422,20 @@ const CLIENT_SCENARIOS: { name: string; run: () => Promise<string | null> }[] = 
       const ms = o.endedAt - o.lastAudioEnd;
       console.log(`    hung up ${ms}ms after the goodbye finished playing`);
       return ms <= 1500 ? null : `hang-up too slow: ${ms}ms`;
+    },
+  },
+  {
+    name: "hang-up-over",
+    run: async () => {
+      const o = await runClient(voiceIdArg(), [LONG_ASK, "I want you to hang up this call."], async (ctx) => {
+        await askAndWaitForSpeech(ctx);
+        ctx.say("I want you to hang up this call.");
+        await ctx.waitFor(ctx.ended, 20000).catch(() => undefined);
+      });
+      if (o.creates.some((c) => /Pick up where you left off/.test(c))) return "resumed instead of ending";
+      if (o.endedAt === null) return "never hung up";
+      console.log(`    hung up ${o.endedAt - o.lastAudioEnd}ms after the goodbye finished playing`);
+      return null;
     },
   },
   {

@@ -1,56 +1,81 @@
-Status: needs-triage
+Status: ready-for-agent
 
 ## Problem Statement
 
-The landing demo call is persona role-play (real estate, car dealership, restaurant). It captures nothing about the visitor, and nothing about it signals that it is meant for real businesses. Visitors leave anonymous, and the call's credits are spent on people who are just playing around.
+The landing demo call is persona role-play (real estate, car dealership, restaurant). It captures nothing about the visitor, and nothing about it signals that it is meant for real businesses. Visitors leave anonymous, and credits go to people who are just playing around.
 
 ## Solution
 
-Voni talks as itself and turns the visitor into a **Prospect** through live "real-world tests." The visitor emails Voni, Voni finds the email and replies with a code, and the visitor reads the code back. Meanwhile Voni researches their business from their email domain and brainstorms with them. Each ask is a step in a test that benefits the visitor. The moment the visitor feels the capture, we've failed. A work-email gate and a staged clock (2 → 4 → 7 min) add scarcity and protect credits.
+Voni talks as itself and turns the visitor into a **Prospect** through live "real-world tests." The visitor emails Voni. Voni finds the email in a busy shared inbox and replies with a code, and the visitor reads the code back. Meanwhile Voni reads their website and brainstorms with them about their business. Each ask is a step in a test that benefits the visitor. The moment the visitor feels the capture, we've failed. A work-email gate, a talk clock (2 → 4 → 7 min), and a stakes ladder make the call feel serious and protect credits. The whole call stays in one session: no callback.
+
+## Beats are mini-goals with stakes
+
+Each beat has a goal. A visitor who stalls or plays around gets a nudge first, then a clear, warm warning with the stakes ("we've only got a couple of minutes and I take this seriously; if we can't move forward I'll have to end the call"). A third off-track stretch means a polite end: "…if you'd like to try again properly, the team's at hi@voni.cc." Jev scores off-track per turn.
 
 ## Conversation beats
 
-1. **Open**: Voni speaks as itself. The persona tabs are removed; the voice and language picker stays. "Hi, I'm Voni. I know you're here to see how useful this would be for your business. I'd rather show you than tell you. Sound good?"
-2. **Invite the test**: "Let's try something real: send me an email and watch how fast I handle it." The card shows the inbox address as a tap-to-copy chip (with a `mailto:` link on phones), and Voni says it once. In the same breath: "…and the Voni team may follow up there too, OK?" A "no" marks the Prospect no-marketing.
-3. **Claim**: after the visitor says they sent it: "I'm getting lots of emails, from you and others testing me. To keep everyone's data safe, which address did you use?"
-   - **Free-email domain** → work-email gate: "Sorry, this demo is for businesses only. Got a work email?" Voni re-prompts once. If they still refuse: "I'll let you go, come back when you want to try it for real," then a polite hang-up.
-   - **Business domain** → provisional extension (to about 4 min). If the address shows a name ("andres@"): "Andres, nice to meet you." Otherwise Voni asks for the name lightly, later.
-   - **Won't send any email** → same as the gate: one re-prompt, then a polite hang-up.
-4. **Research and business talk**: "I'm looking at acme.com right now…" Voni asks what they do, whether they've tried this kind of tech, and where it could help, and it brainstorms concrete ideas for their business. This also fills the wait if the email is slow.
-5. **Reply + code check**: when the email lands and matches the claim, Voni narrates truthfully as it works: "writing it… sending… just sent." The reply contains their name, a 4-digit code framed as "a code to test things out, tell me what it says," and a short warm line Voni writes itself. The visitor gets two tries.
-6. **Reveal**: when the code checks out, the call gets the verified extension (7 min total). "That was actually an OTP, a security check. Didn't feel like one, right? How was that?" Open question, and Voni lets them react.
-7. **Close**: "I've passed my notes to the team; they'll follow up by email. Anything you'd like them to prepare?" The answer goes on the Prospect.
+1. **Open**: Voni speaks as itself. The persona tabs are removed; the voice and language picker stays. "Hi, I'm Voni. Want me to show you what I'd do for your business?" (shortened 2026-09-26: the 7.3s opener felt pre-recorded; it can be interrupted like any reply)
+2. **Invite the test**: "Let's try something real: send me an email from your work address and watch how fast I handle it." The address appears as a tap-to-copy chip (with a `mailto:` link on phones), and Voni says it once. No consent line here.
+3. **Hold** (automatic, on phones and desktop): when the page is hidden (the visitor opens Mail or switches tab), the call goes on Hold. Voni says "Go ahead, I'll hold," and the mic and talk clock pause. During the hold, Jev matches the newest plausible sender in the shared inbox, and Voni pre-reads that domain's website. If the connection drops during the hold, the call reconnects on return with the conversation context carried over.
+4. **Claim** (on return, or after "sent" if they never left): "Welcome back! I'm getting lots of emails, from you and others testing me. To keep everyone's data safe, which address did you use?"
+   - **Business domain** → provisional extension. If the pre-read matched: "Andres! I've already been through acme-realty.com while you were away…" Otherwise: "Give me a second, I'm looking at your site now…" The name comes from the address, or Voni asks for it lightly later.
+   - **Free-email domain** → work-email gate: "Do you have a work email? We only work with verified businesses." If they don't: "No problem. Reach the team at hi@voni.cc and we'll gladly look into it," then a polite end.
+   - **Won't send any email** → the stakes ladder, then the same polite end.
+5. **Business talk (the wait, used)**: Voni says it's analyzing their site and understanding their business. It asks what they do, whether they've tried this kind of tech, and where it could help, and it brainstorms ideas for their business.
+6. **Reply + code check**: when Jev matches the email (claim ↔ sender, plus a spoof/spam check), Voni narrates truthfully as it works: "writing it… sending… just sent." The reply contains their name, a 4-digit code framed as "a code to test things out, tell me what it says," and a short warm line. The visitor gets two tries.
+7. **Reveal**: the code passes → verified extension. "That was actually an OTP, a security check. Didn't feel like one, right?" Then Voni opens up the whole trick: the entire call was a fun way to capture their details (name, verified email, what their business does) without a single form, and there are plenty more creative ways to do this for their customers. "How efficient did that feel to you?"
+8. **Consent + close** (while they're enjoying it): "Glad you liked it. Mind if the team follows up at andres@acme-realty.com?" A "no" marks the Prospect no-marketing. Then: "I've passed my notes on. Anything you'd like them to prepare?" The answer goes on the Prospect.
+
+## Clock
+
+- Talk clock: 2 min base → about 4 min on a claimed business address → 7 min after a passed code check.
+- The talk clock pauses on mute and on hold. After about 20s of mute, Voni checks in once, gently. Hold is capped at about 2 min.
+- A hard wall-clock cap of about 12 min, including mute and hold, protects credits.
+- If the email never arrives, Voni keeps talking business until the provisional limit, then says "I'll reply the moment it lands" and closes politely. The reply still goes out after the call.
 
 ## Agent rules
 
-- Never announce data collection. Every ask is a step in a test.
-- Narration tracks the real tool state. Never say "sent" before the send succeeds.
-- If the email is late, keep the business conversation going. At the provisional limit: "I'll reply the moment it lands," then close politely. The reply still goes out after the call.
-- A claimed address that never produces mail means the call ends at the provisional limit and the code check cannot pass.
-- Speak and write the reply in the picked language. The team summary is always English.
+- Never announce data collection before the reveal. Every ask is a step in a test.
+- Narration tracks the real tool state. Never say "sent" or "read your site" early.
+- Speak and write the reply in the picked language. The team summary is English.
 - v1 never asks for a phone number or WhatsApp.
+
+## Jev roles
+
+Uses the existing `typesafe-ai/jev` via `/api/voice-judge` and `voni/src/lib/voice/jev-judges.ts`:
+
+1. Match an inbound email to the caller (claimed address, speech-to-text near-misses, timing).
+2. Flag spoof/spam.
+3. Score off-track per turn for the stakes ladder.
+
+Free vs. business email is decided by a plain domain list, not by Jev.
 
 ## Prospect record (team-only)
 
-Name, claimed email, verified flag, domain, website summary, what they do, prior tech use, ideas brainstormed, the intent answer, consent/no-marketing, language, transcript, and the AI session summary. The team views it on an admin page gated by `VONI_ADMIN_EMAILS`.
+Name, claimed email, verified flag, domain, website summary, what they do, prior tech use, ideas brainstormed, the intent answer, consent/no-marketing, language, off-track warnings, transcript, and the AI summary. Shown on an admin page gated by `VONI_ADMIN_EMAILS`.
 
 ## Capabilities needed (implementation not yet chosen)
 
 Facts:
-- The demo agent has no tools. `voni/src/lib/demo/stored-agents.ts` sends none, and the `ToolCoordinator` exists only for inline calls in `voni/src/lib/voice/session.ts`.
-- The 120s cap is baked into the token (`voni/src/app/api/demo/token/route.ts`).
-- The repo has no email send or read; the Gmail tools in `voni/src/lib/providers/registry.ts` are catalog stubs.
-- `leads` needs an org and a phone and has no email column.
-- voni.cc does not resolve yet. The test inbox is nedalk.js@gmail.com via the Gmail API; full-inbox access is accepted.
+- The demo agent has no tools. `voni/src/lib/demo/stored-agents.ts` sends none, and the `ToolCoordinator` is inline-only in `voni/src/lib/voice/session.ts`.
+- The 120s cap is in the token (`voni/src/app/api/demo/token/route.ts`).
+- There is no email send or read; the Gmail tools in `voni/src/lib/providers/registry.ts` are stubs.
+- `leads` needs an org and a phone.
+- The `ringback` earcon exists in `voni/src/lib/voice/call-sounds.ts`.
+- Mute is `setInputMuted`, and the timer derives from `startedAt` (`voni/src/components/voice-call.tsx`).
 
 Needed:
-- Demo-agent tools: check the inbox for a sender, send the reply with the code, verify the code, fetch and summarize a website, extend the session, end the call.
-- Session length: mint the token with a 7-min cap and enforce 2 → 4 → 7 on our side.
+- Demo-agent tools: match inbox, send reply with code, verify code, read website, extend, end call.
+- Mint the session with a ~12-min cap and enforce the talk clock on our side.
+- A `visibilitychange` hold, plus reconnect with carried context.
+- Jev judge prompts for the three roles.
 - A free-email domain list.
-- A `prospects` table, an admin page, and the end-of-call summary.
-- A copy chip in the call card (`voni/src/components/voice-call.tsx`), amending the transcript-only rule in `voni/DESIGN.md` §10c.
+- The `prospects` table, admin page, and summary.
+- A copy chip in the call card, amending the transcript-only rule in `voni/DESIGN.md` §10c.
 
-## Out of scope (v2)
+## Dropped / deferred
 
-- The "WhatsApp me" live test: the visitor messages first, so no Meta templates are needed. This is how the phone number gets captured.
-- Moving the inbox to `test@voni.cc` via Cloudflare Email Routing once the domain is registered.
+- Browser callback: dropped, because it risks losing prospects. Keep them in the call.
+- Web Push: dropped along with the callback.
+- Phone/WhatsApp tests: v2 ("WhatsApp me," visitor-initiated).
+- `test@voni.cc` via Cloudflare Email Routing: after the domain is registered. Until then the test inbox is nedalk.js@gmail.com. Shared-inbox noise is wanted.

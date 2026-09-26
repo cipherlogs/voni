@@ -21,7 +21,7 @@ function readRepo(relative: string): string {
 test("landing hero reads as one document composition with logic frozen", () => {
   const landing = readRepo("app/page.tsx");
   // Composition (DESIGN.md §10c): badge, serif headline, subcopy, call CTA,
-  // then the orb beside the live-demo widget.
+  // then the live-demo widget.
   assert.match(landing, /Phone and WhatsApp voice agents/, "hero badge stays");
   assert.match(landing, /font-editorial/, "serif headline stays");
   assert.match(landing, /tracking-\[-0\.03em\]/, "hero keeps the mockup's tight tracking");
@@ -30,7 +30,6 @@ test("landing hero reads as one document composition with logic frozen", () => {
   assert.match(landing, /max-w-225/, "headline keeps the mockup's 900px measure");
   assert.match(landing, /max-w-140/, "subcopy keeps the mockup's 560px measure");
   assert.match(landing, /LandingDemo/, "live-demo widget stays in the hero");
-  assert.match(landing, /LandingOrb/, "closing CTA carries the small orb");
   assert.match(landing, /id="demo"/, "demo links have an anchor to land on");
   // Audit 2026-09-24: one call action. The demo card's Start call is the only
   // green on the page; hero and closing CTAs sign up or link to the demo.

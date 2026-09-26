@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import type { AudioGraph } from "./mic-capture";
 import {
   buildInlineSessionUpdate,
   buildResumeMessage,
@@ -15,7 +16,6 @@ import {
   MICROPHONE_MUTED_CONTEXT,
   MICROPHONE_UNMUTED_CONTEXT,
 } from "./context";
-import { BARGE_IN_EXPLAINING_DELAY_MS, BARGE_IN_QUESTION_DELAY_MS } from "./barge-in";
 
 // Minimal WebSocket shape: updateConfig only touches readyState + send.
 (globalThis as unknown as { WebSocket: unknown }).WebSocket = { OPEN: 1 };
@@ -251,27 +251,12 @@ test("Jev decides ambiguous cut-ins: an aside resumes, a real point is answered"
   assert.deepEqual(real.replyCreates(), []);
 });
 
-test("the opener invites an answer; later replies hold out until they ask", () => {
-  const { handle, messages } = midReply(); // r1 is the opener
-  const delays = () =>
-    messages()
-      .filter((m) => m.type === "session.update")
-      .map((m) => m.session.input.turn_detection.interruption_delay);
-  assert.deepEqual(delays(), [BARGE_IN_QUESTION_DELAY_MS], "the greeting is cut-in friendly");
-  handle({ type: "session.updated" });
+test("replies and questions never touch turn detection mid-call", () => {
+  const { handle, messages } = midReply();
   handle({ type: "reply.done", reply_id: "r1", status: "completed" });
   handle({ type: "reply.started", reply_id: "r2" });
-  handle({ type: "session.updated" });
-  assert.deepEqual(delays(), [BARGE_IN_QUESTION_DELAY_MS, BARGE_IN_EXPLAINING_DELAY_MS]);
-  handle({ type: "transcript.agent.delta", reply_id: "r2", delta: "Want" });
-  handle({ type: "transcript.agent.delta", reply_id: "r2", delta: "details?" });
-  handle({ type: "session.updated" });
-  handle({ type: "transcript.agent.delta", reply_id: "r2", delta: "Great" });
-  assert.deepEqual(
-    delays(),
-    [BARGE_IN_QUESTION_DELAY_MS, BARGE_IN_EXPLAINING_DELAY_MS, BARGE_IN_QUESTION_DELAY_MS],
-    "a question drops it once, deduped",
-  );
+  handle({ type: "transcript.agent.delta", reply_id: "r2", delta: "Want details?" });
+  assert.deepEqual(messages().filter((m) => m.type === "session.update"), []);
 });
 
 test("demo end_call relays to the call-scoped route and hangs up once the goodbye drains", async () => {
@@ -331,7 +316,7 @@ test("a refused demo end_call keeps the caller on the line", async () => {  cons
     .map((raw) => JSON.parse(raw) as Record<string, unknown>)
     .find((message) => message.type === "tool.result");
   assert.equal(result?.is_error, true);
-  assert.equal(internals["pendingHangup"], false);
+  assert.equal(internals["pendingEndCall"], false);
   assert.equal(internals["explicitStop"], false);
 });
 
@@ -582,7 +567,7 @@ test("first session.update omits empty recognition keys", () => {
     tools: [],
   });
   const input = update["input"] as Record<string, unknown>;
-  assert.equal(input["transcription_mode"], "max_accuracy");
+  assert.equal(input["transcription_mode"], "balanced");
   assert.equal(input["voice_focus"], "near-field");
   assert.ok(!("keyterms" in input));
   assert.ok(!("language_codes" in input));
@@ -757,7 +742,7 @@ test("a spoken end_call arms the hangup and never reaches the caption", () => {
   assert.deepEqual(partials, ["Goodbye!"]);
   assert.deepEqual(captions, ["Goodbye!"]);
   assert.equal(ended, 1);
-  assert.equal(internals["pendingHangup"], true);
+  assert.equal(internals["pendingEndCall"], true);
   handle({ type: "reply.done", reply_id: "r1", status: "completed" });
   assert.equal(internals["explicitStop"], true);
 });
@@ -788,4 +773,153 @@ test("spoken name then a real end_call waits for the tool result", async () => {
   assert.ok(sent.some((raw) => JSON.parse(raw).type === "tool.result"));
   assert.equal(internals["explicitStop"], true, "the result itself hangs up");
   assert.equal(ended, 1);
+});
+
+test("after the goodbye, no other reply is heard, captioned, or requested", () => {
+  const captions: string[] = [];
+  const { session, handle, internals, played, replyCreates } = midReply({}, {
+    onTranscript: (turn) => captions.push(turn.text),
+  });
+  withDemoTools(internals, session);
+  handle({ type: "reply.done", reply_id: "r1", status: "completed" });
+  handle({ type: "reply.started", reply_id: "bye" });
+  endCall(handle, "e8", { closing_line: "Okay, bye!" });
+  handle({ type: "reply.audio", reply_id: "bye", data: "" });
+  handle({ type: "transcript.agent", reply_id: "bye", text: "Okay, bye!" });
+  handle({ type: "reply.done", reply_id: "bye", status: "completed" });
+  const before = played.length;
+  // The model speaks again once end_call returns: drop it whole.
+  handle({ type: "reply.started", reply_id: "after" });
+  handle({ type: "reply.audio", reply_id: "after", data: "" });
+  handle({ type: "transcript.agent", reply_id: "after", text: "I'll let you go for now." });
+  assert.equal(played.length, before, "the post-goodbye reply never plays");
+  assert.deepEqual(captions, ["Okay, bye!"]);
+  session.requestReply("The caller is still off-track. Close politely.");
+  assert.deepEqual(replyCreates(), [], "nothing supersedes the goodbye");
+});
+
+test("a superseded reply's caption is only what the caller heard", () => {
+  const captions: string[] = [];
+  const { serverCut, handle } = midReply({}, {
+    onTranscript: (turn) => turn.role === "agent" && captions.push(turn.text),
+  });
+  serverCut("Okaay so");
+  handle({ type: "reply.started", reply_id: "r2" }); // superseded before a word played
+  handle({ type: "transcript.agent", reply_id: "r2", text: "Sure! So what does your business do?" });
+  assert.deepEqual(captions, [], "nothing of r2 was heard");
+});
+
+test("start connects as soon as the graph is ready (no setup awaits in between)", async () => {
+  // Regression: an awaited speaker-enable once sat between graph-ready and
+  // connect(), delaying session establishment — and everything timed off it
+  // (ringback, greeting) — behind device enumeration. Optional output setup
+  // must be fire-and-forget; connect() follows the graph synchronously.
+  const g = globalThis as unknown as Record<string, unknown>;
+  const navigatorDescriptor = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+  const savedWebSocket = g.WebSocket;
+  const constructed: string[] = [];
+  Object.defineProperty(globalThis, "navigator", {
+    value: {
+      mediaDevices: {
+        getUserMedia: async () => ({ getTracks: () => [] }),
+      },
+    },
+    configurable: true,
+  });
+  g.WebSocket = class {
+    static OPEN = 1;
+    constructor(url: unknown) {
+      constructed.push(String(url));
+    }
+    addEventListener() {}
+    send() {}
+    close() {}
+  };
+  try {
+    let resolveGraph!: (graph: AudioGraph) => void;
+    const graphReady = new Promise<AudioGraph>((r) => (resolveGraph = r));
+    const session = new VoiceSession(
+      {},
+      {
+        micOwner: "start-ordering-test",
+        startGraph: () => graphReady,
+      },
+    );
+    const started = session.start({ mode: "agent", agentId: "" }, async () => ({
+      token: "tok",
+      agentId: "a1",
+    }));
+    // Token + mic settle while the graph is pending: no connection yet.
+    await new Promise((r) => setTimeout(r, 10));
+    assert.equal(constructed.length, 0);
+    resolveGraph({
+      audioCtx: null,
+      worklet: null,
+      playout: {
+        play() {},
+        flush() {},
+        settled: () => true,
+        queuedMs: () => 0,
+      },
+      stop() {},
+    } as unknown as AudioGraph);
+    await started;
+    // Graph resolved → connected, with no further awaits in between.
+    assert.equal(constructed.length, 1);
+    assert.match(constructed[0] ?? "", /agents\.assemblyai\.com/);
+    await session.stop();
+  } finally {
+    if (navigatorDescriptor) Object.defineProperty(globalThis, "navigator", navigatorDescriptor);
+    g.WebSocket = savedWebSocket;
+  }
+});
+
+test("pre-ready mic frames probe an input-drop instead of vanishing silently", () => {
+  const probes: { kind: string; dropped?: number }[] = [];
+  const { session } = makeSession({ onAudioProbe: (e) => probes.push(e) });
+  const ingest = (session as unknown as { ingestAudio: (data: ArrayBuffer) => void }).ingestAudio.bind(session);
+  ingest(new ArrayBuffer(4));
+  assert.equal(probes.length, 1);
+  assert.equal(probes[0]?.kind, "input-drop");
+  assert.equal(probes[0]?.dropped, 1);
+});
+
+test("inline session update pins loudest output volume", () => {
+  const update = buildInlineSessionUpdate({
+    mode: "inline",
+    systemPrompt: "prompt",
+    greeting: "Hi.",
+    voiceId: "lola",
+    tools: [],
+  });
+  assert.deepEqual(update["output"], { voice: "lola", volume: 100 });
+});
+
+test("playback gain scales agent audio with a hard clamp", () => {
+  const { handle, internals } = makeSession();
+  const played: { len: number; peak: number }[] = [];
+  internals["playout"] = {
+    play: (pcm: Uint8Array) => {
+      const view = new DataView(pcm.buffer, pcm.byteOffset, pcm.length);
+      let peak = 0;
+      for (let i = 0; i + 1 < pcm.length; i += 2) {
+        peak = Math.max(peak, Math.abs(view.getInt16(i, true)));
+      }
+      played.push({ len: pcm.length, peak });
+    },
+    flush: () => undefined,
+    settled: () => true,
+    queuedMs: () => 0,
+  };
+  handle({ type: "session.ready", session_id: "s-gain" });
+  const session = internals as unknown as {
+    setOutputGain: (gain: number) => void;
+  };
+  session.setOutputGain(2.0);
+  // 1000 * 2 = 2000; 20000 * 2 clamps to 32767.
+  const pcm = new Uint8Array([0xe8, 0x03, 0x20, 0x4e]);
+  const base64 = Buffer.from(pcm).toString("base64");
+  handle({ type: "reply.audio", reply_id: "r1", data: base64 });
+  assert.equal(played.length, 1);
+  assert.equal(played[0]?.peak, 32767);
 });

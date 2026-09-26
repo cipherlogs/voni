@@ -1,7 +1,6 @@
 import { Suspense } from "react";
 import { LandingDemo } from "@/components/landing-demo";
 import { LandingHeader } from "@/components/landing-header";
-import { LandingOrb } from "@/components/landing-orb";
 import { LandingPlay } from "@/components/landing-play";
 import {
   LandingBento,
@@ -138,15 +137,6 @@ export default function LandingPage() {
             <div className="flex-1">
               <LandingFaq />
             </div>
-          </div>
-        </section>
-
-        <section className="landing-lazy border-t">
-          <div className={`${SECTION} flex flex-col items-center gap-5 py-16 text-center md:gap-6 md:py-28`}>
-            <LandingOrb size="sm" />
-            <h2 className="font-editorial text-display-sm md:text-display max-w-180 font-medium tracking-[-0.025em] md:text-balance">
-              Call the demo agent, then build your own.
-            </h2>
           </div>
         </section>
       </main>

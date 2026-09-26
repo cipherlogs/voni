@@ -6,7 +6,6 @@ import {
   demoAgentName,
 } from "./stored-agents";
 import { END_CALL_TOOL } from "@/lib/tools/definitions";
-import { TURN_PRESET } from "@/lib/voice/session";
 import { VONI_GREETINGS } from "./voni-agent";
 
 test("demo agent names are deterministic per voice", () => {
@@ -37,9 +36,10 @@ test("demo body carries call control, tuning, and per-agent vocabulary", () => {
     body.tools.map((tool) => tool.name),
     [END_CALL_TOOL],
   );
-  assert.equal(body.input.transcription_mode, "max_accuracy");
-  assert.deepEqual(body.input.turn_detection, TURN_PRESET, "mirrors the shared turn preset");
+  assert.equal(body.input.transcription_mode, "balanced");
+  assert.equal(body.input.turn_detection, null, "adaptive defaults; clears any stored object");
   assert.equal(body.input.voice_focus, "near-field");
+  assert.deepEqual(body.output, { volume: 100 }, "loudest level; client gain matches voices");
   assert.ok(body.input.keyterms.includes("Voni"), "agent's own name is heard");
   assert.match(body.system_prompt, /use your hang-up tool/, "the hang-up rule ships on demo");
   // Naming the tool in prose makes the model speak it instead of calling it.
@@ -60,7 +60,7 @@ test("fingerprints are stable and move with platform content", () => {
   // invalidate the cache: any body difference flips the fingerprint.
   const changed = {
     ...buildDemoAgentBody("anna"),
-    input: { ...buildDemoAgentBody("anna").input, transcription_mode: "balanced" },
+    input: { ...buildDemoAgentBody("anna").input, transcription_mode: "max_accuracy" },
   };
   assert.notEqual(demoAgentFingerprint(changed), a);
 });

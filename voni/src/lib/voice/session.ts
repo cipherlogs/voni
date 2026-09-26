@@ -37,12 +37,7 @@ import {
   MICROPHONE_UNMUTED_CONTEXT,
 } from "./context";
 import { releaseMic } from "./mic-owner";
-import {
-  BARGE_IN_EXPLAINING_DELAY_MS,
-  BARGE_IN_JUDGE_MS,
-  BARGE_IN_QUESTION_DELAY_MS,
-  judgeOverlap,
-} from "./barge-in";
+import { BARGE_IN_JUDGE_MS, judgeOverlap } from "./barge-in";
 import { requestVoiceJudge } from "./jev-judges";
 import { TRANSCRIPTION_MODE } from "./transcription";
 import {
@@ -95,7 +90,7 @@ export type SessionConfig =
       /** STT speed/accuracy. Balanced is the voice-agent default: finals the
       screen can trust without paying max_accuracy's endpointing wait. */
       transcriptionMode?: TranscriptionMode;
-      /** VAD windows. Defaults to TURN_PRESET; override only in tests. */
+      /** VAD windows. Omit for adaptive end-of-turn; override only in tests. */
       turnDetection?: TurnDetection;
       /** Compiled from the selected on-screen tools, including pacing. */
       tools?: VoiceTool[];
@@ -135,9 +130,9 @@ export class SessionGeneration {
 }
 
 /**
- * The model sometimes speaks the hang-up tool instead of calling it
+ * The model sometimes speaks the end-call tool instead of calling it
  * ("Goodbye! end_call"). Strip the trailing tool name (and any argument
- * blob) from captions, and report it so the session can still hang up.
+ * blob) from captions, and report it so the session can still end the call.
  */
 export function stripSpokenToolCall(text: string): { text: string; endCall: boolean } {
   const match = /\s*\bend_call\b\s*(?:\{[\s\S]*\}|\([\s\S]*\))?\s*$/.exec(text);
@@ -170,7 +165,7 @@ export function buildInlineSessionUpdate(
   return {
     system_prompt: config.systemPrompt,
     greeting: config.greeting,
-    output: { voice: config.voiceId },
+    output: { voice: config.voiceId, volume: 100 },
     input: {
       transcription_mode: config.transcriptionMode ?? TRANSCRIPTION_MODE,
       // Close-talking browser mic: isolate the caller with the near-field
@@ -185,7 +180,8 @@ export function buildInlineSessionUpdate(
       ...(config.languageCodes && config.languageCodes.length > 0
         ? { language_codes: config.languageCodes }
         : {}),
-      turn_detection: { ...(config.turnDetection ?? TURN_PRESET) },
+      // Absent = adaptive end-of-turn (see ADAPTIVE_TURNS below).
+      ...(config.turnDetection ? { turn_detection: { ...config.turnDetection } } : {}),
     },
     ...(config.tools && config.tools.length > 0 ? { tools: config.tools } : {}),
   };
@@ -290,16 +286,18 @@ export type SessionEndedInfo = {
 /**
  * Audio-glitch probe event. Instrumentation only — observing these never
  * changes playback. The provider forwards them to console.debug so an owner
- * reproducing pops on-device can line up each click with the exact cut that
+ * reproducing pops on-device can line up each click with the exact flush that
  * caused it (barge-in flush, interrupted-reply flush, or something else).
  */
 export type AudioProbeEvent = {
-  kind: "ready" | "barge-in" | "reply-cut" | "flush" | "underrun";
+  kind: "ready" | "barge-in" | "reply-cut" | "flush" | "underrun" | "input-drop";
   /** Wall-clock ms of the event. */
   at: number;
   /** Ms of agent audio buffered at that moment (worklet's last report). */
   queued: number;
   sessionId: string | null;
+  /** Frames dropped since the last input-drop probe (only for input-drop). */
+  dropped?: number;
 };
 
 export type VoiceHandlers = {
@@ -331,7 +329,7 @@ export type VoiceHandlers = {
   onReplyStarted?: () => void;
   /**
    * The agent is ending the call: an end_call tool call arrived, or it spoke
-   * the tool name instead. Fires before the hangup, so pacing can stop.
+   * the tool name instead. Fires before the session closes, so pacing can stop.
    */
   onEndCall?: () => void;
   /** The caller started speaking (VAD), before any transcript. */
@@ -345,7 +343,7 @@ export type VoiceHandlers = {
  * What a server barge-in turned out to be, once the caller's words landed:
  * `yield` was real (steering or content, the agent answers it), `ignore`
  * was filler, a back-channel or echo, `keep` was an aside (Jev). For both
- * of those the agent resumes where it was cut.
+ * of those the agent resumes where it stopped.
  */
 export type BargeInEvent = {
   verdict: "yield" | "ignore" | "keep";
@@ -353,7 +351,7 @@ export type BargeInEvent = {
   source: "rule" | "jev";
 };
 
-/** Jev's call on an ambiguous cut-in: real ("yield") or an aside ("keep"). Injected so the demo can add its call token. */
+/** Jev's call on an ambiguous barge-in: real ("yield") or an aside ("keep"). Injected so the demo can add its call token. */
 export type BargeInJudge = (state: {
   text: string;
   agentText: string;
@@ -361,7 +359,7 @@ export type BargeInJudge = (state: {
 }) => Promise<"yield" | "keep">;
 
 /**
- * Jev decides whether an ambiguous cut-in was real. Only a real Jev "keep"
+ * Jev decides whether an ambiguous barge-in was real. Only a real Jev "keep"
  * resumes; a timeout or heuristic fallback counts as real, so the caller
  * is answered. `headers` lets the signed-out demo use its call token.
  */
@@ -376,7 +374,7 @@ export const jevBargeInJudge =
     return verdict.source === "jev" && verdict.decision === "keep-speaking" ? "keep" : "yield";
   };
 
-/** A resume waits this long for the server's own reply to the cut-in, to supersede it. */
+/** A resume waits this long for the server's own reply to the barge-in, to supersede it. */
 const RESUME_WAIT_MS = 500;
 
 export type VoiceState =
@@ -404,22 +402,16 @@ const SENSITIVE_TURN_DETECTION: TurnDetection = {
 };
 
 /**
- * The turn preset: the ONE turn-taking setting for demo calls, test calls,
- * and the copilot.
+ * ADAPTIVE_TURNS: demo calls, test calls and the copilot never send
+ * `turn_detection`. ANY turn_detection object, even one holding only
+ * `interruption_delay`, and even mid-call, switches off AssemblyAI's
+ * adaptive end-of-turn: measured 3.6–4.7s from the caller's last word to
+ * the reply, against 1.3–2.5s without (docs/adr/0003-barge-in-recovery.md).
+ * Server barge-in stays on by default, with semantic back-channel filtering.
  *
- * - No silence windows: setting `min_silence`/`max_silence` switches off
- *   AssemblyAI's adaptive, meaning-based end-of-turn for the whole session
- *   (the old fixed 100/1000ms answered callers halfway through a pause).
- * - Server barge-in stays on: with it off, speech over the agent's audio is
- *   dropped for good. The delay starts at its maximum and the session
- *   adapts it per reply (./barge-in.ts, docs/adr/0003-barge-in-recovery.md).
- *
- * Only `prepareSensitiveCapture` departs from it, for one card-field turn.
+ * Only `prepareSensitiveCapture` departs from it, for one card-field turn,
+ * then restores `null` (adaptive).
  */
-export const TURN_PRESET: TurnDetection = {
-  interrupt_response: true,
-  interruption_delay: BARGE_IN_EXPLAINING_DELAY_MS,
-};
 
 /**
  * Barge-in fade. The playout ramps what is sounding to silence over this long
@@ -432,15 +424,15 @@ const FADE_OUT_S = 0.04;
  * momentarily empty — which also happens between chunks on a jittery link,
  * during the pre-roll wait, and while the resampler tail still holds sound —
  * so a single settled poll can stop mid-word (the caller hears the goodbye
- * chopped). Stop requires HANGUP_SETTLE_POLLS consecutive settled polls AND
- * HANGUP_AUDIO_GRACE_MS since the last audio arrived (covers audio still
+ * chopped). Stop requires END_CALL_SETTLE_POLLS consecutive settled polls AND
+ * END_CALL_AUDIO_GRACE_MS since the last audio arrived (covers audio still
  * traveling to the worklet plus output latency, Bluetooth included).
- * HANGUP_DRAIN_TIMEOUT_MS stays the fail-safe: never hold the line longer.
+ * END_CALL_DRAIN_TIMEOUT_MS stays the fail-safe: never hold the line longer.
  */
-const HANGUP_POLL_MS = 250;
-const HANGUP_SETTLE_POLLS = 3;
-const HANGUP_AUDIO_GRACE_MS = 500;
-const HANGUP_DRAIN_TIMEOUT_MS = 10000;
+const END_CALL_POLL_MS = 250;
+const END_CALL_SETTLE_POLLS = 3;
+const END_CALL_AUDIO_GRACE_MS = 500;
+const END_CALL_DRAIN_TIMEOUT_MS = 10000;
 
 export class VoiceSession {
   private ws: WebSocket | null = null;  private audioCtx: AudioContext | null = null;
@@ -455,18 +447,20 @@ export class VoiceSession {
   /** Exact turn-detection state to restore after one sensitive value turn. */
   private pendingTurnDetectionRestore: TurnDetection | null | undefined;
   /**
-   * Agent-initiated hangup, armed by an end_call result and acted on at the
+   * End call, armed by an end_call result and acted on at the
    * next settled reply — so the spoken closing line finishes playing before
    * the session tears down. Disarmed the moment the caller speaks again
    * (they took the floor back; the agent re-decides).
    */
-  private pendingHangup = false;
-  private hangupTimer: ReturnType<typeof setInterval> | null = null;
+  private pendingEndCall = false;
+  private endCallTimer: ReturnType<typeof setInterval> | null = null;
   /** Last `reply.audio` arrival: the drain handshake waits out fresh audio. */
   private lastAudioAt = 0;
 
   /** end_call was signaled for the current goodbye (tool call or spoken). */
   private endCallSignaled = false;
+  /** The goodbye's reply: once end call is signaled, every other reply is dropped. */
+  private endCallReplyId: string | null = null;
 
   // ── Barge-in recovery + adaptive delay (./barge-in.ts) ─────────────────
   private readonly judgeBargeIn: BargeInJudge;
@@ -480,22 +474,21 @@ export class VoiceSession {
   private replyStartedAt = 0;
   /** A reply we superseded: its late audio is dropped. */
   private droppedReplyId: string | null = null;
-  /** The server just cut the agent: what it had said, and for how long. */
-  private cut: { heard: string; speakingMs: number } | null = null;
+  /** What the caller heard of the superseded reply: its caption, nothing more. */
+  private droppedHeard = "";
+  /** The server just stopped the agent for a barge-in: what it had said, and for how long. */
+  private bargeIn: { heard: string; speakingMs: number } | null = null;
   /** A resume waiting for the server's own reply to supersede. */
   private pendingResume: { instructions: string; timer: ReturnType<typeof setTimeout> } | null = null;
-  /** The interruption delay last requested (dedupes updates). */
-  private requestedDelay: number | undefined = BARGE_IN_EXPLAINING_DELAY_MS;
-  /** The first reply (the greeting) has not finished yet. */
-  private openerPending = true;
 
-  /** Disarm an agent-initiated hangup: the caller took the floor back. */
-  private disarmHangup(): void {
-    this.pendingHangup = false;
+  /** Disarm an end call: the caller took the floor back. */
+  private disarmEndCall(): void {
+    this.pendingEndCall = false;
     this.endCallSignaled = false;
-    if (this.hangupTimer) {
-      clearInterval(this.hangupTimer);
-      this.hangupTimer = null;
+    this.endCallReplyId = null;
+    if (this.endCallTimer) {
+      clearInterval(this.endCallTimer);
+      this.endCallTimer = null;
     }
   }
   /** Last server-acknowledged turn-detection state. Null means adaptive defaults. */
@@ -513,6 +506,8 @@ export class VoiceSession {
   private resumeAttempts = 0;
   private readonly micOwner: string;
   private readonly updateTimeoutMs: number;
+  /** Audio graph builder: the real one in production, a stub in tests. */
+  private readonly buildGraph: typeof startAudioGraph;
   private injectedExecutor: ((call: {
     callId: string;
     name: string;
@@ -526,6 +521,11 @@ export class VoiceSession {
   private greetingAudioSent = false;
   /** session.ready re-fires on resume — timing still marks once per start. */
   private sessionReadySent = false;
+  /** Client playback gain for the active voice (1.0 = native). See voices.ts. */
+  private outputGain = 1.0;
+  /** Mic frames dropped since the last input-drop probe (ingestAudio gate). */
+  private inputDropped = 0;
+  private lastInputDropProbe = 0;
 
   constructor(
     private handlers: VoiceHandlers = {},
@@ -544,10 +544,17 @@ export class VoiceSession {
       }) => Promise<ToolResponse>;
       /** Judge for ambiguous speech over the agent. Defaults to Jev. */
       judgeBargeIn?: BargeInJudge;
+      /**
+       * Graph builder for tests. Production always uses startAudioGraph;
+       * tests inject a stub so `start()` can prove it connects without a
+       * browser (mic, worklets, socket all faked at the boundary).
+       */
+      startGraph?: typeof startAudioGraph;
     } = {},
   ) {
     this.micOwner = opts.micOwner ?? "voice-call";
     this.judgeBargeIn = opts.judgeBargeIn ?? jevBargeInJudge();
+    this.buildGraph = opts.startGraph ?? startAudioGraph;
     this.updateTimeoutMs = opts.updateTimeoutMs ?? 3000;
     this.injectedExecutor = opts.toolExecutor ?? null;
   }
@@ -582,6 +589,9 @@ export class VoiceSession {
     this.firstUpdateAcked = false;
     this.greetingAudioSent = false;
     this.sessionReadySent = false;
+    this.outputGain = 1.0;
+    this.inputDropped = 0;
+    this.lastInputDropProbe = 0;
     if (!this.configSynced) {
       this.configSynced = true;
       this.handlers.onConfigUncertainty?.(false);
@@ -666,9 +676,7 @@ export class VoiceSession {
           ? { mode: "agent", agentId }
           : config;
       this.activeTurnDetection =
-        resolved.mode === "inline"
-          ? { ...(resolved.turnDetection ?? TURN_PRESET) }
-          : null;
+        resolved.mode === "inline" && resolved.turnDetection ? { ...resolved.turnDetection } : null;
       this.boundAgent = resolved.mode === "agent";
       this.pendingTurnDetectionRestore = undefined;
 
@@ -679,7 +687,7 @@ export class VoiceSession {
 
       let graph;
       try {
-        graph = await startAudioGraph(this.micOwner, this.stream, (data) => {
+        graph = await this.buildGraph(this.micOwner, this.stream, (data) => {
           this.ingestAudio(data);
         });
       } catch (e) {
@@ -867,14 +875,14 @@ export class VoiceSession {
           this.sessionReadySent = true;
           this.handlers.onTiming?.("sessionReady");
           // A stored agent can't carry input fields in its binding update, and
-          // its cached server copy would go stale — so the turn preset rides a
-          // follow-up update instead (verified to ack on a bound session).
+          // its cached server copy would go stale — so recognition tuning
+          // rides a follow-up update instead (verified to ack on a bound
+          // session). Never turn_detection: see ADAPTIVE_TURNS.
           if (this.boundAgent) {
             this.updateConfig({
               input: {
                 transcription_mode: TRANSCRIPTION_MODE,
                 voice_focus: "near-field",
-                turn_detection: { ...TURN_PRESET },
               },
             }).catch(() => undefined);
           }
@@ -885,8 +893,8 @@ export class VoiceSession {
         break;
 
       case "reply.audio":
-        // Late audio of a reply the caller cut off: never play it.
-        if (msg.reply_id && msg.reply_id === this.droppedReplyId) break;
+        // Late audio of a superseded reply, or of any reply after the goodbye: never play it.
+        if (this.isDropped(msg.reply_id)) break;
         this.setState("speaking");
         this.lastAudioAt = Date.now();
         if (!this.greetingAudioSent) {
@@ -898,16 +906,14 @@ export class VoiceSession {
 
       case "reply.done": {
         this.replyActive = false;
-        this.openerPending = false;
         // A reply we superseded ends "completed" server-side; it was
         // interrupted all the same.
         const superseded = Boolean(msg.reply_id) && msg.reply_id === this.droppedReplyId;
-        if (superseded) this.droppedReplyId = null;
         const interrupted = msg.status === "interrupted" || superseded;
         if (msg.status === "interrupted") {
-          // The server cut the agent: remember what it had said, so a cut
+          // Barge-in: remember what the agent had said, so a barge-in
           // that turns out to be filler can resume (./barge-in.ts).
-          this.cut = { heard: this.currentAgentText, speakingMs: Date.now() - this.replyStartedAt };
+          this.bargeIn = { heard: this.currentAgentText, speakingMs: Date.now() - this.replyStartedAt };
           // The server stopped generating, so anything still queued is stale
           // speech the caller has already talked over. Cancel it and reset the
           // cursor, or it plays on top of the next reply.
@@ -915,13 +921,13 @@ export class VoiceSession {
           this.flush();
           // A caller talking over the goodbye takes the floor back — the
           // agent re-decides instead of hanging up under them.
-          this.disarmHangup();
+          this.disarmEndCall();
         }
         this.toolCoordinator?.onReplyDone(msg.reply_id ?? null, interrupted);
         this.handlers.onReplyDone?.({ replyId: msg.reply_id ?? null, interrupted });
         this.setState("listening");
-        if (this.pendingHangup && !interrupted) {
-          this.pendingHangup = false;
+        if (this.pendingEndCall && !interrupted) {
+          this.pendingEndCall = false;
           // The closing line is scheduled but may still be playing —
           // reply.done only means generation finished. Let it drain first
           // (bounded: never hold the line more than ~10s for a goodbye).
@@ -935,12 +941,7 @@ export class VoiceSession {
         this.currentAgentText = "";
         this.agentLine = "";
         this.replyStartedAt = Date.now();
-        // The opener invites an answer from its first word; any other reply
-        // is explaining until it asks something (see the delta case).
-        this.setInterruptionDelay(
-          this.openerPending ? BARGE_IN_QUESTION_DELAY_MS : BARGE_IN_EXPLAINING_DELAY_MS,
-        );
-        // The server's own answer to a cut-in we decided to resume from:
+        // The server's own answer to a barge-in we decided to resume from:
         // supersede it before its audio plays.
         if (this.pendingResume) {
           const { instructions, timer } = this.pendingResume;
@@ -970,6 +971,7 @@ export class VoiceSession {
         break;
 
       case "transcript.agent.delta": {
+        if (this.isDropped(msg.reply_id)) break;
         // The API streams ONE word per delta (`delta`), aligned to the audio
         // as it plays, so the running line is exactly what the caller has
         // heard. A cumulative `text` is still honored if one ever arrives.
@@ -980,8 +982,6 @@ export class VoiceSession {
               ? `${this.agentLine} ${msg.delta}`.trim()
               : this.agentLine;
         this.currentAgentText = stripSpokenToolCall(this.agentLine).text;
-        // A question in flight invites an answer: let it cut in sooner.
-        if (this.currentAgentText.includes("?")) this.setInterruptionDelay(BARGE_IN_QUESTION_DELAY_MS);
         this.handlers.onAgentPartial?.({
           itemId:
             typeof msg.reply_id === "string"
@@ -997,9 +997,9 @@ export class VoiceSession {
       case "tool.call":
         if (msg.name === END_CALL_TOOL && this.toolCoordinator) {
           // A real call supersedes a spoken one: its result re-arms the
-          // hangup, so the session never closes before the result is sent.
-          this.pendingHangup = false;
-          if (!this.endCallSignaled) this.signalEndCall();
+          // end call, so the session never closes before the result is sent.
+          this.pendingEndCall = false;
+          if (!this.endCallSignaled) this.signalEndCall(this.currentReplyId);
         }
         this.toolCoordinator?.onToolCall(msg);
         break;
@@ -1009,7 +1009,7 @@ export class VoiceSession {
         break;
 
       case "transcript.user":
-        if (this.cut) this.resolveCut(typeof msg.text === "string" ? msg.text : "");
+        if (this.bargeIn) this.resolveBargeIn(typeof msg.text === "string" ? msg.text : "");
         this.handlers.onTranscript?.({ role: "user", text: msg.text });
         this.handlers.onUserTurn?.({
           itemId: typeof msg.item_id === "string" ? msg.item_id : null,
@@ -1031,21 +1031,22 @@ export class VoiceSession {
         break;
 
       case "transcript.agent": {
-        const spoken = stripSpokenToolCall(typeof msg.text === "string" ? msg.text : "");
+        const replyId = typeof msg.reply_id === "string" ? msg.reply_id : null;
+        // The caption is what the caller heard: nothing of a reply after the
+        // goodbye, only the heard words of one we superseded.
+        if (this.endCallSignaled && replyId !== this.endCallReplyId) break;
+        const full = replyId !== null && replyId === this.droppedReplyId ? this.droppedHeard : msg.text;
+        const spoken = stripSpokenToolCall(typeof full === "string" ? full : "");
         if (spoken.endCall && !this.endCallSignaled) {
-          // Spoken, not called: hang up anyway on this reply's settled
+          // Spoken, not called: end the call anyway on this reply's settled
           // reply.done (transcript.agent precedes it).
-          this.pendingHangup = true;
-          this.signalEndCall();
+          this.pendingEndCall = true;
+          this.signalEndCall(replyId);
         }
+        if (!spoken.text.trim()) break;
         this.handlers.onTranscript?.({ role: "agent", text: spoken.text });
         this.handlers.onAgentTurn?.({
-          itemId:
-            typeof msg.reply_id === "string"
-              ? msg.reply_id
-              : typeof msg.item_id === "string"
-                ? msg.item_id
-                : null,
+          itemId: replyId ?? (typeof msg.item_id === "string" ? msg.item_id : null),
           text: spoken.text,
         });
         break;
@@ -1234,19 +1235,20 @@ export class VoiceSession {
   private supersede(instructions: string): void {
     if (this.replyActive) {
       this.droppedReplyId = this.currentReplyId;
+      this.droppedHeard = this.currentAgentText;
       this.flush();
     }
     this.requestReply(instructions);
   }
 
-  /** Pick up where the agent was cut, when the cut wasn't a real interruption. */
-  private resumeAfterCut(heard: string, text: string): void {
+  /** Pick up where the agent stopped, when the barge-in wasn't real. */
+  private resumeAfterBargeIn(heard: string, text: string): void {
     const instructions = `The caller only said "${text.slice(0, 200)}" while you were speaking; it wasn't a request to stop.${heard ? ` You had just said: "${heard.trim().slice(-200)}".` : ""} Pick up where you left off, naturally ("as I was saying…"), without repeating yourself.`;
     if (this.replyActive) {
       this.supersede(instructions);
       return;
     }
-    // The server's own reply to the cut-in has not started yet: supersede it
+    // The server's own reply to the barge-in has not started yet: supersede it
     // on reply.started, or send ours if it never comes.
     if (this.pendingResume) clearTimeout(this.pendingResume.timer);
     this.pendingResume = {
@@ -1259,46 +1261,32 @@ export class VoiceSession {
     };
   }
 
-  /** The server cut the agent and the caller's words landed: was it real? */
-  private resolveCut(text: string): void {
-    const cut = this.cut;
-    this.cut = null;
-    if (!cut) return;
-    const verdict = judgeOverlap(text, cut.heard);
+  /** The caller barged in and their words landed: was it real? */
+  private resolveBargeIn(text: string): void {
+    const bargeIn = this.bargeIn;
+    this.bargeIn = null;
+    if (!bargeIn) return;
+    const verdict = judgeOverlap(text, bargeIn.heard);
     if (verdict === "yield") {
       this.handlers.onBargeIn?.({ verdict: "yield", text, source: "rule" });
       return; // Real: the server answers it as a normal turn.
     }
     if (verdict === "ignore") {
       this.handlers.onBargeIn?.({ verdict: "ignore", text, source: "rule" });
-      this.resumeAfterCut(cut.heard, text);
+      this.resumeAfterBargeIn(bargeIn.heard, text);
       return;
     }
-    void this.judgeBargeIn({ text, agentText: cut.heard, agentSpeakingMs: cut.speakingMs })
+    void this.judgeBargeIn({ text, agentText: bargeIn.heard, agentSpeakingMs: bargeIn.speakingMs })
       .catch(() => "yield" as const)
       .then((decision) => {
         if (this.state === "ended") return;
         this.handlers.onBargeIn?.({ verdict: decision, text, source: "jev" });
-        if (decision === "keep") this.resumeAfterCut(cut.heard, text);
+        if (decision === "keep") this.resumeAfterBargeIn(bargeIn.heard, text);
       });
   }
 
-  /**
-   * Adaptive barge-in: a reply that asks something lets the caller cut in
-   * sooner; explaining holds out longer. Skipped during a sensitive-field
-   * turn, which owns turn detection until it restores.
-   */
-  private setInterruptionDelay(delayMs: number): void {
-    if (this.requestedDelay === delayMs || !this.ready) return;
-    if (this.pendingTurnDetectionRestore !== undefined) return;
-    this.requestedDelay = delayMs;
-    this.updateConfig({
-      input: { turn_detection: { interrupt_response: true, interruption_delay: delayMs } },
-    }).catch(() => undefined);
-  }
-
   private resetBargeIn(): void {
-    this.cut = null;
+    this.bargeIn = null;
     if (this.pendingResume) clearTimeout(this.pendingResume.timer);
     this.pendingResume = null;
     this.replyActive = false;
@@ -1306,18 +1294,27 @@ export class VoiceSession {
     this.currentAgentText = "";
     this.agentLine = "";
     this.droppedReplyId = null;
-    this.requestedDelay = BARGE_IN_EXPLAINING_DELAY_MS;
-    this.openerPending = true;
+    this.droppedHeard = "";
   }
 
-  private signalEndCall(): void {
+  private signalEndCall(replyId: string | null): void {
     this.endCallSignaled = true;
+    this.endCallReplyId = replyId;
     this.handlers.onEndCall?.();
   }
 
   /**
+   * A reply the caller must not hear: one we superseded, or any reply after
+   * the goodbye (the model sometimes speaks again once end_call returns).
+   */
+  private isDropped(replyId: unknown): boolean {
+    if (typeof replyId !== "string" || !replyId) return false;
+    return replyId === this.droppedReplyId || (this.endCallSignaled && replyId !== this.endCallReplyId);
+  }
+
+  /**
    * One coordinator per connection, for either mode: it times results
-   * against replies, and an end_call result arms the drain-then-hangup.
+   * against replies, and an end_call result arms the drain-then-close.
    */
   private installTools(tools: VoiceTool[], execute: ToolCoordinatorOptions["execute"]): void {
     const modes = new Map(tools.map((tool) => [tool.name, tool.execution_mode]));
@@ -1363,38 +1360,38 @@ export class VoiceSession {
   }
 
   /**
-   * Let the goodbye finish playing, then hang up. Polls playback (bounded
+   * Let the goodbye finish playing, then end the call. Polls playback (bounded
    * ~10s) because reply.done only means generation finished — the closing
-   * line may still be draining through the worklet. See HANGUP_SETTLE_POLLS:
+   * line may still be draining through the worklet. See END_CALL_SETTLE_POLLS:
    * one settled poll is not proof of silence, so stop needs a streak.
    */
   private settleThenStop(): void {
     if (!this.ready || this.state === "ended") return;
-    this.disarmHangupTimer();
+    this.disarmEndCallTimer();
     const audioQuiet = () =>
-      Date.now() - this.lastAudioAt >= HANGUP_AUDIO_GRACE_MS;
+      Date.now() - this.lastAudioAt >= END_CALL_AUDIO_GRACE_MS;
     if (this.playbackSettled() && audioQuiet()) {
       void this.stop();
       return;
     }
     const started = Date.now();
     let settledPolls = 0;
-    this.hangupTimer = setInterval(() => {
+    this.endCallTimer = setInterval(() => {
       // Disarmed mid-drain (caller spoke) or already ended: stand down.
-      if (this.hangupTimer === null || !this.ready || this.isEnded()) {
-        this.disarmHangupTimer();
+      if (this.endCallTimer === null || !this.ready || this.isEnded()) {
+        this.disarmEndCallTimer();
         return;
       }
       settledPolls =
         this.playbackSettled() && audioQuiet() ? settledPolls + 1 : 0;
       if (
-        settledPolls >= HANGUP_SETTLE_POLLS ||
-        Date.now() - started > HANGUP_DRAIN_TIMEOUT_MS
+        settledPolls >= END_CALL_SETTLE_POLLS ||
+        Date.now() - started > END_CALL_DRAIN_TIMEOUT_MS
       ) {
-        this.disarmHangupTimer();
+        this.disarmEndCallTimer();
         this.stopIfLive();
       }
-    }, HANGUP_POLL_MS);
+    }, END_CALL_POLL_MS);
   }
 
   /** Stop only while the session is still live (narrowing-safe). */
@@ -1406,10 +1403,10 @@ export class VoiceSession {
     return this.state === "ended";
   }
 
-  private disarmHangupTimer(): void {
-    if (this.hangupTimer) {
-      clearInterval(this.hangupTimer);
-      this.hangupTimer = null;
+  private disarmEndCallTimer(): void {
+    if (this.endCallTimer) {
+      clearInterval(this.endCallTimer);
+      this.endCallTimer = null;
     }
   }
 
@@ -1441,7 +1438,30 @@ export class VoiceSession {
 
   /** Single choke point for mic frames, so mute is unit-testable. */
   private ingestAudio(data: ArrayBuffer) {
-    if (!this.ready || this.inputMuted || this.ws?.readyState !== WebSocket.OPEN) return;
+    if (!this.ready || this.inputMuted || this.ws?.readyState !== WebSocket.OPEN) {
+      // Was silent: surface the loss so `npm run call:trace` can tell a
+      // pre-ready/reconnect/mute gap apart from "the caller said nothing".
+      // Throttled to one probe per 2s; the count rides along.
+      this.inputDropped += 1;
+      const now = Date.now();
+      if (now - this.lastInputDropProbe > 2000) {
+        this.lastInputDropProbe = now;
+        const dropped = this.inputDropped;
+        this.inputDropped = 0;
+        try {
+          this.handlers.onAudioProbe?.({
+            kind: "input-drop",
+            at: now,
+            queued: this.playout?.queuedMs() ?? 0,
+            sessionId: this.sessionId,
+            dropped,
+          });
+        } catch {
+          // Observation must not break the call.
+        }
+      }
+      return;
+    }
     this.ws.send(
       JSON.stringify({
         type: "input.audio",
@@ -1450,11 +1470,18 @@ export class VoiceSession {
     );
   }
 
+  /** Relative playback gain for the active voice (see VOICE_PLAYBACK_GAIN). */
+  setOutputGain(gain: number): void {
+    this.outputGain = Number.isFinite(gain) && gain > 0 ? gain : 1.0;
+  }
+
   /**
    * Ask the agent to speak right now (idle check-ins, status updates).
    * Best-effort: a dead session just means the idle timer will end things.
    */
   requestReply(instructions: string): void {
+    // Nothing may supersede the goodbye: no rung, check-in or resume.
+    if (this.endCallSignaled) return;
     try {
       this.send({ type: "reply.create", instructions });
     } catch {
@@ -1464,7 +1491,19 @@ export class VoiceSession {
 
   /** Queue one base64 PCM16 chunk on the playout worklet. */
   private schedule(base64: string) {
-    this.playout?.play(fromBase64(base64), TARGET_SAMPLE_RATE);
+    const pcm = fromBase64(base64);
+    const gain = this.outputGain;
+    if (gain !== 1.0 && pcm.length >= 2) {
+      // ponytail: per-voice linear gain with hard clamp; server volume caps
+      // at 100 so this is the only place the 12 dB native gap can close.
+      const view = new DataView(pcm.buffer, pcm.byteOffset, pcm.length);
+      for (let i = 0; i + 1 < pcm.length; i += 2) {
+        const s = view.getInt16(i, true);
+        const g = Math.round(s * gain);
+        view.setInt16(i, g > 32767 ? 32767 : g < -32768 ? -32768 : g, true);
+      }
+    }
+    this.playout?.play(pcm, TARGET_SAMPLE_RATE);
   }
 
   /**
@@ -1534,7 +1573,7 @@ export class VoiceSession {
 
   private async cleanup(): Promise<void> {
     if (this.state === "ended") return;
-    this.disarmHangup();
+    this.disarmEndCall();
     this.resetBargeIn();
     this.setState("ended");
     this.ready = false;

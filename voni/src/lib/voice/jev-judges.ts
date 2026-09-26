@@ -123,6 +123,28 @@ export function isCommandBargeIn(text: string): boolean {
 }
 
 /**
+ * The caller asking to end the call. Never an aside to talk through or an
+ * off-track strike: the agent says goodbye and ends the call.
+ * ponytail: phrase list, English plus the demo languages' goodbyes; the
+ * prompt still covers every other wording, so extend from real misses.
+ */
+const END_CALL_PHRASES = [
+  "hang up", "end the call", "end this call", "end call", "gotta go", "got to go", "have to go", "au revoir",
+];
+const END_CALL_TOKENS = new Set([
+  "bye", "goodbye", "adios", "adiós", "tschüss", "tschuss", "arrivederci", "tchau",
+]);
+
+export function isEndCallRequest(text: string): boolean {
+  const tokens = cleanTokens(text);
+  const padded = ` ${tokens.join(" ")} `;
+  return (
+    END_CALL_PHRASES.some((phrase) => padded.includes(` ${phrase} `)) ||
+    tokens.some((token) => END_CALL_TOKENS.has(token))
+  );
+}
+
+/**
  * Offline probability that `partialText` is a real interruption.
  * Filler-only speech scores near 0; multi-word content while the agent is
  * established scores high. Speech in the first 800ms of a reply is treated
@@ -196,10 +218,13 @@ export function shouldAllowSpeculativeNav(state: NavSpeculativeState): {
 /** Laughter only when repeated: a lone "hi" or "ha" is a greeting, not a joke. */
 const LAUGH = /^(?:(?:ha|he|hi|ja|je){2,}h?|lol+|lmf?ao+|rofl|xd+)$/;
 const TROLL_TOKENS = new Set(["poop", "fart", "penis", "butt", "fuck", "shit", "boobs"]);
+/** Classic assistant asks with no business in them; one strike is only a nudge. */
+const OFF_TOPIC_TOKENS = new Set(["joke", "jokes", "weather", "sing", "poem", "riddle", "homework"]);
 
 /**
  * Offline probability that a visitor turn is off-track: laughter-only,
- * keyboard mash, a looped word, or trolling words. Silence and short genuine
+ * keyboard mash, a looped word, trolling words, or a classic off-topic ask
+ * ("tell me a joke", "what's the weather"). Silence and short genuine
  * answers score low.
  *
  * ponytail: lexical only, it cannot tell a joke from an answer. Jev owns
@@ -209,7 +234,7 @@ export function heuristicOffTrackScore(text: string): number {
   const tokens = cleanTokens(text);
   if (tokens.length === 0) return 0;
   if (tokens.every((t) => LAUGH.test(t))) return 0.8;
-  if (tokens.some((t) => TROLL_TOKENS.has(t))) return 0.75;
+  if (tokens.some((t) => TROLL_TOKENS.has(t) || OFF_TOPIC_TOKENS.has(t))) return 0.75;
   // Keyboard mash: letters-only words with no vowel ("qwrtz"), never hums
   // ("hmmm") or numbers ("2019").
   const mashed = tokens.filter(

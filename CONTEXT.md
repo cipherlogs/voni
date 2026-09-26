@@ -29,7 +29,7 @@ _Avoid_: scene option (in full-grid context)
 ### Voice calls
 
 **Demo call**:
-The public, signed-out browser call on the landing page, bound to a stored persona agent.
+The public, signed-out browser call on the landing page, where Voni talks as itself through a stored agent (one per voice).
 _Avoid_: landing call, trial call
 
 **Test call**:
@@ -45,11 +45,11 @@ Silence between the end of the caller's speech and the first sound of the agent'
 _Avoid_: latency (unqualified), lag
 
 **Barge-in**:
-The caller speaking over the agent. The agent keeps listening in the background: steering (stop, wait, no, repeat) yields a human pivot, junk keeps it talking.
+The caller speaking over the agent. The speech service decides when the agent stops; Voni then judges the caller's words: steering or a real point is answered, while filler, a back-channel, or the agent's own echo makes it pick up where it was cut.
 _Avoid_: interruption (unqualified), cut
 
 **Overheard speech**:
-Caller speech that lands while the agent holds the floor. It renders marked in the transcript, counts in the call ledger, and steers the reply — even when the agent does not yield.
+Caller speech that lands while the agent holds the floor. It renders marked in the transcript and counts in the call ledger; once it cuts the agent, it is answered or resumed from as a barge-in.
 _Avoid_: lost audio, missed interruption
 
 **End call**:
@@ -61,8 +61,12 @@ Owner-supplied vocabulary on the agent (jargon, product and place names) merged 
 _Avoid_: keywords (SEO connotation), keyterms (STT parameter name)
 
 **Turn preset**:
-The single turn-taking setting (silence windows, barge-in delay) shared by every demo call, test call, and copilot session.
+The single turn-taking setting shared by every demo call, test call, and copilot session: meaning-based end-of-turn, and a barge-in delay that holds out while the agent explains and drops while it asks something.
 _Avoid_: VAD config, turn detection (as a noun for the setting)
+
+**Call trace**:
+The post-call record of one call, turn by turn: what the speech service heard and did, with Voni's own decisions alongside.
+_Avoid_: session dump, call log
 
 **Input mute**:
 Microphone-only mute for a connected demo call or test call. It drops outbound microphone frames, keeps the call and agent playback alive, and sends hidden system context on mute and unmute; it never creates an automatic reply or transcript row.
@@ -91,3 +95,11 @@ _Avoid_: trial time
 **Verified extension**:
 The full demo-call time unlocked by a passed code check.
 _Avoid_: unlock, upgrade
+
+**Hold**:
+The paused state of a demo call while the visitor is away from the page; mic and talk clock paused, session kept for resume.
+_Avoid_: mute (the visitor's own mic toggle), pause
+
+**Talk clock**:
+Demo-call time that counts only while the visitor is present and unmuted.
+_Avoid_: timer, duration

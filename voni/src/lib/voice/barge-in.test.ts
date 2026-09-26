@@ -10,6 +10,12 @@ test("steering over the agent cuts it at once", () => {
   }
 });
 
+test("asking to end the call is always real, never an aside", () => {
+  for (const text of ["I want you to hang up this call.", "Okay, bye.", "Please end the call"]) {
+    assert.equal(judgeOverlap(text, agent), "yield", text);
+  }
+});
+
 test("filler and back-channels never cut and are not answered", () => {
   for (const text of ["Okaay so", "mm-hmm", "Uh huh.", "Yeah.", "Okay.", "Right, right", "Sooo"]) {
     assert.equal(judgeOverlap(text, agent), "ignore", text);

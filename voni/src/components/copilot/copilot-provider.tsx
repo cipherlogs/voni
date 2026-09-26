@@ -695,7 +695,7 @@ export function CopilotProvider({
           greeting: COPILOT_GREETING,
           voiceId: prefs.voiceId,
           languageCodes: prefsLanguageCodes(prefs) ?? undefined,
-          // First-utterance tuning; turn-taking comes from TURN_PRESET.
+          // First-utterance tuning; turn-taking stays adaptive (ADAPTIVE_TURNS).
           transcriptionPrompt: buildTranscriptionPrompt(route),
           keyterms: buildKeyterms(route),
           tools: sessionToolsFor(route),

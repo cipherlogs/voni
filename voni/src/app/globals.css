@@ -471,13 +471,6 @@
   animation-play-state: paused;
 }
 
-/* The closing orb spins far below the fold; skip its rendering until it is
-   near the viewport (the §10b `content-visibility` precedent). */
-.landing-lazy {
-  content-visibility: auto;
-  contain-intrinsic-size: auto 32rem;
-}
-
 /* Bento and steps pictures (audit 2026-09-24): each plays once when its
    section scrolls into view — `LandingPlay` stamps `data-inview` on every
    `[data-play]` section — instead of looping forever. The base styles are the

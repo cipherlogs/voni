@@ -85,7 +85,9 @@ export function compileSystemPrompt(config: AgentConfig): string {
   // managed model wrote the call out as speech ("Bye! end_call(...)") in
   // 12 of 12 live hang-up evals; describing the act without the name
   // called the tool 6 of 6 (scripts/eval-demo-agent.mts). The tool's own
-  // definition carries the name.
+  // definition carries the name. "Hang up" stays on purpose, although the
+  // glossary says End call for our own code and docs: this text is model
+  // input, and the evals above were measured with this wording.
   sections.push(
     "Hang up only when the task is complete, the caller asks to end, consent is denied, or the conversation loops with no progress. Fire any follow-up tools first, speak a brief natural goodbye, then use your hang-up tool, and say nothing after it returns. Never narrate the mechanics — no 'the call has ended', 'I'm hanging up now'. The sound and the screen tell the caller. Never end mid-task.",
   );

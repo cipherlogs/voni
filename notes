@@ -1,5 +1,21 @@
+│ 01  │ Voni as itself: tools, talk │ none     │ No persona tabs; muting freezes the clock; messing around gets  │
+│     │  clock, stakes ladder       │          │ a nudge, then a warning, then a polite goodbye                  │
+├─────┼─────────────────────────────┼──────────┼─────────────────────────────────────────────────────────────────┤
+│ 02  │ Hold when the visitor       │ 01       │ Leave for Mail on an iPhone or Android phone and come back; the │
+│     │ leaves the page             │          │  call resumes and Voni still remembers you                      │
+├─────┼─────────────────────────────┼──────────┼─────────────────────────────────────────────────────────────────┤
+│ 03  │ Work-email claim and gate   │ 01       │ Email from a work address and Voni finds it in the busy inbox   │
+│     │                             │          │ and gives more time; a gmail address gets pointed to hi@voni.cc │
+├─────┼─────────────────────────────┼──────────┼─────────────────────────────────────────────────────────────────┤
+│ 04  │ Code check and reveal       │ 03       │ The reply arrives with a code, you read it back, and Voni       │
+│     │                             │          │ reveals it was an OTP                                           │
+├─────┼─────────────────────────────┼──────────┼─────────────────────────────────────────────────────────────────┤
+│ 05  │ Website research and        │ 02, 03   │ Voni says true things about your site, even having read it      │
+│     │ business talk               │          │ while you were away                                             │
+├─────┼─────────────────────────────┼──────────┼─────────────────────────────────────────────────────────────────┤
+│ 06  │ Prospect record, consent +  │ 04       │ After a full call, you appear on the admin page with the        │
+│     │ close, admin page           │          │ consent answer and a summary
 
----
 ### Design constraints
 
 * Every design/component must come from **blocks.so**.
