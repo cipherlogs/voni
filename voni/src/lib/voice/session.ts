@@ -37,6 +37,13 @@ import {
   MICROPHONE_UNMUTED_CONTEXT,
 } from "./context";
 import { releaseMic } from "./mic-owner";
+import {
+  BARGE_IN_EXPLAINING_DELAY_MS,
+  BARGE_IN_JUDGE_MS,
+  BARGE_IN_QUESTION_DELAY_MS,
+  judgeOverlap,
+} from "./barge-in";
+import { requestVoiceJudge } from "./jev-judges";
 import { TRANSCRIPTION_MODE } from "./transcription";
 import {
   acquireMicStream,
@@ -61,8 +68,8 @@ export { TARGET_SAMPLE_RATE, VOICE_MIC_CONSTRAINTS } from "./mic-capture";
  * Sending both is rejected by the API.
  */
 export type TurnDetection = {
-  min_silence: number;
-  max_silence: number;
+  min_silence?: number;
+  max_silence?: number;
   interrupt_response?: boolean;
   interruption_delay?: number;
 };
@@ -329,8 +336,48 @@ export type VoiceHandlers = {
   onEndCall?: () => void;
   /** The caller started speaking (VAD), before any transcript. */
   onInputSpeechStarted?: () => void;
+  /** A barge-in decision on caller speech over the agent (trace + earcon). */
+  onBargeIn?: (event: BargeInEvent) => void;
   onReplyDone?: (info: { replyId: string | null; interrupted: boolean }) => void;
 };
+
+/**
+ * What a server barge-in turned out to be, once the caller's words landed:
+ * `yield` was real (steering or content, the agent answers it), `ignore`
+ * was filler, a back-channel or echo, `keep` was an aside (Jev). For both
+ * of those the agent resumes where it was cut.
+ */
+export type BargeInEvent = {
+  verdict: "yield" | "ignore" | "keep";
+  text: string;
+  source: "rule" | "jev";
+};
+
+/** Jev's call on an ambiguous cut-in: real ("yield") or an aside ("keep"). Injected so the demo can add its call token. */
+export type BargeInJudge = (state: {
+  text: string;
+  agentText: string;
+  agentSpeakingMs: number;
+}) => Promise<"yield" | "keep">;
+
+/**
+ * Jev decides whether an ambiguous cut-in was real. Only a real Jev "keep"
+ * resumes; a timeout or heuristic fallback counts as real, so the caller
+ * is answered. `headers` lets the signed-out demo use its call token.
+ */
+export const jevBargeInJudge =
+  (headers?: () => Record<string, string> | undefined): BargeInJudge =>
+  async (state) => {
+    const verdict = await requestVoiceJudge(
+      "barge-in",
+      { partialText: state.text, agentSpeakingMs: state.agentSpeakingMs, agentText: state.agentText },
+      { timeoutMs: BARGE_IN_JUDGE_MS, headers: headers?.() },
+    );
+    return verdict.source === "jev" && verdict.decision === "keep-speaking" ? "keep" : "yield";
+  };
+
+/** A resume waits this long for the server's own reply to the cut-in, to supersede it. */
+const RESUME_WAIT_MS = 500;
 
 export type VoiceState =
   | "idle"
@@ -357,26 +404,21 @@ const SENSITIVE_TURN_DETECTION: TurnDetection = {
 };
 
 /**
- * The turn preset: the ONE turn-taking dial for demo calls, test calls, and
- * the copilot. Tune speed here and every surface follows.
+ * The turn preset: the ONE turn-taking setting for demo calls, test calls,
+ * and the copilot.
  *
- * - `min_silence` 100: after a sentence that clearly ended (terminal
- *   punctuation), reply almost at once. The punctuation check is what keeps
- *   an unfinished "I was thinking…" from being answered.
- * - `max_silence` 1000: an unclear ending waits at most this long — the docs'
- *   voice-agent starting point. Lower splits phone numbers and emails across
- *   turns; raise mid-call for entity capture instead.
- * - `interruption_delay` 500: the mode default. Coughs, breath, and "uh-huh"
- *   end before the first partial fires, so junk rarely cuts the agent off;
- *   real barge-in still does.
+ * - No silence windows: setting `min_silence`/`max_silence` switches off
+ *   AssemblyAI's adaptive, meaning-based end-of-turn for the whole session
+ *   (the old fixed 100/1000ms answered callers halfway through a pause).
+ * - Server barge-in stays on: with it off, speech over the agent's audio is
+ *   dropped for good. The delay starts at its maximum and the session
+ *   adapts it per reply (./barge-in.ts, docs/adr/0003-barge-in-recovery.md).
  *
  * Only `prepareSensitiveCapture` departs from it, for one card-field turn.
  */
 export const TURN_PRESET: TurnDetection = {
-  min_silence: 100,
-  max_silence: 1000,
   interrupt_response: true,
-  interruption_delay: 500,
+  interruption_delay: BARGE_IN_EXPLAINING_DELAY_MS,
 };
 
 /**
@@ -425,6 +467,27 @@ export class VoiceSession {
 
   /** end_call was signaled for the current goodbye (tool call or spoken). */
   private endCallSignaled = false;
+
+  // ── Barge-in recovery + adaptive delay (./barge-in.ts) ─────────────────
+  private readonly judgeBargeIn: BargeInJudge;
+  /** A reply is generating (reply.started → reply.done). */
+  private replyActive = false;
+  private currentReplyId: string | null = null;
+  /** What the agent has said so far in the current reply (captions). */
+  private currentAgentText = "";
+  /** The current reply's words as streamed, before tool-name stripping. */
+  private agentLine = "";
+  private replyStartedAt = 0;
+  /** A reply we superseded: its late audio is dropped. */
+  private droppedReplyId: string | null = null;
+  /** The server just cut the agent: what it had said, and for how long. */
+  private cut: { heard: string; speakingMs: number } | null = null;
+  /** A resume waiting for the server's own reply to supersede. */
+  private pendingResume: { instructions: string; timer: ReturnType<typeof setTimeout> } | null = null;
+  /** The interruption delay last requested (dedupes updates). */
+  private requestedDelay: number | undefined = BARGE_IN_EXPLAINING_DELAY_MS;
+  /** The first reply (the greeting) has not finished yet. */
+  private openerPending = true;
 
   /** Disarm an agent-initiated hangup: the caller took the floor back. */
   private disarmHangup(): void {
@@ -479,9 +542,12 @@ export class VoiceSession {
         name: string;
         arguments: Record<string, unknown>;
       }) => Promise<ToolResponse>;
+      /** Judge for ambiguous speech over the agent. Defaults to Jev. */
+      judgeBargeIn?: BargeInJudge;
     } = {},
   ) {
     this.micOwner = opts.micOwner ?? "voice-call";
+    this.judgeBargeIn = opts.judgeBargeIn ?? jevBargeInJudge();
     this.updateTimeoutMs = opts.updateTimeoutMs ?? 3000;
     this.injectedExecutor = opts.toolExecutor ?? null;
   }
@@ -512,6 +578,7 @@ export class VoiceSession {
     this.micReleased = false;
     this.inputMuted = false;
     this.endCallSignaled = false;
+    this.resetBargeIn();
     this.firstUpdateAcked = false;
     this.greetingAudioSent = false;
     this.sessionReadySent = false;
@@ -818,6 +885,8 @@ export class VoiceSession {
         break;
 
       case "reply.audio":
+        // Late audio of a reply the caller cut off: never play it.
+        if (msg.reply_id && msg.reply_id === this.droppedReplyId) break;
         this.setState("speaking");
         this.lastAudioAt = Date.now();
         if (!this.greetingAudioSent) {
@@ -827,8 +896,18 @@ export class VoiceSession {
         this.schedule(msg.data as string);
         break;
 
-      case "reply.done":
+      case "reply.done": {
+        this.replyActive = false;
+        this.openerPending = false;
+        // A reply we superseded ends "completed" server-side; it was
+        // interrupted all the same.
+        const superseded = Boolean(msg.reply_id) && msg.reply_id === this.droppedReplyId;
+        if (superseded) this.droppedReplyId = null;
+        const interrupted = msg.status === "interrupted" || superseded;
         if (msg.status === "interrupted") {
+          // The server cut the agent: remember what it had said, so a cut
+          // that turns out to be filler can resume (./barge-in.ts).
+          this.cut = { heard: this.currentAgentText, speakingMs: Date.now() - this.replyStartedAt };
           // The server stopped generating, so anything still queued is stale
           // speech the caller has already talked over. Cancel it and reset the
           // cursor, or it plays on top of the next reply.
@@ -838,16 +917,10 @@ export class VoiceSession {
           // agent re-decides instead of hanging up under them.
           this.disarmHangup();
         }
-        this.toolCoordinator?.onReplyDone(
-          msg.reply_id ?? null,
-          msg.status === "interrupted",
-        );
-        this.handlers.onReplyDone?.({
-          replyId: msg.reply_id ?? null,
-          interrupted: msg.status === "interrupted",
-        });
+        this.toolCoordinator?.onReplyDone(msg.reply_id ?? null, interrupted);
+        this.handlers.onReplyDone?.({ replyId: msg.reply_id ?? null, interrupted });
         this.setState("listening");
-        if (this.pendingHangup && msg.status !== "interrupted") {
+        if (this.pendingHangup && !interrupted) {
           this.pendingHangup = false;
           // The closing line is scheduled but may still be playing —
           // reply.done only means generation finished. Let it drain first
@@ -855,17 +928,34 @@ export class VoiceSession {
           this.settleThenStop();
         }
         break;
+      }
       case "reply.started":
+        this.replyActive = true;
+        this.currentReplyId = typeof msg.reply_id === "string" ? msg.reply_id : null;
+        this.currentAgentText = "";
+        this.agentLine = "";
+        this.replyStartedAt = Date.now();
+        // The opener invites an answer from its first word; any other reply
+        // is explaining until it asks something (see the delta case).
+        this.setInterruptionDelay(
+          this.openerPending ? BARGE_IN_QUESTION_DELAY_MS : BARGE_IN_EXPLAINING_DELAY_MS,
+        );
+        // The server's own answer to a cut-in we decided to resume from:
+        // supersede it before its audio plays.
+        if (this.pendingResume) {
+          const { instructions, timer } = this.pendingResume;
+          clearTimeout(timer);
+          this.pendingResume = null;
+          this.supersede(instructions);
+        }
         this.toolCoordinator?.onReplyStarted(msg.reply_id ?? null);
         this.handlers.onReplyStarted?.();
         break;
 
       case "input.speech.started":
-        // Barge-in: drop queued speech NOW so the user never talks over stale
-        // audio. The interrupted `reply.done` flush below stays as a backstop.
-        this.probe("barge-in");
-        this.flush();
-        this.disarmHangup();
+        // Speech alone never cuts the agent locally: the server decides
+        // (after the interruption delay) and says so with an interrupted
+        // reply.done, which flushes. Back-channels it ignores keep playing.
         this.toolCoordinator?.onInputSpeechStarted();
         this.handlers.onInputSpeechStarted?.();
         break;
@@ -879,7 +969,19 @@ export class VoiceSession {
         });
         break;
 
-      case "transcript.agent.delta":
+      case "transcript.agent.delta": {
+        // The API streams ONE word per delta (`delta`), aligned to the audio
+        // as it plays, so the running line is exactly what the caller has
+        // heard. A cumulative `text` is still honored if one ever arrives.
+        this.agentLine =
+          typeof msg.text === "string"
+            ? msg.text
+            : typeof msg.delta === "string"
+              ? `${this.agentLine} ${msg.delta}`.trim()
+              : this.agentLine;
+        this.currentAgentText = stripSpokenToolCall(this.agentLine).text;
+        // A question in flight invites an answer: let it cut in sooner.
+        if (this.currentAgentText.includes("?")) this.setInterruptionDelay(BARGE_IN_QUESTION_DELAY_MS);
         this.handlers.onAgentPartial?.({
           itemId:
             typeof msg.reply_id === "string"
@@ -887,9 +989,10 @@ export class VoiceSession {
               : typeof msg.item_id === "string"
                 ? msg.item_id
                 : null,
-          text: stripSpokenToolCall(typeof msg.text === "string" ? msg.text : "").text,
+          text: this.currentAgentText,
         });
         break;
+      }
 
       case "tool.call":
         if (msg.name === END_CALL_TOOL && this.toolCoordinator) {
@@ -906,6 +1009,7 @@ export class VoiceSession {
         break;
 
       case "transcript.user":
+        if (this.cut) this.resolveCut(typeof msg.text === "string" ? msg.text : "");
         this.handlers.onTranscript?.({ role: "user", text: msg.text });
         this.handlers.onUserTurn?.({
           itemId: typeof msg.item_id === "string" ? msg.item_id : null,
@@ -1122,6 +1226,90 @@ export class VoiceSession {
     return this.playout?.settled() ?? true;
   }
 
+  /**
+   * Replace whatever the agent is generating with a new reply. A
+   * `reply.create` sent mid-reply supersedes the running one (measured: it
+   * ends within ~60ms); its late audio is dropped.
+   */
+  private supersede(instructions: string): void {
+    if (this.replyActive) {
+      this.droppedReplyId = this.currentReplyId;
+      this.flush();
+    }
+    this.requestReply(instructions);
+  }
+
+  /** Pick up where the agent was cut, when the cut wasn't a real interruption. */
+  private resumeAfterCut(heard: string, text: string): void {
+    const instructions = `The caller only said "${text.slice(0, 200)}" while you were speaking; it wasn't a request to stop.${heard ? ` You had just said: "${heard.trim().slice(-200)}".` : ""} Pick up where you left off, naturally ("as I was saying…"), without repeating yourself.`;
+    if (this.replyActive) {
+      this.supersede(instructions);
+      return;
+    }
+    // The server's own reply to the cut-in has not started yet: supersede it
+    // on reply.started, or send ours if it never comes.
+    if (this.pendingResume) clearTimeout(this.pendingResume.timer);
+    this.pendingResume = {
+      instructions,
+      timer: setTimeout(() => {
+        const pending = this.pendingResume;
+        this.pendingResume = null;
+        if (pending) this.requestReply(pending.instructions);
+      }, RESUME_WAIT_MS),
+    };
+  }
+
+  /** The server cut the agent and the caller's words landed: was it real? */
+  private resolveCut(text: string): void {
+    const cut = this.cut;
+    this.cut = null;
+    if (!cut) return;
+    const verdict = judgeOverlap(text, cut.heard);
+    if (verdict === "yield") {
+      this.handlers.onBargeIn?.({ verdict: "yield", text, source: "rule" });
+      return; // Real: the server answers it as a normal turn.
+    }
+    if (verdict === "ignore") {
+      this.handlers.onBargeIn?.({ verdict: "ignore", text, source: "rule" });
+      this.resumeAfterCut(cut.heard, text);
+      return;
+    }
+    void this.judgeBargeIn({ text, agentText: cut.heard, agentSpeakingMs: cut.speakingMs })
+      .catch(() => "yield" as const)
+      .then((decision) => {
+        if (this.state === "ended") return;
+        this.handlers.onBargeIn?.({ verdict: decision, text, source: "jev" });
+        if (decision === "keep") this.resumeAfterCut(cut.heard, text);
+      });
+  }
+
+  /**
+   * Adaptive barge-in: a reply that asks something lets the caller cut in
+   * sooner; explaining holds out longer. Skipped during a sensitive-field
+   * turn, which owns turn detection until it restores.
+   */
+  private setInterruptionDelay(delayMs: number): void {
+    if (this.requestedDelay === delayMs || !this.ready) return;
+    if (this.pendingTurnDetectionRestore !== undefined) return;
+    this.requestedDelay = delayMs;
+    this.updateConfig({
+      input: { turn_detection: { interrupt_response: true, interruption_delay: delayMs } },
+    }).catch(() => undefined);
+  }
+
+  private resetBargeIn(): void {
+    this.cut = null;
+    if (this.pendingResume) clearTimeout(this.pendingResume.timer);
+    this.pendingResume = null;
+    this.replyActive = false;
+    this.currentReplyId = null;
+    this.currentAgentText = "";
+    this.agentLine = "";
+    this.droppedReplyId = null;
+    this.requestedDelay = BARGE_IN_EXPLAINING_DELAY_MS;
+    this.openerPending = true;
+  }
+
   private signalEndCall(): void {
     this.endCallSignaled = true;
     this.handlers.onEndCall?.();
@@ -1138,8 +1326,10 @@ export class VoiceSession {
       modeFor: (name) => modes.get(name) ?? "interactive",
       onActivityChange: (active) => this.handlers.onToolActivity?.(active),
       onResult: (name, result) => {
+        // Hang up as soon as the goodbye drains. Waiting for the model's
+        // empty post-result reply added ~2s of dead air.
         if (name === END_CALL_TOOL && result.ok && result.hangup === true) {
-          this.pendingHangup = true;
+          this.settleThenStop();
         }
       },
       execute,
@@ -1323,13 +1513,11 @@ export class VoiceSession {
     // agent-test handoff) can acquire it immediately instead of racing a
     // 2s session.ended fallback. Idempotent; cleanup repeats it harmlessly.
     this.releaseMicNow();
-    if (this.ws?.readyState === WebSocket.OPEN) {
-      this.sendEnd();
-      // Don't wait forever for session.ended — if it never arrives we still
-      // need the mic released and the context closed.
-      setTimeout(() => void this.cleanup(), 2000);
-      return;
-    }
+    // session.end first (it stops billing; a bare close bills the resume
+    // window), then tear down at once. Waiting for session.ended was dead
+    // air: the generation is already invalidated, so the socket handler
+    // ignores it and every hang-up sat out a 2s fallback.
+    if (this.ws?.readyState === WebSocket.OPEN) this.sendEnd();
     await this.cleanup();
   }
 
@@ -1347,6 +1535,7 @@ export class VoiceSession {
   private async cleanup(): Promise<void> {
     if (this.state === "ended") return;
     this.disarmHangup();
+    this.resetBargeIn();
     this.setState("ended");
     this.ready = false;
     this.sessionId = null;

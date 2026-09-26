@@ -38,6 +38,7 @@ import {
   authedToken,
   demoToken,
   effectiveInlineLanguages,
+  jevBargeInJudge,
   type Transcript,
   type VoiceError,
   type VoiceState,
@@ -318,9 +319,7 @@ export function VoiceCall({
   /** Whether the live caption is an overheard partial (read in stale closures). */
   const overheardRef = useRef(false);
   const timingsRef = useRef<CallTimings | null>(null);
-  const agentSpeechStartRef = useRef(0);
   const fillerIdxRef = useRef(0);
-  const partialTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** Native barge-in/reply-cut count this call (dev-visible via console). */
   const interruptionsRef = useRef(0);
   // Pending flags mirror the startingRef single-flight (start) and the async
@@ -689,7 +688,6 @@ export function VoiceCall({
 
     const session = new VoiceSession({
       onStateChange: (next) => {
-        if (next === "speaking") agentSpeechStartRef.current = Date.now();
         speakingRef.current = next === "speaking";
         if (next === "connecting" || next === "listening" || next === "speaking" || next === "ended")
           timingsRef.current?.mark(next);
@@ -720,25 +718,15 @@ export function VoiceCall({
           overheardRef.current = overheard;
           setLiveCaption({ role: "user", text: partial.text, ...(overheard ? { overheard: true } : {}) });
         }
-        if (partialTimerRef.current) clearTimeout(partialTimerRef.current);
-        const text = partial.text;
-        partialTimerRef.current = setTimeout(() => {
-          void requestVoiceJudge("barge-in", {
-            partialText: text,
-            agentSpeakingMs: Date.now() - agentSpeechStartRef.current,
-          }).then((r) => {
-            if (r.decision !== "yield") return;
-            setFiller(null);
-            sounds().tick(1, 0.9);
-            // The gate committed: route the overlap to the LLM in context
-            // so IT steers (transition-vs-continue) instead of resuming a
-            // cut-off sentence over words it never addressed.
-            sessionRef.current?.sendContext?.(
-              `The caller said over your reply: "${text.slice(0, 200)}". Acknowledge it briefly first, then follow their direction. Do not resume the cut-off sentence.`,
-            );
-          });
-        }, 150);
       },
+      // Barge-in recovery lives in the session (lib/voice/barge-in.ts);
+      // the card only leaves a trace line for `npm run call:trace`.
+      onBargeIn: (event) => {
+        console.debug("[voice-call] barge-in", event.verdict, event.source, event.text);
+        // A real interjection gets the firm tick: Voni heard you.
+        if (event.verdict === "yield") sounds().tick(1, 0.9);
+      },
+      onSessionReady: (id) => console.debug("[voice-call] session", id),
       onAgentPartial: (partial) => {
         // Agent captions stream word-by-word while it speaks — same live
         // caption line, cleared when the final agent turn lands.
@@ -801,6 +789,11 @@ export function VoiceCall({
           else replyQueueRef.current?.enqueue(rungInstructions(rung, OPEN_BEAT_GOAL));
         });
       },
+    }, {
+      // The signed-out demo reaches Jev with its call token.
+      judgeBargeIn: jevBargeInJudge(() =>
+        callTokenRef.current ? { Authorization: `Bearer ${callTokenRef.current}` } : undefined,
+      ),
     });
     sessionRef.current = session;
     replyQueueRef.current = new ReplyQueue((instructions) => session.requestReply(instructions));

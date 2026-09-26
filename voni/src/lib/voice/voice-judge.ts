@@ -83,7 +83,7 @@ export function judgeQuestions(kind: JudgeKind): {
     return {
       type: "boolean",
       instructions:
-        "Is this user speech a real interruption that requires the agent to stop speaking immediately? Backchannels (uh-huh, yeah, mhm), breathing, humming, singing, and filler-only sounds are NOT interruptions. Steering — stop, wait, no, hold on, repeat — always counts as real even as a single word: the agent finishes its current phrase, acknowledges briefly, then follows. A bare yes counts as real too — the agent confirms it gracefully instead of talking over it.",
+        "The caller spoke (partialText) while the voice agent was saying agentText. Is this a real interruption that requires the agent to stop speaking immediately? A question or a new point that changes the direction counts; an answer or comment that can wait until the agent finishes its sentence does not, and neither does the agent's own words echoed back. Backchannels (uh-huh, yeah, mhm), breathing, humming, singing, and filler-only sounds are NOT interruptions. Steering — stop, wait, no, hold on, repeat — always counts as real even as a single word: the agent finishes its current phrase, acknowledges briefly, then follows. A bare yes counts as real too — the agent confirms it gracefully instead of talking over it.",
     };
   if (kind === "reply")
     return {

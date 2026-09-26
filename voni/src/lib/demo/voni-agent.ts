@@ -22,12 +22,12 @@ export const DEMO_VOICE_IDS = ["anna", "lola", "estelle", "juergen", "giovanni",
  * the product. No gendered agreement on the speaker (any voice speaks it).
  */
 export const VONI_GREETINGS: Record<string, string> = {
-  en: "Hi, I'm Voni. I know you're here to see how useful this would be for your business. I'd rather show you than tell you. Sound good?",
-  es: "Hola, soy Voni. Sé que quieres ver lo útil que esto sería para tu negocio. Prefiero mostrártelo que contártelo. ¿Te parece?",
-  fr: "Bonjour, ici Voni. Vous voulez voir ce que ça pourrait apporter à votre entreprise. Je préfère vous le montrer que vous l'expliquer. Ça vous va ?",
-  de: "Hallo, hier ist Voni. Sie wollen sehen, wie nützlich das für Ihr Unternehmen wäre. Ich zeige es Ihnen lieber, als es zu erklären. Einverstanden?",
-  it: "Ciao, sono Voni. So che vuoi capire quanto potrebbe servire alla tua attività. Preferisco mostrartelo che raccontartelo. Ti va?",
-  pt: "Olá, aqui é Voni. Sei que quer ver o quão útil isto seria para o seu negócio. Prefiro mostrar do que explicar. Pode ser?",
+  en: "Hi, I'm Voni. Want me to show you what I'd do for your business?",
+  es: "Hola, soy Voni. ¿Quieres que te muestre lo que haría por tu negocio?",
+  fr: "Bonjour, ici Voni. Je vous montre ce que je ferais pour votre entreprise ?",
+  de: "Hallo, hier ist Voni. Soll ich Ihnen zeigen, was ich für Ihr Unternehmen tun würde?",
+  it: "Ciao, sono Voni. Vuoi che ti mostri cosa farei per la tua attività?",
+  pt: "Olá, aqui é Voni. Quer que lhe mostre o que eu faria pelo seu negócio?",
 };
 
 /** The current beat's goal: what the Jev judge scores each visitor turn against. */

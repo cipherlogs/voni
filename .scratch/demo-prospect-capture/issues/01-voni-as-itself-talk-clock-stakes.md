@@ -17,7 +17,7 @@ Rate limits stay as they are.
 ## Manual test (approve / reject)
 
 1. Open the landing page. → No persona tabs. The voice/language picker is still there.
-2. Start a call. → Voni opens with "Hi, I'm Voni… I'd rather show you than tell you. Sound good?" (in the picked language).
+2. Start a call. → Voni opens with "Hi, I'm Voni. Want me to show you what I'd do for your business?" (in the picked language), and talking over it cuts it off.
 3. Talk for ~30s, mute for 40s, unmute. → The visible clock froze while muted. Voni checked in once, around the 20s mark of the mute, and didn't nag again.
 4. Keep talking normally until 2 minutes of talk time. → The call ends politely at about 2:00 of talk time, not 2:00 of real time.
 5. New call: answer with nonsense or jokes 3 times in a row. → First a light nudge, then a clear warning about the stakes, then a polite goodbye that mentions hi@voni.cc, and the call ends.

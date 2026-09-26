@@ -33,6 +33,8 @@ export type BargeInState = {
   partialText: string;
   /** How long the agent has been speaking in this reply. */
   agentSpeakingMs: number;
+  /** What the agent was saying when the caller spoke (context for Jev). */
+  agentText?: string;
 };
 
 export type ReplyState = {
@@ -69,7 +71,7 @@ export type JudgeSource = "jev" | "fallback";
  * settled final's soft-confirm path instead of cutting in. Mirrors
  * voice-pipeline/turns.py and telephony-bot/voice_judge.py.
  */
-const FILLER_TOKENS = new Set([
+export const FILLER_TOKENS = new Set([
   "uh", "huh", "uhhuh", "um", "umm", "uhm", "er", "erm",
   "hmm", "hm", "ah", "oh", "mhm", "mmhm", "mmhmm", "mm",
   "yup", "okay", "ok", "right", "alright", "sure",
@@ -101,7 +103,7 @@ function wordCount(text: string): number {
   return words.length === 1 && words[0] === "" ? 0 : words.length;
 }
 
-function cleanTokens(text: string): string[] {
+export function cleanTokens(text: string): string[] {
   return text
     .toLowerCase()
     .replace(/[!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~]/g, "")

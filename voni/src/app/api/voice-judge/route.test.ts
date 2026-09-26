@@ -31,9 +31,9 @@ test("voice judge reads secrets Worker-safe", () => {
   assert.match(source, /secret\("AI_GATEWAY_API_KEY"\)/);
 });
 
-test("the signed-out demo judges off-track only, with its call token", () => {
+test("the signed-out demo judges off-track and barge-in only, with its call token", () => {
   assert.match(source, /demoCallFromRequest/);
-  assert.match(source, /demoOnly && parsed\.kind !== "off-track"/);
+  assert.match(source, /demoOnly && parsed\.kind !== "off-track" && parsed\.kind !== "barge-in"/);
   assert.match(source, /status: 403/);
 });
 

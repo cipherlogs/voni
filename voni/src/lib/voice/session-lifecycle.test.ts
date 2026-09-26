@@ -15,6 +15,7 @@ import {
   MICROPHONE_MUTED_CONTEXT,
   MICROPHONE_UNMUTED_CONTEXT,
 } from "./context";
+import { BARGE_IN_EXPLAINING_DELAY_MS, BARGE_IN_QUESTION_DELAY_MS } from "./barge-in";
 
 // Minimal WebSocket shape: updateConfig only touches readyState + send.
 (globalThis as unknown as { WebSocket: unknown }).WebSocket = { OPEN: 1 };
@@ -130,14 +131,6 @@ function fakePlayout(queuedMs = 0) {
   return { playout, flushes };
 }
 
-test("barge-in flushes queued speech immediately", () => {
-  const { handle, internals } = makeSession();
-  const { playout, flushes } = fakePlayout(200);
-  internals["playout"] = playout;
-  handle({ type: "input.speech.started" });
-  assert.deepEqual(flushes, [0.04]);
-});
-
 /**
  * Demo tools: the session relays each tool call to the call-scoped demo
  * route. `fetch` is stubbed to answer like the route would.
@@ -163,7 +156,125 @@ function endCall(handle: (message: Record<string, unknown>) => void, callId: str
   handle({ type: "tool.call", call_id: callId, name: "end_call", arguments: args });
 }
 
-test("demo end_call relays to the call-scoped route and hangs up on the settled reply", async () => {
+/** A session mid-reply: the agent holds the floor with audio playing. */
+function midReply(
+  opts: ConstructorParameters<typeof VoiceSession>[1] = {},
+  handlers: ConstructorParameters<typeof VoiceSession>[0] = {},
+) {
+  const made = makeSession(handlers, opts);
+  const played: string[] = [];
+  const flushes: number[] = [];
+  let settled = false;
+  made.internals["playout"] = {
+    play: () => {
+      played.push("chunk");
+      settled = false;
+    },
+    flush: (fadeS?: number) => {
+      flushes.push(fadeS ?? -1);
+      settled = true;
+    },
+    settled: () => settled,
+    queuedMs: () => (settled ? 0 : 800),
+  };
+  made.handle({ type: "session.ready", session_id: "s1" });
+  made.handle({ type: "reply.started", reply_id: "r1" });
+  made.handle({ type: "transcript.agent.delta", reply_id: "r1", text: "I'd handle booking and reminders" });
+  made.handle({ type: "reply.audio", reply_id: "r1", data: "" });
+  const messages = () => made.sent.map((raw) => JSON.parse(raw));
+  const replyCreates = () => messages().filter((m) => m.type === "reply.create");
+  /** The server cuts the agent, then the caller's words land. */
+  const serverCut = (text: string) => {
+    made.handle({ type: "input.speech.started" });
+    made.handle({ type: "reply.done", reply_id: "r1", status: "interrupted" });
+    made.handle({ type: "input.speech.stopped" });
+    made.handle({ type: "transcript.user", item_id: "u1", text });
+  };
+  return { ...made, played, flushes, replyCreates, messages, serverCut };
+}
+
+test("speech starting over the agent never cuts it locally", () => {
+  const { handle, flushes } = midReply();
+  handle({ type: "input.speech.started" });
+  assert.deepEqual(flushes, [], "the server decides; its interrupted reply.done flushes");
+});
+
+test("a cut caused by filler resumes, superseding the server's own answer", () => {
+  const events: string[] = [];
+  const { serverCut, handle, replyCreates, played } = midReply({}, {
+    onBargeIn: (event) => events.push(event.verdict),
+  });
+  serverCut("Okaay so");
+  handle({ type: "reply.started", reply_id: "r2" }); // the server answers the filler
+  const [create] = replyCreates();
+  assert.match(create.instructions, /Pick up where you left off/);
+  assert.match(create.instructions, /booking and reminders/, "knows where it was cut");
+  const before = played.length;
+  handle({ type: "reply.audio", reply_id: "r2", data: "" });
+  assert.equal(played.length, before, "the superseded answer never plays");
+  handle({ type: "reply.done", reply_id: "r2", status: "completed" });
+  handle({ type: "reply.started", reply_id: "r3" });
+  handle({ type: "reply.audio", reply_id: "r3", data: "" });
+  assert.equal(played.length, before + 1, "the resumed reply plays");
+  assert.deepEqual(events, ["ignore"]);
+});
+
+test("a resume is sent even if the server never answers the filler", async () => {
+  const { serverCut, replyCreates } = midReply();
+  serverCut("mm-hmm");
+  assert.deepEqual(replyCreates(), []);
+  await new Promise((resolve) => setTimeout(resolve, 600));
+  assert.match(replyCreates()[0].instructions, /Pick up where you left off/);
+});
+
+test("steering after a cut is answered as a normal turn", async () => {
+  const events: string[] = [];
+  const { serverCut, handle, replyCreates } = midReply({}, { onBargeIn: (e) => events.push(e.verdict) });
+  serverCut("Wait, stop.");
+  handle({ type: "reply.started", reply_id: "r2" });
+  await new Promise((resolve) => setTimeout(resolve, 600));
+  assert.deepEqual(replyCreates(), []);
+  assert.deepEqual(events, ["yield"]);
+});
+
+test("Jev decides ambiguous cut-ins: an aside resumes, a real point is answered", async () => {
+  const aside = midReply({ judgeBargeIn: async () => "keep" });
+  aside.serverCut("We're a bakery actually.");
+  aside.handle({ type: "reply.started", reply_id: "r2" });
+  await settle();
+  assert.match(aside.replyCreates()[0].instructions, /We're a bakery actually\./);
+
+  const real = midReply({ judgeBargeIn: async () => "yield" });
+  real.serverCut("What about pricing?");
+  real.handle({ type: "reply.started", reply_id: "r2" });
+  await settle();
+  assert.deepEqual(real.replyCreates(), []);
+});
+
+test("the opener invites an answer; later replies hold out until they ask", () => {
+  const { handle, messages } = midReply(); // r1 is the opener
+  const delays = () =>
+    messages()
+      .filter((m) => m.type === "session.update")
+      .map((m) => m.session.input.turn_detection.interruption_delay);
+  assert.deepEqual(delays(), [BARGE_IN_QUESTION_DELAY_MS], "the greeting is cut-in friendly");
+  handle({ type: "session.updated" });
+  handle({ type: "reply.done", reply_id: "r1", status: "completed" });
+  handle({ type: "reply.started", reply_id: "r2" });
+  handle({ type: "session.updated" });
+  assert.deepEqual(delays(), [BARGE_IN_QUESTION_DELAY_MS, BARGE_IN_EXPLAINING_DELAY_MS]);
+  handle({ type: "transcript.agent.delta", reply_id: "r2", delta: "Want" });
+  handle({ type: "transcript.agent.delta", reply_id: "r2", delta: "details?" });
+  handle({ type: "session.updated" });
+  handle({ type: "transcript.agent.delta", reply_id: "r2", delta: "Great" });
+  assert.deepEqual(
+    delays(),
+    [BARGE_IN_QUESTION_DELAY_MS, BARGE_IN_EXPLAINING_DELAY_MS, BARGE_IN_QUESTION_DELAY_MS],
+    "a question drops it once, deduped",
+  );
+});
+
+test("demo end_call relays to the call-scoped route and hangs up once the goodbye drains", async () => {
   const { session, sent, handle, internals } = makeSession();
   internals["playout"] = {
     play: () => undefined,
@@ -189,9 +300,8 @@ test("demo end_call relays to the call-scoped route and hangs up on the settled 
     .find((message) => message.type === "tool.result");
   assert.equal(result?.call_id, "e1");
   assert.equal(result?.is_error, false);
-  assert.equal(internals["pendingHangup"], true);
-  // Playback already settled: the goodbye lands, then the session stops.
-  handle({ type: "reply.done", reply_id: "r1", status: "completed" });
+  // Playback already settled: stop without waiting for the model's empty
+  // post-result reply (it used to add ~2s of dead air).
   assert.equal(internals["explicitStop"], true);
 });
 
@@ -208,7 +318,8 @@ test("agent mode without a call token answers end_call locally", async () => {
     .find((message) => message.type === "tool.result");
   assert.equal(result?.call_id, "e0");
   assert.equal(result?.is_error, false);
-  assert.equal(internals["pendingHangup"], true);
+  // Nothing left to play: the result itself hangs up.
+  assert.equal(internals["explicitStop"], true);
 });
 
 test("a refused demo end_call keeps the caller on the line", async () => {  const { session, sent, handle, internals } = makeSession();
@@ -224,21 +335,13 @@ test("a refused demo end_call keeps the caller on the line", async () => {  cons
   assert.equal(internals["explicitStop"], false);
 });
 
-test("caller speech over the goodbye disarms the hangup", async () => {
-  const { session, handle, internals } = makeSession();
+test("a cut into the goodbye takes the floor back", async () => {
+  const { session, handle, internals, serverCut } = midReply();
   withDemoTools(internals, session);
-  internals["playout"] = {
-    play: () => undefined,
-    flush: () => undefined,
-    settled: () => true,
-    queuedMs: () => 0,
-  };
-  handle({ type: "session.ready", session_id: "s1" });
   endCall(handle, "e3");
   await settle();
-  assert.equal(internals["pendingHangup"], true);
-  handle({ type: "input.speech.started" });
-  handle({ type: "reply.done", reply_id: "r1", status: "interrupted" });
+  serverCut("Wait, no, one more thing.");
+  await new Promise((resolve) => setTimeout(resolve, 1200));
   assert.equal(internals["explicitStop"], false);
 });
 
@@ -284,13 +387,27 @@ test("hangup waits out fresh audio even when playback reports settled", async ()
     queuedMs: () => 0,
   };
   handle({ type: "session.ready", session_id: "s1" });
+  handle({ type: "reply.audio", reply_id: "r1", data: "" });
   endCall(handle, "e5");
   await settle();
-  handle({ type: "reply.audio", reply_id: "r1", data: "" });
   handle({ type: "reply.done", reply_id: "r1", status: "completed" });
   assert.equal(internals["explicitStop"], false);
   await new Promise((resolve) => setTimeout(resolve, 2000));
   assert.equal(internals["explicitStop"], true);
+});
+
+test("stop ends the call at once, session.end before the socket closes", async () => {
+  const order: string[] = [];
+  const states: string[] = [];
+  const { session, internals } = makeSession({ onStateChange: (state) => states.push(state) });
+  internals["ws"] = {
+    readyState: 1,
+    send: (raw: string) => order.push(JSON.parse(raw).type),
+    close: () => order.push("close"),
+  };
+  await session.stop();
+  assert.deepEqual(order, ["session.end", "close"]);
+  assert.equal(states.at(-1), "ended", "no 2s wait for a session.ended nobody hears");
 });
 
 test("session.ended reports durations for acceptance tracking", () => {
@@ -402,24 +519,6 @@ test("session.ready reports its id and probes the moment", () => {
   assert.equal(probes[0]?.kind, "ready");
   assert.equal(probes[0]?.sessionId, "sess_probe");
   assert.equal(probes[0]?.queued, 0);
-});
-
-test("barge-in probes the cut before flushing", () => {
-  const kinds: string[] = [];
-  const queuedCounts: number[] = [];
-  const { handle, internals } = makeSession({
-    onAudioProbe: (event) => {
-      kinds.push(event.kind);
-      queuedCounts.push(event.queued);
-    },
-  });
-  const { playout, flushes } = fakePlayout(120);
-  internals["playout"] = playout;
-  handle({ type: "input.speech.started" });
-  assert.equal(flushes.length, 1);
-  // The cut is observed first (120ms buffered), then the flush reports the drop.
-  assert.deepEqual(kinds, ["barge-in", "flush"]);
-  assert.deepEqual(queuedCounts, [120, 120]);
 });
 
 test("interrupted reply probes the cut before flushing", () => {
@@ -610,6 +709,18 @@ test("WS timing marks fire once per start", () => {
   assert.equal(marks.filter((m) => m === "greetingAudio").length, 1);
 });
 
+test("agent word deltas accumulate into the heard line", () => {
+  const partials: string[] = [];
+  const { handle } = makeSession({ onAgentPartial: (p) => partials.push(p.text) });
+  handle({ type: "session.ready", session_id: "s1" });
+  handle({ type: "reply.started", reply_id: "r1" });
+  for (const word of ["Hi,", "I'm", "Voni."]) handle({ type: "transcript.agent.delta", reply_id: "r1", delta: word });
+  assert.deepEqual(partials, ["Hi,", "Hi, I'm", "Hi, I'm Voni."]);
+  handle({ type: "reply.started", reply_id: "r2" });
+  handle({ type: "transcript.agent.delta", reply_id: "r2", delta: "Next" });
+  assert.equal(partials.at(-1), "Next", "a new reply starts a new line");
+});
+
 test("stripSpokenToolCall removes a spoken tool name and flags the hangup", () => {
   assert.deepEqual(stripSpokenToolCall("Understood. Goodbye! end_call"), {
     text: "Understood. Goodbye!",
@@ -675,7 +786,6 @@ test("spoken name then a real end_call waits for the tool result", async () => {
   assert.equal(internals["explicitStop"], false, "never closes before the result is sent");
   await settle();
   assert.ok(sent.some((raw) => JSON.parse(raw).type === "tool.result"));
-  handle({ type: "reply.done", reply_id: "fc-e7", status: "completed" });
-  assert.equal(internals["explicitStop"], true);
+  assert.equal(internals["explicitStop"], true, "the result itself hangs up");
   assert.equal(ended, 1);
 });

@@ -4,13 +4,11 @@ import { buildInlineSessionUpdate, TURN_PRESET, VoiceSession } from "./session";
 
 (globalThis as unknown as { WebSocket: unknown }).WebSocket = { OPEN: 1 };
 
-test("turn preset: fast confident endpoint, capped unclear wait, backchannel-proof barge-in", () => {
-  assert.deepEqual(TURN_PRESET, {
-    min_silence: 100,
-    max_silence: 1000,
-    interrupt_response: true,
-    interruption_delay: 500,
-  });
+test("turn preset: adaptive end-of-turn, server barge-in at its maximum delay", () => {
+  // Fixed silence windows switch off AssemblyAI's adaptive, meaning-based
+  // end-of-turn for the whole session. The session adapts the delay per
+  // reply. See docs/adr/0003-barge-in-recovery.md.
+  assert.deepEqual(TURN_PRESET, { interrupt_response: true, interruption_delay: 1000 });
 });
 
 test("inline sessions get the turn preset without passing it", () => {

@@ -17,7 +17,7 @@ import {
  * Auth is a signed-in session (browser), the bridge bearer secret
  * (`VONI_TOOL_SECRET`, same shape as `/api/internal/bridge-config`) — the
  * bridge holds no session cookie — or, for the signed-out landing demo, its
- * call token, which may only ask the off-track question. Judging is
+ * call token, which may only ask the off-track and barge-in questions. Judging is
  * org-agnostic, so unlike the internal routes there is deliberately no
  * workspace-selection gate here.
  *
@@ -26,7 +26,7 @@ import {
  * decision + probability. Any gateway failure falls back to the offline
  * heuristic with `source: "heuristic"` — the audio path never blocks on this.
  *
- * A demo call token may only ask the off-track question, and its Jev spend
+ * A demo call token may only ask the off-track and barge-in questions, and its Jev spend
  * is capped per call (Postgres bucket, Worker-safe like the token limits):
  * about one judgment per visitor turn fits comfortably, while a lifted token
  * cannot burn Jev indefinitely.
@@ -50,8 +50,8 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   const parsed = parseVoiceJudgeRequest(body);
   if (!parsed.ok || !parsed.kind || !parsed.state)
     return NextResponse.json({ error: "invalid judge request" }, { status: 400 });
-  if (demoOnly && parsed.kind !== "off-track")
-    return NextResponse.json({ error: "demo calls judge off-track only" }, { status: 403 });
+  if (demoOnly && parsed.kind !== "off-track" && parsed.kind !== "barge-in")
+    return NextResponse.json({ error: "demo calls judge off-track and barge-in only" }, { status: 403 });
   if (demoOnly && demoCall) {
     const budget = await bumpRateBucket(
       `judge:call:${demoCall.callId}`,

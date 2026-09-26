@@ -72,12 +72,10 @@ export function buildDemoAgentBody(voiceId: string) {
       transcription_prompt: buildAgentTranscriptionPrompt(config),
       keyterms: buildAgentKeyterms(config),
       voice_focus: "near-field",
-      turn_detection: {
-        min_silence: 100,
-        max_silence: 1000,
-        interrupt_response: true,
-        interruption_delay: 500,
-      },
+      // Mirrors TURN_PRESET (voice/session.ts; a test pins them equal):
+      // adaptive end-of-turn, server barge-in at its maximum delay, which
+      // the browser session adapts per reply (docs/adr/0003-barge-in-recovery.md).
+      turn_detection: { interrupt_response: true, interruption_delay: 1000 },
     },
   };
 }
