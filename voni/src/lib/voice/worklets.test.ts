@@ -96,33 +96,59 @@ function jitteryReply(seed = 7) {
 }
 
 test("playout: jittery chunks play as one seamless stream", () => {
-  const { out, posted } = runPlayout(jitteryReply(), 1.4);
+  const { out, posted } = runPlayout(jitteryReply(), 2);
   assert.ok(maxStep(out) <= CLEAN_STEP, `max step ${maxStep(out)} > clean ${CLEAN_STEP}`);
   // Exactly one drain: the natural end of the reply, no mid-reply underrun.
   assert.equal(posted.filter((m) => m.idle).length, 1);
-  // Pre-roll: nothing sounds until 80ms of audio has arrived.
+  // Pre-roll: nothing sounds until 500ms of audio has arrived.
   const arrivals = jitteryReply();
   const firstSound = out.findIndex((y) => y !== 0) / OUT;
   const bufferedAtStart = arrivals
     .filter(([at]) => at <= firstSound)
     .reduce((n, [, chunk]) => n + chunk.length, 0);
-  assert.ok(bufferedAtStart >= 0.08 * SRC, `started with ${bufferedAtStart / SRC}s buffered`);
+  assert.ok(bufferedAtStart >= 0.5 * SRC, `started with ${bufferedAtStart / SRC}s buffered`);
 });
 
 test("playout: a stall longer than the buffer fades out and back in", () => {
   const arrivals: [number, Float32Array][] = [
     [0, sineChunk(0, SRC * 0.2)],
-    [0.5, sineChunk(SRC * 0.2, SRC * 0.2)], // 300ms after the first ran dry
+    [1.3, sineChunk(SRC * 0.2, SRC * 0.2)], // well after the first ran dry
   ];
-  const { out, posted } = runPlayout(arrivals, 1);
+  const { out, posted } = runPlayout(arrivals, 2.2);
   assert.ok(maxStep(out) <= CLEAN_STEP, `max step ${maxStep(out)}`);
   assert.equal(posted.filter((m) => m.idle).length, 2, "one underrun + the end");
 });
 
-test("playout: flush fades to silence within 40ms, no click", () => {
-  const { out } = runPlayout([[0, sineChunk(0, SRC)]], 0.6, 0.3);
+/** Real time, as the server streams (10ms chunks every 10ms), with one network hiccup. */
+function realTimeReply(seconds: number, hiccupAt: number, hiccupS: number) {
+  const arrivals: [number, Float32Array][] = [];
+  const n = SRC * 0.01;
+  for (let pos = 0; pos < seconds * SRC; pos += n) {
+    const due = pos / SRC;
+    arrivals.push([due >= hiccupAt && due < hiccupAt + hiccupS ? hiccupAt + hiccupS : due, sineChunk(pos, n)]);
+  }
+  return arrivals;
+}
+
+test("playout: a 400ms network hiccup mid-line is absorbed, no gap", () => {
+  const { out, posted } = runPlayout(realTimeReply(2, 0.8, 0.4), 3);
   assert.ok(maxStep(out) <= CLEAN_STEP, `max step ${maxStep(out)}`);
-  const after = out.slice(Math.ceil((0.3 + 128 / OUT + 0.04) * OUT));
+  assert.equal(posted.filter((m) => m.idle).length, 1, "only the natural end");
+});
+
+test("playout: reports how much of the stream it has consumed", () => {
+  const { posted } = runPlayout(realTimeReply(1, 9, 0), 1.2);
+  const levels = posted.filter((m) => m.type === "level") as unknown as { consumed: number }[];
+  const consumed = levels.map((m) => m.consumed);
+  assert.ok(consumed.every((c, i) => i === 0 || c >= consumed[i - 1]), "never goes back");
+  // 1.2s run, sound starts after the 0.5s pre-roll: about 0.7s played.
+  assert.ok(Math.abs(consumed.at(-1)! / SRC - 0.7) < 0.05, `consumed ${consumed.at(-1)! / SRC}s`);
+});
+
+test("playout: flush fades to silence within 40ms, no click", () => {
+  const { out } = runPlayout([[0, sineChunk(0, SRC)]], 1.2, 0.8);
+  assert.ok(maxStep(out) <= CLEAN_STEP, `max step ${maxStep(out)}`);
+  const after = out.slice(Math.ceil((0.8 + 128 / OUT + 0.04) * OUT));
   assert.ok(after.every((y) => y === 0), "silent after the fade");
 });
 
@@ -130,20 +156,20 @@ test("playout: a reply right after a flush waits for the tail, never past full s
   // Barge-in resume: the superseded reply fades while the next one is ready.
   const loud = (n: number, hz: number) =>
     new Float32Array(n).map((_, i) => 0.95 * Math.sin((2 * Math.PI * hz * i) / SRC));
-  const { out, posted } = runPlayout([[0, loud(SRC, 180)], [0.3 + 128 / OUT, loud(SRC / 2, 230)]], 1, 0.3, true);
+  const { out, posted } = runPlayout([[0, loud(SRC, 180)], [0.8 + 128 / OUT, loud(SRC / 2, 230)]], 2, 0.8, true);
   const peak = Math.max(...out.map(Math.abs));
   assert.ok(peak <= 1, `peak ${peak}`);
   assert.deepEqual(posted.filter((m) => m.type === "pop"), []);
 });
 
 test("pop probe: a clean jittery reply reports nothing", () => {
-  const { posted } = runPlayout(jitteryReply(), 1.4, undefined, true);
+  const { posted } = runPlayout(jitteryReply(), 2, undefined, true);
   assert.deepEqual(posted.filter((m) => m.type === "pop"), []);
 });
 
 test("pop probe: a hard discontinuity in the stream is flagged as a jump", () => {
   const square = new Float32Array(SRC * 0.2).map((_, i) => (Math.floor(i / 12) % 2 ? 0.9 : -0.9));
-  const { posted } = runPlayout([[0, sineChunk(0, SRC * 0.2)], [0.05, square]], 0.6, undefined, true);
+  const { posted } = runPlayout([[0, sineChunk(0, SRC * 0.2)], [0.05, square]], 1.2, undefined, true);
   const pops = posted.filter((m) => m.type === "pop" && m.kind === "jump");
   assert.ok(pops.length > 0, "the square edge is flagged");
   assert.ok((pops[0]?.size ?? 0) > 0.3);
@@ -151,7 +177,7 @@ test("pop probe: a hard discontinuity in the stream is flagged as a jump", () =>
 
 test("pop probe: off by default, the worklet posts no pop messages", () => {
   const square = new Float32Array(SRC * 0.2).map((_, i) => (Math.floor(i / 12) % 2 ? 0.9 : -0.9));
-  const { posted } = runPlayout([[0, square]], 0.4);
+  const { posted } = runPlayout([[0, square]], 1);
   assert.deepEqual(posted.filter((m) => m.type === "pop"), []);
 });
 

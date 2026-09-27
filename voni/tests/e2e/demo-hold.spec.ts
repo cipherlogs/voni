@@ -135,6 +135,19 @@ test("a long hidden stretch without freeze stays live (Android Chrome)", async (
   expect(server.conns).toHaveLength(1);
 });
 
+test("a flap of 5s or more gets one welcome-back line on return, still live", async ({ page }) => {
+  const server = await fakeServer(page);
+  await startCall(page, server);
+  await setHidden(page, true);
+  await page.waitForTimeout(5200);
+  await setHidden(page, false);
+  await page.waitForTimeout(1600);
+  const lines = server.replyCreates().filter((f) => /"Welcome back!"/.test(String(f.instructions)));
+  expect(lines).toHaveLength(1);
+  expect(server.contexts().some((c) => /on hold/i.test(c)), "a flap, not a hold").toBe(false);
+  expect(server.conns).toHaveLength(1);
+});
+
 test("freeze holds silently; the return un-holds and welcomes back once", async ({ page }) => {
   const server = await fakeServer(page);
   await startCall(page, server);

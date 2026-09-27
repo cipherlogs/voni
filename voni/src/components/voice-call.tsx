@@ -61,8 +61,7 @@ import { formatCallStatus } from "@/lib/calls/call-status";
 import { ACCENT_FLAG, getVoice, voiceLabel, voicePlaybackGain } from "@/lib/agents/voices";
 import {
   DEMO_VOICE_IDS,
-  HOLD_RETURN_SENT_INSTRUCTIONS,
-  HOLD_RETURN_INSTRUCTIONS,
+  welcomeBackInstructions,
   HOLD_TIMEOUT_INSTRUCTIONS,
   LATE_EMAIL_INSTRUCTIONS,
   MUTE_CHECK_IN_INSTRUCTIONS,
@@ -88,7 +87,7 @@ import {
   talkLimitS,
   type EmailTestState,
 } from "@/lib/demo/email-test";
-import { CHECK_CODE_TOOL, CHECK_EMAIL_TOOL, SHOW_TEST_ADDRESS_TOOL } from "@/lib/demo/demo-tools";
+import { CHECK_CODE_TOOL, CHECK_EMAIL_TOOL, SEND_CODE_REPLY_TOOL, SHOW_TEST_ADDRESS_TOOL } from "@/lib/demo/demo-tools";
 import type { CodeStatus } from "@/lib/demo/code-check";
 import {
   buildHoldCarryover,
@@ -99,6 +98,7 @@ import {
   loadCallMemory,
   saveCallMemory,
   shouldParkOnDrop,
+  FLAP_WELCOME_MS,
   shouldRejoinAfterHold,
   type HoldSessionStatus,
 } from "@/lib/demo/hold";
@@ -498,14 +498,12 @@ export function VoiceCall({
   const welcomeBackOnce = useCallback(() => {
     if (welcomedRef.current) return;
     welcomedRef.current = true;
-    // Back right after the invite: most likely from sending the email.
-    const test = emailTestRef.current;
-    replyQueueRef.current?.enqueue(
-      test.invited && !test.found ? HOLD_RETURN_SENT_INSTRUCTIONS : HOLD_RETURN_INSTRUCTIONS,
-    );
+    replyQueueRef.current?.enqueue(welcomeBackInstructions(emailTestRef.current, true));
   }, []);
   /** Page hidden right now (demo): a drop then parks instead of resuming. */
   const hiddenRef = useRef(false);
+  /** When the page went hidden (demo), for the welcome-back after a long flap. */
+  const hiddenAtRef = useRef<number | null>(null);
   /** Server session id, saved with the call memory for a reload resume. */
   const sessionIdRef = useRef<string | null>(null);
   /**
@@ -836,8 +834,21 @@ export function VoiceCall({
       hiddenRef.current = hidden;
       const session = sessionRef.current;
       if (session instanceof VoiceSession) session.setParkOnDrop(shouldParkOnDrop(true, hidden));
-      if (hidden) saveMemory();
-      else exitHold();
+      if (hidden) {
+        hiddenAtRef.current = Date.now();
+        saveMemory();
+        return;
+      }
+      const awayMs = hiddenAtRef.current === null ? 0 : Date.now() - hiddenAtRef.current;
+      hiddenAtRef.current = null;
+      // A flap (the call stayed live) of 5s+: one line about where the test is.
+      // A hold return says its own (welcomeBackOnce).
+      const st = stateRef.current;
+      const flap = !holdRef.current?.holding && (st === "listening" || st === "speaking");
+      if (flap && awayMs >= FLAP_WELCOME_MS && !closingRef.current) {
+        replyQueueRef.current?.enqueue(welcomeBackInstructions(emailTestRef.current, false));
+      }
+      exitHold();
     };
     const onFreeze = () => enterHold(Date.now());
     document.addEventListener("visibilitychange", onVisibility);
@@ -1343,6 +1354,8 @@ export function VoiceCall({
           putTestUp((instructions) => session.replaceNextReply(instructions));
         } else if (name === CHECK_EMAIL_TOOL) {
           setEmailTest(emailTestAfterCheck(emailTestRef.current, checkResultFromData(result.data)));
+        } else if (name === SEND_CODE_REPLY_TOOL) {
+          if (result.data.sent) setEmailTest({ ...emailTestRef.current, replied: true });
         } else if (name === CHECK_CODE_TOOL) {
           // The code read back right: the verified extension (the reveal rides the result).
           setEmailTest(emailTestAfterCode(emailTestRef.current, result.data.status as CodeStatus));
@@ -1796,9 +1809,12 @@ export function VoiceCall({
         ) : null}
       </div>
     );
+    // Phones: the open transcript takes the height left under the orb and
+    // carries the live caption, so the one-line caption hides meanwhile.
+    const transcriptShown = captionsOpen && !errorAlert && (turns.length > 0 || connected);
     const captionsToggle =
       turns.length > 0 || connected ? (
-        <div className="flex w-full flex-col items-center">
+        <div className={cn("flex w-full flex-col items-center", captionsOpen && "min-h-0 flex-1")}>
           <Button
             type="button"
             variant="ghost"
@@ -1815,12 +1831,12 @@ export function VoiceCall({
           {captionsOpen ? (
             <div
               data-testid="landing-demo-mobile-transcript"
-              className="max-h-[36dvh] w-full overflow-y-auto overscroll-contain px-1 pt-1"
+              className="flex min-h-0 w-full flex-1 flex-col px-1 pt-1"
             >
               <DemoTranscript
                 turns={turns}
                 agentName={displayName}
-                liveCaption={null}
+                liveCaption={liveCaption}
                 footer={countdown}
               />
             </div>
@@ -1952,10 +1968,10 @@ export function VoiceCall({
               </BaseDialog.Description>
               {/* WhatsApp call screen: slim name + state header, orb hero,
                   one-line subtitle caption, Captions toggle, bottom dock.
-                  The transcript never takes the screen — history lives
-                  behind the toggle, bounded to 36dvh. */}
+                  Open captions take the height left under a smaller orb
+                  (tests/e2e/demo-layout.spec.ts pins that nothing overlaps). */}
               <div className="flex min-h-0 flex-1 flex-col">
-                <header className="flex shrink-0 flex-col items-center gap-1 px-6 pt-6 text-center">
+                <header className="flex shrink-0 flex-col items-center gap-1 px-4 pt-6 text-center">
                   <p className="text-lg leading-tight font-semibold">{displayName}</p>
                   <p className="text-foreground/70 text-ui leading-tight">{voiceLine}</p>
                   <p
@@ -1964,33 +1980,30 @@ export function VoiceCall({
                   >
                     {statusLine}
                   </p>
-                  {addressChip ? <div className="pt-2">{addressChip}</div> : null}
+                  {addressChip ? <div className="w-full pt-2">{addressChip}</div> : null}
                 </header>
                 <div
                   data-testid="landing-demo-mobile-hero"
-                  className="flex min-h-0 flex-1 flex-col items-center justify-center gap-4 px-6"
+                  className={cn(
+                    "flex flex-col items-center justify-center gap-4 px-6",
+                    transcriptShown ? "shrink-0 pt-4 pb-2" : "min-h-0 flex-1",
+                  )}
                 >
-                  {/* The transcript caps at 36dvh; when captions open the
-                      orb shrinks instead of being squeezed out, staying
-                      visible at every height. */}
-                  <div
-                    className={cn(
-                      "relative transition-transform duration-[var(--motion-standard)]",
-                      captionsOpen && "scale-75",
-                    )}
-                  >
+                  {/* With the chip or the transcript up, the orb takes less
+                      room for real (a scale would keep its full height). */}
+                  <div data-testid="landing-demo-mobile-orb" className="relative">
                     {active ? (
                       <span
                         aria-hidden
                         className="voice-call-live-ring absolute -inset-2 rounded-full border-2"
                       />
                     ) : null}
-                    <LandingOrb state={orbState} />
+                    <LandingOrb size={transcriptShown || addressChip ? "sm" : "lg"} state={orbState} />
                   </div>
                   <div
                     data-testid="landing-demo-mobile-caption"
                     aria-live="polite"
-                    className="flex h-10 w-full max-w-75 items-center justify-center"
+                    className={cn("flex h-10 w-full max-w-75 items-center justify-center", transcriptShown && "hidden")}
                   >
                     {liveCaption ? (
                       // Partial: an early guess, dimmed until the final lands.
@@ -2019,7 +2032,9 @@ export function VoiceCall({
                     ) : null}
                   </div>
                 </div>
-                <div className="flex shrink-0 flex-col items-center gap-2 px-6">
+                <div
+                  className={cn("flex flex-col items-center gap-2 px-6", transcriptShown ? "min-h-0 flex-1" : "shrink-0")}
+                >
                   {errorAlert ?? captionsToggle}
                 </div>
                 <div className="shrink-0 px-6 pt-3 pb-[max(1.5rem,env(safe-area-inset-bottom))]">

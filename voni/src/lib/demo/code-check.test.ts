@@ -139,3 +139,33 @@ test("the invite never repeats the lead-in Voni already said", async () => {
   const { inviteNowInstructions } = await import("./voni-agent");
   assert.match(inviteNowInstructions("Lotus 82"), /already said your lead-in; don't repeat it/);
 });
+
+test("the call opens with the hook, and a yes goes straight to the test", async () => {
+  const { VONI_GREETINGS, voniConfig } = await import("./voni-agent");
+  assert.match(VONI_GREETINGS.en, /Let's try something cool/);
+  assert.doesNotMatch(VONI_GREETINGS.en, /business/, "the business comes later");
+  const rules = voniConfig("any").knowledge;
+  assert.match(rules, /As soon as they say yes[\s\S]*set up the live test right away/);
+  assert.doesNotMatch(rules, /Once they've told you a little about their business/);
+});
+
+test("a personal address: acknowledged, asked again, never a hang-up", async () => {
+  const { checkEmailInstructions, beatGoal, EMAIL_BEAT_GOAL, OPEN_BEAT_GOAL } = await import("./voni-agent");
+  const line = checkEmailInstructions({ status: "free", address: "nedal@gmail.com" });
+  assert.match(line, /Got it, Nedal! But that's a personal address, and I need your work one/);
+  assert.match(line, /Never hang up over it/);
+  assert.doesNotMatch(line, /Then hang up/);
+  const invited = { invited: true, found: false };
+  assert.equal(beatGoal(invited), EMAIL_BEAT_GOAL);
+  assert.equal(beatGoal({ ...invited, gated: true }), OPEN_BEAT_GOAL, "no strikes for not having a work email");
+});
+
+test("welcome back asks about wherever the test is", async () => {
+  const { welcomeBackInstructions, HOLD_RETURN_INSTRUCTIONS } = await import("./voni-agent");
+  assert.match(welcomeBackInstructions({ invited: true, found: false }, false), /"Welcome back! Is the email sent\?"/);
+  const replied = { invited: true, found: true, replied: true };
+  assert.match(welcomeBackInstructions(replied, false), /"Welcome back! Did you find the code\?"/);
+  assert.match(welcomeBackInstructions({ ...replied, verified: true }, false), /one short "Welcome back!"/);
+  assert.match(welcomeBackInstructions({ invited: true, found: false, gated: true }, false), /one short "Welcome back!"/);
+  assert.equal(welcomeBackInstructions({ invited: false, found: false }, true), HOLD_RETURN_INSTRUCTIONS);
+});

@@ -57,10 +57,10 @@ test("the below-lg demo call is a controlled full-viewport modal", () => {
   assert.match(call, /size-16 rounded-full/, "hang-up is the prominent dock control");
   assert.match(call, /aria-label=\{muted \? "Unmute" : "Mute"\}/, "mute stays icon-only with accessible names");
   assert.match(call, /Captions/, "history hides behind a Captions toggle");
-  assert.match(call, /max-h-\[36dvh\]/, "open history stays bounded");
+  assert.match(call, /flex min-h-0 w-full flex-1 flex-col px-1 pt-1/, "open history takes the height left, scrolling inside");
   assert.match(call, /data-testid="landing-demo-mobile-transcript"/);
   assert.match(call, /setCaptionsOpen\(true\)/, "a new call opens captions (phones default open)");
-  assert.match(call, /captionsOpen && "scale-75"/, "the hero orb shrinks instead of being squeezed out");
+  assert.match(call, /size=\{transcriptShown \|\| addressChip \? "sm" : "lg"\}/, "the hero orb takes less room for real, never squeezed out");
   assert.match(call, /function StreamingText/, "streaming captions reveal word by word");
   assert.match(call, /stream-delay-\$\{Math\.min/, "word delays are classes, never inline styles");
   assert.match(call, /overheard/, "overlap renders marked while the agent holds the floor");

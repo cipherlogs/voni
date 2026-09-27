@@ -250,6 +250,8 @@ export type EmailTestState = {
   found: boolean;
   /** Their email landed from a personal address: the work-email gate was given. */
   gated?: boolean;
+  /** Voni's reply with the code went out (04). */
+  replied?: boolean;
   /** They read back the code from Voni's reply (04): the verified extension. */
   verified?: boolean;
 };

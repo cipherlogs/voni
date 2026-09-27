@@ -19,15 +19,22 @@
  * Messages in:  {type:"play", seq, rate, samples: Float32Array}
  *               {type:"flush", fadeS}
  *               {type:"probe", on}  dev pop recorder (see POP_*), off by default
- * Messages out: {type:"level", seq, queuedMs, idle}, posted every few quanta
+ * Messages out: {type:"level", seq, queuedMs, idle, consumed}, posted every few quanta
  *               while sounding and once on going idle. `seq` is the last play
  *               message seen, so the main thread knows the idle report is current.
+ *               `consumed` counts source samples played or flushed since load:
+ *               the main thread paces captions against it.
  *               {type:"pop", kind, size, at}  only while the probe is on:
  *               "jump" = adjacent output samples differ by more than POP_JUMP
  *               (a click the ear hears), "overload" = output beyond ±1 (the
  *               device clips it). Throttled per kind to one per POP_EVERY_S.
  */
-const PREROLL_S = 0.08;
+/**
+ * Audio arrives in real time (measured: 10ms chunks every 10ms), so this
+ * pre-roll is the only cushion against a network hiccup: 80ms broke up on
+ * phones. Owner call: a fixed 500ms.
+ */
+const PREROLL_S = 0.5;
 const EDGE_S = 0.005;
 const LEVEL_EVERY_QUANTA = 8;
 /** Speech at 48 kHz moves well under this between samples; a click does not. */
@@ -57,6 +64,7 @@ class PlayoutProcessor extends AudioWorkletProcessor {
     this.popProbe = false;
     this.lastOut = 0;
     this.popAt = {};
+    this.consumed = 0;
     this.port.onmessage = (e) => this.receive(e.data);
   }
 
@@ -87,6 +95,7 @@ class PlayoutProcessor extends AudioWorkletProcessor {
     }
     if (!this.chunks.length) return null;
     this.queued -= 1;
+    this.consumed += 1;
     return this.chunks[0][this.head++];
   }
 
@@ -137,6 +146,7 @@ class PlayoutProcessor extends AudioWorkletProcessor {
     }
     this.tail = tail;
     this.tailAt = 0;
+    this.consumed += this.queued;
     this.chunks = [];
     this.head = 0;
     this.queued = 0;
@@ -187,6 +197,7 @@ class PlayoutProcessor extends AudioWorkletProcessor {
         seq: this.seq,
         queuedMs: (this.queued / this.rate) * 1000,
         idle: nowIdle,
+        consumed: this.consumed,
       });
     }
     this.idle = nowIdle;

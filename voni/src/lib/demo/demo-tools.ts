@@ -69,7 +69,7 @@ export const SEND_CODE_REPLY_VOICE_TOOL: VoiceTool = {
         type: "string",
         maxLength: 300,
         description:
-          "One short, warm sentence of your own for the email, about their business, in the caller's language. No codes, links, or security words.",
+          "One short, warm sentence of your own for the email, in the caller's language. No codes, links, or security words.",
       },
       name: {
         type: "string",

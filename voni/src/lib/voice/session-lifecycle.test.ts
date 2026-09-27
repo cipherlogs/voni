@@ -10,6 +10,8 @@ import {
   stripSpokenToolCall,
   VOICE_MIC_CONSTRAINTS,
   VoiceSession,
+  CAPTION_MS_PER_CHAR,
+  heardWords,
   type TranscriptPartial,
 } from "./session";
 import {
@@ -230,19 +232,94 @@ test("a resume is sent even if the server never answers the filler", async () =>
   assert.match(replyCreates()[0].instructions, /Pick up where you left off/);
 });
 
-test("a cut with no words after it (noise) resumes after ~1.5s", async () => {
+test("a cut with no words after it (noise) resumes after ~0.8s, without \"as I was saying\"", async () => {
   // A wheel click or a cough reaches the mic, the server cuts the reply, and
   // no transcript ever follows: Voni used to wait forever in silence.
   const { handle, replyCreates } = midReply();
   handle({ type: "input.speech.started" });
   handle({ type: "reply.done", reply_id: "r1", status: "interrupted" });
-  await new Promise((resolve) => setTimeout(resolve, 1000));
+  await new Promise((resolve) => setTimeout(resolve, 500));
   assert.deepEqual(replyCreates(), [], "gives real words time to land");
-  await new Promise((resolve) => setTimeout(resolve, 900));
+  await new Promise((resolve) => setTimeout(resolve, 500));
   const [create] = replyCreates();
   assert.match(create?.instructions ?? "", /Pick up where you left off/);
   assert.match(create.instructions, /booking and reminders/);
+  assert.match(create.instructions, /without repeating those words or saying "as I was saying"/);
   assert.doesNotMatch(create.instructions, /only said ""/);
+});
+
+/** A session whose playout reports played audio, like the real worklet. */
+function pacedReply(handlers: ConstructorParameters<typeof VoiceSession>[0] = {}) {
+  const made = makeSession(handlers);
+  let sent = 0;
+  let consumed = 0;
+  const flushes: number[] = [];
+  made.internals["playout"] = {
+    play: () => {
+      sent += 24_000; // one second per chunk
+    },
+    flush: (fadeS?: number) => flushes.push(fadeS ?? -1),
+    settled: () => false,
+    queuedMs: () => 0,
+    sentSamples: () => sent,
+    consumedSamples: () => consumed,
+  };
+  made.handle({ type: "session.ready", session_id: "s1" });
+  const playMs = (ms: number) => {
+    consumed += (ms / 1000) * 24_000;
+  };
+  return { ...made, flushes, playMs };
+}
+
+test("heardWords: a word shows once its start has played", () => {
+  assert.equal(heardWords("Hi there friend", 0), "Hi");
+  assert.equal(heardWords("Hi there friend", 3 * CAPTION_MS_PER_CHAR), "Hi there");
+  assert.equal(heardWords("Hi there friend", 60_000), "Hi there friend");
+  assert.equal(heardWords("", 1000), "");
+});
+
+test("agent captions follow the played audio, not the words' early arrival", async () => {
+  const partials: TranscriptPartial[] = [];
+  const { handle, playMs, session } = pacedReply({ onAgentPartial: (p) => partials.push(p) });
+  const lastText = () => partials[partials.length - 1]?.text;
+  handle({ type: "reply.started", reply_id: "r1" });
+  // The platform sends the whole line up front…
+  for (const word of "I can take your bookings every single day".split(" ")) {
+    handle({ type: "transcript.agent.delta", reply_id: "r1", delta: word });
+  }
+  assert.deepEqual(partials, [], "nothing before its audio");
+  handle({ type: "reply.audio", reply_id: "r1", data: "" });
+  handle({ type: "reply.audio", reply_id: "r1", data: "" });
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  assert.equal(lastText(), "I", "only the first word at the start of playback");
+  playMs(8 * CAPTION_MS_PER_CHAR);
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  assert.equal(lastText(), "I can take");
+  playMs(60_000);
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  assert.equal(lastText(), "I can take your bookings every single day");
+  const count = partials.length;
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  assert.equal(partials.length, count, "the ticker stops once the line has played");
+  await session.stop();
+});
+
+test("a cut line keeps only the heard words, for the resume and the caption", async () => {
+  const partials: TranscriptPartial[] = [];
+  const { handle, playMs, sent, flushes } = pacedReply({ onAgentPartial: (p) => partials.push(p) });
+  handle({ type: "reply.started", reply_id: "r1" });
+  handle({ type: "transcript.agent.delta", reply_id: "r1", text: "I'd handle booking and reminders for you" });
+  handle({ type: "reply.audio", reply_id: "r1", data: "" });
+  playMs(14 * CAPTION_MS_PER_CHAR);
+  handle({ type: "input.speech.started" });
+  handle({ type: "reply.done", reply_id: "r1", status: "interrupted" });
+  assert.equal(flushes.length, 1);
+  playMs(60_000); // the flush drops the rest; the worklet counts it as consumed
+  await new Promise((resolve) => setTimeout(resolve, 1000)); // no words: the noise resume
+  const create = sent.map((raw) => JSON.parse(raw)).find((m) => m.type === "reply.create");
+  assert.match(create?.instructions ?? "", /heard you up to: "I'd handle booking"/);
+  assert.doesNotMatch(create.instructions, /reminders/);
+  assert.ok(partials.every((p) => !p.text.includes("reminders")), "the caption never showed unheard words");
 });
 
 test("words after a cut are speech: no resume even when the final transcript lands late", async () => {
@@ -344,6 +421,16 @@ test("replaceNextReply sends ours anyway when the platform starts no reply", asy
   const { session, handle, replyCreates } = midReply();
   handle({ type: "reply.done", reply_id: "r1", status: "completed" });
   session.replaceNextReply("Invite them now.", 300);
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  assert.deepEqual(replyCreates().map((c) => c.instructions), ["Invite them now."]);
+});
+
+test("replaceNextReply's fallback never cuts the line still playing: it waits for reply.done", async () => {
+  const { session, handle, replyCreates } = midReply();
+  session.replaceNextReply("Invite them now.", 300);
+  await new Promise((resolve) => setTimeout(resolve, 700));
+  assert.deepEqual(replyCreates(), [], "the lead-in is still going");
+  handle({ type: "reply.done", reply_id: "r1", status: "completed" });
   await new Promise((resolve) => setTimeout(resolve, 400));
   assert.deepEqual(replyCreates().map((c) => c.instructions), ["Invite them now."]);
 });

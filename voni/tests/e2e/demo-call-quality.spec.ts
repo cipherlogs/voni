@@ -100,8 +100,9 @@ test("a noise that cuts Voni off with no words after it: she picks up where she 
   const { server } = await startCall(page);
   server.say({ type: "reply.started", reply_id: "r1" });
   server.say({ type: "transcript.agent.delta", reply_id: "r1", delta: "I could handle flight bookings and itinerary changes" });
-  server.say({ type: "reply.audio", reply_id: "r1", data: HALF_SECOND });
-  await wait(300);
+  for (let i = 0; i < 6; i++) server.say({ type: "reply.audio", reply_id: "r1", data: HALF_SECOND });
+  // The 500ms pre-roll, then about a second of the line plays.
+  await wait(1500);
   // A wheel click reaches the mic: the server cuts the reply, no transcript follows.
   server.say({ type: "input.speech.started" });
   server.say({ type: "reply.done", reply_id: "r1", status: "interrupted" });
@@ -110,7 +111,9 @@ test("a noise that cuts Voni off with no words after it: she picks up where she 
   const resume = server.replyCreates()[0];
   expect(resume.at - cutAt).toBeLessThan(2500);
   expect(String(resume.instructions)).toMatch(/noise[\s\S]*Pick up where you left off/);
-  expect(String(resume.instructions)).toMatch(/itinerary changes/);
+  // She resumes from what was heard, never from words that never played.
+  expect(String(resume.instructions)).toMatch(/heard you up to: "I could handle/);
+  expect(String(resume.instructions)).not.toMatch(/itinerary changes/);
 });
 
 test("real words after a cut are answered, never resumed over", async ({ page }) => {

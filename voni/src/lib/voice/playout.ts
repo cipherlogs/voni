@@ -18,6 +18,10 @@ export type WorkletPlayout = Playout & {
   settled: () => boolean;
   /** Buffered audio at the worklet's last report (instrumentation). */
   queuedMs: () => number;
+  /** Source samples queued so far, all replies. */
+  sentSamples?: () => number;
+  /** Source samples played (or flushed) at the worklet's last report. */
+  consumedSamples?: () => number;
   /** Fires when playback runs dry. The caller decides if that was an underrun. */
   onDrained?: () => void;
   /** Dev pop recorder on/off (worklet flags jumps and overloads). */
@@ -28,7 +32,7 @@ export type WorkletPlayout = Playout & {
 
 export const PLAYOUT_MODULE = "/playout-processor.js";
 
-type Level = { type: "level"; seq: number; queuedMs: number; idle: boolean };
+type Level = { type: "level"; seq: number; queuedMs: number; idle: boolean; consumed: number };
 type Pop = { type: "pop"; kind: "jump" | "overload"; size: number; at: number };
 
 /** Little-endian PCM16 bytes -> float samples in [-1, 1). */
@@ -45,11 +49,14 @@ export function createWorkletPlayout(node: AudioWorkletNode): WorkletPlayout {
   let sent = 0;
   let busy = false;
   let queuedMs = 0;
+  let sentSamples = 0;
+  let consumed = 0;
   const playout: WorkletPlayout = {
     play(pcm, sampleRate) {
       const samples = pcm16ToFloat(pcm);
       if (samples.length === 0) return;
       sent += 1;
+      sentSamples += samples.length;
       busy = true;
       node.port.postMessage({ type: "play", seq: sent, rate: sampleRate, samples }, [
         samples.buffer,
@@ -62,6 +69,8 @@ export function createWorkletPlayout(node: AudioWorkletNode): WorkletPlayout {
     },
     settled: () => !busy,
     queuedMs: () => queuedMs,
+    sentSamples: () => sentSamples,
+    consumedSamples: () => consumed,
     probe(on) {
       node.port.postMessage({ type: "probe", on });
     },
@@ -73,6 +82,7 @@ export function createWorkletPlayout(node: AudioWorkletNode): WorkletPlayout {
     }
     if (e.data?.type !== "level") return;
     queuedMs = e.data.queuedMs;
+    consumed = e.data.consumed;
     // Ignore an idle report that predates the latest chunk still in flight.
     if (e.data.idle && e.data.seq === sent && busy) {
       busy = false;

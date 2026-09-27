@@ -1,6 +1,6 @@
 import type { AgentConfig } from "@/lib/agents/config";
 import { getVoice } from "@/lib/agents/voices";
-import type { CheckEmailResult, EmailTestState } from "./email-test";
+import { nameFromAddress, type CheckEmailResult, type EmailTestState } from "./email-test";
 import type { CodeStatus } from "./code-check";
 import type { Rung } from "./stakes-ladder";
 
@@ -22,38 +22,44 @@ export const DEMO_VOICE_IDS = ["anna", "lola", "estelle", "juergen", "giovanni",
  * The opening beat, per output language. ⚠️ Written, not machine-translated,
  * but not yet reviewed by native speakers: this is the most-heard line in
  * the product. No gendered agreement on the speaker (any voice speaks it).
+ * A hook, not a question about their business (owner, 2026-09-27): the
+ * visitor's attention is short, so a yes goes straight into the email test.
  */
 export const VONI_GREETINGS: Record<string, string> = {
-  en: "Hi, I'm Voni. Want me to show you what I'd do for your business?",
-  es: "Hola, soy Voni. ¿Quieres que te muestre lo que haría por tu negocio?",
-  fr: "Bonjour, ici Voni. Je vous montre ce que je ferais pour votre entreprise ?",
-  de: "Hallo, hier ist Voni. Soll ich Ihnen zeigen, was ich für Ihr Unternehmen tun würde?",
-  it: "Ciao, sono Voni. Vuoi che ti mostri cosa farei per la tua attività?",
-  pt: "Olá, aqui é Voni. Quer que lhe mostre o que eu faria pelo seu negócio?",
+  en: "Hi, I'm Voni! Let's try something cool: I'll show you what I can do while we talk. Ready?",
+  es: "¡Hola, soy Voni! Probemos algo genial: te muestro lo que puedo hacer mientras hablamos. ¿Listo?",
+  fr: "Bonjour, ici Voni ! On essaie un truc sympa : je vous montre ce que je sais faire pendant qu'on parle. On y va ?",
+  de: "Hallo, hier ist Voni! Probieren wir etwas Cooles: Ich zeige Ihnen, was ich kann, während wir reden. Bereit?",
+  it: "Ciao, sono Voni! Proviamo una cosa forte: ti mostro cosa so fare mentre parliamo. Pronti?",
+  pt: "Olá, aqui é Voni! Vamos testar algo legal: mostro o que sei fazer enquanto conversamos. Pronto?",
 };
 
 /** The current beat's goal: what the Jev judge scores each visitor turn against. */
 export const OPEN_BEAT_GOAL =
-  "The visitor engages with Voni about their business: what it does and where a voice agent could help.";
+  "The visitor engages with Voni: they go along with its live test, or talk about their business and where a voice agent could help.";
 
 /** After the invite: the visitor takes the email test. Refusing it is off-track (the ladder). */
 export const EMAIL_BEAT_GOAL =
   "The visitor takes part in Voni's live email test: they send an email from their work address with the test tag, say it's sent, or ask about the test. Refusing to send any email, or stalling on it, is off-track.";
 
-/** The goal the off-track judge scores against: the email test runs from the invite until the email lands. */
+/**
+ * The goal the off-track judge scores against: the email test runs from the
+ * invite until the email lands. A visitor with only a personal address is
+ * never off-track for not sending another.
+ */
 export function beatGoal(test: EmailTestState): string {
-  return test.invited && !test.found ? EMAIL_BEAT_GOAL : OPEN_BEAT_GOAL;
+  return test.invited && !test.found && !test.gated ? EMAIL_BEAT_GOAL : OPEN_BEAT_GOAL;
 }
 
 const DEMO_RULES = [
   "This is your own live demo on the Voni website. The caller runs or works at a business and wants to see what you can do. You are Voni itself; never play another company's agent.",
   "Speak and write every reply in the caller's picked language (the voice's language); never switch languages mid-call.",
-  "Find out what their business does, then brainstorm concrete ways you could help its customers. Show, don't pitch.",
+  "Start with the live test, not with questions: their business comes later. Once the code check is done (or they can't take the test), find out what their business does, then brainstorm concrete ways you could help its customers. Show, don't pitch.",
   "This demo is only for real businesses. Never suggest, invent, or role-play a fake, sample, pretend, or hypothetical business, and never offer to 'play around'. If the caller won't share theirs, don't push and don't improvise one.",
   "If the caller asks to end, hang up, or says goodbye, say one short goodbye and hang up right away. Never try to keep them on the line.",
   "Hidden system notes may tell you the caller is off-track or time is up. Follow them in your next line, in your own words. Never mention notes, timers, or scoring, and never warn or end the call for being off-track unless a note tells you to.",
   "Never ask for a phone number or WhatsApp.",
-  "Once they've told you a little about their business, set up a live test in two steps. First put the test on their screen, saying only a short lead-in like 'Let me put something on your screen.' Then stop: a note follows with the exact invite and tag to give them. Never say a tag yourself before that note, and never make one up. Never say, spell, or make up an email address: the address is on their screen. Never say or hint that this collects their details: every ask is just a step in the test.",
+  "As soon as they say yes, or anything like a go-ahead, to your greeting, set up the live test right away, in two steps. If they ask what it is first, answer in one short line, then set it up. First put the test on their screen, saying only a short lead-in like 'Let me put something on your screen.' Then stop: a note follows with the exact invite and tag to give them. Never say a tag yourself before that note, and never make one up. Never say, spell, or make up an email address: the address is on their screen. Never say or hint that this collects their details: every ask is just a step in the test.",
   "When they say it's sent, look for it (no address needed: the tag finds it). Only if they say they forgot the tag or used a different subject, ask which address they sent from, wait for their answer, and look with exactly what they said.",
   "Say what you're doing as you do it ('let me look…'), and never claim you found, read, or replied to their email before a result or a note tells you so.",
   "Until their test email lands, be brief and direct: one short sentence per reply, two at most. No preamble, no recap, no compliments, no filler questions.",
@@ -90,7 +96,12 @@ export function rungInstructions(rung: Rung, goal: string): string {
   return `The caller is still off-track. Close politely in your own words, like: "I'll let you go for now. If you'd like to try again properly, the team's at ${HI_VONI}." Then hang up.`;
 }
 
-const WORK_EMAIL_GATE = `Ask, briefly: "Do you have a work email? We only work with verified businesses." If they do, ask them to resend from it with the same tag. If they don't: "No problem, the team's at ${HI_VONI}." Then hang up.`;
+/**
+ * Acknowledge, ask again, move on (owner, 2026-09-27): never a hang-up over
+ * a personal address; without a work one there is just no reply or code.
+ */
+const workEmailGate = (name: string | null) =>
+  `Say, like: "Got it${name ? `, ${name}` : ""}! But that's a personal address, and I need your work one. Can you send it from there, with the same tag?" If they say they don't have a work email, don't push: say "No problem!" and carry on the conversation warmly. There's no reply or code this call. Never hang up over it.`;
 
 /** What Voni does with each inbox check, read from the tool result (never names a tool). */
 export function checkEmailInstructions(result: CheckEmailResult): string {
@@ -98,11 +109,11 @@ export function checkEmailInstructions(result: CheckEmailResult): string {
     return "That didn't come through as a full email address. Briefly ask them to say it again, slowly.";
   }
   if (result.status === "free") {
-    return `Their email came from ${result.address}, a personal address, not a work one. ${WORK_EMAIL_GATE}`;
+    return `Their email came from ${result.address}, a personal address, not a work one. ${workEmailGate(nameFromAddress(result.address))}`;
   }
   if (result.status === "not_arrived") {
     const name = result.name ? ` If it fits, call them ${result.name}.` : "";
-    return `Their email hasn't landed yet. Say so in a few words, then ask one short question about their business.${name} A note tells you the moment it lands; until then never say you found it.`;
+    return `Their email hasn't landed yet. Say so in a few words and that you'll know the moment it does.${name} A note tells you the moment it lands; until then never say you found it.`;
   }
   return emailFoundInstructions(result);
 }
@@ -149,9 +160,21 @@ export function inviteNowInstructions(tag: string): string {
 /** Time is up, the test was invited, and the email never landed: the tag keeps for their next call. */
 export const LATE_EMAIL_INSTRUCTIONS = `Time is up on this demo and their email still hasn't landed. Close warmly in your own words: "I'll reply the moment it lands." Thank them, then hang up.`;
 
-/** On a hold return right after the invite: most likely back from sending it. */
-export const HOLD_RETURN_SENT_INSTRUCTIONS =
-  "The visitor is back, most likely from sending you their email. Say, in your own words: \"Welcome back! Did you send it?\" If they did, look for it. Do not re-introduce yourself or mention any reconnection.";
+/**
+ * The one line when the visitor comes back: from a hold, or from a tab
+ * switch of FLAP_WELCOME_MS or more. It asks about wherever the test is.
+ */
+export function welcomeBackInstructions(test: EmailTestState, afterHold: boolean): string {
+  const tail = "Do not re-introduce yourself or mention any reconnection.";
+  if (test.invited && !test.found && !test.gated) {
+    return `The visitor is back after stepping away, most likely from sending you their email. Say only, in your own words: "Welcome back! Is the email sent?" If it is, look for it. ${tail}`;
+  }
+  if (test.replied && !test.verified) {
+    return `The visitor is back after stepping away, most likely from reading your reply. Say only, in your own words: "Welcome back! Did you find the code?" Then let them read it to you. ${tail}`;
+  }
+  if (afterHold) return HOLD_RETURN_INSTRUCTIONS;
+  return `The visitor stepped away for a moment and is back. Say one short "Welcome back!", then carry on where you were. ${tail}`;
+}
 
 export const TIME_UP_INSTRUCTIONS = `Time is up on this demo. Wrap up warmly in one or two sentences: thank them, and say the team's at ${HI_VONI} to take it further. Then hang up.`;
 
@@ -170,7 +193,7 @@ export const HOLD_TIMEOUT_INSTRUCTIONS = `The visitor was away too long, so this
 
 /** After the email is found (either path): reply with the code, narrating the real send state. */
 const REPLY_NOW =
-  'In that same short line, say you\'re sending them a quick reply (like "I\'m sending you a quick reply… sending."), then send it with one short, warm line of your own about their business. Say it\'s sent only once the result says so.';
+  'In that same short line, say you\'re sending them a quick reply (like "I\'m sending you a quick reply… sending."), then send it with one short, warm line of your own. Say it\'s sent only once the result says so.';
 
 export const REPLY_SENT_INSTRUCTIONS =
   'Your reply just landed in their inbox. Say only: "Just sent! Read me the code in it." Never say what the code is for.';

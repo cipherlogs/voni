@@ -1,4 +1,5 @@
-import { expect, test, type Page, type Route, type WebSocketRoute } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
+import { DEMO_TEST_USE, TAG, fakeServer, found, free, mockApis, notArrived, startCall } from "./demo-fakes";
 
 /**
  * Demo email test with the Test tag (ticket 03 + follow-up, ADR 0004), end
@@ -11,100 +12,7 @@ import { expect, test, type Page, type Route, type WebSocketRoute } from "@playw
  *   PLAYWRIGHT_BASE_URL=https://localhost:3000 npx playwright test tests/e2e/demo-email-test.spec.ts
  */
 
-test.use({
-  permissions: ["microphone", "clipboard-read", "clipboard-write"],
-  ignoreHTTPSErrors: true,
-  launchOptions: {
-    args: ["--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream", "--autoplay-policy=no-user-gesture-required"],
-  },
-});
-
-type Frame = Record<string, unknown> & { type: string };
-const TAG = "Lime 42";
-
-async function fakeServer(page: Page) {
-  const frames: Frame[] = [];
-  let ws: WebSocketRoute | null = null;
-  await page.routeWebSocket(/agents\.assemblyai\.com/, (socket) => {
-    ws = socket;
-    socket.onMessage((raw) => {
-      const msg = JSON.parse(String(raw)) as Frame;
-      if (msg.type === "input.audio") return;
-      frames.push(msg);
-      if (msg.type === "session.update") {
-        const session = msg.session as Record<string, unknown>;
-        socket.send(JSON.stringify(session.agent_id ? { type: "session.ready", session_id: "sess_1" } : { type: "session.updated" }));
-      }
-    });
-  });
-  let reply = 0;
-  const say = (msg: Record<string, unknown>) => ws?.send(JSON.stringify(msg));
-  return {
-    frames,
-    say,
-    ready: () => ws !== null && frames.some((f) => f.type === "session.update"),
-    replyCreates: () => frames.filter((f) => f.type === "reply.create").map((f) => String(f.instructions)),
-    toolResults: () =>
-      frames.filter((f) => f.type === "tool.result").map((f) => ({ callId: String(f.call_id), result: JSON.parse(String(f.result)) })),
-    /** One agent reply that calls a tool and speaks for `speakMs` (results go back at once, ADR 0005). */
-    toolCall: async (name: string, args: Record<string, unknown> = {}, speakMs = 0) => {
-      const id = `r${(reply += 1)}`;
-      say({ type: "reply.started", reply_id: id });
-      say({ type: "tool.call", call_id: `call_${id}`, name, arguments: args });
-      say({ type: "transcript.agent", reply_id: id, text: "Let's try something real." });
-      if (speakMs) await new Promise((resolve) => setTimeout(resolve, speakMs));
-      say({ type: "reply.done", reply_id: id, status: "completed" });
-      return `call_${id}`;
-    },
-  };
-}
-
-type Mocks = {
-  /** Answer for a check_email request (the poll or the model's own call). */
-  check: (args: Record<string, unknown>) => Record<string, unknown>;
-  carried?: boolean;
-};
-
-async function mockApis(page: Page, mocks: Mocks) {
-  const toolCalls: { name: string; args: Record<string, unknown>; toolCallId: string }[] = [];
-  const tokenBodies: Record<string, unknown>[] = [];
-  await page.route("**/api/**", (route) => route.fulfill({ status: 503, json: { error: "offline in e2e" } }));
-  await page.route("**/api/demo/token", (route) => {
-    tokenBodies.push(route.request().postDataJSON() as Record<string, unknown>);
-    return route.fulfill({
-      json: { token: "tok", agentId: "agent_demo", callToken: "call-tok", testTag: TAG, tagToken: "tag-tok", tagCarried: mocks.carried === true },
-    });
-  });
-  await page.route("**/api/demo/tools/*", (route: Route) => {
-    const name = decodeURIComponent(new URL(route.request().url()).pathname.split("/").pop() ?? "");
-    const body = route.request().postDataJSON() as { toolCallId: string; arguments: Record<string, unknown> };
-    toolCalls.push({ name, args: body.arguments, toolCallId: body.toolCallId });
-    if (name === "show_test_address") {
-      return route.fulfill({
-        json: { ok: true, data: { shown: true, address: "hi@pilotxstudio.com", testTag: TAG, instructions: `Say "${TAG}".` } },
-      });
-    }
-    return route.fulfill({ json: mocks.check(body.arguments) });
-  });
-  return { toolCalls, tokenBodies, polls: () => toolCalls.filter((c) => c.toolCallId === "inbox-poll") };
-}
-
-const notArrived = { ok: true, data: { status: "not_arrived", instructions: "Not yet." } };
-const found = (extra: Record<string, unknown> = {}) => ({
-  ok: true,
-  data: { status: "found", address: "andres@casaverde.pt", name: "Andres", exact: true, instructions: "Found it.", ...extra },
-});
-const free = { ok: true, data: { status: "free", address: "nidal@gmail.com", instructions: "Gate." } };
-
-async function startCall(page: Page, server: Awaited<ReturnType<typeof fakeServer>>) {
-  await page.goto("/");
-  // A click that lands before hydration does nothing: click again, as a person would.
-  const start = page.getByRole("button", { name: /^start call$/i }).filter({ visible: true }).first();
-  await expect(async () => {
-    if (!server.ready()) await start.click({ timeout: 1000 }).catch(() => undefined);
-    await expect.poll(server.ready, { timeout: 3000 }).toBe(true);
-  }).toPass({ timeout: 20_000 });
-}
+test.use(DEMO_TEST_USE);
 
 const chip = (page: Page) => page.getByTestId("demo-address-chip").filter({ visible: true });
 
@@ -174,7 +82,7 @@ test("a tagged email from a personal address gets the gate once and no extension
   const server = await fakeServer(page);
   await startCall(page, server);
   await server.toolCall("show_test_address");
-  const gate = () => server.replyCreates().filter((i) => /nidal@gmail\.com, a personal address[\s\S]*Do you have a work email/.test(i));
+  const gate = () => server.replyCreates().filter((i) => /nidal@gmail\.com, a personal address[\s\S]*I need your work one/.test(i));
   await expect.poll(() => gate().length, { timeout: 12_000 }).toBe(1);
   await page.waitForTimeout(9000);
   expect(gate(), "said once per sender").toHaveLength(1);
@@ -264,10 +172,10 @@ test.describe("the invite comes from the call, with the exact tag", () => {
     server.say({ type: "transcript.agent", reply_id: "lead", text: "I could pick those up for you. Let me put something on your screen." });
     server.say({ type: "reply.done", reply_id: "lead", status: "completed" });
     await expect(chip(page)).toBeVisible();
-    await expect.poll(() => server.replyCreates().filter((i) => /Invite them now/.test(i)).length, { timeout: 4000 }).toBe(1);
-    expect(server.replyCreates().find((i) => /Invite them now/.test(i))).toContain("with Lime 42 in the subject");
+    await expect.poll(() => server.replyCreates().filter((i) => /Say only the invite/.test(i)).length, { timeout: 4000 }).toBe(1);
+    expect(server.replyCreates().find((i) => /Say only the invite/.test(i))).toContain("with Lime 42 in the subject");
     await page.waitForTimeout(2000);
-    expect(server.replyCreates().filter((i) => /Invite them now/.test(i)), "once").toHaveLength(1);
+    expect(server.replyCreates().filter((i) => /Say only the invite/.test(i)), "once").toHaveLength(1);
   });
 
   const AUDIO = Buffer.alloc(4800).toString("base64");
@@ -286,8 +194,8 @@ test.describe("the invite comes from the call, with the exact tag", () => {
     server.say({ type: "reply.done", reply_id: "lead", status: "completed" });
     // The platform's own reply to the result starts: it is replaced at once.
     server.say({ type: "reply.started", reply_id: "auto" });
-    await expect.poll(() => server.replyCreates().filter((i) => /Invite them now/.test(i)).length, { timeout: 2000 }).toBe(1);
-    expect(server.replyCreates().find((i) => /Invite them now/.test(i))).toContain("with Lime 42 in the subject");
+    await expect.poll(() => server.replyCreates().filter((i) => /Say only the invite/.test(i)).length, { timeout: 2000 }).toBe(1);
+    expect(server.replyCreates().find((i) => /Say only the invite/.test(i))).toContain("with Lime 42 in the subject");
     // Its words never reach the transcript.
     server.say({ type: "transcript.agent", reply_id: "auto", text: "Send me an email with demo 102 in the subject." });
     server.say({ type: "reply.done", reply_id: "auto", status: "completed" });
@@ -297,7 +205,7 @@ test.describe("the invite comes from the call, with the exact tag", () => {
     await expect(page.getByText("with Lime 42 in the subject").filter({ visible: true }).first()).toBeVisible();
     await expect(page.getByText("demo 102")).toHaveCount(0);
     await page.waitForTimeout(2000);
-    expect(server.replyCreates().filter((i) => /Invite them now/.test(i)), "once").toHaveLength(1);
+    expect(server.replyCreates().filter((i) => /Say only the invite/.test(i)), "once").toHaveLength(1);
   });
 
   test("if the platform starts no reply after the chip, the invite is sent anyway", async ({ page }) => {
@@ -308,6 +216,6 @@ test.describe("the invite comes from the call, with the exact tag", () => {
     server.say({ type: "tool.call", call_id: "c1", name: "show_test_address", arguments: {} });
     await expect.poll(() => server.toolResults().length).toBe(1);
     server.say({ type: "reply.done", reply_id: "lead", status: "completed" });
-    await expect.poll(() => server.replyCreates().filter((i) => /Invite them now/.test(i)).length, { timeout: 4000 }).toBe(1);
+    await expect.poll(() => server.replyCreates().filter((i) => /Say only the invite/.test(i)).length, { timeout: 4000 }).toBe(1);
   });
 });

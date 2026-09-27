@@ -410,7 +410,28 @@ const RESUME_WAIT_MS = 500;
  * mic heard) never gets a transcript, so the filler resume never runs and the
  * agent sits silent. After this long without caller words, resume anyway.
  */
-const NO_WORDS_RESUME_MS = 1500;
+const NO_WORDS_RESUME_MS = 800;
+/**
+ * Caption pace. The platform sends a reply's words all at once as it starts
+ * (measured: every delta within ~50ms) while its audio streams in real time,
+ * so captions follow the audio actually played at speaking pace instead:
+ * ~58ms per character (measured on the demo voices).
+ */
+export const CAPTION_MS_PER_CHAR = 58;
+const CAPTION_TICK_MS = 100;
+
+/** The words of `line` whose start has played after `playedMs` of its audio. */
+export function heardWords(line: string, playedMs: number, msPerChar = CAPTION_MS_PER_CHAR): string {
+  const words = line.split(/\s+/).filter(Boolean);
+  let chars = 0;
+  let n = 0;
+  for (const word of words) {
+    if (chars * msPerChar > playedMs) break;
+    chars += word.length + 1;
+    n += 1;
+  }
+  return words.slice(0, n).join(" ");
+}
 /** replaceNextReply: after the replaced reply ends, ours should start at once; else resend. */
 const REPLACE_CONFIRM_MS = 1000;
 /**
@@ -528,6 +549,11 @@ export class VoiceSession {
   private currentAgentText = "";
   /** The current reply's words as streamed, before tool-name stripping. */
   private agentLine = "";
+  /** Where this reply's audio starts in the playout's sample count; null before its first chunk. */
+  private replyAudioStart: number | null = null;
+  private captionTimer: ReturnType<typeof setInterval> | null = null;
+  private captionItemId: string | null = null;
+  private lastCaption = "";
   private replyStartedAt = 0;
   /** A reply we superseded: its late audio is dropped. */
   private droppedReplyId: string | null = null;
@@ -987,6 +1013,7 @@ export class VoiceSession {
       case "reply.audio":
         // Late audio of a superseded reply, or of any reply after the goodbye: never play it.
         if (this.isDropped(msg.reply_id)) break;
+        if (this.replyAudioStart === null) this.replyAudioStart = this.playout?.sentSamples?.() ?? 0;
         this.setState("speaking");
         this.lastAudioAt = Date.now();
         if (!this.greetingAudioSent) {
@@ -1006,10 +1033,11 @@ export class VoiceSession {
           // Barge-in: remember what the agent had said, so a barge-in
           // that turns out to be filler can resume (./barge-in.ts).
           this.bargeIn = {
-            heard: this.currentAgentText,
+            heard: this.heardAgentText(),
             speakingMs: Date.now() - this.replyStartedAt,
             goodbye: this.endCallSignaled,
           };
+          this.stopCaption();
           this.armNoWordsResume();
           // The server stopped generating, so anything still queued is stale
           // speech the caller has already talked over. Cancel it and reset the
@@ -1048,6 +1076,8 @@ export class VoiceSession {
         this.currentReplyId = typeof msg.reply_id === "string" ? msg.reply_id : null;
         this.currentAgentText = "";
         this.agentLine = "";
+        this.replyAudioStart = null;
+        this.stopCaption();
         this.replyStartedAt = Date.now();
         // The server's own answer to a barge-in we decided to resume from:
         // supersede it before its audio plays.
@@ -1112,15 +1142,9 @@ export class VoiceSession {
               ? `${this.agentLine} ${msg.delta}`.trim()
               : this.agentLine;
         this.currentAgentText = stripSpokenToolCall(this.agentLine).text;
-        this.handlers.onAgentPartial?.({
-          itemId:
-            typeof msg.reply_id === "string"
-              ? msg.reply_id
-              : typeof msg.item_id === "string"
-                ? msg.item_id
-                : null,
-          text: this.currentAgentText,
-        });
+        this.captionItemId =
+          typeof msg.reply_id === "string" ? msg.reply_id : typeof msg.item_id === "string" ? msg.item_id : null;
+        this.paceCaption();
         break;
       }
 
@@ -1162,6 +1186,8 @@ export class VoiceSession {
 
       case "transcript.agent": {
         const replyId = typeof msg.reply_id === "string" ? msg.reply_id : null;
+        // The final line takes over from the paced caption.
+        this.stopCaption();
         // The caption is what the caller heard: nothing of a reply after the
         // goodbye, only the heard words of one we superseded.
         if (this.endCallSignaled && replyId !== this.endCallReplyId) break;
@@ -1371,7 +1397,8 @@ export class VoiceSession {
   private supersede(instructions: string): void {
     if (this.replyActive) {
       this.droppedReplyId = this.currentReplyId;
-      this.droppedHeard = this.currentAgentText;
+      this.droppedHeard = this.heardAgentText();
+      this.stopCaption();
       this.flush();
     }
     this.requestReply(instructions);
@@ -1385,14 +1412,21 @@ export class VoiceSession {
    */
   replaceNextReply(instructions: string, waitMs = 1500): void {
     if (this.pendingReplace) clearTimeout(this.pendingReplace.timer);
-    this.pendingReplace = {
-      instructions,
-      timer: setTimeout(() => {
-        const pending = this.pendingReplace;
+    const fallback = (): void => {
+      const pending = this.pendingReplace;
+      if (!pending || this.state === "ended") {
         this.pendingReplace = null;
-        if (pending && this.state !== "ended") this.requestReply(pending.instructions);
-      }, waitMs),
+        return;
+      }
+      // Never cut the line still playing: a reply.create mid-reply supersedes it.
+      if (this.replyActive) {
+        pending.timer = setTimeout(fallback, waitMs);
+        return;
+      }
+      this.pendingReplace = null;
+      this.requestReply(pending.instructions);
     };
+    this.pendingReplace = { instructions, timer: setTimeout(fallback, waitMs) };
   }
 
   /**
@@ -1437,7 +1471,7 @@ export class VoiceSession {
     const cause = text.trim()
       ? `The caller only said "${text.slice(0, 200)}" while you were speaking; it wasn't a request to stop.`
       : "A noise on the caller's side cut you off; they didn't say anything.";
-    const instructions = `${cause}${heard ? ` You had just said: "${heard.trim().slice(-200)}".` : ""} Pick up where you left off, naturally ("as I was saying…"), without repeating yourself.`;
+    const instructions = `${cause}${heard ? ` They heard you up to: "${heard.trim().slice(-200)}".` : ""} Pick up where you left off: carry straight on with the rest of what you were saying, without repeating those words or saying "as I was saying".`;
     if (this.replyActive) {
       this.supersede(instructions);
       return;
@@ -1516,8 +1550,42 @@ export class VoiceSession {
     this.currentReplyId = null;
     this.currentAgentText = "";
     this.agentLine = "";
+    this.replyAudioStart = null;
+    this.stopCaption();
     this.droppedReplyId = null;
     this.droppedHeard = "";
+  }
+
+  /**
+   * What the caller has heard of the current reply: its words up to the
+   * audio played so far. A playout that can't report (tests) hears it all.
+   */
+  private heardAgentText(): string {
+    const playout = this.playout;
+    if (!playout?.consumedSamples || !playout.sentSamples) return this.currentAgentText;
+    if (this.replyAudioStart === null) return "";
+    const playedMs = ((playout.consumedSamples() - this.replyAudioStart) / TARGET_SAMPLE_RATE) * 1000;
+    return heardWords(this.currentAgentText, playedMs);
+  }
+
+  /** Show the heard words now, and keep ticking while some are still unheard. */
+  private paceCaption(): void {
+    const heard = this.heardAgentText();
+    if (heard && heard !== this.lastCaption) {
+      this.lastCaption = heard;
+      this.handlers.onAgentPartial?.({ itemId: this.captionItemId, text: heard });
+    }
+    if (heard === this.currentAgentText || this.state === "ended") {
+      this.stopCaption(false);
+    } else if (!this.captionTimer) {
+      this.captionTimer = setInterval(() => this.paceCaption(), CAPTION_TICK_MS);
+    }
+  }
+
+  private stopCaption(reset = true): void {
+    if (this.captionTimer) clearInterval(this.captionTimer);
+    this.captionTimer = null;
+    if (reset) this.lastCaption = "";
   }
 
   private signalEndCall(replyId: string | null): void {
@@ -1729,7 +1797,8 @@ export class VoiceSession {
   private dropCurrentReply(): void {
     if (this.replyActive && this.currentReplyId) {
       this.droppedReplyId = this.currentReplyId;
-      this.droppedHeard = this.currentAgentText;
+      this.droppedHeard = this.heardAgentText();
+      this.stopCaption();
     }
     this.flush();
   }

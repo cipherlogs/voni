@@ -28,16 +28,18 @@ export function DemoAddressChip({ address, tag, className }: { address: string; 
       variant="outline"
       onClick={() => copy(what, text)}
       aria-label={`Copy ${label} ${text}`}
-      className="h-11 min-w-0 gap-2 rounded-full px-4 text-sm font-medium"
+      // `shrink` undoes the Button base's shrink-0, so a long address truncates instead of wrapping the row.
+      className="h-9 min-w-0 shrink gap-1.5 rounded-full px-3 text-xs font-medium"
     >
-      {copied?.what === what && copied.ok ? <Check className="size-4" aria-hidden /> : <Copy className="size-4" aria-hidden />}
+      {copied?.what === what && copied.ok ? <Check className="size-3.5" aria-hidden /> : <Copy className="size-3.5" aria-hidden />}
       <span className="truncate select-all">{text}</span>
     </Button>
   );
   return (
-    <div data-testid="demo-address-chip" className={cn("flex flex-wrap items-center justify-center gap-2", className)}>
+    // One row at every width: the address gives way first (it stays copyable and in the mailto).
+    <div data-testid="demo-address-chip" className={cn("flex min-w-0 items-center justify-center gap-1.5", className)}>
       {pill("address", "address", address)}
-      <span className="flex items-center gap-2">
+      <span className="flex shrink-0 items-center gap-1.5">
         <span className="text-foreground/70 text-xs">Subject</span>
         {pill("tag", "tag", tag)}
       </span>
@@ -46,10 +48,10 @@ export function DemoAddressChip({ address, tag, className }: { address: string; 
         aria-label={`Email ${address} with subject ${tag}`}
         className={cn(
           buttonVariants({ variant: "outline" }),
-          "hidden size-11 shrink-0 rounded-full p-0 pointer-coarse:inline-flex",
+          "hidden size-9 shrink-0 rounded-full p-0 pointer-coarse:inline-flex",
         )}
       >
-        <Mail className="size-4" aria-hidden />
+        <Mail className="size-3.5" aria-hidden />
       </a>
       <span role="status" className="sr-only">
         {copied ? (copied.ok ? `${copied.what === "tag" ? "Tag" : "Address"} copied` : "Couldn't copy. Select it instead.") : ""}
