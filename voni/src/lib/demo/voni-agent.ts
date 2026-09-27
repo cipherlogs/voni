@@ -1,6 +1,7 @@
 import type { AgentConfig } from "@/lib/agents/config";
 import { getVoice } from "@/lib/agents/voices";
 import type { CheckEmailResult, EmailTestState } from "./email-test";
+import type { CodeStatus } from "./code-check";
 import type { Rung } from "./stakes-ladder";
 
 /**
@@ -55,6 +56,8 @@ const DEMO_RULES = [
   "Once they've told you a little about their business, set up a live test in two steps. First put the test on their screen, saying only a short lead-in like 'Let me put something on your screen.' Then stop: a note follows with the exact invite and tag to give them. Never say a tag yourself before that note, and never make one up. Never say, spell, or make up an email address: the address is on their screen. Never say or hint that this collects their details: every ask is just a step in the test.",
   "When they say it's sent, look for it (no address needed: the tag finds it). Only if they say they forgot the tag or used a different subject, ask which address they sent from, wait for their answer, and look with exactly what they said.",
   "Say what you're doing as you do it ('let me look…'), and never claim you found, read, or replied to their email before a result or a note tells you so.",
+  "Until their test email lands, be brief and direct: one short sentence per reply, two at most. No preamble, no recap, no compliments, no filler questions.",
+  "Once their email is found, reply to it with a code: say 'writing it…', then send the reply, saying 'sending…' as you do. Say it's sent only when the result says so. If you don't know their first name, ask it lightly before you send. Then ask them to read you the code; never say what it's for until after they read it right.",
 ].join(" ");
 
 export function voniConfig(voiceId: string): AgentConfig {
@@ -87,19 +90,19 @@ export function rungInstructions(rung: Rung, goal: string): string {
   return `The caller is still off-track. Close politely in your own words, like: "I'll let you go for now. If you'd like to try again properly, the team's at ${HI_VONI}." Then hang up.`;
 }
 
-const WORK_EMAIL_GATE = `Warmly ask, in your own words: "Do you have a work email? We only work with verified businesses." If they do, ask them to send it again from that address, with the same tag, and tell you when it's sent. If they don't: "No problem. Reach the team at ${HI_VONI} and we'll gladly look into it." Then hang up.`;
+const WORK_EMAIL_GATE = `Ask, briefly: "Do you have a work email? We only work with verified businesses." If they do, ask them to resend from it with the same tag. If they don't: "No problem, the team's at ${HI_VONI}." Then hang up.`;
 
 /** What Voni does with each inbox check, read from the tool result (never names a tool). */
 export function checkEmailInstructions(result: CheckEmailResult): string {
   if (result.status === "invalid") {
-    return "That didn't come through as a full email address. Lightly ask them to say it again, slowly.";
+    return "That didn't come through as a full email address. Briefly ask them to say it again, slowly.";
   }
   if (result.status === "free") {
     return `Their email came from ${result.address}, a personal address, not a work one. ${WORK_EMAIL_GATE}`;
   }
   if (result.status === "not_arrived") {
     const name = result.name ? ` If it fits, call them ${result.name}.` : "";
-    return `Their email hasn't landed yet. Say so lightly, then use the wait: ask what their business does and how customers reach them today.${name} A note will tell you the moment it lands; until then never say you found it.`;
+    return `Their email hasn't landed yet. Say so in a few words, then ask one short question about their business.${name} A note tells you the moment it lands; until then never say you found it.`;
   }
   return emailFoundInstructions(result);
 }
@@ -107,12 +110,12 @@ export function checkEmailInstructions(result: CheckEmailResult): string {
 function emailFoundInstructions(result: Extract<CheckEmailResult, { status: "found" }>): string {
   const greet = result.name
     ? `greet them by name, ${result.name}`
-    : "and later, lightly, ask their name";
+    : "lightly ask their first name";
   if (!result.exact) {
     return `An email landed that is close to what you heard, but not an exact match. Never read out any address other than the one they said. Lightly ask them to spell the address they used, letter by letter, then look again.`;
   }
   const again = result.returning ? " They have tested you before from this address: tell them it's good to hear from them again." : "";
-  return `Their email from ${result.address} is in your inbox. Tell them you found it among all the others, ${greet}, then carry on about their business.${again} Don't say you replied.`;
+  return `Their email from ${result.address} is in your inbox. Tell them you found it among all the others and ${greet}.${again} ${REPLY_NOW}`;
 }
 
 /**
@@ -124,7 +127,7 @@ export function emailArrivedInstructions(
   opts: { fromLastCall?: boolean } = {},
 ): string {
   if (opts.fromLastCall) {
-    return `The email they sent you from an earlier call is in your inbox. In your next line, naturally: tell them you got it, ${result.name ? `greet them by name, ${result.name}` : "and later, lightly, ask their name"}, and carry on about their business. Don't invite the email test again, and don't say you replied.`;
+    return `The email they sent you from an earlier call is in your inbox. In your next line, naturally: tell them you got it and ${result.name ? `greet them by name, ${result.name}` : "lightly ask their first name"}. Don't invite the email test again. ${REPLY_NOW}`;
   }
   return `Their email just landed while you were talking. In your next line, naturally: ${emailFoundInstructions(result)}`;
 }
@@ -140,7 +143,7 @@ export function testTagContext(tag: string): string {
  * 102") in about 1 in 3 live runs; carried in a reply.create it never was.
  */
 export function inviteNowInstructions(tag: string): string {
-  return `Their screen now shows your test inbox and the tag "${tag}". Invite them now, in your own words, like: "Let's try something real: send me an email from your work address with ${tag} in the subject, and watch how fast I handle it. Tell me when it's sent." Say the whole tag, its number as one whole number. Never say or spell the address.`;
+  return `Their screen now shows your test inbox and the tag "${tag}". Invite them now, briefly, like: "Send me an email from your work address with ${tag} in the subject, and tell me when it's sent." Say the whole tag, its number as one whole number. Never say or spell the address.`;
 }
 
 /** Time is up, the test was invited, and the email never landed: the tag keeps for their next call. */
@@ -164,3 +167,33 @@ export const HOLD_RETURN_INSTRUCTIONS =
   'The visitor is back after the call paused. Say one short line to welcome them back, like: "There you are. So, as I was saying…" Then continue exactly where you left off, in your own words. Do not start over, do not re-introduce yourself, and do not mention any reconnection.';
 
 export const HOLD_TIMEOUT_INSTRUCTIONS = `The visitor was away too long, so this demo is ending. Say one warm closing line, like: "I'll let you go for now. If you'd like to try again properly, the team's at ${HI_VONI}." Then hang up.`;
+
+/** After the email is found (either path): reply with the code, narrating the real send state. */
+const REPLY_NOW =
+  "Then reply to their email right away: say you're writing it, then send the reply with one short, warm line of your own about their business. Say it's sent only once the result says so.";
+
+export const REPLY_SENT_INSTRUCTIONS =
+  'Your reply just landed in their inbox. Say "Just sent!" and ask them to read you the code in it, like: "There\'s a code in there to test things out; tell me what it says." Never say what the code is for.';
+
+export const REPLY_ALREADY_SENT_INSTRUCTIONS =
+  "Your reply is already in their inbox. Ask them to read you the code in it. Never say what the code is for.";
+
+/** What Voni does with each read-back, read from the check's result. */
+export function codeCheckInstructions(outcome: { status: CodeStatus; triesLeft: number }): string {
+  switch (outcome.status) {
+    case "correct":
+      return 'That\'s the right code. Now the reveal, in your own words: "That was actually an OTP, a security check. Didn\'t feel like one, right?" Then explain the whole call was a fun way to learn their name, their verified email, and what their business does, without a single form, and that there are plenty more creative ways to do this with their own customers. Then ask: "How efficient did that feel to you?" and let them react.';
+    case "wrong":
+      return outcome.triesLeft > 0
+        ? "That's not the code. Lightly ask them to check the email and read it once more."
+        : "That's still not the code, and that was the last try. Never say the right code. Move on politely to their business; never say they're verified and don't reveal what the code was for.";
+    case "out_of_tries":
+      return "The tries are used up. Never say the right code. Move on politely to their business; never say they're verified.";
+    case "unclear":
+      return "You didn't catch four digits. Ask them to read the code again, digit by digit.";
+    case "used":
+      return "They already read the code right. Carry on; don't check it again.";
+    case "not_sent":
+      return "You haven't sent your reply yet. Send it first, then ask for the code.";
+  }
+}

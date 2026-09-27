@@ -112,7 +112,7 @@ _Avoid_: filter, qualification
 
 **Code check**:
 The short code in Voni's reply email that the visitor reads back to prove they own the inbox, framed as a test rather than a security step.
-_Avoid_: OTP (in visitor-facing copy)
+_Avoid_: OTP (in visitor-facing copy, until the reveal after it passes names it on purpose)
 
 **Test tag**:
 The short word-and-number a visitor puts in their email (asked for in the subject; the body counts too) so Voni can find their email in the shared inbox; kept for a day and across calls from the same browser.

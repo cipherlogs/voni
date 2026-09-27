@@ -10,8 +10,10 @@ import { TAG_TTL_S } from "./test-tag";
  * that call's wall cap (plus the socket-open window), so a token lifted from
  * the network tab cannot drive these routes beyond that one call's lifetime.
  *
- * ponytail: expiry-only, not revoked on hang-up. Add a server-side ended-call
- * mark when a tool with side effects (sending email) lands.
+ * ponytail: expiry-only, not revoked on hang-up. The one side effect (Voni's
+ * reply, reply.ts) goes out once per call, only to the email the call's tag
+ * matched, so a lifted token can't send more. Add a server-side ended-call
+ * mark if a tool with wider side effects lands.
  */
 export const CALL_TOKEN_TTL_S = WALL_CAP_S + 60;
 

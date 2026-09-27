@@ -12,8 +12,8 @@ import { DEMO_INBOX_ADDRESS } from "./email-test";
  * The demo agent's tools, run server-side for one verified demo call (the
  * route checks the call token first). Every tool on the stored demo agent
  * body (stored-agents.ts) needs a case here or in the route. Browser-safe:
- * the voice session imports it, so the inbox check (server-only) is
- * dispatched by the route, not here.
+ * the voice session imports it, so the inbox check, the reply and the code
+ * check (server-only) are dispatched by the route, not here.
  */
 
 export const SHOW_TEST_ADDRESS_TOOL = "show_test_address";
@@ -54,11 +54,65 @@ export const CHECK_EMAIL_VOICE_TOOL: VoiceTool = {
   timeout_seconds: 30,
 };
 
+export const SEND_CODE_REPLY_TOOL = "send_code_reply";
+export const CHECK_CODE_TOOL = "check_code";
+
+export const SEND_CODE_REPLY_VOICE_TOOL: VoiceTool = {
+  type: "function",
+  name: SEND_CODE_REPLY_TOOL,
+  description:
+    "Reply to the caller's email with a code to test things out. Call it once their email is found, after asking their first name if you don't know it. Say you're writing and sending it as you call it; it is sent only when the result says so.",
+  parameters: {
+    type: "object",
+    properties: {
+      warm_line: {
+        type: "string",
+        maxLength: 300,
+        description:
+          "One short, warm sentence of your own for the email, about their business, in the caller's language. No codes, links, or security words.",
+      },
+      name: {
+        type: "string",
+        maxLength: 40,
+        description: "Their first name, only if they told you. Leave it out otherwise.",
+      },
+    },
+    required: ["warm_line"],
+    additionalProperties: false,
+  },
+  execution_mode: "interactive",
+  timeout_seconds: 30,
+};
+
+export const CHECK_CODE_VOICE_TOOL: VoiceTool = {
+  type: "function",
+  name: CHECK_CODE_TOOL,
+  description:
+    "Check the code the caller read back from your reply email. They get two tries; the result says what to do next.",
+  parameters: {
+    type: "object",
+    properties: {
+      code: {
+        type: "string",
+        maxLength: 40,
+        examples: ["4821"],
+        description: "The four digits the caller read, as numerals.",
+      },
+    },
+    required: ["code"],
+    additionalProperties: false,
+  },
+  execution_mode: "interactive",
+  timeout_seconds: 30,
+};
+
 /** Every tool the demo agent carries, in stored-body order. */
 export const DEMO_VOICE_TOOLS: VoiceTool[] = [
   END_CALL_VOICE_TOOL,
   SHOW_TEST_ADDRESS_VOICE_TOOL,
   CHECK_EMAIL_VOICE_TOOL,
+  SEND_CODE_REPLY_VOICE_TOOL,
+  CHECK_CODE_VOICE_TOOL,
 ];
 
 export async function executeDemoTool(

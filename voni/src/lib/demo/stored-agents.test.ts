@@ -50,7 +50,7 @@ test("demo body carries call control, tuning, and per-agent vocabulary", () => {
   const body = buildDemoAgentBody("anna");
   assert.deepEqual(
     body.tools.map((tool) => tool.name),
-    [END_CALL_TOOL, "show_test_address", "check_email"],
+    [END_CALL_TOOL, "show_test_address", "check_email", "send_code_reply", "check_code"],
   );
   assert.equal(body.input.transcription_mode, "balanced");
   assert.equal(body.input.turn_detection, null, "adaptive defaults; clears any stored object");

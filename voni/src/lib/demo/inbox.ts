@@ -2,6 +2,7 @@ import { z } from "zod";
 import { secret } from "@/lib/env";
 import type { ToolResponse } from "@/lib/tools/execute";
 import { jevEvaluate, judgeDepsFromSecrets, type JevDeps } from "@/lib/voice/voice-judge";
+import { replyEmail } from "./code-check";
 import { bumpRateBucket } from "./rate-limit";
 import {
   checkEmail,
@@ -34,6 +35,8 @@ const CHECKS_PER_CALL = 120;
 const CHECK_BUDGET_WINDOW_S = 15 * 60;
 /** A false spoof flag costs a real Prospect, so it takes a confident Jev. */
 const SPOOF_THRESHOLD = 0.75;
+/** Under reply.ts's stale-claim window, so a hung send can't be claimed twice. */
+const GMAIL_TIMEOUT_MS = 15_000;
 
 let cachedToken: { value: string; expiresAt: number } | null = null;
 
@@ -129,6 +132,46 @@ async function searchInbox(query: string): Promise<InboxMessage[]> {
     }),
   );
   return full;
+}
+
+/**
+ * Voni's code reply (reply.ts), threaded to the visitor's email: re-reads its
+ * Message-ID and Subject for In-Reply-To and "Re:". Returns the sent id.
+ */
+export async function sendThreadedReply(opts: {
+  inReplyTo: string;
+  threadId: string | null;
+  to: string;
+  language: string;
+  name: string | null;
+  code: string;
+  warmLine: string;
+}): Promise<string> {
+  const auth = { Authorization: `Bearer ${await accessToken()}` };
+  const url = new URL(`${GMAIL}/messages/${encodeURIComponent(opts.inReplyTo)}`);
+  url.searchParams.set("format", "metadata");
+  for (const h of ["Message-ID", "Subject"]) url.searchParams.append("metadataHeaders", h);
+  const original = await fetch(url, { headers: auth, signal: AbortSignal.timeout(GMAIL_TIMEOUT_MS) });
+  if (!original.ok) throw new Error(`gmail get ${original.status}`);
+  const headers = ((await original.json()) as { payload?: { headers?: { name: string; value: string }[] } }).payload?.headers ?? [];
+  const header = (name: string) => headers.find((h) => h.name.toLowerCase() === name.toLowerCase())?.value ?? "";
+  const raw = replyEmail({
+    language: opts.language,
+    to: opts.to,
+    subject: header("Subject"),
+    messageIdHeader: header("Message-ID").trim(),
+    name: opts.name,
+    code: opts.code,
+    warmLine: opts.warmLine,
+  });
+  const res = await fetch(`${GMAIL}/messages/send`, {
+    method: "POST",
+    headers: { ...auth, "content-type": "application/json" },
+    body: JSON.stringify({ raw, ...(opts.threadId ? { threadId: opts.threadId } : {}) }),
+    signal: AbortSignal.timeout(GMAIL_TIMEOUT_MS),
+  });
+  if (!res.ok) throw new Error(`gmail send ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  return ((await res.json()) as { id: string }).id;
 }
 
 const summary = (m: InboxMessage, now: number) => ({

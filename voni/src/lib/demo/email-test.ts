@@ -1,4 +1,5 @@
 import { TALK_BASE_S } from "./talk-clock";
+import type { CodeStatus } from "./code-check";
 import { containsTag, countTags } from "./test-tag";
 
 /**
@@ -17,6 +18,9 @@ export const DEMO_INBOX_ADDRESS = "hi@pilotxstudio.com";
 
 /** Talk clock once the visitor's email arrives from a business address: provisional, until the code check (04). */
 export const PROVISIONAL_TALK_S = 360;
+
+/** Talk clock once the visitor read the code back right: the verified extension. */
+export const VERIFIED_TALK_S = 540;
 
 /** How far back the inbox is searched: covers a whole call (wall cap) plus a margin. */
 export const INBOX_LOOKBACK_S = 15 * 60;
@@ -246,6 +250,8 @@ export type EmailTestState = {
   found: boolean;
   /** Their email landed from a personal address: the work-email gate was given. */
   gated?: boolean;
+  /** They read back the code from Voni's reply (04): the verified extension. */
+  verified?: boolean;
 };
 
 export const EMAIL_TEST_START: EmailTestState = { invited: false, found: false };
@@ -258,9 +264,19 @@ export function emailTestAfterCheck(state: EmailTestState, result: CheckEmailRes
   return state;
 }
 
+/**
+ * A passed code check is the verified extension (`talkLimitS` still needs the
+ * found email). "used" is a pass too: the first result may have been lost to
+ * a drop, and the server already recorded it.
+ */
+export function emailTestAfterCode(state: EmailTestState, status: CodeStatus): EmailTestState {
+  return status === "correct" || status === "used" ? { ...state, verified: true } : state;
+}
+
 /** Only an arrived business email earns the provisional extension (never a spoken claim). */
 export function talkLimitS(state: EmailTestState): number {
-  return state.found ? PROVISIONAL_TALK_S : TALK_BASE_S;
+  if (!state.found) return TALK_BASE_S;
+  return state.verified ? VERIFIED_TALK_S : PROVISIONAL_TALK_S;
 }
 
 /**

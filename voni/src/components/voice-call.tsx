@@ -81,13 +81,15 @@ import {
   EMAIL_TEST_START,
   checkResultFromData,
   emailTestAfterCheck,
+  emailTestAfterCode,
   loadTagToken,
   mentionsScreen,
   saveTagToken,
   talkLimitS,
   type EmailTestState,
 } from "@/lib/demo/email-test";
-import { CHECK_EMAIL_TOOL, SHOW_TEST_ADDRESS_TOOL } from "@/lib/demo/demo-tools";
+import { CHECK_CODE_TOOL, CHECK_EMAIL_TOOL, SHOW_TEST_ADDRESS_TOOL } from "@/lib/demo/demo-tools";
+import type { CodeStatus } from "@/lib/demo/code-check";
 import {
   buildHoldCarryover,
   clearCallMemory,
@@ -1324,8 +1326,8 @@ export function VoiceCall({
         }
       },
       onReplyStarted: () => replyQueueRef.current?.onReplyStarted(),
-      // Demo email test: the invite shows the address chip; each inbox
-      // check moves invited → claimed (provisional extension) → found.
+      // Demo email test: the invite shows the address chip; a found email
+      // is the provisional extension, a passed code check the verified one.
       onToolResult: (name, result) => {
         if (mode.kind !== "demo" || !result.ok) return;
         if (name === SHOW_TEST_ADDRESS_TOOL) {
@@ -1335,6 +1337,9 @@ export function VoiceCall({
           putTestUp((instructions) => session.replaceNextReply(instructions));
         } else if (name === CHECK_EMAIL_TOOL) {
           setEmailTest(emailTestAfterCheck(emailTestRef.current, checkResultFromData(result.data)));
+        } else if (name === CHECK_CODE_TOOL) {
+          // The code read back right: the verified extension (the reveal rides the result).
+          setEmailTest(emailTestAfterCode(emailTestRef.current, result.data.status as CodeStatus));
         }
       },
       // Socket dropped while the page is hidden: hold from the drop moment.

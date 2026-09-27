@@ -1,7 +1,8 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { checkDemoLimits } from "@/lib/demo/rate-limit";
 import { getOrCreateDemoAgent } from "@/lib/demo/stored-agents";
-import { carryDemoCall, demoCallKey, signTagToken, verifyTagToken } from "@/lib/demo/call-token";
+import { carryDemoCall, demoCallKey, signTagToken, verifyDemoCall, verifyTagToken } from "@/lib/demo/call-token";
+import { recordDemoCall } from "@/lib/demo/reply";
 import { tagForMint } from "@/lib/demo/test-tag-registry";
 import { getVoice } from "@/lib/agents/voices";
 import { WALL_CAP_S } from "@/lib/demo/talk-clock";
@@ -105,12 +106,20 @@ export async function POST(request: NextRequest) {
   // same tag for a day (a callback finds the email sent after a late call);
   // otherwise a fresh one in the call's language.
   const held = typeof body.tagToken === "string" ? verifyTagToken(callKey, body.tagToken) : null;
-  const { tag, carried } = await tagForMint(held, getVoice(voiceId)?.languageCode ?? "en");
+  const language = getVoice(voiceId)?.languageCode ?? "en";
+  const { tag, carried } = await tagForMint(held, language);
+  const callToken = carryDemoCall(callKey, body.callToken, Date.now(), tag.id);
+  // The call's language, for Voni's reply (ticket 04). A rejoin keeps its row.
+  // Never fatal: the reply falls back to the tag's language.
+  const call = verifyDemoCall(callKey, callToken);
+  if (call) {
+    await recordDemoCall(call.callId, tag.id, language).catch((e: unknown) => console.warn(`[demo-token] call record failed: ${e}`));
+  }
   return NextResponse.json(
     {
       token,
       agentId: agent.agentId,
-      callToken: carryDemoCall(callKey, body.callToken, Date.now(), tag.id),
+      callToken,
       testTag: tag.tag,
       // A carried tag keeps its token (same id and issue time).
       tagToken: signTagToken(callKey, tag.id, tag.issuedAt.getTime()),

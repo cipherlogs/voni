@@ -604,6 +604,27 @@ export const demoTestTags = pgTable(
 );
 
 /**
+ * One public demo call (keyed by its call token's id), recorded at token
+ * mint: its language, and the code check's state (ticket 04). The code
+ * itself is derived from the call id and the server key (code-check.ts),
+ * never stored.
+ *
+ * ponytail: no expiry or sweep; bounded by the demo's daily call cap (~60
+ * rows/day). Add a cleanup when 06's Prospect record takes over what's kept.
+ */
+export const demoCalls = pgTable("demo_calls", {
+  callId: text("call_id").primaryKey(),
+  tagId: uuid("tag_id"),
+  language: text("language").notNull(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  /** Set when the reply's send starts (the once-per-call claim), cleared if it fails. */
+  replyStartedAt: timestamp("reply_started_at"),
+  replyMessageId: text("reply_message_id"),
+  codeAttempts: integer("code_attempts").notNull().default(0),
+  codeVerifiedAt: timestamp("code_verified_at"),
+});
+
+/**
  * Counter buckets for rate limiting, keyed by an opaque bucket string
  * (e.g. "demo:ip:<hash>:2026-09-05T14" or "demo:global:2026-09-05").
  *

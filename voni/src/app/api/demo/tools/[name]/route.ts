@@ -1,7 +1,8 @@
 import { z } from "zod";
 import { demoCallFromRequest } from "@/lib/demo/call-token";
-import { CHECK_EMAIL_TOOL, executeDemoTool } from "@/lib/demo/demo-tools";
+import { CHECK_CODE_TOOL, CHECK_EMAIL_TOOL, SEND_CODE_REPLY_TOOL, executeDemoTool } from "@/lib/demo/demo-tools";
 import { runCheckEmail } from "@/lib/demo/inbox";
+import { runCheckCode, runSendReply } from "@/lib/demo/reply";
 import { loadLiveTestTag } from "@/lib/demo/test-tag-registry";
 
 /**
@@ -27,14 +28,20 @@ export async function POST(
     return Response.json({ ok: false, error: "Invalid tool request.", retryable: false }, { status: 400 });
   }
   const { name } = await context.params;
-  // The inbox check is server-only (Gmail + Jev), so it is dispatched here,
-  // not in the browser-safe executor. The call component also polls it.
+  // The inbox check, the reply and the code check are server-only (Gmail,
+  // Jev, the call's row), so they are dispatched here, not in the
+  // browser-safe executor. The call component also polls the inbox check.
+  const args = parsed.data.arguments;
   const result =
     name === CHECK_EMAIL_TOOL
-      ? await runCheckEmail(call, parsed.data.arguments)
-      : await executeDemoTool(name, parsed.data.arguments, {
-          testTag: call.tagId ? (await loadLiveTestTag(call.tagId))?.tag : null,
-        });
+      ? await runCheckEmail(call, args)
+      : name === SEND_CODE_REPLY_TOOL
+        ? await runSendReply(call, args)
+        : name === CHECK_CODE_TOOL
+          ? await runCheckCode(call, args)
+          : await executeDemoTool(name, args, {
+              testTag: call.tagId ? (await loadLiveTestTag(call.tagId))?.tag : null,
+            });
   return Response.json(result, {
     headers: { "Cache-Control": "no-store" },
   });

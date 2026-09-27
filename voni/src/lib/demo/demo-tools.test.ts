@@ -38,3 +38,13 @@ test("demo tools outlast a long invite reply, and the address is optional", asyn
   const check = DEMO_VOICE_TOOLS.find((t) => t.name === "check_email");
   assert.equal((check?.parameters as { required?: string[] }).required, undefined);
 });
+
+test("the reply and the code check are route tools, never answered in the browser", async () => {
+  const { DEMO_VOICE_TOOLS } = await import("./demo-tools");
+  const reply = DEMO_VOICE_TOOLS.find((t) => t.name === "send_code_reply");
+  const check = DEMO_VOICE_TOOLS.find((t) => t.name === "check_code");
+  assert.deepEqual((reply?.parameters as { required?: string[] }).required, ["warm_line"]);
+  assert.deepEqual((check?.parameters as { required?: string[] }).required, ["code"]);
+  assert.equal((await executeDemoTool("send_code_reply", { warm_line: "hi" })).ok, false);
+  assert.equal((await executeDemoTool("check_code", { code: "1234" })).ok, false);
+});
