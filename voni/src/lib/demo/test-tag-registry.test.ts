@@ -30,3 +30,18 @@ test("the token route keeps a live tag the browser holds, and issues a fresh one
   assert.deepEqual(await tagForMint(gone, "es", deps), { tag: row("new", "Lima 17"), carried: false }, "a signed id no longer live");
   assert.deepEqual(issued, ["es", "es"], "fresh tags come in the call's language");
 });
+
+test("a tag whose email was already answered carries only within its own call", async () => {
+  const matched = { ...row("done", "Lotus 82"), matchedMessageId: "m1" } as TestTagRow;
+  const deps = {
+    load: async () => matched,
+    issue: async () => row("new", "Lima 17"),
+  };
+  // sess 2026-09-27: a new call on the old tag replied at the greeting.
+  assert.deepEqual(await tagForMint({ id: "done" }, "en", deps), { tag: row("new", "Lima 17"), carried: false });
+  assert.deepEqual(
+    await tagForMint({ id: "done", continuing: true }, "en", deps),
+    { tag: matched, carried: true },
+    "a rejoin of the same call keeps its tag (its reply and code)",
+  );
+});

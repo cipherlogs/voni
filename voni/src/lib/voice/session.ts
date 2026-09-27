@@ -419,6 +419,13 @@ const REPLACE_CONFIRM_MS = 1000;
  * steadily until its reply.done; 3s also covers a goodbye slow to start.
  */
 export const HELD_RESULT_RELEASE_MS = 3000;
+/**
+ * A held demo tool result with no audio at all in its reply for this long:
+ * the model called the tool without speaking, so nothing can be cut.
+ */
+export const SILENT_TOOL_RELEASE_MS = 1200;
+/** Backstop for a demo result whose line never settles (a stuck playout): well inside the tool's 30s timeout. */
+const HELD_DEMO_RESULT_MAX_MS = 8000;
 
 export type VoiceState =
   | "idle"
@@ -1388,15 +1395,32 @@ export class VoiceSession {
     };
   }
 
+  /**
+   * The platform may hold the reply open until the result arrives, so a held
+   * result can't always wait for reply.done. Release it once nothing is left
+   * to cut: after 3s without audio (end_call, measured), or, for demo tools,
+   * once this reply's line has played out (two settled polls in a row, so a
+   * dry gap between chunks doesn't count) or it never spoke at all. Chunks
+   * arrive faster than they play, so "no new audio" alone isn't "done".
+   */
   private watchHeldResult(): void {
     const heldAt = Date.now();
+    let settledPolls = 0;
     const timer = setInterval(() => {
       const coordinator = this.toolCoordinator;
       if (!coordinator?.hasHeld() || this.state === "ended") {
         clearInterval(timer);
         return;
       }
-      if (Date.now() - Math.max(this.lastAudioAt, heldAt) >= HELD_RESULT_RELEASE_MS) {
+      const now = Date.now();
+      const spoke = this.lastAudioAt > 0 && this.lastAudioAt >= this.replyStartedAt;
+      settledPolls = spoke && this.playbackSettled() ? settledPolls + 1 : 0;
+      const demoOnly = !coordinator.holds(END_CALL_TOOL);
+      const lineDone = (spoke ? settledPolls >= 2 : now - heldAt >= SILENT_TOOL_RELEASE_MS);
+      const release = demoOnly
+        ? lineDone || now - heldAt >= HELD_DEMO_RESULT_MAX_MS
+        : now - Math.max(this.lastAudioAt, heldAt) >= HELD_RESULT_RELEASE_MS;
+      if (release) {
         clearInterval(timer);
         coordinator.releaseHeld();
       }
@@ -1515,12 +1539,15 @@ export class VoiceSession {
    * One coordinator per connection, for either mode: it times results
    * against replies, and an end_call result arms the drain-then-close.
    */
-  private installTools(execute: ToolCoordinatorOptions["execute"]): void {
+  private installTools(execute: ToolCoordinatorOptions["execute"], holdAll = false): void {
     this.toolCoordinator = new ToolCoordinator({
       send: (message) => this.send(message),
       // The goodbye plays whole only if end_call's result waits for its
       // reply to finish (eval bye-audio: 0.7s of ~6s when sent mid-reply).
-      holdUntilReplyDone: (name) => name === END_CALL_TOOL && this.replyActive,
+      // Demo tools too (`holdAll`): a check_email or send_code_reply result
+      // sent mid-line cut "sending…" and made Voni say it again (live test,
+      // 2026-09-27); the docs' own rule is to send results after reply.done.
+      holdUntilReplyDone: (name) => (holdAll || name === END_CALL_TOOL) && this.replyActive,
       // Occasionally the platform holds the goodbye open until the result
       // arrives instead: no goodbye audio for a while means it is waiting on us.
       onHeld: () => this.watchHeldResult(),
@@ -1562,12 +1589,14 @@ export class VoiceSession {
    * server-owned; the browser only relays.
    */
   private installDemoTools(): void {
-    this.installTools((call) =>
-      postTool(
-        `/api/demo/tools/${encodeURIComponent(call.name)}`,
-        { toolCallId: call.callId, arguments: call.arguments },
-        { Authorization: `Bearer ${this.callToken}` },
-      ),
+    this.installTools(
+      (call) =>
+        postTool(
+          `/api/demo/tools/${encodeURIComponent(call.name)}`,
+          { toolCallId: call.callId, arguments: call.arguments },
+          { Authorization: `Bearer ${this.callToken}` },
+        ),
+      true,
     );
   }
 

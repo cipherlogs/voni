@@ -385,6 +385,8 @@ export function VoiceCall({
   const [error, setError] = useState<VoiceError | null>(null);
   const [retryIn, setRetryIn] = useState<number | null>(null);
   const [toolActive, setToolActive] = useState(false);
+  /** For the inbox poll: Voni's own tool call is in flight, so its result speaks. */
+  const toolActiveRef = useRef(false);
   const [elapsed, setElapsed] = useState(0);
   /** Jev-gated filler line shown while the reply is being prepared. */
   const [filler, setFiller] = useState<string | null>(null);
@@ -783,7 +785,9 @@ export function VoiceCall({
     let inFlight = false;
     const check = async () => {
       const token = callTokenRef.current;
-      if (inFlight || !token || closingRef.current || returnPendingRef.current) return;
+      // While Voni's own tool call runs, skip the tick: her check_email would
+      // find the same email, and both saying so was a doubled "found it".
+      if (inFlight || !token || closingRef.current || returnPendingRef.current || toolActiveRef.current) return;
       inFlight = true;
       try {
         const res = await fetch(`/api/demo/tools/${CHECK_EMAIL_TOOL}`, {
@@ -795,7 +799,7 @@ export function VoiceCall({
         if (!body?.ok || !body.data) return;
         const result = checkResultFromData(body.data);
         const test = emailTestRef.current;
-        if (test.found || closingRef.current) return;
+        if (test.found || closingRef.current || toolActiveRef.current) return;
         if (result.status === "free") {
           if (gatedRef.current === result.address) return;
           gatedRef.current = result.address;
@@ -1048,6 +1052,7 @@ export function VoiceCall({
       setReturnPending(false);
       welcomedRef.current = false;
     }
+    toolActiveRef.current = false;
     setToolActive(false);
     setMutedState(preserving ? mutedRef.current : false);
     setFiller(null);
@@ -1293,6 +1298,7 @@ export function VoiceCall({
         setRetryIn(e.retryAfterSeconds ?? null);
       },
       onToolActivity: (active) => {
+        toolActiveRef.current = active;
         setToolActive(active);
         if (active) {
           // Cover the tool-latency pause with a Jev-gated filler line.

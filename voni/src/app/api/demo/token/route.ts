@@ -106,8 +106,9 @@ export async function POST(request: NextRequest) {
   // same tag for a day (a callback finds the email sent after a late call);
   // otherwise a fresh one in the call's language.
   const held = typeof body.tagToken === "string" ? verifyTagToken(callKey, body.tagToken) : null;
+  const previous = typeof body.callToken === "string" ? verifyDemoCall(callKey, body.callToken) : null;
   const language = getVoice(voiceId)?.languageCode ?? "en";
-  const { tag, carried } = await tagForMint(held, language);
+  const { tag, carried } = await tagForMint(held && { ...held, continuing: previous?.tagId === held.id }, language);
   const callToken = carryDemoCall(callKey, body.callToken, Date.now(), tag.id);
   // The call's language, for Voni's reply (ticket 04). A rejoin keeps its row.
   // Never fatal: the reply falls back to the tag's language.

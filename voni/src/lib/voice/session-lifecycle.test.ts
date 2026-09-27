@@ -515,6 +515,40 @@ test("a held end_call result is released when the platform waits for it (no good
   assert.equal(results().length, 1, "released: the platform is waiting on us");
 });
 
+test("a demo tool's result waits until Voni's line has played, then goes out", async () => {
+  // Live test 2026-09-27: send_code_reply's result landed mid "Found it…
+  // sending…", the platform cut the line and Voni said it again.
+  const { session, sent, handle, internals } = makeSession();
+  withDemoTools(internals, session, { ok: true, data: { sent: true } });
+  let settled = false;
+  internals["playout"] = { play: () => undefined, flush: () => undefined, settled: () => settled, queuedMs: () => 0 };
+  handle({ type: "session.ready", session_id: "s1" });
+  handle({ type: "reply.started", reply_id: "r1" });
+  handle({ type: "reply.audio", reply_id: "r1", data: "" });
+  handle({ type: "tool.call", call_id: "t1", name: "send_code_reply", arguments: { warm_line: "Hi!" } });
+  await settle();
+  const results = () => sent.map((raw) => JSON.parse(raw)).filter((m) => m.type === "tool.result" && m.call_id === "t1");
+  await new Promise((resolve) => setTimeout(resolve, 600));
+  assert.equal(results().length, 0, "held while the line is still playing");
+  settled = true;
+  await new Promise((resolve) => setTimeout(resolve, 700));
+  assert.equal(results().length, 1, "sent once the line has played out");
+});
+
+test("a demo tool called without a word is released quickly", async () => {
+  const { session, sent, handle, internals } = makeSession();
+  withDemoTools(internals, session, { ok: true, data: { status: "wrong" } });
+  internals["playout"] = { play: () => undefined, flush: () => undefined, settled: () => true, queuedMs: () => 0 };
+  handle({ type: "session.ready", session_id: "s1" });
+  handle({ type: "reply.started", reply_id: "r2" });
+  handle({ type: "tool.call", call_id: "t2", name: "check_code", arguments: { code: "1234" } });
+  await settle();
+  const results = () => sent.map((raw) => JSON.parse(raw)).filter((m) => m.type === "tool.result" && m.call_id === "t2");
+  assert.equal(results().length, 0);
+  await new Promise((resolve) => setTimeout(resolve, 1600));
+  assert.equal(results().length, 1, "nothing to cut: no dead air waiting for 3s");
+});
+
 test("hangup waits through flapping playback instead of one settled poll", async () => {
   // A momentary dry gap between chunks reports settled once — stopping on
   // that alone chops the goodbye mid-word (heard on jittery mobile links).

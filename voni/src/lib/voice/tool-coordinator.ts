@@ -135,6 +135,11 @@ export class ToolCoordinator {
     return this.held.length > 0;
   }
 
+  /** Whether a held result is this tool's (end_call keeps its own release timing). */
+  holds(name: string): boolean {
+    return this.held.some((h) => h.item.name === name);
+  }
+
   clear() {
     this.held = [];
     this.pending.clear();

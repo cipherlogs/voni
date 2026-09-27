@@ -74,14 +74,16 @@ export async function recordTagMatch(
 
 /**
  * The token route's tag: the browser's own tag while it lives (a callback
- * finds the email sent after a late call), else a fresh one.
+ * finds the email sent after a late call), else a fresh one. A tag whose
+ * email was already matched belongs to its call: only a rejoin of that call
+ * (`continuing`) keeps it, or the next call would reply at the greeting.
  */
 export async function tagForMint(
-  held: { id: string } | null,
+  held: { id: string; continuing?: boolean } | null,
   language: string,
   deps: { load: typeof loadLiveTestTag; issue: typeof issueTestTag } = { load: loadLiveTestTag, issue: issueTestTag },
 ): Promise<{ tag: TestTagRow; carried: boolean }> {
   const carried = held ? await deps.load(held.id) : null;
-  if (carried) return { tag: carried, carried: true };
+  if (carried && (!carried.matchedMessageId || held?.continuing)) return { tag: carried, carried: true };
   return { tag: await deps.issue(language), carried: false };
 }

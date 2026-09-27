@@ -134,3 +134,8 @@ test("Voni's lines follow the check: reveal only on a pass, never the code on a 
   }
   assert.doesNotMatch(REPLY_SENT_INSTRUCTIONS, /OTP|security/, "no early reveal");
 });
+
+test("the invite never repeats the lead-in Voni already said", async () => {
+  const { inviteNowInstructions } = await import("./voni-agent");
+  assert.match(inviteNowInstructions("Lotus 82"), /already said your lead-in; don't repeat it/);
+});

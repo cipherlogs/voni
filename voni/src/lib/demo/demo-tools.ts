@@ -61,7 +61,7 @@ export const SEND_CODE_REPLY_VOICE_TOOL: VoiceTool = {
   type: "function",
   name: SEND_CODE_REPLY_TOOL,
   description:
-    "Reply to the caller's email with a code to test things out. Call it once their email is found, after asking their first name if you don't know it. Say you're writing and sending it as you call it; it is sent only when the result says so.",
+    "Reply to the caller's email with a code to test things out. Call it once their email is found, after asking their first name if you don't know it. Announce it once, in one short line ('I'm sending you a quick reply… sending.'), as you call it; it is sent only when the result says so.",
   parameters: {
     type: "object",
     properties: {
