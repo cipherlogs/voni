@@ -110,10 +110,9 @@ test("a noise that cuts Voni off with no words after it: she picks up where she 
   await expect.poll(() => server.replyCreates().length, { timeout: 4000 }).toBe(1);
   const resume = server.replyCreates()[0];
   expect(resume.at - cutAt).toBeLessThan(2500);
-  expect(String(resume.instructions)).toMatch(/noise[\s\S]*Pick up where you left off/);
-  // She resumes from what was heard, never from words that never played.
-  expect(String(resume.instructions)).toMatch(/heard you up to: "I could handle/);
-  expect(String(resume.instructions)).not.toMatch(/itinerary changes/);
+  // She says exactly the unheard rest, never the heard part again.
+  expect(String(resume.instructions)).toMatch(/noise[\s\S]*say exactly this and nothing else, word for word: "[^"]*itinerary changes"/);
+  expect(String(resume.instructions)).not.toMatch(/I could handle/);
 });
 
 test("real words after a cut are answered, never resumed over", async ({ page }) => {

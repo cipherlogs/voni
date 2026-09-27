@@ -59,7 +59,7 @@ const DEMO_RULES = [
   "If the caller asks to end, hang up, or says goodbye, say one short goodbye and hang up right away. Never try to keep them on the line.",
   "Hidden system notes may tell you the caller is off-track or time is up. Follow them in your next line, in your own words. Never mention notes, timers, or scoring, and never warn or end the call for being off-track unless a note tells you to.",
   "Never ask for a phone number or WhatsApp.",
-  "As soon as they say yes, or anything like a go-ahead, to your greeting, set up the live test right away, in two steps. If they ask what it is first, answer in one short line, then set it up. First put the test on their screen, saying only a short lead-in like 'Let me put something on your screen.' Then stop: a note follows with the exact invite and tag to give them. Never say a tag yourself before that note, and never make one up. Never say, spell, or make up an email address: the address is on their screen. Never say or hint that this collects their details: every ask is just a step in the test.",
+  "Always respond to what the caller actually said first; never talk past them. As soon as they say yes, or anything like a go-ahead, to your greeting, acknowledge it in a few words (like 'Great!') and, in that same turn, put the test on their screen. If they ask something first, answer it in one short line, then put it up. Say nothing about their screen yourself: the result gives you the exact invite and tag to say, once. Never say a tag before that result, and never make one up. Never say, spell, or make up an email address: the address is on their screen. Never say or hint that this collects their details: every ask is just a step in the test.",
   "When they say it's sent, look for it (no address needed: the tag finds it). Only if they say they forgot the tag or used a different subject, ask which address they sent from, wait for their answer, and look with exactly what they said.",
   "Say what you're doing as you do it ('let me look…'), and never claim you found, read, or replied to their email before a result or a note tells you so.",
   "Until their test email lands, be brief and direct: one short sentence per reply, two at most. No preamble, no recap, no compliments, no filler questions.",
@@ -149,45 +149,27 @@ export function testTagContext(tag: string): string {
 }
 
 /**
- * The invite, sent by the call once the chip is up. Left to the platform's
- * own reply to the show tool's result, the tag was skipped or garbled ("demo
- * 102") in about 1 in 3 live runs; carried in a reply.create it never was.
+ * The invite: the show tool's result carries it, so Voni says it once, in
+ * her own reply. A second copy sent as a note raced that reply and both
+ * were spoken (sess_aacaf0224d0441cdb). The session-start tag context keeps
+ * the tag right (it was garbled ~1 in 3 before that existed).
  */
 export function inviteNowInstructions(tag: string): string {
-  return `Their screen now shows your test inbox and the tag "${tag}". You already said your lead-in; don't repeat it or anything before it. Say only the invite, like: "Send me an email from your work address with ${tag} in the subject, and tell me when it's sent." Say the whole tag, its number as one whole number. Never say or spell the address.`;
+  return `Their screen now shows your test inbox and the tag "${tag}". Say only the invite, once, in one line, like: "Send me an email from your work address with ${tag} in the subject, and tell me when it's sent." Say the whole tag, its number as one whole number. Don't repeat anything you already said, don't mention the screen, and never say or spell the address.`;
 }
 
 /** Time is up, the test was invited, and the email never landed: the tag keeps for their next call. */
 export const LATE_EMAIL_INSTRUCTIONS = `Time is up on this demo and their email still hasn't landed. Close warmly in your own words: "I'll reply the moment it lands." Thank them, then hang up.`;
-
-/**
- * The one line when the visitor comes back: from a hold, or from a tab
- * switch of FLAP_WELCOME_MS or more. It asks about wherever the test is.
- */
-export function welcomeBackInstructions(test: EmailTestState, afterHold: boolean): string {
-  const tail = "Do not re-introduce yourself or mention any reconnection.";
-  if (test.invited && !test.found && !test.gated) {
-    return `The visitor is back after stepping away, most likely from sending you their email. Say only, in your own words: "Welcome back! Is the email sent?" If it is, look for it. ${tail}`;
-  }
-  if (test.replied && !test.verified) {
-    return `The visitor is back after stepping away, most likely from reading your reply. Say only, in your own words: "Welcome back! Did you find the code?" Then let them read it to you. ${tail}`;
-  }
-  if (afterHold) return HOLD_RETURN_INSTRUCTIONS;
-  return `The visitor stepped away for a moment and is back. Say one short "Welcome back!", then carry on where you were. ${tail}`;
-}
 
 export const TIME_UP_INSTRUCTIONS = `Time is up on this demo. Wrap up warmly in one or two sentences: thank them, and say the team's at ${HI_VONI} to take it further. Then hang up.`;
 
 export const MUTE_CHECK_IN_INSTRUCTIONS =
   "The caller muted their microphone a little while ago. Check in once, gently, in one short sentence: no rush, you're here when they unmute. Do not ask a question.";
 
-/**
- * The one line on a return from hold (never on a flap). Said once, then
- * Voni picks up the thread itself; its memory is the resumed session or the
- * call memory, so it knows where it was.
- */
-export const HOLD_RETURN_INSTRUCTIONS =
-  'The visitor is back after the call paused. Say one short line to welcome them back, like: "There you are. So, as I was saying…" Then continue exactly where you left off, in your own words. Do not start over, do not re-introduce yourself, and do not mention any reconnection.';
+/** Once per silent stretch on a free floor (lib/voice/floor.ts). */
+export const SILENCE_CHECK_IN_MS = 15_000;
+export const SILENCE_CHECK_IN_INSTRUCTIONS =
+  'The caller has been quiet for a while. Check in once, in one short, warm line, like: "Still with me? Take your time." Nothing else.';
 
 export const HOLD_TIMEOUT_INSTRUCTIONS = `The visitor was away too long, so this demo is ending. Say one warm closing line, like: "I'll let you go for now. If you'd like to try again properly, the team's at ${HI_VONI}." Then hang up.`;
 

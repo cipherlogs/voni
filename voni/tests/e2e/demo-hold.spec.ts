@@ -102,10 +102,10 @@ async function setHidden(page: Page, hidden: boolean) {
 
 const freeze = (page: Page) => page.evaluate(() => document.dispatchEvent(new Event("freeze")));
 
-/** Welcome-back lines sent, after the reply queue's grace. */
+/** Welcome-back lines sent (there are none since 2026-09-27: the owner removed them). */
 async function welcomes(page: Page, server: Awaited<ReturnType<typeof fakeServer>>) {
   await page.waitForTimeout(1600);
-  return server.replyCreates().filter((f) => /welcome them back/i.test(String(f.instructions))).length;
+  return server.replyCreates().filter((f) => /welcome/i.test(String(f.instructions))).length;
 }
 
 test.beforeEach(async ({ page }) => {
@@ -135,20 +135,19 @@ test("a long hidden stretch without freeze stays live (Android Chrome)", async (
   expect(server.conns).toHaveLength(1);
 });
 
-test("a flap of 5s or more gets one welcome-back line on return, still live", async ({ page }) => {
+test("a flap of 5s or more stays live and says nothing on return", async ({ page }) => {
   const server = await fakeServer(page);
   await startCall(page, server);
   await setHidden(page, true);
   await page.waitForTimeout(5200);
   await setHidden(page, false);
   await page.waitForTimeout(1600);
-  const lines = server.replyCreates().filter((f) => /"Welcome back!"/.test(String(f.instructions)));
-  expect(lines).toHaveLength(1);
+  expect(await welcomes(page, server)).toBe(0);
   expect(server.contexts().some((c) => /on hold/i.test(c)), "a flap, not a hold").toBe(false);
   expect(server.conns).toHaveLength(1);
 });
 
-test("freeze holds silently; the return un-holds and welcomes back once", async ({ page }) => {
+test("freeze holds silently; the return un-holds, with no welcome line", async ({ page }) => {
   const server = await fakeServer(page);
   await startCall(page, server);
   await setHidden(page, true);
@@ -157,7 +156,7 @@ test("freeze holds silently; the return un-holds and welcomes back once", async 
   expect(server.contexts().some((c) => /on hold/i.test(c))).toBe(true);
   expect(server.replyCreates()).toHaveLength(0);
   await setHidden(page, false);
-  expect(await welcomes(page, server)).toBe(1);
+  expect(await welcomes(page, server)).toBe(0);
   expect(server.contexts().some((c) => /hold is over/i.test(c))).toBe(true);
   expect(server.conns).toHaveLength(1);
 });
@@ -173,7 +172,7 @@ test("a drop while hidden parks, then resumes the same session on return", async
   await setHidden(page, false);
   await expect.poll(() => server.conns.length).toBe(2);
   await expect.poll(() => server.conns[1]!.frames[0]).toEqual({ type: "session.resume", session_id: "sess_1" });
-  expect(await welcomes(page, server)).toBe(1);
+  expect(await welcomes(page, server)).toBe(0);
   expect(server.all().some((f) => f.type === "session.end")).toBe(false);
 });
 
@@ -192,7 +191,7 @@ test("resume refused after the grace: a fresh session gets the call memory", asy
   await expect
     .poll(() => fresh.find((f) => f.type === "conversation.message")?.content as string | undefined)
     .toMatch(/solar panels in Lisbon[\s\S]*How do leads reach you/);
-  expect(await welcomes(page, server)).toBe(1);
+  expect(await welcomes(page, server)).toBe(0);
   await expect(page.getByText("We sell solar panels in Lisbon.").filter({ visible: true }).first()).toBeVisible();
   expect(tokens[0]).not.toHaveProperty("callToken");
   expect(tokens.at(-1)).toMatchObject({ resume: true, callToken: "call-tok" });
@@ -211,7 +210,7 @@ test("a reload continues the same call: one tap, same session, memory kept", asy
   await expect.poll(() => server.conns.length).toBe(2);
   await expect.poll(() => server.conns[1]!.frames[0]).toEqual({ type: "session.resume", session_id: "sess_1" });
   expect(tokens.at(-1)).toMatchObject({ callToken: "call-tok" });
-  expect(await welcomes(page, server)).toBe(1);
+  expect(await welcomes(page, server)).toBe(0);
   await expect(page.getByText("We sell solar panels in Lisbon.").filter({ visible: true }).first()).toBeVisible();
 });
 

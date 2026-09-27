@@ -112,7 +112,7 @@ test("the email-test lines never name a tool", async () => {
     agent.checkEmailInstructions({ ...found, exact: false, name: null }),
     agent.emailArrivedInstructions(found),
     agent.LATE_EMAIL_INSTRUCTIONS,
-    agent.welcomeBackInstructions({ invited: true, found: false }, true),
+    agent.SILENCE_CHECK_IN_INSTRUCTIONS,
     agent.inviteNowInstructions("Lime 42"),
     agent.testTagContext("Lime 42"),
     agent.emailArrivedInstructions(found, { fromLastCall: true }),
@@ -126,5 +126,5 @@ test("the email-test lines never name a tool", async () => {
   assert.match(agent.emailArrivedInstructions({ ...found, returning: true }), /good to hear from them again/);
   assert.match(agent.emailArrivedInstructions(found, { fromLastCall: true }), /from an earlier call[\s\S]*Don't invite the email test again/);
   assert.doesNotMatch(buildDemoAgentBody("anna").system_prompt, /which address did you use/i, "never asked unprompted");
-  assert.match(agent.inviteNowInstructions("Lime 42"), /with Lime 42 in the subject[\s\S]*Never say or spell the address/);
+  assert.match(agent.inviteNowInstructions("Lime 42"), /with Lime 42 in the subject[\s\S]*never say or spell the address/);
 });

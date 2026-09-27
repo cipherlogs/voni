@@ -131,6 +131,11 @@ export class ToolCoordinator {
     for (const { item, result } of held) this.sendResult(item, result);
   }
 
+  /** A call is running or its result is held: the platform's turn isn't over. */
+  busy(): boolean {
+    return this.pending.size > 0;
+  }
+
   hasHeld(): boolean {
     return this.held.length > 0;
   }

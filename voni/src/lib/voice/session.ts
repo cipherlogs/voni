@@ -32,6 +32,7 @@ import {
 import type { ToolResponse } from "@/lib/tools/execute";
 import { executeDemoTool } from "@/lib/demo/demo-tools";
 import { ToolCoordinator, type ToolCoordinatorOptions } from "./tool-coordinator";
+import { Floor, type FloorLine, type SilenceCheckIn } from "./floor";
 import {
   buildConversationMessage,
   HOLD_OFF_CONTEXT,
@@ -420,6 +421,16 @@ const NO_WORDS_RESUME_MS = 800;
 export const CAPTION_MS_PER_CHAR = 58;
 const CAPTION_TICK_MS = 100;
 
+/**
+ * What the caller didn't hear of a cut line, from the last heard word (it
+ * was cut mid-way, so it's said again). "" when nothing was heard.
+ */
+export function unheardRest(line: string, heard: string): string {
+  const words = line.split(/\s+/).filter(Boolean);
+  const heardCount = heard.split(/\s+/).filter(Boolean).length;
+  return words.slice(Math.max(0, heardCount - 1)).join(" ");
+}
+
 /** The words of `line` whose start has played after `playedMs` of its audio. */
 export function heardWords(line: string, playedMs: number, msPerChar = CAPTION_MS_PER_CHAR): string {
   const words = line.split(/\s+/).filter(Boolean);
@@ -432,8 +443,10 @@ export function heardWords(line: string, playedMs: number, msPerChar = CAPTION_M
   }
   return words.slice(0, n).join(" ");
 }
-/** replaceNextReply: after the replaced reply ends, ours should start at once; else resend. */
-const REPLACE_CONFIRM_MS = 1000;
+/** The floor re-checks this often (playback settling has no event of its own). */
+const FLOOR_TICK_MS = 150;
+/** A resume after a cut says the rest only when more than this many words were unheard. */
+const RESUME_MIN_WORDS = 3;
 /**
  * A held end_call result with no goodbye audio for this long: the platform is
  * waiting for it (measured 1 in 10), so send it. A real goodbye streams audio
@@ -561,15 +574,20 @@ export class VoiceSession {
   private droppedHeard = "";
   /** The server just stopped the agent for a barge-in: what it had said, and for how long. */
   /** `goodbye`: the cut reply was the goodbye (end_call already signaled). */
-  private bargeIn: { heard: string; speakingMs: number; goodbye?: boolean } | null = null;
+  private bargeIn: { heard: string; rest: string; speakingMs: number; goodbye?: boolean } | null = null;
   private noWordsTimer: ReturnType<typeof setTimeout> | null = null;
   /** The next reply is a goodbye resumed after a noise cut: it re-arms the hang-up. */
   private goodbyeResumePending = false;
   /** A resume waiting for the server's own reply to supersede. */
   private pendingResume: { instructions: string; timer: ReturnType<typeof setTimeout> } | null = null;
-  private pendingReplace: { instructions: string; timer: ReturnType<typeof setTimeout> } | null = null;
   /** A reply we replaced, and the instructions to resend if the platform ignored ours. */
-  private replacing: { replyId: string | null; instructions: string; timer: ReturnType<typeof setTimeout> | null } | null = null;
+  /** Every line we prompt the agent to say goes through here (./floor.ts). */
+  private readonly floor = new Floor({
+    send: (instructions) => this.ready && this.ws?.readyState === WebSocket.OPEN && this.requestReply(instructions),
+    settled: () => this.playbackSettled(),
+    toolBusy: () => this.toolCoordinator?.busy() ?? false,
+  });
+  private floorTimer: ReturnType<typeof setInterval> | null = null;
 
   /** Disarm an end call: the caller took the floor back. */
   private disarmEndCall(): void {
@@ -982,6 +1000,11 @@ export class VoiceSession {
     switch (msg.type) {
       case "session.ready":
         this.ready = true;
+        if (!this.floorTimer) {
+          this.floorTimer = setInterval(() => this.floor.tick(), FLOOR_TICK_MS);
+          // Node (tests) only: a live floor never keeps the process alive.
+          (this.floorTimer as { unref?: () => void }).unref?.();
+        }
         if (typeof msg.session_id === "string" && msg.session_id.length > 0) {
           const id: string = msg.session_id;
           this.sessionId = id;
@@ -1032,8 +1055,10 @@ export class VoiceSession {
         if (msg.status === "interrupted") {
           // Barge-in: remember what the agent had said, so a barge-in
           // that turns out to be filler can resume (./barge-in.ts).
+          const heard = this.heardAgentText();
           this.bargeIn = {
-            heard: this.heardAgentText(),
+            heard,
+            rest: unheardRest(this.currentAgentText, heard),
             speakingMs: Date.now() - this.replyStartedAt,
             goodbye: this.endCallSignaled,
           };
@@ -1049,17 +1074,7 @@ export class VoiceSession {
           this.disarmEndCall();
         }
         this.toolCoordinator?.onReplyDone(interrupted);
-        // replaceNextReply: when the supersede takes, the platform ends the
-        // replaced reply and starts ours right after. If nothing starts, it
-        // ignored ours: send it again (the line is idle).
-        const replacing = this.replacing;
-        if (replacing && !replacing.timer && replacing.replyId === (msg.reply_id ?? null)) {
-          replacing.timer = setTimeout(() => {
-            if (this.replacing !== replacing || this.state === "ended") return;
-            this.replacing = null;
-            this.requestReply(replacing.instructions);
-          }, REPLACE_CONFIRM_MS);
-        }
+        this.floor.replyDone(msg.status === "interrupted");
         this.handlers.onReplyDone?.({ replyId: msg.reply_id ?? null, interrupted });
         this.setState("listening");
         if (this.pendingEndCall && !interrupted) {
@@ -1079,6 +1094,7 @@ export class VoiceSession {
         this.replyAudioStart = null;
         this.stopCaption();
         this.replyStartedAt = Date.now();
+        this.floor.replyStarted();
         // The server's own answer to a barge-in we decided to resume from:
         // supersede it before its audio plays.
         if (this.pendingResume) {
@@ -1086,19 +1102,6 @@ export class VoiceSession {
           clearTimeout(timer);
           this.pendingResume = null;
           this.supersede(instructions);
-        } else if (this.pendingReplace) {
-          // replaceNextReply: this reply never plays (dropped by id, no
-          // flush: an earlier reply's audio may still be playing).
-          const { instructions, timer } = this.pendingReplace;
-          clearTimeout(timer);
-          this.pendingReplace = null;
-          this.droppedReplyId = this.currentReplyId;
-          this.droppedHeard = "";
-          this.replacing = { replyId: this.currentReplyId, instructions, timer: null };
-          this.requestReply(instructions);
-        } else if (this.replacing) {
-          // Ours started: the replacement took.
-          this.clearReplacing();
         }
         if (this.goodbyeResumePending) {
           this.goodbyeResumePending = false;
@@ -1112,7 +1115,12 @@ export class VoiceSession {
         // Speech alone never cuts the agent locally: the server decides
         // (after the interruption delay) and says so with an interrupted
         // reply.done, which flushes. Back-channels it ignores keep playing.
+        this.floor.callerSpeechStarted();
         this.handlers.onInputSpeechStarted?.();
+        break;
+
+      case "input.speech.stopped":
+        this.floor.callerSpeechStopped();
         break;
 
       case "transcript.user.delta":
@@ -1120,6 +1128,7 @@ export class VoiceSession {
         // never concatenate. Final assent must come from `transcript.user`.
         // Words after a cut: it was speech, not noise. The transcript path
         // decides (its final can land well after the last partial).
+        if (typeof msg.text === "string" && msg.text.trim()) this.floor.callerWords();
         if (this.bargeIn && this.noWordsTimer && typeof msg.text === "string" && msg.text.trim()) {
           clearTimeout(this.noWordsTimer);
           this.noWordsTimer = null;
@@ -1149,6 +1158,7 @@ export class VoiceSession {
       }
 
       case "tool.call":
+        this.floor.toolCalled();
         if (msg.name === END_CALL_TOOL && this.toolCoordinator) {
           // A real call supersedes a spoken one: its result re-arms the
           // end call, so the session never closes before the result is sent.
@@ -1163,6 +1173,7 @@ export class VoiceSession {
         break;
 
       case "transcript.user":
+        this.floor.callerTurnDone();
         if (this.bargeIn) this.resolveBargeIn(typeof msg.text === "string" ? msg.text : "");
         this.handlers.onTranscript?.({ role: "user", text: msg.text });
         this.handlers.onUserTurn?.({
@@ -1405,28 +1416,22 @@ export class VoiceSession {
   }
 
   /**
-   * Replace the platform's next reply with ours: its audio and captions never
-   * play, ours follows. For a reply the platform starts on its own and gets
-   * wrong (the demo's invite after the show tool's result skipped or garbled
-   * the tag about 1 in 3 times). If none starts within `waitMs`, ours is sent.
+   * Queue a line for the agent to say once the floor is free: no reply
+   * playing or starting, no tool call running, the caller not speaking
+   * (./floor.ts). The one way the demo prompts the agent to speak.
    */
-  replaceNextReply(instructions: string, waitMs = 1500): void {
-    if (this.pendingReplace) clearTimeout(this.pendingReplace.timer);
-    const fallback = (): void => {
-      const pending = this.pendingReplace;
-      if (!pending || this.state === "ended") {
-        this.pendingReplace = null;
-        return;
-      }
-      // Never cut the line still playing: a reply.create mid-reply supersedes it.
-      if (this.replyActive) {
-        pending.timer = setTimeout(fallback, waitMs);
-        return;
-      }
-      this.pendingReplace = null;
-      this.requestReply(pending.instructions);
-    };
-    this.pendingReplace = { instructions, timer: setTimeout(fallback, waitMs) };
+  speak(instructions: string, opts: Omit<FloorLine, "instructions"> = {}): void {
+    this.floor.speak({ instructions, ...opts });
+  }
+
+  /** Drop every line still waiting (the call is closing: nothing may follow the goodbye). */
+  clearLines(): void {
+    this.floor.clear();
+  }
+
+  /** One check-in after a stretch of silence on a free floor (null: none). */
+  setSilenceCheckIn(checkIn: SilenceCheckIn | null): void {
+    this.floor.setSilenceCheckIn(checkIn);
   }
 
   /**
@@ -1461,23 +1466,38 @@ export class VoiceSession {
     }, 250);
   }
 
-  private clearReplacing(): void {
-    if (this.replacing?.timer) clearTimeout(this.replacing.timer);
-    this.replacing = null;
-  }
-
-  /** Pick up where the agent stopped, when the barge-in wasn't real. */
-  private resumeAfterBargeIn(heard: string, text: string, opts: { now?: boolean } = {}): void {
+  /**
+   * Pick up where the agent stopped, when the barge-in wasn't real: say
+   * exactly the unheard rest of the cut line. Told to "carry on", the model
+   * made up a new sentence and then said it twice (sess_f78895fa…). A cut
+   * with only a few words left says nothing: the caller got the point. A
+   * cut goodbye always finishes, so the call still ends after it.
+   */
+  private resumeAfterBargeIn(cut: { rest: string; goodbye?: boolean }, text: string, opts: { now?: boolean } = {}): void {
+    const rest = cut.rest.trim();
+    const short = rest.split(/\s+/).filter(Boolean).length <= RESUME_MIN_WORDS;
+    if (cut.goodbye && rest && short) {
+      // The goodbye was all but said: hang up as it would have.
+      this.goodbyeResumePending = false;
+      this.signalEndCall(null);
+      this.settleThenStop();
+      return;
+    }
+    if (!cut.goodbye && short) return;
     const cause = text.trim()
       ? `The caller only said "${text.slice(0, 200)}" while you were speaking; it wasn't a request to stop.`
       : "A noise on the caller's side cut you off; they didn't say anything.";
-    const instructions = `${cause}${heard ? ` They heard you up to: "${heard.trim().slice(-200)}".` : ""} Pick up where you left off: carry straight on with the rest of what you were saying, without repeating those words or saying "as I was saying".`;
+    const instructions = rest
+      ? `${cause} Finish your sentence: say exactly this and nothing else, word for word: "${rest.slice(0, 400)}"`
+      : `${cause} Say your short goodbye once more, nothing else.`;
+    // Noise or filler: the caller doesn't hold the floor, the rest goes next.
+    this.floor.callerWasNoise();
     if (this.replyActive) {
       this.supersede(instructions);
       return;
     }
     if (opts.now) {
-      this.requestReply(instructions);
+      this.floor.speak({ instructions, key: "resume", front: true });
       return;
     }
     // The server's own reply to the barge-in has not started yet: supersede it
@@ -1488,7 +1508,7 @@ export class VoiceSession {
       timer: setTimeout(() => {
         const pending = this.pendingResume;
         this.pendingResume = null;
-        if (pending) this.requestReply(pending.instructions);
+        if (pending) this.floor.speak({ instructions: pending.instructions, key: "resume", front: true });
       }, RESUME_WAIT_MS),
     };
   }
@@ -1505,8 +1525,7 @@ export class VoiceSession {
       // A noise cut into the goodbye: the resumed goodbye still ends the call
       // (re-armed on its reply.started, bound to that reply).
       if (bargeIn.goodbye) this.goodbyeResumePending = true;
-      // No transcript means no server reply is coming to supersede: resume now.
-      this.resumeAfterBargeIn(bargeIn.heard, "", { now: true });
+      this.resumeAfterBargeIn(bargeIn, "", { now: true });
     }, NO_WORDS_RESUME_MS);
   }
 
@@ -1520,11 +1539,14 @@ export class VoiceSession {
     const verdict = judgeOverlap(text, bargeIn.heard);
     if (verdict === "yield") {
       this.handlers.onBargeIn?.({ verdict: "yield", text, source: "rule" });
-      return; // Real: the server answers it as a normal turn.
+      // Real: the server answers it as a normal turn; a line of ours it cut
+      // is said again, whole, after that.
+      this.floor.requeueCut();
+      return;
     }
     if (verdict === "ignore") {
       this.handlers.onBargeIn?.({ verdict: "ignore", text, source: "rule" });
-      this.resumeAfterBargeIn(bargeIn.heard, text);
+      this.resumeAfterBargeIn(bargeIn, text);
       return;
     }
     void this.judgeBargeIn({ text, agentText: bargeIn.heard, agentSpeakingMs: bargeIn.speakingMs })
@@ -1532,16 +1554,14 @@ export class VoiceSession {
       .then((decision) => {
         if (this.state === "ended") return;
         this.handlers.onBargeIn?.({ verdict: decision, text, source: "jev" });
-        if (decision === "keep") this.resumeAfterBargeIn(bargeIn.heard, text);
+        if (decision === "keep") this.resumeAfterBargeIn(bargeIn, text);
+        else this.floor.requeueCut();
       });
   }
 
   private resetBargeIn(): void {
     this.bargeIn = null;
     this.goodbyeResumePending = false;
-    if (this.pendingReplace) clearTimeout(this.pendingReplace.timer);
-    this.pendingReplace = null;
-    this.clearReplacing();
     if (this.noWordsTimer) clearTimeout(this.noWordsTimer);
     this.noWordsTimer = null;
     if (this.pendingResume) clearTimeout(this.pendingResume.timer);
@@ -1579,6 +1599,7 @@ export class VoiceSession {
       this.stopCaption(false);
     } else if (!this.captionTimer) {
       this.captionTimer = setInterval(() => this.paceCaption(), CAPTION_TICK_MS);
+      (this.captionTimer as { unref?: () => void }).unref?.(); // Node (tests) only
     }
   }
 
@@ -1621,6 +1642,7 @@ export class VoiceSession {
       onHeld: () => this.watchHeldResult(),
       onActivityChange: (active) => this.handlers.onToolActivity?.(active),
       onResult: (name, result) => {
+        this.floor.toolResultSent();
         this.handlers.onToolResult?.(name, result);
         // Hang up as soon as the goodbye drains. Waiting for the model's
         // empty post-result reply added ~2s of dead air.
@@ -1962,6 +1984,9 @@ export class VoiceSession {
 
   private async cleanup(): Promise<void> {
     if (this.state === "ended") return;
+    if (this.floorTimer) clearInterval(this.floorTimer);
+    this.floorTimer = null;
+    this.floor.clear();
     this.disarmEndCall();
     this.resetBargeIn();
     this.setState("ended");

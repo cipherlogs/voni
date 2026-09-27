@@ -19,9 +19,6 @@ export const HOLD_CAP_S = 120;
 /** AssemblyAI keeps a dropped session resumable this long. */
 export const RESUME_GRACE_MS = 30_000;
 
-/** A tab switch (flap) at least this long gets a welcome-back line; a quicker one gets nothing. */
-export const FLAP_WELCOME_MS = 5000;
-
 /** Where the session stands when the visitor comes back from a hold. */
 export type HoldSessionStatus = "live" | "reconnecting" | "parked" | "gone";
 

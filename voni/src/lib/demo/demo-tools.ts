@@ -7,6 +7,7 @@ import {
 } from "@/lib/tools/definitions";
 import type { ToolResponse } from "@/lib/tools/execute";
 import { DEMO_INBOX_ADDRESS } from "./email-test";
+import { inviteNowInstructions } from "./voni-agent";
 
 /**
  * The demo agent's tools, run server-side for one verified demo call (the
@@ -23,7 +24,7 @@ export const SHOW_TEST_ADDRESS_VOICE_TOOL: VoiceTool = {
   type: "function",
   name: SHOW_TEST_ADDRESS_TOOL,
   description:
-    "Put your test inbox address and the caller's test tag on their screen. Call it the moment you invite the caller to send you an email from their work address; the result tells you the tag to say.",
+    "Put your test inbox address and the caller's test tag on their screen. Call it as soon as the caller is ready for the live test, right after acknowledging them; say nothing about the screen yourself. The result gives you the exact invite to say, once.",
   parameters: { type: "object", properties: {}, additionalProperties: false },
   execution_mode: "interactive",
   // Interactive results reach the model only when its reply finishes, and the
@@ -128,7 +129,7 @@ export async function executeDemoTool(
         shown: true,
         address: DEMO_INBOX_ADDRESS,
         testTag: ctx.testTag,
-        instructions: `The address and the tag "${ctx.testTag}" are on their screen now. Don't invite them yet: a note follows with the exact invite. At most, say one short word like "There."`,
+        instructions: inviteNowInstructions(ctx.testTag),
       },
     };
   }

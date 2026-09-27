@@ -16,7 +16,8 @@ export const DEMO_TEST_USE = {
 export type Frame = Record<string, unknown> & { type: string };
 export const TAG = "Lime 42";
 
-export async function fakeServer(page: Page) {
+/** `onFrame` sees each frame the page sends (a test can play the platform's part). */
+export async function fakeServer(page: Page, onFrame?: (msg: Frame) => void) {
   const frames: Frame[] = [];
   let ws: WebSocketRoute | null = null;
   await page.routeWebSocket(/agents\.assemblyai\.com/, (socket) => {
@@ -29,6 +30,7 @@ export async function fakeServer(page: Page) {
         const session = msg.session as Record<string, unknown>;
         socket.send(JSON.stringify(session.agent_id ? { type: "session.ready", session_id: "sess_1" } : { type: "session.updated" }));
       }
+      onFrame?.(msg);
     });
   });
   let reply = 0;

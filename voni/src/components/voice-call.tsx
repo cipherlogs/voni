@@ -61,7 +61,8 @@ import { formatCallStatus } from "@/lib/calls/call-status";
 import { ACCENT_FLAG, getVoice, voiceLabel, voicePlaybackGain } from "@/lib/agents/voices";
 import {
   DEMO_VOICE_IDS,
-  welcomeBackInstructions,
+  SILENCE_CHECK_IN_INSTRUCTIONS,
+  SILENCE_CHECK_IN_MS,
   HOLD_TIMEOUT_INSTRUCTIONS,
   LATE_EMAIL_INSTRUCTIONS,
   MUTE_CHECK_IN_INSTRUCTIONS,
@@ -98,11 +99,10 @@ import {
   loadCallMemory,
   saveCallMemory,
   shouldParkOnDrop,
-  FLAP_WELCOME_MS,
   shouldRejoinAfterHold,
   type HoldSessionStatus,
 } from "@/lib/demo/hold";
-import { ReplyQueue, StakesLadder } from "@/lib/demo/stakes-ladder";
+import { StakesLadder } from "@/lib/demo/stakes-ladder";
 import { cn } from "@/lib/utils";
 
 /**
@@ -430,7 +430,6 @@ export function VoiceCall({
    */
   const clockRef = useRef<TalkClock | null>(null);
   const ladderRef = useRef<StakesLadder | null>(null);
-  const replyQueueRef = useRef<ReplyQueue | null>(null);
   const callTokenRef = useRef<string | null>(null);
   const lastAgentLineRef = useRef("");
   /**
@@ -484,7 +483,6 @@ export function VoiceCall({
   const returnPendingRef = useRef(false);
   /** Brief "Reconnecting…" state while a hold return re-establishes audio. */
   const [returning, setReturning] = useState(false);
-  const welcomedRef = useRef(false);
   /**
    * One window, one setter: the ref is read in socket/visibility callbacks,
    * the state renders the reconnecting note. Stable, so callbacks can close
@@ -494,16 +492,17 @@ export function VoiceCall({
     returnPendingRef.current = value;
     setReturning(value);
   }, []);
-  /** The welcome-back speaks once per return, on whichever arrival lands first. */
-  const welcomeBackOnce = useCallback(() => {
-    if (welcomedRef.current) return;
-    welcomedRef.current = true;
-    replyQueueRef.current?.enqueue(welcomeBackInstructions(emailTestRef.current, true));
+  /**
+   * Queue a line for Voni through the session's floor (lib/voice/floor.ts):
+   * it goes out only when nobody holds the floor, so no note ever lands on
+   * a reply, a tool call, or the caller.
+   */
+  const speak = useCallback((instructions: string, opts?: { key?: string; droppable?: boolean }) => {
+    const session = sessionRef.current;
+    if (session instanceof VoiceSession) session.speak(instructions, opts);
   }, []);
   /** Page hidden right now (demo): a drop then parks instead of resuming. */
   const hiddenRef = useRef(false);
-  /** When the page went hidden (demo), for the welcome-back after a long flap. */
-  const hiddenAtRef = useRef<number | null>(null);
   /** Server session id, saved with the call memory for a reload resume. */
   const sessionIdRef = useRef<string | null>(null);
   /**
@@ -595,7 +594,8 @@ export function VoiceCall({
     closingRef.current = true;
     // The call is over: no hold return is pending anymore either.
     setReturnPending(false);
-    replyQueueRef.current?.clear();
+    const session = sessionRef.current;
+    if (session instanceof VoiceSession) session.clearLines();
     closeTimerRef.current = setTimeout(() => void sessionRef.current?.stop(), CLOSE_FALLBACK_MS);
     return true;
   }, [setReturnPending]);
@@ -605,21 +605,19 @@ export function VoiceCall({
    * exact tag: from the show tool's result, or when Voni announced her
    * screen without calling it. `deliver` sends the invite instructions.
    */
-  const putTestUp = useCallback(
-    (deliver: (instructions: string) => void) => {
-      const tag = testTagRef.current;
-      if (!tag || closingRef.current) return;
-      setEmailTest({ ...emailTestRef.current, invited: true });
-      deliver(inviteNowInstructions(tag));
-    },
-    [setEmailTest],
-  );
+  /** The chip goes up: the test is invited (the invite itself is Voni's own line). */
+  const putTestUp = useCallback((): string | null => {
+    const tag = testTagRef.current;
+    if (!tag || closingRef.current) return null;
+    setEmailTest({ ...emailTestRef.current, invited: true });
+    return tag;
+  }, [setEmailTest]);
   /** Ask Voni to close the call, once. */
   const closeCall = useCallback(
     (instructions: string) => {
-      if (markClosing()) replyQueueRef.current?.enqueue(instructions);
+      if (markClosing()) speak(instructions, { key: "close" });
     },
-    [markClosing],
+    [markClosing, speak],
   );
 
   /**
@@ -663,8 +661,6 @@ export function VoiceCall({
       session.setOnHold(true);
       holdingRef.current = true;
       setHolding(true);
-      // A new hold cycle may welcome back once on return.
-      welcomedRef.current = false;
       saveMemory();
     },
     [mode, saveMemory],
@@ -721,16 +717,14 @@ export function VoiceCall({
       return;
     }
     voice?.setOnHold(false);
-    if (next === "unhold") {
-      welcomeBackOnce();
-      return;
-    }
-    // `await` (auto-resume in flight) or `resume` (parked): welcome back
-    // when audio lands; failures meanwhile rejoin silently (see onError).
+    if (next === "unhold") return;
+    // `await` (auto-resume in flight) or `resume` (parked): back when audio
+    // lands; failures meanwhile rejoin silently (see onError). No welcome
+    // line (owner, 2026-09-27): the silence check-in covers a quiet return.
     greetOnListenRef.current = true;
     setReturnPending(true);
     if (next === "resume") void voice?.resume();
-  }, [closeCall, setReturnPending, welcomeBackOnce]);
+  }, [closeCall, setReturnPending]);
 
   // Hold cap while away: the page may still run (hidden, parked) with no
   // return coming. Fires exitHold at the cap, which ends the call politely
@@ -749,10 +743,9 @@ export function VoiceCall({
       const id = setInterval(() => {
         const now = Date.now();
         setElapsed(clock.talkSeconds(now));
-        // Never let a check-in replace a pending goodbye (the queue is latest-wins).
-        // …or a pending welcome-back: the return lands undisturbed.
+        // Never after a goodbye, and never over a hold return still landing.
         if (clock.takeCheckIn(now) && !closingRef.current && !returnPendingRef.current) {
-          replyQueueRef.current?.enqueue(MUTE_CHECK_IN_INSTRUCTIONS);
+          speak(MUTE_CHECK_IN_INSTRUCTIONS, { key: "mute", droppable: true });
         }
         const test = emailTestRef.current;
         if (clock.isOver(now, talkLimitS(test))) {
@@ -802,13 +795,13 @@ export function VoiceCall({
           if (gatedRef.current === result.address) return;
           gatedRef.current = result.address;
           setEmailTest(emailTestAfterCheck(test, result));
-          replyQueueRef.current?.enqueue(checkEmailInstructions(result));
+          speak(checkEmailInstructions(result), { key: "email" });
           return;
         }
         if (result.status !== "found" || !result.exact) return;
         setEmailTest(emailTestAfterCheck(test, result));
         // Found before any invite on a carried tag: sent after the last call.
-        replyQueueRef.current?.enqueue(emailArrivedInstructions(result, { fromLastCall: !test.invited }));
+        speak(emailArrivedInstructions(result, { fromLastCall: !test.invited }), { key: "email" });
       } catch {
         // Offline for a beat: the next tick tries again.
       } finally {
@@ -819,7 +812,7 @@ export function VoiceCall({
     void check();
     const id = setInterval(check, INBOX_POLL_MS);
     return () => clearInterval(id);
-  }, [inboxPending, setEmailTest]);
+  }, [inboxPending, setEmailTest, speak]);
 
   // Demo hold wiring. `hidden` alone keeps the call live (a flap) but arms
   // parking, so a drop in the background waits for the visitor instead of
@@ -834,21 +827,8 @@ export function VoiceCall({
       hiddenRef.current = hidden;
       const session = sessionRef.current;
       if (session instanceof VoiceSession) session.setParkOnDrop(shouldParkOnDrop(true, hidden));
-      if (hidden) {
-        hiddenAtRef.current = Date.now();
-        saveMemory();
-        return;
-      }
-      const awayMs = hiddenAtRef.current === null ? 0 : Date.now() - hiddenAtRef.current;
-      hiddenAtRef.current = null;
-      // A flap (the call stayed live) of 5s+: one line about where the test is.
-      // A hold return says its own (welcomeBackOnce).
-      const st = stateRef.current;
-      const flap = !holdRef.current?.holding && (st === "listening" || st === "speaking");
-      if (flap && awayMs >= FLAP_WELCOME_MS && !closingRef.current) {
-        replyQueueRef.current?.enqueue(welcomeBackInstructions(emailTestRef.current, false));
-      }
-      exitHold();
+      if (hidden) saveMemory();
+      else exitHold();
     };
     const onFreeze = () => enterHold(Date.now());
     document.addEventListener("visibilitychange", onVisibility);
@@ -901,10 +881,9 @@ export function VoiceCall({
     if (state === "ended" && (closingRef.current || holdEndedRef.current)) clearCallMemory();
   }, [state]);
 
-  // A finished call drops its pending pacing work.
+  // A finished call drops its pending pacing work (the session drops its lines).
   useEffect(() => {
     if (state !== "ended") return;
-    replyQueueRef.current?.clear();
     if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
     closeTimerRef.current = null;
   }, [state]);
@@ -982,7 +961,6 @@ export function VoiceCall({
       void sessionRef.current?.stop();
       sessionRef.current = null;
       soundsRef.current?.stopAll();
-      replyQueueRef.current?.clear();
       if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
     },
     [],
@@ -1061,7 +1039,6 @@ export function VoiceCall({
       carryoverRef.current = null;
       greetOnListenRef.current = false;
       setReturnPending(false);
-      welcomedRef.current = false;
     }
     toolActiveRef.current = false;
     setToolActive(false);
@@ -1208,13 +1185,8 @@ export function VoiceCall({
         if (next === "listening" || next === "speaking") {
           if (returnPendingRef.current) setReturnPending(false);
           rejoiningRef.current = false;
-          // A line refused between sockets (welcome-back included) goes now.
-          replyQueueRef.current?.retry();
-          // Hold rejoin via in-flight auto-resume: one welcome back per return.
-          if (greetOnListenRef.current) {
-            greetOnListenRef.current = false;
-            welcomeBackOnce();
-          }
+          // A hold return has landed (a line refused between sockets goes on the floor's next tick).
+          greetOnListenRef.current = false;
         }
         setCallState(next);
       },
@@ -1259,14 +1231,11 @@ export function VoiceCall({
           sessionRef.current.sendContext(testTagContext(testTagRef.current));
         }
         // Post-grace hold restart: whisper the carried context so Voni
-        // resumes instead of starting over, then welcome the visitor back —
-        // once per return. (The resume-variant agent has no greeting, so
-        // this is the single first utterance, not a second one.)
+        // resumes instead of starting over (no welcome line).
         if (carryoverRef.current && sessionRef.current instanceof VoiceSession) {
           sessionRef.current.sendContext(carryoverRef.current);
           carryoverRef.current = null;
           rejoiningRef.current = false;
-          welcomeBackOnce();
         }
       },
       onAgentPartial: (partial) => {
@@ -1342,7 +1311,6 @@ export function VoiceCall({
           );
         }
       },
-      onReplyStarted: () => replyQueueRef.current?.onReplyStarted(),
       // Demo email test: the invite shows the address chip; a found email
       // is the provisional extension, a passed code check the verified one.
       onToolResult: (name, result) => {
@@ -1351,7 +1319,7 @@ export function VoiceCall({
           // The invite comes from the call, with the exact tag, in place of
           // the platform's own reply to this result: left to it, the tag was
           // skipped, garbled, or said twice in ~1 in 3 live runs.
-          putTestUp((instructions) => session.replaceNextReply(instructions));
+          putTestUp();
         } else if (name === CHECK_EMAIL_TOOL) {
           setEmailTest(emailTestAfterCheck(emailTestRef.current, checkResultFromData(result.data)));
         } else if (name === SEND_CODE_REPLY_TOOL) {
@@ -1368,16 +1336,16 @@ export function VoiceCall({
       onEndCall: () => {
         if (mode.kind === "demo") markClosing();
       },
-      onInputSpeechStarted: () => replyQueueRef.current?.onCallerSpeech(),
-      onReplyDone: () => replyQueueRef.current?.onReplyDone(),
       onAgentTurn: (turn) => {
         lastAgentLineRef.current = turn.text;
         // Voni announced her screen but never called the show tool: put the
         // test up and send the invite, as the tool's result would have.
         // Never once found (a callback's email already in: no invite, Q15).
         const test = emailTestRef.current;
-        if (mode.kind === "demo" && !test.invited && !test.found && mentionsScreen(turn.text)) {
-          putTestUp((instructions) => replyQueueRef.current?.enqueue(instructions));
+        // Only when no tool call ran for it (a running one puts the chip up itself).
+        if (mode.kind === "demo" && !test.invited && !test.found && !toolActiveRef.current && mentionsScreen(turn.text)) {
+          const tag = putTestUp();
+          if (tag) speak(inviteNowInstructions(tag), { key: "invite" });
         }
       },
       // Demo stakes ladder: Jev scores every visitor turn against the beat's
@@ -1400,7 +1368,8 @@ export function VoiceCall({
           console.debug("[voice-call] off-track", rung, verdict.source);
           const goal = beatGoal(emailTestRef.current);
           if (rung === "end") closeCall(rungInstructions(rung, goal));
-          else replyQueueRef.current?.enqueue(rungInstructions(rung, goal));
+          // No key: every rung is said, in order.
+          else speak(rungInstructions(rung, goal));
         });
       },
     }, {
@@ -1414,7 +1383,14 @@ export function VoiceCall({
     const debug = callDebugFlags();
     session.setPopProbe(debug.popProbe);
     session.setOutputGain(debug.gain ?? voicePlaybackGain(mode.kind === "demo" ? voiceId : config.voiceId));
-    replyQueueRef.current = new ReplyQueue((instructions) => session.requestReply(instructions));
+    // Demo: one check-in after 15s of silence on a free floor (owner, 2026-09-27).
+    if (mode.kind === "demo") {
+      session.setSilenceCheckIn({
+        afterMs: SILENCE_CHECK_IN_MS,
+        instructions: SILENCE_CHECK_IN_INSTRUCTIONS,
+        allowed: () => !mutedRef.current && !holdingRef.current && !closingRef.current && !returnPendingRef.current,
+      });
+    }
     // A preserved mute sticks to the fresh transport (pre-ready mutes are
     // held and sent as context on ready, same as a mid-connect mute press).
     if (preserving && mutedRef.current) session.setInputMuted(true);
@@ -1469,7 +1445,7 @@ export function VoiceCall({
       setStarting(false);
       notifyPending({ ...pendingRef.current, starting: false });
     }
-  }, [mode, notifyPending, voiceId, config, engine, cascadeUrl, setCallState, closeCall, markClosing, setReturnPending, welcomeBackOnce, enterHold, setEmailTest, setTestTag, putTestUp]);
+  }, [mode, notifyPending, voiceId, config, engine, cascadeUrl, setCallState, closeCall, markClosing, setReturnPending, enterHold, setEmailTest, setTestTag, putTestUp, speak]);
 
   useEffect(() => {
     startRef.current = start;

@@ -31,26 +31,32 @@ test("a 10s invite reply still gets the address and tag to the model, and the ch
   // go back mid-reply, not at reply.done (that deadlocked until the timeout).
   const replying = server.toolCall("show_test_address", {}, 10_000);
   await expect
-    .poll(() => server.toolResults().find((r) => r.callId === "call_r1")?.result.data?.testTag, { timeout: 2000 })
+    .poll(() => server.toolResults().find((r) => r.callId === "call_r1")?.result.data?.testTag, { timeout: 5000 })
     .toBe(TAG);
   await replying;
   await expect(chip(page)).toBeVisible();
   await expect(chip(page)).toContainText("hi@pilotxstudio.com");
   await expect(chip(page)).toContainText(TAG);
 
-  await chip(page).getByRole("button", { name: /copy address/i }).click();
+  const mailto = "mailto:hi@pilotxstudio.com?subject=Lime%2042";
+  if (testInfo.project.name === "mobile") {
+    // Phones: one tap on the address copies it and opens Mail (the tag as the subject).
+    const address = chip(page).getByRole("link", { name: /email hi@pilotxstudio\.com with subject Lime 42/i });
+    await expect(address).toBeVisible();
+    await expect(address).toHaveAttribute("href", mailto);
+    await expect(chip(page).getByRole("button", { name: /copy address/i })).toBeHidden();
+    // Keep the test page: stop the mailto navigation, keep the copy.
+    await page.evaluate(() => document.addEventListener("click", (e) => e.preventDefault(), { capture: false }));
+    await address.click();
+  } else {
+    await chip(page).getByRole("button", { name: /copy address/i }).click();
+    // Desktop keeps a separate mail button.
+    await expect(chip(page).getByRole("link", { name: /open your mail app/i })).toHaveAttribute("href", mailto);
+  }
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe("hi@pilotxstudio.com");
   await chip(page).getByRole("button", { name: /copy tag/i }).click();
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(TAG);
   await expect(page.getByRole("status").filter({ hasText: "Tag copied" })).toHaveCount(1);
-
-  const mail = chip(page).getByRole("link", { name: /email hi@pilotxstudio\.com/i });
-  if (testInfo.project.name === "mobile") {
-    await expect(mail).toBeVisible();
-    await expect(mail).toHaveAttribute("href", "mailto:hi@pilotxstudio.com?subject=Lime%2042");
-  } else {
-    await expect(mail).toBeHidden();
-  }
   expect(api.tokenBodies[0]).not.toHaveProperty("tagToken");
   expect(await page.evaluate(() => localStorage.getItem("voni:test-tag"))).toBe("tag-tok");
 });
@@ -163,7 +169,7 @@ test.describe("talk clock", () => {
   });
 });
 
-test.describe("the invite comes from the call, with the exact tag", () => {
+test.describe("the invite, said once with the exact tag", () => {
   test("Voni says 'on your screen' but never calls the tool: the call puts the test up itself", async ({ page }) => {
     await mockApis(page, { check: () => notArrived });
     const server = await fakeServer(page);
@@ -180,42 +186,21 @@ test.describe("the invite comes from the call, with the exact tag", () => {
 
   const AUDIO = Buffer.alloc(4800).toString("base64");
 
-  test("after the chip, the platform's own reply is replaced by one invite carrying the tag", async ({ page }) => {
+  test("the invite is Voni's own reply to the chip's result: the call never sends a second one", async ({ page }) => {
+    // sess_aacaf…: an invite note raced the platform's own invite and both were spoken.
     await mockApis(page, { check: () => notArrived });
     const server = await fakeServer(page);
     await startCall(page, server);
-    // The lead-in reply issues the tool call (result back at once).
-    server.say({ type: "reply.started", reply_id: "lead" });
-    server.say({ type: "reply.audio", reply_id: "lead", data: AUDIO });
+    server.say({ type: "reply.started", reply_id: "ack" });
+    server.say({ type: "reply.audio", reply_id: "ack", data: AUDIO });
     server.say({ type: "tool.call", call_id: "c1", name: "show_test_address", arguments: {} });
-    await expect.poll(() => server.toolResults().length).toBe(1);
-    await page.waitForTimeout(800);
-    expect(server.replyCreates(), "never mid-reply").toHaveLength(0);
-    server.say({ type: "reply.done", reply_id: "lead", status: "completed" });
-    // The platform's own reply to the result starts: it is replaced at once.
-    server.say({ type: "reply.started", reply_id: "auto" });
-    await expect.poll(() => server.replyCreates().filter((i) => /Say only the invite/.test(i)).length, { timeout: 2000 }).toBe(1);
-    expect(server.replyCreates().find((i) => /Say only the invite/.test(i))).toContain("with Lime 42 in the subject");
-    // Its words never reach the transcript.
-    server.say({ type: "transcript.agent", reply_id: "auto", text: "Send me an email with demo 102 in the subject." });
-    server.say({ type: "reply.done", reply_id: "auto", status: "completed" });
+    await expect.poll(() => server.toolResults().length, { timeout: 8000 }).toBe(1);
+    server.say({ type: "reply.done", reply_id: "ack", status: "completed" });
+    await expect(chip(page)).toBeVisible();
     server.say({ type: "reply.started", reply_id: "invite" });
-    server.say({ type: "transcript.agent", reply_id: "invite", text: "Send me an email with Lime 42 in the subject." });
+    server.say({ type: "transcript.agent", reply_id: "invite", text: "Send me an email from your work address with Lime 42 in the subject." });
     server.say({ type: "reply.done", reply_id: "invite", status: "completed" });
-    await expect(page.getByText("with Lime 42 in the subject").filter({ visible: true }).first()).toBeVisible();
-    await expect(page.getByText("demo 102")).toHaveCount(0);
-    await page.waitForTimeout(2000);
-    expect(server.replyCreates().filter((i) => /Say only the invite/.test(i)), "once").toHaveLength(1);
-  });
-
-  test("if the platform starts no reply after the chip, the invite is sent anyway", async ({ page }) => {
-    await mockApis(page, { check: () => notArrived });
-    const server = await fakeServer(page);
-    await startCall(page, server);
-    server.say({ type: "reply.started", reply_id: "lead" });
-    server.say({ type: "tool.call", call_id: "c1", name: "show_test_address", arguments: {} });
-    await expect.poll(() => server.toolResults().length).toBe(1);
-    server.say({ type: "reply.done", reply_id: "lead", status: "completed" });
-    await expect.poll(() => server.replyCreates().filter((i) => /Say only the invite/.test(i)).length, { timeout: 4000 }).toBe(1);
+    await page.waitForTimeout(4000);
+    expect(server.replyCreates().filter((i) => /invite/i.test(i)), "no invite note of ours").toHaveLength(0);
   });
 });

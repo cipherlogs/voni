@@ -170,17 +170,30 @@ function midReply(
   const played: string[] = [];
   const flushes: number[] = [];
   let settled = false;
+  // Like the worklet: reports what has played (nothing yet, by default), so
+  // a cut leaves the rest of the line unheard.
+  let sentSamples = 0;
+  let consumed = 0;
   made.internals["playout"] = {
     play: () => {
       played.push("chunk");
       settled = false;
+      sentSamples += 24_000;
     },
     flush: (fadeS?: number) => {
       flushes.push(fadeS ?? -1);
       settled = true;
+      consumed = sentSamples;
     },
     settled: () => settled,
     queuedMs: () => (settled ? 0 : 800),
+    sentSamples: () => sentSamples,
+    consumedSamples: () => consumed,
+  };
+  /** The queued audio played out: the floor sees playback settled. */
+  const drain = () => {
+    consumed = sentSamples;
+    settled = true;
   };
   made.handle({ type: "session.ready", session_id: "s1" });
   made.handle({ type: "reply.started", reply_id: "r1" });
@@ -195,7 +208,7 @@ function midReply(
     made.handle({ type: "input.speech.stopped" });
     made.handle({ type: "transcript.user", item_id: "u1", text });
   };
-  return { ...made, played, flushes, replyCreates, messages, serverCut };
+  return { ...made, played, flushes, replyCreates, messages, serverCut, drain };
 }
 
 test("speech starting over the agent never cuts it locally", () => {
@@ -212,7 +225,7 @@ test("a cut caused by filler resumes, superseding the server's own answer", () =
   serverCut("Okaay so");
   handle({ type: "reply.started", reply_id: "r2" }); // the server answers the filler
   const [create] = replyCreates();
-  assert.match(create.instructions, /Pick up where you left off/);
+  assert.match(create.instructions, /say exactly this and nothing else, word for word: "I'd handle booking and reminders"/);
   assert.match(create.instructions, /booking and reminders/, "knows where it was cut");
   const before = played.length;
   handle({ type: "reply.audio", reply_id: "r2", data: "" });
@@ -229,7 +242,7 @@ test("a resume is sent even if the server never answers the filler", async () =>
   serverCut("mm-hmm");
   assert.deepEqual(replyCreates(), []);
   await new Promise((resolve) => setTimeout(resolve, 600));
-  assert.match(replyCreates()[0].instructions, /Pick up where you left off/);
+  assert.match(replyCreates()[0].instructions, /say exactly this and nothing else, word for word: "I'd handle booking and reminders"/);
 });
 
 test("a cut with no words after it (noise) resumes after ~0.8s, without \"as I was saying\"", async () => {
@@ -242,9 +255,9 @@ test("a cut with no words after it (noise) resumes after ~0.8s, without \"as I w
   assert.deepEqual(replyCreates(), [], "gives real words time to land");
   await new Promise((resolve) => setTimeout(resolve, 500));
   const [create] = replyCreates();
-  assert.match(create?.instructions ?? "", /Pick up where you left off/);
+  assert.match(create?.instructions ?? "", /say exactly this and nothing else, word for word: "I'd handle booking and reminders"/);
   assert.match(create.instructions, /booking and reminders/);
-  assert.match(create.instructions, /without repeating those words or saying "as I was saying"/);
+  assert.doesNotMatch(create.instructions, /as I was saying/);
   assert.doesNotMatch(create.instructions, /only said ""/);
 });
 
@@ -259,7 +272,7 @@ function pacedReply(handlers: ConstructorParameters<typeof VoiceSession>[0] = {}
       sent += 24_000; // one second per chunk
     },
     flush: (fadeS?: number) => flushes.push(fadeS ?? -1),
-    settled: () => false,
+    settled: () => flushes.length > 0,
     queuedMs: () => 0,
     sentSamples: () => sent,
     consumedSamples: () => consumed,
@@ -317,8 +330,9 @@ test("a cut line keeps only the heard words, for the resume and the caption", as
   playMs(60_000); // the flush drops the rest; the worklet counts it as consumed
   await new Promise((resolve) => setTimeout(resolve, 1000)); // no words: the noise resume
   const create = sent.map((raw) => JSON.parse(raw)).find((m) => m.type === "reply.create");
-  assert.match(create?.instructions ?? "", /heard you up to: "I'd handle booking"/);
-  assert.doesNotMatch(create.instructions, /reminders/);
+  // The rest from the last heard word (it was cut mid-way), never the heard part again.
+  assert.match(create?.instructions ?? "", /word for word: "booking and reminders for you"/);
+  assert.doesNotMatch(create.instructions, /I'd handle/);
   assert.ok(partials.every((p) => !p.text.includes("reminders")), "the caption never showed unheard words");
 });
 
@@ -345,14 +359,34 @@ test("a noise cut into the goodbye resumes it and still hangs up after", async (
   handle({ type: "reply.audio", reply_id: "bye", data: "" });
   handle({ type: "input.speech.started" });
   handle({ type: "reply.done", reply_id: "bye", status: "interrupted" }); // a cough, no words
-  await new Promise((resolve) => setTimeout(resolve, 1800));
-  assert.match(replyCreates().at(-1)?.instructions ?? "", /Pick up where you left off/);
+  // The held end_call result goes out on the cut: the floor gives the
+  // platform's reply to it a moment before the rest of the goodbye.
+  await new Promise((resolve) => setTimeout(resolve, 3000));
+  assert.match(replyCreates().at(-1)?.instructions ?? "", /Say your short goodbye once more/);
   assert.equal(internals["explicitStop"], false);
   handle({ type: "reply.started", reply_id: "bye2" });
   handle({ type: "reply.audio", reply_id: "bye2", data: "" });
   handle({ type: "reply.done", reply_id: "bye2", status: "completed" });
   await new Promise((resolve) => setTimeout(resolve, 2000));
   assert.equal(internals["explicitStop"], true, "the finished goodbye hangs up");
+});
+
+test("a goodbye cut by a noise with only its last words left hangs up, not repeated", async () => {
+  const { session, handle, internals, replyCreates, played } = midReply();
+  withDemoTools(internals, session);
+  handle({ type: "reply.done", reply_id: "r1", status: "completed" });
+  handle({ type: "reply.started", reply_id: "bye" });
+  handle({ type: "transcript.agent.delta", reply_id: "bye", text: "Thanks for trying me out today, Nedal. Take care!" });
+  endCall(handle, "e9");
+  await settle();
+  handle({ type: "reply.audio", reply_id: "bye", data: "" });
+  (internals["playout"] as { consumedSamples: () => number }).consumedSamples = () => 24_000 * 5; // all but "Take care!"
+  handle({ type: "input.speech.started" });
+  handle({ type: "reply.done", reply_id: "bye", status: "interrupted" });
+  await new Promise((resolve) => setTimeout(resolve, 2500));
+  assert.deepEqual(replyCreates(), [], "never said again");
+  assert.equal(internals["explicitStop"], true);
+  assert.ok(played.length > 0);
 });
 
 test("a caller still talking after a cut is never resumed over", async () => {
@@ -369,70 +403,87 @@ test("a caller still talking after a cut is never resumed over", async () => {
   assert.deepEqual(replyCreates(), [], "a real point is answered by the server, not resumed");
 });
 
-test("replaceNextReply: the platform's next reply is dropped and ours replaces it; the lead-in keeps playing", async () => {
-  const { session, handle, replyCreates, played, flushes } = midReply();
-  // The lead-in (r1) is still playing when the demo asks for the invite.
-  session.replaceNextReply("Invite them now.");
+test("the floor: a spoken line waits out a tool call and the platform's reply to its result (the lost reveal)", async () => {
+  // sess_aacaf… 164s: a note went out while check_code ran; the reveal was lost.
+  const { session, handle, internals, replyCreates, drain } = midReply();
+  let release: (r: unknown) => void = () => undefined;
+  withDemoTools(internals, session);
+  globalThis.fetch = (() => new Promise((resolve) => (release = resolve))) as unknown as typeof fetch;
   handle({ type: "reply.done", reply_id: "r1", status: "completed" });
-  handle({ type: "reply.started", reply_id: "auto" }); // the platform's own reply to the tool result
-  assert.deepEqual(replyCreates().map((c) => c.instructions), ["Invite them now."]);
-  assert.deepEqual(flushes, [], "the lead-in's queued audio is never cut");
-  const before = played.length;
-  handle({ type: "reply.audio", reply_id: "auto", data: "" });
-  assert.equal(played.length, before, "the replaced reply never plays");
-  handle({ type: "reply.done", reply_id: "auto", status: "completed" });
-  handle({ type: "reply.started", reply_id: "ours" });
-  handle({ type: "reply.audio", reply_id: "ours", data: "" });
-  assert.equal(played.length, before + 1, "ours plays");
+  handle({ type: "reply.started", reply_id: "t1" });
+  handle({ type: "tool.call", call_id: "c1", name: "check_code", arguments: { code: "8703" } });
+  handle({ type: "reply.done", reply_id: "t1", status: "completed" }); // a silent tool-call reply
+  session.speak("a note");
+  await new Promise((resolve) => setTimeout(resolve, 600));
+  assert.deepEqual(replyCreates(), [], "the tool is still running");
+  release(new Response(JSON.stringify({ ok: true, data: { status: "correct" } })));
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  assert.deepEqual(replyCreates(), [], "the platform's reply to the result is coming");
+  handle({ type: "reply.started", reply_id: "reveal" });
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  assert.deepEqual(replyCreates(), [], "never over the reveal");
+  handle({ type: "reply.done", reply_id: "reveal", status: "completed" });
+  drain();
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.deepEqual(replyCreates().map((c) => c.instructions), ["a note"]);
+  await session.stop();
 });
 
-test("replaceNextReply resends ours when the platform ignored it (nothing starts after the replaced reply)", async () => {
-  // Measured live: a reply.create sent at the very start of the platform's
-  // reply was sometimes ignored; that reply ran on (and was dropped), so the
-  // visitor would hear nothing.
-  const { session, handle, replyCreates } = midReply();
+test("the floor: never over the caller; a keyed line is said once", async () => {
+  const { session, handle, replyCreates, drain } = midReply();
   handle({ type: "reply.done", reply_id: "r1", status: "completed" });
-  session.replaceNextReply("Invite them now.");
-  handle({ type: "reply.started", reply_id: "auto" });
-  handle({ type: "reply.done", reply_id: "auto", status: "completed" });
-  await new Promise((resolve) => setTimeout(resolve, 600));
-  assert.equal(replyCreates().length, 1, "gives ours a moment to start");
-  await new Promise((resolve) => setTimeout(resolve, 600));
-  assert.deepEqual(replyCreates().map((c) => c.instructions), ["Invite them now.", "Invite them now."]);
+  drain();
+  handle({ type: "input.speech.started" });
+  session.speak("invite 1", { key: "invite" });
+  session.speak("invite 2", { key: "invite" });
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  assert.deepEqual(replyCreates(), [], "the caller is talking");
+  handle({ type: "transcript.user", item_id: "u1", text: "Hang on." });
+  handle({ type: "reply.started", reply_id: "answer" }); // the platform answers them
+  handle({ type: "reply.done", reply_id: "answer", status: "completed" });
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.deepEqual(replyCreates().map((c) => c.instructions), ["invite 2"]);
+  await session.stop();
+});
+
+test("a tool result never makes the session send a line of its own", async () => {
+  const { session, handle, internals, replyCreates } = midReply();
+  withDemoTools(internals, session, { ok: true, data: { shown: true, testTag: "Lime 42", instructions: "Say the invite." } });
+  handle({ type: "tool.call", call_id: "c1", name: "show_test_address", arguments: {} });
+  handle({ type: "reply.done", reply_id: "r1", status: "completed" });
+  await new Promise((resolve) => setTimeout(resolve, 3000));
+  assert.deepEqual(replyCreates(), [], "the invite is the platform's own reply to the result");
+  await session.stop();
+});
+
+test("our line cut by a real question is said again, whole, after the answer", async () => {
+  const { session, handle, replyCreates, drain } = midReply({ judgeBargeIn: async () => "yield" });
+  handle({ type: "reply.done", reply_id: "r1", status: "completed" });
+  drain();
+  session.speak("Found it: tell them.");
+  await new Promise((resolve) => setTimeout(resolve, 200));
   handle({ type: "reply.started", reply_id: "ours" });
-  handle({ type: "reply.done", reply_id: "ours", status: "completed" });
+  handle({ type: "transcript.agent.delta", reply_id: "ours", text: "Found it, Nedal. I'm sending you a quick reply now." });
+  handle({ type: "input.speech.started" });
+  handle({ type: "reply.done", reply_id: "ours", status: "interrupted" });
+  handle({ type: "transcript.user", item_id: "u1", text: "Wait, what are you sending me exactly?" });
+  await settle(); // the judge's verdict
+  handle({ type: "reply.started", reply_id: "answer" });
+  handle({ type: "reply.done", reply_id: "answer", status: "completed" });
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.deepEqual(replyCreates().map((c) => c.instructions), ["Found it: tell them.", "Found it: tell them."]);
+  await session.stop();
+});
+
+test("a noise cut with only a few words left says nothing more", async () => {
+  const { session, handle, replyCreates } = midReply();
+  handle({ type: "reply.started", reply_id: "g" });
+  handle({ type: "transcript.agent.delta", reply_id: "g", text: "Ready?" });
+  handle({ type: "input.speech.started" });
+  handle({ type: "reply.done", reply_id: "g", status: "interrupted" });
   await new Promise((resolve) => setTimeout(resolve, 1200));
-  assert.equal(replyCreates().length, 2, "never a third");
-});
-
-test("replaceNextReply does not resend when the supersede took (the platform ends its reply, then starts ours)", async () => {
-  // Measured live order: reply.done(replaced) and reply.started(ours) in the same millisecond, done first.
-  const { session, handle, replyCreates } = midReply();
-  handle({ type: "reply.done", reply_id: "r1", status: "completed" });
-  session.replaceNextReply("Invite them now.");
-  handle({ type: "reply.started", reply_id: "auto" });
-  handle({ type: "reply.done", reply_id: "auto", status: "completed" });
-  handle({ type: "reply.started", reply_id: "ours" });
-  await new Promise((resolve) => setTimeout(resolve, 1300));
-  assert.equal(replyCreates().length, 1);
-});
-
-test("replaceNextReply sends ours anyway when the platform starts no reply", async () => {
-  const { session, handle, replyCreates } = midReply();
-  handle({ type: "reply.done", reply_id: "r1", status: "completed" });
-  session.replaceNextReply("Invite them now.", 300);
-  await new Promise((resolve) => setTimeout(resolve, 400));
-  assert.deepEqual(replyCreates().map((c) => c.instructions), ["Invite them now."]);
-});
-
-test("replaceNextReply's fallback never cuts the line still playing: it waits for reply.done", async () => {
-  const { session, handle, replyCreates } = midReply();
-  session.replaceNextReply("Invite them now.", 300);
-  await new Promise((resolve) => setTimeout(resolve, 700));
-  assert.deepEqual(replyCreates(), [], "the lead-in is still going");
-  handle({ type: "reply.done", reply_id: "r1", status: "completed" });
-  await new Promise((resolve) => setTimeout(resolve, 400));
-  assert.deepEqual(replyCreates().map((c) => c.instructions), ["Invite them now."]);
+  assert.deepEqual(replyCreates(), [], "the caller got the point");
+  await session.stop();
 });
 
 test("steering after a cut is answered as a normal turn", async () => {

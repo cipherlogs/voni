@@ -135,9 +135,16 @@ test("Voni's lines follow the check: reveal only on a pass, never the code on a 
   assert.doesNotMatch(REPLY_SENT_INSTRUCTIONS, /OTP|security/, "no early reveal");
 });
 
-test("the invite never repeats the lead-in Voni already said", async () => {
-  const { inviteNowInstructions } = await import("./voni-agent");
-  assert.match(inviteNowInstructions("Lotus 82"), /already said your lead-in; don't repeat it/);
+test("the invite comes once, from the show tool's own result: no lead-in, no second note", async () => {
+  const { inviteNowInstructions, voniConfig } = await import("./voni-agent");
+  const { executeDemoTool, SHOW_TEST_ADDRESS_TOOL } = await import("./demo-tools");
+  const result = await executeDemoTool(SHOW_TEST_ADDRESS_TOOL, {}, { testTag: "Lotus 82" });
+  assert.ok(result.ok);
+  assert.equal(result.data.instructions, inviteNowInstructions("Lotus 82"));
+  assert.match(inviteNowInstructions("Lotus 82"), /Say only the invite, once[\s\S]*with Lotus 82 in the subject[\s\S]*Don't repeat anything/);
+  const rules = voniConfig("any").knowledge;
+  assert.match(rules, /Always respond to what the caller actually said first/);
+  assert.doesNotMatch(rules, /Let me put something on your screen|a note follows/);
 });
 
 test("the call opens with the hook, and a yes goes straight to the test", async () => {
@@ -145,7 +152,7 @@ test("the call opens with the hook, and a yes goes straight to the test", async 
   assert.match(VONI_GREETINGS.en, /Let's try something cool/);
   assert.doesNotMatch(VONI_GREETINGS.en, /business/, "the business comes later");
   const rules = voniConfig("any").knowledge;
-  assert.match(rules, /As soon as they say yes[\s\S]*set up the live test right away/);
+  assert.match(rules, /As soon as they say yes[\s\S]*in that same turn, put the test on their screen/);
   assert.doesNotMatch(rules, /Once they've told you a little about their business/);
 });
 
@@ -160,12 +167,8 @@ test("a personal address: acknowledged, asked again, never a hang-up", async () 
   assert.equal(beatGoal({ ...invited, gated: true }), OPEN_BEAT_GOAL, "no strikes for not having a work email");
 });
 
-test("welcome back asks about wherever the test is", async () => {
-  const { welcomeBackInstructions, HOLD_RETURN_INSTRUCTIONS } = await import("./voni-agent");
-  assert.match(welcomeBackInstructions({ invited: true, found: false }, false), /"Welcome back! Is the email sent\?"/);
-  const replied = { invited: true, found: true, replied: true };
-  assert.match(welcomeBackInstructions(replied, false), /"Welcome back! Did you find the code\?"/);
-  assert.match(welcomeBackInstructions({ ...replied, verified: true }, false), /one short "Welcome back!"/);
-  assert.match(welcomeBackInstructions({ invited: true, found: false, gated: true }, false), /one short "Welcome back!"/);
-  assert.equal(welcomeBackInstructions({ invited: false, found: false }, true), HOLD_RETURN_INSTRUCTIONS);
+test("the silence check-in is one short line", async () => {
+  const { SILENCE_CHECK_IN_INSTRUCTIONS, SILENCE_CHECK_IN_MS } = await import("./voni-agent");
+  assert.equal(SILENCE_CHECK_IN_MS, 15_000);
+  assert.match(SILENCE_CHECK_IN_INSTRUCTIONS, /Still with me\? Take your time\.[\s\S]*Nothing else/);
 });

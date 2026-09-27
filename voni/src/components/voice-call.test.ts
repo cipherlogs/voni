@@ -145,11 +145,10 @@ test("hidden stays live; hold starts only on freeze or a hidden drop", () => {
   assert.match(call, /const previous = sessionRef\.current;/);
   assert.match(call, /sessionRef\.current = null;/);
   assert.match(call, /await previous\.stop\(\)/);
-  // One welcome per return; a line refused between sockets retries on live.
-  assert.match(call, /welcomedRef\.current = false/);
-  assert.match(call, /const welcomeBackOnce = useCallback/);
-  assert.match(call, /if \(welcomedRef\.current\) return;/);
-  assert.match(call, /replyQueueRef\.current\?\.retry\(\)/);
+  // No welcome-back line on a return (owner, 2026-09-27); every prompted
+  // line goes through the session's floor, never straight to the socket.
+  assert.doesNotMatch(call, /welcomeBack|welcomedRef|ReplyQueue|replaceNextReply/);
+  assert.match(call, /session\.speak\(instructions, opts\)/);
   // On-screen state: hold status, holding marker, away-ended copy.
   assert.match(call, /On hold ·/);
   assert.match(call, /data-holding=\{holding\}/);
