@@ -6,7 +6,7 @@ import {
   type VoiceTool,
 } from "@/lib/tools/definitions";
 import type { ToolResponse } from "@/lib/tools/execute";
-import { DEMO_INBOX_ADDRESS, DEMO_INBOX_SPOKEN } from "./email-test";
+import { DEMO_INBOX_ADDRESS } from "./email-test";
 
 /**
  * The demo agent's tools, run server-side for one verified demo call (the
@@ -23,17 +23,20 @@ export const SHOW_TEST_ADDRESS_VOICE_TOOL: VoiceTool = {
   type: "function",
   name: SHOW_TEST_ADDRESS_TOOL,
   description:
-    "Put your test inbox address on the caller's screen as a tap-to-copy chip. Call it the moment you invite the caller to send you an email from their work address, then say the address once.",
+    "Put your test inbox address and the caller's test tag on their screen. Call it the moment you invite the caller to send you an email from their work address; the result tells you the tag to say.",
   parameters: { type: "object", properties: {}, additionalProperties: false },
   execution_mode: "interactive",
-  timeout_seconds: 5,
+  // Interactive results reach the model only when its reply finishes, and the
+  // invite reply is often 10s long: a short timeout made the model give up and
+  // invent an address (sess_c477d8f8).
+  timeout_seconds: 30,
 };
 
 export const CHECK_EMAIL_VOICE_TOOL: VoiceTool = {
   type: "function",
   name: CHECK_EMAIL_TOOL,
   description:
-    "Look for the caller's email in your busy test inbox. Call it as soon as the caller tells you which address they sent from, and again whenever they correct it or give another one.",
+    "Look for the caller's email in your busy test inbox. Call it when the caller says they've sent it (no address needed: their test tag finds it), and again with an address only if the caller forgot the tag and told you which address they sent from.",
   parameters: {
     type: "object",
     properties: {
@@ -41,14 +44,14 @@ export const CHECK_EMAIL_VOICE_TOOL: VoiceTool = {
         type: "string",
         maxLength: 200,
         examples: ["andres@casaverde-realty.com"],
-        description: "The email address the caller says they sent from, exactly as you heard it.",
+        description:
+          "Only when the caller forgot the tag: the address they said they sent from, exactly as you heard it. Leave it out otherwise; never a placeholder.",
       },
     },
-    required: ["address"],
     additionalProperties: false,
   },
   execution_mode: "interactive",
-  timeout_seconds: 15,
+  timeout_seconds: 30,
 };
 
 /** Every tool the demo agent carries, in stored-body order. */
@@ -58,14 +61,20 @@ export const DEMO_VOICE_TOOLS: VoiceTool[] = [
   CHECK_EMAIL_VOICE_TOOL,
 ];
 
-export async function executeDemoTool(name: string, rawArguments: unknown): Promise<ToolResponse> {
+export async function executeDemoTool(
+  name: string,
+  rawArguments: unknown,
+  ctx: { testTag?: string | null } = {},
+): Promise<ToolResponse> {
   if (name === SHOW_TEST_ADDRESS_TOOL) {
+    if (!ctx.testTag) return { ok: false, error: "No test tag on this call.", retryable: false };
     return {
       ok: true,
       data: {
         shown: true,
         address: DEMO_INBOX_ADDRESS,
-        instructions: `The address is on their screen now. Say it once, as '${DEMO_INBOX_SPOKEN}', and tell them to let you know when it's sent.`,
+        testTag: ctx.testTag,
+        instructions: `The address and the tag "${ctx.testTag}" are on their screen now. Don't invite them yet: a note follows with the exact invite. At most, say one short word like "There."`,
       },
     };
   }

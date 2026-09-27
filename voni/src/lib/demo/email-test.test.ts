@@ -4,6 +4,8 @@ import {
   EMAIL_TEST_START,
   PROVISIONAL_TALK_S,
   checkEmail,
+  checkTag,
+  mentionsScreen,
   checkResultFromData,
   checkResultToData,
   emailTestAfterCheck,
@@ -176,16 +178,18 @@ test("check: our own inbox's mail is never the caller's", async () => {
   assert.deepEqual(result, { status: "invalid" });
 });
 
-test("extension: a business claim is provisional (~4 min), free and invalid change nothing", () => {
+test("extension: only an arrived business email earns the 6 minutes; a spoken claim earns nothing", () => {
+  assert.equal(TALK_BASE_S, 240);
+  assert.equal(PROVISIONAL_TALK_S, 360);
   assert.equal(talkLimitS(EMAIL_TEST_START), TALK_BASE_S);
-  const free = emailTestAfterCheck(EMAIL_TEST_START, { status: "free", address: "a@gmail.com" });
-  assert.deepEqual(free, EMAIL_TEST_START);
-  const invalid = emailTestAfterCheck(EMAIL_TEST_START, { status: "invalid" });
-  assert.deepEqual(invalid, EMAIL_TEST_START);
-  const claimed = emailTestAfterCheck(EMAIL_TEST_START, { status: "not_arrived", address: "a@acme.com", name: null });
-  assert.deepEqual(claimed, { invited: false, claim: "a@acme.com", found: false });
-  assert.equal(talkLimitS(claimed), PROVISIONAL_TALK_S);
-  const found = emailTestAfterCheck(claimed, {
+  assert.equal(talkLimitS(emailTestAfterCheck(EMAIL_TEST_START, { status: "free", address: "a@gmail.com" })), TALK_BASE_S);
+  for (const r of [
+    { status: "invalid" },
+    { status: "not_arrived", address: "a@acme.com", name: null },
+  ] as const) {
+    assert.deepEqual(emailTestAfterCheck(EMAIL_TEST_START, r), EMAIL_TEST_START, r.status);
+  }
+  const found = emailTestAfterCheck(EMAIL_TEST_START, {
     status: "found",
     address: "a@acme.com",
     from: "a@acme.com",
@@ -194,9 +198,9 @@ test("extension: a business claim is provisional (~4 min), free and invalid chan
     messageId: "m1",
     threadId: "t1",
   });
-  assert.deepEqual(found, { invited: false, claim: "a@acme.com", found: true });
+  assert.deepEqual(found, { invited: false, found: true });
   assert.equal(talkLimitS(found), PROVISIONAL_TALK_S);
-  const near = emailTestAfterCheck(claimed, {
+  const near = emailTestAfterCheck(EMAIL_TEST_START, {
     status: "found",
     address: "a@acme.com",
     from: "b@acme.com",
@@ -208,9 +212,95 @@ test("extension: a business claim is provisional (~4 min), free and invalid chan
   assert.equal(near.found, false, "a near miss waits for the spelled-out address");
 });
 
+test("a gated personal-address email is not 'still on its way'", () => {
+  const gated = emailTestAfterCheck({ invited: true, found: false }, { status: "free", address: "a@gmail.com" });
+  assert.deepEqual(gated, { invited: true, found: false, gated: true });
+  assert.equal(talkLimitS(gated), TALK_BASE_S, "no extension for a personal address");
+});
+
 test("extension: once found, a later check never un-finds it", () => {
-  const found = { invited: true, claim: "a@acme.com", found: true };
-  assert.deepEqual(emailTestAfterCheck(found, { status: "not_arrived", address: "a@acme.com", name: null }), found);
+  const found = { invited: true, found: true };
+  assert.deepEqual(emailTestAfterCheck(found, { status: "not_arrived", address: null, name: null }), found);
+});
+
+const tagged = (id: string, from: string, subject: string, receivedAt = 1, extra: Partial<InboxMessage> = {}) =>
+  msg(id, from, receivedAt, { subject, ...extra });
+
+test("tag: the newest email carrying the tag is the visitor's, named from its address", async () => {
+  const result = await checkTag("Lime 42", {
+    listTagged: listed([
+      tagged("m1", "someone@else.com", "Lime 43", 5),
+      tagged("m2", "andres.garcia@acme.com", "lime42", 4, { fromName: "Bob Stone" }),
+      tagged("m3", "old@acme.com", "Lime 42", 1),
+    ]),
+  });
+  assert.deepEqual(result, {
+    status: "found",
+    address: "andres.garcia@acme.com",
+    from: "andres.garcia@acme.com",
+    name: "Andres",
+    exact: true,
+    messageId: "m2",
+    threadId: "t_m2",
+  });
+});
+
+test("tag: found in the body too, however it was typed (the owner's real test: subject 'ops', body 'lemon 93')", async () => {
+  for (const body of ["lemon 93", "Lemon93", "LEMON-93 thanks!"]) {
+    const result = await checkTag("Lemon 93", {
+      listTagged: listed([tagged("m1", "andres@acme.com", "ops", 1, { snippet: body })]),
+    });
+    assert.equal(result.status, "found", body);
+  }
+});
+
+test("tag: the tag in both subject and body (the Mail button pre-fills the subject) is found", async () => {
+  const result = await checkTag("Lemon 93", {
+    listTagged: listed([tagged("m1", "andres@acme.com", "Lemon 93", 1, { snippet: "Hi Voni, Lemon 93 here" })]),
+  });
+  assert.equal(result.status, "found");
+});
+
+test("tag: a subject carrying several tags matches no one (one email must not claim many visitors)", async () => {
+  const result = await checkTag("Lime 42", {
+    listTagged: listed([
+      tagged("m1", "spam@acme.com", "Lime 42 Coral 17 Pepper 90", 3),
+      tagged("m2", "spam2@acme.com", "hi", 2, { snippet: "Lime 42 Coral 17 Pepper 90 Rose 11" }),
+      tagged("m3", "andres@acme.com", "Lime 42", 1),
+    ]),
+  });
+  assert.equal(result.status === "found" && result.from, "andres@acme.com", "many tags in the subject or the body match no one");
+});
+
+test("tag: nothing tagged yet → not arrived, with no address to say", async () => {
+  const result = await checkTag("Lime 42", { listTagged: listed([tagged("m1", "a@acme.com", "Lime 24")]) });
+  assert.deepEqual(result, { status: "not_arrived", address: null, name: null });
+});
+
+test("tag: a free-email sender hits the gate on the sender's own domain", async () => {
+  const result = await checkTag("Lime 42", { listTagged: listed([tagged("m1", "nidal@gmail.com", "Lime 42")]) });
+  assert.deepEqual(result, { status: "free", address: "nidal@gmail.com" });
+});
+
+test("tag: spoofed (headers) or flagged (Jev) tagged emails are skipped", async () => {
+  const spoofed = tagged("m2", "ceo@acme.com", "Lime 42", 2, { authResults: "dmarc=fail" });
+  const real = tagged("m1", "andres@acme.com", "Lime 42", 1);
+  const byHeaders = await checkTag("Lime 42", { listTagged: listed([spoofed, real]) });
+  assert.equal(byHeaders.status === "found" && byHeaders.from, "andres@acme.com");
+  const byJev = await checkTag("Lime 42", {
+    listTagged: listed([tagged("m3", "spam@promo.biz", "Lime 42", 3), real]),
+    jevSpoof: async (m) => m.from === "spam@promo.biz",
+  });
+  assert.equal(byJev.status === "found" && byJev.from, "andres@acme.com");
+});
+
+test("tag: an unreadable inbox reads as not arrived", async () => {
+  const result = await checkTag("Lime 42", {
+    listTagged: async () => {
+      throw new Error("gmail down");
+    },
+  });
+  assert.equal(result.status, "not_arrived");
 });
 
 test("the browser reads a check back from the tool route's data", () => {
@@ -229,7 +319,9 @@ test("the route's data and the browser's read agree, and never carry message ids
     { status: "invalid" },
     { status: "free", address: "a@gmail.com" },
     { status: "not_arrived", address: "a@b.com", name: "Ann" },
+    { status: "not_arrived", address: null, name: null },
     { status: "found", address: "a@b.com", from: "a@b.com", name: null, exact: false, messageId: "m", threadId: "t" },
+    { status: "found", address: "a@b.com", from: "a@b.com", name: "Al", exact: true, messageId: "m", threadId: "t", returning: true },
   ] as const;
   for (const r of results) {
     const data = checkResultToData(r);
@@ -237,4 +329,11 @@ test("the route's data and the browser's read agree, and never carry message ids
     const back = checkResultFromData(data);
     assert.deepEqual(back, r.status === "found" ? { ...r, from: "", messageId: "", threadId: "" } : r);
   }
+});
+
+test("Voni putting something on the screen is recognised (the call then puts the test up itself)", () => {
+  assert.equal(mentionsScreen("Let me put something on your screen."), true);
+  assert.equal(mentionsScreen("Use the tag I've put on screen."), true);
+  assert.equal(mentionsScreen("I could screen your calls after hours."), false);
+  assert.equal(mentionsScreen("Your customers see the price on the screen when they book."), false, "business talk");
 });

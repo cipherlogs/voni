@@ -30,6 +30,7 @@ import {
   MessageScrollerItem,
   MessageScrollerProvider,
   MessageScrollerViewport,
+  useMessageScroller,
 } from "@/components/ui/message-scroller";
 import { LoadingButton } from "@/components/loading-button";
 import { Chat01 } from "@/components/chat-01/chat-01";
@@ -60,15 +61,18 @@ import { formatCallStatus } from "@/lib/calls/call-status";
 import { ACCENT_FLAG, getVoice, voiceLabel, voicePlaybackGain } from "@/lib/agents/voices";
 import {
   DEMO_VOICE_IDS,
-  HOLD_RETURN_CLAIM_INSTRUCTIONS,
+  HOLD_RETURN_SENT_INSTRUCTIONS,
   HOLD_RETURN_INSTRUCTIONS,
   HOLD_TIMEOUT_INSTRUCTIONS,
   LATE_EMAIL_INSTRUCTIONS,
   MUTE_CHECK_IN_INSTRUCTIONS,
   TIME_UP_INSTRUCTIONS,
   beatGoal,
+  checkEmailInstructions,
   emailArrivedInstructions,
+  inviteNowInstructions,
   rungInstructions,
+  testTagContext,
   voniConfig,
 } from "@/lib/demo/voni-agent";
 import { TalkClock } from "@/lib/demo/talk-clock";
@@ -77,6 +81,9 @@ import {
   EMAIL_TEST_START,
   checkResultFromData,
   emailTestAfterCheck,
+  loadTagToken,
+  mentionsScreen,
+  saveTagToken,
   talkLimitS,
   type EmailTestState,
 } from "@/lib/demo/email-test";
@@ -154,7 +161,7 @@ export { HANGUP_RED };
 
 /** Session caps, in seconds. The server enforces them; the UI only mirrors. */
 export const INLINE_CAP_SECONDS = 180;
-/** Demo: re-check the inbox this often after a business claim whose email has not landed. */
+/** Demo: re-check the inbox this often once the email test is invited. */
 const INBOX_POLL_MS = 8000;
 /** After asking Voni to close, stop the session ourselves if it never does. */
 const CLOSE_FALLBACK_MS = 20000;
@@ -244,6 +251,27 @@ function StreamingText({ text }: { text: string }) {
 }
 
 /**
+ * The transcript viewport, following the newest line chat-style. The
+ * scroller stops following on any wheel or touch input, even a wheel tick at
+ * the bottom that moves nothing, and only re-checks on a scroll event, which
+ * never comes there, so new lines piled up out of view. Scrolling down while
+ * at the bottom (or lifting a finger there) follows again.
+ */
+function FollowingViewport(props: React.ComponentProps<typeof MessageScrollerViewport>) {
+  const { scrollToEnd } = useMessageScroller();
+  const refollow = (viewport: HTMLElement, down: boolean) => {
+    if (down && viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight <= 8) scrollToEnd();
+  };
+  return (
+    <MessageScrollerViewport
+      {...props}
+      onWheel={(event) => refollow(event.currentTarget, event.deltaY >= 0)}
+      onTouchEnd={(event) => refollow(event.currentTarget, true)}
+    />
+  );
+}
+
+/**
  * Demo transcript in the mockup's flat idiom: a small speaker label over
  * each line and the live caption as the trailing muted line. Scrolling and
  * follow stay on MessageScroller; tool latency remains in the status line.
@@ -263,7 +291,7 @@ function DemoTranscript({
   return (
     <MessageScrollerProvider autoScroll defaultScrollPosition="end">
       <MessageScroller className="min-h-0 flex-1">
-        <MessageScrollerViewport aria-label="Call transcript" aria-live="polite">
+        <FollowingViewport aria-label="Call transcript" aria-live="polite">
           <MessageScrollerContent className="flex flex-col gap-3">
             {lines.map((line, index) => (
               <MessageScrollerItem
@@ -287,7 +315,7 @@ function DemoTranscript({
               </MessageScrollerItem>
             ))}
           </MessageScrollerContent>
-        </MessageScrollerViewport>
+        </FollowingViewport>
         <MessageScrollerButton />
       </MessageScroller>
       {footer ? <div className="flex flex-col items-center gap-1.5 pt-2">{footer}</div> : null}
@@ -412,6 +440,20 @@ export function VoiceCall({
     emailTestRef.current = next;
     setEmailTestState(next);
   }, []);
+  /**
+   * The visitor's Test tag for this call (from the token route), and whether
+   * it was carried over from an earlier call (its email may already be in).
+   * The browser keeps the signed tag token for a day (`TAG_TOKEN_KEY`).
+   */
+  const [testTag, setTestTagState] = useState<string | null>(null);
+  const testTagRef = useRef<string | null>(null);
+  const setTestTag = useCallback((tag: string | null) => {
+    testTagRef.current = tag;
+    setTestTagState(tag);
+  }, []);
+  const [tagCarried, setTagCarried] = useState(false);
+  /** The personal address the gate was already spoken for (once per sender). */
+  const gatedRef = useRef<string | null>(null);
   const closingRef = useRef(false);
   const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   /**
@@ -452,11 +494,10 @@ export function VoiceCall({
   const welcomeBackOnce = useCallback(() => {
     if (welcomedRef.current) return;
     welcomedRef.current = true;
-    // Back right after the invite: most likely from sending the email, so
-    // the welcome-back is the claim question.
+    // Back right after the invite: most likely from sending the email.
     const test = emailTestRef.current;
     replyQueueRef.current?.enqueue(
-      test.invited && !test.claim ? HOLD_RETURN_CLAIM_INSTRUCTIONS : HOLD_RETURN_INSTRUCTIONS,
+      test.invited && !test.found ? HOLD_RETURN_SENT_INSTRUCTIONS : HOLD_RETURN_INSTRUCTIONS,
     );
   }, []);
   /** Page hidden right now (demo): a drop then parks instead of resuming. */
@@ -557,6 +598,20 @@ export function VoiceCall({
     return true;
   }, [setReturnPending]);
 
+  /**
+   * Put the email test on screen and have Voni give the invite with the
+   * exact tag: from the show tool's result, or when Voni announced her
+   * screen without calling it. `deliver` sends the invite instructions.
+   */
+  const putTestUp = useCallback(
+    (deliver: (instructions: string) => void) => {
+      const tag = testTagRef.current;
+      if (!tag || closingRef.current) return;
+      setEmailTest({ ...emailTestRef.current, invited: true });
+      deliver(inviteNowInstructions(tag));
+    },
+    [setEmailTest],
+  );
   /** Ask Voni to close the call, once. */
   const closeCall = useCallback(
     (instructions: string) => {
@@ -699,8 +754,9 @@ export function VoiceCall({
         }
         const test = emailTestRef.current;
         if (clock.isOver(now, talkLimitS(test))) {
-          // A claimed email that never landed: promise the reply, then close.
-          closeCall(test.claim && !test.found ? LATE_EMAIL_INSTRUCTIONS : TIME_UP_INSTRUCTIONS);
+          // Invited but nothing landed: promise the reply (the tag keeps a
+          // day, so a callback finds it), then close.
+          closeCall(test.invited && !test.found && !test.gated ? LATE_EMAIL_INSTRUCTIONS : TIME_UP_INSTRUCTIONS);
         }
       }, 500);
       return () => clearInterval(id);
@@ -714,37 +770,50 @@ export function VoiceCall({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connected]);
 
-  // Demo email test: a claimed business email that had not landed is
-  // re-checked here rather than trusting the model to call again. When it
-  // lands, a hidden note has Voni say so. Paused on hold and while closing.
-  const inboxPending = isDemo && connected && !holding && emailTest.claim !== null && !emailTest.found;
+  // Demo email test: from the invite (or from the start, when a callback
+  // carried its tag over) the call's Test tag is re-checked here rather than
+  // trusting the model to call again. When the email lands, a hidden note has
+  // Voni say so; a personal-address sender gets the work-email gate once.
+  // Paused on hold and while closing.
+  const inboxPending = isDemo && connected && !holding && (emailTest.invited || tagCarried) && !emailTest.found;
   useEffect(() => {
     if (!inboxPending) return;
     let inFlight = false;
-    const id = setInterval(async () => {
+    const check = async () => {
       const token = callTokenRef.current;
-      const claim = emailTestRef.current.claim;
-      if (inFlight || !token || !claim || closingRef.current || returnPendingRef.current) return;
+      if (inFlight || !token || closingRef.current || returnPendingRef.current) return;
       inFlight = true;
       try {
         const res = await fetch(`/api/demo/tools/${CHECK_EMAIL_TOOL}`, {
           method: "POST",
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-          body: JSON.stringify({ toolCallId: "inbox-poll", arguments: { address: claim } }),
+          body: JSON.stringify({ toolCallId: "inbox-poll", arguments: {} }),
         });
         const body = (await res.json().catch(() => null)) as { ok?: boolean; data?: Record<string, unknown> } | null;
         if (!body?.ok || !body.data) return;
         const result = checkResultFromData(body.data);
         const test = emailTestRef.current;
-        if (result.status !== "found" || !result.exact || test.found || test.claim !== claim || closingRef.current) return;
+        if (test.found || closingRef.current) return;
+        if (result.status === "free") {
+          if (gatedRef.current === result.address) return;
+          gatedRef.current = result.address;
+          setEmailTest(emailTestAfterCheck(test, result));
+          replyQueueRef.current?.enqueue(checkEmailInstructions(result));
+          return;
+        }
+        if (result.status !== "found" || !result.exact) return;
         setEmailTest(emailTestAfterCheck(test, result));
-        replyQueueRef.current?.enqueue(emailArrivedInstructions(result));
+        // Found before any invite on a carried tag: sent after the last call.
+        replyQueueRef.current?.enqueue(emailArrivedInstructions(result, { fromLastCall: !test.invited }));
       } catch {
         // Offline for a beat: the next tick tries again.
       } finally {
         inFlight = false;
       }
-    }, INBOX_POLL_MS);
+    };
+    // At once (a callback's email may already be in), then every INBOX_POLL_MS.
+    void check();
+    const id = setInterval(check, INBOX_POLL_MS);
     return () => clearInterval(id);
   }, [inboxPending, setEmailTest]);
 
@@ -966,6 +1035,7 @@ export function VoiceCall({
       ladderRef.current = new StakesLadder();
       lastAgentLineRef.current = "";
       setEmailTest(EMAIL_TEST_START);
+      gatedRef.current = null;
       holdRef.current = null;
       holdingRef.current = false;
       setHolding(false);
@@ -1165,6 +1235,11 @@ export function VoiceCall({
       onSessionReady: (id) => {
         console.debug("[voice-call] session", id);
         sessionIdRef.current = id;
+        // Demo: Voni knows this call's Test tag before it invites the test
+        // (the invite is spoken with the tool call, before any result).
+        if (mode.kind === "demo" && testTagRef.current && sessionRef.current instanceof VoiceSession) {
+          sessionRef.current.sendContext(testTagContext(testTagRef.current));
+        }
         // Post-grace hold restart: whisper the carried context so Voni
         // resumes instead of starting over, then welcome the visitor back —
         // once per return. (The resume-variant agent has no greeting, so
@@ -1254,7 +1329,10 @@ export function VoiceCall({
       onToolResult: (name, result) => {
         if (mode.kind !== "demo" || !result.ok) return;
         if (name === SHOW_TEST_ADDRESS_TOOL) {
-          setEmailTest({ ...emailTestRef.current, invited: true });
+          // The invite comes from the call, with the exact tag, in place of
+          // the platform's own reply to this result: left to it, the tag was
+          // skipped, garbled, or said twice in ~1 in 3 live runs.
+          putTestUp((instructions) => session.replaceNextReply(instructions));
         } else if (name === CHECK_EMAIL_TOOL) {
           setEmailTest(emailTestAfterCheck(emailTestRef.current, checkResultFromData(result.data)));
         }
@@ -1270,6 +1348,13 @@ export function VoiceCall({
       onReplyDone: () => replyQueueRef.current?.onReplyDone(),
       onAgentTurn: (turn) => {
         lastAgentLineRef.current = turn.text;
+        // Voni announced her screen but never called the show tool: put the
+        // test up and send the invite, as the tool's result would have.
+        // Never once found (a callback's email already in: no invite, Q15).
+        const test = emailTestRef.current;
+        if (mode.kind === "demo" && !test.invited && !test.found && mentionsScreen(turn.text)) {
+          putTestUp((instructions) => replyQueueRef.current?.enqueue(instructions));
+        }
       },
       // Demo stakes ladder: Jev scores every visitor turn against the beat's
       // goal (heuristic fallback when Jev is down); each off-track verdict
@@ -1324,8 +1409,12 @@ export function VoiceCall({
             const minted = await demoToken(voiceId, {
               resume: preserving,
               callToken: callTokenRef.current ?? undefined,
+              tagToken: loadTagToken(),
             })();
             callTokenRef.current = minted.callToken ?? null;
+            if (minted.tagToken) saveTagToken(minted.tagToken);
+            setTestTag(minted.testTag ?? null);
+            if (!preserving) setTagCarried(minted.tagCarried === true);
             return minted;
           },
           { resumeSessionId },
@@ -1356,7 +1445,7 @@ export function VoiceCall({
       setStarting(false);
       notifyPending({ ...pendingRef.current, starting: false });
     }
-  }, [mode, notifyPending, voiceId, config, engine, cascadeUrl, setCallState, closeCall, markClosing, setReturnPending, welcomeBackOnce, enterHold, setEmailTest]);
+  }, [mode, notifyPending, voiceId, config, engine, cascadeUrl, setCallState, closeCall, markClosing, setReturnPending, welcomeBackOnce, enterHold, setEmailTest, setTestTag, putTestUp]);
 
   useEffect(() => {
     startRef.current = start;
@@ -1553,7 +1642,8 @@ export function VoiceCall({
       </>
     );
     // Shown from Voni's invite until the call ends (the test may need it again).
-    const addressChip = emailTest.invited && active ? <DemoAddressChip address={DEMO_INBOX_ADDRESS} /> : null;
+    const addressChip =
+      emailTest.invited && active && testTag ? <DemoAddressChip address={DEMO_INBOX_ADDRESS} tag={testTag} /> : null;
     const startButton = (
       <LoadingButton
         pending={starting}

@@ -8,7 +8,7 @@
  * WALL_CLOSE_S in, leaving room for the goodbye before the server cuts.
  */
 
-export const TALK_BASE_S = 120;
+export const TALK_BASE_S = 240;
 export const WALL_CAP_S = 720;
 export const WALL_CLOSE_S = WALL_CAP_S - 20;
 export const MUTE_CHECK_IN_S = 20;

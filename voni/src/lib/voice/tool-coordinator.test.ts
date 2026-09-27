@@ -11,15 +11,17 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-test("holds an interactive result until matching reply.done", async () => {
+test("sends an interactive result the moment it is ready, mid-reply", async () => {
+  // Measured live (scripts/eval-demo-agent.mts, 2026-09-27): the server holds
+  // the calling reply open until the result arrives, so holding the result
+  // for that reply's reply.done deadlocks until the tool times out
+  // (sess_c477d8f8: a 5s stall, then an invented answer).
   const sent: Record<string, unknown>[] = [];
   const result = deferred<ToolResponse>();
   const coordinator = new ToolCoordinator({
     send: (message) => sent.push(message),
     execute: () => result.promise,
-    modeFor: () => "interactive",
   });
-  coordinator.onReplyStarted("reply-1");
   coordinator.onToolCall({
     type: "tool.call",
     call_id: "tool-1",
@@ -28,9 +30,9 @@ test("holds an interactive result until matching reply.done", async () => {
   });
   result.resolve({ ok: true, data: { count: 0 } });
   await tick();
-  assert.equal(sent.length, 0);
-  coordinator.onReplyDone("reply-1", false);
-  assert.equal(sent.length, 1);
+  assert.equal(sent.length, 1, "not held for reply.done");
+  coordinator.onReplyDone(false);
+  assert.equal(sent.length, 1, "sent once");
 });
 
 test("flushes a slow interactive result when reply.done already arrived", async () => {
@@ -39,29 +41,25 @@ test("flushes a slow interactive result when reply.done already arrived", async 
   const coordinator = new ToolCoordinator({
     send: (message) => sent.push(message),
     execute: () => result.promise,
-    modeFor: () => "interactive",
   });
-  coordinator.onReplyStarted("reply-2");
   coordinator.onToolCall({
     type: "tool.call",
     call_id: "tool-2",
     name: "check_calendar",
     arguments: { date: "2026-09-06" },
   });
-  coordinator.onReplyDone("reply-2", false);
+  coordinator.onReplyDone(false);
   result.resolve({ ok: true, data: { slots: [] } });
   await tick();
   assert.equal(sent.length, 1);
 });
 
-test("returns hold-mode results immediately and marks errors", async () => {
+test("returns results immediately and marks errors", async () => {
   const sent: Record<string, unknown>[] = [];
   const coordinator = new ToolCoordinator({
     send: (message) => sent.push(message),
     execute: async () => ({ ok: false, error: "occupied", retryable: false }),
-    modeFor: () => "hold",
   });
-  coordinator.onReplyStarted("reply-3");
   coordinator.onToolCall({
     type: "tool.call",
     call_id: "tool-3",
@@ -78,43 +76,38 @@ test("discards a pending result when its reply is interrupted", async () => {  c
   const coordinator = new ToolCoordinator({
     send: (message) => sent.push(message),
     execute: () => result.promise,
-    modeFor: () => "interactive",
   });
-  coordinator.onReplyStarted("reply-4");
   coordinator.onToolCall({
     type: "tool.call",
     call_id: "tool-4",
     name: "search_properties",
     arguments: {},
   });
-  coordinator.onReplyDone("reply-4", true);
+  coordinator.onReplyDone(true);
   result.resolve({ ok: true, data: { count: 1 } });
   await tick();
   assert.equal(sent.length, 0);
 });
 
-test("holds a late result through a newer user turn", async () => {
+test("sends a late result even while a newer user turn is in flight", async () => {
   const sent: Record<string, unknown>[] = [];
   const result = deferred<ToolResponse>();
   const coordinator = new ToolCoordinator({
     send: (message) => sent.push(message),
     execute: () => result.promise,
-    modeFor: () => "interactive",
   });
-  coordinator.onReplyStarted("reply-5");
   coordinator.onToolCall({
     type: "tool.call",
     call_id: "tool-5",
     name: "search_properties",
     arguments: {},
   });
-  coordinator.onReplyDone("reply-5", false);
-  coordinator.onInputSpeechStarted();
+  coordinator.onReplyDone(false);
   result.resolve({ ok: true, data: { count: 1 } });
   await tick();
-  assert.equal(sent.length, 0);
-  coordinator.onReplyDone("reply-6", false);
   assert.equal(sent.length, 1);
+  coordinator.onReplyDone(false);
+  assert.equal(sent.length, 1, "sent once");
 });
 
 test("reports every sent result with its tool name", async () => {
@@ -122,10 +115,8 @@ test("reports every sent result with its tool name", async () => {
   const coordinator = new ToolCoordinator({
     send: () => {},
     execute: async () => ({ ok: true, hangup: true, data: { ended: true } }),
-    modeFor: () => "hold",
     onResult: (name, result) => seen.push({ name, result }),
   });
-  coordinator.onReplyStarted("reply-7");
   coordinator.onToolCall({
     type: "tool.call",
     call_id: "tool-7",
@@ -136,4 +127,32 @@ test("reports every sent result with its tool name", async () => {
   assert.equal(seen.length, 1);
   assert.equal(seen[0].name, "end_call");
   assert.equal(seen[0].result.ok, true);
+});
+
+test("a held tool's result waits for reply.done, and is still sent when that reply is interrupted", async () => {
+  const sent: Record<string, unknown>[] = [];
+  const coordinator = new ToolCoordinator({
+    send: (message) => sent.push(message),
+    execute: async () => ({ ok: true, hangup: true, data: { ended: true } }),
+    holdUntilReplyDone: (name) => name === "end_call",
+  });
+  coordinator.onToolCall({ type: "tool.call", call_id: "bye", name: "end_call", arguments: {} });
+  await tick();
+  assert.equal(sent.length, 0);
+  coordinator.onReplyDone(false);
+  assert.equal(sent.length, 1);
+
+  const cut = new ToolCoordinator({
+    send: (message) => sent.push(message),
+    execute: async () => ({ ok: true, hangup: true, data: { ended: true } }),
+    holdUntilReplyDone: () => true,
+  });
+  cut.onToolCall({ type: "tool.call", call_id: "bye2", name: "end_call", arguments: {} });
+  await tick();
+  cut.onReplyDone(true);
+  // The platform waits for it either way (never sending it stalled the next
+  // reply until the tool timed out); the session decides whether to hang up.
+  assert.equal(sent.length, 2, "sent at the interrupted reply.done");
+  cut.onReplyDone(false);
+  assert.equal(sent.length, 2, "once");
 });

@@ -114,8 +114,12 @@ _Avoid_: filter, qualification
 The short code in Voni's reply email that the visitor reads back to prove they own the inbox, framed as a test rather than a security step.
 _Avoid_: OTP (in visitor-facing copy)
 
+**Test tag**:
+The short word-and-number a visitor puts in their email (asked for in the subject; the body counts too) so Voni can find their email in the shared inbox; kept for a day and across calls from the same browser.
+_Avoid_: code, OTP, subject code (confused with the code check)
+
 **Provisional extension**:
-Extra demo-call time unlocked by a claimed business address, before the code check.
+Extra demo-call time unlocked when the visitor's email arrives from a business address, before the code check.
 _Avoid_: trial time
 
 **Verified extension**:

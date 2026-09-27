@@ -576,6 +576,34 @@ export const demoAgents = pgTable(
 );
 
 /**
+ * Demo Test tags (docs/adr/0004-test-tag-email-matching.md): the word + two
+ * digits a visitor puts in their email's subject so Voni finds it in the
+ * shared test inbox. A tag lives a day; tags are unique among live ones
+ * (enforced at issue time, test-tag-registry.ts). The match columns record
+ * which email carried it, and `linkedTagId` points at an earlier tag the
+ * same sender matched (a returning visitor on another device).
+ */
+export const demoTestTags = pgTable(
+  "demo_test_tags",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tag: text("tag").notNull(),
+    language: text("language").notNull(),
+    issuedAt: timestamp("issued_at").notNull().defaultNow(),
+    expiresAt: timestamp("expires_at").notNull(),
+    matchedFrom: text("matched_from"),
+    matchedMessageId: text("matched_message_id"),
+    matchedThreadId: text("matched_thread_id"),
+    matchedAt: timestamp("matched_at"),
+    linkedTagId: uuid("linked_tag_id"),
+  },
+  (table) => [
+    index("demo_test_tags_expires_idx").on(table.expiresAt),
+    index("demo_test_tags_matched_from_idx").on(table.matchedFrom),
+  ],
+);
+
+/**
  * Counter buckets for rate limiting, keyed by an opaque bucket string
  * (e.g. "demo:ip:<hash>:2026-09-05T14" or "demo:global:2026-09-05").
  *

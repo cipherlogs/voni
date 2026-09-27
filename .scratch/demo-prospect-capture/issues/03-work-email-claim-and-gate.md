@@ -14,7 +14,7 @@ The server reads the test inbox (hi@pilotxstudio.com for now; was nedalk.js@gmai
 
 **Blocked by:** 01 (Voni as itself: tools, talk clock, stakes ladder).
 
-**Status:** ready-for-human (implementation done; needs `DEMO_INBOX_REFRESH_TOKEN` minted, then manual test steps 1–7)
+**Status:** ready-for-human (follow-up round 1 done; the owner's real call + phone checklist pending)
 
 ## Manual test (approve / reject)
 
@@ -52,3 +52,68 @@ Make sure the test inbox has some unrelated emails in it, to simulate other test
 - **Setup:** see `voni/ENVIRONMENT.md` "Demo test inbox" and `scripts/mint-demo-inbox-token.mts`. Without the token, every claim reads as "not landed yet". Refresh tokens expire after 7 days while the consent screen is in Testing.
 - **Verified:** `npm test` 706/706, `tsc` and `eslint` clean (one pre-existing warning in copilot-provider). e2e `tests/e2e/demo-email-test.spec.ts` (chip + copy + phone mailto, poll → note → stop, free never polled, 2-min base vs 4-min extension + late-email close) plus the hold spec with token-carry checks: 24/24 on desktop and Pixel 7, and mutation checks fail as expected. A real route call with a minted call token returned the free gate and not_arrived.
 - **Known ceilings:** one Gmail page (30 messages) per check, marked `ponytail:` in inbox.ts. The Voni lines are English prompts only (the model speaks the picked language).
+
+### Follow-up round 1 (2026-09-27): owner's first real call, Test tag redesign
+
+Plan: `~/.claude/plans/mutable-frolicking-dongarra.md`; decision record: `docs/adr/0004-test-tag-email-matching.md`.
+
+- **Found in the call (`sess_c477d8f8`):**
+  - An invented inbox address: the show tool timed out at 5s during a 10s invite reply.
+  - `check_email("unknown")` before the visitor answered.
+  - The inbox was never read (the dev server predated the token).
+  - The goodbye was cut after "No problem.".
+  - The transcript stopped following.
+  - Scrolling silenced Voni (mic noise barge-in with no resume).
+- **Decisions:**
+  - The talk clock is 4 / 6 / 9 min.
+  - The **Test tag** (word + 2 digits, per language) replaces the claim question. The spoken address is used only when the visitor raises it.
+  - The extension comes only when a business email arrives.
+  - The tag lives 24h and carries over to the next call from the same browser. A sender who matched before is greeted as returning.
+  - A late call closes with "I'll reply the moment it lands".
+  - Website research (05) comes after 04.
+
+**Built (round 1):**
+- **Test tag** (`voni/src/lib/demo/test-tag.ts`, registry `test-tag-registry.ts`, table `demo_test_tags`, migration 0012 applied to the dev DB directly):
+  - A word + 2 digits, per language, unique among live tags.
+  - It lives 24h, carried in the browser as a signed token (`localStorage voni:test-tag`) and named in the call token.
+- **Matching by tag** (`checkTag` in `email-test.ts`, `listTaggedMessages` in `inbox.ts`):
+  - The tag is found in the subject or body however it was typed.
+  - The DMARC/SPF rule and Jev spoof check still apply.
+  - The work-email gate runs on the sender's domain.
+  - A match is recorded on the tag, and a same-sender earlier tag marks the visitor as returning.
+  - The spoken address remains only as the visitor-raised fallback.
+- **Clock:** 4 min base → 6 min only when a business email arrives. Invited but nothing landed → "I'll reply the moment it lands".
+- **Invite:**
+  - Voni puts the chip up (address + tag, `mailto:?subject=` on phones) with a short lead-in.
+  - The call then *replaces* the platform's own reply to the tool result with its invite carrying the exact tag (`VoiceSession.replaceNextReply`, resent once if the platform ignores it).
+  - A hidden context message gives Voni the tag at session start.
+- **Call-quality fixes:**
+  - Tool results go back at once. Holding interactive results for `reply.done` deadlocked until the tool timed out: the root cause of the invented address.
+  - `end_call`'s result waits for the goodbye reply to finish; sent earlier, the platform cut the goodbye's audio. That was the "No problem." cut.
+  - A cut with no words resumes after 1.5s (wheel clicks, noise).
+  - The transcript re-follows after a wheel tick at the bottom.
+  - See `docs/adr/0005-tool-results-send-at-once-except-end-call.md`.
+- **Owner setup still needed:**
+  - Enable the Gmail API in Google Cloud project 942470299274 (every inbox read got 403 "Gmail API has not been used in project").
+  - Restart `npm run dev:phone` (`.dev.vars` is read at startup).
+  - Run `scripts/verify-demo-inbox.mts`.
+
+**Finish-up (2026-09-27):**
+- **Owner's real inbox test:** the tag was put in the body (subject "ops"). The matcher now takes the subject or the start of the body, needs exactly one distinct tag, and ignores case and spacing. Re-checked against the real inbox: the work email was found ("Nedal"), the gmail one was gated.
+- **Review fixes:**
+  - A tag in both subject and body counts once.
+  - No digit-joining across phone numbers.
+  - The screen fallback is tighter and never re-invites once the email is found.
+  - Words after a cut cancel the noise resume.
+  - A noise-cut goodbye re-arms the hang-up.
+  - A held `end_call` result is always sent, and the stall release is 3s.
+  - Tags are not reissued within 48h.
+- **Tests:** unit 737/737; browser e2e 44/44 (desktop + Pixel 7, repeated runs), every new fix mutation-checked.
+- **Live evals** (the AssemblyAI credit ran out mid-pass; the owner capped the rest at ~$8):
+  - 10/10 before the cap: invite-tag, sent-no-placeholder, refusal, filler-over, over-talk.
+  - 5/5 on the targeted rerun: hang-up-fast, hang-up-over, greeting-cut, late-close, free-gate, forgot-tag, bye-audio, returning.
+  - stop-over 5/5 run alone. Its earlier misses were parallel-load latency, the same at the prior commit (ADR 0003).
+  - 3/3 after the final session fixes: hang-up-fast and hang-up-over (~0.96s hang-ups).
+  - hang-up 4/5: the model spoke the tool call as text, the known ~1-in-19 case from ticket 01.
+- **Known, pre-existing:** a caller talking over the goodbye occasionally gives a 12–19s hang-up (hang-up-over; the same at the prior commit).
+- **Still to do:** the owner's real desktop call + `npm run call:trace`, then the phone checklist.

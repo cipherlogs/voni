@@ -73,6 +73,18 @@ Needed:
 - The `prospects` table, admin page, and summary.
 - A copy chip in the call card, amending the transcript-only rule in `voni/DESIGN.md` §10c.
 
+## Amendment 2026-09-27: Test tag (supersedes beat 4's claim question and the Clock numbers)
+
+- The invite gives the visitor a **Test tag** to put in the subject (e.g. "Lime 42"). The chip shows the address and the tag, and Voni says only the tag. Voni finds the email by the tag, and the sender's address is the claim.
+- The spoken "which address did you use?" is used only when the visitor raises it ("I forgot the tag").
+- **Talk clock:** 4 min base → 6 min when a business-domain email arrives (the provisional extension) → 9 min after the code check. The hard cap stays ~12 min.
+- **Tag lifetime and callbacks:**
+  - A tag lives 24h, in the browser and the server registry.
+  - A callback from the same browser keeps the tag. If the email landed meanwhile, Voni mentions it, skips the invite, and the extension applies at once.
+  - A sender who matched an earlier tag is greeted as returning.
+- No email by the end of the talk time → "I'll reply the moment it lands", then a polite close.
+- See `docs/adr/0004-test-tag-email-matching.md`.
+
 ## Dropped / deferred
 
 - Browser callback: dropped, because it risks losing prospects. Keep them in the call.

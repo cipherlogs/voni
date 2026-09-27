@@ -105,11 +105,20 @@ test("the email-test lines never name a tool", async () => {
     agent.checkEmailInstructions({ ...found, exact: false, name: null }),
     agent.emailArrivedInstructions(found),
     agent.LATE_EMAIL_INSTRUCTIONS,
-    agent.HOLD_RETURN_CLAIM_INSTRUCTIONS,
+    agent.HOLD_RETURN_SENT_INSTRUCTIONS,
+    agent.inviteNowInstructions("Lime 42"),
+    agent.testTagContext("Lime 42"),
+    agent.emailArrivedInstructions(found, { fromLastCall: true }),
+    agent.emailArrivedInstructions({ ...found, returning: true }),
+    agent.checkEmailInstructions({ status: "not_arrived", address: null, name: null }),
     buildDemoAgentBody("anna").system_prompt,
   ];
   for (const text of lines) assert.doesNotMatch(text, /end_call|check_email|show_test_address/);
   assert.match(agent.checkEmailInstructions({ status: "free", address: "a@gmail.com" }), /hi at voni dot c c/);
   assert.match(agent.checkEmailInstructions({ status: "free", address: "a@gmail.com" }), /hang up/);
   assert.match(agent.LATE_EMAIL_INSTRUCTIONS, /reply the moment it lands/);
+  assert.match(agent.emailArrivedInstructions({ ...found, returning: true }), /good to hear from them again/);
+  assert.match(agent.emailArrivedInstructions(found, { fromLastCall: true }), /from an earlier call[\s\S]*Don't invite the email test again/);
+  assert.doesNotMatch(buildDemoAgentBody("anna").system_prompt, /which address did you use/i, "never asked unprompted");
+  assert.match(agent.inviteNowInstructions("Lime 42"), /with Lime 42 in the subject[\s\S]*Never say or spell the address/);
 });

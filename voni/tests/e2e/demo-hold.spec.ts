@@ -78,9 +78,13 @@ const visible = (page: Page, name: RegExp) => page.getByRole("button", { name })
 /** Start a demo call and land one visitor turn + one agent turn (the call memory). */
 async function startCall(page: Page, server: Awaited<ReturnType<typeof fakeServer>>) {
   await page.goto("/");
-  await visible(page, /^(start call|continue call)$/i).click();
-  await expect.poll(() => server.conns.length).toBe(1);
-  await expect.poll(() => server.all().some((f) => f.type === "session.update")).toBe(true);
+  // A click that lands before hydration does nothing: click again, as a person would.
+  const started = () => server.conns.length >= 1 && server.all().some((f) => f.type === "session.update");
+  await expect(async () => {
+    if (!started()) await visible(page, /^(start call|continue call)$/i).click({ timeout: 1000 }).catch(() => undefined);
+    await expect.poll(started, { timeout: 3000 }).toBe(true);
+  }).toPass({ timeout: 20_000 });
+  expect(server.conns).toHaveLength(1);
   server.say({ type: "transcript.user", item_id: "u1", text: "We sell solar panels in Lisbon." });
   server.say({ type: "reply.started", reply_id: "r1" });
   server.say({ type: "transcript.agent", reply_id: "r1", text: "Solar in Lisbon, great. How do leads reach you today?" });
@@ -170,7 +174,8 @@ test("resume refused after the grace: a fresh session gets the call memory", asy
   await setHidden(page, false);
   await expect.poll(() => server.conns.length).toBe(3);
   const fresh = server.conns[2]!.frames;
-  expect(fresh[0]).toMatchObject({ type: "session.update", session: { agent_id: "agent_demo" } });
+  // The socket opens before the page sends its first frame: wait for it.
+  await expect.poll(() => fresh[0]).toMatchObject({ type: "session.update", session: { agent_id: "agent_demo" } });
   await expect
     .poll(() => fresh.find((f) => f.type === "conversation.message")?.content as string | undefined)
     .toMatch(/solar panels in Lisbon[\s\S]*How do leads reach you/);

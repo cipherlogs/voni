@@ -3,7 +3,17 @@ import { secret } from "@/lib/env";
 import type { ToolResponse } from "@/lib/tools/execute";
 import { jevEvaluate, judgeDepsFromSecrets, type JevDeps } from "@/lib/voice/voice-judge";
 import { bumpRateBucket } from "./rate-limit";
-import { checkEmail, checkResultToData, INBOX_LOOKBACK_S, type InboxMessage } from "./email-test";
+import {
+  checkEmail,
+  checkResultToData,
+  checkTag,
+  INBOX_LOOKBACK_S,
+  normalizeClaim,
+  type CheckEmailResult,
+  type InboxMessage,
+} from "./email-test";
+import type { DemoCall } from "./call-token";
+import { loadLiveTestTag, recordTagMatch } from "./test-tag-registry";
 import { checkEmailInstructions } from "./voni-agent";
 
 /**
@@ -55,6 +65,7 @@ type GmailMessage = {
   id: string;
   threadId: string;
   internalDate: string;
+  snippet?: string;
   payload?: { headers?: { name: string; value: string }[] };
 };
 
@@ -79,15 +90,30 @@ export function parseGmailMessage(message: GmailMessage): InboxMessage {
     subject: header("Subject").slice(0, 200),
     receivedAt: Number(message.internalDate),
     authResults: header("Authentication-Results"),
+    snippet: (message.snippet ?? "").slice(0, 300),
   };
 }
 
-export async function listDemoInbox(now = Date.now()): Promise<InboxMessage[]> {
+/** Inbox email since the call's lookback window (the spoken-address fallback). */
+export function listDemoInbox(now = Date.now()): Promise<InboxMessage[]> {
+  return searchInbox(`in:inbox -from:me after:${Math.floor(now / 1000) - INBOX_LOOKBACK_S}`);
+}
+
+/**
+ * Inbox email since the tag was issued that may carry it. Gmail tokenizes
+ * "Lime 42" and "lime42" differently, so search the word both ways and let
+ * `containsTag` decide.
+ */
+export function listTaggedMessages(tag: string, issuedAt: Date): Promise<InboxMessage[]> {
+  const [word, digits] = tag.toLowerCase().split(" ");
+  return searchInbox(`in:inbox -from:me after:${Math.floor(issuedAt.getTime() / 1000) - 60} {${word} ${word}${digits}}`);
+}
+
+async function searchInbox(query: string): Promise<InboxMessage[]> {
   const token = await accessToken();
   const auth = { Authorization: `Bearer ${token}` };
-  const after = Math.floor(now / 1000) - INBOX_LOOKBACK_S;
   const list = new URL(`${GMAIL}/messages`);
-  list.searchParams.set("q", `in:inbox -from:me after:${after}`);
+  list.searchParams.set("q", query);
   list.searchParams.set("maxResults", String(INBOX_PAGE));
   const res = await fetch(list, { headers: auth });
   if (!res.ok) throw new Error(`gmail list ${res.status}`);
@@ -156,27 +182,44 @@ export async function jevSpoof(
   return answer.probability >= SPOOF_THRESHOLD;
 }
 
-const argsSchema = z.object({ address: z.string().trim().min(1).max(200) });
+const argsSchema = z.object({ address: z.string().trim().max(200).optional() });
 
-/** The `check_email` tool for one verified demo call. */
-export async function runCheckEmail(
-  call: { callId: string; startedAt: number },
-  rawArguments: unknown,
-): Promise<ToolResponse> {
+/**
+ * The `check_email` tool for one verified demo call. No address: look for the
+ * call's Test tag (the main path). An address: only when the visitor said
+ * one ("I forgot the tag"), matched as before. Either way a found email is
+ * recorded on the call's tag, so a callback knows it.
+ */
+export async function runCheckEmail(call: DemoCall, rawArguments: unknown): Promise<ToolResponse> {
   const args = argsSchema.safeParse(rawArguments);
   if (!args.success) {
-    return { ok: false, error: "Ask the caller which address they used, then check again.", retryable: true };
+    return { ok: false, error: "Check again without an address, or with the one the caller said.", retryable: true };
   }
   const budget = await bumpRateBucket(`inbox:call:${call.callId}`, CHECKS_PER_CALL, CHECK_BUDGET_WINDOW_S);
   if (!budget.ok) {
     return { ok: false, error: "Too many inbox checks on this call.", retryable: false };
   }
+  const tag = call.tagId ? await loadLiveTestTag(call.tagId) : null;
   const judge = { ...(await judgeDepsFromSecrets()), timeoutMs: 3000 };
-  const result = await checkEmail(args.data.address, {
-    listInbox: () => listDemoInbox(),
-    since: call.startedAt,
-    jevMatch: (claim, candidates) => jevMatch(claim, candidates, judge),
-    jevSpoof: (message) => jevSpoof(message, judge),
-  });
+  const spoof = (message: InboxMessage) => jevSpoof(message, judge);
+  // Placeholders the model sometimes invents ("unknown", "none") are not addresses.
+  const spoken = args.data.address && normalizeClaim(args.data.address) ? args.data.address : null;
+  let result: CheckEmailResult;
+  if (spoken) {
+    result = await checkEmail(spoken, {
+      listInbox: () => listDemoInbox(),
+      since: call.startedAt,
+      jevMatch: (claim, candidates) => jevMatch(claim, candidates, judge),
+      jevSpoof: spoof,
+    });
+  } else if (tag) {
+    result = await checkTag(tag.tag, { listTagged: () => listTaggedMessages(tag.tag, tag.issuedAt), jevSpoof: spoof });
+  } else {
+    return { ok: false, error: "This call has no test tag.", retryable: false };
+  }
+  if (result.status === "found" && result.exact && tag) {
+    const { returning } = await recordTagMatch(tag, result);
+    result = { ...result, returning };
+  }
   return { ok: true, data: { ...checkResultToData(result), instructions: checkEmailInstructions(result) } };
 }

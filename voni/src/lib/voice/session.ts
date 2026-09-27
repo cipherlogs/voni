@@ -26,12 +26,11 @@
 
 import {
   END_CALL_TOOL,
-  END_CALL_VOICE_TOOL,
   SENSITIVE_CAPTURE_TOOL,
   type VoiceTool,
 } from "@/lib/tools/definitions";
 import type { ToolResponse } from "@/lib/tools/execute";
-import { DEMO_VOICE_TOOLS, executeDemoTool } from "@/lib/demo/demo-tools";
+import { executeDemoTool } from "@/lib/demo/demo-tools";
 import { ToolCoordinator, type ToolCoordinatorOptions } from "./tool-coordinator";
 import {
   buildConversationMessage,
@@ -110,7 +109,15 @@ export type SessionConfig =
  * returns a token, the stored `agent_id` it is allowed to bind to, and the
  * `callToken` that scopes the demo's tool route to this call.
  */
-export type TokenFetcher = () => Promise<{ token: string; agentId?: string; callToken?: string }>;
+export type TokenFetcher = () => Promise<{
+  token: string;
+  agentId?: string;
+  callToken?: string;
+  /** Demo only: the visitor's Test tag, its signed browser token, and whether it carried over. */
+  testTag?: string;
+  tagToken?: string;
+  tagCarried?: boolean;
+}>;
 
 /** VoiceStartError lives in ./mic-capture (shared with the cascade client). */
 
@@ -236,7 +243,7 @@ export class RateLimitError extends Error {
 
 /** Public demo: the server picks the prompt (Voni's own), we only name the voice. */
 export const demoToken =
-  (voiceId: string, opts?: { resume?: boolean; callToken?: string }): TokenFetcher =>
+  (voiceId: string, opts?: { resume?: boolean; callToken?: string; tagToken?: string }): TokenFetcher =>
   async () => {
     const res = await fetch("/api/demo/token", {
       method: "POST",
@@ -249,6 +256,8 @@ export const demoToken =
         voiceId,
         ...(opts?.resume === true ? { resume: true } : {}),
         ...(opts?.callToken ? { callToken: opts.callToken } : {}),
+        // The visitor's Test tag, kept a day by the browser (docs/adr/0004).
+        ...(opts?.tagToken ? { tagToken: opts.tagToken } : {}),
       }),
     });
     if (!res.ok) {
@@ -396,6 +405,20 @@ export const jevBargeInJudge =
 
 /** A resume waits this long for the server's own reply to the barge-in, to supersede it. */
 const RESUME_WAIT_MS = 500;
+/**
+ * A cut followed by no words at all (a click, a cough, a wheel scroll the
+ * mic heard) never gets a transcript, so the filler resume never runs and the
+ * agent sits silent. After this long without caller words, resume anyway.
+ */
+const NO_WORDS_RESUME_MS = 1500;
+/** replaceNextReply: after the replaced reply ends, ours should start at once; else resend. */
+const REPLACE_CONFIRM_MS = 1000;
+/**
+ * A held end_call result with no goodbye audio for this long: the platform is
+ * waiting for it (measured 1 in 10), so send it. A real goodbye streams audio
+ * steadily until its reply.done; 3s also covers a goodbye slow to start.
+ */
+export const HELD_RESULT_RELEASE_MS = 3000;
 
 export type VoiceState =
   | "idle"
@@ -504,9 +527,16 @@ export class VoiceSession {
   /** What the caller heard of the superseded reply: its caption, nothing more. */
   private droppedHeard = "";
   /** The server just stopped the agent for a barge-in: what it had said, and for how long. */
-  private bargeIn: { heard: string; speakingMs: number } | null = null;
+  /** `goodbye`: the cut reply was the goodbye (end_call already signaled). */
+  private bargeIn: { heard: string; speakingMs: number; goodbye?: boolean } | null = null;
+  private noWordsTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The next reply is a goodbye resumed after a noise cut: it re-arms the hang-up. */
+  private goodbyeResumePending = false;
   /** A resume waiting for the server's own reply to supersede. */
   private pendingResume: { instructions: string; timer: ReturnType<typeof setTimeout> } | null = null;
+  private pendingReplace: { instructions: string; timer: ReturnType<typeof setTimeout> } | null = null;
+  /** A reply we replaced, and the instructions to resend if the platform ignored ours. */
+  private replacing: { replyId: string | null; instructions: string; timer: ReturnType<typeof setTimeout> | null } | null = null;
 
   /** Disarm an end call: the caller took the floor back. */
   private disarmEndCall(): void {
@@ -771,7 +801,7 @@ export class VoiceSession {
 
     if (config.mode === "inline") {
       const testAgentId = config.testAgentId;
-      this.installTools(config.tools ?? [], async (call) => {
+      this.installTools(async (call) => {
         if (this.injectedExecutor) return this.injectedExecutor(call);
         if (call.name === SENSITIVE_CAPTURE_TOOL) {
           return this.prepareSensitiveCapture();
@@ -968,7 +998,12 @@ export class VoiceSession {
         if (msg.status === "interrupted") {
           // Barge-in: remember what the agent had said, so a barge-in
           // that turns out to be filler can resume (./barge-in.ts).
-          this.bargeIn = { heard: this.currentAgentText, speakingMs: Date.now() - this.replyStartedAt };
+          this.bargeIn = {
+            heard: this.currentAgentText,
+            speakingMs: Date.now() - this.replyStartedAt,
+            goodbye: this.endCallSignaled,
+          };
+          this.armNoWordsResume();
           // The server stopped generating, so anything still queued is stale
           // speech the caller has already talked over. Cancel it and reset the
           // cursor, or it plays on top of the next reply.
@@ -978,7 +1013,18 @@ export class VoiceSession {
           // agent re-decides instead of hanging up under them.
           this.disarmEndCall();
         }
-        this.toolCoordinator?.onReplyDone(msg.reply_id ?? null, interrupted);
+        this.toolCoordinator?.onReplyDone(interrupted);
+        // replaceNextReply: when the supersede takes, the platform ends the
+        // replaced reply and starts ours right after. If nothing starts, it
+        // ignored ours: send it again (the line is idle).
+        const replacing = this.replacing;
+        if (replacing && !replacing.timer && replacing.replyId === (msg.reply_id ?? null)) {
+          replacing.timer = setTimeout(() => {
+            if (this.replacing !== replacing || this.state === "ended") return;
+            this.replacing = null;
+            this.requestReply(replacing.instructions);
+          }, REPLACE_CONFIRM_MS);
+        }
         this.handlers.onReplyDone?.({ replyId: msg.reply_id ?? null, interrupted });
         this.setState("listening");
         if (this.pendingEndCall && !interrupted) {
@@ -1003,8 +1049,25 @@ export class VoiceSession {
           clearTimeout(timer);
           this.pendingResume = null;
           this.supersede(instructions);
+        } else if (this.pendingReplace) {
+          // replaceNextReply: this reply never plays (dropped by id, no
+          // flush: an earlier reply's audio may still be playing).
+          const { instructions, timer } = this.pendingReplace;
+          clearTimeout(timer);
+          this.pendingReplace = null;
+          this.droppedReplyId = this.currentReplyId;
+          this.droppedHeard = "";
+          this.replacing = { replyId: this.currentReplyId, instructions, timer: null };
+          this.requestReply(instructions);
+        } else if (this.replacing) {
+          // Ours started: the replacement took.
+          this.clearReplacing();
         }
-        this.toolCoordinator?.onReplyStarted(msg.reply_id ?? null);
+        if (this.goodbyeResumePending) {
+          this.goodbyeResumePending = false;
+          this.signalEndCall(this.currentReplyId);
+          this.pendingEndCall = true;
+        }
         this.handlers.onReplyStarted?.();
         break;
 
@@ -1012,13 +1075,18 @@ export class VoiceSession {
         // Speech alone never cuts the agent locally: the server decides
         // (after the interruption delay) and says so with an interrupted
         // reply.done, which flushes. Back-channels it ignores keep playing.
-        this.toolCoordinator?.onInputSpeechStarted();
         this.handlers.onInputSpeechStarted?.();
         break;
 
       case "transcript.user.delta":
         // Cumulative running partial for the turn — render the latest one,
         // never concatenate. Final assent must come from `transcript.user`.
+        // Words after a cut: it was speech, not noise. The transcript path
+        // decides (its final can land well after the last partial).
+        if (this.bargeIn && this.noWordsTimer && typeof msg.text === "string" && msg.text.trim()) {
+          clearTimeout(this.noWordsTimer);
+          this.noWordsTimer = null;
+        }
         this.handlers.onUserPartial?.({
           itemId: typeof msg.item_id === "string" ? msg.item_id : null,
           text: typeof msg.text === "string" ? msg.text : "",
@@ -1302,11 +1370,56 @@ export class VoiceSession {
     this.requestReply(instructions);
   }
 
+  /**
+   * Replace the platform's next reply with ours: its audio and captions never
+   * play, ours follows. For a reply the platform starts on its own and gets
+   * wrong (the demo's invite after the show tool's result skipped or garbled
+   * the tag about 1 in 3 times). If none starts within `waitMs`, ours is sent.
+   */
+  replaceNextReply(instructions: string, waitMs = 1500): void {
+    if (this.pendingReplace) clearTimeout(this.pendingReplace.timer);
+    this.pendingReplace = {
+      instructions,
+      timer: setTimeout(() => {
+        const pending = this.pendingReplace;
+        this.pendingReplace = null;
+        if (pending && this.state !== "ended") this.requestReply(pending.instructions);
+      }, waitMs),
+    };
+  }
+
+  private watchHeldResult(): void {
+    const heldAt = Date.now();
+    const timer = setInterval(() => {
+      const coordinator = this.toolCoordinator;
+      if (!coordinator?.hasHeld() || this.state === "ended") {
+        clearInterval(timer);
+        return;
+      }
+      if (Date.now() - Math.max(this.lastAudioAt, heldAt) >= HELD_RESULT_RELEASE_MS) {
+        clearInterval(timer);
+        coordinator.releaseHeld();
+      }
+    }, 250);
+  }
+
+  private clearReplacing(): void {
+    if (this.replacing?.timer) clearTimeout(this.replacing.timer);
+    this.replacing = null;
+  }
+
   /** Pick up where the agent stopped, when the barge-in wasn't real. */
-  private resumeAfterBargeIn(heard: string, text: string): void {
-    const instructions = `The caller only said "${text.slice(0, 200)}" while you were speaking; it wasn't a request to stop.${heard ? ` You had just said: "${heard.trim().slice(-200)}".` : ""} Pick up where you left off, naturally ("as I was saying…"), without repeating yourself.`;
+  private resumeAfterBargeIn(heard: string, text: string, opts: { now?: boolean } = {}): void {
+    const cause = text.trim()
+      ? `The caller only said "${text.slice(0, 200)}" while you were speaking; it wasn't a request to stop.`
+      : "A noise on the caller's side cut you off; they didn't say anything.";
+    const instructions = `${cause}${heard ? ` You had just said: "${heard.trim().slice(-200)}".` : ""} Pick up where you left off, naturally ("as I was saying…"), without repeating yourself.`;
     if (this.replyActive) {
       this.supersede(instructions);
+      return;
+    }
+    if (opts.now) {
+      this.requestReply(instructions);
       return;
     }
     // The server's own reply to the barge-in has not started yet: supersede it
@@ -1322,10 +1435,29 @@ export class VoiceSession {
     };
   }
 
+  /** (Re)start the wait for caller words after a cut; each partial restarts it. */
+  private armNoWordsResume(): void {
+    if (this.noWordsTimer) clearTimeout(this.noWordsTimer);
+    this.noWordsTimer = setTimeout(() => {
+      this.noWordsTimer = null;
+      const bargeIn = this.bargeIn;
+      if (!bargeIn || this.state === "ended" || this.endCallSignaled) return;
+      this.bargeIn = null;
+      this.handlers.onBargeIn?.({ verdict: "ignore", text: "", source: "rule" });
+      // A noise cut into the goodbye: the resumed goodbye still ends the call
+      // (re-armed on its reply.started, bound to that reply).
+      if (bargeIn.goodbye) this.goodbyeResumePending = true;
+      // No transcript means no server reply is coming to supersede: resume now.
+      this.resumeAfterBargeIn(bargeIn.heard, "", { now: true });
+    }, NO_WORDS_RESUME_MS);
+  }
+
   /** The caller barged in and their words landed: was it real? */
   private resolveBargeIn(text: string): void {
     const bargeIn = this.bargeIn;
     this.bargeIn = null;
+    if (this.noWordsTimer) clearTimeout(this.noWordsTimer);
+    this.noWordsTimer = null;
     if (!bargeIn) return;
     const verdict = judgeOverlap(text, bargeIn.heard);
     if (verdict === "yield") {
@@ -1348,6 +1480,12 @@ export class VoiceSession {
 
   private resetBargeIn(): void {
     this.bargeIn = null;
+    this.goodbyeResumePending = false;
+    if (this.pendingReplace) clearTimeout(this.pendingReplace.timer);
+    this.pendingReplace = null;
+    this.clearReplacing();
+    if (this.noWordsTimer) clearTimeout(this.noWordsTimer);
+    this.noWordsTimer = null;
     if (this.pendingResume) clearTimeout(this.pendingResume.timer);
     this.pendingResume = null;
     this.replyActive = false;
@@ -1377,18 +1515,30 @@ export class VoiceSession {
    * One coordinator per connection, for either mode: it times results
    * against replies, and an end_call result arms the drain-then-close.
    */
-  private installTools(tools: VoiceTool[], execute: ToolCoordinatorOptions["execute"]): void {
-    const modes = new Map(tools.map((tool) => [tool.name, tool.execution_mode]));
+  private installTools(execute: ToolCoordinatorOptions["execute"]): void {
     this.toolCoordinator = new ToolCoordinator({
       send: (message) => this.send(message),
-      modeFor: (name) => modes.get(name) ?? "interactive",
+      // The goodbye plays whole only if end_call's result waits for its
+      // reply to finish (eval bye-audio: 0.7s of ~6s when sent mid-reply).
+      holdUntilReplyDone: (name) => name === END_CALL_TOOL && this.replyActive,
+      // Occasionally the platform holds the goodbye open until the result
+      // arrives instead: no goodbye audio for a while means it is waiting on us.
+      onHeld: () => this.watchHeldResult(),
       onActivityChange: (active) => this.handlers.onToolActivity?.(active),
       onResult: (name, result) => {
         this.handlers.onToolResult?.(name, result);
         // Hang up as soon as the goodbye drains. Waiting for the model's
         // empty post-result reply added ~2s of dead air.
-        if (name === END_CALL_TOOL && result.ok && result.hangup === true) {
-          this.settleThenStop();
+        // Only while the hang-up is still armed: a caller who cut into the
+        // goodbye took the floor back (disarmEndCall), and the result the
+        // platform still needs must not hang up on them.
+        if (name === END_CALL_TOOL && result.ok && result.hangup === true && this.endCallSignaled) {
+          // The model often calls end_call before speaking its goodbye in the
+          // same reply: while that reply is still generating, hang up on its
+          // reply.done (pendingEndCall), never on a drain that passes only
+          // because the goodbye's audio has not arrived yet.
+          if (this.replyActive) this.pendingEndCall = true;
+          else this.settleThenStop();
         }
       },
       execute,
@@ -1401,7 +1551,7 @@ export class VoiceSession {
    * still hangs up instead of falling through unanswered.
    */
   private installLocalEndCall(): void {
-    this.installTools([END_CALL_VOICE_TOOL], (call) =>
+    this.installTools((call) =>
       executeDemoTool(call.name, call.arguments),
     );
   }
@@ -1412,7 +1562,7 @@ export class VoiceSession {
    * server-owned; the browser only relays.
    */
   private installDemoTools(): void {
-    this.installTools(DEMO_VOICE_TOOLS, (call) =>
+    this.installTools((call) =>
       postTool(
         `/api/demo/tools/${encodeURIComponent(call.name)}`,
         { toolCallId: call.callId, arguments: call.arguments },

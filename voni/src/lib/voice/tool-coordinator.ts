@@ -7,13 +7,7 @@ type ToolCall = {
   arguments: unknown;
 };
 
-type Pending = {
-  callId: string;
-  name: string;
-  replyId: string | null;
-  mode: "interactive" | "hold";
-  result?: ToolResponse;
-};
+type Pending = { callId: string; name: string };
 
 export type ToolCoordinatorOptions = {
   send: (message: Record<string, unknown>) => void;
@@ -22,7 +16,14 @@ export type ToolCoordinatorOptions = {
     name: string;
     arguments: Record<string, unknown>;
   }) => Promise<ToolResponse>;
-  modeFor: (name: string) => "interactive" | "hold";
+  /**
+   * Hold this tool's result until the current reply is done. For end_call:
+   * a result sent mid-goodbye makes the platform cut the goodbye's audio
+   * (measured ~0.7s of a ~6s line) and speak it again in a new reply.
+   */
+  holdUntilReplyDone?: (name: string) => boolean;
+  /** A result was just held (the session watches for a platform that waits on it). */
+  onHeld?: () => void;
   /**
    * Fires with every tool result as it is sent back to the agent — so the
    * session can react to call-control tools (end_call arms the hangup) as
@@ -50,11 +51,21 @@ function parseArguments(value: unknown): Record<string, unknown> {
   throw new Error("Tool arguments must be a JSON object.");
 }
 
+/**
+ * Runs the agent's tool calls and sends each result back the moment it is
+ * ready, in both execution modes. The docs' client-tools page says to hold
+ * interactive results until reply.done, but the server holds the calling
+ * reply open until the result arrives, so holding deadlocks until the tool
+ * times out (measured live, 2026-09-27; sess_c477d8f8 stalled 5s, then the
+ * model invented the missing answer). An interrupted reply still drops its
+ * pending results: the agent has moved on. The one exception is
+ * `holdUntilReplyDone` (end_call), measured the other way round: held until
+ * its reply is done, then sent whether or not that reply was cut.
+ */
 export class ToolCoordinator {
-  private currentReplyId: string | null = null;
-  private latestEvent: string | null = null;
   private pending = new Map<string, Pending>();
   private discarded = new Set<string>();
+  private held: { item: Pending; result: ToolResponse }[] = [];
   private active = false;
 
   constructor(private options: ToolCoordinatorOptions) {}
@@ -66,36 +77,24 @@ export class ToolCoordinator {
     this.options.onActivityChange?.(next);
   }
 
-  onReplyStarted(replyId: string | null) {
-    this.currentReplyId = replyId;
-    this.latestEvent = "reply.started";
-  }
-
-  onInputSpeechStarted() {
-    this.latestEvent = "input.speech.started";
-  }
-
-  onReplyDone(replyId: string | null, interrupted: boolean) {
-    this.latestEvent = "reply.done";
-    if (interrupted) {
-      for (const callId of this.pending.keys()) {
-        this.pending.delete(callId);
-        this.discarded.add(callId);
-      }
-      this.notifyActivity();
-      return;
+  onReplyDone(interrupted: boolean) {
+    // Held results go out either way: the platform waits for them, and never
+    // sending one stalled the next reply until the tool timed out. The
+    // session decides what a result means once its reply was cut.
+    const held = this.held;
+    this.held = [];
+    for (const { item, result } of held) this.sendResult(item, result);
+    if (!interrupted) return;
+    // Still-running calls are marked so their late results are dropped.
+    for (const callId of this.pending.keys()) {
+      this.pending.delete(callId);
+      this.discarded.add(callId);
     }
-    this.flushInteractive();
+    this.notifyActivity();
   }
 
   onToolCall(event: ToolCall) {
-    const mode = this.options.modeFor(event.name);
-    this.pending.set(event.call_id, {
-      callId: event.call_id,
-      name: event.name,
-      replyId: this.currentReplyId,
-      mode,
-    });
+    this.pending.set(event.call_id, { callId: event.call_id, name: event.name });
     this.notifyActivity();
 
     void (async () => {
@@ -118,44 +117,39 @@ export class ToolCoordinator {
       if (this.discarded.delete(event.call_id)) return;
       const item = this.pending.get(event.call_id);
       if (!item) return;
-      item.result = result;
-      if (item.mode === "hold") {
-        this.sendResult(item);
-      } else {
-        // The tool may finish after reply.done. Flush from the completion path
-        // too, but only while reply.done is still the latest event.
-        this.flushInteractive();
-      }
+      if (this.options.holdUntilReplyDone?.(item.name)) {
+        this.held.push({ item, result });
+        this.options.onHeld?.();
+      } else this.sendResult(item, result);
     })();
   }
 
+  /** Send held results now: the platform turned out to be waiting for them. */
+  releaseHeld() {
+    const held = this.held;
+    this.held = [];
+    for (const { item, result } of held) this.sendResult(item, result);
+  }
+
+  hasHeld(): boolean {
+    return this.held.length > 0;
+  }
+
   clear() {
+    this.held = [];
     this.pending.clear();
     this.discarded.clear();
     this.notifyActivity();
   }
 
-  private flushInteractive() {
-    if (this.latestEvent !== "reply.done") return;
-    for (const item of [...this.pending.values()]) {
-      if (
-        item.mode === "interactive" &&
-        item.result
-      ) {
-        this.sendResult(item);
-      }
-    }
-  }
-
-  private sendResult(item: Pending) {
-    if (!item.result) return;
+  private sendResult(item: Pending, result: ToolResponse) {
     this.options.send({
       type: "tool.result",
       call_id: item.callId,
-      result: JSON.stringify(item.result),
-      is_error: !item.result.ok,
+      result: JSON.stringify(result),
+      is_error: !result.ok,
     });
-    this.options.onResult?.(item.name, item.result);
+    this.options.onResult?.(item.name, result);
     this.pending.delete(item.callId);
     this.notifyActivity();
   }

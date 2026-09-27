@@ -31,6 +31,7 @@ test("a Gmail metadata message becomes an inbox message", () => {
     subject: "hi Voni",
     receivedAt: 1700000000000,
     authResults: "mx.google.com; spf=pass; mx.google.com; dmarc=pass",
+    snippet: "",
   });
 });
 

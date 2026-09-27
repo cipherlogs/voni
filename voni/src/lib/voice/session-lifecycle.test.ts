@@ -230,6 +230,124 @@ test("a resume is sent even if the server never answers the filler", async () =>
   assert.match(replyCreates()[0].instructions, /Pick up where you left off/);
 });
 
+test("a cut with no words after it (noise) resumes after ~1.5s", async () => {
+  // A wheel click or a cough reaches the mic, the server cuts the reply, and
+  // no transcript ever follows: Voni used to wait forever in silence.
+  const { handle, replyCreates } = midReply();
+  handle({ type: "input.speech.started" });
+  handle({ type: "reply.done", reply_id: "r1", status: "interrupted" });
+  await new Promise((resolve) => setTimeout(resolve, 1000));
+  assert.deepEqual(replyCreates(), [], "gives real words time to land");
+  await new Promise((resolve) => setTimeout(resolve, 900));
+  const [create] = replyCreates();
+  assert.match(create?.instructions ?? "", /Pick up where you left off/);
+  assert.match(create.instructions, /booking and reminders/);
+  assert.doesNotMatch(create.instructions, /only said ""/);
+});
+
+test("words after a cut are speech: no resume even when the final transcript lands late", async () => {
+  // The final can come well after the last partial while the platform waits
+  // for the caller to finish; resuming then talked over a real sentence.
+  const { handle, replyCreates } = midReply();
+  handle({ type: "input.speech.started" });
+  handle({ type: "reply.done", reply_id: "r1", status: "interrupted" });
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  handle({ type: "transcript.user.delta", item_id: "u1", text: "What does it" });
+  await new Promise((resolve) => setTimeout(resolve, 2500)); // caller pauses; no final yet
+  assert.deepEqual(replyCreates(), []);
+});
+
+test("a noise cut into the goodbye resumes it and still hangs up after", async () => {
+  const { session, handle, internals, replyCreates } = midReply();
+  withDemoTools(internals, session);
+  internals["playout"] = { play: () => undefined, flush: () => undefined, settled: () => true, queuedMs: () => 0 };
+  internals["lastAudioAt"] = 0;
+  handle({ type: "reply.started", reply_id: "bye" });
+  endCall(handle, "e9");
+  await settle();
+  handle({ type: "reply.audio", reply_id: "bye", data: "" });
+  handle({ type: "input.speech.started" });
+  handle({ type: "reply.done", reply_id: "bye", status: "interrupted" }); // a cough, no words
+  await new Promise((resolve) => setTimeout(resolve, 1800));
+  assert.match(replyCreates().at(-1)?.instructions ?? "", /Pick up where you left off/);
+  assert.equal(internals["explicitStop"], false);
+  handle({ type: "reply.started", reply_id: "bye2" });
+  handle({ type: "reply.audio", reply_id: "bye2", data: "" });
+  handle({ type: "reply.done", reply_id: "bye2", status: "completed" });
+  await new Promise((resolve) => setTimeout(resolve, 2000));
+  assert.equal(internals["explicitStop"], true, "the finished goodbye hangs up");
+});
+
+test("a caller still talking after a cut is never resumed over", async () => {
+  const { handle, replyCreates } = midReply();
+  handle({ type: "input.speech.started" });
+  handle({ type: "reply.done", reply_id: "r1", status: "interrupted" });
+  for (let i = 0; i < 6; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    handle({ type: "transcript.user.delta", item_id: "u1", text: "so what I really want ".repeat(i + 1) });
+  }
+  assert.deepEqual(replyCreates(), []);
+  handle({ type: "transcript.user", item_id: "u1", text: "So what I really want is pricing." });
+  await new Promise((resolve) => setTimeout(resolve, 1800));
+  assert.deepEqual(replyCreates(), [], "a real point is answered by the server, not resumed");
+});
+
+test("replaceNextReply: the platform's next reply is dropped and ours replaces it; the lead-in keeps playing", async () => {
+  const { session, handle, replyCreates, played, flushes } = midReply();
+  // The lead-in (r1) is still playing when the demo asks for the invite.
+  session.replaceNextReply("Invite them now.");
+  handle({ type: "reply.done", reply_id: "r1", status: "completed" });
+  handle({ type: "reply.started", reply_id: "auto" }); // the platform's own reply to the tool result
+  assert.deepEqual(replyCreates().map((c) => c.instructions), ["Invite them now."]);
+  assert.deepEqual(flushes, [], "the lead-in's queued audio is never cut");
+  const before = played.length;
+  handle({ type: "reply.audio", reply_id: "auto", data: "" });
+  assert.equal(played.length, before, "the replaced reply never plays");
+  handle({ type: "reply.done", reply_id: "auto", status: "completed" });
+  handle({ type: "reply.started", reply_id: "ours" });
+  handle({ type: "reply.audio", reply_id: "ours", data: "" });
+  assert.equal(played.length, before + 1, "ours plays");
+});
+
+test("replaceNextReply resends ours when the platform ignored it (nothing starts after the replaced reply)", async () => {
+  // Measured live: a reply.create sent at the very start of the platform's
+  // reply was sometimes ignored; that reply ran on (and was dropped), so the
+  // visitor would hear nothing.
+  const { session, handle, replyCreates } = midReply();
+  handle({ type: "reply.done", reply_id: "r1", status: "completed" });
+  session.replaceNextReply("Invite them now.");
+  handle({ type: "reply.started", reply_id: "auto" });
+  handle({ type: "reply.done", reply_id: "auto", status: "completed" });
+  await new Promise((resolve) => setTimeout(resolve, 600));
+  assert.equal(replyCreates().length, 1, "gives ours a moment to start");
+  await new Promise((resolve) => setTimeout(resolve, 600));
+  assert.deepEqual(replyCreates().map((c) => c.instructions), ["Invite them now.", "Invite them now."]);
+  handle({ type: "reply.started", reply_id: "ours" });
+  handle({ type: "reply.done", reply_id: "ours", status: "completed" });
+  await new Promise((resolve) => setTimeout(resolve, 1200));
+  assert.equal(replyCreates().length, 2, "never a third");
+});
+
+test("replaceNextReply does not resend when the supersede took (the platform ends its reply, then starts ours)", async () => {
+  // Measured live order: reply.done(replaced) and reply.started(ours) in the same millisecond, done first.
+  const { session, handle, replyCreates } = midReply();
+  handle({ type: "reply.done", reply_id: "r1", status: "completed" });
+  session.replaceNextReply("Invite them now.");
+  handle({ type: "reply.started", reply_id: "auto" });
+  handle({ type: "reply.done", reply_id: "auto", status: "completed" });
+  handle({ type: "reply.started", reply_id: "ours" });
+  await new Promise((resolve) => setTimeout(resolve, 1300));
+  assert.equal(replyCreates().length, 1);
+});
+
+test("replaceNextReply sends ours anyway when the platform starts no reply", async () => {
+  const { session, handle, replyCreates } = midReply();
+  handle({ type: "reply.done", reply_id: "r1", status: "completed" });
+  session.replaceNextReply("Invite them now.", 300);
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  assert.deepEqual(replyCreates().map((c) => c.instructions), ["Invite them now."]);
+});
+
 test("steering after a cut is answered as a normal turn", async () => {
   const events: string[] = [];
   const { serverCut, handle, replyCreates } = midReply({}, { onBargeIn: (e) => events.push(e.verdict) });
@@ -331,6 +449,70 @@ test("a cut into the goodbye takes the floor back", async () => {
   serverCut("Wait, no, one more thing.");
   await new Promise((resolve) => setTimeout(resolve, 1200));
   assert.equal(internals["explicitStop"], false);
+});
+
+test("an end_call issued before the goodbye's audio waits for that reply to finish", async () => {
+  // sess_c477d8f8: the model called end_call before speaking its goodbye in
+  // the same reply. The result came back at once, playback was idle and the
+  // last audio was seconds old, so the drain passed and the goodbye was cut
+  // after "No problem." The result still goes back at once (the server waits
+  // for it before speaking); only the hang-up waits for the reply.
+  const { session, sent, handle, internals } = makeSession();
+  withDemoTools(internals, session);
+  internals["playout"] = { play: () => undefined, flush: () => undefined, settled: () => true, queuedMs: () => 0 };
+  internals["lastAudioAt"] = 0;
+  handle({ type: "session.ready", session_id: "s1" });
+  handle({ type: "reply.started", reply_id: "bye" });
+  endCall(handle, "e6");
+  await settle();
+  const results = () => sent.map((raw) => JSON.parse(raw)).filter((m) => m.type === "tool.result" && m.call_id === "e6");
+  // Measured live (eval bye-audio): a result sent mid-goodbye makes the
+  // platform cut the goodbye's audio at ~0.7s and speak it again in a new
+  // reply (which the session drops). Held to reply.done, the goodbye plays whole.
+  assert.equal(results().length, 0, "the result waits for the goodbye reply to finish");
+  await new Promise((resolve) => setTimeout(resolve, 1500));
+  assert.equal(internals["explicitStop"], false, "never hangs up while the goodbye reply is still streaming");
+  handle({ type: "reply.audio", reply_id: "bye", data: "" });
+  handle({ type: "reply.done", reply_id: "bye", status: "completed" });
+  assert.equal(results().length, 1, "sent at the goodbye's reply.done");
+  await new Promise((resolve) => setTimeout(resolve, 2000));
+  assert.equal(internals["explicitStop"], true, "then drains and hangs up");
+});
+
+test("a caller cutting into the goodbye: the held result is still sent, and the call stays up", async () => {
+  // Measured live (hang-up-over): dropping the held result left the platform
+  // waiting until the tool timed out (a 14s hang-up).
+  const { session, sent, handle, internals } = makeSession();
+  withDemoTools(internals, session);
+  internals["playout"] = { play: () => undefined, flush: () => undefined, settled: () => true, queuedMs: () => 0 };
+  handle({ type: "session.ready", session_id: "s1" });
+  handle({ type: "reply.started", reply_id: "bye" });
+  endCall(handle, "e8");
+  await settle();
+  handle({ type: "reply.audio", reply_id: "bye", data: "" });
+  handle({ type: "input.speech.started" });
+  handle({ type: "reply.done", reply_id: "bye", status: "interrupted" });
+  assert.equal(sent.map((raw) => JSON.parse(raw)).filter((m) => m.type === "tool.result").length, 1, "the platform gets its result");
+  await new Promise((resolve) => setTimeout(resolve, 1500));
+  assert.equal(internals["explicitStop"], false, "the caller took the floor back: no hang-up");
+});
+
+test("a held end_call result is released when the platform waits for it (no goodbye audio for 2s)", async () => {
+  // Measured 1 in 10 live: the platform sometimes holds the goodbye reply
+  // open until the result arrives; holding the result then stalled until the
+  // tool's timeout (a 12.6s hang-up).
+  const { session, sent, handle, internals } = makeSession();
+  withDemoTools(internals, session);
+  internals["playout"] = { play: () => undefined, flush: () => undefined, settled: () => true, queuedMs: () => 0 };
+  handle({ type: "session.ready", session_id: "s1" });
+  handle({ type: "reply.started", reply_id: "bye" });
+  endCall(handle, "e7");
+  await settle();
+  const results = () => sent.map((raw) => JSON.parse(raw)).filter((m) => m.type === "tool.result");
+  await new Promise((resolve) => setTimeout(resolve, 2500));
+  assert.equal(results().length, 0, "still held: the goodbye may be slow to start");
+  await new Promise((resolve) => setTimeout(resolve, 1000));
+  assert.equal(results().length, 1, "released: the platform is waiting on us");
 });
 
 test("hangup waits through flapping playback instead of one settled poll", async () => {

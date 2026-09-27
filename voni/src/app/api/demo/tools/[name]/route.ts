@@ -2,6 +2,7 @@ import { z } from "zod";
 import { demoCallFromRequest } from "@/lib/demo/call-token";
 import { CHECK_EMAIL_TOOL, executeDemoTool } from "@/lib/demo/demo-tools";
 import { runCheckEmail } from "@/lib/demo/inbox";
+import { loadLiveTestTag } from "@/lib/demo/test-tag-registry";
 
 /**
  * Public demo tools, scoped to one call: the bearer is the `callToken` that
@@ -31,7 +32,9 @@ export async function POST(
   const result =
     name === CHECK_EMAIL_TOOL
       ? await runCheckEmail(call, parsed.data.arguments)
-      : await executeDemoTool(name, parsed.data.arguments);
+      : await executeDemoTool(name, parsed.data.arguments, {
+          testTag: call.tagId ? (await loadLiveTestTag(call.tagId))?.tag : null,
+        });
   return Response.json(result, {
     headers: { "Cache-Control": "no-store" },
   });

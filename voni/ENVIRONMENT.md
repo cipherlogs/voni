@@ -223,7 +223,7 @@ One-time setup:
 2. On the OAuth client, add `http://localhost:8765` as an authorized redirect URI.
 3. `node --env-file=.dev.vars --import tsx scripts/mint-demo-inbox-token.mts`, sign in as the inbox account, and put the printed line in `.dev.vars` (and `wrangler secret put DEMO_INBOX_REFRESH_TOKEN` for deploys).
 
-⚠️ While the consent screen is in *Testing*, Google expires refresh tokens after 7 days: re-run step 3, or publish the app. If the Cloud project belongs to the `pilotxstudio.com` Workspace, set the consent screen's user type to *Internal* instead: no test users, no 7-day expiry. Without the token the demo still runs; every claim just reads as "not landed yet" (logged as `[demo-inbox] read failed`).
+⚠️ While the consent screen is in *Testing*, Google expires refresh tokens after 7 days: re-run step 3, or publish the app. If the Cloud project belongs to the `pilotxstudio.com` Workspace, set the consent screen's user type to *Internal* instead: no test users, no 7-day expiry. Without the token the demo still runs; every inbox check just reads as "not landed yet" (logged as `[demo-inbox] read failed`).
 
 ## Cloudflare (deploy target + R2 storage)
 - `CLOUDFLARE_ACCOUNT_ID` / `CLOUDFLARE_API_TOKEN` — only needed for `npm run deploy` / R2 access, not local dev.

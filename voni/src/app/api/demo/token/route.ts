@@ -1,7 +1,9 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { checkDemoLimits } from "@/lib/demo/rate-limit";
 import { getOrCreateDemoAgent } from "@/lib/demo/stored-agents";
-import { carryDemoCall, demoCallKey } from "@/lib/demo/call-token";
+import { carryDemoCall, demoCallKey, signTagToken, verifyTagToken } from "@/lib/demo/call-token";
+import { tagForMint } from "@/lib/demo/test-tag-registry";
+import { getVoice } from "@/lib/agents/voices";
 import { WALL_CAP_S } from "@/lib/demo/talk-clock";
 import { secret } from "@/lib/env";
 
@@ -32,7 +34,8 @@ import { secret } from "@/lib/env";
  * server lever is this cap; lowering WALL_CAP_S trades away mute allowance.
  *
  * Each response also carries a `callToken` (call-token.ts): the bearer that
- * scopes the demo's tool and judge routes to this one call.
+ * scopes the demo's tool and judge routes to this one call, and names the
+ * visitor's Test tag (`testTag` + the browser's `tagToken`, test-tag.ts).
  */
 
 const MAX_SESSION_SECONDS = WALL_CAP_S;
@@ -50,7 +53,7 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  let body: { voiceId?: unknown; resume?: unknown; callToken?: unknown };
+  let body: { voiceId?: unknown; resume?: unknown; callToken?: unknown; tagToken?: unknown };
   try {
     body = await request.json();
   } catch {
@@ -97,11 +100,22 @@ export async function POST(request: NextRequest) {
   }
 
   const { token } = (await res.json()) as { token: string };
+
+  // The visitor's Test tag (docs/adr/0004): the browser's token re-issues the
+  // same tag for a day (a callback finds the email sent after a late call);
+  // otherwise a fresh one in the call's language.
+  const held = typeof body.tagToken === "string" ? verifyTagToken(callKey, body.tagToken) : null;
+  const { tag, carried } = await tagForMint(held, getVoice(voiceId)?.languageCode ?? "en");
   return NextResponse.json(
     {
       token,
       agentId: agent.agentId,
-      callToken: carryDemoCall(callKey, body.callToken),
+      callToken: carryDemoCall(callKey, body.callToken, Date.now(), tag.id),
+      testTag: tag.tag,
+      // A carried tag keeps its token (same id and issue time).
+      tagToken: signTagToken(callKey, tag.id, tag.issuedAt.getTime()),
+      /** Carried from an earlier call: its email may already be in (Q15). */
+      tagCarried: carried,
       maxSessionSeconds: MAX_SESSION_SECONDS,
     },
     // A single-use token must never be cached by a CDN or the browser.

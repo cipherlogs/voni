@@ -1,19 +1,22 @@
 import { TALK_BASE_S } from "./talk-clock";
+import { containsTag, countTags } from "./test-tag";
 
 /**
- * The demo's email test (beats 2–4): the visitor emails the shared test
- * inbox, claims the address they used, and Voni finds their email among
- * everyone else's. No I/O of its own: the inbox read (inbox.ts) and the Jev judges are
- * injected, so the gate, the matcher fallback and the extension are testable
- * offline. Browser-safe (the call component imports the state half).
+ * The demo's email test (beats 2–4, docs/adr/0004): the visitor emails the
+ * shared test inbox with their Test tag in the subject, and Voni finds it
+ * among everyone else's (`checkTag`); the sender's own address is the claim.
+ * A spoken address (`checkEmail`, Jev near-miss matcher) is only the
+ * fallback when the visitor forgot the tag. The inbox read (inbox.ts) and
+ * the Jev judges are injected, so the gate, the matchers and the extension
+ * are testable offline. Browser-safe: the call component imports the state
+ * half, plus the two localStorage helpers for the browser's tag token.
  */
 
 /** The shared test inbox. Moves to test@voni.cc once the domain's email routing exists (spec: deferred). */
 export const DEMO_INBOX_ADDRESS = "hi@pilotxstudio.com";
-export const DEMO_INBOX_SPOKEN = "hi at pilot x studio dot com";
 
-/** Talk clock after a claimed business address: provisional, until the code check (04). */
-export const PROVISIONAL_TALK_S = 240;
+/** Talk clock once the visitor's email arrives from a business address: provisional, until the code check (04). */
+export const PROVISIONAL_TALK_S = 360;
 
 /** How far back the inbox is searched: covers a whole call (wall cap) plus a margin. */
 export const INBOX_LOOKBACK_S = 15 * 60;
@@ -29,12 +32,15 @@ export type InboxMessage = {
   receivedAt: number;
   /** Gmail's Authentication-Results header (SPF/DKIM/DMARC). */
   authResults: string;
+  /** Gmail's start-of-body snippet: visitors put the tag in the body too. */
+  snippet?: string;
 };
 
 export type CheckEmailResult =
   | { status: "invalid" }
   | { status: "free"; address: string }
-  | { status: "not_arrived"; address: string; name: string | null }
+  /** `address` is null on the tag path: there is no claimed address to say. */
+  | { status: "not_arrived"; address: string | null; name: string | null }
   | {
       status: "found";
       address: string;
@@ -44,6 +50,8 @@ export type CheckEmailResult =
       exact: boolean;
       messageId: string;
       threadId: string;
+      /** The sender matched an earlier tag: a returning visitor (another device). */
+      returning?: boolean;
     };
 
 const EMAIL = /^[a-z0-9._%+-]+@[a-z0-9-]+(\.[a-z0-9-]+)+$/;
@@ -187,28 +195,72 @@ export async function checkEmail(raw: string, deps: CheckEmailDeps): Promise<Che
   };
 }
 
-/** The call's side of the test: what the visitor was asked, claimed, and whether it landed. */
-export type EmailTestState = {
-  /** Voni showed the address and invited the test. */
-  invited: boolean;
-  /** The claimed business address (never a free one). */
-  claim: string | null;
-  found: boolean;
+export type CheckTagDeps = {
+  /** Inbox email since the tag was issued that may carry it (inbox.ts narrows by the tag's word). */
+  listTagged: () => Promise<InboxMessage[]>;
+  /** Jev's spoof/spam flag. Throws when Jev is unavailable. */
+  jevSpoof?: (message: InboxMessage) => Promise<boolean>;
 };
 
-export const EMAIL_TEST_START: EmailTestState = { invited: false, claim: null, found: false };
+/**
+ * The main path: the newest authentic email carrying the Test tag is the
+ * visitor's, and its sender is the claim. The work-email gate applies to that
+ * sender's domain. The tag is unique among live tags, so a match is exact.
+ */
+export async function checkTag(tag: string, deps: CheckTagDeps): Promise<CheckEmailResult> {
+  const notArrived: CheckEmailResult = { status: "not_arrived", address: null, name: null };
+  const inbox = await deps.listTagged().catch((e: unknown) => {
+    console.error(`[demo-inbox] read failed: ${e}`);
+    return [];
+  });
+  // Subject or the start of the body (the owner's own test put it in the
+  // body), and exactly one tag across both: an email listing many tags
+  // would otherwise claim every live visitor whose tag it names.
+  const text = (m: InboxMessage) => `${m.subject} ${m.snippet ?? ""}`;
+  const carrying = inbox
+    .filter((m) => containsTag(text(m), tag) && countTags(text(m), tag) === 1 && !spoofedByHeaders(m.authResults))
+    .sort((a, b) => b.receivedAt - a.receivedAt);
+  for (const message of carrying) {
+    // A spoof judge that is down counts as "not flagged": Gmail's verdict
+    // already filtered above.
+    const flagged = await (deps.jevSpoof?.(message) ?? Promise.resolve(false)).catch(() => false);
+    if (flagged) continue;
+    if (isFreeEmailDomain(message.from.split("@")[1] ?? "")) return { status: "free", address: message.from };
+    return {
+      status: "found",
+      address: message.from,
+      from: message.from,
+      name: nameFromAddress(message.from, message.fromName),
+      exact: true,
+      messageId: message.id,
+      threadId: message.threadId,
+    };
+  }
+  return notArrived;
+}
+
+/** The call's side of the test: whether Voni invited it, and whether the visitor's business email landed. */
+export type EmailTestState = {
+  /** Voni showed the address and the tag and invited the test. */
+  invited: boolean;
+  found: boolean;
+  /** Their email landed from a personal address: the work-email gate was given. */
+  gated?: boolean;
+};
+
+export const EMAIL_TEST_START: EmailTestState = { invited: false, found: false };
 
 export function emailTestAfterCheck(state: EmailTestState, result: CheckEmailResult): EmailTestState {
   if (state.found) return state;
-  if (result.status === "not_arrived") return { ...state, claim: result.address };
-  // A near miss keeps the claim open: Voni asks them to spell it, then checks again.
-  if (result.status === "found") return { ...state, claim: result.address, found: result.exact };
+  // A near miss (spoken fallback) waits for the spelled-out address.
+  if (result.status === "found" && result.exact) return { ...state, found: true };
+  if (result.status === "free") return { ...state, gated: true };
   return state;
 }
 
-/** A business claim earns the provisional extension. */
+/** Only an arrived business email earns the provisional extension (never a spoken claim). */
 export function talkLimitS(state: EmailTestState): number {
-  return state.claim ? PROVISIONAL_TALK_S : TALK_BASE_S;
+  return state.found ? PROVISIONAL_TALK_S : TALK_BASE_S;
 }
 
 /**
@@ -218,8 +270,8 @@ export function talkLimitS(state: EmailTestState): number {
  */
 export function checkResultToData(result: CheckEmailResult): Record<string, unknown> {
   if (result.status === "found") {
-    const { status, address, name, exact } = result;
-    return { status, address, name, exact };
+    const { status, address, name, exact, returning } = result;
+    return { status, address, name, exact, ...(returning ? { returning } : {}) };
   }
   return { ...result };
 }
@@ -229,9 +281,47 @@ export function checkResultFromData(data: Record<string, unknown>): CheckEmailRe
   const address = typeof data.address === "string" ? data.address : "";
   const name = typeof data.name === "string" ? data.name : null;
   if (data.status === "free" && address) return { status: "free", address };
-  if (data.status === "not_arrived" && address) return { status: "not_arrived", address, name };
+  if (data.status === "not_arrived") return { status: "not_arrived", address: address || null, name };
   if (data.status === "found" && address) {
-    return { status: "found", address, from: "", name, exact: data.exact === true, messageId: "", threadId: "" };
+    return {
+      status: "found",
+      address,
+      from: "",
+      name,
+      exact: data.exact === true,
+      messageId: "",
+      threadId: "",
+      ...(data.returning === true ? { returning: true } : {}),
+    };
   }
   return { status: "invalid" };
+}
+
+/** Where the browser keeps its signed Test-tag token (a day; the server re-checks expiry). */
+export const TAG_TOKEN_KEY = "voni:test-tag";
+
+export function loadTagToken(): string | undefined {
+  try {
+    return localStorage.getItem(TAG_TOKEN_KEY) ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function saveTagToken(token: string): void {
+  try {
+    localStorage.setItem(TAG_TOKEN_KEY, token);
+  } catch {
+    // Private mode or blocked storage: a callback just gets a fresh tag.
+  }
+}
+
+/**
+ * Voni talked about her screen without calling the show tool (measured 2 in
+ * 50 live runs: "Let me put something on your screen." and no tool call).
+ * The call then puts the test up itself.
+ */
+export function mentionsScreen(text: string): boolean {
+  // Voni putting something up, not business talk about someone's screen.
+  return /\bput(?:ting)?\b[^.!?]{0,40}\bon (?:your |the )?screen\b/i.test(text);
 }
