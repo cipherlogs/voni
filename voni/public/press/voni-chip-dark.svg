@@ -3,6 +3,6 @@
     Self-contained press master. -->
   <rect width="96" height="96" rx="24" fill="#171717" stroke="#fafafa" stroke-opacity="0.1" />
   <g transform="translate(24,24) scale(2)">
-    <path d="M5 15Q12 5 19 15" fill="none" stroke="#fafafa" stroke-width="2.75" stroke-linecap="round" />
+    <path d="M5 9Q12 24 19 9" fill="none" stroke="#fafafa" stroke-width="2.75" stroke-linecap="round" />
   </g>
 </svg>

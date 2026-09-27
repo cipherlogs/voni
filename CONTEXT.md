@@ -4,6 +4,32 @@ Voice-calling AI platform (Voni web app + telephony bot): users create agents, c
 
 ## Language
 
+### Brand press kit
+
+**Mark**:
+The solo V stroke (`voni-mark-*`).
+_Avoid_: arc (the old resting curve), logo (unqualified)
+
+**Wordmark**:
+The mark standing in for "V" directly against "oni" (`voni-wordmark-*`).
+_Avoid_: logo (unqualified)
+
+**Chip**:
+The rounded-square app icon: paper square, ink mark (`voni-chip-*`, avatars).
+_Avoid_: icon (unqualified), avatar (outside profile-picture context)
+
+**Lockup**:
+A wordmark plus one slogan line (`voni-lockup-{slug}-*`).
+_Avoid_: banner, header image
+
+**Slogan**:
+The canonical line: "Every call ends with the work already done".
+_Avoid_: tagline (retired with "It sees the lead. It seals the deal."), motto
+
+**Alternates**:
+The spare-approved slogan lines ("One call, and everything after it.", "The work happens while it's still talking.") — one per surface, never stacked.
+_Avoid_: slogans (plural in a single lockup), variants (in press context)
+
 ### Settings bento
 
 **Tile**:

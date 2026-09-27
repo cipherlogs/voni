@@ -182,15 +182,15 @@
 }
 
 /* The chip settles once on mount — arrival still reads as arrival. The mark
-   itself then loops for as long as it stays mounted: the V (`voni-arc`)
-   opens into the arc and folds back. Both are the same kind of curve (one
+   itself then loops for as long as it stays mounted: the resting V
+   (`voni-arc`) opens into the arc and folds back. Both are the same kind of curve (one
    quadratic bezier, control point mirrored across y=12), so animating the
    `d` property directly morphs one into the other with no separate drawings.
    A second copy of the same path in the brand green (`voni-arc-accent`)
    tracks the identical shape and is visible only in the V phase. The V holds
    for most of the loop (the arc is a brief wink), and it is where the loop
    starts, ends, and rests under reduced motion, so the lockup reads "Voni"
-   (audit 2026-09-24). */
+   (audit 2026-09-24). Press masters in `public/press/` freeze this V phase. */
 .voni-chip-in {
   animation: voni-chip-in var(--motion-slow) var(--ease-out-soft) both;
 }

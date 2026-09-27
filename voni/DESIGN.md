@@ -631,7 +631,9 @@ branch. Nothing here applies inside the app shell.
 >   moves `left`/`top`. The closing section is `content-visibility: auto`.
 > - **Mark:** the logo loop holds the V for most of its cycle and rests on the
 >   green V under reduced motion, so the lockup reads "Voni"; the orb is bare
->   wireframe, no core and no mark. The wireframe tints green by call state
+>   wireframe, no core and no mark. Static masters in `public/press/` freeze
+>   the V phase (amendment 2026-09-27: the old resting arc never read as V —
+>   see the press README for the slogan lockup set). The wireframe tints green by call state
 >   (`data-state` on the orb: connecting/listening soft green, speaking
 >   brighter with a quicker ping, idle/ended monochrome).
 > - **Demo card (orb first, round 3 of the canvas, 2026-09-24):** at rest

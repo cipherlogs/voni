@@ -1,13 +1,13 @@
 import { cn } from "@/lib/utils";
 
 /**
- * The Voni mark: a single calm arc that, once a loop, folds down into the
- * letter it's named for and eases back. Both shapes are the same kind of
+ * The Voni mark: a single calm V that, once a loop, opens into the
+ * resting arc and eases back. Both shapes are the same kind of
  * curve (one quadratic bezier, control point mirrored across y=12), so the
  * browser can animate the `d` property directly between them instead of
  * cross-fading two separate drawings.
  *
- * Kept in sync by hand with `src/app/icon.svg`, which draws the resting arc
+ * Kept in sync by hand with `src/app/icon.svg`, which draws the resting V
  * at the same coordinates. The favicon can't import this file or run the
  * loop, so if the geometry changes here, change the resting shape there too.
  */
@@ -20,14 +20,14 @@ const SIZES = {
 
 export type VoniLogoSize = keyof typeof SIZES;
 
-const ARC_PATH = "M5 15Q12 5 19 15";
+const V_PATH = "M5 9Q12 24 19 9";
 
 /**
  * The bare stroke, inheriting `currentColor`. Use when you supply your own
  * container.
  *
- * `animate` loops for as long as the mark stays mounted: the arc holds, folds
- * into a V, and unfolds back — a second copy of the same path in the brand
+ * `animate` loops for as long as the mark stays mounted: the V holds, opens
+ * into the arc, and folds back — a second copy of the same path in the brand
  * green (`voni-arc-accent`) tracks the identical shape and only fades in for
  * the V phase, so the color change lands on the moment of recognition rather
  * than fighting it.
@@ -45,7 +45,7 @@ export function VoniMark({
   return (
     <svg viewBox={viewBox} fill="none" aria-hidden="true" className={className}>
       <path
-        d={ARC_PATH}
+        d={V_PATH}
         strokeWidth={2.75}
         strokeLinecap="round"
         // `stroke` is a real CSS declaration on `.voni-arc` (see globals.css),
@@ -55,7 +55,7 @@ export function VoniMark({
         className={animate ? "voni-arc" : undefined}
         style={animate ? undefined : { stroke: "currentColor" }}
       />
-      {animate ? <path d={ARC_PATH} strokeWidth={2.75} strokeLinecap="round" className="voni-arc-accent" /> : null}
+      {animate ? <path d={V_PATH} strokeWidth={2.75} strokeLinecap="round" className="voni-arc-accent" /> : null}
     </svg>
   );
 }
@@ -66,7 +66,7 @@ export function VoniMark({
  * - Minimal (`wordmark` off): the mark alone in its fixed light chip — use
  *   this everywhere the mark has to hold its own at small sizes (nav rails,
  *   compact headers, anywhere the full name doesn't fit or isn't needed).
- * - Full (`wordmark` on): no chip — the bare mark stands in for the "V" and
+ * - Full (`wordmark` on): no chip — the bare V stands in for the "V" and
  *   sits directly against "oni", so the animated mark itself spells "Voni"
  *   rather than sitting next to a separate repeat of the name. Reserve this
  *   for places that can afford the full lockup's width and where the brand

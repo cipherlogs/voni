@@ -1,23 +1,24 @@
 /**
- * Press-kit raster pass 2/2 — wordmark PNGs (real Geist) + OG cover.
+ * Press-kit raster pass 2/2 — wordmark + lockup PNGs (real Geist) + OG covers.
  *
- * Chromium shapes the HTML "oni" in real Geist (next/font), which sharp
- * alone cannot do (no Geist in fontconfig). Captures full-viewport shots of
- * the disposable src/app/press-specimen routes (each owns its background
- * via local token re-declaration — deterministic at any OS theme), then
+ * Chromium shapes the HTML "oni" + slogans in real Geist (next/font), which
+ * sharp alone cannot do (no Geist in fontconfig). Captures full-viewport
+ * shots of the disposable src/app/press-specimen routes (each owns its
+ * background via inline colors — deterministic at any OS theme), then
  * normalizes with sharp. Requires: `agent-browser` on PATH, `next dev`.
  *
  * Capture notes (learned the hard way — keep these invariants):
  * - `set viewport` only sticks when a page is already open: open FIRST,
  *   then set viewport, then shoot. Verify via DPR when in doubt.
- * - Wordmarks shoot at DPR 2 and DOWNSCALE (never upscale).
+ * - Wordmarks/lockups shoot at DPR 2 and DOWNSCALE (never upscale).
  * - Hide the `nextjs-portal` dev overlay before every capture — it is
  *   fixed-positioned and lands inside full-viewport shots.
  *
  *   NEXT_DEV_URL=http://localhost:3000 npx tsx scripts/press-wordmark-shots.mts
  *
- * Delete src/app/press-specimen + its manifest exclusion after a good run
- * (this script asserts dimensions and fails loudly otherwise).
+ * Delete src/app/press-specimen after a good run (this script asserts
+ * dimensions and fails loudly otherwise). The manifest generator excludes
+ * press-specimen permanently, so no exclusion cleanup is needed.
  */
 import { execFileSync } from "node:child_process";
 import { mkdtempSync } from "node:fs";
@@ -53,6 +54,12 @@ try {
   for (const [route, out] of [
     ["wordmark-light", "voni-wordmark-light-2048.png"],
     ["wordmark-dark", "voni-wordmark-dark-2048.png"],
+    ["lockup-work-done-light", "voni-lockup-work-done-light-2048.png"],
+    ["lockup-work-done-dark", "voni-lockup-work-done-dark-2048.png"],
+    ["lockup-everything-after-light", "voni-lockup-everything-after-light-2048.png"],
+    ["lockup-everything-after-dark", "voni-lockup-everything-after-dark-2048.png"],
+    ["lockup-while-talking-light", "voni-lockup-while-talking-light-2048.png"],
+    ["lockup-while-talking-dark", "voni-lockup-while-talking-dark-2048.png"],
   ] as const) {
     S(["open", `${BASE}/press-specimen/${route}`]);
     S(["wait", "--load", "networkidle"]);
@@ -69,19 +76,26 @@ try {
     console.log(`wrote ${out} (${info.width}x${info.height})`);
   }
 
-  // OG cover: viewport matches the exact 1200x630 box at DPR 1 — pixel-exact.
-  S(["open", `${BASE}/press-specimen/og`]);
-  S(["wait", "--load", "networkidle"]);
-  S(["set", "viewport", "1200", "630", "1"]);
-  S(["wait", "--load", "networkidle"]);
-  S(["eval", HIDE_PORTAL]);
-  S(["screenshot", join(tmp, "og.png")]);
-  const og = await sharp(join(tmp, "og.png")).metadata();
-  if (og.width !== 1200 || og.height !== 630) {
-    throw new Error(`press-wordmark-shots: OG is ${og.width}x${og.height}, expected 1200x630`);
+  // OG covers: viewport matches the exact 1200x630 box at DPR 1 — pixel-exact.
+  for (const [route, out] of [
+    ["og", "og-cover-1200x630.png"],
+    ["og-work-done", "og-work-done-1200x630.png"],
+    ["og-everything-after", "og-everything-after-1200x630.png"],
+    ["og-while-talking", "og-while-talking-1200x630.png"],
+  ] as const) {
+    S(["open", `${BASE}/press-specimen/${route}`]);
+    S(["wait", "--load", "networkidle"]);
+    S(["set", "viewport", "1200", "630", "1"]);
+    S(["wait", "--load", "networkidle"]);
+    S(["eval", HIDE_PORTAL]);
+    S(["screenshot", join(tmp, `${route}.png`)]);
+    const og = await sharp(join(tmp, `${route}.png`)).metadata();
+    if (og.width !== 1200 || og.height !== 630) {
+      throw new Error(`press-wordmark-shots: OG is ${og.width}x${og.height}, expected 1200x630`);
+    }
+    await sharp(join(tmp, `${route}.png`)).png().toFile(join(OUT, out));
+    console.log(`wrote ${out} (1200x630)`);
   }
-  await sharp(join(tmp, "og.png")).png().toFile(join(OUT, "og-cover-1200x630.png"));
-  console.log(`wrote og-cover-1200x630.png (1200x630)`);
 } finally {
   if (session) {
     try {

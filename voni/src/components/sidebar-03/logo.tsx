@@ -8,9 +8,9 @@ import { cn } from "@/lib/utils";
  *
  * - Expanded: the wordmark lockup loops for as long as it stays mounted
  *   (tight construction: cropped mark against "oni", mirroring the inline
- *   wordmark): the resting arc folds into the V and back, the green accent
+ *   wordmark): the resting V opens into the arc and back, the green accent
  *   landing on the moment of recognition.
- * - Collapsed: the rail stays calm — resting arc in the chip, one-shot
+ * - Collapsed: the rail stays calm — resting V in the chip, one-shot
  *   `voni-chip-in` on mount, no loop.
  *
  * Theme comes from `currentColor` + tokens, so there are no theme-specific

@@ -27,7 +27,7 @@ const editorialSerif = Newsreader({
 
 export const metadata: Metadata = {
   title: "Voni",
-  description: "It sees the lead. It seals the deal.",
+  description: "Every call ends with the work already done.",
 };
 
 export const viewport = {

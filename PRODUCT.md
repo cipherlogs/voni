@@ -32,7 +32,7 @@ Explicitly undecided: which vertical to prove next after property; pricing and p
 
 ## Brand Commitments
 
-Name: Voni. Voice: "An AI employee with a mission, not another chatbot." No further identity, asset, or personality constraints confirmed.
+Name: Voni. Voice: "An AI employee with a mission, not another chatbot." Slogan (canonical): "Every call ends with the work already done." Alternates: "One call, and everything after it.", "The work happens while it's still talking." Static brand masters in `voni/public/press/` freeze the logo's resting V; no further identity or personality constraints confirmed.
 
 ## Evidence on Hand
 

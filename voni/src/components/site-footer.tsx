@@ -33,7 +33,7 @@ export function SiteFooter({ year }: { year: ReactNode }) {
       >
         <span className="flex items-center gap-2">
           <VoniLogo size="sm" />
-          <span>It sees the lead. It seals the deal.</span>
+          <span>Every call ends with the work already done.</span>
         </span>
         {year}
       </div>

@@ -157,6 +157,6 @@ test("auth screens keep the login idiom with shared footer language", () => {
   assert.match(block, /Continue with Google/, "Google action stays");
 
   const footer = readRepo("components/site-footer.tsx");
-  assert.match(footer, /It sees the lead/, "shared footer tagline");
+  assert.match(footer, /Every call ends with the work already done/, "shared footer tagline");
   assert.match(footer, /VoniLogo/, "shared footer brand mark");
 });
