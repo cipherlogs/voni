@@ -102,8 +102,13 @@ export function buildDemoAgentBody(voiceId: string, opts?: { resume?: boolean })
   };
 }
 
-export function demoAgentFingerprint(body: ReturnType<typeof buildDemoAgentBody>): string {
-  return createHash("sha256").update(stableJson(body)).digest("hex");
+/**
+ * The body, plus which API key (account) the agent lives under: a new key
+ * moves the fingerprint, so its cached agents are re-checked (and recreated
+ * when that account has never heard of them). Only a hash of the key.
+ */
+export function demoAgentFingerprint(body: ReturnType<typeof buildDemoAgentBody>, apiKey = ""): string {
+  return createHash("sha256").update(stableJson(body)).update(`\0${apiKey}`).digest("hex");
 }
 
 async function remoteCall(
@@ -160,7 +165,7 @@ export async function getOrCreateDemoAgent(
   if (!apiKey) return { ok: false, error: "Voice is not configured." };
 
   const body = buildDemoAgentBody(voiceId, { resume });
-  const fingerprint = demoAgentFingerprint(body);
+  const fingerprint = demoAgentFingerprint(body, apiKey);
 
   const cached = await db
     .select({ agentId: demoAgents.assemblyaiAgentId, fingerprint: demoAgents.fingerprint })
@@ -179,20 +184,26 @@ export async function getOrCreateDemoAgent(
     // A failed refresh falls back to the stale agent (a working demo that
     // cannot hang up beats no demo), and the next request retries.
     const refreshed = await remoteCall(apiKey, "PUT", body, cached[0].agentId);
-    if (!refreshed.ok) {
+    // 404: this account has never heard of the agent (the API key moved to
+    // another account). Serving it stale made every call fail to connect:
+    // recreate it below and repoint the row instead.
+    if (!refreshed.ok && refreshed.status !== 404) {
       console.warn(
         `[demo-agent] refresh ${refreshed.status} for ${cached[0].agentId}, serving stale: ${refreshed.detail.slice(0, 200)}`,
       );
       return { ok: true, agentId: cached[0].agentId };
     }
-    await db
-      .update(demoAgents)
-      .set({ fingerprint })
-      .where(
-        and(eq(demoAgents.personaId, personaId), eq(demoAgents.voiceId, storageKey)),
-      )
-      .catch((e: unknown) => console.warn(`[demo-agent] fingerprint write failed, continuing: ${e}`));
-    return { ok: true, agentId: cached[0].agentId };
+    if (refreshed.ok) {
+      await db
+        .update(demoAgents)
+        .set({ fingerprint })
+        .where(
+          and(eq(demoAgents.personaId, personaId), eq(demoAgents.voiceId, storageKey)),
+        )
+        .catch((e: unknown) => console.warn(`[demo-agent] fingerprint write failed, continuing: ${e}`));
+      return { ok: true, agentId: cached[0].agentId };
+    }
+    console.warn(`[demo-agent] ${cached[0].agentId} not found under this API key; recreating`);
   }
 
   const created = await remoteCall(apiKey, "POST", body);
@@ -208,7 +219,11 @@ export async function getOrCreateDemoAgent(
     await db
       .insert(demoAgents)
       .values({ personaId, voiceId: storageKey, assemblyaiAgentId: created.id, fingerprint })
-      .onConflictDoNothing();
+      // A row whose agent was not found is repointed at the new one.
+      .onConflictDoUpdate({
+        target: [demoAgents.personaId, demoAgents.voiceId],
+        set: { assemblyaiAgentId: created.id, fingerprint },
+      });
   } catch (e) {
     console.warn(`[demo-agent] cache write failed, continuing: ${e}`);
   }

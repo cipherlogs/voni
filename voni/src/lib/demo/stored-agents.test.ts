@@ -68,6 +68,13 @@ test("demo body carries call control, tuning, and per-agent vocabulary", () => {
   }
 });
 
+test("a new API key (another account) moves the fingerprint, so its agents are re-checked", () => {
+  const body = buildDemoAgentBody("anna");
+  assert.equal(demoAgentFingerprint(body, "key-a"), demoAgentFingerprint(body, "key-a"));
+  assert.notEqual(demoAgentFingerprint(body, "key-a"), demoAgentFingerprint(body, "key-b"));
+  assert.doesNotMatch(demoAgentFingerprint(body, "sk-secret-key"), /sk-secret-key/, "never stores the key");
+});
+
 test("fingerprints are stable and move with platform content", () => {
   const a = demoAgentFingerprint(buildDemoAgentBody("anna"));
   const b = demoAgentFingerprint(buildDemoAgentBody("anna"));
