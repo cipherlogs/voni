@@ -2,7 +2,7 @@ import { cn } from "@/lib/utils";
 
 /**
  * The Voni mark: a single calm V that, once a loop, opens into the
- * resting arc and eases back. Both shapes are the same kind of
+ * arc and eases back. Both shapes are the same kind of
  * curve (one quadratic bezier, control point mirrored across y=12), so the
  * browser can animate the `d` property directly between them instead of
  * cross-fading two separate drawings.

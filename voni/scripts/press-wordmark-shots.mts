@@ -50,6 +50,18 @@ try {
   const S = (args: string[]) => ab(["--session", session, "--restore", ...args], env);
   const tmp = mkdtempSync(join(tmpdir(), "press-"));
 
+  // Open → viewport → shoot. `set viewport` only sticks on an open page.
+  const capture = (route: string, w: number, h: number, dpr: number): string => {
+    S(["open", `${BASE}/press-specimen/${route}`]);
+    S(["wait", "--load", "networkidle"]);
+    S(["set", "viewport", String(w), String(h), String(dpr)]);
+    S(["wait", "--load", "networkidle"]);
+    S(["eval", HIDE_PORTAL]);
+    const file = join(tmp, `${route}.png`);
+    S(["screenshot", file]);
+    return file;
+  };
+
   // Oversized lockups at DPR 2: trim to ink, then DOWNSCALE (never upscale).
   for (const [route, out] of [
     ["wordmark-light", "voni-wordmark-light-2048.png"],
@@ -61,17 +73,12 @@ try {
     ["lockup-while-talking-light", "voni-lockup-while-talking-light-2048.png"],
     ["lockup-while-talking-dark", "voni-lockup-while-talking-dark-2048.png"],
   ] as const) {
-    S(["open", `${BASE}/press-specimen/${route}`]);
-    S(["wait", "--load", "networkidle"]);
-    S(["set", "viewport", "2300", "1300", "2"]);
-    S(["wait", "--load", "networkidle"]);
-    S(["eval", HIDE_PORTAL]);
-    S(["screenshot", join(tmp, `${route}.png`)]);
-    const before = await sharp(join(tmp, `${route}.png`)).metadata();
+    const file = capture(route, 2300, 1300, 2);
+    const before = await sharp(file).metadata();
     if ((before.width ?? 0) < WORD_W) {
       throw new Error(`press-wordmark-shots: ${route} captured at ${before.width}w — below ${WORD_W}, cannot upscale`);
     }
-    const info = await sharp(join(tmp, `${route}.png`)).trim({ threshold: 10 }).resize({ width: WORD_W }).png().toFile(join(OUT, out));
+    const info = await sharp(file).trim({ threshold: 10 }).resize({ width: WORD_W }).png().toFile(join(OUT, out));
     if (info.width !== WORD_W) throw new Error(`press-wordmark-shots: ${out} is ${info.width}w, expected ${WORD_W}`);
     console.log(`wrote ${out} (${info.width}x${info.height})`);
   }
@@ -83,17 +90,12 @@ try {
     ["og-everything-after", "og-everything-after-1200x630.png"],
     ["og-while-talking", "og-while-talking-1200x630.png"],
   ] as const) {
-    S(["open", `${BASE}/press-specimen/${route}`]);
-    S(["wait", "--load", "networkidle"]);
-    S(["set", "viewport", "1200", "630", "1"]);
-    S(["wait", "--load", "networkidle"]);
-    S(["eval", HIDE_PORTAL]);
-    S(["screenshot", join(tmp, `${route}.png`)]);
-    const og = await sharp(join(tmp, `${route}.png`)).metadata();
+    const file = capture(route, 1200, 630, 1);
+    const og = await sharp(file).metadata();
     if (og.width !== 1200 || og.height !== 630) {
       throw new Error(`press-wordmark-shots: OG is ${og.width}x${og.height}, expected 1200x630`);
     }
-    await sharp(join(tmp, `${route}.png`)).png().toFile(join(OUT, out));
+    await sharp(file).png().toFile(join(OUT, out));
     console.log(`wrote ${out} (1200x630)`);
   }
 } finally {

@@ -21,7 +21,7 @@ export async function FooterYear() {
 
 /**
  * Shared public footer language (ticket 02): the landing document and the
- * auth screens render the same brand mark, tagline, and year slot. The year
+ * auth screens render the same brand mark, slogan, and year slot. The year
  * stays a caller-provided request-time leaf so each page keeps its own
  * prerenderable shell — see LandingPage FooterYear.
  */

@@ -98,6 +98,8 @@ function Wordmark({ ink, oniSize }: { ink: string; oniSize: number }) {
   );
 }
 
+// Hand-typed params, not PageProps<'/press-specimen/[shot]'>: this is a
+// disposable template — the route is absent from the type system once deleted.
 export default async function PressSpecimenPage({ params }: { params: Promise<{ shot: string }> }) {
   const { shot } = await params;
   const parsed = parseShot(shot);
