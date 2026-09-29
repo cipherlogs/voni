@@ -51,3 +51,6 @@ next-env.d.ts
 
 # next dev --experimental-https (dev:phone) self-signed cert + private key
 /certificates
+
+# playwright run output
+/test-results/
