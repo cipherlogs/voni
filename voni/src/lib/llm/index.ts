@@ -56,6 +56,11 @@ export type GenerateOptions = {
    * text; free providers keep the tight shared budget.
    */
   metaMaxTokens?: number;
+  /**
+   * Meta's reasoning effort, default high. Low for a plain read-and-summarize
+   * where latency matters: 9–11s against 29–45s, same summary (measured on a site read).
+   */
+  metaEffort?: "low" | "medium" | "high";
   /** Per-provider budget. The chain as a whole can take longer. */
   timeoutMs?: number;
 };
@@ -75,8 +80,8 @@ const DEFAULTS = {
   timeoutMs: 30_000,
 };
 
-type ResolvedOptions = Required<Omit<GenerateOptions, "metaMaxTokens">> &
-  Pick<GenerateOptions, "metaMaxTokens">;
+type ResolvedOptions = Required<Omit<GenerateOptions, "metaMaxTokens" | "metaEffort">> &
+  Pick<GenerateOptions, "metaMaxTokens" | "metaEffort">;
 
 type LlmDependencies = {
   metaApiKey: () => Promise<string | undefined>;
@@ -152,7 +157,7 @@ async function callMetaProvider(
     providerOptions: {
       openai: {
         forceReasoning: META_PROVIDER.reasoning.enabled,
-        reasoningEffort: META_PROVIDER.reasoning.effort,
+        reasoningEffort: opts.metaEffort ?? META_PROVIDER.reasoning.effort,
         reasoningSummary: META_PROVIDER.reasoning.summary,
         include: [...META_PROVIDER.reasoning.include],
       } satisfies OpenAIResponsesProviderOptions,

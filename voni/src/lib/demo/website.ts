@@ -10,8 +10,9 @@ import { isFreeEmailDomain } from "./email-test";
 
 /**
  * Fetch + summary, end to end, before Voni falls back to "tell me what you
- * do" (owner, 2026-09-29). Meta's summary alone measured 17–32s; Voni keeps
- * talking meanwhile, so a long budget costs no dead air.
+ * do" (owner, 2026-09-29). Meta's summary measured 17–45s at high effort,
+ * 9–11s at the low effort it now runs; Voni keeps talking meanwhile, so a
+ * long budget costs no dead air.
  */
 export const READ_BUDGET_MS = 60_000;
 
@@ -31,6 +32,12 @@ export type WebsiteDeps = {
   fetchPage: (url: string) => Promise<string | null>;
   /** `business: false` when the text shows no real business (parked, placeholder, error page). */
   summarize: (domain: string, text: string) => Promise<{ business: boolean; summary: string }>;
+  /**
+   * The page as text through a reader service, or null. Tried when no page
+   * came back direct (a network that can't reach the host, a blocked bot) or
+   * the page was little more than its title (built in JavaScript).
+   */
+  fetchReader?: (url: string) => Promise<string | null>;
   budgetMs?: number;
 };
 
@@ -71,22 +78,43 @@ export function looksParked(text: string): boolean {
   return text.length < 80 || PARKED.test(text);
 }
 
+/** A reader's Markdown as plain words: images dropped, links to their text. */
+export function readerText(markdown: string): string {
+  return markdown
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, TEXT_MAX);
+}
+
 const NONE = { status: "none" } as const;
+
+/** Below this, a page is little more than its title and description (measured: a JavaScript-built site gave 145). */
+const THIN = 400;
 
 export async function readWebsite(
   domain: string,
   deps: WebsiteDeps,
 ): Promise<{ status: "read"; summary: string } | { status: "none" }> {
+  const summarized = async (text: string) => {
+    if (looksParked(text)) return NONE;
+    const { business, summary } = await deps.summarize(domain, text);
+    return business && summary.trim() ? { status: "read" as const, summary: summary.trim() } : NONE;
+  };
   const work = async () => {
+    let direct = "";
     for (const url of [`https://${domain}/`, `https://www.${domain}/`]) {
       const html = await deps.fetchPage(url).catch(() => null);
       if (!html) continue;
-      const text = pageText(html);
-      if (looksParked(text)) return NONE;
-      const { business, summary } = await deps.summarize(domain, text);
-      return business && summary.trim() ? { status: "read" as const, summary: summary.trim() } : NONE;
+      direct = pageText(html);
+      if (PARKED.test(direct)) return NONE;
+      if (direct.length >= THIN) return summarized(direct);
+      break; // Little more than a title: built in JavaScript, the reader renders it.
     }
-    return NONE;
+    const markdown = await deps.fetchReader?.(`https://${domain}/`).catch(() => null);
+    const rendered = markdown ? readerText(markdown) : "";
+    return summarized(rendered.length > direct.length ? rendered : direct);
   };
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<typeof NONE>((resolve) => {

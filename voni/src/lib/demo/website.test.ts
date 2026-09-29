@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { looksParked, pageText, preReadFor, readWebsite, siteDomain } from "./website";
+import { looksParked, pageText, preReadFor, readerText, readWebsite, siteDomain } from "./website";
 
 test("the site to read is the sender's own domain, never a free-email one", () => {
   assert.equal(siteDomain("Andres@Acme-Realty.com"), "acme-realty.com");
@@ -32,7 +32,7 @@ test("parked, for-sale and empty pages are no site", () => {
   assert.ok(!looksParked("Acme Realty helps expats find apartments in Lisbon. ".repeat(5)));
 });
 
-const PAGE = `<title>Acme Realty</title><p>${"Acme Realty helps expats rent and buy apartments in Lisbon. ".repeat(4)}</p>`;
+const PAGE = `<title>Acme Realty</title><p>${"Acme Realty helps expats rent and buy apartments in Lisbon. ".repeat(8)}</p>`;
 
 test("a real site is fetched and summarized", async () => {
   const tried: string[] = [];
@@ -98,6 +98,45 @@ test("a fetch or summary that throws or runs past the budget is no site", async 
     budgetMs: 20,
   });
   assert.deepEqual(slow, { status: "none" });
+});
+
+const READER = `Title: Acme Realty\n\nMarkdown Content:\n![Image 1](https://acme.com/a.png) ${"Acme Realty helps [expats](https://acme.com/x) rent in Lisbon. ".repeat(4)}`;
+
+test("a reader's Markdown is plain words: no images, links kept as their text", () => {
+  const text = readerText(READER);
+  assert.match(text, /helps expats rent/);
+  assert.doesNotMatch(text, /png|https:|\]\(/);
+});
+
+test("the reader reads the site when the host can't be reached or its page is built in JavaScript", async () => {
+  const summarize = async (_: string, text: string) => (assert.match(text, /helps expats rent/), { business: true, summary: "Lisbon rentals." });
+  const shell = '<title>Acme Realty - Premium Templates</title><meta name="description" content="Acme, homes for expats."><div id="root"></div>';
+  for (const fetchPage of [async () => null, async () => shell]) {
+    const asked: string[] = [];
+    const result = await readWebsite("acme.com", { fetchPage, summarize, fetchReader: async (url) => (asked.push(url), READER) });
+    assert.deepEqual(result, { status: "read", summary: "Lisbon rentals." });
+    assert.deepEqual(asked, ["https://acme.com/"]);
+  }
+});
+
+test("the reader is not asked when the page was read, or is parked; a reader that fails or finds nothing is no site", async () => {
+  let asked = 0;
+  const fetchReader = async () => (asked++, READER);
+  const summarize = async () => ({ business: true, summary: "x" });
+  await readWebsite("acme.com", { fetchPage: async () => PAGE, summarize, fetchReader });
+  await readWebsite("acme.com", { fetchPage: async () => "<p>This domain is for sale</p>", summarize, fetchReader });
+  assert.equal(asked, 0);
+  const fetchPage = async () => null;
+  for (const reader of [async () => null, async () => "Title: x", async () => { throw new Error("429"); }]) {
+    assert.deepEqual(await readWebsite("acme.com", { fetchPage, summarize, fetchReader: reader }), { status: "none" });
+  }
+  const thin = `<title>Acme Realty</title><p>${"Acme Realty helps expats in Lisbon. ".repeat(4)}</p>`;
+  const fromThin = await readWebsite("acme.com", {
+    fetchPage: async () => thin,
+    summarize: async (_, text) => ({ business: true, summary: text.slice(0, 11) }),
+    fetchReader: async () => null,
+  });
+  assert.deepEqual(fromThin, { status: "read", summary: "Acme Realty" }, "reader down: the thin page is still read");
 });
 
 test("a pre-read is used only when it is for the claimed sender's domain", () => {

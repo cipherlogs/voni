@@ -18,7 +18,8 @@ import { preReadFor, readWebsite, siteDomain, STALE_READ_MS, type WebsiteState }
  * a Queue job started by the inbox match would cover it, if iPhones need it.
  */
 
-const FETCH_TIMEOUT_MS = 10_000;
+const FETCH_TIMEOUT_MS = 5_000;
+const READER_TIMEOUT_MS = 15_000;
 const PAGE_MAX = 400_000;
 
 async function fetchPage(url: string): Promise<string | null> {
@@ -31,6 +32,19 @@ async function fetchPage(url: string): Promise<string | null> {
   return (await res.text()).slice(0, PAGE_MAX);
 }
 
+/**
+ * The page through the Jina reader (free, no key, ~20 requests a minute):
+ * fetched from its network and rendered, as Markdown. Only the site's URL
+ * leaves Voni.
+ */
+async function fetchReader(url: string): Promise<string | null> {
+  const res = await fetch(`https://r.jina.ai/${url}`, {
+    signal: AbortSignal.timeout(READER_TIMEOUT_MS),
+    headers: { accept: "text/plain", "x-no-cache": "true" },
+  });
+  return res.ok ? (await res.text()).slice(0, PAGE_MAX) : null;
+}
+
 const summarySchema = z.object({ business: z.boolean(), summary: z.string().max(800) });
 
 async function summarize(domain: string, text: string) {
@@ -39,8 +53,10 @@ async function summarize(domain: string, text: string) {
       'You read a business\'s website for a voice agent about to talk with its owner. Use only facts stated in the text; never guess or add. Reply with JSON {"business": boolean, "summary": string}. business is false when the text shows no real business (parked, for sale, placeholder, login or error page). summary: two or three short English sentences: what the business does, for whom, and where, plus one or two specific details (services, products, places) worth mentioning in conversation.',
     user: `Website: ${domain}\n\n${text}`,
     maxTokens: 400,
-    // Meta reasons at high effort before it answers: the shared 400 would go to thinking.
+    // Meta reasons before it answers: the shared 400 would go to thinking.
     metaMaxTokens: 4000,
+    // Summarizing stated facts needs no deep reasoning; high effort took 29–45s.
+    metaEffort: "low",
     timeoutMs: 45_000,
   });
   // The summary rides in Voni's instructions, inside """: a site's text must not close them.
@@ -75,7 +91,7 @@ export async function runWebsiteRead(
     )
     .returning({ callId: demoCalls.callId });
   if (!claimed) return loadWebsite(call.callId, address);
-  const work = readWebsite(domain, { fetchPage, summarize }).then(async (result) => {
+  const work = readWebsite(domain, { fetchPage, fetchReader, summarize }).then(async (result) => {
     await db
       .update(demoCalls)
       .set({ websiteStatus: result.status, websiteSummary: result.status === "read" ? result.summary : null })

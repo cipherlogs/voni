@@ -223,6 +223,16 @@ test("Meta JSON that fails the schema falls through to a free account", async ()
   assert.deepEqual(result.data, { answer: "valid" });
 });
 
+test("a caller can lower Meta's reasoning effort for one request", async () => {
+  let body: { reasoning?: { effort?: string } } | undefined;
+  const fetch: typeof globalThis.fetch = async (_, init) => {
+    body = JSON.parse(String(init?.body));
+    return metaResponse('{"answer":"meta"}');
+  };
+  await __llmTest.generateJSONWithDependencies(schema, { ...options, metaEffort: "low" }, testDependencies({ metaKey: "k", fetch }));
+  assert.equal(body?.reasoning?.effort, "low");
+});
+
 test("Meta failures redact the API key and encrypted reasoning content", async () => {
   const apiKey = "meta-key-that-must-not-leak";
   const encrypted = "opaque-reasoning-that-must-not-leak";
