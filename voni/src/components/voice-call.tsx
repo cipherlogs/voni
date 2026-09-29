@@ -88,7 +88,7 @@ import {
   talkLimitS,
   type EmailTestState,
 } from "@/lib/demo/email-test";
-import { CHECK_CODE_TOOL, CHECK_EMAIL_TOOL, SEND_CODE_REPLY_TOOL, SHOW_TEST_ADDRESS_TOOL } from "@/lib/demo/demo-tools";
+import { CHECK_CODE_TOOL, CHECK_EMAIL_TOOL, SEND_CODE_REPLY_TOOL, SHOW_TEST_ADDRESS_TOOL, WEBSITE_POLL } from "@/lib/demo/demo-tools";
 import type { CodeStatus } from "@/lib/demo/code-check";
 import {
   buildHoldCarryover,
@@ -165,6 +165,8 @@ export { HANGUP_RED };
 export const INLINE_CAP_SECONDS = 180;
 /** Demo: re-check the inbox this often once the email test is invited. */
 const INBOX_POLL_MS = 8000;
+/** The site read's poll: a read takes seconds, not minutes. */
+const WEBSITE_POLL_MS = 3000;
 /** After asking Voni to close, stop the session ourselves if it never does. */
 const CLOSE_FALLBACK_MS = 20000;
 
@@ -814,6 +816,46 @@ export function VoiceCall({
     return () => clearInterval(id);
   }, [inboxPending, setEmailTest, speak]);
 
+  // Demo site read (ticket 05): from the moment their work email is found,
+  // this poll runs the read on the server (each request holds while it
+  // reads), so it is usually done before Voni's reply goes out, even while
+  // the visitor is away. Only if the reply told Voni she's still looking
+  // does a finished read become a hidden note. Paused on hold.
+  const websitePending =
+    isDemo && connected && !holding && emailTest.found && (!emailTest.website || emailTest.website === "reading");
+  useEffect(() => {
+    if (!websitePending) return;
+    let inFlight = false;
+    const check = async () => {
+      const token = callTokenRef.current;
+      if (inFlight || !token || closingRef.current) return;
+      inFlight = true;
+      try {
+        const res = await fetch(`/api/demo/tools/${WEBSITE_POLL}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ toolCallId: "website-poll", arguments: {} }),
+        });
+        const body = (await res.json().catch(() => null)) as { ok?: boolean; data?: { status?: string; instructions?: string } } | null;
+        const status = body?.data?.status;
+        if (!body?.ok || (status !== "read" && status !== "none")) return;
+        const test = emailTestRef.current;
+        if (test.website === "read" || test.website === "none") return;
+        setEmailTest({ ...test, website: status });
+        if (test.website === "reading" && body.data?.instructions && !closingRef.current) {
+          speak(body.data.instructions, { key: "website" });
+        }
+      } catch {
+        // Offline for a beat: the next tick tries again.
+      } finally {
+        inFlight = false;
+      }
+    };
+    void check();
+    const id = setInterval(check, WEBSITE_POLL_MS);
+    return () => clearInterval(id);
+  }, [websitePending, setEmailTest, speak]);
+
   // Demo hold wiring. `hidden` alone keeps the call live (a flap) but arms
   // parking, so a drop in the background waits for the visitor instead of
   // burning resume attempts. `freeze` (the browser stopped the page) enters
@@ -1323,7 +1365,10 @@ export function VoiceCall({
         } else if (name === CHECK_EMAIL_TOOL) {
           setEmailTest(emailTestAfterCheck(emailTestRef.current, checkResultFromData(result.data)));
         } else if (name === SEND_CODE_REPLY_TOOL) {
-          if (result.data.sent) setEmailTest({ ...emailTestRef.current, replied: true });
+          if (result.data.sent) {
+            const website = result.data.website === "reading" || result.data.website === "read" ? result.data.website : "none";
+            setEmailTest({ ...emailTestRef.current, replied: true, website });
+          }
         } else if (name === CHECK_CODE_TOOL) {
           // The code read back right: the verified extension (the reveal rides the result).
           setEmailTest(emailTestAfterCode(emailTestRef.current, result.data.status as CodeStatus));

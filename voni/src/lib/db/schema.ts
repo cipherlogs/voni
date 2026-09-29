@@ -622,6 +622,11 @@ export const demoCalls = pgTable("demo_calls", {
   replyMessageId: text("reply_message_id"),
   codeAttempts: integer("code_attempts").notNull().default(0),
   codeVerifiedAt: timestamp("code_verified_at"),
+  /** The site read (ticket 05): the sender's domain, "reading" | "read" | "none", and its English summary. */
+  websiteDomain: text("website_domain"),
+  websiteStatus: text("website_status").$type<"reading" | "read" | "none">(),
+  websiteSummary: text("website_summary"),
+  websiteStartedAt: timestamp("website_started_at"),
 });
 
 /**

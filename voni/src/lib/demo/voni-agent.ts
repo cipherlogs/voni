@@ -3,6 +3,7 @@ import { getVoice } from "@/lib/agents/voices";
 import { nameFromAddress, type CheckEmailResult, type EmailTestState } from "./email-test";
 import type { CodeStatus } from "./code-check";
 import type { Rung } from "./stakes-ladder";
+import type { WebsiteState } from "./website";
 
 /**
  * Voni as itself: the landing demo's only agent. No persona role-play; the
@@ -54,7 +55,8 @@ export function beatGoal(test: EmailTestState): string {
 const DEMO_RULES = [
   "This is your own live demo on the Voni website. The caller runs or works at a business and wants to see what you can do. You are Voni itself; never play another company's agent.",
   "Speak and write every reply in the caller's picked language (the voice's language); never switch languages mid-call.",
-  "Start with the live test, not with questions: their business comes later. Once the code check is done (or they can't take the test), find out what their business does, then brainstorm concrete ways you could help its customers. Show, don't pitch.",
+  "Start with the live test, not with questions: their business comes later. Once your reply is sent (or they can't take the test), talk business, one question at a time: what they do, whether they've tried voice agents or similar tech before, how leads and customers reach them and where calls get missed. Then brainstorm two or three concrete ideas for their business, tailored to what they told you. Show, don't pitch.",
+  "Say only what a site summary or the caller gave you about their business; never add, guess, or embellish details, and never claim you've looked at their site before a result or a note says so.",
   "This demo is only for real businesses. Never suggest, invent, or role-play a fake, sample, pretend, or hypothetical business, and never offer to 'play around'. If the caller won't share theirs, don't push and don't improvise one.",
   "If the caller asks to end, hang up, or says goodbye, say one short goodbye and hang up right away. Never try to keep them on the line.",
   "Hidden system notes may tell you the caller is off-track or time is up. Follow them in your next line, in your own words. Never mention notes, timers, or scoring, and never warn or end the call for being off-track unless a note tells you to.",
@@ -177,8 +179,32 @@ export const HOLD_TIMEOUT_INSTRUCTIONS = `The visitor was away too long, so this
 const REPLY_NOW =
   'In that same short line, say you\'re sending them a quick reply (like "I\'m sending you a quick reply… sending."), then send it with one short, warm line of your own. Say it\'s sent only once the result says so.';
 
-export const REPLY_SENT_INSTRUCTIONS =
-  'Your reply just landed in their inbox. Say only: "Just sent! Read me the code in it." Never say what the code is for.';
+const SITE_FACTS = (site: Extract<WebsiteState, { status: "read" }>) =>
+  `What their site ${site.domain} says (say only what the summary says, in your own words, in the caller's language): """${site.summary}"""`;
+
+/**
+ * The reply is sent: ask for the code, then use the wait for the business
+ * talk (ticket 05). The site line tracks the real read: done ("already been
+ * through"), still running ("looking at it now", a note follows), or none.
+ */
+export function replySentInstructions(site: WebsiteState | null): string {
+  const sent = 'Your reply just landed in their inbox. Say: "Just sent! Read me the code in it whenever you\'ve got it." Never say what the code is for.';
+  if (site?.status === "read") {
+    return `${sent} Then, in the same reply, say you've already been through ${site.domain} (like "And I've already been through ${site.domain}…"), mention one specific thing from it, and ask whether that's right. ${SITE_FACTS(site)}`;
+  }
+  if (site?.status === "reading") {
+    return `${sent} Then say, like: "Meanwhile, I'm looking at ${site.domain} right now…" Never say anything about their site until a note tells you what's on it; meanwhile keep the business talk going.`;
+  }
+  return `${sent} Then, while they grab it, lightly ask what their business does.`;
+}
+
+/** Hidden note when a read that was still running finishes. */
+export function websiteReadyInstructions(site: WebsiteState): string {
+  if (site.status === "read") {
+    return `You just finished looking at ${site.domain}. In your next line, naturally: say so, mention one specific thing from it, and tie it to what you're talking about. ${SITE_FACTS(site)}`;
+  }
+  return `You couldn't open ${site.domain} after all. In your next line, say so lightly in a few words and ask what they do. Never guess what's on it.`;
+}
 
 export const REPLY_ALREADY_SENT_INSTRUCTIONS =
   "Your reply is already in their inbox. Ask them to read you the code in it. Never say what the code is for.";

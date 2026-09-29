@@ -55,6 +55,9 @@ export const CHECK_EMAIL_VOICE_TOOL: VoiceTool = {
   timeout_seconds: 30,
 };
 
+/** Not a model tool: the call's poll of the site read (ticket 05), through the same call-scoped route. */
+export const WEBSITE_POLL = "website";
+
 export const SEND_CODE_REPLY_TOOL = "send_code_reply";
 export const CHECK_CODE_TOOL = "check_code";
 

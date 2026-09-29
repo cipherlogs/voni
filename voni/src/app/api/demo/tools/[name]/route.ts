@@ -1,9 +1,12 @@
+import { after } from "next/server";
 import { z } from "zod";
 import { demoCallFromRequest } from "@/lib/demo/call-token";
-import { CHECK_CODE_TOOL, CHECK_EMAIL_TOOL, SEND_CODE_REPLY_TOOL, executeDemoTool } from "@/lib/demo/demo-tools";
+import { CHECK_CODE_TOOL, CHECK_EMAIL_TOOL, SEND_CODE_REPLY_TOOL, WEBSITE_POLL, executeDemoTool } from "@/lib/demo/demo-tools";
 import { runCheckEmail } from "@/lib/demo/inbox";
 import { runCheckCode, runSendReply } from "@/lib/demo/reply";
 import { loadLiveTestTag } from "@/lib/demo/test-tag-registry";
+import { websiteReadyInstructions } from "@/lib/demo/voni-agent";
+import { runWebsiteRead } from "@/lib/demo/website-read";
 
 /**
  * Public demo tools, scoped to one call: the bearer is the `callToken` that
@@ -32,6 +35,13 @@ export async function POST(
   // Jev, the call's row), so they are dispatched here, not in the
   // browser-safe executor. The call component also polls the inbox check.
   const args = parsed.data.arguments;
+  if (name === WEBSITE_POLL) {
+    // The call's poll once their email is found (not a model tool): it runs the read.
+    const tag = call.tagId ? await loadLiveTestTag(call.tagId) : null;
+    const site = tag?.matchedFrom ? await runWebsiteRead(call, tag.matchedFrom, after) : null;
+    const data = !site || site.status === "reading" ? { status: site?.status ?? "none" } : { status: site.status, instructions: websiteReadyInstructions(site) };
+    return Response.json({ ok: true, data }, { headers: { "Cache-Control": "no-store" } });
+  }
   const result =
     name === CHECK_EMAIL_TOOL
       ? await runCheckEmail(call, args)

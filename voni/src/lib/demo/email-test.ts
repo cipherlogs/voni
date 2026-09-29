@@ -254,6 +254,8 @@ export type EmailTestState = {
   replied?: boolean;
   /** They read back the code from Voni's reply (04): the verified extension. */
   verified?: boolean;
+  /** The site read as of the reply (05); "reading" until the call's poll says it's done. */
+  website?: "reading" | "read" | "none";
 };
 
 export const EMAIL_TEST_START: EmailTestState = { invited: false, found: false };

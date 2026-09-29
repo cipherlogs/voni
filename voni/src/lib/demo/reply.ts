@@ -8,7 +8,8 @@ import { codeOutcome, replyCode, spokenCode } from "./code-check";
 import { nameFromAddress } from "./email-test";
 import { sendThreadedReply } from "./inbox";
 import { loadLiveTestTag } from "./test-tag-registry";
-import { codeCheckInstructions, REPLY_ALREADY_SENT_INSTRUCTIONS, REPLY_SENT_INSTRUCTIONS } from "./voni-agent";
+import { codeCheckInstructions, REPLY_ALREADY_SENT_INSTRUCTIONS, replySentInstructions } from "./voni-agent";
+import { loadWebsite } from "./website-read";
 
 /**
  * Server half of the code check (ticket 04): Voni's reply goes out from the
@@ -80,7 +81,9 @@ export async function runSendReply(call: DemoCall, rawArguments: unknown): Promi
     .set({ replyMessageId: messageId })
     .where(eq(demoCalls.callId, call.callId))
     .catch((e: unknown) => console.error(`[demo-reply] sent, but not recorded: ${e}`));
-  return { ok: true, data: { sent: true, instructions: REPLY_SENT_INSTRUCTIONS } };
+  // The site read started when their email was found (ticket 05): usually done by now.
+  const site = await loadWebsite(call.callId, tag.matchedFrom).catch(() => null);
+  return { ok: true, data: { sent: true, website: site?.status ?? "none", instructions: replySentInstructions(site) } };
 }
 
 const checkArgs = z.object({ code: z.string().max(40) });

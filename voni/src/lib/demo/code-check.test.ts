@@ -124,7 +124,7 @@ test("Voni's line and the name can't break out of the template", () => {
 });
 
 test("Voni's lines follow the check: reveal only on a pass, never the code on a miss", async () => {
-  const { codeCheckInstructions, REPLY_SENT_INSTRUCTIONS } = await import("./voni-agent");
+  const { codeCheckInstructions, replySentInstructions } = await import("./voni-agent");
   assert.match(codeCheckInstructions({ status: "correct", triesLeft: 1 }), /OTP, a security check[\s\S]*How efficient did that feel/);
   assert.match(codeCheckInstructions({ status: "wrong", triesLeft: 1 }), /once more/);
   for (const status of ["wrong", "out_of_tries"] as const) {
@@ -132,7 +132,7 @@ test("Voni's lines follow the check: reveal only on a pass, never the code on a 
     assert.doesNotMatch(line, /OTP|How efficient/, status);
     assert.match(line, /Never say the right code/, status);
   }
-  assert.doesNotMatch(REPLY_SENT_INSTRUCTIONS, /OTP|security/, "no early reveal");
+  assert.doesNotMatch(replySentInstructions(null), /OTP|security/, "no early reveal");
 });
 
 test("the invite comes once, from the show tool's own result: no lead-in, no second note", async () => {
