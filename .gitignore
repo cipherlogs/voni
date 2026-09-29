@@ -34,3 +34,6 @@ ruvector.db
 
 # Voni gate ledger (unlazy runner output, regenerated per run)
 voni/GATES.md
+
+# Local video-making workspace
+/demo/
