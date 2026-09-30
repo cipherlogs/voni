@@ -47,8 +47,12 @@
     { "pattern": "www.voni.cc", "custom_domain": true },
     { "pattern": "app.voni.cc", "custom_domain": true }
   ],
+  // Non-secret production config. Secrets stay Worker secrets
+  // (`wrangler secret put`); .dev.vars overrides these locally.
   "vars": {
-    "LANDING_HOST": "voni.cc"
+    "LANDING_HOST": "voni.cc",
+    "BETTER_AUTH_URL": "https://app.voni.cc",
+    "VONI_API_URL": "https://app.voni.cc"
   },
   "triggers": {
     "crons": ["* * * * *"]

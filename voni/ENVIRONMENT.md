@@ -10,7 +10,7 @@ are gitignored, and this project's permission settings block writing actual
 
 ## Auth (Better Auth + Google OAuth)
 - `BETTER_AUTH_SECRET` — generate: `node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"`
-- `BETTER_AUTH_URL` — `http://localhost:3000` for local dev; `https://app.voni.cc` in production (Worker secret).
+- `BETTER_AUTH_URL` — `http://localhost:3000` for local dev; `https://app.voni.cc` in production (`wrangler.jsonc` `vars`).
 - `LANDING_HOST` — production only, a plain var in `wrangler.jsonc` (`voni.cc`). Splits hosts in `src/proxy.ts`: the landing and demo stay on `voni.cc`, `/login`, `/signup` and the dashboard redirect to the `BETTER_AUTH_URL` host, and the session cookie is shared on `.voni.cc`. Leave unset locally.
 - `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` — Google Cloud Console → APIs & Services → Credentials → OAuth client ID (Web application). Authorized redirect URI: `{BETTER_AUTH_URL}/api/auth/callback/google`.
 
@@ -175,6 +175,14 @@ Two files, and they do **not** overlap:
 | --- | --- | --- | --- |
 | `.env.local` | the Neon CLI | `process.env`, by Next | `DATABASE_URL` only |
 | `.dev.vars` | us | the Cloudflare context | everything else |
+| `wrangler.jsonc` `vars` | us, committed | the deployed Worker | non-secret prod config: `LANDING_HOST`, `BETTER_AUTH_URL`, `VONI_API_URL` |
+
+Production secrets are Worker secrets (`npx wrangler secret put NAME`), never a
+file: `next build` loads `.env*` files into the build, so a prod `.env` would
+ship with any local deploy. A var can't share a name with a secret; delete the
+secret before moving a value into `vars`. `.dev.vars` overrides `vars` locally,
+so it keeps `LANDING_HOST=` (empty) to stop `npm run preview` from scoping
+cookies to voni.cc on localhost.
 
 `.dev.vars` is Cloudflare's convention, and `initOpenNextCloudflareForDev()`
 exposes it through the Cloudflare context — **not** through `process.env`. So a
@@ -211,7 +219,7 @@ $9/day worst case.
 ## Demo test inbox
 
 The demo's email test (`.scratch/demo-prospect-capture/issues/03-*`) reads the
-shared test inbox `hi@pilotxstudio.com` (Google Workspace) through the Gmail REST API
+shared test inbox `test@voni.cc` (Google Workspace) through the Gmail REST API
 (`src/lib/demo/inbox.ts`), on the same Google OAuth client as sign-in.
 
 | Variable | Purpose |
@@ -220,11 +228,11 @@ shared test inbox `hi@pilotxstudio.com` (Google Workspace) through the Gmail RES
 
 One-time setup:
 
-1. Google Cloud Console, same project as `GOOGLE_CLIENT_ID`: enable the **Gmail API**; under the OAuth consent screen add the `gmail.modify` scope and, while the app is in *Testing*, add `hi@pilotxstudio.com` as a test user.
+1. Google Cloud Console, same project as `GOOGLE_CLIENT_ID`: enable the **Gmail API**; under the OAuth consent screen add the `gmail.modify` scope and, while the app is in *Testing*, add `test@voni.cc` as a test user.
 2. On the OAuth client, add `http://localhost:8765` as an authorized redirect URI.
 3. `node --env-file=.dev.vars --import tsx scripts/mint-demo-inbox-token.mts`, sign in as the inbox account, and put the printed line in `.dev.vars` (and `wrangler secret put DEMO_INBOX_REFRESH_TOKEN` for deploys).
 
-⚠️ While the consent screen is in *Testing*, Google expires refresh tokens after 7 days: re-run step 3, or publish the app. If the Cloud project belongs to the `pilotxstudio.com` Workspace, set the consent screen's user type to *Internal* instead: no test users, no 7-day expiry. Without the token the demo still runs; every inbox check just reads as "not landed yet" (logged as `[demo-inbox] read failed`).
+⚠️ While the consent screen is in *Testing*, Google expires refresh tokens after 7 days: re-run step 3, or publish the app. If the Cloud project belongs to the `voni.cc` Workspace, set the consent screen's user type to *Internal* instead: no test users, no 7-day expiry. Without the token the demo still runs; every inbox check just reads as "not landed yet" (logged as `[demo-inbox] read failed`).
 
 ## Cloudflare (deploy target + R2 storage)
 - `CLOUDFLARE_ACCOUNT_ID` / `CLOUDFLARE_API_TOKEN` — only needed for `npm run deploy` / R2 access, not local dev.
