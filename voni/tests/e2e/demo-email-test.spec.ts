@@ -35,13 +35,13 @@ test("a 10s invite reply still gets the address and tag to the model, and the ch
     .toBe(TAG);
   await replying;
   await expect(chip(page)).toBeVisible();
-  await expect(chip(page)).toContainText("hi@pilotxstudio.com");
+  await expect(chip(page)).toContainText("test@voni.cc");
   await expect(chip(page)).toContainText(TAG);
 
-  const mailto = "mailto:hi@pilotxstudio.com?subject=Lime%2042";
+  const mailto = "mailto:test@voni.cc?subject=Lime%2042";
   if (testInfo.project.name === "mobile") {
     // Phones: one tap on the address copies it and opens Mail (the tag as the subject).
-    const address = chip(page).getByRole("link", { name: /email hi@pilotxstudio\.com with subject Lime 42/i });
+    const address = chip(page).getByRole("link", { name: /email test@voni\.cc with subject Lime 42/i });
     await expect(address).toBeVisible();
     await expect(address).toHaveAttribute("href", mailto);
     await expect(chip(page).getByRole("button", { name: /copy address/i })).toBeHidden();
@@ -53,7 +53,7 @@ test("a 10s invite reply still gets the address and tag to the model, and the ch
     // Desktop keeps a separate mail button.
     await expect(chip(page).getByRole("link", { name: /open your mail app/i })).toHaveAttribute("href", mailto);
   }
-  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe("hi@pilotxstudio.com");
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe("test@voni.cc");
   await chip(page).getByRole("button", { name: /copy tag/i }).click();
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(TAG);
   await expect(page.getByRole("status").filter({ hasText: "Tag copied" })).toHaveCount(1);

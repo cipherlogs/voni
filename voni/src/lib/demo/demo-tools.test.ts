@@ -21,12 +21,12 @@ test("tools the demo agent does not have are refused", async () => {
 test("show_test_address puts the inbox and the call's tag on screen; its result is the invite", async () => {
   const result = await executeDemoTool("show_test_address", {}, { testTag: "Lime 42" });
   assert.equal(result.ok, true);
-  assert.equal(result.ok && result.data.address, "hi@pilotxstudio.com");
+  assert.equal(result.ok && result.data.address, "test@voni.cc");
   assert.equal(result.ok && result.data.testTag, "Lime 42");
   const instructions = String(result.ok && result.data.instructions);
   assert.match(instructions, /"Lime 42"/);
   assert.match(instructions, /Say only the invite, once[\s\S]*with Lime 42 in the subject/, "Voni's own reply is the one invite");
-  assert.doesNotMatch(instructions, /pilotxstudio|pilot x/);
+  assert.doesNotMatch(instructions, /test@voni|test at voni/);
   assert.equal((await executeDemoTool("show_test_address", {})).ok, false, "no tag, no invite");
 });
 

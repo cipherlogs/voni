@@ -77,7 +77,7 @@ export async function mockApis(page: Page, mocks: Mocks) {
     toolCalls.push({ name, args: body.arguments, toolCallId: body.toolCallId });
     if (name === "show_test_address") {
       return route.fulfill({
-        json: { ok: true, data: { shown: true, address: "hi@pilotxstudio.com", testTag: TAG, instructions: `Say "${TAG}".` } },
+        json: { ok: true, data: { shown: true, address: "test@voni.cc", testTag: TAG, instructions: `Say "${TAG}".` } },
       });
     }
     return route.fulfill({ json: mocks.check(body.arguments) });

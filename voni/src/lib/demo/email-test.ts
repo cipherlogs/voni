@@ -13,8 +13,8 @@ import { containsTag, countTags } from "./test-tag";
  * half, plus the two localStorage helpers for the browser's tag token.
  */
 
-/** The shared test inbox. Moves to test@voni.cc once the domain's email routing exists (spec: deferred). */
-export const DEMO_INBOX_ADDRESS = "hi@pilotxstudio.com";
+/** The shared test inbox (Google Workspace on voni.cc). */
+export const DEMO_INBOX_ADDRESS = "test@voni.cc";
 
 /** Talk clock once the visitor's email arrives from a business address: provisional, until the code check (04). */
 export const PROVISIONAL_TALK_S = 360;

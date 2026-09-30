@@ -172,7 +172,7 @@ test("check: a match Jev flags as spoof/spam is not treated as a match", async (
 });
 
 test("check: our own inbox's mail is never the caller's", async () => {
-  const result = await checkEmail("hi at pilotxstudio dot com", {
+  const result = await checkEmail("test at voni dot cc", {
     listInbox: async () => assert.fail("inbox read for our own address"),
   });
   assert.deepEqual(result, { status: "invalid" });
