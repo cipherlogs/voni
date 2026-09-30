@@ -1,9 +1,15 @@
-│ 03  │ Work-email claim and gate   │ 01       │ Email from a work address and Voni finds it in the busy inbox   │
-│     │                             │          │ and gives more time; a gmail address gets pointed to hi@voni.cc │
-├─────┼─────────────────────────────┼──────────┼─────────────────────────────────────────────────────────────────┤
-│ 04  │ Code check and reveal       │ 03       │ The reply arrives with a code, you read it back, and Voni       │
-│     │                             │          │ reveals it was an OTP                                           │
-├─────┼─────────────────────────────┼──────────┼─────────────────────────────────────────────────────────────────┤
+Your steps, before deploying:
+1. Cloudflare: add voni.cc as a domain (Free plan), then change the nameservers at your registrar to the two Cloudflare gives you. Wait until the domain shows Active. The deploy will fail until then, because Cloudflare can't attach the three addresses before the domain is active.
+2. Worker secret: wrangler secret put BETTER_AUTH_URL → https://app.voni.cc
+3. telephony-bot: set VONI_API_URL=https://app.voni.cc
+4. Google Cloud Console → OAuth client:
+   - add the origin https://app.voni.cc
+   - add the redirect URI https://app.voni.cc/api/auth/callback/google
+   - keep the workers.dev entries until everything is verified
+5. Deploy, then check with curl -I https://voni.cc/login, which should redirect to app.voni.cc.
+
+I haven't committed anything. Email on the domain (hi@ and test@voni.cc through Cloudflare Email Routing) is still left for later.
+
 │ 05  │ Website research and        │ 02, 03   │ Voni says true things about your site, even having read it      │
 │     │ business talk               │          │ while you were away                                             │
 ├─────┼─────────────────────────────┼──────────┼─────────────────────────────────────────────────────────────────┤
