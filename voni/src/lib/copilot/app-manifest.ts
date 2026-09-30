@@ -21,6 +21,7 @@ export const APP_DESTINATIONS: AppDestination[] = [
   {"route":"/login","title":"Sign in","phrases":["login","sign in"],"examples":["Sign in to Voni","Continue with Google","Open sign in"],"access":"auth","navigationKind":"none"},
   {"route":"/numbers","title":"Phone numbers","phrases":["phone numbers","numbers","calling numbers","my numbers"],"examples":["Show phone numbers","Read the number assignments","Show available number actions"],"access":"signed-in","navigationKind":"static"},
   {"route":"/operator","title":"Platform operator","phrases":["operator","platform operator","platform status"],"examples":["Open the operator area","Show platform readiness","Read provider status"],"access":"platform-admin","navigationKind":"static"},
+  {"route":"/privacy","title":"Privacy Policy","phrases":["privacy policy","privacy"],"examples":["Show the privacy policy","What data do you keep?","Open privacy"],"access":"public","navigationKind":"none"},
   {"route":"/settings","title":"Settings","phrases":["settings","settings landing","preferences"],"examples":["Open settings","Show all settings areas","Back to settings"],"access":"signed-in","navigationKind":"static"},
   {"route":"/settings/account","title":"Account settings","phrases":["account settings","account section","my account","account"],"examples":["Open account settings","Show my account","Sign out"],"access":"signed-in","navigationKind":"static"},
   {"route":"/settings/appearance","title":"Appearance settings","phrases":["appearance settings","appearance section","appearance"],"examples":["Open appearance settings","Switch to dark mode","Show the appearance section"],"access":"signed-in","navigationKind":"static"},
@@ -28,6 +29,7 @@ export const APP_DESTINATIONS: AppDestination[] = [
   {"route":"/settings/voice","title":"Voice copilot","phrases":["voice copilot section","voice settings","voice control","voice copilot","voice section","voice"],"examples":["Open the voice copilot section","Set voice to Ivy","Change my voice"],"access":"signed-in","navigationKind":"static"},
   {"route":"/settings/workspace","title":"Workspace settings","phrases":["workspace settings","workspace section","workspace"],"examples":["Show the workspace section","Edit workspace defaults","Open workspace settings"],"access":"signed-in","navigationKind":"static"},
   {"route":"/signup","title":"Sign up","phrases":["signup","sign up"],"examples":["Create my account","Sign up with Google","Join Voni"],"access":"auth","navigationKind":"none"},
+  {"route":"/terms","title":"Terms of Service","phrases":["terms of service","terms"],"examples":["Show the terms of service","What are the terms?","Open terms"],"access":"public","navigationKind":"none"},
 ];
 
 /** Static routes voice may navigate to. Dynamic detail pages stay model-proposed, never invented. */

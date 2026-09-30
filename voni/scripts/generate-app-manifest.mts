@@ -25,7 +25,7 @@ const SRC = join(import.meta.dirname, "..", "src");
 const OUT = join(SRC, "lib", "copilot", "app-manifest.ts");
 
 /** Routes voice must never offer (auth gates, not app screens). */
-const PUBLIC_ROUTES = new Set(["/"]);
+const PUBLIC_ROUTES = new Set(["/", "/privacy", "/terms"]);
 const AUTH_ROUTES = new Set(["/login", "/signup"]);
 const PLATFORM_ADMIN_ROUTES = new Set(["/operator"]);
 
@@ -38,6 +38,8 @@ const PHRASES: Record<string, string[]> = {
   "/": ["landing page", "public demo"],
   "/login": ["login", "sign in"],
   "/signup": ["signup", "sign up"],
+  "/privacy": ["privacy policy", "privacy"],
+  "/terms": ["terms of service", "terms"],
   "/agents/[id]": ["agent details", "open agent"],
   "/campaigns/[id]": ["campaign details", "open campaign"],
   "/leads/[id]": ["lead details", "open lead"],
@@ -63,6 +65,7 @@ const PHRASES: Record<string, string[]> = {
 /** Titles for voice-reachable routes owned by neither the sidebar nor the header. */
 const TITLE_OVERRIDES: Record<string, string> = {
   "/": "Welcome", "/login": "Sign in", "/signup": "Sign up",
+  "/privacy": "Privacy Policy", "/terms": "Terms of Service",
   "/agents/[id]": "Agent details", "/campaigns/[id]": "Campaign details",
   "/leads/[id]": "Lead details", "/calls/[id]": "Call details",
   "/agents/new": "New agent",
@@ -85,6 +88,16 @@ const EXAMPLES: Record<string, string[]> = {
     "Sign in to Voni",
     "Continue with Google",
     "Open sign in"
+  ],
+  "/privacy": [
+    "Show the privacy policy",
+    "What data do you keep?",
+    "Open privacy"
+  ],
+  "/terms": [
+    "Show the terms of service",
+    "What are the terms?",
+    "Open terms"
   ],
   "/signup": [
     "Create my account",

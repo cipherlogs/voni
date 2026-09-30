@@ -80,8 +80,8 @@ test("feature terms stay within the recognition budget", () => {
   }
 });
 
-test("manifest v3 covers all 23 pages without navigating to templates or public routes", () => {
-  assert.equal(APP_DESTINATIONS.length, 23);
+test("manifest v3 covers all 25 pages without navigating to templates or public routes", () => {
+  assert.equal(APP_DESTINATIONS.length, 25);
   for (const route of APP_DESTINATIONS) {
     assert.equal(route.examples.length, 3);
     assert.ok(route.phrases.length > 0);
