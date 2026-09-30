@@ -5,7 +5,11 @@ import { auth } from "@/lib/auth";
 import { safeNextPath } from "@/lib/auth-redirect";
 import { devBypassEnabled } from "@/lib/dev-bypass";
 
+const INVITE_ONLY =
+  "Voni is in private beta, so accounts are invite-only while we save our call credits for early testers. Want in? Email hi@voni.cc and we'll get you set up.";
+
 const LOGIN_OAUTH_ERRORS: Record<string, string> = {
+  invite_only: INVITE_ONLY,
   access_denied:
     "Google access was cancelled. You can try again when you are ready.",
   oauth_callback_error:
@@ -46,7 +50,9 @@ export async function AuthDecision({
       />
     );
   }
-  const oauthError = query.error
+  const oauthError = query.error === "invite_only"
+    ? INVITE_ONLY
+    : query.error
     ? "Google could not complete account creation. No workspace was created. Please try again."
     : undefined;
   return <AuthForm mode="signup" nextPath={nextPath} oauthError={oauthError} />;

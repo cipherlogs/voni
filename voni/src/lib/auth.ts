@@ -1,7 +1,9 @@
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { organization } from "better-auth/plugins";
+import { eq } from "drizzle-orm";
 import { db } from "@/lib/db";
+import { requireInvitedEmail } from "@/lib/platform/admin";
 import * as schema from "@/lib/db/auth-schema";
 
 export const auth = betterAuth({
@@ -29,6 +31,28 @@ export const auth = betterAuth({
   // Google-only sign-in per plan Section N — no email/password flow.
   emailAndPassword: {
     enabled: false,
+  },
+  // Private beta: only VONI_ADMIN_EMAILS may create an account or a session.
+  // The session hook also locks out anyone who signed up before this gate.
+  databaseHooks: {
+    user: {
+      create: {
+        before: async (user) => {
+          await requireInvitedEmail(user.email);
+        },
+      },
+    },
+    session: {
+      create: {
+        before: async (session) => {
+          const [row] = await db
+            .select({ email: schema.user.email })
+            .from(schema.user)
+            .where(eq(schema.user.id, session.userId));
+          await requireInvitedEmail(row?.email ?? "");
+        },
+      },
+    },
   },
   plugins: [
     organization({

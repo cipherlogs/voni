@@ -19,6 +19,8 @@ are gitignored, and this project's permission settings block writing actual
 - `VONI_ADMIN_EMAILS` — comma-separated Google account emails allowed to see
   and change the operator-only `/operator` area. Matching is exact and
   case-insensitive.
+  It is also the private-beta gate: only these emails can sign up or sign in
+  (`requireInvitedEmail` in `src/lib/auth.ts` hooks). Unset = nobody gets in.
 - `VONI_CREDENTIALS_ENCRYPTION_KEY` — exactly 32 random bytes, encoded as
   base64/base64url or 64 hex characters. Generate a base64 value with:
   `node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"`.

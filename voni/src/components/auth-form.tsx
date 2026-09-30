@@ -28,7 +28,13 @@ export function AuthForm({
   function continueWithGoogle() {
     setError(undefined);
     startTransition(async () => {
-      const result = await signIn.social({ provider: "google", callbackURL: nextPath });
+      // errorCallbackURL brings OAuth failures (e.g. ?error=invite_only) back
+      // to this page instead of Better Auth's bare /api/auth/error screen.
+      const result = await signIn.social({
+        provider: "google",
+        callbackURL: nextPath,
+        errorCallbackURL: `/${mode}?next=${encodeURIComponent(nextPath)}`,
+      });
       if (result?.error) setError("Google sign-in could not start. Please try again.");
     });
   }
