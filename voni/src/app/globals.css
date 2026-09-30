@@ -2,7 +2,7 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 
-@custom-variant dark (&:is(.dark *));
+@custom-variant dark (&:is(.dark:not(:has(.landing-page)) *));
 
 @theme inline {
   --color-background: var(--background);
@@ -704,7 +704,15 @@
   }
 }
 
-.dark {
+/* Light-only landing (DESIGN.md §10c), in CSS so it holds from first paint:
+   the dark tokens and `dark:` variant skip any page holding `.landing-page`,
+   whatever class next-themes puts on <html>. `!important` beats the inline
+   color-scheme next-themes writes. */
+:root:has(.landing-page) {
+  color-scheme: light !important;
+}
+
+.dark:not(:has(.landing-page)) {
   --background: oklch(0.145 0 0);
   --foreground: oklch(0.985 0 0);
   --card: oklch(0.205 0 0);

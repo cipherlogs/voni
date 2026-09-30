@@ -66,14 +66,13 @@ test("landing hero reads as one document composition with logic frozen", () => {
   const inline = call.slice(call.indexOf("// Fills its host rail"));
   assert.doesNotMatch(inline, /landing-|LandingOrb/, "inline call card stays motion-free");
 
-  // Light-only landing (§10c): ephemeral override on "/", no theme toggle
-  // in its header. The provider itself stays outside Suspense (its inline
-  // <script> is SSR-only); only the usePathname leaf suspends.
+  // Light-only landing (§10c): CSS-only, so it holds from first paint and
+  // survives next-themes re-applying `dark`; no theme toggle in its header.
+  const css = readRepo("app/globals.css");
+  assert.match(css, /@custom-variant dark \(&:is\(\.dark:not\(:has\(\.landing-page\)\) \*\)\)/, "dark: utilities skip the landing");
+  assert.match(css, /^\.dark:not\(:has\(\.landing-page\)\) \{/m, "dark tokens skip the landing");
+  assert.match(css, /:root:has\(\.landing-page\) \{\s*color-scheme: light !important/, "landing color-scheme stays light");
   const theme = readRepo("components/theme-provider.tsx");
-  assert.match(theme, /LandingLightEnforcer/, "landing forces the light theme");
-  assert.match(theme, /usePathname\(\)/, "landing override reads the route");
-  assert.match(theme, /pathname !== "\/"/, "override applies to the landing only");
-  assert.match(theme, /classList\.remove\("dark"\)/, "landing strips dark without persisting");
   assert.doesNotMatch(theme, /forcedTheme=\{/, "no conditional provider prop (script must stay out of the fallback)");
   const header = readRepo("components/landing-header.tsx");
   assert.doesNotMatch(header, /ModeToggle/, "landing header has no theme toggle");
