@@ -16,7 +16,7 @@
  */
 
 import Link from 'next/link';
-import type { JSX, SVGProps } from 'react';
+import type { JSX, ReactNode, SVGProps } from 'react';
 import { Separator } from '@/components/ui/separator';
 import { LoadingButton } from '@/components/loading-button';
 
@@ -37,7 +37,10 @@ export default function Login01({
   switchLine,
   switchHref,
   switchLabel,
+  alert,
 }: {
+  /** Rendered above the title, inside the centered column. */
+  alert?: ReactNode;
   title: string;
   description: string;
   pending: boolean;
@@ -51,6 +54,7 @@ export default function Login01({
     <div className="flex w-full flex-1 items-center justify-center">
       <div className="flex flex-1 flex-col justify-center px-4 py-10 lg:px-6">
         <div className="sm:mx-auto sm:w-full sm:max-w-sm">
+          {alert}
           <div className="flex flex-col gap-2 text-center">
             <h1 className="text-balance text-center font-semibold text-foreground text-xl">
               {title}

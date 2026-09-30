@@ -134,7 +134,6 @@ test("auth screens keep the login idiom with shared footer language", () => {
 
   for (const [route, mode] of [
     ["app/login/page.tsx", "login"],
-    ["app/signup/page.tsx", "signup"],
   ] as const) {
     const page = readRepo(route);
     // Thin frames: delegate to the shared decision, keep boundaries + footer.
@@ -146,6 +145,13 @@ test("auth screens keep the login idiom with shared footer language", () => {
     assert.match(page, /FooterYear/, `${route} shares the request-time year leaf`);
     assert.doesNotMatch(page, /auth\.api\.getSession/, `${route} does not duplicate the session check`);
   }
+
+  // Private beta: /signup is a closed notice, not an OAuth entry point.
+  const signupPage = readRepo("app/signup/page.tsx");
+  assert.match(signupPage, /private beta/, "signup explains the private beta");
+  assert.match(signupPage, /mailto:hi@voni\.cc/, "signup offers an invite request");
+  assert.doesNotMatch(signupPage, /AuthDecision|signIn/, "signup cannot start OAuth");
+  assert.match(signupPage, /SiteFooter/, "signup shares the footer language");
 
   const form = readRepo("components/auth-form.tsx");
   assert.match(form, /Login01/, "auth stays on the pinned login idiom");

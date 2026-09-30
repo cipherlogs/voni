@@ -41,15 +41,16 @@ export function AuthForm({
 
   return (
     <div className="flex w-full flex-1 flex-col items-center">
-      {error ? (
-        <Alert variant="destructive" className="mb-6 w-full sm:max-w-sm">
-          <AlertCircle />
-          <AlertTitle>Sign-in did not complete</AlertTitle>
-          <AlertDescription>{error}</AlertDescription>
-        </Alert>
-      ) : null}
-
       <Login01
+        alert={
+          error ? (
+            <Alert variant="destructive" className="mb-6">
+              <AlertCircle />
+              <AlertTitle>Sign-in did not complete</AlertTitle>
+              <AlertDescription>{error}</AlertDescription>
+            </Alert>
+          ) : null
+        }
         title={signup ? "Create your workspace" : "Welcome back"}
         description={
           signup
