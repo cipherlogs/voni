@@ -18,6 +18,14 @@ export const auth = betterAuth({
       clientSecret: process.env.GOOGLE_CLIENT_SECRET as string,
     },
   },
+  // Production splits the landing (LANDING_HOST) from the app (app.<host>);
+  // a parent-domain cookie lets the landing header see the app's session.
+  advanced: {
+    crossSubDomainCookies: {
+      enabled: Boolean(process.env.LANDING_HOST),
+      domain: process.env.LANDING_HOST,
+    },
+  },
   // Google-only sign-in per plan Section N — no email/password flow.
   emailAndPassword: {
     enabled: false,

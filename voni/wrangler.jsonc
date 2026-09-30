@@ -42,6 +42,14 @@
       "bucket_name": "voni-inc-cache"
     }
   ],
+  "routes": [
+    { "pattern": "voni.cc", "custom_domain": true },
+    { "pattern": "www.voni.cc", "custom_domain": true },
+    { "pattern": "app.voni.cc", "custom_domain": true }
+  ],
+  "vars": {
+    "LANDING_HOST": "voni.cc"
+  },
   "triggers": {
     "crons": ["* * * * *"]
   }

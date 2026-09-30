@@ -14,7 +14,35 @@ const PROTECTED_PREFIXES = [
   "/operator",
 ];
 
+const APP_PATHS = ["/login", "/signup", ...PROTECTED_PREFIXES];
+
+/**
+ * Production serves two hosts from one Worker: the landing (and its demo) on
+ * LANDING_HOST, everything else on the BETTER_AUTH_URL host. Unset (dev,
+ * preview) means one host serves everything, as before.
+ */
+function hostRedirect(request: NextRequest): NextResponse | null {
+  const landingHost = process.env.LANDING_HOST;
+  const appUrl = process.env.BETTER_AUTH_URL;
+  if (!landingHost || !appUrl) return null;
+  const { host, pathname, search } = request.nextUrl;
+  if (host === landingHost || host === `www.${landingHost}`) {
+    const appPath = APP_PATHS.some(
+      (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`),
+    );
+    if (appPath) return NextResponse.redirect(new URL(`${pathname}${search}`, appUrl));
+    if (host !== landingHost) {
+      return NextResponse.redirect(`https://${landingHost}${pathname}${search}`, 301);
+    }
+  } else if (host === new URL(appUrl).host && pathname === "/") {
+    return NextResponse.redirect(new URL("/dashboard", appUrl));
+  }
+  return null;
+}
+
 export function proxy(request: NextRequest) {
+  const redirect = hostRedirect(request);
+  if (redirect) return redirect;
   const path = request.nextUrl.pathname;
   const protectedRoute = PROTECTED_PREFIXES.some(
     (prefix) => path === prefix || path.startsWith(`${prefix}/`),
@@ -31,6 +59,9 @@ export function proxy(request: NextRequest) {
 
 export const config = {
   matcher: [
+    "/",
+    "/login",
+    "/signup",
     "/dashboard/:path*",
     "/agents/:path*",
     "/campaigns/:path*",

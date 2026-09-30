@@ -10,7 +10,8 @@ are gitignored, and this project's permission settings block writing actual
 
 ## Auth (Better Auth + Google OAuth)
 - `BETTER_AUTH_SECRET` — generate: `node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"`
-- `BETTER_AUTH_URL` — `http://localhost:3000` for local dev.
+- `BETTER_AUTH_URL` — `http://localhost:3000` for local dev; `https://app.voni.cc` in production (Worker secret).
+- `LANDING_HOST` — production only, a plain var in `wrangler.jsonc` (`voni.cc`). Splits hosts in `src/proxy.ts`: the landing and demo stay on `voni.cc`, `/login`, `/signup` and the dashboard redirect to the `BETTER_AUTH_URL` host, and the session cookie is shared on `.voni.cc`. Leave unset locally.
 - `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` — Google Cloud Console → APIs & Services → Credentials → OAuth client ID (Web application). Authorized redirect URI: `{BETTER_AUTH_URL}/api/auth/callback/google`.
 
 ## Operator access and credential encryption
