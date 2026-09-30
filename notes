@@ -1,3 +1,4 @@
+## Temp
 Your steps, before deploying:
 1. Cloudflare: add voni.cc as a domain (Free plan), then change the nameservers at your registrar to the two Cloudflare gives you. Wait until the domain shows Active. The deploy will fail until then, because Cloudflare can't attach the three addresses before the domain is active.
 2. Worker secret: wrangler secret put BETTER_AUTH_URL → https://app.voni.cc
@@ -10,13 +11,18 @@ Your steps, before deploying:
 
 I haven't committed anything. Email on the domain (hi@ and test@voni.cc through Cloudflare Email Routing) is still left for later.
 
+---
+
+
 │ 05  │ Website research and        │ 02, 03   │ Voni says true things about your site, even having read it      │
 │     │ business talk               │          │ while you were away                                             │
 ├─────┼─────────────────────────────┼──────────┼─────────────────────────────────────────────────────────────────┤
 │ 06  │ Prospect record, consent +  │ 04       │ After a full call, you appear on the admin page with the        │
 │     │ close, admin page           │          │ consent answer and a summary
 
-### Design constraints
+
+
+## Design constraints
 
 * Every design/component must come from **blocks.so**.
 * Do not introduce arbitrary UI patterns or components from elsewhere.
