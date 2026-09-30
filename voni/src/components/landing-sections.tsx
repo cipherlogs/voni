@@ -315,7 +315,9 @@ export function LandingFaq() {
 
 const FOOTER_LINKS = [
   ["#demo", "Live demo", "hidden md:inline"],
-  ["#faq", "FAQ", ""],
+  ["#faq", "FAQ", "hidden md:inline"],
+  ["/privacy", "Privacy", ""],
+  ["/terms", "Terms", ""],
   ["/login", "Sign in", ""],
 ] as const;
 

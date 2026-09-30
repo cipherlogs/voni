@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import Link from "next/link";
 import { connection } from "next/server";
 import { VoniLogo } from "@/components/voni-logo";
 
@@ -35,7 +36,11 @@ export function SiteFooter({ year }: { year: ReactNode }) {
           <VoniLogo size="sm" />
           <span>Every call ends with the work already done.</span>
         </span>
-        {year}
+        <span className="flex items-center gap-4">
+          <Link href="/privacy" className="hover:text-foreground transition-colors">Privacy</Link>
+          <Link href="/terms" className="hover:text-foreground transition-colors">Terms</Link>
+          {year}
+        </span>
       </div>
     </footer>
   );
