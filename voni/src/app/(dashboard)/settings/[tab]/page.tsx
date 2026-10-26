@@ -72,8 +72,14 @@ async function AccountData() {
 }
 
 async function VoiceData() {
-  await requireCtxOrRedirect("/settings/voice");
-  const voicePrefs = await getCopilotVoicePrefs();
+  // One parallel group (ticket 04): the session guard and the voice-prefs
+  // read share no inputs, so both start together — the sibling
+  // WorkspaceData/ServicesData Promise.all pattern. Values, Tiles, and
+  // badges below are unchanged.
+  const [, voicePrefs] = await Promise.all([
+    requireCtxOrRedirect("/settings/voice"),
+    getCopilotVoicePrefs(),
+  ]);
   return (
     <>
       <RouteBrief route="/settings/voice" brief={`Settings · Voice copilot. Voice ${voicePrefs.voiceId}, language ${voicePrefs.language}. Voice and language preferences require confirmed edits and a confirmed save.`} />
