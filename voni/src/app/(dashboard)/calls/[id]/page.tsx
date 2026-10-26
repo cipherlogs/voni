@@ -38,7 +38,6 @@ import {
   messages,
   toolCallLogs,
 } from "@/lib/db/schema";
-import { requireCtxOrRedirect } from "@/lib/session";
 import { pipelineStateLabel } from "@/lib/leads/stage-filter";
 
 function formatWhen(value: Date | null) {
@@ -83,13 +82,14 @@ async function CallDetail({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const call = await callDetail(id);
-  const ctx = await requireCtxOrRedirect(`/calls/${id}`);
+  // Context resolves once inside callDetail; every read below keys off
+  // the call id and the org it returns, so they resolve together.
+  const { call, ctx } = await callDetail(id);
 
   // Ownership-proving join: every query below keys off ids from
   // this row, and it resolves the lead/campaign/agent ids the
   // onward links need. callDetail already 404s on a miss.
-  const [link] = await db
+  const linkPromise = db
     .select({
       leadId: calls.leadId,
       campaignId: calls.campaignId,
@@ -113,10 +113,9 @@ async function CallDetail({
       ),
     )
     .limit(1);
-  if (!link) notFound();
 
   // Recorded turns for this call, oldest first for reading order.
-  const turns = await db
+  const turnsPromise = db
     .select({
       id: messages.id,
       direction: messages.direction,
@@ -127,11 +126,8 @@ async function CallDetail({
     .where(eq(messages.callId, id))
     .orderBy(asc(messages.createdAt))
     .limit(100);
-  const spoken = turns.filter(
-    (turn) => (turn.content ?? "").trim().length > 0,
-  );
 
-  const tools = await db
+  const toolsPromise = db
     .select({
       id: toolCallLogs.id,
       toolName: toolCallLogs.toolName,
@@ -146,12 +142,23 @@ async function CallDetail({
     .orderBy(asc(toolCallLogs.createdAt))
     .limit(50);
 
-  const [outcome] = await db
+  const outcomePromise = db
     .select()
     .from(conversationStates)
     .where(eq(conversationStates.sourceCallId, id))
     .orderBy(desc(conversationStates.createdAt))
     .limit(1);
+
+  const [[link], turns, tools, [outcome]] = await Promise.all([
+    linkPromise,
+    turnsPromise,
+    toolsPromise,
+    outcomePromise,
+  ]);
+  if (!link) notFound();
+  const spoken = turns.filter(
+    (turn) => (turn.content ?? "").trim().length > 0,
+  );
 
   const directionLabel =
     call.direction === "inbound" ? "Inbound" : "Outbound";

@@ -64,10 +64,10 @@ async function LeadDetail({
 }) {
   const { id } = await params;
   // Org scoping + uuid validation + notFound live here; every
-  // query below keys off this row's id.
+  // query below keys off this row's id, so they resolve together.
   const { lead, state } = await leadDetail(id);
 
-  const leadCalls = await db
+  const leadCallsPromise = db
     .select({
       id: calls.id,
       direction: calls.direction,
@@ -81,7 +81,7 @@ async function LeadDetail({
     .orderBy(desc(calls.startedAt))
     .limit(20);
 
-  const memberships = await db
+  const membershipsPromise = db
     .select({
       id: campaignLeads.id,
       status: campaignLeads.status,
@@ -106,7 +106,7 @@ async function LeadDetail({
     .limit(20);
 
   // WhatsApp + call turns for this lead, newest first.
-  const activity = await db
+  const activityPromise = db
     .select({
       id: messages.id,
       channel: messages.channel,
@@ -119,6 +119,12 @@ async function LeadDetail({
     .where(eq(messages.leadId, id))
     .orderBy(desc(messages.createdAt))
     .limit(50);
+
+  const [leadCalls, memberships, activity] = await Promise.all([
+    leadCallsPromise,
+    membershipsPromise,
+    activityPromise,
+  ]);
   const recent = [...activity].reverse();
 
   const channelLabel =
