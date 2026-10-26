@@ -7,6 +7,7 @@ import { EditAgent } from "./edit-agent";
 import { AgentDetailSkeleton } from "@/components/page-skeletons";
 import { agentConfigSchema, normalizeConfig } from "@/lib/agents/config";
 import type { AgentConfig } from "@/lib/agents/config";
+import { toEditAgentProps } from "@/lib/agents/detail-props";
 
 /**
  * Authorized detail leaf: params, query, record, and the data-derived brief
@@ -35,8 +36,6 @@ async function AgentDetail({
 
   // A draft row still carrying its generation job id holds a placeholder
   // config until the reviewed save upgrades it in place.
-  const isGenerationStub =
-    agent.deploymentStatus === "draft" && agent.generationJobId !== null;
   const generationNote =
     agent.generationJobId !== null
       ? ` Generation ${generationStatus ?? "unknown"}.`
@@ -56,20 +55,21 @@ async function AgentDetail({
     <>
       <RouteBrief route={`/agents/${id}`} brief={`Agent ${agent.name}. Deployment ${agent.deploymentStatus}.${generationNote} Configuration version ${agent.configVersion}. Edit configuration or test this agent.`} />
       <EditAgent
-        id={agent.id}
-        name={agent.name}
-        config={storedConfig}
-        initialDeploymentAttention={query.deployment === "attention"}
-        deploymentStatus={agent.deploymentStatus}
-        deploymentError={agent.deploymentError}
-        assemblyaiAgentId={agent.assemblyaiAgentId}
-        generationJobId={agent.generationJobId}
-        generationStatus={generationStatus}
-        generationError={generationError}
-        isGenerationStub={isGenerationStub}
-        isBridgeAgent={isBridgeAgent}
-        phoneReady={phoneReady}
-        whatsappReady={whatsappReady}
+        {...toEditAgentProps({
+          id: agent.id,
+          name: agent.name,
+          config: storedConfig,
+          initialDeploymentAttention: query.deployment === "attention",
+          deploymentStatus: agent.deploymentStatus,
+          deploymentError: agent.deploymentError,
+          assemblyaiAgentId: agent.assemblyaiAgentId,
+          generationJobId: agent.generationJobId,
+          generationStatus,
+          generationError,
+          isBridgeAgent,
+          phoneReady,
+          whatsappReady,
+        })}
       />
     </>
   );
