@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { memo, useDeferredValue, useEffect, useState } from "react";
 import {
   CircleCheck,
   History,
@@ -15,7 +15,7 @@ import { VoiceBars, type VoiceBarsMood } from "@/components/copilot/voice-bars";
 import { useShellAuth } from "@/components/shell-auth";
 import { useJobs } from "@/components/jobs/jobs-provider";
 import { formatCallStatus } from "@/lib/calls/call-status";
-import { getJobProgressPercent } from "@/lib/jobs/ui-helpers";
+import { getJobProgressPercent, getSidebarJobsText } from "@/lib/jobs/ui-helpers";
 import { Progress } from "@/components/ui/progress";
 import {
   SidebarMenu,
@@ -56,6 +56,26 @@ function SidebarVoiceRow() {
   );
 }
 
+/**
+ * Ticking second, isolated (ticket 08): the 1s meter lives in this leaf, so
+ * the button — auth, proposals, start/stop wiring — never re-renders for the
+ * clock. Mounts at zero when a call goes live and unmounts on hang-up, which
+ * is the old reset-in-the-start-tap with no handler logic.
+ */
+const VoiceElapsedText = memo(function VoiceElapsedText() {
+  const [elapsed, setElapsed] = useState(0);
+
+  useEffect(() => {
+    const startedAt = Date.now();
+    const id = setInterval(() => {
+      setElapsed(Math.floor((Date.now() - startedAt) / 1000));
+    }, 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  return <>{formatCallStatus(elapsed)}</>;
+});
+
 function SidebarVoiceButton() {
   const authState = useShellAuth();
   const authReady = authState.status === "authenticated";
@@ -65,19 +85,6 @@ function SidebarVoiceButton() {
       : "Session unavailable — voice copilot is disabled. Refresh to retry.";
   const { status, live, proposals, start, stop, noteInteraction, agentPartial } =
     useCopilot();
-  // Call timer, local to the button — the provider only learns durations at
-  // hang-up. Reset happens in the start tap (an event); the effect only ticks.
-  const [elapsed, setElapsed] = useState(0);
-
-  useEffect(() => {
-    if (!live) return;
-    const startedAt = Date.now();
-    const id = setInterval(() => {
-      setElapsed(Math.floor((Date.now() - startedAt) / 1000));
-    }, 1000);
-    return () => clearInterval(id);
-  }, [live]);
-
   const starting = status === "starting";
   const label =
     status === "idle" || status === "error"
@@ -104,7 +111,7 @@ function SidebarVoiceButton() {
     : proposals.length > 0
       ? proposalText
       : live
-        ? formatCallStatus(elapsed)
+        ? <VoiceElapsedText />
         : "Voice copilot";
 
   return (
@@ -115,7 +122,6 @@ function SidebarVoiceButton() {
       onClick={() => {
         noteInteraction();
         if (status === "idle" || status === "error") {
-          setElapsed(0);
           start();
         } else if (status === "live" || status === "reconnecting") stop();
       }}
@@ -144,30 +150,43 @@ function SidebarVoiceButton() {
  * percent while work is in flight, results-ready text after, quiet link
  * otherwise — always one tap from /jobs, which is the retry path.
  */
+/**
+ * Background-job progress bar, isolated (ticket 08): provider polls
+ * re-render the row every tick, but the bar only commits when its own
+ * deferred percent settles — progress paint never blocks the row's urgent
+ * copy ("N running", results-ready) in the same commit.
+ */
+const SidebarJobProgress = memo(function SidebarJobProgress({
+  value,
+}: {
+  value: number;
+}) {
+  return (
+    <Progress
+      value={value}
+      aria-label="Latest background job progress"
+      className="mx-2 mt-1 h-1 group-data-[collapsible=icon]:hidden"
+    />
+  );
+});
+
 function SidebarJobsRow() {
   const { activeJobs, unreadJobs, optimisticJobs, markSeen } = useJobs();
 
   const activeCount = activeJobs.length + optimisticJobs.length;
-  const unreadText =
-    unreadJobs.length === 1
-      ? "1 result ready"
-      : `${unreadJobs.length} results ready`;
+  // Copy derives during render from the tested helper (ticket 08) — same
+  // strings, no synced state.
+  const { text, ariaLabel } = getSidebarJobsText({
+    activeCount,
+    unreadCount: unreadJobs.length,
+  });
   const firstActive = activeJobs[0];
   const firstPercent = firstActive
     ? getJobProgressPercent(firstActive)
     : null;
-  const text =
-    activeCount > 0
-      ? `${activeCount} running`
-      : unreadJobs.length > 0
-        ? unreadText
-        : "Background jobs";
-  const ariaLabel =
-    activeCount > 0
-      ? `${activeCount} background jobs running. View jobs.`
-      : unreadJobs.length > 0
-        ? `${unreadText}. View jobs.`
-        : "View background jobs";
+  // Non-urgent paint: the bar follows the poll a commit later, never ahead
+  // of the row's own copy.
+  const deferredPercent = useDeferredValue(firstPercent);
 
   // Bell removal carry-over: opening jobs settles the unread count, so the
   // badge keeps meaning something unseen. Fire-and-forget so navigation
@@ -200,12 +219,8 @@ function SidebarJobsRow() {
           {text}
         </span>
       </SidebarMenuButton>
-      {firstPercent != null ? (
-        <Progress
-          value={firstPercent}
-          aria-label="Latest background job progress"
-          className="mx-2 mt-1 h-1 group-data-[collapsible=icon]:hidden"
-        />
+      {deferredPercent != null ? (
+        <SidebarJobProgress value={deferredPercent} />
       ) : null}
     </SidebarMenuItem>
   );
