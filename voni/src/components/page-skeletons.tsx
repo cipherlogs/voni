@@ -522,3 +522,81 @@ export function NewAgentSkeleton() {
     </div>
   );
 }
+
+/**
+ * Mirrors the landing Demo call card at rest (ticket 05): orb portrait,
+ * voice switcher, and the green Start call pill. Shown only while the Demo
+ * call engine chunk loads; the card paints identically once loaded.
+ */
+export function DemoCallSkeleton() {
+  return (
+    <div className="flex flex-col items-center justify-center gap-3.5 py-2" aria-hidden>
+      <Skeleton className="size-24 rounded-full" />
+      <Skeleton className="h-8 w-40 rounded-full" />
+      <Skeleton className="h-11 w-44 rounded-full" />
+    </div>
+  );
+}
+
+/**
+ * Mirrors the Test agent dialog call region (ticket 05): transcript rows in
+ * the conversation region and the call-control pill in the composer slot.
+ * Shown only while the Test call engine chunk loads after the dialog opens;
+ * the dialog chrome stays synchronous around it.
+ */
+export function TestCallSkeleton() {
+  return (
+    <div className="flex h-full min-h-0 flex-col" aria-hidden>
+      <div className="flex min-h-0 flex-1 flex-col gap-3 px-5 py-5">
+        <Skeleton className={`h-4 w-3/4 ${SHIMMER_DELAYS[0]}`} />
+        <Skeleton className={`h-4 w-1/2 self-end ${SHIMMER_DELAYS[1]}`} />
+        <Skeleton className={`h-4 w-2/3 ${SHIMMER_DELAYS[2]}`} />
+        <Skeleton className={`h-4 w-1/3 self-end ${SHIMMER_DELAYS[0]}`} />
+      </div>
+      <div className="flex justify-center px-1 pb-3">
+        <Skeleton className="h-11 w-44 rounded-full" />
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Mirrors the Copilot call pill (ticket 05): timer plus mic, speaker, and
+ * end controls, anchored to the viewport corner like the live shell. Shown
+ * only while the Copilot shell chunk loads; the shell renders null at rest,
+ * so this paints only when a live call is already up.
+ */
+export function CopilotShellSkeleton() {
+  return (
+    <div className="fixed right-4 bottom-4 z-50 flex flex-col items-end" aria-hidden>
+      <div className="bg-card border-border flex items-center gap-1 rounded-full border py-1 pr-1 pl-3">
+        <Skeleton className="h-4 w-10" />
+        <Skeleton className="size-8 rounded-full" />
+        <Skeleton className="size-8 rounded-full" />
+        <Skeleton className="size-8 rounded-full" />
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Mirrors the dashboard shell frame (ticket 05): icon rail plus the page
+ * header and card list the content area streams. Shown only while the
+ * Copilot provider chunk loads; the provider instance still mounts once in
+ * the layout, so the session survives in-app navigation once loaded.
+ */
+export function CopilotBootSkeleton() {
+  return (
+    <div className="flex gap-4" aria-hidden>
+      <div className="flex flex-col items-center gap-3 pt-2">
+        <Skeleton className="size-9 rounded-xl" />
+        <Skeleton className="size-9 rounded-xl" />
+        <Skeleton className="size-9 rounded-xl" />
+      </div>
+      <div className="flex min-w-0 flex-1 flex-col gap-6">
+        <PageHeaderSkeleton withAction={false} />
+        <CardListSkeleton rows={3} />
+      </div>
+    </div>
+  );
+}
