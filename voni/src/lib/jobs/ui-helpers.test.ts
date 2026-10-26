@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   BACKGROUND_AFTER_MS,
   getJobProgressPercent,
+  getSidebarJobsText,
   jobErrorCopy,
   partitionJobs,
   shouldSuppressJobToast,
@@ -145,4 +146,27 @@ test("jobErrorCopy gives distinct copy per failure mode", () => {
   assert.match(jobErrorCopy("timeout"), /long|timed out/i);
   assert.ok(jobErrorCopy("unknown").length > 0);
   assert.ok(jobErrorCopy(null).length > 0);
+});
+
+test("sidebar jobs text derives running/ready/quiet copy with labels", () => {
+  assert.deepEqual(getSidebarJobsText({ activeCount: 2, unreadCount: 0 }), {
+    text: "2 running",
+    ariaLabel: "2 background jobs running. View jobs.",
+  });
+  assert.deepEqual(getSidebarJobsText({ activeCount: 1, unreadCount: 3 }), {
+    text: "1 running",
+    ariaLabel: "1 background jobs running. View jobs.",
+  });
+  assert.deepEqual(getSidebarJobsText({ activeCount: 0, unreadCount: 1 }), {
+    text: "1 result ready",
+    ariaLabel: "1 result ready. View jobs.",
+  });
+  assert.deepEqual(getSidebarJobsText({ activeCount: 0, unreadCount: 4 }), {
+    text: "4 results ready",
+    ariaLabel: "4 results ready. View jobs.",
+  });
+  assert.deepEqual(getSidebarJobsText({ activeCount: 0, unreadCount: 0 }), {
+    text: "Background jobs",
+    ariaLabel: "View background jobs",
+  });
 });

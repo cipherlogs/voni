@@ -27,9 +27,21 @@ test("the public demo transcript has no scripted tool rows or chip model", () =>
   assert.doesNotMatch(packageJson, /src\/lib\/demo\/chips\.test\.ts/);
   assert.match(call, /onToolActivity:/, "tool activity still reaches the call state");
   assert.match(call, /toolActive/, "tool latency state remains available to status feedback");
-  assert.match(call, /Looking that up…/, "the existing filler/status feedback remains");
+  // Status copy derives during render from the tested lib seam (ticket 08):
+  // the component holds no string copy, the helper pins the pixels.
+  assert.match(call, /getVoiceStatusText\(/, "inline status derives in render");
+  assert.match(
+    readRepo("lib/voice/call-status-view.ts"),
+    /Looking that up…/,
+    "the existing filler/status feedback remains",
+  );
   assert.match(call, /tools: compileVoiceTools\(config\)/, "signed-in calls keep backend tools");
-  assert.match(call, /testAgentId: mode\.agentId/, "signed-in calls keep the test agent binding");
+  assert.match(call, /testAgentId: inlineAgentId/, "signed-in calls keep the test agent binding");
+  assert.match(
+    call,
+    /const inlineAgentId = mode\.kind === "inline" \? mode\.agentId : undefined/,
+    "the binding narrows to the stable scalar (ticket 08)",
+  );
 });
 
 test("the below-lg demo call is a controlled full-viewport modal", () => {
@@ -124,8 +136,8 @@ test("hidden stays live; hold starts only on freeze or a hidden drop", () => {
   // Silent entry: no hold line exists anymore (a frozen page can't speak).
   assert.doesNotMatch(call, /holdEnterInstructions|HOLD_DWELL_MS|holdTimerRef/);
   // `pagehide` saves the call memory, it never ends the call (shared fan-out).
-  // Demo-gated: inline test calls never hold.
-  assert.match(call, /if \(mode\.kind !== "demo"\) return;/);
+  // Demo-gated: inline test calls never hold (kind narrows to a scalar, ticket 08).
+  assert.match(call, /if \(modeKind !== "demo"\) return;/);
   // Hold pauses its own way: mic via setOnHold, clock via setHeld.
   assert.match(call, /session\.setOnHold\(true\)/);
   assert.match(call, /voice\?\.setOnHold\(false\)/);
@@ -154,8 +166,14 @@ test("hidden stays live; hold starts only on freeze or a hidden drop", () => {
   // line goes through the session's floor, never straight to the socket.
   assert.doesNotMatch(call, /welcomeBack|welcomedRef|ReplyQueue|replaceNextReply/);
   assert.match(call, /session\.speak\(instructions, opts\)/);
-  // On-screen state: hold status, holding marker, away-ended copy.
-  assert.match(call, /On hold ·/);
+  // On-screen state: hold status, holding marker, away-ended copy. Status
+  // copy lives in the tested lib seam (ticket 08); the component derives it.
+  assert.match(call, /getDemoCallStatus\(/, "demo status derives in render");
+  assert.match(
+    readRepo("lib/voice/call-status-view.ts"),
+    /On hold ·/,
+    "hold status copy remains",
+  );
   assert.match(call, /data-holding=\{holding\}/);
   assert.match(call, /The call ended while you were away\./);
 });
@@ -185,7 +203,13 @@ test("a hold return reconnects visibly, silently, and speaks exactly once", () =
   assert.match(call, /const setReturnPending = useCallback/);
   assert.match(call, /setReturnPending\(true\)/);
   assert.match(call, /setReturnPending\(false\)/);
-  assert.match(call, /Reconnecting…/);
+  // Status copy lives in the tested lib seam (ticket 08); the component
+  // derives it, the helper pins the pixels.
+  assert.match(
+    readRepo("lib/voice/call-status-view.ts"),
+    /Reconnecting…/,
+    "the reconnecting note remains",
+  );
   assert.match(call, /error && !returning/);
   // A hold rejoin binds the greeting-less resume agent variant, so the
   // welcome-back is the single first utterance — never a re-introduction

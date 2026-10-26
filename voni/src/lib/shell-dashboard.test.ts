@@ -104,9 +104,13 @@ test("shell preserves the sidebar-03 idiom with resolver, ordering, and collapse
   assert.match(utility, /activeJobs/, "running source stays");
   assert.match(utility, /unreadJobs/, "unseen-results source stays");
   assert.match(utility, /activeCount/, "running count aggregates both queues");
-  assert.match(utility, /running/, "running copy stays");
-  assert.match(utility, /results ready/, "results-ready copy stays");
-  assert.match(utility, /View background jobs/, "jobs row stays labelled");
+  // Jobs copy derives during render from the tested helper (ticket 08): the
+  // row holds no string copy, the helper pins the pixels.
+  assert.match(utility, /getSidebarJobsText/, "jobs copy derives in render");
+  const helpers = readRepo("lib/jobs/ui-helpers.ts");
+  assert.match(helpers, /running/, "running copy stays");
+  assert.match(helpers, /results ready/, "results-ready copy stays");
+  assert.match(helpers, /View background jobs/, "jobs row stays labelled");
   assert.match(utility, /aria-label=\{ariaLabel\}/, "label stays announced");
   assert.match(utility, /markSeen/, "opening jobs settles the unread count");
   assert.match(

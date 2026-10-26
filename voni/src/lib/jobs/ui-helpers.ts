@@ -35,6 +35,37 @@ export function getJobProgressPercent(job: MinimalJob): number | null {
   return Math.min(100, Math.max(0, pct));
 }
 
+/**
+ * Sidebar jobs row copy (ticket 08 re-render hygiene): running count with
+ * live percent while work is in flight, results-ready text after, quiet link
+ * otherwise. Pure so unit tests pin the exact strings (identical pixels)
+ * while the row stays a thin derivation site.
+ */
+export function getSidebarJobsText({
+  activeCount,
+  unreadCount,
+}: {
+  activeCount: number;
+  unreadCount: number;
+}): { text: string; ariaLabel: string } {
+  if (activeCount > 0) {
+    return {
+      text: `${activeCount} running`,
+      ariaLabel: `${activeCount} background jobs running. View jobs.`,
+    };
+  }
+  if (unreadCount === 1) {
+    return { text: "1 result ready", ariaLabel: "1 result ready. View jobs." };
+  }
+  if (unreadCount > 0) {
+    return {
+      text: `${unreadCount} results ready`,
+      ariaLabel: `${unreadCount} results ready. View jobs.`,
+    };
+  }
+  return { text: "Background jobs", ariaLabel: "View background jobs" };
+}
+
 export type PartitionedJobs<T extends MinimalJob> = {
   activeJobs: T[];
   unreadJobs: T[];
