@@ -108,17 +108,22 @@ test("hidden stays live; hold starts only on freeze or a hidden drop", () => {
   const context = readRepo("lib/voice/context.ts");
 
   // Visibility only arms parking and saves the call memory; never blur.
-  assert.match(call, /document\.addEventListener\("visibilitychange"/);
-  assert.match(call, /document\.removeEventListener\("visibilitychange"/);
+  // Shared fan-out: one native listener per family across voice + jobs.
+  assert.match(call, /subscribeVisibilityChange\(onVisibility\)/);
+  assert.match(call, /subscribeFreeze\(onFreeze\)/);
+  assert.match(call, /subscribePageHide\(saveMemory\)/);
+  assert.match(call, /from "@\/lib\/client\/shared-listeners"/);
+  assert.doesNotMatch(call, /document\.addEventListener\("visibilitychange"/);
+  assert.doesNotMatch(call, /document\.addEventListener\("freeze"/);
+  assert.doesNotMatch(call, /window\.addEventListener\("pagehide"/);
   assert.doesNotMatch(call, /window\.addEventListener\("blur"/);
   assert.match(call, /setParkOnDrop\(shouldParkOnDrop\(true, hidden\)\)/);
   // Hold entry: the browser froze the page, or the socket dropped while hidden.
-  assert.match(call, /document\.addEventListener\("freeze", onFreeze\)/);
+  // (Shared freeze fan-out asserted above.)
   assert.match(call, /onParked: \(\) => enterHold\(Date\.now\(\)\)/);
   // Silent entry: no hold line exists anymore (a frozen page can't speak).
   assert.doesNotMatch(call, /holdEnterInstructions|HOLD_DWELL_MS|holdTimerRef/);
-  // `pagehide` saves the call memory, it never ends the call.
-  assert.match(call, /window\.addEventListener\("pagehide", saveMemory\)/);
+  // `pagehide` saves the call memory, it never ends the call (shared fan-out).
   // Demo-gated: inline test calls never hold.
   assert.match(call, /if \(mode\.kind !== "demo"\) return;/);
   // Hold pauses its own way: mic via setOnHold, clock via setHeld.

@@ -1,15 +1,10 @@
-import * as React from "react"
+import { useSharedMatchMedia } from "@/lib/client/shared-listeners"
 
 const MOBILE_BREAKPOINT = 768
 
+const MOBILE_QUERY = `(max-width: ${MOBILE_BREAKPOINT - 1}px)`
+
 export function useIsMobile() {
-  return React.useSyncExternalStore(
-    (onChange) => {
-      const query = window.matchMedia(`(max-width: ${MOBILE_BREAKPOINT - 1}px)`)
-      query.addEventListener("change", onChange)
-      return () => query.removeEventListener("change", onChange)
-    },
-    () => window.matchMedia(`(max-width: ${MOBILE_BREAKPOINT - 1}px)`).matches,
-    () => false,
-  )
+  // Shared matchMedia: one cached query + one native change listener per query.
+  return useSharedMatchMedia(MOBILE_QUERY, false)
 }

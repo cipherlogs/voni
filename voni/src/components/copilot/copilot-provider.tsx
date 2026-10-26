@@ -56,6 +56,10 @@ import {
 } from "@/lib/copilot/jobs-tools";
 import { shouldCheckIn, shouldEndIdle } from "@/lib/copilot/idle";
 import {
+  subscribeVoicePreempt,
+  subscribeVoicePrefsChanged,
+} from "@/lib/client/shared-listeners";
+import {
   coerceCopilotVoicePrefs,
   DEFAULT_COPILOT_VOICE_PREFS,
   prefsLanguageCodes,
@@ -785,6 +789,7 @@ export function CopilotProvider({
   // Voice prefs: load on mount, refresh on save. Failures keep defaults —
   // prefs must never block the mic. Skipped entirely until auth is ready:
   // no authenticated requests while the session is loading.
+  // Shared prefs-changed fan-out: one native listener for all subscribers.
   useEffect(() => {
     if (!enabled) return;
     let alive = true;
@@ -797,21 +802,21 @@ export function CopilotProvider({
     };
     load();
     const onSaved = () => load();
-    window.addEventListener("voni:voice-prefs-changed", onSaved);
+    const unsubscribe = subscribeVoicePrefsChanged(onSaved);
     return () => {
       alive = false;
-      window.removeEventListener("voni:voice-prefs-changed", onSaved);
+      unsubscribe();
     };
   }, [enabled]);
 
   // Mutual exclusion: the agent-test call preempts us, we preempt it.
+  // Shared preempt fan-out: one native listener for copilot + voice-call.
   useEffect(() => {
     const onPreempt = (event: Event) => {
       const owner = (event as CustomEvent<{ owner?: string }>).detail?.owner;
       if (owner && owner !== "copilot" && sessionRef.current) stop();
     };
-    window.addEventListener("voni:voice-preempt", onPreempt);
-    return () => window.removeEventListener("voni:voice-preempt", onPreempt);
+    return subscribeVoicePreempt(onPreempt);
   }, [stop]);
 
   const proposeChange = useCallback(

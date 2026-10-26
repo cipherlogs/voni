@@ -7,7 +7,6 @@ import {
   useMemo,
   useRef,
   useState,
-  useSyncExternalStore,
 } from "react";
 import {
   ChevronDown,
@@ -104,6 +103,13 @@ import {
 } from "@/lib/demo/hold";
 import { StakesLadder } from "@/lib/demo/stakes-ladder";
 import { cn } from "@/lib/utils";
+import {
+  subscribeFreeze,
+  subscribePageHide,
+  subscribeVisibilityChange,
+  subscribeVoicePreempt,
+  useSharedMatchMedia,
+} from "@/lib/client/shared-listeners";
 
 /**
  * The live call surface.
@@ -196,15 +202,8 @@ const ERROR_BODY =
 const MOBILE_DEMO_QUERY = "(max-width: 1023px)";
 
 function useIsBelowLg() {
-  return useSyncExternalStore(
-    (onChange) => {
-      const query = window.matchMedia(MOBILE_DEMO_QUERY);
-      query.addEventListener("change", onChange);
-      return () => query.removeEventListener("change", onChange);
-    },
-    () => window.matchMedia(MOBILE_DEMO_QUERY).matches,
-    () => false,
-  );
+  // Shared matchMedia: one cached query + one native change listener per query.
+  return useSharedMatchMedia(MOBILE_DEMO_QUERY, false);
 }
 
 /**
@@ -873,13 +872,14 @@ export function VoiceCall({
       else exitHold();
     };
     const onFreeze = () => enterHold(Date.now());
-    document.addEventListener("visibilitychange", onVisibility);
-    document.addEventListener("freeze", onFreeze);
-    window.addEventListener("pagehide", saveMemory);
+    // Shared fan-out: one native listener per family across voice + jobs.
+    const unVisible = subscribeVisibilityChange(onVisibility);
+    const unFreeze = subscribeFreeze(onFreeze);
+    const unPageHide = subscribePageHide(saveMemory);
     return () => {
-      document.removeEventListener("visibilitychange", onVisibility);
-      document.removeEventListener("freeze", onFreeze);
-      window.removeEventListener("pagehide", saveMemory);
+      unVisible();
+      unFreeze();
+      unPageHide();
     };
   }, [isDemo, enterHold, exitHold, saveMemory]);
 
@@ -1010,6 +1010,7 @@ export function VoiceCall({
 
   // Mutual exclusion with the global copilot: whoever starts ends the other
   // first, so two sessions never hold the mic (and the bill) at once.
+  // Shared preempt fan-out: one native listener for voice-call + copilot.
   useEffect(() => {
     const onPreempt = (event: Event) => {
       const owner = (event as CustomEvent<{ owner?: string }>).detail?.owner;
@@ -1018,8 +1019,7 @@ export function VoiceCall({
         sessionRef.current = null;
       }
     };
-    window.addEventListener("voni:voice-preempt", onPreempt);
-    return () => window.removeEventListener("voni:voice-preempt", onPreempt);
+    return subscribeVoicePreempt(onPreempt);
   }, []);
 
   const start = useCallback(async () => {

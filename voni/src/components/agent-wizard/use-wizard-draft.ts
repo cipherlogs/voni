@@ -1,6 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  createParseCache,
+  parseVersioned,
+  wrapVersioned,
+} from "@/lib/storage/versioned";
 import type { ConversationLanguage } from "@/lib/agents/wizard";
 import {
   CONVERSATION_LANGUAGES,
@@ -75,7 +80,7 @@ function isCachedDraft(value: unknown): value is CachedDraft {
 function readCachedDraft(): CachedDraft | null {
   if (typeof window === "undefined") return null;
   try {
-    return parseWizardDraftCache(window.localStorage.getItem(DRAFT_CACHE_KEY));
+    return cachedWizardParse(window.localStorage.getItem(DRAFT_CACHE_KEY));
   } catch {
     return null;
   }
@@ -84,16 +89,17 @@ function readCachedDraft(): CachedDraft | null {
 /**
  * Pure cache parser (exported for unit tests): corrupt, partial, or
  * foreign-shape payloads are rejected so the wizard falls back to empty.
+ * Accepts the versioned `{version, data}` envelope and migrates legacy bare
+ * `{draft, step}` shapes; future versions fall back safely.
  */
 export function parseWizardDraftCache(raw: string | null): CachedDraft | null {
-  if (!raw) return null;
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    return isCachedDraft(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
+  const parsed = parseVersioned<CachedDraft>(raw, { validate: isCachedDraft });
+  if (!parsed) return null;
+  // Normalize: a missing step restores at the fresh step.
+  return { draft: parsed.draft, step: parsed.step ?? 0 };
 }
+
+const cachedWizardParse = createParseCache(parseWizardDraftCache);
 
 /** Drop the durable draft: call after a successful save or Start over. */
 export function clearWizardDraftCache() {
@@ -162,15 +168,31 @@ export const WIZARD_FRESH_STEP = 0;
  */
 const CONSUMED_JOBS_KEY = "voni:wizard-consumed-jobs";
 
-function readConsumedJobs(): string[] {
-  if (typeof window === "undefined") return [];
+function parseConsumedJobs(raw: string | null): string[] {
+  const validate = (data: unknown): boolean =>
+    Array.isArray(data) && data.every((v) => typeof v === "string");
+  // Legacy bare `["id"]` arrays migrate; versioned `{version, data}` is current.
+  const migrated = parseVersioned<string[]>(raw, { validate });
+  if (migrated) return migrated;
+  // Fall back to the pre-envelope string-filter for partially foreign arrays.
+  if (!raw) return [];
   try {
-    const raw = window.sessionStorage.getItem(CONSUMED_JOBS_KEY);
-    if (!raw) return [];
     const parsed: unknown = JSON.parse(raw);
     return Array.isArray(parsed)
       ? parsed.filter((v): v is string => typeof v === "string")
       : [];
+  } catch {
+    return [];
+  }
+}
+
+const cachedConsumedParse = createParseCache(parseConsumedJobs);
+
+function readConsumedJobs(): string[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.sessionStorage.getItem(CONSUMED_JOBS_KEY);
+    return cachedConsumedParse(raw);
   } catch {
     return [];
   }
@@ -189,7 +211,7 @@ export function markJobConsumed(jobId: string) {
     const next = readConsumedJobs();
     if (!next.includes(jobId)) {
       next.push(jobId);
-      window.sessionStorage.setItem(CONSUMED_JOBS_KEY, JSON.stringify(next));
+      window.sessionStorage.setItem(CONSUMED_JOBS_KEY, wrapVersioned(next));
     }
   } catch {
     // Private-mode writes fail silently; the restore guard just won't fire.
@@ -243,12 +265,13 @@ export function useWizardDraft() {
 
   // Persist every committed state so reload/navigation restores the wizard.
   // Best-effort: quota or private-mode failures never break the wizard.
+  // Versioned + minimized (`{version, data: {draft, step}}` only).
   useEffect(() => {
     if (!cacheHydrated) return;
     try {
       window.localStorage.setItem(
         DRAFT_CACHE_KEY,
-        JSON.stringify({ draft, step }),
+        wrapVersioned({ draft, step }),
       );
     } catch {
       // Ignore write failures; in-memory state stays authoritative.
