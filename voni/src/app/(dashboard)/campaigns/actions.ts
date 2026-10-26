@@ -212,7 +212,6 @@ export async function getCampaign(id: string) {
       status: campaignLeads.status,
       attempts: campaignLeads.attempts,
       lastAttemptAt: campaignLeads.lastAttemptAt,
-      nextAttemptAfter: campaignLeads.nextAttemptAfter,
       lastOutcome: campaignLeads.lastOutcome,
       leadId: leads.id,
       leadName: leads.name,

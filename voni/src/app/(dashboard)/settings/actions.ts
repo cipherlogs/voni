@@ -2,6 +2,7 @@
 
 import { and, eq } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
+import { after } from "next/server";
 import { z } from "zod";
 import { db } from "@/lib/db";
 import {
@@ -305,19 +306,19 @@ const providerConnectionSchema = z.object({
 export async function setProviderConnection(
   formData: FormData,
 ): Promise<SettingsActionState> {
-  const parsed = providerConnectionSchema.safeParse({
-    providerId: formData.get("providerId"),
-    connect: formData.get("connect"),
-  });
-  if (!parsed.success) {
-    return { ok: false, error: "Unknown provider." };
-  }
-  const { providerId, connect } = parsed.data;
-  if (!isProviderId(providerId)) {
-    return { ok: false, error: "Unknown provider." };
-  }
   try {
     const ctx = await requireCtx();
+    const parsed = providerConnectionSchema.safeParse({
+      providerId: formData.get("providerId"),
+      connect: formData.get("connect"),
+    });
+    if (!parsed.success) {
+      return { ok: false, error: "Unknown provider." };
+    }
+    const { providerId, connect } = parsed.data;
+    if (!isProviderId(providerId)) {
+      return { ok: false, error: "Unknown provider." };
+    }
     if (ctx.role !== "owner") {
       throw new Error("Only workspace owners can manage provider connections.");
     }
@@ -358,7 +359,8 @@ export async function setProviderConnection(
         connect === "true" ? "Provider connected." : "Provider disconnected.",
     };
   } catch (error) {
-    console.error("[providers] connection update failed", error);
+    // Post-response: logging must never delay or break the mutation result.
+    after(() => console.error("[providers] connection update failed", error));
     return {
       ok: false,
       error:
@@ -382,15 +384,15 @@ export async function updateCopilotVoicePrefs(
   _previous: SettingsActionState,
   formData: FormData,
 ): Promise<SettingsActionState> {
-  const parsed = copilotVoicePrefsSchema.safeParse({
-    voiceId: formData.get("voiceId"),
-    language: formData.get("language"),
-  });
-  if (!parsed.success) {
-    return { ok: false, error: "Pick a voice and a language from the lists." };
-  }
   try {
     const ctx = await requireCtx();
+    const parsed = copilotVoicePrefsSchema.safeParse({
+      voiceId: formData.get("voiceId"),
+      language: formData.get("language"),
+    });
+    if (!parsed.success) {
+      return { ok: false, error: "Pick a voice and a language from the lists." };
+    }
     await ensurePrefsOwner(ctx.userId);
     const values = parsed.data;
     const now = new Date();
@@ -404,7 +406,8 @@ export async function updateCopilotVoicePrefs(
     revalidatePath("/settings/voice");
     return { ok: true, message: "Voice copilot updated. It applies to your next conversation." };
   } catch (error) {
-    console.error("[voice-prefs] save failed", error);
+    // Post-response: logging must never delay or break the mutation result.
+    after(() => console.error("[voice-prefs] save failed", error));
     return { ok: false, error: "Could not save your voice settings. Check your connection and try again." };
   }
 }
