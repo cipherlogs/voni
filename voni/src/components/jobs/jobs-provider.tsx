@@ -279,6 +279,9 @@ export function JobsProvider({
           ? {
               children: "View",
               onClick: () => {
+                // Best-effort seen-mark: the navigation below is the
+                // user's intent and always proceeds; the Jobs center
+                // stays the source of truth for unread state.
                 void fetch(`/api/jobs/${job.id}`, {
                   method: "POST",
                   headers: { "Content-Type": "application/json" },
@@ -333,6 +336,8 @@ export function JobsProvider({
         !nudgedJobsRef.current.has(job.id)
       ) {
         nudgedJobsRef.current.add(job.id);
+        // Best-effort wake nudge: a proactive poke, not a user mutation —
+        // failure just defers to the next poll, so it stays silent here.
         void fetch(`/api/jobs/${job.id}/wake`, { method: "POST" }).catch(() => undefined);
       }
       if (job.status !== "queued") nudgedJobsRef.current.delete(job.id);
@@ -387,11 +392,27 @@ export function JobsProvider({
   const openJob = useCallback(
     async (job: JobJson) => {
       if (!enabledRef.current) return;
-      await fetch(`/api/jobs/${job.id}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "seen" }),
-      }).catch(() => undefined);
+      // The seen-mark is bookkeeping, but a failure is still feedback: the
+      // row would otherwise keep its unread badge with no explanation.
+      // Navigation (the user's intent) always proceeds to the result
+      // destination below.
+      let failed = false;
+      try {
+        const res = await fetch(`/api/jobs/${job.id}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "seen" }),
+        });
+        failed = !res.ok;
+      } catch {
+        failed = true;
+      }
+      if (failed) {
+        toast.add({
+          type: "error",
+          title: `Opening “${job.title}” did not mark it seen — it may still show as unread.`,
+        });
+      }
       await refresh();
       if (job.targetUrl) router.push(job.targetUrl);
     },
@@ -431,11 +452,25 @@ export function JobsProvider({
   const markSeen = useCallback(
     async (id: string) => {
       if (!enabledRef.current) return;
-      await fetch(`/api/jobs/${id}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "seen" }),
-      }).catch(() => undefined);
+      // Same feedback rule as openJob/mutate: a failed seen-mark toasts so
+      // the unchanged unread badge is explainable.
+      let failed = false;
+      try {
+        const res = await fetch(`/api/jobs/${id}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "seen" }),
+        });
+        failed = !res.ok;
+      } catch {
+        failed = true;
+      }
+      if (failed) {
+        toast.add({
+          type: "error",
+          title: "Marking that job seen did not work — try again.",
+        });
+      }
       await refresh();
     },
     [refresh],
