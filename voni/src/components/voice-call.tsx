@@ -102,6 +102,7 @@ import {
   type HoldSessionStatus,
 } from "@/lib/demo/hold";
 import { StakesLadder } from "@/lib/demo/stakes-ladder";
+import { CALL_GREEN, HANGUP_RED, INLINE_CAP_SECONDS } from "./voice-call-theme";
 import { cn } from "@/lib/utils";
 import {
   subscribeFreeze,
@@ -150,25 +151,13 @@ type Mode =
 
 /**
  * Call = green solid fill, hang up = red solid fill. Universal across every
- * phone, softphone and messaging app (Jakob's Law).
- *
- * The live-call green is scoped (`.voice-call-live-fill` in globals.css —
- * owned by a parallel crew, referenced here, never defined here), never a
- * general token. Fill-only with white text; never body text.
- *
- * Hang-up is spelled out rather than using the `destructive` button variant:
- * this scaffold's `destructive` is a TINT (`bg-destructive/10` with red
- * text), not the solid red fill a hang-up button needs. The solid fill still
- * comes from the `destructive` token (both themes) with white text — no raw
- * red shade and no manual dark-mode overrides.
+ * phone, softphone and messaging app (Jakob's Law). Values live in
+ * `./voice-call-theme` (ticket 05): the landing demo card and the Test
+ * agent dialog paint their chrome without importing this heavy engine, so
+ * the engine loads on demand behind `next/dynamic`. Re-exported here so
+ * existing engine importers keep working unchanged.
  */
-const CALL_GREEN = "voice-call-live-fill";
-export { CALL_GREEN };
-const HANGUP_RED = "bg-destructive text-white hover:bg-destructive/90";
-export { HANGUP_RED };
-
-/** Session caps, in seconds. The server enforces them; the UI only mirrors. */
-export const INLINE_CAP_SECONDS = 180;
+export { CALL_GREEN, HANGUP_RED, INLINE_CAP_SECONDS } from "./voice-call-theme";
 /** Demo: re-check the inbox this often once the email test is invited. */
 const INBOX_POLL_MS = 8000;
 /** The site read's poll: a read takes seconds, not minutes. */

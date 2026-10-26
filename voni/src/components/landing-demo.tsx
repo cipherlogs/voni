@@ -1,6 +1,7 @@
 "use client";
 
-import { VoiceCall } from "@/components/voice-call";
+import dynamic from "next/dynamic";
+import { DemoCallSkeleton } from "@/components/page-skeletons";
 
 /**
  * The public live-demo widget (plan Section E).
@@ -13,7 +14,18 @@ import { VoiceCall } from "@/components/voice-call";
  * the prompt lives in a server-owned stored agent. Nothing reachable from here
  * can make the model do anything but the scenario picked — see
  * `src/app/api/demo/token/route.ts` for the four layers behind that.
+ *
+ * Ticket 05: the Demo call engine (`voice-call`) is a heavy interactive
+ * module, so it loads on demand behind this card. The server still
+ * prerenders the card; the client hydrates it once the engine chunk
+ * arrives, painting DemoCallSkeleton meanwhile. Identical Demo call
+ * behavior after load.
  */
+const VoiceCall = dynamic(
+  () => import("@/components/voice-call").then((mod) => mod.VoiceCall),
+  { loading: () => <DemoCallSkeleton /> },
+);
+
 export function LandingDemo() {
   return <VoiceCall mode={{ kind: "demo" }} />;
 }

@@ -50,14 +50,29 @@ import {
   MessageScrollerViewport,
 } from "@/components/ui/message-scroller";
 import { Progress } from "@/components/ui/progress";
+import dynamic from "next/dynamic";
+import { TestCallSkeleton } from "@/components/page-skeletons";
 import {
-  VoiceCall,
   CALL_GREEN,
   HANGUP_RED,
   INLINE_CAP_SECONDS,
-  type VoiceCallHandle,
-  type VoiceCallStatus,
+} from "@/components/voice-call-theme";
+import type {
+  VoiceCallHandle,
+  VoiceCallStatus,
 } from "@/components/voice-call";
+
+/**
+ * Ticket 05: the Test call engine (`voice-call`) is a heavy interactive
+ * module, so it loads on demand behind this dialog — the engine chunk is
+ * fetched only once the dialog opens (`canTest && open` below), while the
+ * trigger, chrome, and not-ready state stay synchronous. TestCallSkeleton
+ * paints meanwhile; identical Test call behavior after load.
+ */
+const VoiceCall = dynamic(
+  () => import("@/components/voice-call").then((mod) => mod.VoiceCall),
+  { loading: () => <TestCallSkeleton /> },
+);
 import { formatCallStatus } from "@/lib/calls/call-status";
 import type { AgentConfig } from "@/lib/agents/config";
 import { cn } from "@/lib/utils";

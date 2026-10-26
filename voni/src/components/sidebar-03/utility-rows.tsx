@@ -10,7 +10,7 @@ import {
 } from "lucide-react";
 
 import { CommandMenu03 } from "@/components/command-menu-03/command-menu-03";
-import { useCopilot } from "@/components/copilot/copilot-provider";
+import { useCopilot } from "@/components/copilot/copilot-context";
 import { VoiceBars, type VoiceBarsMood } from "@/components/copilot/voice-bars";
 import { useShellAuth } from "@/components/shell-auth";
 import { useJobs } from "@/components/jobs/jobs-provider";

@@ -1,12 +1,11 @@
 import { Suspense } from "react";
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
-import { CopilotShell } from "@/components/copilot/copilot-shell";
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { VoniLogo } from "@/components/voni-logo";
 import { ShellAuthBridge, ShellAuthProvider } from "@/components/shell-auth";
 import { SidebarStateRestore } from "@/components/app-sidebar";
-import { ShellCopilotProvider, ShellJobsProvider, ShellSidebar } from "@/components/shell-frame";
+import { ShellCopilotProvider, ShellCopilotShell, ShellJobsProvider, ShellSidebar } from "@/components/shell-frame";
 import { auth } from "@/lib/auth";
 import { safeNextPath } from "@/lib/auth-redirect";
 import { devBypassEnabled, DEV_BYPASS_USER } from "@/lib/dev-bypass";
@@ -104,7 +103,7 @@ export default function DashboardLayout({
                   {children}
                 </div>
               </ViewTransition>
-              <CopilotShell />
+              <ShellCopilotShell />
             </SidebarInset>
           </ShellCopilotProvider>
         </ShellJobsProvider>
