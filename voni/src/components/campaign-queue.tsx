@@ -8,6 +8,10 @@ import { RotateCcw, Trash2, Users } from "lucide-react";
 import { DataTable } from "@/components/data-table";
 import { StatusDot } from "@/components/status-dot";
 import { consentStatus, queueStatus } from "@/lib/campaigns/status";
+import {
+  selectActionableIds,
+  summarizeQueueSelection,
+} from "@/lib/campaigns/queue-select";
 import { Button } from "@/components/ui/button";
 import {
   Empty,
@@ -17,8 +21,10 @@ import {
   EmptyTitle,
 } from "@/components/ui/empty";
 import { Checkbox } from "@/components/ui/checkbox";
+import { WindowedRows } from "@/components/windowed";
 import { Input } from "@/components/ui/input";
 import { dialOutcomeLabel } from "@/lib/campaigns/outcome-label";
+import { formatAbsoluteCallTime } from "@/lib/calls/absolute-time";
 import {
   Table,
   TableBody,
@@ -60,13 +66,11 @@ function LeadStatus({ status }: { status: string }) {
   return <StatusDot tone={tone}>{label}</StatusDot>;
 }
 
-function formatWhen(value: Date | null) {
-  if (!value) return "—";
-  return new Intl.DateTimeFormat("en-GB", {
-    dateStyle: "medium",
-    timeStyle: "short",
-  }).format(value);
-}
+/**
+ * House absolute-time rendering (same string as the calls index):
+ * the formatter lives at module scope in lib/calls/absolute-time,
+ * so queue rows pay no per-row construction.
+ */
 
 export function CampaignQueue({
   members,
@@ -96,9 +100,11 @@ export function CampaignQueue({
   }, [members, query]);
 
   const selectable = campaignId !== undefined;
-  const allVisibleSelected =
-    visible.length > 0 && visible.every((member) => selected.has(member.id));
-  const someVisibleSelected = visible.some((member) => selected.has(member.id));
+  // One pass answers both selection questions (lib/campaigns/
+  // queue-select): select-all and the indeterminate state resolve
+  // together with Set membership instead of separate every/some walks.
+  const { allSelected: allVisibleSelected, someSelected: someVisibleSelected } =
+    summarizeQueueSelection(visible, selected);
 
   const toggle = (id: string, checked: boolean) =>
     setSelected((prev) => {
@@ -118,8 +124,10 @@ export function CampaignQueue({
       return next;
     });
 
+  // Single pass with Set membership: the bulk ids collect in the same
+  // loop that tests membership, instead of filter-then-map.
   const actionable = useMemo(
-    () => visible.filter((member) => selected.has(member.id)).map((m) => m.id),
+    () => selectActionableIds(visible, selected),
     [visible, selected],
   );
 
@@ -256,7 +264,11 @@ export function CampaignQueue({
               </TableRow>
             </TableHeader>
             <TableBody>
-              {visible.map((member) => {
+              {/* Bounded window (ticket 09 V1): the same mapped rows in
+                  the same order — the island only decides how many
+                  mount. 8 columns with the select checkbox, 7 without. */}
+              <WindowedRows
+                rows={visible.map((member) => {
                 const consent = consentStatus(member.consentStatus);
                 return (
                   <TableRow key={member.id} data-copilot-key={member.id}>
@@ -299,7 +311,7 @@ export function CampaignQueue({
                       {member.attempts} / {maxAttempts}
                     </TableCell>
                     <TableCell className="text-muted-foreground hidden text-sm lg:table-cell">
-                      {formatWhen(member.lastAttemptAt)}
+                      {formatAbsoluteCallTime(member.lastAttemptAt)}
                     </TableCell>
                     <TableCell className="text-muted-foreground hidden text-sm md:table-cell">
                       {dialOutcomeLabel(member.lastOutcome)}
@@ -307,6 +319,8 @@ export function CampaignQueue({
                   </TableRow>
                 );
               })}
+                tableColumns={selectable ? 8 : 7}
+              />
             </TableBody>
           </Table>
         )}

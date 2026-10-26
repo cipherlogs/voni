@@ -27,6 +27,8 @@ import {
 import { CallDetailSkeleton } from "@/components/page-skeletons";
 import type { ReactNode } from "react";
 import { callDuration, relativeCallTime } from "@/lib/calls/format";
+import { formatAbsoluteCallTime } from "@/lib/calls/absolute-time";
+import { WindowedRows } from "@/components/windowed";
 import { callDetail } from "@/lib/copilot/detail-data";
 import { db } from "@/lib/db";
 import {
@@ -40,13 +42,11 @@ import {
 } from "@/lib/db/schema";
 import { pipelineStateLabel } from "@/lib/leads/stage-filter";
 
-function formatWhen(value: Date | null) {
-  if (!value) return "—";
-  return new Intl.DateTimeFormat("en-GB", {
-    dateStyle: "medium",
-    timeStyle: "short",
-  }).format(value);
-}
+/**
+ * House absolute-time rendering (same string as the calls index):
+ * the formatter lives at module scope in lib/calls/absolute-time,
+ * so detail facts pay no per-row construction.
+ */
 
 /**
  * House link treatment (same string as the campaign page and the
@@ -211,11 +211,11 @@ async function CallDetail({
               {directionLabel}
             </Fact>
             <Fact label="Started">
-              {formatWhen(call.startedAt)}
+              {formatAbsoluteCallTime(call.startedAt)}
             </Fact>
             <Fact label="Ended">
               {call.endedAt
-                ? formatWhen(call.endedAt)
+                ? formatAbsoluteCallTime(call.endedAt)
                 : call.startedAt
                   ? "Ongoing"
                   : "—"}
@@ -300,7 +300,10 @@ async function CallDetail({
             </Empty>
           ) : (
             <ul className="flex flex-col gap-4">
-              {spoken.map((turn) => (
+              {/* Bounded window (ticket 09 V1): the same turns in the same
+                  order — the island only decides how many mount. */}
+              <WindowedRows
+                rows={spoken.map((turn) => (
                 <li
                   key={turn.id}
                   className="flex flex-col gap-1"
@@ -321,6 +324,7 @@ async function CallDetail({
                   <p className="text-sm">{turn.content}</p>
                 </li>
               ))}
+              />
             </ul>
           )}
       </FormSection>
@@ -351,7 +355,10 @@ async function CallDetail({
             </Empty>
           ) : (
             <ul className="flex flex-col gap-3">
-              {tools.map((tool) => (
+              {/* Bounded window (ticket 09 V1): the same actions in the
+                  same order — the island only decides how many mount. */}
+              <WindowedRows
+                rows={tools.map((tool) => (
                 <li
                   key={tool.id}
                   className="flex flex-col gap-1"
@@ -398,6 +405,7 @@ async function CallDetail({
                   ) : null}
                 </li>
               ))}
+              />
             </ul>
           )}
       </FormSection>
