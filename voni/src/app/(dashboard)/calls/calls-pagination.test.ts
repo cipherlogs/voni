@@ -43,7 +43,11 @@ test("calls result count renders on every page, filtered or not", () => {
 
 test("absolute start time reads without hover and joins link text", () => {
   assert.ok(pageSource.includes("Started"), "Started column header stays");
-  assert.ok(pageSource.includes("absoluteCallTime"), "absolute time rendered as text");
+  assert.ok(pageSource.includes("formatAbsoluteCallTime"), "absolute time rendered as text");
+  assert.ok(
+    !pageSource.includes("new Intl.DateTimeFormat"),
+    "no per-row formatter construction (ticket 09 V3)",
+  );
   assert.ok(pageSource.includes("started ${absolute}"), "absolute time folded into link text");
   assert.ok(
     !pageSource.includes("toISOString()"),

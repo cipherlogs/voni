@@ -33,6 +33,7 @@ import { dialOutcomeLabel } from "@/lib/campaigns/outcome-label";
 import { pipelineStateLabel } from "@/lib/leads/stage-filter";
 import { Fragment } from "react";
 import { callDuration, relativeCallTime } from "@/lib/calls/format";
+import { WindowedRows } from "@/components/windowed";
 import { leadDetail } from "@/lib/copilot/detail-data";
 import { db } from "@/lib/db";
 import {
@@ -326,7 +327,10 @@ async function LeadDetail({
             </Empty>
           ) : (
             <ul className="divide-y">
-              {recent.map((message) => {
+              {/* Bounded window (ticket 09 V1): the same messages in the
+                  same order — the island only decides how many mount. */}
+              <WindowedRows
+                rows={recent.map((message) => {
                 const speaker =
                   message.channel === "call"
                     ? message.direction === "inbound"
@@ -361,6 +365,7 @@ async function LeadDetail({
                   </li>
                 );
               })}
+              />
             </ul>
           )}
         </DataTable>
