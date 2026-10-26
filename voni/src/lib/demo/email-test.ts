@@ -320,17 +320,58 @@ export function checkResultFromData(data: Record<string, unknown>): CheckEmailRe
 /** Where the browser keeps its signed Test-tag token (a day; the server re-checks expiry). */
 export const TAG_TOKEN_KEY = "voni:test-tag";
 
+function isTagToken(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
+}
+
+let lastTagRaw: string | null | undefined;
+let lastTagValue: string | undefined;
+let hasTagCache = false;
+
+/** Versioned read with legacy fallback + in-scope repeat cache. */
 export function loadTagToken(): string | undefined {
   try {
-    return localStorage.getItem(TAG_TOKEN_KEY) ?? undefined;
+    const raw = localStorage.getItem(TAG_TOKEN_KEY);
+    if (hasTagCache && raw === lastTagRaw) return lastTagValue;
+    lastTagRaw = raw;
+    hasTagCache = true;
+    if (!raw) {
+      lastTagValue = undefined;
+      return undefined;
+    }
+    // Current envelope `{version, data: token}` first; legacy bare token second.
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (
+        typeof parsed === "object" &&
+        parsed !== null &&
+        typeof (parsed as { version?: unknown }).version === "number" &&
+        isTagToken((parsed as { data?: unknown }).data)
+      ) {
+        lastTagValue = (parsed as { data: string }).data;
+        return lastTagValue;
+      }
+      // A JSON-quoted bare token (older writer) is still a token.
+      if (isTagToken(parsed)) {
+        lastTagValue = parsed;
+        return lastTagValue;
+      }
+    } catch {
+      // Not JSON: fall through to the legacy raw-token path below.
+    }
+    lastTagValue = isTagToken(raw) ? raw : undefined;
+    return lastTagValue;
   } catch {
     return undefined;
   }
 }
 
 export function saveTagToken(token: string): void {
+  lastTagRaw = JSON.stringify({ version: 1, data: token });
+  lastTagValue = token;
+  hasTagCache = true;
   try {
-    localStorage.setItem(TAG_TOKEN_KEY, token);
+    localStorage.setItem(TAG_TOKEN_KEY, lastTagRaw);
   } catch {
     // Private mode or blocked storage: a callback just gets a fresh tag.
   }

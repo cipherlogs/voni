@@ -7,6 +7,7 @@
  */
 
 import { useCallback, useEffect, useState, type ComponentType } from "react";
+import { subscribeKeyDown } from "@/lib/client/shared-listeners";
 import { useRouter } from "next/navigation";
 import {
   Bot,
@@ -114,8 +115,8 @@ export function CommandMenu03() {
       setOpen((current) => !current);
     };
 
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
+    // Shared keydown fan-out: one native listener for menu + sidebar.
+    return subscribeKeyDown(onKeyDown);
   }, []);
 
   const navigation: CommandItemDefinition[] = [

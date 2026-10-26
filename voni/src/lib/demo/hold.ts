@@ -165,9 +165,31 @@ function storage(): StorageLike | null {
   }
 }
 
+function isCallMemorySnapshot(value: unknown): value is CallMemorySnapshot {
+  if (typeof value !== "object" || value === null) return false;
+  const v = value as Record<string, unknown>;
+  return typeof v.savedAt === "number" && typeof v.voiceId === "string" && Array.isArray(v.turns);
+}
+
+function unwrapCallMemory(raw: string): CallMemorySnapshot | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  // Current envelope `{version, data}` first; legacy bare snapshots migrate.
+  if (typeof parsed === "object" && parsed !== null && typeof (parsed as { version?: unknown }).version === "number") {
+    const data = (parsed as { data?: unknown }).data;
+    return isCallMemorySnapshot(data) ? (data as CallMemorySnapshot) : null;
+  }
+  return isCallMemorySnapshot(parsed) ? (parsed as CallMemorySnapshot) : null;
+}
+
 export function saveCallMemory(snapshot: CallMemorySnapshot, store = storage()): void {
   try {
-    store?.setItem(CALL_MEMORY_KEY, JSON.stringify(snapshot));
+    // Versioned + minimized: only the snapshot fields inside `{version, data}`.
+    store?.setItem(CALL_MEMORY_KEY, JSON.stringify({ version: 1, data: snapshot }));
   } catch {
     // Quota or privacy mode: the call goes on without a reload safety net.
   }
@@ -190,17 +212,14 @@ export function loadCallMemory(now: number, store = storage()): CallMemorySnapsh
     return null;
   }
   if (!raw) return null;
-  try {
-    const snap = JSON.parse(raw) as CallMemorySnapshot;
+  const snap = unwrapCallMemory(raw);
+  if (snap) {
     const fresh =
-      typeof snap.savedAt === "number" &&
       now - snap.savedAt >= 0 &&
       now - snap.savedAt < HOLD_CAP_S * 1000 &&
       typeof snap.voiceId === "string" &&
       Array.isArray(snap.turns);
     if (fresh) return snap;
-  } catch {
-    // Corrupt entry: fall through and clear it.
   }
   clearCallMemory(store);
   return null;
