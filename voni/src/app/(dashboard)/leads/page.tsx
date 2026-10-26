@@ -8,6 +8,7 @@ import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { FilterChips } from "@/components/filter-chips";
 import { LeadsSelectAll, LeadsSelectCell, LeadsSelection } from "@/components/leads-bulk-bar";
+import { WindowedRows } from "@/components/windowed";
 import { PageHeading } from "@/components/wizard/form-layout";
 import {
   Table,
@@ -201,7 +202,10 @@ async function LeadsRows({
             </TableCell>
           </TableRow>
         ) : (
-          rows.map((lead) => {
+          // Bounded window (ticket 09 V1): the same mapped rows in the
+          // same order — the island only decides how many mount.
+          <WindowedRows
+            rows={rows.map((lead) => {
             const consent = consentStatus(lead.consentStatus);
             const stageLabel = pipelineStateLabel(lead.pipelineState);
             return (
@@ -244,7 +248,9 @@ async function LeadsRows({
               </TableCell>
             </TableRow>
             );
-          })
+          })}
+              tableColumns={LEAD_TABLE_COLUMNS}
+            />
         )}
       </TableBody>
     </>

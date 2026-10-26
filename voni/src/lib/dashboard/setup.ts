@@ -62,3 +62,30 @@ export function getDashboardSetupSteps(
     },
   ];
 }
+
+/**
+ * First-run brief numbers in one pass (ticket 09 J1).
+ *
+ * The dashboard brief used to walk the three setup steps twice —
+ * `.filter(completed).length` for the count plus `.find(!completed)`
+ * for the next open step. One loop answers both; the "done" fallback
+ * keeps the brief's wording when every step completes.
+ */
+export function summarizeSetupSteps(steps: DashboardSetupStep[]): {
+  completed: number;
+  total: number;
+  nextIncompleteTitle: string;
+} {
+  let completed = 0;
+  let nextIncompleteTitle = "done";
+  let seenIncomplete = false;
+  for (const step of steps) {
+    if (step.completed) {
+      completed += 1;
+    } else if (!seenIncomplete) {
+      seenIncomplete = true;
+      nextIncompleteTitle = step.title;
+    }
+  }
+  return { completed, total: steps.length, nextIncompleteTitle };
+}

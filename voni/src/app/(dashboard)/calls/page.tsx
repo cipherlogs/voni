@@ -23,12 +23,14 @@ import {
 } from "@/components/ui/empty";
 import { RouteBrief } from "@/components/copilot/route-brief";
 import { FilterChips } from "@/components/filter-chips";
+import { WindowedRows } from "@/components/windowed";
 import { listCalls } from "@/lib/copilot/detail-data";
 import {
   callOutcomeLabel,
   normalizeCallOutcome,
 } from "@/lib/calls/outcome-filter";
 import { callDuration, relativeCallTime } from "@/lib/calls/format";
+import { formatAbsoluteCallTime } from "@/lib/calls/absolute-time";
 
 const CALLS_PAGE_SIZE = 20;
 const CALL_TABLE_COLUMNS = 4;
@@ -75,18 +77,14 @@ function callsPageHref(
 }
 
 /**
- * Absolute start time for the Started column's second line. Local to this
- * server component (not in lib/calls/format.ts): that module must stay
- * arithmetic-only so SSR and client render agree — an Intl string rendered
- * here comes from the server payload, never recomputed on the client.
+ * Absolute start time for the Started column's second line. The
+ * formatter lives at module scope in lib/calls/absolute-time (one
+ * construction per process, not per row per render); this file keeps
+ * only the reference. That module stays separate from
+ * lib/calls/format.ts: format.ts must stay arithmetic-only so SSR and
+ * client render agree — an Intl string rendered here comes from the
+ * server payload, never recomputed on the client.
  */
-function absoluteCallTime(value: Date | null): string {
-  if (!value) return "—";
-  return new Intl.DateTimeFormat("en-GB", {
-    dateStyle: "medium",
-    timeStyle: "short",
-  }).format(value);
-}
 
 /**
  * RouteBrief renders nothing but must not sit inside a <table>: React
@@ -217,11 +215,14 @@ async function CallsRows({
       ) : (
         <>
           <TableBody>
-            {rows.map((call) => {
+            {/* Bounded window (ticket 09 V1): the same mapped rows in the
+                same order — the island only decides how many mount. */}
+            <WindowedRows
+              rows={rows.map((call) => {
               const label = call.name ?? call.phone;
               const directionLabel =
                 call.direction === "inbound" ? "Inbound" : "Outbound";
-              const absolute = absoluteCallTime(call.startedAt);
+              const absolute = formatAbsoluteCallTime(call.startedAt);
               return (
                 <TableRow key={call.id}>
                   <TableCell>
@@ -259,6 +260,8 @@ async function CallsRows({
                 </TableRow>
               );
             })}
+              tableColumns={CALL_TABLE_COLUMNS}
+            />
           </TableBody>
           {safePage > 1 || hasNext ? (
             <TableFooter>
