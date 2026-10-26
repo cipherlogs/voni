@@ -28,6 +28,8 @@ import { shouldSuppressJobToast, jobErrorCopy, BACKGROUND_AFTER_MS } from "@/lib
 import { UnsavedPill } from "@/components/unsaved-pill";
 import { GenerationRetryCard } from "@/components/generation-retry-card";
 import { retryAgentDeploymentAction, updateAgentAction } from "../actions";
+import { parseVersioned, wrapVersioned } from "@/lib/storage/versioned";
+import { subscribeBeforeUnload } from "@/lib/client/shared-listeners";
 import { AgentDeleteButton } from "../delete-agent-button";
 
 export type DeploymentState = "draft" | "queued" | "deploying" | "ready" | "failed" | "cancelled";
@@ -40,20 +42,21 @@ type EditDraftSnapshot = { name: string; config: AgentConfig };
 /**
  * Pure snapshot parser (same shape as parseWizardDraftCache): corrupt,
  * partial, or foreign-shape payloads are rejected so the editor falls back to
- * the server state.
+ * the server state. Accepts the versioned `{version, data}` envelope and
+ * migrates legacy bare `{name, config}` shapes; future versions fall back
+ * safely instead of restoring unknown bytes.
  */
 export function parseEditDraftCache(raw: string | null): EditDraftSnapshot | null {
-  if (!raw) return null;
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    if (typeof parsed !== "object" || parsed === null) return null;
-    const v = parsed as Record<string, unknown>;
-    if (typeof v.name !== "string") return null;
-    if (typeof v.config !== "object" || v.config === null) return null;
-    return { name: v.name, config: v.config as AgentConfig };
-  } catch {
-    return null;
-  }
+  const validate = (data: unknown): boolean => {
+    if (typeof data !== "object" || data === null) return false;
+    const v = data as Record<string, unknown>;
+    if (typeof v.name !== "string") return false;
+    if (typeof v.config !== "object" || v.config === null) return false;
+    return true;
+  };
+  const parsed = parseVersioned<EditDraftSnapshot>(raw, { validate });
+  if (!parsed) return null;
+  return { name: parsed.name, config: parsed.config as AgentConfig };
 }
 
 function readEditDraft(agentId: string): EditDraftSnapshot | null {
@@ -172,6 +175,7 @@ export function EditAgent(props: {
 
   // Persist every unsaved edit so reload/navigation restores the editor.
   // Best-effort: quota or private-mode failures never break the form.
+  // Versioned + minimized (`{version, data}` with only name/config).
   useEffect(() => {
     if (typeof window === "undefined") return;
     try {
@@ -181,7 +185,7 @@ export function EditAgent(props: {
       }
       window.localStorage.setItem(
         editDraftKey(id),
-        JSON.stringify({ name: currentName, config: current }),
+        wrapVersioned({ name: currentName, config: current }),
       );
     } catch {
       // Ignore write failures; in-memory state stays authoritative.
@@ -190,14 +194,14 @@ export function EditAgent(props: {
 
   // Unsaved edits survive reload now; still warn on reload/close while dirty.
   // Scoped to this editor on purpose — the creation wizard owns its own
-  // navigation handling and shares the form component below.
+  // navigation handling and shares the form component below. Shared
+  // beforeunload fan-out: one native listener for all dirty editors.
   useEffect(() => {
     if (!isDirty) return;
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
       e.preventDefault();
     };
-    window.addEventListener("beforeunload", onBeforeUnload);
-    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+    return subscribeBeforeUnload(onBeforeUnload);
   }, [isDirty]);
   const [deployState, setDeployState] = useState<DeploymentState>(() =>
     coerceDeploymentState(deploymentStatus),

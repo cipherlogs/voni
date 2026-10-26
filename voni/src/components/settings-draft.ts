@@ -1,6 +1,12 @@
 "use client";
 
 import { useEffect } from "react";
+import {
+  createParseCache,
+  parseVersioned,
+  wrapVersioned,
+} from "@/lib/storage/versioned";
+import { subscribeBeforeUnload } from "@/lib/client/shared-listeners";
 
 export type SettingsDraftSection = "voice" | "workspace";
 
@@ -43,7 +49,8 @@ export function isWorkspaceDirty(current: WorkspaceDraft, saved: WorkspaceDraft)
  * Warn on reload/close while dirty (ticket 03, edit-agent precedent).
  * SPA navigation across the route split is covered by draft retention in
  * the owning form — this guard covers the browser-level leave path that
- * retention cannot.
+ * retention cannot. The native `beforeunload` listener lives in the shared
+ * registry (one listener per family); this hook only subscribes to it.
  */
 export function useBeforeUnloadGuard(active: boolean): void {
   useEffect(() => {
@@ -54,21 +61,38 @@ export function useBeforeUnloadGuard(active: boolean): void {
       e.preventDefault();
       e.returnValue = "";
     };
-    window.addEventListener("beforeunload", onBeforeUnload);
-    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+    return subscribeBeforeUnload(onBeforeUnload);
   }, [active]);
+}
+
+function isDraftObject(value: unknown): boolean {
+  return typeof value === "object" && value !== null;
+}
+
+const draftParseCaches = new Map<string, (raw: string | null) => unknown>();
+
+function cachedDraftParser<T>(key: string): (raw: string | null) => T | null {
+  let cached = draftParseCaches.get(key);
+  if (!cached) {
+    cached = createParseCache((raw: string | null) =>
+      parseVersioned<T>(raw, { validate: isDraftObject }),
+    );
+    draftParseCaches.set(key, cached);
+  }
+  return cached as (raw: string | null) => T | null;
 }
 
 /**
  * Read a retained draft. Best-effort: private-mode/quota failures and
  * corrupt JSON read as no draft — the server props stay authoritative.
+ * Accepts the versioned `{version, data}` envelope and migrates legacy bare
+ * shapes; repeated reads of an unchanged key skip re-parsing.
  */
 export function readSettingsDraft<T>(key: string): T | null {
   if (typeof window === "undefined") return null;
   try {
     const raw = window.localStorage.getItem(key);
-    if (!raw) return null;
-    return JSON.parse(raw) as T;
+    return cachedDraftParser<T>(key)(raw);
   } catch {
     return null;
   }
@@ -78,12 +102,13 @@ export function readSettingsDraft<T>(key: string): T | null {
  * Retain a dirty draft so navigating to another section and back restores
  * the unfinished edit; clearing (null) drops the key so a saved form never
  * resurrects stale inputs. Best-effort writes — failures never break typing.
+ * Writes are versioned + minimized (`{version, data}` only).
  */
 export function writeSettingsDraft<T>(key: string, value: T | null): void {
   if (typeof window === "undefined") return;
   try {
     if (value === null) window.localStorage.removeItem(key);
-    else window.localStorage.setItem(key, JSON.stringify(value));
+    else window.localStorage.setItem(key, wrapVersioned(value));
   } catch {
     // Ignore write failures; in-memory state stays authoritative.
   }

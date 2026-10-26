@@ -46,55 +46,64 @@ export async function getDashboardSummary(): Promise<DashboardSummary> {
   const ctx = await requireCtxOrRedirect("/dashboard");
   const org = ctx.organizationId;
 
-  const [worked] = await db
-    .select({ value: sql<number>`count(*)::int` })
-    .from(leads)
-    .where(
-      and(eq(leads.organizationId, org), workedLeadExists(leads.id)),
-    );
-
-  const [connected] = await db
-    .select({ value: sql<number>`count(*)::int` })
-    .from(calls)
-    .innerJoin(leads, eq(calls.leadId, leads.id))
-    .where(
-      and(eq(leads.organizationId, org), callConnected()),
-    );
-
-  const [booked] = await db
-    .select({ value: sql<number>`count(*)::int` })
-    .from(leads)
-    .where(
-      and(eq(leads.organizationId, org), liveAppointmentExists(leads.id)),
-    );
-
-  const [handoff] = await db
-    .select({ value: sql<number>`count(*)::int` })
-    .from(leads)
-    .where(
-      and(
-        eq(leads.organizationId, org),
-        latestBlockersNonEmpty(leads.id),
+  const [
+    [worked],
+    [connected],
+    [booked],
+    [handoff],
+    stageRows,
+    emptyCampaigns,
+  ] = await Promise.all([
+    db
+      .select({ value: sql<number>`count(*)::int` })
+      .from(leads)
+      .where(
+        and(eq(leads.organizationId, org), workedLeadExists(leads.id)),
       ),
-    );
 
-  const stageRows = await db
-    .select({ stage: leads.pipelineState, value: count() })
-    .from(leads)
-    .where(eq(leads.organizationId, org))
-    .groupBy(leads.pipelineState);
+    db
+      .select({ value: sql<number>`count(*)::int` })
+      .from(calls)
+      .innerJoin(leads, eq(calls.leadId, leads.id))
+      .where(
+        and(eq(leads.organizationId, org), callConnected()),
+      ),
 
-  const emptyCampaigns = await db
-    .select({ id: campaigns.id, name: campaigns.name })
-    .from(campaigns)
-    .leftJoin(
-      campaignLeads,
-      eq(campaignLeads.campaignId, campaigns.id),
-    )
-    .where(eq(campaigns.organizationId, org))
-    .groupBy(campaigns.id, campaigns.name)
-    .having(sql`count(${campaignLeads.id}) = 0`)
-    .limit(3);
+    db
+      .select({ value: sql<number>`count(*)::int` })
+      .from(leads)
+      .where(
+        and(eq(leads.organizationId, org), liveAppointmentExists(leads.id)),
+      ),
+
+    db
+      .select({ value: sql<number>`count(*)::int` })
+      .from(leads)
+      .where(
+        and(
+          eq(leads.organizationId, org),
+          latestBlockersNonEmpty(leads.id),
+        ),
+      ),
+
+    db
+      .select({ stage: leads.pipelineState, value: count() })
+      .from(leads)
+      .where(eq(leads.organizationId, org))
+      .groupBy(leads.pipelineState),
+
+    db
+      .select({ id: campaigns.id, name: campaigns.name })
+      .from(campaigns)
+      .leftJoin(
+        campaignLeads,
+        eq(campaignLeads.campaignId, campaigns.id),
+      )
+      .where(eq(campaigns.organizationId, org))
+      .groupBy(campaigns.id, campaigns.name)
+      .having(sql`count(${campaignLeads.id}) = 0`)
+      .limit(3),
+  ]);
 
   const [[createdAgent], [importedLead], [activatedCampaign]] =
     await Promise.all([
