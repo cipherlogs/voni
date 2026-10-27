@@ -57,8 +57,8 @@ test("shell preserves the sidebar-03 idiom with resolver, ordering, and collapse
   assert.match(frame, /JobsProvider enabled=\{enabled\}/, "jobs gate stays");
   assert.match(
     frame,
-    /CopilotProvider enabled=\{enabled\}/,
-    "voice gate stays",
+    /CopilotEngineBoot enabled=\{enabled\} platformAdmin=\{platformAdmin\}/,
+    "voice gate stays on the synchronous boundary",
   );
 
   const entry = readRepo("components/app-sidebar.tsx");
