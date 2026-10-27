@@ -223,7 +223,12 @@ test("jobs status lives only in the utility row, nav row removed", () => {
   // marking seen on open so unread does not stick without the bell.
   assert.match(utility, /useJobs/);
   assert.match(utility, /markSeen/);
-  assert.match(utility, /View background jobs/);
+  // Quiet-link copy lives in the tested jobs helper (ticket 08).
+  assert.match(utility, /getSidebarJobsText/);
+  assert.match(
+    source("../lib/jobs/ui-helpers.ts"),
+    /View background jobs/,
+  );
   assert.match(utility, /getJobProgressPercent/);
   assert.match(utility, /group-data-\[collapsible=icon\]:hidden/);
 });

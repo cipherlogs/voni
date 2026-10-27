@@ -31,7 +31,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatCallStatus } from "@/lib/calls/call-status";
-import { useCopilot, type CopilotStatus } from "./copilot-provider";
+import { useCopilot, type CopilotStatus } from "./copilot-context";
 
 const STATUS_TEXT: Record<CopilotStatus, string> = {
   idle: "Voice copilot is off.",

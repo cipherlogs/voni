@@ -20,7 +20,7 @@ import { REAL_ESTATE_TEMPLATE, type AgentConfig } from "@/lib/agents/config";
 import type { JobJson } from "@/lib/jobs/serialize";
 import { useOptimisticJob } from "@/components/jobs/use-optimistic-job";
 import { useJobs } from "@/components/jobs/jobs-provider";
-import { useCopilot } from "@/components/copilot/copilot-provider";
+import { useCopilot } from "@/components/copilot/copilot-context";
 import type {
   BusContext,
   BusToolResult,

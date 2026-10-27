@@ -7,7 +7,7 @@
 "use client";
 
 import { useMemo } from "react";
-import { useCopilotRoute } from "./copilot-provider";
+import { useCopilotRoute } from "./copilot-context";
 
 export function RouteBrief({ route, brief }: { route: string; brief: string }) {
   const config = useMemo(

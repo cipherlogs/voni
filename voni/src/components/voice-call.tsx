@@ -1,13 +1,15 @@
 "use client";
 
 import {
+  memo,
   useCallback,
+  useDeferredValue,
   useEffect,
   useImperativeHandle,
   useMemo,
   useRef,
   useState,
-  useSyncExternalStore,
+  useTransition,
 } from "react";
 import {
   ChevronDown,
@@ -57,7 +59,10 @@ import type { AgentConfig } from "@/lib/agents/config";
 import { buildAgentKeyterms, buildAgentTranscriptionPrompt } from "@/lib/voice/transcription";
 import { CallSounds, tickAllowed } from "@/lib/voice/call-sounds";
 import { compileVoiceTools } from "@/lib/tools/definitions";
-import { formatCallStatus } from "@/lib/calls/call-status";
+import {
+  getDemoCallStatus,
+  getVoiceStatusText,
+} from "@/lib/voice/call-status-view";
 import { ACCENT_FLAG, getVoice, voiceLabel, voicePlaybackGain } from "@/lib/agents/voices";
 import {
   DEMO_VOICE_IDS,
@@ -103,7 +108,15 @@ import {
   type HoldSessionStatus,
 } from "@/lib/demo/hold";
 import { StakesLadder } from "@/lib/demo/stakes-ladder";
+import { CALL_GREEN, HANGUP_RED, INLINE_CAP_SECONDS } from "./voice-call-theme";
 import { cn } from "@/lib/utils";
+import {
+  subscribeFreeze,
+  subscribePageHide,
+  subscribeVisibilityChange,
+  subscribeVoicePreempt,
+  useSharedMatchMedia,
+} from "@/lib/client/shared-listeners";
 
 /**
  * The live call surface.
@@ -144,25 +157,13 @@ type Mode =
 
 /**
  * Call = green solid fill, hang up = red solid fill. Universal across every
- * phone, softphone and messaging app (Jakob's Law).
- *
- * The live-call green is scoped (`.voice-call-live-fill` in globals.css —
- * owned by a parallel crew, referenced here, never defined here), never a
- * general token. Fill-only with white text; never body text.
- *
- * Hang-up is spelled out rather than using the `destructive` button variant:
- * this scaffold's `destructive` is a TINT (`bg-destructive/10` with red
- * text), not the solid red fill a hang-up button needs. The solid fill still
- * comes from the `destructive` token (both themes) with white text — no raw
- * red shade and no manual dark-mode overrides.
+ * phone, softphone and messaging app (Jakob's Law). Values live in
+ * `./voice-call-theme` (ticket 05): the landing demo card and the Test
+ * agent dialog paint their chrome without importing this heavy engine, so
+ * the engine loads on demand behind `next/dynamic`. Re-exported here so
+ * existing engine importers keep working unchanged.
  */
-const CALL_GREEN = "voice-call-live-fill";
-export { CALL_GREEN };
-const HANGUP_RED = "bg-destructive text-white hover:bg-destructive/90";
-export { HANGUP_RED };
-
-/** Session caps, in seconds. The server enforces them; the UI only mirrors. */
-export const INLINE_CAP_SECONDS = 180;
+export { CALL_GREEN, HANGUP_RED, INLINE_CAP_SECONDS } from "./voice-call-theme";
 /** Demo: re-check the inbox this often once the email test is invited. */
 const INBOX_POLL_MS = 8000;
 /** The site read's poll: a read takes seconds, not minutes. */
@@ -196,15 +197,8 @@ const ERROR_BODY =
 const MOBILE_DEMO_QUERY = "(max-width: 1023px)";
 
 function useIsBelowLg() {
-  return useSyncExternalStore(
-    (onChange) => {
-      const query = window.matchMedia(MOBILE_DEMO_QUERY);
-      query.addEventListener("change", onChange);
-      return () => query.removeEventListener("change", onChange);
-    },
-    () => window.matchMedia(MOBILE_DEMO_QUERY).matches,
-    () => false,
-  );
+  // Shared matchMedia: one cached query + one native change listener per query.
+  return useSharedMatchMedia(MOBILE_DEMO_QUERY, false);
 }
 
 /**
@@ -314,7 +308,7 @@ function DemoTranscript({
                     "overheard" in line && line.overheard && "italic",
                   )}
                 >
-                  {"live" in line ? <StreamingText text={line.text} /> : line.text}
+                  {"live" in line ? <MemoStreamingText text={line.text} /> : line.text}
                 </span>
               </MessageScrollerItem>
             ))}
@@ -326,6 +320,13 @@ function DemoTranscript({
     </MessageScrollerProvider>
   );
 }
+
+// Memoized transcript leaves (ticket 08): VoiceCall re-renders every
+// second for the call timer, but this subtree only commits when its own
+// props change — turns only on finals, caption on partials, footer only in
+// the last-30s countdown. The ticking second alone never re-renders it.
+const MemoDemoTranscript = memo(DemoTranscript);
+const MemoStreamingText = memo(StreamingText);
 
 export type VoiceCallStatus = {
   state: VoiceState;
@@ -375,6 +376,13 @@ export function VoiceCall({
   ref?: React.Ref<VoiceCallHandle>;
 }) {
   const isDemo = mode.kind === "demo";
+  // Narrowed effect/callback dependency (ticket 08): the `mode` object
+  // identity changes per parent render, but only its kind (and, inline, its
+  // config/agent) drives behavior — depend on the stable scalars, never the
+  // object, so hold wiring and start stop re-subscribing every render.
+  const modeKind = mode.kind;
+  const inlineConfig = mode.kind === "inline" ? mode.config : null;
+  const inlineAgentId = mode.kind === "inline" ? mode.agentId : undefined;
   const isBelowLg = useIsBelowLg();
   const mobileTriggerRef = useRef<HTMLButtonElement | null>(null);
 
@@ -519,33 +527,29 @@ export function VoiceCall({
   const turnsRef = useRef<Transcript[]>([]);
   const stateRef = useRef<VoiceState>(state);
   const mutedRef = useRef(muted);
-  /** Mirrors `start` (defined below) so hold exit can rejoin without
-      re-subscribing listeners every render. */
+  /**
+   * Latest-start holder (ticket 08): hold exit and error rejoins must call
+   * the current start without re-subscribing their effects every render.
+   * Refreshed in the imperative-handle creator below, which runs at commit
+   * (never during render, never in a dedicated sync effect).
+   */
   const startRef = useRef<() => void>(() => {});
-  useEffect(() => {
-    turnsRef.current = turns;
-  }, [turns]);
-  useEffect(() => {
-    stateRef.current = state;
-  }, [state]);
-  useEffect(() => {
-    mutedRef.current = muted;
-  }, [muted]);
 
   // Synchronous pending mirror for the host footer: the onPendingChange
   // effect below only runs after paint, so the click handler also notifies
   // directly — the footer's Calling… lands in the same commit as the press,
   // before the token/mic/audio awaits resolve. The effect stays as the
   // steady-state mirror (same values → React bails out, no extra render).
-  const onPendingChangeRef = useRef(onPendingChange);
-  useEffect(() => {
-    onPendingChangeRef.current = onPendingChange;
-  }, [onPendingChange]);
+  // The prop is read straight from render scope (ticket 08): no mirror ref,
+  // no sync effect — `pendingRef` below is the only ref, written in handlers.
   const pendingRef = useRef<VoiceCallPending>({ starting: false, hangingUp: false });
-  const notifyPending = useCallback((next: VoiceCallPending) => {
-    pendingRef.current = next;
-    onPendingChangeRef.current?.(next);
-  }, []);
+  const notifyPending = useCallback(
+    (next: VoiceCallPending) => {
+      pendingRef.current = next;
+      onPendingChange?.(next);
+    },
+    [onPendingChange],
+  );
 
   // Demo: talk-clock seconds (paused on mute), raised by the email test; the server holds the wall cap.
   const capSeconds = isDemo ? talkLimitS(emailTest) : INLINE_CAP_SECONDS;
@@ -559,8 +563,8 @@ export function VoiceCall({
   // In inline mode the edit form below owns the config, voice included; the
   // card only mirrors it. In demo mode the card owns both choices.
   const config: AgentConfig = useMemo(
-    () => (mode.kind === "inline" ? mode.config : voniConfig(voiceId)),
-    [mode, voiceId],
+    () => inlineConfig ?? voniConfig(voiceId),
+    [inlineConfig, voiceId],
   );
   const voice = getVoice(voiceId);
   const voiceLine = voice
@@ -568,6 +572,14 @@ export function VoiceCall({
     : voiceLabel(voiceId);
 
 
+  // Non-urgent echoes (ticket 08): per-word partials and the ticking second
+  // resolve after urgent work (final turns, presses) — identical pixels once
+  // settled, without re-rendering the urgent tree for meter traffic.
+  const deferredLiveCaption = useDeferredValue(liveCaption);
+  const deferredElapsed = useDeferredValue(elapsed);
+  // Background discovery yields (ticket 08): inbox/website polls only flip
+  // the chip/copy, so they commit as transitions, never ahead of a press.
+  const [, startPollTransition] = useTransition();
   const displayName = config.identity.name;
   const remaining = Math.max(0, capSeconds - elapsed);
   // The server enforces the session cap; this is only a client-side guess
@@ -627,7 +639,7 @@ export function VoiceCall({
    * that is running or on hold; synchronous, so `pagehide` can call it.
    */
   const saveMemory = useCallback(() => {
-    if (mode.kind !== "demo" || !clockRef.current || closingRef.current) return;
+    if (modeKind !== "demo" || !clockRef.current || closingRef.current) return;
     const live = stateRef.current !== "idle" && stateRef.current !== "ended";
     if (!live && !holdingRef.current) return;
     const now = Date.now();
@@ -641,7 +653,7 @@ export function VoiceCall({
       callToken: callTokenRef.current,
       sessionId: sessionIdRef.current,
     });
-  }, [mode, voiceId]);
+  }, [modeKind, voiceId]);
 
   /**
    * Demo hold entry. Never on `hidden` alone (that is a flap: the call stays
@@ -651,7 +663,7 @@ export function VoiceCall({
    */
   const enterHold = useCallback(
     (at: number) => {
-      if (mode.kind !== "demo") return;
+      if (modeKind !== "demo") return;
       if (closingRef.current || holdEndedRef.current) return;
       const session = sessionRef.current;
       if (!(session instanceof VoiceSession)) return;
@@ -665,7 +677,7 @@ export function VoiceCall({
       setHolding(true);
       saveMemory();
     },
-    [mode, saveMemory],
+    [modeKind, saveMemory],
   );
 
   /**
@@ -796,12 +808,16 @@ export function VoiceCall({
         if (result.status === "free") {
           if (gatedRef.current === result.address) return;
           gatedRef.current = result.address;
-          setEmailTest(emailTestAfterCheck(test, result));
+          startPollTransition(() => {
+            setEmailTest(emailTestAfterCheck(test, result));
+          });
           speak(checkEmailInstructions(result), { key: "email" });
           return;
         }
         if (result.status !== "found" || !result.exact) return;
-        setEmailTest(emailTestAfterCheck(test, result));
+        startPollTransition(() => {
+          setEmailTest(emailTestAfterCheck(test, result));
+        });
         // Found before any invite on a carried tag: sent after the last call.
         speak(emailArrivedInstructions(result, { fromLastCall: !test.invited }), { key: "email" });
       } catch {
@@ -814,7 +830,7 @@ export function VoiceCall({
     void check();
     const id = setInterval(check, INBOX_POLL_MS);
     return () => clearInterval(id);
-  }, [inboxPending, setEmailTest, speak]);
+  }, [inboxPending, setEmailTest, speak, startPollTransition]);
 
   // Demo site read (ticket 05): from the moment their work email is found,
   // this poll runs the read on the server (each request holds while it
@@ -841,7 +857,9 @@ export function VoiceCall({
         if (!body?.ok || (status !== "read" && status !== "none")) return;
         const test = emailTestRef.current;
         if (test.website === "read" || test.website === "none") return;
-        setEmailTest({ ...test, website: status });
+        startPollTransition(() => {
+          setEmailTest({ ...test, website: status });
+        });
         if (test.website === "reading" && body.data?.instructions && !closingRef.current) {
           speak(body.data.instructions, { key: "website" });
         }
@@ -854,7 +872,7 @@ export function VoiceCall({
     void check();
     const id = setInterval(check, WEBSITE_POLL_MS);
     return () => clearInterval(id);
-  }, [websitePending, setEmailTest, speak]);
+  }, [websitePending, setEmailTest, speak, startPollTransition]);
 
   // Demo hold wiring. `hidden` alone keeps the call live (a flap) but arms
   // parking, so a drop in the background waits for the visitor instead of
@@ -873,13 +891,14 @@ export function VoiceCall({
       else exitHold();
     };
     const onFreeze = () => enterHold(Date.now());
-    document.addEventListener("visibilitychange", onVisibility);
-    document.addEventListener("freeze", onFreeze);
-    window.addEventListener("pagehide", saveMemory);
+    // Shared fan-out: one native listener per family across voice + jobs.
+    const unVisible = subscribeVisibilityChange(onVisibility);
+    const unFreeze = subscribeFreeze(onFreeze);
+    const unPageHide = subscribePageHide(saveMemory);
     return () => {
-      document.removeEventListener("visibilitychange", onVisibility);
-      document.removeEventListener("freeze", onFreeze);
-      window.removeEventListener("pagehide", saveMemory);
+      unVisible();
+      unFreeze();
+      unPageHide();
     };
   }, [isDemo, enterHold, exitHold, saveMemory]);
 
@@ -917,22 +936,22 @@ export function VoiceCall({
     preserveRef.current = true;
   }, [isDemo, setEmailTest]);
 
-  // A finished call forgets its memory: a goodbye, the time-up or hold cap.
-  // Error endings keep it (≤ the hold cap), so a reload can still continue.
-  useEffect(() => {
-    if (state === "ended" && (closingRef.current || holdEndedRef.current)) clearCallMemory();
-  }, [state]);
-
-  // A finished call drops its pending pacing work (the session drops its lines).
+  // A finished call forgets its memory (a goodbye, the time-up or hold cap;
+  // error endings keep it ≤ the hold cap, so a reload can still continue)
+  // and drops its pending pacing work (the session drops its lines). One
+  // effect per state (ticket 08), not one per cleanup.
   useEffect(() => {
     if (state !== "ended") return;
+    if (closingRef.current || holdEndedRef.current) clearCallMemory();
     if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
     closeTimerRef.current = null;
   }, [state]);
 
+  // The host footer (TestAgentDialog timer) echoes the deferred second, so
+  // meter traffic resolves non-urgent and never jumps ahead of a press.
   useEffect(() => {
-    onStatusChange?.({ state, elapsed, toolActive, muted });
-  }, [elapsed, muted, onStatusChange, state, toolActive]);
+    onStatusChange?.({ state, elapsed: deferredElapsed, toolActive, muted });
+  }, [deferredElapsed, muted, onStatusChange, state, toolActive]);
 
   // Call earcons, driven by call state (see public/sounds/README.md — a
   // missing file is silence, never an error). Ringback loops from
@@ -986,8 +1005,14 @@ export function VoiceCall({
   }, [liveCaption]);
 
   const setCallState = useCallback((next: VoiceState) => {
+    // Handler-driven mirror (ticket 08): every transition flows through here,
+    // so the ref never lags the state — no sync effect needed.
+    stateRef.current = next;
     setState(next);
-    if (next === "idle" || next === "ended") setMutedState(false);
+    if (next === "idle" || next === "ended") {
+      mutedRef.current = false;
+      setMutedState(false);
+    }
   }, []);
 
   useEffect(() => {
@@ -1010,6 +1035,7 @@ export function VoiceCall({
 
   // Mutual exclusion with the global copilot: whoever starts ends the other
   // first, so two sessions never hold the mic (and the bill) at once.
+  // Shared preempt fan-out: one native listener for voice-call + copilot.
   useEffect(() => {
     const onPreempt = (event: Event) => {
       const owner = (event as CustomEvent<{ owner?: string }>).detail?.owner;
@@ -1018,8 +1044,7 @@ export function VoiceCall({
         sessionRef.current = null;
       }
     };
-    window.addEventListener("voni:voice-preempt", onPreempt);
-    return () => window.removeEventListener("voni:voice-preempt", onPreempt);
+    return subscribeVoicePreempt(onPreempt);
   }, []);
 
   const start = useCallback(async () => {
@@ -1066,6 +1091,9 @@ export function VoiceCall({
       rejoiningRef.current = false;
       sessionIdRef.current = null;
       clearCallMemory();
+      // Handler-driven mirror (ticket 08): a fresh call clears history here,
+      // where the state resets — no sync effect.
+      turnsRef.current = [];
       setTurns([]);
       setElapsed(0);
       clockRef.current = null;
@@ -1084,7 +1112,11 @@ export function VoiceCall({
     }
     toolActiveRef.current = false;
     setToolActive(false);
-    setMutedState(preserving ? mutedRef.current : false);
+    // Handler-driven mirror (ticket 08): mute sticks to the fresh transport
+    // here, where the state resets — no sync effect.
+    const nextMuted = preserving ? mutedRef.current : false;
+    mutedRef.current = nextMuted;
+    setMutedState(nextMuted);
     setFiller(null);
     setLiveCaption(null);
     setClosed(false);
@@ -1110,13 +1142,13 @@ export function VoiceCall({
       new CustomEvent("voni:voice-preempt", { detail: { owner: "voice-call" } }),
     );
 
-    if (engine === "cascade" && mode.kind === "inline") {
+    if (engine === "cascade" && modeKind === "inline") {
       // Cascade slice: Python pipeline service over WebSocket. Same UI
       // states as managed (connecting/listening/speaking/ended) so every
       // indicator, timer, caption, and the countdown below works unchanged.
       // Tools are not executed on the cascade path yet — the agent answers
       // from knowledge, so tool-heavy agents should stay on managed.
-      const agentConfig = mode.config;
+      const agentConfig = config;
       const cascade = new CascadeSession({
         onCaption: (caption) => {
           if (caption.final) {
@@ -1132,12 +1164,18 @@ export function VoiceCall({
             // history: speech the agent talked over still registered. The
             // mark clears only on the user final it belongs to, so an
             // agent final mid-overlap never eats it.
-            setTurns((prev) => {
-              const overheard =
-                caption.role === "user" && overheardRef.current;
-              if (overheard) overheardRef.current = false;
-              return [...prev, { role: caption.role, text: caption.text, ...(overheard ? { overheard: true } : {}) }];
-            });
+            // Handler-driven mirror (ticket 08): history appends here, where
+            // the final lands — no sync effect.
+            const finalOverheard =
+              caption.role === "user" && overheardRef.current;
+            if (finalOverheard) overheardRef.current = false;
+            const settledTurn: Transcript = {
+              role: caption.role,
+              text: caption.text,
+              ...(finalOverheard ? { overheard: true } : {}),
+            };
+            turnsRef.current = [...turnsRef.current, settledTurn];
+            setTurns((prev) => [...prev, settledTurn]);
             setLiveCaption(null);
           } else {
             // Live user caption (the heard-indicator): the running partial
@@ -1238,11 +1276,14 @@ export function VoiceCall({
         if (turn.role === "agent") setFiller(null);
         // Consumed only by the user final it belongs to: an agent final
         // mid-overlap must not clear the mark before the user final lands.
+        // Handler-driven mirror (ticket 08): history appends here, where the
+        // final lands — no sync effect.
         if (turn.role === "user" && overheardRef.current) {
           turn = { ...turn, overheard: true };
           overheardRef.current = false;
         }
         setLiveCaption(null);
+        turnsRef.current = [...turnsRef.current, turn];
         setTurns((prev) => [...prev, turn]);
       },
       onUserPartial: (partial) => {
@@ -1269,7 +1310,7 @@ export function VoiceCall({
         sessionIdRef.current = id;
         // Demo: Voni knows this call's Test tag before it invites the test
         // (the invite is spoken with the tool call, before any result).
-        if (mode.kind === "demo" && testTagRef.current && sessionRef.current instanceof VoiceSession) {
+        if (modeKind === "demo" && testTagRef.current && sessionRef.current instanceof VoiceSession) {
           sessionRef.current.sendContext(testTagContext(testTagRef.current));
         }
         // Post-grace hold restart: whisper the carried context so Voni
@@ -1356,7 +1397,7 @@ export function VoiceCall({
       // Demo email test: the invite shows the address chip; a found email
       // is the provisional extension, a passed code check the verified one.
       onToolResult: (name, result) => {
-        if (mode.kind !== "demo" || !result.ok) return;
+        if (modeKind !== "demo" || !result.ok) return;
         if (name === SHOW_TEST_ADDRESS_TOOL) {
           // The invite comes from the call, with the exact tag, in place of
           // the platform's own reply to this result: left to it, the tag was
@@ -1379,7 +1420,7 @@ export function VoiceCall({
       // Demo: Voni is saying goodbye on its own (caller asked, or it
       // decided). Test calls keep their plain session-level hangup.
       onEndCall: () => {
-        if (mode.kind === "demo") markClosing();
+        if (modeKind === "demo") markClosing();
       },
       onAgentTurn: (turn) => {
         lastAgentLineRef.current = turn.text;
@@ -1388,7 +1429,7 @@ export function VoiceCall({
         // Never once found (a callback's email already in: no invite, Q15).
         const test = emailTestRef.current;
         // Only when no tool call ran for it (a running one puts the chip up itself).
-        if (mode.kind === "demo" && !test.invited && !test.found && !toolActiveRef.current && mentionsScreen(turn.text)) {
+        if (modeKind === "demo" && !test.invited && !test.found && !toolActiveRef.current && mentionsScreen(turn.text)) {
           const tag = putTestUp();
           if (tag) speak(inviteNowInstructions(tag), { key: "invite" });
         }
@@ -1397,7 +1438,7 @@ export function VoiceCall({
       // goal (heuristic fallback when Jev is down); each off-track verdict
       // climbs nudge → warning → polite end.
       onUserTurn: (turn) => {
-        if (mode.kind !== "demo" || closingRef.current || !turn.text.trim()) return;
+        if (modeKind !== "demo" || closingRef.current || !turn.text.trim()) return;
         // Asking to end is never a strike: Voni says goodbye on its own, and
         // an end rung racing that goodbye repeated it.
         if (isEndCallRequest(turn.text)) return;
@@ -1424,12 +1465,12 @@ export function VoiceCall({
       ),
     });
     sessionRef.current = session;
-    session.setParkOnDrop(shouldParkOnDrop(mode.kind === "demo", hiddenRef.current));
+    session.setParkOnDrop(shouldParkOnDrop(modeKind === "demo", hiddenRef.current));
     const debug = callDebugFlags();
     session.setPopProbe(debug.popProbe);
-    session.setOutputGain(debug.gain ?? voicePlaybackGain(mode.kind === "demo" ? voiceId : config.voiceId));
+    session.setOutputGain(debug.gain ?? voicePlaybackGain(modeKind === "demo" ? voiceId : config.voiceId));
     // Demo: one check-in after 15s of silence on a free floor (owner, 2026-09-27).
-    if (mode.kind === "demo") {
+    if (modeKind === "demo") {
       session.setSilenceCheckIn({
         afterMs: SILENCE_CHECK_IN_MS,
         instructions: SILENCE_CHECK_IN_INSTRUCTIONS,
@@ -1443,7 +1484,7 @@ export function VoiceCall({
     // Straight from the click handler: getUserMedia and AudioContext startup
     // are gated behind a user gesture in every major browser.
     try {
-      if (mode.kind === "demo") {
+      if (modeKind === "demo") {
         await session.start(
           // Placeholder id — the token endpoint returns the real one and `start`
           // prefers it, so the browser cannot choose which agent it reaches.
@@ -1480,7 +1521,7 @@ export function VoiceCall({
             transcriptionPrompt: buildAgentTranscriptionPrompt(config),
             keyterms: buildAgentKeyterms(config),
             tools: compileVoiceTools(config),
-            testAgentId: mode.agentId,
+            testAgentId: inlineAgentId,
           },
           authedToken,
         );
@@ -1490,11 +1531,7 @@ export function VoiceCall({
       setStarting(false);
       notifyPending({ ...pendingRef.current, starting: false });
     }
-  }, [mode, notifyPending, voiceId, config, engine, cascadeUrl, setCallState, closeCall, markClosing, setReturnPending, enterHold, setEmailTest, setTestTag, putTestUp, speak]);
-
-  useEffect(() => {
-    startRef.current = start;
-  }, [start]);
+  }, [modeKind, inlineAgentId, notifyPending, voiceId, config, engine, cascadeUrl, setCallState, closeCall, markClosing, setReturnPending, enterHold, setEmailTest, setTestTag, putTestUp, speak]);
 
   const hangUp = useCallback(async () => {
     if (hangingUp) return;
@@ -1525,6 +1562,9 @@ export function VoiceCall({
       // No connected gate: a mute pressed during connecting must stick, or
       // speech after ready leaks through. VoiceSession.setInputMuted already
       // holds pre-ready mutes and sends context on ready.
+      // Handler-driven mirror (ticket 08): every mute press flows through
+      // here — no sync effect.
+      mutedRef.current = nextMuted;
       setMutedState(nextMuted);
       clockRef.current?.setMuted(nextMuted, Date.now());
       sessionRef.current?.setInputMuted(nextMuted);
@@ -1537,12 +1577,16 @@ export function VoiceCall({
   }, [muted, setMuted]);
 
   // ai-05 dialog host drives start/hang-up from its own header buttons.
-  useImperativeHandle(ref, () => ({ start, hangUp, setMuted, toggleMute }), [
-    hangUp,
-    setMuted,
-    start,
-    toggleMute,
-  ]);
+  // The creator runs at commit, so it also refreshes the latest-start
+  // holder above — no dedicated sync effect, no render-time write.
+  useImperativeHandle(
+    ref,
+    () => {
+      startRef.current = start;
+      return { start, hangUp, setMuted, toggleMute };
+    },
+    [hangUp, setMuted, start, toggleMute],
+  );
 
 
 
@@ -1569,18 +1613,15 @@ export function VoiceCall({
   const micHint = `Uses your microphone · ${capSeconds / 60} min max · Just talk — it speaks first.`;
 
   // "What is happening right now" — shared by both layouts; only rendered
-  // off-idle.
-  const statusText =
-    state === "connecting"
-      ? "Calling…"
-      : connected
-        ? toolActive
-          ? (filler ?? "Looking that up…")
-          : (filler ??
-            `${formatCallStatus(elapsed)} · ${state === "speaking" ? "speaking" : "listening"}`)
-        : quotaExceeded
-          ? "Free demo time is up"
-          : `Call ended · ${formatCallStatus(elapsed)}`;
+  // off-idle. Derived during render from the tested helper (ticket 08), so
+  // the copy never drifts a tick behind the state it describes.
+  const statusText = getVoiceStatusText({
+    state,
+    elapsed,
+    toolActive,
+    filler,
+    quotaExceeded,
+  });
 
   const errorAlert = error && !returning ? (
     <div
@@ -1619,11 +1660,12 @@ export function VoiceCall({
       </>
     ) : null;
 
-  const liveCaptionLine = liveCaption ? (
+  // One-line partial echo (deferred: settles without blocking urgent turns).
+  const liveCaptionLine = deferredLiveCaption ? (
     <p className="text-xs italic" aria-live="polite">
-      {liveCaption.role === "user" ? "You: " : `${displayName}: `}
-      <StreamingText text={liveCaption.text} />
-      {liveCaption.overheard ? " · overheard" : ""}
+      {deferredLiveCaption.role === "user" ? "You: " : `${displayName}: `}
+      <MemoStreamingText text={deferredLiveCaption.text} />
+      {deferredLiveCaption.overheard ? " · overheard" : ""}
     </p>
   ) : null;
 
@@ -1641,15 +1683,18 @@ export function VoiceCall({
     const cycle = (step: number) => {
       setVoiceId(DEMO_VOICE_IDS[(voiceIndex + step + DEMO_VOICE_IDS.length) % DEMO_VOICE_IDS.length]);
     };
-    const demoStatus = error && !returning
-      ? "Call didn't connect"
-      : returning
-        ? "Reconnecting…"
-        : holding && (connected || state === "reconnecting")
-          ? `On hold · ${formatCallStatus(elapsed)}`
-          : connected && !toolActive && !filler
-            ? `${state === "speaking" ? "Speaking" : "Listening"} · ${formatCallStatus(elapsed)}`
-            : statusText;
+    const demoStatus = getDemoCallStatus({
+      hasError: error !== null,
+      returning,
+      holding,
+      connected,
+      reconnecting: state === "reconnecting",
+      speaking: state === "speaking",
+      toolActive,
+      filler,
+      elapsed,
+      statusText,
+    });
 
     const arrow = (step: number) => (
       <button
@@ -1741,10 +1786,10 @@ export function VoiceCall({
     const transcript =
       errorAlert ??
         (turns.length > 0 || connected ? (
-          <DemoTranscript
+          <MemoDemoTranscript
             turns={turns}
             agentName={displayName}
-            liveCaption={liveCaption}
+            liveCaption={deferredLiveCaption}
             footer={countdown}
           />
         ) : state === "ended" ? (
@@ -1854,10 +1899,10 @@ export function VoiceCall({
               data-testid="landing-demo-mobile-transcript"
               className="flex min-h-0 w-full flex-1 flex-col px-1 pt-1"
             >
-              <DemoTranscript
+              <MemoDemoTranscript
                 turns={turns}
                 agentName={displayName}
-                liveCaption={liveCaption}
+                liveCaption={deferredLiveCaption}
                 footer={countdown}
               />
             </div>
@@ -2026,12 +2071,12 @@ export function VoiceCall({
                     aria-live="polite"
                     className={cn("flex h-10 w-full max-w-75 items-center justify-center", transcriptShown && "hidden")}
                   >
-                    {liveCaption ? (
+                    {deferredLiveCaption ? (
                       // Partial: an early guess, dimmed until the final lands.
                       <p className="line-clamp-2 text-center text-sm text-foreground/60">
-                        {liveCaption.role === "user" ? "You: " : `${displayName}: `}
-                        <StreamingText text={liveCaption.text} />
-                        {liveCaption.overheard ? " · overheard" : ""}
+                        {deferredLiveCaption.role === "user" ? "You: " : `${displayName}: `}
+                        <MemoStreamingText text={deferredLiveCaption.text} />
+                        {deferredLiveCaption.overheard ? " · overheard" : ""}
                       </p>
                     ) : connected && turns.length > 0 ? (
                       // The settled final stays up, so the corrected words are

@@ -14,6 +14,16 @@ import { toast } from "@/components/ui/toast";
 import { formatCallStatus } from "@/lib/calls/call-status";
 import type { JobJson } from "@/lib/jobs/serialize";
 import { shouldSuppressJobToast } from "@/lib/jobs/ui-helpers";
+import {
+  createParseCache,
+  parseVersioned,
+  wrapVersioned,
+} from "@/lib/storage/versioned";
+import {
+  subscribeFocus,
+  subscribeOnline,
+  subscribeVisibilityChange,
+} from "@/lib/client/shared-listeners";
 
 export type OptimisticEntry = {
   key: string;
@@ -55,9 +65,31 @@ export function useJobs(): JobsContextValue {
 const TOAST_STATE_KEY = "voni-job-toast-state";
 const NOTIFY_FLAG_KEY = "voni-job-notify";
 
+function isToastState(value: unknown): boolean {
+  if (typeof value !== "object" || value === null) return false;
+  return Object.values(value as Record<string, unknown>).every((v) => typeof v === "string");
+}
+
+const cachedToastParse = createParseCache((raw: string | null): Record<string, string> => {
+  if (typeof window === "undefined") return {};
+  const parsed = parseVersioned<Record<string, string>>(raw, { validate: isToastState });
+  if (parsed) return parsed;
+  // Legacy fallback: a bare `{}` that predates the envelope but is still valid.
+  if (!raw) return {};
+  try {
+    const bare: unknown = JSON.parse(raw);
+    if (isToastState(bare)) return bare as Record<string, string>;
+  } catch {
+    // Corrupt: safe fallback below.
+  }
+  return {};
+});
+
+/** Versioned + cached: repeated polls of an unchanged key skip re-parsing. */
 function readToastState(): Record<string, string> {
   try {
-    return JSON.parse(localStorage.getItem(TOAST_STATE_KEY) ?? "{}") as Record<string, string>;
+    if (typeof window === "undefined") return {};
+    return cachedToastParse(window.localStorage.getItem(TOAST_STATE_KEY));
   } catch {
     return {};
   }
@@ -65,9 +97,35 @@ function readToastState(): Record<string, string> {
 
 function writeToastState(state: Record<string, string>): void {
   try {
-    localStorage.setItem(TOAST_STATE_KEY, JSON.stringify(state));
+    localStorage.setItem(TOAST_STATE_KEY, wrapVersioned(state));
   } catch {
     // Private mode: toasts still work for this session, just not across reloads.
+  }
+}
+
+function parseNotifyFlag(raw: string | null): boolean {
+  if (raw === "on") return true;
+  if (raw === "off" || raw === null) return false;
+  const parsed = parseVersioned<string>(raw, {
+    validate: (d): boolean => d === "on" || d === "off",
+  });
+  return parsed === "on";
+}
+
+function readNotifyFlag(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    return parseNotifyFlag(window.localStorage.getItem(NOTIFY_FLAG_KEY));
+  } catch {
+    return false;
+  }
+}
+
+function writeNotifyFlag(on: boolean): void {
+  try {
+    localStorage.setItem(NOTIFY_FLAG_KEY, wrapVersioned(on ? "on" : "off"));
+  } catch {
+    // Ignore; flag just will not survive reloads.
   }
 }
 
@@ -77,7 +135,7 @@ function initialNotificationsOn(): boolean {
   if (typeof window === "undefined") return false;
   try {
     return (
-      localStorage.getItem(NOTIFY_FLAG_KEY) === "on" &&
+      readNotifyFlag() &&
       "Notification" in window &&
       Notification.permission === "granted"
     );
@@ -199,7 +257,7 @@ export function JobsProvider({
         : (job.errorMessage ?? "Something went wrong. Open it from Jobs.");
     try {
       if (
-        localStorage.getItem(NOTIFY_FLAG_KEY) === "on" &&
+        readNotifyFlag() &&
         "Notification" in window &&
         Notification.permission === "granted" &&
         document.hidden
@@ -221,6 +279,9 @@ export function JobsProvider({
           ? {
               children: "View",
               onClick: () => {
+                // Best-effort seen-mark: the navigation below is the
+                // user's intent and always proceeds; the Jobs center
+                // stays the source of truth for unread state.
                 void fetch(`/api/jobs/${job.id}`, {
                   method: "POST",
                   headers: { "Content-Type": "application/json" },
@@ -275,6 +336,8 @@ export function JobsProvider({
         !nudgedJobsRef.current.has(job.id)
       ) {
         nudgedJobsRef.current.add(job.id);
+        // Best-effort wake nudge: a proactive poke, not a user mutation —
+        // failure just defers to the next poll, so it stays silent here.
         void fetch(`/api/jobs/${job.id}/wake`, { method: "POST" }).catch(() => undefined);
       }
       if (job.status !== "queued") nudgedJobsRef.current.delete(job.id);
@@ -314,25 +377,42 @@ export function JobsProvider({
       if (!document.hidden) void refresh();
     };
     const onOnline = () => void refresh();
-    document.addEventListener("visibilitychange", onVisible);
-    window.addEventListener("focus", onVisible);
-    window.addEventListener("online", onOnline);
+    // Shared fan-out: one native listener per family across all providers.
+    const unVisible = subscribeVisibilityChange(onVisible);
+    const unFocus = subscribeFocus(onVisible);
+    const unOnline = subscribeOnline(onOnline);
     return () => {
       clearTimeout(timer);
-      document.removeEventListener("visibilitychange", onVisible);
-      window.removeEventListener("focus", onVisible);
-      window.removeEventListener("online", onOnline);
+      unVisible();
+      unFocus();
+      unOnline();
     };
   }, [refresh, enabled]);
 
   const openJob = useCallback(
     async (job: JobJson) => {
       if (!enabledRef.current) return;
-      await fetch(`/api/jobs/${job.id}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "seen" }),
-      }).catch(() => undefined);
+      // The seen-mark is bookkeeping, but a failure is still feedback: the
+      // row would otherwise keep its unread badge with no explanation.
+      // Navigation (the user's intent) always proceeds to the result
+      // destination below.
+      let failed = false;
+      try {
+        const res = await fetch(`/api/jobs/${job.id}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "seen" }),
+        });
+        failed = !res.ok;
+      } catch {
+        failed = true;
+      }
+      if (failed) {
+        toast.add({
+          type: "error",
+          title: `Opening “${job.title}” did not mark it seen — it may still show as unread.`,
+        });
+      }
       await refresh();
       if (job.targetUrl) router.push(job.targetUrl);
     },
@@ -372,11 +452,25 @@ export function JobsProvider({
   const markSeen = useCallback(
     async (id: string) => {
       if (!enabledRef.current) return;
-      await fetch(`/api/jobs/${id}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "seen" }),
-      }).catch(() => undefined);
+      // Same feedback rule as openJob/mutate: a failed seen-mark toasts so
+      // the unchanged unread badge is explainable.
+      let failed = false;
+      try {
+        const res = await fetch(`/api/jobs/${id}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "seen" }),
+        });
+        failed = !res.ok;
+      } catch {
+        failed = true;
+      }
+      if (failed) {
+        toast.add({
+          type: "error",
+          title: "Marking that job seen did not work — try again.",
+        });
+      }
       await refresh();
     },
     [refresh],
@@ -387,11 +481,7 @@ export function JobsProvider({
     // Explicit user gesture only — permission is never requested on load.
     const permission = await Notification.requestPermission();
     const on = permission === "granted";
-    try {
-      localStorage.setItem(NOTIFY_FLAG_KEY, on ? "on" : "off");
-    } catch {
-      // Ignore; flag just will not survive reloads.
-    }
+    writeNotifyFlag(on);
     setNotificationsOn(on);
     return on;
   }, []);

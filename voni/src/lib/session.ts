@@ -1,3 +1,4 @@
+import { cache } from "react";
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { and, eq } from "drizzle-orm";
@@ -42,8 +43,13 @@ export type Ctx = {
  *   it would swallow the navigation.
  *
  * `getCtx` is the shared core; the two wrappers below pick the failure mode.
+ *
+ * The core is wrapped in React `cache()` so repeated reads within one request
+ * (layout + page + detail + follow-up reads) resolve the session and the
+ * membership once. `cache()` is per-request: outside a request it calls
+ * through uncached, so unit tests stay pollution-free.
  */
-export async function getCtx(): Promise<Ctx | null> {
+async function resolveCtx(): Promise<Ctx | null> {
   if (devBypassEnabled()) {
     return {
       userId: DEV_BYPASS_USER.id,
@@ -131,6 +137,9 @@ export async function getCtx(): Promise<Ctx | null> {
     role: "owner",
   };
 }
+
+/** Per-request deduped core: same ctx for every caller in one request. */
+export const getCtx: () => Promise<Ctx | null> = cache(resolveCtx);
 
 /** For server actions: throws so the caller can render an inline message. */
 export async function requireCtx(): Promise<Ctx> {

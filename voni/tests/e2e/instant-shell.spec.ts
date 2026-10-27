@@ -84,11 +84,43 @@ test.describe("instant shells (unauthenticated)", () => {
 test.describe("signed-out redirects (unauthenticated)", () => {
   // Protected shells need Task 5 sessions; without cookies the proxy must
   // redirect to /login with the safe destination preserved.
-  for (const route of ["/dashboard", "/agents", "/settings", "/jobs"]) {
-    test(`unlock: ${route} redirects to login with next preserved`, async ({ page }) => {
+  // Route -> owning tickets (02-10). Any guard failure maps back to the
+  // listed ticket; ticket 11 owns only this table, never the implementation.
+  // Locked asserts are fixme under the toolchain blocker in the header.
+  const guarded: Array<[string, string]> = [
+    ["/dashboard", "02,05,09"],
+    ["/calls", "09"],
+    ["/calls/abc", "03,09"],
+    ["/leads", "09"],
+    ["/leads/abc", "03,09"],
+    ["/campaigns", "09"],
+    ["/campaigns/abc", "06,09"],
+    ["/agents", "10"],
+    ["/agents/abc", "06"],
+    ["/agents/new", "06,10"],
+    ["/settings", "04,06,10"],
+    ["/settings/voice", "04,06,10"],
+    ["/jobs", "06,10"],
+    ["/numbers", "10"],
+    ["/operator", "10"],
+  ];
+  for (const [route, tickets] of guarded) {
+    test(`unlock: ${route} redirects to login with next preserved (tickets ${tickets})`, async ({ page }) => {
       await page.goto(route);
       await expect(page.getByTestId("login-shell")).toBeVisible();
       expect(page.url()).toContain(`/login?next=${encodeURIComponent(route)}`);
+    });
+
+    // fixme(toolchain): locked path needs React.unstable_postpone — see header.
+    test.fixme(`locked hard nav: ${route} redirect commits under instant()`, async ({ page }) => {
+      await instant(
+        page,
+        async () => {
+          await page.goto(route);
+          await expect(page.getByTestId("login-shell")).toBeVisible();
+        },
+        { baseURL },
+      );
     });
   }
 });

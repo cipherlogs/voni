@@ -18,10 +18,8 @@
 "use client";
 
 import {
-  createContext,
   Suspense,
   useCallback,
-  useContext,
   useEffect,
   useMemo,
   useRef,
@@ -37,8 +35,8 @@ import {
   type VoiceError,
   type VoiceState,
 } from "@/lib/voice/session";
-import { CopilotBus, globalToolDefs, type BusContext, type BusToolResult, type RegisteredTool } from "@/lib/copilot/bus";
-import { ProposalStore, type Proposal } from "@/lib/copilot/proposals";
+import { CopilotBus, globalToolDefs, type BusContext, type BusToolResult } from "@/lib/copilot/bus";
+import { ProposalStore } from "@/lib/copilot/proposals";
 import {
   buildKeyterms,
   buildSystemPrompt,
@@ -55,6 +53,10 @@ import {
   readJobStatus,
 } from "@/lib/copilot/jobs-tools";
 import { shouldCheckIn, shouldEndIdle } from "@/lib/copilot/idle";
+import {
+  subscribeVoicePreempt,
+  subscribeVoicePrefsChanged,
+} from "@/lib/client/shared-listeners";
 import {
   coerceCopilotVoicePrefs,
   DEFAULT_COPILOT_VOICE_PREFS,
@@ -78,88 +80,14 @@ import { getCopilotVoicePrefs } from "@/app/(dashboard)/settings/actions";
 export const IDLE_MS = 60_000;
 const CHECK_IN_LEAD_MS = 10_000;
 
-export type CopilotStatus =
-  | "idle"
-  | "starting"
-  | "live"
-  | "reconnecting"
-  | "error";
-
-export type CaptionTurn = {
-  id: string;
-  role: "user" | "agent";
-  text: string;
-};
-
-export type RouteToolConfig = {
-  tools: RegisteredTool[];
-  targets: Map<string, () => { value: unknown; version: number | string } | null>;
-  brief: string;
-  /**
-   * Live dialog state the route owns (wizard step, draft gate). Merged into
-   * the system prompt on every push — routes that have none omit it.
-   */
-  dialogState?: {
-    wizardStep?: string;
-    draftGateOpen?: boolean;
-  };
-};
-
-export type ProposeChangeInput = {
-  target: { kind: string; id: string };
-  payload: unknown;
-  executor: string;
-  summary: string;
-  keyPhrases: string[];
-  inverse?: { summary: string; payload: unknown } | null;
-};
-
-type CopilotContextValue = {
-  status: CopilotStatus;
-  error: VoiceError | null;
-  /** True while the user muted their own mic — the call stays up, frames drop. */
-  micMuted: boolean;
-  /** True while the copilot's voice output is silenced (volume 0). */
-  speakerMuted: boolean;
-  live: boolean;
-  captions: CaptionTurn[];
-  userPartial: string | null;
-  agentPartial: string | null;
-  proposals: Proposal[];
-  toolActive: boolean;
-  sessionSeconds: number | null;
-  /** AssemblyAI session id for support (docs: persist it, don't guess). */
-  sessionId: string | null;
-  start: () => void;
-  stop: () => void;
-  toggleMicMute: () => void;
-  toggleSpeakerMute: () => void;
-  applyTap: (id: string) => void;
-  dismissTap: (id: string) => void;
-  noteInteraction: () => void;
-  registerRoute: (route: string, config: RouteToolConfig) => void;
-  unregisterRoute: (route: string) => void;
-  /** Tool-run helper: create a proposal from a registered propose tool. */
-  proposeChange: (
-    input: ProposeChangeInput,
-    ctx: BusContext,
-  ) => { proposal_id: string; summary: string };
-  /** Tool-run helper: propose undoing the most recent applied change here. */
-  proposeUndo: (ctx: BusContext) => {
-    ok: boolean;
-    proposal_id?: string;
-    summary?: string;
-    error?: string;
-  };
-};
-
-const CopilotContext = createContext<CopilotContextValue | null>(null);
-
-export function useCopilot(): CopilotContextValue {
-  const value = useContext(CopilotContext);
-  if (!value) throw new Error("useCopilot must be used inside CopilotProvider.");
-  return value;
-}
+import {
+  CopilotContext,
+  type CaptionTurn,
+  type CopilotContextValue,
+  type CopilotStatus,
+  type ProposeChangeInput,
+  type RouteToolConfig,
+} from "./copilot-context";
 
 async function copilotToken(): Promise<{ token: string; maxSessionSeconds?: number }> {
   const res = await fetch("/api/copilot/token");
@@ -785,6 +713,7 @@ export function CopilotProvider({
   // Voice prefs: load on mount, refresh on save. Failures keep defaults —
   // prefs must never block the mic. Skipped entirely until auth is ready:
   // no authenticated requests while the session is loading.
+  // Shared prefs-changed fan-out: one native listener for all subscribers.
   useEffect(() => {
     if (!enabled) return;
     let alive = true;
@@ -797,21 +726,21 @@ export function CopilotProvider({
     };
     load();
     const onSaved = () => load();
-    window.addEventListener("voni:voice-prefs-changed", onSaved);
+    const unsubscribe = subscribeVoicePrefsChanged(onSaved);
     return () => {
       alive = false;
-      window.removeEventListener("voni:voice-prefs-changed", onSaved);
+      unsubscribe();
     };
   }, [enabled]);
 
   // Mutual exclusion: the agent-test call preempts us, we preempt it.
+  // Shared preempt fan-out: one native listener for copilot + voice-call.
   useEffect(() => {
     const onPreempt = (event: Event) => {
       const owner = (event as CustomEvent<{ owner?: string }>).detail?.owner;
       if (owner && owner !== "copilot" && sessionRef.current) stop();
     };
-    window.addEventListener("voni:voice-preempt", onPreempt);
-    return () => window.removeEventListener("voni:voice-preempt", onPreempt);
+    return subscribeVoicePreempt(onPreempt);
   }, [stop]);
 
   const proposeChange = useCallback(
@@ -1264,13 +1193,17 @@ function CopilotRouteSync({ onRoute }: { onRoute: (route: string) => void }) {
 /**
  * Page hook: publish this route's tools, target readers, and screen brief.
  * Tools merge into the session on register and on every navigation.
+ *
+ * Moved to `./copilot-context` (ticket 05) so route leaves read the light
+ * context module without pulling the engine into first paint. Re-exported
+ * here so existing provider importers keep working unchanged.
  */
-export function useCopilotRoute(route: string, config: RouteToolConfig) {
-  const { registerRoute, unregisterRoute } = useCopilot();
-  useEffect(() => {
-    // Pages should memoize `config` (e.g. keyed by a brief string) so this
-    // only re-registers when something actually changed.
-    registerRoute(route, config);
-    return () => unregisterRoute(route);
-  }, [route, config, registerRoute, unregisterRoute]);
-}
+export {
+  useCopilot,
+  useCopilotRoute,
+  type CaptionTurn,
+  type CopilotContextValue,
+  type CopilotStatus,
+  type ProposeChangeInput,
+  type RouteToolConfig,
+} from "./copilot-context";

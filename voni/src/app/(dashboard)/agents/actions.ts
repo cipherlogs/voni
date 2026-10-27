@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { after } from "next/server";
 import { z } from "zod";
 import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
@@ -573,9 +574,9 @@ export async function deleteAgentAction(id: string): Promise<DeleteResult> {
     const remote = await deleteRemoteAgent(agent.assemblyaiAgentId);
     if (!remote.ok) {
       if (remote.reason === "missing-key") {
-        console.warn(
-          `[agent-delete] AssemblyAI key missing — deleting local agent ${id} only.`,
-        );
+        // Post-response: logging must never delay or break the mutation result.
+        const message = `[agent-delete] AssemblyAI key missing — deleting local agent ${id} only.`;
+        after(() => console.warn(message));
       } else {
         return {
           ok: false,
@@ -664,9 +665,9 @@ export async function deleteAgentAction(id: string): Promise<DeleteResult> {
   revalidatePath(`/agents/${id}`);
 
   if (wasBridgeAgent) {
-    console.warn(
-      `[agent-delete] deleted agent ${id} was the bridge default — Settings → Platform needs a new bridge agent.`,
-    );
+    // Post-response: logging must never delay or break the mutation result.
+    const message = `[agent-delete] deleted agent ${id} was the bridge default — Settings → Platform needs a new bridge agent.`;
+    after(() => console.warn(message));
   }
   return { ok: true };
 }
@@ -740,7 +741,16 @@ export async function getAgent(id: string) {
   // A malformed id is "not found", not a Postgres uuid-cast error on screen.
   if (!z.string().uuid().safeParse(id).success) return null;
   const rows = await db
-    .select()
+    .select({
+      id: agents.id,
+      name: agents.name,
+      config: agents.config,
+      deploymentStatus: agents.deploymentStatus,
+      deploymentError: agents.deploymentError,
+      assemblyaiAgentId: agents.assemblyaiAgentId,
+      generationJobId: agents.generationJobId,
+      configVersion: agents.configVersion,
+    })
     .from(agents)
     .where(and(eq(agents.id, id), eq(agents.organizationId, ctx.organizationId)))
     .limit(1);

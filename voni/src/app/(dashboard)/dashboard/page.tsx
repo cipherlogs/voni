@@ -9,7 +9,7 @@ import { StatGridSkeleton } from "@/components/page-skeletons";
 import { pipelineStateLabel } from "@/lib/leads/stage-filter";
 import { RouteBrief } from "@/components/copilot/route-brief";
 import { Onboarding01 } from "@/components/onboarding-01/onboarding-01";
-import { getDashboardSetupSteps } from "@/lib/dashboard/setup";
+import { getDashboardSetupSteps, summarizeSetupSteps } from "@/lib/dashboard/setup";
 import { getDashboardSummary } from "./actions";
 
 type Stat = {
@@ -109,11 +109,14 @@ async function DashboardOutcomes() {
       summary.setup,
       summary.emptyCampaigns,
     );
+    // One pass answers both brief numbers (completed count + next open
+    // step); the steps array itself still drives the onboarding list.
+    const setupSummary = summarizeSetupSteps(setupSteps);
     return (
       <>
         <RouteBrief
           route="/dashboard"
-          brief={`Dashboard: no outcomes yet. Setup is ${setupSteps.filter((step) => step.completed).length} of ${setupSteps.length} complete. The next incomplete step is ${setupSteps.find((step) => !step.completed)?.title ?? "done"}. Voice reads here.`}
+          brief={`Dashboard: no outcomes yet. Setup is ${setupSummary.completed} of ${setupSummary.total} complete. The next incomplete step is ${setupSummary.nextIncompleteTitle}. Voice reads here.`}
         />
         <Onboarding01 steps={setupSteps} />
       </>

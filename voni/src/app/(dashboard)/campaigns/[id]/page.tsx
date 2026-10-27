@@ -18,6 +18,7 @@ import {
 import { CampaignQueue } from "@/components/campaign-queue";
 import { LeadImport } from "@/components/lead-import";
 import { describeCallingWindow } from "@/lib/campaigns/policy";
+import { countQueuedMembers } from "@/lib/campaigns/queue-select";
 import { getCampaign, getCampaignDispatchStatus } from "../actions";
 
 
@@ -61,7 +62,10 @@ async function CampaignDetail({
   if (!data || !dispatch) notFound();
 
   const { campaign, members } = data;
-  const queued = members.filter((m) => m.status === "queued").length;
+  // Single pass (lib/campaigns/queue-select): the queue table below
+  // re-traverses members for its rows, so the count must not add a
+  // second filter pass here.
+  const queued = countQueuedMembers(members);
 
   // The activate button's precondition, phrased for a human. Mirrors what
   // setCampaignStatusAction enforces server-side; shown up front so the

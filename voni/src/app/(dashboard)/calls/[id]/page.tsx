@@ -27,6 +27,8 @@ import {
 import { CallDetailSkeleton } from "@/components/page-skeletons";
 import type { ReactNode } from "react";
 import { callDuration, relativeCallTime } from "@/lib/calls/format";
+import { formatAbsoluteCallTime } from "@/lib/calls/absolute-time";
+import { WindowedRows } from "@/components/windowed";
 import { callDetail } from "@/lib/copilot/detail-data";
 import { db } from "@/lib/db";
 import {
@@ -38,16 +40,13 @@ import {
   messages,
   toolCallLogs,
 } from "@/lib/db/schema";
-import { requireCtxOrRedirect } from "@/lib/session";
 import { pipelineStateLabel } from "@/lib/leads/stage-filter";
 
-function formatWhen(value: Date | null) {
-  if (!value) return "—";
-  return new Intl.DateTimeFormat("en-GB", {
-    dateStyle: "medium",
-    timeStyle: "short",
-  }).format(value);
-}
+/**
+ * House absolute-time rendering (same string as the calls index):
+ * the formatter lives at module scope in lib/calls/absolute-time,
+ * so detail facts pay no per-row construction.
+ */
 
 /**
  * House link treatment (same string as the campaign page and the
@@ -83,13 +82,14 @@ async function CallDetail({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const call = await callDetail(id);
-  const ctx = await requireCtxOrRedirect(`/calls/${id}`);
+  // Context resolves once inside callDetail; every read below keys off
+  // the call id and the org it returns, so they resolve together.
+  const { call, ctx } = await callDetail(id);
 
   // Ownership-proving join: every query below keys off ids from
   // this row, and it resolves the lead/campaign/agent ids the
   // onward links need. callDetail already 404s on a miss.
-  const [link] = await db
+  const linkPromise = db
     .select({
       leadId: calls.leadId,
       campaignId: calls.campaignId,
@@ -113,10 +113,9 @@ async function CallDetail({
       ),
     )
     .limit(1);
-  if (!link) notFound();
 
   // Recorded turns for this call, oldest first for reading order.
-  const turns = await db
+  const turnsPromise = db
     .select({
       id: messages.id,
       direction: messages.direction,
@@ -127,11 +126,8 @@ async function CallDetail({
     .where(eq(messages.callId, id))
     .orderBy(asc(messages.createdAt))
     .limit(100);
-  const spoken = turns.filter(
-    (turn) => (turn.content ?? "").trim().length > 0,
-  );
 
-  const tools = await db
+  const toolsPromise = db
     .select({
       id: toolCallLogs.id,
       toolName: toolCallLogs.toolName,
@@ -146,12 +142,23 @@ async function CallDetail({
     .orderBy(asc(toolCallLogs.createdAt))
     .limit(50);
 
-  const [outcome] = await db
+  const outcomePromise = db
     .select()
     .from(conversationStates)
     .where(eq(conversationStates.sourceCallId, id))
     .orderBy(desc(conversationStates.createdAt))
     .limit(1);
+
+  const [[link], turns, tools, [outcome]] = await Promise.all([
+    linkPromise,
+    turnsPromise,
+    toolsPromise,
+    outcomePromise,
+  ]);
+  if (!link) notFound();
+  const spoken = turns.filter(
+    (turn) => (turn.content ?? "").trim().length > 0,
+  );
 
   const directionLabel =
     call.direction === "inbound" ? "Inbound" : "Outbound";
@@ -204,11 +211,11 @@ async function CallDetail({
               {directionLabel}
             </Fact>
             <Fact label="Started">
-              {formatWhen(call.startedAt)}
+              {formatAbsoluteCallTime(call.startedAt)}
             </Fact>
             <Fact label="Ended">
               {call.endedAt
-                ? formatWhen(call.endedAt)
+                ? formatAbsoluteCallTime(call.endedAt)
                 : call.startedAt
                   ? "Ongoing"
                   : "—"}
@@ -293,7 +300,10 @@ async function CallDetail({
             </Empty>
           ) : (
             <ul className="flex flex-col gap-4">
-              {spoken.map((turn) => (
+              {/* Bounded window (ticket 09 V1): the same turns in the same
+                  order — the island only decides how many mount. */}
+              <WindowedRows
+                rows={spoken.map((turn) => (
                 <li
                   key={turn.id}
                   className="flex flex-col gap-1"
@@ -314,6 +324,7 @@ async function CallDetail({
                   <p className="text-sm">{turn.content}</p>
                 </li>
               ))}
+              />
             </ul>
           )}
       </FormSection>
@@ -344,7 +355,10 @@ async function CallDetail({
             </Empty>
           ) : (
             <ul className="flex flex-col gap-3">
-              {tools.map((tool) => (
+              {/* Bounded window (ticket 09 V1): the same actions in the
+                  same order — the island only decides how many mount. */}
+              <WindowedRows
+                rows={tools.map((tool) => (
                 <li
                   key={tool.id}
                   className="flex flex-col gap-1"
@@ -391,6 +405,7 @@ async function CallDetail({
                   ) : null}
                 </li>
               ))}
+              />
             </ul>
           )}
       </FormSection>

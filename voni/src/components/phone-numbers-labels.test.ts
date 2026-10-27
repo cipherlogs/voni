@@ -49,5 +49,8 @@ test("row Answered-by trigger meets the touch-target floor", () => {
 });
 
 test("jobs row idle label matches nav and page title", () => {
-  assert.ok(headerSource.includes('"Background jobs"'), "idle label is Background jobs");
+  // Idle copy lives in the tested jobs helper (ticket 08); the row derives it.
+  assert.ok(headerSource.includes("getSidebarJobsText"), "row derives the idle label");
+  const helpers = readFileSync(join(dir, "..", "lib", "jobs", "ui-helpers.ts"), "utf8");
+  assert.ok(helpers.includes('"Background jobs"'), "idle label is Background jobs");
 });
