@@ -102,6 +102,76 @@ export function useCopilot(): CopilotContextValue {
 }
 
 /**
+ * On-demand engine upgrade slot (shell review fix).
+ *
+ * The dashboard shell renders children immediately under idle defaults
+ * (createIdleCopilotValue, below) while the heavy engine chunk loads. The
+ * engine boot probe publishes the live value here once loaded, and the
+ * shell swaps idle → live on the SAME provider boundary — re-render, never
+ * remount — so sidebar and page state survive the upgrade. Module state, so
+ * both the light shell and the heavy boot share one slot without the shell
+ * importing the engine.
+ */
+let engineValue: CopilotContextValue | null = null;
+const engineListeners = new Set<() => void>();
+
+export function getEngineValue(): CopilotContextValue | null {
+  return engineValue;
+}
+
+export function subscribeEngineValue(fn: () => void): () => void {
+  engineListeners.add(fn);
+  return () => {
+    engineListeners.delete(fn);
+  };
+}
+
+export function publishEngineValue(next: CopilotContextValue | null): void {
+  if (engineValue === next) return;
+  engineValue = next;
+  engineListeners.forEach((fn) => fn());
+}
+
+/**
+ * Idle first-paint defaults for the light context. Same shape as the live
+ * engine value, inert until the upgrade lands: presses and registrations
+ * only warm the engine chunk (onNeedEngine) instead of touching mic,
+ * session, or store state. Post-upgrade the live value replaces this
+ * object wholesale, so behavior after load is the engine's own.
+ */
+export function createIdleCopilotValue(onNeedEngine?: () => void): CopilotContextValue {
+  const noop = () => {};
+  const warm = () => {
+    onNeedEngine?.();
+  };
+  return {
+    status: "idle",
+    error: null,
+    micMuted: false,
+    speakerMuted: false,
+    live: false,
+    captions: [],
+    userPartial: null,
+    agentPartial: null,
+    proposals: [],
+    toolActive: false,
+    sessionSeconds: null,
+    sessionId: null,
+    start: warm,
+    stop: noop,
+    toggleMicMute: noop,
+    toggleSpeakerMute: noop,
+    applyTap: noop,
+    dismissTap: noop,
+    noteInteraction: noop,
+    registerRoute: warm,
+    unregisterRoute: noop,
+    proposeChange: () => ({ proposal_id: "", summary: "" }),
+    proposeUndo: () => ({ ok: false, error: "Voice copilot is still loading." }),
+  };
+}
+
+/**
  * Page hook: publish this route's tools, target readers, and screen brief.
  * Tools merge into the session on register and on every navigation.
  */

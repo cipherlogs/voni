@@ -113,5 +113,5 @@ test("heavy voice and copilot modules stay behind on-demand loading", () => {
   assert.match(landing, /next\/dynamic/, "landing demo keeps the voice stack dynamic");
   const frame = read(src("components", "shell-frame.tsx"));
   assert.match(frame, /next\/dynamic/, "shell keeps Copilot dynamic");
-  assert.match(frame, /CopilotProvider/, "shell keeps the provider gate");
+  assert.match(frame, /CopilotEngineBoot/, "shell keeps the provider gate");
 });

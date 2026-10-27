@@ -578,25 +578,3 @@ export function CopilotShellSkeleton() {
     </div>
   );
 }
-
-/**
- * Mirrors the dashboard shell frame (ticket 05): icon rail plus the page
- * header and card list the content area streams. Shown only while the
- * Copilot provider chunk loads; the provider instance still mounts once in
- * the layout, so the session survives in-app navigation once loaded.
- */
-export function CopilotBootSkeleton() {
-  return (
-    <div className="flex gap-4" aria-hidden>
-      <div className="flex flex-col items-center gap-3 pt-2">
-        <Skeleton className="size-9 rounded-xl" />
-        <Skeleton className="size-9 rounded-xl" />
-        <Skeleton className="size-9 rounded-xl" />
-      </div>
-      <div className="flex min-w-0 flex-1 flex-col gap-6">
-        <PageHeaderSkeleton withAction={false} />
-        <CardListSkeleton rows={3} />
-      </div>
-    </div>
-  );
-}

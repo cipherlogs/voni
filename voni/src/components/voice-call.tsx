@@ -321,10 +321,10 @@ function DemoTranscript({
   );
 }
 
-  // Memoized transcript leaves (ticket 08): VoiceCall re-renders every
-  // second for the call timer, but this subtree only commits when its own
-  // props change — turns only on finals, caption on partials, footer only in
-  // the last-30s countdown. The ticking second alone never re-renders it.
+// Memoized transcript leaves (ticket 08): VoiceCall re-renders every
+// second for the call timer, but this subtree only commits when its own
+// props change — turns only on finals, caption on partials, footer only in
+// the last-30s countdown. The ticking second alone never re-renders it.
 const MemoDemoTranscript = memo(DemoTranscript);
 const MemoStreamingText = memo(StreamingText);
 

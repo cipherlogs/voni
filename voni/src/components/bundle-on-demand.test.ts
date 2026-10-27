@@ -139,18 +139,44 @@ test("dashboard readers use the light Copilot context, never the heavy provider"
   assert.match(shell, /export function CopilotShell/, "Copilot shell export stays");
 });
 
-test("the Copilot provider loads on demand with the same enabled gate", () => {
+test("the Copilot provider boundary stays synchronous while the engine loads on demand", () => {
   const frame = readRepo("components/shell-frame.tsx");
+  // The engine chunk stays split: no static engine import in the shell
+  // bundle, and the boot host (engine + probe) still loads via next/dynamic.
   assert.match(frame, /next\/dynamic/, "shell splits the Copilot engine");
-  assert.match(frame, /mod\.CopilotProvider/, "dynamic keeps the named provider export");
-  assert.match(frame, /CopilotBootSkeleton/, "loading reads as the shell shape");
-  assert.match(frame, /CopilotProvider enabled=\{enabled\}/, "auth-only load gate stays");
-  assert.match(frame, /\{children\}/, "provider still wraps the shell children");
+  assert.match(frame, /mod\.CopilotEngineBoot/, "dynamic keeps the named engine-boot export");
   assert.doesNotMatch(
     frame,
     /import \{ CopilotProvider \} from "@\/components\/copilot\/copilot-provider"/,
     "no static engine import in the shell bundle",
   );
+  // Children never sit inside a dynamic loading boundary: the provider
+  // renders them immediately under the light context with idle defaults, so
+  // the whole sidebar + page is never swapped for a boot skeleton.
+  assert.match(frame, /CopilotContext\.Provider/, "provider boundary renders the light context");
+  assert.match(frame, /\{children\}/, "children render immediately, never behind the engine chunk");
+  assert.doesNotMatch(frame, /CopilotBootSkeleton/, "no boot skeleton blocks the shell");
+  assert.match(frame, /enabled=\{enabled\}/, "auth-only load gate stays");
+  assert.match(frame, /platformAdmin=\{platformAdmin\}/, "admin flag still reaches the engine");
+  assert.match(
+    frame,
+    /import\("@\/components\/copilot\/copilot-engine-boot"\)/,
+    "engine chunk loads through a split point, never a static import",
+  );
+  assert.doesNotMatch(
+    frame,
+    /import\s+[^;]*from\s+"@\/components\/copilot\/copilot-engine-boot"/,
+    "no static boot import in the shell bundle",
+  );
+
+  const context = readRepo("components/copilot/copilot-context.tsx");
+  assert.match(context, /idle/i, "light context ships idle defaults for first paint");
+  assert.match(context, /subscribe|useSyncExternalStore/, "engine upgrade propagates without remounting");
+
+  const boot = readRepo("components/copilot/copilot-engine-boot.tsx");
+  assert.match(boot, /export function CopilotEngineBoot/, "engine-boot export stays for post-load");
+  assert.match(boot, /CopilotProvider/, "boot mounts the real engine provider once loaded");
+  assert.match(boot, /enabled/, "enabled gate prop stays");
 
   const provider = readRepo("components/copilot/copilot-provider.tsx");
   assert.match(provider, /export function CopilotProvider/, "provider export stays for post-load");
@@ -181,10 +207,10 @@ test("the Copilot shell loads on demand inside the dashboard layout", () => {
 
 test("every on-demand boundary ships a shaped skeleton fallback", () => {
   const skeletons = readRepo("components/page-skeletons.tsx");
-  for (const name of ["DemoCallSkeleton", "TestCallSkeleton", "CopilotShellSkeleton", "CopilotBootSkeleton"]) {
+  for (const name of ["DemoCallSkeleton", "TestCallSkeleton", "CopilotShellSkeleton"]) {
     assert.match(skeletons, new RegExp(`export function ${name}`), `${name} ships with the page skeletons`);
   }
-  for (const name of ["DemoCallSkeleton", "TestCallSkeleton", "CopilotShellSkeleton", "CopilotBootSkeleton"]) {
+  for (const name of ["DemoCallSkeleton", "TestCallSkeleton", "CopilotShellSkeleton"]) {
     const block = skeletons.slice(skeletons.indexOf(`export function ${name}`));
     const nextExport = block.indexOf("export function ", 1);
     const body = nextExport === -1 ? block : block.slice(0, nextExport);
