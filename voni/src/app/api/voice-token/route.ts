@@ -53,9 +53,18 @@ export async function GET() {
 
   // Voice Agent REST endpoints use Bearer auth. The permanent key stays
   // server-side and the browser receives only this endpoint's single-use token.
-  const res = await fetch(url, {
-    headers: { Authorization: `Bearer ${apiKey}` },
-  });
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+  } catch (e) {
+    console.error(`[voice-token] AssemblyAI fetch threw: ${e instanceof Error ? e.message : e}`);
+    return NextResponse.json(
+      { error: "Could not start a call right now." },
+      { status: 502 },
+    );
+  }
 
   if (!res.ok) {
     const body = await res.text().catch(() => "");

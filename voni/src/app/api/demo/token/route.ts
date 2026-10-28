@@ -88,9 +88,18 @@ export async function POST(request: NextRequest) {
     String(MAX_SESSION_SECONDS),
   );
 
-  const res = await fetch(url, {
-    headers: { Authorization: `Bearer ${apiKey}` },
-  });
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+  } catch (e) {
+    console.error(`[demo-token] AssemblyAI fetch threw: ${e instanceof Error ? e.message : e}`);
+    return NextResponse.json(
+      { error: "Could not start a call right now." },
+      { status: 502 },
+    );
+  }
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     console.error(`[demo-token] AssemblyAI ${res.status}: ${text.slice(0, 300)}`);
