@@ -2004,6 +2004,135 @@ export function applyRealCutGate(
   };
 }
 
+// ── Gate: greeting-cut (ticket 08, owner: greeting-cut section) ─────────────
+
+/**
+ * Ticket 08: the greeting cut is the caller's first impression (spec story 1).
+ *
+ * "Wait, stop." one second into the greeting always cuts the greeting inside
+ * the locked window. The bar is the greeting window in GOLDEN_SCRIPT, which
+ * quotes the same 1.5s cut contract as the real cut — quoted, never retuned.
+ * The scenario asserts it on the runner side and the scoreboard gates the
+ * measured number, so a slow greeting can never green on INFO.
+ */
+export const GREETING_CUT_MAX_MS = GOLDEN_SCRIPT.find((beat) => beat.beat === "greeting-cut")!.window.max;
+
+/**
+ * Externally observable greeting-cut evidence: the measured cut latency and
+ * the Call trace turn that shows it. `cutMs: null` with a failed scenario
+ * summary is a measured "never cut"; no summary at all stays unmeasured.
+ */
+export type GreetingCutEvidence = {
+  cutMs: number | null;
+  traceTurn: string | null;
+};
+
+/**
+ * The greeting-cut scenario's own pass predicate (runner side): a measured
+ * cut at or inside the greeting budget passes; beyond it fails with the ms.
+ * Same inclusive bound as the stop-over contract, so the two never diverge.
+ */
+export function greetingCutFailure(cutMs: number | null, reason: CutLatencyReason | null = null): string | null {
+  if (cutMs === null) return `greeting never cut (${reason ?? "no cut"})`;
+  return cutMs <= GREETING_CUT_MAX_MS ? null : `greeting cut too late: ${cutMs}ms`;
+}
+
+/**
+ * The Call trace turn a greeting-cut failure cites: the first interrupted
+ * reply (`CUT at`), else the call's first agent reply — structurally the
+ * greeting that held too long. Null only when the merged excerpt carries no
+ * VONI row, so the detail says "no Call trace turn merged" instead of
+ * inventing a pointer.
+ */
+export function greetingCutTraceTurn(excerpt: string[]): number | null {
+  const { cutTurn } = traceTurnPointers(excerpt);
+  if (cutTurn !== null) return cutTurn;
+  return excerpt.some((line) => line.includes("  VONI    ")) ? 1 : null;
+}
+
+/**
+ * Parse greeting-cut evidence from the eval runner's stdout. A scenario
+ * summary is required; without the numeric line a passed run stays
+ * unmeasured (INFO, never a false PASS), while a failed run is evidence the
+ * greeting never cut.
+ */
+export function extractGreetingCutEvidence(
+  stdout: string,
+  excerpt: string[] = [],
+  sessionId: string | null = null,
+): GreetingCutEvidence | null {
+  const summary = stdout.match(/^greeting-cut: (\d+)\/(\d+)/m);
+  if (!summary) return null;
+  const passed = Number(summary[1]) > 0;
+  const cut = stdout.match(/greeting cut (\d+)ms after the caller started/);
+  if (!cut && passed) return null;
+  const turn = greetingCutTraceTurn(excerpt);
+  return {
+    cutMs: cut ? Number(cut[1]) : null,
+    traceTurn: turn !== null ? formatTraceTurn(turn, sessionId) : null,
+  };
+}
+
+function greetingCutDetail(evidence: GreetingCutEvidence, reason: string): string {
+  const cut = evidence.cutMs === null ? "never cut" : `cut ${evidence.cutMs}ms`;
+  const trace = evidence.traceTurn ?? "no Call trace turn merged";
+  return `${cut} (trace: ${trace}) — ${reason}`;
+}
+
+/** The greeting-cut gate: PASS inside the locked window, FAIL beyond it or never cut. */
+export function evaluateGreetingCut(evidence: GreetingCutEvidence): ScoreboardGate {
+  if (evidence.cutMs === null) {
+    return {
+      name: "greeting-cut",
+      status: "FAIL",
+      detail: greetingCutDetail(evidence, "the greeting held too long: it was never cut"),
+    };
+  }
+  if (evidence.cutMs > GREETING_CUT_MAX_MS) {
+    return {
+      name: "greeting-cut",
+      status: "FAIL",
+      detail: greetingCutDetail(
+        evidence,
+        `cut too late: ${evidence.cutMs}ms exceeds ${GREETING_CUT_MAX_MS}ms`,
+      ),
+    };
+  }
+  const trace = evidence.traceTurn ?? "no Call trace turn merged";
+  return {
+    name: "greeting-cut",
+    status: "PASS",
+    detail: `greeting cut in ${evidence.cutMs}ms (budget ${GREETING_CUT_MAX_MS}ms; trace: ${trace})`,
+  };
+}
+
+/** Stamp evaluated greeting-cut evidence onto the artifact beat and gate. */
+export function applyGreetingCutGate(
+  artifact: ScoreboardArtifact,
+  evidence: GreetingCutEvidence,
+): ScoreboardArtifact {
+  const gate = evaluateGreetingCut(evidence);
+  const prior = artifact.beats["greeting-cut"];
+  const gates = artifact.gates.map((g) => (g.name === "greeting-cut" ? gate : g));
+  return {
+    ...artifact,
+    beats: {
+      ...artifact.beats,
+      "greeting-cut": {
+        gapMs: prior.gapMs,
+        gapSamples: prior.gapSamples,
+        cutMs: evidence.cutMs,
+        resumeMs: prior.resumeMs,
+        drainMs: prior.drainMs,
+        status: gate.status,
+        note: gate.detail,
+      } satisfies BeatTiming,
+    },
+    gates,
+    subScores: buildSubScores(gates),
+  };
+}
+
 // ── Measurement: fixed-clip cut latency (ticket 05, owner: real-cut section) ─
 
 /**
@@ -2349,6 +2478,7 @@ export const GATE_PRIORITY = [
   "measurements",
   "reply-gap",
   "end-of-turn",
+  "greeting-cut",
   "barge-in-cut",
   "filler-resume",
   "overheard-recall",
@@ -2446,6 +2576,11 @@ function skeletonGates(
     replyGate,
     endOfTurn,
     {
+      name: "greeting-cut",
+      status: "INFO",
+      detail: "unmeasured: run --scenario greeting-cut (the fixed caller clip) to gate the greeting cut",
+    },
+    {
       name: "barge-in-cut",
       status: "INFO",
       detail: "no real-cut evidence (run --scenario stop-over or pass --cut-ms/--cut-verdict/--cut-answered)",
@@ -2495,6 +2630,7 @@ export const MEASURED_EVIDENCE_KINDS = [
   "timbre-probes",
   "agent-channel",
   "human-ratings",
+  "greeting-cut",
   "real-cut",
 ] as const;
 
@@ -2516,6 +2652,7 @@ export function measuredEvidenceSources(input: {
   probes?: TimbreProbes;
   agentChannel?: AgentChannelEvidence | null;
   humanRatings?: HumanRatings;
+  greetingCutEvidencePresent?: boolean;
   realCutEvidencePresent?: boolean;
 }): MeasuredEvidenceKind[] {
   const sources: MeasuredEvidenceKind[] = [];
@@ -2542,6 +2679,7 @@ export function measuredEvidenceSources(input: {
   if (input.probes !== undefined) sources.push("timbre-probes");
   if (input.agentChannel != null) sources.push("agent-channel");
   if ((input.humanRatings?.ratings ?? []).length > 0) sources.push("human-ratings");
+  if (input.greetingCutEvidencePresent) sources.push("greeting-cut");
   if (input.realCutEvidencePresent) sources.push("real-cut");
   return sources;
 }
@@ -2562,6 +2700,7 @@ export function hasMeasuredEvidence(input: {
   probes?: TimbreProbes;
   agentChannel?: AgentChannelEvidence | null;
   humanRatings?: HumanRatings;
+  greetingCutEvidencePresent?: boolean;
   realCutEvidencePresent?: boolean;
 }): boolean {
   return measuredEvidenceSources(input).length > 0;
@@ -2597,6 +2736,8 @@ export function buildSkeletonArtifact(input: {
   dryRun?: boolean;
   /** Eval-runner spawn failure text (harness break when set on a real run). */
   evalError?: string | null;
+  /** Greeting-cut evidence handled outside the skeleton (parsed) counts as measured. */
+  greetingCutEvidencePresent?: boolean;
   /** Real-cut evidence handled outside the skeleton (parsed or explicit flags) counts as measured. */
   realCutEvidencePresent?: boolean;
   /** Unique id for this run; generated when omitted. */
@@ -2763,6 +2904,7 @@ export function buildSkeletonArtifact(input: {
     ...(input.probes !== undefined ? { probes: input.probes } : {}),
     ...(agentChannel !== null ? { agentChannel } : {}),
     ...(humanRatings.ratings.length > 0 ? { humanRatings } : {}),
+    ...(input.greetingCutEvidencePresent ? { greetingCutEvidencePresent: true } : {}),
     ...(input.realCutEvidencePresent ? { realCutEvidencePresent: true } : {}),
   });
   const measured = measuredSources.length > 0;

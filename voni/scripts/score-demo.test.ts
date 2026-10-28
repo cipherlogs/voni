@@ -676,6 +676,144 @@ test("dry run with no real-cut evidence leaves the barge-in gate ungated", () =>
   assert.equal(gate.status, "INFO");
 });
 
+// ── Ticket 08: greeting cut on "Wait, stop" ─────────────────────────────────
+
+test("a live greeting-cut run feeds the measured cut into the beat and gate", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  writeFileSync(
+    join(bin, "npm"),
+    `#!/usr/bin/env node
+if (process.argv[3] === "eval:demo-agent") {
+  console.log("    greeting cut 640ms after the caller started (budget 1500ms)");
+  console.log("greeting-cut: 1/1");
+}
+`,
+    { mode: 0o755 },
+  );
+  const out = join(dir, "score.json");
+  const result = run(
+    ["--scenario", "greeting-cut", "--out", out, "--timing-lock", join(dir, "timing.lock")],
+    new URL("../", import.meta.url).pathname,
+    { PATH: `${bin}:${process.env.PATH}` },
+  );
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    beats: Record<string, { cutMs: number | null; status: string }>;
+    gates: { name: string; status: string; detail: string }[];
+  };
+  assert.equal(artifact.beats["greeting-cut"].cutMs, 640);
+  assert.equal(artifact.beats["greeting-cut"].status, "PASS");
+  const gate = artifact.gates.find((g) => g.name === "greeting-cut")!;
+  assert.equal(gate.status, "PASS");
+  assert.match(gate.detail, /640ms/);
+  const measurements = artifact.gates.find((g) => g.name === "measurements")!;
+  assert.equal(measurements.status, "INFO");
+  assert.match(measurements.detail, /greeting-cut/);
+});
+
+test("a passed greeting run with no measured line leaves the greeting gate INFO, never PASS", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  writeFileSync(
+    join(bin, "npm"),
+    `#!/usr/bin/env node\nif (process.argv[3] === "eval:demo-agent") console.log("greeting-cut: 1/1");\n`,
+    { mode: 0o755 },
+  );
+  const out = join(dir, "score.json");
+  const result = run(
+    ["--scenario", "greeting-cut", "--out", out, "--timing-lock", join(dir, "timing.lock")],
+    new URL("../", import.meta.url).pathname,
+    { PATH: `${bin}:${process.env.PATH}` },
+  );
+  assert.equal(result.status, 1, result.stderr + result.stdout);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    beats: Record<string, { cutMs: number | null; status: string }>;
+    gates: { name: string; status: string; detail: string }[];
+  };
+  assert.equal(artifact.beats["greeting-cut"].cutMs, null);
+  const gate = artifact.gates.find((g) => g.name === "greeting-cut")!;
+  assert.equal(gate.status, "INFO");
+  assert.match(gate.detail, /unmeasured/);
+});
+
+test("a late greeting cut fails and cites the Call trace turn where the greeting held", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  writeFileSync(
+    join(bin, "npm"),
+    `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === "run" && args[1] === "eval:demo-agent") {
+  console.log("  · trace session sess_greet08");
+  console.log("    greeting cut 1841ms after the caller started (budget 1500ms)");
+  console.log("  ✗ greeting-cut #1: greeting cut too late: 1841ms");
+  console.log("greeting-cut: 0/1");
+} else if (args[0] === "run" && args[1] === "call:trace") {
+  console.log(' 9.80s  HEARD   "Wait, stop."  (9.20s-10.10s)');
+  console.log(' 9.90s  VONI    "Hi, this is Anna..."  (greeting)  CUT at 11.80s');
+}
+`,
+    { mode: 0o755 },
+  );
+  const out = join(dir, "score.json");
+  const result = run(
+    ["--scenario", "greeting-cut", "--out", out, "--timing-lock", join(dir, "timing.lock")],
+    new URL("../", import.meta.url).pathname,
+    { PATH: `${bin}:${process.env.PATH}` },
+  );
+  assert.equal(result.status, 1, result.stderr + result.stdout);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    beats: Record<string, { cutMs: number | null; status: string }>;
+    gates: { name: string; status: string; detail: string }[];
+  };
+  assert.equal(artifact.beats["greeting-cut"].cutMs, 1841);
+  assert.equal(artifact.beats["greeting-cut"].status, "FAIL");
+  const gate = artifact.gates.find((g) => g.name === "greeting-cut")!;
+  assert.equal(gate.status, "FAIL");
+  assert.match(gate.detail, /1841ms/);
+  assert.match(gate.detail, /call trace turn 1 \(sess_greet08\)/);
+  assert.match(result.stdout, /FAIL\s+greeting-cut/);
+});
+
+test("greeting-cut changes show in the artifact diff against the prior run", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  writeFileSync(
+    join(bin, "npm"),
+    `#!/usr/bin/env node
+if (process.argv[3] === "eval:demo-agent") {
+  console.log("    greeting cut " + (process.env.SHIM_MS ?? "0") + "ms after the caller started (budget 1500ms)");
+  console.log("greeting-cut: " + (Number(process.env.SHIM_MS) <= 1500 ? "1/1" : "0/1"));
+}
+`,
+    { mode: 0o755 },
+  );
+  const cwd = new URL("../", import.meta.url).pathname;
+  const first = join(dir, "score-a.json");
+  const second = join(dir, "score-b.json");
+  const env = { PATH: `${bin}:${process.env.PATH}` };
+
+  const firstRun = run(["--scenario", "greeting-cut", "--out", first, "--timing-lock", join(dir, "lock-a")], cwd, {
+    ...env,
+    SHIM_MS: "1600",
+  });
+  assert.equal(firstRun.status, 1, firstRun.stderr + firstRun.stdout);
+  assert.match(firstRun.stdout, /no prior artifact/);
+
+  const secondRun = run(["--scenario", "greeting-cut", "--out", second, "--timing-lock", join(dir, "lock-b")], cwd, {
+    ...env,
+    SHIM_MS: "900",
+  });
+  assert.equal(secondRun.status, 0, secondRun.stderr + secondRun.stdout);
+  assert.match(secondRun.stdout, /prior artifact: .*score-a\.json/);
+  assert.match(secondRun.stdout, /greeting-cut\s+status FAIL → PASS, cut 1600ms → 900ms \(-700ms\)/);
+});
+
 // ── Ticket 06: overheard-recall gate ────────────────────────────────────────
 function writeAsides(dir: string, name: string, asides: unknown[]): string {
   const path = join(dir, name);

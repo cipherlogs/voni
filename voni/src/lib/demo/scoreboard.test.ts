@@ -2,9 +2,15 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
+  applyGreetingCutGate,
   applyRealCutGate,
   callerClipDrift,
   callerClipFingerprint,
+  evaluateGreetingCut,
+  extractGreetingCutEvidence,
+  greetingCutFailure,
+  greetingCutTraceTurn,
+  GREETING_CUT_MAX_MS,
   DEAD_AIR_MAX_MS,
   DEFAULT_GATE_VOICE,
   DOUBLE_TALK_MAX_OVERLAP_MS,
@@ -1117,6 +1123,139 @@ test("a changed clip is detectable by words, duration, or audio samples", () => 
     callerClipDrift(base, callerClipFingerprint("Wait, stop.", pcmClip(100, 400))) ?? "",
     /audio/,
   );
+});
+
+// --- Ticket 08: greeting cut on "Wait, stop" ---
+
+test("the greeting-cut bar is the locked greeting window, never a retune", () => {
+  const window = GOLDEN_SCRIPT.find((beat) => beat.beat === "greeting-cut")!.window;
+  assert.equal(GREETING_CUT_MAX_MS, window.max);
+  assert.equal(GREETING_CUT_MAX_MS, 1500);
+});
+
+test("the greeting-cut scenario fails only beyond the greeting budget", () => {
+  assert.equal(greetingCutFailure(640, null), null);
+  assert.equal(greetingCutFailure(GREETING_CUT_MAX_MS, null), null, "the budget is inclusive, like stop-over");
+  assert.match(greetingCutFailure(GREETING_CUT_MAX_MS + 1, null) ?? "", /greeting cut too late: 1501ms/);
+  assert.match(greetingCutFailure(null, "no cut") ?? "", /greeting never cut \(no cut\)/);
+});
+
+test("the greeting-cut gate passes a fast cut and names the latency and trace turn", () => {
+  const gate = evaluateGreetingCut({ cutMs: 640, traceTurn: "call trace turn 1 (sess_abc)" });
+  assert.equal(gate.name, "greeting-cut");
+  assert.equal(gate.status, "PASS");
+  assert.match(gate.detail, /640ms/);
+  assert.match(gate.detail, /call trace turn 1 \(sess_abc\)/);
+});
+
+test("the greeting-cut gate fails a cut beyond the budget and names the turn that held too long", () => {
+  const gate = evaluateGreetingCut({ cutMs: 1841, traceTurn: "call trace turn 1 (sess_abc)" });
+  assert.equal(gate.status, "FAIL");
+  assert.match(gate.detail, /1841ms exceeds 1500ms/);
+  assert.match(gate.detail, /call trace turn 1 \(sess_abc\)/);
+});
+
+test("a greeting that never cuts fails, and says so when no trace turn was merged", () => {
+  const gate = evaluateGreetingCut({ cutMs: null, traceTurn: null });
+  assert.equal(gate.status, "FAIL");
+  assert.match(gate.detail, /never cut/);
+  assert.match(gate.detail, /no Call trace turn merged/);
+});
+
+test("greeting-cut evidence parses the measured ms from the runner's stdout", () => {
+  const evidence = extractGreetingCutEvidence(
+    "    greeting cut 640ms after the caller started (budget 1500ms)\ngreeting-cut: 1/1\n",
+  );
+  assert.deepEqual(evidence, { cutMs: 640, traceTurn: null });
+  const late = extractGreetingCutEvidence(
+    '    greeting cut 1601ms after the caller started\n  ✗ greeting-cut #1: greeting cut too late: 1601ms\ngreeting-cut: 0/1\n',
+  );
+  assert.equal(late?.cutMs, 1601);
+  assert.equal(
+    extractGreetingCutEvidence("stop-over: 1/1\n    cut 912ms after the caller started\n"),
+    null,
+    "another scenario's cut is never greeting evidence",
+  );
+});
+
+test("a passed greeting run without a measured line stays unmeasured instead of a false PASS", () => {
+  assert.equal(extractGreetingCutEvidence("greeting-cut: 1/1\n"), null);
+  const artifact = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "greeting-cut",
+    runnerStdout: "greeting-cut: 1/1\n",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+  });
+  const gate = artifact.gates.find((g) => g.name === "greeting-cut")!;
+  assert.equal(gate.status, "INFO");
+  assert.match(gate.detail, /unmeasured/);
+});
+
+test("a failed greeting run with no latency line is evidence the greeting never cut", () => {
+  const evidence = extractGreetingCutEvidence(
+    '  ✗ greeting-cut #1: greeting never cut (no cut)\ngreeting-cut: 0/1\n',
+  );
+  assert.deepEqual(evidence, { cutMs: null, traceTurn: null });
+  assert.equal(evaluateGreetingCut(evidence!).status, "FAIL");
+});
+
+test("greeting-cut evidence cites the interrupted greeting turn from the merged trace", () => {
+  const cutTrace = [
+    ' 9.80s  HEARD   "Wait, stop."  (9.20s-10.10s)',
+    ' 9.90s  VONI    "Hi, this is Anna..."  (greeting)  CUT at 10.60s',
+    '11.20s  VONI    "Sorry about that."  (reply_create gap 700ms)',
+  ];
+  assert.equal(greetingCutTraceTurn(cutTrace), 1);
+  const heldTrace = [
+    ' 9.90s  VONI    "Hi, this is Anna..."  (greeting)',
+    '11.20s  VONI    "Still here?"  (reply_create gap 900ms)',
+  ];
+  assert.equal(
+    greetingCutTraceTurn(heldTrace),
+    1,
+    "with no CUT row the call's first reply is the greeting that held",
+  );
+  assert.equal(greetingCutTraceTurn([]), null);
+});
+
+test("applying greeting-cut evidence fills the beat cut and replaces the skeleton gate", () => {
+  const artifact = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "greeting-cut",
+    runnerStdout: "    greeting cut 640ms after the caller started\ngreeting-cut: 1/1\n",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+    greetingCutEvidencePresent: true,
+  });
+  assert.equal(artifact.gates.find((g) => g.name === "greeting-cut")?.status, "INFO");
+  const gated = applyGreetingCutGate(artifact, { cutMs: 1841, traceTurn: "call trace turn 1" });
+  assert.equal(gated.beats["greeting-cut"].cutMs, 1841);
+  assert.equal(gated.beats["greeting-cut"].status, "FAIL");
+  const gate = gated.gates.find((g) => g.name === "greeting-cut")!;
+  assert.equal(gate.status, "FAIL");
+  assert.match(gate.detail, /1841ms/);
+  assert.match(formatGateTable(gated), /1841ms/);
+});
+
+test("the greeting clip is fixed: identical audio measures the same cut, a fresh take drifts", () => {
+  const pcm = pcmClip(180, 620);
+  const first = callerClipFingerprint("Wait, stop.", pcm);
+  const replay = callerClipFingerprint("Wait, stop.", Buffer.from(pcm));
+  assert.equal(callerClipDrift(first, replay), null, "the same clip is the same fingerprint");
+  const onset = { enqueuedAt: 1000, firstFrameAt: 1050, onsetMs: replay.onsetMs, frameOffsetMs: 0 };
+  assert.equal(measureCutLatency(onset, 1700).cutMs, measureCutLatency(onset, 1700).cutMs);
+  assert.equal(measureCutLatency(onset, 1700).cutMs, 470);
+  // Same words and length, re-synthesized take: flagged, and its onset moves.
+  const fresh = callerClipFingerprint("Wait, stop.", pcmClip(160, 640));
+  assert.match(callerClipDrift(first, fresh) ?? "", /audio/);
+  assert.notEqual(fresh.onsetMs, first.onsetMs);
+});
+
+test("a measured greeting cut counts as evidence for the measurements gate", () => {
+  assert.deepEqual(measuredEvidenceSources({ greetingCutEvidencePresent: true }), ["greeting-cut"]);
 });
 
 // ── Ticket 06: overheard-aside recall gate ────────────────────────────────
