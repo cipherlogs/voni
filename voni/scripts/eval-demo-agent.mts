@@ -12,6 +12,10 @@
  *
  *   npm run eval:demo-agent -- [--runs 5] [--voice <demo-voice-id>] [--scenario hang-up]
  *
+ * Every live call prints `  · trace session sess_…` when the session is
+ * ready: score-demo chains its Call trace merge from that id, so per-turn
+ * Reply gaps come from the merger instead of an estimate.
+ *
  * Scenarios (raw socket):
  *   hang-up       "I want you to hang up." → a real end_call tool call, and
  *                 the tool name is never spoken.
@@ -83,7 +87,7 @@ function arg(name: string, fallback: string): string {
 }
 
 type Step = { say?: string; instructions?: string };
-type Outcome = { agent: string[]; heard: string[]; endCalled: boolean };
+type Outcome = { agent: string[]; heard: string[]; endCalled: boolean; sessionId?: string };
 
 const apiKey = process.env.ASSEMBLYAI_API_KEY;
 if (!apiKey) throw new Error("ASSEMBLYAI_API_KEY missing: run with --env-file=.dev.vars");
@@ -171,7 +175,14 @@ async function runSession(voiceId: string, steps: Step[]): Promise<Outcome> {
 
   ws.addEventListener("message", (event) => {
     const msg = JSON.parse(String(event.data));
-    if (msg.type === "session.ready") ready = true;
+    if (msg.type === "session.ready") {
+      ready = true;
+      // The id the operator (or score-demo's auto-chain) merges the Call trace with.
+      if (typeof msg.session_id === "string" && msg.session_id.length > 0) {
+        outcome.sessionId = msg.session_id;
+        console.log(`  · trace session ${msg.session_id}`);
+      }
+    }
     if (msg.type === "transcript.user" && msg.text) {
       outcome.heard.push(msg.text);
       heardUser = true;
@@ -243,6 +254,8 @@ type ClientOutcome = {
   agent: string[];
   heard: string[];
   interruptedReplies: number;
+  /** The live session's id, for the Call trace merge. */
+  sessionId: string | null;
   /** When the session ended, and when the agent's last audio finished playing. */
   endedAt: number | null;
   lastAudioEnd: number;
@@ -266,13 +279,19 @@ async function runClient(
   for (const line of lines) clips.set(line, await speak(line));
   const body = buildDemoAgentBody(voiceId);
   const outcome: ClientOutcome = {
-    events: [], cutAt: null, creates: [], agent: [], heard: [], interruptedReplies: 0, endedAt: null, lastAudioEnd: 0,
+    events: [], cutAt: null, creates: [], agent: [], heard: [], interruptedReplies: 0, sessionId: null, endedAt: null, lastAudioEnd: 0,
   };
   let repliesDone = 0;
   let audioChunks = 0;
   const session = new VoiceSession(
     {
       onBargeIn: (event) => outcome.events.push({ ...event, at: Date.now() }),
+      // One machine-readable marker per live call: score-demo chains its Call
+      // trace merge from it, and the operator can replay the same id.
+      onSessionReady: (sessionId) => {
+        outcome.sessionId = sessionId;
+        console.log(`  · trace session ${sessionId}`);
+      },
       onStateChange: (state) => {
         if (state === "ended" && outcome.endedAt === null) outcome.endedAt = Date.now();
       },
@@ -514,6 +533,8 @@ type ToolOutcome = {
   tools: ToolCallRecord[];
   endCalled: boolean;
   slowTurns: number;
+  /** The live session's id, for the Call trace merge. */
+  sessionId?: string;
   /** The platform ignored the call's replacement once, so it was resent. */
   resent?: boolean;
   /** Voni announced her screen without the tool; the call put the test up. */
@@ -615,6 +636,11 @@ async function runToolSession(
     }
     if (msg.type === "session.ready") {
       ready = true;
+      // One machine-readable marker per live call (same as runClient).
+      if (typeof msg.session_id === "string" && msg.session_id.length > 0) {
+        outcome.sessionId = msg.session_id;
+        console.log(`  · trace session ${msg.session_id}`);
+      }
       // Like the browser: the call's tag, before any invite.
       send({ type: "conversation.message", role: "system", content: testTagContext(TAG) });
     }

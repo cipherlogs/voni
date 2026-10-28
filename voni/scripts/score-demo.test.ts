@@ -122,6 +122,95 @@ test("one command runs the gate-voice eval, merges the Call trace, and writes th
   assert.match(result.stdout, /artifact: /);
 });
 
+test("a real run chains the trace session the eval runner printed and reports per-turn gaps", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  writeFileSync(
+    join(bin, "npm"),
+    `#!/usr/bin/env node
+const { appendFileSync } = require("node:fs");
+const args = process.argv.slice(2);
+appendFileSync(process.env.SHIM_LOG, JSON.stringify(args) + "\\n");
+if (args[0] === "run" && args[1] === "eval:demo-agent") {
+  console.log("  · trace session sess_auto07");
+  console.log("    cut 912ms after the caller started");
+  console.log('    verdict ["yield","Wait, stop."]');
+  console.log("stop-over: 1/1");
+} else if (args[0] === "run" && args[1] === "call:trace") {
+  console.log('10.00s  HEARD   "Hi, this is Anna."  (0.00s-1.00s)');
+  console.log('12.20s  VONI    "Sorry about that"  (reply_create gap 900ms)');
+}
+`,
+    { mode: 0o755 },
+  );
+  const callLog = join(dir, "npm-calls.log");
+  const out = join(dir, "score.json");
+  const result = run(["--scenario", "stop-over", "--out", out], new URL("../", import.meta.url).pathname, {
+    PATH: `${bin}:${process.env.PATH}`,
+    SHIM_LOG: callLog,
+  });
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+
+  const calls = readFileSync(callLog, "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line) as string[]);
+  assert.deepEqual(calls[1], ["run", "call:trace", "--", "sess_auto07"]);
+
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    callTrace: { sessionId: string };
+    replyGap: { samples: number; p50Ms: number | null };
+  };
+  assert.equal(artifact.callTrace.sessionId, "sess_auto07");
+  assert.equal(artifact.replyGap.samples, 1);
+  assert.equal(artifact.replyGap.p50Ms, 900);
+  assert.match(result.stdout, /reply gap per turn \(sess_auto07; turn = Nth VONI reply in the merged trace\)/);
+  assert.match(result.stdout, /^ {2}turn 1 {2}900ms$/m);
+  assert.match(result.stdout, /replay: npm run call:trace -- sess_auto07/);
+});
+
+test("an auto-chained trace that is not ready yet warns and preserves the artifact", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  writeFileSync(
+    join(bin, "npm"),
+    `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === "run" && args[1] === "eval:demo-agent") {
+  console.log("  · trace session sess_pending");
+  console.log("    cut 912ms after the caller started");
+  console.log('    verdict ["yield","Wait, stop."]');
+  console.log("stop-over: 1/1");
+} else if (args[0] === "run" && args[1] === "call:trace") {
+  console.error("No timeline yet: the session may still be finishing.");
+  process.exit(2);
+}
+`,
+    { mode: 0o755 },
+  );
+  const out = join(dir, "score.json");
+  const result = run(["--scenario", "stop-over", "--out", out], new URL("../", import.meta.url).pathname, {
+    PATH: `${bin}:${process.env.PATH}`,
+  });
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    callTrace?: { sessionId: string };
+    replyGap: { samples: number };
+    gates: { name: string; status: string }[];
+    evalRunner: { status: string };
+  };
+  assert.equal(artifact.evalRunner.status, "ok");
+  assert.equal(artifact.callTrace, undefined, "no excerpt is invented from a failed merge");
+  assert.equal(artifact.replyGap.samples, 0);
+  assert.equal(artifact.gates.find((g) => g.name === "reply-gap")?.status, "INFO");
+  assert.match(result.stdout, /call trace merge deferred for sess_pending/);
+  assert.match(result.stdout, /No timeline yet/);
+  assert.match(result.stdout, /sess_pending/);
+  assert.match(result.stdout, /--trace-session sess_pending/);
+});
+
 test("dry run proves plumbing without judging gates or touching the live runner", () => {
   const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
   const bin = join(dir, "bin");

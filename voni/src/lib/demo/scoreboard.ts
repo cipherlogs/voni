@@ -389,6 +389,43 @@ export function parseTraceGaps(excerpt: string[]): TraceGap[] {
   return gaps;
 }
 
+/**
+ * Console per-turn Reply gap report: one row per merged Call-trace VONI reply
+ * that carried a `gap Nms`, plus the session id the owner replays with
+ * `npm run call:trace -- <id>`. Turn numbers match parseTraceGaps (every VONI
+ * reply counts, interrupted ones included), so each row maps straight onto
+ * the Call trace. Derived from the merged excerpt only — no invented gaps.
+ */
+export function formatReplyGapReport(excerpt: string[], sessionId?: string | null): string {
+  const session = sessionId ?? null;
+  const lines = [
+    session
+      ? `reply gap per turn (${session}; turn = Nth VONI reply in the merged trace)`
+      : "reply gap per turn (no trace session)",
+  ];
+  const gaps = parseTraceGaps(excerpt);
+  if (gaps.length === 0) lines.push("  no per-turn gaps merged");
+  else for (const gap of gaps) lines.push(`  turn ${gap.turnIndex}  ${gap.gapMs}ms`);
+  if (session) lines.push(`  replay: npm run call:trace -- ${session}`);
+  return lines.join("\n");
+}
+
+/**
+ * The live eval runner prints one marker per call:
+ *   `  · trace session sess_…`
+ * score-demo parses the last marker so a real run can chain the Call trace
+ * without the operator copying the id (an explicit --trace-session still
+ * wins). Null when the runner printed none (dry run, crashed, or a scenario
+ * that never opened a live session): absent evidence, never an invented id.
+ */
+export function extractTraceSessionId(runnerStdout: string): string | null {
+  let last: string | null = null;
+  for (const match of runnerStdout.matchAll(/\btrace session (sess_[A-Za-z0-9_-]+)\b/g)) {
+    last = match[1];
+  }
+  return last;
+}
+
 export type TraceAttribution = {
   /** Beat the first merged turn is attributed to, or null when unverified (call-level only). */
   beat: GoldenBeat | null;
@@ -399,29 +436,35 @@ export type TraceAttribution = {
 /**
  * Trace-gap attribution guard (review: the first merged turn was silently
  * attributed to the greeting-cut beat, misattributing any session that does
- * not open with the greeting cut). Attribution requires either an explicit
- * --trace-beat map or a session that starts with a greeting-cut marker
- * (the trace excerpt's first lines carry a greeting/greeting-cut marker).
- * Otherwise the first turn stays call-level and the greeting-cut beat
- * reports INFO with a "trace attribution unverified" warning — never PASS.
+ * not open with the greeting cut). A trace that opens with the greeting cut
+ * always attributes the first turn to the greeting-cut beat — an explicit
+ * --trace-beat map may never override genuine greeting-opening evidence.
+ * Otherwise an explicit --trace-beat map applies, and without one the first
+ * turn stays call-level and the greeting-cut beat reports INFO with a
+ * "trace attribution unverified" warning — never PASS.
  */
 export function attributeFirstTraceGap(
   excerpt: string[],
   opts?: { beatMap?: GoldenBeat | null },
 ): TraceAttribution {
+  const opening = excerpt.slice(0, 5).join("\n");
+  const opensWithGreetingCut = /greeting-cut|greeting cut|\bgreeting\b/i.test(opening);
+  if (opensWithGreetingCut) {
+    const overridden =
+      opts?.beatMap && opts.beatMap !== "greeting-cut"
+        ? ` (explicit --trace-beat ${opts.beatMap} ignored: it never overrides a genuine greeting opening)`
+        : "";
+    return {
+      beat: "greeting-cut",
+      verified: true,
+      note: `trace excerpt opens with the greeting cut: first merged turn attributed to greeting-cut${overridden}`,
+    };
+  }
   if (opts?.beatMap && (GOLDEN_BEATS as readonly string[]).includes(opts.beatMap)) {
     return {
       beat: opts.beatMap,
       verified: true,
       note: `explicit --trace-beat ${opts.beatMap}: first merged turn attributed to ${opts.beatMap}`,
-    };
-  }
-  const opening = excerpt.slice(0, 5).join("\n");
-  if (/greeting-cut|greeting cut|\bgreeting\b/i.test(opening)) {
-    return {
-      beat: "greeting-cut",
-      verified: true,
-      note: "trace excerpt opens with a greeting-cut marker: first merged turn attributed to greeting-cut",
     };
   }
   return {
