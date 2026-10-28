@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, readFileSync, existsSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -106,4 +106,107 @@ test("--voice stays an alias of --gate-voice and the default needs no voice lite
   assert.equal(fallback.status, 0, fallback.stderr + fallback.stdout);
   const resolved = JSON.parse(readFileSync(defaultOut, "utf8")) as { voice: string };
   assert.equal(resolved.voice, DEMO_VOICE_IDS[0]);
+});
+
+// ── Ticket 10: timbre probes + human ballots via CLI ────────────────────────
+
+const RECORDING_SHA = "c".repeat(64);
+
+function probeFile(dir: string, payload: unknown): string {
+  const path = join(dir, "probes.json");
+  writeFileSync(path, JSON.stringify(payload));
+  return path;
+}
+
+test("--probe-json with a clip fails timbre-probes but still writes the artifact", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "clip.json");
+  const probes = probeFile(dir, { jump: 0, overload: 0, clip: 2, underrun: 0, inputDrop: 0 });
+  const result = run(
+    ["--dry-run", "--voice", DEMO_VOICE_IDS[0], "--probe-json", probes, "--out", out],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    probes: { clip: number };
+    gates: { name: string; status: string; detail: string }[];
+  };
+  assert.equal(artifact.probes.clip, 2);
+  const timbre = artifact.gates.find((g) => g.name === "timbre-probes");
+  assert.equal(timbre?.status, "FAIL");
+  assert.ok(timbre?.detail.includes("clip"));
+  assert.match(result.stdout, /FAIL/);
+  assert.match(result.stdout, /timbre-probes/);
+});
+
+test("--probe-json agent-channel evidence fails the same gate on clipped PCM", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "evidence.json");
+  const probes = probeFile(dir, {
+    jump: 0,
+    overload: 0,
+    clip: 0,
+    underrun: 0,
+    inputDrop: 0,
+    agentChannel: { peakDbfs: -0.4, clippedSampleRatio: 0.0001, largestAdjacentStep: 120 },
+  });
+  const result = run(
+    ["--dry-run", "--voice", DEMO_VOICE_IDS[0], "--probe-json", probes, "--out", out],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    gates: { name: string; status: string }[];
+  };
+  assert.equal(artifact.gates.find((g) => g.name === "timbre-probes")?.status, "FAIL");
+});
+
+test("--rate files two blind ballots and passes accent-human on the same recording", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "human.json");
+  const result = run(
+    ["--dry-run", "--voice", DEMO_VOICE_IDS[0], "--out", out, "--recording", RECORDING_SHA, "--rate", "ana:5,4", "--rate", "bob:4,4"],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    humanRatings: { timbre: number; accent: number; recordingSha256: string; ratings: unknown[] };
+    gates: { name: string; status: string; detail: string }[];
+  };
+  assert.equal(artifact.humanRatings.timbre, 4.5);
+  assert.equal(artifact.humanRatings.accent, 4);
+  assert.equal(artifact.humanRatings.recordingSha256, RECORDING_SHA);
+  assert.equal(artifact.humanRatings.ratings.length, 2);
+  const human = artifact.gates.find((g) => g.name === "accent-human");
+  assert.equal(human?.status, "PASS");
+  assert.match(result.stdout, /accent-human/);
+});
+
+test("--rate without --recording fails fast with no artifact", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "unbound.json");
+  const result = run(
+    ["--dry-run", "--voice", DEMO_VOICE_IDS[0], "--out", out, "--rate", "ana:5,4"],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.notEqual(result.status, 0);
+  assert.ok(!existsSync(out));
+  assert.match(result.stderr + result.stdout, /recording/);
+});
+
+test("--rate rejects out-of-range ballots and bad probe counts", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const badRate = run(
+    ["--dry-run", "--out", join(dir, "r.json"), "--recording", RECORDING_SHA, "--rate", "ana:6,4"],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.notEqual(badRate.status, 0);
+  assert.match(badRate.stderr + badRate.stdout, /1-5/);
+  const badProbes = probeFile(dir, { jump: 0, overload: 0, clip: -1, underrun: 0, inputDrop: 0 });
+  const badProbe = run(
+    ["--dry-run", "--out", join(dir, "p.json"), "--probe-json", badProbes],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.notEqual(badProbe.status, 0);
+  assert.match(badProbe.stderr + badProbe.stdout, /probe/);
 });

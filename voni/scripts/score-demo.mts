@@ -18,6 +18,13 @@
  *   npm run scoreboard:demo -- [--gate-voice <demo-voice-id>] [--scenario greeting-cut] [--runs 1]
  *                           [--out scoreboard-runs/score-<ts>-<voice>.json] [--dry-run]
  *                           [--trace-session sess_...]
+ *                           [--probe-json probes.json] [--recording <sha256>] [--rate rater:timbre,accent ...]
+ *
+ * --probe-json carries the session onAudioProbe counts plus the optional
+ * qa-voice-session agent-channel PCM analysis; it drives the timbre-probes
+ * gate (any clip, pop, jump, underrun, or input-drop FAILs the gate but the
+ * artifact is still written). --rate files blind 1-5 human ballots, all
+ * bound to --recording; auto timbre checks must pass before ballots count.
  *
  * --gate-voice picks the gate voice through the shared voice registry
  * (--voice stays an alias); omitting both gates on DEFAULT_GATE_VOICE, never
@@ -28,23 +35,104 @@
  * records a placeholder eval section. --trace-session merges the Call trace
  * for a finished real-call session into the artifact excerpt.
  */
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import {
+  addHumanRating,
   buildSkeletonArtifact,
   DEFAULT_GATE_VOICE,
+  emptyHumanRatings,
   formatGateTable,
   formatGoldenScript,
   redactLines,
   resolveGateVoice,
   sha256Hex,
+  type AgentChannelEvidence,
+  type HumanRatings,
   type ScoreboardArtifact,
+  type TimbreProbes,
 } from "../src/lib/demo/scoreboard";
 
 function arg(name: string, fallback = ""): string {
   const i = process.argv.indexOf(name);
   return i >= 0 && i + 1 < process.argv.length ? process.argv[i + 1] : fallback;
+}
+
+/** Every value passed to a repeatable flag, in order. */
+function argAll(name: string): string[] {
+  const values: string[] = [];
+  for (let i = 0; i < process.argv.length; i++) {
+    if (process.argv[i] === name && i + 1 < process.argv.length) values.push(process.argv[i + 1]);
+  }
+  return values;
+}
+
+/**
+ * Session probe counts collected during the golden run
+ * (VoiceSession onAudioProbe plus the qa-voice-session agent-channel PCM
+ * analysis). Missing counts default to zero; anything negative or
+ * non-integer is a harness bug, not a clean run.
+ */
+function readProbeJson(path: string): { probes: TimbreProbes; agentChannel: AgentChannelEvidence | null } {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(path, "utf8"));
+  } catch (error) {
+    throw new Error(`--probe-json ${path} is not valid JSON: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (typeof parsed !== "object" || parsed === null) {
+    throw new Error(`--probe-json ${path} must be an object of probe counts`);
+  }
+  const record = parsed as Record<string, unknown>;
+  const probes = {} as TimbreProbes;
+  for (const kind of ["jump", "overload", "clip", "underrun", "inputDrop"] as const) {
+    const value = record[kind] ?? 0;
+    if (!Number.isInteger(value) || (value as number) < 0) {
+      throw new Error(`--probe-json ${path}: probe count "${kind}" must be a non-negative int, got ${JSON.stringify(value)}`);
+    }
+    probes[kind] = value as number;
+  }
+  const rawChannel = record.agentChannel ?? null;
+  if (rawChannel === null || rawChannel === undefined) return { probes, agentChannel: null };
+  if (typeof rawChannel !== "object") {
+    throw new Error(`--probe-json ${path}: agentChannel must be an object or absent`);
+  }
+  const channel = rawChannel as Record<string, unknown>;
+  const agentChannel: AgentChannelEvidence = { peakDbfs: null, clippedSampleRatio: null, largestAdjacentStep: null };
+  for (const field of ["peakDbfs", "clippedSampleRatio", "largestAdjacentStep"] as const) {
+    const value = channel[field] ?? null;
+    if (value !== null && typeof value !== "number") {
+      throw new Error(`--probe-json ${path}: agentChannel.${field} must be a number or null`);
+    }
+    agentChannel[field] = value;
+  }
+  return { probes, agentChannel };
+}
+
+/**
+ * File blind ballots from `--rate rater:timbre,accent` (repeatable) against
+ * the shared golden recording (`--recording <sha256>`). Ballots without a
+ * recording are rejected: unbound ears never count.
+ */
+function readHumanRatings(rates: string[], recording: string): HumanRatings {
+  if (rates.length > 0 && !recording) {
+    throw new Error("--rate ballots need --recording <sha256 of the golden recording they judge>");
+  }
+  if (recording && !/^[0-9a-f]{64}$/i.test(recording)) {
+    throw new Error(`--recording needs a sha256 hex digest, got "${recording}"`);
+  }
+  let slots = emptyHumanRatings(recording || null);
+  for (const rate of rates) {
+    const match = /^([^:]+):([^,]+),([^,]+)$/.exec(rate.trim());
+    if (!match) throw new Error(`--rate needs rater:timbre,accent (ints 1-5), got "${rate}"`);
+    slots = addHumanRating(
+      slots,
+      { rater: match[1].trim(), timbre: Number(match[2]), accent: Number(match[3]) },
+      recording,
+    );
+  }
+  return slots;
 }
 
 function stamp(date = new Date()): string {
@@ -88,6 +176,10 @@ function main(): void {
     ? { stdout: "(dry run: eval runner skipped)", exitCode: null as number | null, durationMs: 0 }
     : runEvalRunner(voice, scenario, runs);
 
+  const probePath = arg("--probe-json", "");
+  const { probes, agentChannel } = probePath ? readProbeJson(resolve(probePath)) : { probes: undefined, agentChannel: undefined };
+  const humanRatings = readHumanRatings(argAll("--rate"), arg("--recording", ""));
+
   const artifact: ScoreboardArtifact = buildSkeletonArtifact({
     voice,
     scenario,
@@ -95,6 +187,9 @@ function main(): void {
     exitCode: evalSection.exitCode,
     durationMs: evalSection.durationMs,
     runs: Number(runs) || 1,
+    probes,
+    agentChannel,
+    humanRatings,
   });
   if (traceSession) {
     const excerpt = runCallTrace(traceSession);
