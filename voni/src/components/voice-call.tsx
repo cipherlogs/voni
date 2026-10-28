@@ -58,6 +58,11 @@ import { compileSystemPrompt } from "@/lib/agents/compile";
 import type { AgentConfig } from "@/lib/agents/config";
 import { buildAgentKeyterms, buildAgentTranscriptionPrompt } from "@/lib/voice/transcription";
 import { CallSounds, tickAllowed } from "@/lib/voice/call-sounds";
+import {
+  overheardLabel,
+  settleOverheardTurn,
+  userCaption,
+} from "@/lib/voice/overheard-caption";
 import { compileVoiceTools } from "@/lib/tools/definitions";
 import {
   getDemoCallStatus,
@@ -299,7 +304,7 @@ function DemoTranscript({
               >
                 <span className="text-foreground/60 text-xs leading-[normal]">
                   {line.role === "user" ? "You" : agentName}
-                  {"overheard" in line && line.overheard ? " · overheard" : ""}
+                  {overheardLabel(line)}
                 </span>
                 <span
                   className={cn(
@@ -1176,11 +1181,10 @@ export function VoiceCall({
             const finalOverheard =
               caption.role === "user" && overheardRef.current;
             if (finalOverheard) overheardRef.current = false;
-            const settledTurn: Transcript = {
-              role: caption.role,
-              text: caption.text,
-              ...(finalOverheard ? { overheard: true } : {}),
-            };
+            const settledTurn: Transcript = settleOverheardTurn(
+              { role: caption.role, text: caption.text },
+              finalOverheard,
+            );
             turnsRef.current = [...turnsRef.current, settledTurn];
             setTurns((prev) => [...prev, settledTurn]);
             setLiveCaption(null);
@@ -1191,10 +1195,10 @@ export function VoiceCall({
             // LLM-authored so they stream instantly at zero STT cost.
             if (caption.role === "user") {
               timingsRef.current?.mark("firstPartial");
-              if (caption.text) {
-                const overheard = speakingRef.current;
-                overheardRef.current = overheard;
-                setLiveCaption({ role: "user", text: caption.text, ...(overheard ? { overheard: true } : {}) });
+              const line = userCaption(caption.text, speakingRef.current);
+              if (line) {
+                overheardRef.current = line.overheard === true;
+                setLiveCaption(line);
               }
             } else setLiveCaption({ role: caption.role, text: caption.text });
           }
@@ -1286,7 +1290,7 @@ export function VoiceCall({
         // Handler-driven mirror (ticket 08): history appends here, where the
         // final lands — no sync effect.
         if (turn.role === "user" && overheardRef.current) {
-          turn = { ...turn, overheard: true };
+          turn = settleOverheardTurn(turn, true);
           overheardRef.current = false;
         }
         setLiveCaption(null);
@@ -1300,9 +1304,11 @@ export function VoiceCall({
         // for the settled final, so early guesses never flicker as speech.
         if (partial.text) {
           timingsRef.current?.mark("firstPartial");
-          const overheard = speakingRef.current;
-          overheardRef.current = overheard;
-          setLiveCaption({ role: "user", text: partial.text, ...(overheard ? { overheard: true } : {}) });
+          const line = userCaption(partial.text, speakingRef.current);
+          if (line) {
+            overheardRef.current = line.overheard === true;
+            setLiveCaption(line);
+          }
         }
       },
       // Barge-in recovery lives in the session (lib/voice/barge-in.ts);
@@ -1674,7 +1680,7 @@ export function VoiceCall({
     <p className="text-xs italic" aria-live="polite">
       {deferredLiveCaption.role === "user" ? "You: " : `${displayName}: `}
       <MemoStreamingText text={deferredLiveCaption.text} />
-      {deferredLiveCaption.overheard ? " · overheard" : ""}
+      {overheardLabel(deferredLiveCaption)}
     </p>
   ) : null;
 
@@ -2085,7 +2091,7 @@ export function VoiceCall({
                       <p className="line-clamp-2 text-center text-sm text-foreground/60">
                         {deferredLiveCaption.role === "user" ? "You: " : `${displayName}: `}
                         <MemoStreamingText text={deferredLiveCaption.text} />
-                        {deferredLiveCaption.overheard ? " · overheard" : ""}
+                        {overheardLabel(deferredLiveCaption)}
                       </p>
                     ) : connected && turns.length > 0 ? (
                       // The settled final stays up, so the corrected words are

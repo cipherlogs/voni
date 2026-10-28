@@ -604,6 +604,30 @@ export function extractTraceSessionId(runnerStdout: string): string | null {
   return last;
 }
 
+/**
+ * The live eval runner prints one marker per heard session ledger:
+ *   `    heard ledger ["We're a bakery, actually."]`
+ * These are the session's own `transcript.user` finals — the call ledger the
+ * visitor's words landed in. Null when the runner printed none (dry run,
+ * another scenario, or a crash): absent evidence, never an invented ledger.
+ */
+export function parseHeardLedgerOutput(runnerStdout: string): string[] | null {
+  let last: RegExpExecArray | null = null;
+  for (const match of runnerStdout.matchAll(/^\s*heard ledger (\[.*?\])\s*$/gm)) {
+    last = match as RegExpExecArray;
+  }
+  if (!last) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(last[1]);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(parsed)) return null;
+  const rows = parsed.filter((row): row is string => typeof row === "string" && row.trim().length > 0);
+  return rows.length > 0 ? rows : null;
+}
+
 export type TraceAttribution = {
   /** Beat the first merged turn is attributed to, or null when unverified (call-level only). */
   beat: GoldenBeat | null;
@@ -1517,6 +1541,26 @@ export type OverheardAside = {
 
 export type OverheardFailure = { aside: OverheardAside; reason: string };
 
+/**
+ * Independent evidence for the two things an aside must prove (spec story 7):
+ * the live caption marked it and the call ledger counted it. Both come from
+ * the run itself; absent evidence is recorded as absent, never assumed.
+ */
+export type OverheardTraceEvidence = {
+  /**
+   * Session transcript ledger (`transcript.user` finals the runner heard).
+   * When supplied, an aside absent from it was never counted, even if the
+   * merged trace shows it.
+   */
+  ledger?: string[];
+  /**
+   * Caption rows the live transcript marked Overheard (browser probe).
+   * When supplied (even empty), it is the marking evidence; otherwise a
+   * HEARD row that overlaps agent audio is the marking evidence.
+   */
+  captionMarks?: string[];
+};
+
 export type OverheardEvaluation = {
   recalled: number;
   total: number;
@@ -1608,50 +1652,168 @@ export function evaluateOverheardRecall(asides: OverheardAside[]): OverheardEval
 
 /**
  * Derive overheard asides from a Call-trace excerpt (HEARD/VONI per-turn
- * rows plus CLIENT barge-in verdicts, merged by `call:trace`). Every HEARD
- * row is ledger-counted; it is marked Overheard when Voni audio (a VONI
- * row) holds the floor in the excerpt. Handling comes from the CLIENT
- * barge-in verdict that follows it: `yield` → answered, `ignore`/`keep` →
- * resumed-from, otherwise heard-only (marked + counted even when never
- * answered). Pure and offline: no network, no transport.
+ * rows plus CLIENT barge-in verdicts, merged by `call:trace`).
+ *
+ * Marking is evidence, not assumption: an aside is marked Overheard only
+ * when the merged trace shows the HEARD row overlapping a VONI reply (its
+ * `CUT at` falls inside the caller's speech, or the client resolved a
+ * barge-in after it), or when an explicit caption probe marked it. A HEARD
+ * row spoken into a free floor is ordinary caller speech, not an aside.
+ *
+ * Ledger counting is evidenced too: the HEARD row is the merged transcript,
+ * and when the runner's session ledger is supplied the same words must appear
+ * there. A caption mark with no HEARD row is marked-but-uncounted; a ledgered
+ * aside the caption never marked is unmarked. Both FAIL, and every pointer
+ * names the Call trace turn it overlapped (or says none merged). Pure and
+ * offline: no network, no transport.
  */
 export function overheardFromTraceExcerpt(
   excerpt: string[],
   sessionId: string,
   beat: GoldenBeat = "overheard-aside",
+  evidence: OverheardTraceEvidence = {},
 ): OverheardAside[] {
-  // Every HEARD row handed in for the overheard beat is overheard by
-  // construction: the golden script speaks it while Voni holds the floor,
-  // and the live caption marks exactly that case (speakingRef.current →
-  // `overheard: true`, covered by the voice-call overheard-row test). The
-  // merged trace proves the ledger count; caption marking is asserted by
-  // the caption path, not re-derived from trace timestamps here.
-  void excerpt;
-  const verdictFor = (index: number): OverheardHandling => {
-    for (let i = index + 1; i < excerpt.length; i += 1) {
-      const line = excerpt[i];
-      if (/\bHEARD\b/.test(line)) break;
-      const verdict = line.match(/barge-in\s+(yield|ignore|keep)\b/);
-      if (verdict) {
-        return verdict[1] === "yield" ? "answered" : "resumed-from";
-      }
-    }
-    return "heard-only";
-  };
+  const rows = parseOverheardRows(excerpt);
+  const marks = evidence.captionMarks;
+  const ledger = evidence.ledger;
+  const matches = (list: string[] | undefined, text: string): boolean =>
+    list !== undefined && list.some((entry) => sameTraceWords(entry, text));
+  const pointerFor = (row: TraceOverheardRow, agentTurn: number | null): string =>
+    agentTurn
+      ? `${formatTraceTurn(agentTurn, sessionId)} :: ${row.line.trim().slice(0, 160)}`
+      : `${sessionId} :: no Call trace turn merged :: ${row.line.trim().slice(0, 160)}`;
   const asides: OverheardAside[] = [];
-  excerpt.forEach((line, index) => {
-    const heard = line.match(/\bHEARD\b\s+"([^"]+)"/);
-    if (!heard) return;
+
+  rows.forEach((row, index) => {
+    if (row.kind !== "heard" || !row.heardText.trim()) return;
+    const overlapped = overheardOverlapsAgentAudio(rows, index);
+    const marked = marks !== undefined ? matches(marks, row.heardText) : overlapped;
+    // Speech into a free floor is a normal turn: ledgered, but never an aside.
+    if (!overlapped && !marked) return;
     asides.push({
       beat,
-      text: heard[1],
-      markedOverheard: true,
-      inLedger: true,
-      handling: verdictFor(index),
-      tracePointer: `${sessionId} :: ${line.trim().slice(0, 160)}`,
+      text: row.heardText,
+      markedOverheard: marked,
+      inLedger: ledger !== undefined ? matches(ledger, row.heardText) : true,
+      handling: overheardHandlingFromRows(rows, index),
+      tracePointer: pointerFor(row, row.agentTurn),
     });
   });
+
+  // A caption mark with no HEARD row: the client marked it, the server
+  // transcript never counted it. Cite that no turn merged rather than guess.
+  for (const mark of marks ?? []) {
+    if (!mark.trim()) continue;
+    if (rows.some((row) => row.kind === "heard" && sameTraceWords(row.heardText, mark))) continue;
+    asides.push({
+      beat,
+      text: mark,
+      markedOverheard: true,
+      inLedger: ledger !== undefined ? matches(ledger, mark) : false,
+      handling: "heard-only",
+      tracePointer: `${sessionId} :: no Call trace turn merged :: caption mark "${mark.slice(0, 120)}"`,
+    });
+  }
   return asides;
+}
+
+type TraceOverheardRow = {
+  kind: "voni" | "heard" | "client";
+  line: string;
+  /** 1-based VONI reply this row follows (0 before the first reply). */
+  agentTurn: number | null;
+  /** VONI: when the server cut that reply (`CUT at …`), in excerpt seconds. */
+  cutAt: number | null;
+  /** HEARD: the visitor's words and when their speech started. */
+  heardText: string;
+  heardStart: number | null;
+  /** CLIENT barge-in verdict, translated to handling. */
+  handling: OverheardHandling | null;
+};
+
+/** Rows of the merged Call trace that carry overheard evidence. */
+function parseOverheardRows(excerpt: string[]): TraceOverheardRow[] {
+  const rows: TraceOverheardRow[] = [];
+  let turn = 0;
+  for (const line of excerpt) {
+    if (line.includes("  VONI    ")) {
+      turn += 1;
+      const cut = /CUT at (\d+\.\d+)s/.exec(line);
+      rows.push({
+        kind: "voni",
+        line,
+        agentTurn: turn,
+        cutAt: cut ? Number(cut[1]) : null,
+        heardText: "",
+        heardStart: null,
+        handling: null,
+      });
+      continue;
+    }
+    if (line.includes("  HEARD   ")) {
+      const text = /HEARD\s+"([^"]+)"/.exec(line)?.[1] ?? "";
+      const span = /\((\d+\.\d+)s[–-](\d+\.\d+)s\)/.exec(line);
+      rows.push({
+        kind: "heard",
+        line,
+        agentTurn: turn || null,
+        cutAt: null,
+        heardText: text,
+        heardStart: span ? Number(span[1]) : null,
+        handling: null,
+      });
+      continue;
+    }
+    const barge = /barge-in\s+(yield|ignore|keep)\b/.exec(line);
+    if (barge) {
+      rows.push({
+        kind: "client",
+        line,
+        agentTurn: turn || null,
+        cutAt: null,
+        heardText: "",
+        heardStart: null,
+        handling: barge[1] === "yield" ? "answered" : "resumed-from",
+      });
+    }
+  }
+  return rows;
+}
+
+/**
+ * Did these visitor words land while a VONI reply held the floor? Two
+ * independent trace facts say yes: the nearest reply before the HEARD row
+ * was cut inside the caller's speech window, or the client resolved a
+ * barge-in after it (which only happens over an interrupted reply).
+ */
+function overheardOverlapsAgentAudio(rows: TraceOverheardRow[], index: number): boolean {
+  const heard = rows[index];
+  for (let i = index - 1; i >= 0; i -= 1) {
+    if (rows[i].kind !== "voni") continue;
+    if (rows[i].cutAt !== null && heard.heardStart !== null && rows[i].cutAt! >= heard.heardStart) return true;
+    break;
+  }
+  for (let i = index + 1; i < rows.length; i += 1) {
+    if (rows[i].kind === "heard") break;
+    if (rows[i].kind === "client" && rows[i].handling) return true;
+  }
+  return false;
+}
+
+/** The barge-in verdict that followed this HEARD row, else heard-only. */
+function overheardHandlingFromRows(rows: TraceOverheardRow[], index: number): OverheardHandling {
+  for (let i = index + 1; i < rows.length; i += 1) {
+    if (rows[i].kind === "heard") break;
+    if (rows[i].kind === "client" && rows[i].handling) return rows[i].handling!;
+  }
+  return "heard-only";
+}
+
+/** Word-folded match so STT punctuation/casing drift is not a lost aside. */
+function sameTraceWords(left: string, right: string): boolean {
+  const a = traceLineWords(left);
+  const b = traceLineWords(right);
+  return a.length > 0 && b.length > 0 && (a.includes(b) || b.includes(a));
 }
 
 // ── Gate: voice registry (ticket 02, owner: voice section) ───────────────────

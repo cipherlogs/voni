@@ -864,6 +864,8 @@ const CLIENT_SCENARIOS: { name: string; run: () => Promise<string | null> }[] = 
         ctx.say("We're a bakery, actually.");
         await new Promise((resolve) => setTimeout(resolve, 15000));
       });
+      // The session's own transcript ledger: the words the call counted.
+      console.log(`    heard ledger ${JSON.stringify(o.heard)}`);
       return o.heard.some((t) => /bakery/i.test(t)) ? null : `never heard (heard: ${JSON.stringify(o.heard)})`;
     },
   },
