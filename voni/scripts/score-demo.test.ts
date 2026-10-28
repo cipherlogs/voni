@@ -107,3 +107,115 @@ test("--voice stays an alias of --gate-voice and the default needs no voice lite
   const resolved = JSON.parse(readFileSync(defaultOut, "utf8")) as { voice: string };
   assert.equal(resolved.voice, DEMO_VOICE_IDS[0]);
 });
+
+test("dry run with filler evidence passes the filler-resume gate and names it", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "filler-pass.json");
+  const result = run(
+    [
+      "--dry-run",
+      "--voice",
+      DEMO_VOICE_IDS[0],
+      "--out",
+      out,
+      "--filler-text",
+      "Okaay so",
+    ],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    gates: { name: string; status: string; detail: string }[];
+    beats: Record<string, { cutMs: number | null; resumeMs: number | null; status: string }>;
+  };
+  const gate = artifact.gates.find((g) => g.name === "filler-resume");
+  assert.ok(gate, "artifact carries the filler-resume gate");
+  assert.equal(gate.status, "PASS", gate.detail);
+  assert.equal(artifact.beats["filler-ignored"].status, "PASS");
+  assert.ok(result.stdout.includes("filler-resume"), "console table names the gate");
+});
+
+test("a stolen floor fails the run and the failure names ms, verdict and trace turn", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "filler-fail.json");
+  const result = run(
+    [
+      "--dry-run",
+      "--voice",
+      DEMO_VOICE_IDS[0],
+      "--out",
+      out,
+      "--filler-text",
+      "Okaay so",
+      "--filler-agent-text",
+      "We help dental clinics answer every call",
+      "--filler-verdict",
+      "yield",
+      "--filler-cut-ms",
+      "320",
+    ],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.equal(result.status, 1, `a FAIL gate exits non-zero: ${result.stderr}${result.stdout}`);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    gates: { name: string; status: string; detail: string }[];
+    beats: Record<string, { status: string }>;
+  };
+  const gate = artifact.gates.find((g) => g.name === "filler-resume");
+  assert.ok(gate, "artifact carries the filler-resume gate");
+  assert.equal(gate.status, "FAIL");
+  assert.match(gate.detail, /320ms/, "failure reports cut ms");
+  assert.match(gate.detail, /verdict: yield/, "failure reports the judge verdict");
+  assert.equal(artifact.beats["filler-ignored"].status, "FAIL");
+  assert.ok(result.stdout.includes("filler-resume"), "console table still names the failed gate");
+});
+
+test("a slow resume tail fails the run inside the 2500ms budget", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "filler-slow.json");
+  const line = "We help dental clinics answer every call";
+  const result = run(
+    [
+      "--dry-run",
+      "--voice",
+      DEMO_VOICE_IDS[0],
+      "--out",
+      out,
+      "--filler-text",
+      "mm-hmm",
+      "--filler-agent-text",
+      line,
+      "--filler-verdict",
+      "ignore",
+      "--filler-cut-ms",
+      "300",
+      "--filler-resume-ms",
+      "2600",
+      "--filler-resumed-text",
+      "dental clinics answer every call",
+      "--filler-heard-text",
+      "We help dental",
+      "--filler-trace-turn",
+      "sess_abc#turn 2",
+    ],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.equal(result.status, 1, `a FAIL gate exits non-zero: ${result.stderr}${result.stdout}`);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    gates: { name: string; status: string; detail: string }[];
+  };
+  const gate = artifact.gates.find((g) => g.name === "filler-resume");
+  assert.equal(gate?.status, "FAIL");
+  assert.ok(gate?.detail.includes("sess_abc#turn 2"), "failure points at the Call trace turn");
+});
+
+test("bad filler flags fail fast with no artifact", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "filler-bad.json");
+  const result = run(
+    ["--dry-run", "--voice", DEMO_VOICE_IDS[0], "--out", out, "--filler-text", "yeah", "--filler-verdict", "loud"],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.notEqual(result.status, 0);
+  assert.ok(!existsSync(out));
+});

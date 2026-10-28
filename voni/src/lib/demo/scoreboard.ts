@@ -6,14 +6,18 @@
  * goodbyeCut, TAG=Lime 42) and the e2e specs they mirror; nothing here
  * retunes pipeline thresholds or gains — the windows quote them.
  *
- * The harness measures nothing yet: per-beat gap/cut/drain milliseconds are
- * placeholders, probe counts start at zero, and every gate reports PASS/INFO
- * (no FAIL until gating lands in later tickets). What this module guarantees
+ * The harness measures the filler-ignored beat (ticket 04): per-beat
+ * resume-tail timing plus a filler-resume gate that can FAIL. Every other
+ * beat's gap/cut/drain milliseconds are still placeholders, probe counts
+ * start at zero, and the remaining gates report PASS/INFO (no FAIL until
+ * gating lands in later tickets). What this module guarantees
  * is trustworthy plumbing — one JSON artifact per run with redacted
  * transcripts plus their hash, and empty human-rating slots.
  */
 import { createHash } from "node:crypto";
 import { getVoice, VOICE_OUTPUT_VOLUME, voicePlaybackGain } from "../agents/voices";
+import { BARGE_IN_JUDGE_MS, judgeOverlap, type OverlapVerdict } from "../voice/barge-in";
+import { NO_WORDS_RESUME_MS, RESUME_WAIT_MS, unheardRest } from "../voice/session";
 import { DEMO_VOICE_IDS } from "./voni-agent";
 
 /** The locked golden script: seven beats in fixed order (spec story 11). */
@@ -115,16 +119,18 @@ export const GOLDEN_SCRIPT: GoldenBeatSpec[] = [
   },
 ];
 
-export const SCOREBOARD_SCHEMA_VERSION = 2;
+export const SCOREBOARD_SCHEMA_VERSION = 3;
 
 export type BeatTiming = {
   /** Reply gap: visitor end-of-speech → first agent audio. Placeholder until ticket 02. */
   gapMs: number | null;
   /** Barge-in cut latency. Placeholder until the cut ticket. */
   cutMs: number | null;
+  /** Filler-resume tail: cut → resume first audio (ticket 04; null when never cut). */
+  resumeMs: number | null;
   /** Goodbye drain: goodbye end → session end. Placeholder until the drain ticket. */
   drainMs: number | null;
-  status: "PASS" | "INFO";
+  status: "PASS" | "INFO" | "FAIL";
   note: string;
 };
 
@@ -256,6 +262,123 @@ export function redactLines(stdout: string, limit = 200): string[] {
     .slice(0, limit);
 }
 
+/**
+ * Ticket 04: filler-ignored + resume-tail gate.
+ *
+ * Back-channels never derail the Demo call: filler, back-channel speech and
+ * the agent's own echo must never steal the floor. The source of truth is
+ * the overlap judge (`judgeOverlap` in ../voice/barge-in): filler/echo
+ * resolve to "ignore" synchronously, commands and end-call requests to
+ * "yield", and anything ambiguous goes to the Jev judge with a short
+ * timeout and fail-closed heuristics (an undecided or timed-out judgment
+ * yields, so the caller is answered instead of talked over).
+ *
+ * When a filler does briefly cut the agent, the recovery must be human: the
+ * agent resumes exactly the unheard rest of the cut line (same
+ * `unheardRest` the session uses) within the resume-tail budget, and never
+ * answers over the resumption.
+ *
+ * Thresholds quoted, not retuned (spec: the harness proves the baseline):
+ * - overlap judge budget BARGE_IN_JUDGE_MS (400ms) decides yield vs resume;
+ * - the session waits RESUME_WAIT_MS (500ms) for the server's own reply to
+ *   the barge-in, then falls back after NO_WORDS_RESUME_MS (800ms) with no
+ *   caller words — both well inside the resume-tail budget below.
+ */
+
+/** A brief filler cut recovers with the exact unheard tail inside this budget (spec story 6). */
+export const FILLER_RESUME_TAIL_BUDGET_MS = 2500;
+
+/**
+ * Resolved overlap outcome the pipeline reported for the filler beat:
+ * the synchronous judge verdict, or "keep" once the Jev judge decided an
+ * ambiguous overlap was not real and the agent resumed.
+ */
+export type FillerVerdict = OverlapVerdict | "keep";
+
+/** Observed evidence for the filler-ignored beat: what the caller said, what the floor did. */
+export type FillerResumeEvidence = {
+  /** The overlapping visitor speech ("Okaay so", "mm-hmm", "yeah", agent echo). */
+  visitorText: string;
+  /** The agent line it overlapped (source for the echo check and the resume tail). */
+  agentText: string;
+  /** What the pipeline decided: ignore/keep resumes, yield (or undecided judge) steals the floor. */
+  verdict: FillerVerdict;
+  /** Visitor-speech-start → agent-audio-stop; null when the filler never cut. */
+  cutMs: number | null;
+  /** Cut → resume first audio; null when never cut, or when cut and never resumed. */
+  resumeMs: number | null;
+  /** What the agent said as the resume ("" when never cut). */
+  resumedText: string;
+  /** Agent words heard before the cut (the resume re-says the cut word, then the rest). */
+  heardText: string;
+  /** The server answered over the resumption instead of letting it play. */
+  answeredOver: boolean;
+  /** Call trace turn the failure points at (spec: every failure names its turn). */
+  traceTurn?: string;
+};
+
+/**
+ * Gate the filler-ignored beat. PASS keeps the floor (or recovers it
+ * humanly); every FAIL names the cut milliseconds, the judge verdict and
+ * the Call trace turn so the failure points at a turn, not a vibe.
+ */
+export function evaluateFillerResumeGate(evidence: FillerResumeEvidence): ScoreboardGate {
+  const name = "filler-resume";
+  const trace = evidence.traceTurn ?? "(no trace turn)";
+  const expected = judgeOverlap(evidence.visitorText, evidence.agentText);
+  const cut = evidence.cutMs === null ? "never cut" : `${evidence.cutMs}ms`;
+  const fail = (detail: string): ScoreboardGate => ({
+    name,
+    status: "FAIL",
+    detail: `${detail} (cut: ${cut}; judge verdict: ${evidence.verdict}, expected: ${expected}; trace: ${trace})`,
+  });
+  // Not filler at all: steering, end-call and real content yield per the
+  // judge. Blessing a yield here would hide a threshold regression, and the
+  // real-cut ticket owns the yield path.
+  if (expected === "yield") {
+    return fail(`not filler per the overlap judge: "${evidence.visitorText}" yields`);
+  }
+  // Fail-closed: a stolen floor, or an ambiguous overlap still held for the
+  // judge, counts as derailed — the caller must be answered, not resumed.
+  if (evidence.verdict === "yield" || evidence.verdict === "judge") {
+    return fail(`floor stolen by back-channel "${evidence.visitorText}": fail-closed yield`);
+  }
+  // Ambiguous overlap resumes only on an explicit Jev keep.
+  if (expected === "judge" && evidence.verdict !== "keep") {
+    return fail(`ambiguous overlap "${evidence.visitorText}" resumed without a Jev keep`);
+  }
+  if (evidence.cutMs === null) {
+    if (evidence.resumeMs !== null || evidence.answeredOver) {
+      return fail("inconsistent evidence: never cut but a resume was reported");
+    }
+    return {
+      name,
+      status: "PASS",
+      detail: `filler "${evidence.visitorText}" ignored (judge verdict: ${evidence.verdict}, expected: ${expected}); floor held, never cut; trace: ${trace}`,
+    };
+  }
+  if (evidence.resumeMs === null) {
+    return fail("brief cut never resumed: the exact unheard tail never played");
+  }
+  if (evidence.resumeMs > FILLER_RESUME_TAIL_BUDGET_MS) {
+    return fail(
+      `resume tail too slow: ${evidence.resumeMs}ms exceeds the ${FILLER_RESUME_TAIL_BUDGET_MS}ms budget (judge ${BARGE_IN_JUDGE_MS}ms + server-wait ${RESUME_WAIT_MS}ms + no-words ${NO_WORDS_RESUME_MS}ms)`,
+    );
+  }
+  if (evidence.answeredOver) {
+    return fail("answered over the resumption instead of resuming the exact tail");
+  }
+  const tail = unheardRest(evidence.agentText, evidence.heardText);
+  if (evidence.resumedText.trim() !== tail.trim()) {
+    return fail(`resume tail inexact: said "${evidence.resumedText}" instead of "${tail}"`);
+  }
+  return {
+    name,
+    status: "PASS",
+    detail: `filler "${evidence.visitorText}" cut at ${evidence.cutMs}ms (judge verdict: ${evidence.verdict}), resumed the exact tail in ${evidence.resumeMs}ms (budget ${FILLER_RESUME_TAIL_BUDGET_MS}ms); trace: ${trace}`,
+  };
+}
+
 /** Skeleton gates: reported but never failed until gating lands per ticket. */
 function skeletonGates(exitCode: number | null): ScoreboardGate[] {
   const plumbing: ScoreboardGate =
@@ -270,6 +393,7 @@ function skeletonGates(exitCode: number | null): ScoreboardGate[] {
     plumbing,
     { name: "reply-gap", status: "INFO", detail: "skeleton: gating lands in the reply-gap ticket" },
     { name: "barge-in-cut", status: "INFO", detail: "skeleton: gating lands in the cut ticket" },
+    { name: "filler-resume", status: "INFO", detail: "skeleton: gating lands in the filler ticket" },
     { name: "overheard-recall", status: "INFO", detail: "skeleton: gating lands in the overheard ticket" },
     { name: "double-talk", status: "INFO", detail: "skeleton: gating lands in the naturalness ticket" },
     { name: "dead-air", status: "INFO", detail: "skeleton: gating lands in the naturalness ticket" },
@@ -285,19 +409,33 @@ export function buildSkeletonArtifact(input: {
   exitCode: number | null;
   durationMs: number;
   runs: number;
+  /** Observed filler-beat evidence: when present, the filler-resume gate evaluates instead of staying INFO. */
+  fillerResume?: FillerResumeEvidence | null;
 }): ScoreboardArtifact {
+  const fillerGate = input.fillerResume ? evaluateFillerResumeGate(input.fillerResume) : null;
   const beats = Object.fromEntries(
     GOLDEN_BEATS.map((beat) => [
       beat,
       {
         gapMs: null,
         cutMs: null,
+        resumeMs: null,
         drainMs: null,
         status: "PASS",
         note: "skeleton: placeholder until per-beat timing lands",
       } satisfies BeatTiming,
     ]),
   ) as Record<GoldenBeat, BeatTiming>;
+  if (fillerGate && input.fillerResume) {
+    beats["filler-ignored"] = {
+      gapMs: null,
+      cutMs: input.fillerResume.cutMs,
+      resumeMs: input.fillerResume.resumeMs,
+      drainMs: null,
+      status: fillerGate.status === "FAIL" ? "FAIL" : "PASS",
+      note: fillerGate.detail,
+    };
+  }
   return {
     schemaVersion: SCOREBOARD_SCHEMA_VERSION,
     recordedAt: new Date().toISOString(),
@@ -319,7 +457,9 @@ export function buildSkeletonArtifact(input: {
       redacted: redactLines(input.runnerStdout),
     },
     humanRatings: { timbre: null, accent: null },
-    gates: skeletonGates(input.exitCode),
+    gates: skeletonGates(input.exitCode).map((gate) =>
+      gate.name === "filler-resume" && fillerGate ? fillerGate : gate,
+    ),
     evalRunner: {
       scenario: input.scenario,
       passed: input.exitCode === null ? null : input.exitCode === 0,
