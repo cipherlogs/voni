@@ -11,9 +11,12 @@ import {
   emailTestAfterCheck,
   fallbackMatch,
   isFreeEmailDomain,
+  loadTagToken,
   nameFromAddress,
   normalizeClaim,
+  saveTagToken,
   spoofedByHeaders,
+  TAG_TOKEN_KEY,
   talkLimitS,
   type InboxMessage,
 } from "./email-test";
@@ -337,3 +340,47 @@ test("Voni putting something on the screen is recognised (the call then puts the
   assert.equal(mentionsScreen("I could screen your calls after hours."), false);
   assert.equal(mentionsScreen("Your customers see the price on the screen when they book."), false, "business talk");
 });
+
+test("a saved tag token reads back from localStorage", () => {
+  const map = new Map<string, string>();
+  const store = {
+    getItem: (key: string) => map.get(key) ?? null,
+    setItem: (key: string, value: string) => void map.set(key, value),
+    removeItem: (key: string) => void map.delete(key),
+  };
+  const prior = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  Object.defineProperty(globalThis, "localStorage", { value: store, configurable: true });
+  try {
+    saveTagToken("tag-store-27");
+    assert.equal(map.has(TAG_TOKEN_KEY), true, "written as the versioned envelope");
+    assert.equal(loadTagToken(), "tag-store-27");
+    // A legacy bare token (older writer) still reads.
+    map.set(TAG_TOKEN_KEY, "tag-legacy-27");
+    assert.equal(loadTagToken(), "tag-legacy-27");
+  } finally {
+    if (prior) Object.defineProperty(globalThis, "localStorage", prior);
+  }
+});
+
+test("a tag minted while storage is blocked still scopes the call (private mode)", () => {
+  const store = {
+    getItem: () => null,
+    setItem: () => {
+      throw new Error("QuotaExceededError");
+    },
+    removeItem: () => undefined,
+  };
+  const prior = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  Object.defineProperty(globalThis, "localStorage", { value: store, configurable: true });
+  try {
+    saveTagToken("tag-private-27");
+    assert.equal(
+      loadTagToken(),
+      "tag-private-27",
+      "the page's own mint survives a blocked store: a hold rejoin must not mint a new tag",
+    );
+  } finally {
+    if (prior) Object.defineProperty(globalThis, "localStorage", prior);
+  }
+});
+

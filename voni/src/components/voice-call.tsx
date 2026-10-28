@@ -643,6 +643,7 @@ export function VoiceCall({
     const live = stateRef.current !== "idle" && stateRef.current !== "ended";
     if (!live && !holdingRef.current) return;
     const now = Date.now();
+    const tagToken = loadTagToken();
     saveCallMemory({
       savedAt: now,
       voiceId,
@@ -650,6 +651,8 @@ export function VoiceCall({
       talkSeconds: clockRef.current.talkSeconds(now),
       strikes: ladderRef.current?.strikes ?? 0,
       emailTest: emailTestRef.current,
+      ...(testTagRef.current ? { testTag: testTagRef.current } : {}),
+      ...(tagToken ? { tagToken } : {}),
       callToken: callTokenRef.current,
       sessionId: sessionIdRef.current,
     });
@@ -921,6 +924,10 @@ export function VoiceCall({
     setElapsed(snap.talkSeconds);
     setRestored(true);
     setEmailTest(snap.emailTest ?? EMAIL_TEST_START);
+    // The tag survives the reload via Call memory (ticket 27): the chip and the
+    // re-mint keep the same tag even if localStorage was unavailable.
+    setTestTag(snap.testTag ?? null);
+    if (snap.tagToken) saveTagToken(snap.tagToken);
     callTokenRef.current = snap.callToken ?? null;
     /* eslint-enable react-hooks/set-state-in-effect */
     turnsRef.current = snap.turns;
@@ -934,7 +941,7 @@ export function VoiceCall({
     greetOnListenRef.current = snap.sessionId !== null;
     carryoverRef.current = snap.sessionId ? null : buildHoldCarryover(snap.turns);
     preserveRef.current = true;
-  }, [isDemo, setEmailTest]);
+  }, [isDemo, setEmailTest, setTestTag]);
 
   // A finished call forgets its memory (a goodbye, the time-up or hold cap;
   // error endings keep it ≤ the hold cap, so a reload can still continue)

@@ -943,6 +943,12 @@ export type EmailInviteEvidence = {
   lineTurns?: (string | null)[];
   /** Call trace turn where the contact chip showed (chip failures cite it). */
   chipTraceTurn?: string | null;
+  /**
+   * Call trace turn where the Test tag was lost on Hold return. Omitted, the
+   * scorer derives the later tag mention; null means no turn was merged and
+   * the FAIL says so instead of guessing.
+   */
+  memoryTraceTurn?: string | null;
 };
 
 export type EmailInviteResult = {
@@ -954,6 +960,8 @@ export type EmailInviteResult = {
   workEmailGateMentions: number;
   chipShows: number;
   memoryPersists: boolean | null;
+  /** The turn a lost-tag FAIL cites; null when the trace did not merge one. */
+  memoryTraceTurn: string | null;
   returningOk: boolean | null;
   showToolCalls: number;
   status: "PASS" | "FAIL";
@@ -1027,17 +1035,25 @@ export function countWorkEmailGate(lines: string[]): number {
   return lines.filter((line) => /personal address/i.test(line) && /work (one|email)/i.test(line)).length;
 }
 
-/** Whether Call memory kept the invite across a Hold return or reload. Null when no before/after supplied. */
+/**
+ * Whether Call memory kept the invite, tag token, and call token across a
+ * Hold return or reload. Only a complete before/after pair measures memory;
+ * a lone before or after is unmeasured (null), never a guess. Null when no
+ * pair was supplied.
+ */
 export function persistsEmailAcrossMemory(evidence: EmailInviteEvidence): boolean | null {
-  const hasBefore =
-    evidence.memoryInvitedBefore !== undefined ||
-    evidence.tagTokenBefore !== undefined ||
-    evidence.callTokenBefore !== undefined;
-  if (!hasBefore) return null;
-  if (evidence.memoryInvitedBefore === true && evidence.memoryInvitedAfter !== true) return false;
-  if (evidence.tagTokenBefore != null && evidence.tagTokenAfter !== evidence.tagTokenBefore) return false;
-  if (evidence.callTokenBefore != null && evidence.callTokenAfter !== evidence.callTokenBefore) return false;
-  return true;
+  type MemoryPair = { before: unknown; after: unknown };
+  /** A readable before and after of one signal; null when either side is absent. */
+  const pair = (before: unknown, after: unknown): MemoryPair | null =>
+    before !== undefined && before !== null && after !== undefined ? { before, after } : null;
+  const pairs = [
+    pair(evidence.memoryInvitedBefore, evidence.memoryInvitedAfter),
+    pair(evidence.tagTokenBefore, evidence.tagTokenAfter),
+    pair(evidence.callTokenBefore, evidence.callTokenAfter),
+  ].filter((entry): entry is MemoryPair => entry !== null);
+  if (pairs.length === 0) return null;
+  // A single measured mismatch is a lost tag; every measured pair must agree.
+  return pairs.every(({ before, after }) => before === after);
 }
 
 export function evaluateEmailInvite(evidence: EmailInviteEvidence): EmailInviteResult {
@@ -1068,6 +1084,15 @@ export function evaluateEmailInvite(evidence: EmailInviteEvidence): EmailInviteR
     return turn ? ` at ${turn}` : " (no Call trace turn merged)";
   };
   const citeChip = (): string => (evidence.chipTraceTurn ? ` at ${evidence.chipTraceTurn}` : " (no Call trace turn merged)");
+  // The tag was lost on return: the evidence's own memory turn, else the later
+  // tag mention (the repeat ask after the return), else an explicit "no turn".
+  const memoryTurn =
+    evidence.memoryTraceTurn !== undefined
+      ? evidence.memoryTraceTurn
+      : tagLineIndexes.length > 1
+        ? (lineTurns?.[tagLineIndexes[1]] ?? null)
+        : null;
+  const citeMemory = (): string => (memoryTurn ? ` at ${memoryTurn}` : " (no Call trace turn merged)");
 
   const fails: string[] = [];
   if (showToolCalls > 1) fails.push(`invited ${showToolCalls} times${citeLine(tagLineIndexes[0])}`);
@@ -1120,7 +1145,7 @@ export function evaluateEmailInvite(evidence: EmailInviteEvidence): EmailInviteR
       fails.push("work-email gate without a personal address");
     }
   }
-  if (memoryPersists === false) fails.push("tag did not persist across Hold return/reload");
+  if (memoryPersists === false) fails.push(`tag did not persist across Hold return/reload${citeMemory()}`);
 
   const status = fails.length === 0 ? "PASS" : "FAIL";
   // Unmeasured memory (no hold/reload evidence) is not a pass: the gate
@@ -1137,6 +1162,7 @@ export function evaluateEmailInvite(evidence: EmailInviteEvidence): EmailInviteR
     workEmailGateMentions,
     chipShows: chipShows.length,
     memoryPersists,
+    memoryTraceTurn: memoryTurn,
     returningOk,
     showToolCalls,
     status,
@@ -1152,7 +1178,7 @@ export function emailInviteGate(result: EmailInviteResult): ScoreboardGate {
     return {
       name: "email-invite",
       status: "INFO",
-      detail: "unmeasured - provide hold/reload evidence",
+      detail: "unmeasured - provide a before/after Hold return pair",
     };
   }
   return {
@@ -1177,6 +1203,8 @@ export type EmailInviteEvidenceFile = {
   chipShows: { address: string; tag: string }[];
   showToolCalls: number;
   chipTurn?: number | string | null;
+  /** Call trace turn where the tag was lost on Hold return (optional; else derived). */
+  memoryTurn?: number | string | null;
   traceSession?: string | null;
   memoryInvitedBefore?: boolean;
   memoryInvitedAfter?: boolean;
@@ -1246,6 +1274,14 @@ export function validateEmailInviteEvidence(
   ) {
     fail("chipTurn must be a turn number, a formatted turn, or null");
   }
+  if (
+    record.memoryTurn !== undefined &&
+    record.memoryTurn !== null &&
+    typeof record.memoryTurn !== "number" &&
+    typeof record.memoryTurn !== "string"
+  ) {
+    fail("memoryTurn must be a turn number, a formatted turn, or null");
+  }
   const traceSession = record.traceSession;
   if (traceSession !== undefined && traceSession !== null) {
     if (typeof traceSession !== "string" || !/^sess_[A-Za-z0-9_-]+$/.test(traceSession)) {
@@ -1284,6 +1320,7 @@ export function validateEmailInviteEvidence(
     chipShows,
     showToolCalls: record.showToolCalls as number,
     ...(record.chipTurn !== undefined ? { chipTurn: record.chipTurn as number | string | null } : {}),
+    ...(record.memoryTurn !== undefined ? { memoryTurn: record.memoryTurn as number | string | null } : {}),
     ...(traceSession !== undefined ? { traceSession: traceSession as string | null } : {}),
     ...(record.memoryInvitedBefore !== undefined
       ? { memoryInvitedBefore: record.memoryInvitedBefore as boolean }
