@@ -47,6 +47,7 @@ test("dry run writes an artifact with required keys and prints a gate table", ()
     "gates",
     "emailInvite",
     "evalRunner",
+    "callerClips",
   ]) {
     assert.ok(key in artifact, `artifact missing ${key}`);
   }
@@ -760,6 +761,91 @@ test("dry run with no real-cut evidence leaves the barge-in gate ungated", () =>
   };
   const gate = artifact.gates.find((g) => g.name === "barge-in-cut")!;
   assert.equal(gate.status, "INFO");
+});
+
+test("a faster real cut is comparable only while the caller clip is unchanged", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  // The shim stands in for the live runner: it prints the measured cut and the
+  // fixed caller clip's fingerprint, exactly as eval-demo-agent does.
+  writeFileSync(
+    join(bin, "npm"),
+    `#!/usr/bin/env node
+if (process.argv[3] === "eval:demo-agent") {
+  const cut = Number(process.env.SHIM_CUT);
+  const passed = cut <= 1500;
+  console.log("  · trace session sess_clip10");
+  console.log(\`    cut \${cut}ms after the caller started (budget 1500ms)\`);
+  console.log('    verdict ["yield","Wait, stop."]');
+  console.log(\`stop-over: \${passed ? "1/1" : "0/1"}\`);
+  console.log("EVAL SUMMARY " + JSON.stringify({
+    scenario: "stop-over",
+    runs: 1,
+    failures: passed ? 0 : 1,
+    scenarios: [{ name: "stop-over", passed: passed ? 1 : 0, runs: 1 }],
+    traceSessions: ["sess_clip10"],
+    playout: [{ scenario: "stop-over", run: 1, wallClockMs: 8000 }],
+    audioChunks: 40,
+    live: true,
+    clips: [JSON.parse(process.env.SHIM_CLIP)],
+  }));
+  process.exit(passed ? 0 : 1);
+} else if (process.argv[3] === "call:trace") {
+  console.log('12.20s  VONI    "Sure, first the tour"  (reply_create gap 900ms)');
+}
+`,
+    { mode: 0o755 },
+  );
+  const cwd = new URL("../", import.meta.url).pathname;
+  const clip = { text: "Wait, stop.", bytes: 48000, durationMs: 1000, sha256: "a".repeat(64), onsetMs: 40 };
+  const shorter = { text: "Wait, stop.", bytes: 36000, durationMs: 750, sha256: "b".repeat(64), onsetMs: 40 };
+  const env = { PATH: `${bin}:${process.env.PATH}` };
+  const first = join(dir, "score-a.json");
+  const second = join(dir, "score-b.json");
+  const third = join(dir, "score-c.json");
+
+  const baseline = run(["--scenario", "stop-over", "--out", first, "--timing-lock", join(dir, "lock-a")], cwd, {
+    ...env,
+    SHIM_CUT: "900",
+    SHIM_CLIP: JSON.stringify(clip),
+  });
+  assert.equal(baseline.status, 0, baseline.stderr + baseline.stdout);
+  const baselineArtifact = JSON.parse(readFileSync(first, "utf8")) as {
+    callerClips: { text: string; sha256: string }[];
+    gates: { name: string; status: string }[];
+  };
+  assert.equal(baselineArtifact.callerClips[0]?.sha256, clip.sha256);
+  assert.equal(baselineArtifact.gates.find((g) => g.name === "barge-in-cut")?.status, "PASS");
+
+  // Same clip, faster cut: the improvement is real and the diff shows the delta.
+  const faster = run(["--scenario", "stop-over", "--out", second, "--timing-lock", join(dir, "lock-b")], cwd, {
+    ...env,
+    SHIM_CUT: "700",
+    SHIM_CLIP: JSON.stringify(clip),
+  });
+  assert.equal(faster.status, 0, faster.stderr + faster.stdout);
+  assert.match(faster.stdout, /real-cut-answered\s+cut 900ms → 700ms \(-200ms\)/);
+  assert.doesNotMatch(faster.stdout, /caller clip\s+"Wait, stop\."/);
+
+  // A shorter clip with a faster number is not comparable: the cut gate fails
+  // and names the clip change instead of greening on a shortened take.
+  const drifted = run(["--scenario", "stop-over", "--out", third, "--timing-lock", join(dir, "lock-c")], cwd, {
+    ...env,
+    SHIM_CUT: "600",
+    SHIM_CLIP: JSON.stringify(shorter),
+  });
+  assert.equal(drifted.status, 1, drifted.stderr + drifted.stdout);
+  const driftedArtifact = JSON.parse(readFileSync(third, "utf8")) as {
+    callerClips: { sha256: string }[];
+    gates: { name: string; status: string; detail: string }[];
+  };
+  assert.equal(driftedArtifact.callerClips[0]?.sha256, shorter.sha256);
+  const gate = driftedArtifact.gates.find((g) => g.name === "barge-in-cut")!;
+  assert.equal(gate.status, "FAIL");
+  assert.match(gate.detail, /caller clip/);
+  assert.match(gate.detail, /not comparable/);
+  assert.match(drifted.stdout, /caller clip\s+"Wait, stop\." audio bytes differ/);
 });
 
 // ── Ticket 08: greeting cut on "Wait, stop" ─────────────────────────────────

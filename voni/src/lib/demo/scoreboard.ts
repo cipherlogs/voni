@@ -1112,6 +1112,13 @@ export type ScoreboardArtifact = {
     };
     rawSha256: string;
   };
+  /**
+   * Fixed caller clips the live runner streamed, pinned by words + audio
+   * fingerprint (ticket 05). A run whose clip changed is not comparable with
+   * the prior run's cut latency, so the barge-in-cut gate refuses to green.
+   * Optional: artifacts written before ticket 10 have no such evidence.
+   */
+  callerClips?: CallerClipFingerprint[];
   /** Merged Call trace excerpt for a finished real-call session (via --trace-session). */
   callTrace?: {
     sessionId: string;
@@ -1929,16 +1936,32 @@ function realCutDetail(evidence: RealCutEvidence, reason: string): string {
   const cut = evidence.cutMs === null ? "never cut" : `cut ${evidence.cutMs}ms`;
   const verdict = evidence.verdict ?? "unreported";
   const source = evidence.verdictSource ? `/${evidence.verdictSource}` : "";
-  const trace = evidence.traceTurn ?? "no trace turn";
+  const trace = evidence.traceTurn ?? "no Call trace turn merged";
   return `${cut} (verdict ${verdict}${source}; trace: ${trace}) — ${reason}`;
 }
 
 /**
  * The real-cut gate: PASS only when a real cut yields fast and is answered
  * on point with no resume of old material. Every FAIL names the cut
- * milliseconds, the judge verdict, and the Call trace turn.
+ * milliseconds, the judge verdict, and the Call trace turn (or says no turn
+ * was merged). A cut measured on a changed caller clip is a FAIL: the number
+ * is not comparable with the prior run, so it can never green on a shorter
+ * or differently synthesized take.
  */
-export function evaluateRealCut(evidence: RealCutEvidence): ScoreboardGate {
+export function evaluateRealCut(
+  evidence: RealCutEvidence,
+  clipDrift: string | null = null,
+): ScoreboardGate {
+  if (clipDrift) {
+    return {
+      name: "barge-in-cut",
+      status: "FAIL",
+      detail: realCutDetail(
+        evidence,
+        `caller clip changed since the prior run (${clipDrift}); the cut number is not comparable`,
+      ),
+    };
+  }
   if (evidence.resumed) {
     return {
       name: "barge-in-cut",
@@ -2011,8 +2034,9 @@ export function extractRealCutEvidence(stdout: string, excerpt: string[] = []): 
 export function applyRealCutGate(
   artifact: ScoreboardArtifact,
   evidence: RealCutEvidence,
+  clipDrift: string | null = null,
 ): ScoreboardArtifact {
-  const gate = evaluateRealCut(evidence);
+  const gate = evaluateRealCut(evidence, clipDrift);
   const prior = artifact.beats["real-cut-answered"];
   const gates = artifact.gates.map((g) => (g.name === "barge-in-cut" ? gate : g));
   return {
@@ -2244,6 +2268,26 @@ export function callerClipDrift(
 }
 
 /**
+ * Compare the caller clips a run measured against the prior run's pinned
+ * fingerprints. Clips are matched by their fixed words (a scenario speaks a
+ * fixed line), so a new scenario's clip is not drift; the same line with
+ * different audio, duration, or onset is. Null means every compared clip is
+ * byte-identical — cut latency stays comparable.
+ */
+export function callerClipChanges(
+  prior: CallerClipFingerprint[] = [],
+  next: CallerClipFingerprint[] = [],
+): string | null {
+  for (const actual of next) {
+    const expected = prior.find((clip) => clip.text === actual.text);
+    if (!expected) continue;
+    const drift = callerClipDrift(expected, actual);
+    if (drift) return `"${actual.text}" ${drift}`;
+  }
+  return null;
+}
+
+/**
  * What the runner knows about one caller clip at measure time.
  * `enqueuedAt` is kept only to prove t0 ignores it (and to flag an impossible
  * frame time); the pump fills `firstFrameAt` when it transmits the frame that
@@ -2325,6 +2369,8 @@ export type EvalRunnerSummary = {
   audioChunks: number | null;
   /** At least one live scenario was attempted. */
   live: boolean;
+  /** Fixed caller clips streamed this run, with their audio fingerprints. */
+  clips?: CallerClipFingerprint[];
 };
 
 /** Why the harness broke, never why a gate failed. */
@@ -2389,6 +2435,26 @@ function parseEvalSummary(stdout: string): EvalRunnerSummary | null {
               wallClockMs: Number(row.wallClockMs),
             }))
         : [];
+      const clips = Array.isArray(raw.clips)
+        ? raw.clips
+            .filter(
+              (clip): clip is CallerClipFingerprint =>
+                clip !== null &&
+                typeof clip === "object" &&
+                typeof clip.text === "string" &&
+                Number.isFinite(clip.bytes) &&
+                Number.isFinite(clip.durationMs) &&
+                typeof clip.sha256 === "string" &&
+                Number.isFinite(clip.onsetMs),
+            )
+            .map((clip) => ({
+              text: clip.text,
+              bytes: Number(clip.bytes),
+              durationMs: Number(clip.durationMs),
+              sha256: clip.sha256,
+              onsetMs: Number(clip.onsetMs),
+            }))
+        : [];
       return {
         scenario: typeof raw.scenario === "string" ? raw.scenario : "",
         runs: Number.isFinite(raw.runs) ? Number(raw.runs) : scenarios.reduce((sum, row) => sum + row.runs, 0),
@@ -2403,12 +2469,18 @@ function parseEvalSummary(stdout: string): EvalRunnerSummary | null {
         audioChunks:
           typeof raw.audioChunks === "number" && Number.isFinite(raw.audioChunks) ? raw.audioChunks : null,
         live: raw.live === true,
+        ...(clips.length > 0 ? { clips } : {}),
       };
     } catch {
       return null;
     }
   }
   return null;
+}
+
+/** Caller clip fingerprints the runner printed in its summary; [] when none. */
+export function callerClipsFromRunnerStdout(stdout: string): CallerClipFingerprint[] {
+  return parseEvalSummary(stdout)?.clips ?? [];
 }
 
 function traceSessionsIn(stdout: string): string[] {
@@ -2797,6 +2869,8 @@ export function buildSkeletonArtifact(input: {
   agentChannel?: AgentChannelEvidence | null;
   /** Blind ballots filed with --rate/--recording; empty until judged. */
   humanRatings?: HumanRatings;
+  /** Fixed caller clip fingerprints the live runner streamed; absent means unrecorded. */
+  callerClips?: CallerClipFingerprint[];
 }): ScoreboardArtifact {
   const fillerGate = input.fillerResume ? evaluateFillerResumeGate(input.fillerResume) : null;
   const samples: ReplyGapSample[] = [];
@@ -3048,6 +3122,7 @@ export function buildSkeletonArtifact(input: {
       timings: { scenarioRuns: runnerOutcome?.summary?.playout ?? [] },
       rawSha256: sha256Hex(input.runnerStdout),
     },
+    callerClips: input.callerClips ?? [],
     runId: input.runId ?? `run-${input.voice}-${Date.now().toString(36)}`,
     quarantinedBeats: [],
   };
@@ -3121,6 +3196,18 @@ export type ScoreboardArtifactDiff = {
     goodbyeCoverageDelta: number | null;
     hangUpDelayDeltaMs: number | null;
     narratedEndingChanged: boolean;
+  };
+  /**
+   * Fixed caller clips (ticket 10): a changed clip means the cut delta is not
+   * comparable, so the diff says so instead of reporting a shorter take as a
+   * faster interruption.
+   */
+  callerClips: {
+    prior: CallerClipFingerprint[];
+    next: CallerClipFingerprint[];
+    changed: boolean;
+    /** Human-readable drift of the first compared clip that changed. */
+    drift: string | null;
   };
   /**
    * Plumbing health (ticket 06) across the two runs. Older artifacts predate
@@ -3241,6 +3328,15 @@ export function diffScoreboardArtifact(
     hangUpDelayDeltaMs: numericDelta(prev.endCallDrain.hangUpDelayMs, next.endCallDrain.hangUpDelayMs),
     narratedEndingChanged: prev.endCallDrain.narratedEnding !== next.endCallDrain.narratedEnding,
   };
+  const priorClips = prev.callerClips ?? [];
+  const nextClips = next.callerClips ?? [];
+  const clipDrift = callerClipChanges(priorClips, nextClips);
+  const callerClips = {
+    prior: priorClips,
+    next: nextClips,
+    changed: clipDrift !== null,
+    drift: clipDrift,
+  };
   const changedGates = gates.filter((gate) => gate.changed);
   const changedBeats = beats.filter((beat) => beat.changed);
   const replyGapChanged =
@@ -3289,12 +3385,14 @@ export function diffScoreboardArtifact(
     changedBeats,
     replyGap,
     endCallDrain,
+    callerClips,
     evalRunner,
     changed:
       changedGates.length > 0 ||
       changedBeats.length > 0 ||
       replyGapChanged ||
       drainChanged ||
+      callerClips.changed ||
       evalRunner.changed,
   };
 }
@@ -3348,6 +3446,11 @@ export function formatArtifactDiff(diff: ScoreboardArtifactDiff): string {
       if (beat.drainMs.changed) parts.push(`drain ${formatMsTransition(beat.drainMs.prior, beat.drainMs.next)}`);
       lines.push(`    ${beat.beat.padEnd(20)} ${parts.join(", ")}`);
     }
+  }
+  if (diff.callerClips.changed) {
+    lines.push(
+      `  caller clip  ${diff.callerClips.drift} — cut latency is not comparable with the prior run`,
+    );
   }
   if (diff.evalRunner.changed) {
     // Plumbing health is reported beside the gates but stays a harness verdict,

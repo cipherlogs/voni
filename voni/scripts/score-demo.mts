@@ -124,6 +124,9 @@
  * a missing --cut-answered fails with cut ms plus verdict and trace turn.
  * Explicit flags override the parsed runner output per field. With neither
  * parsed nor explicit evidence the gate stays INFO: recorded, not failed.
+ * The runner's fixed caller clip fingerprints are recorded in the artifact;
+ * if the same line's clip changed since the prior run, the gate FAILs as not
+ * comparable instead of reporting a shorter take as a faster cut.
  *
  * Greeting-cut gate (ticket 08): the greeting-cut scenario's measured ms
  * fills beats["greeting-cut"].cutMs and drives a required greeting-cut gate.
@@ -139,6 +142,8 @@ import {
   applyGreetingCutGate,
   applyRealCutGate,
   buildSkeletonArtifact,
+  callerClipChanges,
+  callerClipsFromRunnerStdout,
   DEFAULT_GATE_VOICE,
   diffScoreboardArtifact,
   emptyHumanRatings,
@@ -620,6 +625,14 @@ function main(): void {
     const fillerTurn = traceTurnForVisitorSpeech(excerpt, fillerResume.visitorText);
     if (fillerTurn !== null) fillerResume.traceTurn = formatTraceTurn(fillerTurn, traceSession || null);
   }
+  // The caller clip the live runner actually streamed (ticket 10): a changed
+  // clip makes the cut number incomparable with the prior run.
+  const callerClips = dryRun ? [] : callerClipsFromRunnerStdout(evalSection.stdout);
+  // The prior run is a working artifact, never committed: load it before the
+  // cut gate so a changed caller clip fails comparability instead of greening.
+  const out = resolve(arg("--out", `scoreboard-runs/score-${stamp()}-${voice}.json`));
+  const priorPath = arg("--prior", "");
+  const prior = priorPath ? loadPriorArtifact(priorPath) : latestPriorArtifact(dirname(out), voice, out);
   // Real-cut evidence counts as measured even though it lands post-skeleton.
   const parsed = extractRealCutEvidence(evalSection.stdout, excerpt ?? []);
   // Greeting-cut evidence comes from the fixed caller clip's own scenario;
@@ -664,6 +677,7 @@ function main(): void {
     evalError: evalSection.evalError,
     ...(greetingCut ? { greetingCutEvidencePresent: true } : {}),
     ...(parsed || hasCutFlags ? { realCutEvidencePresent: true } : {}),
+    callerClips,
     runId: `run-${stamp()}-${voice}`,
   });
   if (parsed || hasCutFlags) {
@@ -694,7 +708,8 @@ function main(): void {
       ended: process.argv.includes("--cut-ended") || base.ended,
       traceTurn: arg("--trace-turn", "") || derivedTraceTurn,
     };
-    artifact = applyRealCutGate(artifact, evidence);
+    const clipDrift = prior ? callerClipChanges(prior.artifact.callerClips ?? [], callerClips) : null;
+    artifact = applyRealCutGate(artifact, evidence, clipDrift);
   }
   if (greetingCut) {
     artifact = applyGreetingCutGate(artifact, greetingCut);
@@ -707,11 +722,6 @@ function main(): void {
     };
   }
 
-  const out = resolve(arg("--out", `scoreboard-runs/score-${stamp()}-${voice}.json`));
-  // The prior run is a working artifact, never committed: an explicit path
-  // wins, otherwise the latest same-voice artifact beside this run's output.
-  const priorPath = arg("--prior", "");
-  const prior = priorPath ? loadPriorArtifact(priorPath) : latestPriorArtifact(dirname(out), voice, out);
   mkdirSync(dirname(out), { recursive: true });
   writeFileSync(out, `${JSON.stringify(artifact, null, 2)}\n`, { mode: 0o600 });
 
