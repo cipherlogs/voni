@@ -1693,6 +1693,7 @@ export function overheardFromTraceExcerpt(
     asides.push({
       beat,
       text: row.heardText,
+      ...(row.agentText ? { agentText: row.agentText } : {}),
       markedOverheard: marked,
       inLedger: ledger !== undefined ? matches(ledger, row.heardText) : true,
       handling: overheardHandlingFromRows(rows, index),
@@ -1727,6 +1728,8 @@ type TraceOverheardRow = {
   /** HEARD: the visitor's words and when their speech started. */
   heardText: string;
   heardStart: number | null;
+  /** What Voni was saying over this row: the last reply's own words, verbatim. */
+  agentText: string;
   /** CLIENT barge-in verdict, translated to handling. */
   handling: OverheardHandling | null;
 };
@@ -1735,10 +1738,12 @@ type TraceOverheardRow = {
 function parseOverheardRows(excerpt: string[]): TraceOverheardRow[] {
   const rows: TraceOverheardRow[] = [];
   let turn = 0;
+  let agentText = "";
   for (const line of excerpt) {
     if (line.includes("  VONI    ")) {
       turn += 1;
       const cut = /CUT at (\d+\.\d+)s/.exec(line);
+      agentText = /\bVONI\s+"([^"]+)"/.exec(line)?.[1] ?? "";
       rows.push({
         kind: "voni",
         line,
@@ -1746,6 +1751,7 @@ function parseOverheardRows(excerpt: string[]): TraceOverheardRow[] {
         cutAt: cut ? Number(cut[1]) : null,
         heardText: "",
         heardStart: null,
+        agentText,
         handling: null,
       });
       continue;
@@ -1760,6 +1766,9 @@ function parseOverheardRows(excerpt: string[]): TraceOverheardRow[] {
         cutAt: null,
         heardText: text,
         heardStart: span ? Number(span[1]) : null,
+        // The reply the words landed on: classification needs its context so
+        // Voni's own echo counts as filler, never as fresh content.
+        agentText,
         handling: null,
       });
       continue;
@@ -1773,6 +1782,7 @@ function parseOverheardRows(excerpt: string[]): TraceOverheardRow[] {
         cutAt: null,
         heardText: "",
         heardStart: null,
+        agentText,
         handling: barge[1] === "yield" ? "answered" : "resumed-from",
       });
     }

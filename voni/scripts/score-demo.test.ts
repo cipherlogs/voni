@@ -1402,6 +1402,111 @@ test("bad --overheard-json fails fast with no artifact", () => {
   assert.match(result.stderr + result.stdout, /tracePointer|text/);
 });
 
+test("a merged trace FAILs steering ignored and filler answered, each citing its turn", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const caseDir = (name: string, heard: string, verdict: string) => {
+    const caseDir = join(dir, name);
+    const bin = join(caseDir, "bin");
+    mkdirSync(bin, { recursive: true });
+    const session = `sess_${name}`;
+    const ledger = JSON.stringify([heard]);
+    writeFileSync(
+      join(bin, "npm"),
+      `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === "run" && args[1] === "eval:demo-agent") {
+  console.log("  · trace session ${session}");
+  console.log('    heard ledger ${ledger}');
+  console.log("over-talk: 1/1");
+} else if (args[0] === "run" && args[1] === "call:trace") {
+  console.log('10.20s  VONI    "handling booking and reminders"  (reply_create ttfa 400ms)  CUT at 11.30s');
+  console.log('11.05s  HEARD   "${heard}"  (11.05s-11.60s)');
+  console.log("11.40s  CLIENT  barge-in ${verdict} rule ${heard}");
+}
+`,
+      { mode: 0o755 },
+    );
+    const out = join(caseDir, "score.json");
+    const result = run(
+      ["--scenario", "over-talk", "--out", out, "--timing-lock", join(caseDir, "timing.lock")],
+      new URL("../", import.meta.url).pathname,
+      { PATH: `${bin}:${process.env.PATH}` },
+    );
+    const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+      gates: { name: string; status: string; detail: string }[];
+    };
+    return { artifact, result, session };
+  };
+
+  // Steering resolved as an aside: the course change was ignored, and the FAIL
+  // names the reply the visitor said it over.
+  const steering = caseDir("steer", "Wait, stop.", "keep jev");
+  const steeringGate = steering.artifact.gates.find((g) => g.name === "overheard-recall")!;
+  assert.equal(steeringGate.status, "FAIL");
+  assert.match(steeringGate.detail, /steering not answered \(handling=resumed-from\)/);
+  assert.match(steeringGate.detail, new RegExp(`call trace turn 1 \\(${steering.session}\\)`));
+  assert.match(steering.result.stdout, /FAIL\s+overheard-recall/);
+  assert.match(steering.result.stdout, /call trace turn 1/);
+
+  // Filler answered instead of resumed from: the call went sideways, and the
+  // FAIL names the same turn.
+  const filler = caseDir("filler", "Okaay so", "yield");
+  const fillerGate = filler.artifact.gates.find((g) => g.name === "overheard-recall")!;
+  assert.equal(fillerGate.status, "FAIL");
+  assert.match(fillerGate.detail, /filler derailed the turn/);
+  assert.match(fillerGate.detail, new RegExp(`call trace turn 1 \\(${filler.session}\\)`));
+  assert.match(filler.result.stdout, /FAIL\s+overheard-recall/);
+  assert.match(filler.result.stdout, /call trace turn 1/);
+});
+
+test("a merged trace PASSes steering answered and filler resumed-from", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  writeFileSync(
+    join(bin, "npm"),
+    `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === "run" && args[1] === "eval:demo-agent") {
+  console.log("  · trace session sess_pass15");
+  console.log('    heard ledger ["Wait, stop.","Okaay so"]');
+  console.log("over-talk: 1/1");
+} else if (args[0] === "run" && args[1] === "call:trace") {
+  console.log('10.20s  VONI    "handling booking and reminders"  (reply_create ttfa 400ms)  CUT at 11.30s');
+  console.log('11.05s  HEARD   "Wait, stop."  (11.05s-11.60s)');
+  console.log("11.40s  CLIENT  barge-in yield rule Wait, stop.");
+  console.log('12.30s  VONI    "Sure, let me slow down"  (reply_create ttfa 300ms)  CUT at 13.10s');
+  console.log('12.90s  HEARD   "Okaay so"  (12.90s-13.20s)');
+  console.log("13.15s  CLIENT  barge-in ignore rule Okaay so");
+}
+`,
+    { mode: 0o755 },
+  );
+  const out = join(dir, "score.json");
+  const result = run(
+    ["--scenario", "over-talk", "--out", out, "--timing-lock", join(dir, "timing.lock")],
+    new URL("../", import.meta.url).pathname,
+    { PATH: `${bin}:${process.env.PATH}` },
+  );
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    overheard: { asides: { text: string; handling: string; tracePointer: string }[] };
+    gates: { name: string; status: string; detail: string }[];
+  };
+  assert.deepEqual(
+    artifact.overheard.asides.map((a) => [a.text, a.handling]),
+    [
+      ["Wait, stop.", "answered"],
+      ["Okaay so", "resumed-from"],
+    ],
+  );
+  const gate = artifact.gates.find((g) => g.name === "overheard-recall")!;
+  assert.equal(gate.status, "PASS");
+  assert.match(gate.detail, /2\/2 asides recalled/);
+  assert.match(artifact.overheard.asides[0].tracePointer, /call trace turn 1 \(sess_pass15\)/);
+  assert.match(artifact.overheard.asides[1].tracePointer, /call trace turn 2 \(sess_pass15\)/);
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+});
+
 test("an over-talk run marks the aside Overheard and proves the session ledger counted it", () => {
   const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
   const bin = join(dir, "bin");

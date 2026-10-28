@@ -1951,6 +1951,78 @@ test("trace asides are marked from agent-floor overlap, never assumed", () => {
   assert.match(orphanGate.detail, /no Call trace turn merged/);
 });
 
+test("a trace aside carries what Voni was saying, so its own echo is filler, not content", () => {
+  const excerpt = [
+    '10.20s  VONI    "handling booking and reminders"  (reply.create)  CUT at 11.30s',
+    '11.05s  HEARD   "booking and reminders"  (11.05s–11.60s)',
+    "11.40s  CLIENT  barge-in yield rule booking and reminders",
+  ];
+  const asides = overheardFromTraceExcerpt(excerpt, "sess_abc");
+  assert.equal(asides.length, 1);
+  assert.equal(asides[0].agentText, "handling booking and reminders");
+  assert.equal(classifyOverheard(asides[0].text, asides[0].agentText), "filler");
+  // The server answered what was only Voni's own echo: the turn went sideways,
+  // and the FAIL must name the reply the aside landed on.
+  const evaluation = evaluateOverheardRecall(asides);
+  assert.equal(evaluation.gate.status, "FAIL");
+  assert.match(evaluation.gate.detail, /filler derailed the turn/);
+  assert.match(evaluation.gate.detail, /call trace turn 1 \(sess_abc\)/);
+});
+
+test("steering ignored in the merged trace FAILs and points at the turn it landed on", () => {
+  const excerpt = [
+    '10.20s  VONI    "handling booking and reminders"  (reply.create)  CUT at 11.30s',
+    '11.05s  HEARD   "Wait, stop."  (11.05s–11.60s)',
+    "11.40s  CLIENT  barge-in keep jev Wait, stop.",
+  ];
+  const asides = overheardFromTraceExcerpt(excerpt, "sess_abc");
+  assert.equal(classifyOverheard(asides[0].text, asides[0].agentText), "steering");
+  assert.equal(asides[0].handling, "resumed-from");
+  const evaluation = evaluateOverheardRecall(asides);
+  assert.equal(evaluation.gate.status, "FAIL");
+  assert.match(evaluation.gate.detail, /steering not answered \(handling=resumed-from\)/);
+  assert.match(evaluation.gate.detail, /call trace turn 1 \(sess_abc\)/);
+
+  // The same aside answered is the expected course change.
+  const answered = overheardFromTraceExcerpt(
+    [
+      '10.20s  VONI    "handling booking and reminders"  (reply.create)  CUT at 11.30s',
+      '11.05s  HEARD   "Wait, stop."  (11.05s–11.60s)',
+      "11.40s  CLIENT  barge-in yield rule Wait, stop.",
+    ],
+    "sess_abc",
+  );
+  assert.equal(answered[0].handling, "answered");
+  assert.equal(evaluateOverheardRecall(answered).gate.status, "PASS");
+});
+
+test("filler answered in the merged trace FAILs and points at the turn it landed on", () => {
+  const excerpt = [
+    '10.20s  VONI    "handling booking and reminders"  (reply.create)  CUT at 11.30s',
+    '11.05s  HEARD   "Okaay so"  (11.05s–11.60s)',
+    "11.40s  CLIENT  barge-in yield rule Okaay so",
+  ];
+  const asides = overheardFromTraceExcerpt(excerpt, "sess_abc");
+  assert.equal(classifyOverheard(asides[0].text, asides[0].agentText), "filler");
+  assert.equal(asides[0].handling, "answered");
+  const evaluation = evaluateOverheardRecall(asides);
+  assert.equal(evaluation.gate.status, "FAIL");
+  assert.match(evaluation.gate.detail, /filler derailed the turn/);
+  assert.match(evaluation.gate.detail, /call trace turn 1 \(sess_abc\)/);
+
+  // Resumed from is the expected recovery: the back-channel never derails.
+  const resumed = overheardFromTraceExcerpt(
+    [
+      '10.20s  VONI    "handling booking and reminders"  (reply.create)  CUT at 11.30s',
+      '11.05s  HEARD   "Okaay so"  (11.05s–11.60s)',
+      "11.40s  CLIENT  barge-in ignore rule Okaay so",
+    ],
+    "sess_abc",
+  );
+  assert.equal(resumed[0].handling, "resumed-from");
+  assert.equal(evaluateOverheardRecall(resumed).gate.status, "PASS");
+});
+
 test("the session ledger proves the same aside counted, and a mismatch FAILs", () => {
   const excerpt = [
     '10.20s  VONI    "handling booking"  (reply.create)  CUT at 11.30s',
