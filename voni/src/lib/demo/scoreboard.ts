@@ -28,7 +28,10 @@
  * measured evidence (--overlap-ms / --goodbye-coverage / --hang-up-delay-ms):
  * without evidence the gates stay INFO, never a false FAIL. What this module guarantees is trustworthy plumbing —
  * one JSON artifact per run with redacted transcripts plus their hash, and
- * empty human-rating slots.
+ * empty human-rating slots. Every failure that has a merged Call trace cites
+ * its exact turn, and diffScoreboardArtifact compares a run with the prior
+ * artifact (gate transitions, beat deltas, reply gap, drain) without ever
+ * committing the artifacts.
  *
  * Gate ownership (one gate, one section below; keep gate logic inside its
  * own section — no unrelated edits in one function):
@@ -387,6 +390,71 @@ export function parseTraceGaps(excerpt: string[]): TraceGap[] {
     if (match) gaps.push({ gapMs: Number(match[1]), turnIndex: turn });
   }
   return gaps;
+}
+
+/**
+ * A Call trace turn pointer in the same numbering every gate uses: the Nth
+ * VONI reply in the merged excerpt. The session id is appended when known so
+ * the owner can replay the exact timeline.
+ */
+export function formatTraceTurn(turn: number, sessionId?: string | null): string {
+  return `call trace turn ${turn}${sessionId ? ` (${sessionId})` : ""}`;
+}
+
+/**
+ * Turn pointers derived from a merged Call trace excerpt: the first
+ * interrupted reply (`CUT at`) and the closing reply that followed the
+ * `end_call` tool row. Both are read from the excerpt's own rows — a missing
+ * row yields null rather than a guessed turn.
+ */
+export type TraceTurnPointers = {
+  /** 1-based VONI turn of the first interrupted reply, or null. */
+  cutTurn: number | null;
+  /** 1-based VONI turn of the reply after the end_call tool row, or null. */
+  goodbyeTurn: number | null;
+};
+
+export function traceTurnPointers(excerpt: string[]): TraceTurnPointers {
+  let turn = 0;
+  let cutTurn: number | null = null;
+  let goodbyeTurn: number | null = null;
+  let endCallSeen = false;
+  for (const line of excerpt) {
+    if (line.includes("  TOOL    ") && /\bend_call\b/.test(line)) {
+      endCallSeen = true;
+      continue;
+    }
+    if (!line.includes("  VONI    ")) continue;
+    turn += 1;
+    if (cutTurn === null && line.includes("CUT at")) cutTurn = turn;
+    if (endCallSeen && goodbyeTurn === null) goodbyeTurn = turn;
+  }
+  return { cutTurn, goodbyeTurn };
+}
+
+/**
+ * The VONI turn a visitor utterance overlapped, derived by matching the
+ * HEARD row's quoted words and counting the VONI replies before it. null when
+ * the words do not appear or no reply was under way yet — never a guessed
+ * turn.
+ */
+export function traceTurnForVisitorSpeech(excerpt: string[], visitorText: string): number | null {
+  const needle = visitorText.trim().toLowerCase();
+  if (!needle) return null;
+  let turn = 0;
+  let lastVoniTurn = 0;
+  for (const line of excerpt) {
+    if (line.includes("  VONI    ")) {
+      turn += 1;
+      lastVoniTurn = turn;
+      continue;
+    }
+    if (!line.includes("  HEARD   ")) continue;
+    const heard = /HEARD\s+"([^"]*)"/.exec(line)?.[1]?.trim().toLowerCase();
+    if (!heard) continue;
+    if (heard.includes(needle) || needle.includes(heard)) return lastVoniTurn || null;
+  }
+  return null;
 }
 
 /**
@@ -1877,9 +1945,11 @@ export function evaluateRealCut(evidence: RealCutEvidence): ScoreboardGate {
 /**
  * Parse real-cut evidence from the eval runner's stdout. Returns null when
  * the output carries no real-cut scenario summary, so unrelated scenarios
- * leave the gate ungated.
+ * leave the gate ungated. When the merged Call trace excerpt is supplied, the
+ * evidence points at the exact turn: the interrupted reply for a measured
+ * cut, or the closing reply after end_call when the caller simply hung up.
  */
-export function extractRealCutEvidence(stdout: string): RealCutEvidence | null {
+export function extractRealCutEvidence(stdout: string, excerpt: string[] = []): RealCutEvidence | null {
   const summary = stdout.match(/^(stop-over|hang-up-over|hang-up-fast): (\d+)\/(\d+)/m);
   if (!summary) return null;
   const scenario = summary[1];
@@ -1888,6 +1958,8 @@ export function extractRealCutEvidence(stdout: string): RealCutEvidence | null {
   const verdict = stdout.match(/\["(yield|ignore|keep|judge)"(,|\])/)?.[1] ?? null;
   const resumed = /resumed instead of ending|Pick up where you left off/.test(stdout);
   const ended = scenario.startsWith("hang-up") && passed && !resumed;
+  const pointers = traceTurnPointers(excerpt);
+  const turn = cut ? pointers.cutTurn : (pointers.cutTurn ?? pointers.goodbyeTurn);
   return {
     cutMs: cut ? Number(cut[1]) : null,
     verdict,
@@ -1895,7 +1967,7 @@ export function extractRealCutEvidence(stdout: string): RealCutEvidence | null {
     answered: passed && !resumed,
     resumed,
     ended,
-    traceTurn: null,
+    traceTurn: turn !== null ? formatTraceTurn(turn) : null,
   };
 }
 
@@ -2368,14 +2440,23 @@ export function buildSkeletonArtifact(input: {
   // opens with a greeting-cut marker. Unverified turns stay call-level.
   const attribution = attributeFirstTraceGap(input.traceExcerpt ?? [], { beatMap: input.traceBeat ?? undefined });
   const attributedBeat = explicitGreetingCut ? null : attribution.beat;
+  const traceFirstTurnIndex = explicitGreetingCut ? null : ((input.traceGaps ?? [])[0]?.turnIndex ?? null);
   const traceFirstToBeat =
     attributedBeat !== null && (input.traceGaps ?? []).length > 0
-      ? [{ beat: attributedBeat, gapMs: (input.traceGaps as TraceGap[])[0].gapMs }]
+      ? [{ beat: attributedBeat, gapMs: (input.traceGaps as TraceGap[])[0].gapMs, turnIndex: traceFirstTurnIndex }]
       : [];
   const traceAttributed = traceFirstToBeat.length > 0;
   for (const beat of GOLDEN_BEATS) {
-    const fromTrace = beat === (traceFirstToBeat[0]?.beat ?? null) ? [traceFirstToBeat[0].gapMs] : [];
-    for (const gapMs of [...fromTrace, ...finiteGaps(beat)]) {
+    const fromTrace = beat === (traceFirstToBeat[0]?.beat ?? null) ? [traceFirstToBeat[0]] : [];
+    for (const traceSample of fromTrace) {
+      samples.push({
+        beat,
+        gapMs: traceSample.gapMs,
+        turnIndex: traceSample.turnIndex,
+        sessionId: input.traceSessionId ?? undefined,
+      });
+    }
+    for (const gapMs of finiteGaps(beat)) {
       samples.push({ beat, gapMs, turnIndex: null, sessionId: input.traceSessionId ?? undefined });
     }
   }
@@ -2438,13 +2519,39 @@ export function buildSkeletonArtifact(input: {
     input.overheardAsides === undefined
       ? null
       : evaluateOverheardRecall(input.overheardAsides);
-  const deadAirGaps = input.deadAir?.gapsMs ?? [];
-  const deadAirCheckIns = input.deadAir?.checkIns ?? [];
   const doubleTalkOverlapMs = input.doubleTalkOverlapMs ?? [];
   const drain = input.endCallDrain ?? { goodbyeCoverage: null, hangUpDelayMs: null, narratedEnding: false };
   const traceRef = input.traceRef ?? input.traceSessionId ?? undefined;
-  const doubleTalkInput: DoubleTalkInput = { overlapMs: doubleTalkOverlapMs, ...(traceRef ? { traceRef } : {}) };
-  const endCallDrainInput: EndCallDrainInput = { ...drain, ...(traceRef ? { traceRef } : {}) };
+  // Turn pointers come from the merged excerpt only: the interrupted reply for
+  // a double-talk cut, the reply after end_call for the goodbye drain, and the
+  // cut row for a check-in that talked over the caller. Missing rows fall back
+  // to the session-level pointer, never a guessed turn.
+  const turnPointers = traceTurnPointers(input.traceExcerpt ?? []);
+  const traceSession = input.traceSessionId ?? null;
+  const cutTraceRef =
+    turnPointers.cutTurn !== null ? formatTraceTurn(turnPointers.cutTurn, traceSession) : traceRef;
+  const goodbyeTraceRef =
+    turnPointers.goodbyeTurn !== null ? formatTraceTurn(turnPointers.goodbyeTurn, traceSession) : traceRef;
+  const deadAirInput = input.deadAir
+    ? {
+        ...input.deadAir,
+        checkIns: input.deadAir.checkIns.map((checkIn) =>
+          checkIn.overCaller && !checkIn.trace && turnPointers.cutTurn !== null
+            ? { ...checkIn, trace: formatTraceTurn(turnPointers.cutTurn, traceSession) }
+            : checkIn,
+        ),
+      }
+    : input.deadAir;
+  const deadAirGaps = deadAirInput?.gapsMs ?? [];
+  const deadAirCheckIns = deadAirInput?.checkIns ?? [];
+  const doubleTalkInput: DoubleTalkInput = {
+    overlapMs: doubleTalkOverlapMs,
+    ...(cutTraceRef ? { traceRef: cutTraceRef } : {}),
+  };
+  const endCallDrainInput: EndCallDrainInput = {
+    ...drain,
+    ...(goodbyeTraceRef ? { traceRef: goodbyeTraceRef } : {}),
+  };
   const timbreProbes: TimbreProbes = input.probes ?? { jump: 0, overload: 0, clip: 0, underrun: 0, inputDrop: 0 };
   const agentChannel = input.agentChannel ?? null;
   const humanRatings = input.humanRatings ?? emptyHumanRatings(null);
@@ -2455,7 +2562,7 @@ export function buildSkeletonArtifact(input: {
     traceGaps: input.traceGaps,
     fillerResume: input.fillerResume,
     overheardAsides: input.overheardAsides,
-    deadAir: input.deadAir,
+    deadAir: deadAirInput,
     doubleTalkOverlapMs,
     endCallDrain: drain,
     ...(input.probes !== undefined ? { probes: input.probes } : {}),
@@ -2472,7 +2579,7 @@ export function buildSkeletonArtifact(input: {
     input.traceExcerpt ?? [],
     fillerGate,
     evaluation?.gate ?? null,
-    input.deadAir,
+    deadAirInput,
     doubleTalkInput,
     endCallDrainInput,
     timbreProbes,
@@ -2570,6 +2677,230 @@ export function formatGateTable(artifact: ScoreboardArtifact): string {
     `demo scoreboard (${artifact.voice}, ${artifact.runs} run${artifact.runs === 1 ? "" : "s"})`,
     ...rows,
   ].join("\n");
+}
+
+// ── Artifact diff: what changed since the prior run (ticket 07) ──────────────
+
+/** One metric's prior/next value and signed change; null when either side is unmeasured. */
+export type ScoreboardMetricDelta = {
+  prior: number | null;
+  next: number | null;
+  /** next - prior; null when either side is unmeasured. */
+  deltaMs: number | null;
+  changed: boolean;
+};
+
+/** A gate's status transition (a gate missing on one side shows null). */
+export type ScoreboardGateTransition = {
+  name: string;
+  prior: GateStatus | null;
+  next: GateStatus | null;
+  changed: boolean;
+};
+
+/** One beat's metric and status changes between two artifacts. */
+export type ScoreboardBeatDelta = {
+  beat: GoldenBeat;
+  status: { prior: GateStatus; next: GateStatus; changed: boolean };
+  gapMs: ScoreboardMetricDelta;
+  cutMs: ScoreboardMetricDelta;
+  resumeMs: ScoreboardMetricDelta;
+  drainMs: ScoreboardMetricDelta;
+  changed: boolean;
+};
+
+/** Pure diff between two scoreboard artifacts: gates, beats, reply gap, drain. */
+export type ScoreboardArtifactDiff = {
+  priorRunId: string;
+  nextRunId: string;
+  priorRecordedAt: string;
+  nextRecordedAt: string;
+  priorVoice: string;
+  nextVoice: string;
+  gates: ScoreboardGateTransition[];
+  /** Only the gates whose status changed, in next-run order. */
+  changedGates: ScoreboardGateTransition[];
+  beats: ScoreboardBeatDelta[];
+  /** Only the beats with a metric or status change, in golden order. */
+  changedBeats: ScoreboardBeatDelta[];
+  replyGap: {
+    prior: ScoreboardArtifact["replyGap"];
+    next: ScoreboardArtifact["replyGap"];
+    p50DeltaMs: number | null;
+    p95DeltaMs: number | null;
+    samplesDelta: number;
+  };
+  endCallDrain: {
+    prior: ScoreboardArtifact["endCallDrain"];
+    next: ScoreboardArtifact["endCallDrain"];
+    goodbyeCoverageDelta: number | null;
+    hangUpDelayDeltaMs: number | null;
+    narratedEndingChanged: boolean;
+  };
+  changed: boolean;
+};
+
+function metricDelta(prior: number | null, next: number | null): ScoreboardMetricDelta {
+  return {
+    prior,
+    next,
+    deltaMs: prior !== null && next !== null ? next - prior : null,
+    changed: prior !== next,
+  };
+}
+
+function numericDelta(prior: number | null, next: number | null): number | null {
+  return prior !== null && next !== null ? next - prior : null;
+}
+
+/**
+ * Diff two scoreboard artifacts so a run shows what moved since the prior
+ * one: per-gate status transitions, per-beat metric deltas, and the reply-gap
+ * and end-call-drain roll-ups. Pure: both sides are read, nothing is inferred
+ * and no missing measurement becomes a zero.
+ */
+export function diffScoreboardArtifact(
+  prev: ScoreboardArtifact,
+  next: ScoreboardArtifact,
+): ScoreboardArtifactDiff {
+  const priorGates = new Map(prev.gates.map((gate) => [gate.name, gate.status] as const));
+  const nextGates = new Map(next.gates.map((gate) => [gate.name, gate.status] as const));
+  const gateNames = [...next.gates.map((gate) => gate.name)];
+  for (const gate of prev.gates) {
+    if (!nextGates.has(gate.name)) gateNames.push(gate.name);
+  }
+  const gates: ScoreboardGateTransition[] = gateNames.map((name) => {
+    const prior = priorGates.get(name) ?? null;
+    const current = nextGates.get(name) ?? null;
+    return { name, prior, next: current, changed: prior !== current };
+  });
+
+  const beats: ScoreboardBeatDelta[] = GOLDEN_BEATS.map((beat) => {
+    const prior = prev.beats[beat];
+    const current = next.beats[beat];
+    const status = {
+      prior: prior.status,
+      next: current.status,
+      changed: prior.status !== current.status,
+    };
+    const gapMs = metricDelta(prior.gapMs, current.gapMs);
+    const cutMs = metricDelta(prior.cutMs, current.cutMs);
+    const resumeMs = metricDelta(prior.resumeMs, current.resumeMs);
+    const drainMs = metricDelta(prior.drainMs, current.drainMs);
+    return {
+      beat,
+      status,
+      gapMs,
+      cutMs,
+      resumeMs,
+      drainMs,
+      changed:
+        status.changed || gapMs.changed || cutMs.changed || resumeMs.changed || drainMs.changed,
+    };
+  });
+
+  const replyGap = {
+    prior: prev.replyGap,
+    next: next.replyGap,
+    p50DeltaMs: numericDelta(prev.replyGap.p50Ms, next.replyGap.p50Ms),
+    p95DeltaMs: numericDelta(prev.replyGap.p95Ms, next.replyGap.p95Ms),
+    samplesDelta: next.replyGap.samples - prev.replyGap.samples,
+  };
+  const endCallDrain = {
+    prior: prev.endCallDrain,
+    next: next.endCallDrain,
+    goodbyeCoverageDelta: numericDelta(prev.endCallDrain.goodbyeCoverage, next.endCallDrain.goodbyeCoverage),
+    hangUpDelayDeltaMs: numericDelta(prev.endCallDrain.hangUpDelayMs, next.endCallDrain.hangUpDelayMs),
+    narratedEndingChanged: prev.endCallDrain.narratedEnding !== next.endCallDrain.narratedEnding,
+  };
+  const changedGates = gates.filter((gate) => gate.changed);
+  const changedBeats = beats.filter((beat) => beat.changed);
+  const replyGapChanged =
+    prev.replyGap.p50Ms !== next.replyGap.p50Ms ||
+    prev.replyGap.p95Ms !== next.replyGap.p95Ms ||
+    prev.replyGap.samples !== next.replyGap.samples;
+  const drainChanged =
+    prev.endCallDrain.goodbyeCoverage !== next.endCallDrain.goodbyeCoverage ||
+    prev.endCallDrain.hangUpDelayMs !== next.endCallDrain.hangUpDelayMs ||
+    endCallDrain.narratedEndingChanged;
+  return {
+    priorRunId: prev.runId,
+    nextRunId: next.runId,
+    priorRecordedAt: prev.recordedAt,
+    nextRecordedAt: next.recordedAt,
+    priorVoice: prev.voice,
+    nextVoice: next.voice,
+    gates,
+    changedGates,
+    beats,
+    changedBeats,
+    replyGap,
+    endCallDrain,
+    changed: changedGates.length > 0 || changedBeats.length > 0 || replyGapChanged || drainChanged,
+  };
+}
+
+function formatMsTransition(prior: number | null, next: number | null): string {
+  if (prior === null && next === null) return "unmeasured";
+  if (prior === null) return `unmeasured → ${next}ms`;
+  if (next === null) return `${prior}ms → unmeasured`;
+  const delta = next - prior;
+  const sign = delta > 0 ? "+" : "";
+  return `${prior}ms → ${next}ms (${sign}${delta}ms)`;
+}
+
+function formatPercent(value: number | null): string {
+  return value === null ? "unmeasured" : `${Math.round(value * 100)}%`;
+}
+
+function formatCoverageTransition(prior: number | null, next: number | null): string {
+  if (prior === null && next === null) return "unmeasured";
+  const delta = numericDelta(prior, next);
+  const change = delta === null ? "" : ` (${delta > 0 ? "+" : ""}${Math.round(delta * 100)}pp)`;
+  return `${formatPercent(prior)} → ${formatPercent(next)}${change}`;
+}
+
+/** Console report: only what changed, plus the reply-gap and drain roll-ups. */
+export function formatArtifactDiff(diff: ScoreboardArtifactDiff): string {
+  const voice =
+    diff.priorVoice === diff.nextVoice ? "" : ` (voice ${diff.priorVoice} → ${diff.nextVoice})`;
+  const sameRun = diff.priorRunId === diff.nextRunId;
+  const priorLabel = sameRun ? `${diff.priorRunId} @ ${diff.priorRecordedAt}` : diff.priorRunId;
+  const nextLabel = sameRun ? `${diff.nextRunId} @ ${diff.nextRecordedAt}` : diff.nextRunId;
+  const lines = [`artifact diff (${priorLabel} → ${nextLabel})${voice}`];
+  if (!diff.changed) {
+    lines.push("  no changes since the prior artifact");
+    return lines.join("\n");
+  }
+  if (diff.changedGates.length > 0) {
+    lines.push(`  gates: ${diff.changedGates.length} changed, ${diff.gates.length - diff.changedGates.length} unchanged`);
+    for (const gate of diff.changedGates) {
+      lines.push(`    ${gate.name.padEnd(16)} ${gate.prior ?? "absent"} → ${gate.next ?? "absent"}`);
+    }
+  }
+  if (diff.changedBeats.length > 0) {
+    lines.push(`  beats: ${diff.changedBeats.length} changed, ${diff.beats.length - diff.changedBeats.length} unchanged`);
+    for (const beat of diff.changedBeats) {
+      const parts: string[] = [];
+      if (beat.status.changed) parts.push(`status ${beat.status.prior} → ${beat.status.next}`);
+      if (beat.gapMs.changed) parts.push(`gap ${formatMsTransition(beat.gapMs.prior, beat.gapMs.next)}`);
+      if (beat.cutMs.changed) parts.push(`cut ${formatMsTransition(beat.cutMs.prior, beat.cutMs.next)}`);
+      if (beat.resumeMs.changed) parts.push(`resume ${formatMsTransition(beat.resumeMs.prior, beat.resumeMs.next)}`);
+      if (beat.drainMs.changed) parts.push(`drain ${formatMsTransition(beat.drainMs.prior, beat.drainMs.next)}`);
+      lines.push(`    ${beat.beat.padEnd(20)} ${parts.join(", ")}`);
+    }
+  }
+  lines.push(
+    `  reply gap  p50 ${formatMsTransition(diff.replyGap.prior.p50Ms, diff.replyGap.next.p50Ms)}, ` +
+      `p95 ${formatMsTransition(diff.replyGap.prior.p95Ms, diff.replyGap.next.p95Ms)}, ` +
+      `n ${diff.replyGap.prior.samples} → ${diff.replyGap.next.samples}`,
+  );
+  lines.push(
+    `  goodbye  coverage ${formatCoverageTransition(diff.endCallDrain.prior.goodbyeCoverage, diff.endCallDrain.next.goodbyeCoverage)}, ` +
+      `hang-up ${formatMsTransition(diff.endCallDrain.prior.hangUpDelayMs, diff.endCallDrain.next.hangUpDelayMs)}, ` +
+      `narration ${diff.endCallDrain.prior.narratedEnding ? "yes" : "no"} → ${diff.endCallDrain.next.narratedEnding ? "yes" : "no"}`,
+  );
+  return lines.join("\n");
 }
 
 /** Console per-beat overheard recall counts with trace pointers. */

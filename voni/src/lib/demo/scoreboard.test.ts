@@ -41,10 +41,13 @@ import {
   checkLoudnessSanity,
   checkRegressionVoice,
   checkTimbreProbes,
+  diffScoreboardArtifact,
   emptyHumanRatings,
   evaluateHumanGate,
   evaluateTimbreGate,
+  formatArtifactDiff,
   formatMatrixTable,
+  formatTraceTurn,
   matchedLoudnessLufs,
   resolveMatrixVoices,
   classifyOverheard,
@@ -70,6 +73,8 @@ import {
   sha256Hex,
   attributeFirstTraceGap,
   buildSubScores,
+  traceTurnPointers,
+  traceTurnForVisitorSpeech,
   emailInviteGate,
   formatSubScoreTable,
   hasMeasuredEvidence,
@@ -824,6 +829,186 @@ test("real-cut evidence parses from the eval runner's stop-over output", () => {
   });
   assert.equal(evaluateRealCut(ended!)?.status, "PASS");
   assert.equal(extractRealCutEvidence("greeting-cut: 1/1\n"), null);
+});
+
+test("real-cut evidence derives the Call trace turn from the merged excerpt", () => {
+  const excerpt = [
+    '12.10s  HEARD   "Tell me about the price."  (10.20s-11.30s)',
+    '12.20s  VONI    "Sure, first the tour"  (reply_create gap 900ms)  CUT at 12.90s',
+    '15.00s  VONI    "The price is"  (reply_create gap 800ms)',
+  ];
+  const pointers = traceTurnPointers(excerpt);
+  assert.deepEqual(pointers, { cutTurn: 1, goodbyeTurn: null });
+  assert.equal(formatTraceTurn(1, "sess_abc"), "call trace turn 1 (sess_abc)");
+
+  const late = extractRealCutEvidence(
+    '    cut 1601ms after the caller started\n  ✗ stop-over #1: cut too late: 1601ms\nstop-over: 0/1\n',
+    excerpt,
+  );
+  assert.equal(late?.traceTurn, "call trace turn 1");
+  const gate = evaluateRealCut(late!);
+  assert.equal(gate.status, "FAIL");
+  assert.match(gate.detail, /call trace turn 1/, `detail should name the derived turn: ${gate.detail}`);
+  // Without a merged excerpt there is no turn to cite; absent evidence stays absent.
+  assert.equal(
+    extractRealCutEvidence('    cut 1601ms after the caller started\nstop-over: 0/1\n')?.traceTurn,
+    null,
+  );
+});
+
+test("double-talk and end-call drain failures point at their Call trace turn", () => {
+  const excerpt = [
+    '12.10s  HEARD   "Tell me about the price."  (10.20s-11.30s)',
+    '12.20s  VONI    "Sure, first the tour"  (reply_create gap 900ms)  CUT at 12.90s',
+    '15.00s  HEARD   "I want you to hang up."  (14.00s-14.50s)',
+    '15.10s  TOOL    end_call {"reason":"caller asked"} 300ms',
+    '16.00s  VONI    "Thanks for calling"  (reply_create gap 700ms)',
+  ];
+  assert.deepEqual(traceTurnPointers(excerpt), { cutTurn: 1, goodbyeTurn: 2 });
+  const artifact = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "hang-up-over",
+    runnerStdout: "trace",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+    traceExcerpt: excerpt,
+    traceSessionId: "sess_abc",
+    doubleTalkOverlapMs: [650],
+    endCallDrain: { goodbyeCoverage: 0.5, hangUpDelayMs: 4200, narratedEnding: false },
+  });
+  const byName = Object.fromEntries(artifact.gates.map((gate) => [gate.name, gate]));
+  assert.equal(byName["double-talk"].status, "FAIL");
+  assert.match(byName["double-talk"].detail, /call trace turn 1 \(sess_abc\)/);
+  assert.equal(byName["end-call-drain"].status, "FAIL");
+  assert.match(byName["end-call-drain"].detail, /call trace turn 2 \(sess_abc\)/);
+});
+
+test("filler trace turn derives from the HEARD row the visitor's words matched", () => {
+  const excerpt = [
+    '12.10s  HEARD   "Tell me about the price."  (10.20s-11.30s)',
+    '12.20s  VONI    "Sure, first the tour"  (reply_create gap 900ms)',
+    '15.00s  HEARD   "Okaay so"  (14.90s-15.10s)',
+    '16.00s  VONI    "The price is"  (reply_create gap 800ms)',
+  ];
+  assert.equal(traceTurnForVisitorSpeech(excerpt, "Okaay so"), 1);
+  assert.equal(traceTurnForVisitorSpeech(excerpt, "okaay SO"), 1);
+  assert.equal(traceTurnForVisitorSpeech(excerpt, "never said"), null);
+  assert.equal(
+    traceTurnForVisitorSpeech(['1.00s  HEARD   "Okaay so"  (0.90s-1.10s)'], "Okaay so"),
+    null,
+    "no VONI reply under way yet",
+  );
+});
+
+test("a reply-gap failure from an attributed trace turn names that turn", () => {
+  const artifact = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "greeting-cut",
+    runnerStdout: "trace",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+    traceGaps: [{ gapMs: 1600, turnIndex: 1 }],
+    traceExcerpt: ['12.20s  VONI    "Hi"  (reply_create gap 1600ms)  greeting-cut marker'],
+    traceSessionId: "sess_abc",
+  });
+  const reply = artifact.gates.find((gate) => gate.name === "reply-gap")!;
+  assert.equal(reply.status, "FAIL");
+  assert.match(reply.detail, /call trace turn 1 \(sess_abc\)/, `detail should cite the turn: ${reply.detail}`);
+});
+
+test("artifact diff reports gate transitions, beat deltas, reply gap and drain changes", () => {
+  const base = {
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "stop-over",
+    runnerStdout: "",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+    dryRun: true,
+  };
+  const prevBase = buildSkeletonArtifact(base);
+  const nextBase = buildSkeletonArtifact(base);
+  const prev = {
+    ...prevBase,
+    runId: "run-prev",
+    gates: prevBase.gates.map((gate) =>
+      gate.name === "reply-gap" ? { ...gate, status: "PASS" as const, detail: "prev" } : gate,
+    ),
+    beats: {
+      ...prevBase.beats,
+      "real-cut-answered": {
+        ...prevBase.beats["real-cut-answered"],
+        cutMs: 1900,
+        status: "FAIL" as const,
+      },
+    },
+    replyGap: { p50Ms: 900, p95Ms: 1200, samples: 2 },
+    endCallDrain: { goodbyeCoverage: 0.95, hangUpDelayMs: 900, narratedEnding: false },
+  };
+  const next = {
+    ...nextBase,
+    runId: "run-next",
+    gates: nextBase.gates.map((gate) =>
+      gate.name === "reply-gap" ? { ...gate, status: "FAIL" as const, detail: "next" } : gate,
+    ),
+    beats: {
+      ...nextBase.beats,
+      "real-cut-answered": {
+        ...nextBase.beats["real-cut-answered"],
+        cutMs: 1500,
+        status: "PASS" as const,
+      },
+    },
+    replyGap: { p50Ms: 1600, p95Ms: 3100, samples: 3 },
+    endCallDrain: { goodbyeCoverage: 0.7, hangUpDelayMs: 4200, narratedEnding: true },
+  };
+  const diff = diffScoreboardArtifact(prev, next);
+  assert.equal(diff.changed, true);
+  const replyGate = diff.gates.find((gate) => gate.name === "reply-gap")!;
+  assert.deepEqual(
+    [replyGate.prior, replyGate.next, replyGate.changed],
+    ["PASS", "FAIL", true],
+  );
+  assert.equal(diff.gates.find((gate) => gate.name === "plumbing")?.changed, false);
+
+  const cutBeat = diff.beats.find((beat) => beat.beat === "real-cut-answered")!;
+  assert.equal(cutBeat.cutMs.prior, 1900);
+  assert.equal(cutBeat.cutMs.next, 1500);
+  assert.equal(cutBeat.cutMs.deltaMs, -400);
+  assert.equal(cutBeat.status.changed, true);
+
+  assert.equal(diff.replyGap.p50DeltaMs, 700);
+  assert.equal(diff.replyGap.p95DeltaMs, 1900);
+  assert.equal(diff.replyGap.samplesDelta, 1);
+  assert.equal(diff.endCallDrain.hangUpDelayDeltaMs, 3300);
+  assert.equal(diff.endCallDrain.narratedEndingChanged, true);
+  assert.equal(Math.round((diff.endCallDrain.goodbyeCoverageDelta ?? 0) * 100), -25);
+
+  const text = formatArtifactDiff(diff);
+  assert.match(text, /PASS → FAIL/);
+  assert.match(text, /real-cut-answered/);
+  assert.match(text, /-400ms/);
+  assert.match(text, /reply gap/);
+  assert.match(text, /goodbye/);
+});
+
+test("an unchanged artifact diff says so instead of printing empty transitions", () => {
+  const artifact = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "greeting-cut",
+    runnerStdout: "",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+    dryRun: true,
+  });
+  const diff = diffScoreboardArtifact(artifact, artifact);
+  assert.equal(diff.changed, false);
+  assert.equal(diff.changedGates.length, 0);
+  assert.equal(diff.changedBeats.length, 0);
+  assert.match(formatArtifactDiff(diff), /no changes since the prior artifact/);
 });
 
 // --- Ticket 05: fixed-clip cut latency ---

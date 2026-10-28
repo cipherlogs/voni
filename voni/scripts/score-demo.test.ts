@@ -1120,3 +1120,30 @@ test("every scoreboard run reports the frozen budgets alongside the gate verdict
   assert.ok(budgetAt >= 0 && verdictsAt > budgetAt, "budgets print before the verdict table");
   assert.ok(result.stdout.includes("scoreboard-budgets.json"), "budget report points at the frozen record");
 });
+
+test("each run diffs its artifact against the prior same-voice artifact and honors --prior", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const cwd = new URL("../", import.meta.url).pathname;
+  const first = join(dir, "score-a.json");
+  const second = join(dir, "score-b.json");
+
+  const firstRun = run(["--dry-run", "--gap", "greeting-cut=900", "--out", first], cwd);
+  assert.equal(firstRun.status, 0, firstRun.stderr + firstRun.stdout);
+  assert.match(firstRun.stdout, /no prior artifact/, "the first artifact has nothing to diff against");
+
+  const secondRun = run(["--dry-run", "--gap", "greeting-cut=1600", "--out", second], cwd);
+  assert.equal(secondRun.status, 1, secondRun.stderr + secondRun.stdout);
+  assert.match(secondRun.stdout, /prior artifact: .*score-a\.json/);
+  assert.match(secondRun.stdout, /artifact diff \(/);
+  assert.match(secondRun.stdout, /PASS → FAIL/);
+  assert.match(secondRun.stdout, /\+700ms/);
+
+  const third = join(dir, "score-c.json");
+  const overridden = run(
+    ["--dry-run", "--gap", "greeting-cut=1400", "--out", third, "--prior", first],
+    cwd,
+  );
+  assert.equal(overridden.status, 0, overridden.stderr + overridden.stdout);
+  assert.match(overridden.stdout, new RegExp(`prior artifact: ${first}`));
+  assert.match(overridden.stdout, /\+500ms/);
+});
