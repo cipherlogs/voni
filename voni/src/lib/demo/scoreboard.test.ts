@@ -65,6 +65,7 @@ import {
   emailInviteGate,
   formatSubScoreTable,
   hasMeasuredEvidence,
+  measuredEvidenceSources,
   persistsEmailAcrossMemory,
   validateProbeCounts,
   type OverheardAside,
@@ -143,6 +144,33 @@ test("skeleton artifact carries every required key with empty human slots", () =
   assert.equal(artifact.humanRatings.accent, null);
   assert.ok(artifact.gates.length > 0);
   assert.ok(artifact.gates.every((g) => g.status === "PASS" || g.status === "INFO"));
+});
+
+test("unmeasured beat rows are placeholder INFO, never a false PASS", () => {
+  const dry = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "greeting-cut",
+    runnerStdout: "(dry run: eval runner skipped)",
+    exitCode: null,
+    durationMs: 0,
+    runs: 1,
+    dryRun: true,
+  });
+  for (const beat of GOLDEN_BEATS) {
+    assert.equal(dry.beats[beat].status, "INFO", `${beat} placeholder must not PASS`);
+    assert.match(dry.beats[beat].note, /placeholder/, `${beat} names its placeholder`);
+  }
+  const measured = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "greeting-cut",
+    runnerStdout: "ok",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+    gaps: { "greeting-cut": [900] },
+  });
+  assert.equal(measured.beats["greeting-cut"].status, "PASS");
+  assert.match(measured.beats["greeting-cut"].note, /reply gap p50 900ms/);
 });
 
 test("harness break: non-dry runner crash fails plumbing, dry runs stay clean", () => {
@@ -1745,6 +1773,29 @@ test("measured evidence silences the measurements gate", () => {
     hasMeasuredEvidence({ endCallDrain: { goodbyeCoverage: 0.95, hangUpDelayMs: null, narratedEnding: false } }),
     true,
   );
+});
+
+test("evidence provenance names only inputs that carry observed values", () => {
+  assert.deepEqual(measuredEvidenceSources({}), []);
+  assert.deepEqual(measuredEvidenceSources({ gaps: { "greeting-cut": [] } }), []);
+  assert.deepEqual(measuredEvidenceSources({ overheardAsides: [] }), []);
+  assert.deepEqual(
+    measuredEvidenceSources({ deadAir: { gapsMs: [], longestSilenceMs: null, checkIns: [] } }),
+    [],
+  );
+  assert.deepEqual(measuredEvidenceSources({ gaps: { "greeting-cut": [900] } }), ["gaps"]);
+  assert.deepEqual(measuredEvidenceSources({ traceGaps: [{ gapMs: 900, turnIndex: 1 }] }), ["trace-gaps"]);
+  assert.deepEqual(
+    measuredEvidenceSources({ probes: { jump: 0, overload: 0, clip: 0, underrun: 0, inputDrop: 0 } }),
+    ["timbre-probes"],
+  );
+  assert.deepEqual(
+    measuredEvidenceSources({ gaps: { "greeting-cut": [900] }, doubleTalkOverlapMs: [120] }),
+    ["gaps", "double-talk"],
+  );
+  // Empty containers never flip the measurements gate: only values observed count.
+  assert.equal(hasMeasuredEvidence({ overheardAsides: [] }), false);
+  assert.equal(hasMeasuredEvidence({ deadAir: { gapsMs: [], longestSilenceMs: null, checkIns: [] } }), false);
 });
 
 test("email memory unmeasured is INFO, persisted is PASS, mismatch is FAIL", () => {

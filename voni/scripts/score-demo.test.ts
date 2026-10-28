@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, existsSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, existsSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -17,11 +17,11 @@ const GATE_BEATS = [
   "goodbye-drain",
 ];
 
-function run(args: string[], cwd: string) {
+function run(args: string[], cwd: string, env: Record<string, string> = {}) {
   return spawnSync("node", ["--import", "tsx", SCRIPT, ...args], {
     cwd,
     encoding: "utf8",
-    env: { ...process.env, PATH: process.env.PATH },
+    env: { ...process.env, PATH: process.env.PATH, ...env },
   });
 }
 
@@ -53,6 +53,130 @@ test("dry run writes an artifact with required keys and prints a gate table", ()
   assert.match(result.stdout, /reply-gap/);
   assert.match(result.stdout, /email-invite/);
   assert.match(result.stdout, /PASS|INFO/);
+});
+
+const EVAL_SHIM = `#!/usr/bin/env node
+const { appendFileSync } = require("node:fs");
+const args = process.argv.slice(2);
+appendFileSync(process.env.SHIM_LOG, JSON.stringify(args) + "\\n");
+if (args[0] === "run" && args[1] === "eval:demo-agent") {
+  console.log("    cut 912ms after the caller started");
+  console.log('    verdict ["yield","Wait, stop."]');
+  console.log("stop-over: 1/1");
+} else if (args[0] === "run" && args[1] === "call:trace") {
+  console.log('10.00s  HEARD   "Hi, this is Anna."  (0.00s-1.00s)');
+  console.log('12.20s  VONI    "Sorry about that"  (reply_create gap 900ms)');
+}
+`;
+
+test("one command runs the gate-voice eval, merges the Call trace, and writes the artifact", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  writeFileSync(join(bin, "npm"), EVAL_SHIM, { mode: 0o755 });
+  const callLog = join(dir, "npm-calls.log");
+  const out = join(dir, "score.json");
+  const result = run(
+    ["--scenario", "stop-over", "--trace-session", "sess_loop01", "--out", out],
+    new URL("../", import.meta.url).pathname,
+    { PATH: `${bin}:${process.env.PATH}`, SHIM_LOG: callLog },
+  );
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+
+  const calls = readFileSync(callLog, "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line) as string[]);
+  assert.deepEqual(calls[0], [
+    "run",
+    "eval:demo-agent",
+    "--",
+    "--voice",
+    DEMO_VOICE_IDS[0],
+    "--scenario",
+    "stop-over",
+    "--runs",
+    "1",
+  ]);
+  assert.deepEqual(calls[1], ["run", "call:trace", "--", "sess_loop01"]);
+
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    voice: string;
+    evalRunner: { scenario: string; status: string };
+    callTrace: { sessionId: string; excerpt: string[] };
+    replyGap: { samples: number; p50Ms: number | null };
+    gates: { name: string; status: string; detail: string }[];
+  };
+  assert.equal(artifact.voice, DEMO_VOICE_IDS[0]);
+  assert.equal(artifact.evalRunner.scenario, "stop-over");
+  assert.equal(artifact.evalRunner.status, "ok");
+  assert.equal(artifact.callTrace.sessionId, "sess_loop01");
+  assert.ok(artifact.callTrace.excerpt.some((line) => line.includes("gap 900ms")));
+  assert.equal(artifact.replyGap.samples, 1);
+  assert.equal(artifact.replyGap.p50Ms, 900);
+  assert.equal(artifact.gates.find((g) => g.name === "plumbing")?.status, "PASS");
+  const measurements = artifact.gates.find((g) => g.name === "measurements")!;
+  assert.equal(measurements.status, "INFO");
+  assert.match(measurements.detail, /trace-gaps/);
+  assert.equal(artifact.gates.find((g) => g.name === "barge-in-cut")?.status, "PASS");
+  assert.match(result.stdout, /artifact: /);
+});
+
+test("dry run proves plumbing without judging gates or touching the live runner", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  const marker = join(dir, "npm-was-called");
+  writeFileSync(
+    join(bin, "npm"),
+    `#!/usr/bin/env node\nrequire("node:fs").writeFileSync(${JSON.stringify(marker)}, "called");\nprocess.exit(1);\n`,
+    { mode: 0o755 },
+  );
+  const out = join(dir, "score.json");
+  const result = run(["--dry-run", "--out", out], new URL("../", import.meta.url).pathname, {
+    PATH: `${bin}:${process.env.PATH}`,
+  });
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  assert.ok(!existsSync(marker), "dry run must not spawn the live runner");
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    evalRunner: { status: string };
+    beats: Record<string, { status: string }>;
+    gates: { name: string; status: string; detail: string }[];
+  };
+  assert.equal(artifact.evalRunner.status, "skipped");
+  assert.equal(artifact.gates.find((g) => g.name === "plumbing")?.status, "PASS");
+  const measurements = artifact.gates.find((g) => g.name === "measurements")!;
+  assert.equal(measurements.status, "INFO");
+  assert.match(measurements.detail, /^dry run:/);
+  assert.ok(artifact.gates.every((g) => g.status !== "FAIL"), "dry run judges no gate");
+  for (const [beat, timing] of Object.entries(artifact.beats)) {
+    assert.equal(timing.status, "INFO", `${beat} is placeholder INFO in a dry run`);
+  }
+});
+
+test("real run whose runner finishes without evidence fails measurements, not a gate", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  writeFileSync(
+    join(bin, "npm"),
+    `#!/usr/bin/env node\nif (process.argv[3] === "eval:demo-agent") console.log("greeting-cut: 1/1");\n`,
+    { mode: 0o755 },
+  );
+  const out = join(dir, "score.json");
+  const result = run(["--scenario", "greeting-cut", "--out", out], new URL("../", import.meta.url).pathname, {
+    PATH: `${bin}:${process.env.PATH}`,
+  });
+  assert.equal(result.status, 1, result.stderr + result.stdout);
+  assert.ok(existsSync(out), "artifact is still written for triage");
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    gates: { name: string; status: string; detail: string }[];
+  };
+  assert.equal(artifact.gates.find((g) => g.name === "plumbing")?.status, "PASS");
+  const measurements = artifact.gates.find((g) => g.name === "measurements")!;
+  assert.equal(measurements.status, "FAIL");
+  assert.equal(measurements.detail, "no measurements - run real audio or pass evidence flags");
+  assert.match(result.stdout, /measured gate breached its budget/);
 });
 
 test("unknown voice fails fast with no artifact", () => {
