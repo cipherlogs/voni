@@ -222,6 +222,97 @@ if (args[0] === "run" && args[1] === "eval:demo-agent") {
   assert.equal(artifact.beats["filler-ignored"].resumeMs, null);
 });
 
+test("a filler cut scores the exact unheard tail and its Call trace turn is the resume turn", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  writeFileSync(
+    join(bin, "npm"),
+    `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === "run" && args[1] === "eval:demo-agent") {
+  console.log('    filler cut at 318ms; events [["ignore","Okaay so"]]; handling resumed-from; tail {"agent":"We help dental clinics answer every call","heard":"We help dental","resumed":"dental clinics answer every call","resumeMs":412}');
+  console.log("filler-over: 1/1");
+} else if (args[0] === "run" && args[1] === "call:trace") {
+  console.log('10.20s  VONI    "We help dental clinics answer every call"  (reply_create gap 900ms)  CUT at 10.54s');
+  console.log('10.40s  HEARD   "Okaay so"  (10.30s-10.60s)');
+  console.log('11.00s  VONI    "dental clinics answer every call"  (reply_create gap 300ms)');
+}
+`,
+    { mode: 0o755 },
+  );
+  const out = join(dir, "score.json");
+  const result = run(
+    ["--scenario", "filler-over", "--trace-session", "sess_filler", "--out", out, "--timing-lock", join(dir, "timing.lock")],
+    new URL("../", import.meta.url).pathname,
+    { PATH: `${bin}:${process.env.PATH}` },
+  );
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    beats: Record<string, { status: string; cutMs: number | null; resumeMs: number | null; note: string }>;
+    gates: { name: string; status: string; detail: string }[];
+  };
+  const gate = artifact.gates.find((g) => g.name === "filler-resume")!;
+  assert.equal(gate.status, "PASS", gate.detail);
+  assert.match(gate.detail, /handling: resumed-from/, "the Call trace shows resume-from, never answer");
+  assert.match(gate.detail, /call trace turn 2 \(sess_filler\)/, "the resume is the turn after the cut");
+  assert.equal(artifact.beats["filler-ignored"].status, "PASS");
+  assert.equal(artifact.beats["filler-ignored"].cutMs, 318);
+  assert.equal(artifact.beats["filler-ignored"].resumeMs, 412);
+  assert.match(artifact.beats["filler-ignored"].note, /resumed the exact tail/);
+});
+
+test("a reworded filler tail FAILs citing the resume turn; a dropped tail cites the cut turn", () => {
+  const cases = [
+    {
+      line:
+        '    filler cut at 300ms; events [["ignore","Okaay so"]]; handling resumed-from; tail {"agent":"We help dental clinics answer every call","heard":"We help dental","resumed":"clinics answer calls","resumeMs":900}',
+      detail: /resume tail inexact/,
+      turn: /call trace turn 2 \(sess_filler\)/,
+    },
+    {
+      line:
+        '    filler cut at 300ms; events [["ignore","Okaay so"]]; handling lost; tail {"agent":"We help dental clinics answer every call","heard":"We help dental","resumed":"","resumeMs":null}',
+      detail: /never resumed/,
+      turn: /call trace turn 1 \(sess_filler\)/,
+    },
+  ];
+  for (const { line, detail, turn } of cases) {
+    const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+    const bin = join(dir, "bin");
+    mkdirSync(bin);
+    writeFileSync(
+      join(bin, "npm"),
+      `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === "run" && args[1] === "eval:demo-agent") {
+  console.log(${JSON.stringify(line)});
+  console.log("filler-over: 0/1");
+} else if (args[0] === "run" && args[1] === "call:trace") {
+  console.log('10.20s  VONI    "We help dental clinics answer every call"  (reply_create gap 900ms)  CUT at 10.54s');
+  console.log('10.40s  HEARD   "Okaay so"  (10.30s-10.60s)');
+  console.log('11.00s  VONI    "clinics answer calls"  (reply_create gap 300ms)');
+}
+`,
+      { mode: 0o755 },
+    );
+    const out = join(dir, "score.json");
+    const result = run(
+      ["--scenario", "filler-over", "--trace-session", "sess_filler", "--out", out, "--timing-lock", join(dir, "timing.lock")],
+      new URL("../", import.meta.url).pathname,
+      { PATH: `${bin}:${process.env.PATH}` },
+    );
+    assert.equal(result.status, 1, result.stderr + result.stdout);
+    const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+      gates: { name: string; status: string; detail: string }[];
+    };
+    const gate = artifact.gates.find((g) => g.name === "filler-resume")!;
+    assert.equal(gate.status, "FAIL", gate.detail);
+    assert.match(gate.detail, detail);
+    assert.match(gate.detail, turn);
+  }
+});
+
 test("explicit filler flags override the runner's observed line", () => {
   const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
   const bin = join(dir, "bin");
