@@ -115,11 +115,13 @@ export const GOLDEN_SCRIPT: GoldenBeatSpec[] = [
   },
 ];
 
-export const SCOREBOARD_SCHEMA_VERSION = 2;
+export const SCOREBOARD_SCHEMA_VERSION = 3;
 
 export type BeatTiming = {
-  /** Reply gap: visitor end-of-speech → first agent audio. Placeholder until ticket 02. */
+  /** Reply gap: visitor end-of-speech → first agent audio (p50 across runs; null until measured). */
   gapMs: number | null;
+  /** Every measured reply gap for this beat, one per run (empty until measured). */
+  gapSamples: number[];
   /** Barge-in cut latency. Placeholder until the cut ticket. */
   cutMs: number | null;
   /** Goodbye drain: goodbye end → session end. Placeholder until the drain ticket. */
@@ -136,6 +138,200 @@ export type ScoreboardGate = {
   detail: string;
 };
 
+/**
+ * Reply-gap budgets (spec stories 2–4): the Demo call feels laggy past
+ * these, so the scoreboard fails. The greeting-cut beat shares the same
+ * budget — cutting the greeting must answer just as fast as any turn.
+ */
+export const REPLY_GAP_P50_BUDGET_MS = 1500;
+export const REPLY_GAP_P95_BUDGET_MS = 2500;
+
+/** One measured reply gap, attributed to the beat that produced it (null = call-level, unattributed). */
+export type ReplyGapSample = {
+  beat: GoldenBeat | null;
+  /** Visitor end-of-speech → first agent audio, in milliseconds. */
+  gapMs: number;
+  /** 1-based VONI reply turn in the merged Call trace (null when unattributed). */
+  turnIndex: number | null;
+  sessionId?: string;
+};
+
+export type ReplyGapSummary = {
+  count: number;
+  p50Ms: number;
+  p95Ms: number;
+  maxMs: number;
+  worst: ReplyGapSample;
+};
+
+/**
+ * Visitor end-of-speech → first agent audio. Null when either mark is
+ * missing. Same subtraction the call-trace merger prints as `gap Nms`
+ * (scripts/call-trace.mts), so the gate judges the merger's own numbers.
+ */
+export function replyGapMs(
+  userSpeechEndedAtMs: number | null | undefined,
+  agentReplyStartedAtMs: number | null | undefined,
+): number | null {
+  if (typeof userSpeechEndedAtMs !== "number" || typeof agentReplyStartedAtMs !== "number") return null;
+  return agentReplyStartedAtMs - userSpeechEndedAtMs;
+}
+
+/** Nearest-rank percentile; same math as the session-evidence exporter. */
+export function percentile(values: number[], p: number): number | null {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const index = Math.ceil((p / 100) * sorted.length) - 1;
+  return sorted[Math.max(0, Math.min(sorted.length - 1, index))];
+}
+
+export type TraceGap = {
+  gapMs: number;
+  /** 1-based VONI reply turn in the merged Call trace excerpt. */
+  turnIndex: number;
+};
+
+/**
+ * Reuse the call-trace merger's per-turn `gap Nms` numbers: every VONI
+ * reply line carries one. Cut turns (`CUT at …`) are skipped — an
+ * interrupted reply measures cut latency (the cut ticket's metric), not
+ * the reply gap. Turn numbers count every VONI reply line, so a failing
+ * gate can point at the exact Call trace turn.
+ */
+export function parseTraceGaps(excerpt: string[]): TraceGap[] {
+  const gaps: TraceGap[] = [];
+  let turn = 0;
+  for (const line of excerpt) {
+    if (!line.includes("  VONI    ")) continue;
+    turn += 1;
+    if (line.includes("CUT at")) continue;
+    const match = /gap (\d+)ms/.exec(line);
+    if (match) gaps.push({ gapMs: Number(match[1]), turnIndex: turn });
+  }
+  return gaps;
+}
+
+export function summarizeReplyGaps(samples: ReplyGapSample[]): ReplyGapSummary | null {
+  if (samples.length === 0) return null;
+  const p50Ms = percentile(samples.map((s) => s.gapMs), 50) ?? 0;
+  const p95Ms = percentile(samples.map((s) => s.gapMs), 95) ?? 0;
+  let worst = samples[0];
+  for (const sample of samples) {
+    if (sample.gapMs > worst.gapMs) worst = sample;
+  }
+  return { count: samples.length, p50Ms, p95Ms, maxMs: worst.gapMs, worst };
+}
+
+function traceRef(sample: ReplyGapSample): string {
+  const where =
+    sample.turnIndex !== null && sample.turnIndex !== undefined
+      ? `call trace turn ${sample.turnIndex}${sample.sessionId ? ` (${sample.sessionId})` : ""}`
+      : sample.sessionId
+        ? `call trace ${sample.sessionId}`
+        : "call trace";
+  return `${sample.beat ?? "overall"} gap ${sample.gapMs}ms at ${where}`;
+}
+
+/**
+ * Enforced Reply-gap gate (spec stories 2–4): FAIL when any beat's — or
+ * the whole call's — p50 exceeds 1500ms or p95 exceeds 2500ms, pointing at
+ * the failing Call trace turn. The greeting-cut beat is evaluated against
+ * the same budget, never a looser one. No samples means INFO, never FAIL:
+ * an unevidenced run records plumbing, it does not cry laggy.
+ */
+export function replyGapGate(samples: ReplyGapSample[], traceSessionId?: string): ScoreboardGate {
+  if (samples.length === 0) {
+    return {
+      name: "reply-gap",
+      status: "INFO",
+      detail: "no measured gaps yet: score a golden call with --trace-session or --gap beat=ms",
+    };
+  }
+  const withSession = traceSessionId
+    ? samples.map((s) => (s.sessionId ? s : { ...s, sessionId: traceSessionId }))
+    : samples;
+  const overall = summarizeReplyGaps(withSession);
+  if (!overall) {
+    return { name: "reply-gap", status: "INFO", detail: "no measured gaps yet" };
+  }
+  const scopes: { scope: string; summary: ReplyGapSummary }[] = [{ scope: "overall", summary: overall }];
+  for (const beat of GOLDEN_BEATS) {
+    const beatSummary = summarizeReplyGaps(withSession.filter((s) => s.beat === beat));
+    if (beatSummary) scopes.push({ scope: beat, summary: beatSummary });
+  }
+  type Breach = { scope: string; metric: "p50" | "p95"; value: number; budget: number };
+  const breaches: Breach[] = [];
+  for (const { scope, summary } of scopes) {
+    if (summary.p50Ms > REPLY_GAP_P50_BUDGET_MS) {
+      breaches.push({ scope, metric: "p50", value: summary.p50Ms, budget: REPLY_GAP_P50_BUDGET_MS });
+    }
+    if (summary.p95Ms > REPLY_GAP_P95_BUDGET_MS) {
+      breaches.push({ scope, metric: "p95", value: summary.p95Ms, budget: REPLY_GAP_P95_BUDGET_MS });
+    }
+  }
+  if (breaches.length > 0) {
+    breaches.sort((a, b) => b.value - b.budget - (a.value - a.budget));
+    const first = breaches[0];
+    const scope = first.scope === "overall" ? "overall" : `beat ${first.scope}`;
+    return {
+      name: "reply-gap",
+      status: "FAIL",
+      detail:
+        `${first.metric} ${first.value}ms > ${first.budget}ms budget (${scope}; ` +
+        `overall p50 ${overall.p50Ms}ms / p95 ${overall.p95Ms}ms, n=${overall.count}; ` +
+        `worst ${traceRef(overall.worst)})`,
+    };
+  }
+  return {
+    name: "reply-gap",
+    status: "PASS",
+    detail:
+      `p50 ${overall.p50Ms}ms / p95 ${overall.p95Ms}ms within ` +
+      `${REPLY_GAP_P50_BUDGET_MS}/${REPLY_GAP_P95_BUDGET_MS}ms budgets (n=${overall.count})`,
+  };
+}
+
+/**
+ * Meaning-based end-of-turn must stay on: ANY turn_detection object —
+ * even one holding only an interruption delay — switches off adaptive
+ * end-of-turn (ADR-0003), measured 3.6–4.7s gaps with an object versus
+ * 1.3–2.5s with none or null. Stored demo agents ship turn_detection:
+ * null; the single sensitive-field exception keeps its narrow scoped
+ * override only. FAIL points at the object or at the merged trace's
+ * CONFIG line.
+ */
+export function meaningBasedEndOfTurnGate(
+  agentInput: { turn_detection?: unknown } | null | undefined,
+  traceExcerpt: string[] = [],
+): ScoreboardGate {
+  const sent =
+    agentInput !== null &&
+    agentInput !== undefined &&
+    "turn_detection" in agentInput &&
+    agentInput.turn_detection !== null &&
+    agentInput.turn_detection !== undefined;
+  if (sent) {
+    return {
+      name: "end-of-turn",
+      status: "FAIL",
+      detail: `turn_detection object sent (${JSON.stringify(agentInput.turn_detection)?.slice(0, 120)}): disables adaptive end-of-turn (ADR-0003); stored demo agents must send turn_detection: null`,
+    };
+  }
+  const configLine = traceExcerpt.find((line) => line.includes("turn_detection"));
+  if (configLine) {
+    return {
+      name: "end-of-turn",
+      status: "FAIL",
+      detail: `call trace shows a turn_detection CONFIG line (${configLine.trim().slice(0, 160)}): no turn-detection object may be sent on the managed session path (ADR-0003)`,
+    };
+  }
+  return {
+    name: "end-of-turn",
+    status: "PASS",
+    detail: "meaning-based end-of-turn preserved: no turn_detection object sent (turn_detection null)",
+  };
+}
+
 export type ScoreboardArtifact = {
   schemaVersion: typeof SCOREBOARD_SCHEMA_VERSION;
   recordedAt: string;
@@ -151,6 +347,8 @@ export type ScoreboardArtifact = {
   /** Non-gate demo voices: regression-only, never gating (spec story 14). */
   regressionVoices: string[];
   beats: Record<GoldenBeat, BeatTiming>;
+  /** Whole-call Reply gap: p50/p95 across every measured beat sample (nulls until measured). */
+  replyGap: { p50Ms: number | null; p95Ms: number | null; samples: number };
   overheard: { recalled: number; total: number | null };
   doubleTalk: { overlapMs: number[]; maxMs: number | null };
   deadAir: { gapsMs: number[]; maxMs: number | null };
@@ -256,8 +454,14 @@ export function redactLines(stdout: string, limit = 200): string[] {
     .slice(0, limit);
 }
 
-/** Skeleton gates: reported but never failed until gating lands per ticket. */
-function skeletonGates(exitCode: number | null): ScoreboardGate[] {
+/** Skeleton gates: reported but never failed without measured evidence. */
+function skeletonGates(
+  exitCode: number | null,
+  replySamples: ReplyGapSample[],
+  traceSessionId: string | null,
+  agentInput: { turn_detection?: unknown } | null | undefined,
+  traceExcerpt: string[],
+): ScoreboardGate[] {
   const plumbing: ScoreboardGate =
     exitCode === null || exitCode === 0
       ? { name: "plumbing", status: "PASS", detail: "eval runner finished" }
@@ -266,9 +470,18 @@ function skeletonGates(exitCode: number | null): ScoreboardGate[] {
           status: "INFO",
           detail: `eval runner exited ${exitCode} (skeleton: recorded, not failed)`,
         };
+  const replyGate =
+    replySamples.length > 0
+      ? replyGapGate(replySamples, traceSessionId ?? undefined)
+      : { name: "reply-gap", status: "INFO" as const, detail: "skeleton: gating lands in the reply-gap ticket" };
+  const endOfTurn =
+    agentInput === undefined
+      ? { name: "end-of-turn", status: "INFO" as const, detail: "skeleton: agent body not checked" }
+      : meaningBasedEndOfTurnGate(agentInput, traceExcerpt);
   return [
     plumbing,
-    { name: "reply-gap", status: "INFO", detail: "skeleton: gating lands in the reply-gap ticket" },
+    replyGate,
+    endOfTurn,
     { name: "barge-in-cut", status: "INFO", detail: "skeleton: gating lands in the cut ticket" },
     { name: "overheard-recall", status: "INFO", detail: "skeleton: gating lands in the overheard ticket" },
     { name: "double-talk", status: "INFO", detail: "skeleton: gating lands in the naturalness ticket" },
@@ -285,18 +498,70 @@ export function buildSkeletonArtifact(input: {
   exitCode: number | null;
   durationMs: number;
   runs: number;
+  /** Measured reply gaps per beat (visitor end-of-speech → first agent audio). Absent = unmeasured. */
+  gaps?: Partial<Record<GoldenBeat, number[]>>;
+  /**
+   * Gaps merged from a Call trace excerpt (scripts/call-trace.mts `gap Nms`
+   * numbers). The first merged turn answers the greeting cut — golden runs
+   * open with the visitor cutting the greeting — so it attributes to the
+   * greeting-cut beat unless explicit greeting-cut gaps were passed. Later
+   * turns stay call-level: only the golden order is fixed, never the turn
+   * count (resumes and tool turns interleave).
+   */
+  traceGaps?: TraceGap[];
+  /** Session the gaps were merged from (trace pointer for a failing gate). */
+  traceSessionId?: string | null;
+  /** Stored agent body input for the end-of-turn check (undefined = not checked). */
+  agentInput?: { turn_detection?: unknown } | null;
+  /** Merged Call trace excerpt lines (scanned for turn_detection CONFIG lines). */
+  traceExcerpt?: string[];
 }): ScoreboardArtifact {
+  const samples: ReplyGapSample[] = [];
+  const finiteGaps = (beat: GoldenBeat): number[] => (input.gaps?.[beat] ?? []).filter((n) => Number.isFinite(n));
+  const explicitGreetingCut = finiteGaps("greeting-cut").length > 0;
+  // The first merged trace turn answers the greeting cut (see traceGaps
+  // above); it joins the greeting-cut beat unless measured explicitly.
+  const traceFirstToGreetingCut =
+    !explicitGreetingCut && (input.traceGaps ?? []).length > 0 ? [(input.traceGaps as TraceGap[])[0].gapMs] : [];
+  for (const beat of GOLDEN_BEATS) {
+    const fromTrace = beat === "greeting-cut" ? traceFirstToGreetingCut : [];
+    for (const gapMs of [...fromTrace, ...finiteGaps(beat)]) {
+      samples.push({ beat, gapMs, turnIndex: null, sessionId: input.traceSessionId ?? undefined });
+    }
+  }
+  for (const traceGap of (input.traceGaps ?? []).slice(explicitGreetingCut ? 0 : 1)) {
+    samples.push({
+      beat: null,
+      gapMs: traceGap.gapMs,
+      turnIndex: traceGap.turnIndex,
+      sessionId: input.traceSessionId ?? undefined,
+    });
+  }
+  const overall = summarizeReplyGaps(samples);
   const beats = Object.fromEntries(
-    GOLDEN_BEATS.map((beat) => [
-      beat,
-      {
-        gapMs: null,
-        cutMs: null,
-        drainMs: null,
-        status: "PASS",
-        note: "skeleton: placeholder until per-beat timing lands",
-      } satisfies BeatTiming,
-    ]),
+    GOLDEN_BEATS.map((beat) => {
+      const beatSamples = finiteGaps(beat).concat(beat === "greeting-cut" ? traceFirstToGreetingCut : []);
+      const measured = beatSamples.length > 0;
+      const beatSummary = summarizeReplyGaps(
+        beatSamples.map((gapMs) => ({ beat, gapMs, turnIndex: null as number | null })),
+      );
+      const breaches =
+        (beatSummary?.p50Ms ?? 0) > REPLY_GAP_P50_BUDGET_MS ||
+        (beatSummary?.p95Ms ?? 0) > REPLY_GAP_P95_BUDGET_MS;
+      return [
+        beat,
+        {
+          gapMs: beatSummary?.p50Ms ?? null,
+          gapSamples: beatSamples,
+          cutMs: null,
+          drainMs: null,
+          status: "PASS",
+          note: measured
+            ? `reply gap p50 ${beatSummary?.p50Ms}ms / p95 ${beatSummary?.p95Ms}ms over ${beatSamples.length} run${beatSamples.length === 1 ? "" : "s"}${breaches ? " (over budget: see reply-gap gate)" : ""}`
+            : "skeleton: placeholder until per-beat timing lands",
+        } satisfies BeatTiming,
+      ];
+    }),
   ) as Record<GoldenBeat, BeatTiming>;
   return {
     schemaVersion: SCOREBOARD_SCHEMA_VERSION,
@@ -310,6 +575,7 @@ export function buildSkeletonArtifact(input: {
     },
     regressionVoices: regressionVoices(input.voice),
     beats,
+    replyGap: { p50Ms: overall?.p50Ms ?? null, p95Ms: overall?.p95Ms ?? null, samples: overall?.count ?? 0 },
     overheard: { recalled: 0, total: null },
     doubleTalk: { overlapMs: [], maxMs: null },
     deadAir: { gapsMs: [], maxMs: null },
@@ -319,7 +585,7 @@ export function buildSkeletonArtifact(input: {
       redacted: redactLines(input.runnerStdout),
     },
     humanRatings: { timbre: null, accent: null },
-    gates: skeletonGates(input.exitCode),
+    gates: skeletonGates(input.exitCode, samples, input.traceSessionId ?? null, input.agentInput, input.traceExcerpt ?? []),
     evalRunner: {
       scenario: input.scenario,
       passed: input.exitCode === null ? null : input.exitCode === 0,

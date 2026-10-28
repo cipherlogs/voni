@@ -5,12 +5,19 @@ import {
   GOLDEN_BEATS,
   GOLDEN_SCRIPT,
   GOLDEN_SCRIPT_BUDGET_S,
+  REPLY_GAP_P50_BUDGET_MS,
+  REPLY_GAP_P95_BUDGET_MS,
   buildSkeletonArtifact,
   formatGateTable,
   formatGoldenScript,
   gateVoicePlayback,
+  meaningBasedEndOfTurnGate,
+  parseTraceGaps,
+  percentile,
   redactTranscript,
   regressionVoices,
+  replyGapGate,
+  replyGapMs,
   resolveGateVoice,
   sha256Hex,
 } from "./scoreboard";
@@ -59,7 +66,7 @@ test("skeleton artifact carries every required key with empty human slots", () =
     durationMs: 1234,
     runs: 1,
   });
-  assert.equal(artifact.schemaVersion, 2);
+  assert.equal(artifact.schemaVersion, 3);
   assert.equal(artifact.voice, DEFAULT_GATE_VOICE);
   for (const beat of GOLDEN_BEATS) {
     const timing = artifact.beats[beat];
@@ -195,4 +202,146 @@ test("skeleton artifact records the locked script and the regression voice set",
   assert.deepEqual([...artifact.regressionVoices].sort(), [...regressionVoices(DEFAULT_GATE_VOICE)].sort());
   assert.ok(artifact.goldenScript.beats.every((b) => b.window.min <= b.window.max));
   assert.ok(artifact.goldenScript.beats.every((b) => b.visitor.length > 0));
+});
+
+test("reply gap budgets match the spec: p50 1500ms, p95 2500ms", () => {
+  assert.equal(REPLY_GAP_P50_BUDGET_MS, 1500);
+  assert.equal(REPLY_GAP_P95_BUDGET_MS, 2500);
+});
+
+test("reply gap is visitor end-of-speech to first agent audio", () => {
+  assert.equal(replyGapMs(1000, 1900), 900);
+  assert.equal(replyGapMs(null, 1900), null);
+  assert.equal(replyGapMs(1000, null), null);
+  assert.equal(replyGapMs(null, null), null);
+});
+
+test("percentile uses nearest-rank with known literals", () => {
+  assert.equal(percentile([], 50), null);
+  assert.equal(percentile([900], 50), 900);
+  assert.equal(percentile([800, 900, 1000, 1100, 3000], 50), 1000);
+  assert.equal(percentile([800, 900, 1000, 1100, 3000], 95), 3000);
+  assert.equal(percentile([3000, 800, 1100, 900, 1000], 50), 1000);
+});
+
+test("trace gaps reuse the call-trace merger gap math and skip cut turns", () => {
+  const excerpt = [
+    '12.10s  HEARD   "Wait, stop."  (10.20s–11.30s)',
+    '12.20s  VONI    "Sorry about that"  (reply_create gap 900ms)',
+    '13.00s  VONI    "Cut short"  (reply_create gap 400ms)  CUT at 13.10s',
+    '14.50s  VONI    "Back to the tour"  (reply_create ttfa 700ms gap 1200ms)',
+  ];
+  const gaps = parseTraceGaps(excerpt);
+  assert.deepEqual(
+    gaps.map((g) => [g.gapMs, g.turnIndex]),
+    [
+      [900, 1],
+      [1200, 3],
+    ],
+  );
+});
+
+test("reply-gap gate stays INFO with no measured gaps", () => {
+  const gate = replyGapGate([]);
+  assert.equal(gate.name, "reply-gap");
+  assert.equal(gate.status, "INFO");
+});
+
+test("reply-gap gate passes with gaps inside budget", () => {
+  const gate = replyGapGate([
+    { beat: "greeting-cut", gapMs: 900, turnIndex: 1 },
+    { beat: "real-cut-answered", gapMs: 1200, turnIndex: 2 },
+  ]);
+  assert.equal(gate.status, "PASS");
+  assert.ok(gate.detail.includes("p50"), `detail reports p50: ${gate.detail}`);
+  assert.ok(gate.detail.includes("p95"), `detail reports p95: ${gate.detail}`);
+});
+
+test("reply-gap gate fails when p50 exceeds 1500ms and points at the trace turn", () => {
+  const gate = replyGapGate([
+    { beat: "real-cut-answered", gapMs: 1600, turnIndex: 2 },
+    { beat: "real-cut-answered", gapMs: 1800, turnIndex: 3 },
+    { beat: "email-invite", gapMs: 900, turnIndex: 4 },
+  ]);
+  assert.equal(gate.status, "FAIL");
+  assert.ok(gate.detail.includes("real-cut-answered"), `detail names the failing beat: ${gate.detail}`);
+  assert.ok(gate.detail.includes("turn 3"), `detail points at the failing trace turn: ${gate.detail}`);
+});
+
+test("reply-gap gate fails when p95 exceeds 2500ms", () => {
+  const gate = replyGapGate([
+    { beat: "greeting-cut", gapMs: 900, turnIndex: 1 },
+    { beat: "real-cut-answered", gapMs: 900, turnIndex: 2 },
+    { beat: "email-invite", gapMs: 900, turnIndex: 3 },
+    { beat: "email-invite", gapMs: 900, turnIndex: 4 },
+    { beat: "goodbye-drain", gapMs: 3100, turnIndex: 5 },
+  ]);
+  assert.equal(gate.status, "FAIL");
+  assert.ok(gate.detail.includes("p95"), `detail names the breached budget: ${gate.detail}`);
+  assert.ok(gate.detail.includes("turn 5"), `detail points at the failing trace turn: ${gate.detail}`);
+});
+
+test("greeting-cut breach fails within the same gap budget and names the beat", () => {
+  const gate = replyGapGate([
+    { beat: "greeting-cut", gapMs: 2100, turnIndex: 1 },
+    { beat: "greeting-cut", gapMs: 2200, turnIndex: 2 },
+  ]);
+  assert.equal(gate.status, "FAIL");
+  assert.ok(gate.detail.includes("greeting-cut"), `detail names the greeting-cut beat: ${gate.detail}`);
+});
+
+test("meaning-based end-of-turn passes when no turn-detection object is sent", () => {
+  const gate = meaningBasedEndOfTurnGate({ turn_detection: null });
+  assert.equal(gate.name, "end-of-turn");
+  assert.equal(gate.status, "PASS");
+});
+
+test("meaning-based end-of-turn fails when a turn-detection object is sent", () => {
+  const gate = meaningBasedEndOfTurnGate({ turn_detection: { min_silence: 100 } });
+  assert.equal(gate.status, "FAIL");
+  assert.ok(gate.detail.includes("turn_detection"), `detail names the object: ${gate.detail}`);
+});
+
+test("meaning-based end-of-turn fails when the merged trace shows a turn-detection config", () => {
+  const gate = meaningBasedEndOfTurnGate({ turn_detection: null }, [
+    "12.20s  VONI    \"Sorry about that\"  (reply_create gap 900ms)",
+    '13.00s  CONFIG  turn_detection {"min_silence":100}',
+  ]);
+  assert.equal(gate.status, "FAIL");
+  assert.ok(gate.detail.includes("turn_detection"), `detail points at the CONFIG line: ${gate.detail}`);
+});
+
+test("artifact with measured gaps fills per-beat gaps and enforces the reply-gap gate", () => {
+  const passing = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "greeting-cut",
+    runnerStdout: "ok",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 2,
+    gaps: { "greeting-cut": [800, 900], "real-cut-answered": [1100, 1200] },
+    traceSessionId: "sess_abc",
+  });
+  assert.deepEqual(passing.beats["greeting-cut"].gapSamples, [800, 900]);
+  assert.equal(passing.beats["greeting-cut"].gapMs, 800);
+  assert.equal(passing.replyGap.p50Ms, 900);
+  assert.equal(passing.replyGap.p95Ms, 1200);
+  const passingGate = passing.gates.find((g) => g.name === "reply-gap");
+  assert.equal(passingGate?.status, "PASS");
+
+  const failing = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "greeting-cut",
+    runnerStdout: "ok",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 2,
+    gaps: { "greeting-cut": [1800, 1900] },
+    traceSessionId: "sess_abc",
+  });
+  assert.equal(failing.gates.find((g) => g.name === "reply-gap")?.status, "FAIL");
+  assert.ok(
+    (failing.gates.find((g) => g.name === "reply-gap")?.detail ?? "").includes("sess_abc"),
+    "failing gate points at the call trace session",
+  );
 });
