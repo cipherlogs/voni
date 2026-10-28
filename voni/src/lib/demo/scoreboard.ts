@@ -14,6 +14,7 @@
  */
 import { createHash } from "node:crypto";
 import { getVoice, VOICE_OUTPUT_VOLUME, voicePlaybackGain } from "../agents/voices";
+import { judgeOverlap } from "../voice/barge-in";
 import { DEMO_VOICE_IDS } from "./voni-agent";
 
 /** The locked golden script: seven beats in fixed order (spec story 11). */
@@ -120,11 +121,11 @@ export const SCOREBOARD_SCHEMA_VERSION = 2;
 export type BeatTiming = {
   /** Reply gap: visitor end-of-speech → first agent audio. Placeholder until ticket 02. */
   gapMs: number | null;
-  /** Barge-in cut latency. Placeholder until the cut ticket. */
+  /** Barge-in cut latency. Set by the real-cut gate (ticket 05). */
   cutMs: number | null;
   /** Goodbye drain: goodbye end → session end. Placeholder until the drain ticket. */
   drainMs: number | null;
-  status: "PASS" | "INFO";
+  status: "PASS" | "INFO" | "FAIL";
   note: string;
 };
 
@@ -256,6 +257,153 @@ export function redactLines(stdout: string, limit = 200): string[] {
     .slice(0, limit);
 }
 
+/**
+ * Ticket 05: real-cut answered gate (spec story 4).
+ *
+ * A real Barge-in with a point always wins the floor fast and gets answered,
+ * never resumed-over. The server owns the cut (ADR-0003): the session stops
+ * the agent, then the overlap judge decides yield versus resume. This gate
+ * reuses that same judge, so "real" here means exactly what the pipeline
+ * yields on: steering, command, and end-call requests always yield, and
+ * multi-word content goes to Jev, which fail-closes to yield (only a real
+ * Jev "keep" resumes). Filler, back-channels, and echo never yield.
+ */
+
+/** A real cut lands within the stop-over 1.5s bar (spec story 4). */
+export const REAL_CUT_MAX_MS = 1500;
+
+/** Eval scenarios whose output carries real-cut evidence. */
+export const REAL_CUT_SCENARIOS = ["stop-over", "hang-up-over", "hang-up-fast"] as const;
+
+/**
+ * Externally observable real-cut evidence: cut latency from caller speech
+ * start to the server cut, the judge verdict from the session events, whether
+ * the agent answered the point, whether old material was resumed instead, and
+ * the Call trace turn that shows it. `ended` covers end-call requests, whose
+ * yield is the goodbye plus hang-up rather than a measured cut.
+ */
+export type RealCutEvidence = {
+  cutMs: number | null;
+  verdict: string | null;
+  verdictSource: string | null;
+  answered: boolean;
+  resumed: boolean;
+  ended: boolean;
+  traceTurn: string | null;
+};
+
+/**
+ * Whether caller speech over the agent is real enough to yield, using the
+ * shared overlap judge (barge-in.ts) and its thresholds — never a copy of
+ * them. Command ("stop", "hold on") and end-call ("hang up") requests always
+ * yield; content ("tell me the price please") goes to the judge; filler
+ * ("mm-hmm", "Okaay so") and echo never do.
+ */
+export function isRealCutExpected(visitorText: string, agentText = ""): boolean {
+  return judgeOverlap(visitorText, agentText) !== "ignore";
+}
+
+/** Failure detail always reports cut ms plus judge verdict with the trace turn. */
+function realCutDetail(evidence: RealCutEvidence, reason: string): string {
+  const cut = evidence.cutMs === null ? "never cut" : `cut ${evidence.cutMs}ms`;
+  const verdict = evidence.verdict ?? "unreported";
+  const source = evidence.verdictSource ? `/${evidence.verdictSource}` : "";
+  const trace = evidence.traceTurn ?? "no trace turn";
+  return `${cut} (verdict ${verdict}${source}; trace: ${trace}) — ${reason}`;
+}
+
+/**
+ * The real-cut gate: PASS only when a real cut yields fast and is answered
+ * on point with no resume of old material. Every FAIL names the cut
+ * milliseconds, the judge verdict, and the Call trace turn.
+ */
+export function evaluateRealCut(evidence: RealCutEvidence): ScoreboardGate {
+  if (evidence.resumed) {
+    return {
+      name: "barge-in-cut",
+      status: "FAIL",
+      detail: realCutDetail(evidence, "resumed with old material instead of answering"),
+    };
+  }
+  if (evidence.cutMs === null && !evidence.ended) {
+    return {
+      name: "barge-in-cut",
+      status: "FAIL",
+      detail: realCutDetail(evidence, "never cut"),
+    };
+  }
+  if (evidence.cutMs !== null && evidence.cutMs > REAL_CUT_MAX_MS) {
+    return {
+      name: "barge-in-cut",
+      status: "FAIL",
+      detail: realCutDetail(
+        evidence,
+        `cut too late: ${evidence.cutMs}ms exceeds ${REAL_CUT_MAX_MS}ms`,
+      ),
+    };
+  }
+  if (!evidence.answered && !evidence.ended) {
+    return {
+      name: "barge-in-cut",
+      status: "FAIL",
+      detail: realCutDetail(evidence, "the point was never answered"),
+    };
+  }
+  const cut = evidence.cutMs === null ? "yielded; session ended with no resume" : `answered in ${evidence.cutMs}ms`;
+  return {
+    name: "barge-in-cut",
+    status: "PASS",
+    detail: `real cut ${cut} (verdict ${evidence.verdict ?? "unreported"})`,
+  };
+}
+
+/**
+ * Parse real-cut evidence from the eval runner's stdout. Returns null when
+ * the output carries no real-cut scenario summary, so unrelated scenarios
+ * leave the gate ungated.
+ */
+export function extractRealCutEvidence(stdout: string): RealCutEvidence | null {
+  const summary = stdout.match(/^(stop-over|hang-up-over|hang-up-fast): (\d+)\/(\d+)/m);
+  if (!summary) return null;
+  const scenario = summary[1];
+  const passed = Number(summary[2]) > 0;
+  const cut = stdout.match(/cut (\d+)ms after the caller started/);
+  const verdict = stdout.match(/\["(yield|ignore|keep|judge)"(,|\])/)?.[1] ?? null;
+  const resumed = /resumed instead of ending|Pick up where you left off/.test(stdout);
+  const ended = scenario.startsWith("hang-up") && passed && !resumed;
+  return {
+    cutMs: cut ? Number(cut[1]) : null,
+    verdict,
+    verdictSource: null,
+    answered: passed && !resumed,
+    resumed,
+    ended,
+    traceTurn: null,
+  };
+}
+
+/** Stamp evaluated real-cut evidence onto the artifact beat and gate. */
+export function applyRealCutGate(
+  artifact: ScoreboardArtifact,
+  evidence: RealCutEvidence,
+): ScoreboardArtifact {
+  const gate = evaluateRealCut(evidence);
+  return {
+    ...artifact,
+    beats: {
+      ...artifact.beats,
+      "real-cut-answered": {
+        gapMs: null,
+        cutMs: evidence.cutMs,
+        drainMs: null,
+        status: gate.status === "PASS" ? "PASS" : "FAIL",
+        note: gate.detail,
+      } satisfies BeatTiming,
+    },
+    gates: artifact.gates.map((g) => (g.name === "barge-in-cut" ? gate : g)),
+  };
+}
+
 /** Skeleton gates: reported but never failed until gating lands per ticket. */
 function skeletonGates(exitCode: number | null): ScoreboardGate[] {
   const plumbing: ScoreboardGate =
@@ -269,7 +417,11 @@ function skeletonGates(exitCode: number | null): ScoreboardGate[] {
   return [
     plumbing,
     { name: "reply-gap", status: "INFO", detail: "skeleton: gating lands in the reply-gap ticket" },
-    { name: "barge-in-cut", status: "INFO", detail: "skeleton: gating lands in the cut ticket" },
+    {
+      name: "barge-in-cut",
+      status: "INFO",
+      detail: "no real-cut evidence (run --scenario stop-over or pass --cut-ms/--cut-verdict/--cut-answered)",
+    },
     { name: "overheard-recall", status: "INFO", detail: "skeleton: gating lands in the overheard ticket" },
     { name: "double-talk", status: "INFO", detail: "skeleton: gating lands in the naturalness ticket" },
     { name: "dead-air", status: "INFO", detail: "skeleton: gating lands in the naturalness ticket" },

@@ -107,3 +107,59 @@ test("--voice stays an alias of --gate-voice and the default needs no voice lite
   const resolved = JSON.parse(readFileSync(defaultOut, "utf8")) as { voice: string };
   assert.equal(resolved.voice, DEMO_VOICE_IDS[0]);
 });
+
+test("dry run with real-cut evidence passes a fast answered cut", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "score.json");
+  const result = run(
+    ["--dry-run", "--voice", DEMO_VOICE_IDS[0], "--out", out,
+      "--cut-ms", "900", "--cut-verdict", "yield", "--cut-answered"],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    beats: Record<string, { cutMs: number | null; status: string }>;
+    gates: { name: string; status: string; detail: string }[];
+  };
+  assert.equal(artifact.beats["real-cut-answered"].cutMs, 900);
+  const gate = artifact.gates.find((g) => g.name === "barge-in-cut")!;
+  assert.equal(gate.status, "PASS");
+  assert.ok(gate.detail.includes("900ms"));
+  assert.match(result.stdout, /900ms/);
+});
+
+test("dry run with real-cut evidence fails a late cut and reports ms plus verdict", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "score.json");
+  const result = run(
+    ["--dry-run", "--voice", DEMO_VOICE_IDS[0], "--out", out,
+      "--cut-ms", "2100", "--cut-verdict", "yield", "--cut-answered",
+      "--trace-turn", "input.speech.started → reply.interrupted"],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    beats: Record<string, { cutMs: number | null; status: string }>;
+    gates: { name: string; status: string; detail: string }[];
+  };
+  assert.equal(artifact.beats["real-cut-answered"].cutMs, 2100);
+  assert.equal(artifact.beats["real-cut-answered"].status, "FAIL");
+  const gate = artifact.gates.find((g) => g.name === "barge-in-cut")!;
+  assert.equal(gate.status, "FAIL");
+  assert.ok(gate.detail.includes("2100ms"));
+  assert.ok(gate.detail.includes("yield"));
+  assert.ok(gate.detail.includes("reply.interrupted"));
+  assert.match(result.stdout, /FAIL/);
+});
+
+test("dry run with no real-cut evidence leaves the barge-in gate ungated", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "score.json");
+  const result = run(["--dry-run", "--voice", DEMO_VOICE_IDS[0], "--out", out], new URL("../", import.meta.url).pathname);
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    gates: { name: string; status: string }[];
+  };
+  const gate = artifact.gates.find((g) => g.name === "barge-in-cut")!;
+  assert.equal(gate.status, "INFO");
+});

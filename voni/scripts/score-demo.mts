@@ -18,6 +18,8 @@
  *   npm run scoreboard:demo -- [--gate-voice <demo-voice-id>] [--scenario greeting-cut] [--runs 1]
  *                           [--out scoreboard-runs/score-<ts>-<voice>.json] [--dry-run]
  *                           [--trace-session sess_...]
++ *                           [--cut-ms <n> | --cut-never] [--cut-verdict <v>] [--cut-answered]
++ *                           [--cut-resumed] [--cut-ended] [--trace-turn <text>]
  *
  * --gate-voice picks the gate voice through the shared voice registry
  * (--voice stays an alias); omitting both gates on DEFAULT_GATE_VOICE, never
@@ -27,18 +29,31 @@
  * --dry-run skips spawning the runner (no ASSEMBLYAI_API_KEY needed) and
  * records a placeholder eval section. --trace-session merges the Call trace
  * for a finished real-call session into the artifact excerpt.
++ *
++ * Real-cut gate (ticket 05): when the eval output carries a real-cut
++ * scenario (stop-over, hang-up-over, hang-up-fast), the barge-in-cut gate is
++ * evaluated from the runner's cut milliseconds, verdict, and resume lines,
+ * and the real-cut-answered beat carries the measured cut. The same evidence
++ * can be passed explicitly (dry-run friendly): --cut-ms with --cut-answered
++ * passes a fast answered cut, --cut-never / a late --cut-ms / --cut-resumed /
++ * a missing --cut-answered fails with cut ms plus verdict and trace turn.
++ * Explicit flags override the parsed runner output per field. With neither
++ * parsed nor explicit evidence the gate stays INFO: recorded, not failed.
  */
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import {
+  applyRealCutGate,
   buildSkeletonArtifact,
   DEFAULT_GATE_VOICE,
+  extractRealCutEvidence,
   formatGateTable,
   formatGoldenScript,
   redactLines,
   resolveGateVoice,
   sha256Hex,
+  type RealCutEvidence,
   type ScoreboardArtifact,
 } from "../src/lib/demo/scoreboard";
 
@@ -83,12 +98,16 @@ function main(): void {
   if (traceSession && !/^sess_[A-Za-z0-9_-]+$/.test(traceSession)) {
     throw new Error(`--trace-session needs a session id like sess_abc, got "${traceSession}"`);
   }
+  const cutMsArg = arg("--cut-ms", "");
+  if (cutMsArg !== "" && !/^\d+$/.test(cutMsArg)) {
+    throw new Error(`--cut-ms needs milliseconds, got "${cutMsArg}"`);
+  }
 
   const evalSection = dryRun
     ? { stdout: "(dry run: eval runner skipped)", exitCode: null as number | null, durationMs: 0 }
     : runEvalRunner(voice, scenario, runs);
 
-  const artifact: ScoreboardArtifact = buildSkeletonArtifact({
+  let artifact: ScoreboardArtifact = buildSkeletonArtifact({
     voice,
     scenario,
     runnerStdout: evalSection.stdout,
@@ -96,6 +115,39 @@ function main(): void {
     durationMs: evalSection.durationMs,
     runs: Number(runs) || 1,
   });
+  const parsed = extractRealCutEvidence(evalSection.stdout);
+  const hasCutFlags =
+    cutMsArg !== "" ||
+    process.argv.includes("--cut-never") ||
+    arg("--cut-verdict", "") !== "" ||
+    process.argv.includes("--cut-answered") ||
+    process.argv.includes("--cut-resumed") ||
+    process.argv.includes("--cut-ended") ||
+    arg("--trace-turn", "") !== "";
+  if (parsed || hasCutFlags) {
+    const base: RealCutEvidence = parsed ?? {
+      cutMs: null,
+      verdict: null,
+      verdictSource: null,
+      answered: false,
+      resumed: false,
+      ended: false,
+      traceTurn: null,
+    };
+    const evidence: RealCutEvidence = {
+      cutMs: process.argv.includes("--cut-never")
+        ? null
+        : cutMsArg !== "" ? Number(cutMsArg) : base.cutMs,
+      verdict: arg("--cut-verdict", "") || base.verdict,
+      verdictSource: base.verdictSource,
+      answered: process.argv.includes("--cut-answered") || base.answered,
+      resumed: process.argv.includes("--cut-resumed") || base.resumed,
+      ended: process.argv.includes("--cut-ended") || base.ended,
+      traceTurn: arg("--trace-turn", "") || base.traceTurn,
+    };
+    // Touch the evaluator so an invalid evidence shape fails the harness, not the gate.
+    artifact = applyRealCutGate(artifact, evidence);
+  }
   if (traceSession) {
     const excerpt = runCallTrace(traceSession);
     artifact.callTrace = {
