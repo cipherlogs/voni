@@ -477,6 +477,8 @@ export function formatTraceTurn(turn: number, sessionId?: string | null): string
 export type TraceTurnPointers = {
   /** 1-based VONI turn of the first interrupted reply, or null. */
   cutTurn: number | null;
+  /** 1-based VONI turn immediately after the cut: the answer, or the resume, or null. */
+  answerTurn: number | null;
   /** 1-based VONI turn of the reply after the end_call tool row, or null. */
   goodbyeTurn: number | null;
 };
@@ -484,6 +486,7 @@ export type TraceTurnPointers = {
 export function traceTurnPointers(excerpt: string[]): TraceTurnPointers {
   let turn = 0;
   let cutTurn: number | null = null;
+  let answerTurn: number | null = null;
   let goodbyeTurn: number | null = null;
   let endCallSeen = false;
   for (const line of excerpt) {
@@ -494,9 +497,10 @@ export function traceTurnPointers(excerpt: string[]): TraceTurnPointers {
     if (!line.includes("  VONI    ")) continue;
     turn += 1;
     if (cutTurn === null && line.includes("CUT at")) cutTurn = turn;
+    else if (cutTurn !== null && answerTurn === null) answerTurn = turn;
     if (endCallSeen && goodbyeTurn === null) goodbyeTurn = turn;
   }
-  return { cutTurn, goodbyeTurn };
+  return { cutTurn, answerTurn, goodbyeTurn };
 }
 
 /**
@@ -2215,6 +2219,89 @@ export const REAL_CUT_MAX_MS = SCOREBOARD_BUDGETS.realCutMs.value;
 export const REAL_CUT_SCENARIOS = ["stop-over", "hang-up-over", "hang-up-fast"] as const;
 
 /**
+ * The live runner's proof line for a post-cut answer. score-demo reads only
+ * this line (never the cut ms) to decide `answered`, so a fast cut alone can
+ * never green the point.
+ */
+export const REAL_CUT_ANSWER_PREFIX = "answered the point after the cut:";
+
+/**
+ * Whether a reply.create instruction is the agent picking up the abandoned
+ * tail after a cut. The session's resume path quotes the unheard rest "word
+ * for word"; the older floor phrasing is kept so a replay still matches.
+ */
+export function isResumeInstructions(instructions: string): boolean {
+  return /finish your sentence|pick up where you left off|word for word:/i.test(instructions);
+}
+
+/**
+ * What a post-cut answer transcript can honestly prove: the caller's point
+ * reached the session, a fresh agent turn followed the cut, and the session
+ * never sent a resume of the abandoned tail. It does not judge semantics — the
+ * transcript it returns is the reviewable evidence, not a model's opinion.
+ */
+export type PostCutAnswerEvidence = {
+  answered: boolean;
+  /** The fresh agent line after the cut, or null. */
+  answer: string | null;
+  /** The resume instruction sent after the cut, or null. */
+  resumed: string | null;
+  /** The caller's point appeared in a final user transcript. */
+  pointHeard: boolean;
+  /** Why the cut was not answered, or null when it was. */
+  reason: string | null;
+};
+
+export function heardPoint(heard: string[], point: string): boolean {
+  const needle = traceLineWords(point);
+  if (!needle) return false;
+  return heard.some((line) => ` ${traceLineWords(line)} `.includes(` ${needle} `));
+}
+
+/**
+ * The fresh agent line that followed both the cut and the caller's point. The
+ * point's own transcript is the floor: an acknowledgement that landed before
+ * the point can never be mistaken for the answer. Null without a cut, and the
+ * interrupted reply is excluded by id.
+ */
+export function postCutAnswerText(input: {
+  cutAt: number | null;
+  cutReplyId: string | null;
+  point: string;
+  heardTurns: { text: string; at: number }[];
+  agentTurns: { replyId: string | null; text: string; at: number }[];
+}): string | null {
+  if (input.cutAt === null) return null;
+  const pointHeardAt =
+    input.heardTurns.find((turn) => heardPoint([turn.text], input.point))?.at ?? input.cutAt;
+  const from = Math.max(input.cutAt, pointHeardAt);
+  return (
+    input.agentTurns.find(
+      (turn) => turn.replyId !== input.cutReplyId && turn.at >= from && turn.text.trim(),
+    )?.text ?? null
+  );
+}
+
+export function judgePostCutAnswer(input: {
+  point: string;
+  heard: string[];
+  answer: string | null;
+  creates: string[];
+}): PostCutAnswerEvidence {
+  const answer = input.answer?.trim() ? input.answer : null;
+  const pointHeard = heardPoint(input.heard, input.point);
+  const resumed = input.creates.find((line) => isResumeInstructions(line)) ?? null;
+  const reason = resumed
+    ? "resumed the abandoned tail instead of answering"
+    : !pointHeard
+      ? "the caller's point was never heard"
+      : answer === null
+        ? "no agent answer after the cut"
+        : null;
+  return { answered: reason === null, answer, resumed, pointHeard, reason };
+}
+
+/**
  * Externally observable real-cut evidence: cut latency from caller speech
  * start to the server cut, the judge verdict from the session events, whether
  * the agent answered the point, whether old material was resumed instead, and
@@ -2305,19 +2392,22 @@ export function evaluateRealCut(
     };
   }
   const cut = evidence.cutMs === null ? "yielded; session ended with no resume" : `answered in ${evidence.cutMs}ms`;
+  const trace = evidence.traceTurn ? `; trace: ${evidence.traceTurn}` : "";
   return {
     name: "barge-in-cut",
     status: "PASS",
-    detail: `real cut ${cut} (verdict ${evidence.verdict ?? "unreported"})`,
+    detail: `real cut ${cut} (verdict ${evidence.verdict ?? "unreported"})${trace}`,
   };
 }
 
 /**
  * Parse real-cut evidence from the eval runner's stdout. Returns null when
  * the output carries no real-cut scenario summary, so unrelated scenarios
- * leave the gate ungated. When the merged Call trace excerpt is supplied, the
- * evidence points at the exact turn: the interrupted reply for a measured
- * cut, or the closing reply after end_call when the caller simply hung up.
+ * leave the gate ungated. A stop-over run counts as answered only when the
+ * runner printed its post-cut answer line: a fast cut by itself is not proof
+ * that the point was answered. When the merged Call trace excerpt is supplied,
+ * the evidence points at the turn after the cut — the answer turn on a PASS,
+ * the resume turn on a FAIL.
  */
 export function extractRealCutEvidence(stdout: string, excerpt: string[] = []): RealCutEvidence | null {
   const summary = stdout.match(/^(stop-over|hang-up-over|hang-up-fast): (\d+)\/(\d+)/m);
@@ -2326,15 +2416,22 @@ export function extractRealCutEvidence(stdout: string, excerpt: string[] = []): 
   const passed = Number(summary[2]) > 0;
   const cut = stdout.match(/cut (\d+)ms after the caller started/);
   const verdict = stdout.match(/\["(yield|ignore|keep|judge)"(,|\])/)?.[1] ?? null;
-  const resumed = /resumed instead of ending|Pick up where you left off/.test(stdout);
+  const resumed =
+    /resumed (?:instead of|after)|Pick up where you left off|Finish your sentence/i.test(stdout);
   const ended = scenario.startsWith("hang-up") && passed && !resumed;
+  const answeredLine = stdout
+    .split("\n")
+    .some((line) => line.trimStart().startsWith(`${REAL_CUT_ANSWER_PREFIX} "`));
+  const answered = scenario === "stop-over" ? answeredLine && !resumed : passed && !resumed;
   const pointers = traceTurnPointers(excerpt);
-  const turn = cut ? pointers.cutTurn : (pointers.cutTurn ?? pointers.goodbyeTurn);
+  const turn = cut
+    ? (pointers.answerTurn ?? pointers.cutTurn)
+    : (pointers.cutTurn ?? pointers.goodbyeTurn);
   return {
     cutMs: cut ? Number(cut[1]) : null,
     verdict,
     verdictSource: null,
-    answered: passed && !resumed,
+    answered,
     resumed,
     ended,
     traceTurn: turn !== null ? formatTraceTurn(turn) : null,

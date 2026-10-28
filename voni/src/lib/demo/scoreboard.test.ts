@@ -70,11 +70,14 @@ import {
   gateVerdictFromArtifact,
   gateVoicePlayback,
   isRealCutExpected,
+  isResumeInstructions,
+  judgePostCutAnswer,
   meaningBasedEndOfTurnGate,
   measureCutLatency,
   overheardFromTraceExcerpt,
   parseTraceGaps,
   percentile,
+  postCutAnswerText,
   REAL_CUT_MAX_MS,
   SILENCE_CHECK_IN_TARGET_MS,
   redactTranscript,
@@ -925,7 +928,13 @@ test("applying real-cut evidence updates the beat and replaces the skeleton gate
 });
 
 test("real-cut evidence parses from the eval runner's stop-over output", () => {
-  const passed = extractRealCutEvidence('    cut 912ms after the caller started\nstop-over: 1/1\n');
+  const passed = extractRealCutEvidence(
+    [
+      '    cut 912ms after the caller started',
+      '    answered the point after the cut: "Pricing depends on call volume."',
+      "stop-over: 1/1",
+    ].join("\n"),
+  );
   assert.deepEqual(passed, {
     cutMs: 912,
     verdict: null,
@@ -958,6 +967,127 @@ test("real-cut evidence parses from the eval runner's stop-over output", () => {
   assert.equal(extractRealCutEvidence("greeting-cut: 1/1\n"), null);
 });
 
+test("a stop-over that resumed the abandoned tail fails and cites the answer turn", () => {
+  const excerpt = [
+    '12.20s  VONI    "We answer every call and triage the urgent ones"  (reply_create gap 900ms)  CUT at 12.90s',
+    '13.20s  HEARD   "Wait, stop. What is the price?"  (12.90s-13.90s)',
+    '14.30s  VONI    "and triage the urgent ones"  (reply_create [Finish your sentence, word for word])',
+  ];
+  const resume = 'Finish your sentence: say exactly this and nothing else, word for word: "and triage the urgent ones"';
+  const evidence = extractRealCutEvidence(
+    [
+      '    cut 980ms after the caller started (budget 1500ms)',
+      `    resumed instead of answering: "${resume}"`,
+      `  ✗ stop-over #1: resumed instead of answering: "${resume}"`,
+      "stop-over: 0/1",
+    ].join("\n"),
+    excerpt,
+  );
+  assert.equal(evidence?.resumed, true);
+  assert.equal(evidence?.answered, false);
+  assert.equal(evidence?.traceTurn, "call trace turn 2", "the resume turn, not the cut turn");
+  const gate = evaluateRealCut(evidence!);
+  assert.equal(gate.status, "FAIL");
+  assert.match(gate.detail, /call trace turn 2/, gate.detail);
+  assert.match(gate.detail, /resum/i, gate.detail);
+  assert.doesNotMatch(gate.detail, /call trace turn 1\b/, gate.detail);
+});
+
+test("a fast cut alone never proves the point was answered", () => {
+  const cutOnly = extractRealCutEvidence('    cut 912ms after the caller started\nstop-over: 1/1\n');
+  assert.equal(cutOnly?.answered, false, "a cut ms alone is not answer evidence");
+  const gate = evaluateRealCut(cutOnly!);
+  assert.equal(gate.status, "FAIL");
+  assert.match(gate.detail, /point was never answered/);
+
+  const answered = extractRealCutEvidence(
+    [
+      '    cut 912ms after the caller started',
+      '    answered the point after the cut: "Pricing depends on call volume."',
+      "stop-over: 1/1",
+    ].join("\n"),
+  );
+  assert.equal(answered?.answered, true);
+  assert.equal(answered?.resumed, false);
+  assert.equal(evaluateRealCut(answered!).status, "PASS");
+});
+
+test("post-cut answer evidence: a fresh answer after the heard point, never a resume", () => {
+  const point = "price";
+  assert.deepEqual(
+    judgePostCutAnswer({
+      point,
+      heard: ["Wait, stop. What's the price?"],
+      answer: "Pricing depends on call volume.",
+      creates: [],
+    }),
+    {
+      answered: true,
+      answer: "Pricing depends on call volume.",
+      resumed: null,
+      pointHeard: true,
+      reason: null,
+    },
+  );
+  // Structural proof only: the point reached the session and a fresh reply
+  // followed. Whether the words answer it stays reviewable in the transcript.
+  assert.deepEqual(
+    judgePostCutAnswer({ point, heard: ["Wait, stop."], answer: "Sure, what is it?", creates: [] }),
+    {
+      answered: false,
+      answer: "Sure, what is it?",
+      resumed: null,
+      pointHeard: false,
+      reason: "the caller's point was never heard",
+    },
+  );
+  assert.equal(
+    judgePostCutAnswer({ point, heard: ["What's the price?"], answer: null, creates: [] }).reason,
+    "no agent answer after the cut",
+  );
+  const tail = 'Finish your sentence: say exactly this and nothing else, word for word: "and triage the urgent ones"';
+  const resumed = judgePostCutAnswer({
+    point,
+    heard: ["What's the price?"],
+    answer: "and triage the urgent ones",
+    creates: [tail],
+  });
+  assert.equal(resumed.answered, false);
+  assert.equal(resumed.resumed, tail);
+  assert.match(resumed.reason ?? "", /resumed the abandoned tail/);
+});
+
+test("the post-cut answer is the fresh turn after the point, never the abandoned tail", () => {
+  const agentTurns = [
+    { replyId: "r1", text: "We answer every call and triage the urgent ones", at: 1050 },
+    { replyId: "r2", text: "Sure, what would you like?", at: 1300 },
+    { replyId: "r3", text: "Pricing depends on call volume.", at: 1800 },
+  ];
+  const heardTurns = [
+    { text: "Wait, stop.", at: 1100 },
+    { text: "What is the price?", at: 1500 },
+  ];
+  // The ack that landed before the point is not the answer to the point.
+  assert.equal(
+    postCutAnswerText({ cutAt: 1000, cutReplyId: "r1", point: "price", heardTurns, agentTurns }),
+    "Pricing depends on call volume.",
+  );
+  // Without a cut there is no post-cut answer to point at.
+  assert.equal(
+    postCutAnswerText({ cutAt: null, cutReplyId: null, point: "price", heardTurns, agentTurns }),
+    null,
+  );
+});
+
+test("resume instructions are recognized by what the session actually sends", () => {
+  assert.equal(
+    isResumeInstructions('Finish your sentence: say exactly this and nothing else, word for word: "answer every call"'),
+    true,
+  );
+  assert.equal(isResumeInstructions("Pick up where you left off"), true);
+  assert.equal(isResumeInstructions("The price depends on call volume."), false);
+});
+
 test("real-cut evidence derives the Call trace turn from the merged excerpt", () => {
   const excerpt = [
     '12.10s  HEARD   "Tell me about the price."  (10.20s-11.30s)',
@@ -965,17 +1095,19 @@ test("real-cut evidence derives the Call trace turn from the merged excerpt", ()
     '15.00s  VONI    "The price is"  (reply_create gap 800ms)',
   ];
   const pointers = traceTurnPointers(excerpt);
-  assert.deepEqual(pointers, { cutTurn: 1, goodbyeTurn: null });
+  assert.deepEqual(pointers, { cutTurn: 1, answerTurn: 2, goodbyeTurn: null });
   assert.equal(formatTraceTurn(1, "sess_abc"), "call trace turn 1 (sess_abc)");
 
   const late = extractRealCutEvidence(
     '    cut 1601ms after the caller started\n  ✗ stop-over #1: cut too late: 1601ms\nstop-over: 0/1\n',
     excerpt,
   );
-  assert.equal(late?.traceTurn, "call trace turn 1");
+  // The cut turn is followed by the answer turn; the evidence points at the
+  // answer turn, where a resume would be visible.
+  assert.equal(late?.traceTurn, "call trace turn 2");
   const gate = evaluateRealCut(late!);
   assert.equal(gate.status, "FAIL");
-  assert.match(gate.detail, /call trace turn 1/, `detail should name the derived turn: ${gate.detail}`);
+  assert.match(gate.detail, /call trace turn 2/, `detail should name the answer turn: ${gate.detail}`);
   // Without a merged excerpt there is no turn to cite; absent evidence stays absent.
   assert.equal(
     extractRealCutEvidence('    cut 1601ms after the caller started\nstop-over: 0/1\n')?.traceTurn,
@@ -991,7 +1123,7 @@ test("double-talk and end-call drain failures point at their Call trace turn", (
     '15.10s  TOOL    end_call {"reason":"caller asked"} 300ms',
     '16.00s  VONI    "Thanks for calling"  (reply_create gap 700ms)',
   ];
-  assert.deepEqual(traceTurnPointers(excerpt), { cutTurn: 1, goodbyeTurn: 2 });
+  assert.deepEqual(traceTurnPointers(excerpt), { cutTurn: 1, answerTurn: 2, goodbyeTurn: 2 });
   const artifact = buildSkeletonArtifact({
     voice: DEFAULT_GATE_VOICE,
     scenario: "hang-up-over",
