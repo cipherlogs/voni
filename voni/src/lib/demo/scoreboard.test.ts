@@ -19,6 +19,7 @@ import {
   evaluateFillerResumeGate,
   evaluateRealCut,
   extractRealCutEvidence,
+  extractTraceSessionId,
   FILLER_RESUME_TAIL_BUDGET_MS,
   GOLDEN_BEATS,
   GOLDEN_SCRIPT,
@@ -49,6 +50,7 @@ import {
   formatGateTable,
   formatGoldenScript,
   formatOverheardReport,
+  formatReplyGapReport,
   gateVoicePlayback,
   isRealCutExpected,
   meaningBasedEndOfTurnGate,
@@ -353,6 +355,52 @@ test("trace gaps reuse the call-trace merger gap math and skip cut turns", () =>
       [900, 1],
       [1200, 3],
     ],
+  );
+});
+
+test("the runner's trace session line is parsed from its output", () => {
+  assert.equal(extractTraceSessionId("greeting-cut: 1/1\n"), null);
+  assert.equal(extractTraceSessionId("  · trace session sess_ab12\n"), "sess_ab12");
+  // A multi-run eval prints one line per live call; the last call wins.
+  assert.equal(
+    extractTraceSessionId("  · trace session sess_first\ngreeting-cut: 1/1\n  · trace session sess_last\n"),
+    "sess_last",
+  );
+  // A transcript that merely echoes a session id is not the runner's marker.
+  assert.equal(extractTraceSessionId('heard: "sess_nope"\n'), null);
+});
+
+test("per-turn reply gap report lists turn indices and the trace session to replay", () => {
+  const excerpt = [
+    '12.10s  HEARD   "Wait, stop."  (10.20s–11.30s)',
+    '12.20s  VONI    "Sorry about that"  (reply_create gap 900ms)',
+    '13.00s  VONI    "Cut short"  (reply_create gap 400ms)  CUT at 13.10s',
+    '14.50s  VONI    "Back to the tour"  (reply_create ttfa 700ms gap 1200ms)',
+  ];
+  assert.equal(
+    formatReplyGapReport(excerpt, "sess_ab12"),
+    [
+      "reply gap per turn (sess_ab12; turn = Nth VONI reply in the merged trace)",
+      "  turn 1  900ms",
+      "  turn 3  1200ms",
+      "  replay: npm run call:trace -- sess_ab12",
+    ].join("\n"),
+  );
+  assert.equal(
+    formatReplyGapReport([], null),
+    ["reply gap per turn (no trace session)", "  no per-turn gaps merged"].join("\n"),
+  );
+  assert.equal(
+    formatReplyGapReport(['12.20s  VONI    "hi"  (reply_create gap 900ms)'], null),
+    ["reply gap per turn (no trace session)", "  turn 1  900ms"].join("\n"),
+  );
+  assert.equal(
+    formatReplyGapReport(['12.10s  HEARD   "Hi"  (0.00s-1.00s)'], "sess_ab12"),
+    [
+      "reply gap per turn (sess_ab12; turn = Nth VONI reply in the merged trace)",
+      "  no per-turn gaps merged",
+      "  replay: npm run call:trace -- sess_ab12",
+    ].join("\n"),
   );
 });
 
@@ -2051,6 +2099,39 @@ test("first trace turn attributes to greeting-cut only with an explicit beat or 
   assert.equal(unverified.beat, null);
   assert.equal(unverified.verified, false);
   assert.match(unverified.note, /trace attribution unverified/);
+});
+
+test("explicit beat mapping never overrides a trace that opens with the greeting cut", () => {
+  const greetingOpening = [
+    '0.10s  HEARD   "Hi, this is Anna."  (0.00s-1.00s)',
+    '0.90s  VONI    "Hi, thanks for calling"  (reply_create gap 900ms)  greeting-cut marker',
+  ];
+  const dominated = attributeFirstTraceGap(greetingOpening, { beatMap: "real-cut-answered" });
+  assert.equal(dominated.beat, "greeting-cut");
+  assert.equal(dominated.verified, true);
+  assert.match(dominated.note, /opens with the greeting cut/);
+
+  const artifact = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "greeting-cut",
+    runnerStdout: "trace",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+    traceGaps: [{ gapMs: 900, turnIndex: 1 }],
+    traceExcerpt: greetingOpening,
+    traceBeat: "real-cut-answered",
+    traceSessionId: "sess_abc",
+  });
+  assert.deepEqual(artifact.beats["greeting-cut"].gapSamples, [900]);
+  assert.deepEqual(artifact.beats["real-cut-answered"].gapSamples, []);
+
+  // Without a greeting opening, the explicit map still does its job.
+  const nonGreeting = attributeFirstTraceGap(
+    ['12.20s  VONI    "Sorry about that"  (reply_create gap 900ms)'],
+    { beatMap: "real-cut-answered" },
+  );
+  assert.equal(nonGreeting.beat, "real-cut-answered");
 });
 
 test("unattributed trace gaps stay call-level with an INFO greeting-cut beat, never a PASS", () => {

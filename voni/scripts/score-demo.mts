@@ -43,8 +43,13 @@
  * --gap feeds a measured reply gap (visitor end-of-speech → first agent
  * audio) to a beat; repeat for several runs. --trace-session merges the
  * Call trace for a finished real-call session: its per-turn `gap Nms`
- * numbers feed the gate, with the first merged turn attributed to the
- * greeting-cut beat (golden runs open with the greeting cut).
+ * numbers feed the gate and the console lists one `turn N  Nms` row per
+ * VONI reply plus the session id to replay. The live eval runner prints
+ * `· trace session sess_…`; when --trace-session is omitted the last one is
+ * chained automatically (a timeline that is not ready yet defers the merge
+ * and prints the replay command instead of breaking the harness). The first
+ * merged turn attributes to the greeting-cut beat only when the excerpt
+ * opens with the greeting cut; otherwise --trace-beat may name it.
  *
  * --filler-text feeds the observed floor behavior for one filler overlap;
  * without it the filler-resume gate stays INFO. --trace-session fills
@@ -75,7 +80,7 @@
  * Extensions kept beyond the ticket scope (documented, not silent):
  * agent-channel PCM evidence rides in --probe-json (offline
  * qa-voice-session analysis); --trace-beat explicitly maps the first merged
- * trace turn when the session does not open with the greeting cut.
+ * trace turn only when the session does not open with the greeting cut.
  *
  * --dry-run skips spawning the runner (no ASSEMBLYAI_API_KEY needed) and
  * records a placeholder eval section. --trace-session merges the Call trace
@@ -84,11 +89,12 @@
  * barge-in verdicts). The first merged turn attributes to the greeting-cut
  * beat only when verified: the excerpt opens with a greeting-cut marker
  * (golden runs open with the greeting cut) or --trace-beat names the beat
- * explicitly. Otherwise the first turn is scored call-level and the
- * greeting-cut beat reports INFO with a "trace attribution unverified"
- * warning, never PASS. --overheard-json feeds explicit asides (marked,
- * ledger, handling, trace pointer per beat); it merges with trace-derived
- * ones.
+ * explicitly. An excerpt that opens with the greeting cut always wins over
+ * an explicit --trace-beat map. Otherwise the first turn is scored
+ * call-level and the greeting-cut beat reports INFO with a "trace
+ * attribution unverified" warning, never PASS. --overheard-json feeds
+ * explicit asides (marked, ledger, handling, trace pointer per beat); it
+ * merges with trace-derived ones.
  *
  * Real-cut gate (ticket 05): when the eval output carries a real-cut
  * scenario (stop-over, hang-up-over, hang-up-fast), the barge-in-cut gate is
@@ -110,10 +116,12 @@ import {
   DEFAULT_GATE_VOICE,
   emptyHumanRatings,
   extractRealCutEvidence,
+  extractTraceSessionId,
   formatBudgetReport,
   formatGateTable,
   formatGoldenScript,
   formatOverheardReport,
+  formatReplyGapReport,
   formatSubScoreTable,
   formatVoiceGainTable,
   GOLDEN_BEATS,
@@ -417,9 +425,10 @@ function main(): void {
     throw new Error(`--runs needs a positive int, got "${runs}"`);
   }
   const dryRun = process.argv.includes("--dry-run");
-  const traceSession = arg("--trace-session", "");
-  if (traceSession && !/^sess_[A-Za-z0-9_-]+$/.test(traceSession)) {
-    throw new Error(`--trace-session needs a session id like sess_abc, got "${traceSession}"`);
+  /** Explicit --trace-session: a bad id or a failed merge is a harness break. */
+  const requestedTraceSession = arg("--trace-session", "");
+  if (requestedTraceSession && !/^sess_[A-Za-z0-9_-]+$/.test(requestedTraceSession)) {
+    throw new Error(`--trace-session needs a session id like sess_abc, got "${requestedTraceSession}"`);
   }
   const traceBeatRaw = arg("--trace-beat", "");
   if (traceBeatRaw && !(GOLDEN_BEATS as readonly string[]).includes(traceBeatRaw)) {
@@ -430,7 +439,7 @@ function main(): void {
     longestSilenceMs: arg("--longest-silence-ms", ""),
     checkInAtMs: arg("--check-in-at-ms", ""),
     checkInOverCaller: process.argv.includes("--check-in-over-caller"),
-    trace: traceSession || undefined,
+    trace: requestedTraceSession || undefined,
   });
   const cutMsArg = arg("--cut-ms", "");
   if (cutMsArg !== "" && !/^\d+$/.test(cutMsArg)) {
@@ -447,13 +456,35 @@ function main(): void {
     ? { stdout: "(dry run: eval runner skipped)", exitCode: null as number | null, durationMs: 0, evalError: null as string | null }
     : runEvalRunner(voice, scenario, runs);
 
+  // The live runner prints `· trace session sess_…` when the call opens; an
+  // explicit --trace-session always wins, otherwise the last live call is
+  // chained so per-turn gaps come from the merger, never an estimate.
+  const runnerTraceSession = dryRun ? null : extractTraceSessionId(evalSection.stdout);
+  const traceSession = requestedTraceSession || runnerTraceSession || "";
+  const autoChainedTrace = !requestedTraceSession && runnerTraceSession !== null;
+
   const gaps = parseGapFlags(process.argv);
   const explicitAsides = overheardJsonPath ? loadOverheardJson(overheardJsonPath) : null;
   let excerpt: string[] | null = null;
   let traceGaps: TraceGap[] = [];
   if (traceSession) {
-    excerpt = runCallTrace(traceSession);
-    traceGaps = parseTraceGaps(excerpt);
+    if (!autoChainedTrace) {
+      excerpt = runCallTrace(traceSession);
+    } else {
+      // A just-finished session may still be processing its timeline: record
+      // the session id and defer the merge instead of breaking the harness or
+      // inventing gaps.
+      try {
+        excerpt = runCallTrace(traceSession);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.log(`call trace merge deferred for ${traceSession}: ${message}`);
+        console.log(
+          `trace session ${traceSession}: rerun once the timeline finishes with npm run call:trace -- ${traceSession}, then score with --trace-session ${traceSession}`,
+        );
+      }
+    }
+    if (excerpt) traceGaps = parseTraceGaps(excerpt);
   }
   const traceAsides =
     excerpt && traceSession ? overheardFromTraceExcerpt(excerpt, traceSession) : [];
@@ -487,7 +518,7 @@ function main(): void {
     traceExcerpt: excerpt ?? [],
     fillerResume,
     ...(overheardAsides !== undefined ? { overheardAsides } : {}),
-    deadAir,
+    deadAir: deadAir && traceSession ? { ...deadAir, trace: traceSession } : deadAir,
     doubleTalkOverlapMs: parseOverlapMs(arg("--overlap-ms", "")),
     endCallDrain: {
       goodbyeCoverage: parseOptionalNumber(arg("--goodbye-coverage", ""), "--goodbye-coverage"),
@@ -541,6 +572,10 @@ function main(): void {
   console.log(formatGoldenScript(voice));
   console.log(formatBudgetReport());
   console.log(formatGateTable(artifact));
+  console.log(formatReplyGapReport(excerpt ?? [], traceSession || null));
+  if (!dryRun && !traceSession) {
+    console.log("trace session: none printed by the eval runner; pass --trace-session <sess_...> to merge per-turn gaps");
+  }
   console.log(formatSubScoreTable(artifact));
   console.log(formatVoiceGainTable(artifact.loudness.voices));
   console.log(formatOverheardReport(artifact));
