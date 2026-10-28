@@ -2504,7 +2504,57 @@ export type RegressionVoiceInput = {
   probes: TimbreProbes;
   tagLines: string[];
   expectedTag?: string;
+  /** Gate artifact rows carried verbatim (read only from the gate voice's artifact). */
+  gates?: ScoreboardGate[];
+  /** Gate artifact sub-scores carried verbatim (never recomputed by the matrix). */
+  subScores?: SubScore[];
 };
+
+/**
+ * The gate verdict a matrix run reports, carried from the gate voice's own
+ * score artifact. The matrix reads these rows and never re-evaluates them, so
+ * a regression voice cannot turn required green into red (or red into green).
+ */
+export type MatrixGateVerdict = {
+  voice: string;
+  status: GateStatus;
+  detail: string;
+  /** Names of carried gates that FAIL; empty means no required gate failed. */
+  failing: string[];
+  gates: ScoreboardGate[];
+  subScores: SubScore[];
+};
+
+/** Carry the gate artifact's verdict: FAIL if any carried gate failed, else PASS. */
+export function gateVerdictFromArtifact(
+  voice: string,
+  gates: ScoreboardGate[] | undefined,
+  subScores: SubScore[] | undefined,
+): MatrixGateVerdict {
+  if (!gates) {
+    return {
+      voice,
+      status: "INFO",
+      detail: `gate ${voice}: INFO (not judged; no gates carried from its score artifact)`,
+      failing: [],
+      gates: [],
+      subScores: subScores ?? [],
+    };
+  }
+  const failing = gates.filter((gate) => gate.status === "FAIL").map((gate) => gate.name);
+  const informational = gates.filter((gate) => gate.status === "INFO").map((gate) => gate.name);
+  return {
+    voice,
+    status: failing.length > 0 ? "FAIL" : "PASS",
+    detail:
+      failing.length > 0
+        ? `gate ${voice}: FAIL (${failing.join(", ")})`
+        : `gate ${voice}: PASS (no required gate failed${informational.length > 0 ? `; ${informational.length} informational` : ""})`,
+    failing,
+    gates,
+    subScores: subScores ?? [],
+  };
+}
 
 export type RegressionMatrix = {
   schemaVersion: typeof SCOREBOARD_SCHEMA_VERSION;
@@ -2513,6 +2563,8 @@ export type RegressionMatrix = {
   expectedTag: string;
   voices: string[];
   results: RegressionVoiceResult[];
+  /** The gate voice's carried verdict; regression rows never modify it. */
+  gate: MatrixGateVerdict;
   gates: ScoreboardGate[];
 };
 
@@ -2534,6 +2586,7 @@ export function buildRegressionMatrix(input: {
     });
   });
   const clean = results.filter((result) => result.status === "PASS").length;
+  const gateEntry = input.entries.find((entry) => entry.voice === gateVoice);
   const gates: ScoreboardGate[] = results.map((result) => ({
     name: `regression:${result.voice}`,
     status: result.status,
@@ -2551,18 +2604,25 @@ export function buildRegressionMatrix(input: {
     expectedTag,
     voices: results.map((result) => result.voice),
     results,
+    gate: gateVerdictFromArtifact(gateVoice, gateEntry?.gates, gateEntry?.subScores),
     gates,
   };
 }
 
-/** Console table: one row per voice plus the overall summary. */
+/** Console table: gate verdict plus one regression row per voice. */
 export function formatMatrixTable(matrix: RegressionMatrix): string {
   const clean = matrix.results.filter((result) => result.status === "PASS").length;
+  const subScores =
+    matrix.gate.subScores.length > 0
+      ? `; sub-scores ${matrix.gate.subScores.map((sub) => `${sub.name} ${sub.status}`).join(", ")}`
+      : "";
+  const gateRow = `${"GATE".padEnd(6)} ${matrix.gate.voice.padEnd(12)} ${matrix.gate.detail}${subScores}`;
   const rows = matrix.results.map(
     (result) => `${result.status.padEnd(6)} ${result.voice.padEnd(12)} ${result.detail}`,
   );
   return [
     `demo voice matrix (gate ${matrix.gateVoice}, ${matrix.results.length} voices, ${clean}/${matrix.results.length} clean)`,
+    gateRow,
     ...rows,
   ].join("\n");
 }
