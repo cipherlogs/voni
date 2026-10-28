@@ -10,17 +10,19 @@
  *   - session evidence exporter: npm run qa:voice-session -- --session <id> --evidence-out <path>
  *   - browser e2e fakes live in tests/e2e/demo-fakes.ts (unchanged here).
  *
- * Gates: the reply-gap and end-of-turn gates fail the command (exit 1) when
- * measured evidence breaches the budget, so regressions never merge
- * silently. Without measured gaps both stay INFO and the command exits 0
- * once the artifact is written, even when the eval runner itself fails (its
- * exit code is recorded in the artifact). Non-zero exit otherwise means the
- * harness broke: unknown voice, bad --gap flag, spawn failure, or an
+ * Gates: the reply-gap, end-of-turn and filler-resume gates fail the
+ * command (exit 1) when measured evidence breaches the budget, so
+ * regressions never merge silently. Without measured gaps or filler
+ * evidence the gates stay INFO and the command exits 0 once the artifact
+ * is written, even when the eval runner itself fails (its exit code is
+ * recorded in the artifact). Non-zero exit otherwise means the harness
+ * broke: unknown voice, bad --gap/--filler flag, spawn failure, or an
  * unwritable artifact.
  *
  *   npm run scoreboard:demo -- [--gate-voice <demo-voice-id>] [--scenario greeting-cut] [--runs 1]
  *                           [--out scoreboard-runs/score-<ts>-<voice>.json] [--dry-run]
  *                           [--trace-session sess_...] [--gap beat=ms ...]
+ *                           [--filler-text "Okaay so" --filler-cut-ms 320 ...]
  *
  * --gate-voice picks the gate voice through the shared voice registry
  * (--voice stays an alias); omitting both gates on DEFAULT_GATE_VOICE, never
@@ -32,6 +34,11 @@
  * Call trace for a finished real-call session: its per-turn `gap Nms`
  * numbers feed the gate, with the first merged turn attributed to the
  * greeting-cut beat (golden runs open with the greeting cut).
+ *
+ * --filler-text feeds the observed floor behavior for one filler overlap;
+ * without it the filler-resume gate stays INFO. --trace-session fills
+ * --filler-trace-turn when the flag is absent, so a failure still points
+ * at the Call trace turn.
  *
  * --dry-run skips spawning the runner (no ASSEMBLYAI_API_KEY needed) and
  * records a placeholder eval section. --trace-session merges the Call trace
@@ -50,11 +57,14 @@ import {
   redactLines,
   resolveGateVoice,
   sha256Hex,
+  type FillerResumeEvidence,
+  type FillerVerdict,
   type GoldenBeat,
   type ScoreboardArtifact,
   type TraceGap,
 } from "../src/lib/demo/scoreboard";
 import { buildDemoAgentBody } from "../src/lib/demo/stored-agents";
+import { judgeOverlap } from "../src/lib/voice/barge-in";
 
 function arg(name: string, fallback = ""): string {
   const i = process.argv.indexOf(name);
@@ -107,6 +117,51 @@ function parseGapFlags(argv: string[]): Partial<Record<GoldenBeat, number[]>> {
   return gaps;
 }
 
+/**
+ * Filler-beat evidence from explicit CLI flags (the observed floor behavior
+ * for one filler overlap). The verdict defaults to what the overlap judge
+ * says about the words; cut/resume/tail observations always come from the
+ * run. Absent --filler-text, the filler-resume gate stays INFO (skeleton).
+ *
+ *   --filler-text "Okaay so" [--filler-agent-text "..."] [--filler-verdict ignore]
+ *   [--filler-cut-ms 320] [--filler-resume-ms 1200]
+ *   [--filler-resumed-text "..."] [--filler-heard-text "..."]
+ *   [--filler-answered-over] [--filler-trace-turn sess_abc#turn]
+ *
+ * --trace-session fills --filler-trace-turn when the flag is absent, so a
+ * failure still points at the Call trace turn.
+ */
+function readFillerEvidence(traceSession: string): FillerResumeEvidence | undefined {
+  const visitorText = arg("--filler-text", "");
+  if (!visitorText) return undefined;
+  const agentText = arg("--filler-agent-text", "");
+  const verdictRaw = arg("--filler-verdict", "");
+  const verdict: FillerVerdict = (
+    verdictRaw ? verdictRaw : judgeOverlap(visitorText, agentText)
+  ) as FillerVerdict;
+  if (!["yield", "ignore", "judge", "keep"].includes(verdict)) {
+    throw new Error(`--filler-verdict needs one of yield|ignore|judge|keep, got "${verdictRaw}"`);
+  }
+  const ms = (flag: string): number | null => {
+    const raw = arg(flag, "");
+    if (raw === "") return null;
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n < 0) throw new Error(`${flag} needs a non-negative ms number, got "${raw}"`);
+    return n;
+  };
+  return {
+    visitorText,
+    agentText,
+    verdict,
+    cutMs: ms("--filler-cut-ms"),
+    resumeMs: ms("--filler-resume-ms"),
+    resumedText: arg("--filler-resumed-text", ""),
+    heardText: arg("--filler-heard-text", ""),
+    answeredOver: process.argv.includes("--filler-answered-over"),
+    traceTurn: arg("--filler-trace-turn", "") || traceSession || undefined,
+  };
+}
+
 function main(): void {
   const voice = resolveGateVoice(arg("--gate-voice", "") || arg("--voice", DEFAULT_GATE_VOICE));
   const scenario = arg("--scenario", "greeting-cut");
@@ -129,6 +184,7 @@ function main(): void {
     traceGaps = parseTraceGaps(excerpt);
   }
   const agentInput = buildDemoAgentBody(voice).input;
+  const fillerResume = readFillerEvidence(traceSession);
 
   const artifact: ScoreboardArtifact = buildSkeletonArtifact({
     voice,
@@ -142,6 +198,7 @@ function main(): void {
     traceSessionId: traceSession || null,
     agentInput,
     traceExcerpt: excerpt ?? [],
+    fillerResume,
   });
   if (excerpt) {
     artifact.callTrace = {

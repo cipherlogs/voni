@@ -405,13 +405,13 @@ export const jevBargeInJudge =
   };
 
 /** A resume waits this long for the server's own reply to the barge-in, to supersede it. */
-const RESUME_WAIT_MS = 500;
+export const RESUME_WAIT_MS = 500;
 /**
  * A cut followed by no words at all (a click, a cough, a wheel scroll the
  * mic heard) never gets a transcript, so the filler resume never runs and the
  * agent sits silent. After this long without caller words, resume anyway.
  */
-const NO_WORDS_RESUME_MS = 800;
+export const NO_WORDS_RESUME_MS = 800;
 /**
  * Caption pace. The platform sends a reply's words all at once as it starts
  * (measured: every delta within ~50ms) while its audio streams in real time,

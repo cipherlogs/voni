@@ -8,6 +8,7 @@ import {
   REPLY_GAP_P50_BUDGET_MS,
   REPLY_GAP_P95_BUDGET_MS,
   buildSkeletonArtifact,
+  evaluateFillerResumeGate,
   formatGateTable,
   formatGoldenScript,
   gateVoicePlayback,
@@ -21,6 +22,7 @@ import {
   resolveGateVoice,
   sha256Hex,
 } from "./scoreboard";
+import { judgeOverlap } from "../voice/barge-in";
 import { DEMO_VOICE_IDS } from "./voni-agent";
 import { VOICE_OUTPUT_VOLUME, voicePlaybackGain } from "../agents/voices";
 
@@ -344,4 +346,175 @@ test("artifact with measured gaps fills per-beat gaps and enforces the reply-gap
     (failing.gates.find((g) => g.name === "reply-gap")?.detail ?? "").includes("sess_abc"),
     "failing gate points at the call trace session",
   );
+});
+
+// ── Ticket 04: filler-ignored + resume-tail gate ─────────────────────────────
+
+test("overlap judge ignores filler, back-channels and agent echo but yields commands", () => {
+  for (const filler of ["mm-hmm", "yeah", "Okaay so"]) {
+    assert.equal(judgeOverlap(filler, "We help dental clinics answer every call"), "ignore", `${filler} must never steal the floor`);
+  }
+  assert.equal(
+    judgeOverlap("help dental clinics", "We help dental clinics answer every call"),
+    "ignore",
+    "agent echo must never steal the floor",
+  );
+  assert.equal(judgeOverlap("Wait, stop.", "We help dental clinics answer every call"), "yield", "steering always yields");
+  assert.equal(judgeOverlap("I want you to hang up.", "Thanks for calling"), "yield", "end-call always yields");
+});
+
+test("filler that never cuts passes with the floor held", () => {
+  for (const filler of ["mm-hmm", "yeah", "Okaay so"]) {
+    const gate = evaluateFillerResumeGate({
+      visitorText: filler,
+      agentText: "We help dental clinics answer every call",
+      verdict: "ignore",
+      cutMs: null,
+      resumeMs: null,
+      resumedText: "",
+      heardText: "",
+      answeredOver: false,
+      traceTurn: "sess_abc#turn 2",
+    });
+    assert.equal(gate.name, "filler-resume");
+    assert.equal(gate.status, "PASS", `${filler}: ${gate.detail}`);
+  }
+});
+
+test("a brief filler cut resumes the exact unheard tail within 2500ms", () => {
+  const line = "We help dental clinics answer every call";
+  const gate = evaluateFillerResumeGate({
+    visitorText: "Okaay so",
+    agentText: line,
+    verdict: "ignore",
+    cutMs: 320,
+    resumeMs: 1200,
+    resumedText: "dental clinics answer every call",
+    heardText: "We help dental",
+    answeredOver: false,
+    traceTurn: "sess_abc#turn 2",
+  });
+  assert.equal(gate.status, "PASS", gate.detail);
+
+  const boundary = evaluateFillerResumeGate({
+    visitorText: "mm-hmm",
+    agentText: line,
+    verdict: "keep",
+    cutMs: 200,
+    resumeMs: 2500,
+    resumedText: "dental clinics answer every call",
+    heardText: "We help dental",
+    answeredOver: false,
+  });
+  assert.equal(boundary.status, "PASS", `2500ms is inside the budget: ${boundary.detail}`);
+});
+
+test("filler failures report cut ms, the judge verdict and the Call trace turn", () => {
+  const line = "We help dental clinics answer every call";
+  const base = {
+    agentText: line,
+    heardText: "We help dental",
+    resumedText: "dental clinics answer every call",
+    traceTurn: "sess_abc#turn 2",
+  };
+  const cases: { label: string; evidence: Parameters<typeof evaluateFillerResumeGate>[0] }[] = [
+    {
+      label: "floor stolen",
+      evidence: { ...base, visitorText: "Okaay so", verdict: "yield", cutMs: 320, resumeMs: null, resumedText: "", answeredOver: false },
+    },
+    {
+      label: "cut never resumed",
+      evidence: { ...base, visitorText: "yeah", verdict: "ignore", cutMs: 410, resumeMs: null, resumedText: "", answeredOver: false },
+    },
+    {
+      label: "resume too slow",
+      evidence: { ...base, visitorText: "mm-hmm", verdict: "ignore", cutMs: 300, resumeMs: 2501, answeredOver: false },
+    },
+    {
+      label: "resume tail inexact",
+      evidence: { ...base, visitorText: "Okaay so", verdict: "ignore", cutMs: 300, resumeMs: 900, resumedText: "something new about pricing", answeredOver: false },
+    },
+    {
+      label: "answered over the resumption",
+      evidence: { ...base, visitorText: "yeah", verdict: "ignore", cutMs: 300, resumeMs: 900, answeredOver: true },
+    },
+    {
+      label: "ambiguous overlap fails closed",
+      evidence: { ...base, visitorText: "price?", verdict: "judge", cutMs: 500, resumeMs: null, resumedText: "", answeredOver: false },
+    },
+  ];
+  for (const { label, evidence } of cases) {
+    const gate = evaluateFillerResumeGate(evidence);
+    assert.equal(gate.status, "FAIL", `${label} must fail`);
+    assert.match(gate.detail, /cut: (never cut|\d+ms)/, `${label} reports cut ms`);
+    assert.match(gate.detail, new RegExp(`verdict:? ${evidence.verdict}`), `${label} reports the judge verdict`);
+    assert.ok(gate.detail.includes("sess_abc#turn 2"), `${label} points at the Call trace turn`);
+  }
+});
+
+test("real steering is not filler: the gate fails instead of blessing a yield", () => {
+  const gate = evaluateFillerResumeGate({
+    visitorText: "Wait, stop.",
+    agentText: "We help dental clinics answer every call",
+    verdict: "ignore",
+    cutMs: null,
+    resumeMs: null,
+    resumedText: "",
+    heardText: "",
+    answeredOver: false,
+    traceTurn: "sess_abc#turn 3",
+  });
+  assert.equal(gate.status, "FAIL", gate.detail);
+});
+
+test("artifact carries the filler-resume gate and timing; console table names it", () => {
+  const line = "We help dental clinics answer every call";
+  const artifact = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "filler-over",
+    runnerStdout: "filler never cut",
+    exitCode: 0,
+    durationMs: 4000,
+    runs: 1,
+    fillerResume: {
+      visitorText: "Okaay so",
+      agentText: line,
+      verdict: "ignore",
+      cutMs: 320,
+      resumeMs: 1200,
+      resumedText: "dental clinics answer every call",
+      heardText: "We help dental",
+      answeredOver: false,
+      traceTurn: "sess_abc#turn 2",
+    },
+  });
+  const gate = artifact.gates.find((g) => g.name === "filler-resume");
+  assert.ok(gate, "artifact carries the filler-resume gate");
+  assert.equal(gate.status, "PASS");
+  assert.equal(artifact.beats["filler-ignored"].cutMs, 320);
+  assert.equal(artifact.beats["filler-ignored"].resumeMs, 1200);
+  assert.equal(artifact.beats["filler-ignored"].status, "PASS");
+  assert.ok(formatGateTable(artifact).includes("filler-resume"));
+
+  const failing = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "filler-over",
+    runnerStdout: "cut and not resumed",
+    exitCode: 0,
+    durationMs: 4000,
+    runs: 1,
+    fillerResume: {
+      visitorText: "Okaay so",
+      agentText: line,
+      verdict: "yield",
+      cutMs: 320,
+      resumeMs: null,
+      resumedText: "",
+      heardText: "We help dental",
+      answeredOver: false,
+      traceTurn: "sess_abc#turn 2",
+    },
+  });
+  assert.equal(failing.gates.find((g) => g.name === "filler-resume")?.status, "FAIL");
+  assert.equal(failing.beats["filler-ignored"].status, "FAIL");
 });
