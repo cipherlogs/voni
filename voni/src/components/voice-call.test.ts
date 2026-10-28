@@ -95,6 +95,18 @@ test("the below-lg demo call is a controlled full-viewport modal", () => {
   assert.match(call, /overheard/, "overlap renders marked while the agent holds the floor");
 });
 
+test("the contact chip has one render site, gated on the invite, the inbox and the call tag", () => {
+  const call = readRepo("components/voice-call.tsx");
+  assert.equal((call.match(/<DemoAddressChip\b/g) ?? []).length, 1, "one chip, never a second");
+  assert.match(
+    call,
+    /emailTest\.invited && active && testTag \? <DemoAddressChip address=\{DEMO_INBOX_ADDRESS\} tag=\{testTag\} \/> : null/,
+    "the chip shows once the invite is up, with the call's inbox and tag",
+  );
+  const put = call.slice(call.indexOf("const putTestUp"), call.indexOf("/** Ask Voni to close the call"));
+  assert.match(put, /setEmailTest\(\{ \.\.\.emailTestRef\.current, invited: true \}\)/, "the invite flag is idempotent");
+});
+
 test("every VoiceCall path exposes mute state and hidden context without reply creation", () => {
   const call = readRepo("components/voice-call.tsx");
   const session = readRepo("lib/voice/session.ts");

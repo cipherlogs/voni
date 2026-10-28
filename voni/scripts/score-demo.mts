@@ -24,7 +24,7 @@
  * from a measured gate FAIL (exit 1). Live scenario playout is printed as
  * wall clock under `evalRunner.timings` and never folded into a gate.
  * Non-zero exit otherwise means the harness broke: unknown voice, bad
- * --runs/--gap/--filler/--cut/--overheard-json/--dead-air-gaps/--overlap-ms/--goodbye-coverage/--hang-up-delay-ms/--trace-beat flag, spawn failure,
+ * --runs/--gap/--filler/--cut/--overheard-json/--email-json/--dead-air-gaps/--overlap-ms/--goodbye-coverage/--hang-up-delay-ms/--trace-beat flag, spawn failure,
  * or an unwritable artifact.
  *
  *   npm run scoreboard:demo -- [--gate-voice <demo-voice-id>] [--scenario greeting-cut] [--runs 1]
@@ -36,7 +36,7 @@
  *                           [--filler-text "Okaay so" --filler-cut-ms 320 ...]
  *                           [--cut-ms <n> | --cut-never] [--cut-verdict <v>] [--cut-answered]
  *                           [--cut-resumed] [--cut-ended] [--trace-turn <text>]
- *                           [--overheard-json asides.json]
+ *                           [--overheard-json asides.json] [--email-json email.json]
  *                           [--dead-air-gaps 400,1200] [--longest-silence-ms 16000]
  *                           [--check-in-at-ms 15200] [--check-in-over-caller]
  *                           [--overlap-ms 120,350] [--goodbye-coverage 0.95]
@@ -82,6 +82,15 @@
  * --check-in-over-caller marks the listed check-ins as overlapping caller
  * speech. Omit all four and the dead-air gate stays INFO (unmeasured, never
  * PASS).
+ *
+ * Invite evidence (ticket 26): the live runner prints one `EMAIL INVITE
+ * {...}` line per invite-tag run (show-tool count, every spoken agent line,
+ * the chip show with inbox+tag, and each line's session turn). score-demo
+ * scores it with applyEmailInvite; --email-json overrides it with a browser
+ * probe or replay of the same shape (plus optional Hold-memory before/after
+ * fields). A hand-supplied file must carry traceSession so a FAIL cites the
+ * Call trace turn where the invite repeated, split the tag, or the chip
+ * duplicated. Memory left unmeasured stays INFO, never PASS.
  *
  * Measured evidence for the ticket-09 gates (no live audio in CI, so a real
  * run or a replay feeds them in): --overlap-ms lists audible overlap per cut
@@ -136,6 +145,7 @@ import { dirname, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import {
   addHumanRating,
+  applyEmailInvite,
   applyGreetingCutGate,
   applyRealCutGate,
   buildSkeletonArtifact,
@@ -157,15 +167,20 @@ import {
   formatVoiceGainTable,
   GOLDEN_BEATS,
   overheardFromTraceExcerpt,
+  parseEmailInviteOutput,
   parseTraceGaps,
   redactLines,
   resolveGateVoice,
   sha256Hex,
   traceTurnForVisitorSpeech,
   traceTurnPointers,
+  traceTurnsForAgentLines,
+  validateEmailInviteEvidence,
   validateProbeCounts,
   type AgentChannelEvidence,
   type DeadAirEvidence,
+  type EmailInviteEvidence,
+  type EmailInviteEvidenceFile,
   type FillerResumeEvidence,
   type FillerVerdict,
   type GoldenBeat,
@@ -229,6 +244,65 @@ function readProbeJson(path: string): { probes: TimbreProbes; agentChannel: Agen
     agentChannel[field] = value;
   }
   return { probes, agentChannel };
+}
+
+/**
+ * Load explicit invite evidence for `--email-json` (a browser/e2e probe, a
+ * replay, or the runner's own EMAIL INVITE object). A hand-supplied file
+ * must name its Call trace session so a FAIL can cite the turn; malformed
+ * evidence is a harness error and writes no artifact.
+ */
+function readEmailInviteJson(path: string): EmailInviteEvidenceFile {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(path, "utf8"));
+  } catch (error) {
+    throw new Error(`--email-json ${path} is not valid JSON: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  return validateEmailInviteEvidence(parsed, `--email-json ${path}`, { requireSession: true });
+}
+
+/** Format one evidence turn: a number becomes a Call trace pointer, a string is already one. */
+function formatEvidenceTurn(value: number | string | null | undefined, session: string | null): string | null {
+  if (value === null || value === undefined) return null;
+  return typeof value === "string" ? value : formatTraceTurn(value, session);
+}
+
+/**
+ * Turn observed invite evidence into the scored shape: each spoken line is
+ * matched to its VONI turn from the merged excerpt when possible, else the
+ * evidence's own turn number. The chip cites the turn that put it up (its
+ * own chipTurn, else the first invite line). No turn is ever guessed.
+ */
+function toEmailInviteEvidence(
+  file: EmailInviteEvidenceFile,
+  excerpt: string[],
+  fallbackSession: string,
+): EmailInviteEvidence {
+  const traceSession = file.traceSession ?? (fallbackSession || null);
+  const derived = excerpt.length > 0 ? traceTurnsForAgentLines(excerpt, file.agentLines) : [];
+  const lineTurns = file.agentLines.map((_, index) =>
+    formatEvidenceTurn(derived[index] ?? file.lineTurns?.[index] ?? null, traceSession),
+  );
+  const firstLineTurn = lineTurns.find((turn): turn is string => turn !== null) ?? null;
+  const chipTraceTurn = formatEvidenceTurn(file.chipTurn ?? null, traceSession) ?? firstLineTurn;
+  return {
+    ...(file.tag !== undefined ? { tag: file.tag } : {}),
+    agentLines: file.agentLines,
+    chipShows: file.chipShows,
+    showToolCalls: file.showToolCalls,
+    lineTurns,
+    chipTraceTurn,
+    ...(file.memoryInvitedBefore !== undefined ? { memoryInvitedBefore: file.memoryInvitedBefore } : {}),
+    ...(file.memoryInvitedAfter !== undefined ? { memoryInvitedAfter: file.memoryInvitedAfter } : {}),
+    ...(file.tagTokenBefore !== undefined ? { tagTokenBefore: file.tagTokenBefore } : {}),
+    ...(file.tagTokenAfter !== undefined ? { tagTokenAfter: file.tagTokenAfter } : {}),
+    ...(file.callTokenBefore !== undefined ? { callTokenBefore: file.callTokenBefore } : {}),
+    ...(file.callTokenAfter !== undefined ? { callTokenAfter: file.callTokenAfter } : {}),
+    ...(file.returning !== undefined ? { returning: file.returning } : {}),
+    ...(file.greetedAsReturning !== undefined ? { greetedAsReturning: file.greetedAsReturning } : {}),
+    ...(file.freeAddress !== undefined ? { freeAddress: file.freeAddress } : {}),
+  };
 }
 
 /**
@@ -568,6 +642,7 @@ function main(): void {
     throw new Error(`--cut-ms needs milliseconds, got "${cutMsArg}"`);
   }
   const overheardJsonPath = arg("--overheard-json", "");
+  const emailJsonPath = arg("--email-json", "");
   const probePath = arg("--probe-json", "");
   const { probes: timbreProbes, agentChannel } = probePath
     ? readProbeJson(resolve(probePath))
@@ -612,6 +687,12 @@ function main(): void {
     excerpt && traceSession ? overheardFromTraceExcerpt(excerpt, traceSession) : [];
   const overheardAsides =
     explicitAsides !== null || traceAsides.length > 0 ? [...(explicitAsides ?? []), ...traceAsides] : undefined;
+  // Invite/tag/chip evidence: an explicit --email-json (browser probe, replay)
+  // wins; otherwise the live runner's own EMAIL INVITE line. Omitted evidence
+  // leaves the email gate INFO (unmeasured), never PASS.
+  const runnerEmailEvidence = dryRun ? null : parseEmailInviteOutput(evalSection.stdout);
+  const emailFile = emailJsonPath ? readEmailInviteJson(resolve(emailJsonPath)) : runnerEmailEvidence;
+  const emailEvidence = emailFile ? toEmailInviteEvidence(emailFile, excerpt ?? [], traceSession) : null;
   const agentInput = buildDemoAgentBody(voice).input;
   const fillerResume = readFillerEvidence(traceSession);
   // A filler FAIL must point at the turn whose reply it overlapped: match the
@@ -664,6 +745,7 @@ function main(): void {
     evalError: evalSection.evalError,
     ...(greetingCut ? { greetingCutEvidencePresent: true } : {}),
     ...(parsed || hasCutFlags ? { realCutEvidencePresent: true } : {}),
+    ...(emailEvidence ? { emailInviteEvidencePresent: true } : {}),
     runId: `run-${stamp()}-${voice}`,
   });
   if (parsed || hasCutFlags) {
@@ -698,6 +780,9 @@ function main(): void {
   }
   if (greetingCut) {
     artifact = applyGreetingCutGate(artifact, greetingCut);
+  }
+  if (emailEvidence) {
+    artifact = applyEmailInvite(artifact, emailEvidence);
   }
   if (excerpt) {
     artifact.callTrace = {

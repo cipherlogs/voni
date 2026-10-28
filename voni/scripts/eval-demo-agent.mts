@@ -82,7 +82,13 @@ import {
   rungInstructions,
 } from "../src/lib/demo/voni-agent";
 import { CHECK_EMAIL_TOOL, DEMO_VOICE_TOOLS, executeDemoTool, SHOW_TEST_ADDRESS_TOOL } from "../src/lib/demo/demo-tools";
-import { checkResultToData, mentionsScreen, normalizeClaim, type CheckEmailResult } from "../src/lib/demo/email-test";
+import {
+  checkResultToData,
+  DEMO_INBOX_ADDRESS,
+  mentionsScreen,
+  normalizeClaim,
+  type CheckEmailResult,
+} from "../src/lib/demo/email-test";
 import { buildEndCallSuccess, END_CALL_VOICE_TOOL } from "../src/lib/tools/definitions";
 import {
   HELD_RESULT_RELEASE_MS,
@@ -95,12 +101,14 @@ import { tryJevGateway } from "../src/lib/voice/voice-judge";
 import {
   callerClipDrift,
   callerClipFingerprint,
+  EMAIL_INVITE_EVIDENCE_PREFIX,
   greetingCutFailure,
   GREETING_CUT_MAX_MS,
   measureCutLatency,
   sha256Hex,
   type CallerClipFingerprint,
   type CallerOnset,
+  type EmailInviteEvidenceFile,
 } from "../src/lib/demo/scoreboard";
 
 const FAKE = /fake|pretend|hypothetical|make one up|made[- ]up|pick anything|example business|imaginary|role[- ]?play/i;
@@ -720,6 +728,12 @@ type ToolOutcome = {
   resent?: boolean;
   /** Voni announced her screen without the tool; the call put the test up. */
   screenByPhrase?: boolean;
+  /**
+   * Contact-chip shows the browser would render: one per invite transition
+   * (the real component renders one chip while `emailTest.invited`). The
+   * eval mirrors that gate so a duplicate show is still detectable.
+   */
+  chipShows: { address: string; tag: string }[];
 };
 type ToolApi = {
   say: (line: string) => Promise<void>;
@@ -744,7 +758,7 @@ async function runToolSession(
 ): Promise<ToolOutcome> {
   const body = buildDemoAgentBody(voiceId);
   const ws = new WebSocket(`${WS}?token=${await token()}`);
-  const outcome: ToolOutcome = { replies: [], heard: [], tools: [], endCalled: false, slowTurns: 0 };
+  const outcome: ToolOutcome = { replies: [], heard: [], tools: [], endCalled: false, slowTurns: 0, chipShows: [] };
   const send = (message: Record<string, unknown>) => {
     if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(message));
   };
@@ -773,9 +787,21 @@ async function runToolSession(
     if (process.env.EVAL_DEBUG) console.log(`    → ${((Date.now() - t0) / 1000).toFixed(2)}s reply.create (invite)`);
     send({ type: "reply.create", instructions: inviteNowInstructions(TAG) });
   };
+  // The browser shows the chip once the invite is up (putTestUp); repeated
+  // callbacks keep the same single chip, so a transition is one show.
+  const showChip = (address: string, tag: string) => {
+    if (outcome.chipShows.length > 0) return;
+    outcome.chipShows.push({ address, tag });
+  };
   const sendResult = (callId: string, result: Record<string, unknown>, record: ToolCallRecord) => {
     record.resultAt = Date.now();
     if (record.name === SHOW_TEST_ADDRESS_TOOL && result.ok === true) {
+      // The chip shows what the tool result carried, exactly like the browser.
+      const data = (result.data ?? {}) as Record<string, unknown>;
+      showChip(
+        typeof data.address === "string" ? data.address : DEMO_INBOX_ADDRESS,
+        typeof data.testTag === "string" ? data.testTag : TAG,
+      );
       replaceNext = setTimeout(() => {
         replaceNext = null;
         sendInvite();
@@ -866,6 +892,7 @@ async function runToolSession(
       // Like the browser: Voni announced her screen without the show tool.
       if (!outcome.tools.some((t) => t.name === SHOW_TEST_ADDRESS_TOOL) && !outcome.screenByPhrase && mentionsScreen(String(msg.text))) {
         outcome.screenByPhrase = true;
+        showChip(DEMO_INBOX_ADDRESS, TAG);
         const sendWhenIdle = () => (replyActive ? setTimeout(sendWhenIdle, 300) : sendInvite());
         setTimeout(sendWhenIdle, 1200);
       }
@@ -1176,6 +1203,30 @@ const EMAIL_SCENARIOS: { name: string; run: (voiceId: string) => Promise<[string
   },
 ];
 
+/**
+ * Machine-readable invite evidence for score-demo's email gate: what Voni
+ * audibly said (non-replaced replies only), how many times the show tool ran,
+ * the chip shows the browser would render, and each spoken line's session
+ * turn (1-based reply, the same numbering as the merged Call trace's VONI
+ * rows). No memory fields: the live eval never performs a Hold return, so
+ * memory stays honestly unmeasured (the gate then reports INFO, never PASS).
+ */
+function emailInviteEvidence(outcome: ToolOutcome): EmailInviteEvidenceFile {
+  const entries = outcome.replies
+    .map((reply, index) => ({ ...reply, turn: index + 1 }))
+    .filter((reply) => !reply.replaced && reply.text.trim().length > 0);
+  const tagTurn = entries.find((reply) => TAG_WORD.test(reply.text))?.turn ?? null;
+  return {
+    tag: TAG,
+    agentLines: entries.map((reply) => reply.text),
+    lineTurns: entries.map((reply) => reply.turn),
+    chipShows: outcome.chipShows,
+    showToolCalls: outcome.tools.filter((tool) => tool.name === SHOW_TEST_ADDRESS_TOOL).length,
+    chipTurn: tagTurn,
+    traceSession: outcome.sessionId ?? null,
+  };
+}
+
 function voiceIdArg(): string {
   return arg("--voice", DEMO_VOICE_IDS[0]);
 }
@@ -1290,6 +1341,9 @@ for (const scenario of EMAIL_SCENARIOS.filter((s) => !only || s.name === only)) 
       reason = error instanceof Error ? error.message : String(error);
     }
     noteSession(outcome?.sessionId);
+    if (scenario.name === "invite-tag" && outcome) {
+      console.log(`${EMAIL_INVITE_EVIDENCE_PREFIX}${JSON.stringify(emailInviteEvidence(outcome))}`);
+    }
     if (reason === null) passed += 1;
     else {
       failures += 1;
