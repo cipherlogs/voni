@@ -182,6 +182,116 @@ if (args[0] === "run" && args[1] === "eval:demo-agent") {
   assert.match(result.stdout, /replay: npm run call:trace -- sess_auto07/);
 });
 
+test("a filler-over run scores the filler-resume gate from the runner's own line", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  writeFileSync(
+    join(bin, "npm"),
+    `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === "run" && args[1] === "eval:demo-agent") {
+  console.log('    filler never cut; events [["ignore","Okaay so"]]; answer continued');
+  console.log("filler-over: 1/1");
+} else if (args[0] === "run" && args[1] === "call:trace") {
+  console.log('10.20s  VONI    "We help dental clinics answer every call"  (reply_create gap 900ms)');
+  console.log('10.40s  HEARD   "Okaay so"  (10.30s-10.50s)');
+}
+`,
+    { mode: 0o755 },
+  );
+  const out = join(dir, "score.json");
+  const result = run(
+    ["--scenario", "filler-over", "--trace-session", "sess_filler", "--out", out, "--timing-lock", join(dir, "timing.lock")],
+    new URL("../", import.meta.url).pathname,
+    { PATH: `${bin}:${process.env.PATH}` },
+  );
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    beats: Record<string, { status: string; cutMs: number | null; resumeMs: number | null }>;
+    gates: { name: string; status: string; detail: string }[];
+  };
+  const gate = artifact.gates.find((g) => g.name === "filler-resume")!;
+  assert.equal(gate.status, "PASS", gate.detail);
+  assert.match(gate.detail, /never cut/);
+  assert.match(gate.detail, /call trace turn 1 \(sess_filler\)/);
+  assert.equal(artifact.beats["filler-ignored"].status, "PASS");
+  assert.equal(artifact.beats["filler-ignored"].cutMs, null);
+  assert.equal(artifact.beats["filler-ignored"].resumeMs, null);
+});
+
+test("explicit filler flags override the runner's observed line", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  writeFileSync(
+    join(bin, "npm"),
+    `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === "run" && args[1] === "eval:demo-agent") {
+  console.log('    filler never cut; events [["ignore","Okaay so"]]; answer continued');
+  console.log("filler-over: 1/1");
+} else if (args[0] === "run" && args[1] === "call:trace") {
+  console.log('10.20s  VONI    "We help dental clinics answer every call"  (reply_create gap 900ms)');
+  console.log('10.40s  HEARD   "Wait, stop."  (10.30s-10.50s)');
+}
+`,
+    { mode: 0o755 },
+  );
+  const out = join(dir, "score.json");
+  const result = run(
+    [
+      "--scenario", "filler-over",
+      "--trace-session", "sess_filler",
+      "--filler-text", "Wait, stop.",
+      "--out", out,
+      "--timing-lock", join(dir, "timing.lock"),
+    ],
+    new URL("../", import.meta.url).pathname,
+    { PATH: `${bin}:${process.env.PATH}` },
+  );
+  assert.equal(result.status, 1, result.stderr + result.stdout);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    gates: { name: string; status: string; detail: string }[];
+  };
+  const gate = artifact.gates.find((g) => g.name === "filler-resume")!;
+  assert.equal(gate.status, "FAIL", "the explicit steering override wins over the runner's ignore line");
+  assert.match(gate.detail, /not filler per the overlap judge/);
+  assert.match(gate.detail, /call trace turn 1 \(sess_filler\)/);
+});
+
+test("a filler FAIL without a merged trace says no turn merged instead of guessing", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  writeFileSync(
+    join(bin, "npm"),
+    `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === "run" && args[1] === "eval:demo-agent") {
+  console.log('    filler cut at 318ms; events [["yield","Okaay so"]]; answer derailed');
+  console.log("filler-over: 0/1");
+}
+`,
+    { mode: 0o755 },
+  );
+  const out = join(dir, "score.json");
+  const result = run(
+    ["--scenario", "filler-over", "--out", out, "--timing-lock", join(dir, "timing.lock")],
+    new URL("../", import.meta.url).pathname,
+    { PATH: `${bin}:${process.env.PATH}` },
+  );
+  assert.equal(result.status, 1, result.stderr + result.stdout);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    gates: { name: string; status: string; detail: string }[];
+  };
+  const gate = artifact.gates.find((g) => g.name === "filler-resume")!;
+  assert.equal(gate.status, "FAIL");
+  assert.match(gate.detail, /floor stolen/);
+  assert.match(gate.detail, /318ms/);
+  assert.match(gate.detail, /trace: no turn merged\)/);
+});
+
 test("a slow later turn fails the scored run and cites its Call trace turn", () => {
   const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
   const bin = join(dir, "bin");
