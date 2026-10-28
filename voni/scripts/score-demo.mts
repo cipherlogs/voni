@@ -10,14 +10,27 @@
  *   - session evidence exporter: npm run qa:voice-session -- --session <id> --evidence-out <path>
  *   - browser e2e fakes live in tests/e2e/demo-fakes.ts (unchanged here).
  *
- * No gates yet: every gate reports PASS/INFO and the command exits 0 once the
- * artifact is written, even when the eval runner itself fails (its exit code
- * is recorded in the artifact). Non-zero exit means the harness broke:
- * unknown voice, spawn failure, or an unwritable artifact.
+ * Ticket-09 gates (double-talk, end-call-drain) evaluate measured evidence
+ * and fail loudly: any FAIL gate exits non-zero once the artifact is written,
+ * even when the eval runner itself fails (its exit code is recorded in the
+ * artifact). Non-zero exit means the demo regressed or the harness broke:
+ * unknown voice, spawn failure, unwritable artifact, or a bad evidence flag.
  *
  *   npm run scoreboard:demo -- [--gate-voice <demo-voice-id>] [--scenario greeting-cut] [--runs 1]
  *                           [--out scoreboard-runs/score-<ts>-<voice>.json] [--dry-run]
  *                           [--trace-session sess_...]
+ *                           [--overlap-ms 120,350] [--goodbye-coverage 0.95]
+ *                           [--hang-up-delay-ms 900] [--narrated-ending]
+ *
+ * Measured evidence for the ticket-09 gates (no live audio in CI, so a real
+ * run or a replay feeds them in): --overlap-ms lists audible overlap per cut
+ * (FAIL past 400ms), --goodbye-coverage is played/expected goodbye speaking
+ * time (FAIL below 80%), --hang-up-delay-ms is session end minus goodbye
+ * audio end (FAIL when negative or past 1500ms), --narrated-ending flags a
+ * model reply after end_call. Omitted evidence is INFO, never a false FAIL.
+ * Any FAIL gate exits non-zero once the artifact is written, so desktop runs
+ * green before merge; a broken harness (unknown voice, spawn failure,
+ * unwritable artifact, bad flag) also exits non-zero with no artifact.
  *
  * --gate-voice picks the gate voice through the shared voice registry
  * (--voice stays an alias); omitting both gates on DEFAULT_GATE_VOICE, never
@@ -74,6 +87,24 @@ function runCallTrace(sessionId: string): string[] {
   return redactLines(result.stdout ?? "");
 }
 
+function parseOverlapMs(raw: string): number[] {
+  if (!raw) return [];
+  const values = raw.split(",").map((part) => Number(part.trim()));
+  if (values.some((v) => !Number.isFinite(v) || v < 0)) {
+    throw new Error(`--overlap-ms needs non-negative milliseconds like "120,350", got "${raw}"`);
+  }
+  return values;
+}
+
+function parseOptionalNumber(raw: string, flag: string): number | null {
+  if (!raw) return null;
+  const value = Number(raw);
+  if (!Number.isFinite(value)) {
+    throw new Error(`${flag} needs a number, got "${raw}"`);
+  }
+  return value;
+}
+
 function main(): void {
   const voice = resolveGateVoice(arg("--gate-voice", "") || arg("--voice", DEFAULT_GATE_VOICE));
   const scenario = arg("--scenario", "greeting-cut");
@@ -95,6 +126,13 @@ function main(): void {
     exitCode: evalSection.exitCode,
     durationMs: evalSection.durationMs,
     runs: Number(runs) || 1,
+    doubleTalkOverlapMs: parseOverlapMs(arg("--overlap-ms", "")),
+    endCallDrain: {
+      goodbyeCoverage: parseOptionalNumber(arg("--goodbye-coverage", ""), "--goodbye-coverage"),
+      hangUpDelayMs: parseOptionalNumber(arg("--hang-up-delay-ms", ""), "--hang-up-delay-ms"),
+      narratedEnding: process.argv.includes("--narrated-ending"),
+    },
+    traceRef: traceSession || undefined,
   });
   if (traceSession) {
     const excerpt = runCallTrace(traceSession);
@@ -112,6 +150,9 @@ function main(): void {
   console.log(formatGoldenScript(voice));
   console.log(formatGateTable(artifact));
   console.log(`artifact: ${out}`);
+  if (artifact.gates.some((gate) => gate.status === "FAIL")) {
+    process.exitCode = 1;
+  }
 }
 
 try {
