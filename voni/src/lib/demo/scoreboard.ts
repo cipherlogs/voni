@@ -15,6 +15,8 @@
 import { createHash } from "node:crypto";
 import { getVoice, VOICE_OUTPUT_VOLUME, voicePlaybackGain } from "../agents/voices";
 import { DEMO_VOICE_IDS } from "./voni-agent";
+import { DEMO_INBOX_ADDRESS } from "./email-test";
+import { containsTag } from "./test-tag";
 
 /** The locked golden script: seven beats in fixed order (spec story 11). */
 export const GOLDEN_BEATS = [
@@ -115,7 +117,7 @@ export const GOLDEN_SCRIPT: GoldenBeatSpec[] = [
   },
 ];
 
-export const SCOREBOARD_SCHEMA_VERSION = 2;
+export const SCOREBOARD_SCHEMA_VERSION = 3;
 
 export type BeatTiming = {
   /** Reply gap: visitor end-of-speech → first agent audio. Placeholder until ticket 02. */
@@ -124,7 +126,7 @@ export type BeatTiming = {
   cutMs: number | null;
   /** Goodbye drain: goodbye end → session end. Placeholder until the drain ticket. */
   drainMs: number | null;
-  status: "PASS" | "INFO";
+  status: "PASS" | "INFO" | "FAIL";
   note: string;
 };
 
@@ -135,6 +137,239 @@ export type ScoreboardGate = {
   status: GateStatus;
   detail: string;
 };
+
+/**
+ * Prospect-capture beat (ticket 08): the Email invite plus Test tag behaves
+ * exactly once and survives hold/reload. Wording reuses the eval
+ * invite-tag/forgot-tag/free-gate/returning checks (TAG Lime 42, no
+ * digit-split, no invented tag, normalizeClaim andres@, hi@voni.cc) and the
+ * e2e demo-email-test expectations (10s invite, chip mailto, clipboard,
+ * localStorage voni:test-tag, poll-once, personal-address once,
+ * returning-greeting, talk-clock 4->6min), with Call memory in sessionStorage
+ * and hold/flap/return resume. All inputs are external observables: what Voni
+ * audibly said, how many times the show tool ran, how many times the chip
+ * showed, which tokens survived.
+ */
+export const EMAIL_INVITE_TAG = "Lime 42";
+
+export type EmailInviteEvidence = {
+  /** Gate tag; defaults to EMAIL_INVITE_TAG (the locked call tag). */
+  tag?: string;
+  /** What Voni audibly said (agent transcripts, one entry per turn). */
+  agentLines: string[];
+  /** Every contact-chip show: the inbox address plus the tag on the chip. */
+  chipShows: { address: string; tag: string }[];
+  /** How many times show_test_address ran (the invite). */
+  showToolCalls: number;
+  /** localStorage voni:test-tag before/after a Hold return or reload. */
+  tagTokenBefore?: string | null;
+  tagTokenAfter?: string | null;
+  /** Call memory sessionStorage voni:demo-call: was the test invited before/after? */
+  memoryInvitedBefore?: boolean;
+  memoryInvitedAfter?: boolean;
+  /** Same call across the return: the call token before/after. */
+  callTokenBefore?: string | null;
+  callTokenAfter?: string | null;
+  /** The sender matched an earlier tag (other device) or carried one (callback). */
+  returning?: boolean;
+  /** Externally observed greeting as returning (again/back/good-to-hear/earlier-call). */
+  greetedAsReturning?: boolean;
+  /** Personal-address sender when the Work-email gate applies; null otherwise. */
+  freeAddress?: string | null;
+};
+
+export type EmailInviteResult = {
+  tag: string;
+  tagMentions: number;
+  digitSplit: boolean;
+  inventedTags: string[];
+  strayAddresses: string[];
+  workEmailGateMentions: number;
+  chipShows: number;
+  memoryPersists: boolean | null;
+  returningOk: boolean | null;
+  showToolCalls: number;
+  status: "PASS" | "FAIL";
+  detail: string;
+};
+
+/** How many agent turns carry the tag (typed any way: lime42, Lime-42, Lime 42). */
+export function countTagMentions(lines: string[], tag: string = EMAIL_INVITE_TAG): number {
+  return lines.filter((line) => containsTag(line, tag)).length;
+}
+
+const DIGIT_WORDS = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine"];
+
+/** Spoken digit by digit ("Lime 4 2", "Lime four two") instead of one whole number ("Lime 42"). */
+export function hasDigitSplitTag(lines: string[], tag: string = EMAIL_INVITE_TAG): boolean {
+  const [word = "", digits = ""] = tag.split(" ");
+  if (!word || !digits) return false;
+  const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const digitChars = digits.split("");
+  const digitSplit = new RegExp(`\\b${esc(word)}\\s+${digitChars.map((d) => esc(d)).join("\\s*[\\- ]\\s*")}\\b`, "i");
+  const wordSplit = new RegExp(
+    `\\b${esc(word)}\\s+${digitChars.map((d) => DIGIT_WORDS[Number(d)] ?? esc(d)).join("\\s+[\\- ]?\\s*")}\\b`,
+    "i",
+  );
+  return lines.some((line) => {
+    // A whole "lime 42" is not a split; a spaced "lime 4 2" is.
+    if (containsTag(line, tag) && !digitSplit.test(line) && !wordSplit.test(line)) return false;
+    return digitSplit.test(line) || wordSplit.test(line);
+  });
+}
+
+/**
+ * Any "Word digits" in a tag/subject line that is not this call's tag was
+ * made up (eval invite-tag: any tag-like match outside the gate word, digits
+ * other than a bare 0, in a line about the tag or subject).
+ */
+export function findInventedTags(lines: string[], tag: string = EMAIL_INVITE_TAG): string[] {
+  const word = (tag.split(" ")[0] ?? "").toLowerCase();
+  const gateWord = new RegExp(`\\b${word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i");
+  const shape = /\b([A-Za-z]+)[ -]?(\d{1,3})\b/g;
+  const found: string[] = [];
+  for (const line of lines) {
+    if (!/tag|subject/i.test(line)) continue;
+    for (const m of line.matchAll(shape)) {
+      if (!gateWord.test(m[1]) && m[2] !== "0") found.push(m[0]);
+    }
+  }
+  return found;
+}
+
+/**
+ * Any spoken email address other than the team's hi@voni.cc (eval
+ * strayAddress: pilot/voni.ai/@ plus the at/dot spoken form, after removing
+ * the goodbye's hi@voni.cc). The invite never says or spells the inbox
+ * address: it is on the visitor's screen.
+ */
+export function findStrayAddresses(lines: string[]): string[] {
+  const spoken = /\b[a-z0-9._-]+\s*(?:@|\bat\b)\s*[a-z0-9-]+\s*(?:\.|\bdot\b)\s*[a-z]{2,}/i;
+  const found: string[] = [];
+  for (const line of lines) {
+    const withoutTeam = line
+      .replace(/hi@voni\.cc/gi, "")
+      .replace(/hi\s+at\s+voni\s+dot\s+c\s*c/gi, "");
+    if (/pilot|voni\.ai|@/i.test(withoutTeam) || spoken.test(withoutTeam)) found.push(line.trim());
+  }
+  return found;
+}
+
+/** Work-email gate lines ("that's a personal address … I need your work one"). */
+export function countWorkEmailGate(lines: string[]): number {
+  return lines.filter((line) => /personal address/i.test(line) && /work (one|email)/i.test(line)).length;
+}
+
+/** Whether Call memory kept the invite across a Hold return or reload. Null when no before/after supplied. */
+export function persistsEmailAcrossMemory(evidence: EmailInviteEvidence): boolean | null {
+  const hasBefore =
+    evidence.memoryInvitedBefore !== undefined ||
+    evidence.tagTokenBefore !== undefined ||
+    evidence.callTokenBefore !== undefined;
+  if (!hasBefore) return null;
+  if (evidence.memoryInvitedBefore === true && evidence.memoryInvitedAfter !== true) return false;
+  if (evidence.tagTokenBefore != null && evidence.tagTokenAfter !== evidence.tagTokenBefore) return false;
+  if (evidence.callTokenBefore != null && evidence.callTokenAfter !== evidence.callTokenBefore) return false;
+  return true;
+}
+
+export function evaluateEmailInvite(evidence: EmailInviteEvidence): EmailInviteResult {
+  const tag = evidence.tag ?? EMAIL_INVITE_TAG;
+  const agentLines = evidence.agentLines ?? [];
+  const chipShows = evidence.chipShows ?? [];
+  const showToolCalls = evidence.showToolCalls ?? 0;
+  const returning = evidence.returning ?? false;
+  const greeted = evidence.greetedAsReturning ?? false;
+  const freeAddress = evidence.freeAddress ?? null;
+
+  const tagMentions = countTagMentions(agentLines, tag);
+  const digitSplit = hasDigitSplitTag(agentLines, tag);
+  const inventedTags = findInventedTags(agentLines, tag);
+  const strayAddresses = findStrayAddresses(agentLines);
+  const workEmailGateMentions = countWorkEmailGate(agentLines);
+  const memoryPersists = persistsEmailAcrossMemory(evidence);
+  const returningOk = returning ? greeted && showToolCalls <= 1 : null;
+
+  const fails: string[] = [];
+  if (showToolCalls > 1) fails.push(`invited ${showToolCalls} times`);
+  if (!returning && showToolCalls !== 1) {
+    fails.push(showToolCalls === 0 ? "never invited the email test" : `invited ${showToolCalls} times`);
+  }
+  if (returning && !greeted) fails.push("returning sender not greeted");
+  if (returning && showToolCalls > 1) fails.push("second invite for a returning sender");
+
+  if (showToolCalls === 0) {
+    // Callback: the carried tag was checked at connect, no second invite.
+    if (tagMentions !== 0) fails.push(`said the tag ${tagMentions} times without an invite`);
+    if (chipShows.length !== 0) fails.push(`chip showed ${chipShows.length} times without an invite`);
+  } else {
+    if (tagMentions !== 1) fails.push(tagMentions === 0 ? "never said the tag" : `said the tag ${tagMentions} times`);
+    if (digitSplit) fails.push("said the tag digit by digit");
+    if (inventedTags.length > 0) fails.push(`invented a tag: "${inventedTags[0]}"`);
+    if (strayAddresses.length > 0) fails.push(`spoke an address: "${strayAddresses[0].slice(0, 80)}"`);
+    if (chipShows.length !== 1) {
+      fails.push(chipShows.length === 0 ? "chip never showed" : `chip showed ${chipShows.length} times`);
+    } else {
+      if (chipShows[0].address !== DEMO_INBOX_ADDRESS) fails.push(`chip showed ${chipShows[0].address}`);
+      if (chipShows[0].tag !== tag) fails.push("chip tag does not match the call tag");
+    }
+    if (freeAddress != null) {
+      if (workEmailGateMentions !== 1) {
+        fails.push(workEmailGateMentions === 0 ? "personal address without the work-email gate" : "work-email gate said twice");
+      }
+    } else if (workEmailGateMentions !== 0) {
+      fails.push("work-email gate without a personal address");
+    }
+  }
+  if (memoryPersists === false) fails.push("tag did not persist across Hold return/reload");
+
+  const status = fails.length === 0 ? "PASS" : "FAIL";
+  return {
+    tag,
+    tagMentions,
+    digitSplit,
+    inventedTags,
+    strayAddresses,
+    workEmailGateMentions,
+    chipShows: chipShows.length,
+    memoryPersists,
+    returningOk,
+    showToolCalls,
+    status,
+    detail: status === "PASS" ? `tag said once (${tag}), chip once, memory kept` : fails.join("; "),
+  };
+}
+
+export function emailInviteGate(result: EmailInviteResult): ScoreboardGate {
+  return {
+    name: "email-invite",
+    status: result.status,
+    detail: result.detail,
+  };
+}
+
+/** Score the email-invite beat and gate from external evidence, leaving every other beat alone. */
+export function applyEmailInvite(artifact: ScoreboardArtifact, evidence: EmailInviteEvidence): ScoreboardArtifact {
+  const result = evaluateEmailInvite(evidence);
+  const gates = artifact.gates.some((g) => g.name === "email-invite")
+    ? artifact.gates.map((g) => (g.name === "email-invite" ? emailInviteGate(result) : g))
+    : [...artifact.gates, emailInviteGate(result)];
+  return {
+    ...artifact,
+    emailInvite: result,
+    beats: {
+      ...artifact.beats,
+      "email-invite": {
+        gapMs: null,
+        cutMs: null,
+        drainMs: null,
+        status: result.status,
+        note: result.detail,
+      },
+    },
+    gates,
+  };
+}
 
 export type ScoreboardArtifact = {
   schemaVersion: typeof SCOREBOARD_SCHEMA_VERSION;
@@ -158,6 +393,8 @@ export type ScoreboardArtifact = {
   transcripts: { sha256: string; redacted: string[] };
   humanRatings: { timbre: number | null; accent: number | null };
   gates: ScoreboardGate[];
+  /** Prospect-capture beat: invite/tag counts, chip-once, memory persistence (ticket 08). Null until evidence lands. */
+  emailInvite: EmailInviteResult | null;
   evalRunner: {
     scenario: string;
     passed: boolean | null;
@@ -271,6 +508,7 @@ function skeletonGates(exitCode: number | null): ScoreboardGate[] {
     { name: "reply-gap", status: "INFO", detail: "skeleton: gating lands in the reply-gap ticket" },
     { name: "barge-in-cut", status: "INFO", detail: "skeleton: gating lands in the cut ticket" },
     { name: "overheard-recall", status: "INFO", detail: "skeleton: gating lands in the overheard ticket" },
+    { name: "email-invite", status: "INFO", detail: "skeleton: invite/tag evidence not yet scored" },
     { name: "double-talk", status: "INFO", detail: "skeleton: gating lands in the naturalness ticket" },
     { name: "dead-air", status: "INFO", detail: "skeleton: gating lands in the naturalness ticket" },
     { name: "timbre-probes", status: "INFO", detail: "skeleton: gating lands in the timbre ticket" },
@@ -320,6 +558,7 @@ export function buildSkeletonArtifact(input: {
     },
     humanRatings: { timbre: null, accent: null },
     gates: skeletonGates(input.exitCode),
+    emailInvite: null,
     evalRunner: {
       scenario: input.scenario,
       passed: input.exitCode === null ? null : input.exitCode === 0,

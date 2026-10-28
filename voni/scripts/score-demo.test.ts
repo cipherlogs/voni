@@ -45,11 +45,13 @@ test("dry run writes an artifact with required keys and prints a gate table", ()
     "transcripts",
     "humanRatings",
     "gates",
+    "emailInvite",
     "evalRunner",
   ]) {
     assert.ok(key in artifact, `artifact missing ${key}`);
   }
   assert.match(result.stdout, /reply-gap/);
+  assert.match(result.stdout, /email-invite/);
   assert.match(result.stdout, /PASS|INFO/);
 });
 
