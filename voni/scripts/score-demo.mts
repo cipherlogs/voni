@@ -124,17 +124,25 @@
  * a missing --cut-answered fails with cut ms plus verdict and trace turn.
  * Explicit flags override the parsed runner output per field. With neither
  * parsed nor explicit evidence the gate stays INFO: recorded, not failed.
+ *
+ * Greeting-cut gate (ticket 08): the greeting-cut scenario's measured ms
+ * fills beats["greeting-cut"].cutMs and drives a required greeting-cut gate.
+ * A passed run with no measured line stays INFO (never a false PASS); a
+ * failed run with no cut line FAILs and cites the interrupted greeting turn
+ * from the merged Call trace (or says no turn was merged).
  */
 import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import {
   addHumanRating,
+  applyGreetingCutGate,
   applyRealCutGate,
   buildSkeletonArtifact,
   DEFAULT_GATE_VOICE,
   diffScoreboardArtifact,
   emptyHumanRatings,
+  extractGreetingCutEvidence,
   extractRealCutEvidence,
   extractTraceSessionId,
   formatArtifactDiff,
@@ -614,6 +622,9 @@ function main(): void {
   }
   // Real-cut evidence counts as measured even though it lands post-skeleton.
   const parsed = extractRealCutEvidence(evalSection.stdout, excerpt ?? []);
+  // Greeting-cut evidence comes from the fixed caller clip's own scenario;
+  // score-demo gates the measured ms and cites the interrupted greeting turn.
+  const greetingCut = extractGreetingCutEvidence(evalSection.stdout, excerpt ?? [], traceSession || null);
   const hasCutFlags =
     cutMsArg !== "" ||
     process.argv.includes("--cut-never") ||
@@ -651,6 +662,7 @@ function main(): void {
     humanRatings,
     dryRun,
     evalError: evalSection.evalError,
+    ...(greetingCut ? { greetingCutEvidencePresent: true } : {}),
     ...(parsed || hasCutFlags ? { realCutEvidencePresent: true } : {}),
     runId: `run-${stamp()}-${voice}`,
   });
@@ -683,6 +695,9 @@ function main(): void {
       traceTurn: arg("--trace-turn", "") || derivedTraceTurn,
     };
     artifact = applyRealCutGate(artifact, evidence);
+  }
+  if (greetingCut) {
+    artifact = applyGreetingCutGate(artifact, greetingCut);
   }
   if (excerpt) {
     artifact.callTrace = {

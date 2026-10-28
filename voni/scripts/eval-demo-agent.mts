@@ -38,7 +38,8 @@
  *   over-talk     a short answer over the reply → heard (never lost).
  *   hang-up-over  "I want you to hang up this call." over a long reply →
  *                 the call ends, never resumed ("as I was saying").
- *   greeting-cut  "Wait, stop." 1s into the greeting → the greeting is cut.
+ *   greeting-cut  "Wait, stop." 1s into the greeting → cut inside the locked
+ *                 greeting window; the scenario asserts the ms it prints.
  *
  * Cut latency is measured from caller speech start (the pump's first
  * transmitted frame carrying the clip's first voiced sample) to the server
@@ -94,6 +95,8 @@ import { tryJevGateway } from "../src/lib/voice/voice-judge";
 import {
   callerClipDrift,
   callerClipFingerprint,
+  greetingCutFailure,
+  GREETING_CUT_MAX_MS,
   measureCutLatency,
   sha256Hex,
   type CallerClipFingerprint,
@@ -681,8 +684,14 @@ const CLIENT_SCENARIOS: { name: string; run: () => Promise<string | null> }[] = 
         await new Promise((resolve) => setTimeout(resolve, 4000));
       });
       const measured = measureCutLatency(said!.onset(), o.cutAt);
-      if (measured.cutMs === null) return `greeting never cut (${measured.reason ?? "no cut"})`;
-      console.log(`    greeting cut ${measured.cutMs}ms after the caller started`);
+      // The scenario asserts its own latency on the gate voice: a measured
+      // cut inside the locked greeting window passes, beyond it fails with
+      // the ms the scoreboard will gate. Never an unasserted print.
+      const failure = greetingCutFailure(measured.cutMs, measured.reason);
+      if (failure) return failure;
+      console.log(
+        `    greeting cut ${measured.cutMs}ms after the caller started (budget ${GREETING_CUT_MAX_MS}ms)`,
+      );
       return null;
     },
   },
