@@ -46,7 +46,8 @@ import { createHash } from "node:crypto";
 import { getVoice, VOICE_OUTPUT_VOLUME, voicePlaybackGain } from "../agents/voices";
 import { BARGE_IN_JUDGE_MS, judgeOverlap, type OverlapVerdict } from "../voice/barge-in";
 import { NO_WORDS_RESUME_MS, RESUME_WAIT_MS, unheardRest } from "../voice/session";
-import { DEMO_VOICE_IDS, SILENCE_CHECK_IN_MS } from "./voni-agent";
+import { SCOREBOARD_BUDGETS } from "./scoreboard-budgets";
+import { DEMO_VOICE_IDS } from "./voni-agent";
 import { DEMO_INBOX_ADDRESS } from "./email-test";
 import { TAG_WORDS, containsTag, countTags } from "./test-tag";
 
@@ -65,7 +66,7 @@ export type GoldenBeat = (typeof GOLDEN_BEATS)[number];
 
 /** The golden call is one 90-second property-inquiry Demo call. */
 export const GOLDEN_VERTICAL = "property-inquiry";
-export const GOLDEN_SCRIPT_BUDGET_S = 90;
+export const GOLDEN_SCRIPT_BUDGET_S = SCOREBOARD_BUDGETS.goldenScriptBudgetS.value;
 
 /**
  * One beat's timing window: the fixed bound the beat's metric must land in
@@ -209,7 +210,7 @@ export type HumanRatings = {
 };
 
 /** At least two independent listeners per golden recording (spec testing decisions). */
-export const HUMAN_RATERS_REQUIRED = 2;
+export const HUMAN_RATERS_REQUIRED = SCOREBOARD_BUDGETS.humanRatersRequired.value;
 
 export function emptyHumanRatings(recordingSha256: string | null): HumanRatings {
   return { timbre: null, accent: null, recordingSha256, ratings: [] };
@@ -235,8 +236,14 @@ export function addHumanRating(
   }
   for (const axis of ["timbre", "accent"] as const) {
     const value = rating[axis];
-    if (!Number.isInteger(value) || value < 1 || value > 5) {
-      throw new Error(`${axis} rating must be an int 1-5, got ${value}`);
+    if (
+      !Number.isInteger(value) ||
+      value < SCOREBOARD_BUDGETS.humanRatingScaleMin.value ||
+      value > SCOREBOARD_BUDGETS.humanRatingScaleMax.value
+    ) {
+      throw new Error(
+        `${axis} rating must be an int ${SCOREBOARD_BUDGETS.humanRatingScaleMin.value}-${SCOREBOARD_BUDGETS.humanRatingScaleMax.value}, got ${value}`,
+      );
     }
   }
   if (!recordingSha256) throw new Error("human rating needs the golden recording it judges");
@@ -291,8 +298,8 @@ export function evaluateHumanGate(autoPassed: boolean, human: HumanRatings): Sco
  * these, so the scoreboard fails. The greeting-cut beat shares the same
  * budget — cutting the greeting must answer just as fast as any turn.
  */
-export const REPLY_GAP_P50_BUDGET_MS = 1500;
-export const REPLY_GAP_P95_BUDGET_MS = 2500;
+export const REPLY_GAP_P50_BUDGET_MS = SCOREBOARD_BUDGETS.replyGapP50Ms.value;
+export const REPLY_GAP_P95_BUDGET_MS = SCOREBOARD_BUDGETS.replyGapP95Ms.value;
 
 /** One measured reply gap, attributed to the beat that produced it (null = call-level, unattributed). */
 export type ReplyGapSample = {
@@ -527,10 +534,10 @@ export function meaningBasedEndOfTurnGate(
 // ── Gate: dead-air (ticket 07, owner: dead-air section) ───────────────────────
 
 /** Uncovered silence longer than this reads as a dropped call. */
-export const DEAD_AIR_MAX_MS = 2000;
+export const DEAD_AIR_MAX_MS = SCOREBOARD_BUDGETS.deadAirMaxMs.value;
 
 /** Silence that must draw exactly one check-in, never over caller speech. */
-export const SILENCE_CHECK_IN_TARGET_MS = SILENCE_CHECK_IN_MS;
+export const SILENCE_CHECK_IN_TARGET_MS = SCOREBOARD_BUDGETS.silenceCheckInTargetMs.value;
 
 export type DeadAirCheckIn = {
   /** Silence elapsed when the check-in went out (audible timing). */
@@ -1169,9 +1176,9 @@ export function regressionVoices(gateVoice: string): string[] {
 // ── Gate: timbre-probes + accent-human (ticket 10, owner: timbre section) ─────
 
 /** Integrated loudness every demo voice is gain-matched to (anna, per voices.ts). */
-export const TIMBRE_REFERENCE_LUFS = -23.1;
+export const TIMBRE_REFERENCE_LUFS = SCOREBOARD_BUDGETS.timbreReferenceLufs.value;
 /** Matched loudness must land within this of the reference to count as sane. */
-export const TIMBRE_LUFS_TOLERANCE_DB = 1.5;
+export const TIMBRE_LUFS_TOLERANCE_DB = SCOREBOARD_BUDGETS.timbreLufsToleranceDb.value;
 
 /**
  * Native integrated loudness per voice, measured from `public/voices/*.mp3`
@@ -1195,7 +1202,7 @@ export const NATIVE_VOICE_LUFS: Record<string, number> = {
  * (qa-voice-session analyzePcm largestAdjacentStep) flags the same clicks
  * the on-device probe would have posted.
  */
-export const POP_JUMP_INT16 = Math.round(0.3 * 32767);
+export const POP_JUMP_INT16 = SCOREBOARD_BUDGETS.popJumpInt16.value;
 
 export type TimbreProbes = {
   jump: number;
@@ -1280,10 +1287,10 @@ export function checkLoudnessSanity(voiceId: string): LoudnessCheck & { unmeasur
 /** Every probe count must be zero across the golden run; the detail names the offender. */
 export function checkTimbreProbes(probes: TimbreProbes): { ok: boolean; detail: string } {
   for (const kind of ["jump", "overload", "clip", "underrun", "inputDrop"] as const) {
-    if (probes[kind] > 0) {
+    if (probes[kind] > SCOREBOARD_BUDGETS.timbreProbeMaxCount.value) {
       return {
         ok: false,
-        detail: `${kind} ${probes[kind]} > 0 across the golden run (must be zero: no clip, pop, playout jump, underrun, or input-drop)`,
+        detail: `${kind} ${probes[kind]} > ${SCOREBOARD_BUDGETS.timbreProbeMaxCount.value} across the golden run (must be zero: no clip, pop, playout jump, underrun, or input-drop)`,
       };
     }
   }
@@ -1363,6 +1370,31 @@ export function formatGoldenScript(gateVoice: string): string {
   ].join("\n");
 }
 
+/**
+ * Console budget report: the frozen numbers every verdict above is judged
+ * against, printed with each run so a green is read next to its ruler. Values
+ * come from the single budget table (never from the gate functions), so the
+ * report cannot drift from what the gates enforce.
+ */
+export function formatBudgetReport(): string {
+  const b = SCOREBOARD_BUDGETS;
+  const lines = [
+    "demo budgets (frozen; pinned in src/lib/demo/scoreboard-budgets.json — a threshold edit is a spec change)",
+    `  golden script          ~${b.goldenScriptBudgetS.value}s, seven locked beats`,
+    `  reply-gap              p50 ≤${b.replyGapP50Ms.value}ms, p95 ≤${b.replyGapP95Ms.value}ms`,
+    `  barge-in-cut           cut ≤${b.realCutMs.value}ms, answered never resumed`,
+    `  filler-resume          exact unheard tail ≤${b.fillerResumeTailMs.value}ms`,
+    `  overheard-recall       ${b.overheardAsidesMin.value}/${b.overheardAsidesMax.value} aside marked Overheard speech + ledger-counted`,
+    `  dead-air               uncovered gap ≤${b.deadAirMaxMs.value}ms; one check-in ${b.silenceCheckInTargetMs.value}-${b.silenceCheckInMaxMs.value}ms`,
+    `  email-invite           tag said ${b.emailTagMentionsMin.value}× exactly, chip once`,
+    `  double-talk            audible overlap ≤${b.doubleTalkMaxOverlapMs.value}ms after ${b.doubleTalkFadeOutS.value}s fade`,
+    `  end-call-drain         coverage ≥${b.goodbyeAudioCoverageMin.value}, hang-up ≤${b.hangUpAfterGoodbyeMaxMs.value}ms, settle ${b.endCallSettlePolls.value}×${b.endCallPollMs.value}ms, grace ${b.endCallAudioGraceMs.value}ms, timeout ${b.endCallDrainTimeoutMs.value}ms`,
+    `  timbre-probes          ref ${b.timbreReferenceLufs.value} LUFS ±${b.timbreLufsToleranceDb.value}dB, probes ≤${b.timbreProbeMaxCount.value}, pop jump ${b.popJumpInt16.value}`,
+    `  accent-human           ${b.humanRatersRequired.value} raters, ${b.humanRatingScaleMin.value}-${b.humanRatingScaleMax.value}, blind on one recording`,
+  ];
+  return lines.join("\n");
+}
+
 // ── Gate: double-talk + end-call-drain (ticket 09, owner: drain section) ──────
 
 /**
@@ -1372,9 +1404,9 @@ export function formatGoldenScript(gateVoice: string): string {
  * fades in the worklet), so anything still audible past 400ms is a real
  * talk-over, not the fade itself.
  */
-export const DOUBLE_TALK_MAX_OVERLAP_MS = 400;
+export const DOUBLE_TALK_MAX_OVERLAP_MS = SCOREBOARD_BUDGETS.doubleTalkMaxOverlapMs.value;
 /** Barge-in fade: what is sounding ramps to silence over this, never a hard stop. */
-export const DOUBLE_TALK_FADE_OUT_S = 0.04;
+export const DOUBLE_TALK_FADE_OUT_S = SCOREBOARD_BUDGETS.doubleTalkFadeOutS.value;
 
 /**
  * End-call drain handshake (spec story 10, ADR-0005 holdUntilReplyDone): the
@@ -1385,14 +1417,14 @@ export const DOUBLE_TALK_FADE_OUT_S = 0.04;
  * GOODBYE_AUDIO_COVERAGE_MIN of its speaking time, per eval bye-audio) and
  * the model must not narrate the ending.
  */
-export const END_CALL_POLL_MS = 250;
-export const END_CALL_SETTLE_POLLS = 3;
-export const END_CALL_AUDIO_GRACE_MS = 500;
-export const END_CALL_DRAIN_TIMEOUT_MS = 10000;
+export const END_CALL_POLL_MS = SCOREBOARD_BUDGETS.endCallPollMs.value;
+export const END_CALL_SETTLE_POLLS = SCOREBOARD_BUDGETS.endCallSettlePolls.value;
+export const END_CALL_AUDIO_GRACE_MS = SCOREBOARD_BUDGETS.endCallAudioGraceMs.value;
+export const END_CALL_DRAIN_TIMEOUT_MS = SCOREBOARD_BUDGETS.endCallDrainTimeoutMs.value;
 /** The goodbye's audio must arrive in full: >= 80% of its words' speaking time. */
-export const GOODBYE_AUDIO_COVERAGE_MIN = 0.8;
+export const GOODBYE_AUDIO_COVERAGE_MIN = SCOREBOARD_BUDGETS.goodbyeAudioCoverageMin.value;
 /** Hang-up after goodbye audio end: the golden goodbye-drain window (0-1500ms). */
-export const HANG_UP_AFTER_GOODBYE_MAX_MS = 1500;
+export const HANG_UP_AFTER_GOODBYE_MAX_MS = SCOREBOARD_BUDGETS.hangUpAfterGoodbyeMaxMs.value;
 
 export type DoubleTalkInput = {
   /** Audible overlap per cut, ms (fade 0.04s already accounted for by the 400ms bar). */
@@ -1537,7 +1569,7 @@ export function redactLines(stdout: string, limit = 200): string[] {
  */
 
 /** A brief filler cut recovers with the exact unheard tail inside this budget (spec story 6). */
-export const FILLER_RESUME_TAIL_BUDGET_MS = 2500;
+export const FILLER_RESUME_TAIL_BUDGET_MS = SCOREBOARD_BUDGETS.fillerResumeTailMs.value;
 
 /**
  * Resolved overlap outcome the pipeline reported for the filler beat:
@@ -1645,7 +1677,7 @@ export function evaluateFillerResumeGate(evidence: FillerResumeEvidence): Scoreb
  */
 
 /** A real cut lands within the stop-over 1.5s bar (spec story 4). */
-export const REAL_CUT_MAX_MS = 1500;
+export const REAL_CUT_MAX_MS = SCOREBOARD_BUDGETS.realCutMs.value;
 
 /** Eval scenarios whose output carries real-cut evidence. */
 export const REAL_CUT_SCENARIOS = ["stop-over", "hang-up-over", "hang-up-fast"] as const;

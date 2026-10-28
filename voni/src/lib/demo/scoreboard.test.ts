@@ -1,10 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
   applyRealCutGate,
   DEAD_AIR_MAX_MS,
   DEFAULT_GATE_VOICE,
   DOUBLE_TALK_MAX_OVERLAP_MS,
+  DOUBLE_TALK_FADE_OUT_S,
   END_CALL_AUDIO_GRACE_MS,
   END_CALL_DRAIN_TIMEOUT_MS,
   END_CALL_POLL_MS,
@@ -17,6 +19,7 @@ import {
   evaluateFillerResumeGate,
   evaluateRealCut,
   extractRealCutEvidence,
+  FILLER_RESUME_TAIL_BUDGET_MS,
   GOLDEN_BEATS,
   GOLDEN_SCRIPT,
   GOLDEN_SCRIPT_BUDGET_S,
@@ -78,8 +81,15 @@ import {
   findStrayAddresses,
   hasDigitSplitTag,
 } from "./scoreboard";
+import {
+  SCOREBOARD_BUDGETS,
+  budgetValues,
+  checkBudgetFreeze,
+  checkGoldenWindows,
+  goldenWindowExpectations,
+} from "./scoreboard-budgets";
 import { judgeOverlap } from "../voice/barge-in";
-import { DEMO_VOICE_IDS } from "./voni-agent";
+import { DEMO_VOICE_IDS, SILENCE_CHECK_IN_MS } from "./voni-agent";
 import { VOICE_OUTPUT_VOLUME, voicePlaybackGain } from "../agents/voices";
 
 test("golden script is locked to seven beats in fixed order", () => {
@@ -1986,4 +1996,139 @@ test("manual and external checks stay INFO, never a false green", () => {
   const pinned = artifact.gates.find((g) => g.name === "talk-hold-pinned")!;
   assert.equal(pinned.status, "INFO");
   assert.match(pinned.detail, /externally|pinned/);
+});
+
+// ── Ticket 03: threshold freeze guard ────────────────────────────────────────
+//
+// Every gate budget is pinned twice: once as a literal expectation here and
+// once in the committed `scoreboard-budgets.json` record. A threshold edit
+// that does not move the table, the golden window, the pinned literal, and
+// the record together fails before it can turn a run green.
+
+/** The hand-pinned budgets. These literals are the expectation, not a re-derivation. */
+const PINNED_BUDGETS: Record<string, number> = {
+  goldenScriptBudgetS: 90,
+  replyGapP50Ms: 1500,
+  replyGapP95Ms: 2500,
+  realCutMs: 1500,
+  fillerResumeTailMs: 2500,
+  overheardAsidesMin: 1,
+  overheardAsidesMax: 1,
+  deadAirMaxMs: 2000,
+  silenceCheckInTargetMs: 15_000,
+  silenceCheckInMaxMs: 18_000,
+  emailTagMentionsMin: 1,
+  emailTagMentionsMax: 1,
+  doubleTalkMaxOverlapMs: 400,
+  doubleTalkFadeOutS: 0.04,
+  endCallPollMs: 250,
+  endCallSettlePolls: 3,
+  endCallAudioGraceMs: 500,
+  endCallDrainTimeoutMs: 10_000,
+  goodbyeAudioCoverageMin: 0.8,
+  hangUpAfterGoodbyeMaxMs: 1500,
+  timbreReferenceLufs: -23.1,
+  timbreLufsToleranceDb: 1.5,
+  timbreProbeMaxCount: 0,
+  popJumpInt16: 9830,
+  humanRatersRequired: 2,
+  humanRatingScaleMin: 1,
+  humanRatingScaleMax: 5,
+};
+
+const BUDGET_RECORD_URL = new URL("./scoreboard-budgets.json", import.meta.url);
+
+function readBudgetRecord(): { version: number; note: string; budgets: Record<string, number> } {
+  return JSON.parse(readFileSync(BUDGET_RECORD_URL, "utf8")) as {
+    version: number;
+    note: string;
+    budgets: Record<string, number>;
+  };
+}
+
+test("budget table pins every gate budget and timing window", () => {
+  assert.deepEqual(budgetValues(), PINNED_BUDGETS);
+  for (const [key, entry] of Object.entries(SCOREBOARD_BUDGETS)) {
+    assert.equal(typeof entry.value, "number", `${key} carries a numeric value`);
+    assert.ok(entry.gate.length > 0, `${key} names the gate it guards`);
+    assert.ok(entry.source.length > 0, `${key} names its spec/pipeline source`);
+  }
+});
+
+test("every gate constant derives from the frozen budget table", () => {
+  assert.equal(GOLDEN_SCRIPT_BUDGET_S, SCOREBOARD_BUDGETS.goldenScriptBudgetS.value);
+  assert.equal(REPLY_GAP_P50_BUDGET_MS, SCOREBOARD_BUDGETS.replyGapP50Ms.value);
+  assert.equal(REPLY_GAP_P95_BUDGET_MS, SCOREBOARD_BUDGETS.replyGapP95Ms.value);
+  assert.equal(REAL_CUT_MAX_MS, SCOREBOARD_BUDGETS.realCutMs.value);
+  assert.equal(FILLER_RESUME_TAIL_BUDGET_MS, SCOREBOARD_BUDGETS.fillerResumeTailMs.value);
+  assert.equal(DEAD_AIR_MAX_MS, SCOREBOARD_BUDGETS.deadAirMaxMs.value);
+  assert.equal(SILENCE_CHECK_IN_TARGET_MS, SCOREBOARD_BUDGETS.silenceCheckInTargetMs.value);
+  assert.equal(SILENCE_CHECK_IN_TARGET_MS, SILENCE_CHECK_IN_MS, "the budget quotes the pipeline's check-in");
+  assert.equal(DOUBLE_TALK_MAX_OVERLAP_MS, SCOREBOARD_BUDGETS.doubleTalkMaxOverlapMs.value);
+  assert.equal(DOUBLE_TALK_FADE_OUT_S, SCOREBOARD_BUDGETS.doubleTalkFadeOutS.value);
+  assert.equal(END_CALL_POLL_MS, SCOREBOARD_BUDGETS.endCallPollMs.value);
+  assert.equal(END_CALL_SETTLE_POLLS, SCOREBOARD_BUDGETS.endCallSettlePolls.value);
+  assert.equal(END_CALL_AUDIO_GRACE_MS, SCOREBOARD_BUDGETS.endCallAudioGraceMs.value);
+  assert.equal(END_CALL_DRAIN_TIMEOUT_MS, SCOREBOARD_BUDGETS.endCallDrainTimeoutMs.value);
+  assert.equal(GOODBYE_AUDIO_COVERAGE_MIN, SCOREBOARD_BUDGETS.goodbyeAudioCoverageMin.value);
+  assert.equal(HANG_UP_AFTER_GOODBYE_MAX_MS, SCOREBOARD_BUDGETS.hangUpAfterGoodbyeMaxMs.value);
+  assert.equal(TIMBRE_REFERENCE_LUFS, SCOREBOARD_BUDGETS.timbreReferenceLufs.value);
+  assert.equal(TIMBRE_LUFS_TOLERANCE_DB, SCOREBOARD_BUDGETS.timbreLufsToleranceDb.value);
+  assert.equal(POP_JUMP_INT16, SCOREBOARD_BUDGETS.popJumpInt16.value);
+  assert.equal(HUMAN_RATERS_REQUIRED, SCOREBOARD_BUDGETS.humanRatersRequired.value);
+});
+
+test("committed budget record matches the pinned table", () => {
+  const record = readBudgetRecord();
+  assert.equal(record.version, 1);
+  assert.match(record.note, /threshold edit/i);
+  assert.deepEqual(record.budgets, PINNED_BUDGETS);
+  assert.deepEqual(record.budgets, budgetValues());
+});
+
+test("budget freeze guard rejects a threshold edit that does not move the record", () => {
+  const record = readBudgetRecord().budgets;
+  assert.deepEqual(checkBudgetFreeze(budgetValues(), record), [], "table and record agree today");
+
+  const editedTable = { ...budgetValues(), replyGapP50Ms: 1800 };
+  const tableDrift = checkBudgetFreeze(editedTable, record);
+  assert.equal(tableDrift.length, 1, `one drift, got ${JSON.stringify(tableDrift)}`);
+  assert.equal(tableDrift[0].key, "replyGapP50Ms");
+  assert.equal(tableDrift[0].reason, "changed");
+  assert.equal(tableDrift[0].table, 1800);
+  assert.equal(tableDrift[0].record, 1500);
+
+  const editedRecord = { ...record, replyGapP50Ms: 1800 };
+  const recordDrift = checkBudgetFreeze(budgetValues(), editedRecord);
+  assert.equal(recordDrift[0].key, "replyGapP50Ms");
+  assert.equal(recordDrift[0].reason, "changed");
+
+  const extra = checkBudgetFreeze(budgetValues(), { ...record, sneakyThresholdMs: 1 });
+  assert.ok(extra.some((drift) => drift.key === "sneakyThresholdMs" && drift.reason === "extra"));
+
+  const missing = { ...record };
+  delete missing.replyGapP50Ms;
+  const missingDrift = checkBudgetFreeze(budgetValues(), missing);
+  assert.ok(
+    missingDrift.some((drift) => drift.key === "replyGapP50Ms" && drift.reason === "missing"),
+    "a budget dropped from the record is still drift",
+  );
+});
+
+test("independent GOLDEN_SCRIPT windows agree with the frozen budget constants", () => {
+  const windows = Object.fromEntries(GOLDEN_SCRIPT.map((beat) => [beat.beat, beat.window]));
+  assert.deepEqual(windows, goldenWindowExpectations());
+  assert.deepEqual(checkGoldenWindows(GOLDEN_SCRIPT), [], "windows track the budget table");
+});
+
+test("golden window guard rejects a window edit that leaves the budget alone", () => {
+  const edited = GOLDEN_SCRIPT.map((beat) =>
+    beat.beat === "greeting-cut" ? { ...beat, window: { ...beat.window, max: 1800 } } : beat,
+  );
+  const drift = checkGoldenWindows(edited);
+  assert.equal(drift.length, 1, `one drift, got ${JSON.stringify(drift)}`);
+  assert.equal(drift[0].beat, "greeting-cut");
+  assert.equal(drift[0].field, "max");
+  assert.equal(drift[0].script, 1800);
+  assert.equal(drift[0].budget, 1500);
 });
