@@ -269,8 +269,10 @@ function pacedReply(handlers: ConstructorParameters<typeof VoiceSession>[0] = {}
   let sent = 0;
   let consumed = 0;
   const flushes: number[] = [];
+  const played: string[] = [];
   made.internals["playout"] = {
     play: () => {
+      played.push("chunk");
       sent += 24_000; // one second per chunk
     },
     flush: (fadeS?: number) => flushes.push(fadeS ?? -1),
@@ -283,7 +285,7 @@ function pacedReply(handlers: ConstructorParameters<typeof VoiceSession>[0] = {}
   const playMs = (ms: number) => {
     consumed += (ms / 1000) * 24_000;
   };
-  return { ...made, flushes, playMs };
+  return { ...made, flushes, playMs, played };
 }
 
 test("heardWords: a word shows once its start has played", () => {
@@ -490,12 +492,51 @@ test("a noise cut with only a few words left says nothing more", async () => {
 
 test("steering after a cut is answered as a normal turn", async () => {
   const events: string[] = [];
-  const { serverCut, handle, replyCreates } = midReply({}, { onBargeIn: (e) => events.push(e.verdict) });
+  const { serverCut, handle, replyCreates, played } = midReply({}, { onBargeIn: (e) => events.push(e.verdict) });
+  const before = played.length;
   serverCut("Wait, stop.");
+  // The judge yields, so the server answers the steering as a fresh turn: its
+  // own reply plays. Nothing resumes the line the steering cut.
   handle({ type: "reply.started", reply_id: "r2" });
+  handle({ type: "reply.audio", reply_id: "r2", data: "" });
   await new Promise((resolve) => setTimeout(resolve, 600));
-  assert.deepEqual(replyCreates(), []);
+  assert.deepEqual(replyCreates(), [], "no tail resume is created");
   assert.deepEqual(events, ["yield"]);
+  assert.equal(played.length, before + 1, "the fresh answer turn plays");
+});
+
+test("filler after a cut is resumed from, never answered, with the exact unheard tail", async () => {
+  const events: string[] = [];
+  const { session, handle, sent, playMs, played } = pacedReply({
+    onBargeIn: (e) => events.push(`${e.verdict}:${e.source}`),
+  });
+  const replyCreates = () =>
+    sent.map((raw) => JSON.parse(raw)).filter((m) => m.type === "reply.create");
+  handle({ type: "reply.started", reply_id: "r1" });
+  handle({ type: "transcript.agent.delta", reply_id: "r1", text: "I'd handle booking and reminders for you" });
+  handle({ type: "reply.audio", reply_id: "r1", data: "" });
+  playMs(14 * CAPTION_MS_PER_CHAR); // the caller heard through "booking"
+  const before = played.length;
+  handle({ type: "input.speech.started" });
+  handle({ type: "reply.done", reply_id: "r1", status: "interrupted" });
+  playMs(60_000);
+  handle({ type: "transcript.user", item_id: "u1", text: "Okaay so" });
+  // The platform answers the back-channel as a turn; that answer is superseded
+  // before it plays — a filler is never answered.
+  handle({ type: "reply.started", reply_id: "r2" });
+  handle({ type: "reply.audio", reply_id: "r2", data: "" });
+  assert.equal(played.length, before, "the answer to filler never plays");
+  const [create] = replyCreates();
+  assert.match(create.instructions, /only said "Okaay so"/);
+  // Ticket 13's exact-tail rule: re-say the unheard rest, word for word.
+  assert.match(create.instructions, /word for word: "booking and reminders for you"/);
+  assert.doesNotMatch(create.instructions, /I'd handle/, "the heard part is not repeated");
+  assert.deepEqual(events, ["ignore:rule"]);
+  handle({ type: "reply.done", reply_id: "r2", status: "completed" });
+  handle({ type: "reply.started", reply_id: "r3" });
+  handle({ type: "reply.audio", reply_id: "r3", data: "" });
+  assert.equal(played.length, before + 1, "the resumed tail plays");
+  await session.stop();
 });
 
 test("Jev decides ambiguous cut-ins: an aside resumes, a real point is answered", async () => {
