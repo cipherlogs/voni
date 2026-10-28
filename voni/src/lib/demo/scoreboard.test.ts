@@ -34,6 +34,14 @@ import {
   resolveGateVoice,
   sha256Hex,
   type OverheardAside,
+  EMAIL_INVITE_TAG,
+  applyEmailInvite,
+  countTagMentions,
+  countWorkEmailGate,
+  evaluateEmailInvite,
+  findInventedTags,
+  findStrayAddresses,
+  hasDigitSplitTag,
 } from "./scoreboard";
 import { judgeOverlap } from "../voice/barge-in";
 import { DEMO_VOICE_IDS } from "./voni-agent";
@@ -1000,4 +1008,180 @@ test("skeleton artifact records dead-air evidence and gates it", () => {
   });
   assert.equal(good.gates.find((g) => g.name === "dead-air")?.status, "PASS");
   assert.deepEqual(good.deadAir.checkIns, [{ atSilenceMs: 15_200, overCaller: false }]);
+});
+
+const FRESH_INVITE = "Send me an email from your work address with Lime 42 in the subject, and tell me when it's sent.";
+
+function freshEvidence(overrides = {}) {
+  return {
+    agentLines: [FRESH_INVITE],
+    chipShows: [{ address: "test@voni.cc", tag: EMAIL_INVITE_TAG }],
+    showToolCalls: 1,
+    tagTokenBefore: "tag-tok",
+    tagTokenAfter: "tag-tok",
+    memoryInvitedBefore: true,
+    memoryInvitedAfter: true,
+    callTokenBefore: "call-tok",
+    callTokenAfter: "call-tok",
+    returning: false,
+    greetedAsReturning: false,
+    freeAddress: null,
+    ...overrides,
+  };
+}
+
+test("email invite counts the tag once exactly (Lime 42)", () => {
+  assert.equal(countTagMentions([FRESH_INVITE]), 1);
+  assert.equal(countTagMentions(["hello there"]), 0);
+  assert.equal(countTagMentions([FRESH_INVITE, FRESH_INVITE]), 2);
+  assert.equal(countTagMentions(["send with lime42 please"]), 1, "typed without a space still counts");
+});
+
+test("email invite rejects digit-by-digit spelling", () => {
+  assert.equal(hasDigitSplitTag([FRESH_INVITE]), false);
+  assert.equal(hasDigitSplitTag(["Send with Lime 4 2 in the subject"]), true);
+  assert.equal(hasDigitSplitTag(["Send with Lime four two in the subject"]), true);
+});
+
+test("email invite rejects an invented tag and a spoken address", () => {
+  assert.deepEqual(findInventedTags([FRESH_INVITE]), []);
+  assert.ok(findInventedTags(["Send with Coral 17 in the subject"]).length > 0);
+  assert.deepEqual(findStrayAddresses([FRESH_INVITE]), []);
+  assert.ok(findStrayAddresses(["My mail is andres@casaverde.pt"]).length > 0);
+  assert.deepEqual(findStrayAddresses(["The team's at hi@voni.cc to take it further"]), [], "goodbye may name hi@voni.cc");
+});
+
+test("work-email gate is said once for a personal address, never otherwise", () => {
+  const gate = "Got it, Nidal! But that's a personal address, and I need your work one. Can you send it from there, with the same tag?";
+  assert.equal(countWorkEmailGate([gate]), 1);
+  assert.equal(countWorkEmailGate([FRESH_INVITE]), 0);
+  const gated = evaluateEmailInvite(freshEvidence({ agentLines: [FRESH_INVITE, gate], freeAddress: "nidal@gmail.com" }));
+  assert.equal(gated.status, "PASS");
+  assert.equal(gated.workEmailGateMentions, 1);
+  const twice = evaluateEmailInvite(
+    freshEvidence({ agentLines: [FRESH_INVITE, gate, gate], freeAddress: "nidal@gmail.com" }),
+  );
+  assert.equal(twice.status, "FAIL", "gate said twice");
+  const missing = evaluateEmailInvite(freshEvidence({ freeAddress: "nidal@gmail.com" }));
+  assert.equal(missing.status, "FAIL", "personal address without the gate");
+  const spurious = evaluateEmailInvite(freshEvidence({ agentLines: [FRESH_INVITE, gate] }));
+  assert.equal(spurious.status, "FAIL", "gate with no personal address");
+});
+
+test("email invite passes once exactly, fails on zero or twice", () => {
+  assert.equal(evaluateEmailInvite(freshEvidence()).status, "PASS");
+  assert.equal(evaluateEmailInvite(freshEvidence()).tagMentions, 1);
+  assert.equal(evaluateEmailInvite(freshEvidence({ agentLines: ["hello"] })).status, "FAIL", "never said");
+  assert.equal(evaluateEmailInvite(freshEvidence({ agentLines: [FRESH_INVITE, FRESH_INVITE] })).status, "FAIL", "said twice");
+  assert.equal(
+    evaluateEmailInvite(freshEvidence({ agentLines: ["Send with Lime 4 2 in the subject"] })).status,
+    "FAIL",
+    "digit split",
+  );
+  assert.equal(
+    evaluateEmailInvite(freshEvidence({ agentLines: ["Send with Coral 17 in the subject", FRESH_INVITE] })).status,
+    "FAIL",
+    "invented tag alongside the real one",
+  );
+  assert.equal(
+    evaluateEmailInvite(freshEvidence({ agentLines: [FRESH_INVITE, "Mail me at andres@casaverde.pt"] })).status,
+    "FAIL",
+    "spoken address",
+  );
+  assert.equal(evaluateEmailInvite(freshEvidence({ showToolCalls: 2 })).status, "FAIL", "second invite");
+});
+
+test("contact chip appears exactly once per address with the inbox and tag", () => {
+  assert.equal(evaluateEmailInvite(freshEvidence()).status, "PASS");
+  assert.equal(evaluateEmailInvite(freshEvidence({ chipShows: [] })).status, "FAIL", "no chip");
+  assert.equal(
+    evaluateEmailInvite(freshEvidence({ chipShows: [{ address: "test@voni.cc", tag: EMAIL_INVITE_TAG }, { address: "test@voni.cc", tag: EMAIL_INVITE_TAG }] })).status,
+    "FAIL",
+    "chip twice for the same address",
+  );
+  assert.equal(
+    evaluateEmailInvite(freshEvidence({ chipShows: [{ address: "other@x.com", tag: EMAIL_INVITE_TAG }] })).status,
+    "FAIL",
+    "wrong address",
+  );
+});
+
+test("tag persists across Hold return and reload via Call memory", () => {
+  assert.equal(evaluateEmailInvite(freshEvidence()).memoryPersists, true);
+  assert.equal(
+    evaluateEmailInvite(freshEvidence({ memoryInvitedAfter: false })).status,
+    "FAIL",
+    "invite lost across hold/reload",
+  );
+  assert.equal(evaluateEmailInvite(freshEvidence({ tagTokenAfter: "other-tok" })).status, "FAIL", "tag token swapped");
+  assert.equal(evaluateEmailInvite(freshEvidence({ callTokenAfter: "other-call" })).status, "FAIL", "call token swapped");
+});
+
+test("returning sender is greeted without a second invite", () => {
+  const greeted = "Found it, Andres. Good to hear from you again!";
+  const ok = evaluateEmailInvite(
+    freshEvidence({ agentLines: [FRESH_INVITE, greeted], returning: true, greetedAsReturning: true }),
+  );
+  assert.equal(ok.status, "PASS");
+  assert.equal(
+    evaluateEmailInvite(freshEvidence({ agentLines: [FRESH_INVITE, "Found it, Andres."], returning: true, greetedAsReturning: false })).status,
+    "FAIL",
+    "returning without a greeting",
+  );
+  assert.equal(
+    evaluateEmailInvite(freshEvidence({ returning: true, greetedAsReturning: true, showToolCalls: 2, agentLines: [FRESH_INVITE, FRESH_INVITE, greeted] })).status,
+    "FAIL",
+    "second invite for a returning sender",
+  );
+  // Callback: the carried tag is checked at connect, no second invite, no chip yet.
+  const callback = evaluateEmailInvite({
+    agentLines: ["Got it from an earlier call."],
+    chipShows: [],
+    showToolCalls: 0,
+    tagTokenBefore: "tag-tok",
+    tagTokenAfter: "tag-tok",
+    memoryInvitedBefore: false,
+    memoryInvitedAfter: false,
+    callTokenBefore: "call-tok",
+    callTokenAfter: "call-tok",
+    returning: true,
+    greetedAsReturning: true,
+    freeAddress: null,
+  });
+  assert.equal(callback.status, "PASS", "callback needs no second invite");
+});
+
+test("skeleton carries an INFO email-invite gate until evidence lands", () => {
+  const artifact = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "greeting-cut",
+    runnerStdout: "",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+  });
+  assert.ok(artifact.gates.some((g) => g.name === "email-invite"), "gate row exists");
+  assert.equal(artifact.gates.find((g) => g.name === "email-invite")?.status, "INFO");
+  assert.equal(artifact.emailInvite, null);
+});
+
+test("applying email evidence scores the beat, the artifact, and the console", () => {
+  const base = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "invite-tag",
+    runnerStdout: FRESH_INVITE,
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+  });
+  const scored = applyEmailInvite(base, freshEvidence());
+  assert.equal(scored.emailInvite?.tagMentions, 1);
+  assert.equal(scored.emailInvite?.status, "PASS");
+  assert.equal(scored.beats["email-invite"].status, "PASS");
+  assert.equal(scored.gates.find((g) => g.name === "email-invite")?.status, "PASS");
+  assert.ok(formatGateTable(scored).includes("email-invite"));
+  const failed = applyEmailInvite(base, freshEvidence({ agentLines: ["hello"] }));
+  assert.equal(failed.emailInvite?.status, "FAIL");
+  assert.equal(failed.beats["email-invite"].status, "FAIL");
+  assert.equal(failed.gates.find((g) => g.name === "email-invite")?.status, "FAIL");
 });
