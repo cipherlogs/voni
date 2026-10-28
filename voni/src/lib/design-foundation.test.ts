@@ -122,7 +122,11 @@ test("bespoke dark sites are gone except the AppearancePreview scene pair", () =
     const text = readFileSync(full, "utf8");
     const lines = text.split("\n");
     lines.forEach((line, idx) => {
-      if (!line.includes("dark:")) return;
+      // Tailwind `dark:<utility>` class usage only (e.g. ` dark:bg-…`).
+      // Foundation owns the dark scope in globals.css (`@custom-variant
+      // dark (…)`, `.dark:not(:has(.landing-page))`) plus a comment naming
+      // the `dark:` variant — none is a bespoke product `dark:` site.
+      if (!/(?:^|[\s"'`({\[])dark:[a-z-\[]/.test(line)) return;
       // Sole scene exception: the illustrative preview keeps light/dark
       // halves fixed under either host theme (DESIGN.md §5).
       if (full.endsWith(join("settings-bento", "scenes.tsx"))) return;
