@@ -10,14 +10,18 @@
  *   - session evidence exporter: npm run qa:voice-session -- --session <id> --evidence-out <path>
  *   - browser e2e fakes live in tests/e2e/demo-fakes.ts (unchanged here).
  *
- * No gates yet: every gate reports PASS/INFO and the command exits 0 once the
- * artifact is written, even when the eval runner itself fails (its exit code
- * is recorded in the artifact). Non-zero exit means the harness broke:
- * unknown voice, spawn failure, or an unwritable artifact.
+ * Overheard recall (ticket 06) is the first enforced gate: every aside
+ * spoken while Voni holds the floor must be marked Overheard speech and
+ * counted in the call ledger, with steering answered and filler
+ * resumed-from. Other gates still report PASS/INFO. The command exits 0
+ * once the artifact is written, even when a gate FAILs or the eval runner
+ * itself fails (both are recorded in the artifact). Non-zero exit means
+ * the harness broke: unknown voice, bad --overheard-json, spawn failure,
+ * or an unwritable artifact.
  *
  *   npm run scoreboard:demo -- [--gate-voice <demo-voice-id>] [--scenario greeting-cut] [--runs 1]
  *                           [--out scoreboard-runs/score-<ts>-<voice>.json] [--dry-run]
- *                           [--trace-session sess_...]
+ *                           [--trace-session sess_...] [--overheard-json asides.json]
  *
  * --gate-voice picks the gate voice through the shared voice registry
  * (--voice stays an alias); omitting both gates on DEFAULT_GATE_VOICE, never
@@ -26,9 +30,13 @@
  *
  * --dry-run skips spawning the runner (no ASSEMBLYAI_API_KEY needed) and
  * records a placeholder eval section. --trace-session merges the Call trace
- * for a finished real-call session into the artifact excerpt.
+ * for a finished real-call session into the artifact excerpt, and its HEARD
+ * rows become ledger-counted overheard asides (handling from the CLIENT
+ * barge-in verdicts). --overheard-json feeds explicit asides (marked,
+ * ledger, handling, trace pointer per beat); it merges with trace-derived
+ * ones.
  */
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import {
@@ -36,9 +44,14 @@ import {
   DEFAULT_GATE_VOICE,
   formatGateTable,
   formatGoldenScript,
+  formatOverheardReport,
+  GOLDEN_BEATS,
+  overheardFromTraceExcerpt,
   redactLines,
   resolveGateVoice,
   sha256Hex,
+  type GoldenBeat,
+  type OverheardAside,
   type ScoreboardArtifact,
 } from "../src/lib/demo/scoreboard";
 
@@ -74,6 +87,44 @@ function runCallTrace(sessionId: string): string[] {
   return redactLines(result.stdout ?? "");
 }
 
+const OVERHEARD_HANDLINGS = ["answered", "resumed-from", "heard-only", "lost"] as const;
+
+/** Load and validate explicit overheard asides; throws (exit 1, no artifact) on bad input. */
+function loadOverheardJson(path: string): OverheardAside[] {
+  const raw = JSON.parse(readFileSync(resolve(path), "utf8")) as unknown;
+  if (!Array.isArray(raw)) throw new Error(`--overheard-json ${path} must be a JSON array of asides`);
+  return raw.map((entry, index) => {
+    const aside = entry as Partial<OverheardAside>;
+    if (aside === null || typeof aside !== "object") {
+      throw new Error(`--overheard-json[${index}]: must be an object`);
+    }
+    if (!(GOLDEN_BEATS as readonly string[]).includes(String(aside.beat))) {
+      throw new Error(`--overheard-json[${index}]: beat must be one of ${GOLDEN_BEATS.join(", ")}`);
+    }
+    if (typeof aside.text !== "string" || !aside.text.trim()) {
+      throw new Error(`--overheard-json[${index}]: text must be a non-empty string`);
+    }
+    if (typeof aside.markedOverheard !== "boolean" || typeof aside.inLedger !== "boolean") {
+      throw new Error(`--overheard-json[${index}]: markedOverheard and inLedger must be booleans`);
+    }
+    if (!(OVERHEARD_HANDLINGS as readonly string[]).includes(String(aside.handling))) {
+      throw new Error(`--overheard-json[${index}]: handling must be one of ${OVERHEARD_HANDLINGS.join(", ")}`);
+    }
+    if (typeof aside.tracePointer !== "string" || !aside.tracePointer.trim()) {
+      throw new Error(`--overheard-json[${index}]: tracePointer must be a non-empty string`);
+    }
+    return {
+      beat: aside.beat as GoldenBeat,
+      text: aside.text,
+      ...(typeof aside.agentText === "string" ? { agentText: aside.agentText } : {}),
+      markedOverheard: aside.markedOverheard,
+      inLedger: aside.inLedger,
+      handling: aside.handling as OverheardAside["handling"],
+      tracePointer: aside.tracePointer,
+    };
+  });
+}
+
 function main(): void {
   const voice = resolveGateVoice(arg("--gate-voice", "") || arg("--voice", DEFAULT_GATE_VOICE));
   const scenario = arg("--scenario", "greeting-cut");
@@ -83,10 +134,21 @@ function main(): void {
   if (traceSession && !/^sess_[A-Za-z0-9_-]+$/.test(traceSession)) {
     throw new Error(`--trace-session needs a session id like sess_abc, got "${traceSession}"`);
   }
+  const overheardJsonPath = arg("--overheard-json", "");
 
   const evalSection = dryRun
     ? { stdout: "(dry run: eval runner skipped)", exitCode: null as number | null, durationMs: 0 }
     : runEvalRunner(voice, scenario, runs);
+
+  const explicitAsides = overheardJsonPath ? loadOverheardJson(overheardJsonPath) : null;
+  let traceExcerpt: string[] | null = null;
+  if (traceSession) {
+    traceExcerpt = runCallTrace(traceSession);
+  }
+  const traceAsides =
+    traceExcerpt && traceSession ? overheardFromTraceExcerpt(traceExcerpt, traceSession) : [];
+  const overheardAsides =
+    explicitAsides !== null || traceAsides.length > 0 ? [...(explicitAsides ?? []), ...traceAsides] : undefined;
 
   const artifact: ScoreboardArtifact = buildSkeletonArtifact({
     voice,
@@ -95,13 +157,13 @@ function main(): void {
     exitCode: evalSection.exitCode,
     durationMs: evalSection.durationMs,
     runs: Number(runs) || 1,
+    ...(overheardAsides !== undefined ? { overheardAsides } : {}),
   });
-  if (traceSession) {
-    const excerpt = runCallTrace(traceSession);
+  if (traceSession && traceExcerpt) {
     artifact.callTrace = {
       sessionId: traceSession,
-      excerptSha256: sha256Hex(excerpt.join("\n")),
-      excerpt: excerpt.slice(0, 120),
+      excerptSha256: sha256Hex(traceExcerpt.join("\n")),
+      excerpt: traceExcerpt.slice(0, 120),
     };
   }
 
@@ -111,6 +173,7 @@ function main(): void {
 
   console.log(formatGoldenScript(voice));
   console.log(formatGateTable(artifact));
+  console.log(formatOverheardReport(artifact));
   console.log(`artifact: ${out}`);
 }
 
