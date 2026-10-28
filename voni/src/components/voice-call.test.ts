@@ -44,6 +44,23 @@ test("the public demo transcript has no scripted tool rows or chip model", () =>
   );
 });
 
+test("the demo call has one loudness path: registry output level plus per-voice gain", () => {
+  const call = readRepo("components/voice-call.tsx");
+  const gainCalls = call.match(/setOutputGain\(/g) ?? [];
+  assert.equal(gainCalls.length, 1, "one client gain call, never a second gain stage");
+  assert.match(
+    call,
+    /setOutputGain\(debug\.gain \?\? voicePlaybackGain\(/,
+    "client gain comes from the shared voice registry",
+  );
+  assert.doesNotMatch(call, /output\.volume\s*=/, "no per-call server volume retune");
+  assert.match(
+    readRepo("lib/voice/session.ts"),
+    /volume: VOICE_OUTPUT_VOLUME/,
+    "the server output level is the registry constant, not a literal",
+  );
+});
+
 test("the below-lg demo call is a controlled full-viewport modal", () => {
   const call = readRepo("components/voice-call.tsx");
 

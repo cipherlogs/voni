@@ -7,7 +7,8 @@ import {
   demoAgentStorageKey,
 } from "./stored-agents";
 import { END_CALL_TOOL } from "@/lib/tools/definitions";
-import { VONI_GREETINGS } from "./voni-agent";
+import { VONI_GREETINGS, DEMO_VOICE_IDS } from "./voni-agent";
+import { VOICE_OUTPUT_VOLUME, voicePlaybackGain } from "@/lib/agents/voices";
 
 test("demo agent names are deterministic per voice", () => {
   assert.equal(demoAgentName("anna"), "demo:voni:anna");
@@ -65,6 +66,16 @@ test("demo body carries call control, tuning, and per-agent vocabulary", () => {
   // model then improvises the call as speech (`end_call{...}` out loud).
   for (const tool of body.tools) {
     assert.ok(!("type" in tool), "stored-agent tools carry no `type`");
+  }
+});
+
+test("every demo voice ships the registry output level with no per-agent gain", () => {
+  for (const voice of DEMO_VOICE_IDS) {
+    const body = buildDemoAgentBody(voice);
+    assert.deepEqual(body.output, { volume: VOICE_OUTPUT_VOLUME });
+    assert.deepEqual(Object.keys(body.output), ["volume"], "no gain or loudness knob on the agent");
+    assert.ok(!JSON.stringify(body).includes('"gain"'), `${voice} body carries no gain field`);
+    assert.ok(voicePlaybackGain(voice) > 0, `${voice} client gain comes from the registry`);
   }
 });
 

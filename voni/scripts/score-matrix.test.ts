@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { DEMO_VOICE_IDS } from "../src/lib/demo/voni-agent";
+import { VOICE_OUTPUT_VOLUME, voicePlaybackGain } from "../src/lib/agents/voices";
 
 const SCRIPT = new URL("./score-matrix.mts", import.meta.url).pathname;
 
@@ -30,6 +31,7 @@ test("dry-run matrix across two voices writes per-voice PASS rows and a table", 
     gateVoice: string;
     voices: string[];
     results: { voice: string; isGate: boolean; status: string }[];
+    gains: { voice: string; isGate: boolean; gain: number; outputVolume: number; status: string }[];
     gates: { name: string; status: string }[];
   };
   assert.equal(matrix.schemaVersion, 4);
@@ -39,8 +41,17 @@ test("dry-run matrix across two voices writes per-voice PASS rows and a table", 
   assert.ok(matrix.results.find((r) => r.voice === "anna")?.isGate);
   assert.ok(!matrix.results.find((r) => r.voice === "lola")?.isGate);
   assert.equal(matrix.gates.find((g) => g.name === "matrix")?.status, "PASS");
+  // Gain applied is reported per matrix voice, not only the gate voice.
+  assert.deepEqual(matrix.gains.map((row) => row.voice), ["anna", "lola"]);
+  assert.equal(matrix.gains[0]?.isGate, true);
+  for (const row of matrix.gains) {
+    assert.equal(row.outputVolume, VOICE_OUTPUT_VOLUME, `${row.voice} server level is the registry constant`);
+    assert.equal(row.gain, voicePlaybackGain(row.voice), `${row.voice} client gain comes from the registry`);
+    assert.equal(row.status, "PASS");
+  }
   assert.match(result.stdout, /anna/);
   assert.match(result.stdout, /lola/);
+  assert.match(result.stdout, /gain=0\.93/, "lola's applied gain is printed");
   assert.match(result.stdout, /2\/2 clean/);
 });
 
@@ -91,9 +102,14 @@ test("--from re-analyzes saved runs: FAIL rows recorded, --strict fails the comm
   assert.equal(lax.status, 0, lax.stderr + lax.stdout);
   const laxMatrix = JSON.parse(readFileSync(laxOut, "utf8")) as {
     results: { voice: string; status: string; detail: string }[];
+    gains: { voice: string; gain: number; status: string }[];
     gates: { name: string; status: string }[];
   };
   assert.equal(laxMatrix.results.find((r) => r.voice === "anna")?.status, "PASS");
+  // Fixtures predate the artifact gain table: gain still comes from the registry.
+  assert.deepEqual(laxMatrix.gains.map((row) => row.voice), ["anna", "lola", "estelle"]);
+  assert.equal(laxMatrix.gains.find((row) => row.voice === "estelle")?.gain, voicePlaybackGain("estelle"));
+  assert.ok(laxMatrix.gains.every((row) => row.status === "PASS"));
   const lola = laxMatrix.results.find((r) => r.voice === "lola");
   assert.equal(lola?.status, "FAIL");
   assert.ok(lola?.detail.includes("clip"));
