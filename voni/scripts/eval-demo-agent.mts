@@ -10,7 +10,7 @@
  * the API, so text injection cannot stand in for a caller.) Ladder rungs use
  * the same `reply.create` instructions the landing UI sends. A few cents a run.
  *
- *   npm run eval:demo-agent -- [--runs 5] [--voice anna] [--scenario hang-up]
+ *   npm run eval:demo-agent -- [--runs 5] [--voice <demo-voice-id>] [--scenario hang-up]
  *
  * Scenarios (raw socket):
  *   hang-up       "I want you to hang up." → a real end_call tool call, and
@@ -51,6 +51,7 @@
 import { buildDemoAgentBody } from "../src/lib/demo/stored-agents";
 import {
   checkEmailInstructions,
+  DEMO_VOICE_IDS,
   inviteNowInstructions,
   LATE_EMAIL_INSTRUCTIONS,
   testTagContext,
@@ -969,7 +970,7 @@ const EMAIL_SCENARIOS: { name: string; run: (voiceId: string) => Promise<[string
 ];
 
 function voiceIdArg(): string {
-  return arg("--voice", "anna");
+  return arg("--voice", DEMO_VOICE_IDS[0]);
 }
 
 const SCENARIOS: { name: string; steps: Step[]; pass: (o: Outcome) => string | null }[] = [
@@ -1004,7 +1005,7 @@ const SCENARIOS: { name: string; steps: Step[]; pass: (o: Outcome) => string | n
 ];
 
 const runs = Number(arg("--runs", "5"));
-const voiceId = arg("--voice", "anna");
+const voiceId = arg("--voice", DEMO_VOICE_IDS[0]);
 const only = arg("--scenario", "");
 let failures = 0;
 for (const scenario of SCENARIOS.filter((s) => !only || s.name === only)) {

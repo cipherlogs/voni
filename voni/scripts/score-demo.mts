@@ -15,9 +15,14 @@
  * is recorded in the artifact). Non-zero exit means the harness broke:
  * unknown voice, spawn failure, or an unwritable artifact.
  *
- *   npm run scoreboard:demo -- [--voice anna] [--scenario greeting-cut] [--runs 1]
+ *   npm run scoreboard:demo -- [--gate-voice <demo-voice-id>] [--scenario greeting-cut] [--runs 1]
  *                           [--out scoreboard-runs/score-<ts>-<voice>.json] [--dry-run]
  *                           [--trace-session sess_...]
+ *
+ * --gate-voice picks the gate voice through the shared voice registry
+ * (--voice stays an alias); omitting both gates on DEFAULT_GATE_VOICE, never
+ * on a literal in this file. New voices deploy as a registry entry plus a
+ * regression run: the dry run lists the gate plus the regression set.
  *
  * --dry-run skips spawning the runner (no ASSEMBLYAI_API_KEY needed) and
  * records a placeholder eval section. --trace-session merges the Call trace
@@ -28,7 +33,9 @@ import { dirname, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import {
   buildSkeletonArtifact,
+  DEFAULT_GATE_VOICE,
   formatGateTable,
+  formatGoldenScript,
   redactLines,
   resolveGateVoice,
   sha256Hex,
@@ -68,7 +75,7 @@ function runCallTrace(sessionId: string): string[] {
 }
 
 function main(): void {
-  const voice = resolveGateVoice(arg("--voice", "anna"));
+  const voice = resolveGateVoice(arg("--gate-voice", "") || arg("--voice", DEFAULT_GATE_VOICE));
   const scenario = arg("--scenario", "greeting-cut");
   const runs = arg("--runs", "1");
   const dryRun = process.argv.includes("--dry-run");
@@ -102,6 +109,7 @@ function main(): void {
   mkdirSync(dirname(out), { recursive: true });
   writeFileSync(out, `${JSON.stringify(artifact, null, 2)}\n`, { mode: 0o600 });
 
+  console.log(formatGoldenScript(voice));
   console.log(formatGateTable(artifact));
   console.log(`artifact: ${out}`);
 }
