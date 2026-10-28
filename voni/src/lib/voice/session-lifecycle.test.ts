@@ -21,6 +21,8 @@ import {
   MICROPHONE_MUTED_CONTEXT,
   MICROPHONE_UNMUTED_CONTEXT,
 } from "./context";
+import { DEMO_VOICE_IDS } from "@/lib/demo/voni-agent";
+import { VOICE_OUTPUT_VOLUME, voicePlaybackGain } from "@/lib/agents/voices";
 
 // Minimal WebSocket shape: updateConfig only touches readyState + send.
 (globalThis as unknown as { WebSocket: unknown }).WebSocket = { OPEN: 1 };
@@ -1284,7 +1286,17 @@ test("pre-ready mic frames probe an input-drop instead of vanishing silently", (
   assert.equal(probes[0]?.dropped, 1);
 });
 
-test("inline session update pins loudest output volume", () => {
+test("inline session update pins the registry output level for every demo voice", () => {
+  for (const voiceId of DEMO_VOICE_IDS) {
+    const update = buildInlineSessionUpdate({
+      mode: "inline",
+      systemPrompt: "prompt",
+      greeting: "Hi.",
+      voiceId,
+      tools: [],
+    });
+    assert.deepEqual(update["output"], { voice: voiceId, volume: VOICE_OUTPUT_VOLUME });
+  }
   const update = buildInlineSessionUpdate({
     mode: "inline",
     systemPrompt: "prompt",
@@ -1294,6 +1306,40 @@ test("inline session update pins loudest output volume", () => {
   });
   assert.deepEqual(update["output"], { voice: "lola", volume: 100 });
 });
+
+test("managed session loudness has one stage: registry gain applied once, never compounded", () => {
+  const { handle, internals } = makeSession();
+  const peaks: number[] = [];
+  internals["playout"] = {
+    play: (pcm: Uint8Array) => {
+      const view = new DataView(pcm.buffer, pcm.byteOffset, pcm.length);
+      let peak = 0;
+      for (let i = 0; i + 1 < pcm.length; i += 2) {
+        peak = Math.max(peak, Math.abs(view.getInt16(i, true)));
+      }
+      peaks.push(peak);
+    },
+    flush: () => undefined,
+    settled: () => true,
+    queuedMs: () => 0,
+  };
+  handle({ type: "session.ready", session_id: "s-one-gain" });
+  const session = internals as unknown as { setOutputGain: (gain: number) => void };
+  // 1000 PCM16 steps, far below the soft knee: gain stays exactly linear.
+  const pcm = new Uint8Array([0xe8, 0x03]);
+  const base64 = Buffer.from(pcm).toString("base64");
+  // No gain was set: the session must not apply a hidden loudness stage.
+  handle({ type: "reply.audio", reply_id: "r0", data: base64 });
+  assert.equal(peaks[0], 1000, "unset gain plays the server level untouched");
+  session.setOutputGain(voicePlaybackGain("juergen"));
+  handle({ type: "reply.audio", reply_id: "r1", data: base64 });
+  assert.equal(peaks[1], Math.round(1000 * voicePlaybackGain("juergen")));
+  // Setting the same registry gain again replaces it; it never stacks.
+  session.setOutputGain(voicePlaybackGain("juergen"));
+  handle({ type: "reply.audio", reply_id: "r2", data: base64 });
+  assert.equal(peaks[2], peaks[1], "gain is one stage, not a new stage per call");
+});
+
 
 test("playback gain scales agent audio under a soft knee, never a hard clamp", () => {
   const { handle, internals } = makeSession();

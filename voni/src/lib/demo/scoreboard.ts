@@ -175,6 +175,27 @@ export type ScoreboardGate = {
   detail: string;
 };
 
+/**
+ * One voice's loudness path as applied by the session: the server output level
+ * and client playback gain, both registry constants, plus the native level they
+ * were derived from. `status` is INFO when the native level is unmeasured — the
+ * voice is reported, never failed (ticket 25).
+ */
+export type VoiceGainRow = {
+  voice: string;
+  isGate: boolean;
+  /** Server `output.volume` the agent ships (one registry constant). */
+  outputVolume: number;
+  /** Client-side per-voice gain from the shared registry. */
+  gain: number;
+  /** Native integrated loudness, or null when unmeasured. */
+  nativeLufs: number | null;
+  /** Post-gain integrated loudness, or null when unmeasured. */
+  matchedLufs: number | null;
+  status: GateStatus;
+  detail: string;
+};
+
 export type ScoreboardLoudness = {
   /** Shared gain reference every voice is matched to (anna). */
   referenceLufs: number;
@@ -186,6 +207,8 @@ export type ScoreboardLoudness = {
   outputVolume: number;
   ok: boolean;
   detail: string;
+  /** The same values for the gate voice plus every regression voice (ticket 25). */
+  voices: VoiceGainRow[];
 };
 
 /** One blind ballot: timbre and accent judged 1-5 on the shared golden recording. */
@@ -1165,6 +1188,35 @@ export function gateVoicePlayback(voiceId: string): VoicePlayback {
 }
 
 /**
+ * One voice's applied loudness path, read from the shared registry: server
+ * `output.volume` is the same constant for every voice, and the client gain is
+ * `voicePlaybackGain`. There is no pipeline retune and no second gain stage.
+ * A voice absent from `NATIVE_VOICE_LUFS` is unmeasured: reported as INFO.
+ */
+export function voiceGainRow(voiceId: string, gateVoice: string): VoiceGainRow {
+  const check = checkLoudnessSanity(voiceId);
+  return {
+    voice: voiceId,
+    isGate: voiceId === gateVoice,
+    outputVolume: VOICE_OUTPUT_VOLUME,
+    gain: voicePlaybackGain(voiceId),
+    nativeLufs: NATIVE_VOICE_LUFS[voiceId] ?? null,
+    matchedLufs: check.matchedLufs,
+    status: check.unmeasured ? "INFO" : check.ok ? "PASS" : "FAIL",
+    detail: check.detail,
+  };
+}
+
+/**
+ * The full gain table: the gate voice first, then every regression voice, all
+ * resolved through the registry. Never a literal list.
+ */
+export function voiceGainTable(gateVoice: string): VoiceGainRow[] {
+  const gate = resolveGateVoice(gateVoice);
+  return [gate, ...regressionVoices(gate)].map((voice) => voiceGainRow(voice, gate));
+}
+
+/**
  * Non-gate demo voices run regression-only (no clip, no pop, no invented
  * test tag): adding voices never breaks existing ones (spec story 14).
  */
@@ -1351,6 +1403,21 @@ export function evaluateTimbreGate(input: {
     status: "PASS",
     detail: `${probes.detail}; ${loudness.detail}; ${evidence.detail}`,
   };
+}
+
+/**
+ * Console gain table: the one loudness path per voice — server level plus
+ * client gain, both from the registry, with the native and matched levels
+ * that explain the number. Unmeasured voices print INFO (reported, not failed).
+ */
+export function formatVoiceGainTable(rows: VoiceGainRow[]): string {
+  const lufs = (value: number | null) => (value === null ? "unmeasured" : `${value} LUFS`);
+  const lines = rows.map((row) => {
+    const scope = row.isGate ? "gate" : "regression";
+    const line = `${row.status.padEnd(6)} ${row.voice.padEnd(10)} ${scope.padEnd(10)} vol=${row.outputVolume} gain=${row.gain} native ${lufs(row.nativeLufs)} matched ${lufs(row.matchedLufs)}`;
+    return row.status === "INFO" ? `${line} — ${row.detail}` : line;
+  });
+  return ["demo voice gain (registry only: server volume + client playback gain)", ...lines].join("\n");
 }
 
 /** Dry-run listing: every beat with its window, plus the resolved gate and regression set. */
@@ -2292,6 +2359,7 @@ export function buildSkeletonArtifact(input: {
       outputVolume: gateVoicePlayback(input.voice).outputVolume,
       ok: loudnessCheck.ok,
       detail: loudnessCheck.detail,
+      voices: voiceGainTable(input.voice),
     },
     transcripts: {
       sha256: sha256Hex(input.runnerStdout),
@@ -2597,6 +2665,8 @@ export type RegressionMatrix = {
   results: RegressionVoiceResult[];
   /** The gate voice's carried verdict; regression rows never modify it. */
   gate: MatrixGateVerdict;
+  /** The applied loudness path per matrix voice (ticket 25): registry only. */
+  gains: VoiceGainRow[];
   gates: ScoreboardGate[];
 };
 
@@ -2637,11 +2707,12 @@ export function buildRegressionMatrix(input: {
     voices: results.map((result) => result.voice),
     results,
     gate: gateVerdictFromArtifact(gateVoice, gateEntry?.gates, gateEntry?.subScores),
+    gains: results.map((result) => voiceGainRow(result.voice, gateVoice)),
     gates,
   };
 }
 
-/** Console table: gate verdict plus one regression row per voice. */
+/** Console table: gate verdict plus one row per voice, the applied gain table, and summary. */
 export function formatMatrixTable(matrix: RegressionMatrix): string {
   const clean = matrix.results.filter((result) => result.status === "PASS").length;
   const subScores =
@@ -2656,5 +2727,6 @@ export function formatMatrixTable(matrix: RegressionMatrix): string {
     `demo voice matrix (gate ${matrix.gateVoice}, ${matrix.results.length} voices, ${clean}/${matrix.results.length} clean)`,
     gateRow,
     ...rows,
+    formatVoiceGainTable(matrix.gains),
   ].join("\n");
 }

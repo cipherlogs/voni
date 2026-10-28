@@ -71,6 +71,9 @@ import {
   measuredEvidenceSources,
   persistsEmailAcrossMemory,
   validateProbeCounts,
+  formatVoiceGainTable,
+  voiceGainRow,
+  voiceGainTable,
   type OverheardAside,
   EMAIL_INVITE_TAG,
   applyEmailInvite,
@@ -1431,6 +1434,61 @@ test("loudness sanity fails a misgained voice by the numbers", () => {
   assert.ok(sanity.detail.includes("3.89"), `detail cites the registry gain: ${sanity.detail}`);
 });
 
+test("per-voice gain table is complete: gate plus every regression voice from the registry", () => {
+  const table = voiceGainTable("anna");
+  assert.deepEqual(
+    table.map((row) => row.voice),
+    ["anna", ...regressionVoices("anna")],
+    "gate first, every regression voice included",
+  );
+  assert.deepEqual(
+    [...table.map((row) => row.voice)].sort(),
+    [...DEMO_VOICE_IDS].sort(),
+    "no demo voice is missing from the gain table",
+  );
+  for (const row of table) {
+    assert.equal(row.isGate, row.voice === "anna");
+    assert.equal(row.outputVolume, VOICE_OUTPUT_VOLUME, `${row.voice} server level is the registry constant`);
+    assert.equal(row.gain, voicePlaybackGain(row.voice), `${row.voice} client gain comes from the registry`);
+    assert.ok(Math.abs((row.matchedLufs ?? 0) - TIMBRE_REFERENCE_LUFS) <= TIMBRE_LUFS_TOLERANCE_DB);
+    assert.equal(row.status, "PASS");
+  }
+  // A different gate voice flips the gate row, never the registry values.
+  const lola = voiceGainTable("lola");
+  assert.equal(lola[0]?.voice, "lola");
+  assert.equal(lola[0]?.isGate, true);
+  assert.equal(lola.find((row) => row.voice === "anna")?.isGate, false);
+});
+
+test("an unmeasured voice is reported INFO, never failed", () => {
+  // alba is in the voice registry but has no native loudness measurement.
+  const row = voiceGainRow("alba", "anna");
+  assert.equal(row.gain, 1.0, "an unknown gain stays the registry default");
+  assert.equal(row.nativeLufs, null);
+  assert.equal(row.matchedLufs, null);
+  assert.equal(row.status, "INFO");
+  assert.ok(row.detail.includes("no native loudness measurement"), row.detail);
+  assert.ok(formatVoiceGainTable([row]).includes("INFO"), "printed as INFO, never FAIL");
+
+  const sanity = checkLoudnessSanity("alba");
+  assert.equal(sanity.unmeasured, true);
+  assert.equal(sanity.matchedLufs, null);
+  const gate = evaluateTimbreGate({ probes: ZERO_PROBES, voiceId: "alba", agentChannel: null });
+  assert.equal(gate.status, "PASS", "unmeasured loudness never fails the timbre gate");
+  assert.ok(gate.detail.includes("no native loudness measurement"));
+});
+
+test("gain table output names every voice with its server level and client gain", () => {
+  const table = voiceGainTable("anna");
+  const printed = formatVoiceGainTable(table);
+  for (const row of table) {
+    assert.ok(printed.includes(row.voice), `printed table missing ${row.voice}`);
+  }
+  assert.ok(printed.includes(`vol=${VOICE_OUTPUT_VOLUME}`));
+  assert.ok(printed.includes("gain=3.89"), "giovanni's registry gain is visible");
+});
+
+
 test("timbre gate passes clean and fails named defects", () => {
   const clean = evaluateTimbreGate({ probes: ZERO_PROBES, voiceId: "anna", agentChannel: null });
   assert.equal(clean.name, "timbre-probes");
@@ -1538,6 +1596,29 @@ test("artifact carries human slots, loudness sanity, and live timbre gates", () 
   assert.equal(timbre?.status, "PASS");
   const human = artifact.gates.find((g) => g.name === "accent-human");
   assert.equal(human?.status, "INFO");
+});
+
+test("artifact carries the per-voice gain table, not only the gate voice", () => {
+  const artifact = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "greeting-cut",
+    runnerStdout: "",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+  });
+  const rows = artifact.loudness.voices;
+  assert.equal(rows.length, DEMO_VOICE_IDS.length, "every demo voice has a gain row");
+  assert.equal(rows[0]?.voice, DEFAULT_GATE_VOICE);
+  assert.equal(rows[0]?.isGate, true);
+  for (const voice of regressionVoices(DEFAULT_GATE_VOICE)) {
+    const row = rows.find((entry) => entry.voice === voice);
+    assert.ok(row, `regression voice ${voice} missing from the artifact gain table`);
+    assert.equal(row.gain, voicePlaybackGain(voice), `${voice} gain comes from the registry`);
+    assert.equal(row.outputVolume, VOICE_OUTPUT_VOLUME);
+    assert.equal(row.status, "PASS");
+  }
+  assert.ok(formatVoiceGainTable(rows).includes("giovanni"));
 });
 
 test("artifact timbre gate fails named defects and holds human ratings until auto passes", () => {

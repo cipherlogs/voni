@@ -53,6 +53,7 @@ import {
   type VoiceErrorCode,
 } from "./mic-capture";
 import type { WorkletPlayout } from "./playout";
+import { VOICE_OUTPUT_VOLUME } from "@/lib/agents/voices";
 
 export { TARGET_SAMPLE_RATE, VOICE_MIC_CONSTRAINTS } from "./mic-capture";
 
@@ -178,7 +179,7 @@ export function buildInlineSessionUpdate(
   return {
     system_prompt: config.systemPrompt,
     greeting: config.greeting,
-    output: { voice: config.voiceId, volume: 100 },
+    output: { voice: config.voiceId, volume: VOICE_OUTPUT_VOLUME },
     input: {
       transcription_mode: config.transcriptionMode ?? TRANSCRIPTION_MODE,
       // Close-talking browser mic: isolate the caller with the near-field

@@ -115,6 +115,7 @@ import {
   formatGoldenScript,
   formatOverheardReport,
   formatSubScoreTable,
+  formatVoiceGainTable,
   GOLDEN_BEATS,
   overheardFromTraceExcerpt,
   parseTraceGaps,
@@ -541,6 +542,7 @@ function main(): void {
   console.log(formatBudgetReport());
   console.log(formatGateTable(artifact));
   console.log(formatSubScoreTable(artifact));
+  console.log(formatVoiceGainTable(artifact.loudness.voices));
   console.log(formatOverheardReport(artifact));
   console.log(`artifact: ${out}`);
   const failures = artifact.gates.filter((gate) => gate.status === "FAIL");
