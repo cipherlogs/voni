@@ -24,6 +24,14 @@
  * --from re-analyzes saved per-voice score artifacts instead of spawning
  * (air-gapped re-check of a finished matrix).
  *
+ * Extensions kept beyond the ticket scope (documented, not silent): --strict
+ * exits non-zero when any voice regresses (CI gate for deploying a new
+ * voice); --from re-analyzes saved artifacts instead of spawning.
+ * Reproducibility bar: three consecutive green runs on the reference desktop
+ * setup before calling the harness solid. Flaky beats are quarantined by
+ * beat name (scoreboard artifact quarantinedBeats, empty for now), never by
+ * loosening thresholds.
+ *
  * Exit 0 once the matrix artifact is written, even with FAIL rows (like
  * score-demo: non-zero means the harness broke). --strict exits non-zero when
  * any voice regresses: use it in CI when deploying a new voice.
@@ -38,6 +46,7 @@ import {
   formatMatrixTable,
   resolveGateVoice,
   resolveMatrixVoices,
+  validateProbeCounts,
   type RegressionMatrix,
   type RegressionVoiceInput,
   type TimbreProbes,
@@ -69,15 +78,12 @@ function readScoreArtifact(path: string): { voice: string; probes: TimbreProbes;
   const record = parsed as Record<string, unknown>;
   if (typeof record.voice !== "string") throw new Error(`matrix cannot read ${path}: no voice`);
   const voice = resolveGateVoice(record.voice);
-  const rawProbes = record.probes as Record<string, unknown> | undefined;
-  const probes = {} as TimbreProbes;
-  for (const kind of ["jump", "overload", "clip", "underrun", "inputDrop"] as const) {
-    const value = rawProbes?.[kind] ?? 0;
-    if (!Number.isInteger(value) || (value as number) < 0) {
-      throw new Error(`matrix cannot read ${path}: probe count "${kind}" is not a non-negative int`);
-    }
-    probes[kind] = value as number;
-  }
+  // Probe-count shape lives in scoreboard.ts (validateProbeCounts): one
+  // validator for the orchestrator and the matrix.
+  const probes = validateProbeCounts(
+    (record.probes ?? {}) as Record<string, unknown>,
+    `matrix cannot read ${path}`,
+  );
   const redacted = (record.transcripts as { redacted?: unknown } | undefined)?.redacted;
   if (!Array.isArray(redacted) || !redacted.every((line) => typeof line === "string")) {
     throw new Error(`matrix cannot read ${path}: no redacted transcripts`);

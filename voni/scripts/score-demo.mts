@@ -12,17 +12,19 @@
  *
  * Gates: the reply-gap, end-of-turn, filler-resume, barge-in-cut,
  * overheard-recall, dead-air, double-talk and end-call-drain gates fail the command (exit 1) when measured
- * evidence breaches the budget, so regressions never merge silently. Without
- * measured gaps, filler, real-cut, overheard, dead-air, double-talk or drain evidence the gates
- * stay INFO and the command exits 0 once the artifact is written, even when
- * the eval runner itself fails (its exit code is recorded in the artifact).
+ * evidence breaches the budget, so regressions never merge silently. A real
+ * (non-dry) run with zero measured evidence fails too ("no measurements -
+ * run real audio or pass evidence flags"): --dry-run stays exit 0 INFO
+ * (explicit dry), but a real run may never green on zero measurements.
+ * A dead eval runner is a harness break (exit 1, plumbing FAIL, evalRunner
+ * status failed) — distinct from a measured gate FAIL (exit 1).
  * Non-zero exit otherwise means the harness broke: unknown voice, bad
- * --gap/--filler/--cut/--overheard-json/--dead-air-gaps/--overlap-ms/--goodbye-coverage/--hang-up-delay-ms flag, spawn failure,
+ * --runs/--gap/--filler/--cut/--overheard-json/--dead-air-gaps/--overlap-ms/--goodbye-coverage/--hang-up-delay-ms/--trace-beat flag, spawn failure,
  * or an unwritable artifact.
  *
  *   npm run scoreboard:demo -- [--gate-voice <demo-voice-id>] [--scenario greeting-cut] [--runs 1]
  *                           [--out scoreboard-runs/score-<ts>-<voice>.json] [--dry-run]
- *                           [--trace-session sess_...] [--probe-json probes.json] [--recording <sha256>] [--rate rater:timbre,accent ...]
+ *                           [--trace-session sess_...] [--trace-beat greeting-cut] [--probe-json probes.json] [--recording <sha256>] [--rate rater:timbre,accent ...]
  *                           [--gap beat=ms ...]
  *                           [--filler-text "Okaay so" --filler-cut-ms 320 ...]
  *                           [--cut-ms <n> | --cut-never] [--cut-verdict <v>] [--cut-answered]
@@ -70,11 +72,21 @@
  * artifact is still written). --rate files blind 1-5 human ballots, all
  * bound to --recording; auto timbre checks must pass before ballots count.
  *
+ * Extensions kept beyond the ticket scope (documented, not silent):
+ * agent-channel PCM evidence rides in --probe-json (offline
+ * qa-voice-session analysis); --trace-beat explicitly maps the first merged
+ * trace turn when the session does not open with the greeting cut.
+ *
  * --dry-run skips spawning the runner (no ASSEMBLYAI_API_KEY needed) and
  * records a placeholder eval section. --trace-session merges the Call trace
  * for a finished real-call session into the artifact excerpt, and its HEARD
  * rows become ledger-counted overheard asides (handling from the CLIENT
- * barge-in verdicts). --overheard-json feeds explicit asides (marked,
+ * barge-in verdicts). The first merged turn attributes to the greeting-cut
+ * beat only when verified: the excerpt opens with a greeting-cut marker
+ * (golden runs open with the greeting cut) or --trace-beat names the beat
+ * explicitly. Otherwise the first turn is scored call-level and the
+ * greeting-cut beat reports INFO with a "trace attribution unverified"
+ * warning, never PASS. --overheard-json feeds explicit asides (marked,
  * ledger, handling, trace pointer per beat); it merges with trace-derived
  * ones.
  *
@@ -101,12 +113,14 @@ import {
   formatGateTable,
   formatGoldenScript,
   formatOverheardReport,
+  formatSubScoreTable,
   GOLDEN_BEATS,
   overheardFromTraceExcerpt,
   parseTraceGaps,
   redactLines,
   resolveGateVoice,
   sha256Hex,
+  validateProbeCounts,
   type AgentChannelEvidence,
   type DeadAirEvidence,
   type FillerResumeEvidence,
@@ -153,14 +167,9 @@ function readProbeJson(path: string): { probes: TimbreProbes; agentChannel: Agen
     throw new Error(`--probe-json ${path} must be an object of probe counts`);
   }
   const record = parsed as Record<string, unknown>;
-  const probes = {} as TimbreProbes;
-  for (const kind of ["jump", "overload", "clip", "underrun", "inputDrop"] as const) {
-    const value = record[kind] ?? 0;
-    if (!Number.isInteger(value) || (value as number) < 0) {
-      throw new Error(`--probe-json ${path}: probe count "${kind}" must be a non-negative int, got ${JSON.stringify(value)}`);
-    }
-    probes[kind] = value as number;
-  }
+  // Probe-count shape lives in scoreboard.ts (validateProbeCounts): one
+  // validator for the orchestrator and the matrix.
+  const probes = validateProbeCounts(record, `--probe-json ${path}`);
   const rawChannel = record.agentChannel ?? null;
   if (rawChannel === null || rawChannel === undefined) return { probes, agentChannel: null };
   if (typeof rawChannel !== "object") {
@@ -208,7 +217,7 @@ function stamp(date = new Date()): string {
   return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
 }
 
-function runEvalRunner(voice: string, scenario: string, runs: string): { stdout: string; exitCode: number | null; durationMs: number } {
+function runEvalRunner(voice: string, scenario: string, runs: string): { stdout: string; exitCode: number | null; durationMs: number; evalError: string | null } {
   const started = Date.now();
   const result = spawnSync(
     "npm",
@@ -216,7 +225,10 @@ function runEvalRunner(voice: string, scenario: string, runs: string): { stdout:
     { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
   );
   const stdout = `${result.stdout ?? ""}${result.stderr ?? ""}`;
-  return { stdout, exitCode: result.status, durationMs: Date.now() - started };
+  // A spawn failure (missing binary, killed) surfaces as result.error, not
+  // an exit code: record it so the artifact marks a harness break.
+  const evalError = result.error instanceof Error ? result.error.message : null;
+  return { stdout, exitCode: evalError ? null : result.status, durationMs: Date.now() - started, evalError };
 }
 
 function runCallTrace(sessionId: string): string[] {
@@ -399,10 +411,17 @@ function main(): void {
   const voice = resolveGateVoice(arg("--gate-voice", "") || arg("--voice", DEFAULT_GATE_VOICE));
   const scenario = arg("--scenario", "greeting-cut");
   const runs = arg("--runs", "1");
+  if (!/^[1-9]\d*$/.test(runs)) {
+    throw new Error(`--runs needs a positive int, got "${runs}"`);
+  }
   const dryRun = process.argv.includes("--dry-run");
   const traceSession = arg("--trace-session", "");
   if (traceSession && !/^sess_[A-Za-z0-9_-]+$/.test(traceSession)) {
     throw new Error(`--trace-session needs a session id like sess_abc, got "${traceSession}"`);
+  }
+  const traceBeatRaw = arg("--trace-beat", "");
+  if (traceBeatRaw && !(GOLDEN_BEATS as readonly string[]).includes(traceBeatRaw)) {
+    throw new Error(`--trace-beat needs a golden beat (one of ${GOLDEN_BEATS.join(", ")}), got "${traceBeatRaw}"`);
   }
   const deadAir = parseDeadAirEvidence({
     gaps: arg("--dead-air-gaps", ""),
@@ -423,7 +442,7 @@ function main(): void {
   const humanRatings: HumanRatings = readHumanRatings(argAll("--rate"), arg("--recording", ""));
 
   const evalSection = dryRun
-    ? { stdout: "(dry run: eval runner skipped)", exitCode: null as number | null, durationMs: 0 }
+    ? { stdout: "(dry run: eval runner skipped)", exitCode: null as number | null, durationMs: 0, evalError: null as string | null }
     : runEvalRunner(voice, scenario, runs);
 
   const gaps = parseGapFlags(process.argv);
@@ -440,6 +459,16 @@ function main(): void {
     explicitAsides !== null || traceAsides.length > 0 ? [...(explicitAsides ?? []), ...traceAsides] : undefined;
   const agentInput = buildDemoAgentBody(voice).input;
   const fillerResume = readFillerEvidence(traceSession);
+  // Real-cut evidence counts as measured even though it lands post-skeleton.
+  const parsed = extractRealCutEvidence(evalSection.stdout);
+  const hasCutFlags =
+    cutMsArg !== "" ||
+    process.argv.includes("--cut-never") ||
+    arg("--cut-verdict", "") !== "" ||
+    process.argv.includes("--cut-answered") ||
+    process.argv.includes("--cut-resumed") ||
+    process.argv.includes("--cut-ended") ||
+    arg("--trace-turn", "") !== "";
 
   let artifact: ScoreboardArtifact = buildSkeletonArtifact({
     voice,
@@ -447,9 +476,10 @@ function main(): void {
     runnerStdout: evalSection.stdout,
     exitCode: evalSection.exitCode,
     durationMs: evalSection.durationMs,
-    runs: Number(runs) || 1,
+    runs: Number(runs),
     gaps,
     traceGaps,
+    ...(traceBeatRaw ? { traceBeat: traceBeatRaw as GoldenBeat } : {}),
     traceSessionId: traceSession || null,
     agentInput,
     traceExcerpt: excerpt ?? [],
@@ -466,16 +496,11 @@ function main(): void {
     probes: timbreProbes,
     agentChannel,
     humanRatings,
+    dryRun,
+    evalError: evalSection.evalError,
+    ...(parsed || hasCutFlags ? { realCutEvidencePresent: true } : {}),
+    runId: `run-${stamp()}-${voice}`,
   });
-  const parsed = extractRealCutEvidence(evalSection.stdout);
-  const hasCutFlags =
-    cutMsArg !== "" ||
-    process.argv.includes("--cut-never") ||
-    arg("--cut-verdict", "") !== "" ||
-    process.argv.includes("--cut-answered") ||
-    process.argv.includes("--cut-resumed") ||
-    process.argv.includes("--cut-ended") ||
-    arg("--trace-turn", "") !== "";
   if (parsed || hasCutFlags) {
     const base: RealCutEvidence = parsed ?? {
       cutMs: null,
@@ -513,10 +538,18 @@ function main(): void {
 
   console.log(formatGoldenScript(voice));
   console.log(formatGateTable(artifact));
+  console.log(formatSubScoreTable(artifact));
   console.log(formatOverheardReport(artifact));
   console.log(`artifact: ${out}`);
-  if (artifact.gates.some((gate) => gate.status === "FAIL")) {
-    console.log("scoreboard: FAIL — a measured gate breached its budget; see the failing gate detail above");
+  const failures = artifact.gates.filter((gate) => gate.status === "FAIL");
+  if (failures.length > 0) {
+    // Harness break (plumbing) is distinct from a measured gate FAIL: the
+    // numbers were never taken, so triage starts with the harness.
+    if (failures.some((gate) => gate.name === "plumbing")) {
+      console.log("scoreboard: HARNESS BREAK — the eval runner never finished; fix the harness, not the thresholds");
+    } else {
+      console.log("scoreboard: FAIL — a measured gate breached its budget; see the failing gate detail above");
+    }
     process.exitCode = 1;
   }
 }

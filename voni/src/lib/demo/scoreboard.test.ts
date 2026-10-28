@@ -60,6 +60,13 @@ import {
   replyGapMs,
   resolveGateVoice,
   sha256Hex,
+  attributeFirstTraceGap,
+  buildSubScores,
+  emailInviteGate,
+  formatSubScoreTable,
+  hasMeasuredEvidence,
+  persistsEmailAcrossMemory,
+  validateProbeCounts,
   type OverheardAside,
   EMAIL_INVITE_TAG,
   applyEmailInvite,
@@ -115,8 +122,9 @@ test("skeleton artifact carries every required key with empty human slots", () =
     exitCode: 0,
     durationMs: 1234,
     runs: 1,
+    dryRun: true,
   });
-  assert.equal(artifact.schemaVersion, 3);
+  assert.equal(artifact.schemaVersion, 4);
   assert.equal(artifact.voice, DEFAULT_GATE_VOICE);
   for (const beat of GOLDEN_BEATS) {
     const timing = artifact.beats[beat];
@@ -137,8 +145,8 @@ test("skeleton artifact carries every required key with empty human slots", () =
   assert.ok(artifact.gates.every((g) => g.status === "PASS" || g.status === "INFO"));
 });
 
-test("skeleton gates never fail: runner crash is plumbing INFO, not FAIL", () => {
-  const artifact = buildSkeletonArtifact({
+test("harness break: non-dry runner crash fails plumbing, dry runs stay clean", () => {
+  const broken = buildSkeletonArtifact({
     voice: DEFAULT_GATE_VOICE,
     scenario: "greeting-cut",
     runnerStdout: "",
@@ -146,7 +154,19 @@ test("skeleton gates never fail: runner crash is plumbing INFO, not FAIL", () =>
     durationMs: 10,
     runs: 1,
   });
-  assert.ok(artifact.gates.every((g) => g.status !== "FAIL"));
+  const plumbing = broken.gates.find((g) => g.name === "plumbing")!;
+  assert.equal(plumbing.status, "FAIL");
+  assert.match(plumbing.detail, /harness break/);
+  const clean = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "greeting-cut",
+    runnerStdout: "(dry run: eval runner skipped)",
+    exitCode: null,
+    durationMs: 0,
+    runs: 1,
+    dryRun: true,
+  });
+  assert.ok(clean.gates.every((g) => g.status !== "FAIL"));
 });
 
 test("console table prints one row per gate", () => {
@@ -1466,7 +1486,7 @@ test("artifact carries human slots, loudness sanity, and live timbre gates", () 
     durationMs: 1234,
     runs: 1,
   });
-  assert.equal(artifact.schemaVersion, 3);
+  assert.equal(artifact.schemaVersion, 4);
   assert.equal(artifact.humanRatings.timbre, null);
   assert.equal(artifact.humanRatings.accent, null);
   assert.deepEqual(artifact.humanRatings.ratings, []);
@@ -1587,7 +1607,7 @@ test("matrix passes all-clean and fails named per voice with an overall row", ()
     },
   ];
   const matrix = buildRegressionMatrix({ gateVoice: "anna", entries });
-  assert.equal(matrix.schemaVersion, 3);
+  assert.equal(matrix.schemaVersion, 4);
   assert.equal(matrix.gateVoice, "anna");
   assert.equal(matrix.results.length, 2);
   assert.ok(matrix.results.every((r) => r.status === "PASS"));
@@ -1632,4 +1652,287 @@ test("matrix table names every voice with its verdict plus a summary", () => {
   assert.ok(table.includes("PASS"));
   assert.ok(table.includes("FAIL"));
   assert.ok(table.includes("1/2"), `summary counts clean voices: ${table}`);
+});
+
+// ── Review fixes: harness break, measurements, memory INFO, attribution, sub-scores ──
+
+test("shared probe validator accepts zeros and rejects bad counts", () => {
+  assert.deepEqual(
+    validateProbeCounts({ jump: 0, overload: 0, clip: 0, underrun: 0, inputDrop: 0 }, "src"),
+    { jump: 0, overload: 0, clip: 0, underrun: 0, inputDrop: 0 },
+  );
+  assert.deepEqual(
+    validateProbeCounts({}, "src"),
+    { jump: 0, overload: 0, clip: 0, underrun: 0, inputDrop: 0 },
+  );
+  assert.throws(() => validateProbeCounts({ jump: -1 }, "src"), /probe count "jump" must be a non-negative int/);
+  assert.throws(() => validateProbeCounts({ clip: 1.5 }, "src"), /probe count "clip" must be a non-negative int/);
+  assert.throws(() => validateProbeCounts({ inputDrop: "x" }, "src"), /probe count "inputDrop" must be a non-negative int/);
+});
+
+test("harness break: non-dry runner crash fails plumbing and marks the eval runner failed", () => {
+  const artifact = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "greeting-cut",
+    runnerStdout: "",
+    exitCode: 1,
+    durationMs: 10,
+    runs: 1,
+    gaps: { "greeting-cut": [900] },
+  });
+  const plumbing = artifact.gates.find((g) => g.name === "plumbing")!;
+  assert.equal(plumbing.status, "FAIL");
+  assert.match(plumbing.detail, /harness break/);
+  assert.equal(artifact.evalRunner.status, "failed");
+  assert.equal(artifact.evalRunner.passed, false);
+  assert.equal(artifact.evalRunner.exitCode, 1);
+});
+
+test("dry run records a skipped eval runner and keeps plumbing green", () => {
+  const artifact = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "greeting-cut",
+    runnerStdout: "(dry run: eval runner skipped)",
+    exitCode: null,
+    durationMs: 0,
+    runs: 1,
+    dryRun: true,
+  });
+  assert.equal(artifact.gates.find((g) => g.name === "plumbing")?.status, "PASS");
+  assert.equal(artifact.evalRunner.status, "skipped");
+  assert.equal(artifact.evalRunner.passed, null);
+});
+
+test("non-dry run with zero measured evidence fails measurements with the exact message", () => {
+  const artifact = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "greeting-cut",
+    runnerStdout: "",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+  });
+  const gate = artifact.gates.find((g) => g.name === "measurements")!;
+  assert.equal(gate.status, "FAIL");
+  assert.equal(gate.detail, "no measurements - run real audio or pass evidence flags");
+});
+
+test("dry run with zero measured evidence stays INFO for backward compatibility", () => {
+  const artifact = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "greeting-cut",
+    runnerStdout: "",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+    dryRun: true,
+  });
+  assert.ok(artifact.gates.every((g) => g.status !== "FAIL"));
+  assert.equal(artifact.gates.find((g) => g.name === "measurements")?.status, "INFO");
+});
+
+test("measured evidence silences the measurements gate", () => {
+  assert.equal(hasMeasuredEvidence({}), false);
+  assert.equal(hasMeasuredEvidence({ gaps: { "greeting-cut": [900] } }), true);
+  assert.equal(hasMeasuredEvidence({ traceGaps: [{ gapMs: 900, turnIndex: 1 }] }), true);
+  assert.equal(hasMeasuredEvidence({ doubleTalkOverlapMs: [120] }), true);
+  assert.equal(hasMeasuredEvidence({ doubleTalkOverlapMs: [] }), false);
+  assert.equal(
+    hasMeasuredEvidence({ endCallDrain: { goodbyeCoverage: null, hangUpDelayMs: null, narratedEnding: false } }),
+    false,
+  );
+  assert.equal(
+    hasMeasuredEvidence({ endCallDrain: { goodbyeCoverage: 0.95, hangUpDelayMs: null, narratedEnding: false } }),
+    true,
+  );
+});
+
+test("email memory unmeasured is INFO, persisted is PASS, mismatch is FAIL", () => {
+  assert.equal(
+    persistsEmailAcrossMemory({ agentLines: [], chipShows: [], showToolCalls: 0 }),
+    null,
+  );
+  const unmeasured = evaluateEmailInvite({
+    agentLines: [FRESH_INVITE],
+    chipShows: [{ address: "test@voni.cc", tag: EMAIL_INVITE_TAG }],
+    showToolCalls: 1,
+  });
+  assert.equal(unmeasured.memoryPersists, null);
+  assert.equal(unmeasured.status, "PASS");
+  const info = emailInviteGate(unmeasured);
+  assert.equal(info.status, "INFO");
+  assert.equal(info.detail, "unmeasured - provide hold/reload evidence");
+  const kept = emailInviteGate(evaluateEmailInvite(freshEvidence()));
+  assert.equal(kept.status, "PASS");
+  const lost = emailInviteGate(evaluateEmailInvite(freshEvidence({ memoryInvitedAfter: false })));
+  assert.equal(lost.status, "FAIL");
+});
+
+test("applying unmeasured email evidence scores the beat INFO, not PASS", () => {
+  const base = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "invite-tag",
+    runnerStdout: FRESH_INVITE,
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+    dryRun: true,
+  });
+  const scored = applyEmailInvite(base, {
+    agentLines: [FRESH_INVITE],
+    chipShows: [{ address: "test@voni.cc", tag: EMAIL_INVITE_TAG }],
+    showToolCalls: 1,
+  });
+  assert.equal(scored.emailInvite?.memoryPersists, null);
+  assert.equal(scored.gates.find((g) => g.name === "email-invite")?.status, "INFO");
+  assert.equal(scored.beats["email-invite"].status, "INFO");
+});
+
+test("first trace turn attributes to greeting-cut only with an explicit beat or a greeting marker", () => {
+  const mapped = attributeFirstTraceGap(['12.20s  VONI    "Sorry"  (reply_create gap 900ms)'], {
+    beatMap: "real-cut-answered",
+  });
+  assert.equal(mapped.beat, "real-cut-answered");
+  assert.equal(mapped.verified, true);
+  const anchored = attributeFirstTraceGap([
+    '12.10s  HEARD   "Wait, stop."',
+    '12.20s  VONI    "Hi, thanks for calling"  (reply_create gap 900ms)  greeting-cut marker',
+  ]);
+  assert.equal(anchored.beat, "greeting-cut");
+  assert.equal(anchored.verified, true);
+  const unverified = attributeFirstTraceGap([
+    '12.10s  HEARD   "Wait, stop."',
+    '12.20s  VONI    "Sorry about that"  (reply_create gap 900ms)',
+  ]);
+  assert.equal(unverified.beat, null);
+  assert.equal(unverified.verified, false);
+  assert.match(unverified.note, /trace attribution unverified/);
+});
+
+test("unattributed trace gaps stay call-level with an INFO greeting-cut beat, never a PASS", () => {
+  const artifact = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "greeting-cut",
+    runnerStdout: "trace",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+    traceGaps: [{ gapMs: 900, turnIndex: 1 }],
+    traceExcerpt: ['12.20s  VONI    "Sorry about that"  (reply_create gap 900ms)'],
+    traceSessionId: "sess_abc",
+  });
+  assert.deepEqual(artifact.beats["greeting-cut"].gapSamples, []);
+  assert.equal(artifact.beats["greeting-cut"].status, "INFO");
+  assert.match(artifact.beats["greeting-cut"].note, /trace attribution unverified/);
+  const reply = artifact.gates.find((g) => g.name === "reply-gap")!;
+  assert.equal(reply.status, "PASS");
+  assert.match(reply.detail, /trace attribution unverified/);
+});
+
+test("greeting-cut marker attributes the first trace turn to the greeting-cut beat", () => {
+  const artifact = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "greeting-cut",
+    runnerStdout: "trace",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+    traceGaps: [{ gapMs: 900, turnIndex: 1 }],
+    traceExcerpt: ['12.20s  VONI    "Hi"  (reply_create gap 900ms)  greeting-cut marker'],
+    traceSessionId: "sess_abc",
+  });
+  assert.deepEqual(artifact.beats["greeting-cut"].gapSamples, [900]);
+});
+
+test("sub-scores aggregate the five human-likeness areas in spec priority", () => {
+  const artifact = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "greeting-cut",
+    runnerStdout: "ok",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+    agentInput: { turn_detection: null },
+    gaps: { "greeting-cut": [900] },
+    doubleTalkOverlapMs: [120, 650],
+  });
+  const subs = buildSubScores(artifact.gates);
+  assert.deepEqual(
+    subs.map((s) => s.name),
+    ["responsiveness", "barge-in", "overheard", "naturalness", "voice"],
+  );
+  assert.equal(subs[0].status, "PASS");
+  assert.equal(subs[3].status, "FAIL");
+  assert.ok(subs[3].detail.includes("650"));
+  assert.equal(artifact.subScores.length, 5);
+  const table = formatSubScoreTable(artifact);
+  for (const name of ["responsiveness", "barge-in", "overheard", "naturalness", "voice"]) {
+    assert.ok(table.includes(name), `sub-score table names ${name}`);
+  }
+});
+
+test("gates report in spec priority: gap, cut, overheard, naturalness", () => {
+  const artifact = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "greeting-cut",
+    runnerStdout: "ok",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+    dryRun: true,
+  });
+  const order = artifact.gates.map((g) => g.name);
+  const before = (a: string, b: string) => {
+    assert.ok(order.indexOf(a) !== -1 && order.indexOf(b) !== -1, `${a} and ${b} present`);
+    assert.ok(order.indexOf(a) < order.indexOf(b), `${a} reports before ${b}`);
+  };
+  before("plumbing", "reply-gap");
+  before("reply-gap", "barge-in-cut");
+  before("barge-in-cut", "overheard-recall");
+  before("overheard-recall", "double-talk");
+  before("double-talk", "dead-air");
+  before("dead-air", "timbre-probes");
+});
+
+test("artifact records a run id with an empty beat-quarantine stub", () => {
+  const artifact = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "greeting-cut",
+    runnerStdout: "ok",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+    dryRun: true,
+  });
+  assert.ok(typeof artifact.runId === "string" && artifact.runId.length > 0);
+  assert.deepEqual(artifact.quarantinedBeats, []);
+  const named = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "greeting-cut",
+    runnerStdout: "ok",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+    dryRun: true,
+    runId: "run-manual",
+  });
+  assert.equal(named.runId, "run-manual");
+});
+
+test("manual and external checks stay INFO, never a false green", () => {
+  const artifact = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "greeting-cut",
+    runnerStdout: "ok",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+    dryRun: true,
+  });
+  const phone = artifact.gates.find((g) => g.name === "phone-checklist")!;
+  assert.equal(phone.status, "INFO");
+  assert.match(phone.detail, /manual/);
+  const pinned = artifact.gates.find((g) => g.name === "talk-hold-pinned")!;
+  assert.equal(pinned.status, "INFO");
+  assert.match(pinned.detail, /externally|pinned/);
 });

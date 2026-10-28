@@ -30,6 +30,18 @@
  * without evidence the gates stay INFO, never a false FAIL. What this module guarantees is trustworthy plumbing —
  * one JSON artifact per run with redacted transcripts plus their hash, and
  * empty human-rating slots.
+ *
+ * Gate ownership (one gate, one section below; keep gate logic inside its
+ * own section — no unrelated edits in one function):
+ *   plumbing / measurements .... skeleton (ticket 01 + review: harness break, dry-run only)
+ *   reply-gap ................... ticket 03 | end-of-turn ............. ADR-0003 contract
+ *   barge-in-cut ................ ticket 05 | filler-resume ........... ticket 04
+ *   overheard-recall ............ ticket 06 | dead-air ................ ticket 07
+ *   email-invite ................ ticket 08 | double-talk / end-call-drain ticket 09
+ *   timbre-probes / accent-human  ticket 10 | phone-checklist / talk-hold-pinned review stubs (manual/external)
+ * TODO: split each gate section into scoreboard/gates/<name>.ts (pure
+ * helpers only) once a second consumer needs one; keep this module's
+ * exports stable so the orchestrator and matrix never change imports.
  */
 import { createHash } from "node:crypto";
 import { getVoice, VOICE_OUTPUT_VOLUME, voicePlaybackGain } from "../agents/voices";
@@ -138,7 +150,7 @@ export const GOLDEN_SCRIPT: GoldenBeatSpec[] = [
   },
 ];
 
-export const SCOREBOARD_SCHEMA_VERSION = 3;
+export const SCOREBOARD_SCHEMA_VERSION = 4;
 
 export type BeatTiming = {
   /** Reply gap: visitor end-of-speech → first agent audio (p50 across runs; null until measured). */
@@ -273,6 +285,8 @@ export function evaluateHumanGate(autoPassed: boolean, human: HumanRatings): Sco
 }
 
 
+// ── Gate: reply-gap (ticket 03, owner: reply-gap section) ────────────────────
+
 /**
  * Reply-gap budgets (spec stories 2–4): the Demo call feels laggy past
  * these, so the scoreboard fails. The greeting-cut beat shares the same
@@ -344,6 +358,48 @@ export function parseTraceGaps(excerpt: string[]): TraceGap[] {
     if (match) gaps.push({ gapMs: Number(match[1]), turnIndex: turn });
   }
   return gaps;
+}
+
+export type TraceAttribution = {
+  /** Beat the first merged turn is attributed to, or null when unverified (call-level only). */
+  beat: GoldenBeat | null;
+  verified: boolean;
+  note: string;
+};
+
+/**
+ * Trace-gap attribution guard (review: the first merged turn was silently
+ * attributed to the greeting-cut beat, misattributing any session that does
+ * not open with the greeting cut). Attribution requires either an explicit
+ * --trace-beat map or a session that starts with a greeting-cut marker
+ * (the trace excerpt's first lines carry a greeting/greeting-cut marker).
+ * Otherwise the first turn stays call-level and the greeting-cut beat
+ * reports INFO with a "trace attribution unverified" warning — never PASS.
+ */
+export function attributeFirstTraceGap(
+  excerpt: string[],
+  opts?: { beatMap?: GoldenBeat | null },
+): TraceAttribution {
+  if (opts?.beatMap && (GOLDEN_BEATS as readonly string[]).includes(opts.beatMap)) {
+    return {
+      beat: opts.beatMap,
+      verified: true,
+      note: `explicit --trace-beat ${opts.beatMap}: first merged turn attributed to ${opts.beatMap}`,
+    };
+  }
+  const opening = excerpt.slice(0, 5).join("\n");
+  if (/greeting-cut|greeting cut|\bgreeting\b/i.test(opening)) {
+    return {
+      beat: "greeting-cut",
+      verified: true,
+      note: "trace excerpt opens with a greeting-cut marker: first merged turn attributed to greeting-cut",
+    };
+  }
+  return {
+    beat: null,
+    verified: false,
+    note: "trace attribution unverified — pass --trace-beat <beat> or ensure the trace excerpt opens with a greeting-cut marker (first turn scored call-level only)",
+  };
 }
 
 export function summarizeReplyGaps(samples: ReplyGapSample[]): ReplyGapSummary | null {
@@ -426,6 +482,8 @@ export function replyGapGate(samples: ReplyGapSample[], traceSessionId?: string)
   };
 }
 
+// ── Gate: end-of-turn (ADR-0003 contract, owner: end-of-turn section) ─────────
+
 /**
  * Meaning-based end-of-turn must stay on: ANY turn_detection object —
  * even one holding only an interruption delay — switches off adaptive
@@ -466,6 +524,8 @@ export function meaningBasedEndOfTurnGate(
     detail: "meaning-based end-of-turn preserved: no turn_detection object sent (turn_detection null)",
   };
 }
+
+// ── Gate: dead-air (ticket 07, owner: dead-air section) ───────────────────────
 
 /** Uncovered silence longer than this reads as a dropped call. */
 export const DEAD_AIR_MAX_MS = 2000;
@@ -558,6 +618,8 @@ export function evaluateDeadAir(evidence: DeadAirEvidence): ScoreboardGate {
     detail: `no dead air over ${DEAD_AIR_MAX_MS}ms across ${gaps.length} gaps (max ${max}ms); no 15s silence stretch`,
   };
 }
+
+// ── Gate: email-invite (ticket 08, owner: email section) ─────────────────────
 
 /**
  * Prospect-capture beat (ticket 08): the Email invite plus Test tag behaves
@@ -745,6 +807,11 @@ export function evaluateEmailInvite(evidence: EmailInviteEvidence): EmailInviteR
   if (memoryPersists === false) fails.push("tag did not persist across Hold return/reload");
 
   const status = fails.length === 0 ? "PASS" : "FAIL";
+  // Unmeasured memory (no hold/reload evidence) is not a pass: the gate
+  // reports it separately as INFO (see emailInviteGate), so the PASS detail
+  // never claims memory was kept.
+  const memoryNote =
+    memoryPersists === true ? ", memory kept" : memoryPersists === null ? ", memory unmeasured" : "";
   return {
     tag,
     tagMentions,
@@ -757,11 +824,21 @@ export function evaluateEmailInvite(evidence: EmailInviteEvidence): EmailInviteR
     returningOk,
     showToolCalls,
     status,
-    detail: status === "PASS" ? `tag said once (${tag}), chip once, memory kept` : fails.join("; "),
+    detail: status === "PASS" ? `tag said once (${tag}), chip once${memoryNote}` : fails.join("; "),
   };
 }
 
 export function emailInviteGate(result: EmailInviteResult): ScoreboardGate {
+  // Unmeasured memory (no hold/reload evidence) is INFO, never PASS: only
+  // a before/after pair that both show the tag persisted counts as kept,
+  // and only a mismatch FAILs.
+  if (result.status === "PASS" && result.memoryPersists === null) {
+    return {
+      name: "email-invite",
+      status: "INFO",
+      detail: "unmeasured - provide hold/reload evidence",
+    };
+  }
   return {
     name: "email-invite",
     status: result.status,
@@ -772,9 +849,10 @@ export function emailInviteGate(result: EmailInviteResult): ScoreboardGate {
 /** Score the email-invite beat and gate from external evidence, leaving every other beat alone. */
 export function applyEmailInvite(artifact: ScoreboardArtifact, evidence: EmailInviteEvidence): ScoreboardArtifact {
   const result = evaluateEmailInvite(evidence);
+  const gate = emailInviteGate(result);
   const gates = artifact.gates.some((g) => g.name === "email-invite")
-    ? artifact.gates.map((g) => (g.name === "email-invite" ? emailInviteGate(result) : g))
-    : [...artifact.gates, emailInviteGate(result)];
+    ? artifact.gates.map((g) => (g.name === "email-invite" ? gate : g))
+    : [...artifact.gates, gate];
   return {
     ...artifact,
     emailInvite: result,
@@ -786,11 +864,12 @@ export function applyEmailInvite(artifact: ScoreboardArtifact, evidence: EmailIn
         cutMs: null,
         resumeMs: null,
         drainMs: null,
-        status: result.status,
-        note: result.detail,
+        status: gate.status === "FAIL" ? "FAIL" : gate.status === "INFO" ? "INFO" : "PASS",
+        note: gate.detail,
       } satisfies BeatTiming,
     },
     gates,
+    subScores: buildSubScores(gates),
   };
 }
 
@@ -844,11 +923,15 @@ export type ScoreboardArtifact = {
   transcripts: { sha256: string; redacted: string[] };
   humanRatings: HumanRatings;
   gates: ScoreboardGate[];
+  /** Five human-likeness sub-scores rolled up from the gates (review; no new thresholds). */
+  subScores: SubScore[];
   /** Prospect-capture beat: invite/tag counts, chip-once, memory persistence (ticket 08). Null until evidence lands. */
   emailInvite: EmailInviteResult | null;
   evalRunner: {
     scenario: string;
     passed: boolean | null;
+    /** ok: runner finished; failed: harness break; skipped: dry run. */
+    status: "ok" | "failed" | "skipped";
     exitCode: number | null;
     durationMs: number;
     rawSha256: string;
@@ -859,7 +942,16 @@ export type ScoreboardArtifact = {
     excerptSha256: string;
     excerpt: string[];
   } | null;
+  /** Unique id for this run (reproducibility: three consecutive greens on the reference desktop). */
+  runId: string;
+  /**
+   * Quarantined beats, by name, excluded from gating while flaky (empty
+   * stub: quarantine by beat name, never by loosening thresholds).
+   */
+  quarantinedBeats: GoldenBeat[];
 };
+
+// ── Gate: overheard-recall (ticket 06, owner: overheard section) ─────────────
 
 /**
  * Overheard speech: visitor words spoken while Voni holds the floor.
@@ -1027,6 +1119,8 @@ export function overheardFromTraceExcerpt(
   return asides;
 }
 
+// ── Gate: voice registry (ticket 02, owner: voice section) ───────────────────
+
 /**
  * The locked gate default: the first demo voice, resolved through the
  * registry at use time. Named once here so neither the orchestrator, the
@@ -1073,7 +1167,7 @@ export function regressionVoices(gateVoice: string): string[] {
   return (DEMO_VOICE_IDS as readonly string[]).filter((voice) => voice !== gateVoice);
 }
 
-// ── Ticket 10: timbre auto gate + loudness sanity ──────────────────────────
+// ── Gate: timbre-probes + accent-human (ticket 10, owner: timbre section) ─────
 
 /** Integrated loudness every demo voice is gain-matched to (anna, per voices.ts). */
 export const TIMBRE_REFERENCE_LUFS = -23.1;
@@ -1111,6 +1205,32 @@ export type TimbreProbes = {
   underrun: number;
   inputDrop: number;
 };
+
+/** Probe-count kinds shared by the orchestrator and the matrix (one validator, one shape). */
+export const PROBE_COUNT_KINDS = ["jump", "overload", "clip", "underrun", "inputDrop"] as const;
+
+/**
+ * Shared probe-count validator (review: was duplicated in score-demo.mts
+ * readProbeJson and score-matrix.mts readScoreArtifact). Missing counts
+ * default to zero; anything negative or non-integer is a harness bug, not
+ * a clean run. `source` prefixes the error (e.g. `--probe-json <path>`).
+ */
+export function validateProbeCounts(
+  record: Record<string, unknown>,
+  source: string,
+): TimbreProbes {
+  const probes = {} as TimbreProbes;
+  for (const kind of PROBE_COUNT_KINDS) {
+    const value = record[kind] ?? 0;
+    if (!Number.isInteger(value) || (value as number) < 0) {
+      throw new Error(
+        `${source}: probe count "${kind}" must be a non-negative int, got ${JSON.stringify(value)}`,
+      );
+    }
+    probes[kind] = value as number;
+  }
+  return probes;
+}
 
 export type AgentChannelEvidence = {
   peakDbfs: number | null;
@@ -1243,6 +1363,8 @@ export function formatGoldenScript(gateVoice: string): string {
     `regression voices: ${regression}`,
   ].join("\n");
 }
+
+// ── Gate: double-talk + end-call-drain (ticket 09, owner: drain section) ──────
 
 /**
  * Double-talk bar (spec story 8): zero audible overlap longer than 400ms
@@ -1390,6 +1512,8 @@ export function redactLines(stdout: string, limit = 200): string[] {
     .slice(0, limit);
 }
 
+// ── Gate: filler-resume (ticket 04, owner: filler section) ────────────────────
+
 /**
  * Ticket 04: filler-ignored + resume-tail gate.
  *
@@ -1506,6 +1630,8 @@ export function evaluateFillerResumeGate(evidence: FillerResumeEvidence): Scoreb
     detail: `filler "${evidence.visitorText}" cut at ${evidence.cutMs}ms (judge verdict: ${evidence.verdict}), resumed the exact tail in ${evidence.resumeMs}ms (budget ${FILLER_RESUME_TAIL_BUDGET_MS}ms); trace: ${trace}`,
   };
 }
+
+// ── Gate: barge-in-cut (ticket 05, owner: real-cut section) ───────────────────
 
 /**
  * Ticket 05: real-cut answered gate (spec story 4).
@@ -1639,6 +1765,7 @@ export function applyRealCutGate(
 ): ScoreboardArtifact {
   const gate = evaluateRealCut(evidence);
   const prior = artifact.beats["real-cut-answered"];
+  const gates = artifact.gates.map((g) => (g.name === "barge-in-cut" ? gate : g));
   return {
     ...artifact,
     beats: {
@@ -1653,9 +1780,36 @@ export function applyRealCutGate(
         note: gate.detail,
       } satisfies BeatTiming,
     },
-    gates: artifact.gates.map((g) => (g.name === "barge-in-cut" ? gate : g)),
+    gates,
+    subScores: buildSubScores(gates),
   };
 }
+
+// ── Skeleton: plumbing, measurements, and gate assembly in spec priority ─────
+// (ticket 01, owner: skeleton section). Gates report in the spec's fail-fast
+// priority: plumbing (harness) → measurements → reply-gap → end-of-turn →
+// barge-in-cut + filler-resume → overheard-recall → email-invite →
+// double-talk → dead-air → end-call-drain → timbre-probes → accent-human →
+// manual/external stubs. Console and artifact share this order.
+
+/** Spec-priority gate order for fail-fast triage (spec implementation decision: gap → cut → overheard → naturalness). */
+export const GATE_PRIORITY = [
+  "plumbing",
+  "measurements",
+  "reply-gap",
+  "end-of-turn",
+  "barge-in-cut",
+  "filler-resume",
+  "overheard-recall",
+  "email-invite",
+  "double-talk",
+  "dead-air",
+  "end-call-drain",
+  "timbre-probes",
+  "accent-human",
+  "phone-checklist",
+  "talk-hold-pinned",
+] as const;
 
 /** Skeleton gates: reported but never failed without measured evidence. */
 function skeletonGates(
@@ -1673,14 +1827,37 @@ function skeletonGates(
   agentChannel?: AgentChannelEvidence | null,
   humanRatings?: HumanRatings | null,
   voiceId?: string,
+  options?: { dryRun?: boolean; evalError?: string | null; measured?: boolean },
 ): ScoreboardGate[] {
-  const plumbing: ScoreboardGate =
-    exitCode === null || exitCode === 0
+  const dryRun = options?.dryRun ?? false;
+  // Finding A: a dead eval runner is a harness break, not a silent INFO.
+  // Dry runs skip the runner (exitCode null placeholder) and stay green.
+  const plumbing: ScoreboardGate = dryRun
+    ? { name: "plumbing", status: "PASS", detail: "dry run: eval runner skipped (placeholder, no audio measured)" }
+    : exitCode === 0 && !options?.evalError
       ? { name: "plumbing", status: "PASS", detail: "eval runner finished" }
       : {
           name: "plumbing",
+          status: "FAIL",
+          detail:
+            `harness break: eval runner ${options?.evalError ? `spawn failed (${options.evalError})` : `exited ${exitCode ?? "without an exit code (killed)"}`} ` +
+            `(no gates measured; fix the harness, not the thresholds)`,
+        };
+  // Finding B: a real (non-dry) run with zero measured evidence must fail
+  // instead of greening on empty INFO gates. --dry-run stays explicit-dry.
+  const measurements: ScoreboardGate =
+    options?.measured || dryRun
+      ? {
+          name: "measurements",
           status: "INFO",
-          detail: `eval runner exited ${exitCode} (skeleton: recorded, not failed)`,
+          detail: dryRun
+            ? "dry run: no measurements required (explicit evidence still gates)"
+            : "measured evidence present",
+        }
+      : {
+          name: "measurements",
+          status: "FAIL",
+          detail: "no measurements - run real audio or pass evidence flags",
         };
   const replyGate =
     replySamples.length > 0
@@ -1712,8 +1889,11 @@ function skeletonGates(
     agentChannel: agentChannel ?? null,
   });
   const humanGate = evaluateHumanGate(timbreGate.status === "PASS", humanRatings ?? emptyHumanRatings(null));
-  return [
+  // Spec priority order (gap → cut → overheard → naturalness); failing
+  // gates surface in this order for fail-fast triage.
+  const gates: ScoreboardGate[] = [
     plumbing,
+    measurements,
     replyGate,
     endOfTurn,
     {
@@ -1730,7 +1910,60 @@ function skeletonGates(
     endCallDrainGate,
     timbreGate,
     humanGate,
+    // Review stubs, deliberately out of ticket scope: the real-phone
+    // checklist and Talk/Hold pinning are manual/external, so they stay
+    // INFO rows instead of a false green.
+    {
+      name: "phone-checklist",
+      status: "INFO",
+      detail: "manual: the real-phone checklist (app-switch/lock/reload/pop-probe calls) gates demo-readiness, not this command",
+    },
+    {
+      name: "talk-hold-pinned",
+      status: "INFO",
+      detail: "talk clock/hold pinned externally (hold/flap/return suite); scoring never confuses absence handling with pipeline lag",
+    },
   ];
+  const rank = new Map<string, number>(GATE_PRIORITY.map((name, index) => [name, index] as const));
+  return gates.toSorted(
+    (a, b) => (rank.get(a.name) ?? GATE_PRIORITY.length) - (rank.get(b.name) ?? GATE_PRIORITY.length),
+  );
+}
+
+/**
+ * Whether the run carries any measured evidence for the required gates.
+ * Presence-based: explicit per-beat gaps, merged trace gaps, filler
+ * observations, overheard asides, dead-air evidence, overlap timings,
+ * measured drain fields, explicit probes/agent-channel/human ballots, or
+ * real-cut evidence handled outside the skeleton. Defaults (zeroed probes,
+ * empty ratings) do not count.
+ */
+export function hasMeasuredEvidence(input: {
+  gaps?: Partial<Record<GoldenBeat, number[]>>;
+  traceGaps?: TraceGap[];
+  fillerResume?: FillerResumeEvidence | null;
+  overheardAsides?: OverheardAside[];
+  deadAir?: DeadAirEvidence | null;
+  doubleTalkOverlapMs?: number[];
+  endCallDrain?: { goodbyeCoverage: number | null; hangUpDelayMs: number | null; narratedEnding: boolean };
+  probes?: TimbreProbes;
+  agentChannel?: AgentChannelEvidence | null;
+  humanRatings?: HumanRatings;
+  realCutEvidencePresent?: boolean;
+}): boolean {
+  if (input.gaps && Object.values(input.gaps).some((samples) => (samples ?? []).length > 0)) return true;
+  if ((input.traceGaps ?? []).length > 0) return true;
+  if (input.fillerResume != null) return true;
+  if (input.overheardAsides !== undefined) return true;
+  if (input.deadAir != null) return true;
+  if ((input.doubleTalkOverlapMs ?? []).length > 0) return true;
+  const drain = input.endCallDrain;
+  if (drain && (drain.goodbyeCoverage != null || drain.hangUpDelayMs != null || drain.narratedEnding)) return true;
+  if (input.probes !== undefined) return true;
+  if (input.agentChannel != null) return true;
+  if ((input.humanRatings?.ratings ?? []).length > 0) return true;
+  if (input.realCutEvidencePresent) return true;
+  return false;
 }
 
 function emptyOverheardByBeat(): Record<GoldenBeat, { recalled: number; total: number }> {
@@ -1750,13 +1983,23 @@ export function buildSkeletonArtifact(input: {
   gaps?: Partial<Record<GoldenBeat, number[]>>;
   /**
    * Gaps merged from a Call trace excerpt (scripts/call-trace.mts `gap Nms`
-   * numbers). The first merged turn answers the greeting cut — golden runs
-   * open with the visitor cutting the greeting — so it attributes to the
-   * greeting-cut beat unless explicit greeting-cut gaps were passed. Later
-   * turns stay call-level: only the golden order is fixed, never the turn
-   * count (resumes and tool turns interleave).
+   * numbers). The first merged turn attributes to a beat only when verified:
+   * an explicit --trace-beat map, or a trace excerpt that opens with a
+   * greeting-cut marker (see attributeFirstTraceGap). Unverified first turns
+   * stay call-level. Later turns always stay call-level: only the golden
+   * order is fixed, never the turn count (resumes and tool turns interleave).
    */
   traceGaps?: TraceGap[];
+  /** Explicit beat map for the first merged trace turn (CLI --trace-beat). */
+  traceBeat?: GoldenBeat | null;
+  /** Dry run: skips the eval runner, stays green without measurements (explicit evidence still gates). */
+  dryRun?: boolean;
+  /** Eval-runner spawn failure text (harness break when set on a real run). */
+  evalError?: string | null;
+  /** Real-cut evidence handled outside the skeleton (parsed or explicit flags) counts as measured. */
+  realCutEvidencePresent?: boolean;
+  /** Unique id for this run; generated when omitted. */
+  runId?: string;
   /** Session the gaps were merged from (trace pointer for a failing gate). */
   traceSessionId?: string | null;
   /** Stored agent body input for the end-of-turn check (undefined = not checked). */
@@ -1786,17 +2029,23 @@ export function buildSkeletonArtifact(input: {
   const samples: ReplyGapSample[] = [];
   const finiteGaps = (beat: GoldenBeat): number[] => (input.gaps?.[beat] ?? []).filter((n) => Number.isFinite(n));
   const explicitGreetingCut = finiteGaps("greeting-cut").length > 0;
-  // The first merged trace turn answers the greeting cut (see traceGaps
-  // above); it joins the greeting-cut beat unless measured explicitly.
-  const traceFirstToGreetingCut =
-    !explicitGreetingCut && (input.traceGaps ?? []).length > 0 ? [(input.traceGaps as TraceGap[])[0].gapMs] : [];
+  // Review (finding D): the first merged trace turn is attributed to a beat
+  // only when verified — an explicit --trace-beat map, or an excerpt that
+  // opens with a greeting-cut marker. Unverified turns stay call-level.
+  const attribution = attributeFirstTraceGap(input.traceExcerpt ?? [], { beatMap: input.traceBeat ?? undefined });
+  const attributedBeat = explicitGreetingCut ? null : attribution.beat;
+  const traceFirstToBeat =
+    attributedBeat !== null && (input.traceGaps ?? []).length > 0
+      ? [{ beat: attributedBeat, gapMs: (input.traceGaps as TraceGap[])[0].gapMs }]
+      : [];
+  const traceAttributed = traceFirstToBeat.length > 0;
   for (const beat of GOLDEN_BEATS) {
-    const fromTrace = beat === "greeting-cut" ? traceFirstToGreetingCut : [];
+    const fromTrace = beat === (traceFirstToBeat[0]?.beat ?? null) ? [traceFirstToBeat[0].gapMs] : [];
     for (const gapMs of [...fromTrace, ...finiteGaps(beat)]) {
       samples.push({ beat, gapMs, turnIndex: null, sessionId: input.traceSessionId ?? undefined });
     }
   }
-  for (const traceGap of (input.traceGaps ?? []).slice(explicitGreetingCut ? 0 : 1)) {
+  for (const traceGap of (input.traceGaps ?? []).slice(traceAttributed ? 1 : 0)) {
     samples.push({
       beat: null,
       gapMs: traceGap.gapMs,
@@ -1804,10 +2053,13 @@ export function buildSkeletonArtifact(input: {
       sessionId: input.traceSessionId ?? undefined,
     });
   }
+  const traceUnverified = (input.traceGaps ?? []).length > 0 && !traceAttributed && !explicitGreetingCut;
   const overall = summarizeReplyGaps(samples);
   const beats = Object.fromEntries(
     GOLDEN_BEATS.map((beat) => {
-      const beatSamples = finiteGaps(beat).concat(beat === "greeting-cut" ? traceFirstToGreetingCut : []);
+      const beatSamples = finiteGaps(beat).concat(
+        beat === (traceFirstToBeat[0]?.beat ?? null) && traceFirstToBeat[0] ? [traceFirstToBeat[0].gapMs] : [],
+      );
       const measured = beatSamples.length > 0;
       const beatSummary = summarizeReplyGaps(
         beatSamples.map((gapMs) => ({ beat, gapMs, turnIndex: null as number | null })),
@@ -1815,6 +2067,10 @@ export function buildSkeletonArtifact(input: {
       const breaches =
         (beatSummary?.p50Ms ?? 0) > REPLY_GAP_P50_BUDGET_MS ||
         (beatSummary?.p95Ms ?? 0) > REPLY_GAP_P95_BUDGET_MS;
+      // Unverified trace attribution never claims the greeting-cut beat:
+      // INFO with the warning, not PASS.
+      const unverifiedNote =
+        traceUnverified && beat === "greeting-cut" && !measured ? attribution.note : null;
       return [
         beat,
         {
@@ -1823,10 +2079,11 @@ export function buildSkeletonArtifact(input: {
           cutMs: null,
           resumeMs: null,
           drainMs: null,
-          status: "PASS",
-          note: measured
-            ? `reply gap p50 ${beatSummary?.p50Ms}ms / p95 ${beatSummary?.p95Ms}ms over ${beatSamples.length} run${beatSamples.length === 1 ? "" : "s"}${breaches ? " (over budget: see reply-gap gate)" : ""}`
-            : "skeleton: placeholder until per-beat timing lands",
+          status: unverifiedNote ? "INFO" : "PASS",
+          note: unverifiedNote ??
+            (measured
+              ? `reply gap p50 ${beatSummary?.p50Ms}ms / p95 ${beatSummary?.p95Ms}ms over ${beatSamples.length} run${beatSamples.length === 1 ? "" : "s"}${breaches ? " (over budget: see reply-gap gate)" : ""}`
+              : "skeleton: placeholder until per-beat timing lands"),
         } satisfies BeatTiming,
       ];
     }),
@@ -1858,6 +2115,20 @@ export function buildSkeletonArtifact(input: {
   const agentChannel = input.agentChannel ?? null;
   const humanRatings = input.humanRatings ?? emptyHumanRatings(null);
   const loudnessCheck = checkLoudnessSanity(input.voice);
+  const dryRun = input.dryRun ?? false;
+  const measured = hasMeasuredEvidence({
+    gaps: input.gaps,
+    traceGaps: input.traceGaps,
+    fillerResume: input.fillerResume,
+    overheardAsides: input.overheardAsides,
+    deadAir: input.deadAir,
+    doubleTalkOverlapMs,
+    endCallDrain: drain,
+    ...(input.probes !== undefined ? { probes: input.probes } : {}),
+    ...(agentChannel !== null ? { agentChannel } : {}),
+    ...(humanRatings.ratings.length > 0 ? { humanRatings } : {}),
+    ...(input.realCutEvidencePresent ? { realCutEvidencePresent: true } : {}),
+  });
   const gatesPreview = skeletonGates(
     input.exitCode,
     samples,
@@ -1873,7 +2144,14 @@ export function buildSkeletonArtifact(input: {
     agentChannel,
     humanRatings,
     input.voice,
+    { dryRun, evalError: input.evalError ?? null, measured },
   );
+  // Finding D: when trace gaps exist but attribution is unverified, the
+  // reply-gap gate says so instead of silently implying beat attribution.
+  if (traceUnverified) {
+    const replyGate = gatesPreview.find((g) => g.name === "reply-gap")!;
+    replyGate.detail += ` (${attribution.note})`;
+  }
   const goodbyeDrainGate = gatesPreview.find((g) => g.name === "end-call-drain")!;
   // Attach drain evidence to the goodbye-drain beat (ticket 09), preserving
   // reply-gap measurements for other beats.
@@ -1932,14 +2210,18 @@ export function buildSkeletonArtifact(input: {
     },
     humanRatings,
     gates: gatesPreview,
+    subScores: buildSubScores(gatesPreview),
     emailInvite: null,
     evalRunner: {
       scenario: input.scenario,
       passed: input.exitCode === null ? null : input.exitCode === 0,
+      status: dryRun ? "skipped" : input.exitCode === 0 && !input.evalError ? "ok" : "failed",
       exitCode: input.exitCode,
       durationMs: input.durationMs,
       rawSha256: sha256Hex(input.runnerStdout),
     },
+    runId: input.runId ?? `run-${input.voice}-${Date.now().toString(36)}`,
+    quarantinedBeats: [],
   };
 }
 
@@ -1974,6 +2256,58 @@ export function formatOverheardReport(artifact: ScoreboardArtifact): string {
     }
   }
   return lines.join("\n");
+}
+
+// ── Review: five sub-scores + fail-fast priority (spec: five + fails fast) ───
+// Lightweight roll-up over the existing gates (no new thresholds): each
+// sub-score is the worst of its member gates, and gate evaluation/reporting
+// follows the spec priority (gap → cut → overheard → naturalness).
+
+export type SubScoreName = "responsiveness" | "barge-in" | "overheard" | "naturalness" | "voice";
+
+export type SubScore = {
+  name: SubScoreName;
+  label: string;
+  status: GateStatus;
+  detail: string;
+  gates: string[];
+};
+
+export const SUB_SCORE_DEFS: { name: SubScoreName; label: string; gates: string[] }[] = [
+  { name: "responsiveness", label: "Responsiveness p50/p95", gates: ["reply-gap", "end-of-turn"] },
+  { name: "barge-in", label: "Barge-in cut", gates: ["barge-in-cut", "filler-resume"] },
+  { name: "overheard", label: "Overheard recall", gates: ["overheard-recall"] },
+  { name: "naturalness", label: "Naturalness double-talk/dead-air", gates: ["double-talk", "dead-air", "end-call-drain"] },
+  { name: "voice", label: "Voice timbre/accent", gates: ["timbre-probes", "accent-human"] },
+];
+
+/** Aggregate the five sub-scores from existing gates: worst member status wins, no new thresholds. */
+export function buildSubScores(gates: ScoreboardGate[]): SubScore[] {
+  const byName = new Map(gates.map((gate) => [gate.name, gate]));
+  return SUB_SCORE_DEFS.map((def) => {
+    const members = def.gates.map((name) => byName.get(name)).filter((m) => m !== undefined);
+    const missing = def.gates.filter((name) => !byName.has(name));
+    const statuses = members.map((member) => member.status);
+    const status: GateStatus =
+      statuses.includes("FAIL")
+        ? "FAIL"
+        : statuses.includes("INFO") || missing.length > 0
+          ? "INFO"
+          : "PASS";
+    const detail = members
+      .map((member) => `${member.name}: ${member.detail}`)
+      .concat(missing.map((name) => `${name}: not scored`))
+      .join("; ");
+    return { name: def.name, label: def.label, status, detail, gates: def.gates };
+  });
+}
+
+/** Console sub-score table: one row per human-likeness area, in spec priority. */
+export function formatSubScoreTable(artifact: ScoreboardArtifact): string {
+  const rows = artifact.subScores.map(
+    (sub) => `${sub.status.padEnd(6)} ${sub.name.padEnd(16)} ${sub.detail}`,
+  );
+  return [`demo sub-scores (5, priority order)`, ...rows].join("\n");
 }
 
 // ── Ticket 10: voice regression matrix ──────────────────────────────────────

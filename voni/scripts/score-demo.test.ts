@@ -788,3 +788,65 @@ test("--rate rejects out-of-range ballots and bad probe counts", () => {
   assert.notEqual(badProbe.status, 0);
   assert.match(badProbe.stderr + badProbe.stdout, /probe/);
 });
+
+test("--trace-beat rejects unknown beats fast with no artifact", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "score.json");
+  const result = run(
+    ["--dry-run", "--voice", DEMO_VOICE_IDS[0], "--out", out, "--trace-beat", "not-a-beat"],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.notEqual(result.status, 0);
+  assert.ok(!existsSync(out));
+  assert.match(result.stderr + result.stdout, /--trace-beat/);
+});
+
+test("--runs rejects non-positive counts fast with no artifact", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  for (const runs of ["0", "-2", "x"]) {
+    const out = join(dir, `runs-${runs}.json`);
+    const result = run(
+      ["--dry-run", "--voice", DEMO_VOICE_IDS[0], "--out", out, "--runs", runs],
+      new URL("../", import.meta.url).pathname,
+    );
+    assert.notEqual(result.status, 0, `--runs ${runs} must fail`);
+    assert.ok(!existsSync(out));
+    assert.match(result.stderr + result.stdout, /--runs/);
+  }
+});
+
+test("--runs records the run count and a run id with an empty quarantine stub", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "score.json");
+  const result = run(
+    ["--dry-run", "--voice", DEMO_VOICE_IDS[0], "--out", out, "--runs", "3"],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    runs: number;
+    runId: string;
+    quarantinedBeats: unknown[];
+  };
+  assert.equal(artifact.runs, 3);
+  assert.match(artifact.runId, /run-/);
+  assert.deepEqual(artifact.quarantinedBeats, []);
+});
+
+test("dry run prints the five sub-scores plus manual and external check rows", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "score.json");
+  const result = run(["--dry-run", "--voice", DEMO_VOICE_IDS[0], "--out", out], new URL("../", import.meta.url).pathname);
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  for (const name of ["responsiveness", "barge-in", "overheard", "naturalness", "voice"]) {
+    assert.ok(result.stdout.includes(name), `console sub-score table names ${name}`);
+  }
+  assert.ok(result.stdout.includes("phone-checklist"), "console names the manual phone checklist");
+  assert.ok(result.stdout.includes("talk-hold-pinned"), "console names the pinned talk/hold check");
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    subScores: { name: string }[];
+    gates: { name: string; status: string }[];
+  };
+  assert.equal(artifact.subScores.length, 5);
+  assert.equal(artifact.gates.find((g) => g.name === "measurements")?.status, "INFO");
+});

@@ -32,7 +32,7 @@ test("dry-run matrix across two voices writes per-voice PASS rows and a table", 
     results: { voice: string; isGate: boolean; status: string }[];
     gates: { name: string; status: string }[];
   };
-  assert.equal(matrix.schemaVersion, 3);
+  assert.equal(matrix.schemaVersion, 4);
   assert.equal(matrix.gateVoice, "anna");
   assert.deepEqual(matrix.voices, ["anna", "lola"]);
   assert.ok(matrix.results.every((r) => r.status === "PASS"), JSON.stringify(matrix.results));
