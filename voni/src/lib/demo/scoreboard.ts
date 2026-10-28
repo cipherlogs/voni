@@ -1,6 +1,10 @@
 /**
- * Demo scoreboard skeleton (ticket 01): artifact shape, redaction, hashing,
- * gate-voice resolution, and the console pass/fail table.
+ * Demo scoreboard: locked golden script (ticket 02) on the ticket-01
+ * plumbing. The seven beats below are fixed order, fixed visitor wording,
+ * and fixed timing windows, so gap/cut milliseconds stay comparable across
+ * runs. Wording reuses the existing eval fragments (LONG_ASK, reachInvite,
+ * goodbyeCut, TAG=Lime 42) and the e2e specs they mirror; nothing here
+ * retunes pipeline thresholds or gains — the windows quote them.
  *
  * The harness measures nothing yet: per-beat gap/cut/drain milliseconds are
  * placeholders, probe counts start at zero, and every gate reports PASS/INFO
@@ -9,7 +13,7 @@
  * transcripts plus their hash, and empty human-rating slots.
  */
 import { createHash } from "node:crypto";
-import { getVoice } from "../agents/voices";
+import { getVoice, VOICE_OUTPUT_VOLUME, voicePlaybackGain } from "../agents/voices";
 import { DEMO_VOICE_IDS } from "./voni-agent";
 
 /** The locked golden script: seven beats in fixed order (spec story 11). */
@@ -25,7 +29,93 @@ export const GOLDEN_BEATS = [
 
 export type GoldenBeat = (typeof GOLDEN_BEATS)[number];
 
-export const SCOREBOARD_SCHEMA_VERSION = 1;
+/** The golden call is one 90-second property-inquiry Demo call. */
+export const GOLDEN_VERTICAL = "property-inquiry";
+export const GOLDEN_SCRIPT_BUDGET_S = 90;
+
+/**
+ * One beat's timing window: the fixed bound the beat's metric must land in
+ * for runs to stay comparable. `ms` windows quote the pipeline's own bars
+ * (stop-over 1.5s, resume tail 2.5s, 15s check-in, 1.5s hang-up); `count`
+ * windows pin exact-once behaviour (overheard recall 1/1, tag said once).
+ */
+export type BeatWindow = {
+  metric: string;
+  unit: "ms" | "count";
+  min: number;
+  max: number;
+};
+
+export type GoldenBeatSpec = {
+  beat: GoldenBeat;
+  /** Fixed visitor wording (or fixed silence) that opens the beat. */
+  visitor: string;
+  /** Pass predicate: what the composed call must audibly do. */
+  expect: string;
+  window: BeatWindow;
+  /** Prior art this beat's wording is taken from. */
+  source: string;
+};
+
+/**
+ * The locked script. Fixed order, fixed wording, fixed windows — a new
+ * voice deploys as a registry entry plus a matrix run, never a script edit.
+ */
+export const GOLDEN_SCRIPT: GoldenBeatSpec[] = [
+  {
+    beat: "greeting-cut",
+    visitor: '"Wait, stop." spoken 1s into Voni\'s greeting',
+    expect: "the greeting audio cuts; the cut lands inside the window",
+    window: { metric: "cut-latency", unit: "ms", min: 0, max: 1500 },
+    source: "scripts/eval-demo-agent.mts CLIENT_SCENARIOS greeting-cut",
+  },
+  {
+    beat: "filler-ignored",
+    visitor: '"Okaay so" (likewise "mm-hmm" / "yeah") over Voni\'s long dental-clinic answer',
+    expect: "the floor never yields; if the filler briefly cuts, Voni resumes with the exact unheard tail",
+    window: { metric: "resume-tail-latency", unit: "ms", min: 0, max: 2500 },
+    source: "scripts/eval-demo-agent.mts CLIENT_SCENARIOS filler-over (LONG_ASK dental clinic)",
+  },
+  {
+    beat: "real-cut-answered",
+    visitor: '"Wait, stop." over the long dental-clinic answer, then the real point ("price?")',
+    expect: "the cut lands and the real point is answered, never resumed past",
+    window: { metric: "cut-to-answer-latency", unit: "ms", min: 0, max: 1500 },
+    source: "scripts/eval-demo-agent.mts CLIENT_SCENARIOS stop-over (story 4: answered within 1500ms)",
+  },
+  {
+    beat: "overheard-aside",
+    visitor: '"We\'re a bakery, actually." while Voni holds the floor',
+    expect: "the aside is marked Overheard speech and counted in the call ledger, never lost",
+    window: { metric: "asides-recalled", unit: "count", min: 1, max: 1 },
+    source: "scripts/eval-demo-agent.mts CLIENT_SCENARIOS over-talk (story 7)",
+  },
+  {
+    beat: "silence-check-in",
+    visitor: "(silence) 15s with no visitor speech on a free floor",
+    expect: 'exactly one check-in ("Still with me? Take your time."), never over a caller who starts talking',
+    window: { metric: "check-in-at-silence", unit: "ms", min: 15000, max: 18000 },
+    source: "src/lib/demo/voni-agent.ts SILENCE_CHECK_IN_MS + tests/e2e/demo-races.spec.ts 15s test",
+  },
+  {
+    beat: "email-invite",
+    visitor:
+      '"We run a small property agency in Lisbon." / "Most of our inquiries come by phone and email, and we miss a lot after hours." / "Sure, let\'s try something."',
+    expect: 'the invite is said once with the exact Test tag "Lime 42" as one whole number — never digit by digit, never invented',
+    window: { metric: "tag-mentions", unit: "count", min: 1, max: 1 },
+    source:
+      "scripts/eval-demo-agent.mts reachInvite + EMAIL_SCENARIOS invite-tag (TAG=Lime 42) + tests/e2e/demo-email-test.spec.ts",
+  },
+  {
+    beat: "goodbye-drain",
+    visitor: '"I want you to hang up."',
+    expect: "the goodbye names hi@voni.cc, plays in full (>=80% of its speaking time), then End call closes the session",
+    window: { metric: "hang-up-after-goodbye-audio", unit: "ms", min: 0, max: 1500 },
+    source: "scripts/eval-demo-agent.mts hang-up-fast + goodbyeCut + tests/e2e/demo-call-quality.spec.ts goodbye drain",
+  },
+];
+
+export const SCOREBOARD_SCHEMA_VERSION = 2;
 
 export type BeatTiming = {
   /** Reply gap: visitor end-of-speech → first agent audio. Placeholder until ticket 02. */
@@ -52,6 +142,14 @@ export type ScoreboardArtifact = {
   /** Gate voice, resolved through the shared voice registry. */
   voice: string;
   runs: number;
+  /** The locked golden script this run scores against (fixed order/wording/windows). */
+  goldenScript: {
+    vertical: typeof GOLDEN_VERTICAL;
+    budgetS: typeof GOLDEN_SCRIPT_BUDGET_S;
+    beats: GoldenBeatSpec[];
+  };
+  /** Non-gate demo voices: regression-only, never gating (spec story 14). */
+  regressionVoices: string[];
   beats: Record<GoldenBeat, BeatTiming>;
   overheard: { recalled: number; total: number | null };
   doubleTalk: { overlapMs: number[]; maxMs: number | null };
@@ -76,6 +174,13 @@ export type ScoreboardArtifact = {
 };
 
 /**
+ * The locked gate default: the first demo voice, resolved through the
+ * registry at use time. Named once here so neither the orchestrator, the
+ * scenarios, nor the assertions carry a voice literal.
+ */
+export const DEFAULT_GATE_VOICE: string = DEMO_VOICE_IDS[0];
+
+/**
  * The gate voice is a parameter resolved through the shared voice registry,
  * never hard-coded in the orchestrator: deploying a new voice is a registry
  * change plus a regression run, not a harness change.
@@ -88,6 +193,47 @@ export function resolveGateVoice(voiceId: string): string {
     );
   }
   return known.id;
+}
+
+export type VoicePlayback = {
+  /** Gate voice id, as resolved through the registry. */
+  id: string;
+  /** Server-side output level every agent ships (loudest, deterministic). */
+  outputVolume: number;
+  /** Client-side per-voice gain matching the voice to the reference level. */
+  playbackGain: number;
+};
+
+/** Gate voice playback: server output volume plus per-voice gain, both from the registry. */
+export function gateVoicePlayback(voiceId: string): VoicePlayback {
+  const id = resolveGateVoice(voiceId);
+  return { id, outputVolume: VOICE_OUTPUT_VOLUME, playbackGain: voicePlaybackGain(id) };
+}
+
+/**
+ * Non-gate demo voices run regression-only (no clip, no pop, no invented
+ * test tag): adding voices never breaks existing ones (spec story 14).
+ */
+export function regressionVoices(gateVoice: string): string[] {
+  resolveGateVoice(gateVoice);
+  return (DEMO_VOICE_IDS as readonly string[]).filter((voice) => voice !== gateVoice);
+}
+
+/** Dry-run listing: every beat with its window, plus the resolved gate and regression set. */
+export function formatGoldenScript(gateVoice: string): string {
+  const playback = gateVoicePlayback(gateVoice);
+  const lines = GOLDEN_SCRIPT.map(
+    (beat, index) =>
+      `${index + 1}. ${beat.beat} — visitor: ${beat.visitor} — window: ${beat.window.metric} ${beat.window.min}–${beat.window.max} ${beat.window.unit} — expect: ${beat.expect}`,
+  );
+  const regression = regressionVoices(gateVoice)
+    .map((voice) => `${voice} (gain ${voicePlaybackGain(voice)})`)
+    .join(", ");
+  return [
+    `golden script (${GOLDEN_VERTICAL}, ~${GOLDEN_SCRIPT_BUDGET_S}s, gate ${playback.id} vol=${playback.outputVolume} gain=${playback.playbackGain})`,
+    ...lines,
+    `regression voices: ${regression}`,
+  ].join("\n");
 }
 
 export function sha256Hex(value: string | Uint8Array): string {
@@ -157,6 +303,12 @@ export function buildSkeletonArtifact(input: {
     recordedAt: new Date().toISOString(),
     voice: input.voice,
     runs: input.runs,
+    goldenScript: {
+      vertical: GOLDEN_VERTICAL,
+      budgetS: GOLDEN_SCRIPT_BUDGET_S,
+      beats: GOLDEN_SCRIPT,
+    },
+    regressionVoices: regressionVoices(input.voice),
     beats,
     overheard: { recalled: 0, total: null },
     doubleTalk: { overlapMs: [], maxMs: null },
