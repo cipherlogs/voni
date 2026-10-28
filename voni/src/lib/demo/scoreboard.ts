@@ -457,6 +457,45 @@ export function traceTurnForVisitorSpeech(excerpt: string[], visitorText: string
   return null;
 }
 
+/** Fold a spoken line to words so quote/punctuation drift still matches. */
+function traceLineWords(text: string): string {
+  return text
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+/**
+ * Map observed agent lines onto their 1-based VONI turn in the merged Call
+ * trace. Matching is word-normalized and consumes each VONI row once, so a
+ * repeated line points at the second turn it was actually spoken on. A line
+ * the trace does not carry stays null: never a guessed turn.
+ */
+export function traceTurnsForAgentLines(excerpt: string[], lines: string[]): (number | null)[] {
+  const rows: { turn: number; words: string }[] = [];
+  let turn = 0;
+  for (const line of excerpt) {
+    if (!line.includes("  VONI    ")) continue;
+    turn += 1;
+    const quoted = /VONI\s+"([^"]*)"/.exec(line)?.[1] ?? "";
+    const words = traceLineWords(quoted);
+    if (words) rows.push({ turn, words });
+  }
+  const used = new Set<number>();
+  return lines.map((line) => {
+    const words = traceLineWords(line);
+    if (!words) return null;
+    const match = rows.find(
+      (row) => !used.has(row.turn) && (row.words.includes(words) || words.includes(row.words)),
+    );
+    if (!match) return null;
+    used.add(match.turn);
+    return match.turn;
+  });
+}
+
 /**
  * Console per-turn Reply gap report: one row per merged Call-trace VONI reply
  * that carried a `gap Nms`, plus the session id the owner replays with
@@ -829,6 +868,14 @@ export type EmailInviteEvidence = {
   greetedAsReturning?: boolean;
   /** Personal-address sender when the Work-email gate applies; null otherwise. */
   freeAddress?: string | null;
+  /**
+   * Call trace pointer for each agentLines entry (parallel array). A FAIL
+   * about a spoken line cites the matching turn; null means the trace did
+   * not merge that line, so the detail says so instead of guessing.
+   */
+  lineTurns?: (string | null)[];
+  /** Call trace turn where the contact chip showed (chip failures cite it). */
+  chipTraceTurn?: string | null;
 };
 
 export type EmailInviteResult = {
@@ -934,37 +981,69 @@ export function evaluateEmailInvite(evidence: EmailInviteEvidence): EmailInviteR
   const returning = evidence.returning ?? false;
   const greeted = evidence.greetedAsReturning ?? false;
   const freeAddress = evidence.freeAddress ?? null;
+  const lineTurns = evidence.lineTurns;
 
   const tagMentions = countTagMentions(agentLines, tag);
-  const digitSplit = hasDigitSplitTag(agentLines, tag);
+  const tagLineIndexes = agentLines.flatMap((line, index) => (containsTag(line, tag) ? [index] : []));
+  const digitSplitIndex = agentLines.findIndex((line) => hasDigitSplitTag([line], tag));
+  const inventedIndex = agentLines.findIndex((line) => findInventedTags([line], tag).length > 0);
+  const strayIndex = agentLines.findIndex((line) => findStrayAddresses([line]).length > 0);
+  const digitSplit = digitSplitIndex >= 0;
   const inventedTags = findInventedTags(agentLines, tag);
   const strayAddresses = findStrayAddresses(agentLines);
   const workEmailGateMentions = countWorkEmailGate(agentLines);
   const memoryPersists = persistsEmailAcrossMemory(evidence);
   const returningOk = returning ? greeted && showToolCalls <= 1 : null;
+  // Every invite/chip FAIL names the moment: the line's own merged turn, the
+  // chip's turn, or an explicit "not merged" so triage never guesses.
+  const citeLine = (index: number | undefined): string => {
+    const turn = index !== undefined && index >= 0 ? lineTurns?.[index] : null;
+    return turn ? ` at ${turn}` : " (no Call trace turn merged)";
+  };
+  const citeChip = (): string => (evidence.chipTraceTurn ? ` at ${evidence.chipTraceTurn}` : " (no Call trace turn merged)");
 
   const fails: string[] = [];
-  if (showToolCalls > 1) fails.push(`invited ${showToolCalls} times`);
+  if (showToolCalls > 1) fails.push(`invited ${showToolCalls} times${citeLine(tagLineIndexes[0])}`);
   if (!returning && showToolCalls !== 1) {
-    fails.push(showToolCalls === 0 ? "never invited the email test" : `invited ${showToolCalls} times`);
+    fails.push(
+      showToolCalls === 0
+        ? `never invited the email test${evidence.chipTraceTurn ? ` at ${evidence.chipTraceTurn}` : ""}`
+        : `invited ${showToolCalls} times${citeLine(tagLineIndexes[0])}`,
+    );
   }
   if (returning && !greeted) fails.push("returning sender not greeted");
   if (returning && showToolCalls > 1) fails.push("second invite for a returning sender");
 
   if (showToolCalls === 0) {
     // Callback: the carried tag was checked at connect, no second invite.
-    if (tagMentions !== 0) fails.push(`said the tag ${tagMentions} times without an invite`);
-    if (chipShows.length !== 0) fails.push(`chip showed ${chipShows.length} times without an invite`);
+    if (tagMentions !== 0) {
+      fails.push(`said the tag ${tagMentions} times without an invite${citeLine(tagLineIndexes[0])}`);
+    }
+    if (chipShows.length !== 0) fails.push(`chip showed ${chipShows.length} times without an invite${citeChip()}`);
   } else {
-    if (tagMentions !== 1) fails.push(tagMentions === 0 ? "never said the tag" : `said the tag ${tagMentions} times`);
-    if (digitSplit) fails.push("said the tag digit by digit");
-    if (inventedTags.length > 0) fails.push(`invented a tag: "${inventedTags[0]}"`);
-    if (strayAddresses.length > 0) fails.push(`spoke an address: "${strayAddresses[0].slice(0, 80)}"`);
+    if (tagMentions !== 1) {
+      fails.push(
+        tagMentions === 0
+          ? `never said the tag${citeLine(undefined)}`
+          : `said the tag ${tagMentions} times${citeLine(tagLineIndexes[1])}`,
+      );
+    }
+    if (digitSplit) fails.push(`said the tag digit by digit${citeLine(digitSplitIndex)}`);
+    if (inventedTags.length > 0) fails.push(`invented a tag: "${inventedTags[0]}"${citeLine(inventedIndex)}`);
+    if (strayAddresses.length > 0) {
+      fails.push(`spoke an address: "${strayAddresses[0].slice(0, 80)}"${citeLine(strayIndex)}`);
+    }
     if (chipShows.length !== 1) {
-      fails.push(chipShows.length === 0 ? "chip never showed" : `chip showed ${chipShows.length} times`);
+      fails.push(
+        chipShows.length === 0
+          ? `chip never showed${citeLine(tagLineIndexes[0])}`
+          : `chip showed ${chipShows.length} times${citeChip()}`,
+      );
     } else {
-      if (chipShows[0].address !== DEMO_INBOX_ADDRESS) fails.push(`chip showed ${chipShows[0].address}`);
-      if (chipShows[0].tag !== tag) fails.push("chip tag does not match the call tag");
+      if (chipShows[0].address !== DEMO_INBOX_ADDRESS) {
+        fails.push(`chip showed ${chipShows[0].address}${citeChip()}`);
+      }
+      if (chipShows[0].tag !== tag) fails.push(`chip tag does not match the call tag${citeChip()}`);
     }
     if (freeAddress != null) {
       if (workEmailGateMentions !== 1) {
@@ -1014,6 +1093,169 @@ export function emailInviteGate(result: EmailInviteResult): ScoreboardGate {
     status: result.status,
     detail: result.detail,
   };
+}
+
+/** The final runner line carrying invite evidence, `EMAIL INVITE {...}`. */
+export const EMAIL_INVITE_EVIDENCE_PREFIX = "EMAIL INVITE ";
+
+/**
+ * Raw invite evidence as the runner or an evidence file carries it: observed
+ * counts plus the session's own turn numbers (1-based agent replies, the same
+ * numbering as the merged Call trace's VONI rows).
+ */
+export type EmailInviteEvidenceFile = {
+  tag?: string;
+  agentLines: string[];
+  lineTurns?: (number | string | null)[];
+  chipShows: { address: string; tag: string }[];
+  showToolCalls: number;
+  chipTurn?: number | string | null;
+  traceSession?: string | null;
+  memoryInvitedBefore?: boolean;
+  memoryInvitedAfter?: boolean;
+  tagTokenBefore?: string | null;
+  tagTokenAfter?: string | null;
+  callTokenBefore?: string | null;
+  callTokenAfter?: string | null;
+  returning?: boolean;
+  greetedAsReturning?: boolean;
+  freeAddress?: string | null;
+};
+
+/**
+ * Validate invite evidence from the runner or `--email-json`. A malformed
+ * evidence file is a harness error (no artifact), never silently ignored.
+ * `requireSession` is on for hand-supplied files: without a Call trace
+ * session a FAIL could not cite its turn.
+ */
+export function validateEmailInviteEvidence(
+  raw: unknown,
+  source: string,
+  options: { requireSession: boolean },
+): EmailInviteEvidenceFile {
+  const fail = (message: string): never => {
+    throw new Error(`${source}: ${message}`);
+  };
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    fail("must be an object with the invite evidence");
+  }
+  const record = raw as Record<string, unknown>;
+  if (record.tag !== undefined && typeof record.tag !== "string") fail("tag must be a string");
+  if (!Array.isArray(record.agentLines) || record.agentLines.some((line) => typeof line !== "string")) {
+    fail("agentLines must be an array of strings");
+  }
+  const agentLines = record.agentLines as string[];
+  if (record.lineTurns !== undefined) {
+    if (!Array.isArray(record.lineTurns) || record.lineTurns.length !== agentLines.length) {
+      fail("lineTurns must be an array parallel to agentLines");
+    }
+    (record.lineTurns as unknown[]).forEach((turn, index) => {
+      if (turn !== null && typeof turn !== "number" && typeof turn !== "string") {
+        fail(`lineTurns[${index}] must be a turn number, a formatted turn, or null`);
+      }
+    });
+  }
+  if (!Array.isArray(record.chipShows)) fail("chipShows must be an array");
+  const chipShows = (record.chipShows as unknown[]).map((show, index) => {
+    if (show === null || typeof show !== "object") fail(`chipShows[${index}] must be an object`);
+    const entry = show as Record<string, unknown>;
+    if (typeof entry.address !== "string" || typeof entry.tag !== "string") {
+      fail(`chipShows[${index}] needs a string address and tag`);
+    }
+    return { address: entry.address as string, tag: entry.tag as string };
+  });
+  if (
+    typeof record.showToolCalls !== "number" ||
+    !Number.isInteger(record.showToolCalls) ||
+    record.showToolCalls < 0
+  ) {
+    fail("showToolCalls must be a non-negative integer");
+  }
+  if (
+    record.chipTurn !== undefined &&
+    record.chipTurn !== null &&
+    typeof record.chipTurn !== "number" &&
+    typeof record.chipTurn !== "string"
+  ) {
+    fail("chipTurn must be a turn number, a formatted turn, or null");
+  }
+  const traceSession = record.traceSession;
+  if (traceSession !== undefined && traceSession !== null) {
+    if (typeof traceSession !== "string" || !/^sess_[A-Za-z0-9_-]+$/.test(traceSession)) {
+      fail("traceSession must be a session id like sess_abc");
+    }
+  }
+  if (options.requireSession && (typeof traceSession !== "string" || traceSession.length === 0)) {
+    fail("needs traceSession (the Call trace session id) so every FAIL can cite its turn");
+  }
+  // A hand-supplied file must carry a turn for everything it asserts: the
+  // runner derives these itself, a browser probe has the session timeline.
+  if (options.requireSession && agentLines.length > 0) {
+    const turns = record.lineTurns as unknown[] | undefined;
+    if (!Array.isArray(turns) || turns.some((turn) => turn === null)) {
+      fail("needs lineTurns (one Call trace turn per agent line) so every spoken FAIL cites its turn");
+    }
+  }
+  if (options.requireSession && chipShows.length > 0 && (record.chipTurn === undefined || record.chipTurn === null)) {
+    fail("needs chipTurn (the Call trace turn where the chip showed) so a chip FAIL cites its turn");
+  }
+  const booleanFields = ["memoryInvitedBefore", "memoryInvitedAfter", "returning", "greetedAsReturning"] as const;
+  for (const field of booleanFields) {
+    if (record[field] !== undefined && typeof record[field] !== "boolean") fail(`${field} must be a boolean`);
+  }
+  const nullableStringFields = ["tagTokenBefore", "tagTokenAfter", "callTokenBefore", "callTokenAfter", "freeAddress"] as const;
+  for (const field of nullableStringFields) {
+    const value = record[field];
+    if (value !== undefined && value !== null && typeof value !== "string") fail(`${field} must be a string or null`);
+  }
+  return {
+    ...(record.tag !== undefined ? { tag: record.tag as string } : {}),
+    agentLines,
+    ...(record.lineTurns !== undefined
+      ? { lineTurns: record.lineTurns as (number | string | null)[] }
+      : {}),
+    chipShows,
+    showToolCalls: record.showToolCalls as number,
+    ...(record.chipTurn !== undefined ? { chipTurn: record.chipTurn as number | string | null } : {}),
+    ...(traceSession !== undefined ? { traceSession: traceSession as string | null } : {}),
+    ...(record.memoryInvitedBefore !== undefined
+      ? { memoryInvitedBefore: record.memoryInvitedBefore as boolean }
+      : {}),
+    ...(record.memoryInvitedAfter !== undefined
+      ? { memoryInvitedAfter: record.memoryInvitedAfter as boolean }
+      : {}),
+    ...(record.tagTokenBefore !== undefined ? { tagTokenBefore: record.tagTokenBefore as string | null } : {}),
+    ...(record.tagTokenAfter !== undefined ? { tagTokenAfter: record.tagTokenAfter as string | null } : {}),
+    ...(record.callTokenBefore !== undefined ? { callTokenBefore: record.callTokenBefore as string | null } : {}),
+    ...(record.callTokenAfter !== undefined ? { callTokenAfter: record.callTokenAfter as string | null } : {}),
+    ...(record.returning !== undefined ? { returning: record.returning as boolean } : {}),
+    ...(record.greetedAsReturning !== undefined
+      ? { greetedAsReturning: record.greetedAsReturning as boolean }
+      : {}),
+    ...(record.freeAddress !== undefined ? { freeAddress: record.freeAddress as string | null } : {}),
+  };
+}
+
+/**
+ * Parse the eval runner's last `EMAIL INVITE {...}` line. Null when the
+ * runner printed no invite evidence (a dry run or another scenario); a
+ * malformed line is a harness error, never ignored.
+ */
+export function parseEmailInviteOutput(stdout: string): EmailInviteEvidenceFile | null {
+  let found: EmailInviteEvidenceFile | null = null;
+  for (const line of stdout.split("\n")) {
+    if (!line.startsWith(EMAIL_INVITE_EVIDENCE_PREFIX)) continue;
+    let raw: unknown;
+    try {
+      raw = JSON.parse(line.slice(EMAIL_INVITE_EVIDENCE_PREFIX.length));
+    } catch (error) {
+      throw new Error(
+        `eval runner EMAIL INVITE line is not valid JSON: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    found = validateEmailInviteEvidence(raw, "eval runner EMAIL INVITE", { requireSession: false });
+  }
+  return found;
 }
 
 /** Score the email-invite beat and gate from external evidence, leaving every other beat alone. */
@@ -2735,6 +2977,7 @@ export const MEASURED_EVIDENCE_KINDS = [
   "human-ratings",
   "greeting-cut",
   "real-cut",
+  "email-invite",
 ] as const;
 
 export type MeasuredEvidenceKind = (typeof MEASURED_EVIDENCE_KINDS)[number];
@@ -2757,6 +3000,7 @@ export function measuredEvidenceSources(input: {
   humanRatings?: HumanRatings;
   greetingCutEvidencePresent?: boolean;
   realCutEvidencePresent?: boolean;
+  emailInviteEvidencePresent?: boolean;
 }): MeasuredEvidenceKind[] {
   const sources: MeasuredEvidenceKind[] = [];
   if (input.gaps && Object.values(input.gaps).some((samples) => (samples ?? []).some((n) => Number.isFinite(n)))) {
@@ -2784,6 +3028,7 @@ export function measuredEvidenceSources(input: {
   if ((input.humanRatings?.ratings ?? []).length > 0) sources.push("human-ratings");
   if (input.greetingCutEvidencePresent) sources.push("greeting-cut");
   if (input.realCutEvidencePresent) sources.push("real-cut");
+  if (input.emailInviteEvidencePresent) sources.push("email-invite");
   return sources;
 }
 
@@ -2805,6 +3050,7 @@ export function hasMeasuredEvidence(input: {
   humanRatings?: HumanRatings;
   greetingCutEvidencePresent?: boolean;
   realCutEvidencePresent?: boolean;
+  emailInviteEvidencePresent?: boolean;
 }): boolean {
   return measuredEvidenceSources(input).length > 0;
 }
@@ -2843,6 +3089,8 @@ export function buildSkeletonArtifact(input: {
   greetingCutEvidencePresent?: boolean;
   /** Real-cut evidence handled outside the skeleton (parsed or explicit flags) counts as measured. */
   realCutEvidencePresent?: boolean;
+  /** Email-invite evidence handled outside the skeleton (runner line or --email-json) counts as measured. */
+  emailInviteEvidencePresent?: boolean;
   /** Unique id for this run; generated when omitted. */
   runId?: string;
   /** Session the gaps were merged from (trace pointer for a failing gate). */
@@ -3011,6 +3259,7 @@ export function buildSkeletonArtifact(input: {
     ...(humanRatings.ratings.length > 0 ? { humanRatings } : {}),
     ...(input.greetingCutEvidencePresent ? { greetingCutEvidencePresent: true } : {}),
     ...(input.realCutEvidencePresent ? { realCutEvidencePresent: true } : {}),
+    ...(input.emailInviteEvidencePresent ? { emailInviteEvidencePresent: true } : {}),
   });
   const measured = measuredSources.length > 0;
   // Ticket 06: the runner's own output decides plumbing health. A dry run

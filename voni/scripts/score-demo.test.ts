@@ -1549,3 +1549,194 @@ test("each run diffs its artifact against the prior same-voice artifact and hono
   assert.match(overridden.stdout, new RegExp(`prior artifact: ${first}`));
   assert.match(overridden.stdout, /\+500ms/);
 });
+
+// ── Ticket 26: invite once plus chip once ───────────────────────────────────
+
+const EMAIL_INVITE_LINE =
+  "Send me an email from your work address with Lime 42 in the subject, and tell me when it's sent.";
+
+/** A fake eval runner that prints one `EMAIL INVITE` evidence line, then its summary. */
+function emailRunnerShim(evidence: unknown, summary = 'invite-tag: 1/1'): string {
+  return `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === "run" && args[1] === "eval:demo-agent") {
+  console.log("EMAIL INVITE " + JSON.stringify(${JSON.stringify(evidence)}));
+  console.log(${JSON.stringify(summary)});
+}
+`;
+}
+
+function writeEmailJson(dir: string, name: string, evidence: unknown): string {
+  const path = join(dir, name);
+  writeFileSync(path, `${JSON.stringify(evidence, null, 2)}\n`);
+  return path;
+}
+
+test("a live invite-tag run applies the runner evidence and keeps unmeasured memory INFO", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  writeFileSync(
+    join(bin, "npm"),
+    emailRunnerShim({
+      tag: "Lime 42",
+      agentLines: [EMAIL_INVITE_LINE],
+      lineTurns: [2],
+      chipShows: [{ address: "test@voni.cc", tag: "Lime 42" }],
+      showToolCalls: 1,
+      chipTurn: 2,
+      traceSession: "sess_email26",
+    }),
+    { mode: 0o755 },
+  );
+  const out = join(dir, "score.json");
+  const result = run(
+    ["--scenario", "invite-tag", "--out", out, "--timing-lock", join(dir, "timing.lock")],
+    new URL("../", import.meta.url).pathname,
+    { PATH: `${bin}:${process.env.PATH}` },
+  );
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    emailInvite: { tagMentions: number; chipShows: number; memoryPersists: boolean | null; status: string };
+    gates: { name: string; status: string; detail: string }[];
+  };
+  assert.equal(artifact.emailInvite.tagMentions, 1);
+  assert.equal(artifact.emailInvite.chipShows, 1);
+  assert.equal(artifact.emailInvite.memoryPersists, null, "the live runner never measures Hold memory");
+  assert.equal(artifact.emailInvite.status, "PASS");
+  assert.equal(artifact.gates.find((g) => g.name === "email-invite")?.status, "INFO");
+  assert.match(artifact.gates.find((g) => g.name === "email-invite")?.detail ?? "", /unmeasured/);
+  assert.equal(artifact.gates.find((g) => g.name === "measurements")?.status, "INFO");
+  assert.match(result.stdout, /INFO\s+email-invite/);
+});
+
+test("a repeated invite from the runner fails and cites the Call trace turn where it repeated", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  writeFileSync(
+    join(bin, "npm"),
+    emailRunnerShim(
+      {
+        tag: "Lime 42",
+        agentLines: [EMAIL_INVITE_LINE, EMAIL_INVITE_LINE],
+        lineTurns: [2, 5],
+        chipShows: [{ address: "test@voni.cc", tag: "Lime 42" }],
+        showToolCalls: 1,
+        chipTurn: 2,
+        traceSession: "sess_email26",
+      },
+      "invite-tag: 0/1",
+    ),
+    { mode: 0o755 },
+  );
+  const out = join(dir, "score.json");
+  const result = run(
+    ["--scenario", "invite-tag", "--out", out, "--timing-lock", join(dir, "timing.lock")],
+    new URL("../", import.meta.url).pathname,
+    { PATH: `${bin}:${process.env.PATH}` },
+  );
+  assert.equal(result.status, 1, result.stderr + result.stdout);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    gates: { name: string; status: string; detail: string }[];
+  };
+  const gate = artifact.gates.find((g) => g.name === "email-invite")!;
+  assert.equal(gate.status, "FAIL");
+  assert.match(gate.detail, /said the tag 2 times at call trace turn 5 \(sess_email26\)/);
+});
+
+test("--email-json scores a browser run with chip and memory evidence, one chip, one tag", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const json = writeEmailJson(dir, "email.json", {
+    tag: "Lime 42",
+    agentLines: [EMAIL_INVITE_LINE],
+    lineTurns: [2],
+    chipShows: [{ address: "test@voni.cc", tag: "Lime 42" }],
+    showToolCalls: 1,
+    chipTurn: 2,
+    traceSession: "sess_browser26",
+    memoryInvitedBefore: true,
+    memoryInvitedAfter: true,
+    tagTokenBefore: "tag-tok",
+    tagTokenAfter: "tag-tok",
+  });
+  const out = join(dir, "score.json");
+  const result = run(
+    ["--dry-run", "--out", out, "--email-json", json],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    emailInvite: { status: string; memoryPersists: boolean | null };
+    gates: { name: string; status: string }[];
+  };
+  assert.equal(artifact.emailInvite.status, "PASS");
+  assert.equal(artifact.emailInvite.memoryPersists, true);
+  assert.equal(artifact.gates.find((g) => g.name === "email-invite")?.status, "PASS");
+});
+
+test("--email-json without memory evidence stays INFO, never PASS", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const json = writeEmailJson(dir, "email.json", {
+    agentLines: [EMAIL_INVITE_LINE],
+    lineTurns: [2],
+    chipShows: [{ address: "test@voni.cc", tag: "Lime 42" }],
+    showToolCalls: 1,
+    chipTurn: 2,
+    traceSession: "sess_browser26",
+  });
+  const out = join(dir, "score.json");
+  const result = run(
+    ["--dry-run", "--out", out, "--email-json", json],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    gates: { name: string; status: string }[];
+  };
+  assert.equal(artifact.gates.find((g) => g.name === "email-invite")?.status, "INFO");
+});
+
+test("--email-json chip duplication fails and cites the chip's Call trace turn", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const json = writeEmailJson(dir, "email.json", {
+    agentLines: [EMAIL_INVITE_LINE],
+    lineTurns: [2],
+    chipShows: [
+      { address: "test@voni.cc", tag: "Lime 42" },
+      { address: "test@voni.cc", tag: "Lime 42" },
+    ],
+    showToolCalls: 1,
+    chipTurn: 2,
+    traceSession: "sess_browser26",
+  });
+  const out = join(dir, "score.json");
+  const result = run(
+    ["--dry-run", "--out", out, "--email-json", json],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.equal(result.status, 1, result.stderr + result.stdout);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    gates: { name: string; status: string; detail: string }[];
+  };
+  const gate = artifact.gates.find((g) => g.name === "email-invite")!;
+  assert.equal(gate.status, "FAIL");
+  assert.match(gate.detail, /chip showed 2 times at call trace turn 2 \(sess_browser26\)/);
+});
+
+test("--email-json evidence must carry a Call trace session so a FAIL can cite a turn", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const json = writeEmailJson(dir, "email.json", {
+    agentLines: [EMAIL_INVITE_LINE],
+    chipShows: [{ address: "test@voni.cc", tag: "Lime 42" }],
+    showToolCalls: 1,
+  });
+  const out = join(dir, "score.json");
+  const result = run(
+    ["--dry-run", "--out", out, "--email-json", json],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.notEqual(result.status, 0);
+  assert.ok(!existsSync(out), "no artifact from invalid evidence");
+  assert.match(result.stderr + result.stdout, /--email-json.*traceSession/);
+});

@@ -85,6 +85,7 @@ import {
   buildSubScores,
   traceTurnPointers,
   traceTurnForVisitorSpeech,
+  traceTurnsForAgentLines,
   emailInviteGate,
   formatSubScoreTable,
   hasMeasuredEvidence,
@@ -1843,6 +1844,105 @@ test("contact chip appears exactly once per address with the inbox and tag", () 
   );
 });
 
+test("email invite FAIL cites the Call trace turn where the tag repeated", () => {
+  const result = evaluateEmailInvite(
+    freshEvidence({
+      agentLines: [FRESH_INVITE, FRESH_INVITE],
+      lineTurns: ["call trace turn 3 (sess_invite26)", "call trace turn 7 (sess_invite26)"],
+      chipTraceTurn: "call trace turn 3 (sess_invite26)",
+    }),
+  );
+  assert.equal(result.status, "FAIL");
+  assert.match(result.detail, /said the tag 2 times at call trace turn 7 \(sess_invite26\)/);
+});
+
+test("email invite FAIL cites the turn for a split tag, invented tag, stray address, or second invite", () => {
+  const split = evaluateEmailInvite(
+    freshEvidence({
+      agentLines: ["Send with Lime 4 2 in the subject"],
+      lineTurns: ["call trace turn 2 (sess_invite26)"],
+    }),
+  );
+  assert.equal(split.status, "FAIL");
+  assert.match(split.detail, /digit by digit at call trace turn 2 \(sess_invite26\)/);
+
+  const invented = evaluateEmailInvite(
+    freshEvidence({
+      agentLines: ["Send with Coral 17 in the subject", FRESH_INVITE],
+      lineTurns: ["call trace turn 2 (sess_invite26)", "call trace turn 3 (sess_invite26)"],
+    }),
+  );
+  assert.equal(invented.status, "FAIL");
+  assert.match(invented.detail, /invented a tag: "Coral 17" at call trace turn 2 \(sess_invite26\)/);
+
+  const stray = evaluateEmailInvite(
+    freshEvidence({
+      agentLines: [FRESH_INVITE, "Mail me at andres@casaverde.pt"],
+      lineTurns: ["call trace turn 2 (sess_invite26)", "call trace turn 4 (sess_invite26)"],
+    }),
+  );
+  assert.equal(stray.status, "FAIL");
+  assert.match(stray.detail, /spoke an address: .* at call trace turn 4 \(sess_invite26\)/);
+
+  const twice = evaluateEmailInvite(
+    freshEvidence({
+      agentLines: [FRESH_INVITE],
+      lineTurns: ["call trace turn 2 (sess_invite26)"],
+      showToolCalls: 2,
+    }),
+  );
+  assert.equal(twice.status, "FAIL");
+  assert.match(twice.detail, /invited 2 times at call trace turn 2 \(sess_invite26\)/);
+});
+
+test("contact chip FAIL cites the turn where the chip duplicated or showed the wrong inbox", () => {
+  const twice = evaluateEmailInvite(
+    freshEvidence({
+      chipShows: [
+        { address: "test@voni.cc", tag: EMAIL_INVITE_TAG },
+        { address: "test@voni.cc", tag: EMAIL_INVITE_TAG },
+      ],
+      chipTraceTurn: "call trace turn 2 (sess_invite26)",
+    }),
+  );
+  assert.equal(twice.status, "FAIL");
+  assert.match(twice.detail, /chip showed 2 times at call trace turn 2 \(sess_invite26\)/);
+
+  const wrong = evaluateEmailInvite(
+    freshEvidence({
+      chipShows: [{ address: "other@x.com", tag: EMAIL_INVITE_TAG }],
+      chipTraceTurn: "call trace turn 2 (sess_invite26)",
+    }),
+  );
+  assert.equal(wrong.status, "FAIL");
+  assert.match(wrong.detail, /chip showed other@x\.com at call trace turn 2 \(sess_invite26\)/);
+
+  const wrongTag = evaluateEmailInvite(
+    freshEvidence({
+      chipShows: [{ address: "test@voni.cc", tag: "Lime 43" }],
+      chipTraceTurn: "call trace turn 2 (sess_invite26)",
+    }),
+  );
+  assert.equal(wrongTag.status, "FAIL");
+  assert.match(wrongTag.detail, /chip tag does not match the call tag at call trace turn 2 \(sess_invite26\)/);
+});
+
+test("agent lines map to their VONI turn in the merged Call trace, repeats in order", () => {
+  const excerpt = [
+    ' 1.00s  HEARD   "We run a small travel agency"  (0.20s-1.00s)',
+    ' 2.00s  VONI    "Got it, a travel agency."  (reply_create gap 900ms)',
+    ' 5.00s  VONI    "Send me an email with Lime 42 in the subject."  (reply_create gap 950ms)',
+    ' 9.00s  VONI    "Send me an email with Lime 42 in the subject."  (reply_create gap 1000ms)',
+  ];
+  assert.deepEqual(traceTurnsForAgentLines(excerpt, ["Got it, a travel agency.", "Send me an email with Lime 42 in the subject."]), [1, 2]);
+  assert.deepEqual(
+    traceTurnsForAgentLines(excerpt, ["Send me an email with Lime 42 in the subject.", "Send me an email with Lime 42 in the subject."]),
+    [2, 3],
+    "the second identical line maps to the second VONI turn",
+  );
+  assert.deepEqual(traceTurnsForAgentLines(excerpt, ["not in the trace"]), [null], "never a guessed turn");
+});
+
 test("tag persists across Hold return and reload via Call memory", () => {
   assert.equal(evaluateEmailInvite(freshEvidence()).memoryPersists, true);
   assert.equal(
@@ -2762,6 +2862,7 @@ test("evidence provenance names only inputs that carry observed values", () => {
     measuredEvidenceSources({ gaps: { "greeting-cut": [900] }, doubleTalkOverlapMs: [120] }),
     ["gaps", "double-talk"],
   );
+  assert.deepEqual(measuredEvidenceSources({ emailInviteEvidencePresent: true }), ["email-invite"]);
   // Empty containers never flip the measurements gate: only values observed count.
   assert.equal(hasMeasuredEvidence({ overheardAsides: [] }), false);
   assert.equal(hasMeasuredEvidence({ deadAir: { gapsMs: [], longestSilenceMs: null, checkIns: [] } }), false);
