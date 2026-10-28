@@ -70,10 +70,12 @@
  * merged turn attributes to the greeting-cut beat only when the excerpt
  * opens with the greeting cut; otherwise --trace-beat may name it.
  *
- * --filler-text feeds the observed floor behavior for one filler overlap;
- * without it the filler-resume gate stays INFO. --trace-session fills
- * --filler-trace-turn when the flag is absent, so a failure still points
- * at the Call trace turn.
+ * The live runner's own `filler …` line feeds the filler-over observed
+ * behavior, so a filler run scores the filler-resume gate without flags.
+ * --filler-text and its siblings override that observation; without either
+ * the gate stays INFO. --trace-session fills --filler-trace-turn when the
+ * flag is absent, so a failure still points at the Call trace turn or says
+ * explicitly that no turn was merged.
  *
  * Dead-air evidence is measured outside the harness (browser e2e fakes,
  * session evidence) and handed in: uncovered silences via --dead-air-gaps,
@@ -162,6 +164,7 @@ import {
   extractGreetingCutEvidence,
   extractRealCutEvidence,
   extractTraceSessionId,
+  fillerEvidenceFromRun,
   formatArtifactDiff,
   formatBudgetReport,
   formatEvalRunnerReport,
@@ -176,6 +179,7 @@ import {
   GOLDEN_BEATS,
   overheardFromTraceExcerpt,
   parseEmailInviteOutput,
+  parseFillerRunOutput,
   parseTraceGaps,
   redactLines,
   resolveGateVoice,
@@ -731,12 +735,22 @@ function main(): void {
   const emailFile = emailJsonPath ? readEmailInviteJson(resolve(emailJsonPath)) : runnerEmailEvidence;
   const emailEvidence = emailFile ? toEmailInviteEvidence(emailFile, excerpt ?? [], traceSession) : null;
   const agentInput = buildDemoAgentBody(voice).input;
-  const fillerResume = readFillerEvidence(traceSession);
+  // Explicit --filler-* flags are the operator override. Without them, the
+  // live runner's own `filler …` line is the observed behavior and scores the
+  // gate, so a filler-over run no longer stays INFO until a human retypes it.
+  const explicitFiller = readFillerEvidence(traceSession);
+  const runnerFiller = explicitFiller || dryRun ? null : parseFillerRunOutput(evalSection.stdout);
+  const fillerResume =
+    explicitFiller ?? (runnerFiller ? fillerEvidenceFromRun(runnerFiller) ?? undefined : undefined);
   // A filler FAIL must point at the turn whose reply it overlapped: match the
-  // merged HEARD row, never the bare session id, when the words appear.
-  if (fillerResume && !arg("--filler-trace-turn", "") && excerpt) {
-    const fillerTurn = traceTurnForVisitorSpeech(excerpt, fillerResume.visitorText);
-    if (fillerTurn !== null) fillerResume.traceTurn = formatTraceTurn(fillerTurn, traceSession || null);
+  // merged HEARD row, never the bare session id, when the words appear. No
+  // merged row is stated explicitly instead of replaced by a guessed turn.
+  if (fillerResume && !arg("--filler-trace-turn", "")) {
+    const fillerTurn = excerpt ? traceTurnForVisitorSpeech(excerpt, fillerResume.visitorText) : null;
+    fillerResume.traceTurn =
+      fillerTurn !== null
+        ? formatTraceTurn(fillerTurn, traceSession || null)
+        : `no turn merged${traceSession ? ` (${traceSession})` : ""}`;
   }
   // The caller clip the live runner actually streamed (ticket 10): a changed
   // clip makes the cut number incomparable with the prior run.

@@ -2132,9 +2132,108 @@ export type FillerResumeEvidence = {
   heardText: string;
   /** The server answered over the resumption instead of letting it play. */
   answeredOver: boolean;
+  /**
+   * The runner observed a cut whose latency could not be measured. Keeps the
+   * gate on the cut path (never a never-cut PASS) without inventing an ms.
+   */
+  cutObserved?: boolean;
+  /**
+   * The answer kept playing through the back-channel instead of being
+   * dropped or replaced. Optional: CLI-flag evidence predates the runner's
+   * answer marker and leaves it unmeasured (undefined, never a guessed true).
+   */
+  answerContinued?: boolean;
   /** Call trace turn the failure points at (spec: every failure names its turn). */
   traceTurn?: string;
 };
+
+/**
+ * What the live eval runner observed for one filler overlap. The runner
+ * prints one line per run:
+ *
+ *   filler never cut; events [["ignore","Okaay so"]]; answer continued
+ *   filler cut at 318ms; events [["ignore","Okaay so"]]; answer resumed
+ *
+ * `events` is the floor's own overlap decisions; `answer` is whether the
+ * caller heard the same answer continue. The `; answer …` suffix is optional
+ * so older runs (which only printed the first two fields) still parse, but an
+ * absent suffix stays unmeasured rather than assumed.
+ */
+export type FillerRunObservation = {
+  visitorText: string;
+  verdict: FillerVerdict;
+  /** The runner observed a cut (even when its latency could not be measured). */
+  cut: boolean;
+  /** Caller-speech-start → agent-audio-stop; null when the filler never cut. */
+  cutMs: number | null;
+  /** A cut was followed by the session's resume create. */
+  resumed: boolean;
+  /** The answer continued/resumed; false when it was dropped/derailed. */
+  answerContinued: boolean | null;
+};
+
+/**
+ * Parse the runner's last `filler …` observation. Returns null when the run
+ * printed no filler line or the line is malformed — absent evidence, never a
+ * guessed verdict. The last line wins because a multi-run score is judged on
+ * the most recent observed call, matching `extractTraceSessionId`.
+ */
+export function parseFillerRunOutput(stdout: string): FillerRunObservation | null {
+  let last: RegExpExecArray | null = null;
+  const pattern =
+    /^\s*filler (never cut|cut(?: at (\d+)ms)?); events (\[.*?\])(?:; answer (continued|resumed|dropped|derailed))?\s*$/gm;
+  for (const match of stdout.matchAll(pattern)) last = match as RegExpExecArray;
+  if (!last) return null;
+  let events: unknown;
+  try {
+    events = JSON.parse(last[3]);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(events) || events.length === 0) return null;
+  const event = events[events.length - 1];
+  if (!Array.isArray(event) || event.length < 2) return null;
+  const verdict = event[0];
+  const visitorText = event[1];
+  if (!["yield", "ignore", "judge", "keep"].includes(String(verdict))) return null;
+  if (typeof visitorText !== "string" || !visitorText.trim()) return null;
+  const cutMs = last[2] === undefined ? null : Number(last[2]);
+  if (cutMs !== null && !Number.isFinite(cutMs)) return null;
+  const cut = last[1] !== "never cut";
+  const answer = last[4];
+  return {
+    visitorText,
+    verdict: verdict as FillerVerdict,
+    cut,
+    cutMs,
+    resumed: cut && answer === "resumed",
+    answerContinued: answer === undefined ? null : answer === "continued" || answer === "resumed",
+  };
+}
+
+/**
+ * Turn the runner's observation into gate evidence. A cut that resumed is
+ * ticket 13's exact-tail evidence, so this never blesses it from a boolean
+ * alone (returning null leaves the skeleton INFO until the tail is measured).
+ * Never-cut and cut-that-stole/derailed observations are scoreable now.
+ */
+export function fillerEvidenceFromRun(observation: FillerRunObservation): FillerResumeEvidence | null {
+  // A cut that resumed is ticket 13's exact-tail evidence, so this never
+  // blesses it from a boolean alone.
+  if (observation.cut && observation.resumed) return null;
+  return {
+    visitorText: observation.visitorText,
+    agentText: "",
+    verdict: observation.verdict,
+    cutMs: observation.cutMs,
+    resumeMs: null,
+    resumedText: "",
+    heardText: "",
+    answeredOver: false,
+    ...(observation.cut ? { cutObserved: true } : {}),
+    ...(observation.answerContinued !== null ? { answerContinued: observation.answerContinued } : {}),
+  };
+}
 
 /**
  * Gate the filler-ignored beat. PASS keeps the floor (or recovers it
@@ -2143,9 +2242,10 @@ export type FillerResumeEvidence = {
  */
 export function evaluateFillerResumeGate(evidence: FillerResumeEvidence): ScoreboardGate {
   const name = "filler-resume";
-  const trace = evidence.traceTurn ?? "(no trace turn)";
+  const trace = evidence.traceTurn ?? "(no turn merged)";
   const expected = judgeOverlap(evidence.visitorText, evidence.agentText);
-  const cut = evidence.cutMs === null ? "never cut" : `${evidence.cutMs}ms`;
+  const cut =
+    evidence.cutMs !== null ? `${evidence.cutMs}ms` : evidence.cutObserved ? "cut (unmeasured)" : "never cut";
   const fail = (detail: string): ScoreboardGate => ({
     name,
     status: "FAIL",
@@ -2166,7 +2266,12 @@ export function evaluateFillerResumeGate(evidence: FillerResumeEvidence): Scoreb
   if (expected === "judge" && evidence.verdict !== "keep") {
     return fail(`ambiguous overlap "${evidence.visitorText}" resumed without a Jev keep`);
   }
-  if (evidence.cutMs === null) {
+  if (evidence.cutMs === null && !evidence.cutObserved && evidence.answerContinued === false) {
+    return fail(
+      `answer dropped: the back-channel did not let "${evidence.visitorText}" pass through the answer`,
+    );
+  }
+  if (evidence.cutMs === null && !evidence.cutObserved) {
     if (evidence.resumeMs !== null || evidence.answeredOver) {
       return fail("inconsistent evidence: never cut but a resume was reported");
     }

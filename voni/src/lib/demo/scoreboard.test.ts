@@ -29,6 +29,8 @@ import {
   evaluateFillerResumeGate,
   evaluateRealCut,
   extractRealCutEvidence,
+  fillerEvidenceFromRun,
+  parseFillerRunOutput,
   extractTraceSessionId,
   FILLER_RESUME_TAIL_BUDGET_MS,
   GOLDEN_BEATS,
@@ -641,6 +643,97 @@ test("overlap judge ignores filler, back-channels and agent echo but yields comm
   );
   assert.equal(judgeOverlap("Wait, stop.", "We help dental clinics answer every call"), "yield", "steering always yields");
   assert.equal(judgeOverlap("I want you to hang up.", "Thanks for calling"), "yield", "end-call always yields");
+});
+
+test("the runner's filler-over line is parsed into a passing never-cut gate", () => {
+  // The live runner prints one observed line per filler-over run; the
+  // scoreboard consumes it instead of waiting for a human to retype flags.
+  const observation = parseFillerRunOutput(
+    '    filler never cut; events [["ignore","Okaay so"]]; answer continued\nfiller-over: 1/1\n',
+  );
+  assert.ok(observation, "the never-cut line parses");
+  assert.equal(observation.visitorText, "Okaay so");
+  assert.equal(observation.verdict, "ignore");
+  assert.equal(observation.cut, false);
+  assert.equal(observation.cutMs, null);
+  assert.equal(observation.resumed, false);
+  assert.equal(observation.answerContinued, true);
+
+  const evidence = fillerEvidenceFromRun(observation);
+  assert.ok(evidence, "never-cut evidence is scoreable");
+  const gate = evaluateFillerResumeGate({ ...evidence, traceTurn: "call trace turn 2 (sess_abc)" });
+  assert.equal(gate.status, "PASS", gate.detail);
+  assert.match(gate.detail, /never cut/);
+  assert.match(gate.detail, /call trace turn 2 \(sess_abc\)/);
+});
+
+test("a cut that resumed is not blessed on a boolean: exact-tail scoring is ticket 13", () => {
+  const observation = parseFillerRunOutput(
+    '    filler cut at 318ms; events [["ignore","mm-hmm"]]; answer resumed\nfiller-over: 1/1\n',
+  );
+  assert.ok(observation);
+  assert.equal(observation.cut, true);
+  assert.equal(observation.cutMs, 318);
+  assert.equal(observation.resumed, true);
+  assert.equal(observation.answerContinued, true);
+  assert.equal(fillerEvidenceFromRun(observation), null);
+});
+
+test("a filler that stole the turn fails and cites the merged Call trace turn", () => {
+  const observation = parseFillerRunOutput(
+    '    filler cut at 318ms; events [["yield","Okaay so"]]; answer derailed\nfiller-over: 0/1\n',
+  );
+  assert.ok(observation);
+  const evidence = fillerEvidenceFromRun(observation);
+  assert.ok(evidence, "a cut that did not resume is scoreable now");
+  const gate = evaluateFillerResumeGate({ ...evidence, traceTurn: "call trace turn 3 (sess_abc)" });
+  assert.equal(gate.status, "FAIL");
+  assert.match(gate.detail, /floor stolen/);
+  assert.match(gate.detail, /call trace turn 3 \(sess_abc\)/);
+});
+
+test("a never-cut run that dropped the answer fails instead of passing on silence", () => {
+  const observation = parseFillerRunOutput(
+    '    filler never cut; events [["ignore","Okaay so"]]; answer dropped\n',
+  );
+  assert.ok(observation);
+  const evidence = fillerEvidenceFromRun(observation);
+  assert.ok(evidence);
+  const gate = evaluateFillerResumeGate({ ...evidence, traceTurn: "call trace turn 2 (sess_abc)" });
+  assert.equal(gate.status, "FAIL", gate.detail);
+  assert.match(gate.detail, /answer dropped/);
+  assert.match(gate.detail, /call trace turn 2 \(sess_abc\)/);
+});
+
+test("a cut with no measured ms is never scored as a never-cut pass", () => {
+  const resumedWithoutMs = parseFillerRunOutput(
+    '    filler cut; events [["ignore","Okaay so"]]; answer resumed',
+  );
+  assert.ok(resumedWithoutMs);
+  assert.equal(resumedWithoutMs.cut, true);
+  assert.equal(resumedWithoutMs.cutMs, null);
+  assert.equal(fillerEvidenceFromRun(resumedWithoutMs), null, "an unmeasured cut stays unmeasured");
+
+  const derailedWithoutMs = parseFillerRunOutput(
+    '    filler cut; events [["ignore","Okaay so"]]; answer derailed',
+  );
+  assert.ok(derailedWithoutMs);
+  assert.equal(fillerEvidenceFromRun(derailedWithoutMs)?.cutMs, null);
+  const gate = evaluateFillerResumeGate(fillerEvidenceFromRun(derailedWithoutMs)!);
+  assert.equal(gate.status, "FAIL", "a cut that dropped the answer is still a failure");
+});
+
+test("a missing or malformed filler line stays unmeasured, never an assumed verdict", () => {
+  assert.equal(parseFillerRunOutput("filler-over: 1/1\n"), null);
+  assert.equal(parseFillerRunOutput('    filler never cut; events not-json; answer continued'), null);
+  assert.equal(parseFillerRunOutput('    filler never cut; events []; answer continued'), null);
+  assert.equal(parseFillerRunOutput('    filler never cut; events [["maybe","Okaay so"]]; answer continued'), null);
+  // A cut without a measured ms is not a never-cut pass.
+  const unmeasured = parseFillerRunOutput('    filler cut; events [["yield","Okaay so"]]; answer derailed');
+  assert.ok(unmeasured);
+  assert.equal(unmeasured.cutMs, null);
+  const gate = evaluateFillerResumeGate(fillerEvidenceFromRun(unmeasured)!);
+  assert.equal(gate.status, "FAIL", "a bare cut stays on the yield/derail path, never a PASS");
 });
 
 test("filler that never cuts passes with the floor held", () => {

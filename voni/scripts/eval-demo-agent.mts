@@ -667,15 +667,47 @@ const CLIENT_SCENARIOS: { name: string; run: () => Promise<string | null> }[] = 
   {
     name: "filler-over",
     run: async () => {
+      let said: CallerSpeech | null = null;
+      let fillerAt = 0;
       const o = await runClient(voiceIdArg(), [LONG_ASK, "Okaay so"], async (ctx) => {
         await askAndWaitForSpeech(ctx);
-        ctx.say("Okaay so");
+        fillerAt = Date.now();
+        said = ctx.say("Okaay so");
         await new Promise((resolve) => setTimeout(resolve, 4000));
       });
-      console.log(`    filler ${o.interruptedReplies === 0 ? "never cut" : "cut"}; events ${JSON.stringify(o.events.map((e) => [e.verdict, e.text]))}`);
-      if (o.interruptedReplies === 0) return null; // never cut
-      const resumed = o.creates.some((c) => /Pick up where you left off/.test(c));
-      return resumed ? null : `cut and not resumed (events: ${JSON.stringify(o.events.map((e) => [e.verdict, e.text]))})`;
+      // A filler is never supposed to steal the turn. Measure the cut from the
+      // caller's transmitted onset (same t0 stop-over uses), and require the
+      // answer to keep sounding through the back-channel: the reply was never
+      // interrupted, no new answer was created, and audio was still scheduled
+      // when the filler landed.
+      const measured = measureCutLatency(said!.onset(), o.cutAt);
+      const cutObserved = o.cutAt !== null;
+      const resumed = cutObserved && o.creates.some((c) => /Pick up where you left off/.test(c));
+      const answerStillSounding = o.lastAudioEnd > fillerAt;
+      const continued =
+        !cutObserved && o.interruptedReplies === 0 && o.creates.length === 0 && answerStillSounding;
+      const answer = cutObserved ? (resumed ? "resumed" : "derailed") : continued ? "continued" : "dropped";
+      const cutLabel = measured.cutMs !== null ? `cut at ${measured.cutMs}ms` : cutObserved ? "cut" : "never cut";
+      console.log(
+        `    filler ${cutLabel}; events ${JSON.stringify(
+          o.events.map((e) => [e.verdict, e.text]),
+        )}; answer ${answer}`,
+      );
+      if (cutObserved) {
+        return resumed
+          ? null
+          : `cut and not resumed (events: ${JSON.stringify(o.events.map((e) => [e.verdict, e.text]))})`;
+      }
+      if (o.interruptedReplies !== 0) {
+        return `reply was interrupted without a measured cut (interrupted replies: ${o.interruptedReplies})`;
+      }
+      if (o.creates.length > 0) {
+        return `answered the back-channel as a new turn (creates: ${JSON.stringify(o.creates)})`;
+      }
+      if (!answerStillSounding) {
+        return "the filler landed after the answer ended (no answer to continue)";
+      }
+      return null; // never cut; the answer continued through the back-channel
     },
   },
   {
