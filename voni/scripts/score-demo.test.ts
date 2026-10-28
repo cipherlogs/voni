@@ -180,6 +180,92 @@ if (args[0] === "run" && args[1] === "eval:demo-agent") {
   assert.match(result.stdout, /replay: npm run call:trace -- sess_auto07/);
 });
 
+test("a slow later turn fails the scored run and cites its Call trace turn", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  writeFileSync(
+    join(bin, "npm"),
+    `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === "run" && args[1] === "eval:demo-agent") {
+  console.log("    cut 912ms after the caller started");
+  console.log('    verdict ["yield","Wait, stop."]');
+  console.log("stop-over: 1/1");
+} else if (args[0] === "run" && args[1] === "call:trace") {
+  console.log('10.00s  HEARD   "Yes please"  (9.20s-9.90s)');
+  console.log('10.90s  VONI    "Happy to help"  (reply_create gap 900ms)');
+  console.log('12.00s  VONI    "Of course"  (reply_create gap 1000ms)');
+  console.log('13.10s  VONI    "The team is small"  (reply_create gap 1100ms)');
+  console.log('14.20s  VONI    "Two bedrooms"  (reply_create gap 1200ms)');
+  console.log('16.40s  VONI    "Here is the tag"  (reply_create gap 2000ms)');
+  console.log('17.50s  VONI    "Thanks for calling"  (reply_create gap 1300ms)');
+}
+`,
+    { mode: 0o755 },
+  );
+  const out = join(dir, "score.json");
+  const result = run(
+    ["--scenario", "stop-over", "--trace-session", "sess_slow", "--out", out, "--timing-lock", join(dir, "timing.lock")],
+    new URL("../", import.meta.url).pathname,
+    { PATH: `${bin}:${process.env.PATH}` },
+  );
+  assert.equal(result.status, 1, result.stderr + result.stdout);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    replyGap: { samples: number; p50Ms: number | null; p95Ms: number | null };
+    gates: { name: string; status: string; detail: string }[];
+  };
+  assert.equal(artifact.replyGap.samples, 6, "every merged turn is scored");
+  assert.equal(artifact.replyGap.p50Ms, 1100, "the call-level distribution alone stays inside budget");
+  assert.equal(artifact.replyGap.p95Ms, 2000);
+  const gate = artifact.gates.find((g) => g.name === "reply-gap")!;
+  assert.equal(gate.status, "FAIL");
+  assert.match(gate.detail, /call trace turn 5 \(sess_slow\)/, `detail points at turn 5: ${gate.detail}`);
+  // The console lists every per-turn gap, so the breach is visible before the table.
+  assert.match(result.stdout, /^ {2}turn 5 {2}2000ms$/m);
+  assert.match(result.stdout, /^ {2}turn 6 {2}1300ms$/m);
+});
+
+test("an all-fast merged trace turns the reply-gap gate green", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  writeFileSync(
+    join(bin, "npm"),
+    `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === "run" && args[1] === "eval:demo-agent") {
+  console.log("    cut 912ms after the caller started");
+  console.log('    verdict ["yield","Wait, stop."]');
+  console.log("stop-over: 1/1");
+} else if (args[0] === "run" && args[1] === "call:trace") {
+  console.log('10.00s  HEARD   "Yes please"  (9.20s-9.90s)');
+  console.log('10.90s  VONI    "Happy to help"  (reply_create gap 900ms)');
+  console.log('12.00s  VONI    "Of course"  (reply_create gap 1000ms)');
+  console.log('13.10s  VONI    "The team is small"  (reply_create gap 1100ms)');
+  console.log('14.20s  VONI    "Two bedrooms"  (reply_create gap 1200ms)');
+  console.log('15.40s  VONI    "Here is the tag"  (reply_create gap 1300ms)');
+}
+`,
+    { mode: 0o755 },
+  );
+  const out = join(dir, "score.json");
+  const result = run(
+    ["--scenario", "stop-over", "--trace-session", "sess_fast", "--out", out, "--timing-lock", join(dir, "timing.lock")],
+    new URL("../", import.meta.url).pathname,
+    { PATH: `${bin}:${process.env.PATH}` },
+  );
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    replyGap: { samples: number; p50Ms: number | null };
+    gates: { name: string; status: string; detail: string }[];
+  };
+  assert.equal(artifact.replyGap.samples, 5);
+  assert.equal(artifact.replyGap.p50Ms, 1100);
+  const gate = artifact.gates.find((g) => g.name === "reply-gap")!;
+  assert.equal(gate.status, "PASS", gate.detail);
+});
+
 test("an auto-chained trace that is not ready yet warns and preserves the artifact", () => {
   const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
   const bin = join(dir, "bin");

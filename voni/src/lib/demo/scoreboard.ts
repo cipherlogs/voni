@@ -565,10 +565,13 @@ function traceRef(sample: ReplyGapSample): string {
 
 /**
  * Enforced Reply-gap gate (spec stories 2–4): FAIL when any beat's — or
- * the whole call's — p50 exceeds 1500ms or p95 exceeds 2500ms, pointing at
- * the failing Call trace turn. The greeting-cut beat is evaluated against
- * the same budget, never a looser one. No samples means INFO, never FAIL:
- * an unevidenced run records plumbing, it does not cry laggy.
+ * the whole call's — p50 exceeds 1500ms or p95 exceeds 2500ms, AND when any
+ * single merged Call-trace turn's gap does. Every turn is judged on its own
+ * (ticket 09): a one-sample turn scope's p50 and p95 are the gap itself, so
+ * the same budgets apply unchanged and one slow turn can never hide behind a
+ * fast call-level distribution. The FAIL always points at the breaching Call
+ * trace turn (index + session). No samples means INFO, never FAIL: an
+ * unevidenced run records plumbing, it does not cry laggy.
  */
 export function replyGapGate(samples: ReplyGapSample[], traceSessionId?: string): ScoreboardGate {
   if (samples.length === 0) {
@@ -585,30 +588,57 @@ export function replyGapGate(samples: ReplyGapSample[], traceSessionId?: string)
   if (!overall) {
     return { name: "reply-gap", status: "INFO", detail: "no measured gaps yet" };
   }
-  const scopes: { scope: string; summary: ReplyGapSummary }[] = [{ scope: "overall", summary: overall }];
+  const scopes: { scope: string; summary: ReplyGapSummary; sample?: ReplyGapSample }[] = [
+    { scope: "overall", summary: overall },
+  ];
   for (const beat of GOLDEN_BEATS) {
     const beatSummary = summarizeReplyGaps(withSession.filter((s) => s.beat === beat));
     if (beatSummary) scopes.push({ scope: beat, summary: beatSummary });
   }
-  type Breach = { scope: string; metric: "p50" | "p95"; value: number; budget: number };
+  // Ticket 09: each merged turn is its own scope, so the per-beat attribution
+  // no longer limits the budget check to an attributed first beat. Later
+  // turns are judged call-level (beat: null) with their own turn index.
+  const turns = new Map<number, ReplyGapSample>();
+  for (const sample of withSession) {
+    if (sample.turnIndex === null || sample.turnIndex === undefined) continue;
+    if (!turns.has(sample.turnIndex)) turns.set(sample.turnIndex, sample);
+  }
+  for (const [turnIndex, sample] of [...turns].sort((a, b) => a[0] - b[0])) {
+    scopes.push({ scope: `turn ${turnIndex}`, summary: summarizeReplyGaps([sample])!, sample });
+  }
+  type Breach = {
+    scope: string;
+    metric: "p50" | "p95";
+    value: number;
+    budget: number;
+    sample?: ReplyGapSample;
+  };
   const breaches: Breach[] = [];
-  for (const { scope, summary } of scopes) {
+  for (const { scope, summary, sample } of scopes) {
     if (summary.p50Ms > REPLY_GAP_P50_BUDGET_MS) {
-      breaches.push({ scope, metric: "p50", value: summary.p50Ms, budget: REPLY_GAP_P50_BUDGET_MS });
+      breaches.push({ scope, metric: "p50", value: summary.p50Ms, budget: REPLY_GAP_P50_BUDGET_MS, sample });
     }
     if (summary.p95Ms > REPLY_GAP_P95_BUDGET_MS) {
-      breaches.push({ scope, metric: "p95", value: summary.p95Ms, budget: REPLY_GAP_P95_BUDGET_MS });
+      breaches.push({ scope, metric: "p95", value: summary.p95Ms, budget: REPLY_GAP_P95_BUDGET_MS, sample });
     }
   }
   if (breaches.length > 0) {
     breaches.sort((a, b) => b.value - b.budget - (a.value - a.budget));
     const first = breaches[0];
-    const scope = first.scope === "overall" ? "overall" : `beat ${first.scope}`;
+    const where = first.sample
+      ? `${first.sample.beat ? `beat ${first.sample.beat}, ` : "call-level, "}${
+          first.sample.turnIndex !== null && first.sample.turnIndex !== undefined
+            ? formatTraceTurn(first.sample.turnIndex, first.sample.sessionId ?? null)
+            : "call trace"
+        }`
+      : first.scope === "overall"
+        ? "overall"
+        : `beat ${first.scope}`;
     return {
       name: "reply-gap",
       status: "FAIL",
       detail:
-        `${first.metric} ${first.value}ms > ${first.budget}ms budget (${scope}; ` +
+        `${first.metric} ${first.value}ms > ${first.budget}ms budget (${where}; ` +
         `overall p50 ${overall.p50Ms}ms / p95 ${overall.p95Ms}ms, n=${overall.count}; ` +
         `worst ${traceRef(overall.worst)})`,
     };
