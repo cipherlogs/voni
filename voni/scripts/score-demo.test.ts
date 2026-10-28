@@ -1402,6 +1402,82 @@ test("bad --overheard-json fails fast with no artifact", () => {
   assert.match(result.stderr + result.stdout, /tracePointer|text/);
 });
 
+test("an over-talk run marks the aside Overheard and proves the session ledger counted it", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  writeFileSync(
+    join(bin, "npm"),
+    `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === "run" && args[1] === "eval:demo-agent") {
+  console.log("  · trace session sess_over14");
+  console.log('    heard ledger ["We run a dental clinic.","We\\'re a bakery, actually."]');
+  console.log("over-talk: 1/1");
+} else if (args[0] === "run" && args[1] === "call:trace") {
+  console.log('10.20s  VONI    "We help dental clinics answer every call"  (reply_create ttfa 400ms)  CUT at 11.30s');
+  console.log('11.05s  HEARD   "We\\'re a bakery, actually."  (11.05s-12.10s)');
+  console.log("11.40s  CLIENT  barge-in keep jev We're a bakery, actually.");
+}
+`,
+    { mode: 0o755 },
+  );
+  const out = join(dir, "score.json");
+  const result = run(
+    ["--scenario", "over-talk", "--out", out, "--timing-lock", join(dir, "timing.lock")],
+    new URL("../", import.meta.url).pathname,
+    { PATH: `${bin}:${process.env.PATH}` },
+  );
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    overheard: { recalled: number; total: number; asides: { text: string; markedOverheard: boolean; inLedger: boolean; tracePointer: string }[] };
+    gates: { name: string; status: string; detail: string }[];
+  };
+  assert.equal(artifact.overheard.total, 1);
+  assert.equal(artifact.overheard.recalled, 1);
+  assert.equal(artifact.overheard.asides[0].markedOverheard, true);
+  assert.equal(artifact.overheard.asides[0].inLedger, true);
+  assert.match(artifact.overheard.asides[0].tracePointer, /call trace turn 1 \(sess_over14\)/);
+  assert.equal(artifact.gates.find((g) => g.name === "overheard-recall")?.status, "PASS");
+  assert.match(result.stdout, /overheard recall 1\/1/);
+});
+
+test("an aside the caption marked but the session ledger never counted FAILs and cites the turn", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  writeFileSync(
+    join(bin, "npm"),
+    `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === "run" && args[1] === "eval:demo-agent") {
+  console.log("  · trace session sess_over14");
+  console.log('    heard ledger ["We run a dental clinic."]');
+  console.log("over-talk: 1/1");
+} else if (args[0] === "run" && args[1] === "call:trace") {
+  console.log('10.20s  VONI    "We help dental clinics answer every call"  (reply_create ttfa 400ms)  CUT at 11.30s');
+  console.log('11.05s  HEARD   "We\\'re a bakery, actually."  (11.05s-12.10s)');
+  console.log("11.40s  CLIENT  barge-in keep jev We're a bakery, actually.");
+}
+`,
+    { mode: 0o755 },
+  );
+  const out = join(dir, "score.json");
+  run(
+    ["--scenario", "over-talk", "--out", out, "--timing-lock", join(dir, "timing.lock")],
+    new URL("../", import.meta.url).pathname,
+    { PATH: `${bin}:${process.env.PATH}` },
+  );
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    overheard: { asides: { inLedger: boolean }[] };
+    gates: { name: string; status: string; detail: string }[];
+  };
+  assert.equal(artifact.overheard.asides[0].inLedger, false);
+  const gate = artifact.gates.find((g) => g.name === "overheard-recall")!;
+  assert.equal(gate.status, "FAIL");
+  assert.match(gate.detail, /missing from the call ledger/);
+  assert.match(gate.detail, /call trace turn 1 \(sess_over14\)/, "the FAIL cites the turn it landed on");
+});
+
 test("dry run without dead-air evidence keeps dead-air INFO (unmeasured)", () => {
   const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
   const out = join(dir, "score.json");

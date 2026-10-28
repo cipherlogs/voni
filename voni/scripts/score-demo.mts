@@ -183,6 +183,7 @@ import {
   overheardFromTraceExcerpt,
   parseEmailInviteOutput,
   parseFillerRunOutput,
+  parseHeardLedgerOutput,
   parseTraceGaps,
   redactLines,
   resolveGateVoice,
@@ -729,7 +730,13 @@ function main(): void {
     if (excerpt) traceGaps = parseTraceGaps(excerpt);
   }
   const traceAsides =
-    excerpt && traceSession ? overheardFromTraceExcerpt(excerpt, traceSession) : [];
+    excerpt && traceSession
+      ? overheardFromTraceExcerpt(excerpt, traceSession, "overheard-aside", {
+          // The runner's session ledger (`transcript.user` finals) proves the
+          // same words were counted, independent of the merged trace.
+          ...(dryRun ? {} : { ledger: parseHeardLedgerOutput(evalSection.stdout) ?? undefined }),
+        })
+      : [];
   const overheardAsides =
     explicitAsides !== null || traceAsides.length > 0 ? [...(explicitAsides ?? []), ...traceAsides] : undefined;
   // Invite/tag/chip evidence: an explicit --email-json (browser probe, replay)

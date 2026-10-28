@@ -77,6 +77,7 @@ import {
   meaningBasedEndOfTurnGate,
   measureCutLatency,
   overheardFromTraceExcerpt,
+  parseHeardLedgerOutput,
   parseTraceGaps,
   percentile,
   postCutAnswerText,
@@ -1901,9 +1902,9 @@ test("overheard report lists per-beat counts with trace pointers", () => {
   assert.ok(report.includes("bakery"), "report carries the aside text");
 });
 
-test("trace excerpt HEARD rows become ledger-counted asides with barge-in verdict handling", () => {
+test("trace asides are marked from agent-floor overlap, never assumed", () => {
   const excerpt = [
-    '10.20s  VONI    "handling booking and reminders"  (reply.create ttfa 400ms)',
+    '10.20s  VONI    "handling booking and reminders"  (reply.create ttfa 400ms)  CUT at 11.30s',
     '11.05s  HEARD   "We\'re a bakery, actually."  (11.05s–12.10s)',
     "11.40s  CLIENT  barge-in keep jev We're a bakery, actually.",
   ];
@@ -1914,6 +1915,7 @@ test("trace excerpt HEARD rows become ledger-counted asides with barge-in verdic
   assert.equal(asides[0].handling, "resumed-from");
   assert.ok(asides[0].tracePointer.includes("sess_abc"));
   assert.ok(asides[0].tracePointer.includes("bakery"));
+  assert.match(asides[0].tracePointer, /call trace turn 1/, "the pointer cites the reply it overlapped");
 
   const steeringExcerpt = [
     '10.20s  VONI    "handling booking"  (reply.create)',
@@ -1923,13 +1925,78 @@ test("trace excerpt HEARD rows become ledger-counted asides with barge-in verdic
   const steering = overheardFromTraceExcerpt(steeringExcerpt, "sess_abc");
   assert.equal(steering[0].handling, "answered");
 
-  const bare = overheardFromTraceExcerpt(
-    ['11.05s  HEARD   "mm-hmm"  (11.05s–11.40s)'],
+  // A HEARD row in a gap between replies is ordinary caller speech: the
+  // transcript ledger counted it, but nothing marks it Overheard, so it is
+  // never invented as an aside.
+  const inGap = overheardFromTraceExcerpt(
+    [
+      '10.20s  VONI    "handling booking"  (reply.create gap 900ms)',
+      '12.00s  HEARD   "What does it cost?"  (11.80s–12.10s)',
+    ],
     "sess_xyz",
   );
-  assert.equal(bare.length, 1);
-  assert.equal(bare[0].handling, "heard-only");
-  assert.equal(bare[0].markedOverheard, true);
+  assert.deepEqual(inGap, []);
+
+  // No HEARD row at all: the explicit caption mark is still a marked aside,
+  // but the ledger never counted it — the gate FAILs on that asymmetry.
+  const orphan = overheardFromTraceExcerpt([], "sess_abc", "overheard-aside", {
+    captionMarks: ["We're a bakery, actually."],
+  });
+  assert.equal(orphan.length, 1);
+  assert.equal(orphan[0].markedOverheard, true);
+  assert.equal(orphan[0].inLedger, false);
+  const orphanGate = evaluateOverheardRecall(orphan).gate;
+  assert.equal(orphanGate.status, "FAIL");
+  assert.match(orphanGate.detail, /ledger/);
+  assert.match(orphanGate.detail, /no Call trace turn merged/);
+});
+
+test("the session ledger proves the same aside counted, and a mismatch FAILs", () => {
+  const excerpt = [
+    '10.20s  VONI    "handling booking"  (reply.create)  CUT at 11.30s',
+    '11.05s  HEARD   "We\'re a bakery, actually."  (11.05s–12.10s)',
+    "11.40s  CLIENT  barge-in keep jev We're a bakery, actually.",
+  ];
+  const counted = overheardFromTraceExcerpt(excerpt, "sess_abc", "overheard-aside", {
+    ledger: ["We run a dental clinic.", "We're a bakery, actually."],
+  });
+  assert.equal(counted[0].markedOverheard, true);
+  assert.equal(counted[0].inLedger, true);
+  assert.equal(evaluateOverheardRecall(counted).gate.status, "PASS");
+
+  // Marked over Voni's reply but missing from the session transcript: the
+  // aside vanished from the ledger, and the FAIL cites the turn it landed on.
+  const uncounted = overheardFromTraceExcerpt(excerpt, "sess_abc", "overheard-aside", {
+    ledger: ["We run a dental clinic."],
+  });
+  assert.equal(uncounted[0].markedOverheard, true);
+  assert.equal(uncounted[0].inLedger, false);
+  const uncountedGate = evaluateOverheardRecall(uncounted).gate;
+  assert.equal(uncountedGate.status, "FAIL");
+  assert.match(uncountedGate.detail, /ledger/);
+  assert.match(uncountedGate.detail, /call trace turn 1/);
+
+  // Caption evidence measured it as unmarked: ledgered but never marked.
+  const unmarked = overheardFromTraceExcerpt(excerpt, "sess_abc", "overheard-aside", {
+    captionMarks: [],
+  });
+  assert.equal(unmarked[0].markedOverheard, false);
+  assert.equal(unmarked[0].inLedger, true);
+  const unmarkedGate = evaluateOverheardRecall(unmarked).gate;
+  assert.equal(unmarkedGate.status, "FAIL");
+  assert.match(unmarkedGate.detail, /not marked Overheard/);
+  assert.match(unmarkedGate.detail, /call trace turn 1/);
+});
+
+test("the runner's session ledger marker parses to transcript rows", () => {
+  const stdout = [
+    "  · trace session sess_over14",
+    '    heard ledger ["We run a dental clinic.","We\'re a bakery, actually."]',
+  ].join("\n");
+  assert.deepEqual(parseHeardLedgerOutput(stdout), ["We run a dental clinic.", "We're a bakery, actually."]);
+  assert.equal(parseHeardLedgerOutput("no ledger marker"), null);
+  assert.equal(parseHeardLedgerOutput("    heard ledger []"), null, "an empty ledger is absent evidence");
+  assert.equal(parseHeardLedgerOutput("    heard ledger not-json"), null);
 });
 
 test("dead-air bars quote the pipeline contracts (2s ceiling, 15s check-in)", () => {
