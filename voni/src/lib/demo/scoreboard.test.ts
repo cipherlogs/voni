@@ -12,11 +12,15 @@ import {
   REPLY_GAP_P50_BUDGET_MS,
   REPLY_GAP_P95_BUDGET_MS,
   buildSkeletonArtifact,
+  classifyOverheard,
+  evaluateOverheardRecall,
   formatGateTable,
   formatGoldenScript,
+  formatOverheardReport,
   gateVoicePlayback,
   isRealCutExpected,
   meaningBasedEndOfTurnGate,
+  overheardFromTraceExcerpt,
   parseTraceGaps,
   percentile,
   REAL_CUT_MAX_MS,
@@ -26,6 +30,7 @@ import {
   replyGapMs,
   resolveGateVoice,
   sha256Hex,
+  type OverheardAside,
 } from "./scoreboard";
 import { judgeOverlap } from "../voice/barge-in";
 import { DEMO_VOICE_IDS } from "./voni-agent";
@@ -665,4 +670,204 @@ test("real-cut evidence parses from the eval runner's stop-over output", () => {
   });
   assert.equal(evaluateRealCut(ended!)?.status, "PASS");
   assert.equal(extractRealCutEvidence("greeting-cut: 1/1\n"), null);
+});
+
+// ── Ticket 06: overheard-aside recall gate ────────────────────────────────
+
+const AGENT_LINE = "I'd handle booking, reminders, and after-hours calls for your clinic.";
+
+function aside(overrides: Partial<OverheardAside> = {}): OverheardAside {
+  return {
+    beat: "overheard-aside",
+    text: "We're a bakery, actually.",
+    agentText: AGENT_LINE,
+    markedOverheard: true,
+    inLedger: true,
+    handling: "heard-only",
+    tracePointer: "sess_abc :: 12.34s HEARD \"We're a bakery, actually.\"",
+    ...overrides,
+  };
+}
+
+test("overheard kinds reuse the overlap judge: steering yields, filler ignored, content judged", () => {
+  assert.equal(classifyOverheard("Wait, stop.", AGENT_LINE), "steering");
+  assert.equal(classifyOverheard("No.", AGENT_LINE), "steering");
+  assert.equal(classifyOverheard("Okaay so", AGENT_LINE), "filler");
+  assert.equal(classifyOverheard("mm-hmm", AGENT_LINE), "filler");
+  assert.equal(classifyOverheard("We're a bakery, actually.", AGENT_LINE), "content");
+  assert.equal(classifyOverheard("What about pricing?", AGENT_LINE), "content");
+});
+
+test("every aside is marked Overheard and counted even when not answered", () => {
+  const heardOnly = evaluateOverheardRecall([aside()]);
+  assert.equal(heardOnly.recalled, 1);
+  assert.equal(heardOnly.total, 1);
+  assert.equal(heardOnly.failures.length, 0);
+  assert.equal(heardOnly.gate.status, "PASS");
+
+  const unmarked = evaluateOverheardRecall([aside({ markedOverheard: false })]);
+  assert.equal(unmarked.recalled, 0);
+  assert.equal(unmarked.gate.status, "FAIL");
+  assert.match(unmarked.gate.detail, /not marked Overheard/);
+
+  const missing = evaluateOverheardRecall([aside({ inLedger: false })]);
+  assert.equal(missing.recalled, 0);
+  assert.equal(missing.gate.status, "FAIL");
+  assert.match(missing.gate.detail, /ledger/);
+
+  const lost = evaluateOverheardRecall([aside({ handling: "lost" })]);
+  assert.equal(lost.recalled, 0);
+  assert.equal(lost.gate.status, "FAIL");
+  assert.match(lost.gate.detail, /lost/);
+});
+
+test("steering is answered; filler is resumed-from without derailing the turn", () => {
+  const steeringAnswered = evaluateOverheardRecall([
+    aside({ text: "Wait, stop.", handling: "answered" }),
+  ]);
+  assert.equal(steeringAnswered.gate.status, "PASS");
+
+  const steeringHeardOnly = evaluateOverheardRecall([
+    aside({ text: "Wait, stop.", handling: "heard-only" }),
+  ]);
+  assert.equal(steeringHeardOnly.gate.status, "FAIL");
+  assert.match(steeringHeardOnly.gate.detail, /not answered/);
+
+  const steeringResumed = evaluateOverheardRecall([
+    aside({ text: "Wait, stop.", handling: "resumed-from" }),
+  ]);
+  assert.equal(steeringResumed.gate.status, "FAIL");
+
+  const fillerResumed = evaluateOverheardRecall([
+    aside({ text: "mm-hmm", handling: "resumed-from" }),
+  ]);
+  assert.equal(fillerResumed.gate.status, "PASS");
+
+  const fillerHeardOnly = evaluateOverheardRecall([
+    aside({ text: "mm-hmm", handling: "heard-only" }),
+  ]);
+  assert.equal(fillerHeardOnly.gate.status, "PASS");
+
+  const fillerAnswered = evaluateOverheardRecall([
+    aside({ text: "mm-hmm", handling: "answered" }),
+  ]);
+  assert.equal(fillerAnswered.gate.status, "FAIL");
+  assert.match(fillerAnswered.gate.detail, /derail/);
+});
+
+test("overheard recall counts per beat with trace pointers", () => {
+  const evaluation = evaluateOverheardRecall([
+    aside({ beat: "overheard-aside", handling: "heard-only" }),
+    aside({
+      beat: "greeting-cut",
+      text: "Wait, stop.",
+      handling: "answered",
+      tracePointer: "sess_abc :: 03.10s HEARD \"Wait, stop.\"",
+    }),
+  ]);
+  assert.equal(evaluation.total, 2);
+  assert.equal(evaluation.recalled, 2);
+  assert.deepEqual(evaluation.byBeat["overheard-aside"], { recalled: 1, total: 1 });
+  assert.deepEqual(evaluation.byBeat["greeting-cut"], { recalled: 1, total: 1 });
+  assert.deepEqual(evaluation.byBeat["filler-ignored"], { recalled: 0, total: 0 });
+
+  const failing = evaluateOverheardRecall([
+    aside({ beat: "overheard-aside", handling: "lost" }),
+  ]);
+  assert.equal(failing.gate.status, "FAIL");
+  assert.ok(failing.gate.detail.includes("sess_abc"), "failing gate points at the trace turn");
+
+  const empty = evaluateOverheardRecall([]);
+  assert.equal(empty.gate.status, "FAIL");
+  assert.match(empty.gate.detail, /no overheard asides/);
+});
+
+test("artifact carries overheard counts per beat plus asides with trace pointers", () => {
+  const asides = [aside()];
+  const artifact = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "greeting-cut",
+    runnerStdout: 'heard: "bakery"\n',
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+    overheardAsides: asides,
+  });
+  assert.equal(artifact.overheard.recalled, 1);
+  assert.equal(artifact.overheard.total, 1);
+  assert.deepEqual(artifact.overheard.byBeat["overheard-aside"], { recalled: 1, total: 1 });
+  assert.deepEqual(artifact.overheard.asides, asides);
+  assert.ok(artifact.overheard.asides[0].tracePointer.includes("sess_abc"));
+  const gate = artifact.gates.find((g) => g.name === "overheard-recall")!;
+  assert.equal(gate.status, "PASS");
+
+  const failing = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "greeting-cut",
+    runnerStdout: "",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+    overheardAsides: [aside({ handling: "lost" })],
+  });
+  assert.equal(failing.gates.find((g) => g.name === "overheard-recall")!.status, "FAIL");
+});
+
+test("skeleton without overheard input stays INFO for backward compatibility", () => {
+  const artifact = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "greeting-cut",
+    runnerStdout: "",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+  });
+  assert.equal(artifact.gates.find((g) => g.name === "overheard-recall")!.status, "INFO");
+});
+
+test("overheard report lists per-beat counts with trace pointers", () => {
+  const artifact = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "greeting-cut",
+    runnerStdout: "",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+    overheardAsides: [aside()],
+  });
+  const report = formatOverheardReport(artifact);
+  assert.match(report, /overheard-aside: 1\/1/);
+  assert.ok(report.includes("sess_abc"), "report carries the trace pointer");
+  assert.ok(report.includes("bakery"), "report carries the aside text");
+});
+
+test("trace excerpt HEARD rows become ledger-counted asides with barge-in verdict handling", () => {
+  const excerpt = [
+    '10.20s  VONI    "handling booking and reminders"  (reply.create ttfa 400ms)',
+    '11.05s  HEARD   "We\'re a bakery, actually."  (11.05s–12.10s)',
+    "11.40s  CLIENT  barge-in keep jev We're a bakery, actually.",
+  ];
+  const asides = overheardFromTraceExcerpt(excerpt, "sess_abc");
+  assert.equal(asides.length, 1);
+  assert.equal(asides[0].inLedger, true);
+  assert.equal(asides[0].markedOverheard, true);
+  assert.equal(asides[0].handling, "resumed-from");
+  assert.ok(asides[0].tracePointer.includes("sess_abc"));
+  assert.ok(asides[0].tracePointer.includes("bakery"));
+
+  const steeringExcerpt = [
+    '10.20s  VONI    "handling booking"  (reply.create)',
+    '11.05s  HEARD   "Wait, stop."  (11.05s–11.60s)',
+    "11.40s  CLIENT  barge-in yield rule Wait, stop.",
+  ];
+  const steering = overheardFromTraceExcerpt(steeringExcerpt, "sess_abc");
+  assert.equal(steering[0].handling, "answered");
+
+  const bare = overheardFromTraceExcerpt(
+    ['11.05s  HEARD   "mm-hmm"  (11.05s–11.40s)'],
+    "sess_xyz",
+  );
+  assert.equal(bare.length, 1);
+  assert.equal(bare[0].handling, "heard-only");
+  assert.equal(bare[0].markedOverheard, true);
 });

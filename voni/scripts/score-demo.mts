@@ -10,14 +10,14 @@
  *   - session evidence exporter: npm run qa:voice-session -- --session <id> --evidence-out <path>
  *   - browser e2e fakes live in tests/e2e/demo-fakes.ts (unchanged here).
  *
- * Gates: the reply-gap, end-of-turn, filler-resume and barge-in-cut gates
- * fail the command (exit 1) when measured evidence breaches the budget, so
- * regressions never merge silently. Without measured gaps, filler or
- * real-cut evidence the gates stay INFO and the command exits 0 once the
- * artifact is written, even when the eval runner itself fails (its exit code
- * is recorded in the artifact). Non-zero exit otherwise means the harness
- * broke: unknown voice, bad --gap/--filler/--cut flag, spawn failure, or an
- * unwritable artifact.
+ * Gates: the reply-gap, end-of-turn, filler-resume, barge-in-cut and
+ * overheard-recall gates fail the command (exit 1) when measured evidence
+ * breaches the budget, so regressions never merge silently. Without measured
+ * gaps, filler, real-cut or overheard evidence the gates stay INFO and the
+ * command exits 0 once the artifact is written, even when the eval runner
+ * itself fails (its exit code is recorded in the artifact). Non-zero exit
+ * otherwise means the harness broke: unknown voice, bad --gap/--filler/--cut
+ * or --overheard-json flag, spawn failure, or an unwritable artifact.
  *
  *   npm run scoreboard:demo -- [--gate-voice <demo-voice-id>] [--scenario greeting-cut] [--runs 1]
  *                           [--out scoreboard-runs/score-<ts>-<voice>.json] [--dry-run]
@@ -25,6 +25,7 @@
  *                           [--filler-text "Okaay so" --filler-cut-ms 320 ...]
  *                           [--cut-ms <n> | --cut-never] [--cut-verdict <v>] [--cut-answered]
  *                           [--cut-resumed] [--cut-ended] [--trace-turn <text>]
+ *                           [--overheard-json asides.json]
  *
  * --gate-voice picks the gate voice through the shared voice registry
  * (--voice stays an alias); omitting both gates on DEFAULT_GATE_VOICE, never
@@ -44,7 +45,11 @@
  *
  * --dry-run skips spawning the runner (no ASSEMBLYAI_API_KEY needed) and
  * records a placeholder eval section. --trace-session merges the Call trace
- * for a finished real-call session into the artifact excerpt.
+ * for a finished real-call session into the artifact excerpt, and its HEARD
+ * rows become ledger-counted overheard asides (handling from the CLIENT
+ * barge-in verdicts). --overheard-json feeds explicit asides (marked,
+ * ledger, handling, trace pointer per beat); it merges with trace-derived
+ * ones.
  *
  * Real-cut gate (ticket 05): when the eval output carries a real-cut
  * scenario (stop-over, hang-up-over, hang-up-fast), the barge-in-cut gate is
@@ -56,7 +61,7 @@
  * Explicit flags override the parsed runner output per field. With neither
  * parsed nor explicit evidence the gate stays INFO: recorded, not failed.
  */
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import {
@@ -66,7 +71,9 @@ import {
   extractRealCutEvidence,
   formatGateTable,
   formatGoldenScript,
+  formatOverheardReport,
   GOLDEN_BEATS,
+  overheardFromTraceExcerpt,
   parseTraceGaps,
   redactLines,
   resolveGateVoice,
@@ -74,6 +81,7 @@ import {
   type FillerResumeEvidence,
   type FillerVerdict,
   type GoldenBeat,
+  type OverheardAside,
   type RealCutEvidence,
   type ScoreboardArtifact,
   type TraceGap,
@@ -177,6 +185,44 @@ function readFillerEvidence(traceSession: string): FillerResumeEvidence | undefi
   };
 }
 
+const OVERHEARD_HANDLINGS = ["answered", "resumed-from", "heard-only", "lost"] as const;
+
+/** Load and validate explicit overheard asides; throws (exit 1, no artifact) on bad input. */
+function loadOverheardJson(path: string): OverheardAside[] {
+  const raw = JSON.parse(readFileSync(resolve(path), "utf8")) as unknown;
+  if (!Array.isArray(raw)) throw new Error(`--overheard-json ${path} must be a JSON array of asides`);
+  return raw.map((entry, index) => {
+    const aside = entry as Partial<OverheardAside>;
+    if (aside === null || typeof aside !== "object") {
+      throw new Error(`--overheard-json[${index}]: must be an object`);
+    }
+    if (!(GOLDEN_BEATS as readonly string[]).includes(String(aside.beat))) {
+      throw new Error(`--overheard-json[${index}]: beat must be one of ${GOLDEN_BEATS.join(", ")}`);
+    }
+    if (typeof aside.text !== "string" || !aside.text.trim()) {
+      throw new Error(`--overheard-json[${index}]: text must be a non-empty string`);
+    }
+    if (typeof aside.markedOverheard !== "boolean" || typeof aside.inLedger !== "boolean") {
+      throw new Error(`--overheard-json[${index}]: markedOverheard and inLedger must be booleans`);
+    }
+    if (!(OVERHEARD_HANDLINGS as readonly string[]).includes(String(aside.handling))) {
+      throw new Error(`--overheard-json[${index}]: handling must be one of ${OVERHEARD_HANDLINGS.join(", ")}`);
+    }
+    if (typeof aside.tracePointer !== "string" || !aside.tracePointer.trim()) {
+      throw new Error(`--overheard-json[${index}]: tracePointer must be a non-empty string`);
+    }
+    return {
+      beat: aside.beat as GoldenBeat,
+      text: aside.text,
+      ...(typeof aside.agentText === "string" ? { agentText: aside.agentText } : {}),
+      markedOverheard: aside.markedOverheard,
+      inLedger: aside.inLedger,
+      handling: aside.handling as OverheardAside["handling"],
+      tracePointer: aside.tracePointer,
+    };
+  });
+}
+
 function main(): void {
   const voice = resolveGateVoice(arg("--gate-voice", "") || arg("--voice", DEFAULT_GATE_VOICE));
   const scenario = arg("--scenario", "greeting-cut");
@@ -190,18 +236,24 @@ function main(): void {
   if (cutMsArg !== "" && !/^\d+$/.test(cutMsArg)) {
     throw new Error(`--cut-ms needs milliseconds, got "${cutMsArg}"`);
   }
+  const overheardJsonPath = arg("--overheard-json", "");
 
   const evalSection = dryRun
     ? { stdout: "(dry run: eval runner skipped)", exitCode: null as number | null, durationMs: 0 }
     : runEvalRunner(voice, scenario, runs);
 
   const gaps = parseGapFlags(process.argv);
+  const explicitAsides = overheardJsonPath ? loadOverheardJson(overheardJsonPath) : null;
   let excerpt: string[] | null = null;
   let traceGaps: TraceGap[] = [];
   if (traceSession) {
     excerpt = runCallTrace(traceSession);
     traceGaps = parseTraceGaps(excerpt);
   }
+  const traceAsides =
+    excerpt && traceSession ? overheardFromTraceExcerpt(excerpt, traceSession) : [];
+  const overheardAsides =
+    explicitAsides !== null || traceAsides.length > 0 ? [...(explicitAsides ?? []), ...traceAsides] : undefined;
   const agentInput = buildDemoAgentBody(voice).input;
   const fillerResume = readFillerEvidence(traceSession);
 
@@ -218,6 +270,7 @@ function main(): void {
     agentInput,
     traceExcerpt: excerpt ?? [],
     fillerResume,
+    ...(overheardAsides !== undefined ? { overheardAsides } : {}),
   });
   const parsed = extractRealCutEvidence(evalSection.stdout);
   const hasCutFlags =
@@ -265,6 +318,7 @@ function main(): void {
 
   console.log(formatGoldenScript(voice));
   console.log(formatGateTable(artifact));
+  console.log(formatOverheardReport(artifact));
   console.log(`artifact: ${out}`);
   if (artifact.gates.some((gate) => gate.status === "FAIL")) {
     console.log("scoreboard: FAIL — a measured gate breached its budget; see the failing gate detail above");

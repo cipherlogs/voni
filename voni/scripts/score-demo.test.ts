@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, readFileSync, existsSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -338,4 +338,146 @@ test("dry run with no real-cut evidence leaves the barge-in gate ungated", () =>
   };
   const gate = artifact.gates.find((g) => g.name === "barge-in-cut")!;
   assert.equal(gate.status, "INFO");
+});
+
+// ── Ticket 06: overheard-recall gate ────────────────────────────────────────
+function writeAsides(dir: string, name: string, asides: unknown[]): string {
+  const path = join(dir, name);
+  writeFileSync(path, `${JSON.stringify(asides, null, 2)}\n`);
+  return path;
+}
+
+test("--overheard-json PASS: marked and ledger-counted aside reports per-beat counts with trace pointers", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "score.json");
+  const json = writeAsides(dir, "asides.json", [
+    {
+      beat: "overheard-aside",
+      text: "We're a bakery, actually.",
+      agentText: "handling booking and reminders",
+      markedOverheard: true,
+      inLedger: true,
+      handling: "heard-only",
+      tracePointer: "sess_abc :: 12.34s HEARD \"We're a bakery, actually.\"",
+    },
+  ]);
+  const result = run(
+    ["--dry-run", "--voice", DEMO_VOICE_IDS[0], "--out", out, "--overheard-json", json],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    overheard: { recalled: number; total: number; byBeat: Record<string, { recalled: number; total: number }> };
+    gates: { name: string; status: string; detail: string }[];
+  };
+  assert.equal(artifact.overheard.recalled, 1);
+  assert.equal(artifact.overheard.total, 1);
+  assert.deepEqual(artifact.overheard.byBeat["overheard-aside"], { recalled: 1, total: 1 });
+  const gate = artifact.gates.find((g) => g.name === "overheard-recall")!;
+  assert.equal(gate.status, "PASS");
+  assert.match(result.stdout, /overheard recall 1\/1/);
+  assert.match(result.stdout, /overheard-aside: 1\/1/);
+  assert.ok(result.stdout.includes("sess_abc"), "console carries the trace pointer");
+  assert.ok(result.stdout.includes("bakery"), "console carries the aside text");
+});
+
+test("--overheard-json FAIL: steering heard-only and filler answered both fail with trace pointers", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const steeringOut = join(dir, "steering.json");
+  const steeringJson = writeAsides(dir, "steering.json", [
+    {
+      beat: "overheard-aside",
+      text: "Wait, stop.",
+      agentText: "handling booking and reminders",
+      markedOverheard: true,
+      inLedger: true,
+      handling: "heard-only",
+      tracePointer: "sess_abc :: 11.05s HEARD \"Wait, stop.\"",
+    },
+  ]);
+  const steering = run(
+    ["--dry-run", "--voice", DEMO_VOICE_IDS[0], "--out", steeringOut, "--overheard-json", steeringJson],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.notEqual(steering.status, 0, "gate FAIL writes the artifact then exits 1");
+  const steeringArtifact = JSON.parse(readFileSync(steeringOut, "utf8")) as {
+    gates: { name: string; status: string; detail: string }[];
+  };
+  assert.equal(steeringArtifact.gates.find((g) => g.name === "overheard-recall")!.status, "FAIL");
+  assert.match(steering.stdout, /FAIL.*overheard-recall/);
+  assert.ok(steering.stdout.includes("sess_abc"));
+
+  const fillerOut = join(dir, "filler.json");
+  const fillerJson = writeAsides(dir, "filler.json", [
+    {
+      beat: "overheard-aside",
+      text: "mm-hmm",
+      agentText: "handling booking and reminders",
+      markedOverheard: true,
+      inLedger: true,
+      handling: "answered",
+      tracePointer: "sess_abc :: 11.40s HEARD \"mm-hmm\"",
+    },
+  ]);
+  const filler = run(
+    ["--dry-run", "--voice", DEMO_VOICE_IDS[0], "--out", fillerOut, "--overheard-json", fillerJson],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.notEqual(filler.status, 0, "filler-answered FAIL exits 1");
+  const fillerArtifact = JSON.parse(readFileSync(fillerOut, "utf8")) as {
+    gates: { name: string; status: string; detail: string }[];
+  };
+  assert.equal(fillerArtifact.gates.find((g) => g.name === "overheard-recall")!.status, "FAIL");
+  assert.ok(filler.stdout.includes("sess_abc"));
+});
+
+test("--overheard-json reports counts per beat with trace pointers", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "score.json");
+  const json = writeAsides(dir, "asides.json", [
+    {
+      beat: "overheard-aside",
+      text: "We're a bakery, actually.",
+      markedOverheard: true,
+      inLedger: true,
+      handling: "heard-only",
+      tracePointer: "sess_abc :: 12.34s HEARD \"bakery\"",
+    },
+    {
+      beat: "greeting-cut",
+      text: "Wait, stop.",
+      markedOverheard: true,
+      inLedger: true,
+      handling: "answered",
+      tracePointer: "sess_abc :: 03.10s HEARD \"Wait, stop.\"",
+    },
+  ]);
+  const result = run(
+    ["--dry-run", "--voice", DEMO_VOICE_IDS[0], "--out", out, "--overheard-json", json],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    overheard: { recalled: number; total: number; byBeat: Record<string, { recalled: number; total: number }> };
+  };
+  assert.deepEqual(artifact.overheard.byBeat["overheard-aside"], { recalled: 1, total: 1 });
+  assert.deepEqual(artifact.overheard.byBeat["greeting-cut"], { recalled: 1, total: 1 });
+  assert.match(result.stdout, /overheard recall 2\/2/);
+  assert.match(result.stdout, /overheard-aside: 1\/1/);
+  assert.match(result.stdout, /greeting-cut: 1\/1/);
+});
+
+test("bad --overheard-json fails fast with no artifact", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "score.json");
+  const json = writeAsides(dir, "bad.json", [
+    { beat: "overheard-aside", text: "", markedOverheard: true, inLedger: true },
+  ]);
+  const result = run(
+    ["--dry-run", "--voice", DEMO_VOICE_IDS[0], "--out", out, "--overheard-json", json],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.notEqual(result.status, 0);
+  assert.ok(!existsSync(out));
+  assert.match(result.stderr + result.stdout, /tracePointer|text/);
 });
