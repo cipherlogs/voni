@@ -289,30 +289,97 @@ export function addHumanRating(
 }
 
 /**
+ * Blind-ballot protocol (spec implementation decision: human likeness stays
+ * reviewable). Committed alongside the harness in voni/docs/blind-human-ballots.md;
+ * the artifact restates it so a stored run explains its own human slot.
+ */
+export const HUMAN_BALLOT_PROTOCOL =
+  "blind: one shared golden recording, at least 2 independent raters, one ballot per rater (1-5 timbre and accent); auto timbre checks must pass first; taste is informational and never fails a run";
+
+/**
+ * The human slot as reviewable evidence: which recording every ballot judged,
+ * how many independent raters filed one, and whether the auto timbre gate let
+ * those ballots count. A ballot record without a recording is impossible by
+ * construction (`addHumanRating` rejects it).
+ */
+export type HumanReview = {
+  /** sha256 of the one golden recording every ballot judged; null until supplied. */
+  recordingSha256: string | null;
+  /** Independent raters who filed a ballot (one ballot per rater). */
+  raterCount: number;
+  requiredRaters: number;
+  /** Rater names in ballot order, so the two ears are attributable. */
+  raters: string[];
+  /** Auto timbre gate status was PASS before ballots count. */
+  autoTimbrePassed: boolean;
+  /** Auto timbre passed and enough independent raters filed: ballots count. */
+  counted: boolean;
+  protocol: string;
+};
+
+export function humanReview(human: HumanRatings, autoTimbrePassed: boolean): HumanReview {
+  const raterCount = human.ratings.length;
+  return {
+    recordingSha256: human.recordingSha256,
+    raterCount,
+    requiredRaters: HUMAN_RATERS_REQUIRED,
+    raters: human.ratings.map((ballot) => ballot.rater),
+    autoTimbrePassed,
+    counted: autoTimbrePassed && raterCount >= HUMAN_RATERS_REQUIRED,
+    protocol: HUMAN_BALLOT_PROTOCOL,
+  };
+}
+
+/** Console block: the shared recording, the raters, and whether taste counted. */
+export function formatHumanReview(review: HumanReview): string {
+  const recording = review.recordingSha256
+    ? `sha256 ${review.recordingSha256}`
+    : "unbound: pass --recording <sha256> or --recording-file <path> to bind ballots to the golden recording";
+  const raters = review.raters.length > 0 ? `${review.raters.join(", ")}` : "none yet";
+  const gate = review.autoTimbrePassed
+    ? "PASS — ballots count"
+    : "not PASS — ballots reported, not counted";
+  return [
+    "blind human ballots (one shared recording, auto timbre first)",
+    `  recording: ${recording}`,
+    `  raters: ${review.raterCount}/${review.requiredRaters} (${raters})`,
+    `  auto timbre: ${gate}`,
+    `  protocol: ${review.protocol}`,
+  ].join("\n");
+}
+
+/**
  * The accent human gate: INFO until at least two independent ballots on the
  * shared recording exist, PASS after. Auto timbre checks must pass before
  * human ratings count — ears judge likeness, never cover for defects.
  * Reviewable by design: taste never FAILs a run, it only completes the record.
  */
 export function evaluateHumanGate(autoPassed: boolean, human: HumanRatings): ScoreboardGate {
+  const recording = human.recordingSha256 ? ` on recording ${human.recordingSha256.slice(0, 12)}` : "";
   if (!autoPassed) {
+    const ballots =
+      human.ratings.length > 0
+        ? ` — ${human.ratings.length} ballot${human.ratings.length === 1 ? "" : "s"} (${human.ratings
+            .map((ballot) => ballot.rater)
+            .join(", ")})${recording} ${human.ratings.length === 1 ? "is" : "are"} reported, not counted`
+        : "";
     return {
       name: "accent-human",
       status: "INFO",
-      detail: "auto timbre checks must pass before human rating counts (defects first, likeness second)",
+      detail: `auto timbre checks must pass before human rating counts (defects first, likeness second)${ballots}`,
     };
   }
   if (human.ratings.length < HUMAN_RATERS_REQUIRED) {
     return {
       name: "accent-human",
       status: "INFO",
-      detail: `awaiting human 1-5 ratings (${human.ratings.length}/${HUMAN_RATERS_REQUIRED} independent raters on the same golden recording)`,
+      detail: `awaiting human 1-5 ratings (${human.ratings.length}/${HUMAN_RATERS_REQUIRED} independent raters on the same golden recording${recording})`,
     };
   }
   return {
     name: "accent-human",
     status: "PASS",
-    detail: `timbre ${human.timbre} / accent ${human.accent} across ${human.ratings.length} independent raters on the same golden recording`,
+    detail: `timbre ${human.timbre} / accent ${human.accent} across ${human.ratings.length} independent raters on the same golden recording${recording}`,
   };
 }
 
@@ -1334,6 +1401,8 @@ export type ScoreboardArtifact = {
   loudness: ScoreboardLoudness;
   transcripts: { sha256: string; redacted: string[] };
   humanRatings: HumanRatings;
+  /** Blind-ballot binding as reviewable evidence: recording sha256, raters, protocol (ticket 28). */
+  humanReview: HumanReview;
   gates: ScoreboardGate[];
   /** Five human-likeness sub-scores rolled up from the gates (review; no new thresholds). */
   subScores: SubScore[];
@@ -3352,6 +3421,10 @@ export function buildSkeletonArtifact(input: {
       redacted: redactLines(input.runnerStdout),
     },
     humanRatings,
+    humanReview: humanReview(
+      humanRatings,
+      gatesPreview.find((gate) => gate.name === "timbre-probes")?.status === "PASS",
+    ),
     gates: gatesPreview,
     subScores: buildSubScores(gatesPreview),
     emailInvite: null,

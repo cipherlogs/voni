@@ -31,7 +31,7 @@
  *                           [--out scoreboard-runs/score-<ts>-<voice>.json] [--dry-run]
  *                           [--prior <path>]
  *                           [--timing-lock /tmp/voni-demo-timing.lock]
- *                           [--trace-session sess_...] [--trace-beat greeting-cut] [--probe-json probes.json] [--recording <sha256>] [--rate rater:timbre,accent ...]
+ *                           [--trace-session sess_...] [--trace-beat greeting-cut] [--probe-json probes.json] [--recording <sha256> | --recording-file <path>] [--rate rater:timbre,accent ...]
  *                           [--gap beat=ms ...]
  *                           [--filler-text "Okaay so" --filler-cut-ms 320 ...]
  *                           [--cut-ms <n> | --cut-never] [--cut-verdict <v>] [--cut-answered]
@@ -103,7 +103,9 @@
  * qa-voice-session agent-channel PCM analysis; it drives the timbre-probes
  * gate (any clip, pop, jump, underrun, or input-drop FAILs the gate but the
  * artifact is still written). --rate files blind 1-5 human ballots, all
- * bound to --recording; auto timbre checks must pass before ballots count.
+ * bound to one shared golden recording via --recording or --recording-file;
+ * auto timbre checks must pass before ballots count, and a ballot without a
+ * recording is rejected (see voni/docs/blind-human-ballots.md).
  *
  * Extensions kept beyond the ticket scope (documented, not silent):
  * agent-channel PCM evidence rides in --probe-json (offline
@@ -165,6 +167,7 @@ import {
   formatEvalRunnerReport,
   formatGateTable,
   formatGoldenScript,
+  formatHumanReview,
   formatOverheardReport,
   formatReplyGapReport,
   formatSubScoreTable,
@@ -311,9 +314,35 @@ function toEmailInviteEvidence(
 }
 
 /**
+ * The one shared golden recording every ballot judges. `--recording-file`
+ * hashes the recording the harness has on disk (the session recording whose
+ * sha256 qa-voice-session already reports), so the operator does not retype a
+ * 64-char digest; an explicit `--recording` must agree with it. Ballots with
+ * neither are rejected: unbound ears never count.
+ */
+function readRecordingBinding(recording: string, recordingFile: string): string {
+  if (!recordingFile) return recording;
+  let bytes: Buffer;
+  try {
+    bytes = readFileSync(resolve(recordingFile));
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(`--recording-file ${recordingFile}: cannot read the golden recording (${reason})`);
+  }
+  const fileSha = sha256Hex(bytes);
+  if (recording && recording.toLowerCase() !== fileSha) {
+    throw new Error(
+      `--recording ${recording} does not match --recording-file sha256 ${fileSha} (ballots judge one shared recording)`,
+    );
+  }
+  return fileSha;
+}
+
+/**
  * File blind ballots from `--rate rater:timbre,accent` (repeatable) against
- * the shared golden recording (`--recording <sha256>`). Ballots without a
- * recording are rejected: unbound ears never count.
+ * the shared golden recording (`--recording <sha256>` or
+ * `--recording-file <path>`). Ballots without a recording are rejected:
+ * unbound ears never count.
  */
 function readHumanRatings(rates: string[], recording: string): HumanRatings {
   if (rates.length > 0 && !recording) {
@@ -652,7 +681,10 @@ function main(): void {
   const { probes: timbreProbes, agentChannel } = probePath
     ? readProbeJson(resolve(probePath))
     : { probes: undefined as TimbreProbes | undefined, agentChannel: undefined as AgentChannelEvidence | null | undefined };
-  const humanRatings: HumanRatings = readHumanRatings(argAll("--rate"), arg("--recording", ""));
+  const humanRatings: HumanRatings = readHumanRatings(
+    argAll("--rate"),
+    readRecordingBinding(arg("--recording", ""), arg("--recording-file", "")),
+  );
 
   const evalSection = dryRun
     ? { stdout: "(dry run: eval runner skipped)", exitCode: null as number | null, durationMs: 0, evalError: null as string | null }
@@ -828,6 +860,7 @@ function main(): void {
   }
   console.log(formatSubScoreTable(artifact));
   console.log(formatVoiceGainTable(artifact.loudness.voices));
+  console.log(formatHumanReview(artifact.humanReview));
   console.log(formatOverheardReport(artifact));
   console.log(`artifact: ${out}`);
   const failures = artifact.gates.filter((gate) => gate.status === "FAIL");

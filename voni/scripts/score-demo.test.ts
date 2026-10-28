@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, existsSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -1402,6 +1403,129 @@ test("--rate files two blind ballots and passes accent-human on the same recordi
   const human = artifact.gates.find((g) => g.name === "accent-human");
   assert.equal(human?.status, "PASS");
   assert.match(result.stdout, /accent-human/);
+});
+
+test("--recording-file binds ballots to the harness-computed recording sha256", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "file-bound.json");
+  const recording = join(dir, "golden.ogg");
+  writeFileSync(recording, "golden call audio");
+  const expected = createHash("sha256").update("golden call audio").digest("hex");
+  const result = run(
+    [
+      "--dry-run",
+      "--voice",
+      DEMO_VOICE_IDS[0],
+      "--out",
+      out,
+      "--recording-file",
+      recording,
+      "--rate",
+      "ana:5,4",
+      "--rate",
+      "bob:4,4",
+    ],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    humanRatings: { recordingSha256: string };
+    humanReview: { recordingSha256: string; raterCount: number; requiredRaters: number; protocol: string };
+    gates: { name: string; status: string }[];
+  };
+  assert.equal(artifact.humanRatings.recordingSha256, expected);
+  assert.equal(artifact.humanReview.recordingSha256, expected);
+  assert.equal(artifact.humanReview.raterCount, 2);
+  assert.equal(artifact.humanReview.requiredRaters, 2);
+  assert.match(artifact.humanReview.protocol, /blind/);
+  assert.equal(artifact.gates.find((g) => g.name === "accent-human")?.status, "PASS");
+  assert.ok(result.stdout.includes(expected), "console prints the shared recording sha256");
+  assert.match(result.stdout, /blind human ballots/);
+
+  const mismatch = run(
+    [
+      "--dry-run",
+      "--voice",
+      DEMO_VOICE_IDS[0],
+      "--out",
+      join(dir, "mismatch.json"),
+      "--recording",
+      "d".repeat(64),
+      "--recording-file",
+      recording,
+    ],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.notEqual(mismatch.status, 0);
+  assert.ok(!existsSync(join(dir, "mismatch.json")));
+  assert.match(mismatch.stderr + mismatch.stdout, /does not match/);
+});
+
+test("ballots on a failing auto gate are recorded but leave the run red", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "blocked.json");
+  const probes = probeFile(dir, { jump: 0, overload: 0, clip: 1, underrun: 0, inputDrop: 0 });
+  const result = run(
+    [
+      "--dry-run",
+      "--voice",
+      DEMO_VOICE_IDS[0],
+      "--out",
+      out,
+      "--probe-json",
+      probes,
+      "--recording",
+      RECORDING_SHA,
+      "--rate",
+      "ana:5,5",
+      "--rate",
+      "bob:5,5",
+    ],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.equal(result.status, 1, "auto FAIL keeps the run red no matter the ballots");
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    humanRatings: { ratings: unknown[] };
+    humanReview: { counted: boolean; autoTimbrePassed: boolean };
+    gates: { name: string; status: string; detail: string }[];
+  };
+  assert.equal(artifact.gates.find((g) => g.name === "timbre-probes")?.status, "FAIL");
+  const human = artifact.gates.find((g) => g.name === "accent-human");
+  assert.equal(human?.status, "INFO");
+  assert.match(human?.detail ?? "", /reported, not counted/);
+  assert.equal(artifact.humanRatings.ratings.length, 2, "ballots stay reviewable in the artifact");
+  assert.equal(artifact.humanReview.autoTimbrePassed, false);
+  assert.equal(artifact.humanReview.counted, false);
+  assert.match(result.stdout, /reported, not counted/);
+});
+
+test("a low ballot after a passing auto gate never fails the run", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "low.json");
+  const result = run(
+    [
+      "--dry-run",
+      "--voice",
+      DEMO_VOICE_IDS[0],
+      "--out",
+      out,
+      "--recording",
+      RECORDING_SHA,
+      "--rate",
+      "ana:1,1",
+      "--rate",
+      "bob:1,1",
+    ],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.equal(result.status, 0, "taste never fails a run");
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    gates: { name: string; status: string; detail: string }[];
+  };
+  const human = artifact.gates.find((g) => g.name === "accent-human");
+  assert.equal(human?.status, "PASS");
+  assert.match(human?.detail ?? "", /timbre 1 \/ accent 1/);
+  assert.ok(!artifact.gates.some((gate) => gate.status === "FAIL"));
 });
 
 test("--rate without --recording fails fast with no artifact", () => {
