@@ -10,19 +10,21 @@
  *   - session evidence exporter: npm run qa:voice-session -- --session <id> --evidence-out <path>
  *   - browser e2e fakes live in tests/e2e/demo-fakes.ts (unchanged here).
  *
- * Gates: the reply-gap, end-of-turn and filler-resume gates fail the
- * command (exit 1) when measured evidence breaches the budget, so
- * regressions never merge silently. Without measured gaps or filler
- * evidence the gates stay INFO and the command exits 0 once the artifact
- * is written, even when the eval runner itself fails (its exit code is
- * recorded in the artifact). Non-zero exit otherwise means the harness
- * broke: unknown voice, bad --gap/--filler flag, spawn failure, or an
+ * Gates: the reply-gap, end-of-turn, filler-resume and barge-in-cut gates
+ * fail the command (exit 1) when measured evidence breaches the budget, so
+ * regressions never merge silently. Without measured gaps, filler or
+ * real-cut evidence the gates stay INFO and the command exits 0 once the
+ * artifact is written, even when the eval runner itself fails (its exit code
+ * is recorded in the artifact). Non-zero exit otherwise means the harness
+ * broke: unknown voice, bad --gap/--filler/--cut flag, spawn failure, or an
  * unwritable artifact.
  *
  *   npm run scoreboard:demo -- [--gate-voice <demo-voice-id>] [--scenario greeting-cut] [--runs 1]
  *                           [--out scoreboard-runs/score-<ts>-<voice>.json] [--dry-run]
  *                           [--trace-session sess_...] [--gap beat=ms ...]
  *                           [--filler-text "Okaay so" --filler-cut-ms 320 ...]
+ *                           [--cut-ms <n> | --cut-never] [--cut-verdict <v>] [--cut-answered]
+ *                           [--cut-resumed] [--cut-ended] [--trace-turn <text>]
  *
  * --gate-voice picks the gate voice through the shared voice registry
  * (--voice stays an alias); omitting both gates on DEFAULT_GATE_VOICE, never
@@ -43,13 +45,25 @@
  * --dry-run skips spawning the runner (no ASSEMBLYAI_API_KEY needed) and
  * records a placeholder eval section. --trace-session merges the Call trace
  * for a finished real-call session into the artifact excerpt.
+ *
+ * Real-cut gate (ticket 05): when the eval output carries a real-cut
+ * scenario (stop-over, hang-up-over, hang-up-fast), the barge-in-cut gate is
+ * evaluated from the runner's cut milliseconds, verdict, and resume lines,
+ * and the real-cut-answered beat carries the measured cut. The same evidence
+ * can be passed explicitly (dry-run friendly): --cut-ms with --cut-answered
+ * passes a fast answered cut, --cut-never / a late --cut-ms / --cut-resumed /
+ * a missing --cut-answered fails with cut ms plus verdict and trace turn.
+ * Explicit flags override the parsed runner output per field. With neither
+ * parsed nor explicit evidence the gate stays INFO: recorded, not failed.
  */
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import {
+  applyRealCutGate,
   buildSkeletonArtifact,
   DEFAULT_GATE_VOICE,
+  extractRealCutEvidence,
   formatGateTable,
   formatGoldenScript,
   GOLDEN_BEATS,
@@ -60,6 +74,7 @@ import {
   type FillerResumeEvidence,
   type FillerVerdict,
   type GoldenBeat,
+  type RealCutEvidence,
   type ScoreboardArtifact,
   type TraceGap,
 } from "../src/lib/demo/scoreboard";
@@ -171,6 +186,10 @@ function main(): void {
   if (traceSession && !/^sess_[A-Za-z0-9_-]+$/.test(traceSession)) {
     throw new Error(`--trace-session needs a session id like sess_abc, got "${traceSession}"`);
   }
+  const cutMsArg = arg("--cut-ms", "");
+  if (cutMsArg !== "" && !/^\d+$/.test(cutMsArg)) {
+    throw new Error(`--cut-ms needs milliseconds, got "${cutMsArg}"`);
+  }
 
   const evalSection = dryRun
     ? { stdout: "(dry run: eval runner skipped)", exitCode: null as number | null, durationMs: 0 }
@@ -186,7 +205,7 @@ function main(): void {
   const agentInput = buildDemoAgentBody(voice).input;
   const fillerResume = readFillerEvidence(traceSession);
 
-  const artifact: ScoreboardArtifact = buildSkeletonArtifact({
+  let artifact: ScoreboardArtifact = buildSkeletonArtifact({
     voice,
     scenario,
     runnerStdout: evalSection.stdout,
@@ -200,6 +219,38 @@ function main(): void {
     traceExcerpt: excerpt ?? [],
     fillerResume,
   });
+  const parsed = extractRealCutEvidence(evalSection.stdout);
+  const hasCutFlags =
+    cutMsArg !== "" ||
+    process.argv.includes("--cut-never") ||
+    arg("--cut-verdict", "") !== "" ||
+    process.argv.includes("--cut-answered") ||
+    process.argv.includes("--cut-resumed") ||
+    process.argv.includes("--cut-ended") ||
+    arg("--trace-turn", "") !== "";
+  if (parsed || hasCutFlags) {
+    const base: RealCutEvidence = parsed ?? {
+      cutMs: null,
+      verdict: null,
+      verdictSource: null,
+      answered: false,
+      resumed: false,
+      ended: false,
+      traceTurn: null,
+    };
+    const evidence: RealCutEvidence = {
+      cutMs: process.argv.includes("--cut-never")
+        ? null
+        : cutMsArg !== "" ? Number(cutMsArg) : base.cutMs,
+      verdict: arg("--cut-verdict", "") || base.verdict,
+      verdictSource: base.verdictSource,
+      answered: process.argv.includes("--cut-answered") || base.answered,
+      resumed: process.argv.includes("--cut-resumed") || base.resumed,
+      ended: process.argv.includes("--cut-ended") || base.ended,
+      traceTurn: arg("--trace-turn", "") || base.traceTurn,
+    };
+    artifact = applyRealCutGate(artifact, evidence);
+  }
   if (excerpt) {
     artifact.callTrace = {
       sessionId: traceSession,
