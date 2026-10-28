@@ -30,7 +30,7 @@ test("bound demo agents get recognition tuning, never turn_detection, after sess
     type: "session.update",
     session: {
       input: {
-        transcription_mode: "balanced",
+        transcription_mode: "max_accuracy",
         voice_focus: "near-field",
       },
     },

@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "dev:phone": "next dev --experimental-https",
+    "dev:all": "node scripts/dev-all.mjs",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
@@ -31,7 +32,8 @@
     "test:e2e:instant": "node scripts/e2e-run.mjs instant",
     "test:e2e:behavior": "node scripts/e2e-run.mjs behavior",
     "test:e2e:cloudflare": "node scripts/e2e-run.mjs cloudflare",
-    "test:e2e": "node scripts/e2e-run.mjs all"
+    "test:e2e": "node scripts/e2e-run.mjs all",
+    "postinstall": "patch-package"
   },
   "dependencies": {
     "@ai-sdk/openai": "^4.0.60",
@@ -72,6 +74,7 @@
     "drizzle-kit": "^0.31.10",
     "eslint": "^9",
     "eslint-config-next": "16.3.4",
+    "patch-package": "^8.0.1",
     "sharp": "^0.35.4",
     "tailwindcss": "^4",
     "typescript": "^5",

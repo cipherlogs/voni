@@ -1516,6 +1516,8 @@ export function VoiceCall({
             // (empty) locks to English so the test call skips 18-language
             // auto-detection every turn.
             languageCodes: effectiveInlineLanguages(config.languageCodes),
+            // Demo parity: best hearing even if gap grows. PSTN stays balanced.
+            transcriptionMode: "max_accuracy",
             // First-utterance STT tuning: scene + vocabulary for the opening
             // turn, which would otherwise run on generic recognition.
             transcriptionPrompt: buildAgentTranscriptionPrompt(config),

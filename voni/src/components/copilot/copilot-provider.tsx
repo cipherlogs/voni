@@ -654,7 +654,7 @@ export function CopilotProvider({
       .catch(() => {
         // start() reports through onError; nothing to add here.
       });
-  }, [noteActivity, sessionToolsFor, stop, liveContext, proposalStore, copilotBus, clearTimers, platformAdmin]);
+  }, [noteActivity, sessionToolsFor, stop, liveContext, proposalStore, copilotBus, clearTimers, platformAdmin, pushScreenContext]);
 
   // Idle rule while live: soft check-in, then end. Typing and taps extend
   // the clock through noteActivity/noteInteraction.

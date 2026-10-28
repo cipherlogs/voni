@@ -8,7 +8,7 @@ import { getVoice, VOICE_OUTPUT_VOLUME } from "@/lib/agents/voices";
 import { DEMO_VOICE_IDS, VONI_AGENT_ID, voniConfig } from "./voni-agent";
 import { toRestTool } from "@/lib/tools/definitions";
 import { DEMO_VOICE_TOOLS } from "./demo-tools";
-import { TRANSCRIPTION_MODE, buildAgentKeyterms, buildAgentTranscriptionPrompt } from "@/lib/voice/transcription";
+import { DEMO_TRANSCRIPTION_MODE, buildAgentKeyterms, buildAgentTranscriptionPrompt } from "@/lib/voice/transcription";
 import { stableJson } from "@/lib/agents/provision";
 
 /**
@@ -90,7 +90,7 @@ export function buildDemoAgentBody(voiceId: string, opts?: { resume?: boolean })
       // every turn is slow. Language codes apply at speech-to-text connect,
       // so they live on the stored agent, not in the post-ready preset.
       language_codes: voice ? [voice.languageCode] : [],
-      transcription_mode: TRANSCRIPTION_MODE,
+      transcription_mode: DEMO_TRANSCRIPTION_MODE,
       transcription_prompt: buildAgentTranscriptionPrompt(config),
       keyterms: buildAgentKeyterms(config),
       voice_focus: "near-field",
@@ -118,6 +118,13 @@ async function remoteCall(
   agentId?: string,
 ): Promise<{ ok: true; id: string } | { ok: false; status: number; detail: string }> {
   const url = agentId ? `${AGENTS_URL}/${encodeURIComponent(agentId)}` : AGENTS_URL;
+  // Updates never clear an absent field: a previously-set `llm` override
+  // survives a PUT whose body omits it (seen live: gateway model the account
+  // can't access kept failing turns after the override was removed from the
+  // body). Send the documented revert (`"llm": []` → managed model) so a
+  // refresh always converges instead of stranding the stale override.
+  const payload =
+    method === "PUT" && !("llm" in body) ? { ...body, llm: [] } : { ...body };
   let res: Response;
   try {
     res = await fetch(url, {
@@ -126,7 +133,7 @@ async function remoteCall(
         Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify(body),
+      body: JSON.stringify(payload),
     });
   } catch (error) {
     return {

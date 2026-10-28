@@ -66,9 +66,9 @@ export function buildConfigMessage(config: CascadeCallConfig): string {
       ...config.pipeline,
       language_codes: config.pipeline.language_codes ?? ["en"],
     },
-    systemPrompt: config.systemPrompt,
+    system_prompt: config.systemPrompt,
     tools: config.tools ?? [],
-    agentName: config.agentName ?? "",
+    agent_name: config.agentName ?? "",
   });
 }
 

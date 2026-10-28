@@ -3,6 +3,7 @@
 Current frontier for this repo. Read this at the start of a session; keep `Now` current after finishing a meaningful chunk of work.
 
 ## Now
+- `voni-perf-sanitize` — all 11 tickets merged to `main` (`bc811ff2`, 83 files, behavior-preserving perf sanitize: concurrent loaders, on-demand voice/Copilot bundles, per-request session dedup, shared listeners + versioned storage, re-render/render hygiene, durable-jobs UX, instant-nav guards + review fix for sync copilot shell boundary). Gates: 881/882 unit (1 pre-existing design-foundation fail), typecheck + lint clean. All ticket branches/worktrees removed. Spec: `.scratch/voni-perf-sanitize/`.
 - `button-cursor-draft-gate` — tickets 01 + 02 done (`.scratch/button-cursor-draft-gate/issues/`, both `done`; 01 committed on `redesign/minimalist-editorial-pass` as `ba2896de`, 02 pre-existing; suite green).
 - `sidebar-03-brand-swap` — all tickets resolved (01/03/06 done, 02 done-superseded, 05 wontfix, 04 done with runtime loop).
 - `sidebar-avatar-menugroup-fix` — spec done, no tickets needed (all stories verified shipped + test-pinned; `.scratch/sidebar-avatar-menugroup-fix/spec.md`).

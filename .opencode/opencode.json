@@ -1,6 +1,15 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": [
-    ".opencode/plugins/graphify.js"
+  "permissions": [
+    { "action": "shell", "resource": "git branch -D *", "effect": "allow" },
+    { "action": "shell", "resource": "git worktree remove *", "effect": "allow" },
+    { "action": "shell", "resource": "rm -rf /home/cipherlogs/Repos/*/*", "effect": "allow" },
+    { "action": "shell", "resource": "rm /home/cipherlogs/Repos/*/*", "effect": "allow" },
+    { "action": "shell", "resource": "rm -rf /tmp/opencode/*", "effect": "allow" },
+    { "action": "shell", "resource": "sudo *", "effect": "deny" },
+    { "action": "shell", "resource": "rm -rf / *", "effect": "deny" },
+    { "action": "shell", "resource": "rm * /", "effect": "deny" },
+    { "action": "shell", "resource": "dd *", "effect": "deny" },
+    { "action": "shell", "resource": "mkfs *", "effect": "deny" }
   ]
 }

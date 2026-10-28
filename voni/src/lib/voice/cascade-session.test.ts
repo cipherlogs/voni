@@ -26,7 +26,7 @@ test("config message carries cascade opt-in and prompt", () => {
   const parsed = JSON.parse(buildConfigMessage(CONFIG));
   assert.equal(parsed.type, "config");
   assert.equal(parsed.pipeline.fallback_mode, "cascade");
-  assert.equal(parsed.systemPrompt, "Be brief.");
+  assert.equal(parsed.system_prompt, "Be brief.");
 });
 
 test("audio frames encode to base64 data messages", () => {

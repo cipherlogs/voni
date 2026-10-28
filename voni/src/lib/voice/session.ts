@@ -43,7 +43,7 @@ import {
 import { releaseMic } from "./mic-owner";
 import { BARGE_IN_JUDGE_MS, judgeOverlap } from "./barge-in";
 import { requestVoiceJudge } from "./jev-judges";
-import { TRANSCRIPTION_MODE } from "./transcription";
+import { TRANSCRIPTION_MODE, DEMO_TRANSCRIPTION_MODE } from "./transcription";
 import {
   acquireMicStream,
   startAudioGraph,
@@ -1022,7 +1022,7 @@ export class VoiceSession {
           if (this.boundAgent) {
             this.updateConfig({
               input: {
-                transcription_mode: TRANSCRIPTION_MODE,
+                transcription_mode: DEMO_TRANSCRIPTION_MODE,
                 voice_focus: "near-field",
               },
             }).catch(() => undefined);

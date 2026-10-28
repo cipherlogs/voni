@@ -1,0 +1,44 @@
+diff --git a/node_modules/next/dist/esm/server/app-render/cache-signal.js b/node_modules/next/dist/esm/server/app-render/cache-signal.js
+index 8d57075..2532b9c 100644
+--- a/node_modules/next/dist/esm/server/app-render/cache-signal.js
++++ b/node_modules/next/dist/esm/server/app-render/cache-signal.js
+@@ -165,7 +165,15 @@ function scheduleImmediateAndTimeoutWithCleanup(cb) {
+         clearPending = clearTimeout.bind(null, timeout);
+     });
+     clearPending = clearImmediate.bind(null, immediate);
+-    return ()=>clearPending();
++    // voni patch: on Cloudflare Workers this signal is shared by the isolate,
++    // so the pending timer may belong to another request, and clearing it
++    // throws "Cannot perform I/O on behalf of a different request", which
++    // hangs the render. That timer can't fire into this request anyway.
++    return ()=>{
++        try {
++            clearPending();
++        } catch  {}
++    };
+ }
+ 
+ //# sourceMappingURL=cache-signal.js.map
+\ No newline at end of file
+diff --git a/node_modules/next/dist/server/app-render/cache-signal.js b/node_modules/next/dist/server/app-render/cache-signal.js
+index 2c45318..80bf519 100644
+--- a/node_modules/next/dist/server/app-render/cache-signal.js
++++ b/node_modules/next/dist/server/app-render/cache-signal.js
+@@ -175,7 +175,15 @@ function scheduleImmediateAndTimeoutWithCleanup(cb) {
+         clearPending = clearTimeout.bind(null, timeout);
+     });
+     clearPending = clearImmediate.bind(null, immediate);
+-    return ()=>clearPending();
++    // voni patch: on Cloudflare Workers this signal is shared by the isolate,
++    // so the pending timer may belong to another request, and clearing it
++    // throws "Cannot perform I/O on behalf of a different request", which
++    // hangs the render. That timer can't fire into this request anyway.
++    return ()=>{
++        try {
++            clearPending();
++        } catch  {}
++    };
+ }
+ 
+ //# sourceMappingURL=cache-signal.js.map
+\ No newline at end of file

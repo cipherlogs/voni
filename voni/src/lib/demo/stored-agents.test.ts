@@ -52,7 +52,7 @@ test("demo body carries call control, tuning, and per-agent vocabulary", () => {
     body.tools.map((tool) => tool.name),
     [END_CALL_TOOL, "show_test_address", "check_email", "send_code_reply", "check_code"],
   );
-  assert.equal(body.input.transcription_mode, "balanced");
+  assert.equal(body.input.transcription_mode, "max_accuracy");
   assert.equal(body.input.turn_detection, null, "adaptive defaults; clears any stored object");
   assert.equal(body.input.voice_focus, "near-field");
   assert.deepEqual(body.output, { volume: 100 }, "loudest level; client gain matches voices");
@@ -79,11 +79,11 @@ test("fingerprints are stable and move with platform content", () => {
   const a = demoAgentFingerprint(buildDemoAgentBody("anna"));
   const b = demoAgentFingerprint(buildDemoAgentBody("anna"));
   assert.equal(a, b);
-  // A platform change (new tool description, prompt rule, tuning) must
+  // A platform change (new tool description, prompt rule, tuning, LLM) must
   // invalidate the cache: any body difference flips the fingerprint.
   const changed = {
     ...buildDemoAgentBody("anna"),
-    input: { ...buildDemoAgentBody("anna").input, transcription_mode: "max_accuracy" },
+    input: { ...buildDemoAgentBody("anna").input, transcription_mode: "balanced" },
   };
   assert.notEqual(demoAgentFingerprint(changed), a);
 });

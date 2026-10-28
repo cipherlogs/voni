@@ -1,10 +1,11 @@
 {
   "$schema": "https://opencode.ai/config.json",
   "mcp": {
+    "servers": {
     "next-devtools": {
       "type": "local",
       "command": ["npx", "-y", "next-devtools-mcp@latest"],
-      "timeout": 30000
+      "timeout": { "catalog": 30000, "execution": 30000 }
     },
     "Neon": {
       "type": "remote",
@@ -13,7 +14,7 @@
         "Authorization": "Bearer {file:.secrets/neon_api_key}"
       },
       "oauth": false,
-      "timeout": 15000
+      "timeout": { "catalog": 15000, "execution": 15000 }
     },
     "Telnyx": {
       "type": "local",
@@ -26,12 +27,13 @@
       "environment": {
         "TELNYX_API_KEY": "{file:.secrets/telnyx_api_key}"
       },
-      "timeout": 120000
+      "timeout": { "catalog": 120000, "execution": 120000 }
     },
     "assemblyai-docs": {
       "type": "remote",
       "url": "https://www.assemblyai.com/docs/mcp",
-      "timeout": 15000
+      "timeout": { "catalog": 15000, "execution": 15000 }
+    }
     }
   }
 }
