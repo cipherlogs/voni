@@ -29,6 +29,7 @@
  *
  *   npm run scoreboard:demo -- [--gate-voice <demo-voice-id>] [--scenario greeting-cut] [--runs 1]
  *                           [--out scoreboard-runs/score-<ts>-<voice>.json] [--dry-run]
+ *                           [--prior <path>]
  *                           [--timing-lock /tmp/voni-demo-timing.lock]
  *                           [--trace-session sess_...] [--trace-beat greeting-cut] [--probe-json probes.json] [--recording <sha256>] [--rate rater:timbre,accent ...]
  *                           [--gap beat=ms ...]
@@ -50,6 +51,13 @@
  * dir, override with --timing-lock) so timing runs go one at a time; a second
  * run fails fast naming the holder instead of inflating cut latency under
  * parallel load. The lock is released on exit and a dead holder is reclaimed.
+ *
+ * --prior <path> pins the artifact a run diffs against; omit it and the
+ * latest same-voice artifact in this run's output directory is used. The diff
+ * prints right after the gate table (gate status transitions, per-beat metric
+ * deltas, reply-gap and goodbye-drain changes); the first run in a directory
+ * prints "no prior artifact" and still exits normally. Artifacts stay
+ * gitignored working files and are never committed.
  *
  * --gap feeds a measured reply gap (visitor end-of-speech → first agent
  * audio) to a beat; repeat for several runs. --trace-session merges the
@@ -117,7 +125,7 @@
  * Explicit flags override the parsed runner output per field. With neither
  * parsed nor explicit evidence the gate stays INFO: recorded, not failed.
  */
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import {
@@ -125,9 +133,11 @@ import {
   applyRealCutGate,
   buildSkeletonArtifact,
   DEFAULT_GATE_VOICE,
+  diffScoreboardArtifact,
   emptyHumanRatings,
   extractRealCutEvidence,
   extractTraceSessionId,
+  formatArtifactDiff,
   formatBudgetReport,
   formatEvalRunnerReport,
   formatGateTable,
@@ -135,6 +145,7 @@ import {
   formatOverheardReport,
   formatReplyGapReport,
   formatSubScoreTable,
+  formatTraceTurn,
   formatVoiceGainTable,
   GOLDEN_BEATS,
   overheardFromTraceExcerpt,
@@ -142,6 +153,8 @@ import {
   redactLines,
   resolveGateVoice,
   sha256Hex,
+  traceTurnForVisitorSpeech,
+  traceTurnPointers,
   validateProbeCounts,
   type AgentChannelEvidence,
   type DeadAirEvidence,
@@ -263,6 +276,86 @@ function runCallTrace(sessionId: string): string[] {
     throw new Error(`call:trace failed for ${sessionId}: ${(result.stderr ?? "").slice(0, 500)}`);
   }
   return redactLines(result.stdout ?? "");
+}
+
+/** Parse a previously written scoreboard artifact; null when the file is not one. */
+function readScoreboardArtifact(path: string): ScoreboardArtifact | null {
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<ScoreboardArtifact> | null;
+    if (
+      parsed === null ||
+      typeof parsed !== "object" ||
+      typeof parsed.voice !== "string" ||
+      !Array.isArray(parsed.gates) ||
+      typeof parsed.beats !== "object" ||
+      parsed.beats === null ||
+      typeof parsed.replyGap !== "object" ||
+      parsed.replyGap === null ||
+      typeof parsed.endCallDrain !== "object" ||
+      parsed.endCallDrain === null
+    ) {
+      return null;
+    }
+    return parsed as ScoreboardArtifact;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Latest artifact for the same voice in the artifact directory (the new run's
+ * own output path is skipped so a rerun to the same file never diffs against
+ * itself). Ties on recordedAt fall back to file mtime, so two runs inside one
+ * second still order by when they landed.
+ */
+function latestPriorArtifact(
+  dir: string,
+  voice: string,
+  skipPath: string,
+): { path: string; artifact: ScoreboardArtifact } | null {
+  let entries: string[];
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return null;
+  }
+  let best: { path: string; artifact: ScoreboardArtifact; recorded: number; mtime: number } | null = null;
+  for (const entry of entries) {
+    if (!entry.endsWith(".json")) continue;
+    const path = resolve(dir, entry);
+    if (path === skipPath) continue;
+    const artifact = readScoreboardArtifact(path);
+    if (!artifact || artifact.voice !== voice) continue;
+    const recorded = Date.parse(artifact.recordedAt);
+    let mtime = 0;
+    try {
+      mtime = statSync(path).mtimeMs;
+    } catch {
+      mtime = 0;
+    }
+    const candidate = {
+      path,
+      artifact,
+      recorded: Number.isFinite(recorded) ? recorded : 0,
+      mtime,
+    };
+    if (
+      best === null ||
+      candidate.recorded > best.recorded ||
+      (candidate.recorded === best.recorded && candidate.mtime > best.mtime)
+    ) {
+      best = candidate;
+    }
+  }
+  return best ? { path: best.path, artifact: best.artifact } : null;
+}
+
+/** Explicit --prior: a bad path or non-artifact is a harness error, never a silent first run. */
+function loadPriorArtifact(path: string): { path: string; artifact: ScoreboardArtifact } {
+  const resolved = resolve(path);
+  const artifact = readScoreboardArtifact(resolved);
+  if (!artifact) throw new Error(`--prior ${path} is not a scoreboard artifact`);
+  return { path: resolved, artifact };
 }
 
 /** Repeatable --gap beat=ms: measured reply gaps per beat (one per run). */
@@ -513,8 +606,14 @@ function main(): void {
     explicitAsides !== null || traceAsides.length > 0 ? [...(explicitAsides ?? []), ...traceAsides] : undefined;
   const agentInput = buildDemoAgentBody(voice).input;
   const fillerResume = readFillerEvidence(traceSession);
+  // A filler FAIL must point at the turn whose reply it overlapped: match the
+  // merged HEARD row, never the bare session id, when the words appear.
+  if (fillerResume && !arg("--filler-trace-turn", "") && excerpt) {
+    const fillerTurn = traceTurnForVisitorSpeech(excerpt, fillerResume.visitorText);
+    if (fillerTurn !== null) fillerResume.traceTurn = formatTraceTurn(fillerTurn, traceSession || null);
+  }
   // Real-cut evidence counts as measured even though it lands post-skeleton.
-  const parsed = extractRealCutEvidence(evalSection.stdout);
+  const parsed = extractRealCutEvidence(evalSection.stdout, excerpt ?? []);
   const hasCutFlags =
     cutMsArg !== "" ||
     process.argv.includes("--cut-never") ||
@@ -565,6 +664,13 @@ function main(): void {
       ended: false,
       traceTurn: null,
     };
+    // The merged excerpt is the only source of a turn number: cite the
+    // interrupted reply for a cut, else the closing reply after end_call.
+    const pointers = traceTurnPointers(excerpt ?? []);
+    const derivedTurn =
+      base.cutMs !== null ? pointers.cutTurn : (pointers.cutTurn ?? pointers.goodbyeTurn);
+    const derivedTraceTurn =
+      derivedTurn !== null ? formatTraceTurn(derivedTurn, traceSession || null) : base.traceTurn;
     const evidence: RealCutEvidence = {
       cutMs: process.argv.includes("--cut-never")
         ? null
@@ -574,7 +680,7 @@ function main(): void {
       answered: process.argv.includes("--cut-answered") || base.answered,
       resumed: process.argv.includes("--cut-resumed") || base.resumed,
       ended: process.argv.includes("--cut-ended") || base.ended,
-      traceTurn: arg("--trace-turn", "") || base.traceTurn,
+      traceTurn: arg("--trace-turn", "") || derivedTraceTurn,
     };
     artifact = applyRealCutGate(artifact, evidence);
   }
@@ -587,13 +693,25 @@ function main(): void {
   }
 
   const out = resolve(arg("--out", `scoreboard-runs/score-${stamp()}-${voice}.json`));
+  // The prior run is a working artifact, never committed: an explicit path
+  // wins, otherwise the latest same-voice artifact beside this run's output.
+  const priorPath = arg("--prior", "");
+  const prior = priorPath ? loadPriorArtifact(priorPath) : latestPriorArtifact(dirname(out), voice, out);
   mkdirSync(dirname(out), { recursive: true });
   writeFileSync(out, `${JSON.stringify(artifact, null, 2)}\n`, { mode: 0o600 });
 
   console.log(formatGoldenScript(voice));
   console.log(formatBudgetReport());
   console.log(formatGateTable(artifact));
+  // Plumbing health first (ticket 06), then what moved since the prior run
+  // (ticket 07): a harness break explains any diff that follows.
   console.log(formatEvalRunnerReport(artifact));
+  if (prior) {
+    console.log(`prior artifact: ${prior.path}`);
+    console.log(formatArtifactDiff(diffScoreboardArtifact(prior.artifact, artifact)));
+  } else {
+    console.log(`artifact diff: no prior artifact for ${voice} in ${dirname(out)} (first run)`);
+  }
   console.log(formatReplyGapReport(excerpt ?? [], traceSession || null));
   if (!dryRun && !traceSession) {
     console.log("trace session: none printed by the eval runner; pass --trace-session <sess_...> to merge per-turn gaps");
