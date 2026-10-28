@@ -107,3 +107,67 @@ test("--voice stays an alias of --gate-voice and the default needs no voice lite
   const resolved = JSON.parse(readFileSync(defaultOut, "utf8")) as { voice: string };
   assert.equal(resolved.voice, DEMO_VOICE_IDS[0]);
 });
+
+test("measured gaps inside budget pass the reply-gap gate and fill per-beat gaps", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "score.json");
+  const result = run(
+    ["--dry-run", "--voice", DEMO_VOICE_IDS[0], "--out", out, "--gap", "greeting-cut=900", "--gap", "real-cut-answered=1200"],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    beats: Record<string, { gapMs: number | null; gapSamples: number[] }>;
+    replyGap: { p50Ms: number | null; p95Ms: number | null; samples: number };
+    gates: { name: string; status: string; detail: string }[];
+  };
+  assert.deepEqual(artifact.beats["greeting-cut"].gapSamples, [900]);
+  assert.equal(artifact.beats["greeting-cut"].gapMs, 900);
+  assert.equal(artifact.replyGap.p50Ms, 900);
+  const gate = artifact.gates.find((g) => g.name === "reply-gap");
+  assert.equal(gate?.status, "PASS");
+  assert.match(gate?.detail ?? "", /p50/);
+});
+
+test("greeting-cut gaps over budget fail the command and point at the beat", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "score.json");
+  const result = run(
+    ["--dry-run", "--voice", DEMO_VOICE_IDS[0], "--out", out, "--gap", "greeting-cut=1800", "--gap", "greeting-cut=1900"],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.notEqual(result.status, 0);
+  assert.match(result.stdout, /FAIL/);
+  assert.match(result.stdout, /greeting-cut/);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    gates: { name: string; status: string; detail: string }[];
+  };
+  const gate = artifact.gates.find((g) => g.name === "reply-gap");
+  assert.equal(gate?.status, "FAIL");
+  assert.match(gate?.detail ?? "", /greeting-cut/);
+});
+
+test("bad --gap flags fail fast with no artifact", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "score.json");
+  const result = run(
+    ["--dry-run", "--voice", DEMO_VOICE_IDS[0], "--out", out, "--gap", "not-a-beat=100"],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.notEqual(result.status, 0);
+  assert.ok(!existsSync(out));
+  assert.match(result.stderr + result.stdout, /--gap needs beat=ms/);
+});
+
+test("dry run checks the stored agent body: end-of-turn passes with no turn-detection object", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "score.json");
+  const result = run(["--dry-run", "--voice", DEMO_VOICE_IDS[0], "--out", out], new URL("../", import.meta.url).pathname);
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    gates: { name: string; status: string; detail: string }[];
+  };
+  const gate = artifact.gates.find((g) => g.name === "end-of-turn");
+  assert.equal(gate?.status, "PASS");
+  assert.match(gate?.detail ?? "", /turn_detection/);
+});

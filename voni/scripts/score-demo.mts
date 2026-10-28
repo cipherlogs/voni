@@ -1,7 +1,7 @@
 /**
- * Demo scoreboard orchestrator (ticket 01 skeleton): one command that scores
- * a full Demo call with real audio and writes one JSON artifact plus a
- * console pass/fail table.
+ * Demo scoreboard orchestrator: one command that scores a full Demo call
+ * with real audio and writes one JSON artifact plus a console pass/fail
+ * table.
  *
  * Single seam at the npm-script level. This file drives the existing runners
  * — it forks none of their logic and invents no transport:
@@ -10,19 +10,28 @@
  *   - session evidence exporter: npm run qa:voice-session -- --session <id> --evidence-out <path>
  *   - browser e2e fakes live in tests/e2e/demo-fakes.ts (unchanged here).
  *
- * No gates yet: every gate reports PASS/INFO and the command exits 0 once the
- * artifact is written, even when the eval runner itself fails (its exit code
- * is recorded in the artifact). Non-zero exit means the harness broke:
- * unknown voice, spawn failure, or an unwritable artifact.
+ * Gates: the reply-gap and end-of-turn gates fail the command (exit 1) when
+ * measured evidence breaches the budget, so regressions never merge
+ * silently. Without measured gaps both stay INFO and the command exits 0
+ * once the artifact is written, even when the eval runner itself fails (its
+ * exit code is recorded in the artifact). Non-zero exit otherwise means the
+ * harness broke: unknown voice, bad --gap flag, spawn failure, or an
+ * unwritable artifact.
  *
  *   npm run scoreboard:demo -- [--gate-voice <demo-voice-id>] [--scenario greeting-cut] [--runs 1]
  *                           [--out scoreboard-runs/score-<ts>-<voice>.json] [--dry-run]
- *                           [--trace-session sess_...]
+ *                           [--trace-session sess_...] [--gap beat=ms ...]
  *
  * --gate-voice picks the gate voice through the shared voice registry
  * (--voice stays an alias); omitting both gates on DEFAULT_GATE_VOICE, never
  * on a literal in this file. New voices deploy as a registry entry plus a
  * regression run: the dry run lists the gate plus the regression set.
+ *
+ * --gap feeds a measured reply gap (visitor end-of-speech → first agent
+ * audio) to a beat; repeat for several runs. --trace-session merges the
+ * Call trace for a finished real-call session: its per-turn `gap Nms`
+ * numbers feed the gate, with the first merged turn attributed to the
+ * greeting-cut beat (golden runs open with the greeting cut).
  *
  * --dry-run skips spawning the runner (no ASSEMBLYAI_API_KEY needed) and
  * records a placeholder eval section. --trace-session merges the Call trace
@@ -36,11 +45,16 @@ import {
   DEFAULT_GATE_VOICE,
   formatGateTable,
   formatGoldenScript,
+  GOLDEN_BEATS,
+  parseTraceGaps,
   redactLines,
   resolveGateVoice,
   sha256Hex,
+  type GoldenBeat,
   type ScoreboardArtifact,
+  type TraceGap,
 } from "../src/lib/demo/scoreboard";
+import { buildDemoAgentBody } from "../src/lib/demo/stored-agents";
 
 function arg(name: string, fallback = ""): string {
   const i = process.argv.indexOf(name);
@@ -74,6 +88,25 @@ function runCallTrace(sessionId: string): string[] {
   return redactLines(result.stdout ?? "");
 }
 
+/** Repeatable --gap beat=ms: measured reply gaps per beat (one per run). */
+function parseGapFlags(argv: string[]): Partial<Record<GoldenBeat, number[]>> {
+  const gaps: Partial<Record<GoldenBeat, number[]>> = {};
+  for (let i = 0; i < argv.length; i += 1) {
+    if (argv[i] !== "--gap") continue;
+    const raw = argv[i + 1] ?? "";
+    const match = /^([a-z-]+)=(\d+)$/.exec(raw);
+    const beat = match?.[1] as GoldenBeat | undefined;
+    const ms = match ? Number(match[2]) : NaN;
+    if (!match || !(GOLDEN_BEATS as readonly string[]).includes(beat as string) || !Number.isFinite(ms)) {
+      throw new Error(
+        `--gap needs beat=ms with a golden beat (one of ${GOLDEN_BEATS.join(", ")}), got "${raw}"`,
+      );
+    }
+    gaps[beat as GoldenBeat] = [...(gaps[beat as GoldenBeat] ?? []), ms];
+  }
+  return gaps;
+}
+
 function main(): void {
   const voice = resolveGateVoice(arg("--gate-voice", "") || arg("--voice", DEFAULT_GATE_VOICE));
   const scenario = arg("--scenario", "greeting-cut");
@@ -88,6 +121,15 @@ function main(): void {
     ? { stdout: "(dry run: eval runner skipped)", exitCode: null as number | null, durationMs: 0 }
     : runEvalRunner(voice, scenario, runs);
 
+  const gaps = parseGapFlags(process.argv);
+  let excerpt: string[] | null = null;
+  let traceGaps: TraceGap[] = [];
+  if (traceSession) {
+    excerpt = runCallTrace(traceSession);
+    traceGaps = parseTraceGaps(excerpt);
+  }
+  const agentInput = buildDemoAgentBody(voice).input;
+
   const artifact: ScoreboardArtifact = buildSkeletonArtifact({
     voice,
     scenario,
@@ -95,9 +137,13 @@ function main(): void {
     exitCode: evalSection.exitCode,
     durationMs: evalSection.durationMs,
     runs: Number(runs) || 1,
+    gaps,
+    traceGaps,
+    traceSessionId: traceSession || null,
+    agentInput,
+    traceExcerpt: excerpt ?? [],
   });
-  if (traceSession) {
-    const excerpt = runCallTrace(traceSession);
+  if (excerpt) {
     artifact.callTrace = {
       sessionId: traceSession,
       excerptSha256: sha256Hex(excerpt.join("\n")),
@@ -112,6 +158,10 @@ function main(): void {
   console.log(formatGoldenScript(voice));
   console.log(formatGateTable(artifact));
   console.log(`artifact: ${out}`);
+  if (artifact.gates.some((gate) => gate.status === "FAIL")) {
+    console.log("scoreboard: FAIL — a measured gate breached its budget; see the failing gate detail above");
+    process.exitCode = 1;
+  }
 }
 
 try {
