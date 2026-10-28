@@ -481,3 +481,94 @@ test("bad --overheard-json fails fast with no artifact", () => {
   assert.ok(!existsSync(out));
   assert.match(result.stderr + result.stdout, /tracePointer|text/);
 });
+
+test("dry run without dead-air evidence keeps dead-air INFO (unmeasured)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "score.json");
+  const result = run(["--dry-run", "--voice", DEMO_VOICE_IDS[0], "--out", out], new URL("../", import.meta.url).pathname);
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    deadAir: { gapsMs: number[]; checkIns: unknown[] };
+    gates: { name: string; status: string; detail: string }[];
+  };
+  assert.deepEqual(artifact.deadAir.gapsMs, []);
+  assert.deepEqual(artifact.deadAir.checkIns, []);
+  assert.equal(artifact.gates.find((g) => g.name === "dead-air")?.status, "INFO");
+});
+
+test("dry run with dead-air evidence records the FAIL gate and prints durations", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "score.json");
+  const result = run(
+    ["--dry-run", "--voice", DEMO_VOICE_IDS[0], "--out", out, "--dead-air-gaps", "400,3200", "--longest-silence-ms", "16000"],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.notEqual(result.status, 0, result.stderr + result.stdout);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    deadAir: { gapsMs: number[]; maxMs: number | null };
+    gates: { name: string; status: string; detail: string }[];
+  };
+  assert.deepEqual(artifact.deadAir.gapsMs, [400, 3200]);
+  assert.equal(artifact.deadAir.maxMs, 3200);
+  const gate = artifact.gates.find((g) => g.name === "dead-air");
+  assert.equal(gate?.status, "FAIL");
+  assert.ok(gate?.detail.includes("3200"));
+  assert.ok(result.stdout.includes("dead-air"));
+  assert.ok(result.stdout.includes("FAIL"));
+  assert.ok(result.stdout.includes("3200"));
+});
+
+test("dry run with a clean 15s check-in records a dead-air PASS", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "score.json");
+  const result = run(
+    [
+      "--dry-run",
+      "--voice",
+      DEMO_VOICE_IDS[0],
+      "--out",
+      out,
+      "--dead-air-gaps",
+      "400",
+      "--longest-silence-ms",
+      "16000",
+      "--check-in-at-ms",
+      "15200",
+    ],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    deadAir: { checkIns: { atSilenceMs: number; overCaller: boolean }[] };
+    gates: { name: string; status: string; detail: string }[];
+  };
+  assert.deepEqual(artifact.deadAir.checkIns, [{ atSilenceMs: 15200, overCaller: false }]);
+  assert.equal(artifact.gates.find((g) => g.name === "dead-air")?.status, "PASS");
+});
+
+test("dry run with a check-in over caller speech records a dead-air FAIL", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "score.json");
+  const result = run(
+    [
+      "--dry-run",
+      "--voice",
+      DEMO_VOICE_IDS[0],
+      "--out",
+      out,
+      "--longest-silence-ms",
+      "16000",
+      "--check-in-at-ms",
+      "15100",
+      "--check-in-over-caller",
+    ],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.notEqual(result.status, 0, result.stderr + result.stdout);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    gates: { name: string; status: string; detail: string }[];
+  };
+  const gate = artifact.gates.find((g) => g.name === "dead-air");
+  assert.equal(gate?.status, "FAIL");
+  assert.ok(gate?.detail.includes("caller"));
+});

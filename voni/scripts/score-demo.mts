@@ -10,14 +10,15 @@
  *   - session evidence exporter: npm run qa:voice-session -- --session <id> --evidence-out <path>
  *   - browser e2e fakes live in tests/e2e/demo-fakes.ts (unchanged here).
  *
- * Gates: the reply-gap, end-of-turn, filler-resume, barge-in-cut and
- * overheard-recall gates fail the command (exit 1) when measured evidence
- * breaches the budget, so regressions never merge silently. Without measured
- * gaps, filler, real-cut or overheard evidence the gates stay INFO and the
- * command exits 0 once the artifact is written, even when the eval runner
- * itself fails (its exit code is recorded in the artifact). Non-zero exit
- * otherwise means the harness broke: unknown voice, bad --gap/--filler/--cut
- * or --overheard-json flag, spawn failure, or an unwritable artifact.
+ * Gates: the reply-gap, end-of-turn, filler-resume, barge-in-cut,
+ * overheard-recall and dead-air gates fail the command (exit 1) when measured
+ * evidence breaches the budget, so regressions never merge silently. Without
+ * measured gaps, filler, real-cut, overheard or dead-air evidence the gates
+ * stay INFO and the command exits 0 once the artifact is written, even when
+ * the eval runner itself fails (its exit code is recorded in the artifact).
+ * Non-zero exit otherwise means the harness broke: unknown voice, bad
+ * --gap/--filler/--cut/--overheard-json/--dead-air-gaps flag, spawn failure,
+ * or an unwritable artifact.
  *
  *   npm run scoreboard:demo -- [--gate-voice <demo-voice-id>] [--scenario greeting-cut] [--runs 1]
  *                           [--out scoreboard-runs/score-<ts>-<voice>.json] [--dry-run]
@@ -26,6 +27,8 @@
  *                           [--cut-ms <n> | --cut-never] [--cut-verdict <v>] [--cut-answered]
  *                           [--cut-resumed] [--cut-ended] [--trace-turn <text>]
  *                           [--overheard-json asides.json]
+ *                           [--dead-air-gaps 400,1200] [--longest-silence-ms 16000]
+ *                           [--check-in-at-ms 15200] [--check-in-over-caller]
  *
  * --gate-voice picks the gate voice through the shared voice registry
  * (--voice stays an alias); omitting both gates on DEFAULT_GATE_VOICE, never
@@ -42,6 +45,14 @@
  * without it the filler-resume gate stays INFO. --trace-session fills
  * --filler-trace-turn when the flag is absent, so a failure still points
  * at the Call trace turn.
+ *
+ * Dead-air evidence is measured outside the harness (browser e2e fakes,
+ * session evidence) and handed in: uncovered silences via --dead-air-gaps,
+ * the longest silence stretch via --longest-silence-ms, and check-in timings
+ * via --check-in-at-ms (comma-separated atSilenceMs, one per check-in).
+ * --check-in-over-caller marks the listed check-ins as overlapping caller
+ * speech. Omit all four and the dead-air gate stays INFO (unmeasured, never
+ * PASS).
  *
  * --dry-run skips spawning the runner (no ASSEMBLYAI_API_KEY needed) and
  * records a placeholder eval section. --trace-session merges the Call trace
@@ -78,6 +89,7 @@ import {
   redactLines,
   resolveGateVoice,
   sha256Hex,
+  type DeadAirEvidence,
   type FillerResumeEvidence,
   type FillerVerdict,
   type GoldenBeat,
@@ -223,6 +235,51 @@ function loadOverheardJson(path: string): OverheardAside[] {
   });
 }
 
+/** Comma-separated milliseconds flag; empty means the flag was not given. */
+function parseMsList(raw: string, flag: string): number[] {
+  if (!raw.trim()) return [];
+  const out = raw
+    .split(",")
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0)
+    .map(Number);
+  if (out.some((n) => !Number.isFinite(n) || n < 0)) {
+    throw new Error(`${flag} needs comma-separated milliseconds >= 0, got "${raw}"`);
+  }
+  return out;
+}
+
+/**
+ * Dead-air evidence from CLI flags. Returns undefined when no dead-air flag
+ * was given, so the gate stays INFO (unmeasured) instead of claiming PASS.
+ */
+function parseDeadAirEvidence(input: {
+  gaps: string;
+  longestSilenceMs: string;
+  checkInAtMs: string;
+  checkInOverCaller: boolean;
+  trace?: string;
+}): DeadAirEvidence | undefined {
+  const gapsMs = parseMsList(input.gaps, "--dead-air-gaps");
+  const checkInAtMs = parseMsList(input.checkInAtMs, "--check-in-at-ms");
+  let longestSilenceMs: number | null = null;
+  if (input.longestSilenceMs.trim()) {
+    longestSilenceMs = Number(input.longestSilenceMs);
+    if (!Number.isFinite(longestSilenceMs) || longestSilenceMs < 0) {
+      throw new Error(`--longest-silence-ms needs milliseconds >= 0, got "${input.longestSilenceMs}"`);
+    }
+  }
+  if (gapsMs.length === 0 && longestSilenceMs === null && checkInAtMs.length === 0) {
+    return undefined;
+  }
+  return {
+    gapsMs,
+    longestSilenceMs,
+    checkIns: checkInAtMs.map((atSilenceMs) => ({ atSilenceMs, overCaller: input.checkInOverCaller })),
+    ...(input.trace ? { trace: input.trace } : {}),
+  };
+}
+
 function main(): void {
   const voice = resolveGateVoice(arg("--gate-voice", "") || arg("--voice", DEFAULT_GATE_VOICE));
   const scenario = arg("--scenario", "greeting-cut");
@@ -232,6 +289,13 @@ function main(): void {
   if (traceSession && !/^sess_[A-Za-z0-9_-]+$/.test(traceSession)) {
     throw new Error(`--trace-session needs a session id like sess_abc, got "${traceSession}"`);
   }
+  const deadAir = parseDeadAirEvidence({
+    gaps: arg("--dead-air-gaps", ""),
+    longestSilenceMs: arg("--longest-silence-ms", ""),
+    checkInAtMs: arg("--check-in-at-ms", ""),
+    checkInOverCaller: process.argv.includes("--check-in-over-caller"),
+    trace: traceSession || undefined,
+  });
   const cutMsArg = arg("--cut-ms", "");
   if (cutMsArg !== "" && !/^\d+$/.test(cutMsArg)) {
     throw new Error(`--cut-ms needs milliseconds, got "${cutMsArg}"`);
@@ -271,6 +335,7 @@ function main(): void {
     traceExcerpt: excerpt ?? [],
     fillerResume,
     ...(overheardAsides !== undefined ? { overheardAsides } : {}),
+    deadAir,
   });
   const parsed = extractRealCutEvidence(evalSection.stdout);
   const hasCutFlags =

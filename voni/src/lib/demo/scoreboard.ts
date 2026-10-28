@@ -1,27 +1,33 @@
 /**
  * Demo scoreboard: locked golden script (ticket 02) on the ticket-01
- * plumbing. The seven beats below are fixed order, fixed visitor wording,
- * and fixed timing windows, so gap/cut milliseconds stay comparable across
- * runs. Wording reuses the existing eval fragments (LONG_ASK, reachInvite,
- * goodbyeCut, TAG=Lime 42) and the e2e specs they mirror; nothing here
- * retunes pipeline thresholds or gains — the windows quote them.
+ * plumbing, plus the dead-air gate (ticket 07). The seven beats below are
+ * fixed order, fixed visitor wording, and fixed timing windows, so gap/cut
+ * milliseconds stay comparable across runs. Wording reuses the existing eval
+ * fragments (LONG_ASK, reachInvite, goodbyeCut, TAG=Lime 42) and the e2e
+ * specs they mirror; nothing here retunes pipeline thresholds or gains —
+ * the windows quote them.
  *
  * The harness measures the greeting-cut reply gap (ticket 03), the
- * filler-ignored beat (ticket 04) and the real-cut-answered beat
- * (ticket 05): per-beat gap samples plus a reply-gap gate, resume-tail
- * timing plus a filler-resume gate, and cut-to-answer timing plus a
- * barge-in-cut gate — all can FAIL. Every other beat's drain
- * milliseconds are still placeholders, probe counts start at zero, and
- * the remaining gates report PASS/INFO (no FAIL until gating lands in
- * later tickets). What this module guarantees
- * is trustworthy plumbing — one JSON artifact per run with redacted
- * transcripts plus their hash, and empty human-rating slots.
+ * filler-ignored beat (ticket 04), the real-cut-answered beat (ticket 05),
+ * the overheard-aside beat (ticket 06) and the silence-check-in dead-air
+ * beat (ticket 07): per-beat gap samples plus a reply-gap gate, resume-tail
+ * timing plus a filler-resume gate, cut-to-answer timing plus a
+ * barge-in-cut gate, overheard recall plus an overheard-recall gate, and
+ * uncovered-silence plus a dead-air gate — all can FAIL. Every other beat's
+ * drain milliseconds are still placeholders, probe counts start at zero, and
+ * the remaining gates report PASS/INFO (no FAIL until gating lands in later
+ * tickets). Dead air gates on measured evidence supplied by the operator
+ * (--dead-air-gaps / --longest-silence-ms / --check-in-at-ms): without
+ * evidence the gate stays INFO, never PASS, so an unmeasured run cannot
+ * claim a quiet call. What this module guarantees is trustworthy plumbing —
+ * one JSON artifact per run with redacted transcripts plus their hash, and
+ * empty human-rating slots.
  */
 import { createHash } from "node:crypto";
 import { getVoice, VOICE_OUTPUT_VOLUME, voicePlaybackGain } from "../agents/voices";
 import { BARGE_IN_JUDGE_MS, judgeOverlap, type OverlapVerdict } from "../voice/barge-in";
 import { NO_WORDS_RESUME_MS, RESUME_WAIT_MS, unheardRest } from "../voice/session";
-import { DEMO_VOICE_IDS } from "./voni-agent";
+import { DEMO_VOICE_IDS, SILENCE_CHECK_IN_MS } from "./voni-agent";
 
 /** The locked golden script: seven beats in fixed order (spec story 11). */
 export const GOLDEN_BEATS = [
@@ -341,6 +347,98 @@ export function meaningBasedEndOfTurnGate(
   };
 }
 
+/** Uncovered silence longer than this reads as a dropped call. */
+export const DEAD_AIR_MAX_MS = 2000;
+
+/** Silence that must draw exactly one check-in, never over caller speech. */
+export const SILENCE_CHECK_IN_TARGET_MS = SILENCE_CHECK_IN_MS;
+
+export type DeadAirCheckIn = {
+  /** Silence elapsed when the check-in went out (audible timing). */
+  atSilenceMs: number;
+  /** The check-in overlapped caller speech (a cut the floor should have yielded). */
+  overCaller: boolean;
+  /** Call-trace pointer (turn/excerpt line) for failure triage. */
+  trace?: string;
+};
+
+export type DeadAirEvidence = {
+  /** Uncovered silences: no filler, no check-in (audible dead air). */
+  gapsMs: number[];
+  /** Longest silence stretch observed, covered or not; null when unmeasured. */
+  longestSilenceMs: number | null;
+  /** Check-ins the run produced (empty when none went out). */
+  checkIns: DeadAirCheckIn[];
+  /** Run-level trace pointer (e.g. the call-trace session id). */
+  trace?: string;
+};
+
+/**
+ * The dead-air gate: zero uncovered silence over 2s, and a 15s silence
+ * draws exactly one check-in that never talks over the caller. The golden
+ * script holds a single 15s silence beat, so exactly-once is per run.
+ * Failure details carry the offending durations plus trace pointers into
+ * deadAir.gapsMs and the Call trace excerpt.
+ */
+export function evaluateDeadAir(evidence: DeadAirEvidence): ScoreboardGate {
+  const gaps = evidence.gapsMs ?? [];
+  const checkIns = evidence.checkIns ?? [];
+  const longest = evidence.longestSilenceMs ?? null;
+  const traceSuffix = evidence.trace ? `, trace ${evidence.trace}` : "";
+  const reasons: string[] = [];
+
+  const bad = gaps.filter((g) => g > DEAD_AIR_MAX_MS);
+  if (bad.length > 0) {
+    reasons.push(
+      `dead air ${bad.map((g) => `${g}ms`).join(", ")} exceeds ${DEAD_AIR_MAX_MS}ms without filler/check-in (see deadAir.gapsMs, silence-check-in beat${traceSuffix})`,
+    );
+  }
+
+  const silenceReachedCheckIn =
+    (longest ?? 0) >= SILENCE_CHECK_IN_TARGET_MS ||
+    gaps.some((g) => g >= SILENCE_CHECK_IN_TARGET_MS) ||
+    checkIns.some((c) => c.atSilenceMs >= SILENCE_CHECK_IN_TARGET_MS);
+  if (silenceReachedCheckIn && checkIns.length !== 1) {
+    reasons.push(
+      `15s silence drew ${checkIns.length} check-ins, want exactly one (silence-check-in beat${traceSuffix})`,
+    );
+  }
+
+  const early = checkIns.filter((c) => c.atSilenceMs < SILENCE_CHECK_IN_TARGET_MS);
+  if (early.length > 0) {
+    reasons.push(
+      `check-in at ${early.map((c) => `${c.atSilenceMs}ms`).join(", ")}, before ${SILENCE_CHECK_IN_TARGET_MS}ms of silence — the floor fires once after 15s on a free floor (silence-check-in beat${traceSuffix})`,
+    );
+  }
+
+  const overlapping = checkIns.filter((c) => c.overCaller);
+  if (overlapping.length > 0) {
+    const where = overlapping
+      .map((c) => `${c.atSilenceMs}ms${c.trace ? ` (${c.trace})` : ""}`)
+      .join(", ");
+    reasons.push(
+      `check-in over caller speech at ${where} silence — never talk over the visitor (silence-check-in beat${traceSuffix})`,
+    );
+  }
+
+  if (reasons.length > 0) {
+    return { name: "dead-air", status: "FAIL", detail: reasons.join("; ") };
+  }
+  if (silenceReachedCheckIn) {
+    return {
+      name: "dead-air",
+      status: "PASS",
+      detail: `no dead air over ${DEAD_AIR_MAX_MS}ms; 15s silence drew exactly one check-in at ${checkIns[0].atSilenceMs}ms, never over the caller`,
+    };
+  }
+  const max = gaps.length > 0 ? Math.max(...gaps) : 0;
+  return {
+    name: "dead-air",
+    status: "PASS",
+    detail: `no dead air over ${DEAD_AIR_MAX_MS}ms across ${gaps.length} gaps (max ${max}ms); no 15s silence stretch`,
+  };
+}
+
 export type ScoreboardArtifact = {
   schemaVersion: typeof SCOREBOARD_SCHEMA_VERSION;
   recordedAt: string;
@@ -365,7 +463,12 @@ export type ScoreboardArtifact = {
     asides: OverheardAside[];
   };
   doubleTalk: { overlapMs: number[]; maxMs: number | null };
-  deadAir: { gapsMs: number[]; maxMs: number | null };
+  deadAir: {
+    gapsMs: number[];
+    maxMs: number | null;
+    checkIns: DeadAirCheckIn[];
+    longestSilenceMs: number | null;
+  };
   probes: { jump: number; overload: number; clip: number; underrun: number; inputDrop: number };
   transcripts: { sha256: string; redacted: string[] };
   humanRatings: { timbre: number | null; accent: number | null };
@@ -910,6 +1013,7 @@ function skeletonGates(
   traceExcerpt: string[],
   fillerGate: ScoreboardGate | null = null,
   overheardGate: ScoreboardGate | null = null,
+  deadAir?: DeadAirEvidence | null,
 ): ScoreboardGate[] {
   const plumbing: ScoreboardGate =
     exitCode === null || exitCode === 0
@@ -929,6 +1033,13 @@ function skeletonGates(
       : meaningBasedEndOfTurnGate(agentInput, traceExcerpt);
   const filler: ScoreboardGate =
     fillerGate ?? { name: "filler-resume", status: "INFO", detail: "skeleton: gating lands in the filler ticket" };
+  const deadAirGate: ScoreboardGate = deadAir
+    ? evaluateDeadAir(deadAir)
+    : {
+        name: "dead-air",
+        status: "INFO",
+        detail: "unmeasured: supply --dead-air-gaps/--longest-silence-ms/--check-in-at-ms to gate",
+      };
   return [
     plumbing,
     replyGate,
@@ -942,7 +1053,7 @@ function skeletonGates(
     overheardGate ??
       { name: "overheard-recall", status: "INFO", detail: "skeleton: gating lands in the overheard ticket" },
     { name: "double-talk", status: "INFO", detail: "skeleton: gating lands in the naturalness ticket" },
-    { name: "dead-air", status: "INFO", detail: "skeleton: gating lands in the naturalness ticket" },
+    deadAirGate,
     { name: "timbre-probes", status: "INFO", detail: "skeleton: gating lands in the timbre ticket" },
     { name: "accent-human", status: "INFO", detail: "skeleton: awaiting human 1-5 ratings" },
   ];
@@ -982,6 +1093,8 @@ export function buildSkeletonArtifact(input: {
   fillerResume?: FillerResumeEvidence | null;
   /** Overheard asides observed while Voni held the floor; omit to keep the skeleton INFO gate. */
   overheardAsides?: OverheardAside[];
+  /** Measured dead-air evidence; omitted means unmeasured (gate stays INFO). */
+  deadAir?: DeadAirEvidence | null;
 }): ScoreboardArtifact {
   const fillerGate = input.fillerResume ? evaluateFillerResumeGate(input.fillerResume) : null;
   const samples: ReplyGapSample[] = [];
@@ -1048,6 +1161,8 @@ export function buildSkeletonArtifact(input: {
     input.overheardAsides === undefined
       ? null
       : evaluateOverheardRecall(input.overheardAsides);
+  const deadAirGaps = input.deadAir?.gapsMs ?? [];
+  const deadAirCheckIns = input.deadAir?.checkIns ?? [];
   return {
     schemaVersion: SCOREBOARD_SCHEMA_VERSION,
     recordedAt: new Date().toISOString(),
@@ -1065,14 +1180,19 @@ export function buildSkeletonArtifact(input: {
       ? { recalled: evaluation.recalled, total: evaluation.total, byBeat: evaluation.byBeat, asides: input.overheardAsides! }
       : { recalled: 0, total: 0, byBeat: emptyOverheardByBeat(), asides: [] },
     doubleTalk: { overlapMs: [], maxMs: null },
-    deadAir: { gapsMs: [], maxMs: null },
+    deadAir: {
+      gapsMs: deadAirGaps,
+      maxMs: deadAirGaps.length > 0 ? Math.max(...deadAirGaps) : null,
+      checkIns: deadAirCheckIns,
+      longestSilenceMs: input.deadAir?.longestSilenceMs ?? null,
+    },
     probes: { jump: 0, overload: 0, clip: 0, underrun: 0, inputDrop: 0 },
     transcripts: {
       sha256: sha256Hex(input.runnerStdout),
       redacted: redactLines(input.runnerStdout),
     },
     humanRatings: { timbre: null, accent: null },
-    gates: skeletonGates(input.exitCode, samples, input.traceSessionId ?? null, input.agentInput, input.traceExcerpt ?? [], fillerGate, evaluation?.gate ?? null),
+    gates: skeletonGates(input.exitCode, samples, input.traceSessionId ?? null, input.agentInput, input.traceExcerpt ?? [], fillerGate, evaluation?.gate ?? null, input.deadAir),
     evalRunner: {
       scenario: input.scenario,
       passed: input.exitCode === null ? null : input.exitCode === 0,
