@@ -4,8 +4,10 @@ import { readFileSync } from "node:fs";
 import {
   applyGreetingCutGate,
   applyRealCutGate,
+  callerClipChanges,
   callerClipDrift,
   callerClipFingerprint,
+  callerClipsFromRunnerStdout,
   evaluateGreetingCut,
   extractGreetingCutEvidence,
   greetingCutFailure,
@@ -874,10 +876,29 @@ test("every real-cut failure reports cut ms plus verdict with the trace turn", (
       `detail should report the verdict: ${gate.detail}`,
     );
     assert.ok(
-      gate.detail.includes(evidence.traceTurn ?? "no trace turn"),
+      gate.detail.includes(evidence.traceTurn ?? "no Call trace turn merged"),
       `detail should report the trace turn: ${gate.detail}`,
     );
   }
+});
+
+test("a late cut with no merged Call trace says no turn merged, never a guessed turn", () => {
+  const gate = evaluateRealCut({ ...ANSWERED_FAST, cutMs: 1841, traceTurn: null });
+  assert.equal(gate.status, "FAIL");
+  assert.match(gate.detail, /1841ms/);
+  assert.match(gate.detail, /no Call trace turn merged/);
+  assert.doesNotMatch(gate.detail, /call trace turn \d/i);
+});
+
+test("a real cut measured on a changed caller clip is not comparable and fails", () => {
+  const drift = "audio duration differs: 1200ms → 700ms";
+  const gate = evaluateRealCut(ANSWERED_FAST, drift);
+  assert.equal(gate.status, "FAIL");
+  assert.match(gate.detail, /caller clip/);
+  assert.match(gate.detail, /1200ms → 700ms/);
+  assert.match(gate.detail, /not comparable/);
+  assert.match(gate.detail, /tell me the price/);
+  assert.equal(evaluateRealCut(ANSWERED_FAST, null).status, "PASS");
 });
 
 test("applying real-cut evidence updates the beat and replaces the skeleton gate", () => {
@@ -1097,6 +1118,34 @@ test("artifact diff reports gate transitions, beat deltas, reply gap and drain c
   assert.match(text, /goodbye/);
 });
 
+test("artifact diff names a changed caller clip so cut deltas stay comparable", () => {
+  const base = {
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "stop-over",
+    runnerStdout: "",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+    dryRun: true,
+  };
+  const clip = {
+    text: "Wait, stop.",
+    bytes: 48_000,
+    durationMs: 1000,
+    sha256: "a".repeat(64),
+    onsetMs: 40,
+  };
+  const shorter = { ...clip, bytes: 24_000, durationMs: 500, sha256: "b".repeat(64) };
+  const prev = buildSkeletonArtifact({ ...base, callerClips: [clip] });
+  const changed = diffScoreboardArtifact(prev, buildSkeletonArtifact({ ...base, callerClips: [shorter] }));
+  assert.equal(changed.callerClips.changed, true);
+  assert.match(changed.callerClips.drift ?? "", /audio bytes differ/);
+  assert.match(formatArtifactDiff(changed), /caller clip.*audio bytes differ/);
+  const same = diffScoreboardArtifact(prev, buildSkeletonArtifact({ ...base, callerClips: [clip] }));
+  assert.equal(same.callerClips.changed, false);
+  assert.equal(same.changed, false, "the same clip and the same skeleton is no change");
+});
+
 test("an unchanged artifact diff says so instead of printing empty transitions", () => {
   const artifact = buildSkeletonArtifact({
     voice: DEFAULT_GATE_VOICE,
@@ -1217,6 +1266,25 @@ test("a changed clip is detectable by words, duration, or audio samples", () => 
     callerClipDrift(base, callerClipFingerprint("Wait, stop.", pcmClip(100, 400))) ?? "",
     /audio/,
   );
+});
+
+test("the runner summary's caller clips are parsed and compared by their fixed words", () => {
+  const clip = { text: "Wait, stop.", bytes: 24000, durationMs: 500, sha256: "a".repeat(64), onsetMs: 40 };
+  const summary = `EVAL SUMMARY ${JSON.stringify({
+    scenario: "stop-over",
+    runs: 1,
+    failures: 0,
+    scenarios: [{ name: "stop-over", passed: 1, runs: 1 }],
+    traceSessions: [],
+    playout: [],
+    audioChunks: 3,
+    live: true,
+    clips: [clip, { text: "broken" }],
+  })}`;
+  assert.deepEqual(callerClipsFromRunnerStdout(`${summary}\n`), [clip]);
+  assert.deepEqual(callerClipsFromRunnerStdout("stop-over: 1/1\n"), [], "no summary is no clip evidence");
+  assert.equal(callerClipChanges([clip], [{ ...clip, sha256: "b".repeat(64) }]), `"Wait, stop." audio samples differ at the same length (sha256 aaaaaaaaaaaa → bbbbbbbbbbbb)`);
+  assert.equal(callerClipChanges([clip], [{ ...clip, text: "Okaay so" }]), null, "a new line is not clip drift");
 });
 
 // --- Ticket 08: greeting cut on "Wait, stop" ---

@@ -98,6 +98,8 @@ import {
   greetingCutFailure,
   GREETING_CUT_MAX_MS,
   measureCutLatency,
+  REAL_CUT_MAX_MS,
+  REAL_CUT_SCENARIOS,
   sha256Hex,
   type CallerClipFingerprint,
   type CallerOnset,
@@ -361,6 +363,8 @@ type ClientOutcome = {
   wallClockMs: number;
   /** Agent audio chunks received during the call. */
   audioChunks: number;
+  /** Fingerprints of the fixed caller clips this call streamed. */
+  callerClips: CallerClipFingerprint[];
 };
 
 /**
@@ -397,7 +401,7 @@ async function runClient(
   const body = buildDemoAgentBody(voiceId);
   const outcome: ClientOutcome = {
     events: [], cutAt: null, creates: [], agent: [], heard: [], interruptedReplies: 0, sessionId: null, endedAt: null, lastAudioEnd: 0,
-    wallClockMs: 0, audioChunks: 0,
+    wallClockMs: 0, audioChunks: 0, callerClips: lines.map((line) => clipPrints.get(line)!),
   };
   let repliesDone = 0;
   let audioChunks = 0;
@@ -445,6 +449,10 @@ async function runClient(
   };
   // Wall-clock playout: "sounding" until the received audio has had time to play.
   let playUntil = 0;
+  // Teardown flushes the playout too. Only a flush during the live scenario is
+  // a server cut; counting the teardown flush would report a never-cut call as
+  // a late cut and cite a turn that never lagged.
+  let live = true;
   internals["playout"] = {
     play: (pcm: Uint8Array, rate: number) => {
       audioChunks += 1;
@@ -452,7 +460,7 @@ async function runClient(
       outcome.lastAudioEnd = playUntil;
     },
     flush: () => {
-      if (outcome.cutAt === null) outcome.cutAt = Date.now();
+      if (live && outcome.cutAt === null) outcome.cutAt = Date.now();
       playUntil = Date.now();
     },
     settled: () => Date.now() >= playUntil,
@@ -581,6 +589,7 @@ async function runClient(
       ended: () => outcome.endedAt !== null,
     });
   } finally {
+    live = false;
     clearInterval(pump);
     await session.stop();
     outcome.wallClockMs = Date.now() - liveStartedAt;
@@ -625,13 +634,17 @@ const CLIENT_SCENARIOS: { name: string; run: () => Promise<string | null> }[] = 
         said = ctx.say("Wait, stop.");
         await new Promise((resolve) => setTimeout(resolve, Number(process.env.EVAL_TAIL_MS ?? 4000)));
       });
-      // t0 is the transmitted caller onset, never the enqueue tick.
+      // t0 is the transmitted caller onset, never the enqueue tick. The
+      // scenario asserts the same quoted budget the scoreboard gates, so a
+      // late cut fails here before any plumbing judgment looks healthy.
       const measured = measureCutLatency(said!.onset(), o.cutAt);
       if (measured.cutMs === null) {
         return `never cut (${measured.reason ?? "no cut"}; events: ${JSON.stringify(o.events.map((e) => e.verdict))})`;
       }
-      console.log(`    cut ${measured.cutMs}ms after the caller started`);
-      return measured.cutMs <= 1500 ? null : `cut too late: ${measured.cutMs}ms`;
+      console.log(`    cut ${measured.cutMs}ms after the caller started (budget ${REAL_CUT_MAX_MS}ms)`);
+      return measured.cutMs <= REAL_CUT_MAX_MS
+        ? null
+        : `cut too late: ${measured.cutMs}ms > ${REAL_CUT_MAX_MS}ms (caller onset → server cut)`;
     },
   },
   {
@@ -1221,6 +1234,8 @@ const scenarioResults: { name: string; passed: number; runs: number }[] = [];
 const traceSessions: string[] = [];
 /** Wall-clock playout of live client runs: reported, never a gate. */
 const playoutRows: { scenario: string; run: number; wallClockMs: number }[] = [];
+/** Fixed caller clips from the real-cut scenarios: the cut's comparability pins. */
+const cutClips: CallerClipFingerprint[] = [];
 let clientRuns = 0;
 let agentAudioChunks = 0;
 const noteSession = (sessionId: string | null | undefined) => {
@@ -1268,6 +1283,11 @@ for (const scenario of CLIENT_SCENARIOS.filter((s) => !only || s.name === only))
       agentAudioChunks += liveRun.audioChunks;
       playoutRows.push({ scenario: scenario.name, run: i, wallClockMs: liveRun.wallClockMs });
       console.log(`    playout ${liveRun.wallClockMs}ms wall clock`);
+      if ((REAL_CUT_SCENARIOS as readonly string[]).includes(scenario.name)) {
+        for (const clip of liveRun.callerClips) {
+          if (!cutClips.some((seen) => seen.text === clip.text)) cutClips.push(clip);
+        }
+      }
     }
     if (reason === null) passed += 1;
     else {
@@ -1318,6 +1338,9 @@ console.log(
     playout: playoutRows,
     audioChunks: clientRuns > 0 ? agentAudioChunks : null,
     live: scenarioResults.length > 0,
+    // Fixed caller clips the real-cut scenarios streamed: the scoreboard
+    // compares these fingerprints with the prior run before trusting a cut.
+    clips: cutClips.sort((a, b) => a.text.localeCompare(b.text)),
   })}`,
 );
 process.exit(failures > 0 ? 1 : 0);
