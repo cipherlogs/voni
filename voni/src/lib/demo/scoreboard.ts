@@ -1883,6 +1883,142 @@ export function applyRealCutGate(
   };
 }
 
+// ── Measurement: fixed-clip cut latency (ticket 05, owner: real-cut section) ─
+
+/**
+ * Ticket 05: cut latency is only comparable across runs when both ends of
+ * the interval are fixed.
+ *
+ * t0 is caller speech start — the moment the pump actually transmits the
+ * clip's first voiced sample — not the tick that enqueued the clip. t1 is
+ * the server cut (the session flushes the playout on an interrupted
+ * `reply.done`; the client never cuts locally, ADR-0003). The clip itself is
+ * pinned by a fingerprint over its words, byte length, duration, and leading
+ * silence, so a re-synthesized take or an edited line is detectable instead
+ * of silently moving the baseline.
+ */
+
+/** PCM16 sample magnitude at or below which a sample counts as pre-speech silence. */
+export const CALLER_ONSET_SILENCE = 120;
+
+/** Fixed identity of one caller clip: same words, same audio, same onset. */
+export type CallerClipFingerprint = {
+  /** The fixed words the clip speaks. */
+  text: string;
+  /** PCM16 mono bytes (identical bytes ⇒ identical duration and audio). */
+  bytes: number;
+  durationMs: number;
+  sha256: string;
+  /** Leading silence before the first voiced sample (clip-relative ms). */
+  onsetMs: number;
+};
+
+/** Clip-relative offset of the first sample louder than the silence floor. */
+export function callerClipOnsetMs(pcm: Uint8Array, sampleRate = 24_000): number {
+  if (sampleRate <= 0) throw new Error(`sampleRate must be positive, got ${sampleRate}`);
+  const view = new DataView(pcm.buffer, pcm.byteOffset, pcm.byteLength);
+  const samples = Math.floor(pcm.byteLength / 2);
+  for (let i = 0; i < samples; i += 1) {
+    if (Math.abs(view.getInt16(i * 2, true)) > CALLER_ONSET_SILENCE) return (i / sampleRate) * 1000;
+  }
+  // All silence: the clip never voices, so its onset is its end.
+  return (samples / sampleRate) * 1000;
+}
+
+/** Pin one caller clip so a changed take is detectable, never a silent baseline shift. */
+export function callerClipFingerprint(
+  text: string,
+  pcm: Uint8Array,
+  sampleRate = 24_000,
+): CallerClipFingerprint {
+  return {
+    text,
+    bytes: pcm.byteLength,
+    durationMs: Math.round((pcm.byteLength / 2 / sampleRate) * 1000),
+    sha256: sha256Hex(pcm),
+    onsetMs: Math.round(callerClipOnsetMs(pcm, sampleRate) * 1000) / 1000,
+  };
+}
+
+/** null when the clips are identical; a human-readable reason when the clip changed. */
+export function callerClipDrift(
+  expected: CallerClipFingerprint,
+  actual: CallerClipFingerprint,
+): string | null {
+  if (expected.text !== actual.text) {
+    return `words differ: "${expected.text}" → "${actual.text}"`;
+  }
+  if (expected.bytes !== actual.bytes) {
+    return `audio bytes differ: ${expected.bytes} → ${actual.bytes}`;
+  }
+  if (expected.durationMs !== actual.durationMs) {
+    return `audio duration differs: ${expected.durationMs}ms → ${actual.durationMs}ms`;
+  }
+  if (expected.sha256 !== actual.sha256) {
+    return `audio samples differ at the same length (sha256 ${expected.sha256.slice(0, 12)} → ${actual.sha256.slice(0, 12)})`;
+  }
+  if (expected.onsetMs !== actual.onsetMs) {
+    return `caller onset differs: ${expected.onsetMs}ms → ${actual.onsetMs}ms`;
+  }
+  return null;
+}
+
+/**
+ * What the runner knows about one caller clip at measure time.
+ * `enqueuedAt` is kept only to prove t0 ignores it (and to flag an impossible
+ * frame time); the pump fills `firstFrameAt` when it transmits the frame that
+ * carries the clip's first voiced sample.
+ */
+export type CallerOnset = {
+  /** Queue tick when say() appended the clip (the old, wrong t0). */
+  enqueuedAt: number;
+  /** Pump tick that transmitted the frame carrying the clip's first voiced sample. */
+  firstFrameAt: number | null;
+  /** Clip-relative offset of the first voiced sample. */
+  onsetMs: number;
+  /** Clip-relative offset where that transmitted frame begins (sub-frame precision). */
+  frameOffsetMs?: number;
+};
+
+export type CutLatencyReason =
+  | "no cut"
+  | "caller speech never transmitted"
+  | "frame before enqueue"
+  | "cut before caller speech start";
+
+export type CutLatency = {
+  cutMs: number | null;
+  speechStartedAt: number | null;
+  /** Why no latency was produced; null when cutMs is measured. */
+  reason: CutLatencyReason | null;
+};
+
+/** Caller speech start: the transmitted frame + the onset's offset inside it. */
+export function callerSpeechStart(onset: CallerOnset): number | null {
+  if (onset.firstFrameAt === null || onset.firstFrameAt < onset.enqueuedAt) return null;
+  return onset.firstFrameAt + Math.max(0, onset.onsetMs - (onset.frameOffsetMs ?? 0));
+}
+
+/**
+ * Cut latency from caller speech start to the server cut. A cut that lands
+ * before the caller's onset is not a caller-caused cut, so it reports null
+ * with a reason instead of a negative or enqueue-inflated number.
+ */
+export function measureCutLatency(onset: CallerOnset, cutAt: number | null): CutLatency {
+  if (cutAt === null) return { cutMs: null, speechStartedAt: callerSpeechStart(onset), reason: "no cut" };
+  if (onset.firstFrameAt === null) {
+    return { cutMs: null, speechStartedAt: null, reason: "caller speech never transmitted" };
+  }
+  if (onset.firstFrameAt < onset.enqueuedAt) {
+    return { cutMs: null, speechStartedAt: null, reason: "frame before enqueue" };
+  }
+  const speechStartedAt = callerSpeechStart(onset)!;
+  if (cutAt < speechStartedAt) {
+    return { cutMs: null, speechStartedAt, reason: "cut before caller speech start" };
+  }
+  return { cutMs: cutAt - speechStartedAt, speechStartedAt, reason: null };
+}
+
 // ── Skeleton: plumbing, measurements, and gate assembly in spec priority ─────
 // (ticket 01, owner: skeleton section). Gates report in the spec's fail-fast
 // priority: plumbing (harness) → measurements → reply-gap → end-of-turn →

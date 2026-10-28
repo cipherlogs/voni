@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
   applyRealCutGate,
+  callerClipDrift,
+  callerClipFingerprint,
   DEAD_AIR_MAX_MS,
   DEFAULT_GATE_VOICE,
   DOUBLE_TALK_MAX_OVERLAP_MS,
@@ -52,6 +54,7 @@ import {
   gateVoicePlayback,
   isRealCutExpected,
   meaningBasedEndOfTurnGate,
+  measureCutLatency,
   overheardFromTraceExcerpt,
   parseTraceGaps,
   percentile,
@@ -773,6 +776,78 @@ test("real-cut evidence parses from the eval runner's stop-over output", () => {
   });
   assert.equal(evaluateRealCut(ended!)?.status, "PASS");
   assert.equal(extractRealCutEvidence("greeting-cut: 1/1\n"), null);
+});
+
+// --- Ticket 05: fixed-clip cut latency ---
+
+/** PCM16 mono at 24kHz: leading silence, then a voiced tone. */
+function pcmClip(silenceMs: number, toneMs: number, rate = 24_000): Uint8Array {
+  const silence = Math.round((silenceMs / 1000) * rate);
+  const samples = silence + Math.round((toneMs / 1000) * rate);
+  const buffer = Buffer.alloc(samples * 2);
+  for (let i = silence; i < samples; i += 1) buffer.writeInt16LE(3000, i * 2);
+  return buffer;
+}
+
+test("cut latency counts from the transmitted caller speech start, not the enqueue tick", () => {
+  const measured = measureCutLatency(
+    { enqueuedAt: 1000, firstFrameAt: 1235, onsetMs: 210, frameOffsetMs: 200 },
+    1900,
+  );
+  assert.equal(measured.speechStartedAt, 1245);
+  assert.equal(measured.cutMs, 655, "the old metric would report 900ms from the enqueue tick");
+  assert.equal(measured.reason, null);
+});
+
+test("a clip still queued behind the pump cannot report a cut", () => {
+  const measured = measureCutLatency({ enqueuedAt: 1000, firstFrameAt: null, onsetMs: 0 }, 1500);
+  assert.equal(measured.cutMs, null);
+  assert.equal(measured.speechStartedAt, null);
+  assert.equal(measured.reason, "caller speech never transmitted");
+});
+
+test("a cut that lands before the caller's onset is not credited as a caller cut", () => {
+  const measured = measureCutLatency(
+    { enqueuedAt: 1000, firstFrameAt: 1235, onsetMs: 200, frameOffsetMs: 0 },
+    1200,
+  );
+  assert.equal(measured.cutMs, null);
+  assert.equal(measured.reason, "cut before caller speech start");
+});
+
+test("no cut and an impossible frame time produce no latency, with a reason", () => {
+  assert.equal(measureCutLatency({ enqueuedAt: 1000, firstFrameAt: 1020, onsetMs: 0 }, null).reason, "no cut");
+  assert.equal(
+    measureCutLatency({ enqueuedAt: 1000, firstFrameAt: 990, onsetMs: 0 }, 1500).reason,
+    "frame before enqueue",
+  );
+});
+
+test("the caller clip fingerprint pins the words, audio bytes, duration, and onset", () => {
+  const pcm = pcmClip(120, 380);
+  const fingerprint = callerClipFingerprint("Wait, stop.", pcm);
+  assert.equal(fingerprint.text, "Wait, stop.");
+  assert.equal(fingerprint.bytes, pcm.byteLength);
+  assert.equal(fingerprint.durationMs, 500);
+  assert.equal(fingerprint.onsetMs, 120);
+  assert.match(fingerprint.sha256, /^[0-9a-f]{64}$/);
+  assert.equal(callerClipFingerprint("Wait, stop.", pcm).sha256, fingerprint.sha256);
+  assert.equal(callerClipDrift(fingerprint, callerClipFingerprint("Wait, stop.", pcm)), null);
+});
+
+test("a changed clip is detectable by words, duration, or audio samples", () => {
+  const pcm = pcmClip(120, 380);
+  const base = callerClipFingerprint("Wait, stop.", pcm);
+  assert.match(callerClipDrift(base, callerClipFingerprint("Wait, stop now.", pcm)) ?? "", /words/);
+  assert.match(
+    callerClipDrift(base, callerClipFingerprint("Wait, stop.", pcmClip(120, 400))) ?? "",
+    /bytes|duration/,
+  );
+  // Same word count and length, different synthesized take: still detectable.
+  assert.match(
+    callerClipDrift(base, callerClipFingerprint("Wait, stop.", pcmClip(100, 400))) ?? "",
+    /audio/,
+  );
 });
 
 // ── Ticket 06: overheard-aside recall gate ────────────────────────────────
