@@ -46,6 +46,18 @@ test("the resume variant drops the greeting but keeps everything else", () => {
     "the variant refreshes its own cached row, never the intro agent",
   );
 });
+
+test("the turn preset stays meaning-based on the intro and the resume agent", () => {
+  for (const resume of [false, true]) {
+    const body = buildDemoAgentBody("anna", { resume });
+    assert.equal(
+      body.input.turn_detection,
+      null,
+      `${resume ? "resume" : "intro"} agent: adaptive end-of-turn, never a turn-detection object`,
+    );
+  }
+});
+
 test("demo body carries call control, tuning, and per-agent vocabulary", () => {
   const body = buildDemoAgentBody("anna");
   assert.deepEqual(
