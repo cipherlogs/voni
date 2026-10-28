@@ -1,11 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  DEAD_AIR_MAX_MS,
   DEFAULT_GATE_VOICE,
   GOLDEN_BEATS,
   GOLDEN_SCRIPT,
   GOLDEN_SCRIPT_BUDGET_S,
+  SILENCE_CHECK_IN_TARGET_MS,
   buildSkeletonArtifact,
+  evaluateDeadAir,
   formatGateTable,
   formatGoldenScript,
   gateVoicePlayback,
@@ -195,4 +198,131 @@ test("skeleton artifact records the locked script and the regression voice set",
   assert.deepEqual([...artifact.regressionVoices].sort(), [...regressionVoices(DEFAULT_GATE_VOICE)].sort());
   assert.ok(artifact.goldenScript.beats.every((b) => b.window.min <= b.window.max));
   assert.ok(artifact.goldenScript.beats.every((b) => b.visitor.length > 0));
+});
+
+test("dead-air bars quote the pipeline contracts (2s ceiling, 15s check-in)", () => {
+  assert.equal(DEAD_AIR_MAX_MS, 2000);
+  assert.equal(SILENCE_CHECK_IN_TARGET_MS, 15_000);
+});
+
+test("dead air: a quiet call with no long silence passes", () => {
+  const gate = evaluateDeadAir({ gapsMs: [400, 1200], longestSilenceMs: 1200, checkIns: [] });
+  assert.equal(gate.name, "dead-air");
+  assert.equal(gate.status, "PASS");
+});
+
+test("dead air: exactly 2000ms of silence is not a violation", () => {
+  const gate = evaluateDeadAir({ gapsMs: [2000], longestSilenceMs: 2000, checkIns: [] });
+  assert.equal(gate.status, "PASS");
+});
+
+test("dead air: uncovered silence over 2s fails and reports durations with trace pointers", () => {
+  const gate = evaluateDeadAir({
+    gapsMs: [400, 3200],
+    longestSilenceMs: 3200,
+    checkIns: [],
+    trace: "sess_abc excerpt 12",
+  });
+  assert.equal(gate.name, "dead-air");
+  assert.equal(gate.status, "FAIL");
+  assert.ok(gate.detail.includes("3200"), "failure reports the dead-air duration");
+  assert.ok(gate.detail.includes("2000"), "failure names the 2s bar");
+  assert.ok(gate.detail.includes("silence-check-in"), "failure points at the beat");
+  assert.ok(gate.detail.includes("sess_abc excerpt 12"), "failure carries the trace pointer");
+});
+
+test("dead air: 15s of silence with no check-in fails check-in-once", () => {
+  const gate = evaluateDeadAir({ gapsMs: [], longestSilenceMs: 16_000, checkIns: [] });
+  assert.equal(gate.status, "FAIL");
+  assert.ok(/exactly one/.test(gate.detail), `want exactly-one wording, got: ${gate.detail}`);
+});
+
+test("dead air: 15s of silence with two check-ins fails exactly-once", () => {
+  const gate = evaluateDeadAir({
+    gapsMs: [],
+    longestSilenceMs: 17_000,
+    checkIns: [
+      { atSilenceMs: 15_200, overCaller: false },
+      { atSilenceMs: 32_000, overCaller: false },
+    ],
+  });
+  assert.equal(gate.status, "FAIL");
+  assert.ok(gate.detail.includes("2"), `want the count in the detail, got: ${gate.detail}`);
+});
+
+test("dead air: a check-in over caller speech fails even when durations pass", () => {
+  const gate = evaluateDeadAir({
+    gapsMs: [],
+    longestSilenceMs: 16_000,
+    checkIns: [{ atSilenceMs: 15_100, overCaller: true, trace: "turn 12" }],
+  });
+  assert.equal(gate.status, "FAIL");
+  assert.ok(/over caller speech/.test(gate.detail), `want overlap wording, got: ${gate.detail}`);
+  assert.ok(gate.detail.includes("turn 12"), "failure carries the trace pointer");
+});
+
+test("dead air: an early check-in before 15s of silence fails", () => {
+  const gate = evaluateDeadAir({
+    gapsMs: [],
+    longestSilenceMs: 16_000,
+    checkIns: [{ atSilenceMs: 5_000, overCaller: false }],
+  });
+  assert.equal(gate.status, "FAIL");
+  assert.ok(gate.detail.includes("5,000") || gate.detail.includes("5000"), `want the timing, got: ${gate.detail}`);
+});
+
+test("dead air: 15s of silence with exactly one clean check-in passes", () => {
+  const gate = evaluateDeadAir({
+    gapsMs: [],
+    longestSilenceMs: 16_000,
+    checkIns: [{ atSilenceMs: 15_200, overCaller: false }],
+  });
+  assert.equal(gate.status, "PASS");
+  assert.ok(gate.detail.includes("15,200") || gate.detail.includes("15200"), `want the timing, got: ${gate.detail}`);
+});
+
+test("skeleton artifact without dead-air evidence keeps dead-air INFO (unmeasured, never PASS)", () => {
+  const artifact = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "greeting-cut",
+    runnerStdout: "",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+  });
+  assert.equal(artifact.gates.find((g) => g.name === "dead-air")?.status, "INFO");
+  assert.deepEqual(artifact.deadAir.gapsMs, []);
+  assert.deepEqual(artifact.deadAir.checkIns, []);
+});
+
+test("skeleton artifact records dead-air evidence and gates it", () => {
+  const bad = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "greeting-cut",
+    runnerStdout: "",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+    deadAir: { gapsMs: [3200], longestSilenceMs: 3200, checkIns: [] },
+  });
+  const badGate = bad.gates.find((g) => g.name === "dead-air");
+  assert.equal(badGate?.status, "FAIL");
+  assert.ok(badGate?.detail.includes("3200"));
+  assert.equal(bad.deadAir.maxMs, 3200);
+
+  const good = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "greeting-cut",
+    runnerStdout: "",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+    deadAir: {
+      gapsMs: [400],
+      longestSilenceMs: 16_000,
+      checkIns: [{ atSilenceMs: 15_200, overCaller: false }],
+    },
+  });
+  assert.equal(good.gates.find((g) => g.name === "dead-air")?.status, "PASS");
+  assert.deepEqual(good.deadAir.checkIns, [{ atSilenceMs: 15_200, overCaller: false }]);
 });
