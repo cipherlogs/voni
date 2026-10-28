@@ -23,12 +23,16 @@ import {
   END_CALL_SETTLE_POLLS,
   GOODBYE_AUDIO_COVERAGE_MIN,
   HANG_UP_AFTER_GOODBYE_MAX_MS,
+  deriveFreeFloorSilence,
   evaluateDeadAir,
   evaluateDoubleTalk,
   evaluateEndCallDrain,
   postFlushOverlapMs,
   playoutCutWindow,
   parseDoubleTalkOutput,
+  parseSilenceTimeline,
+  parseSilenceTimelineOutput,
+  traceSilenceRef,
   evaluateFillerResumeGate,
   evaluateRealCut,
   extractRealCutEvidence,
@@ -2153,6 +2157,164 @@ test("dead air: 15s of silence with exactly one clean check-in passes", () => {
   });
   assert.equal(gate.status, "PASS");
   assert.ok(gate.detail.includes("15,200") || gate.detail.includes("15200"), `want the timing, got: ${gate.detail}`);
+});
+
+test("free-floor silence: gaps between audible turns are measured from the session timeline", () => {
+  const evidence = deriveFreeFloorSilence({
+    startedMs: 0,
+    endedMs: 4_000,
+    agentAudio: [
+      { startMs: 0, endMs: 1_000 },
+      { startMs: 2_700, endMs: 4_000 },
+    ],
+    callerSpeech: [{ startMs: 1_500, endMs: 2_500 }],
+  });
+  assert.deepEqual(evidence.gapsMs, []);
+  assert.deepEqual(
+    evidence.silences.map((silence) => [silence.startMs, silence.endMs, silence.durationMs]),
+    [
+      [1_000, 1_500, 500],
+      [2_500, 2_700, 200],
+    ],
+  );
+  assert.equal(evidence.longestSilenceMs, 500);
+});
+
+test("free-floor silence: a long silence with no coverage is an uncovered gap", () => {
+  const evidence = deriveFreeFloorSilence({
+    startedMs: 0,
+    endedMs: 5_000,
+    agentAudio: [
+      { startMs: 0, endMs: 1_000 },
+      { startMs: 4_200, endMs: 5_000 },
+    ],
+    callerSpeech: [{ startMs: 1_000, endMs: 1_200 }],
+  });
+  assert.deepEqual(evidence.gapsMs, [3_000]);
+  assert.equal(evidence.longestSilenceMs, 3_000);
+  assert.deepEqual(evidence.gapWindows, [
+    { startMs: 1_200, endMs: 4_200, durationMs: 3_000, coveredBy: null, trace: null },
+  ]);
+});
+
+test("free-floor silence: an agent reply start inside the long silence covers it", () => {
+  const evidence = deriveFreeFloorSilence({
+    startedMs: 0,
+    endedMs: 5_000,
+    agentAudio: [
+      { startMs: 0, endMs: 1_000 },
+      { startMs: 4_200, endMs: 5_000 },
+    ],
+    callerSpeech: [{ startMs: 1_000, endMs: 1_200 }],
+    coverage: [{ atMs: 4_000 }],
+  });
+  assert.deepEqual(evidence.gapsMs, []);
+  assert.equal(evidence.longestSilenceMs, 3_000);
+  assert.equal(evidence.silences[0].coveredBy, "agent");
+  const gate = evaluateDeadAir({
+    gapsMs: evidence.gapsMs,
+    gapWindows: evidence.gapWindows,
+    silences: evidence.silences.map((silence) => ({
+      ...silence,
+      trace: "between call trace turn 1 and turn 2 (sess_sil); window 1.20s–4.20s",
+    })),
+    longestSilenceMs: evidence.longestSilenceMs,
+    checkIns: evidence.checkIns,
+  });
+  assert.equal(gate.status, "PASS", gate.detail);
+  assert.match(gate.detail, /covered by an agent turn/);
+  assert.match(gate.detail, /call trace turn 1/);
+});
+
+test("free-floor silence: a timely check-in covers a 15s silence and reports its timing", () => {
+  const evidence = deriveFreeFloorSilence({
+    startedMs: 0,
+    endedMs: 18_000,
+    agentAudio: [
+      { startMs: 0, endMs: 1_000 },
+      { startMs: 17_000, endMs: 18_000 },
+    ],
+    callerSpeech: [{ startMs: 1_000, endMs: 1_200 }],
+    checkIns: [{ atMs: 16_200, overCaller: false }],
+  });
+  assert.deepEqual(evidence.gapsMs, []);
+  assert.equal(evidence.longestSilenceMs, 15_800);
+  assert.equal(evidence.silences[0].coveredBy, "check-in");
+  assert.deepEqual(evidence.checkIns, [{ atSilenceMs: 15_000, overCaller: false }]);
+  const gate = evaluateDeadAir({
+    gapsMs: evidence.gapsMs,
+    gapWindows: evidence.gapWindows,
+    longestSilenceMs: evidence.longestSilenceMs,
+    checkIns: evidence.checkIns,
+  });
+  assert.equal(gate.status, "PASS", gate.detail);
+});
+
+test("dead air: a FAIL cites the gap window and deadAir.gapsMs instead of inventing a trace row", () => {
+  const gate = evaluateDeadAir({
+    gapsMs: [3_500],
+    gapWindows: [
+      {
+        durationMs: 3_500,
+        startMs: 1_500,
+        endMs: 5_000,
+        trace: "between call trace turn 1 and turn 2 (sess_sil); window 1.50s–5.00s",
+      },
+    ],
+    longestSilenceMs: 3_500,
+    checkIns: [],
+  });
+  assert.equal(gate.status, "FAIL");
+  assert.ok(gate.detail.includes("3500"), gate.detail);
+  assert.ok(gate.detail.includes("deadAir.gapsMs"), gate.detail);
+  assert.ok(gate.detail.includes("1.50s–5.00s"), gate.detail);
+  assert.ok(gate.detail.includes("call trace turn 1"), gate.detail);
+});
+
+test("trace silence citation points at the surrounding turns and the window", () => {
+  const excerpt = [
+    '1.00s  VONI    "Hi there"  (greeting)',
+    '3.50s  HEARD   "We run a bakery"  (3.50s–4.50s)',
+    '9.00s  VONI    "Sure thing"  (reply_create gap 900ms)',
+  ];
+  assert.equal(
+    traceSilenceRef(excerpt, { startMs: 4_500, endMs: 9_000 }, "sess_sil"),
+    "between call trace turn 1 and turn 2 (sess_sil); window 4.50s–9.00s",
+  );
+  assert.equal(
+    traceSilenceRef(excerpt, { startMs: 1_000, endMs: 3_000 }, "sess_sil"),
+    "at call trace turn 1 (sess_sil); window 1.00s–3.00s",
+  );
+  assert.equal(
+    traceSilenceRef(excerpt, { startMs: 9_500, endMs: 12_000 }, "sess_sil"),
+    "after call trace turn 2 (sess_sil); window 9.50s–12.00s",
+  );
+  assert.equal(traceSilenceRef([], { startMs: 0, endMs: 1_000 }, "sess_sil"), null);
+});
+
+test("silence timeline evidence parses from the runner line and rejects broken payloads", () => {
+  const line =
+    'SILENCE TIMELINE {"scenario":"stop-over","session":"sess_sil","startedMs":0,"endedMs":5000,' +
+    '"agentAudio":[{"startMs":0,"endMs":1000}],"callerSpeech":[],"coverage":[{"atMs":400}]}';
+  const parsed = parseSilenceTimelineOutput(`banner\n${line}\n`);
+  assert.equal(parsed?.scenario, "stop-over");
+  assert.equal(parsed?.sessionId, "sess_sil");
+  assert.equal(parsed?.timeline.endedMs, 5_000);
+  assert.deepEqual(parsed?.timeline.agentAudio, [{ startMs: 0, endMs: 1_000 }]);
+  assert.deepEqual(parsed?.timeline.coverage, [{ atMs: 400 }]);
+  assert.equal(parseSilenceTimelineOutput("no timeline line"), null);
+  assert.throws(
+    () => parseSilenceTimelineOutput('SILENCE TIMELINE {"scenario":"x","startedMs":0,"endedMs":1000}'),
+    /agentAudio/,
+  );
+  assert.throws(
+    () =>
+      parseSilenceTimeline(
+        { startedMs: 0, endedMs: 1_000, agentAudio: [{ startMs: 900, endMs: 500 }], callerSpeech: [] },
+        "silence.json",
+      ),
+    /startMs/,
+  );
 });
 
 test("skeleton artifact without dead-air evidence keeps dead-air INFO (unmeasured, never PASS)", () => {

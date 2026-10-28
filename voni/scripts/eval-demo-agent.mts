@@ -24,6 +24,12 @@
  * a harness break; the summary also names trace sessions and agent audio so
  * a silent or untraced run is classified as a harness break too.
  *
+ * Each live client call prints one `SILENCE TIMELINE {...}` line: the agent
+ * and caller audio windows, every agent reply start / reply.create (coverage),
+ * and any check-ins, all call-relative ms. score-demo derives the free-floor
+ * silences from it, so dead air is measured from the call's own events rather
+ * than typed in by an operator.
+ *
  * Scenarios (raw socket):
  *   hang-up       "I want you to hang up." → a real end_call tool call, and
  *                 the tool name is never spoken.
@@ -128,12 +134,14 @@ import {
   REAL_CUT_MAX_MS,
   REAL_CUT_SCENARIOS,
   sha256Hex,
+  SILENCE_TIMELINE_PREFIX,
   type AudibleWindow,
   type CallerClipFingerprint,
   type CallerOnset,
   type DoubleTalkCut,
   type EmailInviteEvidenceFile,
   type FillerAnswerMarker,
+  type SilenceTimeline,
 } from "../src/lib/demo/scoreboard";
 
 const FAKE = /fake|pretend|hypothetical|make one up|made[- ]up|pick anything|example business|imaginary|role[- ]?play/i;
@@ -420,6 +428,12 @@ type ClientOutcome = {
   cutWindows: DoubleTalkCut[];
   /** The fade the last flush applied, ms (the worklet's FADE_OUT_S). */
   lastFadeMs: number;
+  /** Agent audio playout windows, call-relative ms (the silence timeline). */
+  agentWindows: { startMs: number; endMs: number }[];
+  /** Agent reply starts / reply.create requests, call-relative ms: coverage. */
+  coverageAt: { atMs: number }[];
+  /** The call's free-floor silence timeline, built once the call has ended. */
+  silenceTimeline: SilenceTimeline | null;
 };
 
 /**
@@ -504,19 +518,24 @@ async function runClient(
   for (const line of lines) clips.set(line, await speak(line));
   // The live call starts here: clip rendering must never inflate playout.
   const liveStartedAt = Date.now();
+  // Call-relative origin for the silence timeline and the playout maths.
+  const t0 = Date.now();
   const body = buildDemoAgentBody(voiceId);
   const outcome: ClientOutcome = {
     events: [], cutAt: null, creates: [], agent: [], heard: [], agentTurns: [], heardTurns: [], cutReplyId: null,
     replyAudioAt: {}, cutPlayedMs: null,
     interruptedReplies: 0, sessionId: null, endedAt: null, lastAudioEnd: 0,
     wallClockMs: 0, audioChunks: 0, callerClips: lines.map((line) => clipPrints.get(line)!),
-    overlapMs: [], cutWindows: [], lastFadeMs: 0,
+    overlapMs: [], cutWindows: [], lastFadeMs: 0, agentWindows: [], coverageAt: [], silenceTimeline: null,
   };
   let repliesDone = 0;
   let audioChunks = 0;
   const session = new VoiceSession(
     {
       onBargeIn: (event) => outcome.events.push({ ...event, at: Date.now() }),
+      // A reply started: the agent is covering the floor. Together with our
+      // own reply.create requests this is the dead-air coverage evidence.
+      onReplyStarted: () => outcome.coverageAt.push({ atMs: Math.max(0, Date.now() - t0) }),
       // One machine-readable marker per live call: score-demo chains its Call
       // trace merge from it, and the operator can replay the same id.
       onSessionReady: (sessionId) => {
@@ -574,6 +593,8 @@ async function runClient(
   let sentSamples = 0;
   const replyAudioStartSamples: Record<string, number> = {};
   let soundingReplyId: string | null = null;
+  /** The playout window the last chunk opened, truncated if the flush cuts it. */
+  let lastAgentWindow: { startMs: number; endMs: number } | null = null;
   const consumedSamplesNow = () => {
     const queuedMs = Math.max(0, playUntil - Date.now());
     const queuedSamples = Math.ceil((queuedMs / 1000) * TARGET_SAMPLE_RATE);
@@ -614,11 +635,23 @@ async function runClient(
     play: (pcm: Uint8Array, rate: number) => {
       audioChunks += 1;
       sentSamples += pcm.byteLength / 2;
-      playUntil = Math.max(Date.now(), playUntil) + (pcm.byteLength / 2 / rate) * 1000;
+      const startedAt = Math.max(Date.now(), playUntil);
+      playUntil = startedAt + (pcm.byteLength / 2 / rate) * 1000;
       outcome.lastAudioEnd = playUntil;
+      lastAgentWindow = {
+        startMs: Math.max(0, startedAt - t0),
+        endMs: Math.max(0, playUntil - t0),
+      };
+      outcome.agentWindows.push(lastAgentWindow);
     },
     flush: (fadeS = 0) => {
       const at = Date.now();
+      // The flush drops whatever had not played: end the sounding window here
+      // so the silence timeline never claims audio the caller never heard.
+      if (lastAgentWindow) {
+        const playedEnd = Math.max(lastAgentWindow.startMs, at - t0);
+        lastAgentWindow.endMs = Math.max(lastAgentWindow.startMs, Math.min(lastAgentWindow.endMs, playedEnd));
+      }
       if (live) {
         // The session flushes with FADE_OUT_S: what is sounding ramps to
         // silence over the fade and the rest is dropped. Record what the
@@ -662,7 +695,6 @@ async function runClient(
     tools: [END_CALL_VOICE_TOOL],
   }, gen);
   const ws = internals.ws!;
-  const t0 = Date.now();
   ws.addEventListener("message", (event) => {
     const msg = JSON.parse(String(event.data));
     if (msg.type === "reply.audio") {
@@ -694,7 +726,10 @@ async function runClient(
   const send = ws.send.bind(ws);
   ws.send = (data: string) => {
     const msg = JSON.parse(String(data));
-    if (msg.type === "reply.create") outcome.creates.push(String(msg.instructions ?? ""));
+    if (msg.type === "reply.create") {
+      outcome.creates.push(String(msg.instructions ?? ""));
+      outcome.coverageAt.push({ atMs: Math.max(0, Date.now() - t0) });
+    }
     if (process.env.EVAL_DEBUG && msg.type !== "input.audio") console.log(`    -> ${msg.type} ${JSON.stringify(msg.session?.input?.turn_detection ?? msg.instructions ?? "")}`);
     send(data);
   };
@@ -781,6 +816,35 @@ async function runClient(
     live = false;
     clearInterval(pump);
     await session.stop();
+    // The call's own silence timeline: audible agent/caller windows plus the
+    // agent reply starts / reply.create requests that covered the floor. It
+    // runs from the first to the last audible event, so the scenario's own
+    // trailing observation wait is never reported as dead air.
+    const callerSpeech = onsets
+      .map((onset) => {
+        const start = callerSpeechStart({
+          enqueuedAt: onset.enqueuedAt,
+          firstFrameAt: onset.firstFrameAt,
+          onsetMs: onset.onsetMs,
+          ...(onset.frameOffsetMs === null ? {} : { frameOffsetMs: onset.frameOffsetMs }),
+        });
+        if (start === null) return null;
+        const end = start + Math.max(0, onset.durationMs - onset.onsetMs);
+        return { startMs: Math.max(0, start - t0), endMs: Math.max(0, end - t0) };
+      })
+      .filter((window): window is { startMs: number; endMs: number } => window !== null && window.endMs > window.startMs);
+    const agentAudio = outcome.agentWindows.filter((window) => window.endMs > window.startMs);
+    const audible = [...agentAudio, ...callerSpeech];
+    outcome.silenceTimeline =
+      audible.length === 0
+        ? null
+        : {
+            startedMs: Math.min(...audible.map((window) => window.startMs)),
+            endedMs: Math.max(...audible.map((window) => window.endMs)),
+            agentAudio,
+            callerSpeech,
+            coverage: outcome.coverageAt,
+          };
     outcome.wallClockMs = Date.now() - liveStartedAt;
     outcome.audioChunks = audioChunks;
     lastClientOutcome = outcome;
@@ -1627,6 +1691,15 @@ for (const scenario of CLIENT_SCENARIOS.filter((s) => !only || s.name === only))
       agentAudioChunks += liveRun.audioChunks;
       playoutRows.push({ scenario: scenario.name, run: i, wallClockMs: liveRun.wallClockMs });
       console.log(`    playout ${liveRun.wallClockMs}ms wall clock`);
+      if (liveRun.silenceTimeline) {
+        console.log(
+          `${SILENCE_TIMELINE_PREFIX}${JSON.stringify({
+            scenario: scenario.name,
+            session: liveRun.sessionId,
+            ...liveRun.silenceTimeline,
+          })}`,
+        );
+      }
       if ((REAL_CUT_SCENARIOS as readonly string[]).includes(scenario.name)) {
         for (const clip of liveRun.callerClips) {
           if (!cutClips.some((seen) => seen.text === clip.text)) cutClips.push(clip);

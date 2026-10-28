@@ -855,7 +855,286 @@ export type DeadAirEvidence = {
   checkIns: DeadAirCheckIn[];
   /** Run-level trace pointer (e.g. the call-trace session id). */
   trace?: string;
+  /**
+   * The windows each gap in `gapsMs` came from (same order). A silent gap has
+   * no trace row of its own, so a FAIL cites the surrounding turn plus this
+   * window instead of inventing one.
+   */
+  gapWindows?: DeadAirSilence[];
+  /** Every free-floor silence observed, covered or not (the timeline). */
+  silences?: DeadAirSilence[];
 };
+
+/** One measured silence: a window with no agent audio, caller speech, or check-in. */
+export type DeadAirSilence = {
+  startMs: number;
+  endMs: number;
+  durationMs: number;
+  /** What covered the window; null when nothing did (an uncovered gap). */
+  coveredBy?: "agent" | "check-in" | null;
+  /** Call trace pointer for the surrounding turn/window. */
+  trace?: string | null;
+};
+
+/** One audible interval on a call, ms since the session opened. */
+export type SilenceWindow = { startMs: number; endMs: number };
+
+/**
+ * The eval's own call timeline: what was audible, when an agent reply was
+ * started or requested (coverage), and any check-ins. Derived from session
+ * events, never guessed. Trailing idle after the last event is not part of
+ * the window: the scenario harness stops the call, the call did not go dead.
+ */
+export type SilenceTimeline = {
+  startedMs: number;
+  endedMs: number;
+  agentAudio: SilenceWindow[];
+  callerSpeech: SilenceWindow[];
+  /** Agent reply starts / reply.create requests: the agent is covering. */
+  coverage?: { atMs: number }[];
+  /** Check-ins that went out, with the silence elapsed at the sending. */
+  checkIns?: { atMs: number; overCaller?: boolean; trace?: string }[];
+};
+
+export type FreeFloorSilenceEvidence = {
+  /** Uncovered silences over the dead-air window, ms. */
+  gapsMs: number[];
+  /** The windows behind gapsMs, same order. */
+  gapWindows: DeadAirSilence[];
+  /** Every silence the timeline held, covered or not. */
+  silences: DeadAirSilence[];
+  /** Longest silence stretch, covered or not; 0 when the call never paused. */
+  longestSilenceMs: number;
+  /** Check-ins with the silence elapsed when each went out. */
+  checkIns: DeadAirCheckIn[];
+};
+
+function mergedBusyWindows(windows: SilenceWindow[]): SilenceWindow[] {
+  const sorted = windows
+    .filter((window) => Number.isFinite(window.startMs) && Number.isFinite(window.endMs) && window.endMs > window.startMs)
+    .map((window) => ({ startMs: window.startMs, endMs: window.endMs }))
+    .sort((a, b) => a.startMs - b.startMs || a.endMs - b.endMs);
+  const merged: SilenceWindow[] = [];
+  for (const window of sorted) {
+    const last = merged[merged.length - 1];
+    if (last && window.startMs <= last.endMs) last.endMs = Math.max(last.endMs, window.endMs);
+    else merged.push({ ...window });
+  }
+  return merged;
+}
+
+/**
+ * Derive free-floor silences from the session timeline: contiguous stretches
+ * with no agent audio and no caller speech between the first and last audible
+ * event. A stretch is covered by an agent reply start / reply.create inside it
+ * or by a check-in; an uncovered stretch longer than DEAD_AIR_MAX_MS is a gap.
+ * The Call trace citation is added later, where the merged excerpt is known.
+ */
+export function deriveFreeFloorSilence(timeline: SilenceTimeline): FreeFloorSilenceEvidence {
+  const busy = mergedBusyWindows([...timeline.agentAudio, ...timeline.callerSpeech]);
+  const coverageAt = (timeline.coverage ?? [])
+    .map((entry) => entry.atMs)
+    .filter((atMs) => Number.isFinite(atMs));
+  const checkInEvents = (timeline.checkIns ?? []).filter((entry) => Number.isFinite(entry.atMs));
+  const silences: DeadAirSilence[] = [];
+  const checkIns: DeadAirCheckIn[] = [];
+  let cursor = timeline.startedMs;
+  for (const window of busy) {
+    if (window.startMs > cursor) silences.push(silenceWindow(cursor, window.startMs));
+    cursor = Math.max(cursor, window.endMs);
+  }
+  if (timeline.endedMs > cursor) silences.push(silenceWindow(cursor, timeline.endedMs));
+
+  // Coverage is matched against each stretch, not the merged busy window.
+  const measured: DeadAirSilence[] = [];
+  for (const silence of silences) {
+    const insideCoverage = coverageAt.some((atMs) => atMs >= silence.startMs && atMs <= silence.endMs);
+    const insideCheckIns = checkInEvents.filter((entry) => entry.atMs >= silence.startMs && entry.atMs <= silence.endMs);
+    const coveredBy = insideCheckIns.length > 0 ? "check-in" : insideCoverage ? "agent" : null;
+    measured.push({ ...silence, coveredBy });
+    for (const checkIn of insideCheckIns) {
+      const atSilenceMs = Math.max(0, Math.round(checkIn.atMs - silence.startMs));
+      checkIns.push({
+        atSilenceMs,
+        overCaller: checkIn.overCaller === true,
+        ...(checkIn.trace ? { trace: checkIn.trace } : {}),
+      });
+    }
+  }
+  const gapWindows = measured.filter(
+    (silence) => silence.coveredBy === null && silence.durationMs > DEAD_AIR_MAX_MS,
+  );
+  return {
+    gapsMs: gapWindows.map((silence) => silence.durationMs),
+    gapWindows,
+    silences: measured,
+    longestSilenceMs: measured.reduce((max, silence) => Math.max(max, silence.durationMs), 0),
+    checkIns,
+  };
+}
+
+function silenceWindow(startMs: number, endMs: number): DeadAirSilence {
+  return {
+    startMs,
+    endMs,
+    durationMs: Math.max(0, endMs - startMs),
+    coveredBy: null,
+    trace: null,
+  };
+}
+
+function nonNegativeNumber(value: unknown, field: string, source: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    throw new Error(`${source}: ${field} must be a non-negative number`);
+  }
+  return value;
+}
+
+function parseSilenceWindows(value: unknown, field: string, source: string): SilenceWindow[] {
+  if (!Array.isArray(value)) throw new Error(`${source}: ${field} must be an array of {startMs,endMs} windows`);
+  return value.map((entry, index) => {
+    const window = entry as Partial<SilenceWindow> | null;
+    if (window === null || typeof window !== "object") {
+      throw new Error(`${source}: ${field}[${index}] must be a {startMs,endMs} window`);
+    }
+    const startMs = nonNegativeNumber(window.startMs, `${field}[${index}].startMs`, source);
+    const endMs = nonNegativeNumber(window.endMs, `${field}[${index}].endMs`, source);
+    if (endMs < startMs) {
+      throw new Error(`${source}: ${field}[${index}].startMs must not exceed endMs`);
+    }
+    return { startMs, endMs };
+  });
+}
+
+/**
+ * Validate a documented silence timeline (an evidence file or the runner's
+ * machine-readable line). Bad payloads throw: the gate is either measured or
+ * absent, never a guess from a broken timeline.
+ */
+export function parseSilenceTimeline(raw: unknown, source: string): SilenceTimeline {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error(`${source}: silence timeline must be a JSON object`);
+  }
+  const candidate = raw as Record<string, unknown>;
+  const startedMs = nonNegativeNumber(candidate.startedMs, "startedMs", source);
+  const endedMs = nonNegativeNumber(candidate.endedMs, "endedMs", source);
+  if (endedMs < startedMs) throw new Error(`${source}: startedMs must not exceed endedMs`);
+  const agentAudio = parseSilenceWindows(candidate.agentAudio, "agentAudio", source);
+  const callerSpeech = parseSilenceWindows(candidate.callerSpeech, "callerSpeech", source);
+  if (agentAudio.length === 0 && callerSpeech.length === 0) {
+    throw new Error(`${source}: a silence timeline needs at least one audible window`);
+  }
+  const coverageRaw = candidate.coverage ?? [];
+  if (!Array.isArray(coverageRaw)) throw new Error(`${source}: coverage must be an array of {atMs} entries`);
+  const coverage = coverageRaw.map((entry, index) => {
+    const atMs = nonNegativeNumber((entry as { atMs?: unknown } | null)?.atMs, `coverage[${index}].atMs`, source);
+    return { atMs };
+  });
+  const checkInsRaw = candidate.checkIns ?? [];
+  if (!Array.isArray(checkInsRaw)) throw new Error(`${source}: checkIns must be an array of {atMs} entries`);
+  const checkIns = checkInsRaw.map((entry, index) => {
+    const checkIn = entry as { atMs?: unknown; overCaller?: unknown; trace?: unknown } | null;
+    const atMs = nonNegativeNumber(checkIn?.atMs, `checkIns[${index}].atMs`, source);
+    if (checkIn?.trace !== undefined && (typeof checkIn.trace !== "string" || !checkIn.trace.trim())) {
+      throw new Error(`${source}: checkIns[${index}].trace must be a non-empty string`);
+    }
+    return {
+      atMs,
+      ...(checkIn?.overCaller === true ? { overCaller: true } : {}),
+      ...(typeof checkIn?.trace === "string" ? { trace: checkIn.trace } : {}),
+    };
+  });
+  return { startedMs, endedMs, agentAudio, callerSpeech, coverage, checkIns };
+}
+
+/** The live runner's machine-readable silence timeline, one line per live call. */
+export const SILENCE_TIMELINE_PREFIX = "SILENCE TIMELINE ";
+
+export type RunnerSilenceTimeline = {
+  scenario: string;
+  sessionId: string | null;
+  timeline: SilenceTimeline;
+};
+
+/**
+ * Parse the runner's `SILENCE TIMELINE {...}` line. Null when the run printed
+ * none (a dry run or a raw-socket scenario). A present but malformed line
+ * throws, so broken evidence never becomes a PASS.
+ */
+export function parseSilenceTimelineOutput(stdout: string): RunnerSilenceTimeline | null {
+  let found: RunnerSilenceTimeline | null = null;
+  for (const rawLine of stdout.split("\n")) {
+    const line = rawLine.trimStart();
+    if (!line.startsWith(SILENCE_TIMELINE_PREFIX)) continue;
+    let raw: unknown;
+    try {
+      raw = JSON.parse(line.slice(SILENCE_TIMELINE_PREFIX.length));
+    } catch (error) {
+      throw new Error(
+        `eval runner SILENCE TIMELINE line is not valid JSON: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+      throw new Error("eval runner SILENCE TIMELINE line must be a JSON object");
+    }
+    const candidate = raw as { scenario?: unknown; session?: unknown };
+    if (typeof candidate.scenario !== "string" || !candidate.scenario.trim()) {
+      throw new Error("eval runner SILENCE TIMELINE line needs a scenario name");
+    }
+    const session = candidate.session ?? null;
+    if (session !== null && (typeof session !== "string" || !session.trim())) {
+      throw new Error("eval runner SILENCE TIMELINE line has an invalid session id");
+    }
+    found = {
+      scenario: candidate.scenario,
+      sessionId: session,
+      timeline: parseSilenceTimeline(raw, "eval runner SILENCE TIMELINE line"),
+    };
+  }
+  return found;
+}
+
+function formatWindowMs(ms: number): string {
+  return `${(ms / 1000).toFixed(2)}s`;
+}
+
+/**
+ * Cite the Call trace turn surrounding a silent window. A silent gap has no
+ * row of its own, so this names the last turn before it and the next turn
+ * after it (or only the one that exists) plus the window itself. Null when
+ * the merged excerpt has no VONI row at all: the FAIL then says no turn was
+ * merged rather than inventing one.
+ */
+export function traceSilenceRef(
+  excerpt: string[],
+  window: { startMs: number; endMs: number },
+  sessionId?: string | null,
+): string | null {
+  const rows: { ms: number; turn: number }[] = [];
+  let turn = 0;
+  for (const line of excerpt) {
+    if (!line.includes("  VONI    ")) continue;
+    turn += 1;
+    const match = /^\s*(\d+(?:\.\d+)?)s\s+VONI\s/.exec(line);
+    if (!match) continue;
+    rows.push({ ms: Math.round(Number(match[1]) * 1000), turn });
+  }
+  if (rows.length === 0) return null;
+  const suffix = sessionId ? ` (${sessionId})` : "";
+  const span = `window ${formatWindowMs(window.startMs)}–${formatWindowMs(window.endMs)}`;
+  const within = rows.find((row) => row.ms >= window.startMs && row.ms < window.endMs);
+  if (within) return `at call trace turn ${within.turn}${suffix}; ${span}`;
+  const before = [...rows].reverse().find((row) => row.ms <= window.startMs) ?? null;
+  const after = rows.find((row) => row.ms >= window.endMs) ?? null;
+  if (before && after) {
+    if (before.turn === after.turn) return `at call trace turn ${before.turn}${suffix}; ${span}`;
+    return `between call trace turn ${before.turn} and turn ${after.turn}${suffix}; ${span}`;
+  }
+  if (before) return `after call trace turn ${before.turn}${suffix}; ${span}`;
+  if (after) return `before call trace turn ${after.turn}${suffix}; ${span}`;
+  return null;
+}
+
 
 /**
  * The dead-air gate: zero uncovered silence over 2s, and a 15s silence
@@ -871,10 +1150,27 @@ export function evaluateDeadAir(evidence: DeadAirEvidence): ScoreboardGate {
   const traceSuffix = evidence.trace ? `, trace ${evidence.trace}` : "";
   const reasons: string[] = [];
 
-  const bad = gaps.filter((g) => g > DEAD_AIR_MAX_MS);
+  const bad = gaps
+    .map((gapMs, index) => ({ gapMs, index }))
+    .filter(({ gapMs }) => gapMs > DEAD_AIR_MAX_MS);
   if (bad.length > 0) {
+    const windows = evidence.gapWindows ?? [];
+    const aligned = windows.length === gaps.length ? windows : [];
+    const described = bad.map(({ gapMs, index }) => {
+      const window = aligned[index];
+      const where =
+        window && Number.isFinite(window.startMs) && Number.isFinite(window.endMs)
+          ? ` at ${formatWindowMs(window.startMs)}–${formatWindowMs(window.endMs)}`
+          : "";
+      const cite = window
+        ? window.trace
+          ? ` (${window.trace})`
+          : " (no call trace turn merged for this window; see deadAir.gapsMs)"
+        : "";
+      return `${gapMs}ms${where}${cite}`;
+    });
     reasons.push(
-      `dead air ${bad.map((g) => `${g}ms`).join(", ")} exceeds ${DEAD_AIR_MAX_MS}ms without filler/check-in (see deadAir.gapsMs, silence-check-in beat${traceSuffix})`,
+      `dead air ${described.join(", ")} exceeds ${DEAD_AIR_MAX_MS}ms without filler/check-in (see deadAir.gapsMs, silence-check-in beat${traceSuffix})`,
     );
   }
 
@@ -905,6 +1201,19 @@ export function evaluateDeadAir(evidence: DeadAirEvidence): ScoreboardGate {
     );
   }
 
+  // A covered long silence is not a gap, but the report still names what
+  // covered it and the surrounding Call trace turn: every long silence shows
+  // coverage or a timely check-in.
+  const agentCovered = (evidence.silences ?? []).filter(
+    (silence) => silence.durationMs > DEAD_AIR_MAX_MS && silence.coveredBy === "agent",
+  );
+  const coverageNote =
+    agentCovered.length > 0
+      ? `; ${agentCovered.length} long silence${agentCovered.length === 1 ? "" : "s"} covered by an agent turn (${agentCovered
+          .map((silence) => `${silence.durationMs}ms${silence.trace ? `: ${silence.trace}` : ""}`)
+          .join(", ")})`
+      : "";
+
   if (reasons.length > 0) {
     return { name: "dead-air", status: "FAIL", detail: reasons.join("; ") };
   }
@@ -912,14 +1221,14 @@ export function evaluateDeadAir(evidence: DeadAirEvidence): ScoreboardGate {
     return {
       name: "dead-air",
       status: "PASS",
-      detail: `no dead air over ${DEAD_AIR_MAX_MS}ms; 15s silence drew exactly one check-in at ${checkIns[0].atSilenceMs}ms, never over the caller`,
+      detail: `no dead air over ${DEAD_AIR_MAX_MS}ms; 15s silence drew exactly one check-in at ${checkIns[0].atSilenceMs}ms, never over the caller${coverageNote}`,
     };
   }
   const max = gaps.length > 0 ? Math.max(...gaps) : 0;
   return {
     name: "dead-air",
     status: "PASS",
-    detail: `no dead air over ${DEAD_AIR_MAX_MS}ms across ${gaps.length} gaps (max ${max}ms); no 15s silence stretch`,
+    detail: `no dead air over ${DEAD_AIR_MAX_MS}ms across ${gaps.length} gaps (max ${max}ms); no 15s silence stretch${coverageNote}`,
   };
 }
 
@@ -1460,6 +1769,8 @@ export type ScoreboardArtifact = {
     maxMs: number | null;
     checkIns: DeadAirCheckIn[];
     longestSilenceMs: number | null;
+    gapWindows: DeadAirSilence[];
+    silences: DeadAirSilence[];
   };
   probes: TimbreProbes;
   /** Shared gain reference the gate voice is matched to, with its post-gain level. */
@@ -4055,6 +4366,8 @@ export function buildSkeletonArtifact(input: {
       maxMs: deadAirGaps.length > 0 ? Math.max(...deadAirGaps) : null,
       checkIns: deadAirCheckIns,
       longestSilenceMs: input.deadAir?.longestSilenceMs ?? null,
+      gapWindows: deadAirInput?.gapWindows ?? [],
+      silences: deadAirInput?.silences ?? [],
     },
     probes: timbreProbes,
     loudness: {
