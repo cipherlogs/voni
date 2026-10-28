@@ -19,9 +19,8 @@
  * invite/tag counts plus an email-invite gate, audible overlap plus a
  * double-talk gate, and goodbye coverage plus an end-call-drain gate — all
  * can FAIL. Every
- * other beat's
- * drain milliseconds are still placeholders, probe counts start at zero, and
- * the remaining gates report PASS/INFO (no FAIL until gating lands in later
+ * unmeasured beat reports INFO with a placeholder note, probe counts start at
+ * zero, and the remaining gates report PASS/INFO (no FAIL until gating lands in later
  * tickets). Dead air gates on measured evidence supplied by the operator
  * (--dead-air-gaps / --longest-silence-ms / --check-in-at-ms): without
  * evidence the gate stays INFO, never PASS, so an unmeasured run cannot
@@ -1827,7 +1826,12 @@ function skeletonGates(
   agentChannel?: AgentChannelEvidence | null,
   humanRatings?: HumanRatings | null,
   voiceId?: string,
-  options?: { dryRun?: boolean; evalError?: string | null; measured?: boolean },
+  options?: {
+    dryRun?: boolean;
+    evalError?: string | null;
+    measured?: boolean;
+    measuredSources?: MeasuredEvidenceKind[];
+  },
 ): ScoreboardGate[] {
   const dryRun = options?.dryRun ?? false;
   // Finding A: a dead eval runner is a harness break, not a silent INFO.
@@ -1852,7 +1856,7 @@ function skeletonGates(
           status: "INFO",
           detail: dryRun
             ? "dry run: no measurements required (explicit evidence still gates)"
-            : "measured evidence present",
+            : `measured evidence present (${(options?.measuredSources ?? []).join(", ")})`,
         }
       : {
           name: "measurements",
@@ -1931,12 +1935,76 @@ function skeletonGates(
 }
 
 /**
+ * Every measured input the run can carry, in stable order. Presence alone is
+ * not provenance: an empty container (no gaps, no asides, no dead-air rows)
+ * means nothing was observed and is not reported.
+ */
+export const MEASURED_EVIDENCE_KINDS = [
+  "gaps",
+  "trace-gaps",
+  "filler-resume",
+  "overheard-asides",
+  "dead-air",
+  "double-talk",
+  "end-call-drain",
+  "timbre-probes",
+  "agent-channel",
+  "human-ratings",
+  "real-cut",
+] as const;
+
+export type MeasuredEvidenceKind = (typeof MEASURED_EVIDENCE_KINDS)[number];
+
+/**
+ * Provenance classification for the measurements gate: which inputs carry
+ * observed values. Empty containers and default placeholders return nothing,
+ * so a dry run or an evidence-free real run can never look measured.
+ */
+export function measuredEvidenceSources(input: {
+  gaps?: Partial<Record<GoldenBeat, number[]>>;
+  traceGaps?: TraceGap[];
+  fillerResume?: FillerResumeEvidence | null;
+  overheardAsides?: OverheardAside[];
+  deadAir?: DeadAirEvidence | null;
+  doubleTalkOverlapMs?: number[];
+  endCallDrain?: { goodbyeCoverage: number | null; hangUpDelayMs: number | null; narratedEnding: boolean };
+  probes?: TimbreProbes;
+  agentChannel?: AgentChannelEvidence | null;
+  humanRatings?: HumanRatings;
+  realCutEvidencePresent?: boolean;
+}): MeasuredEvidenceKind[] {
+  const sources: MeasuredEvidenceKind[] = [];
+  if (input.gaps && Object.values(input.gaps).some((samples) => (samples ?? []).some((n) => Number.isFinite(n)))) {
+    sources.push("gaps");
+  }
+  if ((input.traceGaps ?? []).some((gap) => Number.isFinite(gap.gapMs))) sources.push("trace-gaps");
+  if (input.fillerResume != null) sources.push("filler-resume");
+  if ((input.overheardAsides ?? []).length > 0) sources.push("overheard-asides");
+  const deadAir = input.deadAir;
+  if (
+    deadAir &&
+    (deadAir.gapsMs.length > 0 || deadAir.longestSilenceMs != null || deadAir.checkIns.length > 0)
+  ) {
+    sources.push("dead-air");
+  }
+  if ((input.doubleTalkOverlapMs ?? []).length > 0) sources.push("double-talk");
+  const drain = input.endCallDrain;
+  if (drain && (drain.goodbyeCoverage != null || drain.hangUpDelayMs != null || drain.narratedEnding)) {
+    sources.push("end-call-drain");
+  }
+  // Explicit probes (even all-zero) are a completed measurement; the artifact
+  // only receives this field when --probe-json was actually read.
+  if (input.probes !== undefined) sources.push("timbre-probes");
+  if (input.agentChannel != null) sources.push("agent-channel");
+  if ((input.humanRatings?.ratings ?? []).length > 0) sources.push("human-ratings");
+  if (input.realCutEvidencePresent) sources.push("real-cut");
+  return sources;
+}
+
+/**
  * Whether the run carries any measured evidence for the required gates.
- * Presence-based: explicit per-beat gaps, merged trace gaps, filler
- * observations, overheard asides, dead-air evidence, overlap timings,
- * measured drain fields, explicit probes/agent-channel/human ballots, or
- * real-cut evidence handled outside the skeleton. Defaults (zeroed probes,
- * empty ratings) do not count.
+ * Thin wrapper over measuredEvidenceSources so every caller shares one
+ * provenance rule (empty containers and placeholders do not count).
  */
 export function hasMeasuredEvidence(input: {
   gaps?: Partial<Record<GoldenBeat, number[]>>;
@@ -1951,19 +2019,7 @@ export function hasMeasuredEvidence(input: {
   humanRatings?: HumanRatings;
   realCutEvidencePresent?: boolean;
 }): boolean {
-  if (input.gaps && Object.values(input.gaps).some((samples) => (samples ?? []).length > 0)) return true;
-  if ((input.traceGaps ?? []).length > 0) return true;
-  if (input.fillerResume != null) return true;
-  if (input.overheardAsides !== undefined) return true;
-  if (input.deadAir != null) return true;
-  if ((input.doubleTalkOverlapMs ?? []).length > 0) return true;
-  const drain = input.endCallDrain;
-  if (drain && (drain.goodbyeCoverage != null || drain.hangUpDelayMs != null || drain.narratedEnding)) return true;
-  if (input.probes !== undefined) return true;
-  if (input.agentChannel != null) return true;
-  if ((input.humanRatings?.ratings ?? []).length > 0) return true;
-  if (input.realCutEvidencePresent) return true;
-  return false;
+  return measuredEvidenceSources(input).length > 0;
 }
 
 function emptyOverheardByBeat(): Record<GoldenBeat, { recalled: number; total: number }> {
@@ -2079,7 +2135,7 @@ export function buildSkeletonArtifact(input: {
           cutMs: null,
           resumeMs: null,
           drainMs: null,
-          status: unverifiedNote ? "INFO" : "PASS",
+          status: measured ? "PASS" : "INFO",
           note: unverifiedNote ??
             (measured
               ? `reply gap p50 ${beatSummary?.p50Ms}ms / p95 ${beatSummary?.p95Ms}ms over ${beatSamples.length} run${beatSamples.length === 1 ? "" : "s"}${breaches ? " (over budget: see reply-gap gate)" : ""}`
@@ -2116,7 +2172,7 @@ export function buildSkeletonArtifact(input: {
   const humanRatings = input.humanRatings ?? emptyHumanRatings(null);
   const loudnessCheck = checkLoudnessSanity(input.voice);
   const dryRun = input.dryRun ?? false;
-  const measured = hasMeasuredEvidence({
+  const measuredSources = measuredEvidenceSources({
     gaps: input.gaps,
     traceGaps: input.traceGaps,
     fillerResume: input.fillerResume,
@@ -2129,6 +2185,7 @@ export function buildSkeletonArtifact(input: {
     ...(humanRatings.ratings.length > 0 ? { humanRatings } : {}),
     ...(input.realCutEvidencePresent ? { realCutEvidencePresent: true } : {}),
   });
+  const measured = measuredSources.length > 0;
   const gatesPreview = skeletonGates(
     input.exitCode,
     samples,
@@ -2144,7 +2201,7 @@ export function buildSkeletonArtifact(input: {
     agentChannel,
     humanRatings,
     input.voice,
-    { dryRun, evalError: input.evalError ?? null, measured },
+    { dryRun, evalError: input.evalError ?? null, measured, measuredSources },
   );
   // Finding D: when trace gaps exist but attribution is unverified, the
   // reply-gap gate says so instead of silently implying beat attribution.
