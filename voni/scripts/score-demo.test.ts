@@ -1674,6 +1674,104 @@ test("dry run with a check-in over caller speech records a dead-air FAIL", () =>
   assert.ok(gate?.detail.includes("caller"));
 });
 
+test("a live run derives free-floor gaps from the runner's silence timeline and cites the surrounding turn", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  writeFileSync(
+    join(bin, "npm"),
+    `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === "run" && args[1] === "eval:demo-agent") {
+  console.log("  · trace session sess_silence");
+  console.log("    cut 912ms after the caller started");
+  console.log('    verdict ["yield","Wait, stop."]');
+  console.log('    answered the point after the cut: "Pricing depends on call volume."');
+  console.log('    SILENCE TIMELINE {"scenario":"stop-over","session":"sess_silence","startedMs":0,"endedMs":6000,"agentAudio":[{"startMs":0,"endMs":1000},{"startMs":5000,"endMs":6000}],"callerSpeech":[{"startMs":1000,"endMs":1500}],"coverage":[]}');
+  console.log("stop-over: 1/1");
+} else if (args[0] === "run" && args[1] === "call:trace") {
+  console.log('1.00s  VONI    "Hi, this is Anna"  (greeting)');
+  console.log('1.00s  HEARD   "Hi, this is Anna"  (0.00s-1.00s)');
+  console.log('5.00s  VONI    "Pricing depends on call volume"  (reply_create gap 400ms)');
+}
+`,
+    { mode: 0o755 },
+  );
+  const out = join(dir, "score.json");
+  const result = run(
+    ["--scenario", "stop-over", "--trace-session", "sess_silence", "--out", out, "--timing-lock", join(dir, "timing.lock")],
+    new URL("../", import.meta.url).pathname,
+    { PATH: `${bin}:${process.env.PATH}` },
+  );
+  assert.notEqual(result.status, 0, result.stderr + result.stdout);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    deadAir: { gapsMs: number[]; maxMs: number | null; silences: unknown[] };
+    gates: { name: string; status: string; detail: string }[];
+  };
+  assert.deepEqual(artifact.deadAir.gapsMs, [3500]);
+  assert.equal(artifact.deadAir.maxMs, 3500);
+  assert.equal(artifact.deadAir.silences.length, 1);
+  const gate = artifact.gates.find((g) => g.name === "dead-air")!;
+  assert.equal(gate.status, "FAIL");
+  assert.match(gate.detail, /deadAir\.gapsMs/, "the FAIL points at the evidence");
+  assert.match(gate.detail, /1\.50s–5\.00s/, "the FAIL cites the silence window");
+  assert.match(gate.detail, /call trace turn 1/, "the FAIL cites the surrounding turn");
+});
+
+test("--silence-json feeds dead-air automatically, and explicit CLI flags still override it", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const evidencePath = join(dir, "silence.json");
+  writeFileSync(
+    evidencePath,
+    JSON.stringify({
+      startedMs: 0,
+      endedMs: 6000,
+      agentAudio: [
+        { startMs: 0, endMs: 1000 },
+        { startMs: 5000, endMs: 6000 },
+      ],
+      callerSpeech: [{ startMs: 1000, endMs: 1500 }],
+      coverage: [{ atMs: 4000 }],
+    }),
+  );
+  const coveredOut = join(dir, "covered.json");
+  const covered = run(
+    ["--dry-run", "--voice", DEMO_VOICE_IDS[0], "--out", coveredOut, "--silence-json", evidencePath],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.equal(covered.status, 0, covered.stderr + covered.stdout);
+  const coveredArtifact = JSON.parse(readFileSync(coveredOut, "utf8")) as {
+    deadAir: { gapsMs: number[]; longestSilenceMs: number | null };
+    gates: { name: string; status: string }[];
+  };
+  assert.deepEqual(coveredArtifact.deadAir.gapsMs, []);
+  assert.equal(coveredArtifact.deadAir.longestSilenceMs, 3500);
+  assert.equal(coveredArtifact.gates.find((g) => g.name === "dead-air")?.status, "PASS");
+
+  const overrideOut = join(dir, "override.json");
+  const override = run(
+    [
+      "--dry-run",
+      "--voice",
+      DEMO_VOICE_IDS[0],
+      "--out",
+      overrideOut,
+      "--silence-json",
+      evidencePath,
+      "--dead-air-gaps",
+      "3200",
+    ],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.notEqual(override.status, 0, override.stderr + override.stdout);
+  const overrideArtifact = JSON.parse(readFileSync(overrideOut, "utf8")) as {
+    deadAir: { gapsMs: number[] };
+    gates: { name: string; status: string }[];
+  };
+  assert.deepEqual(overrideArtifact.deadAir.gapsMs, [3200]);
+  assert.equal(overrideArtifact.gates.find((g) => g.name === "dead-air")?.status, "FAIL");
+});
+
 test("double-talk evidence over 400ms fails the run with durations in the table", () => {
   const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
   const out = join(dir, "score.json");

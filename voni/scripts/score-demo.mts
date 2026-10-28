@@ -39,6 +39,7 @@
  *                           [--overheard-json asides.json] [--email-json email.json]
  *                           [--dead-air-gaps 400,1200] [--longest-silence-ms 16000]
  *                           [--check-in-at-ms 15200] [--check-in-over-caller]
+ *                           [--silence-json silence.json]
  *                           [--overlap-ms 120,350] [--goodbye-coverage 0.95]
  *                           [--hang-up-delay-ms 900] [--narrated-ending]
  *
@@ -80,13 +81,24 @@
  * failure still points at the Call trace turn or says explicitly that no turn
  * was merged.
  *
- * Dead-air evidence is measured outside the harness (browser e2e fakes,
- * session evidence) and handed in: uncovered silences via --dead-air-gaps,
- * the longest silence stretch via --longest-silence-ms, and check-in timings
- * via --check-in-at-ms (comma-separated atSilenceMs, one per check-in).
+ * Dead-air evidence is derived from the call's own session timeline, never
+ * guessed. The live runner prints one `SILENCE TIMELINE {...}` line per live
+ * client call: the audible agent/caller windows, agent reply starts and
+ * reply.create requests (coverage), and any check-ins. score-demo derives the
+ * free-floor silences from it automatically: an uncovered stretch longer than
+ * the 2s window fails, a stretch covered by an agent reply start or a timely
+ * check-in does not. A FAIL cites the surrounding Call trace turns plus the
+ * silence window and deadAir.gapsMs — a silent gap has no trace row of its own,
+ * so no row is invented. --silence-json replays a documented timeline of the
+ * same shape. --dead-air-gaps/--longest-silence-ms/--check-in-at-ms
+ * (comma-separated atSilenceMs, one per check-in) stay explicit overrides;
  * --check-in-over-caller marks the listed check-ins as overlapping caller
- * speech. Omit all four and the dead-air gate stays INFO (unmeasured, never
- * PASS).
+ * speech. With no timeline and no flags the dead-air gate stays INFO
+ * (unmeasured, never PASS). --silence-json shape (the runner line's payload
+ * minus scenario/session): {"startedMs":0,"endedMs":6000,
+ * "agentAudio":[{"startMs":0,"endMs":1000}],
+ * "callerSpeech":[{"startMs":1000,"endMs":1500}],
+ * "coverage":[{"atMs":4000}],"checkIns":[{"atMs":16200,"overCaller":false}]}.
  *
  * Invite evidence (ticket 26): the live runner prints one `EMAIL INVITE
  * {...}` line per invite-tag run (show-tool count, every spoken agent line,
@@ -168,6 +180,7 @@ import {
   callerClipChanges,
   callerClipsFromRunnerStdout,
   DEFAULT_GATE_VOICE,
+  deriveFreeFloorSilence,
   diffScoreboardArtifact,
   emptyHumanRatings,
   extractGreetingCutEvidence,
@@ -191,10 +204,13 @@ import {
   parseFillerRunOutput,
   parseHeardLedgerOutput,
   parseDoubleTalkOutput,
+  parseSilenceTimeline,
+  parseSilenceTimelineOutput,
   parseTraceGaps,
   redactLines,
   resolveGateVoice,
   sha256Hex,
+  traceSilenceRef,
   traceTurnForVisitorSpeech,
   traceTurnPointers,
   traceTurnsForAgentLines,
@@ -202,6 +218,7 @@ import {
   validateProbeCounts,
   type AgentChannelEvidence,
   type DeadAirEvidence,
+  type DeadAirSilence,
   type EmailInviteEvidence,
   type EmailInviteEvidenceFile,
   type FillerResumeEvidence,
@@ -211,6 +228,7 @@ import {
   type OverheardAside,
   type RealCutEvidence,
   type ScoreboardArtifact,
+  type SilenceTimeline,
   type TimbreProbes,
   type TraceGap,
 } from "../src/lib/demo/scoreboard";
@@ -655,6 +673,40 @@ function parseDeadAirEvidence(input: {
   };
 }
 
+/** A documented silence timeline (--silence-json): validated, never guessed. */
+function loadSilenceTimeline(path: string): SilenceTimeline {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(resolve(path), "utf8")) as unknown;
+  } catch (error) {
+    throw new Error(`--silence-json ${path} is not valid JSON: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  return parseSilenceTimeline(raw, `--silence-json ${path}`);
+}
+
+/**
+ * Turn a session timeline into dead-air evidence: uncovered long silences are
+ * gaps, every stretch is recorded with its coverage, and each gap cites the
+ * surrounding Call trace turns plus its own window (a silent gap has no row).
+ */
+function deadAirEvidenceFromTimeline(
+  timeline: SilenceTimeline,
+  excerpt: string[],
+  sessionId: string | null,
+): DeadAirEvidence {
+  const derived = deriveFreeFloorSilence(timeline);
+  const cite = (window: { startMs: number; endMs: number }) => traceSilenceRef(excerpt, window, sessionId);
+  const gapWindows: DeadAirSilence[] = derived.gapWindows.map((gap) => ({ ...gap, trace: cite(gap) }));
+  return {
+    gapsMs: gapWindows.map((gap) => gap.durationMs),
+    gapWindows,
+    silences: derived.silences.map((silence) => ({ ...silence, trace: cite(silence) })),
+    longestSilenceMs: derived.longestSilenceMs,
+    checkIns: derived.checkIns,
+    ...(sessionId ? { trace: sessionId } : {}),
+  };
+}
+
 function main(): void {
   const voice = resolveGateVoice(arg("--gate-voice", "") || arg("--voice", DEFAULT_GATE_VOICE));
   const scenario = arg("--scenario", "greeting-cut");
@@ -680,13 +732,14 @@ function main(): void {
   if (traceBeatRaw && !(GOLDEN_BEATS as readonly string[]).includes(traceBeatRaw)) {
     throw new Error(`--trace-beat needs a golden beat (one of ${GOLDEN_BEATS.join(", ")}), got "${traceBeatRaw}"`);
   }
-  const deadAir = parseDeadAirEvidence({
+  const explicitDeadAir = parseDeadAirEvidence({
     gaps: arg("--dead-air-gaps", ""),
     longestSilenceMs: arg("--longest-silence-ms", ""),
     checkInAtMs: arg("--check-in-at-ms", ""),
     checkInOverCaller: process.argv.includes("--check-in-over-caller"),
     trace: requestedTraceSession || undefined,
   });
+  const silenceJsonPath = arg("--silence-json", "");
   const cutMsArg = arg("--cut-ms", "");
   if (cutMsArg !== "" && !/^\d+$/.test(cutMsArg)) {
     throw new Error(`--cut-ms needs milliseconds, got "${cutMsArg}"`);
@@ -736,6 +789,15 @@ function main(): void {
     }
     if (excerpt) traceGaps = parseTraceGaps(excerpt);
   }
+  // Dead-air producer: the live runner's own session timeline (or a documented
+  // --silence-json replay). The explicit --dead-air-* flags stay the override.
+  const runnerSilence = dryRun ? null : parseSilenceTimelineOutput(evalSection.stdout);
+  const silenceTimeline = silenceJsonPath
+    ? loadSilenceTimeline(silenceJsonPath)
+    : (runnerSilence?.timeline ?? null);
+  const deadAir =
+    explicitDeadAir ??
+    (silenceTimeline ? deadAirEvidenceFromTimeline(silenceTimeline, excerpt ?? [], traceSession || null) : undefined);
   const traceAsides =
     excerpt && traceSession
       ? overheardFromTraceExcerpt(excerpt, traceSession, "overheard-aside", {
@@ -832,7 +894,7 @@ function main(): void {
     traceExcerpt: excerpt ?? [],
     fillerResume,
     ...(overheardAsides !== undefined ? { overheardAsides } : {}),
-    deadAir: deadAir && traceSession ? { ...deadAir, trace: traceSession } : deadAir,
+    deadAir,
     doubleTalkOverlapMs,
     ...(doubleTalkTraceRef ? { doubleTalkTraceRef } : {}),
     endCallDrain: {
