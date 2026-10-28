@@ -1,0 +1,852 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, existsSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { spawnSync } from "node:child_process";
+import { DEMO_VOICE_IDS } from "../src/lib/demo/voni-agent";
+
+const SCRIPT = new URL("./score-demo.mts", import.meta.url).pathname;
+const GATE_BEATS = [
+  "greeting-cut",
+  "filler-ignored",
+  "real-cut-answered",
+  "overheard-aside",
+  "silence-check-in",
+  "email-invite",
+  "goodbye-drain",
+];
+
+function run(args: string[], cwd: string) {
+  return spawnSync("node", ["--import", "tsx", SCRIPT, ...args], {
+    cwd,
+    encoding: "utf8",
+    env: { ...process.env, PATH: process.env.PATH },
+  });
+}
+
+test("dry run writes an artifact with required keys and prints a gate table", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "score.json");
+  const result = run(["--dry-run", "--voice", DEMO_VOICE_IDS[0], "--out", out], new URL("../", import.meta.url).pathname);
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(existsSync(out), "artifact file exists");
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as Record<string, unknown>;
+  for (const key of [
+    "schemaVersion",
+    "recordedAt",
+    "voice",
+    "runs",
+    "beats",
+    "overheard",
+    "doubleTalk",
+    "deadAir",
+    "probes",
+    "transcripts",
+    "humanRatings",
+    "gates",
+    "emailInvite",
+    "evalRunner",
+  ]) {
+    assert.ok(key in artifact, `artifact missing ${key}`);
+  }
+  assert.match(result.stdout, /reply-gap/);
+  assert.match(result.stdout, /email-invite/);
+  assert.match(result.stdout, /PASS|INFO/);
+});
+
+test("unknown voice fails fast with no artifact", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "score.json");
+  const result = run(["--dry-run", "--voice", "nope", "--out", out], new URL("../", import.meta.url).pathname);
+  assert.notEqual(result.status, 0);
+  assert.ok(!existsSync(out));
+  assert.match(result.stderr + result.stdout, /unknown gate voice/);
+});
+
+test("dry run lists every beat with its window plus gate and regression voices", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "score.json");
+  const gate = DEMO_VOICE_IDS[1];
+  const result = run(["--dry-run", "--gate-voice", gate, "--out", out], new URL("../", import.meta.url).pathname);
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  for (const beat of GATE_BEATS) {
+    assert.ok(result.stdout.includes(beat), `dry run missing beat ${beat}`);
+  }
+  assert.ok(result.stdout.includes(gate), "dry run names the gate voice");
+  assert.ok(result.stdout.includes("regression"), "dry run names the regression set");
+  for (const voice of DEMO_VOICE_IDS.filter((v) => v !== gate)) {
+    assert.ok(result.stdout.includes(voice), `dry run missing regression voice ${voice}`);
+  }
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    voice: string;
+    regressionVoices: string[];
+    goldenScript: { beats: { beat: string }[] };
+  };
+  assert.equal(artifact.voice, gate);
+  assert.deepEqual(
+    artifact.goldenScript.beats.map((b) => b.beat),
+    GATE_BEATS,
+  );
+  assert.ok(!artifact.regressionVoices.includes(gate), "regression set excludes the gate");
+  assert.deepEqual(
+    [...artifact.regressionVoices].sort(),
+    [...DEMO_VOICE_IDS].filter((v) => v !== gate).sort(),
+  );
+});
+
+test("--voice stays an alias of --gate-voice and the default needs no voice literal", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const aliasOut = join(dir, "alias.json");
+  const alias = run(["--dry-run", "--voice", DEMO_VOICE_IDS[2], "--out", aliasOut], new URL("../", import.meta.url).pathname);
+  assert.equal(alias.status, 0, alias.stderr + alias.stdout);
+  const aliased = JSON.parse(readFileSync(aliasOut, "utf8")) as { voice: string };
+  assert.equal(aliased.voice, DEMO_VOICE_IDS[2]);
+
+  const defaultOut = join(dir, "default.json");
+  const fallback = run(["--dry-run", "--out", defaultOut], new URL("../", import.meta.url).pathname);
+  assert.equal(fallback.status, 0, fallback.stderr + fallback.stdout);
+  const resolved = JSON.parse(readFileSync(defaultOut, "utf8")) as { voice: string };
+  assert.equal(resolved.voice, DEMO_VOICE_IDS[0]);
+});
+
+test("measured gaps inside budget pass the reply-gap gate and fill per-beat gaps", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "score.json");
+  const result = run(
+    ["--dry-run", "--voice", DEMO_VOICE_IDS[0], "--out", out, "--gap", "greeting-cut=900", "--gap", "real-cut-answered=1200"],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    beats: Record<string, { gapMs: number | null; gapSamples: number[] }>;
+    replyGap: { p50Ms: number | null; p95Ms: number | null; samples: number };
+    gates: { name: string; status: string; detail: string }[];
+  };
+  assert.deepEqual(artifact.beats["greeting-cut"].gapSamples, [900]);
+  assert.equal(artifact.beats["greeting-cut"].gapMs, 900);
+  assert.equal(artifact.replyGap.p50Ms, 900);
+  const gate = artifact.gates.find((g) => g.name === "reply-gap");
+  assert.equal(gate?.status, "PASS");
+  assert.match(gate?.detail ?? "", /p50/);
+});
+
+test("greeting-cut gaps over budget fail the command and point at the beat", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "score.json");
+  const result = run(
+    ["--dry-run", "--voice", DEMO_VOICE_IDS[0], "--out", out, "--gap", "greeting-cut=1800", "--gap", "greeting-cut=1900"],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.notEqual(result.status, 0);
+  assert.match(result.stdout, /FAIL/);
+  assert.match(result.stdout, /greeting-cut/);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    gates: { name: string; status: string; detail: string }[];
+  };
+  const gate = artifact.gates.find((g) => g.name === "reply-gap");
+  assert.equal(gate?.status, "FAIL");
+  assert.match(gate?.detail ?? "", /greeting-cut/);
+});
+
+test("bad --gap flags fail fast with no artifact", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "score.json");
+  const result = run(
+    ["--dry-run", "--voice", DEMO_VOICE_IDS[0], "--out", out, "--gap", "not-a-beat=100"],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.notEqual(result.status, 0);
+  assert.ok(!existsSync(out));
+  assert.match(result.stderr + result.stdout, /--gap needs beat=ms/);
+});
+
+test("dry run checks the stored agent body: end-of-turn passes with no turn-detection object", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "score.json");
+  const result = run(["--dry-run", "--voice", DEMO_VOICE_IDS[0], "--out", out], new URL("../", import.meta.url).pathname);
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    gates: { name: string; status: string; detail: string }[];
+  };
+  const gate = artifact.gates.find((g) => g.name === "end-of-turn");
+  assert.equal(gate?.status, "PASS");
+  assert.match(gate?.detail ?? "", /turn_detection/);
+});
+
+test("dry run with filler evidence passes the filler-resume gate and names it", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "filler-pass.json");
+  const result = run(
+    [
+      "--dry-run",
+      "--voice",
+      DEMO_VOICE_IDS[0],
+      "--out",
+      out,
+      "--filler-text",
+      "Okaay so",
+    ],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    gates: { name: string; status: string; detail: string }[];
+    beats: Record<string, { cutMs: number | null; resumeMs: number | null; status: string }>;
+  };
+  const gate = artifact.gates.find((g) => g.name === "filler-resume");
+  assert.ok(gate, "artifact carries the filler-resume gate");
+  assert.equal(gate.status, "PASS", gate.detail);
+  assert.equal(artifact.beats["filler-ignored"].status, "PASS");
+  assert.ok(result.stdout.includes("filler-resume"), "console table names the gate");
+});
+
+test("a stolen floor fails the run and the failure names ms, verdict and trace turn", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "filler-fail.json");
+  const result = run(
+    [
+      "--dry-run",
+      "--voice",
+      DEMO_VOICE_IDS[0],
+      "--out",
+      out,
+      "--filler-text",
+      "Okaay so",
+      "--filler-agent-text",
+      "We help dental clinics answer every call",
+      "--filler-verdict",
+      "yield",
+      "--filler-cut-ms",
+      "320",
+    ],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.equal(result.status, 1, `a FAIL gate exits non-zero: ${result.stderr}${result.stdout}`);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    gates: { name: string; status: string; detail: string }[];
+    beats: Record<string, { status: string }>;
+  };
+  const gate = artifact.gates.find((g) => g.name === "filler-resume");
+  assert.ok(gate, "artifact carries the filler-resume gate");
+  assert.equal(gate.status, "FAIL");
+  assert.match(gate.detail, /320ms/, "failure reports cut ms");
+  assert.match(gate.detail, /verdict: yield/, "failure reports the judge verdict");
+  assert.equal(artifact.beats["filler-ignored"].status, "FAIL");
+  assert.ok(result.stdout.includes("filler-resume"), "console table still names the failed gate");
+});
+
+test("a slow resume tail fails the run inside the 2500ms budget", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "filler-slow.json");
+  const line = "We help dental clinics answer every call";
+  const result = run(
+    [
+      "--dry-run",
+      "--voice",
+      DEMO_VOICE_IDS[0],
+      "--out",
+      out,
+      "--filler-text",
+      "mm-hmm",
+      "--filler-agent-text",
+      line,
+      "--filler-verdict",
+      "ignore",
+      "--filler-cut-ms",
+      "300",
+      "--filler-resume-ms",
+      "2600",
+      "--filler-resumed-text",
+      "dental clinics answer every call",
+      "--filler-heard-text",
+      "We help dental",
+      "--filler-trace-turn",
+      "sess_abc#turn 2",
+    ],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.equal(result.status, 1, `a FAIL gate exits non-zero: ${result.stderr}${result.stdout}`);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    gates: { name: string; status: string; detail: string }[];
+  };
+  const gate = artifact.gates.find((g) => g.name === "filler-resume");
+  assert.equal(gate?.status, "FAIL");
+  assert.ok(gate?.detail.includes("sess_abc#turn 2"), "failure points at the Call trace turn");
+});
+
+test("bad filler flags fail fast with no artifact", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "filler-bad.json");
+  const result = run(
+    ["--dry-run", "--voice", DEMO_VOICE_IDS[0], "--out", out, "--filler-text", "yeah", "--filler-verdict", "loud"],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.notEqual(result.status, 0);
+  assert.ok(!existsSync(out));
+});
+
+test("dry run with real-cut evidence passes a fast answered cut", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "score.json");
+  const result = run(
+    ["--dry-run", "--voice", DEMO_VOICE_IDS[0], "--out", out,
+      "--cut-ms", "900", "--cut-verdict", "yield", "--cut-answered"],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    beats: Record<string, { cutMs: number | null; status: string }>;
+    gates: { name: string; status: string; detail: string }[];
+  };
+  assert.equal(artifact.beats["real-cut-answered"].cutMs, 900);
+  const gate = artifact.gates.find((g) => g.name === "barge-in-cut")!;
+  assert.equal(gate.status, "PASS");
+  assert.ok(gate.detail.includes("900ms"));
+  assert.match(result.stdout, /900ms/);
+});
+
+test("dry run with real-cut evidence fails a late cut and reports ms plus verdict", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "score.json");
+  const result = run(
+    ["--dry-run", "--voice", DEMO_VOICE_IDS[0], "--out", out,
+      "--cut-ms", "2100", "--cut-verdict", "yield", "--cut-answered",
+      "--trace-turn", "input.speech.started → reply.interrupted"],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.equal(result.status, 1, `a FAIL gate exits non-zero: ${result.stderr}${result.stdout}`);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    beats: Record<string, { cutMs: number | null; status: string }>;
+    gates: { name: string; status: string; detail: string }[];
+  };
+  assert.equal(artifact.beats["real-cut-answered"].cutMs, 2100);
+  assert.equal(artifact.beats["real-cut-answered"].status, "FAIL");
+  const gate = artifact.gates.find((g) => g.name === "barge-in-cut")!;
+  assert.equal(gate.status, "FAIL");
+  assert.ok(gate.detail.includes("2100ms"));
+  assert.ok(gate.detail.includes("yield"));
+  assert.ok(gate.detail.includes("reply.interrupted"));
+  assert.match(result.stdout, /FAIL/);
+});
+
+test("dry run with no real-cut evidence leaves the barge-in gate ungated", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "score.json");
+  const result = run(["--dry-run", "--voice", DEMO_VOICE_IDS[0], "--out", out], new URL("../", import.meta.url).pathname);
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    gates: { name: string; status: string }[];
+  };
+  const gate = artifact.gates.find((g) => g.name === "barge-in-cut")!;
+  assert.equal(gate.status, "INFO");
+});
+
+// ── Ticket 06: overheard-recall gate ────────────────────────────────────────
+function writeAsides(dir: string, name: string, asides: unknown[]): string {
+  const path = join(dir, name);
+  writeFileSync(path, `${JSON.stringify(asides, null, 2)}\n`);
+  return path;
+}
+
+test("--overheard-json PASS: marked and ledger-counted aside reports per-beat counts with trace pointers", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "score.json");
+  const json = writeAsides(dir, "asides.json", [
+    {
+      beat: "overheard-aside",
+      text: "We're a bakery, actually.",
+      agentText: "handling booking and reminders",
+      markedOverheard: true,
+      inLedger: true,
+      handling: "heard-only",
+      tracePointer: "sess_abc :: 12.34s HEARD \"We're a bakery, actually.\"",
+    },
+  ]);
+  const result = run(
+    ["--dry-run", "--voice", DEMO_VOICE_IDS[0], "--out", out, "--overheard-json", json],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    overheard: { recalled: number; total: number; byBeat: Record<string, { recalled: number; total: number }> };
+    gates: { name: string; status: string; detail: string }[];
+  };
+  assert.equal(artifact.overheard.recalled, 1);
+  assert.equal(artifact.overheard.total, 1);
+  assert.deepEqual(artifact.overheard.byBeat["overheard-aside"], { recalled: 1, total: 1 });
+  const gate = artifact.gates.find((g) => g.name === "overheard-recall")!;
+  assert.equal(gate.status, "PASS");
+  assert.match(result.stdout, /overheard recall 1\/1/);
+  assert.match(result.stdout, /overheard-aside: 1\/1/);
+  assert.ok(result.stdout.includes("sess_abc"), "console carries the trace pointer");
+  assert.ok(result.stdout.includes("bakery"), "console carries the aside text");
+});
+
+test("--overheard-json FAIL: steering heard-only and filler answered both fail with trace pointers", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const steeringOut = join(dir, "steering.json");
+  const steeringJson = writeAsides(dir, "steering.json", [
+    {
+      beat: "overheard-aside",
+      text: "Wait, stop.",
+      agentText: "handling booking and reminders",
+      markedOverheard: true,
+      inLedger: true,
+      handling: "heard-only",
+      tracePointer: "sess_abc :: 11.05s HEARD \"Wait, stop.\"",
+    },
+  ]);
+  const steering = run(
+    ["--dry-run", "--voice", DEMO_VOICE_IDS[0], "--out", steeringOut, "--overheard-json", steeringJson],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.notEqual(steering.status, 0, "gate FAIL writes the artifact then exits 1");
+  const steeringArtifact = JSON.parse(readFileSync(steeringOut, "utf8")) as {
+    gates: { name: string; status: string; detail: string }[];
+  };
+  assert.equal(steeringArtifact.gates.find((g) => g.name === "overheard-recall")!.status, "FAIL");
+  assert.match(steering.stdout, /FAIL.*overheard-recall/);
+  assert.ok(steering.stdout.includes("sess_abc"));
+
+  const fillerOut = join(dir, "filler.json");
+  const fillerJson = writeAsides(dir, "filler.json", [
+    {
+      beat: "overheard-aside",
+      text: "mm-hmm",
+      agentText: "handling booking and reminders",
+      markedOverheard: true,
+      inLedger: true,
+      handling: "answered",
+      tracePointer: "sess_abc :: 11.40s HEARD \"mm-hmm\"",
+    },
+  ]);
+  const filler = run(
+    ["--dry-run", "--voice", DEMO_VOICE_IDS[0], "--out", fillerOut, "--overheard-json", fillerJson],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.notEqual(filler.status, 0, "filler-answered FAIL exits 1");
+  const fillerArtifact = JSON.parse(readFileSync(fillerOut, "utf8")) as {
+    gates: { name: string; status: string; detail: string }[];
+  };
+  assert.equal(fillerArtifact.gates.find((g) => g.name === "overheard-recall")!.status, "FAIL");
+  assert.ok(filler.stdout.includes("sess_abc"));
+});
+
+test("--overheard-json reports counts per beat with trace pointers", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "score.json");
+  const json = writeAsides(dir, "asides.json", [
+    {
+      beat: "overheard-aside",
+      text: "We're a bakery, actually.",
+      markedOverheard: true,
+      inLedger: true,
+      handling: "heard-only",
+      tracePointer: "sess_abc :: 12.34s HEARD \"bakery\"",
+    },
+    {
+      beat: "greeting-cut",
+      text: "Wait, stop.",
+      markedOverheard: true,
+      inLedger: true,
+      handling: "answered",
+      tracePointer: "sess_abc :: 03.10s HEARD \"Wait, stop.\"",
+    },
+  ]);
+  const result = run(
+    ["--dry-run", "--voice", DEMO_VOICE_IDS[0], "--out", out, "--overheard-json", json],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    overheard: { recalled: number; total: number; byBeat: Record<string, { recalled: number; total: number }> };
+  };
+  assert.deepEqual(artifact.overheard.byBeat["overheard-aside"], { recalled: 1, total: 1 });
+  assert.deepEqual(artifact.overheard.byBeat["greeting-cut"], { recalled: 1, total: 1 });
+  assert.match(result.stdout, /overheard recall 2\/2/);
+  assert.match(result.stdout, /overheard-aside: 1\/1/);
+  assert.match(result.stdout, /greeting-cut: 1\/1/);
+});
+
+test("bad --overheard-json fails fast with no artifact", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "score.json");
+  const json = writeAsides(dir, "bad.json", [
+    { beat: "overheard-aside", text: "", markedOverheard: true, inLedger: true },
+  ]);
+  const result = run(
+    ["--dry-run", "--voice", DEMO_VOICE_IDS[0], "--out", out, "--overheard-json", json],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.notEqual(result.status, 0);
+  assert.ok(!existsSync(out));
+  assert.match(result.stderr + result.stdout, /tracePointer|text/);
+});
+
+test("dry run without dead-air evidence keeps dead-air INFO (unmeasured)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "score.json");
+  const result = run(["--dry-run", "--voice", DEMO_VOICE_IDS[0], "--out", out], new URL("../", import.meta.url).pathname);
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    deadAir: { gapsMs: number[]; checkIns: unknown[] };
+    gates: { name: string; status: string; detail: string }[];
+  };
+  assert.deepEqual(artifact.deadAir.gapsMs, []);
+  assert.deepEqual(artifact.deadAir.checkIns, []);
+  assert.equal(artifact.gates.find((g) => g.name === "dead-air")?.status, "INFO");
+});
+
+test("dry run with dead-air evidence records the FAIL gate and prints durations", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "score.json");
+  const result = run(
+    ["--dry-run", "--voice", DEMO_VOICE_IDS[0], "--out", out, "--dead-air-gaps", "400,3200", "--longest-silence-ms", "16000"],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.notEqual(result.status, 0, result.stderr + result.stdout);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    deadAir: { gapsMs: number[]; maxMs: number | null };
+    gates: { name: string; status: string; detail: string }[];
+  };
+  assert.deepEqual(artifact.deadAir.gapsMs, [400, 3200]);
+  assert.equal(artifact.deadAir.maxMs, 3200);
+  const gate = artifact.gates.find((g) => g.name === "dead-air");
+  assert.equal(gate?.status, "FAIL");
+  assert.ok(gate?.detail.includes("3200"));
+  assert.ok(result.stdout.includes("dead-air"));
+  assert.ok(result.stdout.includes("FAIL"));
+  assert.ok(result.stdout.includes("3200"));
+});
+
+test("dry run with a clean 15s check-in records a dead-air PASS", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "score.json");
+  const result = run(
+    [
+      "--dry-run",
+      "--voice",
+      DEMO_VOICE_IDS[0],
+      "--out",
+      out,
+      "--dead-air-gaps",
+      "400",
+      "--longest-silence-ms",
+      "16000",
+      "--check-in-at-ms",
+      "15200",
+    ],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    deadAir: { checkIns: { atSilenceMs: number; overCaller: boolean }[] };
+    gates: { name: string; status: string; detail: string }[];
+  };
+  assert.deepEqual(artifact.deadAir.checkIns, [{ atSilenceMs: 15200, overCaller: false }]);
+  assert.equal(artifact.gates.find((g) => g.name === "dead-air")?.status, "PASS");
+});
+
+test("dry run with a check-in over caller speech records a dead-air FAIL", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "score.json");
+  const result = run(
+    [
+      "--dry-run",
+      "--voice",
+      DEMO_VOICE_IDS[0],
+      "--out",
+      out,
+      "--longest-silence-ms",
+      "16000",
+      "--check-in-at-ms",
+      "15100",
+      "--check-in-over-caller",
+    ],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.notEqual(result.status, 0, result.stderr + result.stdout);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    gates: { name: string; status: string; detail: string }[];
+  };
+  const gate = artifact.gates.find((g) => g.name === "dead-air");
+  assert.equal(gate?.status, "FAIL");
+  assert.ok(gate?.detail.includes("caller"));
+});
+
+test("double-talk evidence over 400ms fails the run with durations in the table", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "score.json");
+  const result = run(
+    ["--dry-run", "--voice", DEMO_VOICE_IDS[0], "--out", out, "--overlap-ms", "120,650"],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.notEqual(result.status, 0, result.stderr + result.stdout);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    doubleTalk: { overlapMs: number[]; maxMs: number };
+    gates: { name: string; status: string; detail: string }[];
+  };
+  assert.deepEqual(artifact.doubleTalk.overlapMs, [120, 650]);
+  assert.equal(artifact.doubleTalk.maxMs, 650);
+  const gate = artifact.gates.find((g) => g.name === "double-talk")!;
+  assert.equal(gate.status, "FAIL");
+  assert.ok(gate.detail.includes("650"), `detail names the duration: ${gate.detail}`);
+  assert.ok(result.stdout.includes("double-talk") && result.stdout.includes("FAIL"));
+});
+
+test("clean cuts plus a full goodbye drain keep the run green", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "score.json");
+  const result = run(
+    [
+      "--dry-run",
+      "--voice",
+      DEMO_VOICE_IDS[0],
+      "--out",
+      out,
+      "--overlap-ms",
+      "120,300",
+      "--goodbye-coverage",
+      "0.95",
+      "--hang-up-delay-ms",
+      "900",
+    ],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    endCallDrain: { goodbyeCoverage: number; hangUpDelayMs: number; narratedEnding: boolean };
+    beats: Record<string, { drainMs: number | null }>;
+    gates: { name: string; status: string }[];
+  };
+  assert.equal(artifact.endCallDrain.goodbyeCoverage, 0.95);
+  assert.equal(artifact.endCallDrain.hangUpDelayMs, 900);
+  assert.equal(artifact.beats["goodbye-drain"].drainMs, 900);
+  const byName = Object.fromEntries(artifact.gates.map((g) => [g.name, g.status]));
+  assert.equal(byName["double-talk"], "PASS");
+  assert.equal(byName["end-call-drain"], "PASS");
+});
+
+test("a chopped goodbye fails the drain gate with coverage in the table", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "score.json");
+  const result = run(
+    ["--dry-run", "--voice", DEMO_VOICE_IDS[0], "--out", out, "--goodbye-coverage", "0.5", "--hang-up-delay-ms", "100"],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.notEqual(result.status, 0, result.stderr + result.stdout);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    gates: { name: string; status: string; detail: string }[];
+  };
+  const gate = artifact.gates.find((g) => g.name === "end-call-drain")!;
+  assert.equal(gate.status, "FAIL");
+  assert.ok(gate.detail.includes("50"), `detail carries the coverage: ${gate.detail}`);
+  assert.ok(result.stdout.includes("end-call-drain") && result.stdout.includes("FAIL"));
+});
+
+test("a narrated ending fails the drain gate", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "score.json");
+  const result = run(
+    ["--dry-run", "--voice", DEMO_VOICE_IDS[0], "--out", out, "--goodbye-coverage", "1", "--narrated-ending"],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.notEqual(result.status, 0, result.stderr + result.stdout);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    gates: { name: string; status: string; detail: string }[];
+  };
+  const gate = artifact.gates.find((g) => g.name === "end-call-drain")!;
+  assert.equal(gate.status, "FAIL");
+  assert.ok(/narrat/i.test(gate.detail));
+});
+
+test("a hang-up before the goodbye ends fails the drain gate", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "score.json");
+  const result = run(
+    ["--dry-run", "--voice", DEMO_VOICE_IDS[0], "--out", out, "--hang-up-delay-ms", "-200"],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.notEqual(result.status, 0, result.stderr + result.stdout);
+  assert.ok(result.stdout.includes("end-call-drain"));
+});
+
+test("bad evidence flags break the harness fast with no artifact", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "score.json");
+  const result = run(
+    ["--dry-run", "--voice", DEMO_VOICE_IDS[0], "--out", out, "--overlap-ms", "soon"],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.notEqual(result.status, 0);
+  assert.ok(!existsSync(out));
+  assert.match(result.stderr + result.stdout, /overlap-ms/);
+});
+
+// ── Ticket 10: timbre probes + human ballots via CLI ────────────────────────
+
+const RECORDING_SHA = "c".repeat(64);
+
+function probeFile(dir: string, payload: unknown): string {
+  const path = join(dir, "probes.json");
+  writeFileSync(path, JSON.stringify(payload));
+  return path;
+}
+
+test("--probe-json with a clip fails timbre-probes but still writes the artifact", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "clip.json");
+  const probes = probeFile(dir, { jump: 0, overload: 0, clip: 2, underrun: 0, inputDrop: 0 });
+  const result = run(
+    ["--dry-run", "--voice", DEMO_VOICE_IDS[0], "--probe-json", probes, "--out", out],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.equal(result.status, 1, result.stderr + result.stdout);
+  assert.ok(existsSync(out), "artifact is still written when the timbre gate FAILs");
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    probes: { clip: number };
+    gates: { name: string; status: string; detail: string }[];
+  };
+  assert.equal(artifact.probes.clip, 2);
+  const timbre = artifact.gates.find((g) => g.name === "timbre-probes");
+  assert.equal(timbre?.status, "FAIL");
+  assert.ok(timbre?.detail.includes("clip"));
+  assert.match(result.stdout, /FAIL/);
+  assert.match(result.stdout, /timbre-probes/);
+});
+
+test("--probe-json agent-channel evidence fails the same gate on clipped PCM", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "evidence.json");
+  const probes = probeFile(dir, {
+    jump: 0,
+    overload: 0,
+    clip: 0,
+    underrun: 0,
+    inputDrop: 0,
+    agentChannel: { peakDbfs: -0.4, clippedSampleRatio: 0.0001, largestAdjacentStep: 120 },
+  });
+  const result = run(
+    ["--dry-run", "--voice", DEMO_VOICE_IDS[0], "--probe-json", probes, "--out", out],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.equal(result.status, 1, result.stderr + result.stdout);
+  assert.ok(existsSync(out), "artifact is still written when evidence FAILs the gate");
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    gates: { name: string; status: string }[];
+  };
+  assert.equal(artifact.gates.find((g) => g.name === "timbre-probes")?.status, "FAIL");
+});
+
+test("--rate files two blind ballots and passes accent-human on the same recording", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "human.json");
+  const result = run(
+    ["--dry-run", "--voice", DEMO_VOICE_IDS[0], "--out", out, "--recording", RECORDING_SHA, "--rate", "ana:5,4", "--rate", "bob:4,4"],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    humanRatings: { timbre: number; accent: number; recordingSha256: string; ratings: unknown[] };
+    gates: { name: string; status: string; detail: string }[];
+  };
+  assert.equal(artifact.humanRatings.timbre, 4.5);
+  assert.equal(artifact.humanRatings.accent, 4);
+  assert.equal(artifact.humanRatings.recordingSha256, RECORDING_SHA);
+  assert.equal(artifact.humanRatings.ratings.length, 2);
+  const human = artifact.gates.find((g) => g.name === "accent-human");
+  assert.equal(human?.status, "PASS");
+  assert.match(result.stdout, /accent-human/);
+});
+
+test("--rate without --recording fails fast with no artifact", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "unbound.json");
+  const result = run(
+    ["--dry-run", "--voice", DEMO_VOICE_IDS[0], "--out", out, "--rate", "ana:5,4"],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.notEqual(result.status, 0);
+  assert.ok(!existsSync(out));
+  assert.match(result.stderr + result.stdout, /recording/);
+});
+
+test("--rate rejects out-of-range ballots and bad probe counts", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const badRate = run(
+    ["--dry-run", "--out", join(dir, "r.json"), "--recording", RECORDING_SHA, "--rate", "ana:6,4"],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.notEqual(badRate.status, 0);
+  assert.match(badRate.stderr + badRate.stdout, /1-5/);
+  const badProbes = probeFile(dir, { jump: 0, overload: 0, clip: -1, underrun: 0, inputDrop: 0 });
+  const badProbe = run(
+    ["--dry-run", "--out", join(dir, "p.json"), "--probe-json", badProbes],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.notEqual(badProbe.status, 0);
+  assert.match(badProbe.stderr + badProbe.stdout, /probe/);
+});
+
+test("--trace-beat rejects unknown beats fast with no artifact", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "score.json");
+  const result = run(
+    ["--dry-run", "--voice", DEMO_VOICE_IDS[0], "--out", out, "--trace-beat", "not-a-beat"],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.notEqual(result.status, 0);
+  assert.ok(!existsSync(out));
+  assert.match(result.stderr + result.stdout, /--trace-beat/);
+});
+
+test("--runs rejects non-positive counts fast with no artifact", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  for (const runs of ["0", "-2", "x"]) {
+    const out = join(dir, `runs-${runs}.json`);
+    const result = run(
+      ["--dry-run", "--voice", DEMO_VOICE_IDS[0], "--out", out, "--runs", runs],
+      new URL("../", import.meta.url).pathname,
+    );
+    assert.notEqual(result.status, 0, `--runs ${runs} must fail`);
+    assert.ok(!existsSync(out));
+    assert.match(result.stderr + result.stdout, /--runs/);
+  }
+});
+
+test("--runs records the run count and a run id with an empty quarantine stub", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "score.json");
+  const result = run(
+    ["--dry-run", "--voice", DEMO_VOICE_IDS[0], "--out", out, "--runs", "3"],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    runs: number;
+    runId: string;
+    quarantinedBeats: unknown[];
+  };
+  assert.equal(artifact.runs, 3);
+  assert.match(artifact.runId, /run-/);
+  assert.deepEqual(artifact.quarantinedBeats, []);
+});
+
+test("dry run prints the five sub-scores plus manual and external check rows", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "score.json");
+  const result = run(["--dry-run", "--voice", DEMO_VOICE_IDS[0], "--out", out], new URL("../", import.meta.url).pathname);
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  for (const name of ["responsiveness", "barge-in", "overheard", "naturalness", "voice"]) {
+    assert.ok(result.stdout.includes(name), `console sub-score table names ${name}`);
+  }
+  assert.ok(result.stdout.includes("phone-checklist"), "console names the manual phone checklist");
+  assert.ok(result.stdout.includes("talk-hold-pinned"), "console names the pinned talk/hold check");
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    subScores: { name: string }[];
+    gates: { name: string; status: string }[];
+  };
+  assert.equal(artifact.subScores.length, 5);
+  assert.equal(artifact.gates.find((g) => g.name === "measurements")?.status, "INFO");
+});

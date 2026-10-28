@@ -37,3 +37,6 @@ voni/GATES.md
 
 # Local video-making workspace
 /demo/
+
+# Demo scoreboard run artifacts (regenerated per run, never committed)
+voni/scoreboard-runs/
