@@ -51,6 +51,7 @@ import {
   emptyHumanRatings,
   evaluateHumanGate,
   evaluateTimbreGate,
+  formatHumanReview,
   classifyRunnerOutcome,
   formatArtifactDiff,
   formatEvalRunnerReport,
@@ -64,6 +65,7 @@ import {
   formatGoldenScript,
   formatOverheardReport,
   formatReplyGapReport,
+  gateVerdictFromArtifact,
   gateVoicePlayback,
   isRealCutExpected,
   meaningBasedEndOfTurnGate,
@@ -2152,6 +2154,119 @@ test("human gate counts only after two raters and a passing auto gate", () => {
   const blocked = evaluateHumanGate(false, two);
   assert.equal(blocked.status, "INFO");
   assert.ok(blocked.detail.includes("auto"), `auto must pass first: ${blocked.detail}`);
+});
+
+test("auto timbre failure reports ballots but never counts them", () => {
+  const two = addHumanRating(
+    addHumanRating(emptyHumanRatings(RECORDING), { rater: "ana", timbre: 5, accent: 5 }, RECORDING),
+    { rater: "bob", timbre: 5, accent: 5 },
+    RECORDING,
+  );
+  const blocked = evaluateHumanGate(false, two);
+  assert.equal(blocked.status, "INFO", "auto failure keeps the human slot INFO, never FAIL");
+  assert.match(blocked.detail, /auto/);
+  assert.match(blocked.detail, /2 ballots/);
+  assert.match(blocked.detail, /reported, not counted/);
+  assert.ok(blocked.detail.includes(RECORDING.slice(0, 12)), "the shared recording is named in the record");
+
+  const artifact = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "greeting-cut",
+    runnerStdout: "",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+    probes: { jump: 0, overload: 0, clip: 1, underrun: 0, inputDrop: 0 },
+    humanRatings: two,
+  });
+  assert.equal(artifact.gates.find((g) => g.name === "timbre-probes")?.status, "FAIL");
+  const human = artifact.gates.find((g) => g.name === "accent-human");
+  assert.equal(human?.status, "INFO");
+  assert.match(human?.detail ?? "", /reported, not counted/);
+  // Ballots on a FAILed auto gate never make the run green.
+  assert.equal(gateVerdictFromArtifact(DEFAULT_GATE_VOICE, artifact.gates, artifact.subScores).status, "FAIL");
+});
+
+test("artifact makes the shared-recording ballot protocol reviewable", () => {
+  const two = addHumanRating(
+    addHumanRating(emptyHumanRatings(RECORDING), { rater: "ana", timbre: 5, accent: 4 }, RECORDING),
+    { rater: "bob", timbre: 4, accent: 4 },
+    RECORDING,
+  );
+  const artifact = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "greeting-cut",
+    runnerStdout: "",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+    humanRatings: two,
+  });
+  assert.equal(artifact.humanReview.recordingSha256, RECORDING);
+  assert.equal(artifact.humanReview.raterCount, 2);
+  assert.equal(artifact.humanReview.requiredRaters, HUMAN_RATERS_REQUIRED);
+  assert.deepEqual(artifact.humanReview.raters, ["ana", "bob"]);
+  assert.equal(artifact.humanReview.autoTimbrePassed, true);
+  assert.equal(artifact.humanReview.counted, true);
+  assert.match(artifact.humanReview.protocol, /blind/);
+  assert.match(artifact.humanReview.protocol, /one shared/);
+  const report = formatHumanReview(artifact.humanReview);
+  assert.ok(report.includes(RECORDING), "report names the shared recording sha256");
+  assert.match(report, /2\/2/);
+  assert.match(report, /blind/);
+
+  const blocked = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "greeting-cut",
+    runnerStdout: "",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+    probes: { jump: 0, overload: 0, clip: 1, underrun: 0, inputDrop: 0 },
+    humanRatings: two,
+  });
+  assert.equal(blocked.humanReview.autoTimbrePassed, false);
+  assert.equal(blocked.humanReview.counted, false);
+  assert.match(formatHumanReview(blocked.humanReview), /not counted/);
+
+  const unbound = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "greeting-cut",
+    runnerStdout: "",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+  });
+  assert.equal(unbound.humanReview.recordingSha256, null);
+  assert.equal(unbound.humanReview.raterCount, 0);
+  assert.match(formatHumanReview(unbound.humanReview), /--recording/);
+});
+
+test("a low ballot never fails a run: taste stays informational", () => {
+  const low = addHumanRating(
+    addHumanRating(emptyHumanRatings(RECORDING), { rater: "ana", timbre: 1, accent: 1 }, RECORDING),
+    { rater: "bob", timbre: 1, accent: 1 },
+    RECORDING,
+  );
+  const artifact = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "greeting-cut",
+    runnerStdout: "",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+    humanRatings: low,
+    dryRun: true,
+  });
+  const human = artifact.gates.find((g) => g.name === "accent-human");
+  assert.equal(human?.status, "PASS", "counting raters, not taste, decides the human slot");
+  assert.match(human?.detail ?? "", /timbre 1 \/ accent 1/);
+  assert.ok(!artifact.gates.some((gate) => gate.name === "accent-human" && gate.status === "FAIL"));
+  assert.equal(gateVerdictFromArtifact(DEFAULT_GATE_VOICE, artifact.gates, artifact.subScores).status, "PASS");
+
+  const missing = evaluateHumanGate(true, emptyHumanRatings(RECORDING));
+  assert.equal(missing.status, "INFO", "missing ballots stay INFO");
+  assert.ok(missing.detail.includes(RECORDING.slice(0, 12)), "INFO names the recording awaiting ballots");
 });
 
 test("artifact carries human slots, loudness sanity, and live timbre gates", () => {
