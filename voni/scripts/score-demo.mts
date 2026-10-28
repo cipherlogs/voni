@@ -16,8 +16,13 @@
  * (non-dry) run with zero measured evidence fails too ("no measurements -
  * run real audio or pass evidence flags"): --dry-run stays exit 0 INFO
  * (explicit dry), but a real run may never green on zero measurements.
- * A dead eval runner is a harness break (exit 1, plumbing FAIL, evalRunner
- * status failed) — distinct from a measured gate FAIL (exit 1).
+ * Plumbing and judgment are separate: an eval runner that finished (its
+ * summary printed, whatever the exit code) is plumbing PASS even when a
+ * scenario or a measured gate FAILs. A spawn failure, a kill, a crash, no
+ * summary, a run with no Call trace session, or a run with no agent audio is
+ * a harness break (exit 1, plumbing FAIL, evalRunner status failed) — distinct
+ * from a measured gate FAIL (exit 1). Live scenario playout is printed as
+ * wall clock under `evalRunner.timings` and never folded into a gate.
  * Non-zero exit otherwise means the harness broke: unknown voice, bad
  * --runs/--gap/--filler/--cut/--overheard-json/--dead-air-gaps/--overlap-ms/--goodbye-coverage/--hang-up-delay-ms/--trace-beat flag, spawn failure,
  * or an unwritable artifact.
@@ -124,6 +129,7 @@ import {
   extractRealCutEvidence,
   extractTraceSessionId,
   formatBudgetReport,
+  formatEvalRunnerReport,
   formatGateTable,
   formatGoldenScript,
   formatOverheardReport,
@@ -587,6 +593,7 @@ function main(): void {
   console.log(formatGoldenScript(voice));
   console.log(formatBudgetReport());
   console.log(formatGateTable(artifact));
+  console.log(formatEvalRunnerReport(artifact));
   console.log(formatReplyGapReport(excerpt ?? [], traceSession || null));
   if (!dryRun && !traceSession) {
     console.log("trace session: none printed by the eval runner; pass --trace-session <sess_...> to merge per-turn gaps");
