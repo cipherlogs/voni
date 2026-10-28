@@ -64,6 +64,7 @@ appendFileSync(process.env.SHIM_LOG, JSON.stringify(args) + "\\n");
 if (args[0] === "run" && args[1] === "eval:demo-agent") {
   console.log("    cut 912ms after the caller started");
   console.log('    verdict ["yield","Wait, stop."]');
+  console.log('    answered the point after the cut: "Pricing depends on call volume."');
   console.log("stop-over: 1/1");
 } else if (args[0] === "run" && args[1] === "call:trace") {
   console.log('10.00s  HEARD   "Hi, this is Anna."  (0.00s-1.00s)');
@@ -140,6 +141,7 @@ if (args[0] === "run" && args[1] === "eval:demo-agent") {
   console.log("  · trace session sess_auto07");
   console.log("    cut 912ms after the caller started");
   console.log('    verdict ["yield","Wait, stop."]');
+  console.log('    answered the point after the cut: "Pricing depends on call volume."');
   console.log("stop-over: 1/1");
 } else if (args[0] === "run" && args[1] === "call:trace") {
   console.log('10.00s  HEARD   "Hi, this is Anna."  (0.00s-1.00s)');
@@ -193,6 +195,7 @@ const args = process.argv.slice(2);
 if (args[0] === "run" && args[1] === "eval:demo-agent") {
   console.log("    cut 912ms after the caller started");
   console.log('    verdict ["yield","Wait, stop."]');
+  console.log('    answered the point after the cut: "Pricing depends on call volume."');
   console.log("stop-over: 1/1");
 } else if (args[0] === "run" && args[1] === "call:trace") {
   console.log('10.00s  HEARD   "Yes please"  (9.20s-9.90s)');
@@ -239,6 +242,7 @@ const args = process.argv.slice(2);
 if (args[0] === "run" && args[1] === "eval:demo-agent") {
   console.log("    cut 912ms after the caller started");
   console.log('    verdict ["yield","Wait, stop."]');
+  console.log('    answered the point after the cut: "Pricing depends on call volume."');
   console.log("stop-over: 1/1");
 } else if (args[0] === "run" && args[1] === "call:trace") {
   console.log('10.00s  HEARD   "Yes please"  (9.20s-9.90s)');
@@ -280,6 +284,7 @@ if (args[0] === "run" && args[1] === "eval:demo-agent") {
   console.log("  · trace session sess_pending");
   console.log("    cut 912ms after the caller started");
   console.log('    verdict ["yield","Wait, stop."]');
+  console.log('    answered the point after the cut: "Pricing depends on call volume."');
   console.log("stop-over: 1/1");
 } else if (args[0] === "run" && args[1] === "call:trace") {
   console.error("No timeline yet: the session may still be finishing.");
@@ -779,6 +784,7 @@ if (process.argv[3] === "eval:demo-agent") {
   console.log("  · trace session sess_clip10");
   console.log(\`    cut \${cut}ms after the caller started (budget 1500ms)\`);
   console.log('    verdict ["yield","Wait, stop."]');
+  console.log('    answered the point after the cut: "Pricing depends on call volume."');
   console.log(\`stop-over: \${passed ? "1/1" : "0/1"}\`);
   console.log("EVAL SUMMARY " + JSON.stringify({
     scenario: "stop-over",
@@ -847,6 +853,72 @@ if (process.argv[3] === "eval:demo-agent") {
   assert.match(gate.detail, /caller clip/);
   assert.match(gate.detail, /not comparable/);
   assert.match(drifted.stdout, /caller clip\s+"Wait, stop\." audio bytes differ/);
+});
+
+// ── Ticket 11: the real point is answered after the cut ─────────────────────
+
+test("a real cut passes only with a post-cut answer, and a resume fails citing the answer turn", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  writeFileSync(
+    join(bin, "npm"),
+    `#!/usr/bin/env node
+const resumed = process.env.SHIM_RESUME === "1";
+if (process.argv[3] === "eval:demo-agent") {
+  console.log("  · trace session sess_point11");
+  console.log("    cut 912ms after the caller started (budget 1500ms)");
+  if (resumed) {
+    console.log('    resumed instead of answering: "Finish your sentence: say exactly this and nothing else, word for word: and triage the urgent ones"');
+    console.log('  ✗ stop-over #1: resumed instead of answering: "Finish your sentence: say exactly this and nothing else, word for word: and triage the urgent ones"');
+    console.log("stop-over: 0/1");
+    process.exit(1);
+  }
+  console.log('    answered the point after the cut: "Pricing depends on call volume."');
+  console.log("stop-over: 1/1");
+} else if (process.argv[3] === "call:trace") {
+  console.log('12.20s  VONI    "We answer every call and triage the urgent ones"  (reply_create gap 900ms)  CUT at 12.90s');
+  console.log('13.20s  HEARD   "Wait, stop. What is the price?"  (12.90s-13.90s)');
+  console.log('13.30s  CLIENT  barge-in yield "Wait, stop. What is the price?"');
+  console.log(resumed
+    ? '14.30s  VONI    "and triage the urgent ones"  (reply_create [Finish your sentence, word for word])'
+    : '14.30s  VONI    "Pricing depends on call volume."  (reply_create gap 1100ms)');
+}
+`,
+    { mode: 0o755 },
+  );
+  const cwd = new URL("../", import.meta.url).pathname;
+  const env = { PATH: `${bin}:${process.env.PATH}` };
+  const passedOut = join(dir, "score-answered.json");
+  const passed = run(
+    ["--scenario", "stop-over", "--out", passedOut, "--timing-lock", join(dir, "lock-answered")],
+    cwd,
+    env,
+  );
+  assert.equal(passed.status, 0, passed.stderr + passed.stdout);
+  const passedArtifact = JSON.parse(readFileSync(passedOut, "utf8")) as {
+    gates: { name: string; status: string; detail: string }[];
+  };
+  const passedGate = passedArtifact.gates.find((g) => g.name === "barge-in-cut")!;
+  assert.equal(passedGate.status, "PASS", passedGate.detail);
+  assert.match(passedGate.detail, /answered in 912ms/);
+  assert.match(passedGate.detail, /call trace turn 2 \(sess_point11\)/, "the answer turn");
+
+  const resumedOut = join(dir, "score-resumed.json");
+  const resumed = run(
+    ["--scenario", "stop-over", "--out", resumedOut, "--timing-lock", join(dir, "lock-resumed")],
+    cwd,
+    { ...env, SHIM_RESUME: "1" },
+  );
+  assert.equal(resumed.status, 1, resumed.stderr + resumed.stdout);
+  const resumedArtifact = JSON.parse(readFileSync(resumedOut, "utf8")) as {
+    gates: { name: string; status: string; detail: string }[];
+  };
+  const resumedGate = resumedArtifact.gates.find((g) => g.name === "barge-in-cut")!;
+  assert.equal(resumedGate.status, "FAIL");
+  assert.match(resumedGate.detail, /resum/i);
+  assert.match(resumedGate.detail, /call trace turn 2 \(sess_point11\)/, "the turn where Voni resumed past the point");
+  assert.match(resumed.stdout, /FAIL\s+barge-in-cut/);
 });
 
 // ── Ticket 08: greeting cut on "Wait, stop" ─────────────────────────────────

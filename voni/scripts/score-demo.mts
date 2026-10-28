@@ -804,11 +804,14 @@ function main(): void {
       ended: false,
       traceTurn: null,
     };
-    // The merged excerpt is the only source of a turn number: cite the
-    // interrupted reply for a cut, else the closing reply after end_call.
+    // The merged excerpt is the only source of a turn number: for a measured
+    // cut cite the turn after it (the answer, or the resume that must FAIL),
+    // else the interrupted reply / closing reply after end_call.
     const pointers = traceTurnPointers(excerpt ?? []);
     const derivedTurn =
-      base.cutMs !== null ? pointers.cutTurn : (pointers.cutTurn ?? pointers.goodbyeTurn);
+      base.cutMs !== null
+        ? (pointers.answerTurn ?? pointers.cutTurn)
+        : (pointers.cutTurn ?? pointers.goodbyeTurn);
     const derivedTraceTurn =
       derivedTurn !== null ? formatTraceTurn(derivedTurn, traceSession || null) : base.traceTurn;
     const evidence: RealCutEvidence = {

@@ -104,7 +104,12 @@ import {
   EMAIL_INVITE_EVIDENCE_PREFIX,
   greetingCutFailure,
   GREETING_CUT_MAX_MS,
+  heardPoint,
+  isResumeInstructions,
+  judgePostCutAnswer,
   measureCutLatency,
+  postCutAnswerText,
+  REAL_CUT_ANSWER_PREFIX,
   REAL_CUT_MAX_MS,
   REAL_CUT_SCENARIOS,
   sha256Hex,
@@ -361,6 +366,12 @@ type ClientOutcome = {
   creates: string[];
   agent: string[];
   heard: string[];
+  /** Final agent turns with their reply id, for separating the cut reply from the answer. */
+  agentTurns: { replyId: string | null; text: string; at: number }[];
+  /** Final user turns with arrival times, so the answer is the one after the point. */
+  heardTurns: { text: string; at: number }[];
+  /** The reply the server interrupted, if any. */
+  cutReplyId: string | null;
   interruptedReplies: number;
   /** The live session's id, for the Call trace merge. */
   sessionId: string | null;
@@ -388,6 +399,21 @@ type CallerSpeech = {
   onset: () => CallerOnset;
 };
 
+/**
+ * The fresh agent line after the cut and the caller's point. Uses the shared
+ * selector so the runner and the scoreboard agree on what counts as the
+ * answer; the interrupted reply is excluded by id.
+ */
+function postCutAnswerOf(outcome: ClientOutcome, point: string): string | null {
+  return postCutAnswerText({
+    cutAt: outcome.cutAt,
+    cutReplyId: outcome.cutReplyId,
+    point,
+    heardTurns: outcome.heardTurns,
+    agentTurns: outcome.agentTurns,
+  });
+}
+
 async function runClient(
   voiceId: string,
   lines: string[],
@@ -399,6 +425,10 @@ async function runClient(
     audioChunks: () => number;
     /** The session has ended (hung up). */
     ended: () => boolean;
+    /** The first fresh agent line after the cut and the point, or null. */
+    postCutAnswer: (point: string) => string | null;
+    /** Whether a final user transcript carried the given point word. */
+    heardPoint: (point: string) => boolean;
   }) => Promise<void>,
 ): Promise<ClientOutcome> {
   // Render every caller line before dialing: TTS mid-call skews timing.
@@ -408,7 +438,8 @@ async function runClient(
   const liveStartedAt = Date.now();
   const body = buildDemoAgentBody(voiceId);
   const outcome: ClientOutcome = {
-    events: [], cutAt: null, creates: [], agent: [], heard: [], interruptedReplies: 0, sessionId: null, endedAt: null, lastAudioEnd: 0,
+    events: [], cutAt: null, creates: [], agent: [], heard: [], agentTurns: [], heardTurns: [], cutReplyId: null,
+    interruptedReplies: 0, sessionId: null, endedAt: null, lastAudioEnd: 0,
     wallClockMs: 0, audioChunks: 0, callerClips: lines.map((line) => clipPrints.get(line)!),
   };
   let repliesDone = 0;
@@ -428,9 +459,18 @@ async function runClient(
       onTranscript: (turn) => {
         (turn.role === "agent" ? outcome.agent : outcome.heard).push(turn.text);
       },
+      onAgentTurn: (turn) => {
+        outcome.agentTurns.push({ replyId: turn.itemId, text: turn.text, at: Date.now() });
+      },
+      onUserTurn: (turn) => {
+        outcome.heardTurns.push({ text: turn.text, at: Date.now() });
+      },
       onReplyDone: (info) => {
         repliesDone += 1;
-        if (info.interrupted) outcome.interruptedReplies += 1;
+        if (info.interrupted) {
+          outcome.interruptedReplies += 1;
+          if (info.replyId) outcome.cutReplyId = info.replyId;
+        }
       },
     },
     {
@@ -595,6 +635,8 @@ async function runClient(
       replies: () => repliesDone,
       audioChunks: () => audioChunks,
       ended: () => outcome.endedAt !== null,
+      postCutAnswer: (point) => postCutAnswerOf(outcome, point),
+      heardPoint: (point) => heardPoint(outcome.heard, point),
     });
   } finally {
     live = false;
@@ -608,6 +650,9 @@ async function runClient(
 }
 
 const LONG_ASK = "Tell me in detail, step by step, how you would help a dental clinic with its phone calls.";
+/** The real point the caller adds after "Wait, stop."; it must be answered, never resumed past. */
+const STOP_OVER_POINT = "price";
+const STOP_OVER_POINT_LINE = "What is the price?";
 
 /** After the long ask, wait until the agent's answer is audibly under way. */
 async function askAndWaitForSpeech(ctx: Parameters<Parameters<typeof runClient>[2]>[0]) {
@@ -637,10 +682,15 @@ const CLIENT_SCENARIOS: { name: string; run: () => Promise<string | null> }[] = 
     name: "stop-over",
     run: async () => {
       let said: CallerSpeech | null = null;
-      const o = await runClient(voiceIdArg(), [LONG_ASK, "Wait, stop."], async (ctx) => {
+      const tailMs = Number(process.env.EVAL_TAIL_MS ?? 20_000);
+      const o = await runClient(voiceIdArg(), [LONG_ASK, "Wait, stop.", STOP_OVER_POINT_LINE], async (ctx) => {
         await askAndWaitForSpeech(ctx);
         said = ctx.say("Wait, stop.");
-        await new Promise((resolve) => setTimeout(resolve, Number(process.env.EVAL_TAIL_MS ?? 4000)));
+        // The same caller turn carries the real point. After the cut the agent
+        // must answer it — a resume of the abandoned dental-clinic tail FAILs.
+        ctx.say(STOP_OVER_POINT_LINE);
+        await ctx.waitFor(() => ctx.heardPoint(STOP_OVER_POINT), tailMs).catch(() => undefined);
+        await ctx.waitFor(() => ctx.postCutAnswer(STOP_OVER_POINT) !== null, tailMs).catch(() => undefined);
       });
       // t0 is the transmitted caller onset, never the enqueue tick. The
       // scenario asserts the same quoted budget the scoreboard gates, so a
@@ -650,9 +700,26 @@ const CLIENT_SCENARIOS: { name: string; run: () => Promise<string | null> }[] = 
         return `never cut (${measured.reason ?? "no cut"}; events: ${JSON.stringify(o.events.map((e) => e.verdict))})`;
       }
       console.log(`    cut ${measured.cutMs}ms after the caller started (budget ${REAL_CUT_MAX_MS}ms)`);
-      return measured.cutMs <= REAL_CUT_MAX_MS
-        ? null
-        : `cut too late: ${measured.cutMs}ms > ${REAL_CUT_MAX_MS}ms (caller onset → server cut)`;
+      const answer = judgePostCutAnswer({
+        point: STOP_OVER_POINT,
+        heard: o.heard,
+        answer: postCutAnswerOf(o, STOP_OVER_POINT),
+        creates: o.creates,
+      });
+      if (answer.resumed) {
+        console.log(`    resumed instead of answering: "${answer.resumed}"`);
+        return `resumed instead of answering: "${answer.resumed}"`;
+      }
+      if (measured.cutMs > REAL_CUT_MAX_MS) {
+        return `cut too late: ${measured.cutMs}ms > ${REAL_CUT_MAX_MS}ms (caller onset → server cut)`;
+      }
+      if (!answer.answered) {
+        const agent = JSON.stringify(o.agent);
+        const creates = JSON.stringify(o.creates);
+        return `${answer.reason} (agent: ${agent}; creates: ${creates})`;
+      }
+      console.log(`    ${REAL_CUT_ANSWER_PREFIX} "${answer.answer}"`);
+      return null;
     },
   },
   {
@@ -688,7 +755,7 @@ const CLIENT_SCENARIOS: { name: string; run: () => Promise<string | null> }[] = 
         ctx.say("I want you to hang up this call.");
         await ctx.waitFor(ctx.ended, 20000).catch(() => undefined);
       });
-      if (o.creates.some((c) => /Pick up where you left off/.test(c))) return "resumed instead of ending";
+      if (o.creates.some((c) => isResumeInstructions(c))) return "resumed instead of ending";
       if (o.endedAt === null) return "never hung up";
       console.log(`    hung up ${o.endedAt - o.lastAudioEnd}ms after the goodbye finished playing`);
       return null;
