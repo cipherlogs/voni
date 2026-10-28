@@ -178,6 +178,29 @@ test("call memory survives a reload inside the hold cap", () => {
   assert.deepEqual(back, snapshot(1000));
 });
 
+test("call memory carries the Test tag and both tokens across a Hold return", () => {
+  // The Tag survives not just in localStorage: a reload or a rejoin gets the
+  // same tag from Call memory (sessionStorage), so Voni never re-asks.
+  // Live Hold return coverage: tests/e2e/demo-hold.spec.ts (rejoin token body).
+  const store = memoryStore();
+  saveCallMemory(
+    {
+      ...snapshot(1000),
+      emailTest: { invited: true, found: false },
+      testTag: "Lime 42",
+      tagToken: "tag-tok",
+      callToken: "call-tok",
+    },
+    store,
+  );
+  const back = loadCallMemory(1000 + secToMs(30), store);
+  assert.ok(back, "the call comes back inside the hold cap");
+  assert.equal(back.emailTest?.invited, true, "the invite is still in call memory");
+  assert.equal(back.testTag, "Lime 42", "the Test tag itself");
+  assert.equal(back.tagToken, "tag-tok", "the signed tag token");
+  assert.equal(back.callToken, "call-tok", "the same call's scope token");
+});
+
 test("call memory past the hold cap is dropped and cleared", () => {
   const store = memoryStore();
   saveCallMemory(snapshot(0), store);

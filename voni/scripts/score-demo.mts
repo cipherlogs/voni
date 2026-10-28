@@ -305,6 +305,7 @@ function toEmailInviteEvidence(
     showToolCalls: file.showToolCalls,
     lineTurns,
     chipTraceTurn,
+    ...(file.memoryTurn !== undefined ? { memoryTraceTurn: formatEvidenceTurn(file.memoryTurn, traceSession) } : {}),
     ...(file.memoryInvitedBefore !== undefined ? { memoryInvitedBefore: file.memoryInvitedBefore } : {}),
     ...(file.memoryInvitedAfter !== undefined ? { memoryInvitedAfter: file.memoryInvitedAfter } : {}),
     ...(file.tagTokenBefore !== undefined ? { tagTokenBefore: file.tagTokenBefore } : {}),

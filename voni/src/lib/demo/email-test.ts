@@ -330,40 +330,49 @@ let hasTagCache = false;
 
 /** Versioned read with legacy fallback + in-scope repeat cache. */
 export function loadTagToken(): string | undefined {
+  let raw: string | null;
   try {
-    const raw = localStorage.getItem(TAG_TOKEN_KEY);
-    if (hasTagCache && raw === lastTagRaw) return lastTagValue;
+    raw = localStorage.getItem(TAG_TOKEN_KEY);
+  } catch {
+    // Storage blocked after the mint (private mode): the page's own token
+    // still scopes this call, so a hold rejoin carries it instead of minting
+    // a new tag and asking the visitor to start over.
+    return hasTagCache ? lastTagValue : undefined;
+  }
+  if (hasTagCache && raw === lastTagRaw) return lastTagValue;
+  if (!raw) {
+    // A write the browser refused (quota/private mode) leaves the cache as the
+    // only copy: keep it for this call's re-mint rather than starting over.
+    if (hasTagCache && lastTagValue !== undefined) return lastTagValue;
     lastTagRaw = raw;
     hasTagCache = true;
-    if (!raw) {
-      lastTagValue = undefined;
-      return undefined;
-    }
-    // Current envelope `{version, data: token}` first; legacy bare token second.
-    try {
-      const parsed: unknown = JSON.parse(raw);
-      if (
-        typeof parsed === "object" &&
-        parsed !== null &&
-        typeof (parsed as { version?: unknown }).version === "number" &&
-        isTagToken((parsed as { data?: unknown }).data)
-      ) {
-        lastTagValue = (parsed as { data: string }).data;
-        return lastTagValue;
-      }
-      // A JSON-quoted bare token (older writer) is still a token.
-      if (isTagToken(parsed)) {
-        lastTagValue = parsed;
-        return lastTagValue;
-      }
-    } catch {
-      // Not JSON: fall through to the legacy raw-token path below.
-    }
-    lastTagValue = isTagToken(raw) ? raw : undefined;
-    return lastTagValue;
-  } catch {
+    lastTagValue = undefined;
     return undefined;
   }
+  lastTagRaw = raw;
+  hasTagCache = true;
+  // Current envelope `{version, data: token}` first; legacy bare token second.
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      typeof (parsed as { version?: unknown }).version === "number" &&
+      isTagToken((parsed as { data?: unknown }).data)
+    ) {
+      lastTagValue = (parsed as { data: string }).data;
+      return lastTagValue;
+    }
+    // A JSON-quoted bare token (older writer) is still a token.
+    if (isTagToken(parsed)) {
+      lastTagValue = parsed;
+      return lastTagValue;
+    }
+  } catch {
+    // Not JSON: fall through to the legacy raw-token path below.
+  }
+  lastTagValue = isTagToken(raw) ? raw : undefined;
+  return lastTagValue;
 }
 
 export function saveTagToken(token: string): void {

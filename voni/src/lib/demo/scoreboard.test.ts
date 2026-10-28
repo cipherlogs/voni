@@ -2181,6 +2181,75 @@ test("tag persists across Hold return and reload via Call memory", () => {
   assert.equal(evaluateEmailInvite(freshEvidence({ callTokenAfter: "other-call" })).status, "FAIL", "call token swapped");
 });
 
+test("Hold memory is measured only by a complete before/after pair", () => {
+  const base = {
+    agentLines: [FRESH_INVITE],
+    chipShows: [{ address: "test@voni.cc", tag: EMAIL_INVITE_TAG }],
+    showToolCalls: 1,
+  };
+  const loneTag = evaluateEmailInvite({ ...base, tagTokenBefore: "tag-tok" });
+  assert.equal(loneTag.memoryPersists, null, "a lone before is not a pair");
+  assert.equal(loneTag.status, "PASS", "unmeasured memory is not a spoken FAIL");
+  assert.equal(emailInviteGate(loneTag).status, "INFO", "unmeasured memory never blocks required green");
+
+  const loneInvite = evaluateEmailInvite({ ...base, memoryInvitedBefore: true });
+  assert.equal(loneInvite.memoryPersists, null);
+  assert.equal(emailInviteGate(loneInvite).status, "INFO");
+
+  const loneAfter = evaluateEmailInvite({ ...base, callTokenAfter: "call-tok" });
+  assert.equal(loneAfter.memoryPersists, null);
+  assert.equal(emailInviteGate(loneAfter).status, "INFO");
+
+  const paired = evaluateEmailInvite({ ...base, tagTokenBefore: "tag-tok", tagTokenAfter: "tag-tok" });
+  assert.equal(paired.memoryPersists, true);
+  assert.equal(emailInviteGate(paired).status, "PASS");
+
+  const mismatched = evaluateEmailInvite({ ...base, callTokenBefore: "call-tok", callTokenAfter: "new-call" });
+  assert.equal(mismatched.memoryPersists, false);
+  assert.equal(emailInviteGate(mismatched).status, "FAIL", "only a measured mismatch fails");
+});
+
+test("a tag lost on return FAILs and cites the Call trace turn where it was lost", () => {
+  const explicit = evaluateEmailInvite(
+    freshEvidence({
+      tagTokenAfter: "new-tag",
+      memoryTraceTurn: "call trace turn 9 (sess_hold27)",
+    }),
+  );
+  assert.equal(explicit.status, "FAIL");
+  assert.match(explicit.detail, /tag did not persist across Hold return\/reload at call trace turn 9 \(sess_hold27\)/);
+  assert.equal(explicit.memoryTraceTurn, "call trace turn 9 (sess_hold27)");
+
+  // No explicit turn: the later tag mention is the repeat ask after the return.
+  const derived = evaluateEmailInvite(
+    freshEvidence({
+      agentLines: [FRESH_INVITE, FRESH_INVITE],
+      lineTurns: ["call trace turn 2 (sess_hold27)", "call trace turn 7 (sess_hold27)"],
+      tagTokenAfter: "new-tag",
+    }),
+  );
+  assert.equal(derived.status, "FAIL");
+  assert.match(derived.detail, /tag did not persist across Hold return\/reload at call trace turn 7 \(sess_hold27\)/);
+
+  // A trace that merged no turn says so instead of guessing one.
+  const unmerged = evaluateEmailInvite(freshEvidence({ memoryInvitedAfter: false, memoryTraceTurn: null }));
+  assert.equal(unmerged.status, "FAIL");
+  assert.match(unmerged.detail, /tag did not persist across Hold return\/reload \(no Call trace turn merged\)/);
+});
+
+test("after a Hold return a second invite or tag mention FAILs as a repeat ask", () => {
+  const reasked = evaluateEmailInvite(
+    freshEvidence({
+      agentLines: [FRESH_INVITE, FRESH_INVITE],
+      lineTurns: ["call trace turn 2 (sess_hold27)", "call trace turn 7 (sess_hold27)"],
+      showToolCalls: 2,
+    }),
+  );
+  assert.equal(reasked.status, "FAIL");
+  assert.match(reasked.detail, /invited 2 times/);
+  assert.match(reasked.detail, /said the tag 2 times at call trace turn 7 \(sess_hold27\)/);
+});
+
 test("returning sender is greeted without a second invite", () => {
   const greeted = "Found it, Andres. Good to hear from you again!";
   const ok = evaluateEmailInvite(
@@ -3222,7 +3291,7 @@ test("email memory unmeasured is INFO, persisted is PASS, mismatch is FAIL", () 
   assert.equal(unmeasured.status, "PASS");
   const info = emailInviteGate(unmeasured);
   assert.equal(info.status, "INFO");
-  assert.equal(info.detail, "unmeasured - provide hold/reload evidence");
+  assert.equal(info.detail, "unmeasured - provide a before/after Hold return pair");
   const kept = emailInviteGate(evaluateEmailInvite(freshEvidence()));
   assert.equal(kept.status, "PASS");
   const lost = emailInviteGate(evaluateEmailInvite(freshEvidence({ memoryInvitedAfter: false })));

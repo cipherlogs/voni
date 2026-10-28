@@ -68,7 +68,8 @@ async function tokenBodies(page: Page) {
   const bodies: Record<string, unknown>[] = [];
   await page.route("**/api/demo/token", (route) => {
     bodies.push(route.request().postDataJSON() as Record<string, unknown>);
-    return route.fulfill({ json: { token: "tok", agentId: "agent_demo", callToken: "call-tok" } });
+    // A tag minted for this call: the re-mint must carry it back (same tag).
+    return route.fulfill({ json: { token: "tok", agentId: "agent_demo", callToken: "call-tok", testTag: "Lime 42", tagToken: "tag-tok" } });
   });
   return bodies;
 }
@@ -194,7 +195,7 @@ test("resume refused after the grace: a fresh session gets the call memory", asy
   expect(await welcomes(page, server)).toBe(0);
   await expect(page.getByText("We sell solar panels in Lisbon.").filter({ visible: true }).first()).toBeVisible();
   expect(tokens[0]).not.toHaveProperty("callToken");
-  expect(tokens.at(-1)).toMatchObject({ resume: true, callToken: "call-tok" });
+  expect(tokens.at(-1)).toMatchObject({ resume: true, callToken: "call-tok", tagToken: "tag-tok" });
   // No error banner (Next's empty route announcer is also role=alert).
   await expect(page.getByRole("alert").filter({ hasText: /\S/ }).filter({ visible: true })).toHaveCount(0);
 });

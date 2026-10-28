@@ -2003,6 +2003,38 @@ test("--email-json without memory evidence stays INFO, never PASS", () => {
   assert.equal(artifact.gates.find((g) => g.name === "email-invite")?.status, "INFO");
 });
 
+test("--email-json a tag lost on Hold return fails and cites the memory turn", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const json = writeEmailJson(dir, "email.json", {
+    agentLines: [EMAIL_INVITE_LINE],
+    lineTurns: [2],
+    chipShows: [{ address: "test@voni.cc", tag: "Lime 42" }],
+    showToolCalls: 1,
+    chipTurn: 2,
+    traceSession: "sess_hold27",
+    memoryInvitedBefore: true,
+    memoryInvitedAfter: true,
+    tagTokenBefore: "tag-tok",
+    tagTokenAfter: "new-tag",
+    memoryTurn: 7,
+  });
+  const out = join(dir, "score.json");
+  const result = run(
+    ["--dry-run", "--out", out, "--email-json", json],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.equal(result.status, 1, result.stderr + result.stdout);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    emailInvite: { memoryPersists: boolean | null; memoryTraceTurn: string | null };
+    gates: { name: string; status: string; detail: string }[];
+  };
+  assert.equal(artifact.emailInvite.memoryPersists, false);
+  assert.equal(artifact.emailInvite.memoryTraceTurn, "call trace turn 7 (sess_hold27)");
+  const gate = artifact.gates.find((g) => g.name === "email-invite")!;
+  assert.equal(gate.status, "FAIL");
+  assert.match(gate.detail, /tag did not persist across Hold return\/reload at call trace turn 7 \(sess_hold27\)/);
+});
+
 test("--email-json chip duplication fails and cites the chip's Call trace turn", () => {
   const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
   const json = writeEmailJson(dir, "email.json", {
