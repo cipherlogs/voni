@@ -2180,21 +2180,77 @@ export type FillerResumeEvidence = {
    * answer marker and leaves it unmeasured (undefined, never a guessed true).
    */
   answerContinued?: boolean;
+  /**
+   * How the turn resolved for this filler verdict, in the ledger's own
+   * vocabulary: a filler must be `resumed-from` (or `heard-only` when the
+   * answer never cut), never `answered`. Derived from the runner's observed
+   * marker; undefined when the evidence predates it (unmeasured, not guessed).
+   */
+  handling?: OverheardHandling;
   /** Call trace turn the failure points at (spec: every failure names its turn). */
   traceTurn?: string;
+};
+
+/** The runner's own answer marker for one filler overlap. */
+export type FillerAnswerMarker = "continued" | "resumed" | "dropped" | "derailed";
+
+/**
+ * Resolve the overlap handling from the runner's observed answer marker. The
+ * marker is evidence, so this maps it; it never decides that a filler was
+ * "answered" unless the runner actually observed an answer instead of a
+ * resume. `null` stays unmeasured (older evidence), never a guessed value.
+ *
+ * A filler's answer **continuing** through the back-channel is `heard-only`
+ * (the floor never moved); a filler that cut and picked the tail back up is
+ * `resumed-from`; one that was treated as a new turn is `answered`; one whose
+ * answer vanished is `lost`.
+ */
+export function fillerHandlingFor(answer: FillerAnswerMarker | null): OverheardHandling | null {
+  switch (answer) {
+    case null:
+      return null;
+    case "continued":
+      return "heard-only";
+    case "resumed":
+      return "resumed-from";
+    case "derailed":
+      return "answered";
+    case "dropped":
+      return "lost";
+  }
+}
+
+/**
+ * The tail evidence the live runner captured for a filler cut: the agent
+ * line it interrupted, the words the caller heard before the cut, and the
+ * words the agent said as the resume, plus cut → resume first audio. The
+ * scoreboard compares the resume with `unheardRest` itself, so a skip or a
+ * paraphrase can never be blessed by a boolean.
+ */
+export type FillerTailEvidence = {
+  /** The full agent line the filler overlapped (source of the unheard rest). */
+  agentText: string;
+  /** Words of that line whose audio had played before the server cut. */
+  heardText: string;
+  /** What the agent said as the resume ("" when it never played one). */
+  resumedText: string;
+  /** Cut → resume first audio; null when the resume never played. */
+  resumeMs: number | null;
 };
 
 /**
  * What the live eval runner observed for one filler overlap. The runner
  * prints one line per run:
  *
- *   filler never cut; events [["ignore","Okaay so"]]; answer continued
- *   filler cut at 318ms; events [["ignore","Okaay so"]]; answer resumed
+ *   filler never cut; events [["ignore","Okaay so"]]; handling heard-only
+ *   filler cut at 318ms; events [["ignore","Okaay so"]]; handling resumed-from;
+ *     tail {"agent":"…","heard":"…","resumed":"…","resumeMs":412}
  *
- * `events` is the floor's own overlap decisions; `answer` is whether the
- * caller heard the same answer continue. The `; answer …` suffix is optional
- * so older runs (which only printed the first two fields) still parse, but an
- * absent suffix stays unmeasured rather than assumed.
+ * `events` is the floor's own overlap decisions; `handling` is how the turn
+ * resolved (filler never "answer"); `tail` is the verbatim cut/resume
+ * evidence. The `answer …`, `handling …` and `tail …` suffixes are all
+ * optional so older runs still parse, but an absent suffix stays unmeasured
+ * rather than assumed.
  */
 export type FillerRunObservation = {
   visitorText: string;
@@ -2207,6 +2263,10 @@ export type FillerRunObservation = {
   resumed: boolean;
   /** The answer continued/resumed; false when it was dropped/derailed. */
   answerContinued: boolean | null;
+  /** How the turn resolved, from the runner's own marker (null = unmeasured). */
+  handling: OverheardHandling | null;
+  /** The cut/resume tail evidence, or null when the runner captured none. */
+  tail: FillerTailEvidence | null;
 };
 
 /**
@@ -2218,7 +2278,7 @@ export type FillerRunObservation = {
 export function parseFillerRunOutput(stdout: string): FillerRunObservation | null {
   let last: RegExpExecArray | null = null;
   const pattern =
-    /^\s*filler (never cut|cut(?: at (\d+)ms)?); events (\[.*?\])(?:; answer (continued|resumed|dropped|derailed))?\s*$/gm;
+    /^\s*filler (never cut|cut(?: at (\d+)ms)?); events (\[.*?\])(?:; answer (continued|resumed|dropped|derailed))?(?:; handling (answered|resumed-from|heard-only|lost))?(?:; tail (\{.*\}))?\s*$/gm;
   for (const match of stdout.matchAll(pattern)) last = match as RegExpExecArray;
   if (!last) return null;
   let events: unknown;
@@ -2237,38 +2297,81 @@ export function parseFillerRunOutput(stdout: string): FillerRunObservation | nul
   const cutMs = last[2] === undefined ? null : Number(last[2]);
   if (cutMs !== null && !Number.isFinite(cutMs)) return null;
   const cut = last[1] !== "never cut";
-  const answer = last[4];
+  const answer = (last[4] ?? null) as FillerAnswerMarker | null;
+  const reportedHandling = (last[5] ?? null) as OverheardHandling | null;
+  const handling = reportedHandling ?? fillerHandlingFor(answer);
+  let tail: FillerTailEvidence | null = null;
+  if (last[6] !== undefined) {
+    let rawTail: unknown;
+    try {
+      rawTail = JSON.parse(last[6]);
+    } catch {
+      return null;
+    }
+    const candidate = rawTail as { agent?: unknown; heard?: unknown; resumed?: unknown; resumeMs?: unknown } | null;
+    if (candidate === null || typeof candidate !== "object") return null;
+    if (
+      typeof candidate.agent !== "string" ||
+      typeof candidate.heard !== "string" ||
+      typeof candidate.resumed !== "string"
+    ) {
+      return null;
+    }
+    const resumeMs = candidate.resumeMs ?? null;
+    if (resumeMs !== null && (typeof resumeMs !== "number" || !Number.isFinite(resumeMs) || resumeMs < 0)) {
+      return null;
+    }
+    tail = {
+      agentText: candidate.agent,
+      heardText: candidate.heard,
+      resumedText: candidate.resumed,
+      resumeMs,
+    };
+  }
+  const answerContinued =
+    handling !== null
+      ? handling === "resumed-from" || handling === "heard-only"
+      : answer !== null
+        ? answer === "continued" || answer === "resumed"
+        : null;
   return {
     visitorText,
     verdict: verdict as FillerVerdict,
     cut,
     cutMs,
-    resumed: cut && answer === "resumed",
-    answerContinued: answer === undefined ? null : answer === "continued" || answer === "resumed",
+    resumed: cut && (handling === "resumed-from" || answer === "resumed"),
+    answerContinued,
+    handling,
+    tail,
   };
 }
 
 /**
  * Turn the runner's observation into gate evidence. A cut that resumed is
- * ticket 13's exact-tail evidence, so this never blesses it from a boolean
- * alone (returning null leaves the skeleton INFO until the tail is measured).
- * Never-cut and cut-that-stole/derailed observations are scoreable now.
+ * ticket 13's exact-tail evidence: it is only scoreable with the observed
+ * tail, so the boolean alone never blesses it (returning null leaves the
+ * skeleton INFO until the tail is measured). Never-cut and cut-that-stole or
+ * dropped observations carry whatever tail the runner captured.
  */
 export function fillerEvidenceFromRun(observation: FillerRunObservation): FillerResumeEvidence | null {
   // A cut that resumed is ticket 13's exact-tail evidence, so this never
   // blesses it from a boolean alone.
-  if (observation.cut && observation.resumed) return null;
+  if (observation.cut && observation.resumed && !observation.tail) return null;
+  // A cut's tail is only comparable when the agent line it interrupted was
+  // captured; without it the gate stays unmeasured rather than guessing.
+  if (observation.cut && observation.tail && !observation.tail.agentText.trim()) return null;
   return {
     visitorText: observation.visitorText,
-    agentText: "",
+    agentText: observation.tail?.agentText ?? "",
     verdict: observation.verdict,
     cutMs: observation.cutMs,
-    resumeMs: null,
-    resumedText: "",
-    heardText: "",
+    resumeMs: observation.tail?.resumeMs ?? null,
+    resumedText: observation.tail?.resumedText ?? "",
+    heardText: observation.tail?.heardText ?? "",
     answeredOver: false,
     ...(observation.cut ? { cutObserved: true } : {}),
     ...(observation.answerContinued !== null ? { answerContinued: observation.answerContinued } : {}),
+    ...(observation.handling !== null ? { handling: observation.handling } : {}),
   };
 }
 
@@ -2283,10 +2386,11 @@ export function evaluateFillerResumeGate(evidence: FillerResumeEvidence): Scoreb
   const expected = judgeOverlap(evidence.visitorText, evidence.agentText);
   const cut =
     evidence.cutMs !== null ? `${evidence.cutMs}ms` : evidence.cutObserved ? "cut (unmeasured)" : "never cut";
+  const handling = evidence.handling ?? "unmeasured";
   const fail = (detail: string): ScoreboardGate => ({
     name,
     status: "FAIL",
-    detail: `${detail} (cut: ${cut}; judge verdict: ${evidence.verdict}, expected: ${expected}; trace: ${trace})`,
+    detail: `${detail} (cut: ${cut}; judge verdict: ${evidence.verdict}, expected: ${expected}; handling: ${handling}; trace: ${trace})`,
   });
   // Not filler at all: steering, end-call and real content yield per the
   // judge. Blessing a yield here would hide a threshold regression, and the
@@ -2303,6 +2407,11 @@ export function evaluateFillerResumeGate(evidence: FillerResumeEvidence): Scoreb
   if (expected === "judge" && evidence.verdict !== "keep") {
     return fail(`ambiguous overlap "${evidence.visitorText}" resumed without a Jev keep`);
   }
+  // A filler is resumed-from (or heard-only when the answer never cut); the
+  // runner observed the turn resolving as a fresh answer instead.
+  if (evidence.handling === "answered") {
+    return fail(`filler "${evidence.visitorText}" was answered instead of resumed-from`);
+  }
   if (evidence.cutMs === null && !evidence.cutObserved && evidence.answerContinued === false) {
     return fail(
       `answer dropped: the back-channel did not let "${evidence.visitorText}" pass through the answer`,
@@ -2315,7 +2424,7 @@ export function evaluateFillerResumeGate(evidence: FillerResumeEvidence): Scoreb
     return {
       name,
       status: "PASS",
-      detail: `filler "${evidence.visitorText}" ignored (judge verdict: ${evidence.verdict}, expected: ${expected}); floor held, never cut; trace: ${trace}`,
+      detail: `filler "${evidence.visitorText}" ignored (judge verdict: ${evidence.verdict}, expected: ${expected}); floor held, never cut; handling: ${handling}; trace: ${trace}`,
     };
   }
   if (evidence.resumeMs === null) {
@@ -2336,7 +2445,7 @@ export function evaluateFillerResumeGate(evidence: FillerResumeEvidence): Scoreb
   return {
     name,
     status: "PASS",
-    detail: `filler "${evidence.visitorText}" cut at ${evidence.cutMs}ms (judge verdict: ${evidence.verdict}), resumed the exact tail in ${evidence.resumeMs}ms (budget ${FILLER_RESUME_TAIL_BUDGET_MS}ms); trace: ${trace}`,
+    detail: `filler "${evidence.visitorText}" cut at ${evidence.cutMs}ms (judge verdict: ${evidence.verdict}), resumed the exact tail in ${evidence.resumeMs}ms (budget ${FILLER_RESUME_TAIL_BUDGET_MS}ms); handling: ${handling}; trace: ${trace}`,
   };
 }
 

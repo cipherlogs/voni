@@ -34,6 +34,9 @@
  * recovery, docs/adr/0003-barge-in-recovery.md) over a live socket, with a
  * wall-clock fake playout and Jev called directly through the gateway:
  *   filler-over   "Okaay so" over a long reply → not cut, or cut and resumed.
+ *                 A cut prints the agent line, the words heard before it, and
+ *                 the resumed tail, so the scoreboard can prove the exact
+ *                 unheard rest played instead of a paraphrase or a skip.
  *   stop-over     "Wait, stop." over a long reply → cut within ~1.5s, answered.
  *   over-talk     a short answer over the reply → heard (never lost).
  *   hang-up-over  "I want you to hang up this call." over a long reply →
@@ -92,6 +95,7 @@ import {
 import { buildEndCallSuccess, END_CALL_VOICE_TOOL } from "../src/lib/tools/definitions";
 import {
   HELD_RESULT_RELEASE_MS,
+  heardWords,
   stripSpokenToolCall,
   TARGET_SAMPLE_RATE,
   VoiceSession,
@@ -102,6 +106,7 @@ import {
   callerClipDrift,
   callerClipFingerprint,
   EMAIL_INVITE_EVIDENCE_PREFIX,
+  fillerHandlingFor,
   greetingCutFailure,
   GREETING_CUT_MAX_MS,
   heardPoint,
@@ -116,6 +121,7 @@ import {
   type CallerClipFingerprint,
   type CallerOnset,
   type EmailInviteEvidenceFile,
+  type FillerAnswerMarker,
 } from "../src/lib/demo/scoreboard";
 
 const FAKE = /fake|pretend|hypothetical|make one up|made[- ]up|pick anything|example business|imaginary|role[- ]?play/i;
@@ -372,6 +378,14 @@ type ClientOutcome = {
   heardTurns: { text: string; at: number }[];
   /** The reply the server interrupted, if any. */
   cutReplyId: string | null;
+  /** First agent-audio arrival per reply id (cut → resume first audio). */
+  replyAudioAt: Record<string, number>;
+  /**
+   * Played ms of the cut reply at the server cut, from the wall-clock playout
+   * (the same source-latency maths the session uses for its heard words).
+   * Null when the cut reply never had audio measured.
+   */
+  cutPlayedMs: number | null;
   interruptedReplies: number;
   /** The live session's id, for the Call trace merge. */
   sessionId: string | null;
@@ -414,6 +428,38 @@ function postCutAnswerOf(outcome: ClientOutcome, point: string): string | null {
   });
 }
 
+/**
+ * The tail the filler cut interrupted and the resume that followed. The agent
+ * line is the cut reply's own transcript, the heard words come from the
+ * wall-clock playout at the cut (the same source the session reads), and the
+ * resumed words are the first agent line after the cut. Null means the runner
+ * could not measure it — never a guessed tail.
+ */
+function fillerTailOf(outcome: ClientOutcome): {
+  agentText: string;
+  heardText: string;
+  resumedText: string;
+  resumeMs: number | null;
+} | null {
+  const cutAt = outcome.cutAt;
+  if (cutAt === null) return null;
+  const cutTurn =
+    outcome.agentTurns.find((turn) => outcome.cutReplyId !== null && turn.replyId === outcome.cutReplyId) ??
+    [...outcome.agentTurns].reverse().find((turn) => turn.at <= cutAt);
+  const agentText = cutTurn?.text.trim() ? cutTurn.text : "";
+  if (!agentText || outcome.cutPlayedMs === null) return null;
+  const resumedTurn = outcome.agentTurns.find(
+    (turn) => turn !== cutTurn && turn.replyId !== outcome.cutReplyId && turn.at >= cutAt && turn.text.trim(),
+  );
+  const firstAudioAt = resumedTurn?.replyId ? (outcome.replyAudioAt[resumedTurn.replyId] ?? null) : null;
+  return {
+    agentText,
+    heardText: heardWords(agentText, outcome.cutPlayedMs),
+    resumedText: resumedTurn?.text ?? "",
+    resumeMs: firstAudioAt !== null ? Math.max(0, Math.round(firstAudioAt - cutAt)) : null,
+  };
+}
+
 async function runClient(
   voiceId: string,
   lines: string[],
@@ -439,6 +485,7 @@ async function runClient(
   const body = buildDemoAgentBody(voiceId);
   const outcome: ClientOutcome = {
     events: [], cutAt: null, creates: [], agent: [], heard: [], agentTurns: [], heardTurns: [], cutReplyId: null,
+    replyAudioAt: {}, cutPlayedMs: null,
     interruptedReplies: 0, sessionId: null, endedAt: null, lastAudioEnd: 0,
     wallClockMs: 0, audioChunks: 0, callerClips: lines.map((line) => clipPrints.get(line)!),
   };
@@ -497,6 +544,18 @@ async function runClient(
   };
   // Wall-clock playout: "sounding" until the received audio has had time to play.
   let playUntil = 0;
+  // Source-sample bookkeeping so the fake playout can report what actually
+  // played: the session's heard-word maths reads `consumedSamples`, and a
+  // playout that cannot report makes the caller "hear" the whole line — a
+  // resume would then re-say one word and look exact while skipping the rest.
+  let sentSamples = 0;
+  const replyAudioStartSamples: Record<string, number> = {};
+  let soundingReplyId: string | null = null;
+  const consumedSamplesNow = () => {
+    const queuedMs = Math.max(0, playUntil - Date.now());
+    const queuedSamples = Math.ceil((queuedMs / 1000) * TARGET_SAMPLE_RATE);
+    return Math.max(0, sentSamples - Math.min(sentSamples, queuedSamples));
+  };
   // Teardown flushes the playout too. Only a flush during the live scenario is
   // a server cut; counting the teardown flush would report a never-cut call as
   // a late cut and cite a turn that never lagged.
@@ -504,15 +563,27 @@ async function runClient(
   internals["playout"] = {
     play: (pcm: Uint8Array, rate: number) => {
       audioChunks += 1;
+      sentSamples += pcm.byteLength / 2;
       playUntil = Math.max(Date.now(), playUntil) + (pcm.byteLength / 2 / rate) * 1000;
       outcome.lastAudioEnd = playUntil;
     },
     flush: () => {
-      if (live && outcome.cutAt === null) outcome.cutAt = Date.now();
+      if (live && outcome.cutAt === null) {
+        outcome.cutAt = Date.now();
+        const cutReply = outcome.cutReplyId ?? soundingReplyId;
+        const start = cutReply !== null ? replyAudioStartSamples[cutReply] : undefined;
+        // Played source samples since this reply's first chunk at the same
+        // instant the session reads them for its unheard rest.
+        if (start !== undefined) {
+          outcome.cutPlayedMs = Math.max(0, ((consumedSamplesNow() - start) / TARGET_SAMPLE_RATE) * 1000);
+        }
+      }
       playUntil = Date.now();
     },
     settled: () => Date.now() >= playUntil,
     queuedMs: () => Math.max(0, playUntil - Date.now()),
+    sentSamples: () => sentSamples,
+    consumedSamples: () => consumedSamplesNow(),
     onDrained: undefined,
   };
   const gen = internals.generation.begin();
@@ -525,26 +596,35 @@ async function runClient(
     tools: [END_CALL_VOICE_TOOL],
   }, gen);
   const ws = internals.ws!;
-  if (process.env.EVAL_DEBUG) {
-    const t0 = Date.now();
-    ws.addEventListener("message", (event) => {
-      const msg = JSON.parse(String(event.data));
-      if (msg.type === "reply.audio") {
-        if (msg.reply_id !== (globalThis as Record<string, unknown>).lastAudioReply) {
-          (globalThis as Record<string, unknown>).lastAudioReply = msg.reply_id;
-          console.log(`    ${((Date.now() - t0) / 1000).toFixed(2)} first audio of ${msg.reply_id}`);
+  const t0 = Date.now();
+  ws.addEventListener("message", (event) => {
+    const msg = JSON.parse(String(event.data));
+    if (msg.type === "reply.audio") {
+      if (typeof msg.reply_id === "string") {
+        if (outcome.replyAudioAt[msg.reply_id] === undefined) outcome.replyAudioAt[msg.reply_id] = Date.now();
+        // The session's own handler already queued this chunk before ours runs,
+        // so this reply's playout start is the running total minus the chunk.
+        if (replyAudioStartSamples[msg.reply_id] === undefined) {
+          const chunkSamples = Buffer.from(String(msg.data ?? ""), "base64").byteLength / 2;
+          replyAudioStartSamples[msg.reply_id] = Math.max(0, sentSamples - chunkSamples);
         }
-        return;
+        soundingReplyId = msg.reply_id;
       }
-      if (msg.type === "transcript.agent.delta") {
-        if (!(globalThis as Record<string, unknown>).sawDelta) console.log(`    ${((Date.now() - t0) / 1000).toFixed(2)} first agent delta: ${msg.text}`);
-        (globalThis as Record<string, unknown>).sawDelta = true;
-        return;
+      if (process.env.EVAL_DEBUG && msg.reply_id !== (globalThis as Record<string, unknown>).lastAudioReply) {
+        (globalThis as Record<string, unknown>).lastAudioReply = msg.reply_id;
+        console.log(`    ${((Date.now() - t0) / 1000).toFixed(2)} first audio of ${msg.reply_id}`);
       }
-      if (msg.type.endsWith(".delta")) return;
-      console.log(`    ${((Date.now() - t0) / 1000).toFixed(2)} ${msg.type} ${msg.text ?? msg.status ?? msg.message ?? ""}`);
-    });
-  }
+      return;
+    }
+    if (!process.env.EVAL_DEBUG) return;
+    if (msg.type === "transcript.agent.delta") {
+      if (!(globalThis as Record<string, unknown>).sawDelta) console.log(`    ${((Date.now() - t0) / 1000).toFixed(2)} first agent delta: ${msg.text}`);
+      (globalThis as Record<string, unknown>).sawDelta = true;
+      return;
+    }
+    if (msg.type.endsWith(".delta")) return;
+    console.log(`    ${((Date.now() - t0) / 1000).toFixed(2)} ${msg.type} ${msg.text ?? msg.status ?? msg.message ?? ""}`);
+  });
   const send = ws.send.bind(ws);
   ws.send = (data: string) => {
     const msg = JSON.parse(String(data));
@@ -682,16 +762,38 @@ const CLIENT_SCENARIOS: { name: string; run: () => Promise<string | null> }[] = 
       // when the filler landed.
       const measured = measureCutLatency(said!.onset(), o.cutAt);
       const cutObserved = o.cutAt !== null;
-      const resumed = cutObserved && o.creates.some((c) => /Pick up where you left off/.test(c));
+      // The session's current resume instruction is "Finish your sentence …
+      // word for word"; the shared matcher also accepts the older phrasing, so
+      // a live resume is never misread as a derail.
+      const resumed = cutObserved && o.creates.some((c) => isResumeInstructions(c));
       const answerStillSounding = o.lastAudioEnd > fillerAt;
       const continued =
         !cutObserved && o.interruptedReplies === 0 && o.creates.length === 0 && answerStillSounding;
-      const answer = cutObserved ? (resumed ? "resumed" : "derailed") : continued ? "continued" : "dropped";
+      const answer: FillerAnswerMarker = cutObserved
+        ? resumed
+          ? "resumed"
+          : "derailed"
+        : continued
+          ? "continued"
+          : "dropped";
+      // The filler verdict resolves to resume-from (or heard-only when the
+      // answer never cut), never "answered"; the handling is derived from the
+      // observed answer marker, not set by hand.
+      const handling = fillerHandlingFor(answer) ?? "unmeasured";
+      const tail = cutObserved ? fillerTailOf(o) : null;
+      const tailSuffix = tail
+        ? `; tail ${JSON.stringify({
+            agent: tail.agentText,
+            heard: tail.heardText,
+            resumed: tail.resumedText,
+            resumeMs: tail.resumeMs,
+          })}`
+        : "";
       const cutLabel = measured.cutMs !== null ? `cut at ${measured.cutMs}ms` : cutObserved ? "cut" : "never cut";
       console.log(
         `    filler ${cutLabel}; events ${JSON.stringify(
           o.events.map((e) => [e.verdict, e.text]),
-        )}; answer ${answer}`,
+        )}; handling ${handling}${tailSuffix}`,
       );
       if (cutObserved) {
         return resumed

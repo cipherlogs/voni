@@ -71,11 +71,14 @@
  * opens with the greeting cut; otherwise --trace-beat may name it.
  *
  * The live runner's own `filler …` line feeds the filler-over observed
- * behavior, so a filler run scores the filler-resume gate without flags.
- * --filler-text and its siblings override that observation; without either
- * the gate stays INFO. --trace-session fills --filler-trace-turn when the
- * flag is absent, so a failure still points at the Call trace turn or says
- * explicitly that no turn was merged.
+ * behavior, so a filler run scores the filler-resume gate without flags. A
+ * cut line also carries the agent line, the heard words and the resumed tail,
+ * so the exact unheard rest is compared verbatim and the Call trace points at
+ * the resume turn (or the cut turn when nothing played). --filler-text and
+ * its siblings override that observation; without either the gate stays INFO.
+ * --trace-session fills --filler-trace-turn when the flag is absent, so a
+ * failure still points at the Call trace turn or says explicitly that no turn
+ * was merged.
  *
  * Dead-air evidence is measured outside the harness (browser e2e fakes,
  * session evidence) and handed in: uncovered silences via --dead-air-gaps,
@@ -744,10 +747,21 @@ function main(): void {
   const fillerResume =
     explicitFiller ?? (runnerFiller ? fillerEvidenceFromRun(runnerFiller) ?? undefined : undefined);
   // A filler FAIL must point at the turn whose reply it overlapped: match the
-  // merged HEARD row, never the bare session id, when the words appear. No
-  // merged row is stated explicitly instead of replaced by a guessed turn.
+  // merged HEARD row, never the bare session id, when the words appear. A cut
+  // points at what the caller actually heard after it: the resume turn when
+  // the tail played (reworded tails live there), the interrupted turn when
+  // nothing played (the tail was dropped). No merged row is stated explicitly
+  // instead of replaced by a guessed turn.
   if (fillerResume && !arg("--filler-trace-turn", "")) {
-    const fillerTurn = excerpt ? traceTurnForVisitorSpeech(excerpt, fillerResume.visitorText) : null;
+    const cutObserved = fillerResume.cutMs !== null || fillerResume.cutObserved === true;
+    const pointers = excerpt ? traceTurnPointers(excerpt) : { cutTurn: null, answerTurn: null, goodbyeTurn: null };
+    const fillerTurn = cutObserved
+      ? fillerResume.resumeMs !== null
+        ? (pointers.answerTurn ?? pointers.cutTurn)
+        : pointers.cutTurn
+      : excerpt
+        ? traceTurnForVisitorSpeech(excerpt, fillerResume.visitorText)
+        : null;
     fillerResume.traceTurn =
       fillerTurn !== null
         ? formatTraceTurn(fillerTurn, traceSession || null)

@@ -736,6 +736,90 @@ test("a missing or malformed filler line stays unmeasured, never an assumed verd
   assert.equal(gate.status, "FAIL", "a bare cut stays on the yield/derail path, never a PASS");
 });
 
+test("the runner's cut line carries the agent line, heard words and resumed tail verbatim", () => {
+  // The live runner prints what it observed: the cut line, the words that had
+  // played before the server cut, and the words it said as the resume. The
+  // scoreboard compares the resume with `unheardRest` itself, never a boolean.
+  const observation = parseFillerRunOutput(
+    '    filler cut at 318ms; events [["ignore","Okaay so"]]; handling resumed-from; ' +
+      'tail {"agent":"We help dental clinics answer every call","heard":"We help dental","resumed":"dental clinics answer every call","resumeMs":412}\n' +
+      "filler-over: 1/1\n",
+  );
+  assert.ok(observation, "the cut line with tail evidence parses");
+  assert.equal(observation.cut, true);
+  assert.equal(observation.cutMs, 318);
+  assert.equal(observation.resumed, true);
+  assert.equal(observation.handling, "resumed-from");
+  assert.deepEqual(observation.tail, {
+    agentText: "We help dental clinics answer every call",
+    heardText: "We help dental",
+    resumedText: "dental clinics answer every call",
+    resumeMs: 412,
+  });
+  assert.equal(observation.answerContinued, true);
+
+  const evidence = fillerEvidenceFromRun(observation);
+  assert.ok(evidence, "a measured tail is scoreable");
+  assert.equal(evidence.agentText, "We help dental clinics answer every call");
+  assert.equal(evidence.heardText, "We help dental");
+  assert.equal(evidence.resumedText, "dental clinics answer every call");
+  assert.equal(evidence.resumeMs, 412);
+  assert.equal(evidence.handling, "resumed-from", "the filler verdict is resume-from, never answered");
+
+  const gate = evaluateFillerResumeGate({ ...evidence, traceTurn: "call trace turn 2 (sess_abc)" });
+  assert.equal(gate.status, "PASS", gate.detail);
+  assert.match(gate.detail, /resumed the exact tail/);
+  assert.match(gate.detail, /handling: resumed-from/);
+  assert.match(gate.detail, /call trace turn 2 \(sess_abc\)/);
+});
+
+test("a paraphrased filler resume fails and cites the Call trace turn that said it", () => {
+  const observation = parseFillerRunOutput(
+    '    filler cut at 300ms; events [["ignore","Okaay so"]]; handling resumed-from; ' +
+      'tail {"agent":"We help dental clinics answer every call","heard":"We help dental","resumed":"clinics answer calls","resumeMs":900}',
+  );
+  assert.ok(observation);
+  const evidence = fillerEvidenceFromRun(observation);
+  assert.ok(evidence);
+  const gate = evaluateFillerResumeGate({ ...evidence, traceTurn: "call trace turn 2 (sess_abc)" });
+  assert.equal(gate.status, "FAIL", "a paraphrase is not the unheard tail");
+  assert.match(gate.detail, /resume tail inexact/);
+  assert.match(gate.detail, /call trace turn 2 \(sess_abc\)/);
+});
+
+test("a cut that dropped the tail fails instead of passing on a resume create", () => {
+  const observation = parseFillerRunOutput(
+    '    filler cut at 300ms; events [["ignore","Okaay so"]]; handling lost; ' +
+      'tail {"agent":"We help dental clinics answer every call","heard":"We help dental","resumed":"","resumeMs":null}',
+  );
+  assert.ok(observation);
+  const evidence = fillerEvidenceFromRun(observation);
+  assert.ok(evidence);
+  assert.equal(evidence.handling, "lost");
+  const gate = evaluateFillerResumeGate({ ...evidence, traceTurn: "call trace turn 1 (sess_abc)" });
+  assert.equal(gate.status, "FAIL");
+  assert.match(gate.detail, /never resumed/);
+  assert.match(gate.detail, /call trace turn 1 \(sess_abc\)/);
+});
+
+test("a filler answered instead of resumed-from fails even when the words match", () => {
+  const gate = evaluateFillerResumeGate({
+    visitorText: "Okaay so",
+    agentText: "We help dental clinics answer every call",
+    verdict: "ignore",
+    cutMs: 300,
+    resumeMs: 400,
+    resumedText: "dental clinics answer every call",
+    heardText: "We help dental",
+    answeredOver: false,
+    handling: "answered",
+    traceTurn: "call trace turn 2 (sess_abc)",
+  });
+  assert.equal(gate.status, "FAIL", "a filler verdict must resume-from, never answer");
+  assert.match(gate.detail, /answered instead of resumed-from/);
+  assert.match(gate.detail, /call trace turn 2 \(sess_abc\)/);
+});
+
 test("filler that never cuts passes with the floor held", () => {
   for (const filler of ["mm-hmm", "yeah", "Okaay so"]) {
     const gate = evaluateFillerResumeGate({
