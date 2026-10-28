@@ -974,3 +974,31 @@ test("dry run prints the five sub-scores plus manual and external check rows", (
   assert.equal(artifact.subScores.length, 5);
   assert.equal(artifact.gates.find((g) => g.name === "measurements")?.status, "INFO");
 });
+
+test("every scoreboard run reports the frozen budgets alongside the gate verdicts", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "budgets.json");
+  const result = run(["--dry-run", "--out", out], new URL("../", import.meta.url).pathname);
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  assert.match(result.stdout, /demo budgets \(frozen/);
+  for (const pin of [
+    "p50 ≤1500ms",
+    "p95 ≤2500ms",
+    "cut ≤1500ms",
+    "tail ≤2500ms",
+    "1/1 aside",
+    "≤2000ms",
+    "15000-18000ms",
+    "overlap ≤400ms",
+    "coverage ≥0.8",
+    "hang-up ≤1500ms",
+    "ref -23.1 LUFS ±1.5dB",
+    "2 raters, 1-5",
+  ]) {
+    assert.ok(result.stdout.includes(pin), `budget report missing "${pin}":\n${result.stdout}`);
+  }
+  const budgetAt = result.stdout.indexOf("demo budgets (frozen");
+  const verdictsAt = result.stdout.indexOf("demo scoreboard (");
+  assert.ok(budgetAt >= 0 && verdictsAt > budgetAt, "budgets print before the verdict table");
+  assert.ok(result.stdout.includes("scoreboard-budgets.json"), "budget report points at the frozen record");
+});

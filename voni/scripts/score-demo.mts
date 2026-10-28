@@ -110,6 +110,7 @@ import {
   DEFAULT_GATE_VOICE,
   emptyHumanRatings,
   extractRealCutEvidence,
+  formatBudgetReport,
   formatGateTable,
   formatGoldenScript,
   formatOverheardReport,
@@ -537,6 +538,7 @@ function main(): void {
   writeFileSync(out, `${JSON.stringify(artifact, null, 2)}\n`, { mode: 0o600 });
 
   console.log(formatGoldenScript(voice));
+  console.log(formatBudgetReport());
   console.log(formatGateTable(artifact));
   console.log(formatSubScoreTable(artifact));
   console.log(formatOverheardReport(artifact));
