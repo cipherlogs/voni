@@ -4,7 +4,16 @@ import {
   applyRealCutGate,
   DEAD_AIR_MAX_MS,
   DEFAULT_GATE_VOICE,
+  DOUBLE_TALK_MAX_OVERLAP_MS,
+  END_CALL_AUDIO_GRACE_MS,
+  END_CALL_DRAIN_TIMEOUT_MS,
+  END_CALL_POLL_MS,
+  END_CALL_SETTLE_POLLS,
+  GOODBYE_AUDIO_COVERAGE_MIN,
+  HANG_UP_AFTER_GOODBYE_MAX_MS,
   evaluateDeadAir,
+  evaluateDoubleTalk,
+  evaluateEndCallDrain,
   evaluateFillerResumeGate,
   evaluateRealCut,
   extractRealCutEvidence,
@@ -1184,4 +1193,118 @@ test("applying email evidence scores the beat, the artifact, and the console", (
   assert.equal(failed.emailInvite?.status, "FAIL");
   assert.equal(failed.beats["email-invite"].status, "FAIL");
   assert.equal(failed.gates.find((g) => g.name === "email-invite")?.status, "FAIL");
+});
+
+test("double-talk gate pins the 400ms audibility bar", () => {
+  assert.equal(DOUBLE_TALK_MAX_OVERLAP_MS, 400);
+});
+
+test("double-talk passes when every cut fades inside 400ms", () => {
+  const gate = evaluateDoubleTalk({ overlapMs: [0, 120, 400] });
+  assert.equal(gate.name, "double-talk");
+  assert.equal(gate.status, "PASS");
+  assert.ok(gate.detail.includes("400"), `detail names the bar: ${gate.detail}`);
+});
+
+test("double-talk fails on any audible overlap over 400ms, with durations", () => {
+  const gate = evaluateDoubleTalk({ overlapMs: [120, 650] });
+  assert.equal(gate.status, "FAIL");
+  assert.ok(gate.detail.includes("650"), `detail names the offender: ${gate.detail}`);
+  assert.ok(gate.detail.includes("400"), `detail names the bar: ${gate.detail}`);
+});
+
+test("double-talk failure points at the trace that heard it", () => {
+  const gate = evaluateDoubleTalk({ overlapMs: [900], traceRef: "sess_abc / greeting-cut" });
+  assert.equal(gate.status, "FAIL");
+  assert.ok(gate.detail.includes("900"), `detail names the duration: ${gate.detail}`);
+  assert.ok(gate.detail.includes("sess_abc"), `detail points at the trace: ${gate.detail}`);
+});
+
+test("double-talk with no measured cuts is INFO, never a false FAIL", () => {
+  const gate = evaluateDoubleTalk({ overlapMs: [] });
+  assert.equal(gate.status, "INFO");
+});
+
+test("end-call drain gate quotes the settled-poll handshake", () => {
+  assert.equal(END_CALL_POLL_MS, 250);
+  assert.equal(END_CALL_SETTLE_POLLS, 3);
+  assert.equal(END_CALL_AUDIO_GRACE_MS, 500);
+  assert.equal(END_CALL_DRAIN_TIMEOUT_MS, 10000);
+  assert.equal(GOODBYE_AUDIO_COVERAGE_MIN, 0.8);
+  assert.equal(HANG_UP_AFTER_GOODBYE_MAX_MS, 1500);
+});
+
+test("end-call drain passes when the full closing plays before the hang-up", () => {
+  const gate = evaluateEndCallDrain({ goodbyeCoverage: 0.95, hangUpDelayMs: 900, narratedEnding: false });
+  assert.equal(gate.name, "end-call-drain");
+  assert.equal(gate.status, "PASS");
+});
+
+test("end-call drain fails when the goodbye is chopped below 80% coverage", () => {
+  const gate = evaluateEndCallDrain({ goodbyeCoverage: 0.5, hangUpDelayMs: 100, narratedEnding: false });
+  assert.equal(gate.status, "FAIL");
+  assert.ok(gate.detail.includes("50"), `detail carries the coverage: ${gate.detail}`);
+  assert.ok(gate.detail.includes("80"), `detail names the bar: ${gate.detail}`);
+});
+
+test("end-call drain fails when the session ends before the goodbye does", () => {
+  const gate = evaluateEndCallDrain({ goodbyeCoverage: null, hangUpDelayMs: -200, narratedEnding: false });
+  assert.equal(gate.status, "FAIL");
+  assert.ok(gate.detail.includes("-200") || gate.detail.includes("before"), `detail says it hung up early: ${gate.detail}`);
+});
+
+test("end-call drain fails when the line is held past the hang-up bar", () => {
+  const gate = evaluateEndCallDrain({ goodbyeCoverage: 1, hangUpDelayMs: 4000, narratedEnding: false });
+  assert.equal(gate.status, "FAIL");
+  assert.ok(gate.detail.includes("4000"), `detail carries the delay: ${gate.detail}`);
+});
+
+test("end-call drain fails when the model narrates the ending", () => {
+  const gate = evaluateEndCallDrain({ goodbyeCoverage: 1, hangUpDelayMs: 800, narratedEnding: true });
+  assert.equal(gate.status, "FAIL");
+  assert.ok(/narrat/i.test(gate.detail), `detail says the ending was narrated: ${gate.detail}`);
+});
+
+test("end-call drain failure points at the trace that heard it", () => {
+  const gate = evaluateEndCallDrain({
+    goodbyeCoverage: 0.4,
+    hangUpDelayMs: 100,
+    narratedEnding: false,
+    traceRef: "sess_xyz / goodbye-drain",
+  });
+  assert.equal(gate.status, "FAIL");
+  assert.ok(gate.detail.includes("sess_xyz"), `detail points at the trace: ${gate.detail}`);
+});
+
+test("end-call drain with no measured goodbye is INFO, never a false FAIL", () => {
+  const gate = evaluateEndCallDrain({ goodbyeCoverage: null, hangUpDelayMs: null, narratedEnding: false });
+  assert.equal(gate.status, "INFO");
+});
+
+test("artifact carries double-talk overlaps and end-call drain evidence with both gates", () => {
+  const artifact = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "greeting-cut",
+    runnerStdout: 'heard: "Wait, stop."\n',
+    exitCode: 0,
+    durationMs: 1234,
+    runs: 1,
+    doubleTalkOverlapMs: [120, 650],
+    endCallDrain: { goodbyeCoverage: 0.5, hangUpDelayMs: 100, narratedEnding: false },
+    traceRef: "sess_abc",
+  });
+  assert.deepEqual(artifact.doubleTalk.overlapMs, [120, 650]);
+  assert.equal(artifact.doubleTalk.maxMs, 650);
+  assert.equal(artifact.endCallDrain.goodbyeCoverage, 0.5);
+  assert.equal(artifact.endCallDrain.hangUpDelayMs, 100);
+  assert.equal(artifact.endCallDrain.narratedEnding, false);
+  const byName = Object.fromEntries(artifact.gates.map((g) => [g.name, g]));
+  assert.equal(byName["double-talk"].status, "FAIL");
+  assert.equal(byName["end-call-drain"].status, "FAIL");
+  assert.ok(byName["double-talk"].detail.includes("sess_abc"));
+  assert.ok(byName["end-call-drain"].detail.includes("sess_abc"));
+  const table = formatGateTable(artifact);
+  assert.ok(table.includes("double-talk"));
+  assert.ok(table.includes("end-call-drain"));
+  assert.ok(table.includes("FAIL"));
 });

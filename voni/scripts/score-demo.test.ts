@@ -574,3 +574,112 @@ test("dry run with a check-in over caller speech records a dead-air FAIL", () =>
   assert.equal(gate?.status, "FAIL");
   assert.ok(gate?.detail.includes("caller"));
 });
+
+test("double-talk evidence over 400ms fails the run with durations in the table", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "score.json");
+  const result = run(
+    ["--dry-run", "--voice", DEMO_VOICE_IDS[0], "--out", out, "--overlap-ms", "120,650"],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.notEqual(result.status, 0, result.stderr + result.stdout);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    doubleTalk: { overlapMs: number[]; maxMs: number };
+    gates: { name: string; status: string; detail: string }[];
+  };
+  assert.deepEqual(artifact.doubleTalk.overlapMs, [120, 650]);
+  assert.equal(artifact.doubleTalk.maxMs, 650);
+  const gate = artifact.gates.find((g) => g.name === "double-talk")!;
+  assert.equal(gate.status, "FAIL");
+  assert.ok(gate.detail.includes("650"), `detail names the duration: ${gate.detail}`);
+  assert.ok(result.stdout.includes("double-talk") && result.stdout.includes("FAIL"));
+});
+
+test("clean cuts plus a full goodbye drain keep the run green", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "score.json");
+  const result = run(
+    [
+      "--dry-run",
+      "--voice",
+      DEMO_VOICE_IDS[0],
+      "--out",
+      out,
+      "--overlap-ms",
+      "120,300",
+      "--goodbye-coverage",
+      "0.95",
+      "--hang-up-delay-ms",
+      "900",
+    ],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    endCallDrain: { goodbyeCoverage: number; hangUpDelayMs: number; narratedEnding: boolean };
+    beats: Record<string, { drainMs: number | null }>;
+    gates: { name: string; status: string }[];
+  };
+  assert.equal(artifact.endCallDrain.goodbyeCoverage, 0.95);
+  assert.equal(artifact.endCallDrain.hangUpDelayMs, 900);
+  assert.equal(artifact.beats["goodbye-drain"].drainMs, 900);
+  const byName = Object.fromEntries(artifact.gates.map((g) => [g.name, g.status]));
+  assert.equal(byName["double-talk"], "PASS");
+  assert.equal(byName["end-call-drain"], "PASS");
+});
+
+test("a chopped goodbye fails the drain gate with coverage in the table", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "score.json");
+  const result = run(
+    ["--dry-run", "--voice", DEMO_VOICE_IDS[0], "--out", out, "--goodbye-coverage", "0.5", "--hang-up-delay-ms", "100"],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.notEqual(result.status, 0, result.stderr + result.stdout);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    gates: { name: string; status: string; detail: string }[];
+  };
+  const gate = artifact.gates.find((g) => g.name === "end-call-drain")!;
+  assert.equal(gate.status, "FAIL");
+  assert.ok(gate.detail.includes("50"), `detail carries the coverage: ${gate.detail}`);
+  assert.ok(result.stdout.includes("end-call-drain") && result.stdout.includes("FAIL"));
+});
+
+test("a narrated ending fails the drain gate", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "score.json");
+  const result = run(
+    ["--dry-run", "--voice", DEMO_VOICE_IDS[0], "--out", out, "--goodbye-coverage", "1", "--narrated-ending"],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.notEqual(result.status, 0, result.stderr + result.stdout);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    gates: { name: string; status: string; detail: string }[];
+  };
+  const gate = artifact.gates.find((g) => g.name === "end-call-drain")!;
+  assert.equal(gate.status, "FAIL");
+  assert.ok(/narrat/i.test(gate.detail));
+});
+
+test("a hang-up before the goodbye ends fails the drain gate", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "score.json");
+  const result = run(
+    ["--dry-run", "--voice", DEMO_VOICE_IDS[0], "--out", out, "--hang-up-delay-ms", "-200"],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.notEqual(result.status, 0, result.stderr + result.stdout);
+  assert.ok(result.stdout.includes("end-call-drain"));
+});
+
+test("bad evidence flags break the harness fast with no artifact", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "score.json");
+  const result = run(
+    ["--dry-run", "--voice", DEMO_VOICE_IDS[0], "--out", out, "--overlap-ms", "soon"],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.notEqual(result.status, 0);
+  assert.ok(!existsSync(out));
+  assert.match(result.stderr + result.stdout, /overlap-ms/);
+});

@@ -1,6 +1,7 @@
 /**
  * Demo scoreboard: locked golden script (ticket 02) on the ticket-01
- * plumbing, plus the dead-air gate (ticket 07) and the email gate (ticket 08). The seven beats below are
+ * plumbing, plus the dead-air gate (ticket 07), the email gate (ticket 08),
+ * and the double-talk + end-call-drain gates (ticket 09). The seven beats below are
  * fixed order, fixed visitor wording, and fixed timing windows, so gap/cut
  * milliseconds stay comparable across runs. Wording reuses the existing eval
  * fragments (LONG_ASK, reachInvite, goodbyeCut, TAG=Lime 42) and the e2e
@@ -10,18 +11,23 @@
  * The harness measures the greeting-cut reply gap (ticket 03), the
  * filler-ignored beat (ticket 04), the real-cut-answered beat (ticket 05),
  * the overheard-aside beat (ticket 06), the silence-check-in dead-air
- * beat (ticket 07) and the email-invite beat (ticket 08): per-beat gap
+ * beat (ticket 07), the email-invite beat (ticket 08), and the double-talk
+ * overlap plus goodbye-drain beats (ticket 09): per-beat gap
  * samples plus a reply-gap gate, resume-tail timing plus a filler-resume
  * gate, cut-to-answer timing plus a barge-in-cut gate, overheard recall
  * plus an overheard-recall gate, uncovered-silence plus a dead-air gate,
- * and invite/tag counts plus an email-invite gate — all can FAIL. Every
+ * invite/tag counts plus an email-invite gate, audible overlap plus a
+ * double-talk gate, and goodbye coverage plus an end-call-drain gate — all
+ * can FAIL. Every
  * other beat's
  * drain milliseconds are still placeholders, probe counts start at zero, and
  * the remaining gates report PASS/INFO (no FAIL until gating lands in later
  * tickets). Dead air gates on measured evidence supplied by the operator
  * (--dead-air-gaps / --longest-silence-ms / --check-in-at-ms): without
  * evidence the gate stays INFO, never PASS, so an unmeasured run cannot
- * claim a quiet call. What this module guarantees is trustworthy plumbing —
+ * claim a quiet call. Double-talk and end-call-drain likewise gate on
+ * measured evidence (--overlap-ms / --goodbye-coverage / --hang-up-delay-ms):
+ * without evidence the gates stay INFO, never a false FAIL. What this module guarantees is trustworthy plumbing —
  * one JSON artifact per run with redacted transcripts plus their hash, and
  * empty human-rating slots.
  */
@@ -143,7 +149,7 @@ export type BeatTiming = {
   cutMs: number | null;
   /** Filler-resume tail: cut → resume first audio (ticket 04; null when never cut). */
   resumeMs: number | null;
-  /** Goodbye drain: goodbye end → session end. Placeholder until the drain ticket. */
+  /** Goodbye drain: goodbye end → session end. Filled by the drain gate (ticket 09). */
   drainMs: number | null;
   status: "PASS" | "INFO" | "FAIL";
   note: string;
@@ -703,6 +709,19 @@ export type ScoreboardArtifact = {
     asides: OverheardAside[];
   };
   doubleTalk: { overlapMs: number[]; maxMs: number | null };
+  /**
+   * End-call drain evidence (ticket 09): how much of the closing line played
+   * and how long after its audio ended the session closed. Nulls mean the
+   * goodbye was never measured — the gate reports INFO, never a false FAIL.
+   */
+  endCallDrain: {
+    /** Played speaking time / expected speaking time (eval bye-audio bar: >= 0.8). */
+    goodbyeCoverage: number | null;
+    /** Session end minus goodbye audio end; negative means hung up early. */
+    hangUpDelayMs: number | null;
+    /** The model spoke again after end_call instead of letting the line close. */
+    narratedEnding: boolean;
+  };
   deadAir: {
     gapsMs: number[];
     maxMs: number | null;
@@ -957,6 +976,132 @@ export function formatGoldenScript(gateVoice: string): string {
     ...lines,
     `regression voices: ${regression}`,
   ].join("\n");
+}
+
+/**
+ * Double-talk bar (spec story 8): zero audible overlap longer than 400ms
+ * after any cut. Cuts fade what is sounding over DOUBLE_TALK_FADE_OUT_S and
+ * flush the rest (session FADE_OUT_S; playout jitter pre-roll 500ms with edge
+ * fades in the worklet), so anything still audible past 400ms is a real
+ * talk-over, not the fade itself.
+ */
+export const DOUBLE_TALK_MAX_OVERLAP_MS = 400;
+/** Barge-in fade: what is sounding ramps to silence over this, never a hard stop. */
+export const DOUBLE_TALK_FADE_OUT_S = 0.04;
+
+/**
+ * End-call drain handshake (spec story 10, ADR-0005 holdUntilReplyDone): the
+ * end_call result waits for the goodbye reply to finish, then the session
+ * hangs up only after END_CALL_SETTLE_POLLS consecutive settled polls AND
+ * END_CALL_AUDIO_GRACE_MS since the last audio arrived, bounded by
+ * END_CALL_DRAIN_TIMEOUT_MS. The goodbye must play in full (>=
+ * GOODBYE_AUDIO_COVERAGE_MIN of its speaking time, per eval bye-audio) and
+ * the model must not narrate the ending.
+ */
+export const END_CALL_POLL_MS = 250;
+export const END_CALL_SETTLE_POLLS = 3;
+export const END_CALL_AUDIO_GRACE_MS = 500;
+export const END_CALL_DRAIN_TIMEOUT_MS = 10000;
+/** The goodbye's audio must arrive in full: >= 80% of its words' speaking time. */
+export const GOODBYE_AUDIO_COVERAGE_MIN = 0.8;
+/** Hang-up after goodbye audio end: the golden goodbye-drain window (0-1500ms). */
+export const HANG_UP_AFTER_GOODBYE_MAX_MS = 1500;
+
+export type DoubleTalkInput = {
+  /** Audible overlap per cut, ms (fade 0.04s already accounted for by the 400ms bar). */
+  overlapMs: number[];
+  /** Trace pointer for failures, e.g. "sess_abc / greeting-cut". */
+  traceRef?: string;
+};
+
+/** Double-talk gate: external behavior (audible overlap), never internals. */
+export function evaluateDoubleTalk(input: DoubleTalkInput): ScoreboardGate {
+  const trace = input.traceRef ? ` — trace: ${input.traceRef}` : "";
+  if (input.overlapMs.length === 0) {
+    return { name: "double-talk", status: "INFO", detail: "no cuts measured" };
+  }
+  const max = Math.max(...input.overlapMs);
+  const cuts = input.overlapMs.join(", ");
+  if (max > DOUBLE_TALK_MAX_OVERLAP_MS) {
+    return {
+      name: "double-talk",
+      status: "FAIL",
+      detail:
+        `audible overlap ${max}ms > ${DOUBLE_TALK_MAX_OVERLAP_MS}ms after cut ` +
+        `(cuts: ${cuts}ms; fade ${DOUBLE_TALK_FADE_OUT_S}s + flush)${trace}`,
+    };
+  }
+  return {
+    name: "double-talk",
+    status: "PASS",
+    detail:
+      `max overlap ${max}ms ≤ ${DOUBLE_TALK_MAX_OVERLAP_MS}ms across ` +
+      `${input.overlapMs.length} cut${input.overlapMs.length === 1 ? "" : "s"} ` +
+      `(fade ${DOUBLE_TALK_FADE_OUT_S}s + flush)`,
+  };
+}
+
+export type EndCallDrainInput = {
+  /** Played / expected goodbye speaking time; null when never measured. */
+  goodbyeCoverage: number | null;
+  /** Session end minus goodbye audio end; null when never measured. */
+  hangUpDelayMs: number | null;
+  /** The model spoke again after end_call instead of letting the line close. */
+  narratedEnding: boolean;
+  /** Trace pointer for failures, e.g. "sess_xyz / goodbye-drain". */
+  traceRef?: string;
+};
+
+/** End-call drain gate: the full closing plays before the session closes. */
+export function evaluateEndCallDrain(input: EndCallDrainInput): ScoreboardGate {
+  const trace = input.traceRef ? ` — trace: ${input.traceRef}` : "";
+  if (input.narratedEnding) {
+    return {
+      name: "end-call-drain",
+      status: "FAIL",
+      detail: `model narrated the ending after end_call (goodbye never closed the call)${trace}`,
+    };
+  }
+  if (input.goodbyeCoverage !== null && input.goodbyeCoverage < GOODBYE_AUDIO_COVERAGE_MIN) {
+    const pct = Math.round(input.goodbyeCoverage * 100);
+    const bar = Math.round(GOODBYE_AUDIO_COVERAGE_MIN * 100);
+    return {
+      name: "end-call-drain",
+      status: "FAIL",
+      detail: `goodbye audio ${pct}% < ${bar}% of its speaking time (chopped)${trace}`,
+    };
+  }
+  if (input.hangUpDelayMs !== null && input.hangUpDelayMs < 0) {
+    return {
+      name: "end-call-drain",
+      status: "FAIL",
+      detail:
+        `hung up ${-input.hangUpDelayMs}ms before goodbye audio ended ` +
+        `(delay ${input.hangUpDelayMs}ms: chopped)${trace}`,
+    };
+  }
+  if (input.hangUpDelayMs !== null && input.hangUpDelayMs > HANG_UP_AFTER_GOODBYE_MAX_MS) {
+    return {
+      name: "end-call-drain",
+      status: "FAIL",
+      detail:
+        `hang-up ${input.hangUpDelayMs}ms after goodbye audio ` +
+        `> ${HANG_UP_AFTER_GOODBYE_MAX_MS}ms bar (line held)${trace}`,
+    };
+  }
+  if (input.goodbyeCoverage === null && input.hangUpDelayMs === null) {
+    return { name: "end-call-drain", status: "INFO", detail: "no goodbye measured" };
+  }
+  const coverage = input.goodbyeCoverage === null ? "unmeasured" : `${Math.round(input.goodbyeCoverage * 100)}%`;
+  const delay = input.hangUpDelayMs === null ? "unmeasured" : `${input.hangUpDelayMs}ms`;
+  return {
+    name: "end-call-drain",
+    status: "PASS",
+    detail:
+      `goodbye ${coverage} ≥ ${Math.round(GOODBYE_AUDIO_COVERAGE_MIN * 100)}%, ` +
+      `hang-up ${delay} after goodbye audio ` +
+      `(drain ${END_CALL_POLL_MS}ms×${END_CALL_SETTLE_POLLS} + ${END_CALL_AUDIO_GRACE_MS}ms grace)`,
+  };
 }
 
 export function sha256Hex(value: string | Uint8Array): string {
@@ -1256,6 +1401,8 @@ function skeletonGates(
   fillerGate: ScoreboardGate | null = null,
   overheardGate: ScoreboardGate | null = null,
   deadAir?: DeadAirEvidence | null,
+  doubleTalkInput?: DoubleTalkInput | null,
+  endCallDrainInput?: EndCallDrainInput | null,
 ): ScoreboardGate[] {
   const plumbing: ScoreboardGate =
     exitCode === null || exitCode === 0
@@ -1282,6 +1429,12 @@ function skeletonGates(
         status: "INFO",
         detail: "unmeasured: supply --dead-air-gaps/--longest-silence-ms/--check-in-at-ms to gate",
       };
+  const doubleTalkGate: ScoreboardGate = doubleTalkInput
+    ? evaluateDoubleTalk(doubleTalkInput)
+    : evaluateDoubleTalk({ overlapMs: [] });
+  const endCallDrainGate: ScoreboardGate = endCallDrainInput
+    ? evaluateEndCallDrain(endCallDrainInput)
+    : evaluateEndCallDrain({ goodbyeCoverage: null, hangUpDelayMs: null, narratedEnding: false });
   return [
     plumbing,
     replyGate,
@@ -1295,8 +1448,9 @@ function skeletonGates(
     overheardGate ??
       { name: "overheard-recall", status: "INFO", detail: "skeleton: gating lands in the overheard ticket" },
     { name: "email-invite", status: "INFO", detail: "skeleton: invite/tag evidence not yet scored" },
-    { name: "double-talk", status: "INFO", detail: "skeleton: gating lands in the naturalness ticket" },
+    doubleTalkGate,
     deadAirGate,
+    endCallDrainGate,
     { name: "timbre-probes", status: "INFO", detail: "skeleton: gating lands in the timbre ticket" },
     { name: "accent-human", status: "INFO", detail: "skeleton: awaiting human 1-5 ratings" },
   ];
@@ -1338,6 +1492,12 @@ export function buildSkeletonArtifact(input: {
   overheardAsides?: OverheardAside[];
   /** Measured dead-air evidence; omitted means unmeasured (gate stays INFO). */
   deadAir?: DeadAirEvidence | null;
+  /** Measured audible overlap per cut; empty/omitted means unmeasured (INFO). */
+  doubleTalkOverlapMs?: number[];
+  /** Measured goodbye drain evidence; omitted means unmeasured (INFO). */
+  endCallDrain?: { goodbyeCoverage: number | null; hangUpDelayMs: number | null; narratedEnding: boolean };
+  /** Trace pointer attached to failure details, e.g. a sess_ id. */
+  traceRef?: string;
 }): ScoreboardArtifact {
   const fillerGate = input.fillerResume ? evaluateFillerResumeGate(input.fillerResume) : null;
   const samples: ReplyGapSample[] = [];
@@ -1406,6 +1566,39 @@ export function buildSkeletonArtifact(input: {
       : evaluateOverheardRecall(input.overheardAsides);
   const deadAirGaps = input.deadAir?.gapsMs ?? [];
   const deadAirCheckIns = input.deadAir?.checkIns ?? [];
+  const doubleTalkOverlapMs = input.doubleTalkOverlapMs ?? [];
+  const drain = input.endCallDrain ?? { goodbyeCoverage: null, hangUpDelayMs: null, narratedEnding: false };
+  const traceRef = input.traceRef ?? input.traceSessionId ?? undefined;
+  const doubleTalkInput: DoubleTalkInput = { overlapMs: doubleTalkOverlapMs, ...(traceRef ? { traceRef } : {}) };
+  const endCallDrainInput: EndCallDrainInput = { ...drain, ...(traceRef ? { traceRef } : {}) };
+  const gatesPreview = skeletonGates(
+    input.exitCode,
+    samples,
+    input.traceSessionId ?? null,
+    input.agentInput,
+    input.traceExcerpt ?? [],
+    fillerGate,
+    evaluation?.gate ?? null,
+    input.deadAir,
+    doubleTalkInput,
+    endCallDrainInput,
+  );
+  const goodbyeDrainGate = gatesPreview.find((g) => g.name === "end-call-drain")!;
+  // Attach drain evidence to the goodbye-drain beat (ticket 09), preserving
+  // reply-gap measurements for other beats.
+  {
+    const prior = beats["goodbye-drain"];
+    const measured = drain.hangUpDelayMs !== null || drain.goodbyeCoverage !== null;
+    beats["goodbye-drain"] = {
+      gapMs: prior.gapMs,
+      gapSamples: prior.gapSamples,
+      cutMs: prior.cutMs,
+      resumeMs: prior.resumeMs,
+      drainMs: drain.hangUpDelayMs,
+      status: measured ? goodbyeDrainGate.status : prior.status,
+      note: measured ? goodbyeDrainGate.detail : prior.note,
+    };
+  }
   return {
     schemaVersion: SCOREBOARD_SCHEMA_VERSION,
     recordedAt: new Date().toISOString(),
@@ -1422,7 +1615,11 @@ export function buildSkeletonArtifact(input: {
     overheard: evaluation
       ? { recalled: evaluation.recalled, total: evaluation.total, byBeat: evaluation.byBeat, asides: input.overheardAsides! }
       : { recalled: 0, total: 0, byBeat: emptyOverheardByBeat(), asides: [] },
-    doubleTalk: { overlapMs: [], maxMs: null },
+    doubleTalk: {
+      overlapMs: doubleTalkOverlapMs,
+      maxMs: doubleTalkOverlapMs.length > 0 ? Math.max(...doubleTalkOverlapMs) : null,
+    },
+    endCallDrain: { ...drain },
     deadAir: {
       gapsMs: deadAirGaps,
       maxMs: deadAirGaps.length > 0 ? Math.max(...deadAirGaps) : null,
@@ -1435,7 +1632,7 @@ export function buildSkeletonArtifact(input: {
       redacted: redactLines(input.runnerStdout),
     },
     humanRatings: { timbre: null, accent: null },
-    gates: skeletonGates(input.exitCode, samples, input.traceSessionId ?? null, input.agentInput, input.traceExcerpt ?? [], fillerGate, evaluation?.gate ?? null, input.deadAir),
+    gates: gatesPreview,
     emailInvite: null,
     evalRunner: {
       scenario: input.scenario,

@@ -11,13 +11,13 @@
  *   - browser e2e fakes live in tests/e2e/demo-fakes.ts (unchanged here).
  *
  * Gates: the reply-gap, end-of-turn, filler-resume, barge-in-cut,
- * overheard-recall and dead-air gates fail the command (exit 1) when measured
+ * overheard-recall, dead-air, double-talk and end-call-drain gates fail the command (exit 1) when measured
  * evidence breaches the budget, so regressions never merge silently. Without
- * measured gaps, filler, real-cut, overheard or dead-air evidence the gates
+ * measured gaps, filler, real-cut, overheard, dead-air, double-talk or drain evidence the gates
  * stay INFO and the command exits 0 once the artifact is written, even when
  * the eval runner itself fails (its exit code is recorded in the artifact).
  * Non-zero exit otherwise means the harness broke: unknown voice, bad
- * --gap/--filler/--cut/--overheard-json/--dead-air-gaps flag, spawn failure,
+ * --gap/--filler/--cut/--overheard-json/--dead-air-gaps/--overlap-ms/--goodbye-coverage/--hang-up-delay-ms flag, spawn failure,
  * or an unwritable artifact.
  *
  *   npm run scoreboard:demo -- [--gate-voice <demo-voice-id>] [--scenario greeting-cut] [--runs 1]
@@ -29,6 +29,8 @@
  *                           [--overheard-json asides.json]
  *                           [--dead-air-gaps 400,1200] [--longest-silence-ms 16000]
  *                           [--check-in-at-ms 15200] [--check-in-over-caller]
+ *                           [--overlap-ms 120,350] [--goodbye-coverage 0.95]
+ *                           [--hang-up-delay-ms 900] [--narrated-ending]
  *
  * --gate-voice picks the gate voice through the shared voice registry
  * (--voice stays an alias); omitting both gates on DEFAULT_GATE_VOICE, never
@@ -53,6 +55,13 @@
  * --check-in-over-caller marks the listed check-ins as overlapping caller
  * speech. Omit all four and the dead-air gate stays INFO (unmeasured, never
  * PASS).
+ *
+ * Measured evidence for the ticket-09 gates (no live audio in CI, so a real
+ * run or a replay feeds them in): --overlap-ms lists audible overlap per cut
+ * (FAIL past 400ms), --goodbye-coverage is played/expected goodbye speaking
+ * time (FAIL below 80%), --hang-up-delay-ms is session end minus goodbye
+ * audio end (FAIL when negative or past 1500ms), --narrated-ending flags a
+ * model reply after end_call. Omitted evidence is INFO, never a false FAIL.
  *
  * --dry-run skips spawning the runner (no ASSEMBLYAI_API_KEY needed) and
  * records a placeholder eval section. --trace-session merges the Call trace
@@ -249,6 +258,24 @@ function parseMsList(raw: string, flag: string): number[] {
   return out;
 }
 
+function parseOverlapMs(raw: string): number[] {
+  if (!raw) return [];
+  const values = raw.split(",").map((part) => Number(part.trim()));
+  if (values.some((v) => !Number.isFinite(v) || v < 0)) {
+    throw new Error(`--overlap-ms needs non-negative milliseconds like "120,350", got "${raw}"`);
+  }
+  return values;
+}
+
+function parseOptionalNumber(raw: string, flag: string): number | null {
+  if (!raw) return null;
+  const value = Number(raw);
+  if (!Number.isFinite(value)) {
+    throw new Error(`${flag} needs a number, got "${raw}"`);
+  }
+  return value;
+}
+
 /**
  * Dead-air evidence from CLI flags. Returns undefined when no dead-air flag
  * was given, so the gate stays INFO (unmeasured) instead of claiming PASS.
@@ -336,6 +363,13 @@ function main(): void {
     fillerResume,
     ...(overheardAsides !== undefined ? { overheardAsides } : {}),
     deadAir,
+    doubleTalkOverlapMs: parseOverlapMs(arg("--overlap-ms", "")),
+    endCallDrain: {
+      goodbyeCoverage: parseOptionalNumber(arg("--goodbye-coverage", ""), "--goodbye-coverage"),
+      hangUpDelayMs: parseOptionalNumber(arg("--hang-up-delay-ms", ""), "--hang-up-delay-ms"),
+      narratedEnding: process.argv.includes("--narrated-ending"),
+    },
+    traceRef: traceSession || undefined,
   });
   const parsed = extractRealCutEvidence(evalSection.stdout);
   const hasCutFlags =
