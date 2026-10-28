@@ -24,6 +24,7 @@
  *
  *   npm run scoreboard:demo -- [--gate-voice <demo-voice-id>] [--scenario greeting-cut] [--runs 1]
  *                           [--out scoreboard-runs/score-<ts>-<voice>.json] [--dry-run]
+ *                           [--timing-lock /tmp/voni-demo-timing.lock]
  *                           [--trace-session sess_...] [--trace-beat greeting-cut] [--probe-json probes.json] [--recording <sha256>] [--rate rater:timbre,accent ...]
  *                           [--gap beat=ms ...]
  *                           [--filler-text "Okaay so" --filler-cut-ms 320 ...]
@@ -39,6 +40,11 @@
  * (--voice stays an alias); omitting both gates on DEFAULT_GATE_VOICE, never
  * on a literal in this file. New voices deploy as a registry entry plus a
  * regression run: the dry run lists the gate plus the regression set.
+ *
+ * A live (non-dry) run takes an exclusive timing lock (default in the OS temp
+ * dir, override with --timing-lock) so timing runs go one at a time; a second
+ * run fails fast naming the holder instead of inflating cut latency under
+ * parallel load. The lock is released on exit and a dead holder is reclaimed.
  *
  * --gap feeds a measured reply gap (visitor end-of-speech → first agent
  * audio) to a beat; repeat for several runs. --trace-session merges the
@@ -145,6 +151,7 @@ import {
 } from "../src/lib/demo/scoreboard";
 import { buildDemoAgentBody } from "../src/lib/demo/stored-agents";
 import { judgeOverlap } from "../src/lib/voice/barge-in";
+import { acquireTimingLock, DEFAULT_TIMING_LOCK_PATH } from "../src/lib/demo/timing-lock";
 
 function arg(name: string, fallback = ""): string {
   const i = process.argv.indexOf(name);
@@ -425,6 +432,14 @@ function main(): void {
     throw new Error(`--runs needs a positive int, got "${runs}"`);
   }
   const dryRun = process.argv.includes("--dry-run");
+  // Timing runs go one at a time: a live run takes the machine-wide lock
+  // before dialing so a parallel run cannot inflate the cut number. A held
+  // lock fails fast, names the holder, and writes no artifact. The lock is
+  // still taken when the trace session is auto-chained below: the trace
+  // merge rides along with the same live run.
+  if (!dryRun) {
+    acquireTimingLock({ path: arg("--timing-lock", DEFAULT_TIMING_LOCK_PATH), scenario });
+  }
   /** Explicit --trace-session: a bad id or a failed merge is a harness break. */
   const requestedTraceSession = arg("--trace-session", "");
   if (requestedTraceSession && !/^sess_[A-Za-z0-9_-]+$/.test(requestedTraceSession)) {

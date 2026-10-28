@@ -32,6 +32,13 @@
  *                 the call ends, never resumed ("as I was saying").
  *   greeting-cut  "Wait, stop." 1s into the greeting → the greeting is cut.
  *
+ * Cut latency is measured from caller speech start (the pump's first
+ * transmitted frame carrying the clip's first voiced sample) to the server
+ * cut, never from the enqueue tick. Caller clips are cached as PCM in
+ * `.eval-clips/` and fingerprinted (words + bytes + duration + onset), so
+ * greeting-cut and real-cut runs speak the identical audio every time.
+ * Timing runs beat the scoreboard's one-at-a-time lock (score-demo).
+ *
  * Email-test scenarios (raw socket, the demo's real tools; ticket 03 +
  * docs/adr/0004): tool results go back the way the browser sends them, the
  * moment they are ready (EVAL_HOLD_INTERACTIVE=1 replays the old hold-for-
@@ -52,6 +59,9 @@
  *   returning           a found + returning result → greets Andres as
  *                       returning and never re-invites.
  */
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { buildDemoAgentBody } from "../src/lib/demo/stored-agents";
 import {
   checkEmailInstructions,
@@ -73,6 +83,14 @@ import {
   type BargeInEvent,
 } from "../src/lib/voice/session";
 import { tryJevGateway } from "../src/lib/voice/voice-judge";
+import {
+  callerClipDrift,
+  callerClipFingerprint,
+  measureCutLatency,
+  sha256Hex,
+  type CallerClipFingerprint,
+  type CallerOnset,
+} from "../src/lib/demo/scoreboard";
 
 const FAKE = /fake|pretend|hypothetical|make one up|made[- ]up|pick anything|example business|imaginary|role[- ]?play/i;
 const WS = "wss://agents.assemblyai.com/v1/ws";
@@ -101,17 +119,80 @@ async function token(): Promise<string> {
   return ((await res.json()) as { token: string }).token;
 }
 
-/** Caller speech: a session whose greeting is the line, captured as PCM16. */
+/**
+ * Caller speech: a session whose greeting is the line, captured as PCM16.
+ *
+ * The clip is fixed by words AND audio: a per-process memory cache plus an
+ * on-disk PCM cache keyed by caller voice + words means every run streams the
+ * identical bytes, so cut latency stays comparable. Every clip gets a
+ * fingerprint (words, bytes, duration, leading silence) printed once; a
+ * re-synthesized or edited take is therefore visible in the run output.
+ */
 const speechCache = new Map<string, Buffer>();
+const clipPrints = new Map<string, CallerClipFingerprint>();
+const printedClips = new Set<string>();
+const CLIP_CACHE_DIR = process.env.EVAL_CLIP_CACHE_DIR || fileURLToPath(new URL("../.eval-clips/", import.meta.url));
+
+function clipCachePath(line: string): string {
+  return join(CLIP_CACHE_DIR, `${sha256Hex(`${CALLER_VOICE}\n${line}`)}.pcm`);
+}
+
+function rememberClip(line: string, pcm: Buffer, source: "cached" | "synthesized"): CallerClipFingerprint {
+  const fingerprint = callerClipFingerprint(line, pcm, TARGET_SAMPLE_RATE);
+  const prior = clipPrints.get(line);
+  if (prior) {
+    const drift = callerClipDrift(prior, fingerprint);
+    if (drift) throw new Error(`caller clip "${line}" changed mid-run: ${drift}`);
+    return prior;
+  }
+  clipPrints.set(line, fingerprint);
+  if (!printedClips.has(line)) {
+    printedClips.add(line);
+    console.log(
+      `    clip "${line}" sha256=${fingerprint.sha256.slice(0, 12)} ${fingerprint.bytes}B ` +
+        `${fingerprint.durationMs}ms onset ${fingerprint.onsetMs.toFixed(1)}ms (${source})`,
+    );
+  }
+  return fingerprint;
+}
+
+function readClipCache(line: string): Buffer | null {
+  try {
+    const pcm = readFileSync(clipCachePath(line));
+    return pcm.byteLength > 0 && pcm.byteLength % 2 === 0 ? pcm : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeClipCache(line: string, pcm: Buffer): void {
+  try {
+    mkdirSync(CLIP_CACHE_DIR, { recursive: true });
+    writeFileSync(clipCachePath(line), pcm, { mode: 0o600 });
+  } catch (error) {
+    console.error(`  caller clip cache write failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
 async function speak(line: string): Promise<Buffer> {
+  const inMemory = speechCache.get(line);
+  if (inMemory) return inMemory;
+  const onDisk = readClipCache(line);
+  if (onDisk) {
+    rememberClip(line, onDisk, "cached");
+    speechCache.set(line, onDisk);
+    return onDisk;
+  }
   // The throwaway TTS session is infrastructure, not the thing under test:
   // one retry on a timeout keeps a network blip from failing a scenario.
-  return speakOnce(line).catch(() => speakOnce(line));
+  const pcm = await speakOnce(line).catch(() => speakOnce(line));
+  rememberClip(line, pcm, "synthesized");
+  speechCache.set(line, pcm);
+  writeClipCache(line, pcm);
+  return pcm;
 }
 
 async function speakOnce(line: string): Promise<Buffer> {
-  const cached = speechCache.get(line);
-  if (cached) return cached;
   const ws = new WebSocket(`${WS}?token=${await token()}`);
   const chunks: Buffer[] = [];
   const pcm = await new Promise<Buffer>((resolve, reject) => {
@@ -136,7 +217,6 @@ async function speakOnce(line: string): Promise<Buffer> {
   });
   ws.send(JSON.stringify({ type: "session.end" }));
   ws.close();
-  speechCache.set(line, pcm);
   return pcm;
 }
 
@@ -261,11 +341,24 @@ type ClientOutcome = {
   lastAudioEnd: number;
 };
 
+/**
+ * One caller utterance handed back by `say`: the enqueue tick, the fixed
+ * clip's onset, and the pump's first transmitted frame for that onset. The
+ * measurement uses `onset()`, never `enqueuedAt`.
+ */
+type CallerSpeech = {
+  line: string;
+  enqueuedAt: number;
+  onsetMs: number;
+  /** Snapshot for measureCutLatency, filled once the pump transmits the onset. */
+  onset: () => CallerOnset;
+};
+
 async function runClient(
   voiceId: string,
   lines: string[],
   script: (ctx: {
-    say: (line: string) => number;
+    say: (line: string) => CallerSpeech;
     waitFor: (predicate: () => boolean, timeoutMs?: number) => Promise<void>;
     replies: () => number;
     /** Agent audio chunks received so far (the greeting included). */
@@ -379,9 +472,38 @@ async function runClient(
     send(data);
   };
 
+  // Mic pump: stream 50ms PCM16 frames in real time. `sentQueueBytes` counts
+  // only bytes actually dequeued (not the silence padding), so each clip's
+  // first transmitted frame can be stamped for the cut-latency t0.
+  type ClipOnset = {
+    enqueuedAt: number;
+    onsetByte: number;
+    onsetMs: number;
+    firstFrameAt: number | null;
+    frameOffsetMs: number | null;
+  };
+  const onsets: ClipOnset[] = [];
   let queue = Buffer.alloc(0);
+  let queuedBytes = 0;
+  let sentQueueBytes = 0;
   const pump = setInterval(() => {
-    const frame = queue.length > 0 ? queue.subarray(0, FRAME_BYTES) : Buffer.alloc(FRAME_BYTES);
+    const fromQueue = queue.length > 0;
+    const frame = fromQueue ? queue.subarray(0, FRAME_BYTES) : Buffer.alloc(FRAME_BYTES);
+    if (fromQueue) {
+      const frameStart = sentQueueBytes;
+      sentQueueBytes += frame.length;
+      const sentAt = Date.now();
+      for (const onset of onsets) {
+        if (onset.firstFrameAt !== null || sentQueueBytes <= onset.onsetByte) continue;
+        // Sub-frame precision: the onset sample sits at a known offset inside
+        // the frame that just left, and frames tally with real time.
+        onset.firstFrameAt = sentAt;
+        onset.frameOffsetMs = Math.max(
+          0,
+          ((onset.onsetByte - frameStart) / 2 / TARGET_SAMPLE_RATE) * 1000,
+        );
+      }
+    }
     queue = queue.subarray(frame.length);
     const padded = frame.length === FRAME_BYTES ? frame : Buffer.concat([frame, Buffer.alloc(FRAME_BYTES - frame.length)]);
     internals.ingestAudio(padded.buffer.slice(padded.byteOffset, padded.byteOffset + padded.byteLength));
@@ -402,9 +524,31 @@ async function runClient(
   try {
     await script({
       say: (line) => {
-        if (process.env.EVAL_DEBUG) console.log(`    >> say "${line}" (${clips.get(line)!.length / 48000}s)`);
-        queue = Buffer.concat([queue, clips.get(line)!]);
-        return Date.now();
+        const pcm = clips.get(line)!;
+        const fingerprint = clipPrints.get(line)!;
+        const enqueuedAt = Date.now();
+        const onset: ClipOnset = {
+          enqueuedAt,
+          onsetByte: queuedBytes + Math.round((fingerprint.onsetMs / 1000) * TARGET_SAMPLE_RATE) * 2,
+          onsetMs: fingerprint.onsetMs,
+          firstFrameAt: null,
+          frameOffsetMs: null,
+        };
+        queuedBytes += pcm.byteLength;
+        onsets.push(onset);
+        if (process.env.EVAL_DEBUG) console.log(`    >> say "${line}" (${pcm.length / 48000}s)`);
+        queue = Buffer.concat([queue, pcm]);
+        return {
+          line,
+          enqueuedAt,
+          onsetMs: fingerprint.onsetMs,
+          onset: () => ({
+            enqueuedAt,
+            firstFrameAt: onset.firstFrameAt,
+            onsetMs: onset.onsetMs,
+            ...(onset.frameOffsetMs === null ? {} : { frameOffsetMs: onset.frameOffsetMs }),
+          }),
+        };
       },
       waitFor,
       replies: () => repliesDone,
@@ -415,7 +559,6 @@ async function runClient(
     clearInterval(pump);
     await session.stop();
   }
-  void TARGET_SAMPLE_RATE;
   return outcome;
 }
 
@@ -448,16 +591,19 @@ const CLIENT_SCENARIOS: { name: string; run: () => Promise<string | null> }[] = 
   {
     name: "stop-over",
     run: async () => {
-      let spokeAt = 0;
+      let said: CallerSpeech | null = null;
       const o = await runClient(voiceIdArg(), [LONG_ASK, "Wait, stop."], async (ctx) => {
         await askAndWaitForSpeech(ctx);
-        spokeAt = ctx.say("Wait, stop.");
+        said = ctx.say("Wait, stop.");
         await new Promise((resolve) => setTimeout(resolve, Number(process.env.EVAL_TAIL_MS ?? 4000)));
       });
-      if (o.cutAt === null || o.cutAt < spokeAt) return `never cut (events: ${JSON.stringify(o.events.map((e) => e.verdict))})`;
-      const ms = o.cutAt - spokeAt;
-      console.log(`    cut ${ms}ms after the caller started`);
-      return ms <= 1500 ? null : `cut too late: ${ms}ms`;
+      // t0 is the transmitted caller onset, never the enqueue tick.
+      const measured = measureCutLatency(said!.onset(), o.cutAt);
+      if (measured.cutMs === null) {
+        return `never cut (${measured.reason ?? "no cut"}; events: ${JSON.stringify(o.events.map((e) => e.verdict))})`;
+      }
+      console.log(`    cut ${measured.cutMs}ms after the caller started`);
+      return measured.cutMs <= 1500 ? null : `cut too late: ${measured.cutMs}ms`;
     },
   },
   {
@@ -502,15 +648,16 @@ const CLIENT_SCENARIOS: { name: string; run: () => Promise<string | null> }[] = 
   {
     name: "greeting-cut",
     run: async () => {
-      let spokeAt = 0;
+      let said: CallerSpeech | null = null;
       const o = await runClient(voiceIdArg(), ["Wait, stop."], async (ctx) => {
         await ctx.waitFor(() => ctx.audioChunks() > 0);
         await new Promise((resolve) => setTimeout(resolve, 1000));
-        spokeAt = ctx.say("Wait, stop.");
+        said = ctx.say("Wait, stop.");
         await new Promise((resolve) => setTimeout(resolve, 4000));
       });
-      if (o.cutAt === null || o.cutAt < spokeAt) return "greeting never cut";
-      console.log(`    greeting cut ${o.cutAt - spokeAt}ms after the caller started`);
+      const measured = measureCutLatency(said!.onset(), o.cutAt);
+      if (measured.cutMs === null) return `greeting never cut (${measured.reason ?? "no cut"})`;
+      console.log(`    greeting cut ${measured.cutMs}ms after the caller started`);
       return null;
     },
   },

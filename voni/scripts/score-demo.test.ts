@@ -76,12 +76,14 @@ test("one command runs the gate-voice eval, merges the Call trace, and writes th
   writeFileSync(join(bin, "npm"), EVAL_SHIM, { mode: 0o755 });
   const callLog = join(dir, "npm-calls.log");
   const out = join(dir, "score.json");
+  const lock = join(dir, "timing.lock");
   const result = run(
-    ["--scenario", "stop-over", "--trace-session", "sess_loop01", "--out", out],
+    ["--scenario", "stop-over", "--trace-session", "sess_loop01", "--out", out, "--timing-lock", lock],
     new URL("../", import.meta.url).pathname,
     { PATH: `${bin}:${process.env.PATH}`, SHIM_LOG: callLog },
   );
   assert.equal(result.status, 0, result.stderr + result.stdout);
+  assert.equal(existsSync(lock), false, "the timing lock is released when the run exits");
 
   const calls = readFileSync(callLog, "utf8")
     .trim()
@@ -146,11 +148,19 @@ if (args[0] === "run" && args[1] === "eval:demo-agent") {
   );
   const callLog = join(dir, "npm-calls.log");
   const out = join(dir, "score.json");
-  const result = run(["--scenario", "stop-over", "--out", out], new URL("../", import.meta.url).pathname, {
-    PATH: `${bin}:${process.env.PATH}`,
-    SHIM_LOG: callLog,
-  });
+  const lock = join(dir, "timing.lock");
+  const result = run(
+    ["--scenario", "stop-over", "--out", out, "--timing-lock", lock],
+    new URL("../", import.meta.url).pathname,
+    {
+      PATH: `${bin}:${process.env.PATH}`,
+      SHIM_LOG: callLog,
+    },
+  );
   assert.equal(result.status, 0, result.stderr + result.stdout);
+  // The auto-chained trace rides the same live run, so the lock is taken and
+  // released here too; a per-test path keeps the suite off the shared default.
+  assert.equal(existsSync(lock), false, "the timing lock is released when the run exits");
 
   const calls = readFileSync(callLog, "utf8")
     .trim()
@@ -191,9 +201,13 @@ if (args[0] === "run" && args[1] === "eval:demo-agent") {
     { mode: 0o755 },
   );
   const out = join(dir, "score.json");
-  const result = run(["--scenario", "stop-over", "--out", out], new URL("../", import.meta.url).pathname, {
-    PATH: `${bin}:${process.env.PATH}`,
-  });
+  const result = run(
+    ["--scenario", "stop-over", "--out", out, "--timing-lock", join(dir, "timing.lock")],
+    new URL("../", import.meta.url).pathname,
+    {
+      PATH: `${bin}:${process.env.PATH}`,
+    },
+  );
   assert.equal(result.status, 0, result.stderr + result.stdout);
   const artifact = JSON.parse(readFileSync(out, "utf8")) as {
     callTrace?: { sessionId: string };
@@ -497,6 +511,21 @@ test("bad filler flags fail fast with no artifact", () => {
   );
   assert.notEqual(result.status, 0);
   assert.ok(!existsSync(out));
+});
+
+test("a timing run refuses to start while another timing run holds the lock", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const lock = join(dir, "timing.lock");
+  writeFileSync(lock, JSON.stringify({ pid: process.pid, at: new Date().toISOString(), scenario: "stop-over" }));
+  const out = join(dir, "score.json");
+  const result = run(
+    ["--scenario", "stop-over", "--timing-lock", lock, "--out", out],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.notEqual(result.status, 0, "a held lock refuses the run");
+  assert.match(result.stderr + result.stdout, /another timing run holds the lock/);
+  assert.ok(!existsSync(out), "no artifact is written from a run that never measured");
+  assert.ok(existsSync(lock), "the held lock is left for its owner");
 });
 
 test("dry run with real-cut evidence passes a fast answered cut", () => {
