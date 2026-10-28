@@ -1694,6 +1694,76 @@ test("double-talk evidence over 400ms fails the run with durations in the table"
   assert.ok(result.stdout.includes("double-talk") && result.stdout.includes("FAIL"));
 });
 
+test("the runner's DOUBLE TALK evidence feeds the double-talk gate and a breach cites the cut turn", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  writeFileSync(
+    join(bin, "npm"),
+    `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === "run" && args[1] === "eval:demo-agent") {
+  const overlaps = JSON.parse(process.env.SHIM_OVERLAPS);
+  const passed = Math.max(...overlaps) <= 400;
+  console.log("  · trace session sess_dt16");
+  console.log('    heard ledger ["We\\'re a bakery, actually."]');
+  console.log("    DOUBLE TALK " + JSON.stringify({ scenario: "over-talk", session: "sess_dt16", overlapMs: overlaps, fadeMs: 40 }));
+  console.log("    double talk " + Math.max(...overlaps) + "ms max (cuts: " + overlaps.join(", ") + "ms; budget 400ms; fade 0.04s)");
+  if (!passed) console.log("  ✗ over-talk #1: double talk too long");
+  console.log("over-talk: " + (passed ? "1/1" : "0/1"));
+  console.log("EVAL SUMMARY " + JSON.stringify({
+    scenario: "over-talk",
+    runs: 1,
+    failures: passed ? 0 : 1,
+    scenarios: [{ name: "over-talk", passed: passed ? 1 : 0, runs: 1 }],
+    traceSessions: ["sess_dt16"],
+    playout: [{ scenario: "over-talk", run: 1, wallClockMs: 12000 }],
+    audioChunks: 40,
+    live: true,
+  }));
+  process.exit(passed ? 0 : 1);
+} else if (args[0] === "run" && args[1] === "call:trace") {
+  console.log('12.20s  HEARD   "We\\'re a bakery, actually."');
+  console.log('12.20s  VONI    "Sure, first the tour"  (reply_create gap 900ms) CUT at 12.20s by caller speech');
+  console.log('13.10s  VONI    "A bakery, got it."  (reply_create gap 700ms)');
+}
+`,
+    { mode: 0o755 },
+  );
+  const cwd = new URL("../", import.meta.url).pathname;
+  const env = { PATH: `${bin}:${process.env.PATH}` };
+
+  const longOut = join(dir, "long.json");
+  const long = run(["--scenario", "over-talk", "--out", longOut, "--timing-lock", join(dir, "lock-a")], cwd, {
+    ...env,
+    SHIM_OVERLAPS: JSON.stringify([40, 650]),
+  });
+  assert.equal(long.status, 1, long.stderr + long.stdout);
+  const longArtifact = JSON.parse(readFileSync(longOut, "utf8")) as {
+    doubleTalk: { overlapMs: number[]; maxMs: number };
+    gates: { name: string; status: string; detail: string }[];
+  };
+  assert.deepEqual(longArtifact.doubleTalk.overlapMs, [40, 650]);
+  assert.equal(longArtifact.doubleTalk.maxMs, 650);
+  const failing = longArtifact.gates.find((g) => g.name === "double-talk")!;
+  assert.equal(failing.status, "FAIL");
+  assert.ok(failing.detail.includes("40, 650"), `every measured cut is named: ${failing.detail}`);
+  assert.match(failing.detail, /call trace turn 1 \(sess_dt16\)/);
+  assert.match(long.stdout, /FAIL\s+double-talk/);
+
+  const briefOut = join(dir, "brief.json");
+  const brief = run(["--scenario", "over-talk", "--out", briefOut, "--timing-lock", join(dir, "lock-b")], cwd, {
+    ...env,
+    SHIM_OVERLAPS: JSON.stringify([40, 0]),
+  });
+  assert.equal(brief.status, 0, brief.stderr + brief.stdout);
+  const briefArtifact = JSON.parse(readFileSync(briefOut, "utf8")) as {
+    gates: { name: string; status: string }[];
+  };
+  assert.equal(briefArtifact.gates.find((g) => g.name === "double-talk")?.status, "PASS");
+  assert.match(brief.stdout, /PASS\s+double-talk/);
+});
+
 test("clean cuts plus a full goodbye drain keep the run green", () => {
   const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
   const out = join(dir, "score.json");

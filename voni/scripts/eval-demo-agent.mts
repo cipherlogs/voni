@@ -38,7 +38,11 @@
  *                 the resumed tail, so the scoreboard can prove the exact
  *                 unheard rest played instead of a paraphrase or a skip.
  *   stop-over     "Wait, stop." over a long reply → cut within ~1.5s, answered.
- *   over-talk     a short answer over the reply → heard (never lost).
+ *   over-talk     a short answer over the reply → heard (never lost), and the
+ *                 fake playout records the post-flush residual overlap per
+ *                 server cut (caller speech + faded agent audio). Prints one
+ *                 `DOUBLE TALK {...}` line and asserts the 400ms bar; time to
+ *                 cut stays the barge-in-cut budget, never this one.
  *   hang-up-over  "I want you to hang up this call." over a long reply →
  *                 the call ends, never resumed ("as I was saying").
  *   greeting-cut  "Wait, stop." 1s into the greeting → cut inside the locked
@@ -105,6 +109,10 @@ import { tryJevGateway } from "../src/lib/voice/voice-judge";
 import {
   callerClipDrift,
   callerClipFingerprint,
+  callerSpeechStart,
+  DOUBLE_TALK_EVIDENCE_PREFIX,
+  DOUBLE_TALK_FADE_OUT_S,
+  DOUBLE_TALK_MAX_OVERLAP_MS,
   EMAIL_INVITE_EVIDENCE_PREFIX,
   fillerHandlingFor,
   greetingCutFailure,
@@ -113,13 +121,17 @@ import {
   isResumeInstructions,
   judgePostCutAnswer,
   measureCutLatency,
+  playoutCutWindow,
   postCutAnswerText,
+  postFlushOverlapMs,
   REAL_CUT_ANSWER_PREFIX,
   REAL_CUT_MAX_MS,
   REAL_CUT_SCENARIOS,
   sha256Hex,
+  type AudibleWindow,
   type CallerClipFingerprint,
   type CallerOnset,
+  type DoubleTalkCut,
   type EmailInviteEvidenceFile,
   type FillerAnswerMarker,
 } from "../src/lib/demo/scoreboard";
@@ -398,6 +410,16 @@ type ClientOutcome = {
   audioChunks: number;
   /** Fingerprints of the fixed caller clips this call streamed. */
   callerClips: CallerClipFingerprint[];
+  /**
+   * Post-flush residual overlap per server cut, ms: the time both the caller's
+   * speech and the agent's faded playout were still sounding after the flush.
+   * Never time-to-cut (that is the barge-in-cut budget, up to 1500ms).
+   */
+  overlapMs: number[];
+  /** The cut windows those overlaps came from (playout timings, for triage). */
+  cutWindows: DoubleTalkCut[];
+  /** The fade the last flush applied, ms (the worklet's FADE_OUT_S). */
+  lastFadeMs: number;
 };
 
 /**
@@ -488,6 +510,7 @@ async function runClient(
     replyAudioAt: {}, cutPlayedMs: null,
     interruptedReplies: 0, sessionId: null, endedAt: null, lastAudioEnd: 0,
     wallClockMs: 0, audioChunks: 0, callerClips: lines.map((line) => clipPrints.get(line)!),
+    overlapMs: [], cutWindows: [], lastFadeMs: 0,
   };
   let repliesDone = 0;
   let audioChunks = 0;
@@ -560,6 +583,33 @@ async function runClient(
   // a server cut; counting the teardown flush would report a never-cut call as
   // a late cut and cite a turn that never lagged.
   let live = true;
+  // Caller speech bookkeeping for the double-talk window: each clip's first
+  // transmitted frame (the same t0 the cut gate uses) and its speech length.
+  type ClipOnset = {
+    enqueuedAt: number;
+    onsetByte: number;
+    onsetMs: number;
+    /** Clip-relative end of the spoken audio (whole clip, trailing silence included). */
+    durationMs: number;
+    firstFrameAt: number | null;
+    frameOffsetMs: number | null;
+  };
+  const onsets: ClipOnset[] = [];
+  /** The caller utterance sounding at `at`, from its transmitted onset to its end. */
+  const callerWindowAt = (at: number): AudibleWindow | null => {
+    for (const onset of onsets) {
+      const start = callerSpeechStart({
+        enqueuedAt: onset.enqueuedAt,
+        firstFrameAt: onset.firstFrameAt,
+        onsetMs: onset.onsetMs,
+        ...(onset.frameOffsetMs === null ? {} : { frameOffsetMs: onset.frameOffsetMs }),
+      });
+      if (start === null) continue;
+      const end = start + Math.max(0, onset.durationMs - onset.onsetMs);
+      if (start <= at && at < end) return { start, end };
+    }
+    return null;
+  };
   internals["playout"] = {
     play: (pcm: Uint8Array, rate: number) => {
       audioChunks += 1;
@@ -567,9 +617,25 @@ async function runClient(
       playUntil = Math.max(Date.now(), playUntil) + (pcm.byteLength / 2 / rate) * 1000;
       outcome.lastAudioEnd = playUntil;
     },
-    flush: () => {
+    flush: (fadeS = 0) => {
+      const at = Date.now();
+      if (live) {
+        // The session flushes with FADE_OUT_S: what is sounding ramps to
+        // silence over the fade and the rest is dropped. Record what the
+        // caller actually still heard under their own speech after the flush.
+        const fadeMs = Math.max(0, fadeS * 1000);
+        outcome.lastFadeMs = fadeMs;
+        const window = playoutCutWindow({
+          cutAt: at,
+          playUntil,
+          fadeMs,
+          caller: callerWindowAt(at),
+        });
+        outcome.cutWindows.push(window);
+        outcome.overlapMs.push(postFlushOverlapMs(window));
+      }
       if (live && outcome.cutAt === null) {
-        outcome.cutAt = Date.now();
+        outcome.cutAt = at;
         const cutReply = outcome.cutReplyId ?? soundingReplyId;
         const start = cutReply !== null ? replyAudioStartSamples[cutReply] : undefined;
         // Played source samples since this reply's first chunk at the same
@@ -578,7 +644,7 @@ async function runClient(
           outcome.cutPlayedMs = Math.max(0, ((consumedSamplesNow() - start) / TARGET_SAMPLE_RATE) * 1000);
         }
       }
-      playUntil = Date.now();
+      playUntil = at;
     },
     settled: () => Date.now() >= playUntil,
     queuedMs: () => Math.max(0, playUntil - Date.now()),
@@ -636,14 +702,6 @@ async function runClient(
   // Mic pump: stream 50ms PCM16 frames in real time. `sentQueueBytes` counts
   // only bytes actually dequeued (not the silence padding), so each clip's
   // first transmitted frame can be stamped for the cut-latency t0.
-  type ClipOnset = {
-    enqueuedAt: number;
-    onsetByte: number;
-    onsetMs: number;
-    firstFrameAt: number | null;
-    frameOffsetMs: number | null;
-  };
-  const onsets: ClipOnset[] = [];
   let queue = Buffer.alloc(0);
   let queuedBytes = 0;
   let sentQueueBytes = 0;
@@ -692,6 +750,7 @@ async function runClient(
           enqueuedAt,
           onsetByte: queuedBytes + Math.round((fingerprint.onsetMs / 1000) * TARGET_SAMPLE_RATE) * 2,
           onsetMs: fingerprint.onsetMs,
+          durationMs: (pcm.byteLength / 2 / TARGET_SAMPLE_RATE) * 1000,
           firstFrameAt: null,
           frameOffsetMs: null,
         };
@@ -866,7 +925,38 @@ const CLIENT_SCENARIOS: { name: string; run: () => Promise<string | null> }[] = 
       });
       // The session's own transcript ledger: the words the call counted.
       console.log(`    heard ledger ${JSON.stringify(o.heard)}`);
-      return o.heard.some((t) => /bakery/i.test(t)) ? null : `never heard (heard: ${JSON.stringify(o.heard)})`;
+      // Real producer for the double-talk gate: the fake playout recorded, for
+      // every server cut, how long the caller's speech and the faded agent
+      // audio were both still sounding after the flush. That residual — never
+      // time-to-cut, which the barge-in-cut gate budgets separately — is what
+      // the 400ms bar governs. The line is machine-readable so score-demo
+      // scores the same numbers; the scenario asserts them too.
+      const overlaps = o.overlapMs;
+      const maxOverlap = overlaps.length > 0 ? Math.max(...overlaps) : null;
+      console.log(
+        `${DOUBLE_TALK_EVIDENCE_PREFIX}${JSON.stringify({
+          scenario: "over-talk",
+          session: o.sessionId,
+          overlapMs: overlaps,
+          fadeMs: Math.round(o.lastFadeMs),
+        })}`,
+      );
+      const cuts = overlaps.join(", ");
+      console.log(
+        `    double talk ${
+          maxOverlap === null ? "unmeasured (no cut)" : `${maxOverlap}ms max after ${overlaps.length} cut${overlaps.length === 1 ? "" : "s"}`
+        } (cuts: ${cuts || "none"}ms; budget ${DOUBLE_TALK_MAX_OVERLAP_MS}ms; fade ${DOUBLE_TALK_FADE_OUT_S}s)`,
+      );
+      if (!o.heard.some((t) => /bakery/i.test(t))) {
+        return `never heard (heard: ${JSON.stringify(o.heard)})`;
+      }
+      if (maxOverlap === null) {
+        return "never cut under the caller's point (double talk unmeasured)";
+      }
+      if (maxOverlap > DOUBLE_TALK_MAX_OVERLAP_MS) {
+        return `double talk too long: ${maxOverlap}ms > ${DOUBLE_TALK_MAX_OVERLAP_MS}ms after the flush (cuts: ${cuts}ms)`;
+      }
+      return null;
     },
   },
   {

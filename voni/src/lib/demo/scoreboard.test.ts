@@ -26,6 +26,9 @@ import {
   evaluateDeadAir,
   evaluateDoubleTalk,
   evaluateEndCallDrain,
+  postFlushOverlapMs,
+  playoutCutWindow,
+  parseDoubleTalkOutput,
   evaluateFillerResumeGate,
   evaluateRealCut,
   extractRealCutEvidence,
@@ -2544,6 +2547,111 @@ test("applying email evidence scores the beat, the artifact, and the console", (
 
 test("double-talk gate pins the 400ms audibility bar", () => {
   assert.equal(DOUBLE_TALK_MAX_OVERLAP_MS, 400);
+});
+
+test("post-flush overlap counts only the caller audio and agent playout that survive the flush", () => {
+  // Cut at 1200ms with 400ms of agent audio still queued and the real 40ms
+  // fade: the caller hears at most 40ms of the faded tail, never the queue.
+  assert.equal(
+    postFlushOverlapMs({ cutAt: 1200, agentUntil: 1240, caller: { start: 1000, end: 2000 } }),
+    40,
+  );
+  // A fade that lets the playout run long (or a flush that never stops the
+  // audio) is the regression the 400ms bar exists to catch: 800ms audible.
+  assert.equal(
+    postFlushOverlapMs({ cutAt: 1200, agentUntil: 2100, caller: { start: 1000, end: 2000 } }),
+    800,
+  );
+  // Agent audio already finished before the cut: nothing sounds after it.
+  assert.equal(
+    postFlushOverlapMs({ cutAt: 1200, agentUntil: 1100, caller: { start: 1000, end: 2000 } }),
+    0,
+  );
+  // The caller stops 10ms after the cut: only those 10ms can overlap.
+  assert.equal(
+    postFlushOverlapMs({ cutAt: 1200, agentUntil: 1240, caller: { start: 1000, end: 1210 } }),
+    10,
+  );
+  // The caller starts after the fade completed: no simultaneous audio.
+  assert.equal(
+    postFlushOverlapMs({ cutAt: 1200, agentUntil: 1240, caller: { start: 1300, end: 2000 } }),
+    0,
+  );
+  // A cut with no caller speech (agent-only flush) is never overlap.
+  assert.equal(postFlushOverlapMs({ cutAt: 1200, agentUntil: 1240, caller: null }), 0);
+});
+
+test("the over-talk runner line is the overlap evidence the gate scores", () => {
+  const stdout = [
+    "over-talk: 1/1",
+    '    DOUBLE TALK {"scenario":"over-talk","session":"sess_abc","overlapMs":[40,0],"fadeMs":40}',
+  ].join("\n");
+  assert.deepEqual(parseDoubleTalkOutput(stdout), {
+    scenario: "over-talk",
+    sessionId: "sess_abc",
+    overlapMs: [40, 0],
+    fadeMs: 40,
+  });
+});
+
+test("the last DOUBLE TALK line wins and unrelated stdout is ignored", () => {
+  const stdout = [
+    '    DOUBLE TALK {"scenario":"over-talk","session":"sess_first","overlapMs":[900]}',
+    "    heard ledger []",
+    '    DOUBLE TALK {"scenario":"over-talk","session":"sess_last","overlapMs":[40]}',
+  ].join("\n");
+  assert.deepEqual(parseDoubleTalkOutput(stdout)?.overlapMs, [40]);
+  assert.equal(parseDoubleTalkOutput(stdout)?.sessionId, "sess_last");
+  assert.equal(parseDoubleTalkOutput("over-talk: 1/1\n    heard ledger []\n"), null);
+});
+
+test("a malformed DOUBLE TALK line breaks fast instead of scoring invented overlap", () => {
+  assert.throws(
+    () => parseDoubleTalkOutput('    DOUBLE TALK {"scenario":"over-talk","overlapMs":"40"}'),
+    /DOUBLE TALK/,
+  );
+});
+
+test("double-talk evidence past 400ms fails with every measured cut and the Call trace turn", () => {
+  const artifact = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "over-talk",
+    runnerStdout: "over-talk: 0/1\n",
+    exitCode: 1,
+    durationMs: 9000,
+    runs: 1,
+    doubleTalkOverlapMs: [40, 650],
+    traceSessionId: "sess_abc",
+    traceExcerpt: [
+      '  VONI    "Sure, first the tour" (reply_create gap 900ms) CUT at 12.20s by caller speech',
+      '  VONI    "So the price depends on call volume." (reply_create gap 700ms)',
+    ],
+  });
+  const gate = artifact.gates.find((g) => g.name === "double-talk")!;
+  assert.equal(gate.status, "FAIL");
+  assert.ok(gate.detail.includes("40, 650"), `detail names every measured cut: ${gate.detail}`);
+  assert.match(gate.detail, /call trace turn 1 \(sess_abc\)/);
+});
+
+test("fake-playout timings turn a flush into the post-flush overlap window", () => {
+  const caller = { start: 1000, end: 2000 };
+  // 3.8s of agent audio still queued, real 40ms fade: only the fade is heard.
+  const faded = playoutCutWindow({ cutAt: 1200, playUntil: 5000, fadeMs: 40, caller });
+  assert.equal(faded.agentUntil, 1240);
+  assert.equal(postFlushOverlapMs(faded), 40);
+  // Playout already finished before the cut: nothing survives the flush.
+  assert.equal(postFlushOverlapMs(playoutCutWindow({ cutAt: 1200, playUntil: 900, fadeMs: 40, caller })), 0);
+  // A hard stop (no fade) leaves no residual, only the click the fade prevents.
+  assert.equal(postFlushOverlapMs(playoutCutWindow({ cutAt: 1200, playUntil: 5000, fadeMs: 0, caller })), 0);
+  // A fade regression that lets the queued tail run long is the 400ms breach.
+  const long = playoutCutWindow({ cutAt: 1200, playUntil: 5000, fadeMs: 900, caller });
+  assert.equal(long.agentUntil, 2100);
+  assert.equal(postFlushOverlapMs(long), 800);
+  // The caller arriving mid-fade still only overlaps the fade's remainder.
+  assert.equal(
+    postFlushOverlapMs(playoutCutWindow({ cutAt: 1200, playUntil: 5000, fadeMs: 40, caller: { start: 1230, end: 2000 } })),
+    10,
+  );
 });
 
 test("double-talk passes when every cut fades inside 400ms", () => {

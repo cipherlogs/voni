@@ -2178,6 +2178,59 @@ export type DoubleTalkInput = {
   traceRef?: string;
 };
 
+/** One audible window on the wall clock, ms (start inclusive, end exclusive). */
+export type AudibleWindow = { start: number; end: number };
+
+/**
+ * What one cut leaves behind, from the playout's own timings. `agentUntil` is
+ * when agent audio actually went silent after the flush: the worklet's fade
+ * caps it at cutAt + the fade, while a flush that never stops the playout
+ * lets it run to the queued end. The caller window is the speech that was
+ * sounding under the cut, or null when the caller was silent.
+ */
+export type DoubleTalkCut = {
+  /** The server cut (the playout flush), wall clock ms. */
+  cutAt: number;
+  /** When agent playout went silent after the flush, wall clock ms. */
+  agentUntil: number;
+  /** Caller speech audible under the cut; null when the caller was not speaking. */
+  caller: AudibleWindow | null;
+};
+
+/**
+ * Post-flush residual overlap: the ms the caller's speech and the agent's
+ * playout were both still sounding AFTER the flush. Time before the flush is
+ * cut latency, which the barge-in-cut gate budgets separately (up to 1500ms);
+ * only the residual past the flush counts against the 400ms double-talk bar.
+ * The fade (0.04s) means a healthy cut leaves at most the fade's length.
+ */
+export function postFlushOverlapMs(cut: DoubleTalkCut): number {
+  if (!cut.caller) return 0;
+  const start = Math.max(cut.cutAt, cut.caller.start);
+  const end = Math.min(cut.agentUntil, cut.caller.end);
+  return Math.max(0, Math.round(end - start));
+}
+
+/**
+ * The cut window the playout's own timings produce. At the flush the worklet
+ * fades what is sounding over `fadeMs` and drops the rest, so the agent is
+ * audible until `min(playUntil, cutAt + fadeMs)`; without a fade (a hard stop)
+ * that is the cut instant. `playUntil` is the wall-clock end of everything
+ * queued when the flush landed, exactly what the eval's fake playout tracks.
+ */
+export function playoutCutWindow(input: {
+  cutAt: number;
+  playUntil: number;
+  fadeMs: number;
+  caller: AudibleWindow | null;
+}): DoubleTalkCut {
+  return {
+    cutAt: input.cutAt,
+    agentUntil: Math.min(input.playUntil, input.cutAt + Math.max(0, input.fadeMs)),
+    caller: input.caller,
+  };
+}
+
 /** Double-talk gate: external behavior (audible overlap), never internals. */
 export function evaluateDoubleTalk(input: DoubleTalkInput): ScoreboardGate {
   const trace = input.traceRef ? ` — trace: ${input.traceRef}` : "";
@@ -2203,6 +2256,74 @@ export function evaluateDoubleTalk(input: DoubleTalkInput): ScoreboardGate {
       `${input.overlapMs.length} cut${input.overlapMs.length === 1 ? "" : "s"} ` +
       `(fade ${DOUBLE_TALK_FADE_OUT_S}s + flush)`,
   };
+}
+
+/**
+ * The live runner's machine-readable overlap evidence, one line per over-talk
+ * run: `DOUBLE TALK {"scenario":"over-talk","session":"sess_…","overlapMs":[…],"fadeMs":40}`.
+ * `overlapMs` lists the post-flush residual overlap per cut, the same number
+ * the double-talk gate scores. The session id lets score-demo refuse to cite
+ * a Call trace turn from a different call.
+ */
+export const DOUBLE_TALK_EVIDENCE_PREFIX = "DOUBLE TALK ";
+
+export type DoubleTalkEvidence = {
+  scenario: string;
+  sessionId: string | null;
+  /** Post-flush residual overlap per cut, ms. */
+  overlapMs: number[];
+  /** The fade the flush applied, ms (null when the run did not report it). */
+  fadeMs: number | null;
+};
+
+function nonNegativeMs(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+/**
+ * Parse the runner's DOUBLE TALK line. Null when the run printed none (another
+ * scenario, a dry run). A present but malformed line throws: overlap is either
+ * measured or absent, never guessed from a broken payload.
+ */
+export function parseDoubleTalkOutput(stdout: string): DoubleTalkEvidence | null {
+  let found: DoubleTalkEvidence | null = null;
+  for (const rawLine of stdout.split("\n")) {
+    const line = rawLine.trimStart();
+    if (!line.startsWith(DOUBLE_TALK_EVIDENCE_PREFIX)) continue;
+    let raw: unknown;
+    try {
+      raw = JSON.parse(line.slice(DOUBLE_TALK_EVIDENCE_PREFIX.length));
+    } catch (error) {
+      throw new Error(
+        `eval runner DOUBLE TALK line is not valid JSON: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    if (raw === null || typeof raw !== "object") {
+      throw new Error("eval runner DOUBLE TALK line must be a JSON object");
+    }
+    const candidate = raw as { scenario?: unknown; session?: unknown; overlapMs?: unknown; fadeMs?: unknown };
+    if (typeof candidate.scenario !== "string" || !candidate.scenario.trim()) {
+      throw new Error("eval runner DOUBLE TALK line needs a scenario name");
+    }
+    const session = candidate.session ?? null;
+    if (session !== null && (typeof session !== "string" || !session.trim())) {
+      throw new Error("eval runner DOUBLE TALK line has an invalid session id");
+    }
+    if (!Array.isArray(candidate.overlapMs)) {
+      throw new Error("eval runner DOUBLE TALK line needs an overlapMs array");
+    }
+    const overlapMs = candidate.overlapMs.map((value) => {
+      const ms = nonNegativeMs(value);
+      if (ms === null) throw new Error("eval runner DOUBLE TALK line needs non-negative overlapMs");
+      return Math.round(ms);
+    });
+    const fadeMs = candidate.fadeMs === undefined ? null : nonNegativeMs(candidate.fadeMs);
+    if (candidate.fadeMs !== undefined && fadeMs === null) {
+      throw new Error("eval runner DOUBLE TALK line has an invalid fadeMs");
+    }
+    found = { scenario: candidate.scenario, sessionId: session, overlapMs, fadeMs };
+  }
+  return found;
 }
 
 export type EndCallDrainInput = {
@@ -3696,6 +3817,11 @@ export function buildSkeletonArtifact(input: {
   deadAir?: DeadAirEvidence | null;
   /** Measured audible overlap per cut; empty/omitted means unmeasured (INFO). */
   doubleTalkOverlapMs?: number[];
+  /**
+   * Trace pointer for a double-talk FAIL when the overlap came from a
+   * different call than the merged excerpt (never cite another call's turn).
+   */
+  doubleTalkTraceRef?: string;
   /** Measured goodbye drain evidence; omitted means unmeasured (INFO). */
   endCallDrain?: { goodbyeCoverage: number | null; hangUpDelayMs: number | null; narratedEnding: boolean };
   /** Trace pointer attached to failure details, e.g. a sess_ id. */
@@ -3824,7 +3950,11 @@ export function buildSkeletonArtifact(input: {
   const deadAirCheckIns = deadAirInput?.checkIns ?? [];
   const doubleTalkInput: DoubleTalkInput = {
     overlapMs: doubleTalkOverlapMs,
-    ...(cutTraceRef ? { traceRef: cutTraceRef } : {}),
+    ...(input.doubleTalkTraceRef
+      ? { traceRef: input.doubleTalkTraceRef }
+      : cutTraceRef
+        ? { traceRef: cutTraceRef }
+        : {}),
   };
   const endCallDrainInput: EndCallDrainInput = {
     ...drain,

@@ -98,11 +98,17 @@
  * duplicated. Memory left unmeasured stays INFO, never PASS.
  *
  * Measured evidence for the ticket-09 gates (no live audio in CI, so a real
- * run or a replay feeds them in): --overlap-ms lists audible overlap per cut
- * (FAIL past 400ms), --goodbye-coverage is played/expected goodbye speaking
- * time (FAIL below 80%), --hang-up-delay-ms is session end minus goodbye
- * audio end (FAIL when negative or past 1500ms), --narrated-ending flags a
- * model reply after end_call. Omitted evidence is INFO, never a false FAIL.
+ * run or a replay feeds them in): the live runner's `DOUBLE TALK {...}` line
+ * (over-talk) carries the post-flush residual overlap per cut — the ms both
+ * the caller's speech and the faded agent playout were still sounding after
+ * the flush, never time-to-cut — and feeds the gate automatically; a FAIL
+ * cites the Call trace turn of the interrupted reply (or states that no turn
+ * was merged when the overlap came from a different call). --overlap-ms
+ * overrides it with audible overlap per cut (FAIL past 400ms). --goodbye-
+ * coverage is played/expected goodbye speaking time (FAIL below 80%),
+ * --hang-up-delay-ms is session end minus goodbye audio end (FAIL when
+ * negative or past 1500ms), --narrated-ending flags a model reply after
+ * end_call. Omitted evidence is INFO, never a false FAIL.
  *
  * --probe-json carries the session onAudioProbe counts plus the optional
  * qa-voice-session agent-channel PCM analysis; it drives the timbre-probes
@@ -184,6 +190,7 @@ import {
   parseEmailInviteOutput,
   parseFillerRunOutput,
   parseHeardLedgerOutput,
+  parseDoubleTalkOutput,
   parseTraceGaps,
   redactLines,
   resolveGateVoice,
@@ -745,6 +752,20 @@ function main(): void {
   const runnerEmailEvidence = dryRun ? null : parseEmailInviteOutput(evalSection.stdout);
   const emailFile = emailJsonPath ? readEmailInviteJson(resolve(emailJsonPath)) : runnerEmailEvidence;
   const emailEvidence = emailFile ? toEmailInviteEvidence(emailFile, excerpt ?? [], traceSession) : null;
+  // The live runner's own DOUBLE TALK line (over-talk) is the producer for
+  // the double-talk gate: post-flush residual overlap per cut. An explicit
+  // --overlap-ms wins (replay/triage); without either the gate stays INFO.
+  const explicitOverlapMs = parseOverlapMs(arg("--overlap-ms", ""));
+  const runnerDoubleTalk = dryRun ? null : parseDoubleTalkOutput(evalSection.stdout);
+  const doubleTalkOverlapMs = explicitOverlapMs.length > 0 ? explicitOverlapMs : (runnerDoubleTalk?.overlapMs ?? []);
+  // The turn pointer may only come from the same call the overlap was heard
+  // on. A trace merges the run's last session; when the evidence names another
+  // session, cite that session and say no turn was merged instead of pointing
+  // at a turn from a different call.
+  const doubleTalkTraceRef =
+    runnerDoubleTalk?.sessionId && traceSession && runnerDoubleTalk.sessionId !== traceSession
+      ? `${runnerDoubleTalk.sessionId} (no turn merged: trace session ${traceSession} is a different call)`
+      : undefined;
   const agentInput = buildDemoAgentBody(voice).input;
   // Explicit --filler-* flags are the operator override. Without them, the
   // live runner's own `filler …` line is the observed behavior and scores the
@@ -812,7 +833,8 @@ function main(): void {
     fillerResume,
     ...(overheardAsides !== undefined ? { overheardAsides } : {}),
     deadAir: deadAir && traceSession ? { ...deadAir, trace: traceSession } : deadAir,
-    doubleTalkOverlapMs: parseOverlapMs(arg("--overlap-ms", "")),
+    doubleTalkOverlapMs,
+    ...(doubleTalkTraceRef ? { doubleTalkTraceRef } : {}),
     endCallDrain: {
       goodbyeCoverage: parseOptionalNumber(arg("--goodbye-coverage", ""), "--goodbye-coverage"),
       hangUpDelayMs: parseOptionalNumber(arg("--hang-up-delay-ms", ""), "--hang-up-delay-ms"),
