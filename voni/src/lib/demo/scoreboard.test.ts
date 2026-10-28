@@ -44,6 +44,8 @@ import {
   emptyHumanRatings,
   evaluateHumanGate,
   evaluateTimbreGate,
+  classifyRunnerOutcome,
+  formatEvalRunnerReport,
   formatMatrixTable,
   matchedLoudnessLufs,
   resolveMatrixVoices,
@@ -2030,6 +2032,137 @@ test("harness break: non-dry runner crash fails plumbing and marks the eval runn
   assert.equal(artifact.evalRunner.status, "failed");
   assert.equal(artifact.evalRunner.passed, false);
   assert.equal(artifact.evalRunner.exitCode, 1);
+});
+
+/** One machine-readable runner summary, the signal the scoreboard classifies. */
+function evalSummary(overrides: Record<string, unknown> = {}): string {
+  return `EVAL SUMMARY ${JSON.stringify({
+    scenario: "stop-over",
+    runs: 1,
+    failures: 1,
+    scenarios: [{ name: "stop-over", passed: 0, runs: 1 }],
+    traceSessions: ["sess_switch06"],
+    playout: [{ scenario: "stop-over", run: 1, wallClockMs: 8123 }],
+    audioChunks: 42,
+    live: true,
+    ...overrides,
+  })}`;
+}
+
+test("a finished eval run is plumbing health even when its scenarios fail", () => {
+  const legacy = classifyRunnerOutcome({
+    stdout: "  ✗ stop-over #1: cut too late: 1841ms\nstop-over: 0/1\n",
+    exitCode: 1,
+  });
+  assert.equal(legacy.status, "finished");
+  assert.equal(legacy.reason, null);
+  assert.deepEqual(legacy.scenarios, [{ name: "stop-over", passed: 0, runs: 1 }]);
+  assert.match(legacy.detail, /finished/);
+
+  const summary = classifyRunnerOutcome({ stdout: `${evalSummary()}\n`, exitCode: 1 });
+  assert.equal(summary.status, "finished");
+  assert.equal(summary.summary?.failures, 1);
+  assert.deepEqual(summary.summary?.playout, [{ scenario: "stop-over", run: 1, wallClockMs: 8123 }]);
+});
+
+test("spawn failure, a kill, a crash, and a summary-less exit are harness breaks", () => {
+  assert.equal(
+    classifyRunnerOutcome({ stdout: "", exitCode: null, error: "spawn npm ENOENT" }).reason,
+    "spawn-failed",
+  );
+  assert.equal(classifyRunnerOutcome({ stdout: "", exitCode: null }).reason, "killed");
+  assert.equal(classifyRunnerOutcome({ stdout: "partial output", exitCode: 1 }).reason, "crashed");
+  assert.equal(classifyRunnerOutcome({ stdout: "", exitCode: 0 }).reason, "missing-summary");
+});
+
+test("a finished run with no Call trace session or no agent audio is a harness break", () => {
+  const noTrace = classifyRunnerOutcome({
+    stdout: `${evalSummary({ traceSessions: [] })}\n`,
+    exitCode: 1,
+  });
+  assert.equal(noTrace.status, "harness-break");
+  assert.equal(noTrace.reason, "missing-trace");
+  assert.match(noTrace.detail, /missing trace/);
+
+  const noAudio = classifyRunnerOutcome({
+    stdout: `${evalSummary({ audioChunks: 0 })}\n`,
+    exitCode: 1,
+  });
+  assert.equal(noAudio.status, "harness-break");
+  assert.equal(noAudio.reason, "missing-audio");
+  assert.match(noAudio.detail, /missing audio/);
+});
+
+test("a scenario FAIL stays plumbing PASS while a measured gate FAIL stays judgment", () => {
+  const stdout = [
+    "  · trace session sess_switch06",
+    "    cut 1841ms after the caller started",
+    '    verdict ["yield","Wait, stop."]',
+    "  ✗ stop-over #1: cut too late: 1841ms",
+    "stop-over: 0/1",
+    evalSummary(),
+    "",
+  ].join("\n");
+  const artifact = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "stop-over",
+    runnerStdout: stdout,
+    exitCode: 1,
+    durationMs: 9000,
+    runs: 1,
+    realCutEvidencePresent: true,
+  });
+  const judged = applyRealCutGate(artifact, {
+    cutMs: 1841,
+    verdict: "yield",
+    verdictSource: "judge",
+    answered: false,
+    resumed: false,
+    ended: false,
+    traceTurn: null,
+  });
+  assert.equal(judged.gates.find((g) => g.name === "plumbing")?.status, "PASS");
+  assert.equal(judged.evalRunner.status, "ok");
+  assert.equal(judged.evalRunner.breakReason, null);
+  assert.equal(judged.gates.find((g) => g.name === "barge-in-cut")?.status, "FAIL");
+});
+
+test("a missing trace is a harness break in the artifact, distinct from a gate FAIL", () => {
+  const artifact = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "stop-over",
+    runnerStdout: `${evalSummary({ traceSessions: [] })}\nstop-over: 0/1\n`,
+    exitCode: 1,
+    durationMs: 9000,
+    runs: 1,
+    gaps: { "real-cut-answered": [900] },
+  });
+  const plumbing = artifact.gates.find((g) => g.name === "plumbing")!;
+  assert.equal(plumbing.status, "FAIL");
+  assert.match(plumbing.detail, /missing trace/);
+  assert.equal(artifact.evalRunner.status, "failed");
+  assert.equal(artifact.evalRunner.breakReason, "missing-trace");
+  assert.equal(artifact.gates.find((g) => g.name === "reply-gap")?.status, "PASS");
+  assert.match(formatEvalRunnerReport(artifact), /HARNESS BREAK \(missing-trace\).*not a gate FAIL/);
+});
+
+test("live scenario playout is reported separately from gate verdicts", () => {
+  const artifact = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "stop-over",
+    runnerStdout: `${evalSummary()}\nstop-over: 0/1\n`,
+    exitCode: 1,
+    durationMs: 9000,
+    runs: 1,
+  });
+  assert.equal(artifact.gates.find((g) => g.name === "plumbing")?.status, "PASS");
+  assert.deepEqual(artifact.evalRunner.timings.scenarioRuns, [
+    { scenario: "stop-over", run: 1, wallClockMs: 8123 },
+  ]);
+  assert.ok(artifact.gates.every((gate) => gate.name !== "playout"));
+  const report = formatEvalRunnerReport(artifact);
+  assert.match(report, /plumbing PASS/);
+  assert.match(report, /playout \(wall clock, never gated\): stop-over #1 8123ms/);
 });
 
 test("dry run records a skipped eval runner and keeps plumbing green", () => {

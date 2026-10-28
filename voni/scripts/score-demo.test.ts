@@ -282,6 +282,98 @@ test("real run whose runner finishes without evidence fails measurements, not a 
   assert.match(result.stdout, /measured gate breached its budget/);
 });
 
+test("a runner that finished with a failing scenario reports plumbing PASS and judgment FAIL", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  writeFileSync(
+    join(bin, "npm"),
+    `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === "run" && args[1] === "eval:demo-agent") {
+  console.log("  · trace session sess_fail06");
+  console.log("    cut 1841ms after the caller started");
+  console.log('    verdict ["yield","Wait, stop."]');
+  console.log("  ✗ stop-over #1: cut too late: 1841ms");
+  console.log("stop-over: 0/1");
+  console.log('EVAL SUMMARY {"scenario":"stop-over","runs":1,"failures":1,"scenarios":[{"name":"stop-over","passed":0,"runs":1}],"traceSessions":["sess_fail06"],"playout":[{"scenario":"stop-over","run":1,"wallClockMs":8123}],"audioChunks":42,"live":true}');
+  process.exit(1);
+} else if (args[0] === "run" && args[1] === "call:trace") {
+  console.log('12.20s  VONI    "Sorry about that"  (reply_create gap 900ms)');
+}
+`,
+    { mode: 0o755 },
+  );
+  const out = join(dir, "score.json");
+  const result = run(
+    ["--scenario", "stop-over", "--out", out, "--timing-lock", join(dir, "timing.lock")],
+    new URL("../", import.meta.url).pathname,
+    { PATH: `${bin}:${process.env.PATH}` },
+  );
+  assert.equal(result.status, 1, "a gate FAIL still exits non-zero");
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    evalRunner: {
+      status: string;
+      passed: boolean | null;
+      breakReason: string | null;
+      timings: { scenarioRuns: { scenario: string; run: number; wallClockMs: number }[] };
+    };
+    gates: { name: string; status: string }[];
+  };
+  assert.equal(artifact.gates.find((g) => g.name === "plumbing")?.status, "PASS");
+  assert.equal(artifact.gates.find((g) => g.name === "barge-in-cut")?.status, "FAIL");
+  assert.equal(artifact.evalRunner.status, "ok");
+  assert.equal(artifact.evalRunner.breakReason, null);
+  assert.equal(artifact.evalRunner.passed, false, "the scenario itself failed");
+  assert.deepEqual(artifact.evalRunner.timings.scenarioRuns, [
+    { scenario: "stop-over", run: 1, wallClockMs: 8123 },
+  ]);
+  assert.match(result.stdout, /PASS\s+plumbing/);
+  assert.match(result.stdout, /FAIL\s+barge-in-cut/);
+  assert.match(result.stdout, /eval runner: finished/);
+  assert.match(result.stdout, /playout \(wall clock, never gated\): stop-over #1 8123ms/);
+  assert.match(result.stdout, /measured gate breached its budget/);
+  assert.doesNotMatch(result.stdout, /HARNESS BREAK/);
+});
+
+test("a runner that died without a summary is a harness break, not a gate FAIL", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  writeFileSync(
+    join(bin, "npm"),
+    `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === "run" && args[1] === "eval:demo-agent") {
+  console.log("  · trace session sess_dead06");
+  process.exit(3);
+} else if (args[0] === "run" && args[1] === "call:trace") {
+  console.log('12.20s  VONI    "Sorry about that"  (reply_create gap 900ms)');
+}
+`,
+    { mode: 0o755 },
+  );
+  const out = join(dir, "score.json");
+  const result = run(
+    ["--scenario", "stop-over", "--out", out, "--timing-lock", join(dir, "timing.lock")],
+    new URL("../", import.meta.url).pathname,
+    { PATH: `${bin}:${process.env.PATH}` },
+  );
+  assert.equal(result.status, 1, result.stderr + result.stdout);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    evalRunner: { status: string; breakReason: string | null };
+    gates: { name: string; status: string; detail: string }[];
+  };
+  const plumbing = artifact.gates.find((g) => g.name === "plumbing")!;
+  assert.equal(plumbing.status, "FAIL");
+  assert.match(plumbing.detail, /exited 3 before printing a summary/);
+  assert.equal(artifact.evalRunner.status, "failed");
+  assert.equal(artifact.evalRunner.breakReason, "crashed");
+  assert.match(result.stdout, /scoreboard: HARNESS BREAK/);
+  assert.match(result.stdout, /eval runner: HARNESS BREAK \(crashed\).*not a gate FAIL/);
+  assert.doesNotMatch(result.stdout, /measured gate breached its budget/);
+});
+
 test("unknown voice fails fast with no artifact", () => {
   const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
   const out = join(dir, "score.json");

@@ -32,7 +32,7 @@
  *
  * Gate ownership (one gate, one section below; keep gate logic inside its
  * own section — no unrelated edits in one function):
- *   plumbing / measurements .... skeleton (ticket 01 + review: harness break, dry-run only)
+ *   plumbing / measurements .... skeleton (ticket 01/06: finished vs harness break, dry-run only)
  *   reply-gap ................... ticket 03 | end-of-turn ............. ADR-0003 contract
  *   barge-in-cut ................ ticket 05 | filler-resume ........... ticket 04
  *   overheard-recall ............ ticket 06 | dead-air ................ ticket 07
@@ -1004,8 +1004,14 @@ export type ScoreboardArtifact = {
     passed: boolean | null;
     /** ok: runner finished; failed: harness break; skipped: dry run. */
     status: "ok" | "failed" | "skipped";
+    /** Why the harness broke; null when the runner finished or the run was dry. */
+    breakReason: RunnerBreakReason | null;
     exitCode: number | null;
     durationMs: number;
+    /** Wall-clock playout per live scenario run: reported, never folded into a gate. */
+    timings: {
+      scenarioRuns: RunnerPlayout[];
+    };
     rawSha256: string;
   };
   /** Merged Call trace excerpt for a finished real-call session (via --trace-session). */
@@ -2062,6 +2068,202 @@ export function measureCutLatency(onset: CallerOnset, cutAt: number | null): Cut
   return { cutMs: cutAt - speechStartedAt, speechStartedAt, reason: null };
 }
 
+// ── Plumbing versus judgment: the eval runner's outcome (ticket 06) ──────────
+// The runner finishing proves the pipes are healthy; only scoreboard gates
+// decide PASS or FAIL. Scenario failures and measured gate breaches are
+// judgment. A spawn failure, a kill, a crash, a run with no summary, a run
+// that opened no Call trace session, or a run that received no agent audio is
+// a harness break: the numbers were never taken, so triage starts at the
+// harness, never at the thresholds.
+
+/** One scenario row the runner printed: `stop-over: 0/1`. */
+export type RunnerScenarioSummary = { name: string; passed: number; runs: number };
+
+/** Wall-clock playout for one live voice-session run; reported, never gated. */
+export type RunnerPlayout = { scenario: string; run: number; wallClockMs: number };
+
+/** The final machine-readable line the eval runner prints: `EVAL SUMMARY {...}`. */
+export type EvalRunnerSummary = {
+  scenario: string;
+  runs: number;
+  failures: number;
+  scenarios: RunnerScenarioSummary[];
+  traceSessions: string[];
+  playout: RunnerPlayout[];
+  /** Agent audio chunks received by live client runs; null when none ran. */
+  audioChunks: number | null;
+  /** At least one live scenario was attempted. */
+  live: boolean;
+};
+
+/** Why the harness broke, never why a gate failed. */
+export type RunnerBreakReason =
+  | "spawn-failed"
+  | "killed"
+  | "crashed"
+  | "missing-summary"
+  | "missing-trace"
+  | "missing-audio";
+
+/** Runner outcome: finished (plumbing PASS) or harness break (plumbing FAIL). */
+export type RunnerClassification = {
+  status: "finished" | "harness-break";
+  reason: RunnerBreakReason | null;
+  detail: string;
+  summary: EvalRunnerSummary | null;
+  scenarios: RunnerScenarioSummary[];
+};
+
+function parseScenarioSummaries(stdout: string): RunnerScenarioSummary[] {
+  const rows: RunnerScenarioSummary[] = [];
+  for (const match of stdout.matchAll(/^([a-z][a-z0-9-]*): (\d+)\/(\d+)$/gm)) {
+    rows.push({ name: match[1], passed: Number(match[2]), runs: Number(match[3]) });
+  }
+  return rows;
+}
+
+function parseEvalSummary(stdout: string): EvalRunnerSummary | null {
+  const lines = stdout.split("\n");
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index]?.trim() ?? "";
+    if (!line.startsWith("EVAL SUMMARY ")) continue;
+    try {
+      const raw = JSON.parse(line.slice("EVAL SUMMARY ".length)) as Partial<EvalRunnerSummary>;
+      if (raw === null || typeof raw !== "object") return null;
+      const scenarios = Array.isArray(raw.scenarios)
+        ? raw.scenarios
+            .filter(
+              (row): row is RunnerScenarioSummary =>
+                row !== null &&
+                typeof row === "object" &&
+                typeof row.name === "string" &&
+                Number.isFinite(row.passed) &&
+                Number.isFinite(row.runs),
+            )
+            .map((row) => ({ name: row.name, passed: Number(row.passed), runs: Number(row.runs) }))
+        : [];
+      const playout = Array.isArray(raw.playout)
+        ? raw.playout
+            .filter(
+              (row): row is RunnerPlayout =>
+                row !== null &&
+                typeof row === "object" &&
+                typeof row.scenario === "string" &&
+                Number.isFinite(row.run) &&
+                Number.isFinite(row.wallClockMs),
+            )
+            .map((row) => ({
+              scenario: row.scenario,
+              run: Number(row.run),
+              wallClockMs: Number(row.wallClockMs),
+            }))
+        : [];
+      return {
+        scenario: typeof raw.scenario === "string" ? raw.scenario : "",
+        runs: Number.isFinite(raw.runs) ? Number(raw.runs) : scenarios.reduce((sum, row) => sum + row.runs, 0),
+        failures: Number.isFinite(raw.failures)
+          ? Number(raw.failures)
+          : scenarios.reduce((sum, row) => sum + (row.runs - row.passed), 0),
+        scenarios,
+        traceSessions: Array.isArray(raw.traceSessions)
+          ? raw.traceSessions.filter((id): id is string => typeof id === "string" && id.length > 0)
+          : [],
+        playout,
+        audioChunks:
+          typeof raw.audioChunks === "number" && Number.isFinite(raw.audioChunks) ? raw.audioChunks : null,
+        live: raw.live === true,
+      };
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+function traceSessionsIn(stdout: string): string[] {
+  const ids: string[] = [];
+  for (const match of stdout.matchAll(/\btrace session (sess_[A-Za-z0-9_-]+)\b/g)) {
+    if (!ids.includes(match[1])) ids.push(match[1]);
+  }
+  return ids;
+}
+
+/**
+ * Classify the eval runner by what it printed, never by scenario verdicts.
+ * A summary proves the runner finished; any exit code then still means
+ * plumbing PASS (scenario failures are judgment). No summary, a spawn error,
+ * a kill, or a live run with no trace/audio is a harness break.
+ */
+export function classifyRunnerOutcome(input: {
+  stdout: string;
+  exitCode: number | null;
+  error?: string | null;
+}): RunnerClassification {
+  const printed = parseScenarioSummaries(input.stdout);
+  const summary = parseEvalSummary(input.stdout);
+  const scenarios = summary && summary.scenarios.length > 0 ? summary.scenarios : printed;
+  const harnessBreak = (reason: RunnerBreakReason, detail: string): RunnerClassification => ({
+    status: "harness-break",
+    reason,
+    detail: `harness break: ${detail} (no gates measured; fix the harness, not the thresholds)`,
+    summary,
+    scenarios,
+  });
+  if (input.error) {
+    return harnessBreak("spawn-failed", `eval runner spawn failed (${input.error})`);
+  }
+  if (summary === null && scenarios.length === 0) {
+    if (input.exitCode === null) {
+      return harnessBreak("killed", "eval runner was killed before printing a summary");
+    }
+    return input.exitCode === 0
+      ? harnessBreak("missing-summary", "eval runner exited 0 without printing a summary")
+      : harnessBreak("crashed", `eval runner exited ${input.exitCode} before printing a summary`);
+  }
+  // A summary is the runner's own proof it finished. Missing evidence the
+  // run itself reports (trace/audio) breaks the harness, not a gate.
+  if (summary && summary.live) {
+    const sessions = summary.traceSessions.length > 0 ? summary.traceSessions : traceSessionsIn(input.stdout);
+    if (sessions.length === 0) {
+      return harnessBreak("missing-trace", "eval runner finished but opened no Call trace session (missing trace)");
+    }
+    if (summary.audioChunks === 0) {
+      return harnessBreak("missing-audio", "eval runner finished but received no agent audio (missing audio)");
+    }
+  }
+  const failures =
+    summary?.failures ?? scenarios.reduce((sum, row) => sum + (row.runs - row.passed), 0);
+  const scenarioCount = scenarios.length;
+  return {
+    status: "finished",
+    reason: null,
+    detail:
+      `eval runner finished (${scenarioCount} scenario${scenarioCount === 1 ? "" : "s"}, ` +
+      `${failures} scenario failure${failures === 1 ? "" : "s"}) — plumbing PASS; gate judgment is separate`,
+    summary,
+    scenarios,
+  };
+}
+
+/** Console line separating plumbing health and playout from gate verdicts. */
+export function formatEvalRunnerReport(artifact: ScoreboardArtifact): string {
+  const runner = artifact.evalRunner;
+  const head =
+    runner.status === "skipped"
+      ? "eval runner: skipped (dry run)"
+      : runner.status === "ok"
+        ? `eval runner: finished in ${runner.durationMs}ms — plumbing PASS (scenario verdicts are judgment)`
+        : `eval runner: HARNESS BREAK (${runner.breakReason ?? "unknown"}) — no plumbing measured; this is not a gate FAIL`;
+  const rows = runner.timings.scenarioRuns;
+  const playout =
+    rows.length === 0
+      ? "playout (wall clock, never gated): unmeasured"
+      : `playout (wall clock, never gated): ${rows
+          .map((row) => `${row.scenario} #${row.run} ${row.wallClockMs}ms`)
+          .join(", ")}`;
+  return `${head}\n${playout}`;
+}
+
 // ── Skeleton: plumbing, measurements, and gate assembly in spec priority ─────
 // (ticket 01, owner: skeleton section). Gates report in the spec's fail-fast
 // priority: plumbing (harness) → measurements → reply-gap → end-of-turn →
@@ -2090,7 +2292,7 @@ export const GATE_PRIORITY = [
 
 /** Skeleton gates: reported but never failed without measured evidence. */
 function skeletonGates(
-  exitCode: number | null,
+  runnerOutcome: RunnerClassification | null,
   replySamples: ReplyGapSample[],
   traceSessionId: string | null,
   agentInput: { turn_detection?: unknown } | null | undefined,
@@ -2105,28 +2307,21 @@ function skeletonGates(
   humanRatings?: HumanRatings | null,
   voiceId?: string,
   options?: {
-    dryRun?: boolean;
-    evalError?: string | null;
     measured?: boolean;
     measuredSources?: MeasuredEvidenceKind[];
   },
 ): ScoreboardGate[] {
-  const dryRun = options?.dryRun ?? false;
-  // Finding A: a dead eval runner is a harness break, not a silent INFO.
-  // Dry runs skip the runner (exitCode null placeholder) and stay green.
-  const plumbing: ScoreboardGate = dryRun
-    ? { name: "plumbing", status: "PASS", detail: "dry run: eval runner skipped (placeholder, no audio measured)" }
-    : exitCode === 0 && !options?.evalError
-      ? { name: "plumbing", status: "PASS", detail: "eval runner finished" }
-      : {
-          name: "plumbing",
-          status: "FAIL",
-          detail:
-            `harness break: eval runner ${options?.evalError ? `spawn failed (${options.evalError})` : `exited ${exitCode ?? "without an exit code (killed)"}`} ` +
-            `(no gates measured; fix the harness, not the thresholds)`,
-        };
+  // Ticket 06: a finished runner is plumbing health even when its scenarios
+  // or measured gates FAIL; only a harness break fails plumbing.
+  const plumbing: ScoreboardGate =
+    runnerOutcome === null
+      ? { name: "plumbing", status: "PASS", detail: "dry run: eval runner skipped (placeholder, no audio measured)" }
+      : runnerOutcome.status === "finished"
+        ? { name: "plumbing", status: "PASS", detail: runnerOutcome.detail }
+        : { name: "plumbing", status: "FAIL", detail: runnerOutcome.detail };
   // Finding B: a real (non-dry) run with zero measured evidence must fail
   // instead of greening on empty INFO gates. --dry-run stays explicit-dry.
+  const dryRun = runnerOutcome === null;
   const measurements: ScoreboardGate =
     options?.measured || dryRun
       ? {
@@ -2464,8 +2659,17 @@ export function buildSkeletonArtifact(input: {
     ...(input.realCutEvidencePresent ? { realCutEvidencePresent: true } : {}),
   });
   const measured = measuredSources.length > 0;
+  // Ticket 06: the runner's own output decides plumbing health. A dry run
+  // skips the runner entirely (null), never classifies a placeholder as a break.
+  const runnerOutcome = dryRun
+    ? null
+    : classifyRunnerOutcome({
+        stdout: input.runnerStdout,
+        exitCode: input.exitCode,
+        error: input.evalError ?? null,
+      });
   const gatesPreview = skeletonGates(
-    input.exitCode,
+    runnerOutcome,
     samples,
     input.traceSessionId ?? null,
     input.agentInput,
@@ -2479,7 +2683,7 @@ export function buildSkeletonArtifact(input: {
     agentChannel,
     humanRatings,
     input.voice,
-    { dryRun, evalError: input.evalError ?? null, measured, measuredSources },
+    { measured, measuredSources },
   );
   // Finding D: when trace gaps exist but attribution is unverified, the
   // reply-gap gate says so instead of silently implying beat attribution.
@@ -2550,10 +2754,18 @@ export function buildSkeletonArtifact(input: {
     emailInvite: null,
     evalRunner: {
       scenario: input.scenario,
-      passed: input.exitCode === null ? null : input.exitCode === 0,
-      status: dryRun ? "skipped" : input.exitCode === 0 && !input.evalError ? "ok" : "failed",
+      passed: dryRun
+        ? null
+        : runnerOutcome!.status === "finished"
+          ? runnerOutcome!.summary
+            ? runnerOutcome!.summary.failures === 0
+            : runnerOutcome!.scenarios.every((row) => row.passed === row.runs)
+          : false,
+      status: dryRun ? "skipped" : runnerOutcome!.status === "finished" ? "ok" : "failed",
+      breakReason: runnerOutcome?.reason ?? null,
       exitCode: input.exitCode,
       durationMs: input.durationMs,
+      timings: { scenarioRuns: runnerOutcome?.summary?.playout ?? [] },
       rawSha256: sha256Hex(input.runnerStdout),
     },
     runId: input.runId ?? `run-${input.voice}-${Date.now().toString(36)}`,

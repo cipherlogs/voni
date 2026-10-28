@@ -16,6 +16,14 @@
  * ready: score-demo chains its Call trace merge from that id, so per-turn
  * Reply gaps come from the merger instead of an estimate.
  *
+ * The run ends with one machine-readable `EVAL SUMMARY {...}` line: it proves
+ * the runner finished, so scenario failures stay judgment (exit 1) while the
+ * scoreboard reports plumbing PASS. Live client runs also print
+ * `    playout <ms>ms wall clock`, carried in the summary as report-only
+ * timings — never folded into a gate. A crash, kill, or summary-less exit is
+ * a harness break; the summary also names trace sessions and agent audio so
+ * a silent or untraced run is classified as a harness break too.
+ *
  * Scenarios (raw socket):
  *   hang-up       "I want you to hang up." → a real end_call tool call, and
  *                 the tool name is never spoken.
@@ -323,6 +331,13 @@ async function runSession(voiceId: string, steps: Step[]): Promise<Outcome> {
   return outcome;
 }
 
+/** The most recent live client run: playout is reported, never gated. */
+let lastClientOutcome: ClientOutcome | null = null;
+/** Read the last live client run without control-flow narrowing it to null. */
+function latestClientOutcome(): ClientOutcome | null {
+  return lastClientOutcome;
+}
+
 /**
  * One call through the real VoiceSession. `script` gets `say(line)` (queues
  * caller speech) and resolves when the scenario has had its moment.
@@ -339,6 +354,10 @@ type ClientOutcome = {
   /** When the session ended, and when the agent's last audio finished playing. */
   endedAt: number | null;
   lastAudioEnd: number;
+  /** Live-call wall clock from dial to stop, excluding caller clip rendering. */
+  wallClockMs: number;
+  /** Agent audio chunks received during the call. */
+  audioChunks: number;
 };
 
 /**
@@ -370,9 +389,12 @@ async function runClient(
   // Render every caller line before dialing: TTS mid-call skews timing.
   const clips = new Map<string, Buffer>();
   for (const line of lines) clips.set(line, await speak(line));
+  // The live call starts here: clip rendering must never inflate playout.
+  const liveStartedAt = Date.now();
   const body = buildDemoAgentBody(voiceId);
   const outcome: ClientOutcome = {
     events: [], cutAt: null, creates: [], agent: [], heard: [], interruptedReplies: 0, sessionId: null, endedAt: null, lastAudioEnd: 0,
+    wallClockMs: 0, audioChunks: 0,
   };
   let repliesDone = 0;
   let audioChunks = 0;
@@ -558,6 +580,9 @@ async function runClient(
   } finally {
     clearInterval(pump);
     await session.stop();
+    outcome.wallClockMs = Date.now() - liveStartedAt;
+    outcome.audioChunks = audioChunks;
+    lastClientOutcome = outcome;
   }
   return outcome;
 }
@@ -1181,6 +1206,17 @@ const runs = Number(arg("--runs", "5"));
 const voiceId = arg("--voice", DEMO_VOICE_IDS[0]);
 const only = arg("--scenario", "");
 let failures = 0;
+/** Per-scenario rows for the final machine-readable summary. */
+const scenarioResults: { name: string; passed: number; runs: number }[] = [];
+/** Call trace sessions this run opened, deduplicated. */
+const traceSessions: string[] = [];
+/** Wall-clock playout of live client runs: reported, never a gate. */
+const playoutRows: { scenario: string; run: number; wallClockMs: number }[] = [];
+let clientRuns = 0;
+let agentAudioChunks = 0;
+const noteSession = (sessionId: string | null | undefined) => {
+  if (sessionId && !traceSessions.includes(sessionId)) traceSessions.push(sessionId);
+};
 for (const scenario of SCENARIOS.filter((s) => !only || s.name === only)) {
   let passed = 0;
   for (let i = 1; i <= runs; i++) {
@@ -1192,6 +1228,7 @@ for (const scenario of SCENARIOS.filter((s) => !only || s.name === only)) {
     } catch (error) {
       reason = error instanceof Error ? error.message : String(error);
     }
+    noteSession(outcome?.sessionId);
     if (reason === null) passed += 1;
     else {
       failures += 1;
@@ -1202,16 +1239,26 @@ for (const scenario of SCENARIOS.filter((s) => !only || s.name === only)) {
       }
     }
   }
+  scenarioResults.push({ name: scenario.name, passed, runs });
   console.log(`${scenario.name}: ${passed}/${runs}`);
 }
 for (const scenario of CLIENT_SCENARIOS.filter((s) => !only || s.name === only)) {
   let passed = 0;
   for (let i = 1; i <= runs; i++) {
     let reason: string | null;
+    lastClientOutcome = null;
     try {
       reason = await scenario.run();
     } catch (error) {
       reason = error instanceof Error ? error.message : String(error);
+    }
+    const liveRun = latestClientOutcome();
+    if (liveRun) {
+      noteSession(liveRun.sessionId);
+      clientRuns += 1;
+      agentAudioChunks += liveRun.audioChunks;
+      playoutRows.push({ scenario: scenario.name, run: i, wallClockMs: liveRun.wallClockMs });
+      console.log(`    playout ${liveRun.wallClockMs}ms wall clock`);
     }
     if (reason === null) passed += 1;
     else {
@@ -1219,6 +1266,7 @@ for (const scenario of CLIENT_SCENARIOS.filter((s) => !only || s.name === only))
       console.log(`  ✗ ${scenario.name} #${i}: ${reason}`);
     }
   }
+  scenarioResults.push({ name: scenario.name, passed, runs });
   console.log(`${scenario.name}: ${passed}/${runs}`);
 }
 for (const scenario of EMAIL_SCENARIOS.filter((s) => !only || s.name === only)) {
@@ -1232,6 +1280,7 @@ for (const scenario of EMAIL_SCENARIOS.filter((s) => !only || s.name === only)) 
     } catch (error) {
       reason = error instanceof Error ? error.message : String(error);
     }
+    noteSession(outcome?.sessionId);
     if (reason === null) passed += 1;
     else {
       failures += 1;
@@ -1243,6 +1292,23 @@ for (const scenario of EMAIL_SCENARIOS.filter((s) => !only || s.name === only)) 
       }
     }
   }
+  scenarioResults.push({ name: scenario.name, passed, runs });
   console.log(`${scenario.name}: ${passed}/${runs}`);
 }
+
+// One machine-readable line proves the runner finished: scoreboard plumbing is
+// PASS whatever the scenario verdicts and exit code, while a crash, kill, or
+// missing summary/trace/audio is a harness break. Playout stays report-only.
+console.log(
+  `EVAL SUMMARY ${JSON.stringify({
+    scenario: only || "all",
+    runs,
+    failures,
+    scenarios: scenarioResults,
+    traceSessions,
+    playout: playoutRows,
+    audioChunks: clientRuns > 0 ? agentAudioChunks : null,
+    live: scenarioResults.length > 0,
+  })}`,
+);
 process.exit(failures > 0 ? 1 : 0);
