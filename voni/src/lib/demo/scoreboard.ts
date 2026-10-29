@@ -2739,6 +2739,30 @@ export function applyEmailInvite(artifact: ScoreboardArtifact, evidence: EmailIn
 }
 
 
+/**
+ * Which engine produced a run (meta-cascade M12). This is a discriminator, not
+ * a second schema: managed and cascade artifacts share one vocabulary. It is
+ * optional because artifacts written before the cascade carry no field; readers
+ * default an absent discriminator to `managed` (`pipelineOfArtifact`).
+ */
+export type ArtifactPipeline = "managed" | "cascade";
+
+/** The capture legs an artifact may claim (W0 keeps two on the cascade). */
+export type ArtifactCaptureLeg = "reference" | "platform" | "delivered";
+
+/** One capture's provenance — a gitignored working file, never audio bytes. */
+export type ArtifactCapture = { path: string; sha256: string } | null;
+
+/**
+ * Capture evidence by leg. A cascade artifact marks `platform` null
+ * (`N/A — no platform capture on the cascade`); a managed artifact carries all
+ * three. Read-only in this ticket: no writer emits it yet.
+ */
+export type ArtifactCaptures = Partial<Record<ArtifactCaptureLeg, ArtifactCapture>>;
+
+/** One call-scoped event's discriminator as carried by an artifact (M12). */
+export type ArtifactEventRecord = { type: string };
+
 export type ScoreboardArtifact = {
   schemaVersion: typeof SCOREBOARD_SCHEMA_VERSION;
   recordedAt: string;
@@ -2750,6 +2774,21 @@ export type ScoreboardArtifact = {
    * written before the axis derives it from its voice (`subjectOfArtifact`).
    */
   subject?: SubjectRecord;
+  /**
+   * The engine that produced this run (meta-cascade M12). Absent on artifacts
+   * written before the cascade; readers take that as `managed`.
+   */
+  pipeline?: ArtifactPipeline;
+  /**
+   * The capture legs the run recorded (W0). Absent on artifacts written before
+   * the field existed. A cascade artifact never claims the platform leg.
+   */
+  captures?: ArtifactCaptures;
+  /**
+   * The call-scoped events the artifact carries (M12). Absent today; a managed
+   * artifact may never claim a cascade-only event.
+   */
+  events?: ArtifactEventRecord[];
   runs: number;
   /** The locked golden script this run scores against (fixed order/wording/windows). */
   goldenScript: {
