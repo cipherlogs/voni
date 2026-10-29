@@ -50,6 +50,25 @@ export function defaultReferenceText(voiceId: string): string {
   return voniConfig(voiceId).greeting;
 }
 
+/**
+ * The line a text file holds, trimmed of the newline an editor adds.
+ *
+ * A file that cannot be read, or holds nothing but whitespace, is a usage
+ * error named as such: silently falling back to the greeting would blame the
+ * greeting for a sentence it never spoke.
+ */
+export function referenceTextFromFile(path: string): string {
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf8");
+  } catch {
+    throw new Error(`reference text file not found: ${path}`);
+  }
+  const text = raw.trim();
+  if (!text) throw new Error(`reference text file is empty: ${path}`);
+  return text;
+}
+
 /** Cache key: the voice and the exact line, so two lines can never collide. */
 export function referenceKey(voiceId: string, text: string): string {
   return createHash("sha256").update(`${voiceId}\n${text}`).digest("hex");
@@ -108,11 +127,20 @@ function cachedWave(path: string): Buffer | null {
  */
 export async function renderReference(opts: {
   voiceId: string;
+  /** The line to render. Mutually exclusive with `textFile`. */
   text?: string;
+  /** A file holding the line to render. Mutually exclusive with `text`. */
+  textFile?: string;
   dir: string;
   synth: ReferenceSynth;
 }): Promise<RenderedReference> {
-  const text = (opts.text ?? defaultReferenceText(opts.voiceId)).trim();
+  if (opts.text !== undefined && opts.textFile !== undefined) {
+    throw new Error("reference capture takes one line: text and textFile cannot both be set");
+  }
+  const text = (opts.textFile === undefined
+    ? (opts.text ?? defaultReferenceText(opts.voiceId))
+    : referenceTextFromFile(opts.textFile)
+  ).trim();
   if (!text) throw new Error("reference capture needs a line to render");
 
   const path = referencePath(opts.dir, opts.voiceId, text);
