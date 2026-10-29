@@ -138,6 +138,29 @@ test("the test call resolves recognition language from the agent's Locale", () =
   assert.doesNotMatch(call, /pipeline:\s*\{[\s\S]{0,200}?fallback_mode/);
 });
 
+test("the production early return cannot short-circuit the browser E2E capture flag", () => {
+  // Ticket 149's browser E2E serves a production-mode candidate. A blanket
+  // `production || …` return would leave the capture off there even though
+  // `deliveredCaptureRequested` allows the isolated test build; the probes
+  // stay dev-only, the capture flag decides for itself.
+  const call = readRepo("components/voice-call.tsx");
+  const flags = call.slice(
+    call.indexOf("function callDebugFlags"),
+    call.indexOf("function StreamingText"),
+  );
+  assert.doesNotMatch(
+    flags,
+    /production \|\| typeof window === "undefined"/,
+    "the production short-circuit hides the test-build capture",
+  );
+  assert.match(flags, /popProbe: !production && params\.get\("popprobe"\) === "1"/);
+  assert.match(flags, /tickOff: !production && params\.get\("tick"\) === "0"/);
+  assert.match(
+    flags,
+    /deliverCapture: deliveredCaptureRequested\(window\.location\.search, production\)/,
+  );
+});
+
 test("the contact chip has one render site, gated on the invite, the inbox and the call tag", () => {
   const call = readRepo("components/voice-call.tsx");
   assert.equal((call.match(/<DemoAddressChip\b/g) ?? []).length, 1, "one chip, never a second");

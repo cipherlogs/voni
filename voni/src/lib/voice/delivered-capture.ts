@@ -23,9 +23,23 @@ export const DELIVERED_CAPTURE_DIR = ".captures";
 /** A dev sink that is gone must not hold up a hang-up. */
 const CAPTURE_UPLOAD_TIMEOUT_MS = 2000;
 
-/** Dev-only switch, inert in a production build. */
-export function deliveredCaptureRequested(search: string, production: boolean): boolean {
-  if (production) return false;
+/**
+ * Test-build seam (ticket 149): `scripts/e2e-run.mjs` builds its throwaway
+ * candidate with this set, so the browser E2E can write a real delivered
+ * capture from a production-mode build. It is inlined at build time, so an
+ * ordinary `next build` never sees it and the ticket-121 rule (inert in
+ * production) is unchanged there.
+ */
+export const DELIVERED_CAPTURE_TEST_BUILD =
+  process.env.NEXT_PUBLIC_VONI_E2E_CAPTURE === "1";
+
+/** Dev-only switch, inert in production outside the e2e test build. */
+export function deliveredCaptureRequested(
+  search: string,
+  production: boolean,
+  testBuild: boolean = DELIVERED_CAPTURE_TEST_BUILD,
+): boolean {
+  if (production && !testBuild) return false;
   return new URLSearchParams(search).get(DELIVERED_CAPTURE_QUERY) === "1";
 }
 

@@ -214,7 +214,9 @@ function useIsBelowLg() {
  * `?popprobe=1` logs every output jump, overload and underrun as a
  * `[voice-call] pop` line (merged by `npm run call:trace`), `?tick=0`
  * silences the caption tick, and `?delivercapture=1` writes the rendered
- * playout to `voni/.captures/`. Always empty in production.
+ * playout to `voni/.captures/`. The probes are always empty in production;
+ * the capture keeps ticket 121's rule too, except in ticket 149's isolated
+ * test build, which opts in at build time (`deliveredCaptureRequested`).
  */
 function callDebugFlags(): {
   popProbe: boolean;
@@ -222,13 +224,15 @@ function callDebugFlags(): {
   deliverCapture: boolean;
 } {
   const production = process.env.NODE_ENV === "production";
-  if (production || typeof window === "undefined") {
+  if (typeof window === "undefined") {
     return { popProbe: false, tickOff: false, deliverCapture: false };
   }
   const params = new URLSearchParams(window.location.search);
   return {
-    popProbe: params.get("popprobe") === "1",
-    tickOff: params.get("tick") === "0",
+    popProbe: !production && params.get("popprobe") === "1",
+    tickOff: !production && params.get("tick") === "0",
+    // Not gated on `production` here: the flag parser owns that rule, and a
+    // production-mode E2E build must still be able to ask for a capture.
     deliverCapture: deliveredCaptureRequested(window.location.search, production),
   };
 }
