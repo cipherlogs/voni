@@ -1,0 +1,249 @@
+{
+  "contract": "floor-arbitration/1",
+  "recordedAt": "2026-10-29",
+  "comment": "One behavioural table for floor arbitration while the agent holds the floor, read by BOTH the cascade test (voice-pipeline/cascade/test_floor.py) and the browser judge test (voni/src/lib/voice/floor-parity.test.ts). text + agentSpeakingMs + judgeScore are the inputs; command/backchannel are the existing word-set classifications (turns.py in Python, isCommandBargeIn/isFillerOnly in TypeScript); tsVerdict is the browser's judgeOverlap verdict on the agent's own words (yield = take the floor, ignore = backchannel, judge = defers); cascade is what the cascade gate does with the same inputs (take_floor / backchannel / wait). softConfirm marks bare assent: never a command, never filler, never a cut — the settled final takes the existing soft-confirm path. A verdict mapping that stops holding is drift, not a new expected value.",
+  "cases": [
+    {
+      "name": "a command takes the floor once the agent is established",
+      "text": "stop",
+      "agentSpeakingMs": 5000,
+      "judgeScore": 0.9,
+      "command": true,
+      "backchannel": false,
+      "tsVerdict": "yield",
+      "cascade": "take_floor"
+    },
+    {
+      "name": "wait is steering, not filler",
+      "text": "wait",
+      "agentSpeakingMs": 5000,
+      "judgeScore": 0.9,
+      "command": true,
+      "backchannel": false,
+      "tsVerdict": "yield",
+      "cascade": "take_floor"
+    },
+    {
+      "name": "no is steering",
+      "text": "no",
+      "agentSpeakingMs": 5000,
+      "judgeScore": 0.9,
+      "command": true,
+      "backchannel": false,
+      "tsVerdict": "yield",
+      "cascade": "take_floor"
+    },
+    {
+      "name": "nope is steering",
+      "text": "nope",
+      "agentSpeakingMs": 5000,
+      "judgeScore": 0.9,
+      "command": true,
+      "backchannel": false,
+      "tsVerdict": "yield",
+      "cascade": "take_floor"
+    },
+    {
+      "name": "repeat is steering",
+      "text": "repeat",
+      "agentSpeakingMs": 5000,
+      "judgeScore": 0.9,
+      "command": true,
+      "backchannel": false,
+      "tsVerdict": "yield",
+      "cascade": "take_floor"
+    },
+    {
+      "name": "again is steering",
+      "text": "again",
+      "agentSpeakingMs": 5000,
+      "judgeScore": 0.9,
+      "command": true,
+      "backchannel": false,
+      "tsVerdict": "yield",
+      "cascade": "take_floor"
+    },
+    {
+      "name": "sorry is steering",
+      "text": "sorry",
+      "agentSpeakingMs": 5000,
+      "judgeScore": 0.9,
+      "command": true,
+      "backchannel": false,
+      "tsVerdict": "yield",
+      "cascade": "take_floor"
+    },
+    {
+      "name": "listen is steering",
+      "text": "listen",
+      "agentSpeakingMs": 5000,
+      "judgeScore": 0.9,
+      "command": true,
+      "backchannel": false,
+      "tsVerdict": "yield",
+      "cascade": "take_floor"
+    },
+    {
+      "name": "the hold-on phrase is steering",
+      "text": "hold on",
+      "agentSpeakingMs": 5000,
+      "judgeScore": 0.9,
+      "command": true,
+      "backchannel": false,
+      "tsVerdict": "yield",
+      "cascade": "take_floor"
+    },
+    {
+      "name": "the hang-on phrase is steering",
+      "text": "hang on",
+      "agentSpeakingMs": 5000,
+      "judgeScore": 0.9,
+      "command": true,
+      "backchannel": false,
+      "tsVerdict": "yield",
+      "cascade": "take_floor"
+    },
+    {
+      "name": "the excuse-me phrase is steering",
+      "text": "excuse me",
+      "agentSpeakingMs": 5000,
+      "judgeScore": 0.9,
+      "command": true,
+      "backchannel": false,
+      "tsVerdict": "yield",
+      "cascade": "take_floor"
+    },
+    {
+      "name": "a command inside the talk-over window waits on the cascade even though the browser judge yields",
+      "text": "stop",
+      "agentSpeakingMs": 200,
+      "judgeScore": 0.3,
+      "command": true,
+      "backchannel": false,
+      "tsVerdict": "yield",
+      "cascade": "wait"
+    },
+    {
+      "name": "bare assent is not a command and does not cut",
+      "text": "yes",
+      "agentSpeakingMs": 5000,
+      "judgeScore": 0.12,
+      "command": false,
+      "backchannel": false,
+      "tsVerdict": "ignore",
+      "cascade": "wait",
+      "softConfirm": true
+    },
+    {
+      "name": "yeah is the same soft-confirm path",
+      "text": "yeah",
+      "agentSpeakingMs": 5000,
+      "judgeScore": 0.12,
+      "command": false,
+      "backchannel": false,
+      "tsVerdict": "ignore",
+      "cascade": "wait",
+      "softConfirm": true
+    },
+    {
+      "name": "a filler is a backchannel",
+      "text": "uh-huh",
+      "agentSpeakingMs": 5000,
+      "judgeScore": 0.12,
+      "command": false,
+      "backchannel": true,
+      "tsVerdict": "ignore",
+      "cascade": "backchannel"
+    },
+    {
+      "name": "okay is a backchannel",
+      "text": "okay",
+      "agentSpeakingMs": 5000,
+      "judgeScore": 0.12,
+      "command": false,
+      "backchannel": true,
+      "tsVerdict": "ignore",
+      "cascade": "backchannel"
+    },
+    {
+      "name": "hmm is a backchannel",
+      "text": "hmm",
+      "agentSpeakingMs": 5000,
+      "judgeScore": 0.12,
+      "command": false,
+      "backchannel": true,
+      "tsVerdict": "ignore",
+      "cascade": "backchannel"
+    },
+    {
+      "name": "got-it is a backchannel",
+      "text": "got it",
+      "agentSpeakingMs": 5000,
+      "judgeScore": 0.12,
+      "command": false,
+      "backchannel": true,
+      "tsVerdict": "ignore",
+      "cascade": "backchannel"
+    },
+    {
+      "name": "mhm is a backchannel",
+      "text": "mhm",
+      "agentSpeakingMs": 5000,
+      "judgeScore": 0.12,
+      "command": false,
+      "backchannel": true,
+      "tsVerdict": "ignore",
+      "cascade": "backchannel"
+    },
+    {
+      "name": "content at the threshold takes the floor",
+      "text": "book a demo",
+      "agentSpeakingMs": 5000,
+      "judgeScore": 0.72,
+      "command": false,
+      "backchannel": false,
+      "tsVerdict": "judge",
+      "cascade": "take_floor"
+    },
+    {
+      "name": "a full question takes the floor",
+      "text": "what is the price",
+      "agentSpeakingMs": 5000,
+      "judgeScore": 0.88,
+      "command": false,
+      "backchannel": false,
+      "tsVerdict": "judge",
+      "cascade": "take_floor"
+    },
+    {
+      "name": "a single content word waits",
+      "text": "price",
+      "agentSpeakingMs": 5000,
+      "judgeScore": 0.45,
+      "command": false,
+      "backchannel": false,
+      "tsVerdict": "judge",
+      "cascade": "wait"
+    },
+    {
+      "name": "a filler plus content is a real interruption",
+      "text": "mm maybe later",
+      "agentSpeakingMs": 5000,
+      "judgeScore": 0.72,
+      "command": false,
+      "backchannel": false,
+      "tsVerdict": "judge",
+      "cascade": "take_floor"
+    },
+    {
+      "name": "no words at all waits",
+      "text": "",
+      "agentSpeakingMs": 5000,
+      "judgeScore": 0.0,
+      "command": false,
+      "backchannel": false,
+      "tsVerdict": "ignore",
+      "cascade": "wait"
+    }
+  ]
+}
