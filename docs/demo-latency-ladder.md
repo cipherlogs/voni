@@ -76,6 +76,37 @@ pipeline code, transport rewrite or preemption work happens in this effort.
 If no rung was adopted and no trigger is met, the verdict is `no change` (not a
 dead-end, not a pass); ticket 17 is closed as not needed.
 
+## Verdict
+
+**`dead-end` — no window pair adopted; the platform door is closed for this
+effort.** The ladder ran all three rungs, one full-suite run each, alone under
+the timing lock:
+
+| Rung | Pooled p50 / p95 / n | Why it failed | Decision |
+| --- | --- | --- | --- |
+| 1 — 400 / 640 / 0 | 981 / 2255 / 8 | `reply-gap` FAIL on the `email-invite` beat median (1893ms) | `no change` |
+| 2 — 200 / 400 / 0 | 1153 / 2164 / 8 | same beat (1920ms), plus `greeting-cut` and `barge-in-cut` regressions | `no change` |
+| 3 — `interruption_delay: 0` alone | 2297 / 3463 / 8 | pooled median and tail both breach; platform expanded the object to 1000 / 3000 | `dead-end` |
+
+The fallback trigger is met on the **pooled median**: rung 3 measures 2297ms,
+above the 1800ms line. Fragment risk was `clear` on all three rungs, and
+interrupted turns were 6 / 5 / 6 against the baseline's 5, so no canary split.
+The failure is not a fragmenting window pair but the platform's end-of-turn and
+first-audio wait: rung 1 shows ordinary endpointing ~1.3s and delivery ~1.3s,
+and tightening the silence windows does not move the tool/invite-shaped beat
+that keeps the pooled gate red.
+
+Consequences recorded here:
+
+- production keeps `turn_detection: null`; no window pair was adopted, so no
+  end-of-turn contract, pre-roll, budget, model, keyterm or transcription-mode
+  change rides along;
+- the owned-pipeline fallback is scoped as its own ticket
+  (`.scratch/demo-cascade-pipeline/issues/01-owned-pipeline.md`); no pipeline
+  code is written in this effort;
+- no green claim exists: the pooled Reply gap gate never PASSed on a real
+  artifact in this effort.
+
 ## Ledger
 
 Median values are milliseconds, in the order **endpointing / generation /
@@ -88,7 +119,7 @@ than the split band counts). `interrupted` is `adoption.interruptedTurns`.
 | baseline | production (no turn-detection object) | production / `anna` (agent `agent_d66c02a12f904b73a940a42032dbd36d`) | `score-20261029-094855-anna.json` / `6158dd6a4712ac49f0cdb77090555ff21c02d4cb4ea541e4108128cbc67d8ffd` | 1896 / 2135 / 7 | FAIL | ordinary `1859 / 1 / 1999 / 4482` (n=8) · post-cut `1545 / 2 / 1953 / 4000` (n=1) | 9 PASS / 5 INFO / 2 FAIL (`reply-gap`, `barge-in-cut`) | clear | clear | 5 | baseline | `run-20261029-094855-anna` (2026-10-29T08:48:55Z); code `8c3a8b344a99`; llm `google/gemini-2.5-flash`; end-of-turn production (null, no experiment evidence); `barge-in-cut` was an unanswered 1112ms cut — the sidecar flags it as a possible run-level flake to recheck at acceptance; run predates the 07b default-events guard but carries client marks |
 | rung 1 | 400 / 640 / 0 | `turn-window` / `anna:exp` (agent `agent_3efdbb1cc314460aa458d2e87d6c0d53`, fp `f82bb830815c`) | `score-20261029-100925-anna.json` / `1d3fa6eff8ca955da5c5dbff428178b315cda6c7696d8fd5cd12807c8966bb91` | 981 / 2255 / 8 | **NO** — `reply-gap` FAIL on beat `email-invite` (median 1893ms > 1500ms) though overall p50 981ms | ordinary `1305 / 2 / 1328 / 3133` (n=7) · post-cut `1445 / 0 / 1456 / 3401` (n=1) | 10 PASS / 5 INFO / 1 FAIL (`reply-gap`) | clear | clear | 6 | `no change` | `run-20261029-101427-anna`; code `9dc06c557956`; 9/9 scenarios; end-of-turn PASS as experiment evidence (production null preserved); interrupted 6 ≥ baseline 5; failing beat's 2255ms turn is tool/invite flow, not window-shaped; 5 of 13 gapped turns carried no split sample after the strict pairing fix; an earlier attempt (`score-20261029-095132-anna`, `d46fb3b7…`) was voided by the end-of-turn guard bug and a negative split sample, both fixed before this run |
 | rung 2 | 200 / 400 / 0 | `turn-window` / `anna:exp` (agent `agent_3efdbb1cc314460aa458d2e87d6c0d53`, fp `727d4126d650`) | `score-20261029-091544-anna-rung2.json` / `67f8e1de4ffb3fcdd7f782b09cedc63a9835663b901f3ff4bfa041da1dca64b1` | 1153 / 2164 / 8 | **NO** — `reply-gap` FAIL on beat `email-invite` (median 1920ms > 1500ms) | ordinary `975 / 1 / 978 / 2453` (n=7) · post-cut unmeasured (n=0) | 8 PASS / 5 INFO / 3 FAIL (`reply-gap`, `greeting-cut`, `barge-in-cut`) | clear | clear | 5 | `no change` | `run-20261029-102122-anna`; code `34d7d50ecc3f`; 9/9 scenarios; end-of-turn PASS as experiment evidence; the same tool/invite-shaped beat fails (1893 → 1920ms) and the tighter windows buy nothing there; `email-invite` INFO is `unmeasured-memory`, not a pass; run also lost `greeting-cut` and `barge-in-cut` (cut 1580ms) — safety regression relative to rung 1; 5 of 12 gapped turns carried no split sample |
-| rung 3 | - / - / 0 (`interruption_delay` alone) | `turn-window` / `anna:exp` | — | — | — | — | — | — | — | — | — | not run |
+| rung 3 | - / - / 0 (`interruption_delay` alone) | `turn-window` / `anna:exp` (agent `agent_3efdbb1cc314460aa458d2e87d6c0d53`, fp `c4b86a1c235b`) | `score-20261029-092239-anna-rung3.json` / `88130d18a8de2e20f2cecc1734bf802187e3db53b46a3cd8a25e1c7cd58fa5f8` | 2297 / 3463 / 8 | **NO** — pooled p50 and p95 both breach (2297 > 1500, 3463 > 2500) | ordinary `3444 / 1 / 3469 / 7413` (n=6) · post-cut unmeasured (n=0) | 7 PASS / 5 INFO / 4 FAIL (`reply-gap`, `end-of-turn`, `greeting-cut`, `barge-in-cut`) | clear | clear | 6 | `dead-end` | `run-20261029-102816-anna`; code `e73a0180d380`; 9/9 scenarios; recorded windows `{"interruption_delay":0}` but the platform expanded them to `min_silence 1000 / max_silence 3000`, so "no silence windows" is not expressible this way — the `end-of-turn` FAIL is the 10b mismatch guard correctly flagging that expansion; ordinary endpointing ≈ 3.4s and pooled 2297ms is above the 1800ms fallback trigger; 6 of 11 gapped turns carried a split sample |
 
 Filling a row:
 
