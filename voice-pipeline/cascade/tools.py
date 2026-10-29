@@ -39,6 +39,12 @@ one after the model reconnects mid-turn — replays the memoised result
 re-addressed to the repeated call id. A new logical turn clears the memo, so a
 deliberate repeat in a later turn is a real call again.
 
+Ticket 85's narration hold lives in :class:`ToolNarrationHold`: on a turn that
+hands off to a tool, the model's content never reaches the caller. Any narration
+in flight is cancelled and the Locale's hold line is spoken instead, while
+history still records the assistant message verbatim so the model's next request
+sees what it actually said.
+
 ``end_call`` is not a tool. It is a pure signal (:class:`EndCallSignal`): no
 request is made and nothing speakable follows it. The closing line and the
 hangup are ticket 87's.
@@ -47,10 +53,12 @@ hangup are ticket 87's.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import os
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Any
 from urllib.parse import quote
 
@@ -62,11 +70,12 @@ from cascade.meta_llm import (
     MetaLLMTurn,
     ToolCallIdentityError,
     ToolDenial,
+    reply_disposition,
     tool_result_message,
 )
 from cascade.thresholds import require_bound
 from metrics import TimingLedger
-from providers import TokenDelta, ToolCallRequest
+from providers import SentenceAudio, TokenDelta, ToolCallRequest
 
 #: The app's existing tool route. The name is one path segment, never a body
 #: field, because that is the route the managed path already serves.
@@ -85,6 +94,40 @@ END_CALL_TOOL = "end_call"
 #: The only context kind a cascade call sends. A test context is the app's
 #: own dry-run path, not something a live call may claim.
 CALL_CONTEXT_KIND = "call"
+
+#: The line the caller hears while a tool runs, one per Locale the catalogue
+#: speaks (ticket 85). The model's own narration is never spoken on a tool turn;
+#: this is what replaces it. Keyed by our Locale code, never a vendor name.
+HOLD_LINES: Mapping[str, str] = MappingProxyType(
+    {
+        "en": "One moment.",
+        "es": "Un momento.",
+        "fr": "Un instant.",
+        "de": "Einen Moment.",
+        "it": "Un attimo.",
+        "pt": "Um momento.",
+    }
+)
+
+
+class UnknownHoldLineError(LookupError):
+    """No hold line exists for this Locale, so nothing may be spoken for it."""
+
+    def __init__(self, locale_code: str) -> None:
+        self.locale_code = locale_code
+        known = ", ".join(sorted(HOLD_LINES))
+        super().__init__(
+            f'no hold line for Locale "{locale_code}": the catalogue has lines '
+            f"for {known}"
+        )
+
+
+def hold_line(locale_code: str) -> str:
+    """The localized hold line, or the named reason there is none."""
+    line = HOLD_LINES.get(locale_code)
+    if line is None:
+        raise UnknownHoldLineError(locale_code)
+    return line
 
 
 class ToolHopError(RuntimeError):
@@ -488,6 +531,160 @@ class ToolHop:
             return self._outcome
         assert self._task is not None
         return await self._task
+
+
+#: Where one synthesized hold frame goes; the same sink the reply audio uses.
+HoldSink = Callable[[SentenceAudio], Awaitable[None] | None]
+
+
+@dataclass(frozen=True)
+class HoldOutcome:
+    """What the hold actually did, so the call can record it honestly."""
+
+    spoken: bool
+    reason: str
+    text: str = ""
+    frames: int = 0
+    audio_bytes: int = 0
+    cancelled: bool = False
+
+    @classmethod
+    def skipped(cls, reason: str, *, cancelled: bool = False) -> "HoldOutcome":
+        """Nothing was spoken; ``reason`` is the named reason."""
+        return cls(spoken=False, reason=reason, cancelled=cancelled)
+
+    def to_document(self) -> dict[str, Any]:
+        return {
+            "spoken": self.spoken,
+            "reason": self.reason,
+            "text": self.text,
+            "frames": self.frames,
+            "audioBytes": self.audio_bytes,
+            "cancelled": self.cancelled,
+        }
+
+
+class ToolNarrationHold:
+    """Speak the localized hold line instead of the model thinking out loud.
+
+    On a turn that hands off to a tool, the model's content is never spoken: any
+    narration already in flight is cut with the voice's ``Cancel``, then the
+    Locale's hold line is spoken through the same session, so the caller hears a
+    deliberate line rather than dead air or the model's notes (ticket 85).
+
+    The hold is spoken *before* the hop is awaited — it is what fills the wait —
+    and it is skipped when the tool already answered, because a hold that
+    outlives its wait is just a slower reply. A barge-in cancels it with
+    :meth:`cancel`; the tool result still lands in history either way.
+    """
+
+    def __init__(
+        self,
+        *,
+        voice: Any,
+        locale_code: str,
+        sink: HoldSink | None = None,
+    ) -> None:
+        # Resolve the line now: an unbound Locale must refuse before a call.
+        self._line = hold_line(locale_code)
+        self._locale_code = locale_code
+        self._voice = voice
+        self._sink = sink
+        self._cancelled = False
+
+    @property
+    def text(self) -> str:
+        """The line this hold speaks."""
+        return self._line
+
+    @property
+    def cancelled(self) -> bool:
+        return self._cancelled
+
+    async def cancel(self) -> None:
+        """Stop the hold line; a barge-in owns the floor from here.
+
+        Idempotent, and it also cancels the voice so a frame already in flight
+        cannot reach the caller after the interruption.
+        """
+        self._cancelled = True
+        await self._cancel_voice()
+
+    async def speak(
+        self, *, turn: MetaLLMTurn, hop: ToolHop | None = None
+    ) -> HoldOutcome:
+        """Discard the narration and speak the hold, unless it is not needed."""
+        if self._cancelled:
+            return HoldOutcome.skipped("the hold was cancelled", cancelled=True)
+        if not _owes_hold(turn):
+            return HoldOutcome.skipped(
+                "the turn is not a tool handoff, so its reply is spoken as generated"
+            )
+        if turn.content_text.strip():
+            # The model narrated before calling the tool. Cut it, so the caller
+            # never hears the model thinking out loud.
+            await self._cancel_voice()
+        if hop is not None and hop.done:
+            return HoldOutcome.skipped(
+                "the tool answered before a hold was needed, so nothing was spoken"
+            )
+        if self._cancelled:
+            return HoldOutcome.skipped("the hold was cancelled", cancelled=True)
+
+        frames = 0
+        audio_bytes = 0
+        async for audio in self._voice.speak(self._line):
+            if self._cancelled:
+                return HoldOutcome(
+                    spoken=frames > 0,
+                    reason="the hold was cancelled by a barge-in",
+                    text=self._line,
+                    frames=frames,
+                    audio_bytes=audio_bytes,
+                    cancelled=True,
+                )
+            frames += 1
+            audio_bytes += len(audio.pcm)
+            if self._sink is not None:
+                result = self._sink(audio)
+                if inspect.isawaitable(result):
+                    await result
+        if self._cancelled:
+            return HoldOutcome(
+                spoken=frames > 0,
+                reason="the hold was cancelled by a barge-in",
+                text=self._line,
+                frames=frames,
+                audio_bytes=audio_bytes,
+                cancelled=True,
+            )
+        if frames == 0:
+            return HoldOutcome.skipped(
+                "the hold synthesis produced no audio; the caller heard nothing"
+            )
+        return HoldOutcome(
+            spoken=True,
+            reason="spoken",
+            text=self._line,
+            frames=frames,
+            audio_bytes=audio_bytes,
+        )
+
+    async def _cancel_voice(self) -> None:
+        """Cut whatever the session is synthesizing, if the voice can."""
+        cancel = getattr(self._voice, "cancel", None)
+        if not callable(cancel):
+            return
+        result = cancel()
+        if inspect.isawaitable(result):
+            await result
+
+
+def _owes_hold(turn: MetaLLMTurn) -> bool:
+    """Whether this turn hands off to a tool and therefore owes a hold line."""
+    if turn.hold_line_required:
+        return True
+    return reply_disposition(turn).hold_line
 
 
 class ToolExecutor:
