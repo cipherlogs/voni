@@ -2018,7 +2018,7 @@ test("a hang-up before the goodbye ends fails the drain gate", () => {
 });
 
 /** A fake eval runner that prints one GOODBYE DRAIN line (and the hang-up line). */
-function goodbyeShim(evidence: Record<string, unknown>, hangUpLine?: string) {
+function goodbyeShim(evidence: Record<string, unknown>, hangUpLine?: string, traceNarration = evidence.narratedEnding === true) {
   return `#!/usr/bin/env node
 const args = process.argv.slice(2);
 if (args[0] === "run" && args[1] === "eval:demo-agent") {
@@ -2044,6 +2044,7 @@ ${hangUpLine ? `  console.log(${JSON.stringify(hangUpLine)});` : ""}
   console.log(' 6.00s  VONI    "Sure thing"  (reply_create gap 500ms)');
   console.log(' 7.00s  TOOL    end_call {"reason":"caller asked"} 100ms');
   console.log(' 8.00s  VONI    "I will let you go, the team is at hi at voni dot c c"  (reply_create gap 600ms)');
+${traceNarration ? `  console.log(' 9.00s  VONI    "The call has ended. Have a nice day."  (reply_create gap 500ms)');` : ""}
 }
 `;
 }
@@ -2053,10 +2054,11 @@ function runGoodbyeShim(
   evidence: Record<string, unknown>,
   args: string[] = [],
   hangUpLine?: string,
+  traceNarration?: boolean,
 ) {
   const bin = join(dir, "bin");
   mkdirSync(bin, { recursive: true });
-  writeFileSync(join(bin, "npm"), goodbyeShim(evidence, hangUpLine), { mode: 0o755 });
+  writeFileSync(join(bin, "npm"), goodbyeShim(evidence, hangUpLine, traceNarration), { mode: 0o755 });
   const out = join(dir, `score-${Math.random().toString(36).slice(2)}.json`);
   const result = run(
     ["--scenario", "bye-audio", "--out", out, "--timing-lock", join(dir, `lock-${Math.random().toString(36).slice(2)}`), ...args],
@@ -2086,6 +2088,85 @@ test("the runner's full goodbye evidence greens end-call-drain without flags", (
   assert.equal(gate.status, "PASS");
   assert.match(gate.detail, /hi@voni\.cc/);
   assert.match(result.stdout, /PASS\s+end-call-drain/);
+});
+
+test("the runner saying the ending was narrated fails at the post-End call turn", () => {
+  // Post-End call silence is evidence the runner measures (it hears every
+  // reply) and the merged trace turns into a pointer. No --narrated-ending
+  // flag: a real run must be able to FAIL on its own evidence.
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const { result, artifact } = runGoodbyeShim(
+    dir,
+    {
+      scenario: "bye-audio",
+      session: "sess_gd21",
+      turn: 4,
+      coverage: 0.97,
+      inboxNamed: true,
+      narratedEnding: true,
+    },
+    [],
+    "    hung up 700ms after the goodbye finished playing",
+  );
+  assert.equal(result.status, 1, result.stderr + result.stdout);
+  const a = artifact as {
+    endCallDrain: { narratedEnding: boolean };
+    gates: { name: string; status: string; detail: string }[];
+  };
+  assert.equal(a.endCallDrain.narratedEnding, true);
+  const gate = a.gates.find((g) => g.name === "end-call-drain")!;
+  assert.equal(gate.status, "FAIL");
+  assert.match(gate.detail, /narrat/i);
+  assert.match(gate.detail, /call trace turn 5 \(sess_gd21\)/, `cites the post-End turn: ${gate.detail}`);
+});
+
+test("the runner seeing narration with no merged turn says so explicitly", () => {
+  // The runner heard the post-End reply; the merged trace has no such row
+  // (that call's excerpt was not merged). The FAIL must say "no turn", not
+  // point at the goodbye.
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const { result, artifact } = runGoodbyeShim(
+    dir,
+    {
+      scenario: "bye-audio",
+      session: "sess_gd23",
+      turn: 4,
+      coverage: 0.97,
+      inboxNamed: true,
+      narratedEnding: true,
+    },
+    [],
+    "    hung up 700ms after the goodbye finished playing",
+    false,
+  );
+  assert.equal(result.status, 1, result.stderr + result.stdout);
+  const gate = (artifact as { gates: { name: string; status: string; detail: string }[] }).gates.find(
+    (g) => g.name === "end-call-drain",
+  )!;
+  assert.equal(gate.status, "FAIL");
+  assert.match(gate.detail, /narrat/i);
+  assert.match(gate.detail, /no turn merged \(sess_gd23\)/, `explicit no-turn: ${gate.detail}`);
+  assert.doesNotMatch(gate.detail, /call trace turn 4/, "never cites the goodbye turn");
+});
+
+test("the runner measuring a silent ending keeps the gate green", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const { result, artifact } = runGoodbyeShim(
+    dir,
+    {
+      scenario: "bye-audio",
+      session: "sess_gd22",
+      turn: 4,
+      coverage: 0.97,
+      inboxNamed: true,
+      narratedEnding: false,
+    },
+    [],
+    "    hung up 700ms after the goodbye finished playing",
+  );
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  const a = artifact as { endCallDrain: { narratedEnding: boolean } };
+  assert.equal(a.endCallDrain.narratedEnding, false);
 });
 
 test("a closing line that never named the inbox fails at the runner's closing turn", () => {

@@ -31,10 +31,12 @@
  * than typed in by an operator.
  *
  * Each goodbye run prints one `GOODBYE DRAIN {...}` line: the closing reply's
- * turn, its played/expected audio coverage, and whether it named the team
- * inbox (hi@voni.cc, said "hi at voni dot c c"). bye-audio and free-gate both
- * assert the inbox and the 80% coverage bar; score-demo gates the measured
- * numbers and cites the closing turn on a FAIL.
+ * turn, its played/expected audio coverage, whether it named the team inbox
+ * (hi@voni.cc, said "hi at voni dot c c"), and whether the model spoke again
+ * after its own hang-up signal (post-End call narration). bye-audio and
+ * free-gate both assert the inbox and the 80% coverage bar; score-demo gates
+ * the measured numbers and cites the closing — or the post-End — turn on a
+ * FAIL.
  *
  * Scenarios (raw socket):
  *   hang-up       "I want you to hang up." → a real end_call tool call, and
@@ -1187,6 +1189,8 @@ type ReplyRecord = {
   id: string;
   text: string;
   audioBytes: number;
+  /** Wall clock at reply.started: what came after the hang-up signal. */
+  startedAt: number;
   afterToolResult: boolean;
   /** Replaced by the call's own reply: never played in the browser. */
   replaced?: boolean;
@@ -1199,6 +1203,13 @@ type ToolOutcome = {
   tools: ToolCallRecord[];
   endCalled: boolean;
   slowTurns: number;
+  /**
+   * When end_call's result was sent (the browser's hold-until-goodbye-done),
+   * and whether it was held at all. Only then can "spoke after End call" be
+   * measured: the goodbye reply itself started before the result went out.
+   */
+  endCallResultAt: number | null;
+  endCallResultHeld: boolean;
   /** The live session's id, for the Call trace merge. */
   sessionId?: string;
   /** The platform ignored the call's replacement once, so it was resent. */
@@ -1235,7 +1246,16 @@ async function runToolSession(
 ): Promise<ToolOutcome> {
   const body = buildDemoAgentBody(voiceId);
   const ws = new WebSocket(`${WS}?token=${await token()}`);
-  const outcome: ToolOutcome = { replies: [], heard: [], tools: [], endCalled: false, slowTurns: 0, chipShows: [] };
+  const outcome: ToolOutcome = {
+    replies: [],
+    heard: [],
+    tools: [],
+    endCalled: false,
+    slowTurns: 0,
+    endCallResultAt: null,
+    endCallResultHeld: false,
+    chipShows: [],
+  };
   const send = (message: Record<string, unknown>) => {
     if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(message));
   };
@@ -1272,6 +1292,7 @@ async function runToolSession(
   };
   const sendResult = (callId: string, result: Record<string, unknown>, record: ToolCallRecord) => {
     record.resultAt = Date.now();
+    if (record.name === END_CALL_VOICE_TOOL.name) outcome.endCallResultAt = record.resultAt;
     if (record.name === SHOW_TEST_ADDRESS_TOOL && result.ok === true) {
       // The chip shows what the tool result carried, exactly like the browser.
       const data = (result.data ?? {}) as Record<string, unknown>;
@@ -1334,7 +1355,13 @@ async function runToolSession(
     }
     if (msg.type === "reply.started") {
       replyActive = true;
-      current = { id: String(msg.reply_id), text: "", audioBytes: 0, afterToolResult: lastWasToolResult };
+      current = {
+        id: String(msg.reply_id),
+        text: "",
+        audioBytes: 0,
+        startedAt: Date.now(),
+        afterToolResult: lastWasToolResult,
+      };
       if (replaceNext) {
         clearTimeout(replaceNext);
         replaceNext = null;
@@ -1386,6 +1413,7 @@ async function runToolSession(
         // finish (EVAL_END_CALL=now replays the old cut-the-goodbye behaviour).
         const deferEnd = record.name === END_CALL_VOICE_TOOL.name && replyActive && process.env.EVAL_END_CALL !== "now";
         if ((modes.get(record.name) === "interactive" && process.env.EVAL_HOLD_INTERACTIVE) || deferEnd) {
+          if (deferEnd) outcome.endCallResultHeld = true;
           held.push({ callId: String(msg.call_id), result, record });
           flushHeld();
           if (deferEnd) {
@@ -1579,6 +1607,20 @@ function goodbyeCheck(o: ToolOutcome): string | null {
   return `goodbye audio ${played.toFixed(1)}s for ~${expected.toFixed(1)}s of words: "${reading.bye.text.trim()}"`;
 }
 
+/**
+ * Whether the model spoke again after its own hang-up signal. The result is
+ * held until the goodbye reply finishes (the browser's ADR-0005 contract), so
+ * any audible reply that starts after it was sent is post-End call narration.
+ * Null when the result went out immediately (`EVAL_END_CALL=now`, the replay
+ * mode): there is no held goodbye to measure against, so no verdict is made.
+ */
+function narratedAfterEnd(o: ToolOutcome): boolean | null {
+  if (!o.endCallResultHeld || o.endCallResultAt === null) return null;
+  return o.replies.some(
+    (reply) => !reply.replaced && reply.text.trim().length > 0 && reply.startedAt > o.endCallResultAt!,
+  );
+}
+
 /** One machine-readable goodbye measurement per goodbye run, for score-demo. */
 function goodbyeDrainLine(scenario: string, o: ToolOutcome): string {
   const reading = goodbyeReading(o);
@@ -1588,6 +1630,7 @@ function goodbyeDrainLine(scenario: string, o: ToolOutcome): string {
     turn: reading.turn,
     coverage: reading.coverage,
     inboxNamed: reading.inboxNamed,
+    narratedEnding: narratedAfterEnd(o),
   })}`;
 }
 
