@@ -249,7 +249,9 @@ test("--pipeline cascade writes the one shared artifact from the cascade ledger"
   const reference = join(dir, "reference.wav");
   const delivered = join(dir, "delivered.wav");
   writeToneWav(reference, -20);
-  writeToneWav(delivered, -20);
+  // A distinct recording, not the reference copied: identical samples are the
+  // reference render, and the timbre claim refuses that (ticket 144).
+  writeToneWav(delivered, -20.05);
   const ledger = join(dir, "ledger.json");
   writeFileSync(ledger, JSON.stringify(cascadeLedger()));
   const out = join(dir, "cascade.json");
@@ -300,7 +302,9 @@ test("--pipeline cascade derives the three gaps from marks, never from a final f
   const reference = join(dir, "reference.wav");
   const delivered = join(dir, "delivered.wav");
   writeToneWav(reference, -20);
-  writeToneWav(delivered, -20);
+  // A distinct recording, not the reference copied: identical samples are the
+  // reference render, and the timbre claim refuses that (ticket 144).
+  writeToneWav(delivered, -20.05);
   const ledger = join(dir, "ledger.json");
   const document = cascadeLedger();
   delete (document.metrics as { gaps_ms?: unknown }).gaps_ms; // only marks remain
@@ -380,7 +384,9 @@ test("the managed runner writes the same shared shape when all three captures ar
   const delivered = join(dir, "delivered.wav");
   const platform = join(dir, "platform.wav");
   writeToneWav(reference, -20);
-  writeToneWav(delivered, -20);
+  // A distinct recording, not the reference copied: identical samples are the
+  // reference render, and the timbre claim refuses that (ticket 144).
+  writeToneWav(delivered, -20.05);
   writeToneWav(platform, -20);
   const out = join(dir, "managed.json");
   const lock = join(dir, "timing.lock");

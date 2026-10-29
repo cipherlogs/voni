@@ -47,8 +47,19 @@ function axis(result: ReturnType<typeof measureTimbre>, name: string): MeasuredT
 
 const reference = () => capture("captures/reference-anna-en.wav", tone());
 
+/**
+ * A real delivery: its own file, carrying the same voice with the one-sample
+ * drift any capture chain leaves behind. The reference itself is not a
+ * delivery, so it cannot stand in for this file (ticket 144).
+ */
+function cleanDelivery() {
+  const samples = tone();
+  samples[samples.length - 1] = samples[samples.length - 1]! + 1;
+  return capture("captures/delivered-anna-en.wav", samples);
+}
+
 test("a clean copy passes all six measured axes and names every one", () => {
-  const result = measureTimbre({ reference: reference(), delivered: reference() });
+  const result = measureTimbre({ reference: reference(), delivered: cleanDelivery() });
   assert.equal(result.status, "PASS", result.detail);
   for (const name of MEASURED_TIMBRE_AXES) {
     const leg = axis(result, name);
@@ -61,7 +72,8 @@ test("a clean copy passes all six measured axes and names every one", () => {
   assert.match(result.detail, /spectral/i);
   assert.match(result.detail, /breakup/i);
   assert.equal(result.referenceFile, "captures/reference-anna-en.wav");
-  assert.equal(result.deliveredFile, "captures/reference-anna-en.wav");
+  assert.equal(result.deliveredFile, "captures/delivered-anna-en.wav");
+  assert.deepEqual(result.refusals, []);
 });
 
 test("no measured result is INFO/unmeasured, never a PASS", () => {
@@ -163,7 +175,8 @@ test("an inserted silence the reference does not have fails the breakups axis", 
 });
 
 test("the measured result is deterministic: the same files yield the same verdict", () => {
-  const a = measureTimbre({ reference: reference(), delivered: reference() });
-  const b = measureTimbre({ reference: reference(), delivered: reference() });
+  const a = measureTimbre({ reference: reference(), delivered: cleanDelivery() });
+  const b = measureTimbre({ reference: reference(), delivered: cleanDelivery() });
   assert.deepEqual(a, b);
+  assert.equal(a.status, "PASS", a.detail);
 });

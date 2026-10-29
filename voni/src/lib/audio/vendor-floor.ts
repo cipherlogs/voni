@@ -84,7 +84,8 @@ export type VendorFloorErrorCode =
   | "vendor-floor-missing"
   | "vendor-floor-sidecar-invalid"
   | "vendor-floor-unreadable"
-  | "vendor-floor-audio-mismatch";
+  | "vendor-floor-audio-mismatch"
+  | "vendor-floor-evidence-mismatch";
 
 /** A refused floor. A caller can branch on `code`; nothing is assumed. */
 export class VendorFloorError extends Error {
@@ -317,8 +318,70 @@ export function loadVendorFloor(
   return { provenance, audio, path, sidecarPath };
 }
 
-/** A reader-facing one-liner set, for scripts and evidence notes. */
-export function formatVendorFloor(floor: VendorFloor): string {
+/**
+ * The floor as an artifact records it (ticket 126): the committed file's path
+ * and sha256 plus the provenance that says which voice, locale and day it is.
+ * No samples, no line text — the artifact is machine-readable evidence, and the
+ * WAV is a committed capture read through {@link loadVendorFloor}.
+ */
+export type VendorFloorEvidence = {
+  /** The committed capture's path. */
+  path: string;
+  /** Its sha256, as the sidecar records and the loader re-checks. */
+  sha256: string;
+  voice: string;
+  locale: string;
+  capturedOn: string;
+  method: VendorFloorMethod;
+};
+
+/**
+ * Copy the evidence fields out of a loaded floor. The values come from the
+ * committed sidecar the loader already verified against the audio, so a caller
+ * never restates a hash from memory or from a second measurement.
+ */
+export function vendorFloorEvidence(floor: VendorFloor): VendorFloorEvidence {
+  return {
+    path: floor.path,
+    sha256: floor.provenance.audio.sha256,
+    voice: floor.provenance.voice,
+    locale: floor.provenance.locale,
+    capturedOn: floor.provenance.capturedOn,
+    method: floor.provenance.method,
+  };
+}
+
+/**
+ * Refuse a floor record that is not the committed evidence (ticket 126). A
+ * recorded floor naming another file, another voice or another hash is a
+ * recomputed or replaced baseline: the comparison would then judge a reference
+ * against audio nobody committed, so the record is refused by name instead.
+ */
+export function assertVendorFloorEvidenceIsCommitted(
+  recorded: VendorFloorEvidence,
+  committed: VendorFloorEvidence,
+): void {
+  const differs: string[] = [];
+  if (recorded.path !== committed.path) differs.push(`path ${recorded.path} vs ${committed.path}`);
+  if (recorded.sha256 !== committed.sha256) {
+    differs.push(`sha256 ${recorded.sha256} vs ${committed.sha256}`);
+  }
+  if (recorded.voice !== committed.voice || recorded.locale !== committed.locale) {
+    differs.push(
+      `voice ${recorded.voice}/${recorded.locale} vs ${committed.voice}/${committed.locale}`,
+    );
+  }
+  if (differs.length > 0) {
+    throw new VendorFloorError(
+      "vendor-floor-evidence-mismatch",
+      `vendor floor evidence mismatch: the artifact records ${differs.join(", ")}, which is not the committed floor. ` +
+        `The floor is ${committed.voice}/${committed.locale} at ${committed.path}; it is read from the ` +
+        `committed evidence, never recomputed with a different method or replaced by a local render.`,
+    );
+  }
+}
+
+/** A reader-facing one-liner set, for scripts and evidence notes. */export function formatVendorFloor(floor: VendorFloor): string {
   const { provenance, audio, path } = floor;
   const seconds = audio.facts.durationSeconds.toFixed(2);
   return [

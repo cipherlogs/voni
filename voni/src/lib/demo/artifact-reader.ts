@@ -24,6 +24,12 @@ import {
 } from "./scoreboard";
 import { CASCADE_ONLY_EVENT_TYPES, isCascadeOnlyEvent } from "./event-envelope";
 import {
+  GATE_CAPTURE_LEGS,
+  malformedCaptureReason,
+  verifyCaptureRecord,
+  type CaptureIO,
+} from "./capture-evidence";
+import {
   CASCADE_NO_COMMIT_MARK_ABSENCE,
   MANAGED_NO_COMMIT_MARK_ABSENCE,
   MANAGED_NO_PARTIALS_ABSENCE,
@@ -141,6 +147,7 @@ export function parseScoreboardArtifact(raw: unknown, source: string): Scoreboar
 
   const pipeline = pipelineOfArtifact(record as Pick<ScoreboardArtifact, "pipeline">, source);
   const captures = parseCaptures(record.captures, source);
+  parseVendorFloor(record.vendorFloor, source);
   if (pipeline === "cascade" && isPresentCapture(captures?.platform)) {
     throw new ArtifactReadError(
       source,
@@ -149,6 +156,7 @@ export function parseScoreboardArtifact(raw: unknown, source: string): Scoreboar
     );
   }
   assertCaptureLegs(captures, pipeline, source);
+  assertCaptureFilesAreDistinct(captures, source);
 
   // Present sections are validated whether or not the artifact claims the full
   // shape; completeness is checked once every substantive rule has had its say.
@@ -268,12 +276,45 @@ function parseCaptures(raw: unknown, source: string): ArtifactCaptures | undefin
         `capture leg "${leg}" needs path/sha256 (never audio bytes) or a named absence`,
       );
     }
+    const malformed = malformedCaptureReason(capture);
+    if (malformed !== null) {
+      throw new ArtifactReadError(source, `captures.${leg}`, malformed.reason);
+    }
   }
   return record as ArtifactCaptures;
 }
 
-/** A capture that names a file, as opposed to a named N/A or a legacy null. */
-function isPresentCapture(capture: ArtifactCapture | undefined): boolean {
+/**
+ * The committed floor an artifact records (ticket 126): a file and its sha256,
+ * plus the voice, locale, capture day and method that make it evidence. The
+ * shape is validated here; whether those bytes *are* the committed floor is
+ * checked where the floor is loaded, by `assertVendorFloorEvidenceIsCommitted`,
+ * because this reader never opens a capture.
+ */
+function parseVendorFloor(raw: unknown, source: string): void {
+  if (raw === undefined) return;
+  const malformed = malformedCaptureReason(raw);
+  if (malformed !== null) {
+    const sha = (raw as Record<string, unknown> | null)?.sha256;
+    const field =
+      sha !== undefined && (typeof sha !== "string" || !/^[0-9a-f]{64}$/.test(sha))
+        ? "vendorFloor.sha256"
+        : "vendorFloor";
+    throw new ArtifactReadError(source, field, malformed.reason);
+  }
+  const record = raw as Record<string, unknown>;
+  for (const field of ["voice", "locale", "capturedOn", "method"] as const) {
+    if (typeof record[field] !== "string" || (record[field] as string).trim() === "") {
+      throw new ArtifactReadError(
+        source,
+        `vendorFloor.${field}`,
+        `vendorFloor.${field} is missing or empty; the floor names the voice, locale, capture day and method it came from`,
+      );
+    }
+  }
+}
+
+/** A capture that names a file, as opposed to a named N/A or a legacy null. */function isPresentCapture(capture: ArtifactCapture | undefined): boolean {
   return capture !== null && capture !== undefined && !isArtifactAbsence(capture);
 }
 
@@ -316,6 +357,32 @@ function assertCaptureLegs(
         `managed artifact carries no ${leg} capture; the managed path records all three legs`,
       );
     }
+  }
+}
+
+/**
+ * A delivered capture is the audio the caller heard, never the reference
+ * render (ADR 0009, ticket 144). Two legs naming one file is either a copy
+ * mistake or a claim dressed as a capture; both make the timbre gate's PASS
+ * meaningless, so the artifact is refused by the delivered leg's name.
+ */
+function assertCaptureFilesAreDistinct(
+  captures: ArtifactCaptures | undefined,
+  source: string,
+): void {
+  if (captures === undefined) return;
+  const reference = captures.reference;
+  const delivered = captures.delivered;
+  if (!isPresentCapture(reference) || !isPresentCapture(delivered)) return;
+  const referencePath = (reference as { path: string }).path;
+  const deliveredPath = (delivered as { path: string }).path;
+  if (referencePath === deliveredPath) {
+    throw new ArtifactReadError(
+      source,
+      "captures.delivered",
+      `names the reference file ${deliveredPath}; a delivered capture is the audio the caller ` +
+        "heard, never the reference render (a timbre claim without delivered audio is invalid, ADR 0009)",
+    );
   }
 }
 
@@ -842,10 +909,10 @@ function assertEligibilityAgreesWithEvents(
 /**
  * Gates fed by a capture, and the legs each needs (W0/M3). A gate that claims
  * PASS while its capture is missing outran its evidence; the run is not clean.
+ * The registry lives in `capture-evidence.ts` so the gate rule and the capture
+ * verifier read one list; it is re-exported here for the reader's callers.
  */
-export const GATE_CAPTURE_LEGS: Readonly<Record<string, readonly ArtifactCaptureLeg[]>> = {
-  "timbre-probes": ["reference", "delivered"],
-};
+export { GATE_CAPTURE_LEGS };
 
 /** The event fields eligibility reads; the full envelope satisfies it. */
 export type RunEventFact = {
@@ -882,6 +949,13 @@ export type RunEligibilityInput = {
   readonly expectedCode?: { readonly head: string; readonly dirtyHash?: string } | null;
   /** Default `clean`: one run's own verdict. See `RunFingerprintPolicy`. */
   readonly fingerprintPolicy?: RunFingerprintPolicy;
+  /**
+   * When supplied, a gate's capture is re-proved against its working file: a
+   * capture that is gone or whose bytes changed cannot back a PASS (ticket 144).
+   * Omitted, the reader checks the recorded path/hash shape only, so a pure
+   * caller with no filesystem still gets the missing-leg rule.
+   */
+  readonly captureIO?: CaptureIO;
 };
 
 /**
@@ -944,6 +1018,15 @@ export function deriveRunEligibility(input: RunEligibilityInput): RunEligibility
         reasons.push(
           `gate "${gate.name}" PASSes but the ${leg} capture is missing; a gate cannot outrun the capture it feeds`,
         );
+        continue;
+      }
+      if (input.captureIO !== undefined) {
+        const verification = verifyCaptureRecord(capture, input.captureIO);
+        if (verification.status !== "verified") {
+          reasons.push(
+            `gate "${gate.name}" PASSes but its ${leg} capture is ${verification.status}: ${verification.reason}`,
+          );
+        }
       }
     }
   }

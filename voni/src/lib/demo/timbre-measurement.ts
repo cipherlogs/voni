@@ -74,6 +74,12 @@ export type MeasuredTimbreResult = {
   failures: MeasuredTimbreAxis[];
   /** Every axis that could not be measured, by name. */
   unmeasured: MeasuredTimbreAxis[];
+  /**
+   * Claims refused before any axis was measured (ADR 0009). A refusal is a
+   * FAIL with no failed axis: the audio the claim rests on is not delivered
+   * audio, so there was nothing to measure.
+   */
+  refusals: string[];
   referenceFile: string | null;
   deliveredFile: string | null;
   /** One sentence naming every axis, so the gate can quote it. */
@@ -477,12 +483,95 @@ function summarize(axes: MeasuredTimbreAxisResult[]): string {
   return axes.map((axis) => `${axis.axis}: ${axis.detail}`).join("; ");
 }
 
+/** Two decoded files carrying the same samples in the same format. */
+function sameAudio(left: DecodedAudio, right: DecodedAudio): boolean {
+  if (
+    left.facts.sampleRate !== right.facts.sampleRate ||
+    left.facts.channels !== right.facts.channels ||
+    left.facts.frameCount !== right.facts.frameCount ||
+    left.samples.length !== right.samples.length
+  ) {
+    return false;
+  }
+  for (let index = 0; index < left.samples.length; index += 1) {
+    if (left.samples[index] !== right.samples[index]) return false;
+  }
+  return true;
+}
+
+/**
+ * The delivery the claim rests on, or null when it is real (ADR 0009).
+ *
+ * A gate ready to PASS needs audio the caller actually received. A reference
+ * render passed in a second time — under the same path or as a copy — compares
+ * a file with itself, agrees on every axis and would green a delivery that
+ * never happened. There is no measurement that can detect this, so the claim is
+ * refused by name before any axis is read.
+ */
+function undeliveredClaim(input: MeasuredTimbreInput): string | null {
+  const reference = input.reference ?? null;
+  const delivered = input.delivered ?? null;
+  if (reference === null || delivered === null) return null;
+  if (reference.path === delivered.path) {
+    return (
+      `the delivered "capture" is the reference render (${reference.path}); ` +
+      "a timbre claim without delivered audio is invalid (ADR 0009)"
+    );
+  }
+  if (sameAudio(reference.audio, delivered.audio)) {
+    return (
+      `the delivered capture is identical to the reference render (${delivered.path} carries ` +
+      `${reference.path}'s samples); a copy is not a delivery, and a timbre claim without ` +
+      "delivered audio is invalid (ADR 0009)"
+    );
+  }
+  return null;
+}
+
+/** One refusal, shaped like an unmeasured pass attempt: nothing was measured. */
+function refused(result: {
+  refusals: string[];
+  referenceFile: string | null;
+  deliveredFile: string | null;
+}): MeasuredTimbreResult {
+  const axes = MEASURED_TIMBRE_AXES.map(
+    (axis): MeasuredTimbreAxisResult => ({
+      axis,
+      verdict: "unmeasured",
+      value: null,
+      bar: 0,
+      unit: "count",
+      detail: `unmeasured ${axis}: the claim was refused before measurement`,
+    }),
+  );
+  return {
+    status: "FAIL",
+    axes,
+    failures: [],
+    unmeasured: [...MEASURED_TIMBRE_AXES],
+    refusals: [...result.refusals],
+    referenceFile: result.referenceFile,
+    deliveredFile: result.deliveredFile,
+    detail: `measured timbre FAIL — refused: ${result.refusals.join("; ")}`,
+  };
+}
+
 /**
  * Measure the six timbre axes from the reference and delivered captures. The
  * verdict is `PASS` only when every axis measured and passed; a missing axis
  * is `INFO`, and a measured miss is `FAIL` with the axis named.
  */
 export function measureTimbre(input?: MeasuredTimbreInput | null): MeasuredTimbreResult {
+  if (input) {
+    const refusal = undeliveredClaim(input);
+    if (refusal !== null) {
+      return refused({
+        refusals: [refusal],
+        referenceFile: input.reference?.path ?? null,
+        deliveredFile: input.delivered?.path ?? null,
+      });
+    }
+  }
   if (!input) {
     const axes = MEASURED_TIMBRE_AXES.map(
       (axis): MeasuredTimbreAxisResult => ({
@@ -499,6 +588,7 @@ export function measureTimbre(input?: MeasuredTimbreInput | null): MeasuredTimbr
       axes,
       failures: [],
       unmeasured: [...MEASURED_TIMBRE_AXES],
+      refusals: [],
       referenceFile: null,
       deliveredFile: null,
       detail: `unmeasured timbre: ${summarize(axes)}`,
@@ -538,6 +628,7 @@ export function measureTimbre(input?: MeasuredTimbreInput | null): MeasuredTimbr
     axes,
     failures,
     unmeasured,
+    refusals: [],
     referenceFile: reference?.path ?? null,
     deliveredFile: deliveredFile?.path ?? null,
     detail: `${lead} — ${summarize(axes)}`,

@@ -503,8 +503,58 @@ export function compareToFloor(input: {
   return comparison;
 }
 
-/** The verdict as a deterministic block: floor, subject, every axis, one verdict. */
-export function formatFloorVerdict(comparison: FloorComparison): string {
+/**
+ * Judge a voice's *reference render* against the committed floor (ticket 126).
+ *
+ * The reference is the vendor's own audio for the same line, so comparing it to
+ * the floor answers "has the vendor's voice slipped below what the owner called
+ * superb" — the first layer of the W0 verdict. It is not a subject comparison:
+ * there is no delivered capture in this question.
+ *
+ * The four axes that do not need a second file are the whole check. Distortion
+ * is deliberately absent: the reference *is* the baseline, and a residual of a
+ * file against itself would be a fabricated zero.
+ */
+export function compareReferenceToFloor(input: {
+  floor: FloorReference;
+  reference: { path: string; audio: DecodedAudio };
+}): FloorComparison {
+  const { floor, reference } = input;
+  const axisInput: AxisInput = {
+    floor,
+    subject: { reference, delivered: reference },
+    floorLevel: measuredLevel(floor.audio),
+    subjectLevel: measuredLevel(reference.audio),
+  };
+  const axes: FloorAxisReading[] = [
+    levelAxis(axisInput),
+    peakAxis(axisInput),
+    breakupsAxis(axisInput),
+    modulationAxis(axisInput),
+  ];
+  const worse = axes.filter((axis) => axis.standing === "worse");
+  const unmeasuredAxes = axes.filter((axis) => axis.standing === "unmeasured");
+  const verdict: FloorVerdict =
+    worse.length > 0 ? "fail" : unmeasuredAxes.length > 0 ? "inconclusive" : "pass";
+  const cited = {
+    path: floor.path,
+    voice: floor.provenance?.voice ?? null,
+    locale: floor.provenance?.locale ?? null,
+    line: floor.provenance?.line ?? null,
+    capturedOn: floor.provenance?.capturedOn ?? null,
+  };
+  return {
+    floor: cited,
+    subject: { path: reference.path, referencePath: reference.path },
+    axes,
+    worse,
+    unmeasured: unmeasuredAxes,
+    verdict,
+    summary: "",
+  };
+}
+
+/** The verdict as a deterministic block: floor, subject, every axis, one verdict. */export function formatFloorVerdict(comparison: FloorComparison): string {
   const { floor, subject } = comparison;
   const axisWidth = Math.max(...comparison.axes.map((axis) => axis.axis.length));
   const standingWidth = Math.max(...comparison.axes.map((axis) => axis.standing.length));

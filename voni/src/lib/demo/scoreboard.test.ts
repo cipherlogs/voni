@@ -4757,10 +4757,14 @@ function silentTone(path: string): MeasuredLevelFile {
 }
 
 function measuredLevel(referenceRms: number, deliveredRms: number): MeasuredLevelInput {
-  return {
-    reference: measuredTone("captures/reference-anna-en.wav", referenceRms),
-    delivered: measuredTone("captures/delivered-anna-en.wav", deliveredRms),
-  };
+  const reference = measuredTone("captures/reference-anna-en.wav", referenceRms);
+  const delivered = measuredTone("captures/delivered-anna-en.wav", deliveredRms);
+  if (referenceRms === deliveredRms) {
+    // An equal level is still a separate recording (ticket 144): a delivered
+    // capture carrying the reference's exact samples is the reference again.
+    delivered.audio.samples[delivered.audio.samples.length - 1]! += 1;
+  }
+  return { reference, delivered };
 }
 
 test("a measured level within tolerance passes the measured leg of the timbre gate", () => {
