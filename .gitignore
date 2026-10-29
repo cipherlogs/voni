@@ -46,3 +46,6 @@ voice-captures/
 
 # Fixed caller clips for the demo scoreboard (PCM cache, regenerated on miss)
 voni/.eval-clips/
+
+# W0 reference captures: one WAV per voice + line (regenerated, never committed)
+voni/.voice-references/
