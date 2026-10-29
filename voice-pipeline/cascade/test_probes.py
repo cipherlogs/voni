@@ -248,9 +248,29 @@ class ModelProbeTest(unittest.TestCase):
         self.assertEqual(result.tokens, 2)
         self.assertLessEqual(len(MODEL_PROBE_PROMPT), CAP)
 
-    def test_the_cap_has_no_default_and_the_unset_bound_raises_by_name(self):
-        with self.assertRaises(UnsetBoundError) as unset:
-            model_probe_cap()
+    def test_the_cap_has_no_default_and_an_unset_bound_raises_by_name(self):
+        from dataclasses import replace
+
+        from cascade import thresholds
+
+        declared = thresholds.bound("probe.model_max_completion_tokens")
+        self.assertEqual(declared.ticket, "20")
+        original = thresholds.REGISTRY
+        try:
+            thresholds.REGISTRY = thresholds.Registry(
+                {
+                    entry.name: (
+                        replace(entry, value=None, source="", date="")
+                        if entry.name == "probe.model_max_completion_tokens"
+                        else entry
+                    )
+                    for entry in original.bounds()
+                }
+            )
+            with self.assertRaises(UnsetBoundError) as unset:
+                model_probe_cap()
+        finally:
+            thresholds.REGISTRY = original
         self.assertIn("probe.model_max_completion_tokens", str(unset.exception))
         with self.assertRaises(TypeError):
             run(model_probe(FakeModelTarget(FakeClock()), clock=FakeClock()))  # type: ignore[call-arg]
