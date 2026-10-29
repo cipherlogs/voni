@@ -1,0 +1,151 @@
+{
+  "version": 1,
+  "note": "The one registry for every cascade bound the spec leaves open, plus the settled bounds a cascade gate reads. A bound with a value must name its unit, the gate it feeds, its owning ticket, its source and the date the value was taken; a bound without one stays OPEN and require_bound() raises by name. The four frozen reply/cut budgets are read from the budget record and must never carry a literal here. Ticket 04 fills OPEN entries with value + source + date; that is a data edit, not a code edit.",
+  "budget_record": {
+    "path": "voni/src/lib/demo/scoreboard-budgets.json",
+    "version": 1,
+    "date": "2026-10-28",
+    "note": "Frozen demo-scoreboard budget record (freeze-guard commit 835a5f1e). Read at load; never copied."
+  },
+  "bounds": {
+    "reply_gap.p50_ms": {
+      "unit": "ms",
+      "gate": "reply-gap",
+      "ticket": "145",
+      "budget_key": "replyGapP50Ms",
+      "note": "Median reply gap. Consumers: the reply-gap gate, the kill criterion (ticket 119)."
+    },
+    "reply_gap.p95_ms": {
+      "unit": "ms",
+      "gate": "reply-gap",
+      "ticket": "145",
+      "budget_key": "replyGapP95Ms",
+      "note": "Tail reply gap. A small-sample scope is judged against this, never its own median (ticket 119)."
+    },
+    "barge_in.real_cut_ms": {
+      "unit": "ms",
+      "gate": "barge-in-cut",
+      "ticket": "88",
+      "budget_key": "realCutMs",
+      "note": "Audio must stop within this of caller speech start."
+    },
+    "barge_in.filler_resume_tail_ms": {
+      "unit": "ms",
+      "gate": "filler-resume",
+      "ticket": "91",
+      "budget_key": "fillerResumeTailMs",
+      "note": "The unheard tail resumes within this."
+    },
+    "budget.route_managed_ratio": {
+      "unit": "ratio",
+      "gate": "budget.routing",
+      "ticket": "103",
+      "value": 0.8,
+      "source": "spec: settled money policy — the daily counter routes new calls to managed at 80% of the cap",
+      "date": "2026-10-29",
+      "note": "A live cascade call is untouched; only the next new call moves."
+    },
+    "budget.refuse_cascade_ratio": {
+      "unit": "ratio",
+      "gate": "budget.routing",
+      "ticket": "104",
+      "value": 1.0,
+      "source": "spec: settled money policy — refuse cascade at 100% of the cap, never the call",
+      "date": "2026-10-29",
+      "note": "Refusing cascade is a routing decision, not a fallback event."
+    },
+    "stt.handshake_ms": {
+      "unit": "ms",
+      "gate": "stt.handshake",
+      "ticket": "27",
+      "value": 10000,
+      "source": "spec: Meta STT handshake — the first JSON text frame within 10 s of connecting",
+      "date": "2026-10-29",
+      "note": "No acknowledgement inside this fails the call visibly and records the reason."
+    },
+    "tts.idle_timeout_ms": {
+      "unit": "ms",
+      "gate": "tts.idle-keepalive",
+      "ticket": "53",
+      "value": 120000,
+      "source": "spec: the TTS session closes after 120 s with no frame in either direction",
+      "date": "2026-10-29",
+      "note": "The keepalive interval must sit strictly below this and inside the control-frame budget."
+    },
+    "tts.generate_char_cap": {
+      "unit": "chars",
+      "gate": "tts.sentence-scheduling",
+      "ticket": "49",
+      "value": 2000,
+      "source": "spec: a long sentence is split under the 2,000-character Generate cap; an over-cap Generate closes with 3006",
+      "date": "2026-10-29",
+      "note": "Flushing per token is forbidden; this is the sentence ceiling."
+    },
+    "budget.daily_cap": {
+      "unit": "usd",
+      "gate": "budget.daily-cap",
+      "ticket": "103",
+      "note": "OPEN — spec open dependency 5. The 80%/100% behavior is fixed; this value is not."
+    },
+    "budget.per_call_ceiling": {
+      "unit": "usd",
+      "gate": "budget.per-call-ceiling",
+      "ticket": "105",
+      "note": "OPEN — spec open dependency 6. The drain behavior is fixed; this value is not."
+    },
+    "deploy.drain_max_wait_ms": {
+      "unit": "ms",
+      "gate": "deploy.drain",
+      "ticket": "140",
+      "note": "OPEN — spec open dependency 7. A live call is never terminated by the drain; this is the operational wait."
+    },
+    "turn.stall_guard_ms": {
+      "unit": "ms",
+      "gate": "turn.reply-ordering",
+      "ticket": "69",
+      "note": "OPEN — spec open dependency 8. Closes an abandoned turn with no reply; the later turn is still answered."
+    },
+    "tool.loop_cap": {
+      "unit": "count",
+      "gate": "tool.loop-cap",
+      "ticket": "87",
+      "note": "OPEN — spec open dependency 9. Until supplied the loop is bounded by the turn budget and the stall guard."
+    },
+    "tts.keepalive_interval_ms": {
+      "unit": "ms",
+      "gate": "tts.idle-keepalive",
+      "ticket": "53",
+      "note": "OPEN — the spec fixes the behavior (named interval below the idle timeout) but not the interval."
+    },
+    "budget.day_boundary": {
+      "unit": "timezone",
+      "gate": "budget.daily-counter",
+      "ticket": "102",
+      "note": "OPEN — spec open dependency 16. UTC is assumed, not yet confirmed."
+    },
+    "ci.browser_e2e_budget_s": {
+      "unit": "s",
+      "gate": "ci.browser-e2e",
+      "ticket": "149",
+      "note": "OPEN — spec open dependency 18. Over budget, the job moves to a required pre-merge job, never nightly-only."
+    },
+    "turn.reply_task_ms": {
+      "unit": "ms",
+      "gate": "turn.bounded-await",
+      "ticket": "76",
+      "note": "OPEN — the reply task is bounded; the spec does not state the bound."
+    },
+    "tool.timeout_ms": {
+      "unit": "ms",
+      "gate": "tool.execution",
+      "ticket": "76",
+      "note": "OPEN — the tool hop is bounded and a timeout becomes a failed tool result."
+    },
+    "reconnect.handshake_ms": {
+      "unit": "ms",
+      "gate": "reconnect",
+      "ticket": "76",
+      "note": "OPEN — a reconnect handshake is bounded; the STT first-frame ack uses stt.handshake_ms."
+    }
+  }
+}
