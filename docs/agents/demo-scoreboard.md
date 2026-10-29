@@ -106,20 +106,24 @@ an unreadable file fails by name before any artifact is written. A measured
 PASS still needs the agent-channel PCM evidence (`--probe-json`) and the
 weighted ballot: a missing channel is INFO, never a PASS.
 
-## Subject matrix ordering (W5, ticket 78)
+## Subject matrix ordering (W5, tickets 78/118)
 
 `npm run scoreboard:matrix` judges one subject per row — `{agent, Locale,
-transport}` — and every row's verdict comes from that subject's own artifact.
-The featured subject (`anna`) is measured and judged first. Every other
+transport, pipeline}` — and every row's verdict comes from that subject's own
+artifact. The featured subject is not a flag: it is the registry default, the
+`anna`/en browser subject, and `buildRegressionMatrix` refuses any other
+`featuredSubject` by name. It is measured and judged first, and every other
 subject, English and non-English alike, stays `BLOCKED` with a named reason
 (`blocked: featured subject demo anna (en, browser) has not passed …`) until the
 featured subject's own current run in that matrix passes. A missing or
-non-passing featured run blocks too; only PASS opens the gate. The rule is
-recorded in `artifact.ordering` (rule, featured status, blocked row keys,
-detail) and in the `ordering:featured-first` gate row, and printed in the
-compact table, so a Locale is never silently judged on an unproved instrument.
-`--strict` fails while any row is blocked: a subject that was not judged is not
-clean.
+non-passing featured run blocks too; only PASS opens the gate. The measure
+order (the CLI's spawn list) and the judgement order (the matrix rows) both use
+`orderFeaturedFirst`, so there is one implementation of the rule. The rule is
+recorded in `artifact.ordering` (rule, featured status, every unjudged blocked
+row key, detail) and in the `ordering:featured-first` gate row, and printed in
+the compact table, so a Locale is never silently judged on an unproved
+instrument. `--strict` fails while any row is blocked: a subject that was not
+judged is not clean.
 
 ## Reference capture (W0)
 

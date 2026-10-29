@@ -27,11 +27,10 @@ import {
   type TimbreProbes,
 } from "./scoreboard";
 import { deriveRunEligibility, pipelineOfArtifact } from "./artifact-reader";
-import { DEMO_VOICE_IDS } from "./voni-agent";
 import {
+  defaultSubject,
   formatSubject,
   sameSubject,
-  subjectForRunVoice,
   type SubjectRecord,
 } from "./subject";
 
@@ -53,7 +52,7 @@ export type RegressionSubjectInput = {
 /**
  * A row's status: the artifact's own gate status, MISSING with no run, or
  * BLOCKED when the run cannot answer for this matrix (ineligible, historical
- * code) or the ordering rule has not let the subject be judged (ticket 78).
+ * code) or the ordering rule has not let the subject be judged (W5, ticket 118).
  */
 export type RegressionSubjectStatus = GateStatus | "MISSING" | "BLOCKED";
 
@@ -292,16 +291,39 @@ function regressionSubjectRow(
   };
 }
 
-// ── Ordering: the featured subject is proved on the instrument first (78) ────
+// ── Ordering: the featured subject is proved on the instrument first (W5) ────
 
 /**
- * The ordering rule the matrix enforces (voice-parity ticket 78, spec W5):
- * the featured subject is judged first, and every other subject — English and
- * non-English alike — is judged only when the featured subject's own current
- * run in this matrix passes. Until then those rows are BLOCKED, so a refactor
- * bug on the new instrument can never be attributed to a Locale.
+ * The ordering rule the matrix enforces (spec M4/W5, ticket 118): the featured
+ * subject — the registry default, `anna`/en on the browser — is judged first,
+ * and every other subject, English and non-English alike, is judged only when
+ * the featured subject's own current run in this matrix passes. Until then
+ * those rows are BLOCKED, so a refactor bug on the new instrument can never be
+ * attributed to a Locale.
  */
 export const MATRIX_ORDERING_RULE = "featured-first" as const;
+
+/** A caller tried to make a subject other than anna/en lead the matrix. */
+export class FeaturedSubjectError extends Error {
+  constructor(subject: SubjectRecord) {
+    super(
+      `featured subject must be ${formatSubject(defaultSubject())} (the registry default), ` +
+        `not ${formatSubject(subject)}: the ordering rule judges the featured English ` +
+        "subject first and every other subject only after it passes",
+    );
+    this.name = "FeaturedSubjectError";
+  }
+}
+
+/**
+ * The featured subject is not a flag. It is the registry's default subject
+ * (`anna`/en on the browser), so no invocation can re-order the matrix by
+ * naming a Locale — or its own voice — as the instrument to prove first.
+ */
+export function assertFeaturedSubject(subject: SubjectRecord): SubjectRecord {
+  if (!sameSubject(subject, defaultSubject())) throw new FeaturedSubjectError(subject);
+  return subject;
+}
 
 export type MatrixOrdering = {
   rule: typeof MATRIX_ORDERING_RULE;
@@ -316,6 +338,25 @@ export type MatrixOrdering = {
   /** Row keys of subjects that were not judged because the gate is shut. */
   blocked: string[];
 };
+
+/**
+ * Order any list of subject-bearing items featured-first. This is the one
+ * implementation of the rule: the CLI uses it for the measure order (spawn
+ * list) and the matrix uses it for the judgement order (rows), so the two can
+ * never disagree about which subject leads. Non-featured items keep their
+ * relative order.
+ */
+export function orderFeaturedFirst<T>(
+  items: readonly T[],
+  featured: SubjectRecord,
+  subjectOf: (item: T) => SubjectRecord,
+): T[] {
+  const lead = assertFeaturedSubject(featured);
+  return [
+    ...items.filter((item) => sameSubject(subjectOf(item), lead)),
+    ...items.filter((item) => !sameSubject(subjectOf(item), lead)),
+  ];
+}
 
 /**
  * Why a featured subject does not open the gate, in the words the report uses.
@@ -336,7 +377,9 @@ function featuredGateReason(
  * first and replace every other judged row with a BLOCKED row carrying a named
  * reason when the featured subject has not passed. A MISSING row stays MISSING
  * (there was never a run to judge); an already-blocked row keeps its own named
- * reason (its run could not answer regardless of ordering).
+ * reason (its run could not answer regardless of ordering) and is still
+ * listed in `ordering.blocked`, so the artifact never under-reports the rows
+ * the shut gate left unjudged.
  *
  * The blocked row keeps its own run's raw measurements but carries no verdict,
  * so nothing about it can be read as a judgement — least of all another
@@ -346,16 +389,18 @@ function applyFeaturedFirst(input: {
   results: RegressionSubjectResult[];
   featured: SubjectRecord;
 }): { results: RegressionSubjectResult[]; ordering: MatrixOrdering } {
-  const featuredRows = input.results.filter((row) => row.isFeatured);
-  const otherRows = input.results.filter((row) => !row.isFeatured);
-  const featuredRow = featuredRows[0] ?? null;
+  const featuredRow = input.results.find((row) => row.isFeatured) ?? null;
   const featuredStatus = featuredRow?.status ?? null;
   const open = featuredStatus === "PASS";
   const reason = open ? "" : featuredGateReason(featuredRow, input.featured);
   const blocked: string[] = [];
-  const ordered = [...featuredRows, ...otherRows].map((row) => {
-    if (row.isFeatured || open || row.status === "MISSING" || row.status === "BLOCKED") return row;
+  const ordered = orderFeaturedFirst(input.results, input.featured, (row) => row.subject).map((row) => {
+    if (row.isFeatured || open || row.status === "MISSING") return row;
+    // The gate is shut: no other subject may carry a verdict. A row blocked for
+    // its own reason keeps that reason and its measurements, but it is still
+    // recorded as a row the ordering left unjudged.
     blocked.push(row.key);
+    if (row.status === "BLOCKED") return row;
     return {
       ...row,
       status: "BLOCKED" as const,
@@ -363,9 +408,12 @@ function applyFeaturedFirst(input: {
       verdict: null,
     };
   });
+  const judgedAfter = ordered.filter(
+    (row) => !row.isFeatured && row.status !== "MISSING" && row.status !== "BLOCKED",
+  ).length;
   const detail = open
     ? `${featuredRow ? `featured subject ${featuredRow.label}` : "featured subject"} passed; ` +
-      `${otherRows.length} other subject${otherRows.length === 1 ? "" : "s"} judged after it`
+      `${judgedAfter} other subject${judgedAfter === 1 ? "" : "s"} judged after it`
     : input.results.length === 0
       ? `no subjects to order`
       : `blocked: ${reason}; ${blocked.length} subject${blocked.length === 1 ? "" : "s"} not judged`;
@@ -413,7 +461,7 @@ export function buildRegressionMatrix(input: {
   expectedTag?: string;
   expectedCode?: MatrixExpectedCode;
 }): RegressionMatrix {
-  const featured = input.featuredSubject ?? subjectForRunVoice(DEMO_VOICE_IDS[0]);
+  const featured = assertFeaturedSubject(input.featuredSubject ?? defaultSubject());
   const expectedTag = input.expectedTag ?? "Lime 42";
   const options: SubjectVerdictOptions = {
     expectedCode: input.expectedCode,
@@ -427,7 +475,7 @@ export function buildRegressionMatrix(input: {
     if (seen.has(row.key)) throw new Error(`matrix has two rows for subject ${row.label}`);
     seen.add(row.key);
   }
-  // The ordering rule decides what may be judged and in which order (78).
+  // The ordering rule decides what may be judged and in which order (W5, 118).
   const { results, ordering } = applyFeaturedFirst({ results: judged, featured });
   const clean = results.filter((result) => result.status === "PASS").length;
   const missing = results.filter((result) => result.status === "MISSING").length;
@@ -470,7 +518,7 @@ export function buildRegressionMatrix(input: {
 /**
  * Console table: one named subject per row plus the summary. The ordering rule
  * and its reason are printed beside the header and on every blocked row, so a
- * subject that was not judged is never silent (ticket 78).
+ * subject that was not judged is never silent (W5, ticket 118).
  */
 export function formatMatrixTable(matrix: RegressionMatrix): string {
   const clean = matrix.results.filter((result) => result.status === "PASS").length;
