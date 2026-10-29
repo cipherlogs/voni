@@ -1,6 +1,7 @@
 import { TALK_BASE_S } from "./talk-clock";
 import type { CodeStatus } from "./code-check";
 import { containsTag, countTags } from "./test-tag";
+import { EN_RECOGNITION, normalizeSpokenAddress } from "@/lib/voice/recognition";
 
 /**
  * The demo's email test (beats 2–4, docs/adr/0004): the visitor emails the
@@ -62,13 +63,7 @@ const EMAIL = /^[a-z0-9._%+-]+@[a-z0-9-]+(\.[a-z0-9-]+)+$/;
 
 /** A claim as the model passes it, written or spelled out ("andres at casaverde dot pt"). */
 export function normalizeClaim(raw: string): string | null {
-  const address = ` ${raw.toLowerCase()} `
-    .replace(/\s+at\s+/g, "@")
-    .replace(/\s+dot\s+/g, ".")
-    .replace(/\s+(dash|hyphen)\s+/g, "-")
-    .replace(/\s+underscore\s+/g, "_")
-    .replace(/\s+/g, "")
-    .replace(/\.+$/, "");
+  const address = normalizeSpokenAddress(raw, EN_RECOGNITION);
   return EMAIL.test(address) ? address : null;
 }
 
