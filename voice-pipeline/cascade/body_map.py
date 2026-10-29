@@ -41,9 +41,10 @@ recognition-carrying field such as ``input.transcription_prompt`` cannot
 disappear silently. Ignored is not dropped: the record travels on the config
 the call carries.
 
-The unknown-key refusal (ticket 59), the LLM override refusal (60) and the
-eligibility refusals (61) are not this module's job yet: this map is what they
-check against.
+The unknown-key refusal (ticket 59) is the whitelist rule over that data: a key
+at the top level, inside ``input``, ``output`` or ``voice`` that neither set
+names fails by name, before any vendor socket opens. The LLM override refusal
+(60) and the eligibility refusals (61) are not this module's job yet.
 """
 
 from __future__ import annotations
@@ -77,6 +78,22 @@ class UnknownLanguageCodeError(BodyFieldError):
         self.code = code
         known = ", ".join(sorted(LOCALES))
         super().__init__(path, f'unknown language code "{code}"; the catalogue speaks {known}')
+
+
+class UnknownBodyKeyError(BodyFieldError):
+    """A body key is neither mapped nor deliberately ignored.
+
+    This is the profile-whitelist rule: a smuggled key is a visible error, not a
+    cascade feature, and it fails before any vendor socket opens.
+    """
+
+    def __init__(self, path: str) -> None:
+        self.reason = (
+            "unknown key: it is neither in the field map nor in the ignore set, "
+            "so it cannot become a cascade setting"
+        )
+        super().__init__(path, self.reason)
+
 
 
 @dataclass(frozen=True)
@@ -257,6 +274,44 @@ def ignored_fields(body: Mapping[str, Any]) -> tuple[IgnoredField, ...]:
     return tuple(recorded)
 
 
+def _allowed_children() -> Mapping[str, frozenset[str]]:
+    """The keys each checked body section may carry, derived from the two sets.
+
+    Derived per call, so extending either set is the whole change: a module
+    constant computed at import would go stale the moment a set grows.
+    ``llm`` is the one top-level key that is neither mapped nor ignored: it is
+    a documented refusal (ticket 60), so it must reach the adapter to be
+    refused by name rather than as an unknown key.
+    """
+    allowed: dict[str, set[str]] = {"": {"llm"}, "voice": set()}
+    for path in (*FIELD_MAP, *IGNORE_SET):
+        parts = path.split(".")
+        for depth, key in enumerate(parts):
+            parent = ".".join(parts[:depth])
+            allowed.setdefault(parent, set()).add(key)
+    return MappingProxyType({parent: frozenset(keys) for parent, keys in allowed.items()})
+
+
+# The sections whose keys are a closed set. A key in any other object is the
+# object's own business (a tool's parameters schema, an LLM override's body).
+CHECKED_SECTIONS = ("", "input", "output", "voice")
+
+
+def _reject_unknown_keys(body: Mapping[str, Any]) -> None:
+    """Refuse any key in a checked section that neither set names."""
+    allowed_keys = _allowed_children()
+    for section in CHECKED_SECTIONS:
+        node = body if not section else body.get(section, _MISSING)
+        if node is _MISSING:
+            continue
+        if not isinstance(node, Mapping):
+            raise BodyFieldError(section, f"expected an object, got {type(node).__name__}")
+        allowed = allowed_keys.get(section, frozenset())
+        for key in node:
+            if key not in allowed:
+                raise UnknownBodyKeyError(f"{section}.{key}" if section else str(key))
+
+
 @dataclass(frozen=True)
 class CascadeBody:
     """What the cascade reads out of a stored body — no more, no less."""
@@ -297,6 +352,7 @@ def adapt_body(body: Mapping[str, Any]) -> CascadeBody:
     """Read a stored agent body through ``FIELD_MAP`` and nothing else."""
     if not isinstance(body, Mapping):
         raise TypeError(f"a stored agent body must be a mapping, got {type(body).__name__}")
+    _reject_unknown_keys(body)
     produced = {
         field.attribute: field.parse(path, _read(body, path))
         for path, field in FIELD_MAP.items()
