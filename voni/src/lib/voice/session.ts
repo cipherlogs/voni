@@ -47,6 +47,7 @@ import { releaseMic } from "./mic-owner";
 import { BARGE_IN_JUDGE_MS, judgeOverlap } from "./barge-in";
 import { requestVoiceJudge } from "./jev-judges";
 import { TRANSCRIPTION_MODE, DEMO_TRANSCRIPTION_MODE } from "./transcription";
+import { callRecognitionLocale } from "./recognition";
 import {
   acquireMicStream,
   startAudioGraph,
@@ -174,13 +175,20 @@ export function buildResumeMessage(sessionId: string): Record<string, unknown> {
  * tuned: fast endpointing, the screen's vocabulary, the screen's scene.
  */
 /**
- * Test-call language lock. The agent's own picker stays authoritative and
- * passes through untouched; when it is left on Automatic (empty), the test
- * call locks to English instead of paying 18-language auto-detection on
- * every turn. PSTN/provision paths keep passing the raw config untouched.
+ * Test-call language resolution. The agent's own picker stays authoritative
+ * and passes through untouched. When the picker is left on Automatic (empty),
+ * the call follows the agent's Locale — the conversation language its owner
+ * chose — so testing a Spanish agent tests Spanish. Only an agent with no
+ * Locale at all (automatic language detection) locks to English, the one
+ * documented English-scaffolding exception. PSTN/provision paths keep passing
+ * the raw config untouched.
  */
-export function effectiveInlineLanguages(codes: string[] | undefined): string[] {
-  return codes && codes.length > 0 ? [...codes] : ["en"];
+export function effectiveInlineLanguages(
+  codes: string[] | undefined,
+  conversationLanguage?: string | null,
+): string[] {
+  if (codes && codes.length > 0) return [...codes];
+  return [callRecognitionLocale({ conversationLanguage, languageCodes: codes }) ?? "en"];
 }
 
 export function buildInlineSessionUpdate(

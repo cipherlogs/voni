@@ -1256,7 +1256,10 @@ export function VoiceCall({
               tts_voice: process.env.NEXT_PUBLIC_CASCADE_TTS_VOICE ?? "",
               tts_model: process.env.NEXT_PUBLIC_CASCADE_TTS_MODEL ?? "sonic-2",
               fallback_mode: "cascade",
-              language_codes: effectiveInlineLanguages(agentConfig.languageCodes),
+              language_codes: effectiveInlineLanguages(
+                agentConfig.languageCodes,
+                agentConfig.conversationLanguage,
+              ),
               transcription_prompt: buildAgentTranscriptionPrompt(agentConfig),
               keyterms_prompt: buildAgentKeyterms(agentConfig),
               // Seed the STT with the opening line so the first caller
@@ -1565,10 +1568,14 @@ export function VoiceCall({
             systemPrompt: compileSystemPrompt(config),
             greeting: config.greeting,
             voiceId: config.voiceId,
-            // The agent's own language picker stays authoritative; Automatic
-            // (empty) locks to English so the test call skips 18-language
-            // auto-detection every turn.
-            languageCodes: effectiveInlineLanguages(config.languageCodes),
+            // The agent's own language picker stays authoritative; when it is
+            // left on Automatic (empty), the call follows the agent's Locale,
+            // so testing a Spanish agent tests Spanish. Only an agent with no
+            // Locale at all keeps the documented English fallback.
+            languageCodes: effectiveInlineLanguages(
+              config.languageCodes,
+              config.conversationLanguage,
+            ),
             // Demo parity with the stored agent: balanced end-of-turn.
             transcriptionMode: DEMO_TRANSCRIPTION_MODE,
             // First-utterance STT tuning: scene + vocabulary for the opening
