@@ -56,7 +56,8 @@
  *                 `DOUBLE TALK {...}` line and asserts the 400ms bar; time to
  *                 cut stays the barge-in-cut budget, never this one.
  *   hang-up-over  "I want you to hang up this call." over a long reply →
- *                 the call ends, never resumed ("as I was saying").
+ *                 the call ends, never resumed ("as I was saying"), and its
+ *                 drain is asserted on the same 1500ms bar as hang-up-fast.
  *   greeting-cut  "Wait, stop." 1s into the greeting → cut inside the locked
  *                 greeting window; the scenario asserts the ms it prints.
  *   silence-check-in  the caller stays silent on a free floor → exactly one
@@ -136,6 +137,7 @@ import {
   GOODBYE_DRAIN_EVIDENCE_PREFIX,
   greetingCutFailure,
   GREETING_CUT_MAX_MS,
+  hangUpDrainFailure,
   heardPoint,
   namesTeamInbox,
   TEAM_INBOX_ADDRESS,
@@ -1099,7 +1101,7 @@ const CLIENT_SCENARIOS: { name: string; run: () => Promise<string | null> }[] = 
       if (o.endedAt === null) return "never hung up";
       const ms = o.endedAt - o.lastAudioEnd;
       console.log(hangUpLine(ms, o.sessionId));
-      return ms <= 1500 ? null : `hang-up too slow: ${ms}ms`;
+      return hangUpDrainFailure(ms);
     },
   },
   {
@@ -1112,8 +1114,11 @@ const CLIENT_SCENARIOS: { name: string; run: () => Promise<string | null> }[] = 
       });
       if (o.creates.some((c) => isResumeInstructions(c))) return "resumed instead of ending";
       if (o.endedAt === null) return "never hung up";
-      console.log(hangUpLine(o.endedAt - o.lastAudioEnd, o.sessionId));
-      return null;
+      // The same drain verdict as hang-up-fast: the measured ms is asserted,
+      // never just printed, and an early close fails as chopped.
+      const ms = o.endedAt - o.lastAudioEnd;
+      console.log(hangUpLine(ms, o.sessionId));
+      return hangUpDrainFailure(ms);
     },
   },
   {

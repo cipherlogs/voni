@@ -23,6 +23,7 @@ import {
   END_CALL_SETTLE_POLLS,
   GOODBYE_AUDIO_COVERAGE_MIN,
   HANG_UP_AFTER_GOODBYE_MAX_MS,
+  hangUpDrainFailure,
   deriveFreeFloorSilence,
   evaluateDeadAir,
   evaluateDoubleTalk,
@@ -3228,6 +3229,33 @@ test("the runner's hang-up line carries the call whose drain ran long", () => {
     { ms: 4800, sessionId: "sess_over" },
   );
   assert.equal(parseRunnerHangUp("hang-up-fast: 1/1\n"), null);
+});
+
+test("both hang-up scenarios share one drain bar: 1500ms and never an early close", () => {
+  // hang-up-fast and hang-up-over return this same verdict, so neither path
+  // can print a measured drain without asserting it.
+  assert.equal(hangUpDrainFailure(950), null);
+  assert.equal(hangUpDrainFailure(HANG_UP_AFTER_GOODBYE_MAX_MS), null, "the bar itself passes");
+  assert.match(hangUpDrainFailure(1501) ?? "", /1501ms > 1500ms/, "past the bar fails with the budget");
+  assert.match(
+    hangUpDrainFailure(-200) ?? "",
+    /200ms before the goodbye audio ended/,
+    "a session that closed before the goodbye's audio ended is chopped, not fast",
+  );
+});
+
+test("an early close outranks a slow hang-up and keeps its own call", () => {
+  // Any negative delay means the goodbye was cut. Taking the max delay would
+  // let a normal run hide it, and the FAIL must cite the call that closed
+  // early, not the one that merely ran long.
+  assert.deepEqual(
+    parseRunnerHangUp(
+      "    hung up 912ms after the goodbye finished playing (session sess_ok)\n" +
+        "    hung up -200ms after the goodbye finished playing (session sess_chop)\n" +
+        "    hung up 4200ms after the goodbye finished playing (session sess_slow)\n",
+    ),
+    { ms: -200, sessionId: "sess_chop" },
+  );
 });
 
 test("end-call drain fails when the closing line never named the team inbox", () => {
