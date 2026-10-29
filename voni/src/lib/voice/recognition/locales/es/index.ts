@@ -8,6 +8,8 @@ import {
 } from "./filler";
 import { ES_SCENE } from "./scene";
 import { ES_VOCABULARY } from "./vocabulary";
+import { ES_ADDRESS } from "./address";
+import { ES_DIGITS } from "./digits";
 
 /**
  * Spanish recognition: the slots Spanish renders so far.
@@ -19,6 +21,8 @@ import { ES_VOCABULARY } from "./vocabulary";
 export const ES_RECOGNITION: RecognitionSlots = {
   vocabulary: ES_VOCABULARY,
   scene: ES_SCENE,
+  digits: ES_DIGITS,
+  address: ES_ADDRESS,
   filler: ES_FILLER,
   bargeIn: ES_BARGE_IN,
   commands: ES_COMMANDS,

@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { containsTag } from "@/lib/demo/test-tag";
 import {
   ADDRESS_SEPARATORS,
   COMMAND_INTENTS,
@@ -20,6 +21,8 @@ import {
   recognitionVocabulary,
   resolveBundle,
   resolveRecognition,
+  spokenDigitsToNumerals,
+  type CompleteRecognition,
 } from "./index";
 import { DE_FILLER } from "./locales/de/filler";
 import { ES_FILLER } from "./locales/es/filler";
@@ -211,14 +214,12 @@ test("an English keyterm is absent from a non-English vocabulary unless it is a 
   }
 });
 
-test("each spoken Locale is registered with its vocabulary and scene filled and the rest a named hole", () => {
+test("every spoken Locale is whole: every slot renders in its own words", () => {
   for (const locale of SPOKEN_NON_ENGLISH) {
     const resolution = resolveRecognition(locale);
-    assert.equal(resolution.status, "incomplete", locale);
-    if (resolution.status !== "incomplete") continue;
-    assert.equal(resolution.missing.includes("vocabulary"), false, locale);
-    assert.equal(resolution.missing.includes("scene"), false, locale);
-    assert.deepEqual(resolution.missing, ["digits", "address"], locale);
+    assert.equal(resolution.status, "complete", locale);
+    if (resolution.status !== "complete") continue;
+    assert.deepEqual(missingSlots(resolution.recognition), [], locale);
   }
 });
 
@@ -347,3 +348,91 @@ test("a call's Locale comes from its conversation language, then its pinned lang
   assert.equal(callRecognitionLocale({}), null);
   assert.equal(callRecognitionLocale({ languageCodes: [] }), null);
 });
+
+/** The bundle a call in this Locale runs under: its own words, slot by slot. */
+function localeWords(locale: (typeof SPOKEN_NON_ENGLISH)[number]): CompleteRecognition {
+  return callRecognition({ conversationLanguage: locale });
+}
+
+/** The same address, said with each Locale's own separator words. */
+const SPOKEN_ADDRESS: Record<(typeof SPOKEN_NON_ENGLISH)[number], string> = {
+  es: "andres arroba acme punto com",
+  fr: "andres arobase acme point com",
+  de: "andres klammeraffe acme punkt com",
+  it: "andres chiocciola acme punto com",
+  pt: "andres arroba acme ponto com",
+};
+
+test("every spoken Locale renders its own digit words, keyed by numeric value", () => {
+  for (const locale of SPOKEN_NON_ENGLISH) {
+    const digits = LOCALE_RECOGNITION[locale].digits;
+    assert.ok(digits, `${locale}: digits missing`);
+    assert.deepEqual(Object.keys(digits).map(Number).sort((a, b) => a - b), [...DIGITS], locale);
+    for (const digit of DIGITS) assert.ok((digits[digit] ?? []).length > 0, `${locale} ${digit}`);
+    assert.notDeepEqual(digits, EN_RECOGNITION.digits, locale);
+  }
+  // The words are the Locale's own, not the English repertoire under another key.
+  for (const [locale, digit, word] of [
+    ["es", 4, "cuatro"],
+    ["fr", 2, "deux"],
+    ["de", 7, "sieben"],
+    ["it", 5, "cinque"],
+    ["pt", 3, "três"],
+  ] as const) {
+    assert.equal(LOCALE_RECOGNITION[locale].digits?.[digit]?.includes(word), true, `${locale} ${digit} ${word}`);
+  }
+  for (const locale of SPOKEN_NON_ENGLISH) {
+    const words = DIGITS.flatMap((digit) => LOCALE_RECOGNITION[locale].digits?.[digit] ?? []).map((w) => w.toLowerCase());
+    // "six" is French's own 6, so only English words no Locale shares count.
+    for (const english of ["one", "two", "three", "four", "five", "seven", "eight", "nine"]) {
+      assert.equal(words.includes(english), false, `${locale}: English "${english}"`);
+    }
+  }
+});
+
+test("a Spanish spoken digit string resolves to the same Test tag as English numerals", () => {
+  const tag = "Lima 42";
+  const spanish = localeWords("es");
+  assert.equal(spokenDigitsToNumerals("Lima cuatro dos", spanish), "lima 42");
+  assert.equal(containsTag(spokenDigitsToNumerals("Lima cuatro dos", spanish), tag), true);
+  assert.equal(containsTag(spokenDigitsToNumerals("Lima four two", EN_RECOGNITION), tag), true);
+  // Digits the caller already typed are left alone.
+  assert.equal(containsTag(spokenDigitsToNumerals("Lima 4 2", spanish), tag), true);
+});
+
+test("a digit string in the wrong Locale does not silently resolve", () => {
+  const tag = "Lima 42";
+  const spanish = localeWords("es");
+  // Spanish words stay words in English, and English words stay words in Spanish.
+  assert.equal(spokenDigitsToNumerals("Lima four two", spanish), "lima four two");
+  assert.equal(containsTag(spokenDigitsToNumerals("Lima four two", spanish), tag), false);
+  assert.equal(spokenDigitsToNumerals("Lima cuatro dos", EN_RECOGNITION), "lima cuatro dos");
+  assert.equal(containsTag(spokenDigitsToNumerals("Lima cuatro dos", EN_RECOGNITION), tag), false);
+});
+
+test("spoken-address matching accepts each Locale's own separator words", () => {
+  for (const locale of SPOKEN_NON_ENGLISH) {
+    assert.equal(
+      normalizeSpokenAddress(SPOKEN_ADDRESS[locale], localeWords(locale)),
+      "andres@acme.com",
+      locale,
+    );
+  }
+  // A separator said as two words is still one separator, and the longer form
+  // wins: "guion bajo" is an underscore, never a hyphen followed by "bajo".
+  assert.equal(
+    normalizeSpokenAddress("andres punto garcia arroba acme guion bajo ventas punto com", localeWords("es")),
+    "andres.garcia@acme_ventas.com",
+  );
+});
+
+test("one Locale's address words do not resolve in another", () => {
+  for (const locale of ["fr", "de", "it", "en"] as const) {
+    const recognition = locale === "en" ? EN_RECOGNITION : localeWords(locale);
+    // A dot word can be shared ("punto" is Spanish and Italian); the @ word is
+    // the Locale's own, so the address itself never resolves.
+    assert.equal(normalizeSpokenAddress(SPOKEN_ADDRESS.es, recognition).includes("@"), false, locale);
+  }
+  assert.equal(normalizeSpokenAddress(SPOKEN_ADDRESS.fr, localeWords("es")).includes("@"), false);
+});
+
