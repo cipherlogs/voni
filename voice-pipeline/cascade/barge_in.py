@@ -28,8 +28,16 @@ reported milliseconds become a whole sample at the session's own rate, so a
 fractional report can never round past a word, and the session's own
 ``resume_point`` maps that sample to the first unheard word when its
 ``WordBoundaries`` are complete, or to the start of the first sentence not
-fully played otherwise. The located point is stored for ticket 90; nothing is
-re-synthesized here.
+fully played otherwise.
+
+Ticket 90 speaks that located tail. The re-synthesis is the same opened session
+(same voice, same language) on the vendor's next ``flush_id``; it continues the
+reply that was cut — the resume record keeps the cut seam's turn and reply — and
+it never asks the model anything, because the rest of an answer is speech, not
+a new completion. A plan is spoken exactly once, and a new caller turn (or a
+later cut) cancels a stale resume rather than letting the old tail finish over
+the new answer. A reply that already played in full refuses by name instead of
+repeating itself.
 
 A **filler** interruption is the caller's backchannel, not a turn: it sends no
 ``Cancel``, starts no generation and asks for no reply (ticket 91). The agent
@@ -115,6 +123,31 @@ class ReplyInFlightError(RuntimeError):
         super().__init__(
             "a reply is still being produced; stop or cut it before starting "
             "another (one producer per call)"
+        )
+
+
+class ResumeRefusedError(ValueError):
+    """A tail resume that the call cannot honestly perform."""
+
+
+class NoUnheardTailError(ResumeRefusedError):
+    """There is nothing left to say: the whole reply played, or no plan."""
+
+    def __init__(self, reason: str = "") -> None:
+        self.reason = reason
+        super().__init__(
+            "no unheard tail to resume: the whole reply played, so speaking "
+            f"again would repeat the answer ({reason or 'empty tail'})"
+        )
+
+
+class StaleResumeError(ResumeRefusedError):
+    """The tail's plan was already spoken, or a newer turn cancelled it."""
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        super().__init__(
+            f"this tail resume is stale and is never spoken: {reason}"
         )
 
 
@@ -269,6 +302,9 @@ class FillerResume:
     cut: BargeInCut | None = None
     resume: ResumePoint | None = None
     cancelled: bool = False
+    #: Set once the plan has been handed to the resume producer. A plan is
+    #: spoken exactly once; a second attempt is stale, not a repeat.
+    resumed: bool = False
 
     def __post_init__(self) -> None:
         if self.budget_ms <= 0:
@@ -297,6 +333,61 @@ class FillerResume:
 
 
 @dataclass
+class TailResume:
+    """One re-synthesis of the cut reply's tail; never a new answer.
+
+    The record names the reply it continues (``turn`` and ``reply`` from the
+    cut seam) and the request it was cut from, so a reader can prove the resume
+    did not start a second answer. ``flush_id`` is read from the session's first
+    audio frame after the resume, never computed; the vendor may skip ids.
+    ``frames`` is how much of the tail actually played before it finished or
+    was cancelled.
+    """
+
+    text: str
+    granularity: ResumeGranularity
+    turn: Any
+    reply: str
+    source_flush_id: int | None
+    cause: str
+    budget_ms: float
+    generation: int
+    flush_id: int | None = None
+    frames: int = 0
+    cancelled: bool = False
+
+    def __post_init__(self) -> None:
+        if not self.text.strip():
+            raise NoUnheardTailError()
+        if self.budget_ms <= 0:
+            raise ValueError(f"a resume budget must be positive: {self.budget_ms!r}")
+
+    @property
+    def is_reply(self) -> bool:
+        """Always false: a resume is speech, not a model answer."""
+        return False
+
+    @property
+    def continues_reply(self) -> bool:
+        """Always true: the tail belongs to the reply that was being spoken."""
+        return True
+
+    @property
+    def starts_new_answer(self) -> bool:
+        """Always false: the caller hears the rest of the same answer."""
+        return False
+
+    @property
+    def model_calls(self) -> int:
+        """Always zero: the resume never asks the model anything."""
+        return 0
+
+    def cancel(self) -> None:
+        """A newer caller turn owns the floor; the stale tail stops (idempotent)."""
+        self.cancelled = True
+
+
+@dataclass
 class _ReplyRun:
     """The producer's state for one reply."""
 
@@ -305,6 +396,7 @@ class _ReplyRun:
     flush_id: int | None
     turn: Any
     reply: str
+    resume: TailResume | None = None
     dropped_frames: int = 0
     task: asyncio.Task | None = field(default=None, repr=False)
 
@@ -343,6 +435,9 @@ class BargeInCutPath:
         # The cut whose tail a filler may recover, and the plan it produced.
         self._resume_cut: BargeInCut | None = None
         self._pending_filler: FillerResume | None = None
+        # The tail currently being re-synthesized, if any (ticket 90).
+        self._active_resume: TailResume | None = None
+        self._resumes: list[TailResume] = []
 
     # -- state ------------------------------------------------------------
 
@@ -365,6 +460,11 @@ class BargeInCutPath:
             and not self._run.task.done()
         )
 
+    @property
+    def resumes(self) -> tuple[TailResume, ...]:
+        """Every tail resume of this call, in order (a stale one keeps its record)."""
+        return tuple(self._resumes)
+
     # -- producing --------------------------------------------------------
 
     def start(
@@ -381,9 +481,17 @@ class BargeInCutPath:
         session owns the real id and may assign the next one only when its
         first post-``Cancelled`` frame arrives, so a reply started before that
         simply records ``None``.
+
+        A new caller turn preempts a stale resume (ticket 90): the tail was for
+        the reply the caller already talked over, so it is discarded rather
+        than allowed to finish over the new answer. A live reply is not
+        preempted; that stays a programming error.
         """
         if self.reply_in_flight:
-            raise ReplyInFlightError()
+            if self._run is None or self._run.resume is None:
+                raise ReplyInFlightError()
+            self._cancel_resume()
+            self._preempt_producer()
         # A real reply supersedes a pending filler resume and the cut it came
         # from: a stale tail is never spoken over a new answer (ticket 90).
         self._cancel_pending_filler()
@@ -409,7 +517,22 @@ class BargeInCutPath:
                 await _aclose(run.iterator)
                 return
             self._sample_rate = chunk.sample_rate
+            if run.resume is not None:
+                # The resume's first frame is where the vendor's new flush id
+                # becomes known; it is read, never computed.
+                run.resume.frames += 1
+                current = self._current_flush_id()
+                if current is not None and run.resume.flush_id is None:
+                    run.resume.flush_id = current
+                    run.flush_id = current
             await _invoke(self._on_audio, chunk)
+        if (
+            run.resume is not None
+            and self._active_resume is run.resume
+            and not run.resume.cancelled
+        ):
+            # Played to its end: a later caller turn must not mark it cancelled.
+            self._active_resume = None
 
     async def join(self) -> None:
         """Wait for the current reply to finish; a synthesis failure surfaces."""
@@ -421,6 +544,7 @@ class BargeInCutPath:
     async def stop(self) -> None:
         """Stop the producer without a cut: the call is draining or ending."""
         self._cancel_pending_filler()
+        self._cancel_resume()
         self._resume_cut = None
         self._generation += 1
         await self._stop_producer()
@@ -479,6 +603,85 @@ class BargeInCutPath:
         plan, self._pending_filler = self._pending_filler, None
         if plan is not None:
             plan.cancel()
+
+    # -- the tail resume --------------------------------------------------
+
+    async def resume(self, plan: FillerResume | None = None) -> TailResume:
+        """Speak the unheard tail (ticket 90); zero model requests.
+
+        The plan is what the filler path (ticket 91) carries forward, and the
+        default is the one it left pending. The tail is re-synthesized through
+        the *same* session, so the voice and language are the ones the call
+        already bound, and the reply's identity is the cut seam's: this
+        continues the answer the caller was hearing, it does not start a new
+        one. The vendor's next ``flush_id`` is read from the first audio frame,
+        never computed. A plan is spoken exactly once; an already-spoken or
+        cancelled one is stale and is refused by name.
+        """
+        if self.reply_in_flight:
+            raise ReplyInFlightError()
+        plan = self._pending_filler if plan is None else plan
+        if plan is None:
+            raise NoUnheardTailError("no filler plan was carried forward")
+        if plan.cancelled:
+            raise StaleResumeError("a newer turn cancelled the plan")
+        if plan.resumed:
+            raise StaleResumeError("the plan was already spoken")
+        if not plan.resumable:
+            raise NoUnheardTailError("the tail is empty")
+        if self._pending_filler is plan:
+            # Consumed, not cancelled: the plan is becoming speech now.
+            self._pending_filler = None
+        plan.resumed = True
+
+        cut = plan.cut
+        seam = None if cut is None else cut.seam
+        point = plan.resume
+        self._generation += 1
+        record = TailResume(
+            text=plan.text,
+            granularity=(
+                ResumeGranularity.SENTENCE
+                if point is None
+                else point.granularity
+            ),
+            turn=None if seam is None else seam.turn,
+            reply="" if seam is None else seam.reply,
+            source_flush_id=None if seam is None else seam.flush_id,
+            cause="" if cut is None else cut.cause,
+            budget_ms=plan.budget_ms,
+            generation=self._generation,
+        )
+        run = _ReplyRun(
+            generation=record.generation,
+            iterator=self._tts.speak(record.text),
+            flush_id=record.source_flush_id,
+            turn=record.turn,
+            reply=record.reply,
+            resume=record,
+        )
+        run.task = asyncio.ensure_future(self._produce(run))
+        self._run = run
+        self._active_resume = record
+        self._resumes.append(record)
+        return record
+
+    def _cancel_resume(self) -> None:
+        """Mark an in-flight tail stale; the generation bump silences it."""
+        resume, self._active_resume = self._active_resume, None
+        if resume is not None:
+            resume.cancel()
+
+    def _preempt_producer(self) -> None:
+        """Stop a stale resume synchronously; a new turn owns the frame boundary.
+
+        The generation was already bumped by the caller, so the task cannot emit
+        another frame even before it observes the cancellation.
+        """
+        run, self._run = self._run, None
+        if run is None or run.task is None or run.task.done():
+            return
+        run.task.cancel()
 
     # -- the played position ----------------------------------------------
 
@@ -553,8 +756,10 @@ class BargeInCutPath:
             )
 
         async with self._cut_lock:
-            # A later cut supersedes any pending filler resume.
+            # A later cut supersedes any pending filler resume and the tail a
+            # filler is still speaking: the latest caller turn wins.
             self._cancel_pending_filler()
+            self._cancel_resume()
             run = self._run
             # The frame boundary: no chunk of the old reply may be emitted
             # after this synchronous line, even before Cancel is on the wire.
