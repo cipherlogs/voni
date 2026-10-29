@@ -20,6 +20,13 @@
  *
  *   npm run eval:demo-agent -- [--runs 5] [--voice <demo-voice-id>] [--scenario hang-up]
  *     [--transport stored|inline] [--events <path.jsonl>]
+ *     [--variant turn-window] [--turn-windows 400,640,0 | -,-,0]
+ *
+ * `--variant turn-window` binds the experimental stored-agent row (`:exp`)
+ * instead of production; `--turn-windows min,max,interruption_delay` picks a
+ * ladder rung (`-` omits a part, so rung 3 is `-,-,0`). Both also read from
+ * `DEMO_AGENT_VARIANT` / `DEMO_TURN_*`; the flag wins. A variant on the inline
+ * debug transport is refused: inline is never measured.
  *
  * `--events <path>` is an opt-in JSONL stream of key decisions (scenario
  * start/end, session ready, reply create/first audio, cut, tool call/result,
@@ -117,16 +124,23 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildDemoAgentBody, getOrCreateDemoAgent } from "../src/lib/demo/stored-agents";
+import {
+  buildDemoAgentBody,
+  demoAgentVariantFromEnv,
+  demoTurnWindowsFromEnv,
+  getOrCreateDemoAgent,
+} from "../src/lib/demo/stored-agents";
 import { createEvalEventWriter } from "../src/lib/demo/eval-events";
 import { createTurnMarks } from "../src/lib/demo/turn-marks";
 import {
   evalSummaryIdentity,
   evalToolExecutor,
   parseEvalTransport,
+  resolveEvalVariantSelection,
   storedAgentBinding,
   type EvalAgentIdentity,
   type EvalTransport,
+  type EvalVariantSelection,
 } from "../src/lib/demo/eval-transport";
 import {
   checkEmailInstructions,
@@ -273,7 +287,15 @@ async function storedAgentFor(voiceId: string): Promise<EvalAgentIdentity> {
   if (storedAgent) return storedAgent;
   if (!storedAgentRequest) {
     storedAgentRequest = (async () => {
-      const provisioned = await getOrCreateDemoAgent(voiceId);
+      // The variant selection is resolved once at startup (flag beats env);
+      // passing it explicitly keeps the body and the reported identity the
+      // same value, never two independent reads of the environment.
+      const provisioned = await getOrCreateDemoAgent(voiceId, {
+        variant: VARIANT_SELECTION.variant,
+        ...(VARIANT_SELECTION.turnWindows
+          ? { turnWindows: VARIANT_SELECTION.turnWindows }
+          : {}),
+      });
       if (!provisioned.ok) {
         throw new HarnessBreak(`stored agent unavailable for ${voiceId}: ${provisioned.error}`);
       }
@@ -286,10 +308,13 @@ async function storedAgentFor(voiceId: string): Promise<EvalAgentIdentity> {
         agentId: provisioned.agentId,
         fingerprint: provisioned.fingerprint,
         llmModel: provisioned.llmModel,
+        variant: VARIANT_SELECTION.variant,
+        variantKey: VARIANT_SELECTION.variantKey,
+        turnWindows: VARIANT_SELECTION.turnWindows,
       };
       storedAgent = identity;
       console.log(
-        `  · stored agent ${identity.agentId} (fingerprint ${identity.fingerprint.slice(0, 12)}, llm ${identity.llmModel ?? "managed"})`,
+        `  · stored agent ${identity.agentId} (${VARIANT_SELECTION.variant === "turn-window" ? `${VARIANT_SELECTION.variantKey} ` : ""}fingerprint ${identity.fingerprint.slice(0, 12)}, llm ${identity.llmModel ?? "managed"})`,
       );
       return identity;
     })();
@@ -2336,6 +2361,20 @@ if (!Number.isFinite(DOUBLE_TALK_FAULT_MS) || DOUBLE_TALK_FAULT_MS < 0) {
 
 const runs = Number(arg("--runs", "5"));
 const voiceId = arg("--voice", DEMO_VOICE_IDS[0]);
+/**
+ * Which stored body this run binds. An explicit `--variant turn-window`
+ * (+ optional `--turn-windows min,max,interruption_delay`) wins over
+ * `DEMO_AGENT_VARIANT`/`DEMO_TURN_*`; no selection is production. A typo, or
+ * a variant combined with the inline debug transport, throws here, before any
+ * audio or token is spent — never a silent fallback.
+ */
+const VARIANT_SELECTION: EvalVariantSelection = resolveEvalVariantSelection({
+  argv: process.argv,
+  transport: TRANSPORT,
+  voiceId,
+  envVariant: await demoAgentVariantFromEnv(),
+  envWindows: await demoTurnWindowsFromEnv(),
+});
 const requestedScenario = arg("--scenario", "");
 // `--scenario all` (and `suite`) means every scenario: score-demo's one-command
 // suite may pass either name, and a filter that matched "all" literally would
@@ -2345,6 +2384,12 @@ const only = requestedScenario === "all" || requestedScenario === "suite" ? "" :
 // the landing demo's stored agent runs.
 console.log(
   `transport: ${TRANSPORT}${TRANSPORT === "stored" ? " (the landing demo's stored agent)" : " (inline body: debugging only)"}`,
+);
+console.log(
+  `variant: ${VARIANT_SELECTION.variant}` +
+    (VARIANT_SELECTION.variantKey
+      ? ` (${VARIANT_SELECTION.variantKey}, windows ${JSON.stringify(VARIANT_SELECTION.turnWindows)})`
+      : " (no turn windows; source " + VARIANT_SELECTION.source + ")"),
 );
 let failures = 0;
 /** Per-scenario rows for the final machine-readable summary. */
@@ -2488,7 +2533,8 @@ console.log(
     live: scenarioResults.length > 0,
     // Which transport produced the evidence, and which agent/model it bound.
     // An inline or `managed` run can never be mistaken for the fast-model one.
-    ...evalSummaryIdentity(TRANSPORT, storedAgent),
+    // The selection covers a variant run that never bound (raw-socket only).
+    ...evalSummaryIdentity(TRANSPORT, storedAgent, VARIANT_SELECTION),
     // Fixed caller clips the real-cut scenarios streamed: the scoreboard
     // compares these fingerprints with the prior run before trusting a cut.
     clips: cutClips.sort((a, b) => a.text.localeCompare(b.text)),

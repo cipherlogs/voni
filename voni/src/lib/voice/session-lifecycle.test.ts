@@ -1270,6 +1270,43 @@ test("sensitive capture widens once and restores the exact prior pacing", async 
   });
 });
 
+test("sensitive capture widens from the adaptive default and restores null", async () => {
+  const { session, sent, handle, internals } = makeSession();
+  const prepare = (
+    session as unknown as {
+      prepareSensitiveCapture: () => Promise<unknown>;
+    }
+  ).prepareSensitiveCapture.bind(session);
+
+  // The production session starts adaptive (activeTurnDetection null).
+  assert.equal(internals["activeTurnDetection"] ?? null, null);
+  const prepared = prepare();
+  assert.deepEqual(JSON.parse(sent[0]), {
+    type: "session.update",
+    session: {
+      input: {
+        turn_detection: {
+          min_silence: 1400,
+          max_silence: 4000,
+          interrupt_response: true,
+          interruption_delay: 0,
+        },
+      },
+    },
+  });
+  handle({ type: "session.updated" });
+  await prepared;
+
+  // The next final caller turn restores adaptive explicitly (null).
+  handle({ type: "transcript.user", item_id: "u-sensitive", text: "value" });
+  assert.deepEqual(JSON.parse(sent[1]), {
+    type: "session.update",
+    session: { input: { turn_detection: null } },
+  });
+  handle({ type: "session.updated" });
+  assert.equal(internals["activeTurnDetection"] ?? null, null);
+});
+
 test("muted mic drops frames without tearing down the call", () => {
   const { session, sent, handle } = makeSession();
   handle({ type: "session.ready", session_id: "sess_mute" });

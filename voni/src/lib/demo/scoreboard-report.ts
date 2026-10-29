@@ -26,6 +26,7 @@ import {
   type RunnerEvidenceScenario,
   type RunnerEvidenceTurn,
 } from "./runner-evidence";
+import type { DemoAgentVariant, DemoTurnWindows } from "./stored-agents";
 
 export type InspectRunIdentity = {
   voice: string;
@@ -38,6 +39,12 @@ export type InspectRunIdentity = {
   agentId: string | null;
   agentFingerprint: string | null;
   llmModel: string | null;
+  /** production | turn-window; null when the artifact predates the experiment. */
+  variant: DemoAgentVariant | null;
+  /** The variant's row key (`<voice>:exp`), null for production or an old artifact. */
+  variantKey: string | null;
+  /** The windows the variant body carried, or null when there were none. */
+  turnWindows: DemoTurnWindows | null;
 };
 
 export type InspectScenario = RunnerEvidenceScenario;
@@ -183,6 +190,9 @@ export function buildInspectReport(
       agentId: evidence?.agentId ?? agentFromTrace(artifact),
       agentFingerprint: evidence?.agentFingerprint ?? null,
       llmModel: evidence?.llmModel ?? null,
+      variant: evidence?.variant ?? null,
+      variantKey: evidence?.variantKey ?? null,
+      turnWindows: evidence?.turnWindows ?? null,
     },
     scenarios: evidence?.scenarios ?? [],
     gates: artifact.gates.map((gate) => ({ name: gate.name, status: gate.status })),
@@ -211,6 +221,16 @@ function formatTurn(turn: InspectTurn): string {
     `    turn ${String(turn.turnIndex).padStart(2)}  gap ${gap}ms  cutAt ${cut}ms` +
     `  heard ${flag(turn.heard)}  resume ${flag(turn.resume)}  aside ${flag(turn.aside)}`
   );
+}
+
+function formatWindows(windows: DemoTurnWindows): string {
+  const parts: string[] = [];
+  if (windows.min_silence !== undefined) parts.push(`min ${windows.min_silence}`);
+  if (windows.max_silence !== undefined) parts.push(`max ${windows.max_silence}`);
+  if (windows.interruption_delay !== undefined) {
+    parts.push(`interruption_delay ${windows.interruption_delay}`);
+  }
+  return parts.join(" / ");
 }
 
 function formatDrain(drain: InspectDrain): string {
@@ -249,6 +269,12 @@ export function formatInspectReport(report: InspectReport): string {
     `  agent        ${run.agentId ?? "unknown"}  (llm ${run.llmModel ?? "unknown"})`,
   ];
   if (run.agentFingerprint) lines.push(`  fingerprint  ${run.agentFingerprint.slice(0, 12)}`);
+  if (run.variant) {
+    const windows = run.turnWindows ? `  windows ${formatWindows(run.turnWindows)}` : "";
+    lines.push(
+      `  variant      ${run.variant}${run.variantKey ? `  ${run.variantKey}` : ""}${windows}`,
+    );
+  }
 
   if (report.scenarios.length > 0) {
     lines.push("", `scenarios (${report.scenarios.length})`);

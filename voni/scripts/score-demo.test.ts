@@ -19,10 +19,21 @@ const GATE_BEATS = [
 ];
 
 function run(args: string[], cwd: string, env: Record<string, string> = {}) {
+  // Never inherit a developer's experiment selection: the default run is
+  // production unless a test passes the flag/env explicitly.
+  const isolated = { ...process.env };
+  for (const key of [
+    "DEMO_AGENT_VARIANT",
+    "DEMO_TURN_MIN_SILENCE",
+    "DEMO_TURN_MAX_SILENCE",
+    "DEMO_TURN_INTERRUPTION_DELAY",
+  ]) {
+    delete isolated[key];
+  }
   return spawnSync("node", ["--import", "tsx", SCRIPT, ...args], {
     cwd,
     encoding: "utf8",
-    env: { ...process.env, PATH: process.env.PATH, ...env },
+    env: { ...isolated, PATH: process.env.PATH, ...env },
   });
 }
 
@@ -131,6 +142,131 @@ test("one command runs the gate-voice eval, merges the Call trace, and writes th
   assert.match(measurements.detail, /trace-gaps/);
   assert.equal(artifact.gates.find((g) => g.name === "barge-in-cut")?.status, "PASS");
   assert.match(result.stdout, /artifact: /);
+});
+
+test("a variant run forwards each rung's flags and records the variant in run identity", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  writeFileSync(
+    join(bin, "npm"),
+    `#!/usr/bin/env node
+const { appendFileSync } = require("node:fs");
+const args = process.argv.slice(2);
+appendFileSync(process.env.SHIM_LOG, JSON.stringify(args) + "\\n");
+if (args[0] === "run" && args[1] === "eval:demo-agent") {
+  console.log("    cut 912ms after the caller started");
+  console.log('    answered the point after the cut: "Pricing depends on call volume."');
+  console.log("stop-over: 1/1");
+  console.log("EVAL SUMMARY " + JSON.stringify({
+    scenario: "stop-over", runs: 1, failures: 0,
+    scenarios: [{ name: "stop-over", passed: 1, runs: 1 }],
+    traceSessions: ["sess_exp"], playout: [], audioChunks: 40, live: true, clips: [],
+    transport: "stored", agentId: "agent_exp", agentFingerprint: "fp-exp",
+    llmModel: "managed", variant: "turn-window", variantKey: "anna:exp",
+    turnWindows: { min_silence: 400, max_silence: 640, interruption_delay: 0 },
+  }));
+} else if (args[0] === "run" && args[1] === "call:trace") {
+  console.log(' 1.00s  VONI    "Welcome"  (reply_create gap 700ms)');
+  console.log(' 4.00s  VONI    "About 200 dollars a month."  (reply_create gap 600ms)');
+}
+`,
+    { mode: 0o755 },
+  );
+  const callLog = join(dir, "npm-calls.log");
+  const out = join(dir, "score.json");
+  const result = run(
+    [
+      "--scenario", "stop-over", "--trace-session", "sess_exp",
+      "--transport", "stored", "--variant", "turn-window", "--turn-windows", "400,640,0",
+      "--out", out, "--timing-lock", join(dir, "timing.lock"),
+    ],
+    new URL("../", import.meta.url).pathname,
+    { PATH: `${bin}:${process.env.PATH}`, SHIM_LOG: callLog },
+  );
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+
+  const calls = readFileSync(callLog, "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line) as string[]);
+  assert.deepEqual(calls[0], [
+    "run", "eval:demo-agent", "--",
+    "--voice", DEMO_VOICE_IDS[0],
+    "--scenario", "stop-over",
+    "--runs", "1",
+    "--transport", "stored",
+    "--variant", "turn-window",
+    "--turn-windows", "400,640,0",
+  ]);
+
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    gates: { name: string; status: string; detail: string }[];
+    endOfTurn?: {
+      experimental: boolean;
+      variant: string;
+      variantKey: string;
+      turnWindows: { min_silence: number; max_silence: number; interruption_delay: number };
+      productionTurnDetection: null;
+    };
+    runnerEvidence: {
+      variant: string;
+      variantKey: string;
+      agentId: string;
+      turnWindows: { min_silence: number; max_silence: number; interruption_delay: number };
+    };
+  };
+  assert.equal(artifact.runnerEvidence.variant, "turn-window");
+  assert.equal(artifact.runnerEvidence.variantKey, "anna:exp");
+  assert.equal(artifact.runnerEvidence.agentId, "agent_exp");
+  assert.deepEqual(artifact.runnerEvidence.turnWindows, {
+    min_silence: 400,
+    max_silence: 640,
+    interruption_delay: 0,
+  });
+  const endOfTurn = artifact.gates.find((gate) => gate.name === "end-of-turn");
+  assert.equal(endOfTurn?.status, "PASS");
+  assert.match(endOfTurn?.detail ?? "", /experimental/i);
+  assert.match(endOfTurn?.detail ?? "", /min_silence 400/);
+  assert.doesNotMatch(endOfTurn?.detail ?? "", /^meaning-based end-of-turn preserved/);
+  assert.deepEqual(artifact.endOfTurn, {
+    experimental: true,
+    variant: "turn-window",
+    variantKey: "anna:exp",
+    turnWindows: { min_silence: 400, max_silence: 640, interruption_delay: 0 },
+    productionTurnDetection: null,
+  });
+});
+
+test("an unknown variant flag or inline+variant fails loudly, before any runner", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  const callLog = join(dir, "npm-calls.log");
+  // A shim that would record a spawn: a loud failure must leave it empty.
+  writeFileSync(
+    join(bin, "npm"),
+    `#!/usr/bin/env node\nrequire("node:fs").appendFileSync(process.env.SHIM_LOG, "spawned\\n");\n`,
+    { mode: 0o755 },
+  );
+  const env = { PATH: `${bin}:${process.env.PATH}`, SHIM_LOG: callLog };
+  const bad = run(
+    ["--dry-run", "--scenario", "stop-over", "--variant", "turn-knob", "--out", join(dir, "a.json")],
+    new URL("../", import.meta.url).pathname,
+    env,
+  );
+  assert.notEqual(bad.status, 0);
+  assert.match(bad.stderr, /--variant needs one of production, turn-window/);
+
+  const inline = run(
+    ["--dry-run", "--scenario", "stop-over", "--transport", "inline", "--variant", "turn-window",
+      "--out", join(dir, "b.json")],
+    new URL("../", import.meta.url).pathname,
+    env,
+  );
+  assert.notEqual(inline.status, 0);
+  assert.match(inline.stderr, /inline.*never measured/);
+  assert.equal(existsSync(callLog), false, "no runner was spawned for a misconfigured selection");
 });
 
 test("a real run chains the trace session the eval runner printed and reports per-turn gaps", () => {
@@ -787,10 +923,12 @@ test("dry run checks the stored agent body: end-of-turn passes with no turn-dete
   assert.equal(result.status, 0, result.stderr + result.stdout);
   const artifact = JSON.parse(readFileSync(out, "utf8")) as {
     gates: { name: string; status: string; detail: string }[];
+    endOfTurn?: unknown;
   };
   const gate = artifact.gates.find((g) => g.name === "end-of-turn");
   assert.equal(gate?.status, "PASS");
-  assert.match(gate?.detail ?? "", /turn_detection/);
+  assert.match(gate?.detail ?? "", /^meaning-based end-of-turn preserved/);
+  assert.equal(artifact.endOfTurn, undefined);
 });
 
 test("dry run with filler evidence passes the filler-resume gate and names it", () => {
@@ -1916,6 +2054,8 @@ if (args[0] === "run" && args[1] === "eval:demo-agent") {
     audioChunks: 40, live: true, clips: [],
     transport: "stored", agentId: "agent_suite", agentFingerprint: "abc123",
     llmModel: "google/gemini-2.5-flash",
+    variant: "turn-window", variantKey: "anna:exp",
+    turnWindows: { min_silence: 400, max_silence: 640, interruption_delay: 0 },
   }));
   console.log("  · trace session sess_suite");
   if (scenario === "greeting-cut") {
@@ -2009,6 +2149,11 @@ if (args[0] === "run" && args[1] === "eval:demo-agent") {
   assert.match(redacted, /"agentId":"agent_suite"/);
   assert.match(redacted, /"agentFingerprint":"abc123"/);
   assert.match(redacted, /"llmModel":"google\/gemini-2\.5-flash"/);
+  // The suite id/name is merged too, so a rung artifact can prove which
+  // stored-agent variant every section bound.
+  assert.match(redacted, /"variant":"turn-window"/);
+  assert.match(redacted, /"variantKey":"anna:exp"/);
+  assert.match(redacted, /"turnWindows":\{"min_silence":400,"max_silence":640,"interruption_delay":0\}/);
   assert.deepEqual(artifact.doubleTalk.overlapMs, [40], "over-talk's own line is merged");
   assert.deepEqual(artifact.deadAir.checkIns.map((c) => c.atSilenceMs), [15_200], "silence-check-in's own timeline is merged");
   assert.equal(artifact.emailInvite?.tagMentions, 1, "invite-tag's own line is merged");

@@ -23,6 +23,7 @@ import {
 } from "./scoreboard";
 import type { EvalEvent } from "./eval-events";
 import { latencySplit, type LatencySplit } from "./latency-split";
+import type { DemoAgentVariant, DemoTurnWindows } from "./stored-agents";
 
 /**
  * One turn's latency split, joined to the Call trace by the runner's per-call
@@ -120,6 +121,16 @@ export type RunnerEvidence = {
   agentId: string | null;
   agentFingerprint: string | null;
   llmModel: string | null;
+  /**
+   * Which stored body produced the evidence. Absent on artifacts written
+   * before the turn-window experiment, so a reader must treat absence as
+   * unknown rather than assume production.
+   */
+  variant?: DemoAgentVariant | null;
+  /** The variant's own `demo_agents.voice_id` (`<voice>:exp`), null for production. */
+  variantKey?: string | null;
+  /** The windows the variant body was built from; null for production. */
+  turnWindows?: DemoTurnWindows | null;
   scenarios: RunnerEvidenceScenario[];
   sessions: RunnerEvidenceSession[];
   playout: RunnerPlayout[];
@@ -168,6 +179,20 @@ function traceRows(excerpt: string[]): TraceRow[] {
     }
   }
   return rows;
+}
+
+/**
+ * One CONFIG row for the Call trace. It names the agent whose turn detection
+ * the server changed, so a variant window line can never be read as
+ * production pacing (or the other way round). `agentId` is the session's
+ * bound agent; null means the inline debug body.
+ */
+export function configTraceLine(
+  atLabel: string,
+  turnDetection: unknown,
+  agentId: string | null,
+): string {
+  return `${atLabel}  CONFIG  turn_detection ${JSON.stringify(turnDetection)}  agent=${agentId ?? "inline"}`;
 }
 
 /**
@@ -426,6 +451,25 @@ function scenarioWallClock(playout: RunnerPlayout[], name: string): number | nul
   return rows.length === 0 ? null : rows.reduce((sum, row) => sum + row.wallClockMs, 0);
 }
 
+/** Only the two known variants are evidence; anything else is unknown, never assumed. */
+function summaryVariant(summary: EvalRunnerSummary | null): DemoAgentVariant | null {
+  const value = summary?.variant;
+  return value === "production" || value === "turn-window" ? value : null;
+}
+
+/** Keep only the three window fields, and only when they are finite numbers. */
+function summaryTurnWindows(summary: EvalRunnerSummary | null): DemoTurnWindows | null {
+  const raw = summary?.turnWindows;
+  if (raw === undefined || raw === null || typeof raw !== "object") return null;
+  const windows: DemoTurnWindows = {};
+  if (Number.isFinite(raw.min_silence)) windows.min_silence = Number(raw.min_silence);
+  if (Number.isFinite(raw.max_silence)) windows.max_silence = Number(raw.max_silence);
+  if (Number.isFinite(raw.interruption_delay)) {
+    windows.interruption_delay = Number(raw.interruption_delay);
+  }
+  return Object.keys(windows).length > 0 ? windows : null;
+}
+
 function scenariosFromSummary(summary: EvalRunnerSummary | null, playout: RunnerPlayout[]): RunnerEvidenceScenario[] {
   return (summary?.scenarios ?? []).map((row) => ({
     name: row.name,
@@ -541,6 +585,9 @@ export function buildRunnerEvidence(input: {
     agentId: summary?.agentId ?? null,
     agentFingerprint: summary?.agentFingerprint ?? null,
     llmModel: summary?.llmModel ?? null,
+    variant: summaryVariant(summary),
+    variantKey: summary?.variantKey ?? null,
+    turnWindows: summaryTurnWindows(summary),
     scenarios: scenarioRows,
     sessions,
     playout,

@@ -85,6 +85,7 @@ import { DEMO_VOICE_IDS, SILENCE_CHECK_IN_INSTRUCTIONS } from "./voni-agent";
 import { DEMO_INBOX_ADDRESS } from "./email-test";
 import { TAG_WORDS, containsTag, countTags } from "./test-tag";
 import type { RunnerEvidence } from "./runner-evidence";
+import type { DemoAgentVariant, DemoTurnWindows } from "./stored-agents";
 
 /** The locked golden script: seven beats in fixed order (spec story 11). */
 export const GOLDEN_BEATS = [
@@ -938,6 +939,44 @@ export function replyGapGate(samples: ReplyGapSample[], traceSessionId?: string)
 // ── Gate: end-of-turn (ADR-0003 contract, owner: end-of-turn section) ─────────
 
 /**
+ * The stored-agent experiment a run bound (ticket 10). Its windows are
+ * evidence for the experiment only: they never replace the production body
+ * the gate checks, so `turn_detection: null` on production stays the contract.
+ */
+export type EndOfTurnExperiment = {
+  variant: Exclude<DemoAgentVariant, "production">;
+  /** The variant's own row key (`<voice>:exp`), so the evidence names the body. */
+  variantKey: string | null;
+  /** The windows the variant body carries. */
+  turnWindows: DemoTurnWindows | null;
+};
+
+/**
+ * Dedicated artifact evidence that a run measured the experiment, so a reader
+ * can never mistake its gate PASS for a production one. Absent on production
+ * artifacts (the gate's existing PASS line speaks for them).
+ */
+export type EndOfTurnEvidence = {
+  experimental: true;
+  variant: Exclude<DemoAgentVariant, "production">;
+  variantKey: string | null;
+  turnWindows: DemoTurnWindows | null;
+  /** The production body the gate checked: still adaptive. */
+  productionTurnDetection: null;
+};
+
+function formatEndOfTurnWindows(windows: DemoTurnWindows | null): string {
+  if (!windows) return "no windows recorded";
+  const parts: string[] = [];
+  if (windows.min_silence !== undefined) parts.push(`min_silence ${windows.min_silence}`);
+  if (windows.max_silence !== undefined) parts.push(`max_silence ${windows.max_silence}`);
+  if (windows.interruption_delay !== undefined) {
+    parts.push(`interruption_delay ${windows.interruption_delay}`);
+  }
+  return parts.length > 0 ? parts.join(", ") : "no windows recorded";
+}
+
+/**
  * Meaning-based end-of-turn must stay on: ANY turn_detection object —
  * even one holding only an interruption delay — switches off adaptive
  * end-of-turn (ADR-0003), measured 3.6–4.7s gaps with an object versus
@@ -945,10 +984,16 @@ export function replyGapGate(samples: ReplyGapSample[], traceSessionId?: string)
  * null; the single sensitive-field exception keeps its narrow scoped
  * override only. FAIL points at the object or at the merged trace's
  * CONFIG line.
+ *
+ * `experiment` only labels a run of the non-production stored-agent variant:
+ * the gate still checks the production body above (and still FAILs on any
+ * object or CONFIG line), and a PASS says the experiment's windows are
+ * evidence, never a production pass.
  */
 export function meaningBasedEndOfTurnGate(
   agentInput: { turn_detection?: unknown } | null | undefined,
   traceExcerpt: string[] = [],
+  experiment: EndOfTurnExperiment | null = null,
 ): ScoreboardGate {
   const sent =
     agentInput !== null &&
@@ -969,6 +1014,14 @@ export function meaningBasedEndOfTurnGate(
       name: "end-of-turn",
       status: "FAIL",
       detail: `call trace shows a turn_detection CONFIG line (${configLine.trim().slice(0, 160)}): no turn-detection object may be sent on the managed session path (ADR-0003)`,
+    };
+  }
+  if (experiment) {
+    const key = experiment.variantKey ? ` (${experiment.variantKey})` : "";
+    return {
+      name: "end-of-turn",
+      status: "PASS",
+      detail: `experimental ${experiment.variant} variant${key}: windows ${formatEndOfTurnWindows(experiment.turnWindows)} recorded as experiment evidence, not a production pass; production body still sends turn_detection: null (adaptive preserved)`,
     };
   }
   return {
@@ -2103,6 +2156,12 @@ export type ScoreboardArtifact = {
    * valid, and the redacted transcripts stay the only place caller words appear.
    */
   runnerEvidence?: RunnerEvidence | null;
+  /**
+   * Ticket 10: present only when the run bound the non-production turn-window
+   * experiment, naming its windows so the end-of-turn PASS is never read as
+   * a production one. Additive and optional (older artifacts simply lack it).
+   */
+  endOfTurn?: EndOfTurnEvidence;
   /**
    * Exact code the run executed on (git HEAD + dirty hash, ticket 29). Null
    * when git could not report it — the streak then refuses to claim comparable
@@ -4341,6 +4400,12 @@ export type EvalRunnerSummary = {
   agentId?: string | null;
   agentFingerprint?: string | null;
   llmModel?: string | null;
+  /** Which stored body ran (production by default); absent on older summaries. */
+  variant?: "production" | "turn-window" | null;
+  /** The variant's row key (`<voice>:exp`), null for production. */
+  variantKey?: string | null;
+  /** The windows the variant body carried; null for production. */
+  turnWindows?: { min_silence?: number; max_silence?: number; interruption_delay?: number } | null;
 };
 
 /** Why the harness broke, never why a gate failed. */
@@ -4453,6 +4518,17 @@ export function parseEvalSummary(stdout: string): EvalRunnerSummary | null {
           ? { agentFingerprint: raw.agentFingerprint ?? null }
           : {}),
         ...(typeof raw.llmModel === "string" || raw.llmModel === null ? { llmModel: raw.llmModel ?? null } : {}),
+        // Which stored body ran (ticket 09). Absent stays absent so an older
+        // artifact reports unknown rather than assuming production.
+        ...(raw.variant === "production" || raw.variant === "turn-window"
+          ? { variant: raw.variant }
+          : {}),
+        ...(typeof raw.variantKey === "string" || raw.variantKey === null
+          ? { variantKey: raw.variantKey ?? null }
+          : {}),
+        ...(raw.turnWindows && typeof raw.turnWindows === "object"
+          ? { turnWindows: raw.turnWindows }
+          : {}),
       };
     } catch {
       return null;
@@ -4597,6 +4673,8 @@ function skeletonGates(
   options?: {
     measured?: boolean;
     measuredSources?: MeasuredEvidenceKind[];
+    /** Ticket 10: labels a non-production variant run as experimental evidence. */
+    endOfTurnExperiment?: EndOfTurnExperiment | null;
   },
 ): ScoreboardGate[] {
   // Ticket 06: a finished runner is plumbing health even when its scenarios
@@ -4632,7 +4710,7 @@ function skeletonGates(
   const endOfTurn =
     agentInput === undefined
       ? { name: "end-of-turn", status: "INFO" as const, detail: "unmeasured: agent body not checked" }
-      : meaningBasedEndOfTurnGate(agentInput, traceExcerpt);
+      : meaningBasedEndOfTurnGate(agentInput, traceExcerpt, options?.endOfTurnExperiment ?? null);
   const filler: ScoreboardGate =
     fillerGate ?? { name: "filler-resume", status: "INFO", detail: "unmeasured: run --scenario filler-over or pass --filler-* evidence to gate filler recovery" };
   const deadAirGate: ScoreboardGate = deadAir
@@ -4860,6 +4938,12 @@ export function buildSkeletonArtifact(input: {
   traceSessionId?: string | null;
   /** Stored agent body input for the end-of-turn check (undefined = not checked). */
   agentInput?: { turn_detection?: unknown } | null;
+  /**
+   * Ticket 10: the stored-agent experiment this run bound. Labels the
+   * end-of-turn gate as experimental and records its windows; production runs
+   * omit it and keep the gate's existing production PASS.
+   */
+  endOfTurnExperiment?: EndOfTurnExperiment | null;
   /** Merged Call trace excerpt lines (scanned for turn_detection CONFIG lines). */
   traceExcerpt?: string[];
   /** Observed filler-beat evidence: when present, the filler-resume gate evaluates instead of staying INFO. */
@@ -5130,7 +5214,7 @@ export function buildSkeletonArtifact(input: {
     agentChannel,
     humanRatings,
     input.voice,
-    { measured, measuredSources },
+    { measured, measuredSources, endOfTurnExperiment: input.endOfTurnExperiment ?? null },
   );
   // Finding D: when trace gaps exist but attribution is unverified, the
   // reply-gap gate says so instead of silently implying beat attribution.
@@ -5223,6 +5307,17 @@ export function buildSkeletonArtifact(input: {
     },
     callerClips: input.callerClips ?? [],
     runnerEvidence: input.runnerEvidence ?? null,
+    ...(input.endOfTurnExperiment
+      ? {
+          endOfTurn: {
+            experimental: true as const,
+            variant: input.endOfTurnExperiment.variant,
+            variantKey: input.endOfTurnExperiment.variantKey,
+            turnWindows: input.endOfTurnExperiment.turnWindows,
+            productionTurnDetection: null,
+          },
+        }
+      : {}),
     runId: input.runId ?? `run-${input.voice}-${Date.now().toString(36)}`,
     codeFingerprint: input.codeFingerprint ?? null,
     quarantinedBeats: [],

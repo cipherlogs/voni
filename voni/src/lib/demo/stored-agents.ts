@@ -123,18 +123,19 @@ export type DemoAgentVariant = (typeof DEMO_AGENT_VARIANTS)[number];
 export const DEMO_AGENT_VARIANT_SUFFIX = ":exp";
 
 /**
- * The only setting the variant may override: the end-of-turn windows. It is
+ * The only settings the variant may override: the end-of-turn windows. It is
  * one object, not a free-form `turn_detection` pass-through, so a stray
- * object can never reach the production body.
+ * object can never reach the production body. Any field may be omitted: ladder
+ * rung 3 sets `interruption_delay` alone, with no silence pair.
  */
 export type DemoTurnWindows = {
-  min_silence: number;
-  max_silence: number;
-  interruption_delay: number;
+  min_silence?: number;
+  max_silence?: number;
+  interruption_delay?: number;
 };
 
 /** Ladder rung 1, and the defaults when an env var is unset. */
-export const DEMO_TURN_WINDOW_DEFAULTS: DemoTurnWindows = Object.freeze({
+export const DEMO_TURN_WINDOW_DEFAULTS: Readonly<Required<DemoTurnWindows>> = Object.freeze({
   min_silence: 400,
   max_silence: 640,
   interruption_delay: 0,
@@ -238,7 +239,17 @@ export function buildDemoAgentBody(
   const config = voniConfig(voiceId);
   const resume = opts?.resume === true;
   const variant = opts?.variant ?? "production";
-  const windows = { ...DEMO_TURN_WINDOW_DEFAULTS, ...opts?.turnWindows };
+  const windows = opts?.turnWindows ?? DEMO_TURN_WINDOW_DEFAULTS;
+  const turnDetection = {
+    ...(windows.min_silence !== undefined ? { min_silence: windows.min_silence } : {}),
+    ...(windows.max_silence !== undefined ? { max_silence: windows.max_silence } : {}),
+    ...(windows.interruption_delay !== undefined
+      ? { interruption_delay: windows.interruption_delay }
+      : {}),
+  };
+  if (variant === "turn-window" && Object.keys(turnDetection).length === 0) {
+    throw new Error("turn-window variant needs at least one configured window");
+  }
   return {
     name: demoAgentName(voiceId, resume, variant),
     system_prompt: compileSystemPrompt(config),
@@ -274,11 +285,7 @@ export function buildDemoAgentBody(
       // built from exactly these three fields.
       turn_detection:
         variant === "turn-window"
-          ? {
-              min_silence: windows.min_silence,
-              max_silence: windows.max_silence,
-              interruption_delay: windows.interruption_delay,
-            }
+          ? turnDetection
           : null,
     },
   };
@@ -373,7 +380,7 @@ async function remoteCall(
 
 export async function getOrCreateDemoAgent(
   voiceId: string,
-  opts?: { resume?: boolean; variant?: DemoAgentVariant },
+  opts?: { resume?: boolean; variant?: DemoAgentVariant; turnWindows?: DemoTurnWindows },
 ): Promise<ProvisionResult> {
   // Validate against the picker first. This is what stops a caller pushing
   // an arbitrary voice id into an outbound API call.
@@ -408,7 +415,9 @@ export async function getOrCreateDemoAgent(
   // change refreshes the agent exactly like a prompt change.
   const llm = await demoLlmOverride();
   const turnWindows =
-    variant === "turn-window" ? await demoTurnWindowsFromEnv() : undefined;
+    variant === "turn-window"
+      ? (opts?.turnWindows ?? (await demoTurnWindowsFromEnv()))
+      : undefined;
   const { storageKey, body } = planDemoAgent(voiceId, {
     resume,
     variant,
