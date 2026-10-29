@@ -36,7 +36,8 @@
  * a harness break (exit 1, plumbing FAIL, evalRunner status failed) — distinct
  * from a measured gate FAIL (exit 1). Live scenario playout is printed as
  * wall clock under `evalRunner.timings` and never folded into a gate.
- * Non-zero exit otherwise means the harness broke: unknown voice, bad
+ * Non-zero exit otherwise means the harness broke: unknown voice, an unknown
+ * --scenario name (listed with the valid ones, before any artifact), bad
  * --runs/--gap/--filler/--cut/--overheard-json/--email-json/--dead-air-gaps/--overlap-ms/--goodbye-coverage/--hang-up-delay-ms/--trace-beat flag, spawn failure,
  * or an unwritable artifact.
  *
@@ -293,7 +294,7 @@ import {
   type TimbreProbes,
   type TraceGap,
 } from "../src/lib/demo/scoreboard";
-import { buildDemoAgentBody, demoAgentVariantFromEnv, demoTurnWindowsFromEnv, type DemoAgentVariant, type DemoTurnWindows } from "../src/lib/demo/stored-agents";
+import { demoAgentVariantFromEnv, demoTurnWindowsFromEnv, findCachedDemoAgent, readServedDemoAgentBody, type DemoAgentVariant, type DemoTurnWindows } from "../src/lib/demo/stored-agents";
 import {
   evalRunnerArgv,
   parseEvalTransport,
@@ -304,6 +305,11 @@ import {
 } from "../src/lib/demo/eval-transport";
 import { buildRunnerEvidence } from "../src/lib/demo/runner-evidence";
 import { readEvalEvents, type EvalEvent } from "../src/lib/demo/eval-events";
+import {
+  SUITE_SCENARIOS,
+  isAllScenarioSelector,
+  resolveScenarioName,
+} from "../src/lib/demo/scenario-names";
 import { judgeOverlap } from "../src/lib/voice/barge-in";
 import { acquireTimingLock, DEFAULT_TIMING_LOCK_PATH } from "../src/lib/demo/timing-lock";
 
@@ -585,18 +591,10 @@ function runEventsPath(events: RunEvents, scenario: string, suite: boolean): str
  * the whole suite holds the machine-wide timing lock and each scenario gets
  * its own sequential invocation, so cut latencies stay comparable. The
  * free-gate goodbye path is covered by bye-audio; it is not repeated.
+ *
+ * The list lives in `src/lib/demo/scenario-names.ts` beside the runner's own
+ * registry, so the suite and the runner can never mean different names.
  */
-const SUITE_SCENARIOS = [
-  "greeting-cut",
-  "filler-over",
-  "stop-over",
-  "over-talk",
-  "silence-check-in",
-  "invite-tag",
-  "bye-audio",
-  "hang-up-fast",
-  "hang-up-over",
-] as const;
 
 /**
  * Read the run's opt-in client receipt marks for the latency split. The stream
@@ -1081,9 +1079,12 @@ async function main(): Promise<void> {
   const voice = resolveGateVoice(arg("--gate-voice", "") || arg("--voice", DEFAULT_GATE_VOICE));
   // Default is the full gate suite: a plain `npm run scoreboard:demo` must
   // exercise every gate, not leave most of them INFO on one focused scenario.
+  // A misspelt focused name is a named failure here — before the timing lock,
+  // before any runner spawn and before the artifact path is opened — so a typo
+  // can never write a passing artifact that measured nothing.
   const requestedScenario = arg("--scenario", "all");
-  const suite = requestedScenario === "all" || requestedScenario === "suite";
-  const scenario = suite ? "suite" : requestedScenario;
+  const suite = isAllScenarioSelector(requestedScenario);
+  const scenario = suite ? "suite" : resolveScenarioName(requestedScenario);
   const runs = arg("--runs", "1");
   if (!/^[1-9]\d*$/.test(runs)) {
     throw new Error(`--runs needs a positive int, got "${runs}"`);
@@ -1360,7 +1361,6 @@ async function main(): Promise<void> {
       ? `${session} (no turn merged: trace session ${traceSession} is a different call)`
       : undefined;
   })();
-  const agentInput = buildDemoAgentBody(voice).input;
   // Explicit --filler-* flags are the operator override. Without them, the
   // live runner's own `filler …` line is the observed behavior and scores the
   // gate, so a filler-over run no longer stays INFO until a human retypes it.
@@ -1537,10 +1537,38 @@ async function main(): Promise<void> {
     // gate reads exactly what it read before.
     marks: readRunMarks(events, scenario, suite, dryRun),
   });
-  // Ticket 10: the gate keeps checking the production body (explicitly null),
-  // so a variant run cannot loosen the ADR-0003 contract. The experiment's
-  // windows are labelled alongside it instead of replacing it; the bound
-  // agent id lets the gate tell the variant's own CONFIG rows from production.
+  // Voice-parity ticket 20: gates read the stored body a visitor's session
+  // actually binds, read back from the platform — never `buildDemoAgentBody`,
+  // which describes the body the harness intended to store rather than the
+  // copy the platform serves (a failed refresh or stray override differs).
+  // A variant run still verdicts the production body (ticket 10), so it reads
+  // the cached production row; an unreadable body stays unmeasured (INFO).
+  const cachedProduction =
+    selection.variant === "production" ? null : await findCachedDemoAgent(voice);
+  const servedAgentId =
+    selection.variant === "production"
+      ? (runnerEvidence?.agentId ?? null)
+      : (cachedProduction?.agentId ?? null);
+  const servedAgentFingerprint =
+    selection.variant === "production"
+      ? (runnerEvidence?.agentFingerprint ?? null)
+      : (cachedProduction?.fingerprint ?? null);
+  const servedRead =
+    dryRun || !servedAgentId ? null : await readServedDemoAgentBody(servedAgentId);
+  if (servedRead && !servedRead.ok) {
+    console.warn(
+      `[scoreboard] stored body unmeasured: ${servedRead.error} (end-of-turn and the level leg stay unmeasured, never a reconstruction)`,
+    );
+  }
+  const servedAgentBody =
+    servedRead?.ok && servedAgentId
+      ? { ...servedRead.body, fingerprint: servedAgentFingerprint }
+      : undefined;
+  // Ticket 10: the gate keeps checking the production body (read above from
+  // the platform, never rebuilt), so a variant run cannot loosen the ADR-0003
+  // contract. The experiment's windows are labelled alongside it instead of
+  // replacing it; the bound agent id lets the gate tell the variant's own
+  // CONFIG rows from production.
   const endOfTurnExperiment =
     selection.variant === "turn-window"
       ? {
@@ -1561,7 +1589,7 @@ async function main(): Promise<void> {
     traceGaps,
     ...(traceBeatRaw ? { traceBeat: traceBeatRaw as GoldenBeat } : {}),
     traceSessionId: traceSession || null,
-    agentInput,
+    servedAgentBody,
     ...(endOfTurnExperiment ? { endOfTurnExperiment } : {}),
     traceExcerpt: excerpt ?? [],
     fillerResume,

@@ -108,8 +108,8 @@ export type InspectEndOfTurn = {
   variant: string | null;
   variantKey: string | null;
   turnWindows: DemoTurnWindows | null;
-  /** The production body the gate checked stays adaptive (`turn_detection: null`). */
-  productionTurnDetection: null;
+  /** The production body's served turn setting (null = the Turn preset). */
+  productionTurnDetection: unknown;
 };
 
 /** Compact gate tally; the full rows stay in `gates`, so nothing is hidden. */
@@ -540,7 +540,7 @@ function endOfTurnInput(artifact: ScoreboardArtifact): InspectEndOfTurn {
       variant: null,
       variantKey: null,
       turnWindows: null,
-      productionTurnDetection: null,
+      productionTurnDetection: artifact.agentBody?.turnDetection ?? null,
     };
   }
   return {
@@ -548,7 +548,7 @@ function endOfTurnInput(artifact: ScoreboardArtifact): InspectEndOfTurn {
     variant: experiment.variant,
     variantKey: experiment.variantKey,
     turnWindows: experiment.turnWindows,
-    productionTurnDetection: null,
+    productionTurnDetection: experiment.productionTurnDetection,
   };
 }
 

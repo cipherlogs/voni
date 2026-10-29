@@ -336,6 +336,150 @@ export function demoAgentFingerprint(body: ReturnType<typeof buildDemoAgentBody>
   return createHash("sha256").update(stableJson(body)).update(`\0${apiKey}`).digest("hex");
 }
 
+/**
+ * The stored agent body the platform actually serves, read back through
+ * `GET /v1/agents/{id}`. This is the only source a gate may read settings
+ * from: `buildDemoAgentBody` describes what the harness intended to store,
+ * while a failed refresh, a stray remote override or a stale row can leave
+ * the served copy different — a difference no visitor's audio would show
+ * through a reconstruction.
+ */
+export type ServedDemoAgentBody = {
+  /** The stored agent id this body was read from. */
+  agentId: string;
+  /**
+   * The provisioner fingerprint for the body the run bound, when the caller
+   * knows it. The read never invents one: a served body may differ from the
+   * body that fingerprint describes.
+   */
+  fingerprint?: string | null;
+  /** The served `input` object (turn settings, language, transcription). */
+  input: { turn_detection?: unknown } & Record<string, unknown>;
+  /**
+   * The served `output` object verbatim — the level the visitor's session
+   * receives. `{}` when the platform served none: the level is then
+   * unmeasured, never filled in from the registry (voice-parity ticket 21).
+   */
+  output: { volume?: unknown } & Record<string, unknown>;
+};
+
+/**
+ * The served `output.volume` in the platform's own units, or null when the
+ * body serves no readable level. This is the only level a gate may judge:
+ * `VOICE_OUTPUT_VOLUME` is what the builder ships, not what the visitor's
+ * stored agent necessarily carries (voice-parity ticket 21).
+ */
+export function servedAgentOutputVolume(body: ServedDemoAgentBody): number | null {
+  const volume = body.output?.volume;
+  return typeof volume === "number" && Number.isFinite(volume) ? volume : null;
+}
+
+
+export type ServedDemoAgentBodyResult =
+  | { ok: true; body: ServedDemoAgentBody }
+  | { ok: false; error: string };
+
+/**
+ * Read one stored agent's served body. Injectable key/fetch keep the read
+ * testable without the platform; production resolves the same credential the
+ * provisioner uses.
+ */
+export async function readServedDemoAgentBody(
+  agentId: string,
+  deps?: { apiKey?: string | null; fetchFn?: typeof fetch },
+): Promise<ServedDemoAgentBodyResult> {
+  const apiKey =
+    deps && "apiKey" in deps ? deps.apiKey : await secret("ASSEMBLYAI_API_KEY");
+  if (!apiKey) return { ok: false, error: "AssemblyAI is not configured." };
+  const fetchFn = deps?.fetchFn ?? fetch;
+  let response: Response;
+  try {
+    response = await fetchFn(`${AGENTS_URL}/${encodeURIComponent(agentId)}`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(15000),
+    });
+  } catch (error) {
+    return {
+      ok: false,
+      error: `stored agent ${agentId} read failed: ${
+        error instanceof Error ? error.message : "transport failed"
+      }`,
+    };
+  }
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    return {
+      ok: false,
+      error: `stored agent ${agentId} read failed ${response.status}: ${detail.slice(0, 200)}`,
+    };
+  }
+  let payload: unknown;
+  try {
+    payload = await response.json();
+  } catch {
+    return { ok: false, error: `stored agent ${agentId} served unreadable JSON` };
+  }
+  const input =
+    payload !== null && typeof payload === "object"
+      ? (payload as { input?: unknown }).input
+      : undefined;
+  if (input === null || typeof input !== "object" || Array.isArray(input)) {
+    return { ok: false, error: `stored agent ${agentId} served no input object` };
+  }
+  const servedOutput =
+    payload !== null && typeof payload === "object"
+      ? (payload as { output?: unknown }).output
+      : undefined;
+  const output =
+    servedOutput !== null && typeof servedOutput === "object" && !Array.isArray(servedOutput)
+      ? (servedOutput as ServedDemoAgentBody["output"])
+      : {};
+  return {
+    ok: true,
+    body: { agentId, input: input as ServedDemoAgentBody["input"], output },
+  };
+}
+
+/**
+ * The cached production stored agent for a voice, read-only. A run bound to a
+ * non-production variant still verdicts the production body a visitor
+ * receives, so the scoreboard uses this to find that body's id without
+ * provisioning (and without rebuilding it).
+ */
+export async function findCachedDemoAgent(
+  voiceId: string,
+  opts?: { resume?: boolean },
+): Promise<{ agentId: string; fingerprint: string | null } | null> {
+  try {
+    const rows = await db
+      .select({
+        agentId: demoAgents.assemblyaiAgentId,
+        fingerprint: demoAgents.fingerprint,
+      })
+      .from(demoAgents)
+      .where(
+        and(
+          eq(demoAgents.personaId, VONI_AGENT_ID),
+          eq(demoAgents.voiceId, demoAgentStorageKey(voiceId, opts?.resume === true, "production")),
+        ),
+      )
+      .limit(1);
+    const row = rows[0];
+    return row
+      ? { agentId: row.agentId, fingerprint: row.fingerprint ?? null }
+      : null;
+  } catch (error) {
+    // No database (or no row yet): the caller reports the body unmeasured
+    // rather than falling back to a reconstruction.
+    console.warn(
+      `[demo-agent] production agent lookup for ${voiceId} failed: ${
+        error instanceof Error ? error.message : "unknown error"
+      }`,
+    );
+    return null;
+  }
+}
+
 async function remoteCall(
   apiKey: string,
   method: "POST" | "PUT",

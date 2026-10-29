@@ -7,7 +7,7 @@ import {
 } from "./completeness";
 import { CONVERSATION_LANGUAGES } from "@/lib/agents/wizard";
 import { EN_RECOGNITION } from "./en";
-import { RECOGNITION_SLOTS, type RecognitionSlotName } from "./types";
+import { RECOGNITION_SLOTS } from "./types";
 
 /**
  * The completeness report is the gate's view of the recognition contract: one
@@ -18,30 +18,41 @@ import { RECOGNITION_SLOTS, type RecognitionSlotName } from "./types";
 
 const NON_ENGLISH = CONVERSATION_LANGUAGES.filter((locale) => locale !== "en");
 
-test("the report names every missing slot of every Locale that has no rendering", () => {
+test("the report names every missing slot of every spoken Locale", () => {
   const report = recognitionCompletenessReport();
 
   assert.deepEqual(
     report.locales.map((locale) => locale.locale),
     [...CONVERSATION_LANGUAGES],
   );
-  assert.equal(report.complete, false);
-  assert.deepEqual(report.incomplete, [...NON_ENGLISH]);
+  assert.equal(report.complete, report.locales.every((entry) => entry.complete));
+  assert.deepEqual(
+    report.incomplete,
+    report.locales.filter((entry) => !entry.complete).map((entry) => entry.locale),
+  );
 
-  for (const locale of report.locales.filter((entry) => entry.locale !== "en")) {
-    assert.equal(locale.status, "missing", locale.locale);
-    assert.equal(locale.complete, false, locale.locale);
-    assert.deepEqual(locale.missing, [...RECOGNITION_SLOTS], locale.locale);
+  for (const locale of report.locales) {
+    // A slot is either rendered by the Locale or a named hole: every missing
+    // slot has exactly one hole, in report order, and a complete Locale has none.
     assert.deepEqual(
       locale.holes.map((hole) => hole.slot),
-      [...RECOGNITION_SLOTS],
+      [...locale.missing],
+      `${locale.locale} holes match its missing slots`,
+    );
+    assert.deepEqual(
+      locale.missing,
+      RECOGNITION_SLOTS.filter((slot) => locale.missing.includes(slot)),
       `${locale.locale} holes are listed in report order`,
     );
+    assert.equal(locale.complete, locale.missing.length === 0, locale.locale);
     for (const hole of locale.holes) {
       assert.match(hole.detail, new RegExp(locale.locale), `${locale.locale}: ${hole.slot} names its Locale`);
       assert.match(hole.detail, new RegExp(hole.slot), `${locale.locale}: ${hole.slot} names its slot`);
     }
   }
+
+  // English is complete, so incompleteness can never be English's absence.
+  assert.equal(recognitionCompleteness("en").complete, true);
 });
 
 test("a Locale with holes names exactly those holes, not a whole repertoire of substitutes", () => {
@@ -63,21 +74,39 @@ test("a Locale with holes names exactly those holes, not a whole repertoire of s
   assert.equal(report.detail, "fr: 2 slots missing: scene, digits");
 });
 
-test("a Locale with no rendering is a hole on every slot, never an English substitute", () => {
+test("a Locale with holes names them, never an English substitute", () => {
   for (const locale of NON_ENGLISH) {
     const report = recognitionCompleteness(locale);
-    assert.equal(report.complete, false, locale);
-    // Every slot is a named hole. If any slot were quietly served by English,
-    // it would be absent from this list.
+    assert.equal(report.missing.length > 0, !report.complete, locale);
+    // Every missing slot is a named hole. If any slot were quietly served by
+    // English, it would be absent from this list.
     for (const slot of RECOGNITION_SLOTS) {
-      assert.equal(report.missing.includes(slot), true, `${locale}: ${slot}`);
+      assert.equal(
+        report.missing.includes(slot),
+        report.holes.some((hole) => hole.slot === slot),
+        `${locale}: ${slot}`,
+      );
     }
-    assert.deepEqual(report.missing, [...RECOGNITION_SLOTS], locale);
+    for (const hole of report.holes) {
+      assert.match(hole.detail, new RegExp(locale), `${locale}: ${hole.slot} names its Locale`);
+    }
   }
 
   // The same rule at the top: English alone cannot make the report whole.
   assert.equal(recognitionCompleteness("en").complete, true);
-  assert.equal(recognitionCompletenessReport().complete, false);
+  assert.equal(
+    recognitionCompletenessReport().complete,
+    NON_ENGLISH.every((locale) => recognitionCompleteness(locale).complete),
+  );
+});
+
+test("a Locale with no rendering is a hole on every slot, never an English substitute", () => {
+  for (const locale of ["ar", "xx", "", "auto"]) {
+    const report = recognitionCompleteness(locale);
+    assert.equal(report.status, "missing", locale);
+    assert.equal(report.complete, false, locale);
+    assert.deepEqual(report.missing, [...RECOGNITION_SLOTS], locale);
+  }
 });
 
 test("a complete Locale reports no holes", () => {
@@ -131,6 +160,11 @@ test("the report can be scoped to the Locales a caller asks for", () => {
     ["en"],
   );
 
-  const single: readonly RecognitionSlotName[] = recognitionCompletenessReport(["es"]).locales[0].missing;
-  assert.deepEqual(single, [...RECOGNITION_SLOTS]);
+  const single = recognitionCompletenessReport(["es"]).locales[0];
+  assert.equal(single.locale, "es");
+  // The scoped verdict is the Locale's own: holes are named, not inherited
+  // from English and not filled in on its behalf.
+  assert.deepEqual(single.missing, recognitionCompleteness("es").missing);
+  assert.equal(single.holes.length, single.missing.length);
+  assert.match(single.detail, /^es: /);
 });

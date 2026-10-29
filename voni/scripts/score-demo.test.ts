@@ -919,7 +919,7 @@ test("bad --gap flags fail fast with no artifact", () => {
   assert.match(result.stderr + result.stdout, /--gap needs beat=ms/);
 });
 
-test("dry run checks the stored agent body: end-of-turn passes with no turn-detection object", () => {
+test("dry run has no served stored body, so end-of-turn stays unmeasured", () => {
   const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
   const out = join(dir, "score.json");
   const result = run(["--dry-run", "--voice", DEMO_VOICE_IDS[0], "--out", out], new URL("../", import.meta.url).pathname);
@@ -927,11 +927,13 @@ test("dry run checks the stored agent body: end-of-turn passes with no turn-dete
   const artifact = JSON.parse(readFileSync(out, "utf8")) as {
     gates: { name: string; status: string; detail: string }[];
     endOfTurn?: unknown;
+    agentBody?: unknown;
   };
   const gate = artifact.gates.find((g) => g.name === "end-of-turn");
-  assert.equal(gate?.status, "PASS");
-  assert.match(gate?.detail ?? "", /^meaning-based end-of-turn preserved/);
+  assert.equal(gate?.status, "INFO", "a dry run reads no stored body: INFO, never a reconstructed PASS");
+  assert.match(gate?.detail ?? "", /unmeasured/);
   assert.equal(artifact.endOfTurn, undefined);
+  assert.equal(artifact.agentBody, undefined);
 });
 
 test("dry run with filler evidence passes the filler-resume gate and names it", () => {
