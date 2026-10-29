@@ -4,7 +4,8 @@ import { db } from "@/lib/db";
 import { secret } from "@/lib/env";
 import { demoAgents } from "@/lib/db/schema";
 import { compileSystemPrompt } from "@/lib/agents/compile";
-import { getVoice, VOICE_OUTPUT_VOLUME } from "@/lib/agents/voices";
+import { getVoice } from "@/lib/agents/voices";
+import { voiceOutputVolume } from "@/lib/agents/voice-levels";
 import { DEMO_VOICE_IDS, VONI_AGENT_ID, voniConfig } from "./voni-agent";
 import { toRestTool } from "@/lib/tools/definitions";
 import { DEMO_VOICE_TOOLS } from "./demo-tools";
@@ -259,10 +260,11 @@ export function buildDemoAgentBody(
     // first utterance instead of a re-introduction stacked on one.
     ...(resume ? {} : { greeting: config.greeting }),
     voice: { voice_id: voiceId },
-    // Loudest server level on every voice: native levels differ by ~12 dB,
-    // so omitted volume plays each voice at its own level. Client gain in
-    // VoiceSession.schedule applies the relative match per voice.
-    output: { volume: VOICE_OUTPUT_VOLUME },
+    // The voice's level, decided from its measured reference (voice-parity
+    // ticket 37): 100 = the native render with no processing, and a measured
+    // delivered deviation is expressed here so the level is deployable,
+    // fingerprinted and auditable. The browser applies no level at all.
+    output: { volume: voiceOutputVolume(voiceId) },
     // Each one is answered by /api/demo/tools (see module note). REST
     // shape (no `type`) — see `toRestTool`.
     tools: DEMO_VOICE_TOOLS.map((tool) => toRestTool({ ...tool })),
@@ -382,9 +384,9 @@ export function isServedDemoAgentBody(value: unknown): value is ServedDemoAgentB
 
 /**
  * The served `output.volume` in the platform's own units, or null when the
- * body serves no readable level. This is the only level a gate may judge:
- * `VOICE_OUTPUT_VOLUME` is what the builder ships, not what the visitor's
- * stored agent necessarily carries (voice-parity ticket 21).
+ * body serves no readable level. This is the only level a gate may judge: the
+ * measured registry (`./voice-levels`) is what the builder ships, not what the
+ * visitor's stored agent necessarily carries (voice-parity ticket 21).
  */
 export function servedAgentOutputVolume(body: ServedDemoAgentBody): number | null {
   const volume = body.output?.volume;

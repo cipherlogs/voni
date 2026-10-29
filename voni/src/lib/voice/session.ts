@@ -69,7 +69,7 @@ import {
   type DeliveredCapture,
 } from "./delivered-capture";
 import { decodeOutputAudio, resolveOutputFormat, type OutputEncoding } from "./output-format";
-import { VOICE_OUTPUT_VOLUME } from "@/lib/agents/voices";
+import { voiceOutputVolume } from "@/lib/agents/voice-levels";
 
 export { TARGET_SAMPLE_RATE, VOICE_MIC_CONSTRAINTS } from "./mic-capture";
 
@@ -213,7 +213,7 @@ export function buildInlineSessionUpdate(
   return {
     system_prompt: config.systemPrompt,
     greeting: config.greeting,
-    output: { voice: config.voiceId, volume: VOICE_OUTPUT_VOLUME },
+    output: { voice: config.voiceId, volume: voiceOutputVolume(config.voiceId) },
     input: {
       transcription_mode: config.transcriptionMode ?? TRANSCRIPTION_MODE,
       // Close-talking browser mic: isolate the caller with the near-field

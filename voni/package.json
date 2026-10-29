@@ -30,6 +30,7 @@
     "voice:reference": "node --env-file-if-exists=.env.local --env-file-if-exists=.dev.vars --import tsx scripts/render-reference.mts",
     "voice:compare": "node --import tsx scripts/compare-audio.mts",
     "voice:vendor-floor": "node --env-file-if-exists=.env.local --env-file-if-exists=.dev.vars --import tsx scripts/capture-vendor-floor.mts",
+    "voice:levels": "node --env-file-if-exists=.env.local --env-file-if-exists=.dev.vars --import tsx scripts/measure-voice-levels.mts",
     "qa:voice-session": "node --env-file-if-exists=.env.local --env-file-if-exists=.dev.vars --import tsx scripts/qa-voice-session.mts",
     "operator:credential": "node --env-file-if-exists=.env.local --env-file-if-exists=.dev.vars --import tsx scripts/rotate-platform-credential.mts",
     "test:e2e:instant": "node scripts/e2e-run.mjs instant",

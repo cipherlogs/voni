@@ -53,8 +53,8 @@ test("the demo call has no client level stage: level ships in the agent body", (
   assert.doesNotMatch(call, /output\.volume\s*=/, "no per-call server volume retune");
   assert.match(
     readRepo("lib/voice/session.ts"),
-    /volume: VOICE_OUTPUT_VOLUME/,
-    "the server output level is the registry constant, not a literal",
+    /volume: voiceOutputVolume\(config\.voiceId\)/,
+    "the server output level is the measured registry value for the voice, not a literal",
   );
 });
 
