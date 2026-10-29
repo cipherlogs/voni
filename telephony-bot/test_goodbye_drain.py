@@ -12,17 +12,22 @@ import importlib
 import json
 import os
 import pathlib
-import re
+import tempfile
 import time
 import unittest
 from unittest import mock
 
 from goodbye_drain import (
+    BUDGET_RECORD_ENV,
+    DRAIN_BUDGETS,
     GOODBYE_AUDIO_GRACE_MS,
     GOODBYE_DRAIN_TIMEOUT_MS,
     GOODBYE_POLL_MS,
     GOODBYE_SETTLE_POLLS,
+    BudgetRecordError,
     GoodbyeDrain,
+    budget_record_path,
+    load_drain_budgets,
     playout_settled,
 )
 
@@ -265,30 +270,41 @@ class PlayoutProbeTests(unittest.TestCase):
 class BrowserParityTests(unittest.TestCase):
     """ADR 0007: the two implementations are pinned to one set of numbers."""
 
-    def test_the_drain_constants_match_the_browser_budget_record(self):
-        # The browser's live handshake (session.ts) and this bridge's copy are
-        # independently implemented, so the record is the only place the
-        # numbers can be read as one. Drift fails here instead of on a call.
-        budgets = (
-            pathlib.Path(__file__).resolve().parent.parent
-            / "voni/src/lib/demo/scoreboard-budgets.ts"
-        )
-        source = budgets.read_text()
+    def test_the_drain_constants_are_the_browser_budget_record(self):
+        # The bridge and the browser's live handshake (session.ts) are
+        # independently implemented, so the JSON record is the one place the
+        # numbers can be read as one. This reads the record itself, not the TS
+        # source's formatting: drift fails here instead of on a call.
+        record_path = budget_record_path()
+        self.assertTrue(record_path.is_file(), f"budget record not found at {record_path}")
+        record = json.loads(record_path.read_text(encoding="utf-8"))["budgets"]
         for key, ours in (
             ("endCallPollMs", GOODBYE_POLL_MS),
             ("endCallSettlePolls", GOODBYE_SETTLE_POLLS),
             ("endCallAudioGraceMs", GOODBYE_AUDIO_GRACE_MS),
             ("endCallDrainTimeoutMs", GOODBYE_DRAIN_TIMEOUT_MS),
         ):
-            match = re.search(
-                rf"{key}:\s*\{{\s*value:\s*([0-9_]+)", source
-            )
-            self.assertIsNotNone(match, f"{key} missing from the budget record")
-            self.assertEqual(
-                int(match.group(1).replace("_", "")),
-                ours,
-                f"{key} drifted from the browser's end-call drain",
-            )
+            self.assertIn(key, record, f"{key} missing from the budget record")
+            self.assertEqual(record[key], ours, f"{key} drifted from the browser's end-call drain")
+            self.assertEqual(DRAIN_BUDGETS[key], ours)
+
+    def test_the_env_override_points_the_loader_at_a_deployed_record(self):
+        # A bridge deployed without the voni/ tree gets the record by path. The
+        # loader must use it, and a missing key must be a named error rather
+        # than a silent fallback to a copied number.
+        record = {"budgets": {"endCallPollMs": 250, "endCallSettlePolls": 3,
+                              "endCallAudioGraceMs": 500, "endCallDrainTimeoutMs": 10_000}}
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "budgets.json"
+            path.write_text(json.dumps(record), encoding="utf-8")
+            with mock.patch.dict(os.environ, {BUDGET_RECORD_ENV: str(path)}):
+                self.assertEqual(budget_record_path(), path.resolve())
+                self.assertEqual(load_drain_budgets()["endCallPollMs"], 250)
+
+            del record["budgets"]["endCallSettlePolls"]
+            path.write_text(json.dumps(record), encoding="utf-8")
+            with self.assertRaisesRegex(BudgetRecordError, "endCallSettlePolls"):
+                load_drain_budgets(path)
 
 
 class FakeAgentStream:
