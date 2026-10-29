@@ -270,6 +270,7 @@ import {
   type TraceGap,
 } from "../src/lib/demo/scoreboard";
 import { buildDemoAgentBody } from "../src/lib/demo/stored-agents";
+import { buildRunnerEvidence } from "../src/lib/demo/runner-evidence";
 import { judgeOverlap } from "../src/lib/voice/barge-in";
 import { acquireTimingLock, DEFAULT_TIMING_LOCK_PATH } from "../src/lib/demo/timing-lock";
 
@@ -1343,6 +1344,20 @@ function main(): void {
     process.argv.includes("--cut-ended") ||
     arg("--trace-turn", "") !== "";
 
+  // Retro #2: reduce the run's own markers and merged traces to typed,
+  // PII-safe evidence. Additive: the redacted transcripts stay as they are,
+  // and the gates keep reading their own existing fields.
+  const evidenceExcerpts = [...tracesBySession.values()].map((trace) => ({
+    sessionId: trace.sessionId,
+    excerpt: trace.excerpt,
+  }));
+  if (traceSession && excerpt && !evidenceExcerpts.some((trace) => trace.sessionId === traceSession)) {
+    evidenceExcerpts.push({ sessionId: traceSession, excerpt });
+  }
+  const runnerEvidence = buildRunnerEvidence({
+    runnerStdout: evalSection.stdout,
+    excerpts: evidenceExcerpts,
+  });
   let artifact: ScoreboardArtifact = buildSkeletonArtifact({
     voice,
     scenario,
@@ -1378,6 +1393,7 @@ function main(): void {
     ...(greetingCut ? { greetingCutEvidencePresent: true } : {}),
     ...(parsed || hasCutFlags ? { realCutEvidencePresent: true } : {}),
     callerClips,
+    runnerEvidence,
     ...(emailEvidence ? { emailInviteEvidencePresent: true } : {}),
     runId: `run-${stamp()}-${voice}`,
     // Ticket 29: the streak compares the exact code, not just the voice.

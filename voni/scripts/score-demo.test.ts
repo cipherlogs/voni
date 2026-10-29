@@ -3357,3 +3357,106 @@ test("--email-json evidence must carry a Call trace session so a FAIL can cite a
   assert.ok(!existsSync(out), "no artifact from invalid evidence");
   assert.match(result.stderr + result.stdout, /--email-json.*traceSession/);
 });
+
+test("the artifact carries structured, PII-safe runnerEvidence from the run", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  const summary = {
+    scenario: "stop-over",
+    runs: 1,
+    failures: 0,
+    scenarios: [{ name: "stop-over", passed: 1, runs: 1 }],
+    traceSessions: ["sess_ev01"],
+    playout: [{ scenario: "stop-over", run: 1, wallClockMs: 27213 }],
+    audioChunks: 120,
+    live: true,
+    transport: "stored",
+    agentId: "agent_d66c02a12f904b73a940a42032dbd36d",
+    agentFingerprint: "fingerprint-abc",
+    llmModel: "google/gemini-2.5-flash",
+  };
+  writeFileSync(
+    join(bin, "npm"),
+    `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === "run" && args[1] === "eval:demo-agent") {
+  console.log("  · trace session sess_ev01");
+  console.log('    heard ledger ["We are a bakery, actually."]');
+  console.log('OVERHEARD ASIDE {"scenario":"over-talk","session":"sess_ev01","text":"We are a bakery, actually.","agentText":"I can show you","replyId":"reply_9","startMs":15370,"endMs":null,"cutMs":15870}');
+  console.log('GOODBYE DRAIN {"scenario":"bye-audio","session":"sess_ev01","turn":2,"coverage":0.9659,"inboxNamed":true,"narratedEnding":false}');
+  console.log("    hung up 956ms after the goodbye finished playing (session sess_ev01)");
+  console.log("    cut 912ms after the caller started");
+  console.log('    answered the point after the cut: "It depends on call volume."');
+  console.log("stop-over: 1/1");
+  console.log("EVAL SUMMARY " + JSON.stringify(${JSON.stringify(summary)}));
+} else if (args[0] === "run" && args[1] === "call:trace") {
+  console.log('0.71s  VONI    "Hi, I am Voni"  (greeting ttfa 626ms)  CUT at 3.50s');
+  console.log('5.77s  VONI    "Sorry"  (user_speech ttfa 2200ms gap 2209ms)');
+}
+`,
+    { mode: 0o755 },
+  );
+  const out = join(dir, "score.json");
+  const result = run(
+    [
+      "--scenario",
+      "stop-over",
+      "--trace-session",
+      "sess_ev01",
+      "--gap",
+      "greeting-cut=900",
+      "--out",
+      out,
+      "--timing-lock",
+      join(dir, "timing.lock"),
+    ],
+    new URL("../", import.meta.url).pathname,
+    { PATH: `${bin}:${process.env.PATH}` },
+  );
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    runnerEvidence: {
+      transport: string;
+      agentId: string | null;
+      llmModel: string | null;
+      scenarios: { name: string; passed: number; runs: number; wallClockMs: number | null }[];
+      sessions: {
+        id: string;
+        turns: { turnIndex: number; gapMs: number | null; cutMs: number | null; resume: boolean }[];
+        gaps: { turnIndex: number; gapMs: number | null; cutMs: number | null }[];
+        hangUp?: { delayMs: number; coverage: number | null; inboxNamed: boolean | null };
+      }[];
+      asides: { sessionId: string; cutMs: number | null; markedOverheard: boolean | null }[];
+      hangUps: { sessionId: string | null; delayMs: number }[];
+      playout: { scenario: string; run: number; wallClockMs: number }[];
+    };
+  };
+  const evidence = artifact.runnerEvidence;
+  assert.ok(evidence, "a real run records structured runner evidence");
+  assert.equal(evidence.transport, "stored");
+  assert.equal(evidence.agentId, "agent_d66c02a12f904b73a940a42032dbd36d");
+  assert.equal(evidence.llmModel, "google/gemini-2.5-flash");
+  assert.deepEqual(evidence.scenarios, [
+    { name: "stop-over", passed: 1, runs: 1, wallClockMs: 27213 },
+  ]);
+  assert.deepEqual(evidence.playout, [{ scenario: "stop-over", run: 1, wallClockMs: 27213 }]);
+  const session = evidence.sessions.find((row) => row.id === "sess_ev01");
+  assert.ok(session);
+  assert.deepEqual(session.gaps, [
+    { turnIndex: 1, gapMs: null, cutMs: 3500 },
+    { turnIndex: 2, gapMs: 2209, cutMs: null },
+  ]);
+  assert.equal(session.turns[1].resume, true);
+  assert.equal(session.hangUp?.delayMs, 956);
+  assert.equal(session.hangUp?.coverage, 0.9659);
+  assert.equal(session.hangUp?.inboxNamed, true);
+  const aside = evidence.asides.find((row) => row.sessionId === "sess_ev01");
+  assert.ok(aside);
+  assert.equal(aside.cutMs, 15870);
+  assert.equal(aside.markedOverheard, true);
+  assert.equal(evidence.hangUps[0].delayMs, 956);
+  // PII-safe: caller words stay in the redacted transcript, never here.
+  assert.doesNotMatch(JSON.stringify(evidence), /bakery/i);
+  assert.doesNotMatch(JSON.stringify(evidence), /Wait, stop/i);
+});

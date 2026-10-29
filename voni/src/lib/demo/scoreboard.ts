@@ -84,6 +84,7 @@ import {
 import { DEMO_VOICE_IDS, SILENCE_CHECK_IN_INSTRUCTIONS } from "./voni-agent";
 import { DEMO_INBOX_ADDRESS } from "./email-test";
 import { TAG_WORDS, containsTag, countTags } from "./test-tag";
+import type { RunnerEvidence } from "./runner-evidence";
 
 /** The locked golden script: seven beats in fixed order (spec story 11). */
 export const GOLDEN_BEATS = [
@@ -2093,6 +2094,14 @@ export type ScoreboardArtifact = {
   } | null;
   /** Unique id for this run (reproducibility: three consecutive greens on the reference desktop). */
   runId: string;
+  /**
+   * Structured runner evidence (retro #2): what the eval printed, reduced to
+   * typed, PII-safe facts (identity, scenario verdicts, per-session turn gaps
+   * and cuts, aside/hang-up flags, playout). Additive and optional: an
+   * artifact from before this field is still valid, and the redacted
+   * transcripts stay the only place caller words appear.
+   */
+  runnerEvidence?: RunnerEvidence | null;
   /**
    * Exact code the run executed on (git HEAD + dirty hash, ticket 29). Null
    * when git could not report it — the streak then refuses to claim comparable
@@ -4322,6 +4331,15 @@ export type EvalRunnerSummary = {
   live: boolean;
   /** Fixed caller clips streamed this run, with their audio fingerprints. */
   clips?: CallerClipFingerprint[];
+  /**
+   * Which transport produced the evidence and which stored agent/model it
+   * bound (retro #2). Absent on summaries written before this field; the
+   * runnerEvidence builder then reports them as unknown, never invents them.
+   */
+  transport?: string;
+  agentId?: string | null;
+  agentFingerprint?: string | null;
+  llmModel?: string | null;
 };
 
 /** Why the harness broke, never why a gate failed. */
@@ -4350,7 +4368,12 @@ function parseScenarioSummaries(stdout: string): RunnerScenarioSummary[] {
   return rows;
 }
 
-function parseEvalSummary(stdout: string): EvalRunnerSummary | null {
+/**
+ * Parse the runner's final `EVAL SUMMARY {...}` line. Exported so the
+ * structured `runnerEvidence` builder (retro #2) reads the same identity and
+ * scenario rows the plumbing classifier does, never a second parser.
+ */
+export function parseEvalSummary(stdout: string): EvalRunnerSummary | null {
   const lines = stdout.split("\n");
   for (let index = lines.length - 1; index >= 0; index -= 1) {
     const line = lines[index]?.trim() ?? "";
@@ -4421,6 +4444,14 @@ function parseEvalSummary(stdout: string): EvalRunnerSummary | null {
           typeof raw.audioChunks === "number" && Number.isFinite(raw.audioChunks) ? raw.audioChunks : null,
         live: raw.live === true,
         ...(clips.length > 0 ? { clips } : {}),
+        // Additive identity (retro #2): absent means an older summary, not a
+        // managed run. The builder reports unknown rather than guessing.
+        ...(typeof raw.transport === "string" ? { transport: raw.transport } : {}),
+        ...(typeof raw.agentId === "string" || raw.agentId === null ? { agentId: raw.agentId ?? null } : {}),
+        ...(typeof raw.agentFingerprint === "string" || raw.agentFingerprint === null
+          ? { agentFingerprint: raw.agentFingerprint ?? null }
+          : {}),
+        ...(typeof raw.llmModel === "string" || raw.llmModel === null ? { llmModel: raw.llmModel ?? null } : {}),
       };
     } catch {
       return null;
@@ -4867,6 +4898,12 @@ export function buildSkeletonArtifact(input: {
   humanRatings?: HumanRatings;
   /** Fixed caller clip fingerprints the live runner streamed; absent means unrecorded. */
   callerClips?: CallerClipFingerprint[];
+  /**
+   * Structured runner evidence built from the run's own markers and merged
+   * traces (retro #2). Omitted means the caller did not measure it; never
+   * synthesized here.
+   */
+  runnerEvidence?: RunnerEvidence | null;
 }): ScoreboardArtifact {
   const fillerGate = input.fillerResume ? evaluateFillerResumeGate(input.fillerResume) : null;
   const samples: ReplyGapSample[] = [];
@@ -5184,6 +5221,7 @@ export function buildSkeletonArtifact(input: {
       rawSha256: sha256Hex(input.runnerStdout),
     },
     callerClips: input.callerClips ?? [],
+    runnerEvidence: input.runnerEvidence ?? null,
     runId: input.runId ?? `run-${input.voice}-${Date.now().toString(36)}`,
     codeFingerprint: input.codeFingerprint ?? null,
     quarantinedBeats: [],
