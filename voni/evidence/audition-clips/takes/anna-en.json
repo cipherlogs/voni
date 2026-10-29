@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "voice": "anna",
+  "locale": "en",
+  "line": "Hi, I'm Voni! Let's try something cool: I'll show you what I can do while we talk. Ready?",
+  "lineSha256": "1fc5f4bc46cd75037b68c4af616afb58740fb27478ec90652c45a7ff48f18ac6",
+  "recordedOn": "2026-10-29",
+  "method": "silent-greeting Voice Agent session (output.voice only: no output.volume, no gain, no limiter)",
+  "command": "cd voni && npm run voice:reference -- --voice anna --out-dir <empty dir>",
+  "relation": "A fresh take of the committed anna clip, rendered after public/voices/anna.mp3 was committed. Vendor synthesis is nondeterministic, so it differs in duration and level within the named regeneration tolerances; the comparison proves the committed asset is still this voice, this Locale and this line at native level.",
+  "audio": {
+    "file": "anna-en.wav",
+    "sha256": "78a17f8e6f890d563fdc58416b54f7c3f1b3115eddf2d6be024bbf6355f610ce",
+    "container": "wav",
+    "sampleRate": 24000,
+    "channels": 1,
+    "bitsPerSample": 16,
+    "durationMs": 5770
+  },
+  "observedTakes": [
+    {
+      "durationMs": 5630,
+      "committed": false,
+      "why": "6.5% shorter than the committed clip: outside AUDITION_REGENERATION_DURATION_RATIO (5%)"
+    },
+    {
+      "durationMs": 5770,
+      "committed": true,
+      "why": "4.2% shorter than the committed clip: inside the named duration ratio"
+    },
+    {
+      "durationMs": 6360,
+      "committed": false,
+      "why": "5.6% longer than the committed clip: outside AUDITION_REGENERATION_DURATION_RATIO (5%)"
+    }
+  ]
+}
