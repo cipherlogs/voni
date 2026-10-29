@@ -886,6 +886,17 @@ export function replyGapGate(samples: ReplyGapSample[], traceSessionId?: string)
   };
   const breaches: Breach[] = [];
   for (const { scope, summary, sample } of scopes) {
+    // A scope with fewer than three samples has no meaningful median: one
+    // slow turn would be its own p50. Judge those against the p95 budget
+    // instead (the frozen 2500ms tail bar), so the p50 budget still governs
+    // the overall distribution while every turn is checked for a real tail
+    // breach.
+    if (summary.count < 3) {
+      if (summary.maxMs > REPLY_GAP_P95_BUDGET_MS) {
+        breaches.push({ scope, metric: "p95", value: summary.maxMs, budget: REPLY_GAP_P95_BUDGET_MS, sample });
+      }
+      continue;
+    }
     if (summary.p50Ms > REPLY_GAP_P50_BUDGET_MS) {
       breaches.push({ scope, metric: "p50", value: summary.p50Ms, budget: REPLY_GAP_P50_BUDGET_MS, sample });
     }

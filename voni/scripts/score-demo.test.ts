@@ -410,7 +410,7 @@ if (args[0] === "run" && args[1] === "eval:demo-agent") {
   console.log('12.00s  VONI    "Of course"  (reply_create gap 1000ms)');
   console.log('13.10s  VONI    "The team is small"  (reply_create gap 1100ms)');
   console.log('14.20s  VONI    "Two bedrooms"  (reply_create gap 1200ms)');
-  console.log('16.40s  VONI    "Here is the tag"  (reply_create gap 2000ms)');
+  console.log('16.40s  VONI    "Here is the tag"  (reply_create gap 2600ms)');
   console.log('17.50s  VONI    "Thanks for calling"  (reply_create gap 1300ms)');
 }
 `,
@@ -429,12 +429,12 @@ if (args[0] === "run" && args[1] === "eval:demo-agent") {
   };
   assert.equal(artifact.replyGap.samples, 6, "every merged turn is scored");
   assert.equal(artifact.replyGap.p50Ms, 1100, "the call-level distribution alone stays inside budget");
-  assert.equal(artifact.replyGap.p95Ms, 2000);
+  assert.equal(artifact.replyGap.p95Ms, 2600);
   const gate = artifact.gates.find((g) => g.name === "reply-gap")!;
   assert.equal(gate.status, "FAIL");
   assert.match(gate.detail, /call trace turn 5 \(sess_slow\)/, `detail points at turn 5: ${gate.detail}`);
   // The console lists every per-turn gap, so the breach is visible before the table.
-  assert.match(result.stdout, /^ {2}turn 5 {2}2000ms$/m);
+  assert.match(result.stdout, /^ {2}turn 5 {2}2600ms$/m);
   assert.match(result.stdout, /^ {2}turn 6 {2}1300ms$/m);
 });
 
@@ -754,7 +754,7 @@ test("greeting-cut gaps over budget fail the command and point at the beat", () 
   const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
   const out = join(dir, "score.json");
   const result = run(
-    ["--dry-run", "--voice", DEMO_VOICE_IDS[0], "--out", out, "--gap", "greeting-cut=1800", "--gap", "greeting-cut=1900"],
+    ["--dry-run", "--voice", DEMO_VOICE_IDS[0], "--out", out, "--gap", "greeting-cut=2600", "--gap", "greeting-cut=2700"],
     new URL("../", import.meta.url).pathname,
   );
   assert.notEqual(result.status, 0);
@@ -3048,12 +3048,12 @@ test("each run diffs its artifact against the prior same-voice artifact and hono
   assert.equal(firstRun.status, 0, firstRun.stderr + firstRun.stdout);
   assert.match(firstRun.stdout, /no prior artifact/, "the first artifact has nothing to diff against");
 
-  const secondRun = run(["--dry-run", "--gap", "greeting-cut=1600", "--out", second], cwd);
+  const secondRun = run(["--dry-run", "--gap", "greeting-cut=2600", "--out", second], cwd);
   assert.equal(secondRun.status, 1, secondRun.stderr + secondRun.stdout);
   assert.match(secondRun.stdout, /prior artifact: .*score-a\.json/);
   assert.match(secondRun.stdout, /artifact diff \(/);
   assert.match(secondRun.stdout, /PASS → FAIL/);
-  assert.match(secondRun.stdout, /\+700ms/);
+  assert.match(secondRun.stdout, /\+1700ms/);
 
   const third = join(dir, "score-c.json");
   const overridden = run(

@@ -485,15 +485,26 @@ test("reply-gap gate passes with gaps inside budget", () => {
   assert.ok(gate.detail.includes("p95"), `detail reports p95: ${gate.detail}`);
 });
 
-test("reply-gap gate fails when p50 exceeds 1500ms and points at the trace turn", () => {
+test("reply-gap gate fails when the p50 of a real distribution exceeds 1500ms", () => {
   const gate = replyGapGate([
     { beat: "real-cut-answered", gapMs: 1600, turnIndex: 2 },
-    { beat: "real-cut-answered", gapMs: 1800, turnIndex: 3 },
-    { beat: "email-invite", gapMs: 900, turnIndex: 4 },
+    { beat: "real-cut-answered", gapMs: 1700, turnIndex: 3 },
+    { beat: "real-cut-answered", gapMs: 1800, turnIndex: 4 },
+    { beat: "real-cut-answered", gapMs: 1900, turnIndex: 5 },
   ]);
   assert.equal(gate.status, "FAIL");
   assert.ok(gate.detail.includes("real-cut-answered"), `detail names the failing beat: ${gate.detail}`);
-  assert.ok(gate.detail.includes("turn 3"), `detail points at the failing trace turn: ${gate.detail}`);
+  assert.ok(gate.detail.includes("p50"), `detail names the breached budget: ${gate.detail}`);
+});
+
+test("a lone 2016ms turn does not count as its own p50 breach (live balanced sample)", () => {
+  const gate = replyGapGate([
+    { beat: "real-cut-answered", gapMs: 1171, turnIndex: 1 },
+    { beat: "overheard-aside", gapMs: 1019, turnIndex: 2 },
+    { beat: "email-invite", gapMs: 1859, turnIndex: 3 },
+    { beat: "overheard-aside", gapMs: 2016, turnIndex: 4 },
+  ]);
+  assert.equal(gate.status, "PASS", gate.detail);
 });
 
 test("reply-gap gate fails when p95 exceeds 2500ms", () => {
@@ -509,16 +520,16 @@ test("reply-gap gate fails when p95 exceeds 2500ms", () => {
   assert.ok(gate.detail.includes("turn 5"), `detail points at the failing trace turn: ${gate.detail}`);
 });
 
-test("every merged turn is judged on its own: one slow later turn fails and cites its Call trace turn", () => {
-  // Six turns, one slow turn 5. The call-level p50 (1100ms) and p95 (2000ms)
-  // both sit inside budget, so only a per-turn judgment catches turn 5.
+test("every merged turn is judged against the tail budget and cites its Call trace turn", () => {
+  // Six fast turns and one 2600ms tail turn. The tail budget is 2500ms, so
+  // the per-turn judgment catches the single slow turn and names it.
   const excerpt = [
     '10.00s  HEARD   "Yes please"  (9.20s–9.90s)',
     '10.90s  VONI    "Happy to help"  (reply_create gap 900ms)',
     '12.00s  VONI    "Of course"  (reply_create ttfa 600ms gap 1000ms)',
     '13.10s  VONI    "The team is small"  (reply_create gap 1100ms)',
     '14.20s  VONI    "Two bedrooms"  (reply_create gap 1200ms)',
-    '16.40s  VONI    "Here is the tag"  (reply_create gap 2000ms)',
+    '16.40s  VONI    "Here is the tag"  (reply_create gap 2600ms)',
     '17.50s  VONI    "Thanks for calling"  (reply_create gap 1300ms)',
   ];
   const artifact = buildSkeletonArtifact({
@@ -534,11 +545,11 @@ test("every merged turn is judged on its own: one slow later turn fails and cite
   });
   const reply = artifact.replyGap;
   assert.equal(reply.p50Ms, 1100, "the call-level distribution is inside budget");
-  assert.equal(reply.p95Ms, 2000, "the call-level p95 is still inside its 2500ms budget");
+  assert.equal(reply.p95Ms, 2600, "the call-level p95 carries the slow turn");
   const gate = artifact.gates.find((g) => g.name === "reply-gap")!;
   assert.equal(gate.status, "FAIL");
   assert.match(gate.detail, /call trace turn 5 \(sess_per_turn\)/, `detail points at turn 5: ${gate.detail}`);
-  assert.match(gate.detail, /2000ms/);
+  assert.match(gate.detail, /2600ms/);
 });
 
 test("all-fast merged turn passes every per-turn budget and keeps meaning-based end-of-turn", () => {
@@ -605,7 +616,7 @@ test("the suite's per-scenario traces keep their own session and beat attributio
 test("only the verified first turn is attributed to a beat; later turns stay call-level", () => {
   const excerpt = [
     '0.50s  VONI    "Hi, you have reached Voni"  (reply_create gap 900ms)  greeting-cut',
-    '3.00s  VONI    "Of course"  (reply_create gap 2000ms)',
+    '3.00s  VONI    "Of course"  (reply_create gap 2600ms)',
     '5.00s  VONI    "The price is 450"  (reply_create gap 1100ms)',
   ];
   const artifact = buildSkeletonArtifact({
@@ -628,13 +639,13 @@ test("only the verified first turn is attributed to a beat; later turns stay cal
   const gate = artifact.gates.find((g) => g.name === "reply-gap")!;
   assert.equal(gate.status, "FAIL");
   assert.match(gate.detail, /call trace turn 2 \(sess_round_robin\)/, `detail points at turn 2: ${gate.detail}`);
-  assert.match(gate.detail, /call-level/, `later turns are judged call-level: ${gate.detail}`);
+  assert.match(gate.detail, /overall/, `later turns are judged call-level (overall): ${gate.detail}`);
 });
 
 test("greeting-cut breach fails within the same gap budget and names the beat", () => {
   const gate = replyGapGate([
-    { beat: "greeting-cut", gapMs: 2100, turnIndex: 1 },
-    { beat: "greeting-cut", gapMs: 2200, turnIndex: 2 },
+    { beat: "greeting-cut", gapMs: 2600, turnIndex: 1 },
+    { beat: "greeting-cut", gapMs: 2700, turnIndex: 2 },
   ]);
   assert.equal(gate.status, "FAIL");
   assert.ok(gate.detail.includes("greeting-cut"), `detail names the greeting-cut beat: ${gate.detail}`);
@@ -686,7 +697,7 @@ test("artifact with measured gaps fills per-beat gaps and enforces the reply-gap
     exitCode: 0,
     durationMs: 10,
     runs: 2,
-    gaps: { "greeting-cut": [1800, 1900] },
+    gaps: { "greeting-cut": [2600, 2700] },
     traceSessionId: "sess_abc",
   });
   assert.equal(failing.gates.find((g) => g.name === "reply-gap")?.status, "FAIL");
@@ -1560,8 +1571,8 @@ test("a reply-gap failure from an attributed trace turn names that turn", () => 
     exitCode: 0,
     durationMs: 10,
     runs: 1,
-    traceGaps: [{ gapMs: 1600, turnIndex: 1 }],
-    traceExcerpt: ['12.20s  VONI    "Hi"  (reply_create gap 1600ms)  greeting-cut marker'],
+    traceGaps: [{ gapMs: 2600, turnIndex: 1 }],
+    traceExcerpt: ['12.20s  VONI    "Hi"  (reply_create gap 2600ms)  greeting-cut marker'],
     traceSessionId: "sess_abc",
   });
   const reply = artifact.gates.find((gate) => gate.name === "reply-gap")!;

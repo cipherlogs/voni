@@ -106,7 +106,7 @@ test("fingerprints are stable and move with platform content", () => {
   // invalidate the cache: any body difference flips the fingerprint.
   const changed = {
     ...buildDemoAgentBody("anna"),
-    input: { ...buildDemoAgentBody("anna").input, transcription_mode: "balanced" },
+    input: { ...buildDemoAgentBody("anna").input, transcription_mode: "min_latency" },
   };
   assert.notEqual(demoAgentFingerprint(changed), a);
 });
