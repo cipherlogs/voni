@@ -17,6 +17,11 @@
  *   - Per-chunk resampling. Each 24 kHz buffer resampled on its own to the
  *     device rate leaves a seam at every join. Here a single linear resampler
  *     carries its phase across chunks, so the joins don't exist.
+ *   - Aliasing below the stream rate. When the device runs below the stream
+ *     rate — Bluetooth headset mode, some phone and desktop routes — the
+ *     resampler must drop source samples. Dropping them raw folds everything
+ *     above the device Nyquist back into the speech band, so the device-rate
+ *     path runs a decimating low-pass first (see LP_*).
  *   - Hard edges. Starts ramp in over EDGE_S, the source running dry fades out
  *     over EDGE_S (and resumes at once if the audio returns), and `flush`
  *     fades out over the time given by the main thread. Never a fade derived
@@ -117,6 +122,80 @@ const POP_JUMP = 0.3;
 const POP_EVERY_S = 0.02;
 /** Delivered capture block: 100ms is enough to keep port traffic trivial. */
 const TAP_BLOCK_S = 0.1;
+/**
+ * Device-rate decimating low-pass. The resampler drops source samples whenever
+ * the output device runs below the stream rate: 24 kHz into a 16 kHz route (a
+ * Bluetooth headset in headset mode, some phone and desktop routes) keeps two
+ * of every three samples, and 24 kHz into an 8 kHz route keeps one of three.
+ * Dropping without a low-pass folds everything above the device Nyquist back
+ * into the speech band — a 10 kHz tone becomes 6 kHz at the level it went in,
+ * so the top of the voice is a mirror of itself.
+ *
+ * Design, from the stream and device rates whenever either changes:
+ *
+ *   - stopband edge: the device Nyquist (deviceRate / 2) — the first frequency
+ *     that can fold, so it ends the transition band.
+ *   - passband edge: 0.85 x the device Nyquist, so the speech band below it is
+ *     flat.
+ *   - stopband: LP_STOPBAND_DB flat across the stopband, from a Kaiser window.
+ *   - length: from the Kaiser estimate for that transition, 53 taps at
+ *     22.05 kHz up to 145 at 8 kHz. Linear phase, so it delays the reply by
+ *     (taps - 1) / 2 source samples (under 3 ms) and reshapes nothing.
+ *
+ * It is engaged only while the stream rate is above the device rate. At equal
+ * or higher device rates the resampler never drops a sample, the filter is not
+ * built, and the output is bit for bit the resampler's.
+ */
+const LP_STOPBAND_DB = 60;
+const LP_PASS_FRAC_OF_NYQUIST = 0.85;
+const LP_MAX_TAPS = 255;
+
+/** Zeroth-order modified Bessel of the first kind, for the Kaiser window. */
+function besselI0(x) {
+  let sum = 1;
+  let term = 1;
+  const q = (x * x) / 4;
+  for (let k = 1; k < 32; k++) {
+    term *= q / (k * k);
+    sum += term;
+  }
+  return sum;
+}
+
+/**
+ * Kaiser-windowed sinc low-pass at `sourceRate`, for a device running at
+ * `deviceRate`, or null when the device rate is not below the stream rate (no
+ * decimation, no filter). Taps are normalised to unity gain at DC.
+ */
+function designDecimator(sourceRate, deviceRate) {
+  if (deviceRate >= sourceRate) return null;
+  const nyquist = deviceRate / 2;
+  const fPass = LP_PASS_FRAC_OF_NYQUIST * nyquist;
+  const fStop = nyquist;
+  // Cycles per source sample: the transition the filter has to fit into.
+  const transition = (fStop - fPass) / sourceRate;
+  const taps =
+    Math.min(
+      LP_MAX_TAPS,
+      Math.max(31, Math.ceil((LP_STOPBAND_DB - 8) / (2.285 * 2 * Math.PI * transition))),
+    ) | 1; // odd, so the linear-phase centre is a sample
+  const beta = 0.1102 * (LP_STOPBAND_DB - 8.7);
+  const i0 = besselI0(beta);
+  const cutoff = (fPass + fStop) / 2 / sourceRate;
+  const mid = (taps - 1) / 2;
+  const h = new Float32Array(taps);
+  let sum = 0;
+  for (let n = 0; n < taps; n++) {
+    const m = n - mid;
+    const sinc = m === 0 ? 2 * cutoff : Math.sin(2 * Math.PI * cutoff * m) / (Math.PI * m);
+    const r = m / mid;
+    const w = besselI0(beta * Math.sqrt(Math.max(0, 1 - r * r))) / i0;
+    h[n] = sinc * w;
+    sum += h[n];
+  }
+  for (let n = 0; n < taps; n++) h[n] /= sum;
+  return h;
+}
 
 class PlayoutProcessor extends AudioWorkletProcessor {
   constructor() {
@@ -124,8 +203,14 @@ class PlayoutProcessor extends AudioWorkletProcessor {
     this.chunks = [];
     this.head = 0; // read offset into chunks[0]
     this.queued = 0; // source samples not yet read
+    /** Source rate, device (context) rate and the step between them. */
     this.rate = 24000;
-    this.step = this.rate / sampleRate;
+    this.step = 1;
+    /** Device-rate decimator taps (null when no sample is dropped) and its history. */
+    this.decimator = null;
+    this.decimatorHist = null;
+    this.decimatorAt = 0;
+    this.setSourceRate(this.rate);
     // Resampler: output = a + (b - a) * frac, between source samples a and b.
     this.a = 0;
     this.b = 0;
@@ -175,8 +260,7 @@ class PlayoutProcessor extends AudioWorkletProcessor {
   receive(msg) {
     if (msg.type === "play") {
       if (msg.rate !== this.rate) {
-        this.rate = msg.rate;
-        this.step = this.rate / sampleRate;
+        this.setSourceRate(msg.rate);
         // A new source clock says nothing about the old drift.
         this.adjust = 0;
         this.drift = 0;
@@ -199,6 +283,47 @@ class PlayoutProcessor extends AudioWorkletProcessor {
     }
   }
 
+  /**
+   * A new source clock: recompute the step, and build or drop the device-rate
+   * decimator. Only a device rate below the stream rate drops samples, so that
+   * is the only case with a filter in the path.
+   */
+  setSourceRate(rate) {
+    this.rate = rate;
+    this.step = rate / sampleRate;
+    this.decimator = designDecimator(rate, sampleRate);
+    this.decimatorAt = 0;
+    this.decimatorHist = this.decimator ? new Float32Array(this.decimator.length) : null;
+  }
+
+  /**
+   * One source sample with the device-rate low-pass applied: the decimating
+   * filter runs before any sample is dropped, so nothing above the device
+   * Nyquist can fold into the speech band. A ring buffer of the newest taps-1
+   * source samples, oldest at increasing offsets from `decimatorAt`.
+   */
+  filterSample(x) {
+    const h = this.decimator;
+    const hist = this.decimatorHist;
+    const n = h.length;
+    this.decimatorAt = this.decimatorAt === 0 ? n - 1 : this.decimatorAt - 1;
+    hist[this.decimatorAt] = x;
+    let sum = 0;
+    let i = this.decimatorAt;
+    for (let k = 0; k < n; k++) {
+      sum += h[k] * hist[i];
+      i = i === n - 1 ? 0 : i + 1;
+    }
+    return sum;
+  }
+
+  /** Drop the decimator's history: the flushed reply must never sound again. */
+  resetDecimator() {
+    if (!this.decimatorHist) return;
+    this.decimatorHist.fill(0);
+    this.decimatorAt = 0;
+  }
+
   /** Next source sample, or null when the buffer is empty. */
   take() {
     while (this.chunks.length && this.head >= this.chunks[0].length) {
@@ -208,7 +333,10 @@ class PlayoutProcessor extends AudioWorkletProcessor {
     if (!this.chunks.length) return null;
     this.queued -= 1;
     this.consumed += 1;
-    return this.chunks[0][this.head++];
+    const raw = this.chunks[0][this.head++];
+    // The device-rate path filters each source sample before the resampler
+    // drops any of them. The equal-rate and upsampling paths are untouched.
+    return this.decimator ? this.filterSample(raw) : raw;
   }
 
   /** Render one output sample of the stream, or 0 when not playing. */
@@ -311,6 +439,9 @@ class PlayoutProcessor extends AudioWorkletProcessor {
     this.adjust = 0;
     this.drift = 0;
     this.dryAt = -Infinity;
+    // The decimator's history is the tail of the interrupted reply: drop it
+    // with the queue, or the reply the caller talked over would ring on.
+    this.resetDecimator();
     // A barge-in carries the cushion's deadline across the flush, so the new
     // reply is not charged a second pre-roll (see the constructor). A hang-up
     // keeps nothing: it holds no credit for audio that will never come.
