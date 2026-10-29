@@ -12,7 +12,9 @@
  */
 
 import { acquireMic, releaseMic } from "./mic-owner";
+import { DEFAULT_OUTPUT_SAMPLE_RATE } from "./output-format";
 import { createWorkletPlayout, PLAYOUT_MODULE, type WorkletPlayout } from "./playout";
+import { openStreamRateContext } from "./stream-rate-context";
 
 export type VoiceErrorCode =
   | "mic"
@@ -95,6 +97,10 @@ export type AudioGraph = {
   worklet: AudioWorkletNode;
   /** Agent-voice output on the same context (see playout.ts). */
   playout: WorkletPlayout;
+  /** The context's actual rate: the playout worklet's device rate. */
+  contextRate: number;
+  /** True when the context runs at the stream rate, so the low-pass is idle. */
+  atStreamRate: boolean;
   /** Stop playback plumbing: close the worklet port, disconnect, close context. */
   stop: () => void;
 };
@@ -104,17 +110,41 @@ export type AudioGraph = {
  * as 24 kHz 16-bit PCM ArrayBuffers on `onFrame` (transferred, not copied).
  * On failure the stream tracks stop and the mic claim releases, matching
  * the previous inline behavior in `VoiceSession.start`.
+ *
+ * `streamRate` is the rate the agent's output is expected at (the resolved
+ * format once the session confirms it; the API's PCM default before that). The
+ * shared context prefers that rate, so the playout never decimates where the
+ * platform can render at the stream rate; where it cannot, the context stays at
+ * the device rate and the worklet's mandatory low-pass takes over.
  */
 export async function startAudioGraph(
   owner: string,
   stream: MediaStream,
   onFrame: (data: ArrayBuffer) => void,
+  streamRate: number = DEFAULT_OUTPUT_SAMPLE_RATE,
 ): Promise<AudioGraph> {
   let audioCtx: AudioContext | null = null;
+  let contextRate = 0;
+  let atStreamRate = false;
   try {
-    // Default rate on purpose; the worklet resamples. Forcing 24 kHz here is
-    // Chromium-only and breaks Firefox's echo canceller and Safari outright.
-    audioCtx = new AudioContext();
+    // Prefer a context at the stream rate (no decimation), but never trust the
+    // request: openStreamRateContext verifies the rate, proves the microphone
+    // can join the context, closes one that fails either test, and falls back
+    // to the plain device context. The single context is shared by mic and
+    // playout so the echo canceller hears what we play; preferring a rate must
+    // never split that graph or silence the mic.
+    const choice = openStreamRateContext(
+      streamRate,
+      (options) => new AudioContext(options),
+      (candidate) => {
+        // Firefox opens the requested rate but cannot connect a getUserMedia
+        // source across rates (bug 1674892). Ask before committing.
+        candidate.createMediaStreamSource(stream);
+      },
+    );
+    audioCtx = choice.ctx;
+    contextRate = choice.rate;
+    atStreamRate = choice.atStreamRate;
     await audioCtx.resume();
     await Promise.all([
       audioCtx.audioWorklet.addModule("/pcm-processor.js"),
@@ -156,5 +186,12 @@ export async function startAudioGraph(
     output.disconnect();
     void ctx.close().catch(() => undefined);
   };
-  return { audioCtx: ctx, worklet, playout: createWorkletPlayout(output), stop };
+  return {
+    audioCtx: ctx,
+    worklet,
+    playout: createWorkletPlayout(output),
+    contextRate,
+    atStreamRate,
+    stop,
+  };
 }
