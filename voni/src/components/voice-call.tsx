@@ -1252,6 +1252,9 @@ export function VoiceCall({
         },
       });
       sessionRef.current = cascade;
+      // The same dev flag as the managed path: a W0 delivered capture must be
+      // written on the cascade path too, or the two captures cannot compare.
+      cascade.setDeliveredCapture(callDebugFlags().deliverCapture);
       setCallState("connecting");
       try {
         await cascade.start(

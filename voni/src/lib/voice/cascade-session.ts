@@ -18,7 +18,15 @@
 
 import { acquireMicStream, startAudioGraph } from "./mic-capture";
 import { releaseMic } from "./mic-owner";
-import type { Playout } from "./playout";
+import type { Playout, WorkletPlayout } from "./playout";
+import {
+  attachDeliveredCapture,
+  finishDeliveredCapture,
+  postDeliveredCapture,
+  type CaptureResult,
+  type CaptureWrite,
+  type DeliveredCapture,
+} from "./delivered-capture";
 import {
   buildCascadeContextMessage,
   MICROPHONE_MUTED_CONTEXT,
@@ -183,7 +191,18 @@ export type CascadeDeps = {
   socketFactory?: (url: string) => WebSocket;
   startMic?: (owner: string, onFrame: (data: ArrayBuffer) => void) => Promise<MicHandle>;
   createPlayout?: (audioCtx: AudioContext | null | undefined) => Playout;
+  /** Dev delivered capture sink; defaults to the dev-only WAV route. */
+  writeCapture?: CaptureWrite;
+  /** Capture clock, injectable for a deterministic filename. */
+  captureNow?: () => Date;
 };
+
+/** The worklet handle `out` is a `WorkletPlayout`; a test playout may not be. */
+type TappablePlayout = Playout & Pick<WorkletPlayout, "tap" | "onTap">;
+
+function isTappable(playout: Playout | null): playout is TappablePlayout {
+  return playout !== null && typeof (playout as Partial<WorkletPlayout>).tap === "function";
+}
 
 async function defaultStartMic(
   owner: string,
@@ -220,11 +239,20 @@ export class CascadeSession {
    * interruption — the floor changed hands back.
    */
   private endCallArmed = false;
+  /** Dev delivered capture (`?delivercapture=1`): off unless the caller sets it. */
+  private deliveredCaptureOn = false;
+  private deliveredCapture: DeliveredCapture | null = null;
+  private captureOutcome: CaptureResult | null = null;
+  private readonly writeCapture: CaptureWrite;
+  private readonly captureNow: (() => Date) | undefined;
 
   constructor(
     private handlers: CascadeHandlers = {},
     private deps: CascadeDeps = {},
-  ) {}
+  ) {
+    this.writeCapture = deps.writeCapture ?? postDeliveredCapture;
+    this.captureNow = deps.captureNow;
+  }
 
   /**
    * Must be called from inside a user gesture (click/touch): mic and audio
@@ -257,11 +285,38 @@ export class CascadeSession {
     });
     this.micStop = handle.stop;
     this.playout = this.deps.createPlayout?.(handle.audioCtx) ?? handle.playout ?? null;
+    // Dev delivered capture: the worklet's output, at the device rate. It is
+    // observation only — the tap copies samples after rendering, so it cannot
+    // move a sample, a chunk boundary or a playout deadline.
+    if (this.deliveredCaptureOn && isTappable(this.playout)) {
+      this.deliveredCapture = attachDeliveredCapture(this.playout, {
+        sampleRate: handle.audioCtx?.sampleRate ?? DEFAULT_OUTPUT_SAMPLE_RATE,
+        write: this.writeCapture,
+        ...(this.captureNow === undefined ? {} : { now: this.captureNow }),
+      });
+    }
     // Chime trigger: the worklet's first audible sample, not the queued frame.
     if (this.playout) this.playout.onFirstAudible = () => this.handlers.onFirstAudible?.();
     this.started = true;
     // Socket may already be open (fake sockets, fast localhost): flush config now.
     if (ws.readyState === ws.OPEN) this.sendConfig(config);
+  }
+
+  /**
+   * Dev delivered capture (`?delivercapture=1`): set before `start`. Taps the
+   * playout worklet's rendered output and writes one WAV on hang-up. The flag
+   * parser is inert in a production build, so this never runs there.
+   */
+  setDeliveredCapture(on: boolean): void {
+    this.deliveredCaptureOn = on;
+  }
+
+  /**
+   * The last capture's named outcome (`complete`, or why it is missing or
+   * short). Null until a capture with the flag on has closed.
+   */
+  deliveredCaptureResult(): CaptureResult | null {
+    return this.captureOutcome;
   }
 
   /** Drop only microphone frames; keep the socket and agent playback alive. */
@@ -351,13 +406,15 @@ export class CascadeSession {
     }, 250);
   }
 
-  async stop(): Promise<void> {    if (!this.started) return;
+  async stop(): Promise<void> {
+    if (!this.started) return;
     this.started = false;
     try {
       if (this.ws?.readyState === this.ws?.OPEN) this.send(JSON.stringify({ type: "stop" }));
     } catch {
       // Socket already gone; local teardown below still runs.
     }
+    await this.closeCapture();
     this.teardown();
   }
 
@@ -369,7 +426,32 @@ export class CascadeSession {
     }
   }
 
+  /**
+   * Close the capture before the playout is dropped: tap off flushes the
+   * worklet's final partial block, then exactly one WAV is written. Dev-only,
+   * best-effort, and idempotent — observation never fails a hang-up.
+   */
+  private closeCapture(): Promise<void> {
+    const capture = this.deliveredCapture;
+    const playout = this.playout;
+    this.deliveredCapture = null;
+    if (!capture) return Promise.resolve();
+    return (async () => {
+      try {
+        this.captureOutcome = await finishDeliveredCapture(
+          isTappable(playout) ? playout : null,
+          capture,
+        );
+      } catch {
+        /* capture is dev instrumentation */
+      }
+    })();
+  }
+
   private teardown(): void {
+    // A socket drop or the end message can land without an awaited stop;
+    // start the capture close before the playout reference goes away.
+    void this.closeCapture();
     try {
       this.micStop?.();
     } catch {

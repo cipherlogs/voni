@@ -11,6 +11,7 @@ import {
   DeliveredCapture,
   deliveredCaptureRequested,
   encodeWavPcm16,
+  finishDeliveredCapture,
 } from "./delivered-capture";
 import { decodeWav } from "@/lib/audio/format-facts";
 
@@ -138,7 +139,13 @@ test("delivered capture: blocks become one WAV named for the call", async () => 
   const read = decodeWav(writes[0]!.bytes);
   assert.equal(read.facts.sampleRate, 44100);
   assert.deepEqual(Array.from(read.samples), [3277, 6553, 9830, -13107, -16383]);
-  assert.deepEqual(result, { name: writes[0]!.name, samples: 5, bytes: writes[0]!.bytes.length });
+  assert.deepEqual(result, {
+    complete: true,
+    reason: "",
+    name: writes[0]!.name,
+    samples: 5,
+    bytes: writes[0]!.bytes.length,
+  });
 });
 
 test("delivered capture (direct path): writes the stream it is handed, never rewrites it", async () => {
@@ -166,7 +173,20 @@ test("delivered capture (direct path): writes the stream it is handed, never rew
   assert.deepEqual(Array.from(decodeWav(writes[0]!).samples), before.flat().map(quantise));
 });
 
-test("delivered capture: a call that never played anything writes no file", async () => {
+test("delivered capture flag: on only with ?delivercapture=1, never in production", () => {
+  assert.equal(deliveredCaptureRequested("?delivercapture=1", false), true);
+  assert.equal(deliveredCaptureRequested("?foo=2&delivercapture=1", false), true);
+  assert.equal(deliveredCaptureRequested("", false), false);
+  assert.equal(deliveredCaptureRequested("?delivercapture=0", false), false);
+  assert.equal(deliveredCaptureRequested("?delivercapture=1", true), false);
+});
+
+// ── A capture that is not whole is a named failure (ticket 121) ───────────
+// "Missing" and "truncated" must not look like a short but valid recording:
+// the W0 comparison would measure a file that is quietly missing its tail and
+// call the difference a client defect. The capture names the failure instead.
+
+test("delivered capture: nothing played is a named missing capture, not an empty file", async () => {
   let wrote = false;
   const capture = new DeliveredCapture({
     sampleRate: 48000,
@@ -175,14 +195,66 @@ test("delivered capture: a call that never played anything writes no file", asyn
     },
   });
   const result = await capture.finish();
-  assert.equal(result, null);
-  assert.equal(wrote, false);
+  assert.deepEqual(result, {
+    complete: false,
+    reason: "no-audio",
+    name: null,
+    samples: 0,
+    bytes: 0,
+  });
+  assert.equal(wrote, false, "an empty WAV is never written");
 });
 
-test("delivered capture flag: on only with ?delivercapture=1, never in production", () => {
-  assert.equal(deliveredCaptureRequested("?delivercapture=1", false), true);
-  assert.equal(deliveredCaptureRequested("?foo=2&delivercapture=1", false), true);
-  assert.equal(deliveredCaptureRequested("", false), false);
-  assert.equal(deliveredCaptureRequested("?delivercapture=0", false), false);
-  assert.equal(deliveredCaptureRequested("?delivercapture=1", true), false);
+test("delivered capture: a worklet that never acks is a named truncation, never silently short", async () => {
+  const writes: { name: string; bytes: Uint8Array }[] = [];
+  const capture = new DeliveredCapture({
+    sampleRate: 48000,
+    write: (name, bytes) => {
+      writes.push({ name, bytes });
+    },
+    now: () => new Date(Date.UTC(2026, 9, 29, 14, 5, 6)),
+  });
+  capture.push(new Float32Array([0.1, 0.2, 0.3]));
+
+  const result = await finishDeliveredCapture({ tap: async () => ({ ended: false }) }, capture);
+
+  assert.equal(result.complete, false);
+  assert.equal(result.reason, "tap-timeout");
+  assert.equal(result.name, "delivered-20261029-140506.wav");
+  assert.equal(result.samples, 3);
+  assert.equal(writes.length, 1, "the partial WAV is kept for triage");
+  assert.equal(result.bytes, writes[0]!.bytes.length);
+});
+
+test("delivered capture: a complete tap writes the whole stream and says so", async () => {
+  const capture = new DeliveredCapture({
+    sampleRate: 48000,
+    write: () => undefined,
+    now: () => new Date(Date.UTC(2026, 9, 29, 14, 5, 6)),
+  });
+  capture.push(new Float32Array([0.1, -0.2]));
+  const result = await finishDeliveredCapture({ tap: async () => ({ ended: true }) }, capture);
+  assert.equal(result.complete, true);
+  assert.equal(result.reason, "");
+  assert.equal(result.samples, 2);
+  assert.match(result.name ?? "", /^delivered-20261029-140506\.wav$/);
+});
+
+test("delivered capture: a dev sink that is down is a named write failure, not a blank", async () => {
+  const capture = new DeliveredCapture({
+    sampleRate: 48000,
+    write: () => {
+      throw new Error("capture upload failed: 500");
+    },
+    now: () => new Date(Date.UTC(2026, 9, 29, 14, 5, 6)),
+  });
+  capture.push(new Float32Array([0.1]));
+  const result = await finishDeliveredCapture({ tap: async () => ({ ended: true }) }, capture);
+  assert.deepEqual(result, {
+    complete: false,
+    reason: "write-failed",
+    name: "delivered-20261029-140506.wav",
+    samples: 1,
+    bytes: 46,
+  });
 });

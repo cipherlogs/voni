@@ -64,6 +64,7 @@ import {
 import type { WorkletPlayout } from "./playout";
 import {
   attachDeliveredCapture,
+  finishDeliveredCapture,
   postDeliveredCapture,
   type CaptureWrite,
   type DeliveredCapture,
@@ -2353,8 +2354,9 @@ export class VoiceSession {
     this.deliveredCapture = null;
     if (capture) {
       try {
-        await this.playout?.tap(false);
-        await capture.finish();
+        // Tap off flushes the last partial block; the ack is what lets the
+        // writer distinguish a whole capture from a truncated one.
+        await finishDeliveredCapture(this.playout, capture);
       } catch {
         /* capture is dev instrumentation */
       }
