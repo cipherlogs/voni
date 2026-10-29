@@ -1,4 +1,5 @@
 import type { RecognitionSlots } from "../../types";
+import { FR_SCENE } from "./scene";
 import { FR_VOCABULARY } from "./vocabulary";
 
 /**
@@ -7,4 +8,5 @@ import { FR_VOCABULARY } from "./vocabulary";
  */
 export const FR_RECOGNITION: RecognitionSlots = {
   vocabulary: FR_VOCABULARY,
+  scene: FR_SCENE,
 };

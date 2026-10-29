@@ -84,6 +84,48 @@ test("platform English tool nouns do not leak into a non-English recognition req
   }
 });
 
+test("a Spanish call's transcription prompt is Spanish, not the English scene", () => {
+  const prompt = buildAgentTranscriptionPrompt({ ...DENTAL, conversationLanguage: "es" });
+  assert.equal(
+    prompt,
+    "Una llamada telefónica de clinic coordinator. " +
+      "Book dental appointments and get urgent cases seen sooner. " +
+      "Habla Nadia. Quien llama menciona Reason for calling, Urgency.",
+  );
+  assert.doesNotMatch(prompt, /phone call|Callers mention/);
+  assert.doesNotMatch(prompt, /transcribe verbatim|do not|never/i);
+});
+
+test("every spoken Locale's prompt describes the call in its own language", () => {
+  const markers = [
+    ["es", /llamada telefónica/],
+    ["fr", /appel téléphonique/],
+    ["de", /Telefonanruf/],
+    ["it", /chiamata telefonica/],
+    ["pt", /chamada telefónica/],
+  ] as const;
+  for (const [locale, marker] of markers) {
+    const prompt = buildAgentTranscriptionPrompt({ ...DENTAL, conversationLanguage: locale });
+    assert.match(prompt, marker, locale);
+    assert.match(prompt, /Nadia/, locale);
+    assert.doesNotMatch(prompt, /phone call|Callers mention/, locale);
+    assert.ok(prompt.length <= 500, locale);
+  }
+});
+
+test("a missing scene is a hole, never an English prompt", () => {
+  for (const locale of ["ar", "xx"]) {
+    const prompt = buildAgentTranscriptionPrompt(DENTAL, locale);
+    assert.equal(prompt, "", locale);
+  }
+});
+
+test("automatic detection keeps the English scene as the documented exception", () => {
+  const prompt = buildAgentTranscriptionPrompt(DENTAL, null);
+  assert.match(prompt, /A clinic coordinator phone call/);
+  assert.match(prompt, /Nadia/);
+});
+
 test("the term budget holds in every Locale", () => {
   for (const locale of CONVERSATION_LANGUAGES) {
     const terms = buildAgentKeyterms({
