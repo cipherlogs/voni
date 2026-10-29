@@ -28,7 +28,7 @@ class LedgerTests(unittest.TestCase):
         self.assertAlmostEqual(gaps["audio_in_to_first_partial"], 350.0)
         self.assertAlmostEqual(gaps["final_to_first_token"], 400.0)
         self.assertAlmostEqual(gaps["final_to_first_playout"], 1400.0)
-        self.assertAlmostEqual(gaps["commit_to_first_playout"], 1400.0)
+        self.assertAlmostEqual(gaps["floor_take_to_first_playout"], 1400.0)
 
     def test_first_mark_wins_and_missing_gaps_are_none(self):
         ledger = TimingLedger(now=lambda: 10.0)
@@ -38,17 +38,18 @@ class LedgerTests(unittest.TestCase):
         self.assertEqual(len(summary["marks"]), 1)
         self.assertIsNone(summary["gaps_ms"]["final_to_first_playout"])
 
-    def test_commit_mark_overrides_final_for_reply_gap(self):
+    def test_floor_take_mark_overrides_final_for_reply_gap(self):
         t = [0.0]
         ledger = TimingLedger(now=lambda: t[0])
         ledger.mark("final")
         t[0] += 0.5
-        ledger.mark("commit")
+        ledger.mark("floor_take")
         t[0] += 0.8
         ledger.mark("first_playout")
         gaps = ledger.summary()["gaps_ms"]
-        # Early commit: the reply gap counts from commit, not final.
-        self.assertAlmostEqual(gaps["commit_to_first_playout"], 800.0)
+        # The caller took the floor early: the reply gap counts from there,
+        # not from the final.
+        self.assertAlmostEqual(gaps["floor_take_to_first_playout"], 800.0)
         self.assertAlmostEqual(gaps["final_to_first_playout"], 1300.0)
 
     def test_counters_track_judge_and_prefetch(self):
