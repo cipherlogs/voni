@@ -48,6 +48,7 @@ import {
   type VoiceState,
 } from "@/lib/voice/session";
 import { CallTimings } from "@/lib/voice/call-timings";
+import { deliveredCaptureRequested } from "@/lib/voice/delivered-capture";
 import { CascadeSession } from "@/lib/voice/cascade-session";
 import {
   FILLER_POOL,
@@ -211,12 +212,19 @@ function useIsBelowLg() {
  * Dev-only A/B switches for the pop hunt, read from the page URL:
  * `?popprobe=1` logs every output jump, overload, gain clamp and underrun
  * as a `[voice-call] pop` line (merged by `npm run call:trace`), `?tick=0`
- * silences the caption tick, `?gain=1` plays the voice at native level.
+ * silences the caption tick, `?gain=1` plays the voice at native level, and
+ * `?delivercapture=1` writes the rendered playout to `voni/.captures/`.
  * Always empty in production.
  */
-function callDebugFlags(): { popProbe: boolean; tickOff: boolean; gain: number | null } {
-  if (process.env.NODE_ENV === "production" || typeof window === "undefined") {
-    return { popProbe: false, tickOff: false, gain: null };
+function callDebugFlags(): {
+  popProbe: boolean;
+  tickOff: boolean;
+  gain: number | null;
+  deliverCapture: boolean;
+} {
+  const production = process.env.NODE_ENV === "production";
+  if (production || typeof window === "undefined") {
+    return { popProbe: false, tickOff: false, gain: null, deliverCapture: false };
   }
   const params = new URLSearchParams(window.location.search);
   const gain = Number(params.get("gain"));
@@ -224,6 +232,7 @@ function callDebugFlags(): { popProbe: boolean; tickOff: boolean; gain: number |
     popProbe: params.get("popprobe") === "1",
     tickOff: params.get("tick") === "0",
     gain: params.has("gain") && Number.isFinite(gain) && gain > 0 ? gain : null,
+    deliverCapture: deliveredCaptureRequested(window.location.search, production),
   };
 }
 
@@ -1511,6 +1520,7 @@ export function VoiceCall({
     session.setParkOnDrop(shouldParkOnDrop(modeKind === "demo", hiddenRef.current));
     const debug = callDebugFlags();
     session.setPopProbe(debug.popProbe);
+    session.setDeliveredCapture(debug.deliverCapture);
     session.setOutputGain(debug.gain ?? voicePlaybackGain(modeKind === "demo" ? voiceId : config.voiceId));
     // Demo: one check-in after 15s of silence on a free floor (owner, 2026-09-27).
     if (modeKind === "demo") {

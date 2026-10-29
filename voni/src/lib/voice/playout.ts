@@ -28,12 +28,25 @@ export type WorkletPlayout = Playout & {
   probe: (on: boolean) => void;
   /** A flagged output discontinuity, while the probe is on. */
   onPop?: (pop: { kind: "jump" | "overload"; size: number }) => void;
+  /**
+   * Dev delivered capture on/off. While on, every rendered block arrives at
+   * `onTap`. Turning it off resolves only after the worklet has posted its
+   * final partial block, so the caller can close a complete WAV.
+   */
+  tap: (on: boolean) => Promise<void>;
+  /** One block of the output exactly as it was emitted, at the device rate. */
+  onTap?: (samples: Float32Array) => void;
 };
 
 export const PLAYOUT_MODULE = "/playout-processor.js";
 
+/** Longest a teardown waits for the final tap block before writing anyway. */
+const TAP_END_TIMEOUT_MS = 250;
+
 type Level = { type: "level"; seq: number; queuedMs: number; idle: boolean; consumed: number };
 type Pop = { type: "pop"; kind: "jump" | "overload"; size: number; at: number };
+type Tap = { type: "tap"; samples: Float32Array };
+type TapEnd = { type: "tap-end" };
 
 /** Little-endian PCM16 bytes -> float samples in [-1, 1). */
 export function pcm16ToFloat(pcm: Uint8Array): Float32Array {
@@ -51,6 +64,7 @@ export function createWorkletPlayout(node: AudioWorkletNode): WorkletPlayout {
   let queuedMs = 0;
   let sentSamples = 0;
   let consumed = 0;
+  let tapEnded: (() => void) | null = null;
   const playout: WorkletPlayout = {
     play(pcm, sampleRate) {
       const samples = pcm16ToFloat(pcm);
@@ -74,8 +88,33 @@ export function createWorkletPlayout(node: AudioWorkletNode): WorkletPlayout {
     probe(on) {
       node.port.postMessage({ type: "probe", on });
     },
+    tap(on) {
+      node.port.postMessage({ type: "tap", on });
+      if (on) return Promise.resolve();
+      // A suspended context never acks: a hang-up must not wait on it forever.
+      return new Promise<void>((resolve) => {
+        const timer = setTimeout(() => {
+          tapEnded = null;
+          resolve();
+        }, TAP_END_TIMEOUT_MS);
+        tapEnded = () => {
+          clearTimeout(timer);
+          resolve();
+        };
+      });
+    },
   };
-  node.port.onmessage = (e: MessageEvent<Level | Pop>) => {
+  node.port.onmessage = (e: MessageEvent<Level | Pop | Tap | TapEnd>) => {
+    if (e.data?.type === "tap") {
+      playout.onTap?.(e.data.samples);
+      return;
+    }
+    if (e.data?.type === "tap-end") {
+      const done = tapEnded;
+      tapEnded = null;
+      done?.();
+      return;
+    }
     if (e.data?.type === "pop") {
       playout.onPop?.({ kind: e.data.kind, size: e.data.size });
       return;

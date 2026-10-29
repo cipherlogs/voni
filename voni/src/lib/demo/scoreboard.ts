@@ -86,7 +86,11 @@ import { DEMO_INBOX_ADDRESS } from "./email-test";
 import { TAG_WORDS, containsTag, countTags } from "./test-tag";
 import type { RunnerEvidence } from "./runner-evidence";
 import type { LatencyBand } from "./latency-split";
-import type { DemoAgentVariant, DemoTurnWindows } from "./stored-agents";
+import type {
+  DemoAgentVariant,
+  DemoTurnWindows,
+  ServedDemoAgentBody,
+} from "./stored-agents";
 import { formatTurnWindows } from "./turn-windows";
 
 /** The locked golden script: seven beats in fixed order (spec story 11). */
@@ -971,6 +975,28 @@ export function replyGapGate(samples: ReplyGapSample[], traceSessionId?: string)
 // ── Gate: end-of-turn (ADR-0003 contract, owner: end-of-turn section) ─────────
 
 /**
+ * The stored agent body a run actually serves, read back from the platform
+ * (voice-parity ticket 20). Gates read settings from this, never from
+ * `buildDemoAgentBody`: a reconstruction describes what the harness intended
+ * to store, not the body a visitor's session binds, so it can pass on a body
+ * nobody heard.
+ */
+export type ServedAgentBody = ServedDemoAgentBody;
+
+/**
+ * Which stored body a run measured, recorded beside its verdicts so a PASS or
+ * FAIL can be traced to the agent that served it (voice-parity ticket 20).
+ */
+export type AgentBodyEvidence = {
+  /** Always the platform's stored copy; the harness never rebuilds a gate input. */
+  source: "stored-agent";
+  agentId: string;
+  fingerprint: string | null;
+  /** The served `input.turn_detection`; null = the Turn preset (adaptive). */
+  turnDetection: unknown;
+};
+
+/**
  * The stored-agent experiment a run bound (ticket 10). Its windows are
  * evidence for the experiment only: they never replace the production body
  * the gate checks, so `turn_detection: null` on production stays the contract.
@@ -998,8 +1024,8 @@ export type EndOfTurnEvidence = {
   variant: Exclude<DemoAgentVariant, "production">;
   variantKey: string | null;
   turnWindows: DemoTurnWindows | null;
-  /** The production body the gate checked: still adaptive. */
-  productionTurnDetection: null;
+  /** The production body's served turn setting (null = the Turn preset). */
+  productionTurnDetection: unknown;
 };
 
 /**
@@ -1058,23 +1084,26 @@ function configReportsVariantWindows(line: string, windows: DemoTurnWindows | nu
  * recorded windows is a stray object and FAILs. When the experiment is bound
  * but no variant CONFIG row matches, the gate is INFO/unmeasured, never PASS:
  * the windows were not observed to be applied.
+ *
+ * `servedInput` is the platform-served stored body's `input` (voice-parity
+ * ticket 20), never a body rebuilt by the harness.
  */
 export function meaningBasedEndOfTurnGate(
-  agentInput: { turn_detection?: unknown } | null | undefined,
+  servedInput: { turn_detection?: unknown } | null | undefined,
   traceExcerpt: string[] = [],
   experiment: EndOfTurnExperiment | null = null,
 ): ScoreboardGate {
   const sent =
-    agentInput !== null &&
-    agentInput !== undefined &&
-    "turn_detection" in agentInput &&
-    agentInput.turn_detection !== null &&
-    agentInput.turn_detection !== undefined;
+    servedInput !== null &&
+    servedInput !== undefined &&
+    "turn_detection" in servedInput &&
+    servedInput.turn_detection !== null &&
+    servedInput.turn_detection !== undefined;
   if (sent) {
     return {
       name: "end-of-turn",
       status: "FAIL",
-      detail: `turn_detection object sent (${JSON.stringify(agentInput.turn_detection)?.slice(0, 120)}): disables adaptive end-of-turn (ADR-0003); stored demo agents must send turn_detection: null`,
+      detail: `turn_detection object sent (${JSON.stringify(servedInput.turn_detection)?.slice(0, 120)}): disables adaptive end-of-turn (ADR-0003); stored demo agents must send turn_detection: null`,
     };
   }
   const configLines = traceExcerpt.filter((line) => line.includes("turn_detection"));
@@ -2253,6 +2282,12 @@ export type ScoreboardArtifact = {
    * valid, and the redacted transcripts stay the only place caller words appear.
    */
   runnerEvidence?: RunnerEvidence | null;
+  /**
+   * Which stored agent body the run measured, read back from the platform
+   * (voice-parity ticket 20). Absent when no body was read, so a reader never
+   * mistakes a reconstruction for a measured body.
+   */
+  agentBody?: AgentBodyEvidence;
   /**
    * Ticket 10: present only when the run bound the non-production turn-window
    * experiment, naming its windows so the end-of-turn PASS is never read as
@@ -4756,7 +4791,7 @@ function skeletonGates(
   runnerOutcome: RunnerClassification | null,
   replySamples: ReplyGapSample[],
   traceSessionId: string | null,
-  agentInput: { turn_detection?: unknown } | null | undefined,
+  servedAgentBody: ServedAgentBody | null | undefined,
   traceExcerpt: string[],
   fillerGate: ScoreboardGate | null = null,
   overheardGate: ScoreboardGate | null = null,
@@ -4805,9 +4840,9 @@ function skeletonGates(
       ? replyGapGate(replySamples, traceSessionId ?? undefined)
       : { name: "reply-gap", status: "INFO" as const, detail: "unmeasured: run --scenario all or pass --trace-session/--gap beat=ms to gate reply gaps" };
   const endOfTurn =
-    agentInput === undefined
-      ? { name: "end-of-turn", status: "INFO" as const, detail: "unmeasured: agent body not checked" }
-      : meaningBasedEndOfTurnGate(agentInput, traceExcerpt, options?.endOfTurnExperiment ?? null);
+    servedAgentBody === undefined || servedAgentBody === null
+      ? { name: "end-of-turn", status: "INFO" as const, detail: "unmeasured: stored agent body not read" }
+      : meaningBasedEndOfTurnGate(servedAgentBody.input, traceExcerpt, options?.endOfTurnExperiment ?? null);
   const filler: ScoreboardGate =
     fillerGate ?? { name: "filler-resume", status: "INFO", detail: "unmeasured: run --scenario filler-over or pass --filler-* evidence to gate filler recovery" };
   const deadAirGate: ScoreboardGate = deadAir
@@ -5033,8 +5068,12 @@ export function buildSkeletonArtifact(input: {
   codeFingerprint?: CodeFingerprint | null;
   /** Session the gaps were merged from (trace pointer for a failing gate). */
   traceSessionId?: string | null;
-  /** Stored agent body input for the end-of-turn check (undefined = not checked). */
-  agentInput?: { turn_detection?: unknown } | null;
+  /**
+   * The stored agent body the run served, read back from the platform
+   * (voice-parity ticket 20). Gates read settings from this; undefined means
+   * no body was read and the end-of-turn gate stays unmeasured.
+   */
+  servedAgentBody?: ServedAgentBody | null;
   /**
    * Ticket 10: the stored-agent experiment this run bound. Labels the
    * end-of-turn gate as experimental and records its windows; production runs
@@ -5311,7 +5350,7 @@ export function buildSkeletonArtifact(input: {
     runnerOutcome,
     samples,
     input.traceSessionId ?? null,
-    input.agentInput,
+    input.servedAgentBody,
     input.traceExcerpt ?? [],
     fillerGate,
     evaluation?.gate ?? null,
@@ -5415,6 +5454,16 @@ export function buildSkeletonArtifact(input: {
     },
     callerClips: input.callerClips ?? [],
     runnerEvidence: input.runnerEvidence ?? null,
+    ...(input.servedAgentBody
+      ? {
+          agentBody: {
+            source: "stored-agent" as const,
+            agentId: input.servedAgentBody.agentId,
+            fingerprint: input.servedAgentBody.fingerprint ?? null,
+            turnDetection: input.servedAgentBody.input.turn_detection ?? null,
+          },
+        }
+      : {}),
     ...(input.endOfTurnExperiment
       ? {
           endOfTurn: {
@@ -5422,7 +5471,8 @@ export function buildSkeletonArtifact(input: {
             variant: input.endOfTurnExperiment.variant,
             variantKey: input.endOfTurnExperiment.variantKey,
             turnWindows: input.endOfTurnExperiment.turnWindows,
-            productionTurnDetection: null,
+            productionTurnDetection:
+              input.servedAgentBody?.input.turn_detection ?? null,
           },
         }
       : {}),
