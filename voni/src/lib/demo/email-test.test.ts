@@ -362,6 +362,28 @@ test("a saved tag token reads back from localStorage", () => {
   }
 });
 
+test("a cleared or expired tag clears in-page instead of resurfacing from the cache", () => {
+  const map = new Map<string, string>();
+  const store = {
+    getItem: (key: string) => map.get(key) ?? null,
+    setItem: (key: string, value: string) => void map.set(key, value),
+    removeItem: (key: string) => void map.delete(key),
+  };
+  const prior = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  Object.defineProperty(globalThis, "localStorage", { value: store, configurable: true });
+  try {
+    saveTagToken("tag-cleared-27");
+    assert.equal(loadTagToken(), "tag-cleared-27");
+    // The token was cleared or expired: storage answered null. The in-page
+    // cache must not resurrect it (a cleared tag has to clear).
+    map.delete(TAG_TOKEN_KEY);
+    assert.equal(loadTagToken(), undefined);
+    assert.equal(loadTagToken(), undefined, "the stale cache stays cleared");
+  } finally {
+    if (prior) Object.defineProperty(globalThis, "localStorage", prior);
+  }
+});
+
 test("a tag minted while storage is blocked still scopes the call (private mode)", () => {
   const store = {
     getItem: () => null,

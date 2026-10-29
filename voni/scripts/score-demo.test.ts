@@ -1802,6 +1802,181 @@ if (args[0] === "run" && args[1] === "eval:demo-agent") {
   assert.match(overGate.detail, /call trace turn 2 \(sess_check\)/, "cites the turn the check-in talked over the visitor");
 });
 
+test("a measured check-in yield is gated against the quoted cut budget", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const cwd = new URL("../", import.meta.url).pathname;
+  const runCase = (yieldMs: string) => {
+    const out = join(dir, `yield-${yieldMs}.json`);
+    const result = run(
+      [
+        "--dry-run",
+        "--out",
+        out,
+        "--check-in-at-ms",
+        "15200",
+        "--check-in-over-caller",
+        "--check-in-yield-ms",
+        yieldMs,
+      ],
+      cwd,
+    );
+    return { result, artifact: JSON.parse(readFileSync(out, "utf8")) as {
+      deadAir: { checkIns: { yieldMs?: number }[] };
+      gates: { name: string; status: string; detail: string }[];
+    } };
+  };
+  const prompt = runCase("900");
+  assert.equal(prompt.result.status, 0, prompt.result.stderr + prompt.result.stdout);
+  assert.equal(prompt.artifact.deadAir.checkIns[0]?.yieldMs, 900);
+  assert.equal(prompt.artifact.gates.find((g) => g.name === "dead-air")?.status, "PASS");
+
+  const late = runCase("1900");
+  assert.notEqual(late.result.status, 0, late.result.stderr + late.result.stdout);
+  const gate = late.artifact.gates.find((g) => g.name === "dead-air")!;
+  assert.equal(gate.status, "FAIL");
+  assert.match(gate.detail, /held 1900ms/);
+  assert.match(gate.detail, /1500ms/);
+});
+
+test("a default run executes the whole gate suite once, sequentially, into one artifact", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  const log = join(dir, "invocations.log");
+  // The shim proves invocation order/count and that no timing run overlaps.
+  const shim = `#!/usr/bin/env node
+const fs = require("node:fs");
+const args = process.argv.slice(2);
+const log = process.env.SUITE_LOG;
+const tag = (line) => fs.appendFileSync(log, line + "\\n");
+if (args[0] === "run" && args[1] === "eval:demo-agent") {
+  const i = args.indexOf("--scenario");
+  const scenario = i >= 0 ? args[i + 1] : "(none)";
+  tag("start " + scenario);
+  const summary = (name) => console.log("EVAL SUMMARY " + JSON.stringify({
+    scenario: name, runs: 1, failures: 0,
+    scenarios: [{ name, passed: 1, runs: 1 }],
+    traceSessions: ["sess_suite"], playout: [{ scenario: name, run: 1, wallClockMs: 1000 }],
+    audioChunks: 40, live: true, clips: [],
+  }));
+  console.log("  · trace session sess_suite");
+  if (scenario === "greeting-cut") {
+    console.log("    greeting cut 900ms after the caller started (budget 1500ms)");
+  } else if (scenario === "filler-over") {
+    console.log('    filler never cut; events [["ignore","Okaay so"]]; handling heard-only');
+  } else if (scenario === "stop-over") {
+    console.log("    cut 900ms after the caller started (budget 1500ms)");
+    console.log('    answered the point after the cut: "about 200 dollars a month"');
+  } else if (scenario === "over-talk") {
+    console.log("    heard ledger [\\"We're a bakery, actually.\\"]");
+    console.log("    DOUBLE TALK " + JSON.stringify({ scenario: "over-talk", session: "sess_suite", overlapMs: [40], fadeMs: 40 }));
+  } else if (scenario === "silence-check-in") {
+    console.log("    SILENCE TIMELINE " + JSON.stringify({
+      scenario: "silence-check-in", session: "sess_suite",
+      startedMs: 0, endedMs: 18000,
+      agentAudio: [{ startMs: 0, endMs: 1000 }, { startMs: 17000, endMs: 18000 }],
+      callerSpeech: [], coverage: [], checkIns: [{ atMs: 16200 }],
+    }));
+  } else if (scenario === "invite-tag") {
+    console.log("EMAIL INVITE " + JSON.stringify({
+      tag: "Lime 42",
+      agentLines: ["Send me an email from your work address with Lime 42 in the subject, and tell me when it's sent."],
+      lineTurns: [2], chipShows: [{ address: "test@voni.cc", tag: "Lime 42" }],
+      showToolCalls: 1, chipTurn: 2, traceSession: "sess_suite",
+    }));
+  } else if (scenario === "bye-audio") {
+    console.log("    hung up 900ms after the goodbye finished playing (session sess_suite)");
+    console.log("    GOODBYE DRAIN " + JSON.stringify({ scenario: "bye-audio", session: "sess_suite", turn: 4, coverage: 0.95, inboxNamed: true }));
+  } else if (scenario === "hang-up-fast") {
+    console.log("    hung up 800ms after the goodbye finished playing (session sess_suite)");
+  } else if (scenario === "hang-up-over") {
+    console.log("    hung up 1100ms after the goodbye finished playing (session sess_suite)");
+  }
+  console.log(scenario + ": 1/1");
+  summary(scenario);
+  tag("end " + scenario);
+  process.exit(0);
+} else if (args[0] === "run" && args[1] === "call:trace") {
+  console.log(' 1.00s  VONI    "Welcome to the demo"  (reply_create gap 700ms)');
+  console.log(' 4.00s  VONI    "Sure, first the tour"  (reply_create gap 900ms) CUT at 4.10s by caller speech');
+  console.log(' 5.00s  VONI    "About 200 dollars a month."  (reply_create gap 600ms)');
+}
+`;
+  writeFileSync(join(bin, "npm"), shim, { mode: 0o755 });
+  const out = join(dir, "suite.json");
+  const result = run(
+    ["--out", out, "--timing-lock", join(dir, "suite.lock")],
+    new URL("../", import.meta.url).pathname,
+    { PATH: `${bin}:${process.env.PATH}`, SUITE_LOG: log },
+  );
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+
+  const calls = readFileSync(log, "utf8").trim().split("\n");
+  const suite = [
+    "greeting-cut",
+    "filler-over",
+    "stop-over",
+    "over-talk",
+    "silence-check-in",
+    "invite-tag",
+    "bye-audio",
+    "hang-up-fast",
+    "hang-up-over",
+  ];
+  assert.deepEqual(
+    calls,
+    suite.flatMap((name) => [`start ${name}`, `end ${name}`]),
+    "every scenario runs once, one at a time, never in parallel",
+  );
+
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    evalRunner: { scenario: string; status: string; timings: { scenarioRuns: { scenario: string }[] } };
+    doubleTalk: { overlapMs: number[] };
+    deadAir: { checkIns: { atSilenceMs: number }[] };
+    emailInvite: { tagMentions: number } | null;
+    endCallDrain: { goodbyeCoverage: number | null; hangUpDelayMs: number | null };
+    beats: Record<string, { cutMs: number | null }>;
+  };
+  assert.equal(artifact.evalRunner.scenario, "suite");
+  assert.equal(artifact.evalRunner.status, "ok");
+  assert.deepEqual(artifact.doubleTalk.overlapMs, [40], "over-talk's own line is merged");
+  assert.deepEqual(artifact.deadAir.checkIns.map((c) => c.atSilenceMs), [15_200], "silence-check-in's own timeline is merged");
+  assert.equal(artifact.emailInvite?.tagMentions, 1, "invite-tag's own line is merged");
+  assert.equal(artifact.endCallDrain.goodbyeCoverage, 0.95, "bye-audio's own line is merged");
+  assert.equal(artifact.endCallDrain.hangUpDelayMs, 1100, "the worst hang-up path is carried");
+  assert.equal(artifact.beats["greeting-cut"].cutMs, 900);
+  assert.ok(artifact.evalRunner.timings.scenarioRuns.length >= 9);
+});
+
+test("default, all and suite dry runs spawn nothing and select the suite", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  const marker = join(dir, "spawned");
+  writeFileSync(
+    join(bin, "npm"),
+    `#!/usr/bin/env node\nrequire("node:fs").writeFileSync(${JSON.stringify(marker)}, "spawned");\n`,
+    { mode: 0o755 },
+  );
+  for (const [label, args] of [
+    ["default", []],
+    ["all", ["--scenario", "all"]],
+    ["suite", ["--scenario", "suite"]],
+  ] as const) {
+    const out = join(dir, `${label}.json`);
+    const result = run(
+      [...args, "--dry-run", "--out", out],
+      new URL("../", import.meta.url).pathname,
+      { PATH: `${bin}:${process.env.PATH}` },
+    );
+    assert.equal(result.status, 0, `${label}: ${result.stderr}${result.stdout}`);
+    const artifact = JSON.parse(readFileSync(out, "utf8")) as { evalRunner: { scenario: string; status: string } };
+    assert.equal(artifact.evalRunner.scenario, "suite", `${label} routes to the suite`);
+    assert.equal(artifact.evalRunner.status, "skipped");
+  }
+  assert.equal(existsSync(marker), false, "no dry run spawned the runner");
+});
+
 test("--silence-json feeds dead-air automatically, and explicit CLI flags still override it", () => {
   const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
   const evidencePath = join(dir, "silence.json");

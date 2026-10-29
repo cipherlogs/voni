@@ -20,9 +20,7 @@
  *   npm run scoreboard:streak -- [--gate-voice <demo-voice-id>]
  *                               [--dir scoreboard-runs]
  *                               [--artifacts a.json,b.json,c.json]
- *                               [--behavior <evidence.json>
- *                                | --behavior-exit <code>
- *                                  --behavior-fingerprint <head>:<dirtyHash>:<clean|dirty>]
+ *                               [--behavior <evidence.json>]
  *
  * Produce the behavior evidence on a built bundle (temp candidate: it runs
  * `npm ci` + `next build` + `next start` + the behavior Playwright specs, and
@@ -31,25 +29,25 @@
  *   npm run test:e2e:behavior -- --evidence /tmp/voni-behavior.json
  *
  * The runner writes that file on green and red, carrying its exit code and
- * the same code fingerprint shape the artifacts use. Exit result only:
- * pass the code it ran on explicitly (head:dirtyHash:clean|dirty).
+ * the same code fingerprint shape the artifacts use. Evidence is a file, never
+ * a typed exit code: a human cannot type a green streak.
  *
  * Exit 0 only when the streak claim holds; 1 for a failed or unprovable claim.
  */
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import {
-  BEHAVIOR_RUN_EVIDENCE_KIND,
-  BEHAVIOR_RUN_EVIDENCE_SCHEMA_VERSION,
   DEFAULT_GATE_VOICE,
   evaluateScoreStreak,
   formatStreakVerdict,
   parseBehaviorRunEvidence,
+  parseGateRows,
   resolveGateVoice,
+  STREAK_SIZE,
   type BehaviorRunEvidence,
   type CodeFingerprint,
-  type ScoreboardGate,
   type StreakArtifact,
+  type UnreadableArtifact,
 } from "../src/lib/demo/scoreboard";
 
 const USAGE = `Usage: npm run scoreboard:streak -- [options]
@@ -60,9 +58,7 @@ candidate behavior run, and prints a PASS/FAIL streak verdict.
   --gate-voice <id>       gate voice (--voice is an alias); default ${DEFAULT_GATE_VOICE}
   --dir <path>            artifact directory; default scoreboard-runs
   --artifacts a,b,c       explicit artifacts (any order; judged oldest→newest)
-  --behavior <path>       behavior-run evidence JSON (preferred)
-  --behavior-exit <code>  only the runner's exit result; needs
-  --behavior-fingerprint <head>:<dirtyHash>:<clean|dirty>
+  --behavior <path>       behavior-run evidence JSON written by the runner
   --help                  this text
 
 Produce the behavior evidence on a built bundle (temp candidate: npm ci +
@@ -71,8 +67,10 @@ next build + next start + Playwright behavior specs; no dev server touched):
   npm run test:e2e:behavior -- --evidence /tmp/voni-behavior.json
 
 A missing behavior file, a red exit, or a different code fingerprint fails
-the streak. Accent ballots, the real-phone checklist and Talk/Hold pinning
-stay informational and can never block it.`;
+the streak. An unreadable artifact in the evaluated window also fails it by
+name, so a crashed newer run can never be skipped. Accent ballots, the
+real-phone checklist and Talk/Hold pinning stay informational and can never
+block it.`;
 
 function arg(name: string, fallback = ""): string {
   const index = process.argv.indexOf(name);
@@ -89,57 +87,53 @@ function argAll(name: string): string[] {
   return values;
 }
 
-const GATE_STATUSES = new Set(["PASS", "INFO", "FAIL"]);
+type ReadResult = { artifact: StreakArtifact } | { broken: UnreadableArtifact };
 
 /**
- * Read one artifact as the streak sees it. Anything that is not a scoreboard
- * artifact is rejected for an explicit path; the directory scan skips other
- * JSON so a matrix artifact is never mistaken for a run.
+ * Read one artifact as the streak sees it. Gate rows go through the shared
+ * validator in scoreboard.ts; a JSON that cannot be read is reported, never
+ * skipped, so a crashed run still names itself in the verdict.
  */
-function readArtifact(path: string): StreakArtifact | null {
+function readArtifact(path: string): ReadResult {
   let raw: unknown;
   try {
     raw = JSON.parse(readFileSync(path, "utf8"));
-  } catch {
-    return null;
+  } catch (error) {
+    return { broken: { name: basename(path), reason: `not valid JSON (${error instanceof Error ? error.message : String(error)})` } };
   }
-  if (raw === null || typeof raw !== "object") return null;
+  const name = basename(path);
+  if (raw === null || typeof raw !== "object") {
+    return { broken: { name, reason: "not a scoreboard artifact object" } };
+  }
   const record = raw as Record<string, unknown>;
   if (
     typeof record.voice !== "string" ||
     typeof record.recordedAt !== "string" ||
     !Number.isFinite(Date.parse(record.recordedAt)) ||
     typeof record.runId !== "string" ||
-    typeof record.schemaVersion !== "number" ||
-    !Array.isArray(record.gates)
+    typeof record.schemaVersion !== "number"
   ) {
-    return null;
+    return { broken: { name, reason: "missing voice/recordedAt/runId/schemaVersion" } };
   }
-  const gates: ScoreboardGate[] = [];
-  for (const value of record.gates) {
-    if (value === null || typeof value !== "object") return null;
-    const gate = value as Record<string, unknown>;
-    if (
-      typeof gate.name !== "string" ||
-      typeof gate.detail !== "string" ||
-      typeof gate.status !== "string" ||
-      !GATE_STATUSES.has(gate.status)
-    ) {
-      return null;
-    }
-    gates.push({ name: gate.name, detail: gate.detail, status: gate.status as ScoreboardGate["status"] });
+  let gates;
+  try {
+    gates = parseGateRows(record.gates, name);
+  } catch (error) {
+    return { broken: { name, reason: error instanceof Error ? error.message : String(error) } };
   }
   const fingerprintRaw = record.codeFingerprint;
   let codeFingerprint: CodeFingerprint | null = null;
   if (fingerprintRaw !== null && fingerprintRaw !== undefined) {
-    if (typeof fingerprintRaw !== "object") return null;
+    if (typeof fingerprintRaw !== "object") {
+      return { broken: { name, reason: "codeFingerprint is not an object" } };
+    }
     const fingerprint = fingerprintRaw as Record<string, unknown>;
     if (
       typeof fingerprint.head !== "string" ||
       typeof fingerprint.dirtyHash !== "string" ||
       typeof fingerprint.dirty !== "boolean"
     ) {
-      return null;
+      return { broken: { name, reason: "codeFingerprint needs head/dirtyHash/dirty" } };
     }
     codeFingerprint = {
       head: fingerprint.head,
@@ -148,44 +142,66 @@ function readArtifact(path: string): StreakArtifact | null {
     };
   }
   return {
-    voice: record.voice,
-    recordedAt: record.recordedAt,
-    runId: record.runId,
-    schemaVersion: record.schemaVersion,
-    gates,
-    codeFingerprint,
+    artifact: {
+      voice: record.voice,
+      recordedAt: record.recordedAt,
+      runId: record.runId,
+      schemaVersion: record.schemaVersion,
+      gates,
+      codeFingerprint,
+    },
   };
 }
 
-type Candidate = { path: string; artifact: StreakArtifact; mtimeMs: number };
+type Candidate = {
+  path: string;
+  artifact: StreakArtifact | null;
+  /** Why an unreadable candidate cannot be judged; null when it parsed. */
+  broken: UnreadableArtifact | null;
+  mtimeMs: number;
+};
 
 function readExplicit(paths: string[]): Candidate[] {
   return paths.map((path) => {
     const resolved = resolve(path);
     if (!existsSync(resolved)) throw new Error(`--artifacts ${path} does not exist`);
-    const artifact = readArtifact(resolved);
-    if (!artifact) throw new Error(`--artifacts ${path} is not a scoreboard artifact`);
-    return { path: resolved, artifact, mtimeMs: statSync(resolved).mtimeMs };
+    const read = readArtifact(resolved);
+    if ("broken" in read) {
+      throw new Error(`--artifacts ${path} is not a scoreboard artifact (${read.broken.reason})`);
+    }
+    return { path: resolved, artifact: read.artifact, broken: null, mtimeMs: statSync(resolved).mtimeMs };
   });
 }
 
+/**
+ * Scan the run directory. Only `score-*.json` files are candidates (a matrix
+ * artifact is never mistaken for a run). A score artifact that cannot be read
+ * stays in the candidate set as broken: a crashed newer run must break the
+ * streak, not disappear from it.
+ */
 function scanDirectory(dir: string, voice: string): Candidate[] {
   if (!existsSync(dir)) return [];
   const candidates: Candidate[] = [];
   for (const entry of readdirSync(dir)) {
-    if (!entry.endsWith(".json")) continue;
+    if (!/^score-.*\.json$/.test(entry)) continue;
     const path = resolve(dir, entry);
-    const artifact = readArtifact(path);
-    if (!artifact || artifact.voice !== voice) continue;
-    candidates.push({ path, artifact, mtimeMs: statSync(path).mtimeMs });
+    const read = readArtifact(path);
+    if ("broken" in read) {
+      candidates.push({ path, artifact: null, broken: read.broken, mtimeMs: statSync(path).mtimeMs });
+      continue;
+    }
+    if (read.artifact.voice !== voice) continue;
+    candidates.push({ path, artifact: read.artifact, broken: null, mtimeMs: statSync(path).mtimeMs });
   }
   return candidates;
 }
 
-/** Oldest→newest by recordedAt, mtime as the tiebreaker for same-second runs. */
+/** Oldest→newest by recordedAt (mtime for an unreadable run), path as the tiebreaker. */
 function chronological(candidates: Candidate[]): Candidate[] {
+  const at = (candidate: Candidate) =>
+    candidate.artifact ? Date.parse(candidate.artifact.recordedAt) : candidate.mtimeMs;
   return candidates.toSorted((a, b) => {
-    const recorded = Date.parse(a.artifact.recordedAt) - Date.parse(b.artifact.recordedAt);
+    const recorded = at(a) - at(b);
     if (recorded !== 0) return recorded;
     if (a.mtimeMs !== b.mtimeMs) return a.mtimeMs - b.mtimeMs;
     return a.path.localeCompare(b.path);
@@ -194,44 +210,19 @@ function chronological(candidates: Candidate[]): Candidate[] {
 
 function readBehavior(): BehaviorRunEvidence | null {
   const path = arg("--behavior", "");
-  const exitRaw = arg("--behavior-exit", "");
-  if (path && exitRaw !== "") {
-    throw new Error("pass either --behavior <evidence.json> or --behavior-exit <code>, not both");
-  }
-  if (path) {
-    let raw: unknown;
-    try {
-      raw = JSON.parse(readFileSync(resolve(path), "utf8"));
-    } catch (error) {
-      throw new Error(`--behavior ${path}: cannot read behavior-run evidence (${error instanceof Error ? error.message : String(error)})`);
-    }
-    return parseBehaviorRunEvidence(raw);
-  }
-  if (exitRaw === "") return null;
-  if (!/^\d+$/.test(exitRaw)) throw new Error(`--behavior-exit needs an exit code, got "${exitRaw}"`);
-  const fingerprintRaw = arg("--behavior-fingerprint", "");
-  if (!fingerprintRaw) {
+  if (process.argv.includes("--behavior-exit") || process.argv.includes("--behavior-fingerprint")) {
     throw new Error(
-      "--behavior-exit needs --behavior-fingerprint <head>:<dirtyHash>:<clean|dirty> so the exit result is bound to code (or pass --behavior <evidence.json>)",
+      "--behavior-exit is not evidence: run npm run test:e2e:behavior -- --evidence <path> and pass --behavior <path>",
     );
   }
-  const match = /^([0-9a-f]{7,64}):([0-9a-f]{64}):(clean|dirty)$/i.exec(fingerprintRaw);
-  if (!match) {
-    throw new Error(
-      `--behavior-fingerprint needs <git-head>:<sha256-dirty-hash>:<clean|dirty>, got "${fingerprintRaw}"`,
-    );
+  if (!path) return null;
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(resolve(path), "utf8"));
+  } catch (error) {
+    throw new Error(`--behavior ${path}: cannot read behavior-run evidence (${error instanceof Error ? error.message : String(error)})`);
   }
-  const exitCode = Number(exitRaw);
-  return {
-    kind: BEHAVIOR_RUN_EVIDENCE_KIND,
-    schemaVersion: BEHAVIOR_RUN_EVIDENCE_SCHEMA_VERSION,
-    mode: "behavior",
-    passed: exitCode === 0,
-    exitCode,
-    recordedAt: new Date().toISOString(),
-    command: "npm run test:e2e:behavior (exit result)",
-    codeFingerprint: { head: match[1], dirtyHash: match[2], dirty: match[3].toLowerCase() === "dirty" },
-  };
+  return parseBehaviorRunEvidence(raw);
 }
 
 function main(): void {
@@ -243,12 +234,14 @@ function main(): void {
   const explicit = argAll("--artifacts");
   const dir = resolve(arg("--dir", "scoreboard-runs"));
   const candidates = chronological(explicit.length > 0 ? readExplicit(explicit) : scanDirectory(dir, voice));
-  const artifacts = candidates.slice(-3).map((candidate) => candidate.artifact);
+  const window = candidates.slice(-STREAK_SIZE);
+  const artifacts = window.flatMap((candidate) => (candidate.artifact ? [candidate.artifact] : []));
+  const unreadable = window.flatMap((candidate) => (candidate.broken ? [candidate.broken] : []));
   const behavior = readBehavior();
-  const result = evaluateScoreStreak({ artifacts, gateVoice: voice, behavior });
+  const result = evaluateScoreStreak({ artifacts, gateVoice: voice, behavior, unreadable });
   console.log(formatStreakVerdict(result));
-  if (candidates.length > 0) {
-    console.log(`artifacts: ${candidates.slice(-3).map((candidate) => basename(candidate.path)).join(", ")}`);
+  if (window.length > 0) {
+    console.log(`artifacts: ${window.map((candidate) => basename(candidate.path)).join(", ")}`);
     if (explicit.length === 0) console.log(`directory: ${dir}`);
   }
   if (!result.ok) process.exitCode = 1;

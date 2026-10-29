@@ -23,10 +23,14 @@
 import { spawn, spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { createHash } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import net from "node:net";
+import {
+  BEHAVIOR_RUN_EVIDENCE_KIND,
+  BEHAVIOR_RUN_EVIDENCE_SCHEMA_VERSION,
+  codeFingerprintFromGit,
+} from "../src/lib/demo/behavior-evidence.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const appDir = resolve(here, "..");
@@ -58,8 +62,8 @@ function writeBehaviorEvidence() {
   writeFileSync(
     abs,
     `${JSON.stringify({
-      kind: "voni-behavior-run",
-      schemaVersion: 1,
+      kind: BEHAVIOR_RUN_EVIDENCE_KIND,
+      schemaVersion: BEHAVIOR_RUN_EVIDENCE_SCHEMA_VERSION,
       mode: "behavior",
       passed: behaviorEvidence.passed,
       exitCode: behaviorEvidence.passed ? 0 : 1,
@@ -106,9 +110,13 @@ function fingerprint() {
   const head = capture("git", ["-C", top, "rev-parse", "HEAD"]);
   const status = capture("git", ["-C", top, "status", "--porcelain=v1"]);
   const diff = capture("git", ["-C", top, "diff", "HEAD"]);
-  const dirtyHash = createHash("sha256").update(`${status}\n${diff}`).digest("hex");
-  const dirty = status.trim() !== "" || diff.trim() !== "";
-  return { head, statusLines: status.split("\n").filter(Boolean).length, dirty, dirtyHash, hash: dirtyHash.slice(0, 16) };
+  const fingerprint = codeFingerprintFromGit({ head, status, diff });
+  if (!fingerprint) throw new Error("git has no HEAD: cannot fingerprint the candidate");
+  return {
+    ...fingerprint,
+    statusLines: status.split("\n").filter(Boolean).length,
+    hash: fingerprint.dirtyHash.slice(0, 16),
+  };
 }
 
 // Relevant untracked source files = app source under src/scripts/tests that

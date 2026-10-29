@@ -35,24 +35,51 @@
  * artifact (gate transitions, beat deltas, reply gap, drain) without ever
  * committing the artifacts.
  *
- * Gate ownership (one gate, one section below; keep gate logic inside its
- * own section — no unrelated edits in one function):
- *   plumbing / measurements .... skeleton (ticket 01/06: finished vs harness break, dry-run only)
- *   reply-gap ................... ticket 03 | end-of-turn ............. ADR-0003 contract
- *   barge-in-cut ................ ticket 05 | filler-resume ........... ticket 04
- *   overheard-recall ............ ticket 06 | dead-air ................ ticket 07
- *   email-invite ................ ticket 08 | double-talk / end-call-drain ticket 09
- *   timbre-probes / accent-human  ticket 10 | phone-checklist / talk-hold-pinned review stubs (manual/external)
- * TODO: split each gate section into scoreboard/gates/<name>.ts (pure
- * helpers only) once a second consumer needs one; keep this module's
- * exports stable so the orchestrator and matrix never change imports.
+ * Gate ownership (one gate, one section below, in file order; keep gate
+ * logic inside its own section — no unrelated edits in one function):
+ *   reply-gap .......................... ticket 03
+ *   end-of-turn ........................ ADR-0003 contract
+ *   dead-air (incl. check-in once/yield) ticket 07 / 18 / 19
+ *   email-invite ....................... ticket 08
+ *   artifact shape (ScoreboardArtifact) shared plumbing, ticket 01
+ *   overheard-recall ................... ticket 06
+ *   voice registry (gate voice lock) ... ticket 02
+ *   timbre-probes / accent-human ....... ticket 10
+ *   double-talk + end-call-drain ....... ticket 09 (shared section: both
+ *                                        read the same cut/drain timings)
+ *   filler-resume ...................... ticket 04
+ *   barge-in-cut ....................... ticket 05
+ *   greeting-cut ....................... ticket 08
+ *   fixed-clip cut measurement ......... ticket 05 (feeds barge-in-cut)
+ *   skeleton: plumbing/measurements/assembly ticket 01 / 06
+ *   artifact diff ...................... ticket 07
+ *   streak / behavior evidence ......... ticket 29
+ *   phone-checklist / talk-hold-pinned . review stubs (manual/external)
+ * TODO: this module is ~5.8k lines. Split double-talk and end-call-drain
+ * into separate scoreboard/gates/*.ts files, and then each gate section,
+ * once a second consumer needs one; until then keep the exports stable so
+ * the orchestrator and matrix never change imports. The shared section is
+ * a known sequencing compromise, not an ownership rule.
  */
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { getVoice, VOICE_OUTPUT_VOLUME, voicePlaybackGain } from "../agents/voices";
 import { BARGE_IN_JUDGE_MS, judgeOverlap, type OverlapVerdict } from "../voice/barge-in";
-import { NO_WORDS_RESUME_MS, RESUME_WAIT_MS, unheardRest } from "../voice/session";
+import {
+  END_CALL_AUDIO_GRACE_MS,
+  END_CALL_DRAIN_TIMEOUT_MS,
+  END_CALL_POLL_MS,
+  END_CALL_SETTLE_POLLS,
+  NO_WORDS_RESUME_MS,
+  RESUME_WAIT_MS,
+  unheardRest,
+} from "../voice/session";
 import { SCOREBOARD_BUDGETS } from "./scoreboard-budgets";
+import {
+  BEHAVIOR_RUN_EVIDENCE_KIND,
+  BEHAVIOR_RUN_EVIDENCE_SCHEMA_VERSION,
+  codeFingerprintFromGit,
+} from "./behavior-evidence.mjs";
 import { DEMO_VOICE_IDS, SILENCE_CHECK_IN_INSTRUCTIONS } from "./voni-agent";
 import { DEMO_INBOX_ADDRESS } from "./email-test";
 import { TAG_WORDS, containsTag, countTags } from "./test-tag";
@@ -175,11 +202,92 @@ export type BeatTiming = {
 
 export type GateStatus = "PASS" | "INFO" | "FAIL";
 
+export const GATE_STATUSES: readonly GateStatus[] = ["PASS", "INFO", "FAIL"];
+
+export function isGateStatus(value: unknown): value is GateStatus {
+  return typeof value === "string" && (GATE_STATUSES as readonly string[]).includes(value);
+}
+
+/**
+ * Typed reasons a row may be non-PASS without lying about the call. The streak
+ * judges these fields, never the human-readable `detail` prose: rewriting a
+ * detail line can never mint a green streak.
+ */
+export type GateReason =
+  /** Provenance row: evidence was supplied, so nothing is left to gate. */
+  | "measured-evidence"
+  /** Dry run: no measurements were required. */
+  | "dry-run"
+  /** Ticket 27: prospect-capture memory has no before/after pair yet. */
+  | "unmeasured-memory";
+
+export const GATE_REASONS: readonly GateReason[] = ["measured-evidence", "dry-run", "unmeasured-memory"];
+
+export function isGateReason(value: unknown): value is GateReason {
+  return typeof value === "string" && (GATE_REASONS as readonly string[]).includes(value);
+}
+
 export type ScoreboardGate = {
   name: string;
   status: GateStatus;
   detail: string;
+  /** Typed semantics a consumer may act on; absent when the status speaks for itself. */
+  reason?: GateReason;
 };
+
+/**
+ * The one gate-row validator for every artifact reader (the streak and the
+ * matrix used to re-implement this). Throws with the source label so a broken
+ * artifact is named instead of silently skipped.
+ */
+export function parseGateRow(raw: unknown, source: string, index: number): ScoreboardGate {
+  if (raw === null || typeof raw !== "object") {
+    throw new Error(`${source}: gate ${index} needs name/status/detail`);
+  }
+  const record = raw as Record<string, unknown>;
+  if (typeof record.name !== "string" || typeof record.detail !== "string" || !isGateStatus(record.status)) {
+    throw new Error(`${source}: gate ${index} needs name/status/detail`);
+  }
+  if (record.reason !== undefined && !isGateReason(record.reason)) {
+    throw new Error(`${source}: gate ${index} has an unknown reason "${String(record.reason)}"`);
+  }
+  return {
+    name: record.name,
+    status: record.status,
+    detail: record.detail,
+    ...(record.reason !== undefined ? { reason: record.reason } : {}),
+  };
+}
+
+export function parseGateRows(raw: unknown, source: string): ScoreboardGate[] {
+  if (!Array.isArray(raw)) throw new Error(`${source}: gates is not an array`);
+  return raw.map((gate, index) => parseGateRow(gate, source, index));
+}
+
+/** The one sub-score-row validator shared by the matrix and the streak. */
+export function parseSubScoreRows(raw: unknown, source: string): SubScore[] {
+  if (!Array.isArray(raw)) throw new Error(`${source}: subScores is not an array`);
+  return raw.map((sub, index) => {
+    const record = (sub ?? {}) as Record<string, unknown>;
+    if (
+      typeof record.name !== "string" ||
+      typeof record.label !== "string" ||
+      typeof record.detail !== "string" ||
+      !isGateStatus(record.status) ||
+      !Array.isArray(record.gates) ||
+      !record.gates.every((name) => typeof name === "string")
+    ) {
+      throw new Error(`${source}: sub-score ${index} needs name/label/status/detail/gates`);
+    }
+    return {
+      name: record.name as SubScore["name"],
+      label: record.label,
+      status: record.status,
+      detail: record.detail,
+      gates: record.gates as string[],
+    };
+  });
+}
 
 /**
  * One voice's loudness path as applied by the session: the server output level
@@ -851,6 +959,14 @@ export const SILENCE_CHECK_IN_TARGET_MS = SCOREBOARD_BUDGETS.silenceCheckInTarge
 export const SILENCE_CHECK_IN_MAX_MS = SCOREBOARD_BUDGETS.silenceCheckInMaxMs.value;
 
 /**
+ * Ticket 19: how long the check-in may hold the floor after the visitor
+ * starts speaking over it. This quotes the existing barge-in cut budget
+ * (`realCutMs`) instead of introducing a new threshold: yielding is the same
+ * promise as cutting, measured from caller speech start to silence.
+ */
+export const CHECK_IN_YIELD_BUDGET_MS = SCOREBOARD_BUDGETS.realCutMs.value;
+
+/**
  * The floor makes the check-in from this exact instruction string, so the
  * runner counts a reply.create as a check-in only when it matches — never a
  * greeting, invite, or resume that happens to mention silence.
@@ -866,6 +982,11 @@ export type DeadAirCheckIn = {
   atSilenceMs: number;
   /** The check-in overlapped caller speech (a cut the floor should have yielded). */
   overCaller: boolean;
+  /**
+   * Measured ms from the visitor's speech start to the check-in going silent
+   * (ticket 19). Absent when the yield was never measured; never guessed.
+   */
+  yieldMs?: number;
   /** Call-trace pointer (turn/excerpt line) for failure triage. */
   trace?: string;
 };
@@ -917,7 +1038,7 @@ export type SilenceTimeline = {
   /** Agent reply starts / reply.create requests: the agent is covering. */
   coverage?: { atMs: number }[];
   /** Check-ins that went out, with the silence elapsed at the sending. */
-  checkIns?: { atMs: number; overCaller?: boolean; trace?: string }[];
+  checkIns?: { atMs: number; overCaller?: boolean; yieldMs?: number; trace?: string }[];
 };
 
 export type FreeFloorSilenceEvidence = {
@@ -985,6 +1106,7 @@ export function deriveFreeFloorSilence(timeline: SilenceTimeline): FreeFloorSile
         atMs,
         atSilenceMs,
         overCaller: checkIn.overCaller === true,
+        ...(checkIn.yieldMs !== undefined ? { yieldMs: checkIn.yieldMs } : {}),
         ...(checkIn.trace ? { trace: checkIn.trace } : {}),
       });
     }
@@ -1001,6 +1123,7 @@ export function deriveFreeFloorSilence(timeline: SilenceTimeline): FreeFloorSile
       atMs,
       atSilenceMs: Math.max(0, atMs - prior.startMs),
       overCaller: true,
+      ...(entry.yieldMs !== undefined ? { yieldMs: entry.yieldMs } : {}),
       ...(entry.trace ? { trace: entry.trace } : {}),
     });
   });
@@ -1076,14 +1199,17 @@ export function parseSilenceTimeline(raw: unknown, source: string): SilenceTimel
   const checkInsRaw = candidate.checkIns ?? [];
   if (!Array.isArray(checkInsRaw)) throw new Error(`${source}: checkIns must be an array of {atMs} entries`);
   const checkIns = checkInsRaw.map((entry, index) => {
-    const checkIn = entry as { atMs?: unknown; overCaller?: unknown; trace?: unknown } | null;
+    const checkIn = entry as { atMs?: unknown; overCaller?: unknown; yieldMs?: unknown; trace?: unknown } | null;
     const atMs = nonNegativeNumber(checkIn?.atMs, `checkIns[${index}].atMs`, source);
     if (checkIn?.trace !== undefined && (typeof checkIn.trace !== "string" || !checkIn.trace.trim())) {
       throw new Error(`${source}: checkIns[${index}].trace must be a non-empty string`);
     }
+    const yieldMs =
+      checkIn?.yieldMs === undefined ? undefined : nonNegativeNumber(checkIn.yieldMs, `checkIns[${index}].yieldMs`, source);
     return {
       atMs,
       ...(checkIn?.overCaller === true ? { overCaller: true } : {}),
+      ...(yieldMs !== undefined ? { yieldMs } : {}),
       ...(typeof checkIn?.trace === "string" ? { trace: checkIn.trace } : {}),
     };
   });
@@ -1271,7 +1397,26 @@ export function evaluateDeadAir(evidence: DeadAirEvidence): ScoreboardGate {
     );
   }
 
-  const overlapping = checkIns.filter((c) => c.overCaller);
+  // Ticket 19: a check-in that the visitor talked over must yield inside the
+  // quoted cut budget. A measured yield at or under the bar passes even
+  // though it overlapped; holding past it FAILs at the check-in's turn.
+  const held = checkIns.filter(
+    (c) => c.yieldMs !== undefined && c.yieldMs > CHECK_IN_YIELD_BUDGET_MS,
+  );
+  if (held.length > 0) {
+    const where = held
+      .map(
+        (c) =>
+          `held ${c.yieldMs}ms after the visitor started speaking (${c.trace ?? `${noTurn} for this check-in`})`,
+      )
+      .join(", ");
+    reasons.push(
+      `check-in ${where} — > ${CHECK_IN_YIELD_BUDGET_MS}ms; yield like a cut (silence-check-in beat${traceSuffix})`,
+    );
+  }
+  // An overlap with no measured yield is still the unyielding check-in that
+  // must never talk over the visitor (the existing floor bar).
+  const overlapping = checkIns.filter((c) => c.overCaller && c.yieldMs === undefined);
   if (overlapping.length > 0) {
     const where = overlapping
       .map((c) => `${c.atSilenceMs}ms (${c.trace ?? `${noTurn} for this check-in`})`)
@@ -1298,10 +1443,12 @@ export function evaluateDeadAir(evidence: DeadAirEvidence): ScoreboardGate {
     return { name: "dead-air", status: "FAIL", detail: reasons.join("; ") };
   }
   if (silenceReachedCheckIn) {
+    const yielded = checkIns.find((c) => c.yieldMs !== undefined);
+    const yieldNote = yielded ? `; yielded in ${yielded.yieldMs}ms when the visitor spoke` : ", never over the caller";
     return {
       name: "dead-air",
       status: "PASS",
-      detail: `no dead air over ${DEAD_AIR_MAX_MS}ms; 15s silence drew exactly one check-in at ${checkIns[0].atSilenceMs}ms, never over the caller${coverageNote}`,
+      detail: `no dead air over ${DEAD_AIR_MAX_MS}ms; 15s silence drew exactly one check-in at ${checkIns[0].atSilenceMs}ms${yieldNote}${coverageNote}`,
     };
   }
   const max = gaps.length > 0 ? Math.max(...gaps) : 0;
@@ -1607,6 +1754,7 @@ export function emailInviteGate(result: EmailInviteResult): ScoreboardGate {
     return {
       name: "email-invite",
       status: "INFO",
+      reason: "unmeasured-memory",
       detail: "unmeasured - provide a before/after Hold return pair",
     };
   }
@@ -2237,7 +2385,7 @@ function sameTraceWords(left: string, right: string): boolean {
   return a.length > 0 && b.length > 0 && (a.includes(b) || b.includes(a));
 }
 
-// ── Gate: voice registry (ticket 02, owner: voice section) ───────────────────
+// ── Gate: voice registry (ticket 02, owner: voice-registry section) ──────────
 
 /**
  * The locked gate default: the first demo voice, resolved through the
@@ -2551,7 +2699,7 @@ export function formatBudgetReport(): string {
   return lines.join("\n");
 }
 
-// ── Gate: double-talk + end-call-drain (ticket 09, owner: drain section) ──────
+// ── Gate: double-talk + end-call-drain (ticket 09, shared cut/drain section) ───
 
 /**
  * Double-talk bar (spec story 8): zero audible overlap longer than 400ms
@@ -2573,10 +2721,10 @@ export const DOUBLE_TALK_FADE_OUT_S = SCOREBOARD_BUDGETS.doubleTalkFadeOutS.valu
  * GOODBYE_AUDIO_COVERAGE_MIN of its speaking time, per eval bye-audio) and
  * the model must not narrate the ending.
  */
-export const END_CALL_POLL_MS = SCOREBOARD_BUDGETS.endCallPollMs.value;
-export const END_CALL_SETTLE_POLLS = SCOREBOARD_BUDGETS.endCallSettlePolls.value;
-export const END_CALL_AUDIO_GRACE_MS = SCOREBOARD_BUDGETS.endCallAudioGraceMs.value;
-export const END_CALL_DRAIN_TIMEOUT_MS = SCOREBOARD_BUDGETS.endCallDrainTimeoutMs.value;
+// The live session owns these handshake constants; the scoreboard re-exports
+// them so a retune in session.ts moves the same number the freeze guard pins
+// (the freeze test cross-checks both against the committed record).
+export { END_CALL_POLL_MS, END_CALL_SETTLE_POLLS, END_CALL_AUDIO_GRACE_MS, END_CALL_DRAIN_TIMEOUT_MS };
 /** The goodbye's audio must arrive in full: >= 80% of its words' speaking time. */
 export const GOODBYE_AUDIO_COVERAGE_MIN = SCOREBOARD_BUDGETS.goodbyeAudioCoverageMin.value;
 /** Hang-up after goodbye audio end: the golden goodbye-drain window (0-1500ms). */
@@ -2609,51 +2757,82 @@ export type DoubleTalkInput = {
 export type AudibleWindow = { start: number; end: number };
 
 /**
- * What one cut leaves behind, from the playout's own timings. `agentUntil` is
- * when agent audio actually went silent after the flush: the worklet's fade
- * caps it at cutAt + the fade, while a flush that never stops the playout
- * lets it run to the queued end. The caller window is the speech that was
- * sounding under the cut, or null when the caller was silent.
+ * What one cut leaves behind, from the playout's own timings. `cutAt` is when
+ * the caller began speaking over the agent (the cut trigger, i.e. cut
+ * latency); `flushAt` is when the server cut/flush was actually processed;
+ * `agentUntil` is when agent audio actually went silent: a healthy flush
+ * drops the queue so only the fade remains, while an ineffective flush (or
+ * a fade that never completes) leaves queued audio sounding. The caller
+ * window is the speech that was sounding under the cut, or null when the
+ * caller was silent.
  */
 export type DoubleTalkCut = {
-  /** The server cut (the playout flush), wall clock ms. */
+  /** The cut trigger (caller speech start under the agent), wall clock ms. */
   cutAt: number;
-  /** When agent playout went silent after the flush, wall clock ms. */
+  /** When the server cut/flush was processed, wall clock ms. */
+  flushAt: number;
+  /** When agent playout actually went silent, wall clock ms. */
   agentUntil: number;
   /** Caller speech audible under the cut; null when the caller was not speaking. */
   caller: AudibleWindow | null;
 };
 
-/**
- * Post-flush residual overlap: the ms the caller's speech and the agent's
- * playout were both still sounding AFTER the flush. Time before the flush is
- * cut latency, which the barge-in-cut gate budgets separately (up to 1500ms);
- * only the residual past the flush counts against the 400ms double-talk bar.
- * The fade (0.04s) means a healthy cut leaves at most the fade's length.
- */
-export function postFlushOverlapMs(cut: DoubleTalkCut): number {
+/** Both audios sounding together from `from` until agent silence. */
+function overlapFrom(cut: DoubleTalkCut, from: number): number {
   if (!cut.caller) return 0;
-  const start = Math.max(cut.cutAt, cut.caller.start);
+  const start = Math.max(from, cut.caller.start);
   const end = Math.min(cut.agentUntil, cut.caller.end);
   return Math.max(0, Math.round(end - start));
 }
 
 /**
- * The cut window the playout's own timings produce. At the flush the worklet
- * fades what is sounding over `fadeMs` and drops the rest, so the agent is
- * audible until `min(playUntil, cutAt + fadeMs)`; without a fade (a hard stop)
- * that is the cut instant. `playUntil` is the wall-clock end of everything
- * queued when the flush landed, exactly what the eval's fake playout tracks.
+ * The double-talk measure the gate scores: POST-FLUSH residual overlap, the
+ * ms both were still sounding after the server cut/flush was processed. A
+ * prompt flush leaves only the fade's tail (normally <=40ms → PASS); a flush
+ * that fails to drop the queue, or a fade that leaves agent audio sounding
+ * past 400ms, FAILs. Time before the flush is cut latency, which the
+ * barge-in-cut budget (1500ms) measures separately.
+ */
+export function postFlushOverlapMs(cut: DoubleTalkCut): number {
+  return overlapFrom(cut, cut.flushAt);
+}
+
+/**
+ * Diagnostic only: audible overlap from the caller's first word to agent
+ * silence. This is CUT LATENCY (the barge-in-cut budget, up to 1500ms), not
+ * double talk; the double-talk gate must never score it, or every healthy
+ * cut slower than ~400ms would wrongly fail.
+ */
+export function cutOverlapMs(cut: DoubleTalkCut): number {
+  return overlapFrom(cut, cut.cutAt);
+}
+
+/**
+ * The cut window the playout's own timings produce. `playUntil` is the
+ * wall-clock end of everything queued when the flush landed. A healthy flush
+ * drops that queue, so the worklet's `fadeMs` is all that is left;
+ * `keepSoundingMs` models an ineffective flush (fault injection): queued
+ * audio keeps sounding after the flush for that long, then fades. The window
+ * is never assumed to stop at flushAt + fade when the flush failed.
  */
 export function playoutCutWindow(input: {
   cutAt: number;
+  /** When the flush was processed; defaults to the cut trigger (prompt flush). */
+  flushAt?: number;
   playUntil: number;
   fadeMs: number;
+  /** Audio the flush failed to stop after the fade (0 for a healthy flush). */
+  keepSoundingMs?: number;
   caller: AudibleWindow | null;
 }): DoubleTalkCut {
+  const flushAt = Math.max(input.cutAt, input.flushAt ?? input.cutAt);
+  const residual = Math.max(0, input.fadeMs) + Math.max(0, input.keepSoundingMs ?? 0);
   return {
     cutAt: input.cutAt,
-    agentUntil: Math.min(input.playUntil, input.cutAt + Math.max(0, input.fadeMs)),
+    flushAt,
+    // The actual silence comes from the playout: a dropped queue stops at the
+    // fade, a failed flush plays on for keepSoundingMs first.
+    agentUntil: Math.min(input.playUntil, flushAt + residual),
     caller: input.caller,
   };
 }
@@ -2671,7 +2850,7 @@ export function evaluateDoubleTalk(input: DoubleTalkInput): ScoreboardGate {
       name: "double-talk",
       status: "FAIL",
       detail:
-        `audible overlap ${max}ms > ${DOUBLE_TALK_MAX_OVERLAP_MS}ms after cut ` +
+        `audible overlap ${max}ms > ${DOUBLE_TALK_MAX_OVERLAP_MS}ms after the flush ` +
         `(cuts: ${cuts}ms; fade ${DOUBLE_TALK_FADE_OUT_S}s + flush)${trace}`,
     };
   }
@@ -4175,6 +4354,7 @@ function skeletonGates(
       ? {
           name: "measurements",
           status: "INFO",
+          reason: dryRun ? "dry-run" : "measured-evidence",
           detail: dryRun
             ? "dry run: no measurements required (explicit evidence still gates)"
             : `measured evidence present (${(options?.measuredSources ?? []).join(", ")})`,
@@ -5463,20 +5643,9 @@ export type CodeFingerprint = {
   dirtyHash: string;
 };
 
-/** Pure fingerprint from the three git outputs; null when git has no HEAD. */
-export function codeFingerprintFromGit(
-  input: { head?: string | null; status?: string | null; diff?: string | null } | null | undefined,
-): CodeFingerprint | null {
-  const head = input?.head?.trim();
-  if (!head) return null;
-  const status = input?.status ?? "";
-  const diff = input?.diff ?? "";
-  return {
-    head,
-    dirty: status.trim() !== "" || diff.trim() !== "",
-    dirtyHash: sha256Hex(`${status}\n${diff}`),
-  };
-}
+// The pure fingerprint helper (and the evidence kind) live in the shared ESM
+// module so scripts/e2e-run.mjs writes exactly what this scorer validates.
+export { BEHAVIOR_RUN_EVIDENCE_KIND, BEHAVIOR_RUN_EVIDENCE_SCHEMA_VERSION, codeFingerprintFromGit };
 
 /**
  * Read the fingerprint from git at run time (score-demo writes it into the
@@ -5548,7 +5717,8 @@ export type StreakFailureCode =
   | "behavior-missing"
   | "behavior-failed"
   | "behavior-code-missing"
-  | "behavior-code-differs";
+  | "behavior-code-differs"
+  | "artifact-unreadable";
 
 export type StreakFailure = {
   code: StreakFailureCode;
@@ -5580,14 +5750,16 @@ export type StreakResult = {
   failures: StreakFailure[];
 };
 
-/** Ticket 27: the only non-PASS email-invite row a green streak tolerates. */
+/**
+ * Ticket 27: the only non-PASS email-invite row a green streak tolerates.
+ * Judged by the typed reason, never by the detail prose.
+ */
 export function isUnmeasuredMemoryEmailInvite(gate: ScoreboardGate): boolean {
-  return (
-    gate.status === "INFO" &&
-    /unmeasured/i.test(gate.detail) &&
-    /before\/after|hold return/i.test(gate.detail)
-  );
+  return gate.status === "INFO" && gate.reason === "unmeasured-memory";
 }
+
+/** One artifact in the evaluated window that could not be read (a crashed run). */
+export type UnreadableArtifact = { name: string; reason: string };
 
 function sameFingerprint(a: CodeFingerprint, b: CodeFingerprint): boolean {
   return a.head === b.head && a.dirtyHash === b.dirtyHash && a.dirty === b.dirty;
@@ -5613,6 +5785,11 @@ export function evaluateScoreStreak(input: {
   informationalGates?: readonly string[];
   expectedSchemaVersion?: number;
   behavior?: BehaviorRunEvidence | null;
+  /**
+   * Candidates in the evaluated window that could not be parsed. A crashed
+   * newer run must break "three consecutive" instead of being skipped.
+   */
+  unreadable?: readonly UnreadableArtifact[];
 }): StreakResult {
   const requiredGates = input.requiredGates ?? STREAK_REQUIRED_GATES;
   const provenanceGates = input.provenanceGates ?? STREAK_PROVENANCE_GATES;
@@ -5630,6 +5807,9 @@ export function evaluateScoreStreak(input: {
       null,
       `need ${STREAK_SIZE} consecutive artifacts for ${input.gateVoice}, found ${artifacts.length}`,
     );
+  }
+  for (const broken of input.unreadable ?? []) {
+    fail("artifact-unreadable", broken.name, null, `artifact ${broken.name} is unreadable (${broken.reason})`);
   }
 
   const known = new Set<string>([...requiredGates, ...provenanceGates, ...informationalGates]);
@@ -5694,7 +5874,7 @@ export function evaluateScoreStreak(input: {
         continue;
       }
       if (gate.status === "PASS") continue;
-      if (gate.status === "INFO" && /measured evidence present/i.test(gate.detail)) continue;
+      if (gate.status === "INFO" && gate.reason === "measured-evidence") continue;
       fail("gate-not-pass", run, name, `${gate.status} — ${gate.detail}`);
     }
     for (const gate of artifact.gates) {
@@ -5789,9 +5969,6 @@ export function formatStreakVerdict(result: StreakResult): string {
 // then runs the behavior Playwright specs against it. The runner writes this
 // evidence file on both green and red so a streak claim can never silently
 // omit the browser run.
-
-export const BEHAVIOR_RUN_EVIDENCE_KIND = "voni-behavior-run";
-export const BEHAVIOR_RUN_EVIDENCE_SCHEMA_VERSION = 1;
 
 export type BehaviorRunEvidence = {
   kind: typeof BEHAVIOR_RUN_EVIDENCE_KIND;

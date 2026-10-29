@@ -2,6 +2,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
+  END_CALL_AUDIO_GRACE_MS as SESSION_END_CALL_AUDIO_GRACE_MS,
+  END_CALL_DRAIN_TIMEOUT_MS as SESSION_END_CALL_DRAIN_TIMEOUT_MS,
+  END_CALL_POLL_MS as SESSION_END_CALL_POLL_MS,
+  END_CALL_SETTLE_POLLS as SESSION_END_CALL_SETTLE_POLLS,
+} from "../voice/session";
+import {
   applyGreetingCutGate,
   applyRealCutGate,
   callerClipChanges,
@@ -29,6 +35,9 @@ import {
   evaluateDoubleTalk,
   evaluateEndCallDrain,
   postFlushOverlapMs,
+  cutOverlapMs,
+  parseGateRow,
+  parseGateRows,
   playoutCutWindow,
   parseDoubleTalkOutput,
   parseGoodbyeDrainOutput,
@@ -61,6 +70,8 @@ import {
   checkRegressionVoice,
   checkTimbreProbes,
   codeFingerprintFromGit,
+  BEHAVIOR_RUN_EVIDENCE_KIND,
+  BEHAVIOR_RUN_EVIDENCE_SCHEMA_VERSION,
   diffScoreboardArtifact,
   evaluateScoreStreak,
   formatStreakVerdict,
@@ -2204,6 +2215,43 @@ test("dead air: a check-in over caller speech fails even when durations pass", (
   assert.ok(gate.detail.includes("turn 12"), "failure carries the trace pointer");
 });
 
+test("dead air: a check-in that yields inside the cut budget passes and carries the measured yield", () => {
+  // Ticket 19: the visitor started speaking over the check-in; it stopped
+  // inside the same 1500ms cut budget the barge-in uses (quoted, not retuned).
+  const gate = evaluateDeadAir({
+    gapsMs: [],
+    longestSilenceMs: 16_000,
+    checkIns: [{ atSilenceMs: 15_100, overCaller: true, yieldMs: 900, trace: "turn 12" }],
+  });
+  assert.equal(gate.status, "PASS", gate.detail);
+  assert.match(gate.detail, /yielded in 900ms/);
+});
+
+test("dead air: a check-in that holds past the cut budget fails at its turn", () => {
+  const gate = evaluateDeadAir({
+    gapsMs: [],
+    longestSilenceMs: 16_000,
+    checkIns: [{ atSilenceMs: 15_100, overCaller: true, yieldMs: 1900, trace: "call trace turn 7 (sess_yield)" }],
+  });
+  assert.equal(gate.status, "FAIL", gate.detail);
+  assert.match(gate.detail, /held 1900ms/);
+  assert.match(gate.detail, /1500ms/);
+  assert.match(gate.detail, /call trace turn 7 \(sess_yield\)/);
+});
+
+test("the silence timeline carries a measured check-in yield", () => {
+  const derived = deriveFreeFloorSilence({
+    startedMs: 0,
+    endedMs: 20_000,
+    agentAudio: [{ startMs: 0, endMs: 1_000 }],
+    callerSpeech: [{ startMs: 16_500, endMs: 18_000 }],
+    coverage: [{ atMs: 15_500 }],
+    checkIns: [{ atMs: 15_400, overCaller: true, yieldMs: 800 }],
+  });
+  assert.equal(derived.checkIns.length, 1);
+  assert.equal(derived.checkIns[0].yieldMs, 800);
+});
+
 test("dead air: a check-in over caller speech with no merged turn says so explicitly", () => {
   const gate = evaluateDeadAir({
     gapsMs: [],
@@ -2987,35 +3035,69 @@ test("double-talk gate pins the 400ms audibility bar", () => {
 });
 
 test("post-flush overlap counts only the caller audio and agent playout that survive the flush", () => {
-  // Cut at 1200ms with 400ms of agent audio still queued and the real 40ms
-  // fade: the caller hears at most 40ms of the faded tail, never the queue.
+  // Prompt flush at the cut (1200ms) with 400ms of agent audio still queued
+  // and the real 40ms fade: the caller hears at most 40ms of the faded tail.
   assert.equal(
-    postFlushOverlapMs({ cutAt: 1200, agentUntil: 1240, caller: { start: 1000, end: 2000 } }),
+    postFlushOverlapMs({ cutAt: 1200, flushAt: 1200, agentUntil: 1240, caller: { start: 1000, end: 2000 } }),
     40,
   );
   // A fade that lets the playout run long (or a flush that never stops the
   // audio) is the regression the 400ms bar exists to catch: 800ms audible.
   assert.equal(
-    postFlushOverlapMs({ cutAt: 1200, agentUntil: 2100, caller: { start: 1000, end: 2000 } }),
+    postFlushOverlapMs({ cutAt: 1200, flushAt: 1200, agentUntil: 2100, caller: { start: 1000, end: 2000 } }),
     800,
   );
   // Agent audio already finished before the cut: nothing sounds after it.
   assert.equal(
-    postFlushOverlapMs({ cutAt: 1200, agentUntil: 1100, caller: { start: 1000, end: 2000 } }),
+    postFlushOverlapMs({ cutAt: 1200, flushAt: 1200, agentUntil: 1100, caller: { start: 1000, end: 2000 } }),
     0,
   );
   // The caller stops 10ms after the cut: only those 10ms can overlap.
   assert.equal(
-    postFlushOverlapMs({ cutAt: 1200, agentUntil: 1240, caller: { start: 1000, end: 1210 } }),
+    postFlushOverlapMs({ cutAt: 1200, flushAt: 1200, agentUntil: 1240, caller: { start: 1000, end: 1210 } }),
     10,
   );
   // The caller starts after the fade completed: no simultaneous audio.
   assert.equal(
-    postFlushOverlapMs({ cutAt: 1200, agentUntil: 1240, caller: { start: 1300, end: 2000 } }),
+    postFlushOverlapMs({ cutAt: 1200, flushAt: 1200, agentUntil: 1240, caller: { start: 1300, end: 2000 } }),
     0,
   );
   // A cut with no caller speech (agent-only flush) is never overlap.
-  assert.equal(postFlushOverlapMs({ cutAt: 1200, agentUntil: 1240, caller: null }), 0);
+  assert.equal(postFlushOverlapMs({ cutAt: 1200, flushAt: 1200, agentUntil: 1240, caller: null }), 0);
+});
+
+test("a 1200ms cut latency with a prompt flush passes double talk", () => {
+  // The caller starts at 0 and the server cut lands at 1200ms: that 1200ms is
+  // cut latency, budgeted by barge-in-cut (1500ms). It must NOT be scored as
+  // double talk. The flush drops the queue, so only the 40ms fade remains.
+  const caller = { start: 0, end: 2000 };
+  const prompt = playoutCutWindow({ cutAt: 0, flushAt: 1200, playUntil: 5000, fadeMs: 40, caller });
+  assert.equal(prompt.agentUntil, 1240);
+  assert.equal(postFlushOverlapMs(prompt), 40);
+  assert.equal(cutOverlapMs(prompt), 1240, "cut latency is diagnosed, never gated as double talk");
+  const gate = evaluateDoubleTalk({ overlapMs: [postFlushOverlapMs(prompt)], traceRef: "sess_cut / over-talk" });
+  assert.equal(gate.status, "PASS", gate.detail);
+});
+
+test("an ineffective flush leaves agent audio sounding and fails at the cut turn", () => {
+  // The flush was processed at 1200ms but failed to drop the queue: audio
+  // keeps sounding for 650ms after it (then fades). The post-flush residual
+  // is 690ms, a real talk-over rather than an assumption that flush == stop.
+  const caller = { start: 1000, end: 3000 };
+  const failed = playoutCutWindow({
+    cutAt: 1200,
+    flushAt: 1200,
+    playUntil: 5000,
+    fadeMs: 40,
+    keepSoundingMs: 650,
+    caller,
+  });
+  assert.equal(failed.agentUntil, 1890);
+  assert.equal(postFlushOverlapMs(failed), 690);
+  const gate = evaluateDoubleTalk({ overlapMs: [postFlushOverlapMs(failed)], traceRef: "sess_fault / over-talk" });
+  assert.equal(gate.status, "FAIL", gate.detail);
+  assert.match(gate.detail, /690/);
+  assert.match(gate.detail, /call trace|sess_fault/);
 });
 
 test("the over-talk runner line is the overlap evidence the gate scores", () => {
@@ -3074,8 +3156,10 @@ test("fake-playout timings turn a flush into the post-flush overlap window", () 
   const caller = { start: 1000, end: 2000 };
   // 3.8s of agent audio still queued, real 40ms fade: only the fade is heard.
   const faded = playoutCutWindow({ cutAt: 1200, playUntil: 5000, fadeMs: 40, caller });
+  assert.equal(faded.flushAt, 1200, "a prompt flush defaults to the cut instant");
   assert.equal(faded.agentUntil, 1240);
   assert.equal(postFlushOverlapMs(faded), 40);
+  assert.equal(cutOverlapMs(faded), 40);
   // Playout already finished before the cut: nothing survives the flush.
   assert.equal(postFlushOverlapMs(playoutCutWindow({ cutAt: 1200, playUntil: 900, fadeMs: 40, caller })), 0);
   // A hard stop (no fade) leaves no residual, only the click the fade prevents.
@@ -3084,11 +3168,26 @@ test("fake-playout timings turn a flush into the post-flush overlap window", () 
   const long = playoutCutWindow({ cutAt: 1200, playUntil: 5000, fadeMs: 900, caller });
   assert.equal(long.agentUntil, 2100);
   assert.equal(postFlushOverlapMs(long), 800);
+  // An ineffective flush keeps queued audio sounding after the fade.
+  const kept = playoutCutWindow({ cutAt: 1200, playUntil: 5000, fadeMs: 40, keepSoundingMs: 650, caller });
+  assert.equal(kept.agentUntil, 1890);
+  assert.equal(postFlushOverlapMs(kept), 690);
   // The caller arriving mid-fade still only overlaps the fade's remainder.
   assert.equal(
     postFlushOverlapMs(playoutCutWindow({ cutAt: 1200, playUntil: 5000, fadeMs: 40, caller: { start: 1230, end: 2000 } })),
     10,
   );
+});
+
+test("a flush that stops the agent late still passes: only the post-flush residual counts", () => {
+  // The server cut lands at 1700ms (after 1200ms of cut latency); the flush
+  // itself is prompt, so the residual is the fade. Double talk cannot fail
+  // for cut latency, which the barge-in-cut gate budgets separately.
+  const caller = { start: 0, end: 2000 };
+  const lateCut = playoutCutWindow({ cutAt: 0, flushAt: 1700, playUntil: 5000, fadeMs: 40, caller });
+  assert.equal(lateCut.agentUntil, 1740);
+  assert.equal(postFlushOverlapMs(lateCut), 40);
+  assert.equal(evaluateDoubleTalk({ overlapMs: [postFlushOverlapMs(lateCut)] }).status, "PASS");
 });
 
 test("double-talk passes when every cut fades inside 400ms", () => {
@@ -4591,28 +4690,45 @@ test("budget table pins every gate budget and timing window", () => {
   }
 });
 
-test("every gate constant derives from the frozen budget table", () => {
-  assert.equal(GOLDEN_SCRIPT_BUDGET_S, SCOREBOARD_BUDGETS.goldenScriptBudgetS.value);
-  assert.equal(REPLY_GAP_P50_BUDGET_MS, SCOREBOARD_BUDGETS.replyGapP50Ms.value);
-  assert.equal(REPLY_GAP_P95_BUDGET_MS, SCOREBOARD_BUDGETS.replyGapP95Ms.value);
-  assert.equal(REAL_CUT_MAX_MS, SCOREBOARD_BUDGETS.realCutMs.value);
-  assert.equal(FILLER_RESUME_TAIL_BUDGET_MS, SCOREBOARD_BUDGETS.fillerResumeTailMs.value);
-  assert.equal(DEAD_AIR_MAX_MS, SCOREBOARD_BUDGETS.deadAirMaxMs.value);
-  assert.equal(SILENCE_CHECK_IN_TARGET_MS, SCOREBOARD_BUDGETS.silenceCheckInTargetMs.value);
-  assert.equal(SILENCE_CHECK_IN_MAX_MS, SCOREBOARD_BUDGETS.silenceCheckInMaxMs.value);
+test("every gate constant is pinned independently of the table it derives from", () => {
+  // Expected values come from PINNED_BUDGETS (hand literals), not from the
+  // same expression the constant uses: a constant that stopped tracking the
+  // ruler still fails here.
+  assert.equal(GOLDEN_SCRIPT_BUDGET_S, PINNED_BUDGETS.goldenScriptBudgetS);
+  assert.equal(REPLY_GAP_P50_BUDGET_MS, PINNED_BUDGETS.replyGapP50Ms);
+  assert.equal(REPLY_GAP_P95_BUDGET_MS, PINNED_BUDGETS.replyGapP95Ms);
+  assert.equal(REAL_CUT_MAX_MS, PINNED_BUDGETS.realCutMs);
+  assert.equal(FILLER_RESUME_TAIL_BUDGET_MS, PINNED_BUDGETS.fillerResumeTailMs);
+  assert.equal(DEAD_AIR_MAX_MS, PINNED_BUDGETS.deadAirMaxMs);
+  assert.equal(SILENCE_CHECK_IN_TARGET_MS, PINNED_BUDGETS.silenceCheckInTargetMs);
+  assert.equal(SILENCE_CHECK_IN_MAX_MS, PINNED_BUDGETS.silenceCheckInMaxMs);
   assert.equal(SILENCE_CHECK_IN_TARGET_MS, SILENCE_CHECK_IN_MS, "the budget quotes the pipeline's check-in");
-  assert.equal(DOUBLE_TALK_MAX_OVERLAP_MS, SCOREBOARD_BUDGETS.doubleTalkMaxOverlapMs.value);
-  assert.equal(DOUBLE_TALK_FADE_OUT_S, SCOREBOARD_BUDGETS.doubleTalkFadeOutS.value);
-  assert.equal(END_CALL_POLL_MS, SCOREBOARD_BUDGETS.endCallPollMs.value);
-  assert.equal(END_CALL_SETTLE_POLLS, SCOREBOARD_BUDGETS.endCallSettlePolls.value);
-  assert.equal(END_CALL_AUDIO_GRACE_MS, SCOREBOARD_BUDGETS.endCallAudioGraceMs.value);
-  assert.equal(END_CALL_DRAIN_TIMEOUT_MS, SCOREBOARD_BUDGETS.endCallDrainTimeoutMs.value);
-  assert.equal(GOODBYE_AUDIO_COVERAGE_MIN, SCOREBOARD_BUDGETS.goodbyeAudioCoverageMin.value);
-  assert.equal(HANG_UP_AFTER_GOODBYE_MAX_MS, SCOREBOARD_BUDGETS.hangUpAfterGoodbyeMaxMs.value);
-  assert.equal(TIMBRE_REFERENCE_LUFS, SCOREBOARD_BUDGETS.timbreReferenceLufs.value);
-  assert.equal(TIMBRE_LUFS_TOLERANCE_DB, SCOREBOARD_BUDGETS.timbreLufsToleranceDb.value);
-  assert.equal(POP_JUMP_INT16, SCOREBOARD_BUDGETS.popJumpInt16.value);
-  assert.equal(HUMAN_RATERS_REQUIRED, SCOREBOARD_BUDGETS.humanRatersRequired.value);
+  assert.equal(DOUBLE_TALK_MAX_OVERLAP_MS, PINNED_BUDGETS.doubleTalkMaxOverlapMs);
+  assert.equal(DOUBLE_TALK_FADE_OUT_S, PINNED_BUDGETS.doubleTalkFadeOutS);
+  assert.equal(END_CALL_POLL_MS, PINNED_BUDGETS.endCallPollMs);
+  assert.equal(END_CALL_SETTLE_POLLS, PINNED_BUDGETS.endCallSettlePolls);
+  assert.equal(END_CALL_AUDIO_GRACE_MS, PINNED_BUDGETS.endCallAudioGraceMs);
+  assert.equal(END_CALL_DRAIN_TIMEOUT_MS, PINNED_BUDGETS.endCallDrainTimeoutMs);
+  assert.equal(GOODBYE_AUDIO_COVERAGE_MIN, PINNED_BUDGETS.goodbyeAudioCoverageMin);
+  assert.equal(HANG_UP_AFTER_GOODBYE_MAX_MS, PINNED_BUDGETS.hangUpAfterGoodbyeMaxMs);
+  assert.equal(TIMBRE_REFERENCE_LUFS, PINNED_BUDGETS.timbreReferenceLufs);
+  assert.equal(TIMBRE_LUFS_TOLERANCE_DB, PINNED_BUDGETS.timbreLufsToleranceDb);
+  assert.equal(POP_JUMP_INT16, PINNED_BUDGETS.popJumpInt16);
+  assert.equal(HUMAN_RATERS_REQUIRED, PINNED_BUDGETS.humanRatersRequired);
+});
+
+test("the live session's drain constants are the ones the freeze guard pins", () => {
+  // scoreboard.ts re-exports the session's handshake constants. Retuning the
+  // session alone must move a number this test (and the committed record)
+  // pins, so a budget edit in session.ts can never quietly escape the freeze.
+  assert.equal(SESSION_END_CALL_POLL_MS, PINNED_BUDGETS.endCallPollMs);
+  assert.equal(SESSION_END_CALL_SETTLE_POLLS, PINNED_BUDGETS.endCallSettlePolls);
+  assert.equal(SESSION_END_CALL_AUDIO_GRACE_MS, PINNED_BUDGETS.endCallAudioGraceMs);
+  assert.equal(SESSION_END_CALL_DRAIN_TIMEOUT_MS, PINNED_BUDGETS.endCallDrainTimeoutMs);
+  assert.equal(END_CALL_POLL_MS, SESSION_END_CALL_POLL_MS, "one source of truth, re-exported");
+  assert.equal(END_CALL_SETTLE_POLLS, SESSION_END_CALL_SETTLE_POLLS);
+  assert.equal(END_CALL_AUDIO_GRACE_MS, SESSION_END_CALL_AUDIO_GRACE_MS);
+  assert.equal(END_CALL_DRAIN_TIMEOUT_MS, SESSION_END_CALL_DRAIN_TIMEOUT_MS);
 });
 
 test("committed budget record matches the pinned table", () => {
@@ -4680,8 +4796,8 @@ const STREAK_FP: CodeFingerprint = {
 
 function greenBehavior(codeFingerprint: CodeFingerprint = STREAK_FP): BehaviorRunEvidence {
   return {
-    kind: "voni-behavior-run",
-    schemaVersion: 1,
+    kind: BEHAVIOR_RUN_EVIDENCE_KIND,
+    schemaVersion: BEHAVIOR_RUN_EVIDENCE_SCHEMA_VERSION,
     mode: "behavior",
     passed: true,
     exitCode: 0,
@@ -4698,7 +4814,12 @@ function streakGates(overrides: Record<string, ScoreboardArtifact["gates"][numbe
     detail: `${name} measured`,
   }));
   const provenance = [
-    { name: "measurements", status: "INFO" as const, detail: "measured evidence present (gaps, real-cut)" },
+    {
+      name: "measurements",
+      status: "INFO" as const,
+      reason: "measured-evidence" as const,
+      detail: "measured evidence present (gaps, real-cut)",
+    },
   ];
   const informational = STREAK_INFORMATIONAL_GATES.map((name) => ({
     name,
@@ -4803,6 +4924,7 @@ test("unmeasured prospect-capture memory is the only email-invite INFO a streak 
         "email-invite": {
           name: "email-invite",
           status: "INFO",
+          reason: "unmeasured-memory",
           detail: "unmeasured - provide a before/after Hold return pair",
         },
       }),
@@ -4823,6 +4945,83 @@ test("unmeasured prospect-capture memory is the only email-invite INFO a streak 
   ]);
   assert.equal(otherInfo.ok, false);
   assert.ok(otherInfo.failures.some((failure) => failure.gate === "email-invite" && failure.run === "run-2"));
+});
+
+test("gate rows carry typed semantics for artifact readers", () => {
+  assert.equal(
+    emailInviteGate({
+      tag: "Lime 42",
+      tagMentions: 1,
+      digitSplit: false,
+      inventedTags: [],
+      strayAddresses: [],
+      workEmailGateMentions: 1,
+      chipShows: 1,
+      memoryPersists: null,
+      memoryTraceTurn: null,
+      returningOk: null,
+      showToolCalls: 1,
+      status: "PASS",
+      detail: "tag said once",
+    }).reason,
+    "unmeasured-memory",
+  );
+  const row = parseGateRow(
+    { name: "email-invite", status: "INFO", detail: "held", reason: "unmeasured-memory" },
+    "artifact",
+    0,
+  );
+  assert.equal(row.reason, "unmeasured-memory");
+  assert.throws(() => parseGateRow({ name: "x", status: "INFO", detail: "d", reason: "vibes" }, "artifact", 0), /unknown reason/);
+  assert.throws(() => parseGateRows([{ name: "x", status: "MAYBE", detail: "d" }], "artifact"), /name\/status\/detail/);
+});
+
+test("the streak judges typed reasons, never the human-readable detail prose", () => {
+  // Prose that reads like the old regex shapes earns nothing without the
+  // typed reason...
+  const proseOnly = runStreak([
+    streakArtifact(1, {
+      gates: streakGates({
+        "email-invite": {
+          name: "email-invite",
+          status: "INFO",
+          detail: "unmeasured - before/after Hold return pair",
+        },
+      }),
+    }),
+    streakArtifact(2),
+    streakArtifact(3),
+  ]);
+  assert.equal(proseOnly.ok, false, "a typed reason is required");
+
+  // ...and a typed reason survives any rewording of the detail.
+  const typed = runStreak([
+    streakArtifact(1, {
+      gates: streakGates({
+        "email-invite": {
+          name: "email-invite",
+          status: "INFO",
+          reason: "unmeasured-memory",
+          detail: "held: no pair yet",
+        },
+      }),
+    }),
+    streakArtifact(2),
+    streakArtifact(3),
+  ]);
+  assert.equal(typed.ok, true, formatStreakVerdict(typed));
+
+  // The provenance row likewise depends on the typed reason.
+  const provenanceProse = runStreak([
+    streakArtifact(1, {
+      gates: streakGates({
+        measurements: { name: "measurements", status: "INFO", detail: "measured evidence present (gaps)" },
+      }),
+    }),
+    streakArtifact(2),
+    streakArtifact(3),
+  ]);
+  assert.equal(provenanceProse.ok, false, "measurements INFO needs the typed measured-evidence reason");
 });
 
 test("accent ballots, the real-phone checklist, and Talk pinning never block the streak", () => {

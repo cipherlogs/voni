@@ -518,10 +518,17 @@ const FADE_OUT_S = 0.04;
  * traveling to the worklet plus output latency, Bluetooth included).
  * END_CALL_DRAIN_TIMEOUT_MS stays the fail-safe: never hold the line longer.
  */
-const END_CALL_POLL_MS = 250;
-const END_CALL_SETTLE_POLLS = 3;
-const END_CALL_AUDIO_GRACE_MS = 500;
-const END_CALL_DRAIN_TIMEOUT_MS = 10000;
+export const END_CALL_POLL_MS = 250;
+export const END_CALL_SETTLE_POLLS = 3;
+export const END_CALL_AUDIO_GRACE_MS = 500;
+export const END_CALL_DRAIN_TIMEOUT_MS = 10000;
+/**
+ * A demo tool's line is done after two settled polls in a row (a dry gap
+ * between chunks is not the end of the line). This is deliberately NOT the
+ * end-call drain's three polls: the goodbye gets the extra poll because a
+ * chopped closing line is the failure the drain handshake exists to prevent.
+ */
+const DEMO_LINE_SETTLE_POLLS = 2;
 
 export class VoiceSession {
   private ws: WebSocket | null = null;  private audioCtx: AudioContext | null = null;
@@ -557,6 +564,13 @@ export class VoiceSession {
   private endCallSignaled = false;
   /** The goodbye's reply: once end call is signaled, every other reply is dropped. */
   private endCallReplyId: string | null = null;
+  /**
+   * The goodbye has completed (its reply.done arrived) or its held end_call
+   * result was released on the drain handshake. Until then the goodbye owns
+   * the floor, so an id-less reply may still be the closing line itself and
+   * must play; after it, an id-less reply can only be narration (ticket 23).
+   */
+  private goodbyeFinished = false;
 
   // ── Barge-in recovery + adaptive delay (./barge-in.ts) ─────────────────
   private readonly judgeBargeIn: BargeInJudge;
@@ -599,6 +613,7 @@ export class VoiceSession {
     this.pendingEndCall = false;
     this.endCallSignaled = false;
     this.endCallReplyId = null;
+    this.goodbyeFinished = false;
     if (this.endCallTimer) {
       clearInterval(this.endCallTimer);
       this.endCallTimer = null;
@@ -711,6 +726,7 @@ export class VoiceSession {
     this.inputMuted = false;
     this.holdPaused = false;
     this.endCallSignaled = false;
+    this.goodbyeFinished = false;
     this.resetBargeIn();
     this.firstUpdateAcked = false;
     this.greetingAudioSent = false;
@@ -1053,6 +1069,10 @@ export class VoiceSession {
 
       case "reply.done": {
         this.replyActive = false;
+        // The goodbye's generation is over: from here an id-less reply can
+        // only be post-End call narration, so the drop guard may silence it
+        // (its already-queued audio still plays out through the drain).
+        if (this.endCallSignaled) this.goodbyeFinished = true;
         // A reply we superseded ends "completed" server-side; it was
         // interrupted all the same.
         const superseded = Boolean(msg.reply_id) && msg.reply_id === this.droppedReplyId;
@@ -1066,6 +1086,7 @@ export class VoiceSession {
             rest: unheardRest(this.currentAgentText, heard),
             speakingMs: Date.now() - this.replyStartedAt,
             goodbye: this.endCallSignaled,
+            droppable: this.floor.currentDroppable(),
           };
           this.stopCaption();
           this.armNoWordsResume();
@@ -1080,7 +1101,6 @@ export class VoiceSession {
         }
         this.toolCoordinator?.onReplyDone(interrupted);
         this.floor.replyDone(msg.status === "interrupted");
-        if (this.bargeIn) this.bargeIn.droppable = this.floor.cutDroppable();
         this.handlers.onReplyDone?.({ replyId: msg.reply_id ?? null, interrupted });
         this.setState("listening");
         if (this.pendingEndCall && !interrupted) {
@@ -1471,13 +1491,19 @@ export class VoiceSession {
       // when the worklet is settled and the audio grace has passed, so fresh
       // audio (or a dry gap) restarts the count instead of releasing early.
       settledPolls = spoke && this.playbackSettled() && (demoOnly || quiet) ? settledPolls + 1 : 0;
-      const lineDone = (spoke ? settledPolls >= 2 : now - heldAt >= SILENT_TOOL_RELEASE_MS);
+      const lineDone = spoke
+        ? settledPolls >= DEMO_LINE_SETTLE_POLLS
+        : now - heldAt >= SILENT_TOOL_RELEASE_MS;
       const release = demoOnly
         ? lineDone || now - heldAt >= HELD_DEMO_RESULT_MAX_MS
         : (spoke && this.audioDrained(settledPolls)) ||
           now - Math.max(this.lastAudioAt, heldAt) >= HELD_RESULT_RELEASE_MS;
       if (release) {
         clearInterval(timer);
+        // The held end_call result is released only once the goodbye has
+        // drained (or never started): the closing line no longer owns the
+        // floor, so an id-less reply from here is narration (ticket 23).
+        if (coordinator.holds(END_CALL_TOOL) && this.endCallSignaled) this.goodbyeFinished = true;
         coordinator.releaseHeld();
       }
     }, 250);
@@ -1649,10 +1675,11 @@ export class VoiceSession {
   private signalEndCall(replyId: string | null): void {
     this.endCallSignaled = true;
     this.endCallReplyId = replyId;
+    this.goodbyeFinished = false;
     // The goodbye is the last word: nothing queued (rung, check-in, resume)
     // may even wait for the floor. `requestReply` refuses AFTER the signal too;
     // this closes the gap for lines queued before it.
-    this.floor.clear();
+    this.clearLines();
     this.handlers.onEndCall?.();
   }
 
@@ -1665,7 +1692,17 @@ export class VoiceSession {
    */
   private isDropped(replyId: unknown): boolean {
     const id = typeof replyId === "string" && replyId ? replyId : null;
-    if (this.endCallSignaled) return id === null || id !== this.endCallReplyId;
+    if (this.endCallSignaled) {
+      // Once the goodbye has completed, only silence may follow it.
+      if (this.goodbyeFinished) return true;
+      // While the goodbye still owns the floor an id-less message cannot be
+      // proven to be a later reply: the platform may omit the id on the
+      // closing line's own audio/caption, so let it through (ticket 20).
+      if (id === null) return false;
+      // A spoken end_call may leave the goodbye's id unknown; until it
+      // finishes, an id-carrying reply is a candidate for that goodbye.
+      return this.endCallReplyId !== null && id !== this.endCallReplyId;
+    }
     if (id === null) return false;
     return id === this.droppedReplyId;
   }
