@@ -94,11 +94,14 @@ export function isCascadeOnlyEvent(type: string): boolean {
  */
 export const MANAGED_ONLY_EVENT_FIELDS = ["platformCapture", "vendorOwned"] as const;
 
-/** Envelope-owned names: a payload field may never overwrite one. */
-const ENVELOPE_FIELDS: ReadonlySet<string> = new Set([
-  ...CALL_SCOPED_EVENT_FIELDS,
-  ...OPERATIONAL_EVENT_FIELDS,
-]);
+/**
+ * Envelope-owned names per shape. A call-scoped event owns subject/turn; an
+ * operational event owns leg. `leg` is a legitimate payload field on a
+ * call-scoped event (`provider_fallback` names the leg it moved), so each
+ * shape reserves only its own names.
+ */
+const CALL_SCOPED_ENVELOPE_FIELDS: ReadonlySet<string> = new Set(CALL_SCOPED_EVENT_FIELDS);
+const OPERATIONAL_ENVELOPE_FIELDS: ReadonlySet<string> = new Set(OPERATIONAL_EVENT_FIELDS);
 
 export type CallScopedEventEnvelope = {
   readonly schemaVersion: typeof EVENT_SCHEMA_VERSION;
@@ -284,13 +287,6 @@ function validateEnvelope(record: Record<string, unknown>, source: string): Even
     }
     requireText(record, "leg", source);
   } else {
-    if (record.leg !== undefined) {
-      throw new EventEnvelopeError(
-        source,
-        "leg",
-        `call-scoped event "${type}" carries subject and turn, not a leg`,
-      );
-    }
     requireText(record, "subject", source);
     requireTurn(record, source);
   }
@@ -395,13 +391,14 @@ export type BuiltEventEnvelope = {
  */
 export function buildEventEnvelope(input: EventEnvelopeInput): BuiltEventEnvelope {
   const fields = input.fields ?? {};
+  const operational = isOperationalEventType(input.type);
+  const reserved = operational ? OPERATIONAL_ENVELOPE_FIELDS : CALL_SCOPED_ENVELOPE_FIELDS;
   for (const key of Object.keys(fields)) {
-    if (ENVELOPE_FIELDS.has(key)) {
+    if (reserved.has(key)) {
       throw new EventEnvelopeError("event", key, `payload field "${key}" collides with the envelope field`);
     }
   }
   const sanitized = sanitizeEventFields(fields);
-  const operational = isOperationalEventType(input.type);
   const event: Record<string, unknown> = {
     schemaVersion: EVENT_SCHEMA_VERSION,
     pipeline: input.pipeline,
