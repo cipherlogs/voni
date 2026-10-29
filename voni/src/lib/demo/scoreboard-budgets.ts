@@ -198,6 +198,9 @@ const BUDGETS = {
     gate: "audio-comparison",
     source: "envelope-modulation module bar: 5% peak-to-trough is the smallest detectable cushion artifact",
   },
+  // Coupled pair: this and timbreMeasuredBandDeltaDb judge the same timbre
+  // defect (an octave tilt a re-encode does not make) on two captures. Keep
+  // them equal; the freeze test asserts the pair so the bars cannot drift.
   comparisonBandDeltaDb: {
     value: 3,
     unit: "db",
@@ -250,6 +253,9 @@ const BUDGETS = {
     gate: "timbre-probes",
     source: "spec W5: delivered true peak keeps 1 dBTP of encode headroom; a peak at the ceiling is a clip risk, not parity",
   },
+  // Coupled pair: this and comparisonDistortionDb are the same clean-file
+  // residual bar measured on two captures (delivered vs the platform's). Keep
+  // them equal; the freeze test asserts the pair so the bars cannot drift.
   timbreMeasuredDistortionDb: {
     value: -45,
     unit: "db",
@@ -273,6 +279,45 @@ const BUDGETS = {
     unit: "count",
     gate: "timbre-probes",
     source: "spec stories 4, 12 and W5: an inserted silence the reference does not have is a hole; the delivered cut carries none",
+  },
+  timbreMeasuredBreakupMatchSeconds: {
+    value: 0.05,
+    unit: "s",
+    gate: "timbre-probes",
+    source: "timbre-measurement.ts: two breakups within 50 ms are the same hole in both captures, so only an unmatched hole counts",
+  },
+  // W6 floor-mode bars (review fix): the driver's comparison tolerances moved
+  // here from floor-mode.ts so every quality bar has one record. New records
+  // only: the W0/W5 bars above are untouched.
+  floorLevelDeviationLu: {
+    value: 0.2,
+    unit: "db",
+    gate: "vendor-floor",
+    source: "level-facts.ts LEVEL_TOLERANCE_DB: EBU Tech 3341 ±0.1 LU widened a tenth for 16-bit captures",
+  },
+  floorPeakHeadroomDb: {
+    value: 0.3,
+    unit: "db",
+    gate: "vendor-floor",
+    source: "level-facts.ts TRUE_PEAK_TOLERANCE_DB: the 4x-oversampled true-peak estimate's own resolution",
+  },
+  floorDistortionResidualDb: {
+    value: -60,
+    unit: "db",
+    gate: "vendor-floor",
+    source: "distortion-crest.ts DEFAULT_DISTORTION_CREST_THRESHOLDS.maxResidualDb: the clean-file residual bar",
+  },
+  floorBreakupSeconds: {
+    value: 0.02,
+    unit: "s",
+    gate: "vendor-floor",
+    source: "floor-mode.ts: breakups are found on 10 ms envelope frames; two frames absorb one edge frame",
+  },
+  floorModulationDepth: {
+    value: 0.01,
+    unit: "ratio",
+    gate: "vendor-floor",
+    source: "floor-mode.ts: one percentage point of peak-to-trough swing, twice the modulation metric's 0.5% detection floor",
   },
   timbreBallotWeightTimbre: {
     value: 0.5,

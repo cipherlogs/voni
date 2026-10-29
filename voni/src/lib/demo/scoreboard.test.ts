@@ -2,6 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { decodePcm } from "../audio/format-facts";
+import { DEFAULT_DISTORTION_CREST_THRESHOLDS } from "../audio/distortion-crest";
+import { LEVEL_TOLERANCE_DB, TRUE_PEAK_TOLERANCE_DB } from "../audio/level-facts";
 import {
   END_CALL_AUDIO_GRACE_MS as SESSION_END_CALL_AUDIO_GRACE_MS,
   END_CALL_DRAIN_TIMEOUT_MS as SESSION_END_CALL_DRAIN_TIMEOUT_MS,
@@ -168,6 +170,8 @@ import {
   goldenWindowExpectations,
 } from "./scoreboard-budgets";
 import { judgeOverlap } from "../voice/barge-in";
+import { FLOOR_AXIS_THRESHOLDS } from "../audio/floor-mode";
+import { BREAKUP_MATCH_SECONDS } from "./timbre-measurement";
 import { formatSubject, resolveSubject, sameSubject, type SubjectRecord } from "./subject";
 import { EN_RECOGNITION } from "../voice/recognition";
 import { DEMO_VOICE_IDS, SILENCE_CHECK_IN_INSTRUCTIONS, SILENCE_CHECK_IN_MS } from "./voni-agent";
@@ -1174,6 +1178,7 @@ test("every body gate follows the one served body when it is swapped", () => {
       runBody,
       measuredLevel: measuredLevel(-23.1, -23.1),
       humanRatings: passingBallots(),
+      agentChannel: CLEAN_CHANNEL,
     });
 
   const first = artifactFor(
@@ -4399,6 +4404,9 @@ test("artifact carries double-talk overlaps and end-call drain evidence with bot
 
 const ZERO_PROBES = { jump: 0, overload: 0, clip: 0, underrun: 0, inputDrop: 0 };
 
+/** A measured agent channel with no clip and no pop-scale jump. */
+const CLEAN_CHANNEL = { peakDbfs: -7.2, clippedSampleRatio: 0, largestAdjacentStep: 120 };
+
 /** The run's platform-read body; `undefined` output = no level served. */
 const servedBody = (volume: number | undefined, agentId = "agent_stored", fingerprint: string | null = "fp_stored") =>
   runBodyOf(volume, { agentId, fingerprint });
@@ -4422,7 +4430,7 @@ test("the level leg's verdict moves with the measured files, not the loudness fo
     evaluateTimbreGate({
       probes: ZERO_PROBES,
       voiceId: "anna",
-      agentChannel: null,
+      agentChannel: CLEAN_CHANNEL,
       runBody: servedBody(SERVED_LEVEL),
       measuredLevel: measuredLevel(-23.1, deliveredRms),
       humanRatings: passingBallots(),
@@ -4506,7 +4514,7 @@ test("timbre gate passes clean and fails named defects", () => {
   const clean = evaluateTimbreGate({
     probes: ZERO_PROBES,
     voiceId: "anna",
-    agentChannel: null,
+    agentChannel: CLEAN_CHANNEL,
     runBody: servedBody(SERVED_LEVEL),
     measuredLevel: {
       reference: measuredTone("captures/reference-anna-en.wav", -23.1),
@@ -4519,7 +4527,7 @@ test("timbre gate passes clean and fails named defects", () => {
   const clipped = evaluateTimbreGate({
     probes: { ...ZERO_PROBES, clip: 2 },
     voiceId: "anna",
-    agentChannel: null,
+    agentChannel: CLEAN_CHANNEL,
   });
   assert.equal(clipped.status, "FAIL");
   assert.ok(clipped.detail.includes("clip"));
@@ -4534,18 +4542,52 @@ test("timbre gate passes clean and fails named defects", () => {
 
 test("session evidence flags clipped samples and playout-scale jumps", () => {
   assert.equal(POP_JUMP_INT16, 9830);
-  const clean = checkEvidenceTimbre({ peakDbfs: -7.2, clippedSampleRatio: 0, largestAdjacentStep: 120 });
-  assert.equal(clean.ok, true);
+  const clean = checkEvidenceTimbre(CLEAN_CHANNEL);
+  assert.equal(clean.status, "PASS");
   assert.ok(clean.detail.includes("-7.2"), `peak stays reviewable: ${clean.detail}`);
   const clipped = checkEvidenceTimbre({ peakDbfs: -0.4, clippedSampleRatio: 0.0001, largestAdjacentStep: 120 });
-  assert.equal(clipped.ok, false);
+  assert.equal(clipped.status, "FAIL");
   assert.ok(clipped.detail.includes("clip"));
   const stepped = checkEvidenceTimbre({ peakDbfs: -6.0, clippedSampleRatio: 0, largestAdjacentStep: 20000 });
-  assert.equal(stepped.ok, false);
+  assert.equal(stepped.status, "FAIL");
   assert.ok(stepped.detail.includes("jump"));
   const missing = checkEvidenceTimbre(null);
-  assert.equal(missing.ok, true);
+  assert.equal(missing.status, "INFO", "unmeasured is INFO, never PASS");
   assert.ok(missing.detail.includes("no agent-channel evidence"));
+});
+
+test("a dry run's missing agent channel is INFO and cannot contribute a PASS", () => {
+  // Every other half passes; the only unmeasured input is the agent-channel
+  // PCM evidence a dry run never produces. It must keep the gate INFO, not
+  // let the measured files and ballot green it (CODING_STANDARDS.md §Gates).
+  const dry = evaluateTimbreGate({
+    probes: ZERO_PROBES,
+    voiceId: "anna",
+    agentChannel: null,
+    runBody: servedBody(SERVED_LEVEL),
+    measuredLevel: measuredLevel(-23.1, -23.2),
+    humanRatings: passingBallots(),
+  });
+  assert.equal(dry.status, "INFO", dry.detail);
+  assert.match(dry.detail, /no agent-channel evidence/);
+  assert.match(dry.detail, /unmeasured agent channel/);
+
+  const artifact = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "suite",
+    runnerStdout: "",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+    dryRun: true,
+    runBody: servedBody(SERVED_LEVEL),
+    measuredLevel: measuredLevel(-23.1, -23.2),
+    humanRatings: passingBallots(),
+    agentChannel: null,
+  });
+  const timbre = artifact.gates.find((gate) => gate.name === "timbre-probes");
+  assert.equal(timbre?.status, "INFO", timbre?.detail);
+  assert.match(timbre?.detail ?? "", /no agent-channel evidence/);
 });
 
 // ── Ticket 21: the level leg reads the stored body a visitor receives ─────
@@ -4558,7 +4600,7 @@ test("the timbre gate reads the served body's level, never the registry constant
   const atRegistryVolume = evaluateTimbreGate({
     probes: ZERO_PROBES,
     voiceId: "anna",
-    agentChannel: null,
+    agentChannel: CLEAN_CHANNEL,
     runBody: servedBody(SERVED_LEVEL),
     measuredLevel: measured,
     humanRatings: passingBallots(),
@@ -4575,7 +4617,7 @@ test("the timbre gate reads the served body's level, never the registry constant
   const quieter = evaluateTimbreGate({
     probes: ZERO_PROBES,
     voiceId: "anna",
-    agentChannel: null,
+    agentChannel: CLEAN_CHANNEL,
     runBody: servedBody(62),
   });
   assert.equal(quieter.status, "INFO", quieter.detail);
@@ -4592,7 +4634,7 @@ test("a served level reaches the timbre gate unchanged", () => {
     const gate = evaluateTimbreGate({
       probes: ZERO_PROBES,
       voiceId: "anna",
-      agentChannel: null,
+      agentChannel: CLEAN_CHANNEL,
       runBody: servedBody(volume),
       measuredLevel: measured,
       humanRatings: passingBallots(),
@@ -4608,14 +4650,14 @@ test("an unread served level is reported unmeasured, never passed by a registry 
   const noLevel = evaluateTimbreGate({
     probes: ZERO_PROBES,
     voiceId: "anna",
-    agentChannel: null,
+    agentChannel: CLEAN_CHANNEL,
     runBody: servedBody(undefined),
   });
   assert.equal(noLevel.status, "INFO", "probes still gate; the level is unmeasured");
   assert.match(noLevel.detail, /unmeasured level/);
   assert.doesNotMatch(noLevel.detail, /level agrees/);
 
-  const noBody = evaluateTimbreGate({ probes: ZERO_PROBES, voiceId: "anna", agentChannel: null });
+  const noBody = evaluateTimbreGate({ probes: ZERO_PROBES, voiceId: "anna", agentChannel: CLEAN_CHANNEL });
   assert.equal(noBody.status, "INFO");
   assert.match(noBody.detail, /unmeasured level/);
   assert.doesNotMatch(noBody.detail, /level agrees/);
@@ -4723,7 +4765,7 @@ test("a measured level within tolerance passes the measured leg of the timbre ga
   const gate = evaluateTimbreGate({
     probes: ZERO_PROBES,
     voiceId: "anna",
-    agentChannel: null,
+    agentChannel: CLEAN_CHANNEL,
     runBody: servedBody(SERVED_LEVEL),
     measuredLevel: measuredLevel(-23.1, -23.2),
     humanRatings: passingBallots(),
@@ -4748,7 +4790,7 @@ test("a measured level out of tolerance fails the timbre gate with both measured
   const gate = evaluateTimbreGate({
     probes: ZERO_PROBES,
     voiceId: "anna",
-    agentChannel: null,
+    agentChannel: CLEAN_CHANNEL,
     runBody: servedBody(SERVED_LEVEL),
     measuredLevel: measuredLevel(-23.1, -25.0),
   });
@@ -4764,7 +4806,7 @@ test("a missing measurement is INFO, never PASS", () => {
   const noFiles = evaluateTimbreGate({
     probes: ZERO_PROBES,
     voiceId: "anna",
-    agentChannel: null,
+    agentChannel: CLEAN_CHANNEL,
     runBody: servedBody(SERVED_LEVEL),
   });
   assert.equal(noFiles.status, "INFO", noFiles.detail);
@@ -4774,7 +4816,7 @@ test("a missing measurement is INFO, never PASS", () => {
   const silent = evaluateTimbreGate({
     probes: ZERO_PROBES,
     voiceId: "anna",
-    agentChannel: null,
+    agentChannel: CLEAN_CHANNEL,
     runBody: servedBody(SERVED_LEVEL),
     measuredLevel: {
       reference: measuredTone("captures/reference-anna-en.wav", -23.1),
@@ -4792,7 +4834,7 @@ test("the derived constant cannot make the level leg pass", () => {
   const arithmeticOnly = evaluateTimbreGate({
     probes: ZERO_PROBES,
     voiceId: "anna",
-    agentChannel: null,
+    agentChannel: CLEAN_CHANNEL,
     runBody: servedBody(SERVED_LEVEL),
   });
   assert.equal(arithmeticOnly.status, "INFO", "the formula alone never passes the level leg");
@@ -4801,7 +4843,7 @@ test("the derived constant cannot make the level leg pass", () => {
   const measuredFail = evaluateTimbreGate({
     probes: ZERO_PROBES,
     voiceId: "anna",
-    agentChannel: null,
+    agentChannel: CLEAN_CHANNEL,
     runBody: servedBody(SERVED_LEVEL),
     measuredLevel: measuredLevel(-23.1, -28.1),
   });
@@ -4812,7 +4854,7 @@ test("the derived constant cannot make the level leg pass", () => {
   const noBody = evaluateTimbreGate({
     probes: ZERO_PROBES,
     voiceId: "anna",
-    agentChannel: null,
+    agentChannel: CLEAN_CHANNEL,
     measuredLevel: measuredLevel(-23.1, -23.2),
   });
   assert.equal(noBody.status, "INFO", noBody.detail);
@@ -4856,7 +4898,7 @@ function timbreGateFor(input: {
   return evaluateTimbreGate({
     probes: ZERO_PROBES,
     voiceId: DEFAULT_GATE_VOICE,
-    agentChannel: null,
+    agentChannel: CLEAN_CHANNEL,
     runBody: servedBody(SERVED_LEVEL),
     subject: input.subject ?? gateSubject(),
     measuredLevel: input.measuredLevel === undefined ? measuredPass() : input.measuredLevel,
@@ -5049,6 +5091,7 @@ test("English is the one named N/A: the axis renormalises with a stated reason a
     runBody: servedBody(SERVED_LEVEL),
     measuredLevel: measuredPass(),
     humanRatings: ballots,
+    agentChannel: CLEAN_CHANNEL,
   });
   const axis = artifact.humanReview.axes.find((entry) => entry.axis === "languageNaturalness");
   assert.equal(axis?.status, "na");
@@ -5105,6 +5148,7 @@ test("an artifact binds the ballots to its own subject and records the weighted 
     runBody: servedBody(SERVED_LEVEL),
     measuredLevel: measuredPass(),
     humanRatings: ballotsFor({ timbre: 5, accent: 5 }, { timbre: 5, accent: 5 }),
+    agentChannel: CLEAN_CHANNEL,
   });
   const timbre = artifact.gates.find((gate) => gate.name === "timbre-probes");
   assert.equal(timbre?.status, "PASS", timbre?.detail);
@@ -5236,6 +5280,7 @@ test("artifact makes the shared-recording ballot protocol reviewable", () => {
       delivered: measuredTone("captures/delivered-anna-en.wav", -23.2),
     },
     humanRatings: two,
+    agentChannel: CLEAN_CHANNEL,
   });
   assert.equal(artifact.humanReview.recordingSha256, RECORDING);
   assert.equal(artifact.humanReview.raterCount, 2);
@@ -6301,6 +6346,12 @@ const PINNED_BUDGETS: Record<string, number> = {
   timbreMeasuredCrestMin: 1.2,
   timbreMeasuredBandDeltaDb: 3,
   timbreMeasuredBreakupMax: 0,
+  timbreMeasuredBreakupMatchSeconds: 0.05,
+  floorLevelDeviationLu: 0.2,
+  floorPeakHeadroomDb: 0.3,
+  floorDistortionResidualDb: -60,
+  floorBreakupSeconds: 0.02,
+  floorModulationDepth: 0.01,
   timbreBallotWeightTimbre: 0.5,
   timbreBallotWeightAccent: 0.25,
   timbreBallotWeightLanguageNaturalness: 0.25,
@@ -6374,6 +6425,43 @@ test("committed budget record matches the pinned table", () => {
   assert.match(record.note, /threshold edit/i);
   assert.deepEqual(record.budgets, PINNED_BUDGETS);
   assert.deepEqual(record.budgets, budgetValues());
+});
+
+test("floor-mode bars and the breakup matcher are the pinned records, not local literals", () => {
+  // The driver used to declare these itself. They now live only in the budget
+  // table, so a local retune must move the record (and this pin) or fail.
+  assert.equal(FLOOR_AXIS_THRESHOLDS.levelDeviationLu, PINNED_BUDGETS.floorLevelDeviationLu);
+  assert.equal(FLOOR_AXIS_THRESHOLDS.peakHeadroomDb, PINNED_BUDGETS.floorPeakHeadroomDb);
+  assert.equal(FLOOR_AXIS_THRESHOLDS.distortionResidualDb, PINNED_BUDGETS.floorDistortionResidualDb);
+  assert.equal(FLOOR_AXIS_THRESHOLDS.breakupSeconds, PINNED_BUDGETS.floorBreakupSeconds);
+  assert.equal(FLOOR_AXIS_THRESHOLDS.modulationDepth, PINNED_BUDGETS.floorModulationDepth);
+  assert.equal(BREAKUP_MATCH_SECONDS, PINNED_BUDGETS.timbreMeasuredBreakupMatchSeconds);
+  // The budget source strings quote these metric modules; if one moves alone
+  // the record (and this pin) fails instead of the two bars disagreeing.
+  assert.equal(FLOOR_AXIS_THRESHOLDS.levelDeviationLu, LEVEL_TOLERANCE_DB);
+  assert.equal(FLOOR_AXIS_THRESHOLDS.peakHeadroomDb, TRUE_PEAK_TOLERANCE_DB);
+  assert.equal(
+    FLOOR_AXIS_THRESHOLDS.distortionResidualDb,
+    DEFAULT_DISTORTION_CREST_THRESHOLDS.maxResidualDb,
+  );
+});
+
+test("bars that judge the same defect stay equal across gates", () => {
+  // `comparisonBandDeltaDb` / `timbreMeasuredBandDeltaDb` are the same octave
+  // tilt bar, and `comparisonDistortionDb` / `timbreMeasuredDistortionDb` the
+  // same clean-file residual bar, measured on two different capture pairs.
+  // Separate records keep each gate's provenance; this pin stops a retune of
+  // one from silently disagreeing with the other.
+  assert.equal(
+    SCOREBOARD_BUDGETS.comparisonBandDeltaDb.value,
+    SCOREBOARD_BUDGETS.timbreMeasuredBandDeltaDb.value,
+    "the spectral-tilt bar is one bar, whichever gate quotes it",
+  );
+  assert.equal(
+    SCOREBOARD_BUDGETS.comparisonDistortionDb.value,
+    SCOREBOARD_BUDGETS.timbreMeasuredDistortionDb.value,
+    "the clean-file distortion residual bar is one bar, whichever gate quotes it",
+  );
 });
 
 test("budget freeze guard rejects a threshold edit that does not move the record", () => {

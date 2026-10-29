@@ -23,16 +23,88 @@ Telnyx beyond the two probes the caller passes in.
 from __future__ import annotations
 
 import asyncio
+import json
+import os
+import pathlib
 import time
 from dataclasses import dataclass
 from typing import Callable
 
-# Mirrors voni/src/lib/voice/session.ts and the end-call-drain budget record
-# (voni/src/lib/demo/scoreboard-budgets.ts), which the freeze guard pins.
-GOODBYE_POLL_MS = 250
-GOODBYE_SETTLE_POLLS = 3
-GOODBYE_AUDIO_GRACE_MS = 500
-GOODBYE_DRAIN_TIMEOUT_MS = 10_000
+# The one budget record the browser's end-call drain is frozen in. The phone
+# leg reads it at runtime instead of copying four numbers: a retune moves the
+# record, the freeze guard and this bridge together, and a missing record is a
+# named error rather than a silent stale value.
+BUDGET_RECORD_ENV = "VONI_SCOREBOARD_BUDGETS_JSON"
+_BUDGET_RECORD_RELATIVE = pathlib.Path(
+    "voni/src/lib/demo/scoreboard-budgets.json"
+)
+_DRAIN_BUDGET_KEYS = {
+    "endCallPollMs": "GOODBYE_POLL_MS",
+    "endCallSettlePolls": "GOODBYE_SETTLE_POLLS",
+    "endCallAudioGraceMs": "GOODBYE_AUDIO_GRACE_MS",
+    "endCallDrainTimeoutMs": "GOODBYE_DRAIN_TIMEOUT_MS",
+}
+
+
+class BudgetRecordError(RuntimeError):
+    """The browser's frozen budget record cannot be read or is incomplete."""
+
+
+def budget_record_path() -> pathlib.Path:
+    """Locate the budget record: env override first, then the repo checkout.
+
+    `VONI_SCOREBOARD_BUDGETS_JSON` is the deployment override (the bridge may
+    ship without the `voni/` tree). In a checkout the record is found by
+    walking up from this file, so running from any working directory works.
+    """
+    override = os.environ.get(BUDGET_RECORD_ENV)
+    if override:
+        return pathlib.Path(override).expanduser().resolve()
+    here = pathlib.Path(__file__).resolve()
+    for parent in here.parents:
+        candidate = parent / _BUDGET_RECORD_RELATIVE
+        if candidate.is_file():
+            return candidate
+    raise BudgetRecordError(
+        f"cannot find {_BUDGET_RECORD_RELATIVE} above {here}; "
+        f"set {BUDGET_RECORD_ENV} to the record's path"
+    )
+
+
+def load_drain_budgets(path: pathlib.Path | str | None = None) -> dict[str, int]:
+    """Read the four end-call drain budgets from the record, validated by name."""
+    record_path = pathlib.Path(path).expanduser().resolve() if path else budget_record_path()
+    try:
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+    except OSError as error:
+        raise BudgetRecordError(
+            f"cannot read the budget record at {record_path}: {error}"
+        ) from error
+    except json.JSONDecodeError as error:
+        raise BudgetRecordError(
+            f"the budget record at {record_path} is not valid JSON: {error}"
+        ) from error
+    budgets = record.get("budgets") if isinstance(record, dict) else None
+    if not isinstance(budgets, dict):
+        raise BudgetRecordError(
+            f"the budget record at {record_path} has no 'budgets' object"
+        )
+    values: dict[str, int] = {}
+    for key in _DRAIN_BUDGET_KEYS:
+        value = budgets.get(key)
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise BudgetRecordError(
+                f"the budget record at {record_path} is missing an integer {key}"
+            )
+        values[key] = value
+    return values
+
+
+DRAIN_BUDGETS = load_drain_budgets()
+GOODBYE_POLL_MS = DRAIN_BUDGETS["endCallPollMs"]
+GOODBYE_SETTLE_POLLS = DRAIN_BUDGETS["endCallSettlePolls"]
+GOODBYE_AUDIO_GRACE_MS = DRAIN_BUDGETS["endCallAudioGraceMs"]
+GOODBYE_DRAIN_TIMEOUT_MS = DRAIN_BUDGETS["endCallDrainTimeoutMs"]
 
 # The phone leg is G.711 at 8 kHz: one byte per sample.
 TELEPHONY_BYTES_PER_SEC = 8000.0

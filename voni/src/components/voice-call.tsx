@@ -1566,7 +1566,15 @@ export function VoiceCall({
           // Placeholder id — the token endpoint returns the real one and `start`
           // prefers it, so the browser cannot choose which agent it reaches.
           // The voice picked pins the Locale the browser's guardrails hear in.
-          { mode: "agent", agentId: "", languageCodes: config.languageCodes },
+          // The conversation Locale rides along too: an explicit code list can
+          // name several languages, and the picker's Locale stays authoritative
+          // for barge-in/filler/goodbye words.
+          {
+            mode: "agent",
+            agentId: "",
+            languageCodes: config.languageCodes,
+            conversationLanguage: config.conversationLanguage,
+          },
           async () => {
             // A hold rejoin binds the greeting-less resume agent variant, so
             // the welcome-back is the single first utterance (see stored-agents).
@@ -1598,6 +1606,9 @@ export function VoiceCall({
               config.languageCodes,
               config.conversationLanguage,
             ),
+            // The Locale also keys the browser guardrails' words directly, so a
+            // picker-set Locale never falls back to English filler/goodbye words.
+            conversationLanguage: config.conversationLanguage,
             // Demo parity with the stored agent: balanced end-of-turn.
             transcriptionMode: DEMO_TRANSCRIPTION_MODE,
             // First-utterance STT tuning: scene + vocabulary for the opening

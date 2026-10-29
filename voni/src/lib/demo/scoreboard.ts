@@ -3360,30 +3360,43 @@ export function checkTimbreProbes(probes: TimbreProbes): { ok: boolean; detail: 
 /**
  * Offline PCM check against the same defects the live probes watch:
  * clipped samples (analyzePcm clippedSampleRatio) and playout-scale
- * adjacent-sample jumps. Missing evidence (dry run, decoder unavailable)
- * passes open, never fails closed.
+ * adjacent-sample jumps.
+ *
+ * Missing evidence (dry run, decoder unavailable) is `INFO`/unmeasured, never
+ * a pass: the timbre gate cannot claim the agent channel was clean when it has
+ * no channel to inspect (CODING_STANDARDS.md §Gates). A measured channel is
+ * `PASS` only when it carries no clip and no pop-scale jump; a defect is a
+ * named `FAIL`.
  */
-export function checkEvidenceTimbre(channel: AgentChannelEvidence | null): {
-  ok: boolean;
+export type EvidenceTimbreVerdict = {
+  status: "PASS" | "INFO" | "FAIL";
   detail: string;
-} {
-  if (channel === null) return { ok: true, detail: "no agent-channel evidence (dry run or decoder unavailable)" };
+};
+
+export function checkEvidenceTimbre(channel: AgentChannelEvidence | null): EvidenceTimbreVerdict {
+  if (channel === null) {
+    return {
+      status: "INFO",
+      detail:
+        "no agent-channel evidence (dry run or decoder unavailable): unmeasured, so the timbre gate cannot pass on it",
+    };
+  }
   const clipped = channel.clippedSampleRatio ?? 0;
   if (clipped > 0) {
     return {
-      ok: false,
+      status: "FAIL",
       detail: `clip ${clipped} of agent-channel samples at full scale`,
     };
   }
   const step = channel.largestAdjacentStep ?? 0;
   if (step > POP_JUMP_INT16) {
     return {
-      ok: false,
+      status: "FAIL",
       detail: `jump of ${step} int16 steps exceeds the playout pop threshold ${POP_JUMP_INT16}`,
     };
   }
   return {
-    ok: true,
+    status: "PASS",
     detail: `peak ${channel.peakDbfs} dBFS, no clipped samples, max adjacent step ${step}`,
   };
 }
@@ -3402,8 +3415,10 @@ export function checkEvidenceTimbre(channel: AgentChannelEvidence | null): {
  *   shared recording for this subject.
  *
  * A missing measurement is INFO/unmeasured, and a missing or single ballot is
- * INFO — never a machine-only PASS. A ballot below five, two raters on
- * different recordings, or a ballot filed for another subject FAILs.
+ * INFO — never a machine-only PASS. The same holds for the agent-channel PCM
+ * leg: a dry run with no channel evidence cannot be a PASS. A ballot below
+ * five, two raters on different recordings, or a ballot filed for another
+ * subject FAILs.
  */
 export function evaluateTimbreGate(input: {
   probes: TimbreProbes;
@@ -3421,7 +3436,7 @@ export function evaluateTimbreGate(input: {
   const probes = checkTimbreProbes(input.probes);
   if (!probes.ok) return { name: "timbre-probes", status: "FAIL", detail: probes.detail };
   const evidence = checkEvidenceTimbre(input.agentChannel);
-  if (!evidence.ok) return { name: "timbre-probes", status: "FAIL", detail: evidence.detail };
+  if (evidence.status === "FAIL") return { name: "timbre-probes", status: "FAIL", detail: evidence.detail };
 
   // Ticket 74: the timbre gate is a measured result (six axes) plus a weighted
   // ballot from two raters on one shared recording, at five out of five.
@@ -3453,16 +3468,26 @@ export function evaluateTimbreGate(input: {
     };
   }
   // A measured file with no served body identity cannot be attributed to the
-  // agent a visitor received, so it is unmeasured rather than a pass.
-  if (measured.status === "INFO" || !body) {
+  // agent a visitor received, so it is unmeasured rather than a pass. The same
+  // rule applies to the agent-channel PCM leg: no channel evidence is INFO,
+  // never a PASS by default (CODING_STANDARDS.md §Gates).
+  if (measured.status === "INFO" || !body || evidence.status === "INFO") {
     const why =
-      measured.status === "PASS"
-        ? `unmeasured body: ${runBodyUnmeasuredReason(input.runBody)}, so the gate cannot say whose audio the measured files are`
-        : measured.detail;
+      measured.status === "INFO"
+        ? measured.detail
+        : !body
+          ? `unmeasured body: ${runBodyUnmeasuredReason(input.runBody)}, so the gate cannot say whose audio the measured files are`
+          : `unmeasured agent channel: ${evidence.detail}`;
     return {
       name: "timbre-probes",
       status: "INFO",
-      detail: `${probes.detail}; ${why}; ${ballotDetail}; ${evidence.detail}`,
+      // The measured result is always quoted, even when another leg (body
+      // identity, agent channel) keeps the gate unmeasured: the audit trail
+      // must show what was measured, not only what was missing.
+      detail:
+        `${probes.detail}; ` +
+        (measured.status === "INFO" ? "" : `${measured.detail}; `) +
+        `${why}; ${ballotDetail}; ${evidence.detail}`,
     };
   }
   // Two raters at five out of five are still not a PASS when the measured
@@ -5368,33 +5393,60 @@ export const GATE_PRIORITY = [
   "talk-hold-pinned",
 ] as const;
 
+/**
+ * The measured inputs the skeleton gates read. Absent means unmeasured, never
+ * a default value: the gates render INFO and the caller cannot mistake a
+ * missing input for a passing one.
+ */
+export type SkeletonGatesEvidence = {
+  probes?: TimbreProbes | null;
+  agentChannel?: AgentChannelEvidence | null;
+  humanRatings?: HumanRatings | null;
+  voiceId?: string;
+  measured?: boolean;
+  measuredSources?: MeasuredEvidenceKind[];
+  /** Ticket 10: labels a non-production variant run as experimental evidence. */
+  endOfTurnExperiment?: EndOfTurnExperiment | null;
+  /** Ticket 16: the two measured files the timbre level leg compares. */
+  measuredLevel?: MeasuredLevelInput | null;
+  /** Ticket 74: the subject the ballots judge (a ballot is per subject). */
+  subject?: SubjectRecord;
+};
+
+/** One named input per skeleton gate, plus the evidence bundle they share. */
+export type SkeletonGatesInput = {
+  runnerOutcome: RunnerClassification | null;
+  replySamples: ReplyGapSample[];
+  traceSessionId: string | null;
+  runBody: RunBody | null | undefined;
+  traceExcerpt: string[];
+  fillerGate?: ScoreboardGate | null;
+  overheardGate?: ScoreboardGate | null;
+  deadAir?: DeadAirEvidence | null;
+  doubleTalk?: DoubleTalkInput | null;
+  endCallDrain?: EndCallDrainInput | null;
+  evidence?: SkeletonGatesEvidence;
+};
+
 /** Skeleton gates: reported but never failed without measured evidence. */
-function skeletonGates(
-  runnerOutcome: RunnerClassification | null,
-  replySamples: ReplyGapSample[],
-  traceSessionId: string | null,
-  runBody: RunBody | null | undefined,
-  traceExcerpt: string[],
-  fillerGate: ScoreboardGate | null = null,
-  overheardGate: ScoreboardGate | null = null,
-  deadAir?: DeadAirEvidence | null,
-  doubleTalkInput?: DoubleTalkInput | null,
-  endCallDrainInput?: EndCallDrainInput | null,
-  probes?: TimbreProbes | null,
-  agentChannel?: AgentChannelEvidence | null,
-  humanRatings?: HumanRatings | null,
-  voiceId?: string,
-  options?: {
-    measured?: boolean;
-    measuredSources?: MeasuredEvidenceKind[];
-    /** Ticket 10: labels a non-production variant run as experimental evidence. */
-    endOfTurnExperiment?: EndOfTurnExperiment | null;
-    /** Ticket 16: the two measured files the timbre level leg compares. */
-    measuredLevel?: MeasuredLevelInput | null;
-    /** Ticket 74: the subject the ballots judge (a ballot is per subject). */
-    subject?: SubjectRecord;
-  },
-): ScoreboardGate[] {
+function skeletonGates(input: SkeletonGatesInput): ScoreboardGate[] {
+  const {
+    runnerOutcome,
+    replySamples,
+    traceSessionId,
+    runBody,
+    traceExcerpt,
+    fillerGate = null,
+    overheardGate = null,
+    deadAir = null,
+    doubleTalk: doubleTalkInput = null,
+    endCallDrain: endCallDrainInput = null,
+    evidence: options = {},
+  } = input;
+  const probes = options.probes ?? null;
+  const agentChannel = options.agentChannel ?? null;
+  const humanRatings = options.humanRatings ?? null;
+  const voiceId = options.voiceId ?? "";
   // Ticket 06: a finished runner is plumbing health even when its scenarios
   // or measured gates FAIL; only a harness break fails plumbing.
   const plumbing: ScoreboardGate =
@@ -5973,29 +6025,29 @@ export function buildSkeletonArtifact(input: {
         exitCode: input.exitCode,
         error: input.evalError ?? null,
       });
-  const gatesPreview = skeletonGates(
+  const gatesPreview = skeletonGates({
     runnerOutcome,
-    samples,
-    input.traceSessionId ?? null,
+    replySamples: samples,
+    traceSessionId: input.traceSessionId ?? null,
     runBody,
-    input.traceExcerpt ?? [],
+    traceExcerpt: input.traceExcerpt ?? [],
     fillerGate,
-    evaluation?.gate ?? null,
-    deadAirInput,
-    doubleTalkInput,
-    endCallDrainInput,
-    timbreProbes,
-    agentChannel,
-    humanRatings,
-    input.voice,
-    {
+    overheardGate: evaluation?.gate ?? null,
+    deadAir: deadAirInput,
+    doubleTalk: doubleTalkInput,
+    endCallDrain: endCallDrainInput,
+    evidence: {
+      probes: timbreProbes,
+      agentChannel,
+      humanRatings,
+      voiceId: input.voice,
       measured,
       measuredSources,
       endOfTurnExperiment: input.endOfTurnExperiment ?? null,
       measuredLevel: input.measuredLevel ?? null,
       subject,
     },
-  );
+  });
   // Finding D: when trace gaps exist but attribution is unverified, the
   // reply-gap gate says so instead of silently implying beat attribution.
   if (traceUnverified) {

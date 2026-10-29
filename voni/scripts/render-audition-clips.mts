@@ -34,11 +34,13 @@
 import {
   existsSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
   readdirSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { VOICES, getVoice } from "../src/lib/agents/voices";
@@ -62,6 +64,7 @@ import {
 import { mp3Facts } from "../src/lib/demo/mp3-facts";
 import { referencePath, renderReference } from "../src/lib/demo/reference-render";
 import { collectSilentGreeting } from "../src/lib/voice/silent-greeting";
+import { committedClipFor, regenerationProblems } from "../src/lib/demo/clip-regeneration";
 import { produceAuditionClip } from "./lib/audition-produce";
 import { hasFfmpeg } from "./lib/mp3-encode";
 
@@ -75,10 +78,15 @@ const USAGE = `Usage: npm run voice:clips -- [options]
   --voice <id>   render or refresh only this catalog voice
   --force        ignore the cached native render for this voice
   --check        verify the plan, evidence and committed bytes (no credentials)
+  --verify-regeneration  render one voice now and compare with its committed clip
   --strict       exit non-zero when any voice is pending
 
 Needs ASSEMBLYAI_API_KEY for a render. Writes public/voices/<id>.mp3 and
-${AUDITION_MANIFEST_PATH}. Never fabricates audio for a voice it cannot render.`;
+${AUDITION_MANIFEST_PATH}. Never fabricates audio for a voice it cannot render.
+--verify-regeneration writes nothing: it renders into a temp dir, measures the
+fresh take with the same encoder, and compares it with the committed clip
+within the regeneration tolerances. Without ASSEMBLYAI_API_KEY it prints a
+named SKIP and exits 0; it never reports a pass it did not measure.`;
 
 function arg(name: string): string | undefined {
   const index = process.argv.indexOf(name);
@@ -342,6 +350,68 @@ function report(manifest: AuditionManifest): void {
   }
 }
 
+/**
+ * Render one clip for real and compare the fresh take with the committed
+ * asset. Nothing is written: the render lands in a temp dir and the committed
+ * file is only read. A missing key is a named SKIP, never a pass.
+ */
+async function verifyRegeneration(voiceId: string): Promise<void> {
+  if (!process.env.ASSEMBLYAI_API_KEY) {
+    console.log(
+      "regeneration SKIP: ASSEMBLYAI_API_KEY is not set (nothing was rendered, nothing passed)",
+    );
+    return;
+  }
+  if (!hasFfmpeg()) fail("ffmpeg is not on PATH: the clip encoder needs it");
+  const manifest = readManifest();
+  if (!manifest) fail(`${AUDITION_MANIFEST_PATH} is missing: there is no committed clip to compare`);
+
+  const clip = auditionClipFor(voiceId);
+  const committed = committedClipFor(manifest, voiceId, {
+    assetExists: (asset) => existsSync(join(ROOT, asset)),
+  });
+  const scratch = mkdtempSync(join(tmpdir(), "voni-clip-regeneration-"));
+  try {
+    // An empty cache dir is the point: this is a new render today, not the
+    // committed take being read back.
+    const rendered = await renderReference({
+      voiceId: clip.voiceId,
+      dir: scratch,
+      synth: async ({ voiceId: voice, text }) =>
+        collectSilentGreeting({ voiceId: voice, text, token: await token() }),
+    });
+    const produced = produceAuditionClip({ sourceWav: rendered.path, output: join(scratch, `${voiceId}.mp3`) });
+    const record: AuditionClipRecord = {
+      voice: clip.voiceId,
+      locale: clip.locale,
+      line: clip.text,
+      lineSha256: clip.textSha256,
+      asset: clip.asset,
+      url: clip.url,
+      volume: clip.volume,
+      facts: produced.facts,
+      level: {
+        ...produced.level,
+        referenceIntegratedLufs: voiceLevelMeasurement(clip.voiceId)?.integratedLufs ?? null,
+      },
+      generatedOn: today(),
+    };
+    const problems = regenerationProblems(clip, committed, record);
+    console.log(
+      `rendered ${voiceId} now: ${record.facts.durationMs} ms, ` +
+        `${record.level.assetIntegratedLufs} LUFS, crest ${record.level.assetCrestDb} dB ` +
+        `(committed ${committed.facts.durationMs} ms, ${committed.level.assetIntegratedLufs} LUFS, ` +
+        `crest ${committed.level.assetCrestDb} dB)`,
+    );
+    if (problems.length > 0) {
+      fail(`regeneration of ${voiceId} is outside the tolerances: ${problems.join(" | ")}`);
+    }
+    console.log(`regeneration PASS: ${voiceId} is within 5% duration, 1 LU level and 3 dB crest`);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
 async function main(): Promise<void> {
   if (flag("--help")) {
     console.log(USAGE);
@@ -349,6 +419,12 @@ async function main(): Promise<void> {
   }
   if (flag("--check")) {
     check();
+    return;
+  }
+  if (flag("--verify-regeneration")) {
+    const voiceId = arg("--voice") ?? "anna";
+    if (!getVoice(voiceId)) fail(`unknown voice "${voiceId}": regeneration needs a catalog voice`);
+    await verifyRegeneration(voiceId);
     return;
   }
   await generate();

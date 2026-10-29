@@ -32,30 +32,21 @@
  * saved subject can be re-judged without a browser, network or database. A
  * metric a file cannot carry is `unmeasured`, and an `unmeasured` axis blocks a
  * pass: the verdict is `pass`, `fail` or `inconclusive`, and only `pass` clears
- * the floor. No threshold here is edited from an existing budget: the tolerances
- * reuse the level, true-peak and distortion bars already published by their
- * metric modules, and the two this module adds (breakup seconds, modulation
- * depth) are declared below with their source.
+ * the floor. Every tolerance here is a record in `scoreboard-budgets.ts`
+ * (`floor*`), which quotes the metric module that first published it; the
+ * freeze guard pins the records, so a retune is a spec change, not a local
+ * edit.
  *
  * This module is deliberately separate from the three-way first-divergence
  * verdict: floor mode answers "is this subject at least as good as the vendor",
  * which is a different question from "which layer diverged first".
  */
+import { SCOREBOARD_BUDGETS } from "../demo/scoreboard-budgets";
 import { detectBreakups, type BreakupReport } from "./breakups";
-import {
-  DEFAULT_DISTORTION_CREST_THRESHOLDS,
-  DistortionCrestError,
-  distortionResidual,
-} from "./distortion-crest";
+import { DistortionCrestError, distortionResidual } from "./distortion-crest";
 import { measureEnvelopeModulation, type EnvelopeModulation } from "./envelope-modulation";
 import type { DecodedAudio } from "./format-facts";
-import {
-  LEVEL_TOLERANCE_DB,
-  LevelFactsError,
-  TRUE_PEAK_TOLERANCE_DB,
-  analyseLevel,
-  type LevelFacts,
-} from "./level-facts";
+import { LevelFactsError, analyseLevel, type LevelFacts } from "./level-facts";
 import type { VendorFloorProvenance } from "./vendor-floor";
 
 export type FloorAxis = "level" | "peak" | "distortion" | "breakups" | "modulation";
@@ -88,21 +79,16 @@ export const FLOOR_AXIS_DIRECTIONS: Readonly<Record<FloorAxis, string>> = {
 };
 
 /**
- * Every tolerance floor mode uses, each with its source. This is not a new
- * budget: three entries are the bars the metric modules already publish, and
- * the two this module owns are derived from a measurement's own resolution.
+ * Every tolerance floor mode uses, read from the frozen budget table. The
+ * budget record's `source` names the metric module each bar quotes, so this
+ * module owns no threshold of its own.
  */
 export const FLOOR_AXIS_THRESHOLDS = {
-  /** Same-level tolerance EBU Tech 3341 states as ±0.1 LU, widened a tenth for 16-bit captures (level-facts.ts). */
-  levelDeviationLu: LEVEL_TOLERANCE_DB,
-  /** The 4x-oversampled true-peak estimate's own resolution (level-facts.ts). */
-  peakHeadroomDb: TRUE_PEAK_TOLERANCE_DB,
-  /** The clean-file residual bar (distortion-crest.ts); the floor itself renders no residual. */
-  distortionResidualDb: DEFAULT_DISTORTION_CREST_THRESHOLDS.maxResidualDb,
-  /** Breakups are found on 10 ms envelope frames; two frames absorb one edge frame. */
-  breakupSeconds: 0.02,
-  /** One percentage point of peak-to-trough swing; the modulation metric's detection floor is 0.5%. */
-  modulationDepth: 0.01,
+  levelDeviationLu: SCOREBOARD_BUDGETS.floorLevelDeviationLu.value,
+  peakHeadroomDb: SCOREBOARD_BUDGETS.floorPeakHeadroomDb.value,
+  distortionResidualDb: SCOREBOARD_BUDGETS.floorDistortionResidualDb.value,
+  breakupSeconds: SCOREBOARD_BUDGETS.floorBreakupSeconds.value,
+  modulationDepth: SCOREBOARD_BUDGETS.floorModulationDepth.value,
 } as const;
 
 /**

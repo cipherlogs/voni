@@ -238,12 +238,12 @@ test("the budget freeze guard and its threshold table stay byte-identical", () =
   const sha256 = (url: URL) => createHash("sha256").update(readFileSync(url)).digest("hex");
   assert.equal(
     sha256(new URL("./scoreboard-budgets.ts", import.meta.url)),
-    "85414c2567df7067985f522751b8f4c3d2e732dfe4d59d5ca02c77c6b11cb6bf",
+    "dd1aad93e7ffbf9aabf93a28016fdba7e9a679f67a1b8eed15326089bd74fa12",
     "scoreboard-budgets.ts is byte-identical",
   );
   assert.equal(
     sha256(new URL("./scoreboard-budgets.json", import.meta.url)),
-    "20e91721a867dc809da4ecdb2743d8cb65754138b54bb4b1ce5f55c64046fe43",
+    "4bb0f75419ebfba16716db6a6508cb791ebb0e8bc7ad272cbeabda1da1654bde",
     "scoreboard-budgets.json is byte-identical",
   );
 });

@@ -53,9 +53,13 @@ test("a measured voice's level is the decision recorded against its measured ref
     const voice = getVoice(row.voice);
     assert.ok(voice, `${row.voice} is a catalog voice`);
     assert.equal(row.locale, voice.languageCode, "a voice speaks exactly one Locale");
+    assert.equal(row.measured, true, "a registry row in MEASURED_VOICE_LEVELS is measured");
     assert.ok(Number.isFinite(row.integratedLufs), "the reference's integrated loudness was measured");
     assert.ok(Number.isFinite(row.truePeakDbtp), "the reference's true peak was measured");
-    assert.ok(row.truePeakDbtp < 0, "the reference does not clip");
+    assert.ok(
+      row.truePeakDbtp !== null && row.truePeakDbtp < 0,
+      "the reference does not clip",
+    );
     assert.equal(
       row.volume,
       100,
@@ -70,8 +74,8 @@ test("the registry and the committed evidence are the same measurement", () => {
   const shape = (row: {
     voice: string;
     locale: string;
-    integratedLufs: number;
-    truePeakDbtp: number;
+    integratedLufs: number | null;
+    truePeakDbtp: number | null;
     volume: number;
   }) => ({
     voice: row.voice,
@@ -87,23 +91,31 @@ test("the registry and the committed evidence are the same measurement", () => {
   );
   for (const row of committed.voices) {
     assert.ok(
-      row.integratedLufs <= committed.reference.integratedLufs + 0.2,
-      `${row.voice} is not louder than the reference floor beyond the gate's 0.20 LU tolerance, ` +
-        "so it needs no attenuation",
-    );
-    assert.ok(
       row.truePeakDbtp < 0,
       `${row.voice} does not clip at native level, so no level boost is possible or needed`,
     );
   }
+  // Each voice is judged against its own reference, not against `anna`: the
+  // measured spread is native variation (~6 dB), so a "within 0.20 LU of the
+  // anna floor" claim would be false. The floor is one voice's baseline.
+  const levels = committed.voices.map((row) => row.integratedLufs);
+  assert.ok(
+    Math.max(...levels) - Math.min(...levels) > 1.5,
+    "the voices measure across a real spread, not inside one 0.20 LU tolerance",
+  );
 });
 
-test("an unmeasured voice keeps a named default rather than inventing a level", () => {
+test("an unmeasured voice is a visible registry row, never a silent 100", () => {
   const committed = evidence();
   const measuredIds = new Set(committed.voices.map((row) => row.voice));
   for (const row of committed.unmeasured) {
     assert.equal(measuredIds.has(row.voice), false, `${row.voice} is not also reported as measured`);
-    assert.equal(voiceLevelMeasurement(row.voice), null, `${row.voice} has no measurement to cite`);
+    const registered = voiceLevelMeasurement(row.voice);
+    assert.ok(registered, `${row.voice} has a named registry row, not an absent one`);
+    assert.equal(registered.measured, false, `${row.voice} is visibly unmeasured`);
+    assert.equal(registered.integratedLufs, null);
+    assert.equal(registered.truePeakDbtp, null);
+    assert.match(registered.unmeasuredReason ?? "", /422 voice_not_found/);
     assert.equal(
       voiceOutputVolume(row.voice),
       row.volume,
@@ -116,9 +128,13 @@ test("an unmeasured voice keeps a named default rather than inventing a level", 
     "the named default is the native reference, not a guess at a quieter level",
   );
   // The one demo voice the vendor's TTS endpoint does not serve: it keeps the
-  // named default and the gate reports it unmeasured instead of passing it.
-  assert.equal(voiceLevelMeasurement("juergen"), null);
+  // named default, and the row itself says the number is not a measurement.
+  const juergen = voiceLevelMeasurement("juergen");
+  assert.ok(juergen, "juergen is in the registry so a report can flag it");
+  assert.equal(juergen.measured, false);
+  assert.match(juergen.unmeasuredReason ?? "", /voice_not_found/);
   assert.equal(voiceOutputVolume("juergen"), UNMEASURED_VOICE_OUTPUT_VOLUME);
+  assert.equal(voiceLevelMeasurement("not-a-voice"), null, "an unknown voice has no row");
 });
 
 test("the level is no longer a second registry constant beside the body", () => {

@@ -100,8 +100,13 @@ export type SessionConfig =
       systemPrompt: string;
       greeting: string;
       voiceId: string;
-      /** Empty = automatic detection across all supported languages. */
+      /** Empty/omitted = automatic detection across all supported languages. */
       languageCodes?: string[];
+      /**
+       * The Locale the owner picked for this call. The guardrails (barge-in,
+       * filler, goodbye) read its words; client-side only, never on the wire.
+       */
+      conversationLanguage?: string | null;
       /**
        * Speech-recognition context, sent in the FIRST session.update so the
        * first utterance is already tuned — pushing it post-start leaves the
@@ -131,6 +136,11 @@ export type SessionConfig =
        * automatic detection, the documented English-scaffolding exception.
        */
       languageCodes?: string[];
+      /**
+       * The Locale the agent (or the demo voice) speaks. Guardrail words read
+       * it first, so a picker-set Locale is not left with English words.
+       */
+      conversationLanguage?: string | null;
     };
 
 /**
@@ -195,17 +205,21 @@ export function buildResumeMessage(sessionId: string): Record<string, unknown> {
  * Test-call language resolution. The agent's own picker stays authoritative
  * and passes through untouched. When the picker is left on Automatic (empty),
  * the call follows the agent's Locale — the conversation language its owner
- * chose — so testing a Spanish agent tests Spanish. Only an agent with no
- * Locale at all (automatic language detection) locks to English, the one
- * documented English-scaffolding exception. PSTN/provision paths keep passing
- * the raw config untouched.
+ * chose — so testing a Spanish agent tests Spanish.
+ *
+ * With neither an explicit code nor a conversation Locale, this returns
+ * `undefined`: the wire key is omitted and the recogniser keeps its automatic
+ * detection. Pinning `["en"]` would switch detection off for a call that was
+ * never configured for English; the documented English-scaffolding exception
+ * still covers words (keyterms/scene), never the recogniser's language set.
  */
 export function effectiveInlineLanguages(
   codes: string[] | undefined,
   conversationLanguage?: string | null,
-): string[] {
+): string[] | undefined {
   if (codes && codes.length > 0) return [...codes];
-  return [callRecognitionLocale({ conversationLanguage, languageCodes: codes }) ?? "en"];
+  const locale = callRecognitionLocale({ conversationLanguage, languageCodes: codes });
+  return locale === null ? undefined : [locale];
 }
 
 export function buildInlineSessionUpdate(
@@ -515,12 +529,18 @@ export function heardWords(line: string, playedMs: number, msPerChar = CAPTION_M
 }
 /** The floor re-checks this often (playback settling has no event of its own). */
 const FLOOR_TICK_MS = 150;
-/** A resume after a cut says the rest only when more than this many words were unheard. */
-export const RESUME_MIN_WORDS = 3;
+/**
+ * A resume after a cut says the rest only when at least this many words were
+ * unheard. Named as the minimum, not as an exclusive count: the boundary is
+ * four words, and the condition below uses `>=` so the name and the behaviour
+ * cannot disagree. This is a behaviour cut-off, not a quality bar, so it stays
+ * beside the resume logic rather than in the scoreboard budget table.
+ */
+export const RESUME_TAIL_MIN_WORDS = 4;
 
 /** A tail of a few words is the caller having got the point, not a lost thought. */
 export function worthResuming(rest: string): boolean {
-  return rest.split(/\s+/).filter(Boolean).length > RESUME_MIN_WORDS;
+  return rest.split(/\s+/).filter(Boolean).length >= RESUME_TAIL_MIN_WORDS;
 }
 
 /**
@@ -857,9 +877,14 @@ export class VoiceSession {
     this.lastInputDropProbe = 0;
     this.preReadyDropped = 0;
     this.lastPreReadyDropProbe = 0;
-    // The call's own words, from the Locale it pinned. Automatic detection
-    // (nothing pinned) is the documented English scaffolding (`callRecognition`).
-    this.recognition = callRecognition({ languageCodes: config.languageCodes });
+    // The call's own words, from the Locale it pinned. The conversation
+    // Locale wins over a bare code list, so a picker-set Locale keeps its own
+    // barge-in/filler/goodbye words. Automatic detection (nothing pinned) is
+    // the documented English scaffolding (`callRecognition`).
+    this.recognition = callRecognition({
+      conversationLanguage: config.conversationLanguage,
+      languageCodes: config.languageCodes,
+    });
     if (!this.configSynced) {
       this.configSynced = true;
       this.handlers.onConfigUncertainty?.(false);

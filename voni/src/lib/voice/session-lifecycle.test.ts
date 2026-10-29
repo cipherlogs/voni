@@ -2713,7 +2713,7 @@ test("an explicitly configured language list is passed through untouched", async
   }
 });
 
-test("automatic detection keeps the documented English-scaffolding exception", async () => {
+test("automatic detection keeps the English-scaffolding words, not an English pin", async () => {
   const automatic: AgentConfig = {
     ...SPANISH_AGENT,
     conversationLanguage: undefined,
@@ -2725,11 +2725,46 @@ test("automatic detection keeps the documented English-scaffolding exception", a
     const update = t.sockets[0]?.sent.find((message) => message.type === "session.update");
     const session = update?.["session"] as Record<string, unknown>;
     const input = session["input"] as Record<string, unknown>;
-    assert.deepEqual(input["language_codes"], ["en"], "nothing pinned still locks to English");
+    assert.equal(
+      "language_codes" in input,
+      false,
+      "nothing pinned omits the key, so the recogniser keeps automatic detection",
+    );
     const keyterms = input["keyterms"] as string[];
     for (const term of NEUTRAL_KEYTERMS) assert.ok(keyterms.includes(term), term);
     assert.equal(keyterms.includes("teléfono"), false);
     assert.match(String(input["transcription_prompt"]), /phone call/);
+  } finally {
+    await t.restore();
+  }
+});
+
+test("a picker-set Spanish Locale gives the session Spanish filler, command and goodbye words", async () => {
+  // `languageCodes` may list several languages; the picker's Locale is the
+  // one the call is conducted in, so the session's own guardrails must read
+  // Spanish even though the code list starts with French.
+  const t = await startedSession(
+    {},
+    {},
+    { mode: "agent", agentId: "", languageCodes: ["fr"], conversationLanguage: "es" },
+  );
+  try {
+    const recognition = (t.session as unknown as {
+      recognition: {
+        locale: string;
+        filler: readonly string[];
+        commands: { stop: readonly string[] };
+        goodbye: readonly string[];
+        endCall: readonly string[];
+      };
+    }).recognition;
+    assert.equal(recognition.locale, "es");
+    assert.ok(recognition.filler.includes("vale"), recognition.filler.join(", "));
+    assert.equal(recognition.filler.includes("okay"), false, "no English filler on a Spanish call");
+    assert.ok(recognition.commands.stop.includes("para"));
+    assert.equal(recognition.commands.stop.includes("stop"), false);
+    assert.ok(recognition.goodbye.includes("adiós"));
+    assert.ok(recognition.endCall.includes("adiós"));
   } finally {
     await t.restore();
   }
