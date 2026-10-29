@@ -49,6 +49,7 @@ test("every registered scenario name resolves unchanged", () => {
     "silence-check-in",
     "invite-tag",
     "bye-audio",
+    "free-gate",
     "hang-up-fast",
     "hang-up-over",
   ]);

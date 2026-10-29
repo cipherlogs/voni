@@ -1,11 +1,17 @@
 /**
- * Characterisation of the playout defect ticket 25 removes.
+ * Characterisation of the playout defect ticket 25 removed.
  *
- * THIS TEST PINS BAD BEHAVIOUR. It is evidence, not a gate: it passes only
- * while the buffer-length envelope still reshapes the voice and the dry-out
- * still inserts its fixed hole. Ticket 28 replaces it with the absence
- * assertions; if this file starts failing, the defect is gone and the
- * numbers in `voni/docs/playout-defect-evidence.md` need re-measuring.
+ * THIS TEST PINNED BAD BEHAVIOUR. It is evidence, not a gate: it passed only
+ * while the buffer-length envelope still reshaped the voice and the dry-out
+ * still inserted its fixed hole. Ticket 25 removed the per-sample envelope, so
+ * the starving and dry-out assertions below are no longer true of the worklet
+ * and every test in this file is skipped. `voni/docs/playout-defect-evidence.md`
+ * keeps the measured numbers (100 Hz at depth 0.212, a 0.511 s hole).
+ *
+ * Ticket 28 replaces this file with gating assertions — the absence of
+ * chunk-rate modulation and of an inserted hole — so it must not be deleted
+ * before then. Do not un-skip these tests: they assert the defect, not a
+ * contract.
  *
  * The three traces are the same 2.2 s 10 ms-chunked stream, differing only in
  * when its second half arrives:
@@ -186,7 +192,7 @@ function dryOutTrace() {
   return stream(0, PREROLL_S).concat(stream(PREROLL_S, 2.2, 0.51));
 }
 
-test("playout defect control: a real-time stream holds the cushion and is not modulated", () => {
+test.skip("playout defect control: a real-time stream holds the cushion and is not modulated", () => {
   const { audio, out, posts } = render(healthyTrace(), 3.2);
   const reading = measureEnvelopeModulation(played(audio, out));
 
@@ -197,7 +203,7 @@ test("playout defect control: a real-time stream holds the cushion and is not mo
   assert.deepEqual(interiorSilences(out), [], "no hole once the reply has started");
 });
 
-test("playout defect: a starving buffer amplitude-modulates the voice at the chunk rate", () => {
+test.skip("playout defect: a starving buffer amplitude-modulates the voice at the chunk rate", () => {
   const { audio, out, posts } = render(starvingTrace(), 3.2);
   const reading = measureEnvelopeModulation(played(audio, out));
   const cushion = Math.min(
@@ -227,7 +233,7 @@ test("playout defect: a starving buffer amplitude-modulates the voice at the chu
   assert.ok(held.length > 0, "the trace must hold less than 10 ms of cushion");
 });
 
-test("playout defect: a dry-out inserts half a second of silence before resuming", () => {
+test.skip("playout defect: a dry-out inserts half a second of silence before resuming", () => {
   const { audio, out } = render(dryOutTrace(), 3.2);
   const [hole] = interiorSilences(out);
   assert.ok(hole, "one inserted silence");

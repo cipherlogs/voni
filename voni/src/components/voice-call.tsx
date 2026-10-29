@@ -56,6 +56,7 @@ import {
   isGoodbyeLine,
   requestVoiceJudge,
 } from "@/lib/voice/jev-judges";
+import { callRecognition } from "@/lib/voice/recognition";
 import { compileSystemPrompt } from "@/lib/agents/compile";
 import type { AgentConfig } from "@/lib/agents/config";
 import { DEMO_TRANSCRIPTION_MODE, buildAgentKeyterms, buildAgentTranscriptionPrompt } from "@/lib/voice/transcription";
@@ -1285,6 +1286,9 @@ export function VoiceCall({
       return;
     }
 
+    // The call's own words: the demo's voice pins its Locale, and an inline
+    // agent's language picker is authoritative (automatic → English scaffolding).
+    const recognition = callRecognition(config);
     const session = new VoiceSession({
       onStateChange: (next) => {
         speakingRef.current = next === "speaking";
@@ -1463,7 +1467,12 @@ export function VoiceCall({
         if (endRequestedRef.current) {
           endRequestedRef.current = false;
           const session = sessionRef.current;
-          if (modeKind === "demo" && !closingRef.current && isGoodbyeLine(turn.text) && session instanceof VoiceSession) {
+          if (
+            modeKind === "demo" &&
+            !closingRef.current &&
+            isGoodbyeLine(turn.text, recognition) &&
+            session instanceof VoiceSession
+          ) {
             session.endAfterReply();
           }
         }
@@ -1493,7 +1502,7 @@ export function VoiceCall({
         if (modeKind !== "demo" || closingRef.current || !turn.text.trim()) return;
         // Asking to end is never a strike: Voni says goodbye on its own, and
         // an end rung racing that goodbye repeated it.
-        if (isEndCallRequest(turn.text)) {
+        if (isEndCallRequest(turn.text, recognition)) {
           endRequestedRef.current = true;
           return;
         }
@@ -1544,7 +1553,8 @@ export function VoiceCall({
         await session.start(
           // Placeholder id — the token endpoint returns the real one and `start`
           // prefers it, so the browser cannot choose which agent it reaches.
-          { mode: "agent", agentId: "" },
+          // The voice picked pins the Locale the browser's guardrails hear in.
+          { mode: "agent", agentId: "", languageCodes: config.languageCodes },
           async () => {
             // A hold rejoin binds the greeting-less resume agent variant, so
             // the welcome-back is the single first utterance (see stored-agents).
