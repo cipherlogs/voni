@@ -20,15 +20,36 @@ settled price of "TTS: AssemblyAI only".
 
 The choice always reports the stored ``state`` and ``lastProbeAt`` next to the
 rung, so a pinned leg still shows why it is pinned and whether it is healthy.
+
+:func:`read_choices` is the per-call read: one durable read per leg, frozen into
+a :class:`RungChoice` the call carries. A record it cannot read raises
+:class:`LegUnreadable` (a new call refuses; it never invents a closed leg).
+:class:`CallRungs` is the live call's copy: breaker writes during a call are
+bookkeeping for future calls, so a failed write alerts and the call keeps
+talking on the rung it already chose.
+
 Timestamps are epoch seconds (UTC).
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
-from cascade.breaker import LEGS, BreakerLeg, BreakerState, ProviderBreakerRecord
+from cascade.breaker import (
+    LEGS,
+    Breaker,
+    BreakerLeg,
+    BreakerRecordCorrupt,
+    BreakerRecordMissing,
+    BreakerState,
+    BreakerTransitions,
+    ProviderBreakerRecord,
+    TransitionOutcome,
+)
+from cascade.failures import FailureVerdict
+from cascade.store import StoreUnavailable
 
 
 def _check_leg(leg: object) -> BreakerLeg:
@@ -211,3 +232,194 @@ def choose_rung(
         pinned=False,
         **common,
     )
+
+
+# ---------------------------------------------------------------------------
+# Reading the rungs for one call, and what a live call does when a leg fails
+# ---------------------------------------------------------------------------
+
+
+class LegUnreadable(RuntimeError):
+    """The durable record for a leg cannot be read, so no rung can be chosen.
+
+    A new call refuses rather than opening a socket on a guess: the spec's
+    answer to a breaker-store outage is "new calls refused/managed". This is
+    deliberately not a ``BreakerRecordMissing``/closed fallback — the state is
+    unknown, and an unknown state is never healthy.
+    """
+
+    def __init__(self, leg: BreakerLeg, reason: str) -> None:
+        self.leg = leg
+        self.reason = reason
+        super().__init__(
+            f"the {leg} breaker record is unreadable ({reason}); "
+            "a new call cannot select a rung and must not invent a closed leg"
+        )
+
+
+async def read_choices(
+    breaker: Breaker, *, ladders: Sequence[Ladder]
+) -> dict[BreakerLeg, RungChoice]:
+    """Read every leg's record once and freeze the rungs one new call uses.
+
+    Every read goes to the durable store (no in-process cache), so a call
+    cannot be moved by a later write and cannot start from a stale rung. A leg
+    whose record is missing, corrupt or behind an outage raises
+    :class:`LegUnreadable` naming the leg.
+    """
+    if not isinstance(breaker, Breaker):
+        raise TypeError(f"read_choices needs a Breaker, got {breaker!r}")
+    choices: dict[BreakerLeg, RungChoice] = {}
+    for ladder in ladders:
+        if not isinstance(ladder, Ladder):
+            raise TypeError(f"read_choices needs Ladders, got {ladder!r}")
+        if ladder.leg in choices:
+            raise LadderError(
+                f"the {ladder.leg!r} leg has two ladders; one leg, one rung order"
+            )
+        try:
+            record = await breaker.read(ladder.leg)
+        except (StoreUnavailable, BreakerRecordMissing, BreakerRecordCorrupt) as exc:
+            raise LegUnreadable(ladder.leg, str(exc)) from exc
+        choices[ladder.leg] = choose_rung(
+            record,
+            ladder,
+            now=breaker.now(),
+            probe_interval_s=breaker.probe_interval_s,
+        )
+    if not choices:
+        raise LadderError("a call needs at least one leg to read")
+    return choices
+
+
+@dataclass(frozen=True)
+class ProviderAlert:
+    """One operational alert a live call raised about its breaker bookkeeping."""
+
+    leg: BreakerLeg
+    kind: str
+    error: str
+    at: float
+    rung: Rung
+
+    def __post_init__(self) -> None:
+        _check_leg(self.leg)
+        if not isinstance(self.kind, str) or not self.kind.strip():
+            raise LadderError(f"an alert needs a kind, got {self.kind!r}")
+        if not isinstance(self.error, str) or not self.error.strip():
+            raise LadderError(f"an alert needs the error it reports, got {self.error!r}")
+        if isinstance(self.at, bool) or not isinstance(self.at, (int, float)):
+            raise LadderError(f"an alert needs a timestamp, got {self.at!r}")
+        if self.rung not in RUNGS:
+            raise LadderError(f"unknown rung {self.rung!r}; expected one of {RUNGS}")
+
+    def to_document(self) -> dict[str, object]:
+        return {
+            "leg": self.leg,
+            "kind": self.kind,
+            "error": self.error,
+            "at": self.at,
+            "rung": self.rung,
+        }
+
+
+@dataclass(frozen=True)
+class LegOutcome:
+    """What recording one leg event did to the record (and to the alerting)."""
+
+    leg: BreakerLeg
+    written: bool
+    error: str
+    alerted: bool
+    transition: TransitionOutcome
+
+
+class CallRungs:
+    """The rungs one live call selected, frozen for the life of the call.
+
+    Breaker writes made during the call are bookkeeping for *new* calls: a write
+    that fails alerts (``alerts`` plus the optional ``on_alert`` sink) and the
+    call keeps talking on the rung it already selected. Nothing here re-selects
+    a rung, so a call is never moved, cancelled or restarted by a breaker write.
+    """
+
+    def __init__(
+        self,
+        choices: Mapping[BreakerLeg, RungChoice],
+        *,
+        transitions: BreakerTransitions,
+        on_alert: Callable[[ProviderAlert], None] | None = None,
+    ) -> None:
+        if not isinstance(transitions, BreakerTransitions):
+            raise TypeError(
+                f"CallRungs needs BreakerTransitions, got {transitions!r}"
+            )
+        if not choices:
+            raise LadderError("a call needs at least one chosen rung")
+        self._choices = dict(choices)
+        self._transitions = transitions
+        self._on_alert = on_alert
+        self._alerts: list[ProviderAlert] = []
+
+    def rung(self, leg: BreakerLeg) -> RungChoice:
+        """The rung this call uses for ``leg``; never re-read, never re-selected."""
+        try:
+            return self._choices[leg]
+        except KeyError:
+            raise LadderError(
+                f"this call never selected a rung for leg {leg!r}; "
+                f"it has {sorted(self._choices)}"
+            ) from None
+
+    @property
+    def choices(self) -> Mapping[BreakerLeg, RungChoice]:
+        return dict(self._choices)
+
+    @property
+    def alerts(self) -> tuple[ProviderAlert, ...]:
+        return tuple(self._alerts)
+
+    async def failed(
+        self,
+        leg: BreakerLeg,
+        *,
+        verdict: FailureVerdict,
+        phase: str,
+        turn: int | None = None,
+    ) -> LegOutcome:
+        """Record a real-call failure for future calls; this call is unmoved."""
+        choice = self.rung(leg)
+        outcome = await self._transitions.record_failure(
+            leg, verdict=verdict, phase=phase, turn=turn
+        )
+        return self._settle(leg, choice, outcome)
+
+    async def succeeded(self, leg: BreakerLeg, *, phase: str = "call") -> LegOutcome:
+        """Record a watched real-call success; only probes close a leg."""
+        choice = self.rung(leg)
+        outcome = await self._transitions.record_real_call_success(leg, phase=phase)
+        return self._settle(leg, choice, outcome)
+
+    def _settle(
+        self, leg: BreakerLeg, choice: RungChoice, outcome: TransitionOutcome
+    ) -> LegOutcome:
+        alerted = False
+        if not outcome.written and outcome.error:
+            alert = ProviderAlert(
+                leg=leg,
+                kind="breaker_write_failed",
+                error=outcome.error,
+                at=self._transitions.breaker.now(),
+                rung=choice.rung,
+            )
+            self._alerts.append(alert)
+            alerted = True
+            if self._on_alert is not None:
+                self._on_alert(alert)
+        return LegOutcome(
+            leg=leg,
+            written=outcome.written,
+            error=outcome.error,
+            alerted=alerted,
+            transition=outcome,
+        )
