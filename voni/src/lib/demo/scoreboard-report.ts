@@ -40,6 +40,12 @@ import {
 import type { DemoAgentVariant, DemoTurnWindows } from "./stored-agents";
 import { formatTurnWindows } from "./turn-windows";
 import { englishLeakForArtifact, type EnglishLeakCount } from "./english-leak";
+import {
+  ANSWERED_QUESTION_ENGLISH_FP,
+  answeredQuestionForArtifact,
+  formatAnswerCategory,
+  type AnsweredQuestionCount,
+} from "./answered-question";
 
 export type InspectRunIdentity = {
   voice: string;
@@ -185,6 +191,13 @@ export type InspectReport = {
    * the measured false-positive baseline. Evidence only: no gate reads it.
    */
   englishLeak: EnglishLeakCount;
+  /**
+   * The report-only already-answered counter (voice-parity 77): agent turns
+   * that asked for a value the caller had already supplied, their rate, and —
+   * on English — the run's own flagged-request baseline beside the measured
+   * English false-positive rate. Evidence only: no gate reads it.
+   */
+  answeredQuestion: AnsweredQuestionCount;
   drain: InspectDrain;
   overTalkAside: RunnerEvidenceAside | null;
   hangUps: RunnerEvidenceHangUp[];
@@ -653,6 +666,15 @@ export function buildInspectReport(
             locale: subject.locale,
             sessionId: opts.sessionId ?? null,
           }),
+    // Same rule as the English-leak counter: the artifact's own count is
+    // canonical, and `--session` narrows the transcript so that scope re-reads.
+    answeredQuestion:
+      artifact.answeredQuestion && !opts.sessionId
+        ? artifact.answeredQuestion
+        : answeredQuestionForArtifact(artifact, {
+            locale: subject.locale,
+            sessionId: opts.sessionId ?? null,
+          }),
     drain: {
       goodbyeCoverage: artifact.endCallDrain.goodbyeCoverage,
       hangUpDelayMs: artifact.endCallDrain.hangUpDelayMs,
@@ -823,6 +845,59 @@ function formatEnglishLeak(leak: EnglishLeakCount): string[] {
   return lines;
 }
 
+/**
+ * The report-only already-answered counter, compact and clearly not a verdict.
+ * A subject shows the repeated requests and their rate against the requests it
+ * made; English shows the run's own flagged-request baseline beside the
+ * measured English false-positive rate the promotion decision cites. The
+ * promotion line always says report-only until a new record lands.
+ */
+function formatAnsweredQuestion(count: AnsweredQuestionCount): string[] {
+  const rate = (value: number | null) => (value === null ? "—" : value.toFixed(2));
+  const lines = [
+    "answered-question (report-only, never gated)",
+    `  locale       ${count.locale}`,
+  ];
+  if (count.status === "not-applicable") {
+    lines.push(
+      "  applicable   no: the Locale is undetermined, and no cue lexicon is assumed",
+    );
+  } else if (count.status === "unmeasured") {
+    lines.push("  turns        unmeasured: no agent turn in the transcript");
+  } else {
+    lines.push(
+      `  requests     ${count.count} of ${count.requests} requests repeat an answer (${rate(count.rate)})`,
+    );
+    for (const finding of count.findings) {
+      const where =
+        finding.turn !== null
+          ? `${finding.sessionId ?? "unknown session"} turn ${finding.turn}`
+          : "an unnamed agent turn";
+      const categories = finding.categories.map(formatAnswerCategory).join(", ");
+      lines.push(
+        `  repeated     ${where}: ${categories} already answered at turn ${finding.answeredAt.turn} (${finding.answeredAt.value})`,
+      );
+    }
+  }
+  const fp = ANSWERED_QUESTION_ENGLISH_FP;
+  lines.push(
+    `  english-fp   ${rate(fp.falsePositiveRate)} over ${fp.cases} labelled cases ` +
+      `(${fp.falsePositives} false positives of ${fp.flagged} flagged, ${fp.missed} missed)`,
+  );
+  if (count.englishBaseline) {
+    const baseline = count.englishBaseline;
+    lines.push(
+      `  baseline     this run ${baseline.flagged} of ${baseline.requests} requests flagged (${rate(baseline.rate)})`,
+    );
+  }
+  lines.push(
+    `  promotion    ${count.promotion.gating ? "GATING" : "report-only (never gated)"}` +
+      `${count.promotion.decidedAt ? ` since ${count.promotion.decidedAt}` : ""}` +
+      " — the record is appended, never edited",
+  );
+  return lines;
+}
+
 function formatDrain(drain: InspectDrain): string {
   const coverage =
     drain.goodbyeCoverage === null ? "unmeasured" : drain.goodbyeCoverage.toFixed(2);
@@ -898,6 +973,7 @@ export function formatInspectReport(report: InspectReport): string {
   lines.push("", ...formatLatency(report.latency));
   lines.push("", ...formatAdoption(report.adoption));
   lines.push("", ...formatEnglishLeak(report.englishLeak));
+  lines.push("", ...formatAnsweredQuestion(report.answeredQuestion));
   lines.push("", formatDrain(report.drain));
   const aside = formatAside(report.overTalkAside);
   if (aside) lines.push(aside);
