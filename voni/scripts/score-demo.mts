@@ -250,7 +250,6 @@ import {
   formatReplyGapReport,
   formatSubScoreTable,
   formatTraceTurn,
-  formatVoiceGainTable,
   GOLDEN_BEATS,
   HANG_UP_AFTER_GOODBYE_MAX_MS,
   overheardFromRunEvidence,
@@ -1748,7 +1747,6 @@ async function main(): Promise<void> {
     console.log("trace session: none printed by the eval runner; pass --trace-session <sess_...> to merge per-turn gaps");
   }
   console.log(formatSubScoreTable(artifact));
-  console.log(formatVoiceGainTable(artifact.loudness.voices));
   console.log(formatHumanReview(artifact.humanReview));
   console.log(formatOverheardReport(artifact));
   console.log(`artifact: ${out}`);

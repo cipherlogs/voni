@@ -63,7 +63,7 @@
  */
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { getVoice, voicePlaybackGain } from "../agents/voices";
+import { getVoice } from "../agents/voices";
 import { BARGE_IN_JUDGE_MS, judgeOverlap, type OverlapVerdict } from "../voice/barge-in";
 import { EN_RECOGNITION } from "../voice/recognition";
 import {
@@ -312,34 +312,14 @@ export function parseSubScoreRows(raw: unknown, source: string): SubScore[] {
 }
 
 /**
- * One voice's loudness path as applied by the session: the server output level
- * the stored body actually serves (voice-parity ticket 21) and the client
- * playback gain, plus the native level they were derived from. `status` is
- * INFO when the level or the native measurement is unread — the voice is
- * reported, never passed by a registry default.
+ * The gate voice's loudness path: the server output level the stored body
+ * actually serves (voice-parity ticket 21) and the level measured from the
+ * delivered file (ticket 16). There is no client gain stage: the browser
+ * alters timing, never level (voice-parity 36).
  */
-export type VoiceGainRow = {
-  voice: string;
-  isGate: boolean;
-  /** Server `output.volume` read from the served body; null = unmeasured. */
-  outputVolume: number | null;
-  /** Client-side per-voice gain from the shared registry. */
-  gain: number;
-  /** Native integrated loudness, or null when unmeasured. */
-  nativeLufs: number | null;
-  /** Post-gain integrated loudness, or null when unmeasured. */
-  matchedLufs: number | null;
-  status: GateStatus;
-  detail: string;
-};
-
 export type ScoreboardLoudness = {
-  /** Shared gain reference every voice is matched to (anna). */
+  /** The reference the delivered level is measured against. */
   referenceLufs: number;
-  /** Post-gain integrated loudness, or null when the voice is unmeasured. */
-  matchedLufs: number | null;
-  /** Client-side per-voice gain from the registry. */
-  gain: number;
   /** Server-side output level the served body carries; null = unmeasured. */
   outputVolume: number | null;
   ok: boolean;
@@ -349,8 +329,6 @@ export type ScoreboardLoudness = {
    * files inside the tolerance, and an absent measurement is INFO here too.
    */
   measured: MeasuredLevelCheck;
-  /** The same values for the gate voice plus every regression voice (ticket 25). */
-  voices: VoiceGainRow[];
 };
 
 /** One blind ballot: timbre and accent judged 1-5 on the shared golden recording. */
@@ -2312,7 +2290,7 @@ export type ScoreboardArtifact = {
     silences: DeadAirSilence[];
   };
   probes: TimbreProbes;
-  /** Shared gain reference the gate voice is matched to, with its post-gain level. */
+  /** The measured level leg and the served body level; no client gain row. */
   loudness: ScoreboardLoudness;
   transcripts: { sha256: string; redacted: string[] };
   humanRatings: HumanRatings;
@@ -2746,14 +2724,12 @@ export type VoicePlayback = {
   id: string;
   /** The served body's output level, verbatim; null = no body read. */
   outputVolume: number | null;
-  /** Client-side per-voice gain matching the voice to the reference level. */
-  playbackGain: number;
 };
 
 /**
- * Gate voice playback: the client gain from the registry, and the server level
- * only from the stored body the run served (voice-parity tickets 21 and 24).
- * No body means the level is unmeasured, never the builder's constant.
+ * Gate voice playback: the server level only from the stored body the run
+ * served (voice-parity tickets 21 and 24), never the builder's constant and
+ * never a client gain. No body means the level is unmeasured.
  */
 export function gateVoicePlayback(
   voiceId: string,
@@ -2764,52 +2740,7 @@ export function gateVoicePlayback(
   return {
     id,
     outputVolume: body ? servedAgentOutputVolume(body) : null,
-    playbackGain: voicePlaybackGain(id),
   };
-}
-
-/**
- * One voice's applied loudness path. The gate voice's server level is read
- * from the run's one served body; a regression voice was not read in this run,
- * so its level stays unmeasured (INFO) rather than greening on the builder's
- * constant. There is no pipeline retune and no second gain stage.
- * A voice absent from `NATIVE_VOICE_LUFS` is unmeasured: reported as INFO.
- */
-export function voiceGainRow(
-  voiceId: string,
-  gateVoice: string,
-  runBody?: RunBody | null,
-): VoiceGainRow {
-  const check = checkServedLoudness(
-    voiceId,
-    voiceId === gateVoice ? runBody : null,
-  );
-  const body = voiceId === gateVoice ? runBodyServedBody(runBody) : null;
-  return {
-    voice: voiceId,
-    isGate: voiceId === gateVoice,
-    outputVolume: body ? servedAgentOutputVolume(body) : null,
-    gain: voicePlaybackGain(voiceId),
-    nativeLufs: NATIVE_VOICE_LUFS[voiceId] ?? null,
-    matchedLufs: check.matchedLufs,
-    status: check.unmeasured ? "INFO" : check.ok ? "PASS" : "FAIL",
-    detail: check.detail,
-  };
-}
-
-/**
- * The full gain table: the gate voice first, then every regression voice, all
- * resolved through the registry, with the gate voice's level read from the one
- * served body this run measured. Never a literal list.
- */
-export function voiceGainTable(
-  gateVoice: string,
-  runBody?: RunBody | null,
-): VoiceGainRow[] {
-  const gate = resolveGateVoice(gateVoice);
-  return [gate, ...regressionVoices(gate)].map((voice) =>
-    voiceGainRow(voice, gate, runBody),
-  );
 }
 
 /**
@@ -2823,26 +2754,10 @@ export function regressionVoices(gateVoice: string): string[] {
 
 // ── Gate: timbre-probes + accent-human (ticket 10, owner: timbre section) ─────
 
-/** Integrated loudness every demo voice is gain-matched to (anna, per voices.ts). */
+/** The reference the delivered level is measured against (a measured file, ticket 16). */
 export const TIMBRE_REFERENCE_LUFS = SCOREBOARD_BUDGETS.timbreReferenceLufs.value;
-/** Matched loudness must land within this of the reference to count as sane. */
+/** The delivered level must land within this of the reference to count as sane. */
 export const TIMBRE_LUFS_TOLERANCE_DB = SCOREBOARD_BUDGETS.timbreLufsToleranceDb.value;
-
-/**
- * Native integrated loudness per voice, measured from `public/voices/*.mp3`
- * (see the VOICE_PLAYBACK_GAIN comment in lib/agents/voices.ts). The table is
- * restated here so the gate checks the gain it actually runs with, not the
- * comment it was derived from. A voice with no entry here is unmeasured:
- * its probes still gate, its loudness is reported, not failed.
- */
-export const NATIVE_VOICE_LUFS: Record<string, number> = {
-  anna: -23.1,
-  lola: -22.5,
-  rafael: -23.8,
-  juergen: -28.8,
-  estelle: -30.3,
-  giovanni: -34.9,
-};
 
 /**
  * Playout pop threshold (public/playout-processor.js POP_JUMP = 0.3 of full
@@ -2891,111 +2806,6 @@ export type AgentChannelEvidence = {
   clippedSampleRatio: number | null;
   largestAdjacentStep: number | null;
 };
-
-/** Post-gain integrated loudness, or null when the voice has no native measurement. */
-export function matchedLoudnessLufs(voiceId: string): number | null {
-  const native = NATIVE_VOICE_LUFS[voiceId];
-  if (native === undefined) return null;
-  return Number((native + 20 * Math.log10(voicePlaybackGain(voiceId))).toFixed(2));
-}
-
-export type LoudnessCheck = {
-  ok: boolean;
-  matchedLufs: number | null;
-  detail: string;
-};
-
-/**
- * Platform `output.volume` units: 100 is the platform's cap, i.e. the voice's
- * full (native) level. Below it the scale is linear amplitude.
- */
-export const SERVED_VOLUME_UNITY = 100;
-
-/**
- * Pure loudness math: native level plus the client gain plus the level the
- * served body carries. `volume` is the platform's own unit (100 = native), so
- * a body serving 62 is ~4.15 dB down; the gate judges the level the visitor
- * receives, never a registry default (voice-parity ticket 21).
- */
-export function checkLoudness(input: {
-  nativeLufs: number;
-  gain: number;
-  volume: number;
-  agentId?: string;
-}): LoudnessCheck {
-  const served =
-    input.agentId === undefined ? "" : `, served volume ${input.volume} on ${input.agentId}`;
-  const basis = `native ${input.nativeLufs}, gain ${input.gain}${served}`;
-  if (input.volume <= 0) {
-    return {
-      ok: false,
-      matchedLufs: null,
-      detail: `served volume ${input.volume} is silence: the level is unmeasurable (${basis})`,
-    };
-  }
-  const matchedLufs = Number(
-    (
-      input.nativeLufs +
-      20 * Math.log10(input.gain) +
-      20 * Math.log10(input.volume / SERVED_VOLUME_UNITY)
-    ).toFixed(2),
-  );
-  const ok = Math.abs(matchedLufs - TIMBRE_REFERENCE_LUFS) <= TIMBRE_LUFS_TOLERANCE_DB;
-  return {
-    ok,
-    matchedLufs,
-    detail: ok
-      ? `matched ${matchedLufs} LUFS vs reference ${TIMBRE_REFERENCE_LUFS} LUFS (${basis})`
-      : `matched ${matchedLufs} LUFS misses reference ${TIMBRE_REFERENCE_LUFS} LUFS by more than ${TIMBRE_LUFS_TOLERANCE_DB} dB (${basis})`,
-  };
-}
-
-/**
- * Loudness sanity for one voice from the body the run served, never a
- * reconstruction. `unmeasured` is explicit when no body was read or the body
- * serves no level: the voice is reported, not passed by arithmetic.
- *
- * This is the per-voice gain table's review number (ticket 25). It is not the
- * timbre gate's level leg any more: that reads a measured file (ticket 16).
- */
-export function checkServedLoudness(
-  voiceId: string,
-  runBody?: RunBody | null,
-): LoudnessCheck & { unmeasured?: boolean } {
-  const body = runBodyServedBody(runBody);
-  if (!body) {
-    return {
-      ok: false,
-      unmeasured: true,
-      matchedLufs: null,
-      detail: `unmeasured: ${runBodyUnmeasuredReason(runBody)}; the served level is unknown (loudness is reported not failed)`,
-    };
-  }
-  const volume = servedAgentOutputVolume(body);
-  if (volume === null) {
-    return {
-      ok: false,
-      unmeasured: true,
-      matchedLufs: null,
-      detail: `unmeasured: stored agent ${body.agentId} served no output level (loudness is reported not failed)`,
-    };
-  }
-  const native = NATIVE_VOICE_LUFS[voiceId];
-  if (native === undefined) {
-    return {
-      ok: false,
-      unmeasured: true,
-      matchedLufs: null,
-      detail: `no native loudness measurement for "${voiceId}" on ${body.agentId} (served volume ${volume}): probes still gate, loudness is reported not failed`,
-    };
-  }
-  return checkLoudness({
-    nativeLufs: native,
-    gain: voicePlaybackGain(voiceId),
-    volume,
-    agentId: body.agentId,
-  });
-}
 
 /**
  * One saved capture the level leg measures itself. The gate runs the level
@@ -3074,9 +2884,8 @@ function measuredFileFacts(
 /**
  * The timbre gate's level leg (voice-parity ticket 16). Two measured files, one
  * comparison: the delivered integrated loudness against the reference within
- * the library's existing 0.2 LU tolerance. The old derived constant
- * (`NATIVE_VOICE_LUFS` plus a registry gain) is not an input, so a voice no
- * file measured is reported unmeasured instead of greening on arithmetic.
+ * the library's existing 0.2 LU tolerance. There is no derived formula left to
+ * green a voice no file measured (ticket 36 deleted the gain term).
  */
 export function checkMeasuredLevel(
   input?: MeasuredLevelInput | null,
@@ -3126,9 +2935,9 @@ export function checkTimbreProbes(probes: TimbreProbes): { ok: boolean; detail: 
 
 /**
  * Offline PCM check against the same defects the live probes watch:
- * clipped samples (analyzePcm clippedSampleRatio, the gain softLimit's
- * backstop) and playout-scale adjacent-sample jumps. Missing evidence
- * (dry run, decoder unavailable) passes open, never fails closed.
+ * clipped samples (analyzePcm clippedSampleRatio) and playout-scale
+ * adjacent-sample jumps. Missing evidence (dry run, decoder unavailable)
+ * passes open, never fails closed.
  */
 export function checkEvidenceTimbre(channel: AgentChannelEvidence | null): {
   ok: boolean;
@@ -3139,7 +2948,7 @@ export function checkEvidenceTimbre(channel: AgentChannelEvidence | null): {
   if (clipped > 0) {
     return {
       ok: false,
-      detail: `clip ${clipped} of agent-channel samples at full scale (softLimit backstop missed)`,
+      detail: `clip ${clipped} of agent-channel samples at full scale`,
     };
   }
   const step = channel.largestAdjacentStep ?? 0;
@@ -3213,22 +3022,6 @@ export function evaluateTimbreGate(input: {
   };
 }
 
-/**
- * Console gain table: the one loudness path per voice — the served server
- * level plus the client gain, with the native and matched levels that explain
- * the number. An unread voice prints INFO (reported, not greened).
- */
-export function formatVoiceGainTable(rows: VoiceGainRow[]): string {
-  const lufs = (value: number | null) => (value === null ? "unmeasured" : `${value} LUFS`);
-  const volume = (value: number | null) => (value === null ? "unmeasured" : String(value));
-  const lines = rows.map((row) => {
-    const scope = row.isGate ? "gate" : "regression";
-    const line = `${row.status.padEnd(6)} ${row.voice.padEnd(10)} ${scope.padEnd(10)} vol=${volume(row.outputVolume)} gain=${row.gain} native ${lufs(row.nativeLufs)} matched ${lufs(row.matchedLufs)}`;
-    return row.status === "INFO" ? `${line} — ${row.detail}` : line;
-  });
-  return ["demo voice gain (served body output level + client playback gain)", ...lines].join("\n");
-}
-
 /** Dry-run listing: every beat with its window, plus the resolved gate and regression set. */
 export function formatGoldenScript(gateVoice: string, runBody?: RunBody | null): string {
   const playback = gateVoicePlayback(gateVoice, runBody);
@@ -3236,11 +3029,9 @@ export function formatGoldenScript(gateVoice: string, runBody?: RunBody | null):
     (beat, index) =>
       `${index + 1}. ${beat.beat} — visitor: ${beat.visitor} — window: ${beat.window.metric} ${beat.window.min}–${beat.window.max} ${beat.window.unit} — expect: ${beat.expect}`,
   );
-  const regression = regressionVoices(gateVoice)
-    .map((voice) => `${voice} (gain ${voicePlaybackGain(voice)})`)
-    .join(", ");
+  const regression = regressionVoices(gateVoice).join(", ");
   return [
-    `golden script (${GOLDEN_VERTICAL}, ~${GOLDEN_SCRIPT_BUDGET_S}s, gate ${playback.id} vol=${playback.outputVolume ?? "unmeasured"} gain=${playback.playbackGain})`,
+    `golden script (${GOLDEN_VERTICAL}, ~${GOLDEN_SCRIPT_BUDGET_S}s, gate ${playback.id} vol=${playback.outputVolume ?? "unmeasured"})`,
     ...lines,
     `regression voices: ${regression}`,
   ].join("\n");
@@ -5671,9 +5462,8 @@ export function buildSkeletonArtifact(input: {
   const runBody = input.runBody ?? null;
   const bodyEvidence = runBodyEvidence(runBody);
   const servedBody = runBodyServedBody(runBody);
-  const loudnessCheck = checkServedLoudness(input.voice, runBody);
-  // Ticket 16: the level leg's verdict comes from the measured files, not
-  // from `loudnessCheck` (which stays the gain table's review number).
+  // Ticket 16: the level leg's verdict comes from the measured files. There is
+  // no client-gain formula left to produce a level number (ticket 36).
   const measuredLevelCheck = checkMeasuredLevel(input.measuredLevel);
   const dryRun = input.dryRun ?? false;
   const measuredSources = measuredEvidenceSources({
@@ -5777,13 +5567,10 @@ export function buildSkeletonArtifact(input: {
     probes: timbreProbes,
     loudness: {
       referenceLufs: TIMBRE_REFERENCE_LUFS,
-      matchedLufs: loudnessCheck.matchedLufs,
-      gain: gateVoicePlayback(input.voice, runBody).playbackGain,
       outputVolume: servedBody ? servedAgentOutputVolume(servedBody) : null,
       ok: measuredLevelCheck.status === "PASS" && servedBody !== null,
       detail: measuredLevelCheck.detail,
       measured: measuredLevelCheck,
-      voices: voiceGainTable(input.voice, runBody),
     },
     transcripts: {
       sha256: sha256Hex(input.runnerStdout),
@@ -6465,8 +6252,6 @@ export type RegressionMatrix = {
   results: RegressionVoiceResult[];
   /** The gate voice's carried verdict; regression rows never modify it. */
   gate: MatrixGateVerdict;
-  /** The applied loudness path per matrix voice (ticket 25): registry only. */
-  gains: VoiceGainRow[];
   gates: ScoreboardGate[];
 };
 
@@ -6507,12 +6292,11 @@ export function buildRegressionMatrix(input: {
     voices: results.map((result) => result.voice),
     results,
     gate: gateVerdictFromArtifact(gateVoice, gateEntry?.gates, gateEntry?.subScores),
-    gains: results.map((result) => voiceGainRow(result.voice, gateVoice)),
     gates,
   };
 }
 
-/** Console table: gate verdict plus one row per voice, the applied gain table, and summary. */
+/** Console table: gate verdict plus one row per voice and the summary. */
 export function formatMatrixTable(matrix: RegressionMatrix): string {
   const clean = matrix.results.filter((result) => result.status === "PASS").length;
   const subScores =
@@ -6527,7 +6311,6 @@ export function formatMatrixTable(matrix: RegressionMatrix): string {
     `demo voice matrix (gate ${matrix.gateVoice}, ${matrix.results.length} voices, ${clean}/${matrix.results.length} clean)`,
     gateRow,
     ...rows,
-    formatVoiceGainTable(matrix.gains),
   ].join("\n");
 }
 

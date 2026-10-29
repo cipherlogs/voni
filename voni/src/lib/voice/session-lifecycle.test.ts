@@ -10,7 +10,6 @@ import {
   decideReconnectOnClose,
   effectiveInlineLanguages,
   SessionGeneration,
-  softLimit,
   stripSpokenToolCall,
   VOICE_MIC_CONSTRAINTS,
   VoiceSession,
@@ -36,7 +35,7 @@ import {
 } from "./context";
 import { DEMO_VOICE_IDS, SILENCE_CHECK_IN_INSTRUCTIONS } from "@/lib/demo/voni-agent";
 import { evalToolExecutor } from "@/lib/demo/eval-transport";
-import { VOICE_OUTPUT_VOLUME, voicePlaybackGain } from "@/lib/agents/voices";
+import { VOICE_OUTPUT_VOLUME } from "@/lib/agents/voices";
 import { decodeWav } from "@/lib/audio/format-facts";
 
 // Minimal WebSocket shape: updateConfig only touches readyState + send.
@@ -2028,84 +2027,96 @@ test("inline session update pins the registry output level for every demo voice"
   assert.deepEqual(update["output"], { voice: "lola", volume: 100 });
 });
 
-test("managed session loudness has one stage: registry gain applied once, never compounded", () => {
+test("agent samples reach the playout bit-identical: no gain, knee or limiter", () => {
   const { handle, internals } = makeSession();
-  const peaks: number[] = [];
+  const played: { bytes: Uint8Array; rate: number }[] = [];
   internals["playout"] = {
-    play: (pcm: Uint8Array) => {
-      const view = new DataView(pcm.buffer, pcm.byteOffset, pcm.length);
-      let peak = 0;
-      for (let i = 0; i + 1 < pcm.length; i += 2) {
-        peak = Math.max(peak, Math.abs(view.getInt16(i, true)));
-      }
-      peaks.push(peak);
+    play: (pcm: Uint8Array, rate: number) => {
+      played.push({ bytes: Uint8Array.from(pcm), rate });
     },
     flush: () => undefined,
     settled: () => true,
     queuedMs: () => 0,
   };
-  handle({ type: "session.ready", session_id: "s-one-gain" });
-  const session = internals as unknown as { setOutputGain: (gain: number) => void };
-  // 1000 PCM16 steps, far below the soft knee: gain stays exactly linear.
-  const pcm = new Uint8Array([0xe8, 0x03]);
-  const base64 = Buffer.from(pcm).toString("base64");
-  // No gain was set: the session must not apply a hidden loudness stage.
-  handle({ type: "reply.audio", reply_id: "r0", data: base64 });
-  assert.equal(peaks[0], 1000, "unset gain plays the server level untouched");
-  session.setOutputGain(voicePlaybackGain("juergen"));
-  handle({ type: "reply.audio", reply_id: "r1", data: base64 });
-  assert.equal(peaks[1], Math.round(1000 * voicePlaybackGain("juergen")));
-  // Setting the same registry gain again replaces it; it never stacks.
-  session.setOutputGain(voicePlaybackGain("juergen"));
-  handle({ type: "reply.audio", reply_id: "r2", data: base64 });
-  assert.equal(peaks[2], peaks[1], "gain is one stage, not a new stage per call");
+  handle({ type: "session.ready", session_id: "s-transparent" });
+  // A full-scale square would bend under any soft knee applied at any gain;
+  // a quiet clip would be scaled up by a per-voice gain. Both must arrive
+  // sample-for-sample as the server sent them.
+  const clips = [
+    Int16Array.from([32767, -32768, 32767, -32768, 12345, -12345]),
+    Int16Array.from([100, -100, 0, 1, -1, 2]),
+    Int16Array.from([-32768, 32767, -1, 1]),
+  ];
+  clips.forEach((samples, index) => {
+    const bytes = new Uint8Array(samples.buffer, samples.byteOffset, samples.byteLength);
+    handle({
+      type: "reply.audio",
+      reply_id: `r${index}`,
+      data: Buffer.from(bytes).toString("base64"),
+    });
+    const sent = played[index];
+    assert.ok(sent, `chunk ${index} never reached the playout`);
+    assert.equal(sent.bytes.length, bytes.length, "the client resampled or repacked the chunk");
+    assert.ok(
+      Buffer.from(sent.bytes).equals(Buffer.from(bytes)),
+      `chunk ${index} was altered on the clean path (no client level stage is allowed)`,
+    );
+  });
+  assert.equal(played.length, clips.length, "no chunk was split, merged or dropped");
 });
 
-
-test("playback gain scales agent audio under a soft knee, never a hard clamp", () => {
+test("removing client gain changes no timing: one play per chunk at the resolved rate", () => {
   const { handle, internals } = makeSession();
-  const played: { len: number; peak: number }[] = [];
+  const played: { length: number; rate: number }[] = [];
   internals["playout"] = {
-    play: (pcm: Uint8Array) => {
-      const view = new DataView(pcm.buffer, pcm.byteOffset, pcm.length);
-      let peak = 0;
-      for (let i = 0; i + 1 < pcm.length; i += 2) {
-        peak = Math.max(peak, Math.abs(view.getInt16(i, true)));
-      }
-      played.push({ len: pcm.length, peak });
-    },
+    play: (pcm: Uint8Array, rate: number) =>
+      played.push({ length: pcm.length, rate }),
     flush: () => undefined,
     settled: () => true,
     queuedMs: () => 0,
   };
-  handle({ type: "session.ready", session_id: "s-gain" });
-  const session = internals as unknown as {
-    setOutputGain: (gain: number) => void;
-  };
-  session.setOutputGain(2.0);
-  // 1000 * 2 = 2000 stays linear; 20000 * 2 bends under full scale.
-  const pcm = new Uint8Array([0xe8, 0x03, 0x20, 0x4e]);
-  const base64 = Buffer.from(pcm).toString("base64");
-  handle({ type: "reply.audio", reply_id: "r1", data: base64 });
-  assert.equal(played.length, 1);
-  assert.ok((played[0]?.peak ?? 0) > 30000 && (played[0]?.peak ?? 0) <= 32767, `peak ${played[0]?.peak}`);
-});
-
-test("softLimit: linear below the knee, smooth and bounded above it", () => {
-  assert.equal(softLimit(2000), 2000);
-  assert.equal(softLimit(-2000), -2000);
-  assert.ok(softLimit(40000) < 32767 && softLimit(40000) > 30000);
-  assert.ok(softLimit(1e6) <= 32767);
-  assert.ok(softLimit(-1e6) >= -32767);
-  // Monotonic: louder in never comes out quieter (no fold-back distortion).
-  let last = -Infinity;
-  for (let x = 0; x <= 130000; x += 500) {
-    assert.ok(softLimit(x) >= last);
-    last = softLimit(x);
+  handle({ type: "session.ready", session_id: "s-timing" });
+  const chunk = new Uint8Array([0x01, 0x00, 0x02, 0x00, 0x03, 0x00]);
+  for (let index = 0; index < 3; index++) {
+    handle({
+      type: "reply.audio",
+      reply_id: `r${index}`,
+      data: Buffer.from(chunk).toString("base64"),
+    });
   }
-  // Continuous at the knee: no step where the curve changes.
-  const knee = 0.8 * 32767;
-  assert.ok(Math.abs(softLimit(knee + 1) - softLimit(knee)) < 2);
+  // Level processing used to rewrite every sample before the same `play`
+  // call; the schedule therefore cannot move with it. The worklet owns timing.
+  assert.equal(played.length, 3, "each server chunk is scheduled once");
+  for (const call of played) {
+    assert.equal(call.length, chunk.length, "duration unchanged by the level stage");
+    assert.equal(call.rate, DEFAULT_OUTPUT_SAMPLE_RATE);
+  }
+});
+
+test("the voice path carries no client gain, knee, limiter or gain table", () => {
+  // A deleted stage cannot be asserted through a public API: absence is the
+  // contract, so the guard reads the voice path's own source.
+  assert.doesNotMatch(
+    SESSION_SOURCE,
+    /setOutputGain|outputGain|softLimit|SOFT_KNEE|Math\.tanh/,
+    "session playback still alters the agent's samples",
+  );
+  const voicesDir = join(dirname(fileURLToPath(import.meta.url)), "..", "agents");
+  const voicesSource = readFileSync(join(voicesDir, "voices.ts"), "utf8");
+  assert.doesNotMatch(
+    voicesSource,
+    /VOICE_PLAYBACK_GAIN|voicePlaybackGain|playbackGain/,
+    "the per-voice client gain table still exists",
+  );
+  const callSource = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), "..", "..", "components", "voice-call.tsx"),
+    "utf8",
+  );
+  assert.doesNotMatch(
+    callSource,
+    /setOutputGain|voicePlaybackGain|\bgain\b/i,
+    "the call still applies a client level stage",
+  );
 });
 
 // ── Hold: park, resume, reload resume, background wake ───────────────────

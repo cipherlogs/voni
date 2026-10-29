@@ -24,7 +24,7 @@ import {
 } from "./stored-agents";
 import { END_CALL_TOOL } from "@/lib/tools/definitions";
 import { VONI_GREETINGS, DEMO_VOICE_IDS } from "./voni-agent";
-import { VOICE_OUTPUT_VOLUME, voicePlaybackGain } from "@/lib/agents/voices";
+import { VOICE_OUTPUT_VOLUME } from "@/lib/agents/voices";
 
 test("the served stored body is read from the platform, never rebuilt", async () => {
   const calls: string[] = [];
@@ -447,7 +447,7 @@ test("demo body carries call control, tuning, and per-agent vocabulary", () => {
   assert.equal(body.input.transcription_mode, "balanced");
   assert.equal(body.input.turn_detection, null, "adaptive defaults; clears any stored object");
   assert.equal(body.input.voice_focus, "near-field");
-  assert.deepEqual(body.output, { volume: 100 }, "loudest level; client gain matches voices");
+  assert.deepEqual(body.output, { volume: 100 }, "loudest level; the stored body is the only level source");
   assert.ok(body.input.keyterms.includes("Voni"), "agent's own name is heard");
   assert.match(body.system_prompt, /use your hang-up tool/, "the hang-up rule ships on demo");
   // Naming the tool in prose makes the model speak it instead of calling it.
@@ -460,13 +460,12 @@ test("demo body carries call control, tuning, and per-agent vocabulary", () => {
   }
 });
 
-test("every demo voice ships the registry output level with no per-agent gain", () => {
+test("every demo voice ships the registry output level with no client gain", () => {
   for (const voice of DEMO_VOICE_IDS) {
     const body = buildDemoAgentBody(voice);
     assert.deepEqual(body.output, { volume: VOICE_OUTPUT_VOLUME });
     assert.deepEqual(Object.keys(body.output), ["volume"], "no gain or loudness knob on the agent");
     assert.ok(!JSON.stringify(body).includes('"gain"'), `${voice} body carries no gain field`);
-    assert.ok(voicePlaybackGain(voice) > 0, `${voice} client gain comes from the registry`);
   }
 });
 
