@@ -46,6 +46,36 @@ the same drift, so a greeting change cannot quietly leave a stale preview.
 only**: the session and TTS paths normalise a voice differently by −3.2 … +5.2
 LU, so it is not the clip's level target.
 
+## Regeneration take (ticket 39)
+
+`takes/anna-en.json` + `takes/anna-en.wav` are one **fresh take** of anna's
+English greeting, rendered through the same silent-greeting session after
+`public/voices/anna.mp3` was committed. The unit test in
+`src/lib/demo/clip-regeneration.test.ts` loads the take, encodes it with the
+generator's encoder, measures it, and compares it with the committed clip:
+
+- identity — the voice, its own Locale, and the greeting the agent speaks;
+- duration within `AUDITION_REGENERATION_DURATION_RATIO` (5%);
+- level within `AUDITION_REGENERATION_LEVEL_TOLERANCE_LU` (1 LU);
+- crest within `AUDITION_REGENERATION_CREST_TOLERANCE_DB` (3 dB);
+- plus ticket 38's format, native-level, bitrate and delivery re-encode checks.
+
+The take is committed because the vendor's synthesis is nondeterministic: three
+takes of the same line measured 5 630, 5 770 and 6 360 ms, and only the 5 770 ms
+take is inside the 5% ratio against the committed clip's 6 024 ms. CI therefore
+measures one fixed sample on every run, while the two rejected durations are
+kept in the evidence and driven through the comparison to prove the ratio can
+fail.
+
+No token, socket or credential is used by the test. **ffmpeg is the only
+prerequisite**: absent locally it is a named skip, absent in CI it is a named
+failure. The test fails — never skips — when the committed clip, its evidence
+record or the take (or its hash) is missing.
+
+Refresh the take when the greeting or the voice changes, with
+`npm run voice:reference -- --voice anna --out-dir <empty dir>`, then update
+`takes/anna-en.json` (file name, sha256, duration) and the line hash together.
+
 ## Pending voices
 
 A voice the generator cannot render gets **no audio** — no placeholder, no
