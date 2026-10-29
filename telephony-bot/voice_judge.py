@@ -2,7 +2,9 @@
 
 Mirrors the voni TypeScript heuristics (`voni/src/lib/voice/jev-judges.ts`)
 with identical thresholds — one rule in two languages, fail-closed in both:
-an unsure barge-in never reads as an interruption.
+an unsure barge-in never reads as an interruption. What counts as filler also
+mirrors the browser's overlap judge (`voni/src/lib/voice/barge-in.ts`), so a
+phone filler resumes the agent instead of taking the floor (voice-parity 70).
 
 Hot-path rule (see server.py): the audio-forwarding loop never awaits a
 network round trip. Everything here is synchronous except `sample_judge`,
@@ -36,6 +38,29 @@ FILLER_TOKENS = frozenset(
     }
 )
 
+# Continuers that never take the floor even though they are not plain filler:
+# the browser's `recognition.bargeIn` set (voni/src/lib/voice/recognition/en.ts),
+# read by `judgeOverlap` (voni/src/lib/voice/barge-in.ts). A Spanish call has
+# its own rendering; this bridge's fallback judge is English.
+BARGE_IN_TOKENS = frozenset(
+    {"so", "well", "like", "yeah", "yes", "yep", "cool", "nice", "wow"}
+)
+
+# "okaay" -> "okay", "sooo" -> "so", "mmhmm" -> "mhm": elongation is the
+# caller's habit, not another word. Same squeeze the browser applies.
+_REPEATS = re.compile(r"(.)\1+")
+
+
+def _squeeze(token: str) -> str:
+    return _REPEATS.sub(r"\1", token)
+
+
+# Both sides of the comparison are squeezed, exactly as the browser does: an
+# entry like "uhhuh" only matches a caller's "uh-huh" after the same rule.
+_FILLER_AND_BARGE_IN = frozenset(
+    _squeeze(token) for token in FILLER_TOKENS | BARGE_IN_TOKENS
+)
+
 # Steering that always reads as an interruption once established, bypassing
 # the word-count floor: stop/wait/no/repeat. Mirrors turns.COMMAND_*.
 COMMAND_PHRASES = frozenset({"hold on", "hang on", "excuse me"})
@@ -47,9 +72,16 @@ _PUNCT_STRIP = str.maketrans("", "", string.punctuation)
 
 
 def is_backchannel(text: str) -> bool:
-    """True when every token is filler — never an interruption."""
+    """True when every token is filler — never an interruption.
+
+    Squeezed first, because "Okaay so" and "sooo" are the caller's habit, not
+    content. The browser's `judgeOverlap` does the same, so the phone and the
+    browser agree on what a filler is (voice-parity 70).
+    """
     words = (text or "").lower().translate(_PUNCT_STRIP).split()
-    return bool(words) and all(token in FILLER_TOKENS for token in words)
+    if not words:
+        return False
+    return all(_squeeze(token) in _FILLER_AND_BARGE_IN for token in words)
 
 
 def is_command_overlap(text: str) -> bool:
