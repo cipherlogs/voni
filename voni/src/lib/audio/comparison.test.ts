@@ -246,6 +246,18 @@ test("breakup count, total and longest inserted silence are reported per file", 
   assert.deepEqual(rowCells(table, "breakup longest silence (s)"), ["0.000", "0.000", "0.500"]);
 });
 
+test("a capture with a lead-in reports its onset, so misalignment is visible", () => {
+  const speech = tone(1, 500, 0.3);
+  const comparison = compareFiles({
+    reference: wavFrom(speech),
+    platform: wavFrom(speech),
+    delivered: wavFrom([...silence(0.5), ...speech]),
+  });
+  const table = formatComparisonTable(comparison);
+
+  assert.deepEqual(rowCells(table, "onset (s)"), ["0.000", "0.000", "0.500"]);
+});
+
 test("files at different rates and channel counts are named, never a crash", () => {
   // A phone platform recording at 8 kHz beside a 24 kHz reference, and a
   // delivered capture carrying two channels. Everything per-file still prints;

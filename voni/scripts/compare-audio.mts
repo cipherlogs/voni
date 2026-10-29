@@ -1,6 +1,6 @@
 /**
- * W0 comparison — one table over three saved captures of the same line, and
- * optionally the vendor-floor verdict.
+ * W0 comparison — one table over three saved captures of the same line, the
+ * first-divergence verdict, and optionally the vendor-floor verdict.
  *
  *   npm run voice:compare -- \
  *     --reference .voice-references/anna-<hash>.wav \
@@ -19,15 +19,19 @@
  *
  * Every file is decoded before anything is measured, so a missing or
  * unreadable capture fails by path before a table is printed. The table itself
- * is measurements only; naming the first divergence is the verdict's job
- * (`lib/audio/comparison.ts` exposes the rows for it).
+ * is measurements only; the verdict after it names the first divergence as
+ * reference, platform, model text or client. `--line` and `--transcript` are
+ * what let it attribute a divergence to the model's words; without them the
+ * verdict says model text was not checked rather than guessing.
  *
  * `--floor` adds floor mode: the subject is judged against the committed vendor
  * floor (`lib/audio/vendor-floor.ts`) instead of against the previous take. It
  * fails only when it is *worse* than the floor on a measured axis — level,
  * peak headroom, distortion, breakups or modulation — and names that axis.
  * Being merely different does not fail; an axis the file cannot carry is
- * inconclusive rather than a pass.
+ * inconclusive rather than a pass. When `--platform` is also supplied, the
+ * three-way table and the first-divergence verdict print first, then the floor
+ * verdict: the floor result is never folded into the verdict.
  */
 import { resolve } from "node:path";
 import {
@@ -38,6 +42,7 @@ import {
   type CaptureRole,
 } from "../src/lib/audio/comparison";
 import { compareToFloor, formatFloorVerdict } from "../src/lib/audio/floor-mode";
+import { decideVerdict } from "../src/lib/audio/verdict";
 import { decodeAudioFile } from "../src/lib/audio/format-facts";
 import { loadVendorFloor } from "../src/lib/audio/vendor-floor";
 
@@ -47,18 +52,26 @@ const USAGE = `Usage: npm run voice:compare -- <captures> [--floor]
   --platform  <file.wav>   the agent channel of the platform's recording
   --delivered <file.wav>   what the browser's playout emitted
 
+Optional, for attributing model text:
+
+  --line        <text>     the line the agent was meant to say
+  --transcript  <text>     the platform transcript of what it said
+
   --floor                  judge the subject against the committed vendor floor
   --floor-voice <voice>    floor voice id (default anna)
   --floor-locale <locale>  floor Locale (default en)
 
-Compares three saved 16-bit PCM WAVs of one line. No call is placed. The
-reference is the baseline for the distortion residual.
+Compares saved 16-bit PCM WAVs of one line. No call is placed. The reference is
+the baseline for the distortion residual.
+
+Without --floor, all three captures are required and the output is the table
+followed by the first-divergence verdict.
 
 With --floor, --reference and --delivered are required and the subject is judged
 against the committed vendor floor: it fails when it is worse than the floor on
 any measured axis (level, peak headroom, distortion, breakups, modulation), not
 merely different from before. --platform is optional in floor mode; when given,
-the three-way table is printed too.
+the three-way table and the verdict are printed too, before the floor verdict.
 
 Exit codes: 0 pass (or a table with no --floor), 1 fail, 2 inconclusive.`;
 
@@ -89,16 +102,38 @@ function load(role: CaptureRole, path: string): CaptureInput {
   }
 }
 
-/** Three-way table mode: every role is required. */
+/**
+ * Print the three-way table and then the first-divergence verdict. The inputs
+ * are already decoded, so a refused capture never leaves a half table.
+ */
+function printComparison(captures: CaptureInput[]): void {
+  const comparison = compareCaptures(captures);
+  console.log(formatComparisonTable(comparison));
+
+  const verdict = decideVerdict({
+    comparison,
+    intendedLine: arg("--line"),
+    transcript: arg("--transcript"),
+  });
+  console.log("");
+  console.log(`Verdict: ${verdict.sentence}`);
+  console.log(
+    `  thresholds: ${verdict.thresholds
+      .map((entry) => `${entry.key} ${entry.value} ${entry.unit}`)
+      .join(", ")} (src/lib/demo/scoreboard-budgets.ts)`,
+  );
+}
+
+/** Three-way mode: every role is required. */
 function printTable(): void {
-  const captures = CAPTURE_ROLES.map((role) => load(role, requiredPath(role)));
-  console.log(formatComparisonTable(compareCaptures(captures)));
+  printComparison(CAPTURE_ROLES.map((role) => load(role, requiredPath(role))));
 }
 
 /**
  * Floor mode: the subject is its reference plus its delivered capture, and the
  * bar is the committed floor. The platform recording is not needed to judge the
- * subject, so it is only used when the caller also wants the three-way table.
+ * subject, so it is only used when the caller also wants the three-way table
+ * and the first-divergence verdict.
  */
 function printFloorVerdict(): void {
   const reference = load("reference", requiredPath("reference"));
@@ -107,7 +142,7 @@ function printFloorVerdict(): void {
   const platformPath = arg("--platform");
   if (platformPath) {
     const platform = load("platform", platformPath);
-    console.log(formatComparisonTable(compareCaptures([reference, platform, delivered])));
+    printComparison([reference, platform, delivered]);
     console.log("");
   }
 

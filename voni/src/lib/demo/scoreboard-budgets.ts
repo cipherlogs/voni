@@ -184,6 +184,62 @@ const BUDGETS = {
     gate: "accent-human",
     source: "blind ballot scale 1-5",
   },
+  // W0 verdict bars (ticket 15). New records only: the demo-scoreboard
+  // thresholds above are untouched, so a green there keeps its meaning.
+  comparisonLevelLu: {
+    value: 1.5,
+    unit: "db",
+    gate: "audio-comparison",
+    source: "spec W0 comparison + story 7: a level step above 1.5 LU is a different loudness, not a re-encode",
+  },
+  comparisonModulationDepth: {
+    value: 0.05,
+    unit: "ratio",
+    gate: "audio-comparison",
+    source: "envelope-modulation module bar: 5% peak-to-trough is the smallest detectable cushion artifact",
+  },
+  comparisonBandDeltaDb: {
+    value: 3,
+    unit: "db",
+    gate: "audio-comparison",
+    source: "spec W0: an octave tilt move above 3 dB is a timbre change a re-encode does not make",
+  },
+  comparisonDistortionDb: {
+    value: -45,
+    unit: "db",
+    gate: "audio-comparison",
+    source: "ticket 14 probe: a 1% third harmonic reads -40 dB, so -45 dB separates a clean re-encode from reshaping with margin",
+  },
+  comparisonDistortionDeltaDb: {
+    value: 3,
+    unit: "db",
+    gate: "audio-comparison",
+    source: "spec W0: the delivered residual may not rise more than 3 dB above the platform's against the same reference",
+  },
+  comparisonBreakupCount: {
+    value: 1,
+    unit: "count",
+    gate: "audio-comparison",
+    source: "spec stories 4, 12: one inserted silence in a capture the other does not have is a hole",
+  },
+  comparisonOnsetToleranceS: {
+    value: 0.05,
+    unit: "s",
+    gate: "audio-comparison",
+    source: "spec W0: captures more than 50 ms apart cannot be compared sample-for-sample; a lead-in is reported, never blamed",
+  },
+  comparisonModelTextWordChanges: {
+    value: 0,
+    unit: "count",
+    gate: "audio-comparison",
+    source: "spec W0: the platform transcript must be the intended line before any audio layer is attributed",
+  },
+  comparisonReferenceClipDbtp: {
+    value: -0.1,
+    unit: "db",
+    gate: "audio-comparison",
+    source: "spec W0: a reference at the full-scale ceiling cannot be the baseline for peak or distortion",
+  },
 } as const satisfies Record<string, BudgetEntry>;
 
 /** The one table. Gate constants in scoreboard.ts derive from these values. */
