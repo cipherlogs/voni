@@ -15,6 +15,17 @@
  * and proposed tool calls (verify-before-apply).
  */
 
+import {
+  EN_RECOGNITION,
+  cleanTokens,
+  isCommandBargeIn as isCommandBargeInIn,
+  isEndCallRequest as isEndCallRequestIn,
+  isFillerOnly as isFillerOnlyIn,
+  isGoodbyeLine as isGoodbyeLineIn,
+} from "./recognition";
+
+export { cleanTokens };
+
 export const BARGE_IN_THRESHOLD = 0.65;
 export const REPLY_NOW_THRESHOLD = 0.6;
 export const FILLER_THRESHOLD = 0.6;
@@ -64,38 +75,8 @@ export type OffTrackState = {
 export type JudgeKind = "barge-in" | "reply" | "tool" | "nav-speculative" | "off-track";
 export type JudgeSource = "jev" | "fallback";
 
-/**
- * Filler-only tokens that must never yield while the agent holds the floor
- * (breath mishears, hmm, got-it continuers). "yes"/"yeah" are deliberately
- * ABSENT from filler but are NOT commands either: assent waits for the
- * settled final's soft-confirm path instead of cutting in. Mirrors
- * voice-pipeline/turns.py and telephony-bot/voice_judge.py.
- */
-export const FILLER_TOKENS = new Set([
-  "uh", "huh", "uhhuh", "um", "umm", "uhm", "er", "erm",
-  "hmm", "hm", "ah", "oh", "mhm", "mmhm", "mmhmm", "mm",
-  "yup", "okay", "ok", "right", "alright", "sure",
-  "gotcha", "got", "it", "thanks",
-]);
-
-/**
- * Steering that always yields once established, bypassing the word-count
- * floor and the probability threshold: stop/wait/no/repeat. The LLM (which
- * sees the overlap in context) decides transition-vs-continue; the gate
- * only guarantees steering is heard. Mirrors turns.COMMAND_*.
- */
-const COMMAND_PHRASES = ["hold on", "hang on", "excuse me"];
-const COMMAND_TOKENS = new Set([
-  "stop", "wait", "no", "nope", "repeat", "again", "sorry", "listen",
-]);
-
 function isAllFiller(text: string): boolean {
-  const words = text
-    .toLowerCase()
-    .replace(/[!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~]/g, "")
-    .split(/\s+/)
-    .filter(Boolean);
-  return words.length > 0 && words.every((token) => FILLER_TOKENS.has(token));
+  return isFillerOnlyIn(text, EN_RECOGNITION);
 }
 
 function wordCount(text: string): number {
@@ -103,45 +84,26 @@ function wordCount(text: string): number {
   return words.length === 1 && words[0] === "" ? 0 : words.length;
 }
 
-export function cleanTokens(text: string): string[] {
-  return text
-    .toLowerCase()
-    .replace(/[!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~]/g, "")
-    .split(/\s+/)
-    .filter(Boolean);
-}
-
-/** True when the overlap carries steering (stop/wait/no/repeat...). */
+/**
+ * The English-pinned match surface for call paths that still run English.
+ * Every word and rule is owned by `./recognition`, keyed by Locale; a
+ * locale-aware caller passes its own `CompleteRecognition` to the same
+ * functions. These wrappers are neither a second owner nor a fallback.
+ *
+ * True when the overlap carries steering (stop/wait/no/repeat...). The LLM
+ * (which sees the overlap in context) decides transition-vs-continue; the
+ * gate only guarantees steering is heard.
+ */
 export function isCommandBargeIn(text: string): boolean {
-  const tokens = cleanTokens(text);
-  if (tokens.length === 0) return false;
-  const padded = ` ${tokens.join(" ")} `;
-  if (COMMAND_PHRASES.some((phrase) => padded.includes(` ${phrase} `))) {
-    return true;
-  }
-  return tokens.some((token) => COMMAND_TOKENS.has(token));
+  return isCommandBargeInIn(text, EN_RECOGNITION);
 }
 
 /**
  * The caller asking to end the call. Never an aside to talk through or an
  * off-track strike: the agent says goodbye and ends the call.
- * ponytail: phrase list, English plus the demo languages' goodbyes; the
- * prompt still covers every other wording, so extend from real misses.
  */
-const END_CALL_PHRASES = [
-  "hang up", "end the call", "end this call", "end call", "gotta go", "got to go", "have to go", "au revoir",
-];
-const END_CALL_TOKENS = new Set([
-  "bye", "goodbye", "adios", "adiós", "tschüss", "tschuss", "arrivederci", "tchau",
-]);
-
 export function isEndCallRequest(text: string): boolean {
-  const tokens = cleanTokens(text);
-  const padded = ` ${tokens.join(" ")} `;
-  return (
-    END_CALL_PHRASES.some((phrase) => padded.includes(` ${phrase} `)) ||
-    tokens.some((token) => END_CALL_TOKENS.has(token))
-  );
+  return isEndCallRequestIn(text, EN_RECOGNITION);
 }
 
 /**
@@ -150,10 +112,7 @@ export function isEndCallRequest(text: string): boolean {
  * caller's intent, not the agent's closing line.
  */
 export function isGoodbyeLine(text: string): boolean {
-  const tokens = cleanTokens(text);
-  if (tokens.some((token) => END_CALL_TOKENS.has(token))) return true;
-  const padded = ` ${tokens.join(" ")} `;
-  return ["see you", "talk soon", "take care"].some((phrase) => padded.includes(` ${phrase} `));
+  return isGoodbyeLineIn(text, EN_RECOGNITION);
 }
 
 /**
