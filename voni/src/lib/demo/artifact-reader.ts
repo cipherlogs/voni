@@ -166,6 +166,7 @@ export function parseScoreboardArtifact(raw: unknown, source: string): Scoreboar
       );
     }
   }
+  assertEligibilityAgreesWithEvents(record.eligibility, eventTypes, source);
 
   // A declared pipeline claims the one shared shape (ticket 112); an artifact
   // with no discriminator predates the cascade and is read expand-only so old
@@ -785,6 +786,51 @@ export const FALLBACK_EVENT_TYPE = "provider_fallback";
 
 /** The budget event that ends a call; an 80% crossing is not a stop. */
 export const BUDGET_STOP_EVENT_TYPE = "budget.stopped";
+
+/**
+ * The events that make a run contaminated (M13). An artifact whose own
+ * eligibility flag says eligible while its event stream records one of these
+ * is a lying artifact, refused by field: the flag and the stream cannot
+ * disagree, and green is never a reading of a contaminated run.
+ */
+const CONTAMINATING_EVENT_TYPES: readonly string[] = [
+  FALLBACK_EVENT_TYPE,
+  BUDGET_STOP_EVENT_TYPE,
+];
+
+/**
+ * Refuse an artifact that claims green while its own events say contaminated
+ * (M4/M18, ticket 143). The reader already validates the flag's shape; this is
+ * the one cross-field rule that stops `eligibility: {eligible: true}` from
+ * laundering a fallback or a budget stop. The run verdict derives eligibility
+ * from the facts instead of the flag, so this refusal names the contradiction
+ * rather than silently overriding one source with the other.
+ */
+function assertEligibilityAgreesWithEvents(
+  rawEligibility: unknown,
+  eventTypes: readonly string[],
+  source: string,
+): void {
+  if (
+    rawEligibility === null ||
+    typeof rawEligibility !== "object" ||
+    Array.isArray(rawEligibility) ||
+    (rawEligibility as Record<string, unknown>).eligible !== true
+  ) {
+    return; // parseEligibility names a malformed flag and an eligible:false run
+  }
+  const contaminating = eventTypes.find((type) => CONTAMINATING_EVENT_TYPES.includes(type));
+  if (contaminating === undefined) return;
+  const why =
+    contaminating === FALLBACK_EVENT_TYPE
+      ? "a fallback-contaminated run is not eligible for green"
+      : "a run with a budget stop is not eligible for green";
+  throw new ArtifactReadError(
+    source,
+    "eligibility.eligible",
+    `claims eligible: true but its events record "${contaminating}"; ${why}`,
+  );
+}
 
 /**
  * Gates fed by a capture, and the legs each needs (W0/M3). A gate that claims
