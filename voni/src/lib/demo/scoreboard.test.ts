@@ -65,6 +65,7 @@ import {
   TIMBRE_REFERENCE_LUFS,
   addHumanRating,
   analyzeTagMentions,
+  bindBallotsToSubject,
   buildRegressionMatrix,
   checkEvidenceTimbre,
   checkMeasuredLevel,
@@ -74,6 +75,8 @@ import {
   ballotWeightedScore,
   evaluateTimbreBallot,
   TIMBRE_BALLOT_AXIS_WEIGHTS,
+  NATURALNESS_NA_REASON,
+  naturalnessApplies,
   type HumanRatings,
   checkTimbreProbes,
   codeFingerprintFromGit,
@@ -4913,6 +4916,7 @@ test("two raters on different recordings are not one shared recording and never 
   const mixed: HumanRatings = {
     timbre: 5,
     accent: 5,
+    languageNaturalness: null,
     weighted: 5,
     recordingSha256: GATE_RECORDING,
     ratings: [
@@ -4952,6 +4956,111 @@ test("the weighted ballot aggregates the axes and a four blocks below five", () 
   const gate = timbreGateFor({ humanRatings: ballots });
   assert.equal(gate.status, "FAIL", gate.detail);
   assert.match(gate.detail, /below five|4\.88/);
+});
+
+// ── Ticket 75: the third axis, language naturalness ─────────────────────────
+
+test("the weighted result includes naturalness: changing only that axis changes the score and the verdict", () => {
+  const es = resolveSubject({ voice: "lola" });
+  assert.equal(es.locale, "es");
+
+  const naturalness = (score: number): HumanRatings =>
+    ballotsFor(
+      { timbre: 5, accent: 5, languageNaturalness: score },
+      { timbre: 5, accent: 5, languageNaturalness: score },
+    );
+
+  // 0.5×5 + 0.25×5 + 0.25×n, worked out independently of the implementation.
+  const five = evaluateTimbreBallot(naturalness(5), es);
+  assert.equal(five.status, "PASS", five.detail);
+  assert.equal(five.weighted, 5);
+
+  const four = evaluateTimbreBallot(naturalness(4), es);
+  assert.equal(four.status, "FAIL", four.detail);
+  assert.equal(four.weighted, 4.75, "naturalness is a quarter of the weighted ballot");
+  assert.match(four.detail, /languageNaturalness/);
+  assert.match(four.detail, /4\.75/);
+
+  const three = evaluateTimbreBallot(naturalness(3), es);
+  assert.equal(three.weighted, 4.5);
+  assert.notEqual(three.weighted, four.weighted);
+  assert.equal(timbreGateFor({ humanRatings: naturalness(4), subject: es }).status, "FAIL");
+});
+
+test("a Spanish subject's two-axis ballot is incomplete, never a renormalised pass", () => {
+  const es = resolveSubject({ voice: "lola" });
+  // A record built before the axis existed: five out of five on the two axes
+  // it carries. Renormalisation would score it 5.00 and pass it.
+  const twoAxis = ballotsFor({ timbre: 5, accent: 5 }, { timbre: 5, accent: 5 });
+
+  const ballot = evaluateTimbreBallot(twoAxis, es);
+  assert.equal(ballot.status, "FAIL", ballot.detail);
+  assert.equal(ballot.weighted, null, "an incomplete ballot has no weighted score");
+  assert.match(ballot.detail, /incomplete/i);
+  assert.match(ballot.detail, /language naturalness/i);
+  assert.match(ballot.detail, /ana, bob/);
+
+  const gate = timbreGateFor({ humanRatings: twoAxis, subject: es });
+  assert.equal(gate.status, "FAIL", gate.detail);
+  assert.match(gate.detail, /incomplete/i);
+});
+
+test("filing a two-axis ballot for a bound Spanish subject is refused by name", () => {
+  const es = resolveSubject({ voice: "lola" });
+  const bound = bindBallotsToSubject(emptyHumanRatings(GATE_RECORDING), es);
+  assert.throws(
+    () => addHumanRating(bound, { rater: "ana", timbre: 5, accent: 5 }, GATE_RECORDING),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.match(error.message, /incomplete/);
+      assert.match(error.message, /languageNaturalness/);
+      return true;
+    },
+  );
+
+  const filed = addHumanRating(
+    bound,
+    { rater: "ana", timbre: 5, accent: 5, languageNaturalness: 5 },
+    GATE_RECORDING,
+  );
+  assert.equal(filed.languageNaturalness, 5, "the third axis has its own mean");
+  assert.equal(filed.weighted, 5);
+});
+
+test("English is the one named N/A: the axis renormalises with a stated reason and still reports its weight", () => {
+  assert.equal(naturalnessApplies("en"), false);
+  assert.equal(naturalnessApplies("es"), true);
+  assert.equal(naturalnessApplies(null), true, "an unnamed Locale never drops an axis");
+
+  const ballots = ballotsFor({ timbre: 5, accent: 5 }, { timbre: 5, accent: 5 });
+  const ballot = evaluateTimbreBallot(ballots, gateSubject());
+  assert.equal(ballot.status, "PASS", ballot.detail);
+  assert.equal(ballot.weighted, 5, "timbre and accent renormalise over themselves for English");
+  assert.match(ballot.detail, /language naturalness N\/A/);
+  assert.match(ballot.detail, /featured baseline Locale/);
+
+  const artifact = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "greeting-cut",
+    runnerStdout: "",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+    runBody: servedBody(SERVED_LEVEL),
+    measuredLevel: measuredPass(),
+    humanRatings: ballots,
+  });
+  const axis = artifact.humanReview.axes.find((entry) => entry.axis === "languageNaturalness");
+  assert.equal(axis?.status, "na");
+  assert.equal(axis?.weight, 0.25, "the report keeps the axis's weight even where it is N/A");
+  assert.match(axis?.reason ?? "", /English is the featured baseline Locale/);
+  assert.equal(artifact.humanReview.counted, true);
+  assert.equal(artifact.humanRatings.notApplicable?.languageNaturalness, NATURALNESS_NA_REASON);
+
+  const report = formatHumanReview(artifact.humanReview);
+  assert.match(report, /languageNaturalness: N\/A ×0\.25/);
+  assert.match(report, /featured baseline/);
+  assert.match(report, /timbre: 5\.0 mean ×0\.5/);
 });
 
 test("a ballot below five names the rater's stated reason and blocks", () => {
@@ -5045,16 +5154,30 @@ test("the human gate needs two raters at five out of five, after the measured re
   assert.equal(awaiting.name, "accent-human");
   assert.equal(awaiting.status, "INFO");
   assert.ok(awaiting.detail.includes("awaiting"));
-  const one = addHumanRating(none, { rater: "ana", timbre: 5, accent: 5 }, RECORDING);
+  const one = addHumanRating(
+    none,
+    { rater: "ana", timbre: 5, accent: 5, languageNaturalness: 5 },
+    RECORDING,
+  );
   assert.equal(evaluateHumanGate(true, one).status, "INFO", "one ballot is reported, never counted");
   // A four is a delivered judgement, not a missing one: it blocks.
   const four = addHumanRating(
     one,
-    { rater: "bob", timbre: 4, accent: 4, reasons: { timbre: "thin", accent: "marked" } },
+    {
+      rater: "bob",
+      timbre: 4,
+      accent: 4,
+      languageNaturalness: 4,
+      reasons: { timbre: "thin", accent: "marked", languageNaturalness: "reads as a translation" },
+    },
     RECORDING,
   );
   assert.equal(evaluateHumanGate(true, four).status, "FAIL", "a ballot below five blocks");
-  const two = addHumanRating(one, { rater: "bob", timbre: 5, accent: 5 }, RECORDING);
+  const two = addHumanRating(
+    one,
+    { rater: "bob", timbre: 5, accent: 5, languageNaturalness: 5 },
+    RECORDING,
+  );
   const counted = evaluateHumanGate(true, two);
   assert.equal(counted.status, "PASS");
   assert.match(counted.detail, /weighted 5\.00\/5/, counted.detail);

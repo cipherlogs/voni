@@ -3191,6 +3191,240 @@ test("--rate files two blind ballots at five out of five on one shared recording
   assert.match(result.stdout, /accent-human/);
 });
 
+// ── Ticket 75: the third axis, language naturalness ─────────────────────────
+
+test("--rate files the third axis: timbre, accent and language naturalness", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "three-axis.json");
+  const result = run(
+    [
+      "--dry-run",
+      "--voice",
+      "lola",
+      "--out",
+      out,
+      "--recording",
+      RECORDING_SHA,
+      "--rate",
+      "ana:5,5,5",
+      "--rate",
+      "bob:5,5,5",
+    ],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    humanRatings: {
+      timbre: number;
+      accent: number;
+      languageNaturalness: number;
+      weighted: number;
+      subject?: { locale: string };
+      ratings: { rater: string; languageNaturalness?: number }[];
+    };
+    humanReview: {
+      axes: { axis: string; weight: number; mean: number | null; status: string }[];
+      weighted: number;
+    };
+  };
+  assert.equal(artifact.humanRatings.subject?.locale, "es");
+  assert.equal(artifact.humanRatings.timbre, 5);
+  assert.equal(artifact.humanRatings.accent, 5);
+  assert.equal(artifact.humanRatings.languageNaturalness, 5, "the third axis is recorded, not dropped");
+  assert.equal(artifact.humanRatings.weighted, 5);
+  for (const ballot of artifact.humanRatings.ratings) {
+    assert.equal(ballot.languageNaturalness, 5, `${ballot.rater}'s ballot carries the third axis`);
+  }
+  const naturalness = artifact.humanReview.axes.find((axis) => axis.axis === "languageNaturalness");
+  assert.equal(naturalness?.weight, 0.25, "the report prints the naturalness weight");
+  assert.equal(naturalness?.mean, 5);
+  assert.equal(naturalness?.status, "required", "the axis applies to a Spanish subject");
+  assert.match(result.stdout, /language naturalness/);
+});
+
+test("--rate without the third axis is an incomplete ballot for a non-English subject", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "two-axis-es.json");
+  const result = run(
+    [
+      "--dry-run",
+      "--voice",
+      "lola",
+      "--out",
+      out,
+      "--recording",
+      RECORDING_SHA,
+      "--rate",
+      "ana:5,5",
+      "--rate",
+      "bob:5,5",
+    ],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.notEqual(result.status, 0, "a missing axis is rejected, not defaulted");
+  assert.ok(!existsSync(out), "the incomplete ballot writes no artifact");
+  assert.match(result.stderr + result.stdout, /languageNaturalness/);
+  assert.match(result.stderr + result.stdout, /incomplete/i);
+});
+
+test("--reviewer-pack loads a reviewer's filed verdict into the ballot with all three axes", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "from-pack.json");
+  const sharedCut = "e".repeat(64);
+  const pack = {
+    schemaVersion: 1,
+    voice: "lola",
+    locale: "es",
+    recording: {
+      voice: "lola",
+      locale: "es",
+      asset: "public/voices/lola.mp3",
+      url: "/voices/lola.mp3",
+      sha256: sharedCut,
+      line: "Hola, soy Voni.",
+      lineSha256: sharedCut,
+      durationMs: 5000,
+      sampleRate: 24000,
+      channels: 1,
+      bitrateKbps: 160,
+      source: "audition-clip",
+    },
+    ballot: {
+      axes: ["timbre", "accent", "languageNaturalness"],
+      scale: { min: 1, max: 5, pass: 5 },
+      reasonRequiredBelow: 5,
+    },
+    verdict: {
+      reviewer: "nuria",
+      reviewedOn: "2026-10-29",
+      locale: "es",
+      scores: { timbre: 5, accent: 5, languageNaturalness: 5 },
+      reasons: {},
+    },
+    generatedOn: "2026-10-29",
+    source: "evidence/audition-clips/clips.json",
+  };
+  const packPath = join(dir, "lola-pack.json");
+  writeFileSync(packPath, JSON.stringify(pack));
+
+  const result = run(
+    ["--dry-run", "--voice", "lola", "--out", out, "--reviewer-pack", packPath],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    humanRatings: {
+      recordingSha256: string;
+      subject?: { locale: string };
+      languageNaturalness: number;
+      weighted: number;
+      ratings: { rater: string; languageNaturalness?: number; recordingSha256?: string }[];
+    };
+    humanReview: { raterCount: number; counted: boolean; axes: { axis: string; mean: number | null }[] };
+  };
+  assert.equal(artifact.humanRatings.recordingSha256, sharedCut, "the pack's own shared cut binds the ballot");
+  assert.equal(artifact.humanRatings.subject?.locale, "es");
+  assert.equal(artifact.humanRatings.ratings.length, 1);
+  assert.equal(artifact.humanRatings.ratings[0]?.rater, "nuria");
+  assert.equal(artifact.humanRatings.ratings[0]?.languageNaturalness, 5);
+  assert.equal(artifact.humanRatings.languageNaturalness, 5);
+  assert.equal(artifact.humanRatings.weighted, 5);
+  assert.equal(
+    artifact.humanReview.axes.find((axis) => axis.axis === "languageNaturalness")?.mean,
+    5,
+  );
+  assert.equal(artifact.humanReview.raterCount, 1, "one reviewer is one ballot, never two");
+  assert.equal(artifact.humanReview.counted, false, "a dry run has no measured result to count against");
+  assert.match(result.stdout, /language naturalness/);
+
+  // A second ear may still file a --rate ballot on the pack's shared cut.
+  const two = join(dir, "from-pack-two.json");
+  const withSecond = run(
+    [
+      "--dry-run",
+      "--voice",
+      "lola",
+      "--out",
+      two,
+      "--reviewer-pack",
+      packPath,
+      "--rate",
+      "bob:5,5,5",
+    ],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.equal(withSecond.status, 0, withSecond.stderr + withSecond.stdout);
+  const merged = JSON.parse(readFileSync(two, "utf8")) as {
+    humanRatings: { ratings: { rater: string }[]; recordingSha256: string };
+    humanReview: { raterCount: number };
+  };
+  assert.deepEqual(
+    merged.humanRatings.ratings.map((ballot) => ballot.rater),
+    ["nuria", "bob"],
+  );
+  assert.equal(merged.humanRatings.recordingSha256, sharedCut, "both ears judge the pack's one cut");
+  assert.equal(merged.humanReview.raterCount, 2);
+});
+
+test("--reviewer-pack is refused when its cut is not the one the run measured", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "pack-mismatch.json");
+  const packPath = join(dir, "pack.json");
+  writeFileSync(
+    packPath,
+    JSON.stringify({
+      schemaVersion: 1,
+      voice: "lola",
+      locale: "es",
+      recording: {
+        voice: "lola",
+        locale: "es",
+        asset: "public/voices/lola.mp3",
+        url: "/voices/lola.mp3",
+        sha256: "e".repeat(64),
+        line: "Hola, soy Voni.",
+        lineSha256: "e".repeat(64),
+        durationMs: 5000,
+        sampleRate: 24000,
+        channels: 1,
+        bitrateKbps: 160,
+        source: "audition-clip",
+      },
+      ballot: {
+        axes: ["timbre", "accent", "languageNaturalness"],
+        scale: { min: 1, max: 5, pass: 5 },
+        reasonRequiredBelow: 5,
+      },
+      verdict: {
+        reviewer: "nuria",
+        reviewedOn: "2026-10-29",
+        locale: "es",
+        scores: { timbre: 5, accent: 5, languageNaturalness: 5 },
+        reasons: {},
+      },
+      generatedOn: "2026-10-29",
+      source: "evidence/audition-clips/clips.json",
+    }),
+  );
+  const result = run(
+    [
+      "--dry-run",
+      "--voice",
+      "lola",
+      "--out",
+      out,
+      "--reviewer-pack",
+      packPath,
+      "--recording",
+      RECORDING_SHA,
+    ],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.notEqual(result.status, 0);
+  assert.ok(!existsSync(out));
+  assert.match(result.stderr + result.stdout, /shared cut|one shared recording|does not match/);
+});
+
 test("--recording-file binds ballots to the harness-computed recording sha256", () => {
   const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
   const out = join(dir, "file-bound.json");
