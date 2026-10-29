@@ -151,7 +151,9 @@ class LeadBudgetTest(unittest.TestCase):
 
         self.assertEqual(backend.dropped_frames, 1)
         sent_audio = factory.socket.sent[1:]
-        self.assertEqual(sum(len(frame) for frame in sent_audio), 5 * BYTES_PER_SECOND + 24000)
+        self.assertEqual(
+            sum(len(frame) for frame in sent_audio), 5 * BYTES_PER_SECOND + 24000
+        )
 
 
 class SilenceTest(unittest.TestCase):

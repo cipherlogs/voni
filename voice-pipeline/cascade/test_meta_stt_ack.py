@@ -104,7 +104,9 @@ class HandshakeBoundTest(unittest.TestCase):
 
         # The spec and ticket say 10 s; the registry is the single source.
         self.assertEqual(backend.handshake_timeout_s, 10.0)
-        self.assertEqual(backend.handshake_timeout_s * 1000.0, require_bound(HANDSHAKE_BOUND))
+        self.assertEqual(
+            backend.handshake_timeout_s * 1000.0, require_bound(HANDSHAKE_BOUND)
+        )
         self.assertEqual(HANDSHAKE_BOUND, "stt.handshake_ms")
 
 
@@ -172,7 +174,9 @@ class RetryableCloseTest(unittest.TestCase):
         self.assertIn("1013", str(raised.exception))
 
     def test_a_codeless_close_is_treated_as_retryable_and_opens_the_leg(self):
-        factory = ScriptedSocketFactory([Frame(close_code=None, exc=ConnectionError("gone"))])
+        factory = ScriptedSocketFactory(
+            [Frame(close_code=None, exc=ConnectionError("gone"))]
+        )
         backend = MetaStreamingSTT(
             call_id="call-123", api_key="test-key", socket_factory=factory
         )

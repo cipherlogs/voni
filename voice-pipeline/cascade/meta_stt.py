@@ -1,4 +1,4 @@
-"""Meta realtime speech-to-text backend: session handshake (ticket 26).
+"""Meta realtime speech-to-text backend: handshake, audio, events, end (26-30).
 
 The credential travels inside the handshake frame (``authorization.accessToken``)
 because the vendor ignores the ``Authorization`` header; the handshake also
@@ -13,6 +13,11 @@ leaves the client before the ack. The wait for that acknowledgement is bounded
 by ``stt.handshake_ms`` (the registry, not a literal); a missing ack fails
 visibly and records the reason, and a close during the wait is classified
 through the shared speech-leg table so the caller can open the leg.
+
+Audio is raw s16le mono at 24 kHz only, paced by a 5 s lead budget with PCM
+silence filling the gaps, and never awaits a vendor reply. Events map onto
+distinct start/partial/end/complete types; only ``endStream`` may follow the
+handshake, at a deliberate end that drains and waits for the normal close.
 """
 
 from __future__ import annotations
@@ -69,6 +74,11 @@ _CONTAINERS = (
     (b"ID3", "MP3/ID3"),
     (b"\x1aE\xdf\xa3", "Matroska/WebM"),
 )
+
+#: The only client text frame after the handshake (spec, Meta STT: "Text
+#: frames"). There is no ForceEndpoint, no UpdateConfiguration and no per-turn
+#: commit, so nothing else may be built here.
+END_STREAM_FRAME = json.dumps({"type": "endStream"})
 
 SocketFactory = Callable[[str, dict[str, str]], Awaitable[Any]]
 
@@ -210,11 +220,21 @@ class MetaStreamingSTT(StreamingSTT):
         self._clock = clock if clock is not None else RealClock()
         self._audio_end = 0.0
         self._dropped_frames = 0
+        self._last_close_code: int | None = None
 
     @property
     def dropped_frames(self) -> int:
         """Frames the audio path refused to forward (malformed or over lead)."""
         return self._dropped_frames
+
+    @property
+    def last_close_code(self) -> int | None:
+        """The vendor's close code on the most recent session, if it sent one.
+
+        Only ``1000`` (normal completion) is acted on here; the policy for
+        ``1008``/``1011``/``1013`` belongs to ticket 31.
+        """
+        return self._last_close_code
 
     @property
     def acked(self) -> bool:
@@ -251,8 +271,7 @@ class MetaStreamingSTT(StreamingSTT):
         be delayed by the client. ``language_codes`` and ``keyterms`` are frozen
         on the first session start and reused on a later session (a reconnect is
         the same call, and the body is frozen for it); no method retunes them.
-        The 10 s ack deadline (``stt.handshake_ms``) and its failure
-        classification belong to ticket 27.
+        The ack wait is bounded by ``stt.handshake_ms`` (ticket 27).
         """
         if self._socket is not None:
             raise RuntimeError("meta speech session is already open")
@@ -269,6 +288,7 @@ class MetaStreamingSTT(StreamingSTT):
         self._session = session
         self._latest_turn = None
         self._audio_end = float(self._clock())
+        self._last_close_code = None
         url = f"{REALTIME_URL}?{urlencode({'sessionId': session})}"
         frame = {
             "authorization": {"accessToken": f"Bearer {self._api_key}"},
@@ -428,10 +448,15 @@ class MetaStreamingSTT(StreamingSTT):
         """
         if self._socket is None or not self._acked:
             raise RuntimeError("meta speech session has no acknowledgement yet")
-        async for raw in self._frames:
-            mapped = self._map_frame(raw)
-            if mapped is not None:
-                yield mapped
+        try:
+            async for raw in self._frames:
+                mapped = self._map_frame(raw)
+                if mapped is not None:
+                    yield mapped
+        except Exception as error:
+            if not self._record_close(error):
+                raise
+            return
 
     def _map_frame(self, raw: Any) -> Any:
         """Map one inbound frame; ``None`` means ignore it."""
@@ -510,12 +535,64 @@ class MetaStreamingSTT(StreamingSTT):
         return None
 
     async def close(self) -> None:
-        """Close the socket. ``endStream`` and close-code handling land in ticket 30."""
+        """End the call deliberately: drain, ``endStream``, wait for the close.
+
+        Idempotent. The audio timeline is drained first (bounded by
+        ``MAX_LEAD_S``) so the vendor has the frames it was sent, then the one
+        permitted text frame goes up, and the socket is read until the vendor
+        closes. Classification of a non-normal close belongs to ticket 31.
+        """
         socket, self._socket = self._socket, None
-        self._frames = None
-        self._acked = False
-        if socket is not None:
+        frames, self._frames = self._frames, None
+        was_acked, self._acked = self._acked, False
+        self._latest_turn = None
+        if socket is None:
+            return
+        if not was_acked:
             await _close_quietly(socket)
+            return
+
+        try:
+            await self._drain_audio()
+            await socket.send(END_STREAM_FRAME)
+        except Exception as error:
+            _log.warning(
+                "meta speech session %s: endStream could not be sent (%s)",
+                self._session,
+                error,
+            )
+        await self._await_vendor_close(frames)
+        await _close_quietly(socket)
+
+    async def _drain_audio(self) -> None:
+        """Wait out the audio already handed to the vendor, bounded by the lead."""
+        lead = self._lead()
+        if lead > 0:
+            await self._clock.sleep(min(lead, MAX_LEAD_S))
+
+    async def _await_vendor_close(self, frames: Any) -> None:
+        """Discard events after ``endStream`` until the vendor closes."""
+        if frames is None:
+            return
+        while True:
+            try:
+                await frames.__anext__()
+            except StopAsyncIteration:
+                return
+            except Exception as error:
+                self._record_close(error)
+                return
+
+    def _record_close(self, error: BaseException) -> bool:
+        """Record a close code; ``True`` when it is the normal completion.
+
+        A code other than ``1000`` is recorded but not acted on here: retry,
+        backoff and breaker policy belong to ticket 31.
+        """
+        code = getattr(error, "code", None)
+        if isinstance(code, int):
+            self._last_close_code = code
+        return code == 1000
 
 
 def session_id(call_id: str, epoch: int) -> str:
