@@ -8,6 +8,7 @@
  *   - Send `input.audio` continuously at real time; frames beyond ~1s of audio
  *     per second of wall clock are DROPPED, not buffered.
  *   - Wait for `session.ready` before the first chunk or it is discarded.
+ *     A discard is never silent: it probes `pre-ready-drop` with the count.
  *
  * Three things here are easy to get wrong and expensive when you do:
  *
@@ -335,13 +336,22 @@ export type SessionEndedInfo = {
  * caused it (barge-in flush, interrupted-reply flush, or something else).
  */
 export type AudioProbeEvent = {
-  kind: "ready" | "barge-in" | "reply-cut" | "flush" | "underrun" | "input-drop" | "pop" | "clip";
+  kind:
+    | "ready"
+    | "barge-in"
+    | "reply-cut"
+    | "flush"
+    | "underrun"
+    | "input-drop"
+    | "pre-ready-drop"
+    | "pop"
+    | "clip";
   /** Wall-clock ms of the event. */
   at: number;
   /** Ms of agent audio buffered at that moment (worklet's last report). */
   queued: number;
   sessionId: string | null;
-  /** Frames dropped since the last input-drop probe (only for input-drop). */
+  /** Chunks dropped since the last drop probe (input-drop, pre-ready-drop). */
   dropped?: number;
   /** Pop recorder: "jump"/"overload" for `pop`, clamped samples for `clip`. */
   detail?: string;
@@ -717,6 +727,9 @@ export class VoiceSession {
   /** Mic frames dropped since the last input-drop probe (ingestAudio gate). */
   private inputDropped = 0;
   private lastInputDropProbe = 0;
+  /** Reply chunks dropped before any format was confirmed (schedule gate). */
+  private preReadyDropped = 0;
+  private lastPreReadyDropProbe = 0;
 
   constructor(
     private handlers: VoiceHandlers = {},
@@ -801,6 +814,8 @@ export class VoiceSession {
     this.outputGain = 1.0;
     this.inputDropped = 0;
     this.lastInputDropProbe = 0;
+    this.preReadyDropped = 0;
+    this.lastPreReadyDropProbe = 0;
     // The call's own words, from the Locale it pinned. Automatic detection
     // (nothing pinned) is the documented English scaffolding (`callRecognition`).
     this.recognition = callRecognition({ languageCodes: config.languageCodes });
@@ -2142,7 +2157,13 @@ export class VoiceSession {
     // guessed at.
     const rate = this.outputSampleRate;
     const encoding = this.outputEncoding;
-    if (rate === null || encoding === null) return;
+    if (rate === null || encoding === null) {
+      // A refused format already reported itself. Audio that beat
+      // `session.ready` had no report at all, so probe the loss rather than
+      // leave a silent hole in the first reply.
+      if (!this.ready) this.dropPreReadyChunk();
+      return;
+    }
     let pcm: Uint8Array;
     try {
       pcm = decodeOutputAudio(fromBase64(base64), encoding);
@@ -2179,11 +2200,27 @@ export class VoiceSession {
     this.probe("flush", dropped);
   }
 
+  /**
+   * One agent-audio chunk that arrived before a format was confirmed is not
+   * played. Throttled to one probe per 2s with the count, the same shape as the
+   * mic's input-drop probe: a missing first word has to be diagnosable, and a
+   * run of silence must not read as a dead socket.
+   */
+  private dropPreReadyChunk(): void {
+    this.preReadyDropped += 1;
+    const now = Date.now();
+    if (now - this.lastPreReadyDropProbe <= 2_000) return;
+    this.lastPreReadyDropProbe = now;
+    const dropped = this.preReadyDropped;
+    this.preReadyDropped = 0;
+    this.probe("pre-ready-drop", undefined, { dropped });
+  }
+
   /** Emit one probe event. Never throws, never affects playback. */
   private probe(
     kind: AudioProbeEvent["kind"],
     queued = this.playout?.queuedMs() ?? 0,
-    extra: Pick<AudioProbeEvent, "detail" | "size"> = {},
+    extra: Pick<AudioProbeEvent, "detail" | "size" | "dropped"> = {},
   ) {
     try {
       this.handlers.onAudioProbe?.({

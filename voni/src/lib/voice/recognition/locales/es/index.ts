@@ -6,6 +6,7 @@ import {
   ES_FILLER,
   ES_GOODBYE,
 } from "./filler";
+import { ES_SCENE } from "./scene";
 import { ES_VOCABULARY } from "./vocabulary";
 
 /**
@@ -13,10 +14,11 @@ import { ES_VOCABULARY } from "./vocabulary";
  *
  * A slot absent here is a real hole and `resolveRecognition("es")` names it;
  * nothing fills it from English. Sibling slot files land with their own
- * tickets (scene, digits/address).
+ * tickets (digits/address).
  */
 export const ES_RECOGNITION: RecognitionSlots = {
   vocabulary: ES_VOCABULARY,
+  scene: ES_SCENE,
   filler: ES_FILLER,
   bargeIn: ES_BARGE_IN,
   commands: ES_COMMANDS,

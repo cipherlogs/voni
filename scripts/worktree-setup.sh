@@ -19,7 +19,7 @@ fi
 link() {
   local source="$1" target="$2"
   [ -e "$source" ] || return 0
-  [ -e "$target" ] && return 0
+  if [ -e "$target" ]; then return 0; fi
   mkdir -p "$(dirname "$target")"
   ln -s "$source" "$target"
   echo "linked $target -> $source"

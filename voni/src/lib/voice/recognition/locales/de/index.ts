@@ -6,6 +6,7 @@ import {
   DE_FILLER,
   DE_GOODBYE,
 } from "./filler";
+import { DE_SCENE } from "./scene";
 import { DE_VOCABULARY } from "./vocabulary";
 
 /**
@@ -14,6 +15,7 @@ import { DE_VOCABULARY } from "./vocabulary";
  */
 export const DE_RECOGNITION: RecognitionSlots = {
   vocabulary: DE_VOCABULARY,
+  scene: DE_SCENE,
   filler: DE_FILLER,
   bargeIn: DE_BARGE_IN,
   commands: DE_COMMANDS,

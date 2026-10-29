@@ -6,6 +6,7 @@ import {
   PT_FILLER,
   PT_GOODBYE,
 } from "./filler";
+import { PT_SCENE } from "./scene";
 import { PT_VOCABULARY } from "./vocabulary";
 
 /**
@@ -14,6 +15,7 @@ import { PT_VOCABULARY } from "./vocabulary";
  */
 export const PT_RECOGNITION: RecognitionSlots = {
   vocabulary: PT_VOCABULARY,
+  scene: PT_SCENE,
   filler: PT_FILLER,
   bargeIn: PT_BARGE_IN,
   commands: PT_COMMANDS,

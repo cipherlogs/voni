@@ -211,13 +211,14 @@ test("an English keyterm is absent from a non-English vocabulary unless it is a 
   }
 });
 
-test("each spoken Locale is registered with the vocabulary slot filled and the rest a named hole", () => {
+test("each spoken Locale is registered with its vocabulary and scene filled and the rest a named hole", () => {
   for (const locale of SPOKEN_NON_ENGLISH) {
     const resolution = resolveRecognition(locale);
     assert.equal(resolution.status, "incomplete", locale);
     if (resolution.status !== "incomplete") continue;
     assert.equal(resolution.missing.includes("vocabulary"), false, locale);
-    assert.deepEqual(resolution.missing, ["scene", "digits", "address"], locale);
+    assert.equal(resolution.missing.includes("scene"), false, locale);
+    assert.deepEqual(resolution.missing, ["digits", "address"], locale);
   }
 });
 

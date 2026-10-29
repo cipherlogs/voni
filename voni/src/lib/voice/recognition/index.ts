@@ -10,6 +10,7 @@ import {
   type RecognitionSlots,
   type RecognitionSlotValues,
   type RecognitionSlotName,
+  type SceneRenderer,
 } from "./types";
 
 export * from "./types";
@@ -110,6 +111,16 @@ export function callRecognition(source: CallLanguageSource): CompleteRecognition
  */
 export function recognitionVocabulary(locale: string): readonly string[] | undefined {
   return isRecognitionLocale(locale) ? REGISTRY[locale]?.slots.vocabulary : undefined;
+}
+
+/**
+ * The scene a Locale describes its call with, or `undefined` when the Locale has
+ * no scene rendering yet. Like vocabulary, a hole stays a hole: an absent scene
+ * never resolves to English's description, and `recognitionCompleteness` names
+ * it.
+ */
+export function recognitionScene(locale: string): SceneRenderer | undefined {
+  return isRecognitionLocale(locale) ? REGISTRY[locale]?.slots.scene : undefined;
 }
 
 /** The slots a rendering is still missing, in report order. */

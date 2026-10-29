@@ -19,6 +19,7 @@ import {
   MICROPHONE_MUTED_CONTEXT,
   MICROPHONE_UNMUTED_CONTEXT,
 } from "./context";
+import { DEFAULT_OUTPUT_SAMPLE_RATE } from "./output-format";
 
 export type CascadeCaption = {
   role: "user" | "agent";
@@ -151,7 +152,15 @@ export function decodeAudioMessage(raw: string): {
   if (record.type !== "audio" || typeof record.data !== "string") return null;
   return {
     pcm: base64Decode(record.data),
-    sampleRate: typeof record.sample_rate === "number" ? record.sample_rate : 24000,
+    // The pipeline's own contract (voice-pipeline/transport.py): every frame
+    // stamps the rate the TTS produced, so a frame that omits it can only be
+    // our default PCM16 stream. The fallback is output-format's named default,
+    // the same rate the managed path resolves when its confirmation carries
+    // none — never a second, drifting copy of 24 kHz.
+    sampleRate:
+      typeof record.sample_rate === "number"
+        ? record.sample_rate
+        : DEFAULT_OUTPUT_SAMPLE_RATE,
   };
 }
 

@@ -6,6 +6,7 @@ import {
   FR_FILLER,
   FR_GOODBYE,
 } from "./filler";
+import { FR_SCENE } from "./scene";
 import { FR_VOCABULARY } from "./vocabulary";
 
 /**
@@ -14,6 +15,7 @@ import { FR_VOCABULARY } from "./vocabulary";
  */
 export const FR_RECOGNITION: RecognitionSlots = {
   vocabulary: FR_VOCABULARY,
+  scene: FR_SCENE,
   filler: FR_FILLER,
   bargeIn: FR_BARGE_IN,
   commands: FR_COMMANDS,
