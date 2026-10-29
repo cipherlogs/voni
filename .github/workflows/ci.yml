@@ -165,6 +165,12 @@ jobs:
           ../.venv/bin/python -m unittest \
             cascade.test_admission \
             cascade.test_rollback
+      # Ticket 146: every fallback is emitted, including at connect, and a run
+      # whose frozen rung says fallback without the event is refused by name.
+      # The proof is a committed test: deleting the emission fails this step.
+      - name: Anti-lie fallback emission
+        working-directory: voice-pipeline
+        run: ../.venv/bin/python -m unittest cascade.test_anti_lie_fallback_emission
 
   # AC4: a skipped or cancelled Python job must not report success. A job that
   # never runs produces no failing check, so branch protection must require
