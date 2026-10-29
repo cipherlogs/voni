@@ -214,6 +214,14 @@ class ReasoningEffortError(ValueError):
     """A reasoning effort the cascade refuses to construct a client without."""
 
 
+class MessageAssemblyError(ValueError):
+    """A message array that would be a conversation-structure bug.
+
+    The vendor answers these shapes with HTTP 400, so the assembly refuses them
+    here, by name, instead of spending a request to learn it.
+    """
+
+
 class MetaLLMRequestError(RuntimeError):
     """The vendor answered the request with a non-success status.
 
@@ -343,6 +351,183 @@ def build_messages(
     messages.extend(dict(message) for message in history)
     messages.extend({"role": "system", "content": item} for item in hidden_context)
     return messages
+
+
+def assistant_reply_message(
+    turn: MetaLLMTurn, *, spoken_text: str | None = None
+) -> dict[str, Any]:
+    """The assistant message history records for a spoken reply.
+
+    ``spoken_text`` is the prefix the caller actually heard. A reply cut by a
+    barge-in or a drained queue is recorded up to that point only: the next turn
+    must see the conversation the caller had, not words that never reached their
+    ear. Omitting it records the whole generated content, which is only safe
+    when nothing cut the reply.
+
+    A prefix that the model never generated is refused: it would put invented
+    speech in the model's mouth and make the next answer drift.
+    """
+    if turn.tool_calls:
+        raise MessageAssemblyError(
+            "this turn requested tools; record it with tool_turn_messages (or "
+            "append_tool_turn) so the assistant message keeps its tool_calls "
+            "ahead of the results"
+        )
+    content = turn.content_text if spoken_text is None else spoken_text
+    if not turn.content_text.startswith(content):
+        raise MessageAssemblyError(
+            f"spoken reply {content!r} is not a prefix of what the model "
+            f"generated ({turn.content_text!r}); history may only record "
+            "what the caller heard"
+        )
+    return {"role": "assistant", "content": content}
+
+
+class MessageHistory:
+    """The ordered Chat Completions history for one call.
+
+    One object owns the two rules a hand-rolled list gets wrong: a reply is
+    appended as the prefix the caller heard, and a tool turn is appended as the
+    assistant message followed by its results. Hidden context is held aside and
+    appears only in the next request, as an uncaptioned system message.
+
+    Construct it with ``system_prompt`` only when this object assembles the
+    request itself; when :class:`MetaLLM` owns the body's prompt, leave it unset
+    so the prompt is not sent twice.
+    """
+
+    def __init__(self, *, system_prompt: str = "") -> None:
+        self.system_prompt = system_prompt
+        self._messages: list[dict[str, Any]] = []
+        self._hidden: list[str] = []
+
+    @property
+    def messages(self) -> tuple[dict[str, Any], ...]:
+        """The recorded conversation, without system prompt or hidden context."""
+        return tuple(self._messages)
+
+    def append_user(self, text: str) -> dict[str, Any]:
+        """Record the caller's final transcript."""
+        message = {"role": "user", "content": text}
+        self._messages.append(message)
+        return message
+
+    def append_reply(
+        self, turn: MetaLLMTurn, *, spoken_text: str | None = None
+    ) -> dict[str, Any] | None:
+        """Record a spoken reply, or nothing when the caller heard no word."""
+        message = assistant_reply_message(turn, spoken_text=spoken_text)
+        if not message["content"]:
+            return None
+        self._messages.append(message)
+        return message
+
+    def add_hidden_context(self, text: str) -> None:
+        """Hold context for the next request only.
+
+        It is appended as a plain ``system`` message with exactly this content:
+        no caption, no prefix, and no path into a reply or a tool result.
+        """
+        if not isinstance(text, str) or not text.strip():
+            raise MessageAssemblyError(
+                "hidden context must be non-empty text; an empty system "
+                "message is noise the vendor does not need"
+            )
+        self._hidden.append(text)
+
+    def append_tool_turn(
+        self, turn: MetaLLMTurn, tool_messages: Sequence[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Record a tool turn as one ordered unit, never the results alone."""
+        messages = tool_turn_messages(turn, tool_messages)
+        self._messages.extend(messages)
+        return messages
+
+    def request_messages(self) -> list[dict[str, Any]]:
+        """The next request's array: prompt, recorded history, hidden context."""
+        hidden = list(self._hidden)
+        self._hidden.clear()
+        return build_messages(
+            system_prompt=self.system_prompt,
+            history=self._messages,
+            hidden_context=hidden,
+        )
+
+
+def tool_call_part(call: MetaToolCall) -> dict[str, Any]:
+    """One ``tool_calls`` entry, replayed with the arguments as streamed."""
+    if not call.call_id:
+        raise MessageAssemblyError(
+            f"tool call {call.name!r} has no call id; it cannot be replayed to "
+            "the vendor"
+        )
+    return {
+        "id": call.call_id,
+        "type": "function",
+        "function": {"name": call.name, "arguments": call.arguments},
+    }
+
+
+def tool_call_message(turn: MetaLLMTurn) -> dict[str, Any]:
+    """The assistant message that requested a tool turn.
+
+    Its content is kept verbatim even when the narration was held back from
+    audio: the model said it, and the next request must show the model its own
+    words rather than the hold line the caller heard.
+    """
+    if not turn.tool_calls:
+        raise MessageAssemblyError(
+            "this turn requested no tool calls, so it has no assistant tool "
+            "message to replay"
+        )
+    return {
+        "role": "assistant",
+        "content": turn.content_text,
+        "tool_calls": [tool_call_part(call) for call in turn.tool_calls],
+    }
+
+
+def tool_result_message(call_id: str, content: str) -> dict[str, Any]:
+    """One ``role: "tool"`` result answering the call that asked for it."""
+    if not call_id:
+        raise MessageAssemblyError(
+            "a tool result needs the call id it answers; the vendor cannot "
+            "match an anonymous result"
+        )
+    if not isinstance(content, str):
+        raise MessageAssemblyError(
+            "a tool result must be text; the vendor rejects a structured "
+            f"content value (got {type(content).__name__})"
+        )
+    return {"role": "tool", "tool_call_id": call_id, "content": content}
+
+
+def tool_turn_messages(
+    turn: MetaLLMTurn, tool_messages: Sequence[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """The replayable unit: assistant ``tool_calls`` message, then results.
+
+    The assistant message is not optional. The vendor answers a ``tool``
+    message whose call was never declared with HTTP 400, so returning the
+    results alone is the one shape this function will not produce.
+    """
+    assistant = tool_call_message(turn)
+    declared = {call.call_id for call in turn.tool_calls}
+    results: list[dict[str, Any]] = []
+    for message in tool_messages:
+        if message.get("role") != "tool":
+            raise MessageAssemblyError(
+                f"a tool turn carries only tool results after the assistant "
+                f"message, got a {message.get('role')!r} message"
+            )
+        call_id = message.get("tool_call_id")
+        if call_id not in declared:
+            raise MessageAssemblyError(
+                f"tool result answers call {call_id!r}, which the assistant "
+                f"message did not request (declared: {sorted(declared)})"
+            )
+        results.append(dict(message))
+    return [assistant, *results]
 
 
 def build_chat_request(
@@ -1651,6 +1836,8 @@ __all__ = [
     "TOOL_FINISH_REASONS",
     "UNAVAILABLE_REASONING_EFFORT",
     "FailureDecision",
+    "MessageAssemblyError",
+    "MessageHistory",
     "MetaLLM",
     "MetaLLMConfigError",
     "MetaLLMFailure",
@@ -1669,6 +1856,7 @@ __all__ = [
     "ToolDenial",
     "ToolSchemaError",
     "TurnUsage",
+    "assistant_reply_message",
     "build_chat_request",
     "build_messages",
     "parse_tool_arguments",
@@ -1676,5 +1864,9 @@ __all__ = [
     "privacy_identifier",
     "reply_disposition",
     "resolve_reasoning_effort",
+    "tool_call_message",
+    "tool_call_part",
+    "tool_result_message",
+    "tool_turn_messages",
     "validate_tool_arguments",
 ]
