@@ -735,7 +735,10 @@ async function runClient(
   const liveStartedAt = Date.now();
   // Call-relative origin for the silence timeline and the playout maths.
   const t0 = Date.now();
-  const body = buildDemoAgentBody(voiceId);
+  // A stored run never reconstructs the demo body: its settings come from the
+  // agent the platform serves (score-demo reads that body back after the run).
+  // The builder is only for the inline debug transport (voice-parity ticket 24).
+  const body = TRANSPORT === "inline" ? buildDemoAgentBody(voiceId) : null;
   const outcome: ClientOutcome = {
     events: [], cutAt: null, creates: [], agent: [], heard: [], agentTurns: [], heardTurns: [], cutReplyId: null,
     replyAudioAt: {}, cutPlayedMs: null,
@@ -1001,6 +1004,7 @@ async function runClient(
     internals["tokenFetcher"] = binding.tokenFetcher;
     internals.connect(callToken, binding.config, gen);
   } else {
+    if (!body) throw new Error("inline transport must build the demo body");
     internals.connect(callToken, {
       mode: "inline",
       systemPrompt: body.system_prompt,

@@ -89,9 +89,13 @@ import type { LatencyBand } from "./latency-split";
 import type {
   DemoAgentVariant,
   DemoTurnWindows,
+  ServedAgentBodyRead,
   ServedDemoAgentBody,
 } from "./stored-agents";
-import { servedAgentOutputVolume } from "./stored-agents";
+import {
+  isServedDemoAgentBody,
+  servedAgentOutputVolume,
+} from "./stored-agents";
 import { formatTurnWindows } from "./turn-windows";
 import type { DecodedAudio } from "../audio/format-facts";
 import {
@@ -328,13 +332,6 @@ export type VoiceGainRow = {
   detail: string;
 };
 
-/** The stored body a level was read from, recorded beside the level it served. */
-export type LoudnessBodyIdentity = {
-  source: "stored-agent";
-  agentId: string;
-  fingerprint: string | null;
-};
-
 export type ScoreboardLoudness = {
   /** Shared gain reference every voice is matched to (anna). */
   referenceLufs: number;
@@ -351,11 +348,6 @@ export type ScoreboardLoudness = {
    * files inside the tolerance, and an absent measurement is INFO here too.
    */
   measured: MeasuredLevelCheck;
-  /**
-   * The stored body the level came from. Null when no body was read, so a
-   * reader never mistakes an unmeasured level for a served one.
-   */
-  body: LoudnessBodyIdentity | null;
   /** The same values for the gate voice plus every regression voice (ticket 25). */
   voices: VoiceGainRow[];
 };
@@ -1010,17 +1002,83 @@ export function replyGapGate(samples: ReplyGapSample[], traceSessionId?: string)
 export type ServedAgentBody = ServedDemoAgentBody;
 
 /**
- * Which stored body a run measured, recorded beside its verdicts so a PASS or
- * FAIL can be traced to the agent that served it (voice-parity ticket 20).
+ * The one run-level body seam (voice-parity ticket 24): the read outcome every
+ * gate and the artifact receive. A `measured: false` read names why, so a gate
+ * that cannot get a served body reports INFO instead of reconstructing one.
+ */
+export type RunBody = ServedAgentBodyRead;
+
+/**
+ * The served body a gate may judge, or null. Runtime half of the brand: a
+ * reconstruction-shaped object smuggled past the types never counts.
+ */
+export function runBodyServedBody(
+  runBody: RunBody | null | undefined,
+): ServedAgentBody | null {
+  if (!runBody || runBody.measured !== true) return null;
+  return isServedDemoAgentBody(runBody.body) ? runBody.body : null;
+}
+
+/**
+ * Which stored body a run measured, recorded exactly once for the run
+ * (voice-parity ticket 24). It is the artifact's only body identity: the
+ * end-of-turn gate, the timbre level leg and the loudness table all read the
+ * same value, and a read failure is recorded here rather than dropped.
  */
 export type AgentBodyEvidence = {
-  /** Always the platform's stored copy; the harness never rebuilds a gate input. */
+  /** Always describes a platform read attempt; the harness never rebuilds one. */
   source: "stored-agent";
-  agentId: string;
+  /** True only when the platform served a readable body the gates may judge. */
+  measured: boolean;
+  /** The stored agent id the run bound, or null when it bound none (dry run). */
+  agentId: string | null;
   fingerprint: string | null;
-  /** The served `input.turn_detection`; null = the Turn preset (adaptive). */
-  turnDetection: unknown;
+  /** The served `input.turn_detection`; null = the Turn preset. Absent = unread. */
+  turnDetection?: unknown;
+  /** Why the body is unmeasured; null when measured. */
+  reason: string | null;
 };
+
+/** The run's one identity record, derived from the run body read. */
+export function runBodyEvidence(runBody: RunBody | null | undefined): AgentBodyEvidence {
+  if (!runBody) {
+    return {
+      source: "stored-agent",
+      measured: false,
+      agentId: null,
+      fingerprint: null,
+      reason: "no stored body read",
+    };
+  }
+  const body = runBodyServedBody(runBody);
+  if (!body) {
+    return {
+      source: "stored-agent",
+      measured: false,
+      agentId: runBody.agentId,
+      fingerprint: runBody.fingerprint,
+      reason:
+        runBody.measured === true
+          ? "not a platform-served body: a reconstruction cannot gate"
+          : runBody.reason,
+    };
+  }
+  return {
+    source: "stored-agent",
+    measured: true,
+    agentId: runBody.agentId,
+    fingerprint: runBody.fingerprint,
+    turnDetection: body.input.turn_detection ?? null,
+    reason: null,
+  };
+}
+
+/** Why this run has no judgeable body; the reason every dependent gate cites. */
+export function runBodyUnmeasuredReason(
+  runBody: RunBody | null | undefined,
+): string {
+  return runBodyEvidence(runBody).reason ?? "unmeasured";
+}
 
 /**
  * The stored-agent experiment a run bound (ticket 10). Its windows are
@@ -2688,44 +2746,43 @@ export type VoicePlayback = {
 
 /**
  * Gate voice playback: the client gain from the registry, and the server level
- * only from the stored body the run served (voice-parity ticket 21). No body
- * means the level is unmeasured, never the builder's constant.
+ * only from the stored body the run served (voice-parity tickets 21 and 24).
+ * No body means the level is unmeasured, never the builder's constant.
  */
 export function gateVoicePlayback(
   voiceId: string,
-  servedAgentBody?: ServedAgentBody | null,
+  runBody?: RunBody | null,
 ): VoicePlayback {
   const id = resolveGateVoice(voiceId);
+  const body = runBodyServedBody(runBody);
   return {
     id,
-    outputVolume: servedAgentBody ? servedAgentOutputVolume(servedAgentBody) : null,
+    outputVolume: body ? servedAgentOutputVolume(body) : null,
     playbackGain: voicePlaybackGain(id),
   };
 }
 
 /**
  * One voice's applied loudness path. The gate voice's server level is read
- * from the served body the run measured; a regression voice was not read in
- * this run, so its level stays unmeasured (INFO) rather than greening on the
- * builder's constant. There is no pipeline retune and no second gain stage.
+ * from the run's one served body; a regression voice was not read in this run,
+ * so its level stays unmeasured (INFO) rather than greening on the builder's
+ * constant. There is no pipeline retune and no second gain stage.
  * A voice absent from `NATIVE_VOICE_LUFS` is unmeasured: reported as INFO.
  */
 export function voiceGainRow(
   voiceId: string,
   gateVoice: string,
-  servedAgentBody?: ServedAgentBody | null,
+  runBody?: RunBody | null,
 ): VoiceGainRow {
   const check = checkServedLoudness(
     voiceId,
-    voiceId === gateVoice ? servedAgentBody : null,
+    voiceId === gateVoice ? runBody : null,
   );
+  const body = voiceId === gateVoice ? runBodyServedBody(runBody) : null;
   return {
     voice: voiceId,
     isGate: voiceId === gateVoice,
-    outputVolume:
-      voiceId === gateVoice && servedAgentBody
-        ? servedAgentOutputVolume(servedAgentBody)
-        : null,
+    outputVolume: body ? servedAgentOutputVolume(body) : null,
     gain: voicePlaybackGain(voiceId),
     nativeLufs: NATIVE_VOICE_LUFS[voiceId] ?? null,
     matchedLufs: check.matchedLufs,
@@ -2741,11 +2798,11 @@ export function voiceGainRow(
  */
 export function voiceGainTable(
   gateVoice: string,
-  servedAgentBody?: ServedAgentBody | null,
+  runBody?: RunBody | null,
 ): VoiceGainRow[] {
   const gate = resolveGateVoice(gateVoice);
   return [gate, ...regressionVoices(gate)].map((voice) =>
-    voiceGainRow(voice, gate, servedAgentBody),
+    voiceGainRow(voice, gate, runBody),
   );
 }
 
@@ -2897,23 +2954,24 @@ export function checkLoudness(input: {
  */
 export function checkServedLoudness(
   voiceId: string,
-  servedAgentBody?: ServedAgentBody | null,
+  runBody?: RunBody | null,
 ): LoudnessCheck & { unmeasured?: boolean } {
-  if (!servedAgentBody) {
+  const body = runBodyServedBody(runBody);
+  if (!body) {
     return {
       ok: false,
       unmeasured: true,
       matchedLufs: null,
-      detail: "unmeasured: stored agent body not read, so the served level is unknown (loudness is reported not failed)",
+      detail: `unmeasured: ${runBodyUnmeasuredReason(runBody)}; the served level is unknown (loudness is reported not failed)`,
     };
   }
-  const volume = servedAgentOutputVolume(servedAgentBody);
+  const volume = servedAgentOutputVolume(body);
   if (volume === null) {
     return {
       ok: false,
       unmeasured: true,
       matchedLufs: null,
-      detail: `unmeasured: stored agent ${servedAgentBody.agentId} served no output level (loudness is reported not failed)`,
+      detail: `unmeasured: stored agent ${body.agentId} served no output level (loudness is reported not failed)`,
     };
   }
   const native = NATIVE_VOICE_LUFS[voiceId];
@@ -2922,14 +2980,14 @@ export function checkServedLoudness(
       ok: false,
       unmeasured: true,
       matchedLufs: null,
-      detail: `no native loudness measurement for "${voiceId}" on ${servedAgentBody.agentId} (served volume ${volume}): probes still gate, loudness is reported not failed`,
+      detail: `no native loudness measurement for "${voiceId}" on ${body.agentId} (served volume ${volume}): probes still gate, loudness is reported not failed`,
     };
   }
   return checkLoudness({
     nativeLufs: native,
     gain: voicePlaybackGain(voiceId),
     volume,
-    agentId: servedAgentBody.agentId,
+    agentId: body.agentId,
   });
 }
 
@@ -3106,7 +3164,8 @@ export function evaluateTimbreGate(input: {
   probes: TimbreProbes;
   voiceId: string;
   agentChannel: AgentChannelEvidence | null;
-  servedAgentBody?: ServedAgentBody | null;
+  /** The run's one served-body read (ticket 24); absent = unmeasured. */
+  runBody?: RunBody | null;
   /** The two measured files the level leg judges; absent = unmeasured. */
   measuredLevel?: MeasuredLevelInput | null;
 }): ScoreboardGate {
@@ -3115,11 +3174,10 @@ export function evaluateTimbreGate(input: {
   const evidence = checkEvidenceTimbre(input.agentChannel);
   if (!evidence.ok) return { name: "timbre-probes", status: "FAIL", detail: evidence.detail };
   const level = checkMeasuredLevel(input.measuredLevel);
-  const servedVolume = input.servedAgentBody
-    ? servedAgentOutputVolume(input.servedAgentBody)
-    : null;
-  const bodyRef = input.servedAgentBody
-    ? `served by stored agent ${input.servedAgentBody.agentId}` +
+  const body = runBodyServedBody(input.runBody);
+  const servedVolume = body ? servedAgentOutputVolume(body) : null;
+  const bodyRef = body
+    ? `served by stored agent ${body.agentId}` +
       (servedVolume === null ? "" : ` at volume ${servedVolume}`)
     : "";
   if (level.status === "FAIL") {
@@ -3131,10 +3189,10 @@ export function evaluateTimbreGate(input: {
   }
   // A measured file with no served body identity cannot be attributed to the
   // agent a visitor received, so it is unmeasured rather than a pass.
-  if (level.status === "INFO" || !input.servedAgentBody) {
+  if (level.status === "INFO" || !body) {
     const why =
       level.status === "PASS"
-        ? "unmeasured level: measured files carry no served body identity, so the gate cannot say whose audio they are"
+        ? `unmeasured level: ${runBodyUnmeasuredReason(input.runBody)}, so the gate cannot say whose audio the measured files are`
         : level.detail;
     return {
       name: "timbre-probes",
@@ -3166,8 +3224,8 @@ export function formatVoiceGainTable(rows: VoiceGainRow[]): string {
 }
 
 /** Dry-run listing: every beat with its window, plus the resolved gate and regression set. */
-export function formatGoldenScript(gateVoice: string): string {
-  const playback = gateVoicePlayback(gateVoice);
+export function formatGoldenScript(gateVoice: string, runBody?: RunBody | null): string {
+  const playback = gateVoicePlayback(gateVoice, runBody);
   const lines = GOLDEN_SCRIPT.map(
     (beat, index) =>
       `${index + 1}. ${beat.beat} — visitor: ${beat.visitor} — window: ${beat.window.metric} ${beat.window.min}–${beat.window.max} ${beat.window.unit} — expect: ${beat.expect}`,
@@ -5057,7 +5115,7 @@ function skeletonGates(
   runnerOutcome: RunnerClassification | null,
   replySamples: ReplyGapSample[],
   traceSessionId: string | null,
-  servedAgentBody: ServedAgentBody | null | undefined,
+  runBody: RunBody | null | undefined,
   traceExcerpt: string[],
   fillerGate: ScoreboardGate | null = null,
   overheardGate: ScoreboardGate | null = null,
@@ -5107,10 +5165,15 @@ function skeletonGates(
     replySamples.length > 0
       ? replyGapGate(replySamples, traceSessionId ?? undefined)
       : { name: "reply-gap", status: "INFO" as const, detail: "unmeasured: run --scenario all or pass --trace-session/--gap beat=ms to gate reply gaps" };
+  const servedBody = runBodyServedBody(runBody);
   const endOfTurn =
-    servedAgentBody === undefined || servedAgentBody === null
-      ? { name: "end-of-turn", status: "INFO" as const, detail: "unmeasured: stored agent body not read" }
-      : meaningBasedEndOfTurnGate(servedAgentBody.input, traceExcerpt, options?.endOfTurnExperiment ?? null);
+    servedBody === null
+      ? {
+          name: "end-of-turn",
+          status: "INFO" as const,
+          detail: `unmeasured: ${runBodyUnmeasuredReason(runBody)}`,
+        }
+      : meaningBasedEndOfTurnGate(servedBody.input, traceExcerpt, options?.endOfTurnExperiment ?? null);
   const filler: ScoreboardGate =
     fillerGate ?? { name: "filler-resume", status: "INFO", detail: "unmeasured: run --scenario filler-over or pass --filler-* evidence to gate filler recovery" };
   const deadAirGate: ScoreboardGate = deadAir
@@ -5131,7 +5194,7 @@ function skeletonGates(
     probes: timbreProbes,
     voiceId: voiceId ?? "",
     agentChannel: agentChannel ?? null,
-    servedAgentBody,
+    runBody,
     measuredLevel: options?.measuredLevel ?? null,
   });
   const humanGate = evaluateHumanGate(timbreGate.status === "PASS", humanRatings ?? emptyHumanRatings(null));
@@ -5339,11 +5402,11 @@ export function buildSkeletonArtifact(input: {
   /** Session the gaps were merged from (trace pointer for a failing gate). */
   traceSessionId?: string | null;
   /**
-   * The stored agent body the run served, read back from the platform
-   * (voice-parity ticket 20). Gates read settings from this; undefined means
-   * no body was read and the end-of-turn gate stays unmeasured.
+   * The run's one stored-body read (voice-parity ticket 24). Every body gate
+   * and the artifact's single identity record derive from this; absent means
+   * no body was read and every dependent gate stays INFO.
    */
-  servedAgentBody?: ServedAgentBody | null;
+  runBody?: RunBody | null;
   /**
    * The two measured captures the timbre level leg compares — the reference
    * rendering and the delivered audio, both measured off disk (voice-parity
@@ -5595,22 +5658,17 @@ export function buildSkeletonArtifact(input: {
   const timbreProbes: TimbreProbes = input.probes ?? { jump: 0, overload: 0, clip: 0, underrun: 0, inputDrop: 0 };
   const agentChannel = input.agentChannel ?? null;
   const humanRatings = input.humanRatings ?? emptyHumanRatings(null);
-  // One body source for the level and the end-of-turn setting: the stored
-  // agent the run served, read back from the platform. A body that was not
-  // read leaves the level unmeasured rather than rebuilding a level nobody
-  // heard (voice-parity ticket 21).
-  const servedAgentBody = input.servedAgentBody ?? null;
-  const loudnessCheck = checkServedLoudness(input.voice, servedAgentBody);
+  // One body source for every body gate and the artifact's one identity
+  // record: the run's stored-body read (voice-parity ticket 24). A body that
+  // was not read leaves the level and turn setting unmeasured rather than
+  // rebuilding a body nobody heard.
+  const runBody = input.runBody ?? null;
+  const bodyEvidence = runBodyEvidence(runBody);
+  const servedBody = runBodyServedBody(runBody);
+  const loudnessCheck = checkServedLoudness(input.voice, runBody);
   // Ticket 16: the level leg's verdict comes from the measured files, not
   // from `loudnessCheck` (which stays the gain table's review number).
   const measuredLevelCheck = checkMeasuredLevel(input.measuredLevel);
-  const loudnessBody: LoudnessBodyIdentity | null = servedAgentBody
-    ? {
-        source: "stored-agent",
-        agentId: servedAgentBody.agentId,
-        fingerprint: servedAgentBody.fingerprint ?? null,
-      }
-    : null;
   const dryRun = input.dryRun ?? false;
   const measuredSources = measuredEvidenceSources({
     gaps: input.gaps,
@@ -5641,7 +5699,7 @@ export function buildSkeletonArtifact(input: {
     runnerOutcome,
     samples,
     input.traceSessionId ?? null,
-    input.servedAgentBody,
+    runBody,
     input.traceExcerpt ?? [],
     fillerGate,
     evaluation?.gate ?? null,
@@ -5714,13 +5772,12 @@ export function buildSkeletonArtifact(input: {
     loudness: {
       referenceLufs: TIMBRE_REFERENCE_LUFS,
       matchedLufs: loudnessCheck.matchedLufs,
-      gain: gateVoicePlayback(input.voice, servedAgentBody).playbackGain,
-      outputVolume: servedAgentBody ? servedAgentOutputVolume(servedAgentBody) : null,
-      ok: measuredLevelCheck.status === "PASS" && servedAgentBody !== null,
+      gain: gateVoicePlayback(input.voice, runBody).playbackGain,
+      outputVolume: servedBody ? servedAgentOutputVolume(servedBody) : null,
+      ok: measuredLevelCheck.status === "PASS" && servedBody !== null,
       detail: measuredLevelCheck.detail,
       measured: measuredLevelCheck,
-      body: loudnessBody,
-      voices: voiceGainTable(input.voice, servedAgentBody),
+      voices: voiceGainTable(input.voice, runBody),
     },
     transcripts: {
       sha256: sha256Hex(input.runnerStdout),
@@ -5752,16 +5809,10 @@ export function buildSkeletonArtifact(input: {
     },
     callerClips: input.callerClips ?? [],
     runnerEvidence: input.runnerEvidence ?? null,
-    ...(input.servedAgentBody
-      ? {
-          agentBody: {
-            source: "stored-agent" as const,
-            agentId: input.servedAgentBody.agentId,
-            fingerprint: input.servedAgentBody.fingerprint ?? null,
-            turnDetection: input.servedAgentBody.input.turn_detection ?? null,
-          },
-        }
-      : {}),
+    // One body identity for the run (voice-parity ticket 24): the same record
+    // the end-of-turn, timbre and loudness gates read, including why an
+    // unreadable body is unmeasured. There is no second copy under loudness.
+    agentBody: bodyEvidence,
     ...(input.endOfTurnExperiment
       ? {
           endOfTurn: {
@@ -5769,8 +5820,9 @@ export function buildSkeletonArtifact(input: {
             variant: input.endOfTurnExperiment.variant,
             variantKey: input.endOfTurnExperiment.variantKey,
             turnWindows: input.endOfTurnExperiment.turnWindows,
-            productionTurnDetection:
-              input.servedAgentBody?.input.turn_detection ?? null,
+            productionTurnDetection: servedBody
+              ? (servedBody.input.turn_detection ?? null)
+              : undefined,
           },
         }
       : {}),

@@ -294,7 +294,7 @@ import {
   type TimbreProbes,
   type TraceGap,
 } from "../src/lib/demo/scoreboard";
-import { demoAgentVariantFromEnv, demoTurnWindowsFromEnv, findCachedDemoAgent, readServedDemoAgentBody, type DemoAgentVariant, type DemoTurnWindows } from "../src/lib/demo/stored-agents";
+import { demoAgentVariantFromEnv, demoTurnWindowsFromEnv, findCachedDemoAgent, readServedAgentBodyForRun, type DemoAgentVariant, type DemoTurnWindows } from "../src/lib/demo/stored-agents";
 import {
   evalRunnerArgv,
   parseEvalTransport,
@@ -1537,12 +1537,14 @@ async function main(): Promise<void> {
     // gate reads exactly what it read before.
     marks: readRunMarks(events, scenario, suite, dryRun),
   });
-  // Voice-parity ticket 20: gates read the stored body a visitor's session
-  // actually binds, read back from the platform — never `buildDemoAgentBody`,
-  // which describes the body the harness intended to store rather than the
-  // copy the platform serves (a failed refresh or stray override differs).
-  // A variant run still verdicts the production body (ticket 10), so it reads
-  // the cached production row; an unreadable body stays unmeasured (INFO).
+  // Voice-parity tickets 20/24: every gate and the artifact's single identity
+  // record read the stored body a visitor's session actually binds, read back
+  // from the platform — never `buildDemoAgentBody`, which describes the body
+  // the harness intended to store rather than the copy the platform serves (a
+  // failed refresh or stray override differs). A variant run still verdicts
+  // the production body (ticket 10), so it reads the cached production row. A
+  // dry run or an unreadable body stays explicitly unmeasured (INFO), never a
+  // reconstruction.
   const cachedProduction =
     selection.variant === "production" ? null : await findCachedDemoAgent(voice);
   const servedAgentId =
@@ -1553,17 +1555,16 @@ async function main(): Promise<void> {
     selection.variant === "production"
       ? (runnerEvidence?.agentFingerprint ?? null)
       : (cachedProduction?.fingerprint ?? null);
-  const servedRead =
-    dryRun || !servedAgentId ? null : await readServedDemoAgentBody(servedAgentId);
-  if (servedRead && !servedRead.ok) {
+  const runBody = await readServedAgentBodyForRun({
+    agentId: servedAgentId,
+    fingerprint: servedAgentFingerprint,
+    dryRun,
+  });
+  if (!runBody.measured) {
     console.warn(
-      `[scoreboard] stored body unmeasured: ${servedRead.error} (end-of-turn and the level leg stay unmeasured, never a reconstruction)`,
+      `[scoreboard] stored body unmeasured: ${runBody.reason} (body gates stay unmeasured, never a reconstruction)`,
     );
   }
-  const servedAgentBody =
-    servedRead?.ok && servedAgentId
-      ? { ...servedRead.body, fingerprint: servedAgentFingerprint }
-      : undefined;
   // Ticket 10: the gate keeps checking the production body (read above from
   // the platform, never rebuilt), so a variant run cannot loosen the ADR-0003
   // contract. The experiment's windows are labelled alongside it instead of
@@ -1589,7 +1590,7 @@ async function main(): Promise<void> {
     traceGaps,
     ...(traceBeatRaw ? { traceBeat: traceBeatRaw as GoldenBeat } : {}),
     traceSessionId: traceSession || null,
-    servedAgentBody,
+    runBody,
     ...(endOfTurnExperiment ? { endOfTurnExperiment } : {}),
     traceExcerpt: excerpt ?? [],
     fillerResume,
@@ -1687,7 +1688,7 @@ async function main(): Promise<void> {
   mkdirSync(dirname(out), { recursive: true });
   writeFileSync(out, `${JSON.stringify(artifact, null, 2)}\n`, { mode: 0o600 });
 
-  console.log(formatGoldenScript(voice));
+  console.log(formatGoldenScript(voice, runBody));
   console.log(formatBudgetReport());
   console.log(formatGateTable(artifact));
   // Plumbing health first (ticket 06), then what moved since the prior run

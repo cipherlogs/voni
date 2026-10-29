@@ -15,7 +15,10 @@ import {
   demoAgentVariantFromEnv,
   demoLlmOverride,
   demoTurnWindowsFromEnv,
+  isServedDemoAgentBody,
+  parseServedDemoAgentBody,
   planDemoAgent,
+  readServedAgentBodyForRun,
   readServedDemoAgentBody,
   servedAgentOutputVolume,
 } from "./stored-agents";
@@ -126,6 +129,83 @@ test("the served body read refuses to invent a body without an API key", async (
     }) as typeof fetch,
   });
   assert.equal(result.ok, false);
+});
+
+// ── Ticket 24: one stored-body seam ────────────────────────────────────────
+
+test("a served body is branded by the platform read, a builder body never is", async () => {
+  const read = await readServedDemoAgentBody("agent_stored", {
+    apiKey: "test-key",
+    fetchFn: (async () =>
+      new Response(JSON.stringify({ input: { turn_detection: null }, output: { volume: 62 } }), {
+        status: 200,
+      })) as typeof fetch,
+  });
+  assert.equal(read.ok, true);
+  if (!read.ok) return;
+  assert.equal(isServedDemoAgentBody(read.body), true);
+  assert.equal(
+    isServedDemoAgentBody(buildDemoAgentBody("anna")),
+    false,
+    "the demo builder describes intent; it is not a body the platform served",
+  );
+  assert.equal(
+    isServedDemoAgentBody(JSON.parse(JSON.stringify(read.body))),
+    false,
+    "the brand never survives serialisation, so a copied payload cannot pose as a served body",
+  );
+});
+
+test("the run body read is measured with identity, and every other outcome names why not", async () => {
+  const ok = await readServedAgentBodyForRun({
+    agentId: "agent_stored",
+    fingerprint: "fp_stored",
+    apiKey: "test-key",
+    fetchFn: (async () =>
+      new Response(JSON.stringify({ input: { turn_detection: null }, output: { volume: 62 } }), {
+        status: 200,
+      })) as typeof fetch,
+  });
+  assert.equal(ok.measured, true);
+  if (ok.measured) {
+    assert.equal(ok.agentId, "agent_stored");
+    assert.equal(ok.fingerprint, "fp_stored");
+    assert.equal(ok.body.fingerprint, "fp_stored");
+    assert.equal(servedAgentOutputVolume(ok.body), 62);
+  }
+
+  const dry = await readServedAgentBodyForRun({
+    agentId: "agent_stored",
+    dryRun: true,
+    apiKey: "test-key",
+    fetchFn: (async () => {
+      throw new Error("a dry run must not fetch");
+    }) as typeof fetch,
+  });
+  assert.equal(dry.measured, false);
+  if (!dry.measured) assert.match(dry.reason, /dry run/);
+
+  const unbound = await readServedAgentBodyForRun({ agentId: null, apiKey: "test-key" });
+  assert.equal(unbound.measured, false);
+  if (!unbound.measured) assert.match(unbound.reason, /no stored agent id/);
+
+  const failed = await readServedAgentBodyForRun({
+    agentId: "agent_missing",
+    fingerprint: "fp_missing",
+    apiKey: "test-key",
+    fetchFn: (async () => new Response("not found", { status: 404 })) as typeof fetch,
+  });
+  assert.equal(failed.measured, false);
+  if (!failed.measured) {
+    assert.equal(failed.agentId, "agent_missing");
+    assert.equal(failed.fingerprint, "fp_missing");
+    assert.match(failed.reason, /agent_missing read failed 404/);
+  }
+});
+
+test("the served payload parser refuses a payload with no input object", () => {
+  const parsed = parseServedDemoAgentBody("agent_stored", { output: { volume: 100 } });
+  assert.equal(parsed.ok, false);
 });
 
 test("demo agent names are deterministic per voice", () => {
