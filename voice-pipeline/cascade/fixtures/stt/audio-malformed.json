@@ -1,0 +1,57 @@
+{
+  "name": "audio-malformed",
+  "description": "Two malformed binary frames (one odd byte count, one empty) are dropped and counted on the audio path, then a valid 20 ms frame still goes up untouched. Nothing malformed reaches the vendor and the adapter does not fail the call for one bad frame.",
+  "kind": "audio",
+  "plans": [
+    [
+      {
+        "json": {
+          "sessionId": "call-123:0",
+          "status": "ready"
+        }
+      }
+    ]
+  ],
+  "audio": [
+    {
+      "pcm_hex": "010001"
+    },
+    {
+      "pcm_hex": ""
+    },
+    {
+      "audio_ms": 20,
+      "value": 1
+    }
+  ],
+  "expect": {
+    "sent": [
+      [
+        {
+          "authorization": {
+            "accessToken": "Bearer test-meta-key"
+          },
+          "audioEncoding": "PCM_24KHZ",
+          "model": "muse-voice-transcribe-1.0",
+          "mode": "ENDPOINTING",
+          "partialMode": "CUMULATIVE",
+          "emitAudioProgress": false,
+          "languageBias": [],
+          "keywords": []
+        },
+        {
+          "bytes": 960,
+          "sha256": "f957972f55d4e968",
+          "silence": false
+        }
+      ]
+    ],
+    "connections": 1,
+    "session_ids": ["call-123:0"],
+    "acked": true,
+    "epoch": 0,
+    "error": null,
+    "events": [],
+    "dropped_frames": 2
+  }
+}

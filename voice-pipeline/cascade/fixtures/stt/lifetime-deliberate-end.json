@@ -1,0 +1,91 @@
+{
+  "name": "lifetime-deliberate-end",
+  "description": "The call ends deliberately after a completed turn. close() drains the audio timeline, sends the one permitted text frame endStream, reads to the socket's end, and records a deliberate session ending with endStream sent — never a normal or dropped one. No reconnect is opened.",
+  "kind": "lifetime",
+  "end": "deliberate",
+  "plans": [
+    [
+      {
+        "json": {
+          "sessionId": "call-123:0",
+          "status": "ready"
+        }
+      },
+      {
+        "json": {
+          "type": "speechStart",
+          "turnId": "turn-1"
+        }
+      },
+      {
+        "json": {
+          "type": "speechEnd",
+          "turnId": "turn-1"
+        }
+      },
+      {
+        "json": {
+          "type": "speechComplete",
+          "turnId": "turn-1",
+          "text": "hello"
+        }
+      }
+    ]
+  ],
+  "expect": {
+    "sent": [
+      [
+        {
+          "authorization": {
+            "accessToken": "Bearer test-meta-key"
+          },
+          "audioEncoding": "PCM_24KHZ",
+          "model": "muse-voice-transcribe-1.0",
+          "mode": "ENDPOINTING",
+          "partialMode": "CUMULATIVE",
+          "emitAudioProgress": false,
+          "languageBias": [],
+          "keywords": []
+        },
+        {
+          "type": "endStream"
+        }
+      ]
+    ],
+    "connections": 1,
+    "session_ids": ["call-123:0"],
+    "acked": false,
+    "epoch": 0,
+    "error": null,
+    "events": [
+      {
+        "type": "SpeechStart",
+        "turn_id": "turn-1",
+        "session_epoch": 0
+      },
+      {
+        "type": "SpeechEnd",
+        "turn_id": "turn-1",
+        "session_epoch": 0
+      },
+      {
+        "type": "SpeechComplete",
+        "text": "hello",
+        "turn_id": "turn-1",
+        "session_epoch": 0
+      }
+    ],
+    "reconnects": 0,
+    "failures": [],
+    "session_endings": [
+      {
+        "epoch": 0,
+        "kind": "deliberate",
+        "code": null,
+        "planned": false,
+        "end_stream_sent": true
+      }
+    ],
+    "ledger_marks": []
+  }
+}

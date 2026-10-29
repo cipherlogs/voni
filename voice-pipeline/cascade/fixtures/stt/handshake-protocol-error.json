@@ -1,0 +1,39 @@
+{
+  "name": "handshake-protocol-error",
+  "description": "A typed transcript frame arrives before the acknowledgement. It cannot be the ack, so the session fails by name, records the reason with the session id, marks itself unacknowledged, and closes the socket. The handshake was still the only client frame sent.",
+  "kind": "handshake",
+  "plans": [
+    [
+      {
+        "json": {
+          "type": "transcript",
+          "text": "hi"
+        }
+      }
+    ]
+  ],
+  "expect": {
+    "sent": [
+      [
+        {
+          "authorization": {
+            "accessToken": "Bearer test-meta-key"
+          },
+          "audioEncoding": "PCM_24KHZ",
+          "model": "muse-voice-transcribe-1.0",
+          "mode": "ENDPOINTING",
+          "partialMode": "CUMULATIVE",
+          "emitAudioProgress": false,
+          "languageBias": [],
+          "keywords": []
+        }
+      ]
+    ],
+    "connections": 1,
+    "session_ids": ["call-123:0"],
+    "acked": false,
+    "epoch": 0,
+    "error": "MetaHandshakeProtocolError",
+    "failure_reason": "meta speech session call-123:0: a frame of type 'transcript' arrived before the acknowledgement"
+  }
+}

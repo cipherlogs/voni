@@ -1,0 +1,43 @@
+{
+  "name": "handshake-ack",
+  "description": "The vendor acknowledges the opening frame: one text JSON object with no type, carrying the session id and a ready status. The replay pins the entire client handshake (credential in the frame, one encoding/model/mode/partial shape, language bias and keyterms) and the ack it consumed, so any change to a known handshake field fails by name.",
+  "kind": "handshake",
+  "open": {
+    "language_codes": ["en"],
+    "keyterms": [" pricing ", "Voni", "pricing", ""]
+  },
+  "plans": [
+    [
+      {
+        "json": {
+          "sessionId": "call-123:0",
+          "status": "ready"
+        }
+      }
+    ]
+  ],
+  "expect": {
+    "sent": [
+      [
+        {
+          "authorization": {
+            "accessToken": "Bearer test-meta-key"
+          },
+          "audioEncoding": "PCM_24KHZ",
+          "model": "muse-voice-transcribe-1.0",
+          "mode": "ENDPOINTING",
+          "partialMode": "CUMULATIVE",
+          "emitAudioProgress": false,
+          "languageBias": ["English"],
+          "keywords": ["pricing", "Voni"]
+        }
+      ]
+    ],
+    "connections": 1,
+    "session_ids": ["call-123:0"],
+    "acked": true,
+    "epoch": 0,
+    "error": null,
+    "failure_reason": null
+  }
+}
