@@ -39,6 +39,11 @@ one after the model reconnects mid-turn — replays the memoised result
 re-addressed to the repeated call id. A new logical turn clears the memo, so a
 deliberate repeat in a later turn is a real call again.
 
+Ticket 86's order lives in :func:`execute_turn_calls`: several calls in one turn
+run one at a time in the model's index order, never in parallel, and their
+results are appended one message per call in that same order. An ``end_call``
+in the batch stops every later side effect.
+
 Ticket 85's narration hold lives in :class:`ToolNarrationHold`: on a turn that
 hands off to a tool, the model's content never reaches the caller. Any narration
 in flight is cancelled and the Locale's hold line is spoken instead, while
@@ -63,7 +68,7 @@ import asyncio
 import inspect
 import json
 import os
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from types import MappingProxyType
@@ -296,21 +301,16 @@ class ToolTimeout(ToolRouteError):
 
 
 class ToolTurnError(ToolHopError):
-    """This continuation cannot answer the turn as it was asked.
+    """This tool turn's calls and outcomes cannot form one model request.
 
-    One call is the unit a tool turn continues to; several calls are ticket
-    86's ordering rule. Refusing by name is deliberate: appending the results
-    we happen to have first would send the vendor a request missing a tool
-    result, which is an HTTP 400 and a lost turn.
+    One call per ``role: "tool"`` message, appended in call order, is the only
+    shape the vendor accepts. A result that answers a call the turn never
+    requested, or answers one call twice, is refused by name rather than sent
+    as a request the vendor will reject.
     """
 
-    def __init__(self, calls: int) -> None:
-        self.calls = calls
-        super().__init__(
-            f"this turn requested {calls} tool calls; the continuation executes "
-            "one call per tool turn (ticket 86 owns several calls in index "
-            "order), so the turn is refused rather than half answered"
-        )
+    def __init__(self, reason: str) -> None:
+        super().__init__(f"the tool turn cannot be assembled: {reason}")
 
 
 @dataclass(frozen=True)
@@ -477,7 +477,7 @@ class ToolResult:
 
     @property
     def reason(self) -> str:
-        """The route's own refusal text, when it refused."""
+        """The route's refusal text, or the mapped failure's reason."""
         error = self.payload.get("error")
         return error if isinstance(error, str) else ""
 
@@ -1065,36 +1065,144 @@ def _aiohttp_session() -> Any:
     return _AiohttpSession
 
 
+def order_tool_calls(
+    turn: MetaLLMTurn, calls: Sequence[ToolCallRequest]
+) -> list[ToolCallRequest]:
+    """The turn's executable calls in the turn's own index order (ticket 86).
+
+    The vendor may hand the calls back in any order and allows them to run in
+    parallel; the cascade does neither. Order comes from ``MetaToolCall.index``,
+    never from the order the caller happened to collect, so two spellings of the
+    same batch cannot produce two different side-effect orders. A call the turn
+    never requested is refused by name instead of being executed.
+    """
+    index_of = {call.call_id: call.index for call in turn.tool_calls if call.call_id}
+    seen: set[str] = set()
+    for call in calls:
+        if not call.call_id:
+            # Identity-less calls are denied by the executor without a request;
+            # their position among themselves cannot affect a side effect.
+            continue
+        if call.call_id in seen:
+            raise ToolTurnError(f'call "{call.call_id}" was requested twice')
+        if call.call_id not in index_of:
+            raise ToolTurnError(
+                f'call "{call.call_id}" is not one this turn requested'
+            )
+        seen.add(call.call_id)
+    return sorted(
+        calls,
+        key=lambda call: (0, index_of[call.call_id])
+        if call.call_id in index_of
+        else (1, 0),
+    )
+
+
+async def execute_turn_calls(
+    executor: ToolExecutor,
+    turn: MetaLLMTurn,
+    calls: Sequence[ToolCallRequest],
+) -> list[ToolOutcome]:
+    """Run one turn's calls one at a time in index order (ticket 86).
+
+    Each hop is awaited before the next starts, so a side effect can never be
+    reordered to save latency. ``end_call`` is a signal, not a hop: when it
+    appears in the batch, every later call is left unexecuted, because the
+    caller has already ended the conversation (ticket 87 speaks the goodbye).
+    """
+    outcomes: list[ToolOutcome] = []
+    for call in order_tool_calls(turn, calls):
+        outcome = await executor.execute(call)
+        outcomes.append(outcome)
+        if isinstance(outcome, EndCallSignal):
+            break
+    return outcomes
+
+
+def _outcomes(outcome: ToolOutcome | Sequence[ToolOutcome]) -> list[ToolOutcome]:
+    """One outcome and a batch are the same thing to the continuation."""
+    if isinstance(outcome, (ToolResult, EndCallSignal, DeniedCall)):
+        return [outcome]
+    return list(outcome)
+
+
+def _declared_index(turn: MetaLLMTurn, call_id: str) -> int | None:
+    """Where the turn placed this call, or ``None`` for an unaddressed signal."""
+    for call in turn.tool_calls:
+        if call.call_id == call_id:
+            return call.index
+    return None
+
+
+def _ordered_results(
+    turn: MetaLLMTurn, results: Sequence[ToolResult]
+) -> list[ToolResult]:
+    """One result per call, in the turn's index order (ticket 86)."""
+    index_of = {call.call_id: call.index for call in turn.tool_calls}
+    seen: set[str] = set()
+    for result in results:
+        if result.tool_call_id not in index_of:
+            raise ToolTurnError(
+                f'a tool result answers call "{result.tool_call_id}", which '
+                "this turn did not request"
+            )
+        if result.tool_call_id in seen:
+            raise ToolTurnError(
+                f'call "{result.tool_call_id}" was answered twice'
+            )
+        seen.add(result.tool_call_id)
+    return sorted(results, key=lambda result: index_of[result.tool_call_id])
+
+
 async def continue_after_tool(
     *,
     llm: Any,
     history: Any,
     turn: MetaLLMTurn,
-    outcome: ToolOutcome,
+    outcome: ToolOutcome | Sequence[ToolOutcome],
     tools: list[dict[str, Any]] | None = None,
     record: MetaLLMTurn | None = None,
     ledger: TimingLedger | None = None,
 ) -> AsyncIterator[TokenDelta | ToolCallRequest]:
     """Continue the same logical turn with a new model request, or nothing.
 
-    A :class:`ToolResult` is recorded with the assistant message that asked for
-    it and the next request sees both, which is the only shape the vendor
-    accepts. A :class:`DeniedCall` closes the turn instead: its denial is
-    recorded on the turn (once — the LLM layer may already have recorded it when
-    it emitted the identity-less request) and a hold line is owed (ticket 85),
-    but no request is made, because a ``tool`` message cannot answer a call the
-    vendor never identified. An :class:`EndCallSignal` yields no event at all:
-    end call is call control, so nothing speakable follows it.
+    One outcome or a whole batch is accepted: every :class:`ToolResult` is
+    recorded with the assistant message that asked for it, one ``tool`` message
+    per call and in the turn's index order, which is the only shape the vendor
+    accepts (ticket 86). A :class:`DeniedCall` closes the turn instead: its
+    denial is recorded on the turn (once — the LLM layer may already have
+    recorded it when it emitted the identity-less request) and a hold line is
+    owed (ticket 85), but no request is made, because a ``tool`` message cannot
+    answer a call the vendor never identified. An :class:`EndCallSignal` yields
+    no event at all: results that ran before it are recorded (the spec keeps
+    them unspoken), and nothing after it runs or is spoken.
     """
-    if isinstance(outcome, EndCallSignal):
-        return
-    if isinstance(outcome, DeniedCall):
-        _record_denial(turn, outcome.denial, ledger=ledger)
+    outcomes = _outcomes(outcome)
+    denials = [item for item in outcomes if isinstance(item, DeniedCall)]
+    if denials:
+        for denial in denials:
+            _record_denial(turn, denial.denial, ledger=ledger)
         turn.hold_line_required = True
         return
-    if len(turn.tool_calls) != 1:
-        raise ToolTurnError(len(turn.tool_calls))
-    history.append_tool_turn(turn, [outcome.tool_message()])
+
+    results = [item for item in outcomes if isinstance(item, ToolResult)]
+    signals = [item for item in outcomes if isinstance(item, EndCallSignal)]
+    if signals:
+        end_at = _declared_index(turn, signals[0].tool_call_id)
+        if end_at is not None:
+            before_signal: list[ToolResult] = []
+            for result in results:
+                index = _declared_index(turn, result.tool_call_id)
+                if index is not None and index < end_at:
+                    before_signal.append(result)
+            results = before_signal
+    if results:
+        ordered = _ordered_results(turn, results)
+        history.append_tool_turn(turn, [result.tool_message() for result in ordered])
+    if signals:
+        return
+    if not results:
+        return
     kwargs: dict[str, Any] = {}
     if record is not None:
         kwargs["turn"] = record

@@ -10,14 +10,15 @@ Seams under test:
 
 * ``ToolExecutor`` -> the route wire (URL, method, headers, JSON body, timeout)
   and the bounded wait. Catches a re-pointed call, an unauthenticated request
-  and an unbounded hop; misses which HTTP conditions become failure results
-  (ticket 84).
+  and an unbounded hop; the per-status failure mapping is copied out to
+  ``test_tools_failures.py`` (ticket 84) and multi-call order to
+  ``test_tools_order.py`` (ticket 86).
 * ``ToolResult.tool_message`` -> the ``role: "tool"`` message the model reads.
   Catches a lost or mismatched call id; misses narration and the hold line
   (ticket 85).
 * ``continue_after_tool`` -> one new model request in the same logical turn.
-  Catches a dropped result or a second tool execution; misses the loop cap
-  (ticket 87) and multi-call ordering (ticket 86).
+  Catches a dropped result or a result answering an unrequested call; the cap is
+  ticket 87 and several-call ordering is ticket 86.
 * ``EndCallSignal`` -> call control, never HTTP. Catches an ``end_call`` that
   opens a request or speaks; misses the closing line and the hangup (87).
 """
@@ -487,16 +488,11 @@ class ContinuationTests(unittest.TestCase):
         )
         self.assertEqual(continued.content_text, "Two properties match.")
 
-    def test_a_turn_with_several_calls_is_refused_rather_than_half_answered(self):
-        turn = MetaLLMTurn(
-            finish_reason="tool_calls",
-            tool_calls=[
-                MetaToolCall(index=0, call_id="call_1", name="search_properties"),
-                MetaToolCall(index=1, call_id="call_2", name="check_availability"),
-            ],
+    def test_a_result_for_a_call_the_turn_did_not_request_is_refused(self):
+        turn = tool_turn()
+        result = ToolResult(
+            name="search_properties", tool_call_id="call_2", payload={"ok": True}
         )
-        turn.close()
-        result = ToolResult(name="search_properties", tool_call_id="call_1", payload={"ok": True})
         llm = ScriptedLLM([])
         history = MessageHistory()
 
@@ -507,7 +503,7 @@ class ContinuationTests(unittest.TestCase):
                 )
             )
 
-        self.assertIn("one call", str(raised.exception))
+        self.assertIn("call_2", str(raised.exception))
         self.assertEqual(llm.requests, [])
         self.assertEqual(history.messages, ())
 
