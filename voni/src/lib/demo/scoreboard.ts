@@ -6351,6 +6351,15 @@ function regressionSubjectRow(
       tag: null,
     };
   }
+  // A row reads only its own subject's run. A mismatched pair is a harness
+  // error, never a way to give one subject another subject's verdict.
+  const artifactSubject = subjectOfArtifact(artifact);
+  if (!sameSubject(artifactSubject, input.subject)) {
+    throw new Error(
+      `matrix row ${label} was handed the artifact of ${formatSubject(artifactSubject)} ` +
+        `(a row only reads its own subject's run)`,
+    );
+  }
   const verdict = subjectGateVerdict(artifact);
   const probes = validateProbeCounts(
     artifact.probes as unknown as Record<string, unknown>,

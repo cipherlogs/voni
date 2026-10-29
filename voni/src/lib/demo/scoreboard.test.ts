@@ -5268,6 +5268,21 @@ test("matrix rows read gates only from their own subject artifact", () => {
   assert.ok(lolaRow?.verdict?.failing.includes("timbre-probes"));
 });
 
+test("a matrix row refuses an artifact from another subject", () => {
+  const anna = resolveSubject({ voice: "anna" });
+  const lola = resolveSubject({ voice: "lola" });
+  const lolaRun = matrixRun({
+    voice: "lola",
+    subject: lola,
+    gates: [{ name: "plumbing", status: "PASS", detail: "eval runner finished" }],
+  });
+  assert.throws(
+    () => buildRegressionMatrix({ entries: [{ subject: anna, artifact: lolaRun }] }),
+    /only reads its own subject's run/,
+    "a passing artifact from another subject is never a row's own verdict",
+  );
+});
+
 // ── Review fixes: harness break, measurements, memory INFO, attribution, sub-scores ──
 
 test("shared probe validator accepts zeros and rejects bad counts", () => {
