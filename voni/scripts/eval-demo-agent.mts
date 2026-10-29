@@ -119,6 +119,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildDemoAgentBody, getOrCreateDemoAgent } from "../src/lib/demo/stored-agents";
 import { createEvalEventWriter } from "../src/lib/demo/eval-events";
+import { createTurnMarks } from "../src/lib/demo/turn-marks";
 import {
   evalSummaryIdentity,
   evalToolExecutor,
@@ -715,6 +716,15 @@ async function runClient(
     wallClockMs: 0, audioChunks: 0, callerClips: lines.map((line) => clipPrints.get(line)!),
     overlapMs: [], cutWindows: [], lastFadeMs: 0, agentWindows: [], coverageAt: [], checkIns: [], silenceTimeline: null,
   };
+  // Per-call turn receipt marks for the latency split (ticket 01). Null when
+  // the stream is off, so a live call that did not ask for a file pays
+  // nothing: `mark` is the only work a call with `--events` adds.
+  const MARKS = EVENTS.path ? createTurnMarks(EVENTS) : null;
+  const mark = (msg: { type: string; reply_id?: unknown }) =>
+    MARKS?.observe(msg, {
+      sessionId: outcome.sessionId,
+      atMs: Math.max(0, Math.round(Date.now() - t0)),
+    });
   let repliesDone = 0;
   let audioChunks = 0;
   /** The caller asked to end; a spoken goodbye with no tool call still ends. */
@@ -982,11 +992,7 @@ async function runClient(
       if (typeof msg.reply_id === "string") {
         if (outcome.replyAudioAt[msg.reply_id] === undefined) {
           outcome.replyAudioAt[msg.reply_id] = Date.now();
-          EVENTS.emit("reply.first_audio", {
-            sessionId: outcome.sessionId,
-            replyId: msg.reply_id,
-            callMs: Math.max(0, Math.round(Date.now() - t0)),
-          });
+          mark(msg);
         }
         // The session's own handler already queued this chunk before ours runs,
         // so this reply's playout start is the running total minus the chunk.
@@ -1002,11 +1008,15 @@ async function runClient(
       }
       return;
     }
-    if (msg.type === "reply.started" && pendingCheckInReply) {
-      pendingCheckInReply = false;
-      checkInReplyId = typeof msg.reply_id === "string" ? msg.reply_id : null;
-      return;
+    if (msg.type === "reply.started") {
+      mark(msg);
+      if (pendingCheckInReply) {
+        pendingCheckInReply = false;
+        checkInReplyId = typeof msg.reply_id === "string" ? msg.reply_id : null;
+        return;
+      }
     }
+    if (msg.type === "transcript.user") mark(msg);
     if (!process.env.EVAL_DEBUG) return;
     if (msg.type === "transcript.agent.delta") {
       if (!(globalThis as Record<string, unknown>).sawDelta) console.log(`    ${((Date.now() - t0) / 1000).toFixed(2)} first agent delta: ${msg.text}`);
@@ -1664,6 +1674,13 @@ async function runToolSession(
 
   const modes = new Map(DEMO_VOICE_TOOLS.map((t) => [t.name, t.execution_mode]));
   const t0 = Date.now();
+  // Same per-call turn marks as `runClient`: null when the stream is off.
+  const MARKS = EVENTS.path ? createTurnMarks(EVENTS) : null;
+  const mark = (msg: { type: string; reply_id?: unknown }) =>
+    MARKS?.observe(msg, {
+      sessionId: outcome.sessionId ?? null,
+      atMs: Math.max(0, Math.round(Date.now() - t0)),
+    });
   let replyActive = false;
   let current: ReplyRecord | null = null;
   let lastWasToolResult = false;
@@ -1779,11 +1796,15 @@ async function runToolSession(
       // Like the browser: the call's tag, before any invite.
       send({ type: "conversation.message", role: "system", content: testTagContext(TAG) });
     }
-    if (msg.type === "transcript.user" && msg.text) {
-      outcome.heard.push(msg.text);
-      heardUser = true;
+    if (msg.type === "transcript.user") {
+      mark(msg);
+      if (msg.text) {
+        outcome.heard.push(msg.text);
+        heardUser = true;
+      }
     }
     if (msg.type === "reply.started") {
+      mark(msg);
       replyActive = true;
       current = {
         id: String(msg.reply_id),
@@ -1800,13 +1821,7 @@ async function runToolSession(
     const owner = (id: unknown) => outcome.replies.find((r) => r.id === String(id)) ?? null;
     if (msg.type === "reply.audio") {
       const r = owner(msg.reply_id);
-      if (r && r.audioBytes === 0) {
-        EVENTS.emit("reply.first_audio", {
-          sessionId: outcome.sessionId,
-          replyId: r.id,
-          callMs: Math.max(0, Math.round(Date.now() - t0)),
-        });
-      }
+      if (r && r.audioBytes === 0) mark(msg);
       if (r) r.audioBytes += Buffer.from(String(msg.data), "base64").length;
     }
     if (msg.type === "transcript.agent.delta" && msg.delta) {

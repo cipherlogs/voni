@@ -78,8 +78,11 @@ edit a budget to pass; fix the call or amend the spec first.
 - `--transport stored` is the landing-demo path. `--transport inline` is for
   debugging the inline body only; do not measure the demo on it.
 - `--events /tmp/run.jsonl` records the live decision timeline
-  (`reply.create`, first audio, cut, tool, drain, aside, hangup);
-  `scoreboard:inspect --events` summarizes it.
+  (`turn.user_final`, `turn.reply_start`, first audio with the one
+  `anchor: true` clock mark, `reply.create`, cut, tool, drain, aside,
+  hangup); a focused run writes that file, the suite writes
+  `/tmp/run.<scenario>.jsonl` per scenario. `scoreboard:inspect --events`
+  summarizes one file.
 
 ## Fast LLM override
 
