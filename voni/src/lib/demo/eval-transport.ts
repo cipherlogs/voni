@@ -34,6 +34,24 @@ import {
 
 export type EvalTransport = "stored" | "inline";
 
+/**
+ * The `--agent <id>` flag: a tenant agent the run binds directly, instead of a
+ * provisioned demo agent. `undefined`/empty means the run measures the demo
+ * subject (voice-parity ticket 72).
+ */
+export const TENANT_AGENT_FLAG = "--agent";
+
+/** The tenant agent a run asks to measure, or null when it binds a demo voice. */
+export function parseEvalAgentId(argv: readonly string[]): string | null {
+  const index = argv.indexOf(TENANT_AGENT_FLAG);
+  if (index < 0) return null;
+  const value = (argv[index + 1] ?? "").trim();
+  if (value === "") {
+    throw new Error("--agent needs a tenant agent id (an empty id would measure the demo subject)");
+  }
+  return value;
+}
+
 export const EVAL_TRANSPORTS: readonly EvalTransport[] = ["stored", "inline"];
 
 /** `--transport stored|inline`, defaulting to the real demo path. */
@@ -148,8 +166,19 @@ export function resolveEvalVariantSelection(input: {
 }): EvalVariantSelection {
   const flagVariant = parseEvalVariantArg(input.argv);
   const flagWindows = parseEvalTurnWindowsArg(input.argv);
+  const tenantAgent = parseEvalAgentId(input.argv);
   const variant = flagVariant ?? input.envVariant;
 
+  if (tenantAgent !== null && input.transport === "inline") {
+    throw new Error(
+      "--agent binds a tenant stored agent and never runs inline: drop --transport inline or the agent",
+    );
+  }
+  if (tenantAgent !== null && (variant !== "production" || flagWindows !== null)) {
+    throw new Error(
+      "--agent measures the tenant agent's own body: the demo turn-window experiment cannot be applied to it",
+    );
+  }
   if (input.transport === "inline" && (variant === "turn-window" || flagWindows !== null)) {
     throw new Error(
       "--transport inline is a debugging path and is never measured: " +
@@ -188,6 +217,8 @@ export function evalRunnerArgv(input: {
   transport?: EvalTransport | null;
   variant?: DemoAgentVariant | null;
   turnWindows?: DemoTurnWindows | null;
+  /** A tenant agent to bind in place of the provisioned demo agent (ticket 72). */
+  agentId?: string | null;
   /** Opt-in JSONL event stream (ticket 01); absent writes no file. */
   eventsPath?: string | null;
 }): string[] {
@@ -202,6 +233,7 @@ export function evalRunnerArgv(input: {
     "--runs",
     input.runs,
   ];
+  if (input.agentId) argv.push(TENANT_AGENT_FLAG, input.agentId);
   if (input.transport) argv.push("--transport", input.transport);
   // An explicit `production` is forwarded too: it must override a variant in
   // the child's environment. Absent (`null`/undefined) leaves the env alone.
@@ -214,7 +246,8 @@ export function evalRunnerArgv(input: {
 /** What the summary reports about the agent a run actually bound. */
 export type EvalAgentIdentity = {
   agentId: string;
-  fingerprint: string;
+  /** The provisioner fingerprint; null when the body is not ours to fingerprint (a tenant agent). */
+  fingerprint: string | null;
   /** Override model, or null for the managed default. */
   llmModel: string | null;
   /** Which stored body bound; absent on an inline/older run means production. */

@@ -21,9 +21,12 @@
 import {
   EMAIL_INVITE_TAG,
   percentile,
+  subjectOfArtifact,
   type RunnerPlayout,
   type ScoreboardArtifact,
 } from "./scoreboard";
+import type { SubjectRecord } from "./subject";
+import { formatSubject } from "./subject";
 import type { EvalEventSummary } from "./eval-events";
 import type { LatencyBand } from "./latency-split";
 import {
@@ -39,6 +42,8 @@ import { formatTurnWindows } from "./turn-windows";
 
 export type InspectRunIdentity = {
   voice: string;
+  /** What this run measured: agent, Locale and transport (voice-parity 72). */
+  subject: SubjectRecord;
   runId: string;
   recordedAt: string;
   schemaVersion: number;
@@ -604,6 +609,7 @@ export function buildInspectReport(
   return {
     run: {
       voice: artifact.voice,
+      subject: subjectOfArtifact(artifact),
       runId: artifact.runId,
       recordedAt: artifact.recordedAt,
       schemaVersion: artifact.schemaVersion,
@@ -789,6 +795,7 @@ export function formatInspectReport(report: InspectReport): string {
     `  schema       ${run.schemaVersion}`,
     `  code         ${code}`,
     `  transport    ${run.transport}`,
+    `  subject      ${formatSubject(run.subject)}`,
     `  agent        ${run.agentId ?? "unknown"}  (llm ${run.llmModel ?? "unknown"})`,
   ];
   if (run.agentFingerprint) lines.push(`  fingerprint  ${run.agentFingerprint.slice(0, 12)}`);
