@@ -26,13 +26,16 @@ from cascade.events import (
     PHASES,
     PIPELINES,
     EventEnvelopeError,
+    EventStream,
     EventWriter,
     Fallback,
+    ForbiddenEventKey,
     connect_fallback,
     emit_fallback,
     turn_fallback,
 )
 from cascade.routing import CallSubject, decide
+from cascade.sanitizer import REDACTED
 
 SUBJECT = "demo anna (en, browser)"
 
@@ -435,6 +438,148 @@ class FallbackRefusalTests(unittest.TestCase):
             )
             self.assertEqual(error.field, "trigger")
             self.assertIn("not a provider fault", str(error))
+
+
+def cascade_stream(call_id: str = "call-111") -> tuple[list[str], EventStream]:
+    lines: list[str] = []
+    writer = EventWriter(pipeline="cascade", call_id=call_id)
+    return lines, EventStream(writer, sink=lines.append)
+
+
+class CascadeStreamSanitizerTests(unittest.TestCase):
+    def test_every_cascade_line_runs_the_shared_sanitizer_before_write(self):
+        lines, stream = cascade_stream()
+
+        event = stream.call_scoped(
+            "turn.reply_start",
+            subject=SUBJECT,
+            turn="turn-1",
+            at_ms=1200,
+            phase="turn",
+            fields={
+                "sessionId": "sess_abc",
+                "reason": "fallback to wss://edge:supersecret@cascade.example/ws",
+                "note": "key sk_live_abcdefgh1234 leaked",
+            },
+        )
+
+        self.assertEqual(len(lines), 1)
+        line = json.loads(lines[0])
+        self.assertEqual(line, event)
+        self.assertEqual(
+            line["reason"], "fallback to wss://[redacted]@cascade.example/ws"
+        )
+        self.assertEqual(line["note"], "key [redacted] leaked")
+        self.assertEqual(line["sessionId"], "sess_abc")
+        self.assertNotIn("supersecret", lines[0])
+        self.assertNotIn("sk_live_abcdefgh1234", lines[0])
+
+    def test_a_forbidden_key_rejects_the_line_by_name_before_write(self):
+        lines, stream = cascade_stream()
+
+        with self.assertRaises(ForbiddenEventKey) as caught:
+            stream.call_scoped(
+                "turn.user_final",
+                subject=SUBJECT,
+                turn="turn-1",
+                at_ms=1200,
+                phase="turn",
+                fields={"text": "caller words", "token": "tok_secret"},
+            )
+
+        self.assertEqual(caught.exception.keys, ("text", "token"))
+        self.assertEqual(caught.exception.field, "text")
+        self.assertIn('"text"', str(caught.exception))
+        self.assertIn('"token"', str(caught.exception))
+        self.assertEqual(lines, [], "a refused line is not written")
+        self.assertNotIn("caller words", str(caught.exception))
+        self.assertNotIn("tok_secret", str(caught.exception))
+
+    def test_a_raw_vendor_handshake_is_never_logged(self):
+        # The frame ``MetaStreamingSTT.open`` sends: the credential is inside it.
+        handshake = {
+            "authorization": {"accessToken": "Bearer supersecret"},
+            "audioEncoding": "pcm_s16le",
+            "model": "u-3-rt",
+            "mode": "agent",
+            "languageBias": ["English"],
+        }
+        lines, stream = cascade_stream()
+
+        with self.assertRaises(ForbiddenEventKey) as caught:
+            stream.call_scoped(
+                "stt.handshake",
+                subject=SUBJECT,
+                turn=None,
+                at_ms=0,
+                phase="connect",
+                fields={"handshake": handshake},
+            )
+
+        self.assertEqual(caught.exception.keys, ("handshake.authorization",))
+        self.assertIn("authorization", str(caught.exception))
+        self.assertNotIn("supersecret", str(caught.exception))
+        self.assertNotIn("Bearer", str(caught.exception))
+        self.assertEqual(lines, [])
+
+    def test_a_fallback_reason_is_redacted_on_the_written_line(self):
+        lines, stream = cascade_stream()
+
+        emit_fallback(
+            stream.writer,
+            turn_fallback(
+                "stt",
+                from_provider="meta",
+                to_provider="assemblyai",
+                trigger="mid_turn_failure",
+                turn="turn-3",
+                reason="retry wss://user:pw@vendor.example/ws with Bearer abc.def",
+            ),
+            subject=SUBJECT,
+            at_ms=900,
+            sink=stream,
+        )
+
+        line = json.loads(lines[0])
+        self.assertEqual(line["type"], FALLBACK_EVENT_TYPE)
+        self.assertEqual(line["leg"], "stt")
+        self.assertEqual(line["from"], "meta")
+        self.assertEqual(line["to"], "assemblyai")
+        self.assertEqual(line["trigger"], "mid_turn_failure")
+        self.assertEqual(line["turn"], "turn-3")
+        self.assertEqual(line["phase"], "turn")
+        self.assertEqual(
+            line["reason"], f"retry wss://{REDACTED}@vendor.example/ws with {REDACTED}"
+        )
+        self.assertNotIn("user:pw", lines[0])
+        self.assertNotIn("abc.def", lines[0])
+
+    def test_existing_consumers_see_the_same_allowed_fields(self):
+        lines, stream = cascade_stream()
+
+        stream.operational(
+            "breaker.transition",
+            leg="llm",
+            at_ms=4200,
+            phase="turn",
+            fields={"from": "spark", "to": "gateway", "reason": "1013 rate limited"},
+        )
+
+        self.assertEqual(
+            json.loads(lines[0]),
+            {
+                "schemaVersion": EVENT_SCHEMA_VERSION,
+                "pipeline": "cascade",
+                "callId": "call-111",
+                "type": "breaker.transition",
+                "leg": "llm",
+                "atMs": 4200,
+                "phase": "turn",
+                "from": "spark",
+                "to": "gateway",
+                "reason": "1013 rate limited",
+            },
+        )
 
 
 if __name__ == "__main__":

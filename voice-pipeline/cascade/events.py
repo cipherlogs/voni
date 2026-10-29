@@ -13,16 +13,18 @@ mid-turn alike, through :func:`emit_fallback` and the one
 :class:`EventWriter`; a routing or eligibility refusal is a different fact and
 never emits it.
 
-This module is a builder, not a second writer and not a second sanitizer:
+The persisted cascade stream is written by :class:`EventStream`, which is the
+one Python write boundary: every line is built by :class:`EventWriter` and
+passes through the one sanitizer's rules before it is written (ticket 111). The
+rules live once, in ``voni/src/lib/demo/event-sanitizer.ts`` (ticket 07);
+``cascade/sanitizer.py`` is a callable copy for the Python service, and
+``test_sanitizer.py`` parses the TS source and fails by name when the copy
+drifts. There is no second denylist and no unsanitized write path.
 
-* The persisted stream is written by the one TS writer
-  (``voni/src/lib/demo/event-envelope.ts``), which calls the one sanitizer
-  (``event-sanitizer.ts``, ticket 07). Re-implementing the forbidden-key list
-  here would be exactly the second denylist that ticket bans, so a Python event
-  crosses the wire and is sanitized once, at that boundary.
-* The same TS module is the one reader. It refuses an unknown schema version, a
-  missing required field, a managed event carrying a cascade-only type and a
-  cascade event carrying a managed-only field, always by name.
+The TS module (``voni/src/lib/demo/event-envelope.ts``) is the one reader. It
+refuses an unknown schema version, a missing required field, a managed event
+carrying a cascade-only type and a cascade event carrying a managed-only field,
+always by name.
 
 The canonical shapes are pinned by ``event-envelope.fixtures.json`` and both
 sides' tests read it, so a drift between this writer and the reader fails rather
@@ -31,12 +33,14 @@ than quietly producing a second schema.
 
 from __future__ import annotations
 
+import json
 import math
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
 from cascade.breaker import LEGS
+from cascade.sanitizer import sanitize_fields
 
 #: The one schema version. A reader must refuse anything else.
 EVENT_SCHEMA_VERSION = 1
@@ -88,6 +92,24 @@ class EventEnvelopeError(ValueError):
         super().__init__(f"{field}: {reason}")
         self.field = field
         self.reason = reason
+
+
+class ForbiddenEventKey(EventEnvelopeError):
+    """A line that still carries a forbidden key is refused before it is written.
+
+    The names are the sanitizer's dotted paths; the values are never echoed, so
+    a refusal cannot itself leak the text or credential that caused it.
+    """
+
+    def __init__(self, keys: tuple[str, ...] | list[str]) -> None:
+        self.keys = tuple(keys)
+        first = self.keys[0] if self.keys else "event"
+        named = ", ".join(f'"{key}"' for key in self.keys)
+        super().__init__(
+            first,
+            f"forbidden event key {named}; a line carrying caller text or audio "
+            "is refused, not written",
+        )
 
 
 def _require_text(field: str, value: Any) -> str:
@@ -391,3 +413,81 @@ def emit_fallback(
     )
     sink(event)
     return event
+
+
+# ---------------------------------------------------------------------------
+# The cascade's one stream writer: sanitize every line before it is written
+# ---------------------------------------------------------------------------
+
+
+class EventStream:
+    """One cascade stream: the one envelope builder, the one sanitizer, one sink.
+
+    Every line is built by :class:`EventWriter` and passes through the one
+    shared rule module (``cascade.sanitizer``, a parity-tested copy of the TS
+    rule source) before it is written. A line that still carries a forbidden
+    key is refused by name and nothing is written; an allowed field keeps its
+    value except where a credential inside it is redacted. There is no second
+    write path: ``__call__`` is the only thing that touches the sink.
+
+    ``emit_fallback(..., sink=stream)`` works because the stream is callable,
+    so a fallback line is sanitized like every other line.
+    """
+
+    def __init__(
+        self, writer: EventWriter, *, sink: Callable[[str], None]
+    ) -> None:
+        if not isinstance(writer, EventWriter):
+            raise TypeError(f"EventStream needs an EventWriter, got {writer!r}")
+        if not callable(sink):
+            raise TypeError(f"EventStream needs a write sink, got {sink!r}")
+        self.writer = writer
+        self._sink = sink
+
+    def __call__(self, event: Mapping[str, Any]) -> dict[str, Any]:
+        """Sanitize one finished line, then write it; a refusal writes nothing."""
+        sanitized = sanitize_fields(dict(event))
+        if sanitized.rejected_keys:
+            raise ForbiddenEventKey(sanitized.rejected_keys)
+        self._sink(
+            json.dumps(sanitized.value, ensure_ascii=False, separators=(",", ":")) + "\n"
+        )
+        return sanitized.value
+
+    def call_scoped(
+        self,
+        type: str,
+        *,
+        subject: str,
+        turn: str | None,
+        at_ms: float | int,
+        phase: str,
+        fields: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Build and write one call-scoped line."""
+        return self(
+            self.writer.call_scoped(
+                type,
+                subject=subject,
+                turn=turn,
+                at_ms=at_ms,
+                phase=phase,
+                fields=fields,
+            )
+        )
+
+    def operational(
+        self,
+        type: str,
+        *,
+        leg: str,
+        at_ms: float | int,
+        phase: str,
+        fields: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Build and write one operational line."""
+        return self(
+            self.writer.operational(
+                type, leg=leg, at_ms=at_ms, phase=phase, fields=fields
+            )
+        )
