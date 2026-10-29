@@ -175,11 +175,92 @@ export type BeatTiming = {
 
 export type GateStatus = "PASS" | "INFO" | "FAIL";
 
+export const GATE_STATUSES: readonly GateStatus[] = ["PASS", "INFO", "FAIL"];
+
+export function isGateStatus(value: unknown): value is GateStatus {
+  return typeof value === "string" && (GATE_STATUSES as readonly string[]).includes(value);
+}
+
+/**
+ * Typed reasons a row may be non-PASS without lying about the call. The streak
+ * judges these fields, never the human-readable `detail` prose: rewriting a
+ * detail line can never mint a green streak.
+ */
+export type GateReason =
+  /** Provenance row: evidence was supplied, so nothing is left to gate. */
+  | "measured-evidence"
+  /** Dry run: no measurements were required. */
+  | "dry-run"
+  /** Ticket 27: prospect-capture memory has no before/after pair yet. */
+  | "unmeasured-memory";
+
+export const GATE_REASONS: readonly GateReason[] = ["measured-evidence", "dry-run", "unmeasured-memory"];
+
+export function isGateReason(value: unknown): value is GateReason {
+  return typeof value === "string" && (GATE_REASONS as readonly string[]).includes(value);
+}
+
 export type ScoreboardGate = {
   name: string;
   status: GateStatus;
   detail: string;
+  /** Typed semantics a consumer may act on; absent when the status speaks for itself. */
+  reason?: GateReason;
 };
+
+/**
+ * The one gate-row validator for every artifact reader (the streak and the
+ * matrix used to re-implement this). Throws with the source label so a broken
+ * artifact is named instead of silently skipped.
+ */
+export function parseGateRow(raw: unknown, source: string, index: number): ScoreboardGate {
+  if (raw === null || typeof raw !== "object") {
+    throw new Error(`${source}: gate ${index} needs name/status/detail`);
+  }
+  const record = raw as Record<string, unknown>;
+  if (typeof record.name !== "string" || typeof record.detail !== "string" || !isGateStatus(record.status)) {
+    throw new Error(`${source}: gate ${index} needs name/status/detail`);
+  }
+  if (record.reason !== undefined && !isGateReason(record.reason)) {
+    throw new Error(`${source}: gate ${index} has an unknown reason "${String(record.reason)}"`);
+  }
+  return {
+    name: record.name,
+    status: record.status,
+    detail: record.detail,
+    ...(record.reason !== undefined ? { reason: record.reason } : {}),
+  };
+}
+
+export function parseGateRows(raw: unknown, source: string): ScoreboardGate[] {
+  if (!Array.isArray(raw)) throw new Error(`${source}: gates is not an array`);
+  return raw.map((gate, index) => parseGateRow(gate, source, index));
+}
+
+/** The one sub-score-row validator shared by the matrix and the streak. */
+export function parseSubScoreRows(raw: unknown, source: string): SubScore[] {
+  if (!Array.isArray(raw)) throw new Error(`${source}: subScores is not an array`);
+  return raw.map((sub, index) => {
+    const record = (sub ?? {}) as Record<string, unknown>;
+    if (
+      typeof record.name !== "string" ||
+      typeof record.label !== "string" ||
+      typeof record.detail !== "string" ||
+      !isGateStatus(record.status) ||
+      !Array.isArray(record.gates) ||
+      !record.gates.every((name) => typeof name === "string")
+    ) {
+      throw new Error(`${source}: sub-score ${index} needs name/label/status/detail/gates`);
+    }
+    return {
+      name: record.name as SubScore["name"],
+      label: record.label,
+      status: record.status,
+      detail: record.detail,
+      gates: record.gates as string[],
+    };
+  });
+}
 
 /**
  * One voice's loudness path as applied by the session: the server output level
@@ -1607,6 +1688,7 @@ export function emailInviteGate(result: EmailInviteResult): ScoreboardGate {
     return {
       name: "email-invite",
       status: "INFO",
+      reason: "unmeasured-memory",
       detail: "unmeasured - provide a before/after Hold return pair",
     };
   }
@@ -4200,6 +4282,7 @@ function skeletonGates(
       ? {
           name: "measurements",
           status: "INFO",
+          reason: dryRun ? "dry-run" : "measured-evidence",
           detail: dryRun
             ? "dry run: no measurements required (explicit evidence still gates)"
             : `measured evidence present (${(options?.measuredSources ?? []).join(", ")})`,
@@ -5573,7 +5656,8 @@ export type StreakFailureCode =
   | "behavior-missing"
   | "behavior-failed"
   | "behavior-code-missing"
-  | "behavior-code-differs";
+  | "behavior-code-differs"
+  | "artifact-unreadable";
 
 export type StreakFailure = {
   code: StreakFailureCode;
@@ -5605,14 +5689,16 @@ export type StreakResult = {
   failures: StreakFailure[];
 };
 
-/** Ticket 27: the only non-PASS email-invite row a green streak tolerates. */
+/**
+ * Ticket 27: the only non-PASS email-invite row a green streak tolerates.
+ * Judged by the typed reason, never by the detail prose.
+ */
 export function isUnmeasuredMemoryEmailInvite(gate: ScoreboardGate): boolean {
-  return (
-    gate.status === "INFO" &&
-    /unmeasured/i.test(gate.detail) &&
-    /before\/after|hold return/i.test(gate.detail)
-  );
+  return gate.status === "INFO" && gate.reason === "unmeasured-memory";
 }
+
+/** One artifact in the evaluated window that could not be read (a crashed run). */
+export type UnreadableArtifact = { name: string; reason: string };
 
 function sameFingerprint(a: CodeFingerprint, b: CodeFingerprint): boolean {
   return a.head === b.head && a.dirtyHash === b.dirtyHash && a.dirty === b.dirty;
@@ -5638,6 +5724,11 @@ export function evaluateScoreStreak(input: {
   informationalGates?: readonly string[];
   expectedSchemaVersion?: number;
   behavior?: BehaviorRunEvidence | null;
+  /**
+   * Candidates in the evaluated window that could not be parsed. A crashed
+   * newer run must break "three consecutive" instead of being skipped.
+   */
+  unreadable?: readonly UnreadableArtifact[];
 }): StreakResult {
   const requiredGates = input.requiredGates ?? STREAK_REQUIRED_GATES;
   const provenanceGates = input.provenanceGates ?? STREAK_PROVENANCE_GATES;
@@ -5655,6 +5746,9 @@ export function evaluateScoreStreak(input: {
       null,
       `need ${STREAK_SIZE} consecutive artifacts for ${input.gateVoice}, found ${artifacts.length}`,
     );
+  }
+  for (const broken of input.unreadable ?? []) {
+    fail("artifact-unreadable", broken.name, null, `artifact ${broken.name} is unreadable (${broken.reason})`);
   }
 
   const known = new Set<string>([...requiredGates, ...provenanceGates, ...informationalGates]);
@@ -5719,7 +5813,7 @@ export function evaluateScoreStreak(input: {
         continue;
       }
       if (gate.status === "PASS") continue;
-      if (gate.status === "INFO" && /measured evidence present/i.test(gate.detail)) continue;
+      if (gate.status === "INFO" && gate.reason === "measured-evidence") continue;
       fail("gate-not-pass", run, name, `${gate.status} — ${gate.detail}`);
     }
     for (const gate of artifact.gates) {

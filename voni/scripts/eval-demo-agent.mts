@@ -149,7 +149,7 @@ import {
   measureCutLatency,
   playoutCutWindow,
   postCutAnswerText,
-  postFlushOverlapMs,
+  cutOverlapMs,
   REAL_CUT_ANSWER_PREFIX,
   REAL_CUT_MAX_MS,
   REAL_CUT_SCENARIOS,

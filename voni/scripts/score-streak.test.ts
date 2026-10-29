@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -26,7 +26,12 @@ function run(args: string[], cwd: string) {
 function gates(overrides: Record<string, ScoreboardGate> = {}): ScoreboardGate[] {
   const required = STREAK_REQUIRED_GATES.map((name) => ({ name, status: "PASS" as const, detail: `${name} measured` }));
   const provenance = [
-    { name: "measurements", status: "INFO" as const, detail: "measured evidence present (gaps, real-cut)" },
+    {
+      name: "measurements",
+      status: "INFO" as const,
+      reason: "measured-evidence" as const,
+      detail: "measured evidence present (gaps, real-cut)",
+    },
   ];
   const informational = STREAK_INFORMATIONAL_GATES.map((name) => ({
     name,
@@ -159,25 +164,63 @@ test("manual review rows can fail or disappear without blocking the streak", () 
   assert.match(result.stdout, /streak: PASS/);
 });
 
-test("an exit result is accepted when it is explicitly bound to the streak code", () => {
+test("a typed exit result is refused: only the behavior evidence file can carry a green", () => {
   const dir = mkdtempSync(join(tmpdir(), "streak-"));
   for (const index of [1, 2, 3]) writeArtifact(dir, index);
   const fingerprint = `${FP.head}:${FP.dirtyHash}:clean`;
-  const green = run(
+  const typed = run(
     ["--dir", dir, "--behavior-exit", "0", "--behavior-fingerprint", fingerprint],
     new URL("../", import.meta.url).pathname,
   );
-  assert.equal(green.status, 0, green.stderr + green.stdout);
-  assert.match(green.stdout, /streak: PASS/);
-
-  const red = run(
-    ["--dir", dir, "--behavior-exit", "1", "--behavior-fingerprint", fingerprint],
-    new URL("../", import.meta.url).pathname,
-  );
-  assert.equal(red.status, 1);
-  assert.match(red.stdout, /candidate behavior run is red/);
-
-  const unbound = run(["--dir", dir, "--behavior-exit", "0"], new URL("../", import.meta.url).pathname);
-  assert.equal(unbound.status, 1, "an exit result without its code is not evidence");
-  assert.match(unbound.stderr + unbound.stdout, /--behavior-fingerprint/);
+  assert.equal(typed.status, 1, "a human cannot type a green streak");
+  assert.match(typed.stderr + typed.stdout, /--behavior-exit is not evidence/);
+  assert.match(typed.stderr + typed.stdout, /--evidence/);
 });
+
+test("behavior evidence must be the runner's own kind with a code fingerprint", () => {
+  const dir = mkdtempSync(join(tmpdir(), "streak-"));
+  for (const index of [1, 2, 3]) writeArtifact(dir, index);
+  const wrongKind = join(dir, "wrong-kind.json");
+  writeFileSync(wrongKind, JSON.stringify({ ...greenBehavior(), kind: "something-else" }));
+  const wrong = run(["--dir", dir, "--behavior", wrongKind], new URL("../", import.meta.url).pathname);
+  assert.equal(wrong.status, 1);
+  assert.match(wrong.stderr + wrong.stdout, /not a behavior-run evidence file/);
+
+  const noFingerprint = join(dir, "no-fingerprint.json");
+  writeFileSync(noFingerprint, JSON.stringify({ ...greenBehavior(), codeFingerprint: null }));
+  const unbound = run(["--dir", dir, "--behavior", noFingerprint], new URL("../", import.meta.url).pathname);
+  assert.equal(unbound.status, 1);
+  assert.match(unbound.stdout, /no code fingerprint/);
+});
+
+test("an unreadable artifact in the evaluated window fails the streak by name", () => {
+  const dir = mkdtempSync(join(tmpdir(), "streak-"));
+  // The newest run crashed and wrote a truncated artifact. It must break the
+  // three-consecutive claim instead of being skipped as "not an artifact".
+  for (const index of [1, 2, 3]) writeArtifact(dir, index);
+  const broken = join(dir, "score-20261029-120004-gate.json");
+  writeFileSync(broken, '{"schemaVersion": 4, "voice": "');
+  const crashedAt = new Date(Date.UTC(2026, 9, 29, 12, 4));
+  utimesSync(broken, crashedAt, crashedAt);
+  const behavior = writeGreenBehavior(dir);
+  const result = run(["--dir", dir, "--behavior", behavior], new URL("../", import.meta.url).pathname);
+  assert.equal(result.status, 1, result.stderr + result.stdout);
+  assert.match(result.stdout, /streak: FAIL/);
+  assert.match(result.stdout, /is unreadable/);
+  assert.match(result.stdout, /score-20261029-120004-gate\.json/);
+});
+
+test("an unreadable artifact older than the window does not break the streak", () => {
+  const dir = mkdtempSync(join(tmpdir(), "streak-"));
+  const broken = join(dir, "score-20261029-110000-gate.json");
+  writeFileSync(broken, "{not json");
+  // mtime order matters for an unreadable run; keep it older than the greens.
+  const past = new Date(Date.now() - 60_000);
+  utimesSync(broken, past, past);
+  for (const index of [1, 2, 3]) writeArtifact(dir, index);
+  const behavior = writeGreenBehavior(dir);
+  const result = run(["--dir", dir, "--behavior", behavior], new URL("../", import.meta.url).pathname);
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  assert.match(result.stdout, /streak: PASS/);
+});
+

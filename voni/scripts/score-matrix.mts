@@ -47,10 +47,11 @@ import {
   buildRegressionMatrix,
   DEFAULT_GATE_VOICE,
   formatMatrixTable,
+  parseGateRows,
+  parseSubScoreRows,
   resolveGateVoice,
   resolveMatrixVoices,
   validateProbeCounts,
-  type GateStatus,
   type RegressionMatrix,
   type RegressionVoiceInput,
   type ScoreboardGate,
@@ -59,7 +60,6 @@ import {
 } from "../src/lib/demo/scoreboard";
 
 const SCORE_DEMO = new URL("./score-demo.mts", import.meta.url).pathname;
-const GATE_STATUSES: readonly GateStatus[] = ["PASS", "INFO", "FAIL"];
 
 function arg(name: string, fallback = ""): string {
   const i = process.argv.indexOf(name);
@@ -110,50 +110,16 @@ function readScoreArtifact(path: string): {
   };
 }
 
-const isGateStatus = (value: unknown): value is GateStatus =>
-  typeof value === "string" && (GATE_STATUSES as readonly string[]).includes(value);
-
 /** Carry the gate rows verbatim; absent rows stay absent (reported INFO, never invented). */
 function readGates(raw: unknown, path: string): ScoreboardGate[] | undefined {
   if (raw === undefined) return undefined;
-  if (!Array.isArray(raw)) throw new Error(`matrix cannot read ${path}: gates is not an array`);
-  return raw.map((gate, index) => {
-    const record = (gate ?? {}) as Record<string, unknown>;
-    if (
-      typeof record.name !== "string" ||
-      typeof record.detail !== "string" ||
-      !isGateStatus(record.status)
-    ) {
-      throw new Error(`matrix cannot read ${path}: gate ${index} needs name/status/detail`);
-    }
-    return { name: record.name, status: record.status, detail: record.detail };
-  });
+  return parseGateRows(raw, `matrix cannot read ${path}`);
 }
 
 /** Carry the five sub-scores verbatim; the matrix never re-derives them. */
 function readSubScores(raw: unknown, path: string): SubScore[] | undefined {
   if (raw === undefined) return undefined;
-  if (!Array.isArray(raw)) throw new Error(`matrix cannot read ${path}: subScores is not an array`);
-  return raw.map((sub, index) => {
-    const record = (sub ?? {}) as Record<string, unknown>;
-    if (
-      typeof record.name !== "string" ||
-      typeof record.label !== "string" ||
-      typeof record.detail !== "string" ||
-      !isGateStatus(record.status) ||
-      !Array.isArray(record.gates) ||
-      !record.gates.every((name) => typeof name === "string")
-    ) {
-      throw new Error(`matrix cannot read ${path}: sub-score ${index} needs name/label/status/detail/gates`);
-    }
-    return {
-      name: record.name as SubScore["name"],
-      label: record.label,
-      status: record.status,
-      detail: record.detail,
-      gates: record.gates as string[],
-    };
-  });
+  return parseSubScoreRows(raw, `matrix cannot read ${path}`);
 }
 
 function runScoreDemo(voice: string, scenario: string, runs: string, dryRun: boolean, out: string): void {

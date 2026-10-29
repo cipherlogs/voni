@@ -30,6 +30,8 @@ import {
   evaluateEndCallDrain,
   postFlushOverlapMs,
   cutOverlapMs,
+  parseGateRow,
+  parseGateRows,
   playoutCutWindow,
   parseDoubleTalkOutput,
   parseGoodbyeDrainOutput,
@@ -4730,7 +4732,12 @@ function streakGates(overrides: Record<string, ScoreboardArtifact["gates"][numbe
     detail: `${name} measured`,
   }));
   const provenance = [
-    { name: "measurements", status: "INFO" as const, detail: "measured evidence present (gaps, real-cut)" },
+    {
+      name: "measurements",
+      status: "INFO" as const,
+      reason: "measured-evidence" as const,
+      detail: "measured evidence present (gaps, real-cut)",
+    },
   ];
   const informational = STREAK_INFORMATIONAL_GATES.map((name) => ({
     name,
@@ -4835,6 +4842,7 @@ test("unmeasured prospect-capture memory is the only email-invite INFO a streak 
         "email-invite": {
           name: "email-invite",
           status: "INFO",
+          reason: "unmeasured-memory",
           detail: "unmeasured - provide a before/after Hold return pair",
         },
       }),
@@ -4855,6 +4863,83 @@ test("unmeasured prospect-capture memory is the only email-invite INFO a streak 
   ]);
   assert.equal(otherInfo.ok, false);
   assert.ok(otherInfo.failures.some((failure) => failure.gate === "email-invite" && failure.run === "run-2"));
+});
+
+test("gate rows carry typed semantics for artifact readers", () => {
+  assert.equal(
+    emailInviteGate({
+      tag: "Lime 42",
+      tagMentions: 1,
+      digitSplit: false,
+      inventedTags: [],
+      strayAddresses: [],
+      workEmailGateMentions: 1,
+      chipShows: 1,
+      memoryPersists: null,
+      memoryTraceTurn: null,
+      returningOk: null,
+      showToolCalls: 1,
+      status: "PASS",
+      detail: "tag said once",
+    }).reason,
+    "unmeasured-memory",
+  );
+  const row = parseGateRow(
+    { name: "email-invite", status: "INFO", detail: "held", reason: "unmeasured-memory" },
+    "artifact",
+    0,
+  );
+  assert.equal(row.reason, "unmeasured-memory");
+  assert.throws(() => parseGateRow({ name: "x", status: "INFO", detail: "d", reason: "vibes" }, "artifact", 0), /unknown reason/);
+  assert.throws(() => parseGateRows([{ name: "x", status: "MAYBE", detail: "d" }], "artifact"), /name\/status\/detail/);
+});
+
+test("the streak judges typed reasons, never the human-readable detail prose", () => {
+  // Prose that reads like the old regex shapes earns nothing without the
+  // typed reason...
+  const proseOnly = runStreak([
+    streakArtifact(1, {
+      gates: streakGates({
+        "email-invite": {
+          name: "email-invite",
+          status: "INFO",
+          detail: "unmeasured - before/after Hold return pair",
+        },
+      }),
+    }),
+    streakArtifact(2),
+    streakArtifact(3),
+  ]);
+  assert.equal(proseOnly.ok, false, "a typed reason is required");
+
+  // ...and a typed reason survives any rewording of the detail.
+  const typed = runStreak([
+    streakArtifact(1, {
+      gates: streakGates({
+        "email-invite": {
+          name: "email-invite",
+          status: "INFO",
+          reason: "unmeasured-memory",
+          detail: "held: no pair yet",
+        },
+      }),
+    }),
+    streakArtifact(2),
+    streakArtifact(3),
+  ]);
+  assert.equal(typed.ok, true, formatStreakVerdict(typed));
+
+  // The provenance row likewise depends on the typed reason.
+  const provenanceProse = runStreak([
+    streakArtifact(1, {
+      gates: streakGates({
+        measurements: { name: "measurements", status: "INFO", detail: "measured evidence present (gaps)" },
+      }),
+    }),
+    streakArtifact(2),
+    streakArtifact(3),
+  ]);
+  assert.equal(provenanceProse.ok, false, "measurements INFO needs the typed measured-evidence reason");
 });
 
 test("accent ballots, the real-phone checklist, and Talk pinning never block the streak", () => {
