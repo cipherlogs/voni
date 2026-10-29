@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "voice": "anna",
+  "locale": "en",
+  "line": "Hi, I'm Voni! Let's try something cool: I'll show you what I can do while we talk. Ready?",
+  "capturedOn": "2026-10-29",
+  "producedBy": "POST https://tts.us.assemblyai.com/v1/speech with stream=false, container=wav, encoding=pcm_s16le, sample_rate=24000, language=english (request 0121e472-b089-493f-9b59-dc135e2eec63)",
+  "method": "vendor-tts-http",
+  "vendor": {
+    "name": "assemblyai",
+    "voiceId": "aai-anna",
+    "model": "assemblyai-tts-1"
+  },
+  "audio": {
+    "file": "anna-en.wav",
+    "sha256": "239b589943f66aa5d89be5a6b1b77416aa06d87a2e41389d5db1132d7ef3bd25",
+    "container": "wav",
+    "sampleRate": 24000,
+    "channels": 1,
+    "bitsPerSample": 16
+  }
+}
