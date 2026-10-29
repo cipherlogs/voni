@@ -1858,6 +1858,8 @@ if (args[0] === "run" && args[1] === "eval:demo-agent") {
     scenarios: [{ name, passed: 1, runs: 1 }],
     traceSessions: ["sess_suite"], playout: [{ scenario: name, run: 1, wallClockMs: 1000 }],
     audioChunks: 40, live: true, clips: [],
+    transport: "stored", agentId: "agent_suite", agentFingerprint: "abc123",
+    llmModel: "google/gemini-2.5-flash-lite",
   }));
   console.log("  · trace session sess_suite");
   if (scenario === "greeting-cut") {
@@ -1930,7 +1932,12 @@ if (args[0] === "run" && args[1] === "eval:demo-agent") {
   );
 
   const artifact = JSON.parse(readFileSync(out, "utf8")) as {
-    evalRunner: { scenario: string; status: string; timings: { scenarioRuns: { scenario: string }[] } };
+    evalRunner: {
+      scenario: string;
+      status: string;
+      timings: { scenarioRuns: { scenario: string }[] };
+    };
+    transcripts: { redacted: string[] };
     doubleTalk: { overlapMs: number[] };
     deadAir: { checkIns: { atSilenceMs: number }[] };
     emailInvite: { tagMentions: number } | null;
@@ -1939,6 +1946,13 @@ if (args[0] === "run" && args[1] === "eval:demo-agent") {
   };
   assert.equal(artifact.evalRunner.scenario, "suite");
   assert.equal(artifact.evalRunner.status, "ok");
+  // The merged summary still names the transport and agent/model the evidence
+  // came from, so a suite artifact can prove the stored fast-model agent ran.
+  const redacted = artifact.transcripts.redacted.join("\n");
+  assert.match(redacted, /"transport":"stored"/);
+  assert.match(redacted, /"agentId":"agent_suite"/);
+  assert.match(redacted, /"agentFingerprint":"abc123"/);
+  assert.match(redacted, /"llmModel":"google\/gemini-2\.5-flash-lite"/);
   assert.deepEqual(artifact.doubleTalk.overlapMs, [40], "over-talk's own line is merged");
   assert.deepEqual(artifact.deadAir.checkIns.map((c) => c.atSilenceMs), [15_200], "silence-check-in's own timeline is merged");
   assert.equal(artifact.emailInvite?.tagMentions, 1, "invite-tag's own line is merged");

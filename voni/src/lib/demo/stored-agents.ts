@@ -46,9 +46,60 @@ import { stableJson } from "@/lib/agents/provision";
 
 const AGENTS_URL = "https://agents.assemblyai.com/v1/agents";
 
+/**
+ * A bring-your-own OpenAI-compatible LLM for the stored demo agent. Write-only
+ * on the agent body (`api_key` is never returned by the platform, and this
+ * module never returns it to a caller either). `llm` is an array with at most
+ * one entry; `[]` reverts to the managed model.
+ */
+export type LlmOverride = {
+  base_url: string;
+  model: string;
+  api_key: string;
+};
+
+/** Vercel AI Gateway: the fastest measured tool-calling model (see research 08). */
+export const DEMO_LLM_BASE_URL = "https://ai-gateway.vercel.sh/v1";
+export const DEMO_LLM_MODEL = "google/gemini-2.5-flash-lite";
+
 export type ProvisionResult =
-  | { ok: true; agentId: string }
+  | {
+      ok: true;
+      agentId: string;
+      /** Hash the cached row stores; the eval reports it as run identity. */
+      fingerprint: string;
+      /** The override model in force, or null for the managed default. */
+      llmModel: string | null;
+      /** A refresh failed and the cached remote copy is stale (served anyway). */
+      stale?: true;
+    }
   | { ok: false; error: string };
+
+/**
+ * The fast-LLM override, when the deployment has an AI Gateway key.
+ *
+ * The landing demo's reply latency is dominated by the managed model's think
+ * time (measured ~1.26s), so a demo agent runs on a faster one when the key
+ * exists. Absent key = no override at all, and the body stays byte-identical
+ * to the managed default (so no stored agent is refreshed just by shipping
+ * this). Both settings are read through `secret()` so `.dev.vars`, plain
+ * Node/CI, and the deployed Worker all agree.
+ */
+export async function demoLlmOverride(): Promise<LlmOverride[] | null> {
+  const apiKey = await secret("AI_GATEWAY_API_KEY");
+  if (!apiKey) return null;
+  const [baseUrl, model] = await Promise.all([
+    secret("DEMO_LLM_BASE_URL"),
+    secret("DEMO_LLM_MODEL"),
+  ]);
+  return [
+    {
+      base_url: baseUrl || DEMO_LLM_BASE_URL,
+      model: model || DEMO_LLM_MODEL,
+      api_key: apiKey,
+    },
+  ];
+}
 
 export function demoAgentName(voiceId: string, resume = false): string {
   return `demo:${VONI_AGENT_ID}:${voiceId}${resume ? ":resume" : ""}`;
@@ -65,7 +116,10 @@ export function demoAgentStorageKey(voiceId: string, resume = false): string {
 }
 
 /** The exact remote body a demo agent runs. Pure: fingerprint + tests pin it. */
-export function buildDemoAgentBody(voiceId: string, opts?: { resume?: boolean }) {
+export function buildDemoAgentBody(
+  voiceId: string,
+  opts?: { resume?: boolean; llm?: LlmOverride[] },
+) {
   const voice = getVoice(voiceId);
   const config = voniConfig(voiceId);
   const resume = opts?.resume === true;
@@ -85,6 +139,9 @@ export function buildDemoAgentBody(voiceId: string, opts?: { resume?: boolean })
     // Each one is answered by /api/demo/tools (see module note). REST
     // shape (no `type`) — see `toRestTool`.
     tools: DEMO_VOICE_TOOLS.map((tool) => toRestTool({ ...tool })),
+    // Absent unless an override is supplied: the managed default body must
+    // stay byte-identical, so no cached demo agent refreshes for nothing.
+    ...(opts?.llm ? { llm: opts.llm } : {}),
     input: {
       // Locked to the voice's language: detecting across all 18 languages
       // every turn is slow. Language codes apply at speech-to-text connect,
@@ -171,8 +228,14 @@ export async function getOrCreateDemoAgent(
   const apiKey = await secret("ASSEMBLYAI_API_KEY");
   if (!apiKey) return { ok: false, error: "Voice is not configured." };
 
-  const body = buildDemoAgentBody(voiceId, { resume });
+  // A faster LLM when the gateway key is configured (the landing demo and the
+  // eval then run the same stored body). The key rides the body, never a
+  // client response; the fingerprint below covers the whole body, so a model
+  // change refreshes the agent exactly like a prompt change.
+  const llm = await demoLlmOverride();
+  const body = buildDemoAgentBody(voiceId, { resume, ...(llm ? { llm } : {}) });
   const fingerprint = demoAgentFingerprint(body, apiKey);
+  const llmModel = llm?.[0]?.model ?? null;
 
   const cached = await db
     .select({ agentId: demoAgents.assemblyaiAgentId, fingerprint: demoAgents.fingerprint })
@@ -182,7 +245,7 @@ export async function getOrCreateDemoAgent(
     )
     .limit(1);
   if (cached.length > 0 && cached[0].fingerprint === fingerprint) {
-    return { ok: true, agentId: cached[0].agentId };
+    return { ok: true, agentId: cached[0].agentId, fingerprint, llmModel };
   }
 
   if (cached.length > 0) {
@@ -198,7 +261,16 @@ export async function getOrCreateDemoAgent(
       console.warn(
         `[demo-agent] refresh ${refreshed.status} for ${cached[0].agentId}, serving stale: ${refreshed.detail.slice(0, 200)}`,
       );
-      return { ok: true, agentId: cached[0].agentId };
+      return {
+        ok: true,
+        agentId: cached[0].agentId,
+        // The cached row's hash is the last body known to have been applied;
+        // never claim the intended one for a remote copy that did not take it.
+        // (A pre-fingerprint row has none; `stale` marks the identity unusable.)
+        fingerprint: cached[0].fingerprint ?? fingerprint,
+        llmModel,
+        stale: true,
+      };
     }
     if (refreshed.ok) {
       await db
@@ -208,7 +280,7 @@ export async function getOrCreateDemoAgent(
           and(eq(demoAgents.personaId, personaId), eq(demoAgents.voiceId, storageKey)),
         )
         .catch((e: unknown) => console.warn(`[demo-agent] fingerprint write failed, continuing: ${e}`));
-      return { ok: true, agentId: cached[0].agentId };
+      return { ok: true, agentId: cached[0].agentId, fingerprint, llmModel };
     }
     console.warn(`[demo-agent] ${cached[0].agentId} not found under this API key; recreating`);
   }
@@ -235,5 +307,5 @@ export async function getOrCreateDemoAgent(
     console.warn(`[demo-agent] cache write failed, continuing: ${e}`);
   }
 
-  return { ok: true, agentId: created.id };
+  return { ok: true, agentId: created.id, fingerprint, llmModel };
 }

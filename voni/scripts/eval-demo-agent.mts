@@ -1,8 +1,16 @@
 /**
  * Live eval of the demo agent's call behavior, driven by real audio.
  *
- * Runs Voni's exact demo body (buildDemoAgentBody) as an inline session, so
- * it needs no demo rate limit and no stored-agent refresh. Caller lines are
+ * Runs Voni's real demo agent: by default (`--transport stored`) the client
+ * path binds the same stored AssemblyAI agent the landing demo binds
+ * (`{ agent_id }`), so the prompt, tools, tuning and LLM a visitor gets are
+ * exactly what is measured — that is the path every reply-gap and barge-in
+ * scenario drives. It needs the demo database (`DATABASE_URL`) and can refresh
+ * the cached agent like a token request — no rate limit still. Raw-socket
+ * scenarios (hang-up, refusal, the email tests) still send the body inline
+ * until they get the same treatment. `--transport inline` keeps the client
+ * path inline too, for debugging or a run without DB access (it does not prove
+ * what the stored agent runs). Caller lines are
  * real speech: a throwaway AssemblyAI session speaks each line as its fixed
  * greeting (sent straight to TTS, no LLM), and those PCM16 frames stream into
  * the demo session as `input.audio`, so turn detection and STT run exactly as
@@ -11,6 +19,12 @@
  * the same `reply.create` instructions the landing UI sends. A few cents a run.
  *
  *   npm run eval:demo-agent -- [--runs 5] [--voice <demo-voice-id>] [--scenario hang-up]
+ *     [--transport stored|inline]
+ *
+ * A stored run's LLM comes from the demo agent's own body: with
+ * `AI_GATEWAY_API_KEY` configured it is `google/gemini-2.5-flash-lite` via the
+ * Vercel AI Gateway (`DEMO_LLM_MODEL` / `DEMO_LLM_BASE_URL` override), otherwise
+ * the managed model. The summary always says which one ran.
  *
  * Every live call prints `  · trace session sess_…` when the session is
  * ready: score-demo chains its Call trace merge from that id, so per-turn
@@ -96,7 +110,15 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildDemoAgentBody } from "../src/lib/demo/stored-agents";
+import { buildDemoAgentBody, getOrCreateDemoAgent } from "../src/lib/demo/stored-agents";
+import {
+  evalSummaryIdentity,
+  evalToolExecutor,
+  parseEvalTransport,
+  storedAgentBinding,
+  type EvalAgentIdentity,
+  type EvalTransport,
+} from "../src/lib/demo/eval-transport";
 import {
   checkEmailInstructions,
   DEMO_VOICE_IDS,
@@ -117,7 +139,7 @@ import {
   normalizeClaim,
   type CheckEmailResult,
 } from "../src/lib/demo/email-test";
-import { buildEndCallSuccess, END_CALL_VOICE_TOOL } from "../src/lib/tools/definitions";
+import { END_CALL_VOICE_TOOL } from "../src/lib/tools/definitions";
 import {
   HELD_RESULT_RELEASE_MS,
   END_CALL_AUDIO_GRACE_MS,
@@ -188,13 +210,92 @@ type Outcome = { agent: string[]; heard: string[]; endCalled: boolean; sessionId
 const apiKey = process.env.ASSEMBLYAI_API_KEY;
 if (!apiKey) throw new Error("ASSEMBLYAI_API_KEY missing: run with --env-file=.dev.vars");
 
+/**
+ * Where `runClient` dials: the real stored demo agent (`stored`, the default)
+ * or an inline copy of its body (`inline`, debugging only). Parsed once; an
+ * unknown value is a usage error, never a silent fallback.
+ */
+const TRANSPORT: EvalTransport = parseEvalTransport(process.argv);
+
+/**
+ * Server cap per token. The landing demo's wall cap is 720s; a bound run has
+ * the stored greeting plus long scenario tails, and a server cut mid-scenario
+ * would look like a model failure. 180s (the old fixed cap) was tight for
+ * stop-over's 20s wait.
+ */
+const MAX_SESSION_SECONDS = (() => {
+  const value = Number(arg("--max-session-seconds", "600"));
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error(`--max-session-seconds needs seconds > 0, got "${arg("--max-session-seconds", "")}"`);
+  }
+  return Math.round(value);
+})();
+
 async function token(): Promise<string> {
   const url = new URL("https://agents.assemblyai.com/v1/token");
   url.searchParams.set("expires_in_seconds", "60");
-  url.searchParams.set("max_session_duration_seconds", "180");
+  url.searchParams.set("max_session_duration_seconds", String(MAX_SESSION_SECONDS));
   const res = await fetch(url, { headers: { Authorization: `Bearer ${apiKey}` } });
   if (!res.ok) throw new Error(`token ${res.status}: ${await res.text()}`);
   return ((await res.json()) as { token: string }).token;
+}
+
+/** A harness break, not a scenario verdict: exit 2 before any EVAL SUMMARY. */
+class HarnessBreak extends Error {}
+
+let storedAgent: EvalAgentIdentity | null = null;
+let storedAgentRequest: Promise<EvalAgentIdentity> | null = null;
+
+/**
+ * Provision (or refresh) the exact stored agent the landing demo binds, once
+ * per run. Failure is a harness break: without the real agent there is nothing
+ * to measure, and falling back inline would quietly prove a different thing.
+ */
+async function storedAgentFor(voiceId: string): Promise<EvalAgentIdentity> {
+  if (storedAgent) return storedAgent;
+  if (!storedAgentRequest) {
+    storedAgentRequest = (async () => {
+      const provisioned = await getOrCreateDemoAgent(voiceId);
+      if (!provisioned.ok) {
+        throw new HarnessBreak(`stored agent unavailable for ${voiceId}: ${provisioned.error}`);
+      }
+      if (provisioned.stale) {
+        throw new HarnessBreak(
+          `stored agent ${provisioned.agentId} is stale (refresh failed): its body was not applied, so the run would not measure the demo`,
+        );
+      }
+      const identity: EvalAgentIdentity = {
+        agentId: provisioned.agentId,
+        fingerprint: provisioned.fingerprint,
+        llmModel: provisioned.llmModel,
+      };
+      storedAgent = identity;
+      console.log(
+        `  · stored agent ${identity.agentId} (fingerprint ${identity.fingerprint.slice(0, 12)}, llm ${identity.llmModel ?? "managed"})`,
+      );
+      return identity;
+    })();
+  }
+  try {
+    return await storedAgentRequest;
+  } catch (error) {
+    // Never cache a failed provision: the next scenario must fail loudly again.
+    storedAgentRequest = null;
+    throw error;
+  }
+}
+
+/** Tools a bound agent called that this eval could not answer (harness break). */
+const unhandledTools: string[] = [];
+
+function assertToolsAnswered(): void {
+  if (unhandledTools.length === 0) return;
+  const names = [...new Set(unhandledTools)].join(", ");
+  console.error(
+    `EVAL HARNESS BREAK: the stored agent called tool(s) this eval cannot answer: ${names}. ` +
+      "Evidence from this run would be fiction.",
+  );
+  process.exit(2);
 }
 
 /**
@@ -567,6 +668,12 @@ async function runClient(
   }) => Promise<void>,
   options: ClientOptions = {},
 ): Promise<ClientOutcome> {
+  // Bind the real demo agent before spending anything on TTS: a provisioning
+  // failure is a harness break, not a scenario verdict.
+  const binding =
+    TRANSPORT === "stored"
+      ? storedAgentBinding((await storedAgentFor(voiceId)).agentId, token)
+      : null;
   // Render every caller line before dialing: TTS mid-call skews timing.
   const clips = new Map<string, Buffer>();
   for (const line of lines) clips.set(line, await speak(line));
@@ -586,6 +693,13 @@ async function runClient(
   let audioChunks = 0;
   /** The caller asked to end; a spoken goodbye with no tool call still ends. */
   let endRequested = false;
+  const answerTool = evalToolExecutor({
+    testTag: TAG,
+    checkEmail: checkEmailAnswer(() => NOT_LANDED),
+    onRouteOnlyTool: (name) => {
+      console.log(`  · ${name} is route-only in the demo; answered "not on this call"`);
+    },
+  });
   const session = new VoiceSession(
     {
       onBargeIn: (event) => outcome.events.push({ ...event, at: Date.now() }),
@@ -626,7 +740,19 @@ async function runClient(
       },
     },
     {
-      toolExecutor: async () => buildEndCallSuccess(false),
+      // Every tool the demo agent carries is answered: the stored agent owns
+      // the tool surface, and an unanswered call stalls the turn. `end_call`
+      // still rides the session's hold-until-goodbye-done path.
+      toolExecutor: async (call) => {
+        try {
+          return await answerTool(call);
+        } catch (error) {
+          // The coordinator sends an error result so the turn does not stall;
+          // the run aborts before the summary because the evidence is fiction.
+          unhandledTools.push(call.name);
+          throw error;
+        }
+      },
       judgeBargeIn: async (state) => {
         try {
           const verdict = await tryJevGateway(
@@ -782,14 +908,24 @@ async function runClient(
     onDrained: undefined,
   };
   const gen = internals.generation.begin();
-  internals.connect(await token(), {
-    mode: "inline",
-    systemPrompt: body.system_prompt,
-    greeting: body.greeting,
-    voiceId,
-    languageCodes: body.input.language_codes,
-    tools: [END_CALL_VOICE_TOOL],
-  }, gen);
+  const callToken = await token();
+  if (binding) {
+    // The landing demo's own sequence: bind the stored agent, mark the
+    // session bound (post-ready recognition preset) and give it a fresh-token
+    // fetch so a drop resumes instead of parking in `reconnecting`.
+    internals["boundAgent"] = binding.boundAgent;
+    internals["tokenFetcher"] = binding.tokenFetcher;
+    internals.connect(callToken, binding.config, gen);
+  } else {
+    internals.connect(callToken, {
+      mode: "inline",
+      systemPrompt: body.system_prompt,
+      greeting: body.greeting,
+      voiceId,
+      languageCodes: body.input.language_codes,
+      tools: [END_CALL_VOICE_TOOL],
+    }, gen);
+  }
   const ws = internals.ws!;
   ws.addEventListener("message", (event) => {
     const msg = JSON.parse(String(event.data));
@@ -1654,14 +1790,23 @@ async function runToolSession(
   return outcome;
 }
 
+/**
+ * The demo route's `check_email` answer for a scenario's inbox state: the same
+ * result shape and the same Gmail+Jev latency, so tool timing stays honest.
+ */
+function checkEmailAnswer(check: (args: Record<string, unknown>) => CheckEmailResult) {
+  return async (args: Record<string, unknown>): Promise<{ ok: true; data: Record<string, unknown> }> => {
+    await new Promise((resolve) => setTimeout(resolve, 1500)); // Gmail + Jev
+    const result = check(args);
+    return { ok: true, data: { ...checkResultToData(result), instructions: checkEmailInstructions(result) } };
+  };
+}
+
 /** The demo tools as the call routes answer them, with a check_email outcome per scenario. */
 function demoAnswers(check: (args: Record<string, unknown>) => CheckEmailResult) {
+  const checkEmail = checkEmailAnswer(check);
   return async (name: string, args: Record<string, unknown>) => {
-    if (name === CHECK_EMAIL_TOOL) {
-      await new Promise((resolve) => setTimeout(resolve, 1500)); // Gmail + Jev
-      const result = check(args);
-      return { ok: true, data: { ...checkResultToData(result), instructions: checkEmailInstructions(result) } };
-    }
+    if (name === CHECK_EMAIL_TOOL) return checkEmail(args);
     return (await executeDemoTool(name, args, { testTag: TAG })) as Record<string, unknown>;
   };
 }
@@ -1994,6 +2139,11 @@ const requestedScenario = arg("--scenario", "");
 // suite may pass either name, and a filter that matched "all" literally would
 // run nothing at all.
 const only = requestedScenario === "all" || requestedScenario === "suite" ? "" : requestedScenario;
+// Say it once up front: an inline run is a debugging aid, never proof of what
+// the landing demo's stored agent runs.
+console.log(
+  `transport: ${TRANSPORT}${TRANSPORT === "stored" ? " (the landing demo's stored agent)" : " (inline body: debugging only)"}`,
+);
 let failures = 0;
 /** Per-scenario rows for the final machine-readable summary. */
 const scenarioResults: { name: string; passed: number; runs: number }[] = [];
@@ -2041,8 +2191,15 @@ for (const scenario of CLIENT_SCENARIOS.filter((s) => !only || s.name === only))
     try {
       reason = await scenario.run();
     } catch (error) {
+      if (error instanceof HarnessBreak) {
+        console.error(`EVAL HARNESS BREAK: ${error.message}`);
+        process.exit(2);
+      }
       reason = error instanceof Error ? error.message : String(error);
     }
+    // A tool this eval cannot answer means the scenario's evidence is fiction:
+    // abort before any summary, never report it as a model failure.
+    assertToolsAnswered();
     const liveRun = latestClientOutcome();
     if (liveRun) {
       noteSession(liveRun.sessionId);
@@ -2110,6 +2267,7 @@ for (const scenario of EMAIL_SCENARIOS.filter((s) => !only || s.name === only)) 
 // One machine-readable line proves the runner finished: scoreboard plumbing is
 // PASS whatever the scenario verdicts and exit code, while a crash, kill, or
 // missing summary/trace/audio is a harness break. Playout stays report-only.
+assertToolsAnswered();
 console.log(
   `EVAL SUMMARY ${JSON.stringify({
     scenario: only || "all",
@@ -2120,6 +2278,9 @@ console.log(
     playout: playoutRows,
     audioChunks: clientRuns > 0 ? agentAudioChunks : null,
     live: scenarioResults.length > 0,
+    // Which transport produced the evidence, and which agent/model it bound.
+    // An inline or `managed` run can never be mistaken for the fast-model one.
+    ...evalSummaryIdentity(TRANSPORT, storedAgent),
     // Fixed caller clips the real-cut scenarios streamed: the scoreboard
     // compares these fingerprints with the prior run before trusting a cut.
     clips: cutClips.sort((a, b) => a.text.localeCompare(b.text)),
