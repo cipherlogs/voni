@@ -34,9 +34,11 @@ import {
  *
  * ── The seams the following tickets extend ────────────────────────────────
  * - 61: the whitelist above — `FORBIDDEN_PROFILE_FIELDS` + the rejection.
- * - 62: one fingerprint over the whole body. Bodies leave here as one
- *   `StoredAgentBody` shape, and `stableJson` is the canonical form to hash;
- *   the tenant's field-subset hash (`comparableAgent`) is what 62 replaces.
+ * - 62: one fingerprint over the whole body — `agentBodyFingerprint` in
+ *   `./fingerprint` hashes the `StoredAgentBody` this builder returns, for the
+ *   demo refresh and the tenant deployment alike. It replaced the tenant's
+ *   field-subset hash (`comparableAgent`), which had omitted the model override.
+ *   `stableJson` is its canonical form.
  * - 64/65: `turnDetectionFor` below is the single turn-taking switch. It
  *   returns the Turn preset (`turn_detection: null`) for the demo; the tenant
  *   branch is the pre-64 object that 64/65 removes.
@@ -442,8 +444,8 @@ export function buildStoredAgent(input: StoredAgentInput): StoredAgentBody {
 
 /**
  * Canonical JSON for a body fingerprint. Sorted keys and trimmed `undefined`,
- * so a fingerprint moves only when the body does. Exported here (rather than
- * from one of the two paths) because ticket 62 hashes this one shape for both.
+ * so a fingerprint moves only when the body does. The one fingerprint
+ * (`agentBodyFingerprint` in `./fingerprint`) hashes both paths with it.
  */
 export function stableJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
