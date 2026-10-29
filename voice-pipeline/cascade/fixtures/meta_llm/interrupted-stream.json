@@ -1,0 +1,34 @@
+{
+  "name": "interrupted-stream",
+  "description": "Content arrived, then the stream ended with no finish reason and no usage chunk: unmeasured, incomplete, never restarted.",
+  "tools": [],
+  "chunks": [
+    "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Your rate is 6.2\"},\"finish_reason\":null}]}\n\n",
+    "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\" percent.\"},\"finish_reason\":null}]}\n\n"
+  ],
+  "expect": {
+    "spoken": [
+      "Your rate is 6.2",
+      " percent."
+    ],
+    "content": "Your rate is 6.2 percent.",
+    "reasoning": "",
+    "reasoning_deltas": 0,
+    "finish_reason": null,
+    "outcome": "incomplete",
+    "speak": true,
+    "retry_allowed": false,
+    "hold_line": false,
+    "truncated": false,
+    "filtered": false,
+    "tool_calls": [],
+    "usage": {
+      "prompt_tokens": null,
+      "completion_tokens": null,
+      "total_tokens": null,
+      "cached_tokens": null,
+      "reasoning_tokens": null,
+      "measured": false
+    }
+  }
+}
