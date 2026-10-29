@@ -5,7 +5,9 @@ import {
   buildStoredAgent,
   TENANT_LEGACY_TURN_DETECTION,
   type AgentProfile,
+  type StoredAgentBody,
 } from "./body";
+import { agentBodyFingerprint } from "./fingerprint";
 import { REAL_ESTATE_TEMPLATE } from "./config";
 import {
   deploymentFingerprint,
@@ -136,14 +138,165 @@ test("the unified builder leaves every published body byte-identical", () => {
   );
 });
 
-test("the unified builder leaves both refresh fingerprints unchanged", () => {
+test("the demo refresh fingerprint is unchanged by the unification", () => {
   assert.equal(
     demoAgentFingerprint(buildDemoAgentBody("anna"), "key"),
     "6545bd6c7037614d673f1d0964dd70ffbcb1ec95fbc5d04f50b33ff2f3607a7d",
   );
+});
+
+// ── One fingerprint over the whole body (ticket 62) ────────────────────────
+
+const copy = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
+
+/** Every path at which two JSON-ish values differ. */
+function changedPaths(before: unknown, after: unknown, at = ""): string[] {
+  const isRecord = (value: unknown): value is Record<string, unknown> =>
+    value !== null && typeof value === "object" && !Array.isArray(value);
+  if (isRecord(before) && isRecord(after)) {
+    const keys = new Set([...Object.keys(before), ...Object.keys(after)]);
+    return [...keys].flatMap((key) =>
+      changedPaths(before[key], after[key], at ? `${at}.${key}` : key),
+    );
+  }
+  if (Array.isArray(before) && Array.isArray(after) && before.length === after.length) {
+    return before.flatMap((item, index) =>
+      changedPaths(item, after[index], `${at}[${index}]`),
+    );
+  }
+  return JSON.stringify(before) === JSON.stringify(after) ? [] : [at];
+}
+
+test("demo and tenant refresh paths hash with the one whole-body function", () => {
+  const demo = buildDemoAgentBody("anna");
+  const tenant = storedAgentBody("Layla", REAL_ESTATE_TEMPLATE);
+
+  assert.equal(
+    demoAgentFingerprint(demo, "account"),
+    agentBodyFingerprint(demo, "account"),
+    "the demo path is the one function, not a second implementation",
+  );
   assert.equal(
     deploymentFingerprint("Layla", REAL_ESTATE_TEMPLATE),
-    "8a2416220fe2f13eaee875f4f89592bf2a4e3ade52e75be1ec14511a4415c38b",
+    agentBodyFingerprint(tenant),
+    "the tenant path is the one function, not a second implementation",
+  );
+
+  // Both personas, both platforms, one shape: an overridden demo body is
+  // hashed by exactly the same function as the tenant body above.
+  const overridden = buildDemoAgentBody("anna", { llm: DEMO_LLM });
+  assert.equal(demoAgentFingerprint(overridden, "account"), agentBodyFingerprint(overridden, "account"));
+});
+
+test("the fingerprint covers every field of the stored body", () => {
+  const base = storedAgentBody("Layla", REAL_ESTATE_TEMPLATE);
+  assert.ok("greeting" in base, "the base body opens with a greeting");
+  assert.ok(base.input.format, "the base body declares an audio format");
+  assert.ok(base.input.voice_focus_threshold !== undefined, "the base body declares a focus threshold");
+  assert.ok(!("llm" in base), "the base body has no model override");
+
+  const mutate = (change: (body: StoredAgentBody) => void): StoredAgentBody => {
+    const body = copy(base);
+    change(body);
+    return body;
+  };
+
+  // Every authored field; the path is the only difference the fingerprint sees.
+  const mutations: Array<[path: string, body: StoredAgentBody]> = [
+    ["name", mutate((body) => { body.name = `${body.name} 2`; })],
+    ["system_prompt", mutate((body) => { body.system_prompt += "\nOne more rule."; })],
+    ["greeting", mutate((body) => { body.greeting = `${body.greeting} Welcome.`; })],
+    ["greeting", mutate((body) => { delete body.greeting; })],
+    ["voice.voice_id", mutate((body) => { body.voice.voice_id = "lola"; })],
+    ["output.volume", mutate((body) => { body.output.volume -= 1; })],
+    ["output.voice", mutate((body) => { body.output.voice = "lola"; })],
+    ["output.format.sample_rate", mutate((body) => { body.output.format!.sample_rate = 16000; })],
+    ["tools[0].description", mutate((body) => { body.tools[0].description += " Updated."; })],
+    ["tools", mutate((body) => { body.tools = []; })],
+    ["llm", mutate((body) => { body.llm = copy(DEMO_LLM); })],
+    ["llm", mutate((body) => { body.llm = []; })],
+    ["input.format.encoding", mutate((body) => { body.input.format!.encoding = "audio/pcm"; })],
+    ["input.language_codes", mutate((body) => { body.input.language_codes = ["en", "ar"]; })],
+    ["input.transcription_mode", mutate((body) => { body.input.transcription_mode = "manual"; })],
+    ["input.transcription_prompt", mutate((body) => { body.input.transcription_prompt += " Expect digits."; })],
+    ["input.keyterms", mutate((body) => { body.input.keyterms.push("Layla"); })],
+    ["input.voice_focus", mutate((body) => { body.input.voice_focus = "near-field"; })],
+    ["input.voice_focus_threshold", mutate((body) => { body.input.voice_focus_threshold = 0.5; })],
+    ["input.turn_detection.min_silence", mutate((body) => {
+      body.input.turn_detection = { ...(body.input.turn_detection as Record<string, number | boolean>), min_silence: 200 };
+    })],
+  ];
+
+  const seen = new Map<string, string>([[agentBodyFingerprint(base), "the base body"]]);
+  for (const [path, mutated] of mutations) {
+    assert.deepEqual(changedPaths(base, mutated), [path], `${path}: the field is the only difference`);
+    const fingerprint = agentBodyFingerprint(mutated);
+    const collision = seen.get(fingerprint);
+    assert.equal(collision, undefined, `${path} must not fingerprint like ${collision}`);
+    seen.set(fingerprint, path);
+  }
+  assert.equal(seen.size, mutations.length + 1, "every field moves the fingerprint on its own");
+});
+
+test("a body that differs only by the model override is a different fingerprint", () => {
+  const managed = storedAgentBody("Layla", REAL_ESTATE_TEMPLATE);
+  const withLlm = (body: StoredAgentBody, llm: StoredAgentBody["llm"]): StoredAgentBody => ({
+    ...copy(body),
+    llm,
+  });
+  const overridden = withLlm(managed, copy(DEMO_LLM));
+  const reverted = withLlm(managed, []);
+
+  assert.deepEqual(
+    changedPaths(managed, overridden),
+    ["llm"],
+    "the override is the only difference between the two bodies",
+  );
+  assert.notEqual(
+    agentBodyFingerprint(overridden),
+    agentBodyFingerprint(managed),
+    "an override the tenant subset used to omit is now inside the fingerprint",
+  );
+  assert.notEqual(
+    agentBodyFingerprint(reverted),
+    agentBodyFingerprint(managed),
+    "the documented revert is distinguishable from an absent override",
+  );
+  assert.notEqual(agentBodyFingerprint(reverted), agentBodyFingerprint(overridden));
+});
+
+test("an unchanged body keeps its fingerprint, whatever the key order", () => {
+  const body = storedAgentBody("Layla", REAL_ESTATE_TEMPLATE);
+
+  assert.equal(agentBodyFingerprint(copy(body)), agentBodyFingerprint(body));
+  assert.equal(
+    agentBodyFingerprint(storedAgentBody("Layla", REAL_ESTATE_TEMPLATE)),
+    agentBodyFingerprint(body),
+  );
+
+  const reversed = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(reversed);
+    if (value !== null && typeof value === "object") {
+      const record = value as Record<string, unknown>;
+      return Object.fromEntries(
+        Object.keys(record).reverse().map((key) => [key, reversed(record[key])]),
+      );
+    }
+    return value;
+  };
+  const reordered = reversed(body) as StoredAgentBody;
+  assert.notDeepEqual(Object.keys(reordered), Object.keys(body), "the key order really changed");
+  assert.equal(agentBodyFingerprint(reordered), agentBodyFingerprint(body));
+});
+
+// The tenant fingerprint moved in ticket 62: it used to hash the read-back
+// subset (which omitted the model override). Pinned so a later change to the
+// whole-body contract is a reviewable diff, not a silent refresh of every
+// deployed tenant agent.
+test("the tenant refresh fingerprint is pinned", () => {
+  assert.equal(
+    deploymentFingerprint("Layla", REAL_ESTATE_TEMPLATE),
+    "0006f91074018cfb8cc554d8d82e6691f3f3299040d0b3ea08dfb8c5403d06ce",
   );
 });
 
