@@ -19,14 +19,20 @@ One cut is one order of events:
 4. the client is told to flush its playout;
 5. the cut is recorded: the ledger's ``cancelled`` mark (first write wins, so
    once per call), the ``interruption`` count (one per cut), the measured stop
-   latency against ``barge_in.real_cut_ms``, and the played-position seam that
-   ticket 89 maps to reply text.
+   latency against ``barge_in.real_cut_ms``, and the played position the
+   client reported.
 
-The played position is recorded verbatim and never interpreted: locating the
-unheard tail (89), re-synthesizing it (90) and the filler rule (91) belong to
-the tickets that own them. The next request is untouched by a cut — it starts
-on a later generation and takes whatever ``flush_id`` the vendor assigns, which
-may skip numbers and is read from the wire, never computed here.
+The played position is kept verbatim on the seam (it is the client's report,
+not a measurement we made) and also located on the reply text (ticket 89): the
+reported milliseconds become a whole sample at the session's own rate, so a
+fractional report can never round past a word, and the session's own
+``resume_point`` maps that sample to the first unheard word when its
+``WordBoundaries`` are complete, or to the start of the first sentence not
+fully played otherwise. The located point is stored for ticket 90; nothing is
+re-synthesized here. The filler rule is ticket 91's, and the next request is
+untouched by a cut — it starts on a later generation and takes whatever
+``flush_id`` the vendor assigns, which may skip numbers and is read from the
+wire, never computed here.
 
 This module owns no thresholds, no word lists and no wire shapes: the cut
 budget comes from :mod:`cascade.thresholds`, the transport owns what a playout
@@ -37,11 +43,12 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import math
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from cascade.assemblyai_tts import Cancellation
+from cascade.assemblyai_tts import Cancellation, ResumeGranularity, ResumePoint
 from cascade.thresholds import require_bound
 from cascade.turn_state import Clock
 from metrics import TimingLedger
@@ -99,14 +106,69 @@ class PlayoutFlush:
     at: float
 
 
+class UnknownSampleRateError(ValueError):
+    """A played position cannot be made sample-exact without a session rate."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "no sample rate is known for the reply audio: a played position "
+            "cannot be made sample-exact before a session format or a played "
+            "chunk exists"
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CutPoint:
+    """The sample-exact point a reply was cut at, and the tail it leaves.
+
+    ``played_ms`` is derived from ``played_samples`` at the session's own rate,
+    never the raw client report: the cut is a whole sample that has already
+    played, so a fractional report can only repeat a word, never lose one.
+    ``resume`` is the session's own located tail (ticket 51); ``resume_error``
+    names why there is none instead of inventing one.
+    """
+
+    played_samples: int
+    sample_rate: int
+    played_ms: float
+    resume: ResumePoint | None = None
+    resume_error: str = ""
+
+    def __post_init__(self) -> None:
+        if self.played_samples < 0:
+            raise ValueError(
+                f"a cut point cannot be before the audio start: "
+                f"{self.played_samples!r} samples"
+            )
+        if self.sample_rate <= 0:
+            raise ValueError(
+                f"a cut point needs a positive sample rate: {self.sample_rate!r}"
+            )
+
+    @property
+    def resume_text(self) -> str:
+        """The unheard tail, or empty when the whole reply played or is unknown."""
+        return "" if self.resume is None else self.resume.text
+
+    @property
+    def word_level(self) -> bool:
+        """Whether the tail is word-level (boundaries complete) or sentence-level."""
+        return (
+            self.resume is not None
+            and self.resume.granularity is ResumeGranularity.WORD
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class CutSeam:
-    """What the resume tickets need, recorded and nothing resolved.
+    """What the resume tickets need: the report, the located tail, nothing said.
 
     ``played_ms`` is the position the client reported with the interruption,
     exactly as reported; ``None`` means it was not reported, never ``0.0``.
-    ``turn`` and ``reply`` name the reply being cut, opaquely: 89/90 own how
-    they key the reply text.
+    ``cut_point`` is that position made sample-exact and mapped to reply text
+    (ticket 89), or ``None`` when the client reported nothing or the rate is
+    unknown. ``turn`` and ``reply`` name the reply being cut, opaquely: 90 owns
+    how it keys the reply text.
     """
 
     played_ms: float | None
@@ -114,6 +176,17 @@ class CutSeam:
     generation: int
     turn: Any = None
     reply: str = ""
+    cut_point: CutPoint | None = None
+
+    @property
+    def resume(self) -> ResumePoint | None:
+        """The located resume point, or ``None`` when it could not be located."""
+        return None if self.cut_point is None else self.cut_point.resume
+
+    @property
+    def resume_text(self) -> str:
+        """The first word (or sentence) the caller did not hear, or empty."""
+        return "" if self.cut_point is None else self.cut_point.resume_text
 
 
 @dataclass(frozen=True, slots=True)
@@ -193,6 +266,9 @@ class BargeInCutPath:
         self._run: _ReplyRun | None = None
         self._cuts: list[BargeInCut] = []
         self._cut_lock = asyncio.Lock()
+        # The rate of the audio actually played, so a cut point is expressed
+        # in the samples the caller heard, not in an assumed 24 kHz.
+        self._sample_rate: int | None = None
 
     # -- state ------------------------------------------------------------
 
@@ -254,6 +330,7 @@ class BargeInCutPath:
                 run.dropped_frames += 1
                 await _aclose(run.iterator)
                 return
+            self._sample_rate = chunk.sample_rate
             await _invoke(self._on_audio, chunk)
 
     async def join(self) -> None:
@@ -267,6 +344,49 @@ class BargeInCutPath:
         """Stop the producer without a cut: the call is draining or ending."""
         self._generation += 1
         await self._stop_producer()
+
+    # -- the played position ----------------------------------------------
+
+    def cut_point(self, played_ms: float) -> CutPoint:
+        """Locate the unheard tail at the client's reported played position.
+
+        The position is made sample-exact first (whole samples at the rate of
+        the audio actually played), then handed to the session's own
+        ``resume_point``, which owns word boundaries, flush durations and the
+        sentence fallback. This never re-synthesizes and never starts a
+        request: it is a read of what was played.
+        """
+        _validate_played_ms(played_ms)
+        rate = self._known_sample_rate()
+        samples = math.floor(played_ms * rate / 1000.0)
+        exact_ms = samples * 1000.0 / rate
+        resume: ResumePoint | None = None
+        error = ""
+        locate = getattr(self._tts, "resume_point", None)
+        if locate is None:
+            error = "the synthesis session cannot locate a resume point"
+        else:
+            try:
+                resume = locate(exact_ms)
+            except Exception as exc:  # noqa: BLE001 - a cut must still stop the audio
+                error = f"{type(exc).__name__}: {exc}"
+        return CutPoint(
+            played_samples=samples,
+            sample_rate=rate,
+            played_ms=exact_ms,
+            resume=resume,
+            resume_error=error,
+        )
+
+    def _known_sample_rate(self) -> int:
+        """The played audio's rate, then the session format; else refuse by name."""
+        if self._sample_rate is not None:
+            return self._sample_rate
+        session_format = getattr(self._tts, "format", None)
+        rate = getattr(session_format, "sample_rate", None)
+        if isinstance(rate, int) and rate > 0:
+            return rate
+        raise UnknownSampleRateError()
 
     # -- the cut ----------------------------------------------------------
 
@@ -286,15 +406,8 @@ class BargeInCutPath:
         """
         if cause not in CUT_CAUSES:
             raise UnknownCutCauseError(cause)
-        if played_ms is not None and (
-            isinstance(played_ms, bool)
-            or not isinstance(played_ms, (int, float))
-            or played_ms < 0
-        ):
-            raise ValueError(
-                f"played_ms must be a non-negative number of milliseconds, "
-                f"got {played_ms!r}"
-            )
+        if played_ms is not None:
+            _validate_played_ms(played_ms)
         if speech_started_at is not None and (
             isinstance(speech_started_at, bool)
             or not isinstance(speech_started_at, (int, float))
@@ -335,6 +448,15 @@ class BargeInCutPath:
                 if speech_started_at is None
                 else max(0.0, (stopped_at - speech_started_at) * 1000.0)
             )
+            # A reported position is located against the reply text, sample-
+            # exact. An unknown rate leaves the report on the seam unlocated;
+            # it never delays or refuses the cut.
+            point: CutPoint | None = None
+            if played_ms is not None:
+                try:
+                    point = self.cut_point(played_ms)
+                except UnknownSampleRateError:
+                    point = None
             cut = BargeInCut(
                 cause=cause,
                 generation=self._generation,
@@ -354,6 +476,7 @@ class BargeInCutPath:
                     generation=self._generation,
                     turn=None if run is None else run.turn,
                     reply="" if run is None else run.reply,
+                    cut_point=point,
                 ),
                 cancellation=cancellation,
                 dropped_frames=dropped_frames,
@@ -377,6 +500,19 @@ class BargeInCutPath:
         """The synthesis request in flight, from the session, never computed."""
         flush_id = getattr(self._tts, "flush_id", None)
         return flush_id if isinstance(flush_id, int) else None
+
+
+def _validate_played_ms(played_ms: Any) -> None:
+    """A played position is non-negative milliseconds, never a bool or a string."""
+    if (
+        isinstance(played_ms, bool)
+        or not isinstance(played_ms, (int, float))
+        or played_ms < 0
+    ):
+        raise ValueError(
+            f"played_ms must be a non-negative number of milliseconds, "
+            f"got {played_ms!r}"
+        )
 
 
 async def _invoke(
