@@ -40,7 +40,7 @@ import codecs
 import json
 import os
 from collections.abc import AsyncIterator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from cascade.model_guard import resolve_model
@@ -177,12 +177,19 @@ class MetaLLMTurn:
 
     ``reasoning_text`` is the model's private reasoning. It is recorded for
     usage and telemetry; it is never yielded to synthesis.
+
+    ``usage`` starts and stays :meth:`TurnUsage.unmeasured` unless the vendor's
+    usage chunk arrived. An interrupted stream therefore records "we do not
+    know", never a zero that a cost table would price as free.
     """
 
     reasoning_text: str = ""
     reasoning_deltas: int = 0
     content_text: str = ""
     finish_reason: str | None = None
+    usage: TurnUsage = field(default_factory=lambda: TurnUsage.unmeasured())
+    finished: bool = False
+    interrupted: bool = False
     closed: bool = False
 
     def close(self) -> None:
@@ -190,6 +197,97 @@ class MetaLLMTurn:
         if self.closed:
             return
         self.closed = True
+        if not self.finished:
+            self.interrupted = True
+        if not self.usage.measured:
+            # Restated, not recomputed: a partial count must never be read as
+            # a measurement, and zero is a measurement.
+            self.usage = TurnUsage.unmeasured()
+
+
+@dataclass(frozen=True, slots=True)
+class TurnUsage:
+    """The per-turn token units, or an honest "unmeasured".
+
+    ``measured`` is the only thing a cost table may branch on: when it is
+    False every count is ``None``. A single absent unit (a vendor that omits
+    ``cached_tokens``) is ``None`` too, never a zero, because zero says "none
+    were cached" and absence says "the vendor did not say".
+    """
+
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    total_tokens: int | None = None
+    cached_tokens: int | None = None
+    reasoning_tokens: int | None = None
+    measured: bool = True
+
+    @classmethod
+    def unmeasured(cls) -> "TurnUsage":
+        """The only value a stream that never saw a usage chunk may record."""
+        return cls(measured=False)
+
+    def as_dict(self) -> dict[str, Any]:
+        """Stable artifact shape; ticket 101 prices these units, not the SSE."""
+        return {
+            "prompt_tokens": self.prompt_tokens,
+            "completion_tokens": self.completion_tokens,
+            "total_tokens": self.total_tokens,
+            "cached_tokens": self.cached_tokens,
+            "reasoning_tokens": self.reasoning_tokens,
+            "measured": self.measured,
+        }
+
+
+def _count(value: Any) -> int | None:
+    """A token count, or ``None`` when the vendor did not supply one."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def _nested_count(usage: dict[str, Any], container: str, key: str) -> int | None:
+    details = usage.get(container)
+    if isinstance(details, dict):
+        return _count(details.get(key))
+    return None
+
+
+def _first_count(
+    usage: dict[str, Any], container: str, key: str, top_level: str
+) -> int | None:
+    """A detail count, falling back to the top-level spelling when omitted."""
+    nested = _nested_count(usage, container, key)
+    return nested if nested is not None else _count(usage.get(top_level))
+
+
+def parse_usage(usage: dict[str, Any]) -> TurnUsage:
+    """Read the vendor's usage object into the per-turn record.
+
+    The counts live either under ``*_tokens_details`` (current shape) or at the
+    top level (older/open-compatible vendors). Cached and reasoning counts are
+    absent-tolerant: an omitted detail is ``None``, never zero. A frame that
+    carries no count at all is not a measurement.
+    """
+    prompt = _count(usage.get("prompt_tokens"))
+    completion = _count(usage.get("completion_tokens"))
+    total = _count(usage.get("total_tokens"))
+    cached = _first_count(
+        usage, "prompt_tokens_details", "cached_tokens", "cached_tokens"
+    )
+    reasoning = _first_count(
+        usage, "completion_tokens_details", "reasoning_tokens", "reasoning_tokens"
+    )
+    if prompt is completion is total is cached is reasoning is None:
+        return TurnUsage.unmeasured()
+    return TurnUsage(
+        prompt_tokens=prompt,
+        completion_tokens=completion,
+        total_tokens=total,
+        cached_tokens=cached,
+        reasoning_tokens=reasoning,
+        measured=True,
+    )
 
 
 class _SSEParser:
@@ -290,6 +388,11 @@ class _TurnStream:
             raise MetaLLMStreamError(
                 f"Meta stream frame is not an object: {payload[:120]!r}"
             )
+        usage = data.get("usage")
+        if isinstance(usage, dict):
+            parsed = parse_usage(usage)
+            if parsed.measured:
+                self.turn.usage = parsed
         emitted: list[TokenDelta] = []
         for choice in data.get("choices") or ():
             delta = choice.get("delta") or {}
@@ -472,26 +575,9 @@ class MetaLLM(LLMStream):
                     for frame in parser.close():
                         for event in stream.consume(frame):
                             yield event
+                    record.finished = True
         finally:
             record.close()
-
-    async def _stream_events(
-        self, response: Any
-    ) -> AsyncIterator[TokenDelta | ToolCallRequest]:
-        """Chunk-level seam kept for tests of the reader itself.
-
-        ``complete()`` drives the parser directly so it can finalise the turn
-        when the caller stops consuming early.
-        """
-        parser = _SSEParser()
-        stream = _TurnStream(MetaLLMTurn(), self._ledger)
-        async for chunk in response.iter_bytes():
-            for frame in parser.feed(chunk):
-                for event in stream.consume(frame):
-                    yield event
-        for frame in parser.close():
-            for event in stream.consume(frame):
-                yield event
 
 
 __all__ = [
@@ -506,7 +592,9 @@ __all__ = [
     "MetaLLMStreamError",
     "MetaLLMTurn",
     "ReasoningEffortError",
+    "TurnUsage",
     "build_chat_request",
     "build_messages",
+    "parse_usage",
     "resolve_reasoning_effort",
 ]
