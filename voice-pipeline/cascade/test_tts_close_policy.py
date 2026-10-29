@@ -1,7 +1,9 @@
 """Voice close policy: trigger, bug or planned reconnect (ticket 55).
 
-A synthesis failure is visible, never papered over. A retryable close is
-retried once before any audio was delivered, then fails the call and opens the
+A synthesis failure is visible, never papered over. A retryable close gets the
+one failure reconnect from the ticket-94 budget — including after audio was
+delivered, because ticket 97 resumes the reply from its first unheard point
+rather than replaying it — then a second failure fails the call and opens the
 voice leg's breaker. Configuration and pacing closes are our bug: they fail
 the call and alert without opening the leg. ``3008`` and the session's
 ``expires_at`` are planned reconnects. There is no second voice vendor, so
@@ -61,7 +63,10 @@ class TriggerTests(unittest.TestCase):
         self.assertTrue(failure.visible)
         self.assertTrue(failure.call_ended)
 
-    def test_a_trigger_close_after_audio_was_delivered_is_not_retried(self):
+    def test_a_trigger_close_after_audio_was_delivered_still_gets_the_one_retry(self):
+        # Ticket 97: a mid-reply close resumes from the first unheard point
+        # instead of failing, so delivered audio no longer refuses the retry.
+        # The one-per-call budget still bounds it.
         tts, factory = open_session(
             [
                 begin(),
@@ -75,10 +80,13 @@ class TriggerTests(unittest.TestCase):
 
         asyncio.run(drain())
 
+        decision = asyncio.run(tts.handle_close(1006))
+
+        self.assertIs(decision.action, CloseAction.RETRY)
+        self.assertEqual(len(factory.connections), 2)
+        self.assertEqual(tts.breaker_opens, [])
         with self.assertRaises(SynthesisCallFailure):
             asyncio.run(tts.handle_close(1006))
-
-        self.assertEqual(len(factory.connections), 1)
         self.assertEqual(tts.breaker_opens[-1].failure_class, FailureClass.TRIGGER)
 
     def test_a_close_without_a_code_is_a_trigger(self):
