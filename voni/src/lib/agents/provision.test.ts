@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { deleteRemoteAgent } from "./provision";
+import { deleteRemoteAgent, stableJson } from "./provision";
 
 function response(status: number): Response {
   return new Response(null, { status });
@@ -84,4 +84,34 @@ test("storedAgentBody ships REST-shaped tools without `type`", async () => {
   for (const tool of body.tools as Array<Record<string, unknown>>) {
     assert.ok(!("type" in tool), "Agents REST API has no `type` field");
   }
+});
+
+test("the tenant stored body carries the voice's measured level", async () => {
+  const { storedAgentBody, comparableAgent, deploymentFingerprint } = await import("./provision");
+  const { REAL_ESTATE_TEMPLATE } = await import("./config");
+  const { voiceOutputVolume } = await import("./voice-levels");
+
+  const body = storedAgentBody("test-agent", REAL_ESTATE_TEMPLATE);
+  assert.equal(typeof body.output.volume, "number", "the body carries a numeric output.volume");
+  assert.equal(body.output.volume, voiceOutputVolume(REAL_ESTATE_TEMPLATE.voiceId));
+
+  // Unknown voice: the builder still ships the named default, never a guess.
+  const unmeasured = storedAgentBody("test-agent", { ...REAL_ESTATE_TEMPLATE, voiceId: "not-a-voice" });
+  assert.equal(unmeasured.output.volume, voiceOutputVolume("not-a-voice"));
+
+  // The tenant fingerprint input covers the level: changing only the volume
+  // changes the hashed body, so a level change cannot hide behind a stale cache.
+  const base = comparableAgent(body);
+  const attenuated = comparableAgent({ ...body, output: { ...body.output, volume: body.output.volume - 1 } });
+  assert.notEqual(stableJson(attenuated), stableJson(base), "the level is inside the fingerprint input");
+  assert.deepEqual(
+    { ...attenuated, output: base.output },
+    base,
+    "nothing but the level changed",
+  );
+  assert.notEqual(
+    deploymentFingerprint("test-agent", { ...REAL_ESTATE_TEMPLATE, voiceId: "anna" }),
+    deploymentFingerprint("test-agent", { ...REAL_ESTATE_TEMPLATE, voiceId: "lola" }),
+    "different voices ship different bodies (and levels) as different fingerprints",
+  );
 });

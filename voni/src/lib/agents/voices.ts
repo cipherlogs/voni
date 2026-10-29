@@ -140,12 +140,10 @@ export function getVoice(id: string): Voice | undefined {
 }
 
 /**
- * Server-side output level: every agent ships `output.volume = 100`
- * (loudest) so all voices play at a deterministic level instead of each
- * voice's native level. Native levels differ by up to ~12 dB (giovanni vs
- * anna, measured 2026-09-26 on `public/voices/*.mp3`).
+ * A voice's output level is not a setting of this catalog: it lives on the
+ * stored agent body (`output.volume`) and is decided from that voice's measured
+ * reference in `./voice-levels.ts` (voice-parity ticket 37).
  */
-export const VOICE_OUTPUT_VOLUME = 100;
 
 /** Title-case a voice id for display. The ids are first names. */
 export function voiceLabel(id: string): string {

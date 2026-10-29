@@ -2,7 +2,7 @@ import { compileSystemPrompt } from "./compile";
 import type { AgentConfig } from "./config";
 import { compileVoiceTools, toRestTool } from "@/lib/tools/definitions";
 import { TRANSCRIPTION_MODE, buildAgentKeyterms, buildAgentTranscriptionPrompt } from "@/lib/voice/transcription";
-import { VOICE_OUTPUT_VOLUME } from "./voices";
+import { voiceOutputVolume } from "./voice-levels";
 import { resolveCredential } from "@/lib/platform/credentials";
 
 const AGENTS_URL = "https://agents.assemblyai.com/v1/agents";
@@ -39,7 +39,10 @@ export function storedAgentBody(name: string, config: AgentConfig) {
     output: {
       voice: config.voiceId,
       format: { encoding: "audio/pcmu", sample_rate: 8000 },
-      volume: VOICE_OUTPUT_VOLUME,
+      // The voice's level, decided from its measured reference (voice-parity
+      // ticket 37). Same field and source as the demo body; the browser never
+      // applies a level of its own.
+      volume: voiceOutputVolume(config.voiceId),
     },
     // REST shape (no `type`): the Agents API tool object has no such field —
     // sending it risks the tool being dropped while the prompt still
@@ -48,7 +51,12 @@ export function storedAgentBody(name: string, config: AgentConfig) {
   };
 }
 
-function comparableAgent(value: Record<string, unknown>) {
+/**
+ * The exact tenant-body fields the deployment fingerprint covers. Exported so
+ * a test can prove a field (the per-voice level, voice-parity ticket 37) is
+ * inside the fingerprint input without rebuilding the whole body.
+ */
+export function comparableAgent(value: Record<string, unknown>) {
   const voice = (value.voice ?? {}) as Record<string, unknown>;
   const input = (value.input ?? {}) as Record<string, unknown>;
   const output = (value.output ?? {}) as Record<string, unknown>;

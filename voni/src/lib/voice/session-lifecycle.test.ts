@@ -35,7 +35,7 @@ import {
 } from "./context";
 import { DEMO_VOICE_IDS, SILENCE_CHECK_IN_INSTRUCTIONS } from "@/lib/demo/voni-agent";
 import { evalToolExecutor } from "@/lib/demo/eval-transport";
-import { VOICE_OUTPUT_VOLUME } from "@/lib/agents/voices";
+import { voiceOutputVolume } from "@/lib/agents/voice-levels";
 import { decodeWav } from "@/lib/audio/format-facts";
 
 // Minimal WebSocket shape: updateConfig only touches readyState + send.
@@ -2006,7 +2006,7 @@ test("pre-ready mic frames probe an input-drop instead of vanishing silently", (
   assert.equal(probes[0]?.dropped, 1);
 });
 
-test("inline session update pins the registry output level for every demo voice", () => {
+test("inline session update carries the measured level for every demo voice", () => {
   for (const voiceId of DEMO_VOICE_IDS) {
     const update = buildInlineSessionUpdate({
       mode: "inline",
@@ -2015,7 +2015,7 @@ test("inline session update pins the registry output level for every demo voice"
       voiceId,
       tools: [],
     });
-    assert.deepEqual(update["output"], { voice: voiceId, volume: VOICE_OUTPUT_VOLUME });
+    assert.deepEqual(update["output"], { voice: voiceId, volume: voiceOutputVolume(voiceId) });
   }
   const update = buildInlineSessionUpdate({
     mode: "inline",

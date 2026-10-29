@@ -24,7 +24,7 @@ import {
 } from "./stored-agents";
 import { END_CALL_TOOL } from "@/lib/tools/definitions";
 import { VONI_GREETINGS, DEMO_VOICE_IDS } from "./voni-agent";
-import { VOICE_OUTPUT_VOLUME } from "@/lib/agents/voices";
+import { voiceOutputVolume } from "@/lib/agents/voice-levels";
 
 test("the served stored body is read from the platform, never rebuilt", async () => {
   const calls: string[] = [];
@@ -463,9 +463,45 @@ test("demo body carries call control, tuning, and per-agent vocabulary", () => {
 test("every demo voice ships the registry output level with no client gain", () => {
   for (const voice of DEMO_VOICE_IDS) {
     const body = buildDemoAgentBody(voice);
-    assert.deepEqual(body.output, { volume: VOICE_OUTPUT_VOLUME });
+    assert.deepEqual(body.output, { volume: voiceOutputVolume(voice) });
+    assert.equal(typeof body.output.volume, "number", `${voice} carries a numeric level`);
     assert.deepEqual(Object.keys(body.output), ["volume"], "no gain or loudness knob on the agent");
     assert.ok(!JSON.stringify(body).includes('"gain"'), `${voice} body carries no gain field`);
+  }
+});
+
+test("the level is inside the body fingerprint, and only the level moves it", () => {
+  const body = buildDemoAgentBody("anna");
+  // A level change a deployment could actually make (attenuation is the only
+  // direction the platform allows).
+  const attenuated = { ...body, output: { volume: body.output.volume - 1 } };
+  assert.notEqual(
+    demoAgentFingerprint(attenuated, "account"),
+    demoAgentFingerprint(body, "account"),
+    "a level change refreshes the stored agent instead of playing a stale body",
+  );
+  assert.deepEqual(
+    { ...attenuated, output: body.output },
+    body,
+    "nothing but the level changed, so the fingerprint difference is the level",
+  );
+});
+
+test("the served body's level is what the gate reads", () => {
+  for (const voice of DEMO_VOICE_IDS) {
+    const built = buildDemoAgentBody(voice);
+    const served = parseServedDemoAgentBody("agent_stored", {
+      input: built.input,
+      output: built.output,
+    });
+    assert.equal(served.ok, true);
+    if (!served.ok) continue;
+    assert.equal(
+      servedAgentOutputVolume(served.body),
+      voiceOutputVolume(voice),
+      `${voice}: the gate reads the level the platform serves, unchanged`,
+    );
+    assert.deepEqual(served.body.output, built.output, "the served output object is verbatim");
   }
 });
 
