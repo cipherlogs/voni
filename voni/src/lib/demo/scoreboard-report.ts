@@ -108,7 +108,10 @@ export type InspectEndOfTurn = {
   variant: string | null;
   variantKey: string | null;
   turnWindows: DemoTurnWindows | null;
-  /** The production body's served turn setting (null = the Turn preset). */
+  /**
+   * The production body's served turn setting (null = the Turn preset).
+   * Undefined when no served body was read: the report never invents one.
+   */
   productionTurnDetection: unknown;
 };
 
@@ -540,7 +543,10 @@ function endOfTurnInput(artifact: ScoreboardArtifact): InspectEndOfTurn {
       variant: null,
       variantKey: null,
       turnWindows: null,
-      productionTurnDetection: artifact.agentBody?.turnDetection ?? null,
+      productionTurnDetection:
+        artifact.agentBody?.measured === true
+          ? (artifact.agentBody.turnDetection ?? null)
+          : undefined,
     };
   }
   return {

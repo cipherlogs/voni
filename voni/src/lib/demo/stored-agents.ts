@@ -343,8 +343,16 @@ export function demoAgentFingerprint(body: ReturnType<typeof buildDemoAgentBody>
  * while a failed refresh, a stray remote override or a stale row can leave
  * the served copy different — a difference no visitor's audio would show
  * through a reconstruction.
+ *
+ * The nominal brand is the seam (voice-parity ticket 24): a builder body is
+ * structurally similar but cannot be assigned here, and `isServedDemoAgentBody`
+ * refuses one at runtime, so a gate can never PASS on audio nobody heard.
  */
+const SERVED_BODY_BRAND: unique symbol = Symbol.for("voni.served-demo-agent-body");
+
 export type ServedDemoAgentBody = {
+  /** Proves the value came from the platform read, not the demo builder. */
+  readonly [SERVED_BODY_BRAND]: true;
   /** The stored agent id this body was read from. */
   agentId: string;
   /**
@@ -363,6 +371,15 @@ export type ServedDemoAgentBody = {
   output: { volume?: unknown } & Record<string, unknown>;
 };
 
+/** Runtime half of the brand: a reconstruction is not a served body. */
+export function isServedDemoAgentBody(value: unknown): value is ServedDemoAgentBody {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as Record<PropertyKey, unknown>)[SERVED_BODY_BRAND] === true
+  );
+}
+
 /**
  * The served `output.volume` in the platform's own units, or null when the
  * body serves no readable level. This is the only level a gate may judge:
@@ -378,6 +395,44 @@ export function servedAgentOutputVolume(body: ServedDemoAgentBody): number | nul
 export type ServedDemoAgentBodyResult =
   | { ok: true; body: ServedDemoAgentBody }
   | { ok: false; error: string };
+
+/**
+ * Parse one platform `GET /v1/agents/{id}` payload into a served body. This
+ * is the single mint for the brand above: the async reader uses it, and a
+ * test can parse a recorded payload without a network call. A payload with no
+ * platform `input` object is refused, so no shape can be "helpfully" filled in.
+ */
+export function parseServedDemoAgentBody(
+  agentId: string,
+  payload: unknown,
+  fingerprint: string | null = null,
+): ServedDemoAgentBodyResult {
+  const input =
+    payload !== null && typeof payload === "object"
+      ? (payload as { input?: unknown }).input
+      : undefined;
+  if (input === null || typeof input !== "object" || Array.isArray(input)) {
+    return { ok: false, error: `stored agent ${agentId} served no input object` };
+  }
+  const servedOutput =
+    payload !== null && typeof payload === "object"
+      ? (payload as { output?: unknown }).output
+      : undefined;
+  const output =
+    servedOutput !== null && typeof servedOutput === "object" && !Array.isArray(servedOutput)
+      ? (servedOutput as ServedDemoAgentBody["output"])
+      : {};
+  return {
+    ok: true,
+    body: {
+      [SERVED_BODY_BRAND]: true,
+      agentId,
+      fingerprint,
+      input: input as ServedDemoAgentBody["input"],
+      output,
+    },
+  };
+}
 
 /**
  * Read one stored agent's served body. Injectable key/fetch keep the read
@@ -419,25 +474,72 @@ export async function readServedDemoAgentBody(
   } catch {
     return { ok: false, error: `stored agent ${agentId} served unreadable JSON` };
   }
-  const input =
-    payload !== null && typeof payload === "object"
-      ? (payload as { input?: unknown }).input
-      : undefined;
-  if (input === null || typeof input !== "object" || Array.isArray(input)) {
-    return { ok: false, error: `stored agent ${agentId} served no input object` };
+  return parseServedDemoAgentBody(agentId, payload);
+}
+
+/**
+ * One run's body read, with identity: the single value every gate and the
+ * artifact receive (voice-parity ticket 24). `measured: false` carries the
+ * reason so each dependent gate can report INFO instead of reconstructing a
+ * body or greening on a default.
+ */
+export type ServedAgentBodyRead =
+  | {
+      measured: true;
+      body: ServedDemoAgentBody;
+      agentId: string;
+      fingerprint: string | null;
+    }
+  | {
+      measured: false;
+      agentId: string | null;
+      fingerprint: string | null;
+      reason: string;
+    };
+
+/**
+ * Read the body this run's subject serves, once. A dry run or a run with no
+ * bound agent never fetches and is explicitly unmeasured; a failed read keeps
+ * its error as the reason. The caller threads this one value to every gate.
+ */
+export async function readServedAgentBodyForRun(input: {
+  agentId: string | null;
+  fingerprint?: string | null;
+  dryRun?: boolean;
+  apiKey?: string | null;
+  fetchFn?: typeof fetch;
+}): Promise<ServedAgentBodyRead> {
+  const fingerprint = input.fingerprint ?? null;
+  if (input.dryRun === true) {
+    return {
+      measured: false,
+      agentId: input.agentId,
+      fingerprint,
+      reason: "dry run: no stored body read",
+    };
   }
-  const servedOutput =
-    payload !== null && typeof payload === "object"
-      ? (payload as { output?: unknown }).output
-      : undefined;
-  const output =
-    servedOutput !== null && typeof servedOutput === "object" && !Array.isArray(servedOutput)
-      ? (servedOutput as ServedDemoAgentBody["output"])
-      : {};
-  return {
-    ok: true,
-    body: { agentId, input: input as ServedDemoAgentBody["input"], output },
-  };
+  if (!input.agentId) {
+    return {
+      measured: false,
+      agentId: null,
+      fingerprint,
+      reason: "no stored agent id in the run's evidence",
+    };
+  }
+  const read = await readServedDemoAgentBody(
+    input.agentId,
+    "apiKey" in input ? { apiKey: input.apiKey, fetchFn: input.fetchFn } : { fetchFn: input.fetchFn },
+  );
+  if (!read.ok) {
+    return {
+      measured: false,
+      agentId: input.agentId,
+      fingerprint,
+      reason: read.error,
+    };
+  }
+  const body = { ...read.body, fingerprint };
+  return { measured: true, body, agentId: input.agentId, fingerprint };
 }
 
 /**
