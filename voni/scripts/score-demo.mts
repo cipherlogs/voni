@@ -293,7 +293,7 @@ import {
   type TimbreProbes,
   type TraceGap,
 } from "../src/lib/demo/scoreboard";
-import { buildDemoAgentBody, demoAgentVariantFromEnv, demoTurnWindowsFromEnv, type DemoAgentVariant, type DemoTurnWindows } from "../src/lib/demo/stored-agents";
+import { demoAgentVariantFromEnv, demoTurnWindowsFromEnv, findCachedDemoAgent, readServedDemoAgentBody, type DemoAgentVariant, type DemoTurnWindows } from "../src/lib/demo/stored-agents";
 import {
   evalRunnerArgv,
   parseEvalTransport,
@@ -1360,7 +1360,6 @@ async function main(): Promise<void> {
       ? `${session} (no turn merged: trace session ${traceSession} is a different call)`
       : undefined;
   })();
-  const agentInput = buildDemoAgentBody(voice).input;
   // Explicit --filler-* flags are the operator override. Without them, the
   // live runner's own `filler …` line is the observed behavior and scores the
   // gate, so a filler-over run no longer stays INFO until a human retypes it.
@@ -1537,10 +1536,38 @@ async function main(): Promise<void> {
     // gate reads exactly what it read before.
     marks: readRunMarks(events, scenario, suite, dryRun),
   });
-  // Ticket 10: the gate keeps checking the production body (explicitly null),
-  // so a variant run cannot loosen the ADR-0003 contract. The experiment's
-  // windows are labelled alongside it instead of replacing it; the bound
-  // agent id lets the gate tell the variant's own CONFIG rows from production.
+  // Voice-parity ticket 20: gates read the stored body a visitor's session
+  // actually binds, read back from the platform — never `buildDemoAgentBody`,
+  // which describes the body the harness intended to store rather than the
+  // copy the platform serves (a failed refresh or stray override differs).
+  // A variant run still verdicts the production body (ticket 10), so it reads
+  // the cached production row; an unreadable body stays unmeasured (INFO).
+  const cachedProduction =
+    selection.variant === "production" ? null : await findCachedDemoAgent(voice);
+  const servedAgentId =
+    selection.variant === "production"
+      ? (runnerEvidence?.agentId ?? null)
+      : (cachedProduction?.agentId ?? null);
+  const servedAgentFingerprint =
+    selection.variant === "production"
+      ? (runnerEvidence?.agentFingerprint ?? null)
+      : (cachedProduction?.fingerprint ?? null);
+  const servedRead =
+    dryRun || !servedAgentId ? null : await readServedDemoAgentBody(servedAgentId);
+  if (servedRead && !servedRead.ok) {
+    console.warn(
+      `[scoreboard] stored body unmeasured: ${servedRead.error} (end-of-turn stays INFO, never a reconstruction)`,
+    );
+  }
+  const servedAgentBody =
+    servedRead?.ok && servedAgentId
+      ? { ...servedRead.body, fingerprint: servedAgentFingerprint }
+      : undefined;
+  // Ticket 10: the gate keeps checking the production body (read above from
+  // the platform, never rebuilt), so a variant run cannot loosen the ADR-0003
+  // contract. The experiment's windows are labelled alongside it instead of
+  // replacing it; the bound agent id lets the gate tell the variant's own
+  // CONFIG rows from production.
   const endOfTurnExperiment =
     selection.variant === "turn-window"
       ? {
@@ -1561,7 +1588,7 @@ async function main(): Promise<void> {
     traceGaps,
     ...(traceBeatRaw ? { traceBeat: traceBeatRaw as GoldenBeat } : {}),
     traceSessionId: traceSession || null,
-    agentInput,
+    servedAgentBody,
     ...(endOfTurnExperiment ? { endOfTurnExperiment } : {}),
     traceExcerpt: excerpt ?? [],
     fillerResume,
