@@ -832,7 +832,7 @@ export function summarizeReplyGaps(samples: ReplyGapSample[]): ReplyGapSummary |
  * (session, 1-based VONI turn). Joined from the runner's per-turn latency
  * split; a turn with no split simply has no band (never guessed).
  */
-function latencyBandsByTurn(evidence: RunnerEvidence | null | undefined): Map<string, LatencyBand> {
+function bandsByTurn(evidence: RunnerEvidence | null | undefined): Map<string, LatencyBand> {
   const bands = new Map<string, LatencyBand>();
   for (const session of evidence?.sessions ?? []) {
     for (const turn of session.turns) {
@@ -5083,19 +5083,19 @@ export function buildSkeletonArtifact(input: {
       sessionId: traceGap.sessionId ?? input.traceSessionId ?? undefined,
     });
   }
+  const traceUnverified =
+    allTraceGaps.length > 0 && !traceAttributed && !explicitGreetingCut && preAttributed.length === 0;
   // Ticket 06: label each measured turn with its interaction band, joined from
   // the runner's per-turn split by (session, turn). Labels only — the pooled
   // sample set above is passed to the gate untouched.
-  const bandsByTurn = latencyBandsByTurn(input.runnerEvidence);
-  if (bandsByTurn.size > 0) {
+  const bands = bandsByTurn(input.runnerEvidence);
+  if (bands.size > 0) {
     for (const sample of samples) {
       if (sample.turnIndex === null || sample.turnIndex === undefined || !sample.sessionId) continue;
-      const band = bandsByTurn.get(`${sample.sessionId}#${sample.turnIndex}`);
+      const band = bands.get(`${sample.sessionId}#${sample.turnIndex}`);
       if (band) sample.band = band;
     }
   }
-  const traceUnverified =
-    allTraceGaps.length > 0 && !traceAttributed && !explicitGreetingCut && preAttributed.length === 0;
   const overall = summarizeReplyGaps(samples);
   const beats = Object.fromEntries(
     GOLDEN_BEATS.map((beat) => {
