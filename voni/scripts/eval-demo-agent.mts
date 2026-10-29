@@ -186,6 +186,7 @@ import {
 } from "../src/lib/voice/session";
 import { tryJevGateway } from "../src/lib/voice/voice-judge";
 import { isEndCallRequest, isGoodbyeLine } from "../src/lib/voice/jev-judges";
+import { callRecognition } from "../src/lib/voice/recognition";
 import { collectSilentGreeting } from "../src/lib/voice/silent-greeting";
 import {
   callerClipDrift,
@@ -736,6 +737,8 @@ async function runClient(
   // Call-relative origin for the silence timeline and the playout maths.
   const t0 = Date.now();
   const body = buildDemoAgentBody(voiceId);
+  // The demo body pins the call's Locale; the caller's own words are judged in it.
+  const recognition = callRecognition({ languageCodes: body.input.language_codes });
   const outcome: ClientOutcome = {
     events: [], cutAt: null, creates: [], agent: [], heard: [], agentTurns: [], heardTurns: [], cutReplyId: null,
     replyAudioAt: {}, cutPlayedMs: null,
@@ -790,12 +793,12 @@ async function runClient(
         // spoken goodbye without calling the tool — still hang up after it.
         if (endRequested) {
           endRequested = false;
-          if (isGoodbyeLine(turn.text)) session.endAfterReply();
+          if (isGoodbyeLine(turn.text, recognition)) session.endAfterReply();
         }
       },
       onUserTurn: (turn) => {
         outcome.heardTurns.push({ text: turn.text, at: Date.now() });
-        if (isEndCallRequest(turn.text)) endRequested = true;
+        if (isEndCallRequest(turn.text, recognition)) endRequested = true;
       },
       onReplyDone: (info) => {
         repliesDone += 1;

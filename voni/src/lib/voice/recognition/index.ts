@@ -69,6 +69,42 @@ export function callRecognitionLocale(source: CallLanguageSource): RecognitionLo
 }
 
 /**
+ * No words at all, filled slot by slot. A Locale that has not rendered a slot
+ * matches nothing there — never English's words.
+ */
+const NO_WORDS: Omit<CompleteRecognition, "locale"> = {
+  vocabulary: [],
+  scene: () => "",
+  digits: { 0: [], 1: [], 2: [], 3: [], 4: [], 5: [], 6: [], 7: [], 8: [], 9: [] },
+  address: { at: [], dot: [], hyphen: [], underscore: [] },
+  filler: [],
+  bargeIn: [],
+  commands: { stop: [], wait: [], deny: [], repeat: [], listen: [], interject: [] },
+  endCall: [],
+  goodbye: [],
+};
+
+/**
+ * The recognition a call runs under, for the code that has to decide *now* —
+ * a barge-in, a back-channel, a goodbye — from what the call says about its
+ * Locale.
+ *
+ * - A pinned Locale is that Locale's own words. A slot it has not rendered yet
+ *   contributes nothing (see `NO_WORDS`): a hole matches nothing, which is a
+ *   visible miss, while English words would be a silent wrong call. The hole
+ *   itself is reported by `resolveRecognition` / `recognitionCompleteness`.
+ * - Automatic detection (nothing pinned) is the one documented English
+ *   scaffolding exception, the same one `NEUTRAL_KEYTERMS` records: the
+ *   recogniser cannot know the Locale before the caller speaks, and a guardrail
+ *   with no words at all would answer every "okay".
+ */
+export function callRecognition(source: CallLanguageSource): CompleteRecognition {
+  const locale = callRecognitionLocale(source);
+  if (locale === null) return EN_RECOGNITION;
+  return { ...NO_WORDS, ...(REGISTRY[locale]?.slots ?? {}), locale };
+}
+
+/**
  * The vocabulary a Locale is primed with, or `undefined` when the Locale has
  * no vocabulary rendering yet. A hole stays a hole; an absent Locale never
  * resolves to English's words.
@@ -116,15 +152,4 @@ export function resolveRecognition(locale: string): RecognitionResolution {
   const bundle = isRecognitionLocale(locale) ? REGISTRY[locale] : undefined;
   if (!bundle) return { status: "missing", locale };
   return resolveBundle(bundle);
-}
-
-/**
- * The whole bundle a Locale matches with, or `null` when it is not whole.
- * Never another key's words: an incomplete rendering matches nothing rather
- * than quietly matching English. Automatic detection is the caller's decision
- * (`EN_RECOGNITION`, the documented exception), not this function's.
- */
-export function completeRecognitionFor(locale: string): CompleteRecognition | null {
-  const resolution = resolveRecognition(locale);
-  return resolution.status === "complete" ? resolution.recognition : null;
 }

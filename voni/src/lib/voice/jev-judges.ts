@@ -16,12 +16,14 @@
  */
 
 import {
-  EN_RECOGNITION,
   cleanTokens,
   isCommandBargeIn as isCommandBargeInIn,
   isEndCallRequest as isEndCallRequestIn,
   isFillerOnly as isFillerOnlyIn,
   isGoodbyeLine as isGoodbyeLineIn,
+  callRecognition,
+  type CompleteRecognition,
+  type RecognitionLocale,
 } from "./recognition";
 
 export { cleanTokens };
@@ -46,6 +48,12 @@ export type BargeInState = {
   agentSpeakingMs: number;
   /** What the agent was saying when the caller spoke (context for Jev). */
   agentText?: string;
+  /**
+   * The Locale the call is conducted in, so the offline fallback reads the
+   * caller's words. Absent is automatic detection, the documented English
+   * scaffolding exception (see `callRecognition`).
+   */
+  locale?: RecognitionLocale | null;
 };
 
 export type ReplyState = {
@@ -75,8 +83,8 @@ export type OffTrackState = {
 export type JudgeKind = "barge-in" | "reply" | "tool" | "nav-speculative" | "off-track";
 export type JudgeSource = "jev" | "fallback";
 
-function isAllFiller(text: string): boolean {
-  return isFillerOnlyIn(text, EN_RECOGNITION);
+function isAllFiller(text: string, recognition: CompleteRecognition): boolean {
+  return isFillerOnlyIn(text, recognition);
 }
 
 function wordCount(text: string): number {
@@ -85,34 +93,35 @@ function wordCount(text: string): number {
 }
 
 /**
- * The English-pinned match surface for call paths that still run English.
- * Every word and rule is owned by `./recognition`, keyed by Locale; a
- * locale-aware caller passes its own `CompleteRecognition` to the same
- * functions. These wrappers are neither a second owner nor a fallback.
+ * The match surface every call path shares, judged in the call's own words.
+ * The words and rules are owned by `./recognition`, keyed by Locale; a caller
+ * passes the `CompleteRecognition` of the Locale the call is conducted in
+ * (`callRecognition`). There is no English default here: an English word can
+ * never steer, end or fill a call of another Locale.
  *
  * True when the overlap carries steering (stop/wait/no/repeat...). The LLM
  * (which sees the overlap in context) decides transition-vs-continue; the
  * gate only guarantees steering is heard.
  */
-export function isCommandBargeIn(text: string): boolean {
-  return isCommandBargeInIn(text, EN_RECOGNITION);
+export function isCommandBargeIn(text: string, recognition: CompleteRecognition): boolean {
+  return isCommandBargeInIn(text, recognition);
 }
 
 /**
  * The caller asking to end the call. Never an aside to talk through or an
  * off-track strike: the agent says goodbye and ends the call.
  */
-export function isEndCallRequest(text: string): boolean {
-  return isEndCallRequestIn(text, EN_RECOGNITION);
+export function isEndCallRequest(text: string, recognition: CompleteRecognition): boolean {
+  return isEndCallRequestIn(text, recognition);
 }
 
 /**
- * Whether an agent line is a goodbye ("Okay, bye!", "Goodbye", "Take care").
+ * Whether an agent line is a goodbye ("Okay, bye!", "Hasta luego", "Tschüss").
  * Narrower than isEndCallRequest: a request phrase like "hang up" is the
  * caller's intent, not the agent's closing line.
  */
-export function isGoodbyeLine(text: string): boolean {
-  return isGoodbyeLineIn(text, EN_RECOGNITION);
+export function isGoodbyeLine(text: string, recognition: CompleteRecognition): boolean {
+  return isGoodbyeLineIn(text, recognition);
 }
 
 /**
@@ -127,9 +136,10 @@ export function isGoodbyeLine(text: string): boolean {
 export function heuristicBargeInScore(state: BargeInState): number {
   const text = state.partialText.trim();
   if (!text) return 0;
-  if (isAllFiller(text)) return 0.12;
+  const recognition = callRecognition({ conversationLanguage: state.locale });
+  if (isAllFiller(text, recognition)) return 0.12;
   if (state.agentSpeakingMs < 800) return 0.3;
-  if (isCommandBargeIn(text)) return 0.9;
+  if (isCommandBargeIn(text, recognition)) return 0.9;
   const words = wordCount(text);
   if (words >= 4) return 0.88;
   if (words >= 2) return 0.72;

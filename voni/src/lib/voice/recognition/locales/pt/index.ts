@@ -1,4 +1,11 @@
 import type { RecognitionSlots } from "../../types";
+import {
+  PT_BARGE_IN,
+  PT_COMMANDS,
+  PT_END_CALL,
+  PT_FILLER,
+  PT_GOODBYE,
+} from "./filler";
 import { PT_SCENE } from "./scene";
 import { PT_VOCABULARY } from "./vocabulary";
 import { PT_ADDRESS } from "./address";
@@ -13,4 +20,9 @@ export const PT_RECOGNITION: RecognitionSlots = {
   scene: PT_SCENE,
   digits: PT_DIGITS,
   address: PT_ADDRESS,
+  filler: PT_FILLER,
+  bargeIn: PT_BARGE_IN,
+  commands: PT_COMMANDS,
+  endCall: PT_END_CALL,
+  goodbye: PT_GOODBYE,
 };

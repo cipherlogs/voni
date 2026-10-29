@@ -22,18 +22,10 @@ import {
   type InboxMessage,
 } from "./email-test";
 import { TALK_BASE_S } from "./talk-clock";
-import { EN_RECOGNITION, LOCALE_RECOGNITION, type CompleteRecognition } from "@/lib/voice/recognition";
+import { callRecognition, type CompleteRecognition } from "@/lib/voice/recognition";
 
-/**
- * A Spanish call's recognition: Spanish digits and address words, with English
- * standing in for the slots that arrive with their own tickets. The fixture is
- * the test's, never a production fallback.
- */
-const spanishRecognition: CompleteRecognition = {
-  ...EN_RECOGNITION,
-  ...LOCALE_RECOGNITION.es,
-  locale: "es",
-};
+/** A Spanish call's recognition, as the call path resolves it. */
+const spanishRecognition: CompleteRecognition = callRecognition({ conversationLanguage: "es" });
 
 const msg = (id: string, from: string, receivedAt: number, extra: Partial<InboxMessage> = {}): InboxMessage => ({
   id,

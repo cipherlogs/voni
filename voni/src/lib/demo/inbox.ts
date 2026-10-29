@@ -16,11 +16,7 @@ import {
 import type { DemoCall } from "./call-token";
 import { loadLiveTestTag, recordTagMatch } from "./test-tag-registry";
 import { checkEmailInstructions } from "./voni-agent";
-import {
-  EN_RECOGNITION,
-  callRecognitionLocale,
-  completeRecognitionFor,
-} from "@/lib/voice/recognition";
+import { callRecognition } from "@/lib/voice/recognition";
 
 /**
  * Server half of the demo email test: reads the shared test inbox through the
@@ -252,14 +248,12 @@ export async function runCheckEmail(call: DemoCall, rawArguments: unknown): Prom
   const spoof = (message: InboxMessage) => jevSpoof(message, judge);
   // The call's Locale is the tag's (minted from the voice's language). No tag
   // is automatic detection, the documented English-scaffolding exception; a
-  // Locale that is not whole matches no address rather than reading English.
-  const locale = callRecognitionLocale({ conversationLanguage: tag?.language });
-  const recognition = locale === null ? EN_RECOGNITION : completeRecognitionFor(locale);
+  // hole in a pinned Locale matches no address rather than reading English.
+  const recognition = callRecognition({ conversationLanguage: tag?.language });
   // Placeholders the model sometimes invents ("unknown", "none") are not addresses.
-  const spoken =
-    recognition && args.data.address && normalizeClaim(args.data.address, recognition) ? args.data.address : null;
+  const spoken = args.data.address && normalizeClaim(args.data.address, recognition) ? args.data.address : null;
   let result: CheckEmailResult;
-  if (spoken && recognition) {
+  if (spoken) {
     result = await checkEmail(spoken, {
       listInbox: () => listDemoInbox(),
       since: call.startedAt,
