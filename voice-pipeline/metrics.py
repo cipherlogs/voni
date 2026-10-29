@@ -1,32 +1,58 @@
-"""Metric rig for the cascade pipeline (P0).
+"""Metric rig for the cascade pipeline.
 
 Same scoreboard as the managed path so the P1 A/B is apples-to-apples:
-- audio_in -> first_partial: screen latency (words visible while spoken)
-- final -> first_token: think start (LLM engaged)
-- final/floor_take -> first_playout: reply gap (floor_take wins when the caller
-  takes the floor early)
+- audio_in -> first_partial: screen latency
+- speech_complete -> first_token: think start (cascade)
+- final -> first_token: think start (managed)
+- final -> first_playout: managed reply gap
+- floor_take -> first_playout: cascade reply gap; N/A when the caller never
+  took the floor
 - counts: judge outcomes + prefetch lifecycle + tool denies
 
-First mark wins; missing marks yield None gaps, never exceptions. Clock is
-injectable (time.monotonic in prod) so tests are deterministic.
+The cascade also records the marks its provider-owned turn boundary produces
+(speech_end, speech_complete, floor_take, greeting start/first audio/done,
+reconnect, cancelled). They are ordinary marks: first write wins and a
+duplicate is ignored.
+
+The three cascade gaps are derived from the marks mapping alone through
+``cascade_gaps()``; there is no second scoreboard and no gap is invented from
+a mark that was not recorded. A missing mark yields None, never a borrowed
+value and never zero. Clock is injectable (time.monotonic in prod) so tests
+are deterministic.
 """
 
 from __future__ import annotations
 
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Optional
 
 
 MARKS = (
     "audio_in",
     "first_partial",
+    "speech_end",
+    "speech_complete",
     "final",
     "floor_take",
     "first_token",
     "first_sentence_audio",
     "first_playout",
     "reply_done",
+    "greeting_start",
+    "greeting_first_audio",
+    "greeting_done",
+    "reconnect",
+    "cancelled",
+)
+
+# (row name, start mark, end mark). The cascade reports these three gaps; the
+# managed path can only produce the reply gap, which it reports as
+# final_to_first_playout instead.
+CASCADE_GAPS = (
+    ("screen_latency_ms", "audio_in", "first_partial"),
+    ("think_ms", "speech_complete", "first_token"),
+    ("reply_gap_ms", "speech_complete", "first_playout"),
 )
 
 COUNTERS = (
@@ -40,6 +66,22 @@ COUNTERS = (
     "end_call",
     "overheard",
 )
+
+
+def cascade_gaps(marks: Mapping[str, float]) -> dict[str, Optional[float]]:
+    """The three cascade gaps, computed from ledger marks alone.
+
+    ``marks`` is what ``TimingLedger.summary()["marks"]`` carries, so a reader
+    holding only the end-of-call ledger can derive every cascade gap without
+    the ledger object. A gap whose start or end mark is absent is None.
+    """
+    gaps: dict[str, Optional[float]] = {}
+    for row, start, end in CASCADE_GAPS:
+        if start in marks and end in marks:
+            gaps[row] = (marks[end] - marks[start]) * 1000.0
+        else:
+            gaps[row] = None
+    return gaps
 
 
 class TimingLedger:
@@ -72,8 +114,7 @@ class TimingLedger:
                 "final_to_first_token": self._gap("final", "first_token"),
                 "final_to_first_playout": self._gap("final", "first_playout"),
                 "floor_take_to_first_playout": self._gap(
-                    "floor_take" if "floor_take" in self._marks else "final",
-                    "first_playout",
+                    "floor_take", "first_playout"
                 ),
             },
             "counts": dict(self._counts),
