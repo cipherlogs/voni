@@ -46,9 +46,13 @@ import {
 import { releaseMic } from "./mic-owner";
 import { BARGE_IN_JUDGE_MS, judgeOverlap } from "./barge-in";
 import { requestVoiceJudge } from "./jev-judges";
-import { callRecognition, type CompleteRecognition, type RecognitionLocale } from "./recognition";
+import {
+  callRecognition,
+  callRecognitionLocale,
+  type CompleteRecognition,
+  type RecognitionLocale,
+} from "./recognition";
 import { TRANSCRIPTION_MODE, DEMO_TRANSCRIPTION_MODE } from "./transcription";
-import { callRecognitionLocale } from "./recognition";
 import {
   acquireMicStream,
   startAudioGraph,
