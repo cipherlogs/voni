@@ -364,6 +364,27 @@ if (process.env.E2E_DATABASE_URL) {
   process.exit(1);
 }
 
+// Live guard (ticket 151): the PR browser E2E is not a live vendor run. Every
+// socket is faked, so a vendor key in the environment means something is
+// wrong with the invocation — refuse by name instead of quietly spending a
+// vendor call from a PR job. Live provider work belongs to nightly.yml.
+const VENDOR_KEYS = [
+  "ASSEMBLYAI_API_KEY",
+  "META_API_KEY",
+  "CARTESIA_API_KEY",
+  "OPENAI_API_KEY",
+];
+const vendorKeysPresent = VENDOR_KEYS.filter(
+  (name) => String(process.env[name] ?? "").trim() !== "",
+);
+if (vendorKeysPresent.length > 0) {
+  console.error(
+    `[e2e] REFUSE: vendor key(s) present (${vendorKeysPresent.join(", ")}) — ` +
+      "the PR browser E2E uses a deterministic fake service and must not reach a " +
+      "vendor. Live smoke is key-gated in .github/workflows/nightly.yml.",
+  );
+  process.exit(1);
+}
 
 try {
   if (mode === "instant") await modeInstant();
