@@ -125,7 +125,7 @@ function words(text: string): string[] {
 }
 
 /** Insertions plus deletions between the intended words and the heard words. */
-function wordChanges(intended: string, heard: string): number {
+export function wordChangeCount(intended: string, heard: string): number {
   const a = words(intended);
   const b = words(heard);
   const lcs: number[][] = Array.from({ length: a.length + 1 }, () =>
@@ -157,7 +157,7 @@ function readText(input: VerdictInput): TextEvidence {
   }
   if (!intendedPresent) return { checked: false, missing: "no intended line supplied" };
   if (!transcriptPresent) return { checked: false, missing: "no transcript supplied" };
-  return { checked: true, changes: wordChanges(intended, heard), intended, heard };
+  return { checked: true, changes: wordChangeCount(intended, heard), intended, heard };
 }
 
 function quote(text: string): string {

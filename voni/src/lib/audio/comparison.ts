@@ -34,7 +34,7 @@ import {
   measureSpectralBalance,
   type SpectralBalance,
 } from "./spectral-balance";
-import { SCOREBOARD_BUDGETS } from "../demo/scoreboard-budgets";
+import { SCOREBOARD_BUDGETS, type BudgetKey, type BudgetUnit } from "../demo/scoreboard-budgets";
 
 /** The three captures, in table order: reference, platform, delivered. */
 export const CAPTURE_ROLES = ["reference", "platform", "delivered"] as const;
@@ -711,7 +711,8 @@ export type TwoCaptureProblemCode =
   | "header-only"
   | "stereo"
   | "wrong-rate"
-  | "misdescribed";
+  | "misdescribed"
+  | "wrong-line";
 
 /** A refused capture: the code a caller can branch on and the printed reason. */
 export type TwoCaptureProblem = {
@@ -787,6 +788,72 @@ export type TwoCaptureComparison = {
   octaveBandsHz: readonly number[];
   tilt: { fromCentreHz: number; toCentreHz: number } | null;
   rows: ComparisonRow<TwoCaptureRole>[];
+  /**
+   * The playout signatures, each measured on the aligned pair. These are what
+   * separates our pipeline from the client: a hole, a chunk-rate envelope
+   * swing, a folded band or a partial gain dip is playback, not a server-side
+   * timbre change.
+   */
+  clientSignatures: ClientSignature[];
+  /**
+   * The pairwise pipeline axes on the aligned pair, with client-owned damage
+   * masked out and a slow gain envelope divided out, so a client hole or a
+   * client fade cannot be re-read as a server-side level or residual defect.
+   */
+  pipeline: W0PipelineAudit;
+};
+
+/** A time window one capture owns, in seconds from the start of the aligned file. */
+export type SignatureInterval = { startSeconds: number; seconds: number };
+
+/** The four client-owned signatures a delivered capture can carry. */
+export const CLIENT_SIGNATURE_KINDS = [
+  "inserted-silence",
+  "chunk-rate-modulation",
+  "device-rate-alias",
+  "boundary-fade",
+] as const;
+
+export type ClientSignatureKind = (typeof CLIENT_SIGNATURE_KINDS)[number];
+
+export type SignatureThreshold = {
+  key: BudgetKey;
+  value: number;
+  unit: BudgetUnit;
+};
+
+export type ClientSignature = {
+  kind: ClientSignatureKind;
+  detected: boolean;
+  /** The measured value the decision rests on: holes, depth ratio, bands, dip dB. */
+  value: number;
+  /** The frozen bar, when this signature enforces one. */
+  bar: SignatureThreshold | null;
+  /** Windows the signature owns, so the pipeline audit can mask them. */
+  intervals: SignatureInterval[];
+  /** One sentence naming the measurement and the bar. */
+  detail: string;
+  /** Why the signature could not be measured; null when it was. */
+  reason: string | null;
+};
+
+/** The pipeline axes measured after the client's damage is taken out. */
+export type W0PipelineAudit = {
+  /** Why the audit is unmeasured; null when it was measured. */
+  reason: string | null;
+  /** Every client-owned window zeroed in both captures before comparing. */
+  masked: SignatureInterval[];
+  /**
+   * Axes a detected client signature imitates, so the two captures cannot
+   * separate the server's audio from playback. These are SKIPPED, never read
+   * as a pipeline failure.
+   */
+  clientOwned: ("spectrum" | "distortion")[];
+  level: Reading<{ referenceLufs: number; deliveredLufs: number; deltaLu: number }>;
+  peak: Reading<{ referenceDbtp: number; deliveredDbtp: number }>;
+  distortion: Reading<{ residualDb: number }>;
+  spectrum: Reading<{ referenceDeltaDb: number; deliveredDeltaDb: number; deltaDb: number }>;
+  crest: Reading<{ reference: number; delivered: number }>;
 };
 
 function isDecoded(slot: TwoCaptureSlot | null): slot is TwoCaptureDecoded {
@@ -859,7 +926,7 @@ function captureProblem(
     }
     if (description.text !== undefined && line !== null && !sameLine(line.text, description.text)) {
       return {
-        code: "misdescribed",
+        code: "wrong-line",
         reason:
           `${role} capture misdescribed: ${slot.path}: the description says ` +
           `${JSON.stringify(description.text)} but the line is ${JSON.stringify(line.text)}`,
@@ -1041,15 +1108,527 @@ function alignWindows(
   };
 }
 
+// ── Client signatures and the pipeline audit ────────────────────────────────
+
+/** The envelope frame the fade analyser reads; the breakup analyser's own 10 ms. */
+const FADE_FRAME_SECONDS = 0.01;
+/** A dip this many frames long is a fade; one frame is an edge, not a dip. */
+const FADE_MIN_FRAMES = 2;
+/** The analyser reports the whole dip, including the ramp either side. */
+const FADE_RAMP_FRAMES = 2;
+/** The breakups module's digital-silence floor: a fade never reaches it. */
+const FADE_SILENCE_FLOOR_DBFS = -60;
+
+function signatureBar(key: BudgetKey): SignatureThreshold {
+  return { key, value: SCOREBOARD_BUDGETS[key].value, unit: SCOREBOARD_BUDGETS[key].unit };
+}
+
+function factFor(
+  facts: readonly CaptureFacts<TwoCaptureRole>[],
+  role: TwoCaptureRole,
+): CaptureFacts<TwoCaptureRole> | null {
+  return facts.find((capture) => capture.role === role) ?? null;
+}
+
+/** Mean-square level of each non-overlapping frame, in dBFS. */
+function envelopeLevelsDb(audio: DecodedAudio, frameSamples: number): number[] {
+  const { samples, facts } = audio;
+  const { channels, frameCount } = facts;
+  const frames = Math.ceil(frameCount / frameSamples);
+  const levels = new Array<number>(frames);
+  for (let frame = 0; frame < frames; frame++) {
+    const first = frame * frameSamples;
+    const last = Math.min(first + frameSamples, frameCount);
+    let sumSquares = 0;
+    for (let index = first; index < last; index++) {
+      for (let channel = 0; channel < channels; channel++) {
+        const sample = samples[index * channels + channel] / 32_768;
+        sumSquares += sample * sample;
+      }
+    }
+    const count = (last - first) * channels;
+    levels[frame] =
+      count === 0 ? -Infinity : 10 * Math.log10(sumSquares / count);
+  }
+  return levels;
+}
+
+function emptySignature(
+  kind: ClientSignatureKind,
+  reason: string,
+): ClientSignature {
+  return { kind, detected: false, value: 0, bar: null, intervals: [], detail: reason, reason };
+}
+
 /**
- * Compare a reference rendering with a delivered capture, and nothing else.
- *
- * Pure over decoded audio: the caller owns file reading, so a saved capture can
- * be re-analysed without a browser or a network. A missing, truncated,
- * unreadable or format-mismatched capture is `unresolved`, never a pass; the
- * rows still print what each file could carry, so the cause is visible beside
- * the numbers.
+ * A short partial gain dip the reference does not have. Unlike an inserted
+ * silence it never reaches digital silence, and unlike a level step it is
+ * bounded on both sides: the delivered recovers to the reference's level.
  */
+function boundaryFade(
+  reference: DecodedAudio,
+  delivered: DecodedAudio,
+): ClientSignature {
+  const bar = signatureBar("comparisonLevelLu");
+  if (
+    reference.facts.sampleRate !== delivered.facts.sampleRate ||
+    reference.facts.channels !== delivered.facts.channels
+  ) {
+    return emptySignature(
+      "boundary-fade",
+      "the captures are not in one format, so a gain dip cannot be compared",
+    );
+  }
+  const frameSamples = Math.max(1, Math.round(FADE_FRAME_SECONDS * reference.facts.sampleRate));
+  const frameSeconds = frameSamples / reference.facts.sampleRate;
+  const refLevels = envelopeLevelsDb(reference, frameSamples);
+  const delLevels = envelopeLevelsDb(delivered, frameSamples);
+  const count = Math.min(refLevels.length, delLevels.length);
+  const intervals: SignatureInterval[] = [];
+  let deepest = 0;
+
+  let frame = 0;
+  while (frame < count) {
+    const referenceLevel = refLevels[frame];
+    const deliveredLevel = delLevels[frame];
+    const measurable =
+      referenceLevel > FADE_SILENCE_FLOOR_DBFS && deliveredLevel > FADE_SILENCE_FLOOR_DBFS;
+    const drop = measurable ? referenceLevel - deliveredLevel : -Infinity;
+    if (drop < bar.value) {
+      frame++;
+      continue;
+    }
+
+    const start = frame;
+    while (frame < count) {
+      const refLevel = refLevels[frame];
+      const delLevel = delLevels[frame];
+      const stillMeasurable = refLevel > FADE_SILENCE_FLOOR_DBFS && delLevel > FADE_SILENCE_FLOOR_DBFS;
+      if (!stillMeasurable || refLevel - delLevel < bar.value) break;
+      frame++;
+    }
+    const end = frame;
+
+    // A step that never recovers before the file ends is a level change, not a
+    // bounded fade; the level check owns it. A fade recovers inside the file.
+    const bounded = start > 0 && end < count;
+    if (!bounded || end - start < FADE_MIN_FRAMES) continue;
+
+    let peak = 0;
+    for (let index = start; index < end; index++) {
+      peak = Math.max(peak, refLevels[index] - delLevels[index]);
+    }
+    deepest = Math.max(deepest, peak);
+    // Report the whole dip, not only the frames over the bar: the ramp either
+    // side is part of the fade and must be masked out of the residual too.
+    const maskStart = Math.max(0, start - FADE_RAMP_FRAMES);
+    const maskEnd = Math.min(count, end + FADE_RAMP_FRAMES);
+    intervals.push({
+      startSeconds: maskStart * frameSeconds,
+      seconds: (maskEnd - maskStart) * frameSeconds,
+    });
+  }
+
+  if (intervals.length === 0) {
+    return {
+      kind: "boundary-fade",
+      detected: false,
+      value: 0,
+      bar,
+      intervals: [],
+      detail: `no delivered frame dips more than ${bar.value.toFixed(1)} dB below the reference and recovers`,
+      reason: null,
+    };
+  }
+  return {
+    kind: "boundary-fade",
+    detected: true,
+    value: Number(deepest.toFixed(2)),
+    bar,
+    intervals,
+    detail:
+      `${intervals.length} partial gain ${intervals.length === 1 ? "dip" : "dips"} the reference does not have ` +
+      `(deepest ${deepest.toFixed(1)} dB, over the ${bar.value.toFixed(1)} dB bar)`,
+    reason: null,
+  };
+}
+
+function insertedSilence(
+  reference: CaptureFacts<TwoCaptureRole>,
+  delivered: CaptureFacts<TwoCaptureRole>,
+): ClientSignature {
+  const bar = signatureBar("comparisonBreakupCount");
+  const match = SCOREBOARD_BUDGETS.timbreMeasuredBreakupMatchSeconds.value;
+  if (!reference.breakups.measured) {
+    return emptySignature(
+      "inserted-silence",
+      `the breakups could not be measured on the reference capture (${reference.breakups.reason})`,
+    );
+  }
+  if (!delivered.breakups.measured) {
+    return emptySignature(
+      "inserted-silence",
+      `the breakups could not be measured on the delivered capture (${delivered.breakups.reason})`,
+    );
+  }
+  const referenceStarts = reference.breakups.value.breakups.map((entry) => entry.startSeconds);
+  const unmatched = delivered.breakups.value.breakups.filter(
+    (entry) => !referenceStarts.some((start) => Math.abs(start - entry.startSeconds) <= match),
+  );
+  const seconds = unmatched.reduce((sum, entry) => sum + entry.durationSeconds, 0);
+  return {
+    kind: "inserted-silence",
+    detected: unmatched.length >= bar.value,
+    value: unmatched.length,
+    bar,
+    intervals: unmatched.map((entry) => ({
+      startSeconds: entry.startSeconds,
+      seconds: entry.durationSeconds,
+    })),
+    detail:
+      unmatched.length === 0
+        ? "the delivered capture carries no inserted silence the reference does not have"
+        : `the delivered capture adds ${unmatched.length} inserted ${
+            unmatched.length === 1 ? "silence" : "silences"
+          } (${seconds.toFixed(3)} s) the reference does not have`,
+    reason: null,
+  };
+}
+
+function chunkRateModulation(
+  reference: CaptureFacts<TwoCaptureRole>,
+  delivered: CaptureFacts<TwoCaptureRole>,
+): ClientSignature {
+  const bar = signatureBar("comparisonModulationDepth");
+  if (!reference.modulation.measured) {
+    return emptySignature(
+      "chunk-rate-modulation",
+      `the envelope could not be measured on the reference capture (${reference.modulation.reason})`,
+    );
+  }
+  if (!delivered.modulation.measured) {
+    return emptySignature(
+      "chunk-rate-modulation",
+      `the envelope could not be measured on the delivered capture (${delivered.modulation.reason})`,
+    );
+  }
+  const delta = delivered.modulation.value.depth - reference.modulation.value.depth;
+  const detected = delta > bar.value;
+  return {
+    kind: "chunk-rate-modulation",
+    detected,
+    value: Number(delta.toFixed(4)),
+    bar,
+    intervals: [],
+    detail: detected
+      ? `the delivered envelope swings ${(delta * 100).toFixed(1)} points deeper at ` +
+        `${delivered.modulation.value.rateHz.toFixed(1)} Hz, over the ${(bar.value * 100).toFixed(0)}-point bar`
+      : `the delivered envelope is within ${(bar.value * 100).toFixed(0)} points of the reference at ` +
+        `${delivered.modulation.value.rateHz.toFixed(1)} Hz`,
+    reason: null,
+  };
+}
+
+/**
+ * A fold, not a tilt: a band the reference does not carry appears lower in the
+ * delivered capture while a band the reference carries disappears above it.
+ * A re-encode or an octave tilt keeps both bands present at a moved level.
+ */
+function deviceRateAlias(
+  reference: CaptureFacts<TwoCaptureRole>,
+  delivered: CaptureFacts<TwoCaptureRole>,
+): ClientSignature {
+  if (!reference.spectrum.measured) {
+    return emptySignature(
+      "device-rate-alias",
+      `the octave balance could not be measured on the reference capture (${reference.spectrum.reason})`,
+    );
+  }
+  if (!delivered.spectrum.measured) {
+    return emptySignature(
+      "device-rate-alias",
+      `the octave balance could not be measured on the delivered capture (${delivered.spectrum.reason})`,
+    );
+  }
+  const referenceMissing = new Set(
+    reference.spectrum.value.missingBands.map((band) => band.centreHz),
+  );
+  const deliveredMissing = new Set(
+    delivered.spectrum.value.missingBands.map((band) => band.centreHz),
+  );
+  const gained = delivered.spectrum.value.bands.filter(
+    (band) => !deliveredMissing.has(band.centreHz) && referenceMissing.has(band.centreHz),
+  );
+  const lost = reference.spectrum.value.bands.filter(
+    (band) => !referenceMissing.has(band.centreHz) && deliveredMissing.has(band.centreHz),
+  );
+  const foldedDown =
+    gained.length > 0 &&
+    lost.length > 0 &&
+    Math.max(...gained.map((band) => band.centreHz)) <
+      Math.min(...lost.map((band) => band.centreHz));
+  return {
+    kind: "device-rate-alias",
+    detected: foldedDown,
+    value: foldedDown ? gained.length : 0,
+    bar: null,
+    intervals: [],
+    detail: foldedDown
+      ? `energy folded down: ${gained
+          .map((band) => `${band.centreHz} Hz at ${band.levelDb.toFixed(1)} dBFS`)
+          .join(", ")} appeared where the reference carried none, and ${lost
+          .map((band) => `${band.centreHz} Hz`)
+          .join(", ")} disappeared above it`
+      : "no band moved down the spectrum while a higher band was lost",
+    reason: null,
+  };
+}
+
+function detectClientSignatures(
+  reference: DecodedAudio | null,
+  delivered: DecodedAudio | null,
+  facts: readonly CaptureFacts<TwoCaptureRole>[],
+): ClientSignature[] {
+  const refFacts = factFor(facts, "reference");
+  const delFacts = factFor(facts, "delivered");
+  if (reference === null || delivered === null || refFacts === null || delFacts === null) {
+    const reason = "both captures must be present and aligned before a client signature can be measured";
+    return CLIENT_SIGNATURE_KINDS.map((kind) => emptySignature(kind, reason));
+  }
+  if (
+    reference.facts.sampleRate !== delivered.facts.sampleRate ||
+    reference.facts.channels !== delivered.facts.channels
+  ) {
+    const reason = "the captures are not in one format, so a client signature cannot be measured";
+    return CLIENT_SIGNATURE_KINDS.map((kind) => emptySignature(kind, reason));
+  }
+  const silence = insertedSilence(refFacts, delFacts);
+  const fade = boundaryFade(reference, delivered);
+  // A periodic envelope swing is modulation, not a boundary fade; a single
+  // bounded dip is a fade, not a periodic modulation. The two signatures are
+  // separated by their shape, so neither steals the other's blame.
+  const periodicSwing = fade.detected && fade.intervals.length > 2;
+  const fadeReading = periodicSwing
+    ? emptySignature(
+        "boundary-fade",
+        "the delivered envelope dips repeatedly; the chunk-rate modulation signature owns that swing",
+      )
+    : fade;
+  const modulation = silence.detected
+    ? emptySignature(
+        "chunk-rate-modulation",
+        "the inserted silence owns the envelope swing, so this is not a chunk-rate modulation",
+      )
+    : fadeReading.detected
+      ? emptySignature(
+          "chunk-rate-modulation",
+          "the single bounded dip is the boundary-fade signature, not a periodic modulation",
+        )
+      : chunkRateModulation(refFacts, delFacts);
+  return [
+    silence,
+    modulation,
+    deviceRateAlias(refFacts, delFacts),
+    fadeReading,
+  ];
+}
+
+/** Zero the same frames in both captures, so client damage is not read as signal. */
+function maskIntervals(
+  audio: DecodedAudio,
+  intervals: readonly SignatureInterval[],
+): DecodedAudio {
+  if (intervals.length === 0) return audio;
+  const samples = audio.samples.slice();
+  const { sampleRate, channels, frameCount } = audio.facts;
+  for (const interval of intervals) {
+    const start = Math.max(0, Math.round(interval.startSeconds * sampleRate));
+    const end = Math.min(frameCount, start + Math.round(interval.seconds * sampleRate));
+    for (let frame = start; frame < end; frame++) {
+      for (let channel = 0; channel < channels; channel++) {
+        samples[frame * channels + channel] = 0;
+      }
+    }
+  }
+  return { samples, facts: audio.facts };
+}
+
+function buildPipelineAudit(
+  reference: DecodedAudio | null,
+  delivered: DecodedAudio | null,
+  facts: readonly CaptureFacts<TwoCaptureRole>[],
+  signatures: readonly ClientSignature[],
+  spectral: SpectralContext,
+): W0PipelineAudit {
+  const unmeasured = (reason: string): W0PipelineAudit => ({
+    reason,
+    masked: [],
+    clientOwned: [],
+    level: { measured: false, reason },
+    peak: { measured: false, reason },
+    distortion: { measured: false, reason },
+    spectrum: { measured: false, reason },
+    crest: { measured: false, reason },
+  });
+
+  if (reference === null || delivered === null) {
+    return unmeasured("both captures must be present and aligned before the pipeline axes can be compared");
+  }
+  if (
+    reference.facts.sampleRate !== delivered.facts.sampleRate ||
+    reference.facts.channels !== delivered.facts.channels
+  ) {
+    return unmeasured("the captures are not in one format, so the pipeline axes are not comparable");
+  }
+
+  const maskable = signatures
+    .filter((signature) => signature.detected && signature.intervals.length > 0)
+    .flatMap((signature) => signature.intervals);
+  const maskedReference = maskIntervals(reference, maskable);
+  const maskedDelivered = maskIntervals(delivered, maskable);
+  const alias = signatures.find((signature) => signature.kind === "device-rate-alias");
+  const modulation = signatures.find((signature) => signature.kind === "chunk-rate-modulation");
+  const aliasOwnsTheSpectrum = alias?.detected === true;
+  const modulationOwnsTheResidual = modulation?.detected === true;
+  const clientOwned: W0PipelineAudit["clientOwned"] = [
+    ...(aliasOwnsTheSpectrum ? (["spectrum", "distortion"] as const) : []),
+    ...(modulationOwnsTheResidual ? (["distortion"] as const) : []),
+  ];
+
+  const levelReading = (audio: DecodedAudio): Reading<Extract<LevelFacts, { measured: true }>> => {
+    try {
+      const reading = analyseLevel(audio);
+      return reading.measured
+        ? { measured: true, value: reading }
+        : { measured: false, reason: `no measurable level (${reading.absence})` };
+    } catch (error) {
+      if (error instanceof LevelFactsError) return { measured: false, reason: error.message };
+      throw error;
+    }
+  };
+
+  const referenceLevel = levelReading(maskedReference);
+  const deliveredLevel = levelReading(maskedDelivered);
+
+  const level: W0PipelineAudit["level"] =
+    referenceLevel.measured && deliveredLevel.measured
+      ? {
+          measured: true,
+          value: {
+            referenceLufs: referenceLevel.value.integratedLufs,
+            deliveredLufs: deliveredLevel.value.integratedLufs,
+            deltaLu: deliveredLevel.value.integratedLufs - referenceLevel.value.integratedLufs,
+          },
+        }
+      : {
+          measured: false,
+          reason:
+            `level is unmeasured on the ` +
+            `${referenceLevel.measured ? "delivered" : "reference"} capture (` +
+            `${referenceLevel.measured ? (deliveredLevel as { reason: string }).reason : (referenceLevel as { reason: string }).reason})`,
+        };
+
+  const peak: W0PipelineAudit["peak"] =
+    referenceLevel.measured && deliveredLevel.measured
+      ? {
+          measured: true,
+          value: {
+            referenceDbtp: referenceLevel.value.truePeakDbtp,
+            deliveredDbtp: deliveredLevel.value.truePeakDbtp,
+          },
+        }
+      : { measured: false, reason: level.measured ? "level is unmeasured" : level.reason };
+
+  const distortion: W0PipelineAudit["distortion"] = modulationOwnsTheResidual
+    ? {
+        measured: false,
+        reason:
+          "the client's chunk-rate modulation imitates a residual, so a delivered residual " +
+          "cannot separate the server's audio from the client's playback",
+      }
+    : aliasOwnsTheSpectrum
+      ? {
+          measured: false,
+          reason:
+            "the device-rate alias folds the spectrum, so a delivered residual cannot separate " +
+            "the server's audio from the client's playback",
+        }
+      : (() => {
+          try {
+            return {
+              measured: true as const,
+              value: { residualDb: distortionResidual(maskedReference, maskedDelivered).residualDb },
+            };
+          } catch (error) {
+            if (error instanceof DistortionCrestError) {
+              return { measured: false as const, reason: error.message };
+            }
+            throw error;
+          }
+        })();
+
+  const spectrum: W0PipelineAudit["spectrum"] = aliasOwnsTheSpectrum
+    ? {
+        measured: false,
+        reason:
+          "the device-rate alias owns the octave bands it moved, so the server-side balance " +
+          "cannot be separated from the client's fold",
+      }
+    : (() => {
+        if (spectral.tilt === null) {
+          return { measured: false as const, reason: "needs two octave bands to quote a balance" };
+        }
+        try {
+          const referenceBalance = measureSpectralBalance(maskedReference, {
+            centresHz: spectral.bands,
+            tilt: spectral.tilt,
+          });
+          const deliveredBalance = measureSpectralBalance(maskedDelivered, {
+            centresHz: spectral.bands,
+            tilt: spectral.tilt,
+          });
+          return {
+            measured: true as const,
+            value: {
+              referenceDeltaDb: referenceBalance.tilt.deltaDb,
+              deliveredDeltaDb: deliveredBalance.tilt.deltaDb,
+              deltaDb: deliveredBalance.tilt.deltaDb - referenceBalance.tilt.deltaDb,
+            },
+          };
+        } catch (error) {
+          if (error instanceof RangeError) return { measured: false as const, reason: error.message };
+          throw error;
+        }
+      })();
+
+  const crest: W0PipelineAudit["crest"] = (() => {
+    const referenceCrest = crestFactor(maskedReference);
+    const deliveredCrest = crestFactor(maskedDelivered);
+    if (!Number.isFinite(referenceCrest.crestFactor) || !Number.isFinite(deliveredCrest.crestFactor)) {
+      return { measured: false as const, reason: "a silent signal has no crest factor" };
+    }
+    return {
+      measured: true as const,
+      value: {
+        reference: referenceCrest.crestFactor,
+        delivered: deliveredCrest.crestFactor,
+      },
+    };
+  })();
+
+  return {
+    reason: null,
+    masked: maskable,
+    clientOwned,
+    level,
+    peak,
+    distortion,
+    spectrum,
+    crest,
+  };
+}
+
+
 export function compareReferenceAndDelivered(
   input: TwoCaptureRequest,
 ): TwoCaptureComparison {
@@ -1154,6 +1733,18 @@ export function compareReferenceAndDelivered(
   });
   const rows = buildRows(TWO_CAPTURE_ROLES, rowCaptures, spectral);
 
+  // The client signatures are measured on the aligned pair; the pipeline audit
+  // then removes the windows those signatures own, so a playback hole or fade
+  // cannot be re-read as a server-side level or residual defect.
+  const clientSignatures = detectClientSignatures(alignedReference, alignedDelivered, facts);
+  const pipeline = buildPipelineAudit(
+    alignedReference,
+    alignedDelivered,
+    facts,
+    clientSignatures,
+    spectral,
+  );
+
   const withinTolerance =
     onsetDeltaSeconds === null ? null : onsetDeltaSeconds <= toleranceSeconds;
   return {
@@ -1178,6 +1769,8 @@ export function compareReferenceAndDelivered(
     octaveBandsHz: spectral.bands,
     tilt: spectral.tilt,
     rows,
+    clientSignatures,
+    pipeline,
   };
 }
 
