@@ -1,4 +1,5 @@
 import type { RecognitionSlots } from "../../types";
+import { IT_SCENE } from "./scene";
 import { IT_VOCABULARY } from "./vocabulary";
 import { IT_ADDRESS } from "./address";
 import { IT_DIGITS } from "./digits";
@@ -9,6 +10,7 @@ import { IT_DIGITS } from "./digits";
  */
 export const IT_RECOGNITION: RecognitionSlots = {
   vocabulary: IT_VOCABULARY,
+  scene: IT_SCENE,
   digits: IT_DIGITS,
   address: IT_ADDRESS,
 };

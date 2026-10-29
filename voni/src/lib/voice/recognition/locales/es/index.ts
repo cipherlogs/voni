@@ -1,4 +1,5 @@
 import type { RecognitionSlots } from "../../types";
+import { ES_SCENE } from "./scene";
 import { ES_VOCABULARY } from "./vocabulary";
 import { ES_ADDRESS } from "./address";
 import { ES_DIGITS } from "./digits";
@@ -12,6 +13,7 @@ import { ES_DIGITS } from "./digits";
  */
 export const ES_RECOGNITION: RecognitionSlots = {
   vocabulary: ES_VOCABULARY,
+  scene: ES_SCENE,
   digits: ES_DIGITS,
   address: ES_ADDRESS,
 };

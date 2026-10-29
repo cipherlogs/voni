@@ -310,6 +310,11 @@ import {
   isAllScenarioSelector,
   resolveScenarioName,
 } from "../src/lib/demo/scenario-names";
+import {
+  assertGateProducersInSuite,
+  gateProducerSummary,
+  producersFor,
+} from "../src/lib/demo/gate-producers";
 import { judgeOverlap } from "../src/lib/voice/barge-in";
 import { acquireTimingLock, DEFAULT_TIMING_LOCK_PATH } from "../src/lib/demo/timing-lock";
 
@@ -589,11 +594,15 @@ function runEventsPath(events: RunEvents, scenario: string, suite: boolean): str
  * The one-command suite (ticket 01): every gate voice scenario that carries
  * scoreboard evidence, run one at a time. Timing runs are never parallel:
  * the whole suite holds the machine-wide timing lock and each scenario gets
- * its own sequential invocation, so cut latencies stay comparable. The
- * free-gate goodbye path is covered by bye-audio; it is not repeated.
+ * its own sequential invocation, so cut latencies stay comparable. Both
+ * goodbye-drain paths run (bye-audio and free-gate), so the end-call-drain
+ * gate keeps a measured closing line if one invite flow changes.
  *
  * The list lives in `src/lib/demo/scenario-names.ts` beside the runner's own
- * registry, so the suite and the runner can never mean different names.
+ * registry, so the suite and the runner can never mean different names. The
+ * gate-to-producer table lives in `src/lib/demo/gate-producers.ts`; startup
+ * asserts every gate's producer runs here, so a gate cannot silently lose its
+ * evidence and report INFO forever.
  */
 
 /**
@@ -1085,6 +1094,19 @@ async function main(): Promise<void> {
   const requestedScenario = arg("--scenario", "all");
   const suite = isAllScenarioSelector(requestedScenario);
   const scenario = suite ? "suite" : resolveScenarioName(requestedScenario);
+  // Harness integrity (ticket 23): every gate must keep the scenario that
+  // produces its evidence. Pure table check — before the timing lock, the
+  // runner and the artifact — so a gate that silently lost its producer fails
+  // the command instead of reporting INFO forever.
+  assertGateProducersInSuite();
+  {
+    const producers = gateProducerSummary();
+    console.log(
+      `gate producers: ${producers.gates} gates, ${producers.scenarioProducers} scenario producers across ` +
+        `${producers.suiteScenarios} default-suite scenarios, ${producers.nonScenarioGates} declared without a ` +
+        `scenario — every gate has its producer in the default suite`,
+    );
+  }
   const runs = arg("--runs", "1");
   if (!/^[1-9]\d*$/.test(runs)) {
     throw new Error(`--runs needs a positive int, got "${runs}"`);
@@ -1416,8 +1438,13 @@ async function main(): Promise<void> {
   );
   // Goodbye drain producer: the live runner's GOODBYE DRAIN line (coverage
   // plus whether the closing line named the team inbox) and its own measured
-  // hang-up line. Explicit --goodbye-* flags stay the operator override.
-  const runnerGoodbye = dryRun ? null : parseGoodbyeDrainOutput(scenarioStdout("bye-audio"));
+  // hang-up line. The producers come from `gate-producers.ts` — the same list
+  // the coverage assertion checks — so the gate and the suite cannot disagree
+  // about which goodbye-drain scenario supplies the evidence. Explicit
+  // --goodbye-* flags stay the operator override.
+  const runnerGoodbye = dryRun
+    ? null
+    : parseGoodbyeDrainOutput(scenarioStdout(...producersFor("end-call-drain", "goodbye-drain")));
   const inboxNamedFlagged = process.argv.includes("--goodbye-inbox-named");
   const inboxMissingFlagged = process.argv.includes("--goodbye-inbox-missing");
   if (inboxNamedFlagged && inboxMissingFlagged) {
@@ -1436,9 +1463,10 @@ async function main(): Promise<void> {
   let missingGoodbye: { sessionId: string | null } | null = null;
   let missingScenarioName: string | null = null;
   if (flaggedHangUpMs === null && !dryRun) {
-    const hangUpNames = suite
-      ? (["hang-up-fast", "hang-up-over"] as const)
-      : [scenario];
+    // Both hang-up paths come from the same producer map as the coverage
+    // check, so a dropped hang-up scenario fails at startup instead of
+    // leaving the drain gate with half its evidence.
+    const hangUpNames = suite ? producersFor("end-call-drain", "hang-up-delay") : [scenario];
     for (const name of hangUpNames) {
       const sectionStdout = scenarioStdout(name);
       const missing = parseRunnerMissingGoodbye(sectionStdout);
@@ -1557,7 +1585,7 @@ async function main(): Promise<void> {
     dryRun || !servedAgentId ? null : await readServedDemoAgentBody(servedAgentId);
   if (servedRead && !servedRead.ok) {
     console.warn(
-      `[scoreboard] stored body unmeasured: ${servedRead.error} (end-of-turn stays INFO, never a reconstruction)`,
+      `[scoreboard] stored body unmeasured: ${servedRead.error} (end-of-turn and the level leg stay unmeasured, never a reconstruction)`,
     );
   }
   const servedAgentBody =

@@ -209,15 +209,18 @@ test("an English keyterm is absent from a non-English vocabulary unless it is a 
   }
 });
 
-test("each spoken Locale is registered with the vocabulary slot filled and the rest a named hole", () => {
+test("each spoken Locale is registered with vocabulary, scene, digits and address filled and the rest a named hole", () => {
   for (const locale of SPOKEN_NON_ENGLISH) {
     const resolution = resolveRecognition(locale);
     assert.equal(resolution.status, "incomplete", locale);
     if (resolution.status !== "incomplete") continue;
     assert.equal(resolution.missing.includes("vocabulary"), false, locale);
+    assert.equal(resolution.missing.includes("scene"), false, locale);
+    assert.equal(resolution.missing.includes("digits"), false, locale);
+    assert.equal(resolution.missing.includes("address"), false, locale);
     assert.deepEqual(
       resolution.missing,
-      ["scene", "filler", "bargeIn", "commands", "endCall", "goodbye"],
+      ["filler", "bargeIn", "commands", "endCall", "goodbye"],
       locale,
     );
   }
@@ -323,16 +326,6 @@ test("one Locale's address words do not resolve in another", () => {
     assert.equal(normalizeSpokenAddress(SPOKEN_ADDRESS.es, recognition).includes("@"), false, locale);
   }
   assert.equal(normalizeSpokenAddress(SPOKEN_ADDRESS.fr, withLocaleWords("es")).includes("@"), false);
-});
-
-test("each spoken Locale's digits and address slots are filled, the other slots still holes", () => {
-  for (const locale of SPOKEN_NON_ENGLISH) {
-    const resolution = resolveRecognition(locale);
-    assert.equal(resolution.status, "incomplete", locale);
-    if (resolution.status !== "incomplete") continue;
-    assert.equal(resolution.missing.includes("digits"), false, locale);
-    assert.equal(resolution.missing.includes("address"), false, locale);
-  }
 });
 
 test("a Locale that is not whole matches nothing, never English", () => {
