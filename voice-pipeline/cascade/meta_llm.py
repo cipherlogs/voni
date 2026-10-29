@@ -34,11 +34,13 @@ Tool arguments are parsed and validated against the tool's declared schema
 before a request is emitted; a correctable failure becomes a ``tool`` result the
 model fixes next request, while an unenforceable schema fails the turn.
 
-Failures follow the spec's phase policy: a 400 is a conversation bug (fail the
-turn and alert, never open the leg), while 429/5xx/timeouts retry once before
-anything reached the caller and otherwise open the leg for future calls. A
-reply already delivered is never restarted, because a second completion would
-repeat speech; a second failure on the leg ends the call.
+Failures follow the spec's phase policy and the ticket-94 budget: a 400 is a
+conversation bug (fail the turn and alert, never open the leg), while
+429/5xx/timeouts retry once before anything reached the caller and otherwise
+open the leg for future calls. A reply already delivered is never restarted,
+because a second completion would repeat speech: the turn drains at its last
+complete sentence, ``spoken_text`` records the prefix the caller heard, and a
+second failure on the leg ends the call (ticket 96).
 
 The per-turn record is how a caller reads what the stream produced without
 re-parsing it: pass a :class:`MetaLLMTurn` to ``complete()`` (or read
@@ -60,6 +62,11 @@ from typing import Any
 from cascade.failures import FailureClass, FailureVerdict, classify
 from cascade.ladders import CallRungs
 from cascade.model_guard import resolve_model
+from cascade.reconnect import (
+    RECONNECTS_PER_LEG,
+    ReconnectAction,
+    ReconnectBudget,
+)
 from providers import LLMStream, PrefetchHandle, TokenDelta, ToolCallRequest
 
 META_BASE_URL = "https://api.meta.ai/v1"
@@ -94,8 +101,9 @@ PHASE_REPLY = "reply"
 FAILURE_PHASES = (PHASE_CONNECT, PHASE_TURN, PHASE_REPLY)
 
 #: The spec's failure policy: one retry per leg, so two failures end the call.
-#: This is settled policy, not an operational bound, so it is not a threshold.
-MAX_LEG_FAILURES = 2
+#: Kept as the exported contract, but the ticket-94 budget is the authority;
+#: this is settled policy, not an operational bound, so it is not a threshold.
+MAX_LEG_FAILURES = RECONNECTS_PER_LEG + 1
 
 #: Stable codes a withheld call carries back to the model. A correctable failure
 #: has a call id, so the tool loop can answer it with a ``role: "tool"`` result
@@ -353,6 +361,42 @@ def build_messages(
     return messages
 
 
+#: Characters that end a sentence when they are followed by whitespace or the
+#: end of the generated text. A decimal point or an abbreviation inside a word
+#: is not a boundary (the terminator must be followed by a break).
+_SENTENCE_END = ".!?"
+
+#: Closing punctuation that may sit between the terminator and the break.
+_SENTENCE_CLOSERS = "\"'”’)]}"
+
+
+def last_complete_sentence(text: str) -> str:
+    """The longest prefix of ``text`` that ends at a complete sentence.
+
+    A failure mid-reply drains the sentences already handed to synthesis and
+    closes the turn here: the caller hears whole sentences and never a cut
+    word. Text with no finished sentence has no safe close point, so the
+    prefix is empty (the queued sentence is dropped, not truncated).
+    """
+    if not isinstance(text, str):
+        raise TypeError(f"a reply must be text, got {type(text).__name__}")
+    end = 0
+    index = 0
+    while index < len(text):
+        if text[index] not in _SENTENCE_END:
+            index += 1
+            continue
+        cursor = index + 1
+        while cursor < len(text) and text[cursor] in _SENTENCE_CLOSERS:
+            cursor += 1
+        if cursor == len(text) or text[cursor].isspace():
+            end = cursor
+            index = cursor
+            continue
+        index += 1
+    return text[:end].rstrip()
+
+
 def assistant_reply_message(
     turn: MetaLLMTurn, *, spoken_text: str | None = None
 ) -> dict[str, Any]:
@@ -361,8 +405,9 @@ def assistant_reply_message(
     ``spoken_text`` is the prefix the caller actually heard. A reply cut by a
     barge-in or a drained queue is recorded up to that point only: the next turn
     must see the conversation the caller had, not words that never reached their
-    ear. Omitting it records the whole generated content, which is only safe
-    when nothing cut the reply.
+    ear. Omitting it uses the turn's own drain point when a mid-reply failure
+    recorded one (ticket 96); otherwise the whole generated content is spoken
+    and is recorded, which is only safe when nothing cut the reply.
 
     A prefix that the model never generated is refused: it would put invented
     speech in the model's mouth and make the next answer drift.
@@ -373,7 +418,8 @@ def assistant_reply_message(
             "append_tool_turn) so the assistant message keeps its tool_calls "
             "ahead of the results"
         )
-    content = turn.content_text if spoken_text is None else spoken_text
+    heard = turn.spoken_text if spoken_text is None else spoken_text
+    content = turn.content_text if heard is None else heard
     if not turn.content_text.startswith(content):
         raise MessageAssemblyError(
             f"spoken reply {content!r} is not a prefix of what the model "
@@ -608,6 +654,11 @@ class MetaLLMTurn:
     deltas. ``denied_tool_calls`` are calls that were emitted but must not run
     (no identity); ``rejected_tool_calls`` are calls held back for ticket 40's
     argument validation.
+
+    ``spoken_text`` is the drain point of a reply a mid-reply failure cut
+    (ticket 96): the prefix up to the last complete sentence. It stays ``None``
+    for a turn that was not cut, where the whole generated text is what the
+    caller heard.
     """
 
     reasoning_text: str = ""
@@ -624,11 +675,19 @@ class MetaLLMTurn:
     closed: bool = False
     disposition: ReplyDisposition | None = None
     failure_decisions: list[FailureDecision] = field(default_factory=list)
+    spoken_text: str | None = None
 
     @property
     def last_failure(self) -> FailureDecision | None:
         """The most recent failure decision, if the turn saw one."""
         return self.failure_decisions[-1] if self.failure_decisions else None
+
+    @property
+    def unspoken_text(self) -> str:
+        """The generated tail the caller must not hear or have in history."""
+        if self.spoken_text is None:
+            return ""
+        return self.content_text[len(self.spoken_text):]
 
     @property
     def truncated(self) -> bool:
@@ -1574,6 +1633,7 @@ class MetaLLM(LLMStream):
         identifier_salt: str | None = None,
         rungs: CallRungs | None = None,
         on_alert: Callable[[FailureDecision], None] | None = None,
+        budget: ReconnectBudget | None = None,
     ) -> None:
         # Construction guard first: a Contributor id must fail before any
         # request field exists to leak into (ticket 35).
@@ -1598,9 +1658,11 @@ class MetaLLM(LLMStream):
         # call's rung, and neither retries anything.
         self._rungs = rungs
         self._on_alert = on_alert
-        #: Failures on this leg in this call. One retry is allowed, so the
-        #: second failure ends the call (spec "Failures").
-        self._leg_failures = 0
+        # Ticket 94 owns the call's one failure reconnect per leg; this module
+        # reports the phase evidence and never keeps a second counter. A retry
+        # before speech, a drain after speech and the end on a second failure
+        # are all that budget's answers.
+        self._budget = budget or ReconnectBudget()
         self._last_turn: MetaLLMTurn | None = None
 
     @property
@@ -1610,6 +1672,11 @@ class MetaLLM(LLMStream):
     @property
     def reasoning_effort(self) -> str:
         return self._reasoning_effort
+
+    @property
+    def reconnect_budget(self) -> ReconnectBudget:
+        """The call's one reconnect ledger (ticket 94); this leg never counts."""
+        return self._budget
 
     @property
     def last_turn(self) -> MetaLLMTurn | None:
@@ -1676,12 +1743,12 @@ class MetaLLM(LLMStream):
                     # is not an outage: never retried, never classified away.
                     raise
                 except (MetaLLMRequestError, TimeoutError, OSError) as error:
-                    decision, retry = await self._apply_policy(
+                    decision, retry, action = await self._apply_policy(
                         error, progress, attempt, record
                     )
                     if retry:
                         continue
-                    failure = self._failure_error(decision)
+                    failure = self._failure_error(decision, action)
                     if failure is None:
                         # An unclassified failure keeps its provider type: the
                         # policy recorded it and alerted, but it has no action.
@@ -1741,51 +1808,40 @@ class MetaLLM(LLMStream):
         progress: _Progress,
         attempt: int,
         record: MetaLLMTurn,
-    ) -> tuple[FailureDecision, bool]:
-        """Classify one attempt's failure and decide retry/open/fail.
+    ) -> tuple[FailureDecision, bool, ReconnectAction]:
+        """Classify one attempt's failure and let the ticket-94 budget decide.
 
         The phase comes from what the caller already heard, not from the status:
-        only ``connect``/``turn`` may retry, and only the first failure on the
-        leg. A reply failure has no retry available, so it opens the leg at
-        once and the caller drains instead of restarting.
+        a ``connect``/``turn`` failure may be RECONNECTed before the first
+        content token, while a ``reply`` failure is DRAINed (a restart would
+        repeat speech) and a spent leg is ENDed. A bug never spends the retry.
         """
         verdict = self._verdict_for(error)
         phase = progress.phase
-        if verdict.opens_breaker:
-            # A bug is not an outage and never spends the leg's retry budget.
-            self._leg_failures += 1
-        retry = (
-            verdict.opens_breaker
-            and phase != PHASE_REPLY
-            and self._leg_failures == 1
-            and attempt < MAX_LEG_FAILURES
+        recovery = self._budget.failed(
+            verdict, mid_reply=phase == PHASE_REPLY
         )
+        retry = recovery.action is ReconnectAction.RECONNECT
         opened = False
         if verdict.opens_breaker and not retry:
             opened = await self._open_leg(verdict, phase)
 
-        if retry:
-            reason = (
-                f"{verdict.reason}; retrying once before the first content token"
-            )
-        elif verdict.opens_breaker:
-            reason = (
-                f"{verdict.reason}; the retry policy is spent, so the leg opens"
-            )
-        else:
-            reason = verdict.reason
+        if phase == PHASE_REPLY:
+            # The turn closes at the last complete sentence; everything after
+            # it is unspoken and must not enter history (ticket 96).
+            record.spoken_text = last_complete_sentence(record.content_text)
         decision = FailureDecision(
             attempt=attempt,
             phase=phase,
             verdict=verdict,
             retry=retry,
             opened_leg=opened,
-            reason=reason,
+            reason=recovery.reason,
         )
         record.failure_decisions.append(decision)
         if not retry and self._on_alert is not None:
             self._on_alert(decision)
-        return decision, retry
+        return decision, retry, recovery.action
 
     async def _open_leg(self, verdict: FailureVerdict, phase: str) -> bool:
         """Record the failure for future calls; this call's rung never moves."""
@@ -1796,16 +1852,16 @@ class MetaLLM(LLMStream):
         return record is not None and record.state == "open"
 
     def _failure_error(
-        self, decision: FailureDecision
+        self, decision: FailureDecision, action: ReconnectAction
     ) -> MetaLLMFailure | None:
         verdict = decision.verdict
         if verdict.failure_class is FailureClass.TRIGGER:
-            if self._leg_failures >= MAX_LEG_FAILURES:
-                # The one retry was already spent on this leg; a second failure
-                # ends the call even when it lands mid-reply.
-                return MetaLLMLegExhausted(decision)
-            if decision.phase == PHASE_REPLY:
+            if action is ReconnectAction.DRAIN:
+                # Speech is already queued: drain to the last complete
+                # sentence, never restart the completion.
                 return MetaLLMReplyInterrupted(decision)
+            # The retry was already spent on this leg (or the caller may not
+            # retry now), so this call ends.
             return MetaLLMLegExhausted(decision)
         if verdict.failure_class is FailureClass.BUG:
             return MetaLLMTurnFailed(decision)

@@ -75,6 +75,8 @@
     "breaker_opens": 0,
     "alerts": 0,
     "session_endings": [],
-    "ledger_marks": []
+    "ledger_marks": [
+      "reconnect"
+    ]
   }
 }
