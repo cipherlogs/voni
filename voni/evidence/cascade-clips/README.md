@@ -47,3 +47,23 @@ and the exact command, and its old asset is removed. Without
 `ASSEMBLYAI_API_KEY` the script writes nothing at all — no manifest, no
 placeholder, no stale file — and fails naming the key. No audio is ever
 fabricated.
+
+## Regeneration and vendor determinism (ticket 129)
+
+The PR test replays a **recorded synthesis fixture**
+(`voice-pipeline/cascade/fixtures/clips/<voice>-<locale>.json`) through the
+call's own client and binding table — no key, no socket — and compares the
+regenerated clip's binding, Locale, vendor language, text, endpoint, format and
+measured level with the fixture. The fixture pins the PCM hash, the WAV hash and
+the level; the loader recomputes all three from the frames, so a changed frame
+fails by fixture name.
+
+Byte identity is **measured, never assumed**: the fixture is replayed at least
+twice and only a byte-identical render sets `byteIdentityRequired`. A byte
+difference with matching binding and level is not a failure.
+
+A live regeneration is key-gated: without `ASSEMBLYAI_API_KEY` it returns a
+named blocker and writes nothing. A live take is recorded as evidence
+(`clip-regeneration` document: endpoint, format, sha256, level, determinism),
+never swapped in as the committed asset.
+
