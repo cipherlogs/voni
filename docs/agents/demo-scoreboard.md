@@ -37,6 +37,11 @@ npm run scoreboard:demo
 | `voni/src/lib/demo/stored-agents.ts` | stored demo agent body, fingerprint, LLM override, provision/refresh |
 | `voni/src/lib/demo/voni-agent.ts` | demo prompt rules, greeting, check-in/end instructions |
 | `voni/src/lib/demo/scoreboard-report.ts` | compact inspect/report formatters |
+| `voni/src/lib/demo/turn-marks.ts` | client receipt marks (`turn.user_final`, `turn.reply_start`, first-audio anchor) for the split |
+| `voni/src/lib/demo/latency-split.ts` | per-turn endpointing/generation/delivery arithmetic, ordinary vs post-cut |
+| `voni/src/lib/demo/playout-preroll.ts` | the fixed playback pre-roll constant (report-only `perceived`, never a gate input) |
+| `voni/src/lib/demo/turn-windows.ts` | one formatter for turn-window evidence (gate detail + inspect report) |
+| `docs/demo-latency-ladder.md` | turn-window experiment rulebook, stop rule, and ledger (not a gate or budget owner) |
 
 Evidence flow: runner stdout -> parsers in `score-demo` -> gate inputs in
 `scoreboard.ts` -> `artifact.gates` + `runnerEvidence`/`callTrace`. Gate

@@ -87,6 +87,7 @@ import { TAG_WORDS, containsTag, countTags } from "./test-tag";
 import type { RunnerEvidence } from "./runner-evidence";
 import type { LatencyBand } from "./latency-split";
 import type { DemoAgentVariant, DemoTurnWindows } from "./stored-agents";
+import { formatTurnWindows } from "./turn-windows";
 
 /** The locked golden script: seven beats in fixed order (spec story 11). */
 export const GOLDEN_BEATS = [
@@ -980,11 +981,16 @@ export type EndOfTurnExperiment = {
   variantKey: string | null;
   /** The windows the variant body carries. */
   turnWindows: DemoTurnWindows | null;
+  /**
+   * The stored agent id the variant bound, so a CONFIG row can be attributed.
+   * Null means no row can be the experiment's, so every row stays production.
+   */
+  agentId: string | null;
 };
 
 /**
- * Dedicated artifact evidence that a run measured the experiment, so a reader
- * can never mistake its gate PASS for a production one. Absent on production
+ * Dedicated artifact evidence that a run bound the experiment, so the variant
+ * windows are named beside the gate's production PASS. Absent on production
  * artifacts (the gate's existing PASS line speaks for them).
  */
 export type EndOfTurnEvidence = {
@@ -996,24 +1002,14 @@ export type EndOfTurnEvidence = {
   productionTurnDetection: null;
 };
 
-function formatEndOfTurnWindows(windows: DemoTurnWindows | null): string {
-  if (!windows) return "no windows recorded";
-  const parts: string[] = [];
-  if (windows.min_silence !== undefined) parts.push(`min_silence ${windows.min_silence}`);
-  if (windows.max_silence !== undefined) parts.push(`max_silence ${windows.max_silence}`);
-  if (windows.interruption_delay !== undefined) {
-    parts.push(`interruption_delay ${windows.interruption_delay}`);
-  }
-  return parts.length > 0 ? parts.join(", ") : "no windows recorded";
-}
-
-function experimentalEndOfTurnPass(experiment: EndOfTurnExperiment): ScoreboardGate {
-  const key = experiment.variantKey ? ` (${experiment.variantKey})` : "";
-  return {
-    name: "end-of-turn",
-    status: "PASS",
-    detail: `experimental ${experiment.variant} variant${key}: windows ${formatEndOfTurnWindows(experiment.turnWindows)} recorded as experiment evidence, not a production pass; production body still sends turn_detection: null (adaptive preserved)`,
-  };
+/**
+ * Does one merged CONFIG row belong to the experimental agent? A row without
+ * an `agent=` attribution is production; so is any other agent's row.
+ */
+function configLineIsExperiment(line: string, experiment: EndOfTurnExperiment): boolean {
+  if (experiment.agentId === null) return false;
+  const agent = /\bagent=(\S+)/.exec(line)?.[1] ?? null;
+  return agent === experiment.agentId;
 }
 
 const TURN_WINDOW_KEYS = ["min_silence", "max_silence", "interruption_delay"] as const;
@@ -1055,10 +1051,13 @@ function configReportsVariantWindows(line: string, windows: DemoTurnWindows | nu
  * override only. FAIL points at the object or at the merged trace's
  * CONFIG line.
  *
- * `experiment` only labels a run of the non-production stored-agent variant:
- * the gate still checks the production body above (and still FAILs on any
- * object or a CONFIG line that is not the experiment's own windows), and a
- * PASS says the experiment's windows are evidence, never a production pass.
+ * `experiment` only labels a run of the non-production stored-agent variant.
+ * The gate verdicts the production body and production-attributed CONFIG rows;
+ * the variant's own rows are evidence (named in `artifact.endOfTurn` and the
+ * report), never a PASS path. A variant row whose windows do not match the
+ * recorded windows is a stray object and FAILs. When the experiment is bound
+ * but no variant CONFIG row matches, the gate is INFO/unmeasured, never PASS:
+ * the windows were not observed to be applied.
  */
 export function meaningBasedEndOfTurnGate(
   agentInput: { turn_detection?: unknown } | null | undefined,
@@ -1079,26 +1078,48 @@ export function meaningBasedEndOfTurnGate(
     };
   }
   const configLines = traceExcerpt.filter((line) => line.includes("turn_detection"));
-  const configLine = configLines[0];
-  // The variant body's own CONFIG row is expected evidence: the server
-  // echoes the windows the experiment sent. Every row must match, so one
-  // stray object still FAILs below with the production detail.
-  if (
-    experiment &&
-    configLines.length > 0 &&
-    configLines.every((line) => configReportsVariantWindows(line, experiment.turnWindows))
-  ) {
-    return experimentalEndOfTurnPass(experiment);
+  const variantLines: string[] = [];
+  const productionLines: string[] = [];
+  for (const line of configLines) {
+    if (experiment && configLineIsExperiment(line, experiment)) variantLines.push(line);
+    else productionLines.push(line);
   }
-  if (configLine) {
+  // Production is strict: any production-attributed object (including a row
+  // with no attribution at all) keeps the existing contract detail verbatim.
+  const productionLine = productionLines[0];
+  if (productionLine) {
     return {
       name: "end-of-turn",
       status: "FAIL",
-      detail: `call trace shows a turn_detection CONFIG line (${configLine.trim().slice(0, 160)}): no turn-detection object may be sent on the managed session path (ADR-0003)`,
+      detail: `call trace shows a turn_detection CONFIG line (${productionLine.trim().slice(0, 160)}): no turn-detection object may be sent on the managed session path (ADR-0003)`,
+    };
+  }
+  // The variant's own rows are evidence, but only when they report exactly the
+  // windows this run recorded. A mismatched variant row is a stray object.
+  const strayVariantLine = experiment
+    ? variantLines.find((line) => !configReportsVariantWindows(line, experiment.turnWindows))
+    : undefined;
+  if (strayVariantLine) {
+    return {
+      name: "end-of-turn",
+      status: "FAIL",
+      detail: `call trace shows a turn_detection CONFIG line (${strayVariantLine.trim().slice(0, 160)}): no turn-detection object may be sent on the managed session path (ADR-0003)`,
     };
   }
   if (experiment) {
-    return experimentalEndOfTurnPass(experiment);
+    const applied =
+      experiment.turnWindows !== null &&
+      variantLines.some((line) => configReportsVariantWindows(line, experiment.turnWindows));
+    if (!applied) {
+      return {
+        name: "end-of-turn",
+        status: "INFO",
+        detail:
+          experiment.turnWindows === null
+            ? `unmeasured: experiment ${experiment.variant} has no recorded windows, so no CONFIG row can confirm them (production body still sends turn_detection: null)`
+            : `unmeasured: no CONFIG row attributed to ${experiment.agentId ?? "the experimental agent"} reports the experiment's recorded windows (${formatTurnWindows(experiment.turnWindows)}); production body still sends turn_detection: null`,
+      };
+    }
   }
   return {
     name: "end-of-turn",

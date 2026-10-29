@@ -229,9 +229,8 @@ if (args[0] === "run" && args[1] === "eval:demo-agent") {
     interruption_delay: 0,
   });
   const endOfTurn = artifact.gates.find((gate) => gate.name === "end-of-turn");
-  assert.equal(endOfTurn?.status, "PASS");
-  assert.match(endOfTurn?.detail ?? "", /experimental/i);
-  assert.match(endOfTurn?.detail ?? "", /min_silence 400/);
+  assert.equal(endOfTurn?.status, "INFO", "no variant CONFIG row proves the windows were applied");
+  assert.match(endOfTurn?.detail ?? "", /unmeasured/i);
   assert.doesNotMatch(endOfTurn?.detail ?? "", /^meaning-based end-of-turn preserved/);
   assert.deepEqual(artifact.endOfTurn, {
     experimental: true,

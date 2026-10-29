@@ -35,6 +35,7 @@ import {
   type RunnerEvidenceTurn,
 } from "./runner-evidence";
 import type { DemoAgentVariant, DemoTurnWindows } from "./stored-agents";
+import { formatTurnWindows } from "./turn-windows";
 
 export type InspectRunIdentity = {
   voice: string;
@@ -688,28 +689,6 @@ function formatLatency(latency: InspectLatency): string[] {
   return lines;
 }
 
-function formatWindows(windows: DemoTurnWindows): string {
-  const parts: string[] = [];
-  if (windows.min_silence !== undefined) parts.push(`min ${windows.min_silence}`);
-  if (windows.max_silence !== undefined) parts.push(`max ${windows.max_silence}`);
-  if (windows.interruption_delay !== undefined) {
-    parts.push(`interruption_delay ${windows.interruption_delay}`);
-  }
-  return parts.join(" / ");
-}
-
-/** Windows as the end-of-turn gate names them (`min_silence 400, …`). */
-function formatEndOfTurnWindows(windows: DemoTurnWindows | null): string {
-  if (!windows) return "no windows recorded";
-  const parts: string[] = [];
-  if (windows.min_silence !== undefined) parts.push(`min_silence ${windows.min_silence}`);
-  if (windows.max_silence !== undefined) parts.push(`max_silence ${windows.max_silence}`);
-  if (windows.interruption_delay !== undefined) {
-    parts.push(`interruption_delay ${windows.interruption_delay}`);
-  }
-  return parts.length > 0 ? parts.join(", ") : "no windows recorded";
-}
-
 function formatFragmentFinding(finding: InspectFragmentFinding): string {
   const where =
     finding.turn !== null
@@ -761,7 +740,7 @@ function formatAdoption(adoption: InspectAdoption): string[] {
   if (endOfTurn.mode === "experimental") {
     const bits = [endOfTurn.variant];
     if (endOfTurn.variantKey) bits.push(endOfTurn.variantKey);
-    bits.push(formatEndOfTurnWindows(endOfTurn.turnWindows));
+    bits.push(formatTurnWindows(endOfTurn.turnWindows));
     lines.push(
       `  end-of-turn  experimental ${bits[0]} (${bits.slice(1).join("; ")}) — evidence, not a production pass`,
     );
@@ -808,7 +787,9 @@ export function formatInspectReport(report: InspectReport): string {
   ];
   if (run.agentFingerprint) lines.push(`  fingerprint  ${run.agentFingerprint.slice(0, 12)}`);
   if (run.variant) {
-    const windows = run.turnWindows ? `  windows ${formatWindows(run.turnWindows)}` : "";
+    const windows = run.turnWindows
+      ? `  windows ${formatTurnWindows(run.turnWindows, { labels: "short", separator: " / ", empty: "" })}`
+      : "";
     lines.push(
       `  variant      ${run.variant}${run.variantKey ? `  ${run.variantKey}` : ""}${windows}`,
     );

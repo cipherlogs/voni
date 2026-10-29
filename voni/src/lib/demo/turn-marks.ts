@@ -112,3 +112,20 @@ export function createTurnMarks(writer: EvalEventWriter): TurnMarks {
     },
   };
 }
+
+/**
+ * The eval runner's own mark function: reads the call's session and elapsed
+ * time when a message fires, rounds to whole call-relative ms, and is a no-op
+ * when the event stream is off. Both eval call loops share this one shape.
+ */
+export function createCallTurnMarks(
+  writer: EvalEventWriter,
+  context: () => TurnMarkContext,
+): (message: TurnMarkMessage) => EvalEvent | null {
+  const marks = writer.path ? createTurnMarks(writer) : null;
+  if (!marks) return () => null;
+  return (message) => {
+    const { sessionId, atMs } = context();
+    return marks.observe(message, { sessionId, atMs: Math.max(0, Math.round(atMs)) });
+  };
+}
