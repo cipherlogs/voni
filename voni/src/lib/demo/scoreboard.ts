@@ -1007,6 +1007,45 @@ function formatEndOfTurnWindows(windows: DemoTurnWindows | null): string {
   return parts.length > 0 ? parts.join(", ") : "no windows recorded";
 }
 
+function experimentalEndOfTurnPass(experiment: EndOfTurnExperiment): ScoreboardGate {
+  const key = experiment.variantKey ? ` (${experiment.variantKey})` : "";
+  return {
+    name: "end-of-turn",
+    status: "PASS",
+    detail: `experimental ${experiment.variant} variant${key}: windows ${formatEndOfTurnWindows(experiment.turnWindows)} recorded as experiment evidence, not a production pass; production body still sends turn_detection: null (adaptive preserved)`,
+  };
+}
+
+const TURN_WINDOW_KEYS = ["min_silence", "max_silence", "interruption_delay"] as const;
+
+/**
+ * Does one merged CONFIG row report exactly the variant body's windows?
+ *
+ * The server echoes the object it received with its own normalized fields
+ * added (`type`, `vad_threshold`, `interrupt_response`, …), so the window
+ * keys — not the extras — decide whether the row is the experiment's own
+ * body. A row carrying a different window, a subset or none is a stray
+ * object and must not be accepted as experiment evidence.
+ */
+function configReportsVariantWindows(line: string, windows: DemoTurnWindows | null): boolean {
+  if (!windows) return false;
+  const configured = TURN_WINDOW_KEYS.filter((key) => windows[key] !== undefined);
+  if (configured.length === 0) return false;
+  const object = /\{.*\}/.exec(line)?.[0];
+  if (!object) return false;
+  let reported: Record<string, unknown>;
+  try {
+    const parsed: unknown = JSON.parse(object);
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return false;
+    reported = parsed as Record<string, unknown>;
+  } catch {
+    return false;
+  }
+  const reportedKeys = TURN_WINDOW_KEYS.filter((key) => reported[key] !== undefined);
+  if (reportedKeys.length !== configured.length) return false;
+  return configured.every((key) => reported[key] === windows[key]);
+}
+
 /**
  * Meaning-based end-of-turn must stay on: ANY turn_detection object —
  * even one holding only an interruption delay — switches off adaptive
@@ -1018,8 +1057,8 @@ function formatEndOfTurnWindows(windows: DemoTurnWindows | null): string {
  *
  * `experiment` only labels a run of the non-production stored-agent variant:
  * the gate still checks the production body above (and still FAILs on any
- * object or CONFIG line), and a PASS says the experiment's windows are
- * evidence, never a production pass.
+ * object or a CONFIG line that is not the experiment's own windows), and a
+ * PASS says the experiment's windows are evidence, never a production pass.
  */
 export function meaningBasedEndOfTurnGate(
   agentInput: { turn_detection?: unknown } | null | undefined,
@@ -1039,7 +1078,18 @@ export function meaningBasedEndOfTurnGate(
       detail: `turn_detection object sent (${JSON.stringify(agentInput.turn_detection)?.slice(0, 120)}): disables adaptive end-of-turn (ADR-0003); stored demo agents must send turn_detection: null`,
     };
   }
-  const configLine = traceExcerpt.find((line) => line.includes("turn_detection"));
+  const configLines = traceExcerpt.filter((line) => line.includes("turn_detection"));
+  const configLine = configLines[0];
+  // The variant body's own CONFIG row is expected evidence: the server
+  // echoes the windows the experiment sent. Every row must match, so one
+  // stray object still FAILs below with the production detail.
+  if (
+    experiment &&
+    configLines.length > 0 &&
+    configLines.every((line) => configReportsVariantWindows(line, experiment.turnWindows))
+  ) {
+    return experimentalEndOfTurnPass(experiment);
+  }
   if (configLine) {
     return {
       name: "end-of-turn",
@@ -1048,12 +1098,7 @@ export function meaningBasedEndOfTurnGate(
     };
   }
   if (experiment) {
-    const key = experiment.variantKey ? ` (${experiment.variantKey})` : "";
-    return {
-      name: "end-of-turn",
-      status: "PASS",
-      detail: `experimental ${experiment.variant} variant${key}: windows ${formatEndOfTurnWindows(experiment.turnWindows)} recorded as experiment evidence, not a production pass; production body still sends turn_detection: null (adaptive preserved)`,
-    };
+    return experimentalEndOfTurnPass(experiment);
   }
   return {
     name: "end-of-turn",
