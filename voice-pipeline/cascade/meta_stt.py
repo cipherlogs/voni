@@ -27,6 +27,7 @@ from typing import Any
 from urllib.parse import urlencode
 
 from cascade.failures import FailureVerdict, classify_stt
+from cascade.testing.clock import RealClock
 from cascade.thresholds import require_bound
 from cascade.voice_binding import LOCALES
 from providers import FinalTranscript, PartialTranscript, StreamingSTT
@@ -44,6 +45,30 @@ PARTIAL_MODE = "CUMULATIVE"
 EMIT_AUDIO_PROGRESS = False
 SAMPLE_RATE = 24000
 API_KEY_ENV = "META_API_KEY"
+
+BYTES_PER_SAMPLE = 2
+BYTES_PER_SECOND = SAMPLE_RATE * BYTES_PER_SAMPLE
+
+#: A silence frame is one 20 ms tick at the declared rate. This is the frame
+#: quantum, not a tunable bound: the browser and phone transports tick in 20 ms
+#: frames and the vendor's idle close fires on a stream with no frames at all.
+SILENCE_FRAME_MS = 20.0
+SILENCE_FRAME_BYTES = int(BYTES_PER_SECOND * SILENCE_FRAME_MS / 1000)
+
+#: The spec's hard audio lead: "Never run more than 5 s ahead of processing"
+#: (`.scratch/meta-cascade/spec.md`, Meta speech-to-text backend). A backlog
+#: beyond this is the vendor's 1008 close, so the client sheds before it.
+MAX_LEAD_S = 5.0
+
+#: Container signatures that are never raw PCM. A text payload (JSON/base64)
+#: is refused by type before this check.
+_CONTAINERS = (
+    (b"RIFF", "WAV/AVI"),
+    (b"OggS", "Ogg"),
+    (b"fLaC", "FLAC"),
+    (b"ID3", "MP3/ID3"),
+    (b"\x1aE\xdf\xa3", "Matroska/WebM"),
+)
 
 SocketFactory = Callable[[str, dict[str, str]], Awaitable[Any]]
 
@@ -123,6 +148,14 @@ class MetaStreamError(RuntimeError):
         super().__init__(f"meta speech session {session_id}: {reason}")
 
 
+class AudioFrameRejected(ValueError):
+    """A payload that must never reach the vendor as audio."""
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        super().__init__(reason)
+
+
 @dataclass(frozen=True)
 class SpeechStart:
     """``speechStart``: a provider turn opened, named by the vendor's turn id."""
@@ -159,6 +192,7 @@ class MetaStreamingSTT(StreamingSTT):
         socket_factory: SocketFactory | None = None,
         keyterms: Iterable[str] = (),
         handshake_timeout_s: float | None = None,
+        clock: Any = None,
     ) -> None:
         self._call_id = call_id
         self._api_key = api_key or os.environ.get(API_KEY_ENV)
@@ -173,6 +207,14 @@ class MetaStreamingSTT(StreamingSTT):
         self._handshake_timeout_s = handshake_timeout_s
         self._failure_reason: str | None = None
         self._latest_turn: str | None = None
+        self._clock = clock if clock is not None else RealClock()
+        self._audio_end = 0.0
+        self._dropped_frames = 0
+
+    @property
+    def dropped_frames(self) -> int:
+        """Frames the audio path refused to forward (malformed or over lead)."""
+        return self._dropped_frames
 
     @property
     def acked(self) -> bool:
@@ -226,6 +268,7 @@ class MetaStreamingSTT(StreamingSTT):
         session = session_id(self._call_id, self._epoch)
         self._session = session
         self._latest_turn = None
+        self._audio_end = float(self._clock())
         url = f"{REALTIME_URL}?{urlencode({'sessionId': session})}"
         frame = {
             "authorization": {"accessToken": f"Bearer {self._api_key}"},
@@ -310,10 +353,69 @@ class MetaStreamingSTT(StreamingSTT):
         _log.warning("%s", self._failure_reason)
 
     async def send_audio(self, pcm: bytes) -> None:
-        """Forward one binary PCM frame; pacing and framing land in ticket 28."""
+        """Forward one raw PCM frame; never await a vendor reply.
+
+        Only signed 16-bit little-endian mono at 24 kHz reaches the vendor. A
+        text payload, a JSON object or a container is refused locally by type
+        or signature; a malformed binary frame is dropped and logged. Silence
+        is filled up to the injected clock before the frame, and nothing is
+        sent once the audio is more than ``MAX_LEAD_S`` ahead of processing.
+        """
+        self._require_acked()
+        payload = _pcm_payload(pcm)
+        if payload is None:
+            self._drop("a malformed PCM frame")
+            return
+
+        await self._fill_silence()
+        duration = len(payload) / BYTES_PER_SECOND
+        if self._lead() + duration > MAX_LEAD_S:
+            self._drop(f"a frame {MAX_LEAD_S:g} s or more ahead of processing")
+            return
+
+        await self._socket.send(payload)
+        self._audio_end += duration
+
+    async def send_silence(self, seconds: float | None = None) -> None:
+        """Send PCM silence for ``seconds`` (default one 20 ms frame).
+
+        Used by a quiet audio tick so the vendor's idle-input close does not
+        fire. Duration is quantised down to whole silence frames and bounded by
+        the lead budget.
+        """
+        self._require_acked()
+        frames = 1 if seconds is None else _silence_frames_for(seconds)
+        await self._send_silence_frames(frames)
+
+    async def _fill_silence(self) -> None:
+        """Fill the gap between the audio timeline and the clock with silence."""
+        gap = float(self._clock()) - self._audio_end
+        if gap <= 0:
+            return
+        await self._send_silence_frames(_silence_frames_for(gap))
+
+    async def _send_silence_frames(self, frames: int) -> None:
+        capacity = _silence_frames_for(max(0.0, MAX_LEAD_S - self._lead()))
+        silence = b"\x00" * SILENCE_FRAME_BYTES
+        for _ in range(min(frames, capacity)):
+            await self._socket.send(silence)
+            self._audio_end += SILENCE_FRAME_MS / 1000.0
+
+    def _lead(self) -> float:
+        """How far the audio timeline is ahead of the injected clock."""
+        return self._audio_end - float(self._clock())
+
+    def _require_acked(self) -> None:
         if self._socket is None or not self._acked:
             raise RuntimeError("meta speech session has no acknowledgement yet")
-        raise NotImplementedError("audio path lands in ticket 28")
+
+    def _drop(self, reason: str) -> None:
+        self._dropped_frames += 1
+        _log.warning(
+            "meta speech session %s: dropped audio (%s)",
+            self._session,
+            reason,
+        )
 
     async def events(self) -> AsyncIterator[Any]:
         """Yield the vendor's events mapped onto the internal vocabulary.
@@ -461,6 +563,37 @@ def _json_object(raw: Any) -> dict[str, Any] | None:
     except json.JSONDecodeError:
         return None
     return value if isinstance(value, dict) else None
+
+
+def _pcm_payload(pcm: Any) -> bytes | None:
+    """Raw PCM bytes, or ``None`` when a binary frame is malformed.
+
+    A text payload (JSON audio, base64) or a container is refused loudly: it
+    is a caller bug, not a recoverable frame. An empty or odd-length binary
+    frame is malformed and is dropped by the caller.
+    """
+    if not isinstance(pcm, (bytes, bytearray, memoryview)):
+        raise AudioFrameRejected(
+            "audio frame must be raw binary PCM s16le mono at "
+            f"{SAMPLE_RATE} Hz, not {type(pcm).__name__}"
+        )
+    data = bytes(pcm)
+    for magic, label in _CONTAINERS:
+        if data.startswith(magic):
+            raise AudioFrameRejected(
+                f"audio frame is a {label} container, not raw PCM s16le mono "
+                f"at {SAMPLE_RATE} Hz"
+            )
+    if not data or len(data) % BYTES_PER_SAMPLE:
+        return None
+    return data
+
+
+def _silence_frames_for(seconds: float) -> int:
+    """Whole 20 ms silence frames that fit in ``seconds`` (rounded down)."""
+    if seconds <= 0:
+        return 0
+    return int(seconds * 1000.0 / SILENCE_FRAME_MS + 1e-9)
 
 
 def _turn_id(message: dict[str, Any]) -> str | None:
