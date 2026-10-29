@@ -22,13 +22,14 @@ import json
 import logging
 import os
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
+from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlencode
 
 from cascade.failures import FailureVerdict, classify_stt
 from cascade.thresholds import require_bound
 from cascade.voice_binding import LOCALES
-from providers import StreamingSTT
+from providers import FinalTranscript, PartialTranscript, StreamingSTT
 
 _log = logging.getLogger(__name__)
 
@@ -113,6 +114,40 @@ class UnsupportedSampleRateError(ValueError):
         )
 
 
+class MetaStreamError(RuntimeError):
+    """The vendor reported an error on an established session."""
+
+    def __init__(self, session_id: str, reason: str) -> None:
+        self.session_id = session_id
+        self.reason = reason
+        super().__init__(f"meta speech session {session_id}: {reason}")
+
+
+@dataclass(frozen=True)
+class SpeechStart:
+    """``speechStart``: a provider turn opened, named by the vendor's turn id."""
+
+    turn_id: str
+
+
+@dataclass(frozen=True)
+class SpeechEnd:
+    """``speechEnd``: the provider's boundary. Records, never finalises."""
+
+    turn_id: str
+
+
+@dataclass(frozen=True)
+class SpeechComplete(FinalTranscript):
+    """``speechComplete``: the authoritative turn text.
+
+    A ``FinalTranscript`` so existing turn handling reads it as the one final,
+    with the provider ``turn_id`` added for the logical-turn store.
+    """
+
+    turn_id: str = ""
+
+
 class MetaStreamingSTT(StreamingSTT):
     """StreamingSTT over Meta's realtime ASR endpoint."""
 
@@ -137,6 +172,7 @@ class MetaStreamingSTT(StreamingSTT):
         self._session = ""
         self._handshake_timeout_s = handshake_timeout_s
         self._failure_reason: str | None = None
+        self._latest_turn: str | None = None
 
     @property
     def acked(self) -> bool:
@@ -189,6 +225,7 @@ class MetaStreamingSTT(StreamingSTT):
         self._epoch += 1
         session = session_id(self._call_id, self._epoch)
         self._session = session
+        self._latest_turn = None
         url = f"{REALTIME_URL}?{urlencode({'sessionId': session})}"
         frame = {
             "authorization": {"accessToken": f"Bearer {self._api_key}"},
@@ -279,8 +316,96 @@ class MetaStreamingSTT(StreamingSTT):
         raise NotImplementedError("audio path lands in ticket 28")
 
     async def events(self) -> AsyncIterator[Any]:
-        """Read vendor events; the mapping lands in ticket 29."""
-        raise NotImplementedError("event mapping lands in ticket 29")
+        """Yield the vendor's events mapped onto the internal vocabulary.
+
+        ``speechStart`` → :class:`SpeechStart`, ``transcript`` →
+        :class:`providers.PartialTranscript` (no id, latest start),
+        ``speechEnd`` → :class:`SpeechEnd`, ``speechComplete`` →
+        :class:`SpeechComplete`, ``error`` → :class:`MetaStreamError`.
+        Unknown types, server binary frames and non-JSON text are ignored.
+        """
+        if self._socket is None or not self._acked:
+            raise RuntimeError("meta speech session has no acknowledgement yet")
+        async for raw in self._frames:
+            mapped = self._map_frame(raw)
+            if mapped is not None:
+                yield mapped
+
+    def _map_frame(self, raw: Any) -> Any:
+        """Map one inbound frame; ``None`` means ignore it."""
+        if not isinstance(raw, str):
+            # The vendor's binary frames carry no transcript.
+            return None
+        message = _json_object(raw)
+        if message is None:
+            _log.warning(
+                "meta speech session %s: ignoring a non-JSON text frame",
+                self._session,
+            )
+            return None
+
+        kind = message.get("type")
+        if kind == "speechStart":
+            turn_id = _turn_id(message)
+            if turn_id is None:
+                _log.warning(
+                    "meta speech session %s: speechStart without a turnId",
+                    self._session,
+                )
+                return None
+            self._latest_turn = turn_id
+            return SpeechStart(turn_id)
+
+        if kind == "transcript":
+            text = message.get("text")
+            if self._latest_turn is None:
+                _log.warning(
+                    "meta speech session %s: ignoring a partial with no "
+                    "preceding speechStart",
+                    self._session,
+                )
+                return None
+            if not isinstance(text, str) or not text:
+                return None
+            return PartialTranscript(text)
+
+        if kind == "speechEnd":
+            turn_id = _turn_id(message)
+            if turn_id is None:
+                _log.warning(
+                    "meta speech session %s: speechEnd without a turnId",
+                    self._session,
+                )
+                return None
+            return SpeechEnd(turn_id)
+
+        if kind == "speechComplete":
+            turn_id = _turn_id(message)
+            if turn_id is None:
+                _log.warning(
+                    "meta speech session %s: speechComplete without a turnId",
+                    self._session,
+                )
+                return None
+            text = message.get("text")
+            return SpeechComplete(
+                text=text if isinstance(text, str) else "", turn_id=turn_id
+            )
+
+        if kind == "error":
+            reason = _error_reason(message)
+            self._failure_reason = (
+                f"meta speech session {self._session}: {reason}"
+            )
+            _log.error("%s", self._failure_reason)
+            raise MetaStreamError(self._session, reason)
+
+        _log.debug(
+            "meta speech session %s: ignoring event type %r",
+            self._session,
+            kind,
+        )
+        return None
 
     async def close(self) -> None:
         """Close the socket. ``endStream`` and close-code handling land in ticket 30."""
@@ -336,6 +461,25 @@ def _json_object(raw: Any) -> dict[str, Any] | None:
     except json.JSONDecodeError:
         return None
     return value if isinstance(value, dict) else None
+
+
+def _turn_id(message: dict[str, Any]) -> str | None:
+    """The vendor turn id, or ``None`` when the event does not name one."""
+    value = message.get("turnId")
+    if isinstance(value, str) and value.strip():
+        return value
+    return None
+
+
+def _error_reason(message: dict[str, Any]) -> str:
+    """The most specific detail an ``error`` event supplies."""
+    for field in ("message", "error", "detail"):
+        detail = message.get(field)
+        if isinstance(detail, dict):
+            return json.dumps(detail, sort_keys=True)
+        if isinstance(detail, str) and detail.strip():
+            return detail
+    return "unspecified error"
 
 
 async def _close_quietly(socket: Any) -> None:
