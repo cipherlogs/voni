@@ -45,12 +45,18 @@ The unknown-key refusal (ticket 59) is the whitelist rule over that data: a key
 at the top level, inside ``input``, ``output`` or ``voice`` that neither set
 names fails by name, before any vendor socket opens. The LLM override refusal
 (60) is the one-body rule's consequence: a non-empty ``llm`` array routes the
-call managed, while ``llm: []`` is the documented revert. The eligibility
-refusals (61) are the next gate, not this module's job.
+call managed, while ``llm: []`` is the documented revert.
+
+This adapter refuses what it cannot *represent*: an unbound voice, an unknown
+language code, a missing prompt, a tool name the vendor would reject. What the
+body may still not be *eligible* for — automatic language detection, more
+keyterms than the vendor accepts — is :mod:`cascade.eligibility`'s gate, which
+turns every refusal here into a routing reason (ticket 61).
 """
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
@@ -116,6 +122,22 @@ class LlmOverrideRefusal(BodyFieldError):
         )
 
 
+class MissingSystemPromptError(BodyFieldError):
+    """The body has no prompt to send as the system message.
+
+    A compiled prompt is part of the stored body's contract; an empty one is a
+    builder defect, not a valid silent agent.
+    """
+
+    def __init__(self, path: str = "system_prompt") -> None:
+        super().__init__(
+            path,
+            "a cascade body must carry a system prompt; a missing or blank "
+            "prompt is a body contract violation",
+        )
+
+
+
 
 
 @dataclass(frozen=True)
@@ -126,12 +148,42 @@ class MappedField:
     parse: Callable[[str, object], object]
 
 
+# The vendor's function-name rule: letters, digits, underscores and dashes,
+# with at most one dot (the namespace separator). A name outside it is an HTTP
+# 400 at the vendor, so the adapter refuses it instead of dropping the tool.
+_TOOL_NAME = re.compile(r"^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)?$")
+
+
+class InvalidToolNameError(BodyFieldError):
+    """A tool name the vendor would reject, so the tool cannot be represented."""
+
+    def __init__(self, path: str, name: str) -> None:
+        self.name = name
+        super().__init__(
+            path,
+            f'tool name "{name}" violates the vendor function-name rule: '
+            "letters, digits, underscores and dashes, with at most one dot",
+        )
+
+
+
 def _text(path: str, value: object) -> str:
     """A body string; absent means the empty string."""
     if value is _MISSING or value is None:
         return ""
     if not isinstance(value, str):
         raise BodyFieldError(path, f"expected a string, got {type(value).__name__}")
+    return value
+
+
+def _system_prompt(path: str, value: object) -> str:
+    """The compiled prompt; a missing or blank one is a contract violation."""
+    if value is _MISSING or value is None:
+        raise MissingSystemPromptError(path)
+    if not isinstance(value, str):
+        raise BodyFieldError(path, f"expected a string, got {type(value).__name__}")
+    if not value.strip():
+        raise MissingSystemPromptError(path)
     return value
 
 
@@ -181,6 +233,8 @@ def _function_tool(path: str, index: int, tool: object) -> dict[str, Any]:
     name = tool.get("name")
     if not isinstance(name, str) or not name:
         raise BodyFieldError(f"{where}.name", "a tool must have a name")
+    if not _TOOL_NAME.match(name):
+        raise InvalidToolNameError(f"{where}.name", name)
     return {
         "type": "function",
         "function": {key: tool[key] for key in TOOL_FUNCTION_FIELDS if key in tool},
@@ -199,7 +253,7 @@ def _tools(path: str, value: object) -> tuple[dict[str, Any], ...]:
 FIELD_MAP: Mapping[str, MappedField] = MappingProxyType(
     {
         # The prompt's own map: sent unchanged as the system message.
-        "system_prompt": MappedField("system_prompt", _text),
+        "system_prompt": MappedField("system_prompt", _system_prompt),
         # Absent or empty means the call opens silently.
         "greeting": MappedField("greeting", _text),
         # The voice, and through it the one Locale synthesis speaks.

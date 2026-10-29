@@ -25,7 +25,9 @@ from cascade.body_map import (
     BodyFieldError,
     CascadeBody,
     IgnoredField,
+    InvalidToolNameError,
     LlmOverrideRefusal,
+    MissingSystemPromptError,
     UnknownBodyKeyError,
     UnknownLanguageCodeError,
     adapt_body,
@@ -142,6 +144,54 @@ class ToolTests(unittest.TestCase):
             [tool["function"]["name"] for tool in config.tools],
             ["book_viewing", "end_call"],
         )
+
+    def test_a_tool_name_with_more_than_one_dot_is_refused_by_name(self):
+        tool = {**REST_TOOL, "name": "crm.deals.book"}
+
+        with self.assertRaises(InvalidToolNameError) as caught:
+            adapt_body({**MINIMAL_BODY, "tools": [tool]})
+
+        self.assertEqual(caught.exception.path, "tools[0].name")
+        self.assertIn("crm.deals.book", str(caught.exception))
+
+    def test_a_tool_name_with_an_invalid_character_is_refused_by_name(self):
+        for name in ("book viewing", "book/viewing", "book_viewing!", "booké"):
+            with self.subTest(name=name):
+                with self.assertRaises(InvalidToolNameError) as caught:
+                    adapt_body({**MINIMAL_BODY, "tools": [{**REST_TOOL, "name": name}]})
+                self.assertIn(name, str(caught.exception))
+
+    def test_a_single_dot_in_a_tool_name_is_allowed(self):
+        config = adapt_body({**MINIMAL_BODY, "tools": [{**REST_TOOL, "name": "crm.book"}]})
+
+        self.assertEqual(config.tools[0]["function"]["name"], "crm.book")
+
+    def test_one_unrepresentable_tool_refuses_the_whole_set(self):
+        good = {**REST_TOOL, "name": "book_viewing"}
+        bad = {**REST_TOOL, "name": "crm.deals.book"}
+
+        with self.assertRaises(InvalidToolNameError) as caught:
+            adapt_body({**MINIMAL_BODY, "tools": [good, bad]})
+
+        # Nothing is silently dropped: no config exists to run the one good tool.
+        self.assertEqual(caught.exception.path, "tools[1].name")
+
+
+class SystemPromptContractTests(unittest.TestCase):
+    def test_a_missing_system_prompt_is_refused_as_a_contract_violation(self):
+        body = {key: value for key, value in MINIMAL_BODY.items() if key != "system_prompt"}
+
+        with self.assertRaises(MissingSystemPromptError) as caught:
+            adapt_body(body)
+
+        self.assertEqual(caught.exception.path, "system_prompt")
+
+    def test_a_blank_system_prompt_is_refused(self):
+        for prompt in ("", "   ", "\n\t"):
+            with self.subTest(prompt=prompt):
+                with self.assertRaises(MissingSystemPromptError):
+                    adapt_body({**MINIMAL_BODY, "system_prompt": prompt})
+
 
 
 class LanguageTests(unittest.TestCase):
