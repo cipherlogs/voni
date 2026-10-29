@@ -21,6 +21,10 @@ turns are two objects; nothing is shared between them.
   else; it never finalises.
 * :meth:`~TurnStateStore.finalise` — ``speechComplete`` supplies the
   authoritative text; a duplicate is idempotent.
+* :meth:`~TurnStateStore.reply` — the reply slot carries its own logical turn
+  and the authoritative final it answers.
+* :meth:`~TurnStateStore.user_text` — the only text a user caption may carry;
+  a partial is never a caption source.
 * :meth:`~TurnStateStore.close` — the turn ended (answered, suppressed,
   abandoned or the call drained) and carries the reason.
 
@@ -96,9 +100,17 @@ class ToolLoopState:
 
 @dataclass
 class ReplyState:
-    """The turn's reply slot, keyed to the same logical turn as its input."""
+    """The turn's reply slot, keyed to the same logical turn as its input.
+
+    ``turn_id`` names the logical turn the reply belongs to, so a caption or a
+    history entry cannot be attributed to a later turn that happened to open
+    while the reply was streaming. ``user_text`` is the authoritative final the
+    reply answers — never the last partial of another turn.
+    """
 
     text: str = ""
+    turn_id: LogicalTurnId | None = None
+    user_text: str = ""
     started_at: float | None = None
     first_audio_at: float | None = None
     finished_at: float | None = None
@@ -338,6 +350,45 @@ class TurnStateStore:
         state.phase = TurnPhase.FINALISED
         return state
 
+    def reply(
+        self,
+        text: str = "",
+        *,
+        turn: TurnKey | None = None,
+        at: float | None = None,
+        epoch: int | None = None,
+    ) -> ReplyState | None:
+        """Record reply text on the logical turn that produced it.
+
+        The reply carries the turn's own id and the authoritative final it
+        answers, so a later turn opening mid-reply cannot be captioned with
+        this reply's user text. The start stamp is first-write-wins.
+        """
+        state = self._state(turn, epoch=epoch)
+        if state is None:
+            return None
+        reply = state.reply
+        if reply.started_at is None:
+            reply.started_at = self.now() if at is None else float(at)
+        reply.turn_id = state.id
+        reply.user_text = state.final_text
+        if text:
+            reply.text = text
+        return reply
+
+    def user_text(
+        self, turn: TurnKey, *, epoch: int | None = None
+    ) -> str | None:
+        """The only text a user caption may carry: the turn's own final.
+
+        A partial is never a caption source, and a turn that has not received
+        its authoritative completion has no user text at all.
+        """
+        state = self._state(turn, epoch=epoch, open_only=False)
+        if state is None or not state.is_finalised:
+            return None
+        return state.final_text
+
     def cut(
         self,
         turn: TurnKey | None = None,
@@ -359,9 +410,10 @@ class TurnStateStore:
         *,
         reason: str = "",
         at: float | None = None,
+        epoch: int | None = None,
     ) -> TurnState | None:
         """End the turn; ``reason`` says answered, suppressed or abandoned."""
-        state = self._state(turn, open_only=False)
+        state = self._state(turn, epoch=epoch, open_only=False)
         if state is None:
             return None
         if not state.is_open:
@@ -375,9 +427,13 @@ class TurnStateStore:
 
     # -- lookup -----------------------------------------------------------
 
-    def get(self, turn: TurnKey) -> TurnState | None:
-        """A turn by identity, including a closed one."""
-        return self._state(turn, open_only=False)
+    def get(self, turn: TurnKey, *, epoch: int | None = None) -> TurnState | None:
+        """A turn by identity, including a closed one.
+
+        ``epoch`` is the stamp the caller's event carried: an event from a
+        replaced session cannot even read a live turn, let alone close it.
+        """
+        return self._state(turn, epoch=epoch, open_only=False)
 
     def turns(self) -> tuple[TurnState, ...]:
         """Every turn of the call, in the order the provider opened them."""
@@ -400,11 +456,14 @@ class TurnStateStore:
         open_only: bool = True,
     ) -> TurnState | None:
         state: TurnState | None
+        # The epoch guard comes first for every key shape. A state or logical
+        # id can still be named by a late event from a replaced session, and
+        # applying it would let that event mutate a live turn.
+        if not self._accepts(epoch):
+            return None
         if turn is None:
             state = (
-                self._turns.get(self._latest)
-                if self._accepts(epoch) and self._latest is not None
-                else None
+                self._turns.get(self._latest) if self._latest is not None else None
             )
         elif isinstance(turn, TurnState):
             state = self._turns.get(turn.id)
