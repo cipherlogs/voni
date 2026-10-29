@@ -105,6 +105,23 @@ test("an omitted window setting is ladder rung 1, and only the three fields ship
   ]);
 });
 
+test("ladder rung 3 configures interruption_delay alone, with no silence pair", () => {
+  const variant = buildDemoAgentBody("anna", {
+    variant: "turn-window",
+    turnWindows: { interruption_delay: 0 },
+  });
+  assert.deepEqual(variant.input.turn_detection, { interruption_delay: 0 });
+  assert.notEqual(
+    demoAgentFingerprint(variant, "account"),
+    demoAgentFingerprint(buildDemoAgentBody("anna"), "account"),
+    "rung 3 is still its own variant row",
+  );
+  assert.throws(
+    () => buildDemoAgentBody("anna", { variant: "turn-window", turnWindows: {} }),
+    /at least one configured window/,
+  );
+});
+
 test("a window change moves only the experimental variant's fingerprint", () => {
   const production = buildDemoAgentBody("anna");
   const rung1 = buildDemoAgentBody("anna", {
