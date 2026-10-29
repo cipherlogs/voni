@@ -682,7 +682,6 @@ function notComparable(layer: W0Layer, reason: string): W0LayerFinding {
 function divergenceSentence(
   layer: "vendor voice" | "our pipeline" | "client",
   detail: string,
-  axis: W0CheckName,
 ): string {
   if (layer === "vendor voice") {
     return `The first divergence is the vendor voice: ${detail}, so no later layer can be judged until the reference is fixed.`;
@@ -732,7 +731,7 @@ export function decideW0Verdict(input: W0VerdictInput): W0Verdict {
       "divergence",
       "vendor voice",
       failed.metric,
-      divergenceSentence("vendor voice", reason, failed.metric),
+      divergenceSentence("vendor voice", reason),
       [reference, notComparable("model text", "the vendor voice broke first"), notComparable("our pipeline", "the vendor voice broke first"), notComparable("client", "the vendor voice broke first")],
       [],
       [failed.bar, bar("comparisonLevelLu")].filter((entry): entry is W0Threshold => entry !== null),
@@ -799,7 +798,7 @@ export function decideW0Verdict(input: W0VerdictInput): W0Verdict {
       "divergence",
       "our pipeline",
       failed.metric,
-      divergenceSentence("our pipeline", failed.reason ?? "the delivered audio differs from its reference", failed.metric),
+      divergenceSentence("our pipeline", failed.reason ?? "the delivered audio differs from its reference"),
       [reference, text, pipeline, notComparable("client", "our pipeline broke first")],
       [],
       [failed.bar].filter((entry): entry is W0Threshold => entry !== null),
@@ -825,7 +824,7 @@ export function decideW0Verdict(input: W0VerdictInput): W0Verdict {
       "divergence",
       "client",
       failed.metric,
-      divergenceSentence("client", failed.reason ?? "the delivered audio carries a playout signature", failed.metric),
+      divergenceSentence("client", failed.reason ?? "the delivered audio carries a playout signature"),
       [reference, text, pipeline, client],
       [],
       [failed.bar].filter((entry): entry is W0Threshold => entry !== null),
