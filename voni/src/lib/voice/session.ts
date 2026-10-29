@@ -47,11 +47,18 @@ import { TRANSCRIPTION_MODE, DEMO_TRANSCRIPTION_MODE } from "./transcription";
 import {
   acquireMicStream,
   startAudioGraph,
+  TARGET_SAMPLE_RATE,
   VOICE_MIC_CONSTRAINTS,
   VoiceStartError,
   type VoiceErrorCode,
 } from "./mic-capture";
 import type { WorkletPlayout } from "./playout";
+import {
+  attachDeliveredCapture,
+  postDeliveredCapture,
+  type CaptureWrite,
+  type DeliveredCapture,
+} from "./delivered-capture";
 import { resolveOutputSampleRate } from "./output-format";
 import { VOICE_OUTPUT_VOLUME } from "@/lib/agents/voices";
 
@@ -671,6 +678,12 @@ export class VoiceSession {
   private outputSampleRate: number | null = null;
   /** Dev pop recorder: worklet jumps/overloads and gain clamps become probes. */
   private popProbe = false;
+  /** Dev delivered capture (`?delivercapture=1`): tap the playout worklet. */
+  private deliveredCaptureOn = false;
+  /** The call's capture; null unless the flag was set before start. */
+  private deliveredCapture: DeliveredCapture | null = null;
+  /** Where a capture WAV goes; the dev route in the browser, stubbed in tests. */
+  private readonly writeCapture: CaptureWrite;
   /** Mic frames dropped since the last input-drop probe (ingestAudio gate). */
   private inputDropped = 0;
   private lastInputDropProbe = 0;
@@ -698,6 +711,11 @@ export class VoiceSession {
        * browser (mic, worklets, socket all faked at the boundary).
        */
       startGraph?: typeof startAudioGraph;
+      /**
+       * Where the dev delivered-capture WAV is written. Production always uses
+       * the dev-only route; tests inject a sink to prove the file's contents.
+       */
+      writeCapture?: CaptureWrite;
     } = {},
   ) {
     this.micOwner = opts.micOwner ?? "voice-call";
@@ -705,6 +723,7 @@ export class VoiceSession {
     this.buildGraph = opts.startGraph ?? startAudioGraph;
     this.updateTimeoutMs = opts.updateTimeoutMs ?? 3000;
     this.injectedExecutor = opts.toolExecutor ?? null;
+    this.writeCapture = opts.writeCapture ?? postDeliveredCapture;
   }
 
   private setState(next: VoiceState) {
@@ -871,6 +890,12 @@ export class VoiceSession {
       if (this.popProbe) {
         this.playout.probe?.(true);
         this.playout.onPop = (pop) => this.probe("pop", undefined, { detail: pop.kind, size: pop.size });
+      }
+      if (this.deliveredCaptureOn) {
+        this.deliveredCapture = attachDeliveredCapture(this.playout, {
+          sampleRate: this.audioCtx?.sampleRate ?? TARGET_SAMPLE_RATE,
+          write: this.writeCapture,
+        });
       }
       this.connect(token, resolved, gen, opts.resumeSessionId);
     } catch (e) {
@@ -2000,6 +2025,15 @@ export class VoiceSession {
     this.popProbe = on;
   }
 
+  /**
+   * Dev delivered capture (`?delivercapture=1`): set before `start`. Taps the
+   * playout worklet's rendered output and writes one WAV on hang-up. Never
+   * enables in a production build (the caller's flag parser is inert there).
+   */
+  setDeliveredCapture(on: boolean): void {
+    this.deliveredCaptureOn = on;
+  }
+
   /** Relative playback gain for the active voice (see VOICE_PLAYBACK_GAIN). */
   setOutputGain(gain: number): void {
     this.outputGain = Number.isFinite(gain) && gain > 0 ? gain : 1.0;
@@ -2160,6 +2194,20 @@ export class VoiceSession {
     this.flush();
     // Hang-up mid-reply: let the fade finish before the context closes.
     if (wasSpeaking) await new Promise((r) => setTimeout(r, FADE_OUT_S * 1000));
+
+    // Close the delivered capture before the worklet port does. The tap-off
+    // flushes its last partial block, then the WAV is written. Dev-only, and
+    // observation must never fail a hang-up.
+    const capture = this.deliveredCapture;
+    this.deliveredCapture = null;
+    if (capture) {
+      try {
+        await this.playout?.tap(false);
+        await capture.finish();
+      } catch {
+        /* capture is dev instrumentation */
+      }
+    }
 
     try {
       this.worklet?.port.close();

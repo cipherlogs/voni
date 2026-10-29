@@ -8,6 +8,9 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
 
+import { DeliveredCapture } from "./delivered-capture";
+import { decodeWav } from "@/lib/audio/format-facts";
+
 type Port = { onmessage: ((e: { data: unknown }) => void) | null; posted: unknown[] };
 type Processor = { port: Port; process: (inputs: Float32Array[][], outputs: Float32Array[][]) => boolean };
 
@@ -61,9 +64,11 @@ function runPlayout(
   flushAt?: number,
   probe = false,
   sourceRate = SRC,
+  tap = false,
 ) {
   const { proc, scope } = load("playout-processor.js", OUT);
   if (probe) proc.port.onmessage!({ data: { type: "probe", on: true } });
+  if (tap) proc.port.onmessage!({ data: { type: "tap", on: true } });
   const out: number[] = [];
   let seq = 0;
   let next = 0;
@@ -82,7 +87,21 @@ function runPlayout(
     proc.process([], [[buf]]);
     out.push(...buf);
   }
-  return { out, posted: proc.port.posted as { type: string; idle: boolean; kind?: string; size?: number }[] };
+  // Capture off, like session teardown: the tap flushes its last partial block
+  // and acks, so a capture never loses its tail.
+  if (tap) proc.port.onmessage!({ data: { type: "tap", on: false } });
+  return { out, posted: proc.port.posted as PostedTap[] };
+}
+
+type PostedTap =
+  | { type: "level"; idle: boolean; consumed?: number }
+  | { type: "pop"; kind?: string; size?: number }
+  | { type: "tap"; samples?: Float32Array }
+  | { type: "tap-end" };
+
+/** Concatenate the tap's posted blocks, as the main thread's capture would. */
+function tappedSamples(posted: PostedTap[]): number[] {
+  return posted.flatMap((m) => (m.type === "tap" && m.samples ? Array.from(m.samples) : []));
 }
 
 /** 1s of sine in chunks of 40–60ms, each up to 70ms late (in order, as over TCP). */
@@ -120,7 +139,7 @@ test("playout: jittery chunks play as one seamless stream", () => {
   const { out, posted } = runPlayout(jitteryReply(), 2);
   assert.ok(maxStep(out) <= CLEAN_STEP, `max step ${maxStep(out)} > clean ${CLEAN_STEP}`);
   // Exactly one drain: the natural end of the reply, no mid-reply underrun.
-  assert.equal(posted.filter((m) => m.idle).length, 1);
+  assert.equal(posted.filter((m) => m.type === "level" && m.idle).length, 1);
   // Pre-roll: nothing sounds until 500ms of audio has arrived.
   const arrivals = jitteryReply();
   const firstSound = out.findIndex((y) => y !== 0) / OUT;
@@ -137,7 +156,7 @@ test("playout: a stall longer than the buffer fades out and back in", () => {
   ];
   const { out, posted } = runPlayout(arrivals, 2.2);
   assert.ok(maxStep(out) <= CLEAN_STEP, `max step ${maxStep(out)}`);
-  assert.equal(posted.filter((m) => m.idle).length, 2, "one underrun + the end");
+  assert.equal(posted.filter((m) => m.type === "level" && m.idle).length, 2, "one underrun + the end");
 });
 
 /** Real time, as the server streams (10ms chunks every 10ms), with one network hiccup. */
@@ -154,7 +173,7 @@ function realTimeReply(seconds: number, hiccupAt: number, hiccupS: number) {
 test("playout: a 400ms network hiccup mid-line is absorbed, no gap", () => {
   const { out, posted } = runPlayout(realTimeReply(2, 0.8, 0.4), 3);
   assert.ok(maxStep(out) <= CLEAN_STEP, `max step ${maxStep(out)}`);
-  assert.equal(posted.filter((m) => m.idle).length, 1, "only the natural end");
+  assert.equal(posted.filter((m) => m.type === "level" && m.idle).length, 1, "only the natural end");
 });
 
 test("playout: reports how much of the stream it has consumed", () => {
@@ -191,7 +210,7 @@ test("pop probe: a clean jittery reply reports nothing", () => {
 test("pop probe: a hard discontinuity in the stream is flagged as a jump", () => {
   const square = new Float32Array(SRC * 0.2).map((_, i) => (Math.floor(i / 12) % 2 ? 0.9 : -0.9));
   const { posted } = runPlayout([[0, sineChunk(0, SRC * 0.2)], [0.05, square]], 1.2, undefined, true);
-  const pops = posted.filter((m) => m.type === "pop" && m.kind === "jump");
+  const pops = posted.filter((m): m is Extract<PostedTap, { type: "pop" }> => m.type === "pop" && m.kind === "jump");
   assert.ok(pops.length > 0, "the square edge is flagged");
   assert.ok((pops[0]?.size ?? 0) > 0.3);
 });
@@ -200,6 +219,63 @@ test("pop probe: off by default, the worklet posts no pop messages", () => {
   const square = new Float32Array(SRC * 0.2).map((_, i) => (Math.floor(i / 12) % 2 ? 0.9 : -0.9));
   const { posted } = runPlayout([[0, square]], 1);
   assert.deepEqual(posted.filter((m) => m.type === "pop"), []);
+});
+
+/** Compare two streams sample by sample, reporting the first divergence. */
+function assertSameSamples(actual: number[], expected: number[], label: string) {
+  assert.equal(actual.length, expected.length, `${label}: ${actual.length} samples, want ${expected.length}`);
+  for (let i = 0; i < expected.length; i++) {
+    if (actual[i] !== expected[i]) {
+      assert.fail(`${label}: sample ${i} is ${actual[i]}, want ${expected[i]}`);
+    }
+  }
+}
+
+test("delivered capture: the tap posts exactly the samples the worklet emitted", () => {
+  const { out, posted } = runPlayout(jitteryReply(), 2, undefined, false, SRC, true);
+  const captured = tappedSamples(posted);
+  assertSameSamples(captured, out, "capture vs emitted stream");
+  // The ack follows the final block, so teardown can await a complete file.
+  assert.equal(posted.at(-1)?.type, "tap-end");
+});
+
+test("delivered capture: enabling the tap does not change the emitted samples", () => {
+  const plain = runPlayout(jitteryReply(), 2);
+  const tapped = runPlayout(jitteryReply(), 2, undefined, false, SRC, true);
+  assertSameSamples(tapped.out, plain.out, "tapped vs plain output");
+});
+
+test("delivered capture: a flush mid-reply is captured through its fade", () => {
+  const { out, posted } = runPlayout([[0, sineChunk(0, SRC)]], 1.2, 0.8, false, SRC, true);
+  assertSameSamples(tappedSamples(posted), out, "capture across a flush");
+});
+
+test("delivered capture: off by default, no tap buffers are posted", () => {
+  const { posted } = runPlayout(jitteryReply(), 1.5);
+  assert.deepEqual(posted.filter((m) => m.type === "tap" || m.type === "tap-end"), []);
+});
+
+test("delivered capture: a tapped run writes a readable WAV of what the speaker got", async () => {
+  const { out, posted } = runPlayout(jitteryReply(), 1.5, undefined, false, SRC, true);
+  const files: Uint8Array[] = [];
+  const capture = new DeliveredCapture({
+    sampleRate: OUT,
+    write: (_name, bytes) => {
+      files.push(bytes);
+    },
+    now: () => new Date(Date.UTC(2026, 9, 29, 14, 5, 6)),
+  });
+  for (const message of posted) {
+    if (message.type === "tap" && message.samples) capture.push(message.samples);
+  }
+  const result = await capture.finish();
+  assert.equal(result?.name, "delivered-20261029-140506.wav");
+  const wav = decodeWav(files[0]!);
+  assert.equal(wav.facts.sampleRate, OUT);
+  // 16-bit PCM is the comparison's format: compare the file to the emitted
+  // stream at that quantisation, sample for sample.
+  const quantise = (v: number) => Math.round(Math.max(-1, Math.min(1, v)) * 32767);
+  assertSameSamples(Array.from(wav.samples), out.map(quantise), "WAV vs emitted stream");
 });
 
 function runMic(inputRate: number, seconds: number) {
