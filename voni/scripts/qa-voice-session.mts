@@ -16,8 +16,8 @@ import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
-import { spawnSync } from "node:child_process";
 import { resolveCredential } from "../src/lib/platform/credentials";
+import { decodeRecordingPcm } from "../src/lib/platform/recording-decode";
 import {
   RecordingCaptureError,
   agentChannelPcm,
@@ -127,30 +127,7 @@ function analyzePcm(pcm: Uint8Array, sampleRate: number) {
  * at. No `-ar` and no per-channel `pan`: a resampled copy would hide the rate
  * defect the capture exists to expose.
  */
-function decodeRecording(audioPath: string): Buffer | null {
-  const result = spawnSync(
-    "ffmpeg",
-    [
-      "-hide_banner",
-      "-loglevel",
-      "error",
-      "-i",
-      audioPath,
-      "-vn",
-      "-acodec",
-      "pcm_s16le",
-      "-f",
-      "s16le",
-      "pipe:1",
-    ],
-    { encoding: null, maxBuffer: 256 * 1024 * 1024 },
-  );
-  return result.status === 0 &&
-    Buffer.isBuffer(result.stdout) &&
-    result.stdout.byteLength > 0
-    ? result.stdout
-    : null;
-}
+
 
 async function fetchChecked(url: string, init?: RequestInit): Promise<Response> {
   const response = await fetch(url, init);
@@ -217,7 +194,7 @@ async function main() {
       sample_rate: metadata.sample_rate,
       channels: metadata.channels,
     });
-    const interleaved = decodeRecording(audioPath);
+    const interleaved = decodeRecordingPcm(audioPath, format.sampleRate);
     const left = interleaved ? channelPcm(interleaved, format, 0) : null;
     const right = interleaved ? agentChannelPcm(interleaved, format) : null;
     const evidence = {
