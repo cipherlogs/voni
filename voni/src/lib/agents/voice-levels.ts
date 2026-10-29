@@ -31,18 +31,21 @@
  *
  * ── The measured run (2026-10-29) ─────────────────────────────────────────
  * Three vendor renders per voice of that voice's own greeting, measured with
- * `src/lib/audio/level-facts.ts`. Every offered voice that the TTS endpoint
- * serves measured at or within the gate's 0.20 LU tolerance of the committed
- * `anna` floor (−20.04 LUFS; measured medians −20.11 … −26.41) and no take
- * clips (worst true peak −1.48 dBTP), so no voice needs attenuation and none
- * may be boosted: `volume = 100` for every measured voice. The measured level
- * is the voice's own reference, so unity is the decision, not a default that
- * skipped the measurement.
+ * `src/lib/audio/level-facts.ts`. Each voice was judged against **its own**
+ * reference render, not against another voice: measured medians span −20.11
+ * (`anna`) to −26.41 (`rafael`) LUFS, roughly 6 dB, and that spread is
+ * expected native variation, not a parity defect. The committed `anna` floor
+ * (−20.04 LUFS) is a single-voice vendor baseline; no cross-voice claim is
+ * made from it. No take clips (worst true peak −1.48 dBTP), `output.volume`
+ * is attenuation-only, and each voice's own reference is its target, so the
+ * decision is `volume = 100` for every measured voice: unity is the measured
+ * decision, not a default that skipped the measurement.
  *
  * `juergen` is the exception the vendor's TTS endpoint does not serve
- * (`422 voice_not_found`), so it has no measured reference. It keeps the named
- * `UNMEASURED_VOICE_OUTPUT_VOLUME` and the gate reports it unmeasured — an
- * unmeasured voice never passes on a default (ticket 21).
+ * (`422 voice_not_found`), so it has no measured reference. Its registry entry
+ * is explicit and `measured: false`, not a silent 100: `voiceOutputVolume`
+ * reads the named `UNMEASURED_VOICE_OUTPUT_VOLUME`, and the gate reports it
+ * unmeasured — an unmeasured voice never passes on a default (ticket 21).
  */
 
 /**
@@ -57,12 +60,20 @@ export type VoiceLevelMeasurement = {
   voice: string;
   /** The voice's own Locale — a voice speaks exactly one. */
   locale: string;
-  /** Median gated integrated loudness across the takes, LUFS (BS.1770-4). */
-  integratedLufs: number;
-  /** Loudest true peak across the takes, dBTP. */
-  truePeakDbtp: number;
+  /** Median gated integrated loudness across the takes, LUFS; null when unmeasured. */
+  integratedLufs: number | null;
+  /** Loudest true peak across the takes, dBTP; null when unmeasured. */
+  truePeakDbtp: number | null;
   /** The `output.volume` the stored body carries: 100 = native reference. */
   volume: number;
+  /**
+   * Whether a reference render was measured for this voice. An unmeasured
+   * voice is a visible registry row, never an absent row that silently falls
+   * back to the native default.
+   */
+  measured: boolean;
+  /** Why this voice has no measurement; null for a measured row. */
+  unmeasuredReason: string | null;
 };
 
 /**
@@ -87,16 +98,45 @@ export const MEASURED_VOICE_LEVELS: readonly VoiceLevelMeasurement[] = Object.fr
   { voice: "paul", locale: "en", integratedLufs: -22.04, truePeakDbtp: -1.48, volume: 100 },
   { voice: "rafael", locale: "pt", integratedLufs: -26.41, truePeakDbtp: -6.58, volume: 100 },
   { voice: "vera", locale: "en", integratedLufs: -21.21, truePeakDbtp: -3.85, volume: 100 },
+].map((row) => Object.freeze({ ...row, measured: true as const, unmeasuredReason: null })));
+
+/**
+ * The voices with no measured reference, recorded as first-class rows so the
+ * registry and every report say "unmeasured" instead of showing a bare 100.
+ */
+export const UNMEASURED_VOICE_LEVELS: readonly VoiceLevelMeasurement[] = Object.freeze([
+  {
+    voice: "juergen",
+    locale: "de",
+    integratedLufs: null,
+    truePeakDbtp: null,
+    volume: UNMEASURED_VOICE_OUTPUT_VOLUME,
+    measured: false,
+    unmeasuredReason:
+      "vendor /v1/speech did not serve a measurable reference: 422 voice_not_found",
+  },
 ].map((row) => Object.freeze(row)));
 
-/** The measurement behind a voice's level, or null when it has none. */
+/** Every offered voice's level decision: measured rows first, then the named gaps. */
+export const VOICE_LEVEL_REGISTRY: readonly VoiceLevelMeasurement[] = Object.freeze([
+  ...MEASURED_VOICE_LEVELS,
+  ...UNMEASURED_VOICE_LEVELS,
+]);
+
+/**
+ * The measurement behind a voice's level, or null when the voice is not in the
+ * registry. An unmeasured voice returns its visible row (`measured: false`),
+ * not null: absence would hide the gap.
+ */
 export function voiceLevelMeasurement(voiceId: string): VoiceLevelMeasurement | null {
-  return MEASURED_VOICE_LEVELS.find((row) => row.voice === voiceId) ?? null;
+  return VOICE_LEVEL_REGISTRY.find((row) => row.voice === voiceId) ?? null;
 }
 
 /**
- * The `output.volume` a stored body carries for this voice. An unmeasured
- * voice keeps the named native default; it is never given an invented level.
+ * The `output.volume` a stored body carries for this voice. An unmeasured or
+ * unknown voice keeps the named native default; it is never given an invented
+ * level. `voiceLevelMeasurement(voiceId)?.measured === false` is the visible
+ * status that says the number is a default, not a measurement.
  */
 export function voiceOutputVolume(voiceId: string): number {
   return voiceLevelMeasurement(voiceId)?.volume ?? UNMEASURED_VOICE_OUTPUT_VOLUME;

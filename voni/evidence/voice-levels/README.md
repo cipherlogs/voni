@@ -38,21 +38,27 @@ against that voice's measured reference, and nothing in the browser changes it.
 | method | `POST https://tts.us.assemblyai.com/v1/speech`, `stream=false`, `container=wav`, `encoding=pcm_s16le`, `sample_rate=24000`, each voice's own greeting in its own Locale |
 | takes | 3 renders per voice; the recorded loudness is the median |
 | measured with | `src/lib/audio/level-facts.ts` (BS.1770-4 gated integrated loudness, 4× true peak) |
-| reference floor | `evidence/vendor-floor/anna-en.wav`, −20.04 LUFS (ticket 18) |
+| anna floor (separate baseline) | `evidence/vendor-floor/anna-en.wav`, −20.04 LUFS (ticket 18) |
 | file | `levels.json` — every take, the median, the loudest true peak and the volume |
 | reproduce | `cd voni && npm run voice:levels` (writes `levels.json`; `--force` replaces an existing record) |
 
-Measured medians run from −20.11 (`anna`) to −26.41 (`rafael`) LUFS. No
-measured voice is louder than the reference floor beyond the gate's own
-0.20 LU tolerance, and no take clips (loudest true peak −1.48 dBTP, `paul`).
-So no voice needs attenuation and none may be boosted: **`volume = 100` for
+Measured medians run from −20.11 (`anna`) to −26.41 (`rafael`) LUFS, a spread
+of about 6 dB. **Each voice is measured against its own reference render, not
+against `anna`.** The anna floor is a single-voice vendor baseline from
+ticket 18; comparing a voice to it is not a cross-voice parity claim, and the
+~6 dB spread is expected native variation, not a level defect. No take clips
+(loudest true peak −1.48 dBTP, `paul`), and `output.volume` is
+attenuation-only. Since each voice's native reference is already its target,
+no voice needs attenuation and none may be boosted: **`volume = 100` for
 every measured voice**. That is the measured decision, not an untouched
 default.
 
 `juergen` is the one offered voice the TTS endpoint does not serve — it
-answers `422 voice_not_found` — so it has no measured reference. It keeps the
-named default (`UNMEASURED_VOICE_OUTPUT_VOLUME`, 100 = native) and the gate
-reports it unmeasured; an unmeasured voice never passes on a default.
+answers `422 voice_not_found` — so it has no measured reference. It is a
+visible `UNMEASURED_VOICE_LEVELS` row (`measured: false`, null loudness/peak,
+`unmeasuredReason` naming the 422), keeps the named default
+(`UNMEASURED_VOICE_OUTPUT_VOLUME`, 100 = native), and the gate reports it
+unmeasured; an unmeasured voice never passes on a default.
 
 ## Registry
 
