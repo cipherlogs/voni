@@ -2609,51 +2609,76 @@ export type DoubleTalkInput = {
 export type AudibleWindow = { start: number; end: number };
 
 /**
- * What one cut leaves behind, from the playout's own timings. `agentUntil` is
- * when agent audio actually went silent after the flush: the worklet's fade
- * caps it at cutAt + the fade, while a flush that never stops the playout
+ * What one cut leaves behind, from the playout's own timings. `cutAt` is when
+ * the cut was triggered (the caller started talking over the agent);
+ * `flushAt` is when the flush/fade was actually processed, which can lag the
+ * trigger; `agentUntil` is when agent audio went silent: the worklet's fade
+ * caps it at flushAt + the fade, while a flush that never stops the playout
  * lets it run to the queued end. The caller window is the speech that was
  * sounding under the cut, or null when the caller was silent.
  */
 export type DoubleTalkCut = {
-  /** The server cut (the playout flush), wall clock ms. */
+  /** The cut trigger (caller speech start under the agent), wall clock ms. */
   cutAt: number;
+  /** When the flush/fade was processed, wall clock ms (>= cutAt). */
+  flushAt: number;
   /** When agent playout went silent after the flush, wall clock ms. */
   agentUntil: number;
   /** Caller speech audible under the cut; null when the caller was not speaking. */
   caller: AudibleWindow | null;
 };
 
-/**
- * Post-flush residual overlap: the ms the caller's speech and the agent's
- * playout were both still sounding AFTER the flush. Time before the flush is
- * cut latency, which the barge-in-cut gate budgets separately (up to 1500ms);
- * only the residual past the flush counts against the 400ms double-talk bar.
- * The fade (0.04s) means a healthy cut leaves at most the fade's length.
- */
-export function postFlushOverlapMs(cut: DoubleTalkCut): number {
+/** Both audios sounding together from `from` until agent silence. */
+function overlapFrom(cut: DoubleTalkCut, from: number): number {
   if (!cut.caller) return 0;
-  const start = Math.max(cut.cutAt, cut.caller.start);
+  const start = Math.max(from, cut.caller.start);
   const end = Math.min(cut.agentUntil, cut.caller.end);
   return Math.max(0, Math.round(end - start));
 }
 
 /**
- * The cut window the playout's own timings produce. At the flush the worklet
- * fades what is sounding over `fadeMs` and drops the rest, so the agent is
- * audible until `min(playUntil, cutAt + fadeMs)`; without a fade (a hard stop)
- * that is the cut instant. `playUntil` is the wall-clock end of everything
+ * Post-flush residual overlap: the ms both were still sounding after the
+ * flush was processed. This is the fade's own tail (normally <=40ms); it is
+ * honest but not the bar's full measure, because a delayed flush leaves the
+ * agent sounding before it. Kept for triage and the residual-math pin.
+ */
+export function postFlushOverlapMs(cut: DoubleTalkCut): number {
+  return overlapFrom(cut, cut.flushAt);
+}
+
+/**
+ * The double-talk measure the gate scores: audible overlap from the cut
+ * trigger (when the caller started talking over the agent) until the agent
+ * goes silent. A prompt flush leaves only the fade (<=40ms); a flush that
+ * lags the caller's speech by 500ms leaves 540ms of double talk even though
+ * the post-flush residual is still 40ms. Never an assumption that flush ==
+ * cut, so the gate can actually FAIL.
+ */
+export function cutOverlapMs(cut: DoubleTalkCut): number {
+  return overlapFrom(cut, cut.cutAt);
+}
+
+/**
+ * The cut window the playout's own timings produce. The worklet fades what is
+ * sounding over `fadeMs` when it processes the flush and drops the rest, so
+ * the agent is audible until `min(playUntil, flushAt + fadeMs)`; without a
+ * fade (a hard stop) that is the flush instant. `flushAt` defaults to the cut
+ * trigger for a prompt flush; `playUntil` is the wall-clock end of everything
  * queued when the flush landed, exactly what the eval's fake playout tracks.
  */
 export function playoutCutWindow(input: {
   cutAt: number;
+  /** When the fade was processed; defaults to the cut trigger (prompt flush). */
+  flushAt?: number;
   playUntil: number;
   fadeMs: number;
   caller: AudibleWindow | null;
 }): DoubleTalkCut {
+  const flushAt = Math.max(input.cutAt, input.flushAt ?? input.cutAt);
   return {
     cutAt: input.cutAt,
-    agentUntil: Math.min(input.playUntil, input.cutAt + Math.max(0, input.fadeMs)),
+    flushAt,
+    agentUntil: Math.min(input.playUntil, flushAt + Math.max(0, input.fadeMs)),
     caller: input.caller,
   };
 }
@@ -2671,8 +2696,8 @@ export function evaluateDoubleTalk(input: DoubleTalkInput): ScoreboardGate {
       name: "double-talk",
       status: "FAIL",
       detail:
-        `audible overlap ${max}ms > ${DOUBLE_TALK_MAX_OVERLAP_MS}ms after cut ` +
-        `(cuts: ${cuts}ms; fade ${DOUBLE_TALK_FADE_OUT_S}s + flush)${trace}`,
+        `audible overlap ${max}ms > ${DOUBLE_TALK_MAX_OVERLAP_MS}ms from the caller's cut ` +
+        `(cuts: ${cuts}ms; fade ${DOUBLE_TALK_FADE_OUT_S}s + flush lag)${trace}`,
     };
   }
   return {
@@ -2681,7 +2706,7 @@ export function evaluateDoubleTalk(input: DoubleTalkInput): ScoreboardGate {
     detail:
       `max overlap ${max}ms ≤ ${DOUBLE_TALK_MAX_OVERLAP_MS}ms across ` +
       `${input.overlapMs.length} cut${input.overlapMs.length === 1 ? "" : "s"} ` +
-      `(fade ${DOUBLE_TALK_FADE_OUT_S}s + flush)`,
+      `(fade ${DOUBLE_TALK_FADE_OUT_S}s + flush lag)`,
   };
 }
 

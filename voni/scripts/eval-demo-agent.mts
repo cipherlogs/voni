@@ -704,14 +704,19 @@ async function runClient(
         // caller actually still heard under their own speech after the flush.
         const fadeMs = Math.max(0, fadeS * 1000);
         outcome.lastFadeMs = fadeMs;
+        // The cut trigger is the caller's speech start (they spoke over the
+        // agent); the flush is processed now. A delayed flush leaves audible
+        // double talk between the two, which the residual alone cannot see.
+        const caller = callerWindowAt(at);
         const window = playoutCutWindow({
-          cutAt: at,
+          cutAt: caller ? Math.min(caller.start, at) : at,
+          flushAt: at,
           playUntil,
           fadeMs,
-          caller: callerWindowAt(at),
+          caller,
         });
         outcome.cutWindows.push(window);
-        outcome.overlapMs.push(postFlushOverlapMs(window));
+        outcome.overlapMs.push(cutOverlapMs(window));
       }
       if (live && outcome.cutAt === null) {
         outcome.cutAt = at;

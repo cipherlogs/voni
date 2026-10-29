@@ -29,6 +29,7 @@ import {
   evaluateDoubleTalk,
   evaluateEndCallDrain,
   postFlushOverlapMs,
+  cutOverlapMs,
   playoutCutWindow,
   parseDoubleTalkOutput,
   parseGoodbyeDrainOutput,
@@ -2987,35 +2988,54 @@ test("double-talk gate pins the 400ms audibility bar", () => {
 });
 
 test("post-flush overlap counts only the caller audio and agent playout that survive the flush", () => {
-  // Cut at 1200ms with 400ms of agent audio still queued and the real 40ms
-  // fade: the caller hears at most 40ms of the faded tail, never the queue.
+  // Prompt flush at the cut (1200ms) with 400ms of agent audio still queued
+  // and the real 40ms fade: the caller hears at most 40ms of the faded tail.
   assert.equal(
-    postFlushOverlapMs({ cutAt: 1200, agentUntil: 1240, caller: { start: 1000, end: 2000 } }),
+    postFlushOverlapMs({ cutAt: 1200, flushAt: 1200, agentUntil: 1240, caller: { start: 1000, end: 2000 } }),
     40,
   );
   // A fade that lets the playout run long (or a flush that never stops the
   // audio) is the regression the 400ms bar exists to catch: 800ms audible.
   assert.equal(
-    postFlushOverlapMs({ cutAt: 1200, agentUntil: 2100, caller: { start: 1000, end: 2000 } }),
+    postFlushOverlapMs({ cutAt: 1200, flushAt: 1200, agentUntil: 2100, caller: { start: 1000, end: 2000 } }),
     800,
   );
   // Agent audio already finished before the cut: nothing sounds after it.
   assert.equal(
-    postFlushOverlapMs({ cutAt: 1200, agentUntil: 1100, caller: { start: 1000, end: 2000 } }),
+    postFlushOverlapMs({ cutAt: 1200, flushAt: 1200, agentUntil: 1100, caller: { start: 1000, end: 2000 } }),
     0,
   );
   // The caller stops 10ms after the cut: only those 10ms can overlap.
   assert.equal(
-    postFlushOverlapMs({ cutAt: 1200, agentUntil: 1240, caller: { start: 1000, end: 1210 } }),
+    postFlushOverlapMs({ cutAt: 1200, flushAt: 1200, agentUntil: 1240, caller: { start: 1000, end: 1210 } }),
     10,
   );
   // The caller starts after the fade completed: no simultaneous audio.
   assert.equal(
-    postFlushOverlapMs({ cutAt: 1200, agentUntil: 1240, caller: { start: 1300, end: 2000 } }),
+    postFlushOverlapMs({ cutAt: 1200, flushAt: 1200, agentUntil: 1240, caller: { start: 1300, end: 2000 } }),
     0,
   );
   // A cut with no caller speech (agent-only flush) is never overlap.
-  assert.equal(postFlushOverlapMs({ cutAt: 1200, agentUntil: 1240, caller: null }), 0);
+  assert.equal(postFlushOverlapMs({ cutAt: 1200, flushAt: 1200, agentUntil: 1240, caller: null }), 0);
+});
+
+test("a delayed flush is audible double talk the residual bar must catch", () => {
+  // The cut is triggered when the caller starts talking over the agent; the
+  // flush that fades the playout is processed later. With a prompt flush the
+  // caller hears only the 40ms fade; a flush 500ms late leaves both sounding
+  // for 540ms. The post-flush residual stays 40ms either way, which is why
+  // the gate must score from the cut, not from the flush.
+  const caller = { start: 1000, end: 2000 };
+  const prompt = playoutCutWindow({ cutAt: 1200, flushAt: 1200, playUntil: 5000, fadeMs: 40, caller });
+  assert.equal(prompt.agentUntil, 1240);
+  assert.equal(postFlushOverlapMs(prompt), 40);
+  assert.equal(cutOverlapMs(prompt), 40);
+
+  const late = playoutCutWindow({ cutAt: 1200, flushAt: 1700, playUntil: 5000, fadeMs: 40, caller });
+  assert.equal(late.agentUntil, 1740);
+  assert.equal(postFlushOverlapMs(late), 40, "the post-flush residual is honest: only the fade remains");
+  assert.equal(cutOverlapMs(late), 540, "but the caller heard 540ms of double talk from their cut");
+  assert.ok(cutOverlapMs(late) > DOUBLE_TALK_MAX_OVERLAP_MS, "a delayed flush must be able to FAIL");
 });
 
 test("the over-talk runner line is the overlap evidence the gate scores", () => {
@@ -3074,8 +3094,10 @@ test("fake-playout timings turn a flush into the post-flush overlap window", () 
   const caller = { start: 1000, end: 2000 };
   // 3.8s of agent audio still queued, real 40ms fade: only the fade is heard.
   const faded = playoutCutWindow({ cutAt: 1200, playUntil: 5000, fadeMs: 40, caller });
+  assert.equal(faded.flushAt, 1200, "a prompt flush defaults to the cut instant");
   assert.equal(faded.agentUntil, 1240);
   assert.equal(postFlushOverlapMs(faded), 40);
+  assert.equal(cutOverlapMs(faded), 40);
   // Playout already finished before the cut: nothing survives the flush.
   assert.equal(postFlushOverlapMs(playoutCutWindow({ cutAt: 1200, playUntil: 900, fadeMs: 40, caller })), 0);
   // A hard stop (no fade) leaves no residual, only the click the fade prevents.
@@ -3084,11 +3106,21 @@ test("fake-playout timings turn a flush into the post-flush overlap window", () 
   const long = playoutCutWindow({ cutAt: 1200, playUntil: 5000, fadeMs: 900, caller });
   assert.equal(long.agentUntil, 2100);
   assert.equal(postFlushOverlapMs(long), 800);
+  assert.equal(cutOverlapMs(long), 800);
   // The caller arriving mid-fade still only overlaps the fade's remainder.
   assert.equal(
     postFlushOverlapMs(playoutCutWindow({ cutAt: 1200, playUntil: 5000, fadeMs: 40, caller: { start: 1230, end: 2000 } })),
     10,
   );
+});
+
+test("a delayed flush fails the double-talk gate at the cut turn", () => {
+  const caller = { start: 1000, end: 2000 };
+  const late = playoutCutWindow({ cutAt: 1200, flushAt: 1700, playUntil: 5000, fadeMs: 40, caller });
+  const gate = evaluateDoubleTalk({ overlapMs: [postFlushOverlapMs(late), cutOverlapMs(late)], traceRef: "sess_late / over-talk" });
+  assert.equal(gate.status, "FAIL");
+  assert.match(gate.detail, /540/);
+  assert.match(gate.detail, /sess_late/);
 });
 
 test("double-talk passes when every cut fades inside 400ms", () => {
