@@ -9,12 +9,14 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
 import aiohttp
 from loguru import logger
 
+from capture_windows import capture_windows
 from voice_judge import allow_tool_call
 
 SENSITIVE_CAPTURE_TOOL = "prepare_sensitive_capture"
@@ -39,7 +41,15 @@ class PendingTool:
 
 
 class ToolCoordinator:
-    def __init__(self, agent_ws: Any, voni_call_id: str | None) -> None:
+    def __init__(
+        self,
+        agent_ws: Any,
+        voni_call_id: str | None,
+        load_turn_detection: Callable[
+            [], Awaitable[dict[str, Any] | None]
+        ]
+        | None = None,
+    ) -> None:
         self.agent_ws = agent_ws
         self.voni_call_id = voni_call_id
         self.api_url = os.environ.get("VONI_API_URL", "").rstrip("/")
@@ -52,6 +62,14 @@ class ToolCoordinator:
         self.send_lock = asyncio.Lock()
         self.update_waiter: asyncio.Future | None = None
         self.restore_fast_pacing = False
+        # The call's stored body, read once while the greeting plays. `None`
+        # means the Turn preset; an object is the demo experiment's windows.
+        # Both widen and restore read this, so neither is a bridge guess.
+        self._turn_detection_task = (
+            self._track(asyncio.create_task(load_turn_detection()))
+            if load_turn_detection is not None
+            else None
+        )
         # Agent-initiated hangup, armed by an end_call result and acted on
         # at the next settled reply — the spoken closing line finishes
         # first. Disarmed the moment the caller speaks again.
@@ -121,9 +139,10 @@ class ToolCoordinator:
         task = asyncio.create_task(self._execute(event))
         self._track(task)
 
-    def _track(self, task: asyncio.Task) -> None:
+    def _track(self, task: asyncio.Task) -> asyncio.Task:
         self.tasks.add(task)
         task.add_done_callback(self.tasks.discard)
+        return task
 
     async def _execute(self, event: dict[str, Any]) -> None:
         call_id = event["call_id"]
@@ -188,10 +207,26 @@ class ToolCoordinator:
                     }
                 return body
 
+    async def _stored_turn_detection(self) -> dict[str, Any] | None:
+        """The call's served turn setting, or the Turn preset when unreadable."""
+        if self._turn_detection_task is None:
+            return None
+        try:
+            return await self._turn_detection_task
+        except Exception as error:
+            logger.warning(f"stored agent body unavailable; Turn preset used: {error}")
+            return None
+
     async def _prepare_sensitive_capture(self) -> dict[str, Any]:
         try:
             await self._update_session(
-                {"input": {"turn_detection": {"min_silence": 500, "max_silence": 2000}}}
+                {
+                    "input": {
+                        "turn_detection": capture_windows(
+                            await self._stored_turn_detection()
+                        )
+                    }
+                }
             )
         except Exception:
             return {
@@ -208,7 +243,11 @@ class ToolCoordinator:
     async def _restore_pacing(self) -> None:
         try:
             await self._update_session(
-                {"input": {"turn_detection": {"min_silence": 100, "max_silence": 500}}}
+                {
+                    "input": {
+                        "turn_detection": await self._stored_turn_detection()
+                    }
+                }
             )
         except Exception as error:
             logger.warning(f"could not restore fast call pacing: {error}")

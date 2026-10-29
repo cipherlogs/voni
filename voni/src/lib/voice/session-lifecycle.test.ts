@@ -1508,6 +1508,47 @@ test("sensitive capture widens from the adaptive default and restores null", asy
   assert.equal(internals["activeTurnDetection"] ?? null, null);
 });
 
+test("sensitive capture follows a body whose windows exceed the floor", async () => {
+  const { session, sent, handle, internals } = makeSession();
+  const body = {
+    min_silence: 1600,
+    max_silence: 5200,
+    interrupt_response: false,
+    interruption_delay: 250,
+  };
+  internals["activeTurnDetection"] = body;
+  const prepare = (
+    session as unknown as {
+      prepareSensitiveCapture: () => Promise<unknown>;
+    }
+  ).prepareSensitiveCapture.bind(session);
+
+  const prepared = prepare();
+  assert.deepEqual(JSON.parse(sent[0]), {
+    type: "session.update",
+    session: {
+      input: {
+        turn_detection: {
+          min_silence: 1600,
+          max_silence: 5200,
+          interrupt_response: true,
+          interruption_delay: 0,
+        },
+      },
+    },
+  });
+  handle({ type: "session.updated" });
+  await prepared;
+
+  handle({ type: "transcript.user", item_id: "u-wide", text: "value" });
+  assert.deepEqual(JSON.parse(sent[1]), {
+    type: "session.update",
+    session: { input: { turn_detection: body } },
+  });
+  handle({ type: "session.updated" });
+  assert.deepEqual(internals["activeTurnDetection"], body);
+});
+
 test("muted mic drops frames without tearing down the call", () => {
   const { session, sent, handle } = makeSession();
   handle({ type: "session.ready", session_id: "sess_mute" });

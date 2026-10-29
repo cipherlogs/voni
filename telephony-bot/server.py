@@ -40,6 +40,7 @@ from pipecat.runner.utils import parse_telephony_websocket
 from voni_db import recorder
 import barge_in_recovery as recovery
 from goodbye_drain import GoodbyeDrain, playout_settled
+from stored_agent_body import read_turn_detection
 from tool_coordinator import ToolCoordinator
 from voice_judge import classify_user_turn, judge_enabled, sample_judge
 from bridge_config import BridgeConfig, bridge_config
@@ -1005,6 +1006,17 @@ async def media_stream(websocket: WebSocket):
     session_id = None
     try:
         runtime = await bridge_config.get(force=True)
+        # The body this call serves, read once while the greeting plays. Its
+        # turn setting decides what sensitive capture widens from and what the
+        # next final caller turn restores — the browser's mechanics, pinned to
+        # the same stored body (ADR 0007, voice-parity ticket 71).
+        inbound_agent = INBOUND_AGENTS.pop(call_control_id, None)
+        stored_agent = inbound_agent or runtime.assemblyai_agent_id
+        load_turn_detection = (
+            (lambda: read_turn_detection(runtime.assemblyai_api_key, stored_agent))
+            if stored_agent
+            else None
+        )
         # Voice Agent API uses Bearer authentication. Browser sessions use the
         # short-lived tokens minted by Voni instead of this server credential.
         agent_ws = await websockets.connect(
@@ -1018,7 +1030,7 @@ async def media_stream(websocket: WebSocket):
             json.dumps(
                 build_session_update(
                     in_encoding, out_encoding, runtime,
-                    INBOUND_AGENTS.pop(call_control_id, None),
+                    inbound_agent,
                 )
             )
         )
@@ -1035,7 +1047,11 @@ async def media_stream(websocket: WebSocket):
                 logger.error(f"agent session failed to start: {event}")
                 return
 
-        tools = ToolCoordinator(agent_ws, recorder.get_call_id(call_control_id))
+        tools = ToolCoordinator(
+            agent_ws,
+            recorder.get_call_id(call_control_id),
+            load_turn_detection=load_turn_detection,
+        )
 
         # Whichever leg ends first tears down the other.
         done, pending = await asyncio.wait(
