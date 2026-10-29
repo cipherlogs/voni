@@ -1,0 +1,80 @@
+{
+  "contract": "barge-in-cases/1",
+  "recordedAt": "2026-10-29",
+  "recordedWith": "the managed path's recorded table (voni/src/lib/voice/barge-in-recovery.cases.json) plus the spec's M09 case catalogue (double barge-in, expiry, greeting, goodbye, tool-hold)",
+  "recoverySource": "voni/src/lib/voice/barge-in-recovery.cases.json",
+  "recoveryContract": "barge-in-recovery/1",
+  "comment": "The cross-engine barge-in table. recoveryRows names every row of the managed table the cascade must pass unchanged; the runner reads those rows from the managed file rather than copying them, so a missing managed row or a changed expected tail fails by name. cases are the lifecycle rows from the spec; each row names its source case and the observables the cascade must produce. A difference from a recorded value is a bug, not a new expected value.",
+  "recoveryRows": [
+    "a filler barge-in resumes the exact unheard tail from the last heard word",
+    "a noise with no caller words still resumes the unheard tail",
+    "a cut after the last word has nothing left unheard",
+    "a tail of three words or fewer is not worth resuming",
+    "hearing only the first word keeps the whole line, heard word included",
+    "a line that played in full leaves only the overlap word, never a restart"
+  ],
+  "cases": [
+    {
+      "name": "double barge-in keeps one acknowledgement per cancel and the latest caller turn wins",
+      "kind": "double_barge_in",
+      "source": "M09 AC4; spec \"Barge-in on Cancel\" — Double barge-in",
+      "expect": {
+        "cancels": 2,
+        "acknowledgements": 2,
+        "cuts": 2,
+        "cancelled_resumes": 1,
+        "stale_audio_played": 0,
+        "latest_turn_frames": 1,
+        "latest_turn_flush_id": 6
+      }
+    },
+    {
+      "name": "a cancel after expiry gets no acknowledgement; playback stops locally",
+      "kind": "cancel_after_expiry",
+      "source": "spec case \"Cancel is sent after expires_at\"",
+      "expect": {
+        "cancels": 1,
+        "acknowledgements": 0,
+        "client_flushed": true,
+        "frames_after_cut": 0,
+        "reply_in_flight": false
+      }
+    },
+    {
+      "name": "a greeting barge-in cancels the greeting and the caller wins",
+      "kind": "greeting_barge_in",
+      "source": "spec case \"A barge-in arrives during the greeting\"; M07 AC3",
+      "expect": {
+        "greeting_cancels": 1,
+        "greeting_lines": 1,
+        "greeting_frames_after_cut": 0,
+        "greeting_resumed": false,
+        "caller_turn_frames": 1,
+        "cancelled": true
+      }
+    },
+    {
+      "name": "a goodbye barge-in cancels the closing line and the caller wins",
+      "kind": "goodbye_barge_in",
+      "source": "spec case \"A barge-in arrives during the goodbye\"",
+      "expect": {
+        "closing_cancels": 1,
+        "closing_frames_after_cut": 0,
+        "cause": "goodbye",
+        "caller_turn_frames": 1
+      }
+    },
+    {
+      "name": "a tool-hold barge-in cancels the hold and the tool result still lands",
+      "kind": "tool_hold_barge_in",
+      "source": "spec case \"A real interruption happens during a tool hold\"; M08 AC5",
+      "expect": {
+        "hold_cancels": 1,
+        "hold_frames_after_cut": 0,
+        "tool_result_in_history": true,
+        "caller_turn_frames": 1,
+        "cancelled": true
+      }
+    }
+  ]
+}
