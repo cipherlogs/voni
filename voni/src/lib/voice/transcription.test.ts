@@ -6,6 +6,7 @@ import {
   NEUTRAL_KEYTERMS,
 } from "./transcription";
 import { REAL_ESTATE_TEMPLATE, type AgentConfig } from "@/lib/agents/config";
+import { CONVERSATION_LANGUAGES } from "@/lib/agents/wizard";
 
 const DENTAL: AgentConfig = {
   ...REAL_ESTATE_TEMPLATE,
@@ -59,4 +60,37 @@ test("transcription prompt describes the call without instructing", () => {
   assert.match(prompt, /Nadia/);
   assert.doesNotMatch(prompt, /transcribe verbatim|do not|never/i);
   assert.ok(prompt.length <= 500);
+});
+
+test("a Spanish call's recognition request carries Spanish terms", () => {
+  const terms = buildAgentKeyterms({ ...DENTAL, conversationLanguage: "es" });
+  assert.ok(terms.includes("teléfono"), terms.join(", "));
+  assert.equal(terms.includes("phone"), false);
+});
+
+test("a call whose Locale is pinned by its voice carries that Locale's terms", () => {
+  const terms = buildAgentKeyterms({ ...DENTAL, languageCodes: ["es"] });
+  assert.ok(terms.includes("teléfono"), terms.join(", "));
+  assert.equal(terms.some((term) => term.toLowerCase() === "phone"), false);
+});
+
+test("platform English tool nouns do not leak into a non-English recognition request", () => {
+  const terms = buildAgentKeyterms({ ...DENTAL, conversationLanguage: "es" });
+  for (const english of [
+    "calendar", "appointment", "slot", "follow-up", "callback",
+    "manager", "supervisor", "human", "person",
+  ]) {
+    assert.equal(terms.includes(english), false, english);
+  }
+});
+
+test("the term budget holds in every Locale", () => {
+  for (const locale of CONVERSATION_LANGUAGES) {
+    const terms = buildAgentKeyterms({
+      ...DENTAL,
+      conversationLanguage: locale,
+      keyterms: Array.from({ length: 200 }, (_, i) => `Term${i}`),
+    });
+    assert.equal(terms.length, 100, locale);
+  }
 });
