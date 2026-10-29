@@ -6313,8 +6313,11 @@ export type RegressionSubjectInput = {
   expectedTag?: string;
 };
 
-/** A row's status: the artifact's own gate status, or MISSING with no run. */
-export type RegressionSubjectStatus = GateStatus | "MISSING";
+/**
+ * A row's status: the artifact's own gate status, MISSING with no run, or
+ * BLOCKED when the ordering rule has not let the subject be judged (ticket 78).
+ */
+export type RegressionSubjectStatus = GateStatus | "MISSING" | "BLOCKED";
 
 export type RegressionSubjectResult = {
   subject: SubjectRecord;
@@ -6427,13 +6430,106 @@ function regressionSubjectRow(
   };
 }
 
+// ── Ordering: the featured subject is proved on the instrument first (78) ────
+
+/**
+ * The ordering rule the matrix enforces (voice-parity ticket 78, spec W5):
+ * the featured subject is judged first, and every other subject — English and
+ * non-English alike — is judged only when the featured subject's own current
+ * run in this matrix passes. Until then those rows are BLOCKED, so a refactor
+ * bug on the new instrument can never be attributed to a Locale.
+ */
+export const MATRIX_ORDERING_RULE = "featured-first" as const;
+
+export type MatrixOrdering = {
+  rule: typeof MATRIX_ORDERING_RULE;
+  featuredSubject: SubjectRecord;
+  /**
+   * The featured subject's own row status in this matrix; null when the matrix
+   * contains no featured row, which leaves the gate shut.
+   */
+  featuredStatus: RegressionSubjectStatus | null;
+  /** Named reason: what opened the gate, or what it is waiting for. */
+  detail: string;
+  /** Row keys of subjects that were not judged because the gate is shut. */
+  blocked: string[];
+};
+
+/**
+ * Why a featured subject does not open the gate, in the words the report uses.
+ * Only PASS opens it: INFO (a run that reports no gates) is not a proof, and a
+ * missing run is not a pass.
+ */
+function featuredGateReason(
+  row: RegressionSubjectResult | null,
+  featured: SubjectRecord,
+): string {
+  const label = row ? row.label : formatSubject(featured);
+  const why = row ? row.detail : "no run artifact for the featured subject in this matrix";
+  return `featured subject ${label} has not passed (${why})`;
+}
+
+/**
+ * Apply the featured-first rule to already-built rows: order the featured row
+ * first and replace every other judged row with a BLOCKED row carrying a named
+ * reason when the featured subject has not passed. A MISSING row stays MISSING
+ * (there was never a run to judge); it is not silently turned into a verdict.
+ *
+ * The blocked row keeps its own run's raw measurements but carries no verdict,
+ * so nothing about it can be read as a judgement — least of all another
+ * subject's.
+ */
+function applyFeaturedFirst(input: {
+  results: RegressionSubjectResult[];
+  featured: SubjectRecord;
+}): { results: RegressionSubjectResult[]; ordering: MatrixOrdering } {
+  const featuredRows = input.results.filter((row) => row.isFeatured);
+  const otherRows = input.results.filter((row) => !row.isFeatured);
+  const featuredRow = featuredRows[0] ?? null;
+  const featuredStatus = featuredRow?.status ?? null;
+  const open = featuredStatus === "PASS";
+  const reason = open ? "" : featuredGateReason(featuredRow, input.featured);
+  const blocked: string[] = [];
+  const ordered = [...featuredRows, ...otherRows].map((row) => {
+    if (row.isFeatured || open || row.status === "MISSING") return row;
+    blocked.push(row.key);
+    return {
+      ...row,
+      status: "BLOCKED" as const,
+      detail: `blocked: ${reason}; this subject is not judged until it does`,
+      verdict: null,
+    };
+  });
+  const detail = open
+    ? `${featuredRow ? `featured subject ${featuredRow.label}` : "featured subject"} passed; ` +
+      `${otherRows.length} other subject${otherRows.length === 1 ? "" : "s"} judged after it`
+    : input.results.length === 0
+      ? `no subjects to order`
+      : `blocked: ${reason}; ${blocked.length} subject${blocked.length === 1 ? "" : "s"} not judged`;
+  return {
+    results: ordered,
+    ordering: {
+      rule: MATRIX_ORDERING_RULE,
+      featuredSubject: input.featured,
+      featuredStatus,
+      detail,
+      blocked,
+    },
+  };
+}
+
 export type RegressionMatrix = {
   schemaVersion: typeof SCOREBOARD_SCHEMA_VERSION;
   recordedAt: string;
   expectedTag: string;
   /** The featured default subject: named for report emphasis, never a verdict source. */
   featuredSubject: SubjectRecord;
-  /** Every subject measured, in row order. */
+  /**
+   * The ordering the harness enforced: featured first, everything else only
+   * after it passes. Recorded so the artifact says which rule produced its rows.
+   */
+  ordering: MatrixOrdering;
+  /** Every subject measured, in row order (featured first). */
   subjects: SubjectRecord[];
   results: RegressionSubjectResult[];
   gates: ScoreboardGate[];
@@ -6451,46 +6547,68 @@ export function buildRegressionMatrix(input: {
 }): RegressionMatrix {
   const featured = input.featuredSubject ?? subjectForRunVoice(DEMO_VOICE_IDS[0]);
   const expectedTag = input.expectedTag ?? "Lime 42";
-  const results = input.entries.map((entry) => regressionSubjectRow(entry, featured, expectedTag));
+  const judged = input.entries.map((entry) => regressionSubjectRow(entry, featured, expectedTag));
   const seen = new Set<string>();
-  for (const row of results) {
+  for (const row of judged) {
     if (seen.has(row.key)) throw new Error(`matrix has two rows for subject ${row.label}`);
     seen.add(row.key);
   }
+  // The ordering rule decides what may be judged and in which order (78).
+  const { results, ordering } = applyFeaturedFirst({ results: judged, featured });
   const clean = results.filter((result) => result.status === "PASS").length;
   const missing = results.filter((result) => result.status === "MISSING").length;
+  const blocked = results.filter((result) => result.status === "BLOCKED").length;
   const gates: ScoreboardGate[] = results.map((row) => ({
     name: `subject:${row.key}`,
     // A missing run is never clean: the matrix cannot claim a subject it did
-    // not measure.
-    status: row.status === "MISSING" ? "FAIL" : row.status,
+    // not measure. A blocked subject was not judged at all, so it is INFO with
+    // the reason in the detail; the matrix gate still refuses to call it clean.
+    status:
+      row.status === "MISSING" ? "FAIL" : row.status === "BLOCKED" ? "INFO" : row.status,
     detail: `${row.label}: ${row.detail}`,
   }));
   gates.push({
+    name: `ordering:${MATRIX_ORDERING_RULE}`,
+    status: results.length === 0 ? "INFO" : ordering.featuredStatus === "PASS" ? "PASS" : "FAIL",
+    detail: ordering.detail,
+  });
+  gates.push({
     name: "matrix",
     status: results.length === 0 ? "INFO" : clean === results.length ? "PASS" : "FAIL",
-    detail: `${clean}/${results.length} subjects clean${missing > 0 ? `, ${missing} missing` : ""} (each verdict derived from its own run)`,
+    detail:
+      `${clean}/${results.length} subjects clean` +
+      `${missing > 0 ? `, ${missing} missing` : ""}` +
+      `${blocked > 0 ? `, ${blocked} blocked` : ""}` +
+      ` (each verdict derived from its own run)`,
   });
   return {
     schemaVersion: SCOREBOARD_SCHEMA_VERSION,
     recordedAt: new Date().toISOString(),
     expectedTag,
     featuredSubject: featured,
+    ordering,
     subjects: results.map((result) => result.subject),
     results,
     gates,
   };
 }
 
-/** Console table: one named subject per row plus the summary. */
+/**
+ * Console table: one named subject per row plus the summary. The ordering rule
+ * and its reason are printed beside the header and on every blocked row, so a
+ * subject that was not judged is never silent (ticket 78).
+ */
 export function formatMatrixTable(matrix: RegressionMatrix): string {
   const clean = matrix.results.filter((result) => result.status === "PASS").length;
   const missing = matrix.results.filter((result) => result.status === "MISSING").length;
+  const blocked = matrix.results.filter((result) => result.status === "BLOCKED").length;
   const summary = [`${clean}/${matrix.results.length} clean`];
   if (missing > 0) summary.push(`${missing} missing`);
+  if (blocked > 0) summary.push(`${blocked} blocked`);
   const width = Math.max(12, ...matrix.results.map((row) => row.label.length));
   const rows = matrix.results.map((row) => {
-    const status = row.status === "MISSING" ? "MISS" : row.status;
+    const status =
+      row.status === "MISSING" ? "MISS" : row.status === "BLOCKED" ? "BLOCK" : row.status;
     const subScores =
       row.isFeatured && row.subScores.length > 0
         ? `; sub-scores ${row.subScores.map((sub) => `${sub.name} ${sub.status}`).join(", ")}`
@@ -6498,7 +6616,8 @@ export function formatMatrixTable(matrix: RegressionMatrix): string {
     return `${status.padEnd(6)} ${row.label.padEnd(width)} ${row.detail}${subScores}`;
   });
   return [
-    `subject matrix (featured ${formatSubject(matrix.featuredSubject)}, ${matrix.results.length} subjects, ${summary.join(", ")})`,
+    `subject matrix (featured ${formatSubject(matrix.featuredSubject)}, ordering ${matrix.ordering.rule}, ${matrix.results.length} subjects, ${summary.join(", ")})`,
+    `ordering: ${matrix.ordering.detail}`,
     ...rows,
   ].join("\n");
 }

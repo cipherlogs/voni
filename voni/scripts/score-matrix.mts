@@ -14,6 +14,12 @@
  * pop, no invented test tag): adding a subject never breaks an existing one.
  * Deploying a new voice is a registry entry plus a full matrix run.
  *
+ * Ordering (ticket 78): the featured subject is spawned and judged first, and
+ * every other subject is BLOCKED — no verdict derived — until the featured
+ * subject's own current run in the same matrix PASSES. The rule and its reason
+ * are printed and recorded in the artifact, so a Locale is never silently
+ * judged on an instrument the featured voice has not cleared.
+ *
  *   npm run scoreboard:matrix -- [--voices anna,lola] [--tenant <agent-id>,<voice>,<locale>[,<transport>]]
  *                              [--scenario greeting-cut] [--runs 1]
  *                              [--expected-tag "Lime 42"] [--out matrix-<ts>.json]
@@ -234,6 +240,17 @@ function dedupeTargets(targets: MatrixTarget[]): MatrixTarget[] {
   return unique;
 }
 
+/**
+ * Measure the featured subject first (ticket 78): the run order is part of the
+ * rule, so a non-featured subject is never the first audio on a new instrument.
+ */
+function featuredFirst(targets: MatrixTarget[], featured: SubjectRecord): MatrixTarget[] {
+  return [
+    ...targets.filter((target) => sameSubject(target.subject, featured)),
+    ...targets.filter((target) => !sameSubject(target.subject, featured)),
+  ];
+}
+
 /** Latest saved run per subject (`--from` can see several runs of one subject). */
 function latestRunPerSubject(runs: MatrixRun[]): MatrixRun[] {
   const byKey = new Map<string, MatrixRun>();
@@ -277,7 +294,7 @@ function main(): void {
       // No filter: every subject the directory measured, tenants included.
       for (const run of saved) entries.push({ subject: run.subject, artifact: run.artifact });
     } else {
-      for (const target of dedupeTargets([...demoTargets(voicesFlag), ...tenants])) {
+      for (const target of featuredFirst(dedupeTargets([...demoTargets(voicesFlag), ...tenants]), featured)) {
         const found = saved.find((run) => sameSubject(run.subject, target.subject));
         // A requested subject with no artifact is MISSING, never another row's.
         entries.push({ subject: target.subject, ...(found ? { artifact: found.artifact } : {}) });
@@ -285,7 +302,7 @@ function main(): void {
     }
   } else {
     const scratch = mkdtempSync(join(tmpdir(), "score-matrix-"));
-    for (const target of dedupeTargets([...demoTargets(voicesFlag), ...tenants])) {
+    for (const target of featuredFirst(dedupeTargets([...demoTargets(voicesFlag), ...tenants]), featured)) {
       const tmp = resolve(scratch, `${subjectRowKey(target.subject).replace(/[^a-zA-Z0-9]+/g, "-")}.json`);
       runScoreDemo(target, scenario, runs, dryRun, tmp);
       const run = readScoreArtifact(tmp);
