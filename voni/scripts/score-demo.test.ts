@@ -295,6 +295,82 @@ test("--pipeline cascade writes the one shared artifact from the cascade ledger"
   assert.deepEqual(artifact.ledger?.marks, (cascadeLedger().metrics as { marks: unknown }).marks);
 });
 
+test("--pipeline cascade derives the three gaps from marks, never from a final fallback", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const reference = join(dir, "reference.wav");
+  const delivered = join(dir, "delivered.wav");
+  writeToneWav(reference, -20);
+  writeToneWav(delivered, -20);
+  const ledger = join(dir, "ledger.json");
+  const document = cascadeLedger();
+  delete (document.metrics as { gaps_ms?: unknown }).gaps_ms; // only marks remain
+  writeFileSync(ledger, JSON.stringify(document));
+  const out = join(dir, "cascade.json");
+
+  const result = run(
+    [
+      "--pipeline",
+      "cascade",
+      "--ledger",
+      ledger,
+      "--reference",
+      reference,
+      "--delivered",
+      delivered,
+      "--voice",
+      DEMO_VOICE_IDS[0],
+      "--out",
+      out,
+    ],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  const artifact = readScoreboardArtifactFile(out);
+  assert.equal(artifact.latency?.screenToFirstPartialMs, 180);
+  assert.equal(artifact.latency?.speechCompleteToFirstTokenMs, 240);
+  assert.equal(artifact.latency?.replyGapP50Ms, 510);
+
+  // Same marks, but the caller's final landed and `speech_complete` never did:
+  // the two provider-anchored rows are N/A, never the managed final→playout.
+  const noComplete = join(dir, "no-speech-complete.json");
+  const fallbackDoc = cascadeLedger({
+    metrics: {
+      marks: { audio_in: 0, first_partial: 0.2, final: 0.5, first_token: 0.8, first_playout: 1.2 },
+      counts: {},
+    },
+  });
+  writeFileSync(noComplete, JSON.stringify(fallbackDoc));
+  const missingOut = join(dir, "missing.json");
+  const missing = run(
+    [
+      "--pipeline",
+      "cascade",
+      "--ledger",
+      noComplete,
+      "--reference",
+      reference,
+      "--delivered",
+      delivered,
+      "--voice",
+      DEMO_VOICE_IDS[0],
+      "--out",
+      missingOut,
+    ],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.equal(missing.status, 0, missing.stderr + missing.stdout);
+  const missingArtifact = readScoreboardArtifactFile(missingOut);
+  assert.match(
+    (missingArtifact.latency?.speechCompleteToFirstTokenMs as { absent: string }).absent,
+    /speech_complete/,
+  );
+  assert.match(
+    (missingArtifact.latency?.replyGapP50Ms as { absent: string }).absent,
+    /speech_complete/,
+  );
+  assert.match(missing.stdout, /reply gap p50\s+N\/A .*speech_complete/);
+});
+
 test("the managed runner writes the same shared shape when all three captures are named", () => {
   const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
   const bin = join(dir, "bin");

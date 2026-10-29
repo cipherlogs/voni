@@ -355,7 +355,7 @@ import {
   type ArtifactPipeline,
   type ArtifactProviders,
 } from "../src/lib/demo/scoreboard";
-import { readScoreboardArtifactFile } from "../src/lib/demo/artifact-reader";
+import { cascadeLatencyFromMarks, readScoreboardArtifactFile } from "../src/lib/demo/artifact-reader";
 import { judgeOverlap } from "../src/lib/voice/barge-in";
 import { EN_RECOGNITION } from "../src/lib/voice/recognition";
 import { acquireTimingLock, DEFAULT_TIMING_LOCK_PATH } from "../src/lib/demo/timing-lock";
@@ -1041,29 +1041,14 @@ function ledgerCounts(metrics: Record<string, unknown>): Record<string, number> 
   return value;
 }
 
-/** The cascade's three reportable gaps, from the ledger's `gaps_ms` summary. */
-function cascadeLatencyFromLedger(metrics: Record<string, unknown>): ArtifactLatency {
-  const gaps = metrics.gaps_ms;
-  const table = gaps !== null && typeof gaps === "object" && !Array.isArray(gaps)
-    ? (gaps as Record<string, unknown>)
-    : {};
-  const row = (name: string): number | undefined => {
-    const value = table[name];
-    return typeof value === "number" && Number.isFinite(value) ? Math.round(value) : undefined;
-  };
-  const screen = row("screen_latency_ms");
-  const think = row("think_ms");
-  const reply = row("reply_gap_ms");
+/**
+ * The cascade's latency section: the three gaps derived from the ledger marks
+ * (ticket 114), plus the two rows a single call cannot produce. The ledger's
+ * own `gaps_ms` is never read — a derived row cannot drift from its marks.
+ */
+function cascadeLatencyFromLedger(marks: Record<string, number>): ArtifactLatency {
   return {
-    ...(screen !== undefined
-      ? { screenToFirstPartialMs: screen }
-      : { screenToFirstPartialMs: { absent: "N/A — the ledger records no screen_latency_ms" } }),
-    ...(think !== undefined
-      ? { speechCompleteToFirstTokenMs: think }
-      : { speechCompleteToFirstTokenMs: { absent: "N/A — the ledger records no think_ms" } }),
-    ...(reply !== undefined
-      ? { replyGapP50Ms: reply }
-      : { replyGapP50Ms: { absent: "N/A — the ledger records no reply_gap_ms" } }),
+    ...cascadeLatencyFromMarks(marks),
     replyGapP95Ms: { absent: ONE_CALL_NO_P95_ABSENCE },
     commitToFirstPlayoutMs: { absent: CASCADE_NO_COMMIT_MARK_ABSENCE },
   };
@@ -1200,7 +1185,7 @@ function runCascadeArtifact(input: {
         delivered: captureFromFile(deliveredPath),
       },
       eligibility: cascadeEligibilityFromLedger(document.eligibility),
-      latency: cascadeLatencyFromLedger(metrics),
+      latency: cascadeLatencyFromLedger(marks),
       providers: cascadeProvidersFromLedger(document.providers),
       cost: cascadeCostFromLedger(document),
       ledger: { marks, ...(counts !== undefined ? { counts } : {}) },

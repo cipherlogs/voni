@@ -21,9 +21,11 @@ import {
 } from "./scoreboard";
 import {
   ARTIFACT_SECTIONS,
+  CASCADE_GAP_ROWS,
   ArtifactReadError,
   artifactCostTotal,
   artifactSectionGaps,
+  cascadeLatencyFromMarks,
   parseScoreboardArtifact,
   pipelineOfArtifact,
   readScoreboardArtifactFile,
@@ -803,6 +805,136 @@ test("one writer and one reader: a managed and a cascade artifact round-trip thr
   assert.equal(row(cascade, "replyGapP50Ms").ms, 510);
   assert.equal(row(managed, "commitToFirstPlayoutMs").absent, "N/A — no commit mark on the managed artifact");
   assert.equal(row(cascade, "commitToFirstPlayoutMs").absent, CASCADE_NO_COMMIT_MARK_ABSENCE);
+});
+
+// ── Three cascade gaps from marks alone, and an honest N/A (ticket 114) ─────
+
+/** Ledger marks in the ledger's own seconds, as `TimingLedger.summary()` writes them. */
+const CASCADE_MARKS = {
+  audio_in: 10,
+  first_partial: 10.18,
+  speech_complete: 10.6,
+  first_token: 10.84,
+  first_playout: 11.11,
+};
+
+/** The measured rows plus the two named N/As every cascade artifact carries. */
+const CASCADE_LATENCY = {
+  ...ENGINE_LATENCY.cascade,
+  replyGapP95Ms: { absent: ONE_CALL_NO_P95_ABSENCE },
+  commitToFirstPlayoutMs: { absent: CASCADE_NO_COMMIT_MARK_ABSENCE },
+};
+
+test("the three cascade gaps are computed from the ledger marks alone", () => {
+  assert.deepEqual(cascadeLatencyFromMarks(CASCADE_MARKS), {
+    screenToFirstPartialMs: 180,
+    speechCompleteToFirstTokenMs: 240,
+    replyGapP50Ms: 510,
+  });
+  assert.deepEqual(
+    CASCADE_GAP_ROWS.map((row) => row.row),
+    ["screenToFirstPartialMs", "speechCompleteToFirstTokenMs", "replyGapP50Ms"],
+  );
+});
+
+test("a missing mark is a named N/A, never another row's number", () => {
+  // `final` is present and `first_playout` is present: a fallback to the
+  // managed anchor would yield a plausible reply gap. The cascade must not.
+  const rows = cascadeLatencyFromMarks({
+    audio_in: 0,
+    final: 0.5,
+    first_token: 0.8,
+    first_playout: 1.2,
+  });
+  const absentOf = (value: unknown) =>
+    value !== null && typeof value === "object" && "absent" in value
+      ? (value as { absent: string }).absent
+      : "";
+  assert.match(absentOf(rows.screenToFirstPartialMs), /first_partial/);
+  assert.match(absentOf(rows.speechCompleteToFirstTokenMs), /speech_complete/);
+  assert.match(absentOf(rows.replyGapP50Ms), /speech_complete/);
+  assert.match(absentOf(rows.replyGapP50Ms), /never "final"/);
+});
+
+test("the greeting and a cut are excluded from every cascade gap", () => {
+  const withGreeting = cascadeLatencyFromMarks({
+    ...CASCADE_MARKS,
+    greeting_start: 0,
+    greeting_first_audio: 0.05,
+    greeting_done: 9.5,
+    cancelled: 11.5,
+  });
+  assert.deepEqual(withGreeting, cascadeLatencyFromMarks(CASCADE_MARKS));
+});
+
+test("the reader refuses a reply gap borrowed from the final mark", () => {
+  const raw = cascadeArtifact({
+    ledger: { marks: { audio_in: 0, first_partial: 0.2, final: 0.5, first_token: 0.8, first_playout: 1.2 } },
+    latency: {
+      screenToFirstPartialMs: 200,
+      // The think row already states the missing mark; the reply row is the
+      // one that must never be silently filled from `final`.
+      speechCompleteToFirstTokenMs: { absent: "N/A — no speech_complete mark" },
+      replyGapP50Ms: 700,
+      replyGapP95Ms: { absent: ONE_CALL_NO_P95_ABSENCE },
+      commitToFirstPlayoutMs: { absent: CASCADE_NO_COMMIT_MARK_ABSENCE },
+    },
+  });
+  assert.throws(
+    () => parseScoreboardArtifact(raw, "cascade.json"),
+    (error: unknown) =>
+      error instanceof ArtifactReadError &&
+      error.field === "latency.replyGapP50Ms" &&
+      /speech_complete/.test(error.message),
+    "the row is derived from the ledger marks, never borrowed from another mark",
+  );
+});
+
+test("the reader refuses a measured row where the ledger has no anchor mark", () => {
+  const withoutComplete = { ...CASCADE_MARKS };
+  delete (withoutComplete as { speech_complete?: number }).speech_complete;
+  const raw = cascadeArtifact({
+    ledger: { marks: withoutComplete },
+    latency: CASCADE_LATENCY,
+  });
+  assert.throws(
+    () => parseScoreboardArtifact(raw, "cascade.json"),
+    (error: unknown) =>
+      error instanceof ArtifactReadError &&
+      error.field === "latency.speechCompleteToFirstTokenMs" &&
+      /speech_complete/.test(error.message),
+  );
+});
+
+test("a copied reply gap in the commit row is refused on the cascade", () => {
+  const raw = cascadeArtifact({
+    ledger: { marks: CASCADE_MARKS },
+    latency: {
+      screenToFirstPartialMs: 180,
+      speechCompleteToFirstTokenMs: 240,
+      replyGapP50Ms: 510,
+      replyGapP95Ms: { absent: ONE_CALL_NO_P95_ABSENCE },
+      commitToFirstPlayoutMs: 510,
+    },
+  });
+  assert.throws(
+    () => parseScoreboardArtifact(raw, "cascade.json"),
+    (error: unknown) =>
+      error instanceof ArtifactReadError &&
+      error.field === "latency.commitToFirstPlayoutMs" &&
+      /N\/A/.test(error.message),
+    "the commit mark does not exist on the cascade; its row is N/A, not the reply gap",
+  );
+});
+
+test("a cascade artifact whose rows agree with its ledger marks is accepted", () => {
+  const raw = cascadeArtifact({
+    ledger: { marks: CASCADE_MARKS },
+    latency: CASCADE_LATENCY,
+  });
+  const parsed = parseScoreboardArtifact(raw, "cascade.json");
+  assert.deepEqual(parsed.ledger?.marks, CASCADE_MARKS);
+  assert.equal(parsed.latency?.replyGapP50Ms, 510);
 });
 
 test("the one writer refuses an invalid capture combination before writing", () => {
