@@ -53,10 +53,18 @@ language code, a missing prompt, a tool name the vendor would reject. What the
 body may still not be *eligible* for — automatic language detection, more
 keyterms than the vendor accepts — is :mod:`cascade.eligibility`'s gate, which
 turns every refusal here into a routing reason (ticket 61).
+
+The signed body's fingerprint also lives here (ticket 63): :func:`stable_json`,
+:func:`body_fingerprint` and :func:`verify_served_body` hash the *whole* served
+body under the account salt and refuse a body that is not the one the app
+minted. The test pins one vector computed by the TypeScript implementation, so
+the two languages cannot drift apart silently.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -136,6 +144,75 @@ class MissingSystemPromptError(BodyFieldError):
             "a cascade body must carry a system prompt; a missing or blank "
             "prompt is a body contract violation",
         )
+
+
+class BodyFingerprintMismatch(ValueError):
+    """The body the app read back is not the body the app minted.
+
+    A call cannot run a body nobody fingerprinted. The two fingerprints are
+    named; the account salt that was mixed into them is never printed.
+    """
+
+    def __init__(self, minted: str, served: str) -> None:
+        self.minted = minted
+        self.served = served
+        super().__init__(
+            f'the served body\'s full fingerprint "{served}" does not match the '
+            f'minted fingerprint "{minted}"; a call cannot run a body nobody '
+            "fingerprinted"
+        )
+
+
+def stable_json(value: object) -> str:
+    """Canonical JSON: sorted keys, compact separators, unescaped unicode.
+
+    This is the canonical form ``stableJson`` in
+    ``voni/src/lib/agents/body.ts`` produces (it only additionally drops
+    ``undefined``, which Python does not have), so both languages fingerprint
+    the same body to the same bytes.
+    """
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def body_fingerprint(body: Mapping[str, Any], *, account_salt: str) -> str:
+    """The full fingerprint of a stored body under one account.
+
+    Everything on the body is hashed, because the body is hashed whole — an
+    ignored field is still part of the fingerprint. The account salt is mixed
+    in after the body, exactly as the vitest-minted fingerprint does, so the
+    same body under another account is a different fingerprint.
+    """
+    if not isinstance(body, Mapping):
+        raise TypeError(f"a stored agent body must be a mapping, got {type(body).__name__}")
+    if not isinstance(account_salt, str):
+        raise ValueError(
+            f"the account salt must be a string, got {account_salt!r}; the "
+            "fingerprint is scoped to the account that minted it"
+        )
+    digest = hashlib.sha256()
+    digest.update(stable_json(body).encode("utf-8"))
+    digest.update(b"\0")
+    digest.update(account_salt.encode("utf-8"))
+    return digest.hexdigest()
+
+
+def verify_served_body(
+    *,
+    served_body: Mapping[str, Any],
+    minted_fingerprint: str,
+    account_salt: str,
+) -> str:
+    """Compare the served body's full fingerprint with the minted one.
+
+    The body passed here is the body the app *read back*, never the body it
+    intended to write: verifying the intention would pass by construction. A
+    mismatch is a named refusal, not a warning.
+    """
+    served = body_fingerprint(served_body, account_salt=account_salt)
+    if served != minted_fingerprint:
+        raise BodyFingerprintMismatch(minted_fingerprint, served)
+    return served
+
 
 
 

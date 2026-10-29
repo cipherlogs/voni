@@ -23,6 +23,7 @@ from cascade.body_map import (
     FIELD_MAP,
     IGNORE_SET,
     BodyFieldError,
+    BodyFingerprintMismatch,
     CascadeBody,
     IgnoredField,
     InvalidToolNameError,
@@ -31,7 +32,10 @@ from cascade.body_map import (
     UnknownBodyKeyError,
     UnknownLanguageCodeError,
     adapt_body,
+    body_fingerprint,
     ignored_fields,
+    stable_json,
+    verify_served_body,
 )
 from cascade.meta_llm import build_chat_request, build_messages
 from cascade.meta_stt import MetaStreamingSTT
@@ -730,6 +734,115 @@ class LlmOverrideTests(unittest.TestCase):
         self.assertEqual(later.voice_id, "lola")
         self.assertEqual(decision.disposition, "cascade")
         self.assertEqual(decision.reason, "")
+
+
+class FingerprintTests(unittest.TestCase):
+    # The account (credential) the body is stored under, mixed into the hash.
+    ACCOUNT = "acct_7f3"
+
+    # Pinned independently of this module: the hash `agentBodyFingerprint` in
+    # voni/src/lib/agents/fingerprint.ts mints for FULL_BODY under ACCOUNT,
+    # computed by running that function under node. The two languages must
+    # agree on the canonical form, or every minted body looks tampered with.
+    MINTED = "c132f5973859c2629f1bc0eecbb6cf814db8e2971184196f9e2029f8dc2d2df6"
+
+    def test_the_canonical_form_is_sorted_compact_json(self):
+        self.assertEqual(
+            stable_json({"b": 1, "a": {"d": [1, 2], "c": None}}),
+            '{"a":{"c":null,"d":[1,2]},"b":1}',
+        )
+
+    def test_the_python_fingerprint_equals_the_minted_typescript_one(self):
+        self.assertEqual(
+            body_fingerprint(FULL_BODY, account_salt=self.ACCOUNT),
+            self.MINTED,
+        )
+
+    def test_the_served_body_fingerprint_equals_the_minted_one(self):
+        served = verify_served_body(
+            served_body=FULL_BODY,
+            minted_fingerprint=self.MINTED,
+            account_salt=self.ACCOUNT,
+        )
+
+        self.assertEqual(served, self.MINTED)
+
+    def test_the_account_salt_is_part_of_the_fingerprint(self):
+        other = body_fingerprint(FULL_BODY, account_salt="acct_other")
+
+        self.assertNotEqual(other, self.MINTED)
+        with self.assertRaises(BodyFingerprintMismatch) as caught:
+            verify_served_body(
+                served_body=FULL_BODY,
+                minted_fingerprint=self.MINTED,
+                account_salt="acct_other",
+            )
+        self.assertEqual(caught.exception.minted, self.MINTED)
+        self.assertEqual(caught.exception.served, other)
+
+    def test_one_mutated_body_field_is_a_named_mismatch(self):
+        served = {**FULL_BODY, "greeting": "Hi, this is someone else."}
+
+        with self.assertRaises(BodyFingerprintMismatch) as caught:
+            verify_served_body(
+                served_body=served,
+                minted_fingerprint=self.MINTED,
+                account_salt=self.ACCOUNT,
+            )
+
+        self.assertEqual(caught.exception.minted, self.MINTED)
+        self.assertNotEqual(caught.exception.served, self.MINTED)
+        self.assertIn("full fingerprint", str(caught.exception))
+        self.assertNotIn(self.ACCOUNT, str(caught.exception))
+
+    def test_an_ignored_field_is_part_of_the_fingerprint(self):
+        # The adapter ignores output.volume; the fingerprint does not. A body
+        # that changed at all is a body nobody fingerprinted.
+        served = {
+            **FULL_BODY,
+            "output": {**FULL_BODY["output"], "volume": 0.851},
+        }
+
+        with self.assertRaises(BodyFingerprintMismatch):
+            verify_served_body(
+                served_body=served,
+                minted_fingerprint=self.MINTED,
+                account_salt=self.ACCOUNT,
+            )
+
+    def test_the_check_runs_on_the_body_read_back_not_the_intended_one(self):
+        # The mint happened over the intended body; the platform served a
+        # different one. Verifying the intended body would pass by mistake.
+        intended = FULL_BODY
+        served = {**FULL_BODY, "system_prompt": "You are Voni, but different."}
+        minted = body_fingerprint(intended, account_salt=self.ACCOUNT)
+
+        with self.assertRaises(BodyFingerprintMismatch):
+            verify_served_body(
+                served_body=served,
+                minted_fingerprint=minted,
+                account_salt=self.ACCOUNT,
+            )
+
+    def test_a_mismatch_routes_managed_with_the_recorded_reason(self):
+        subject = CallSubject("acme", "tenant")
+        served = {**FULL_BODY, "greeting": "Hi, this is someone else."}
+        with self.assertRaises(BodyFingerprintMismatch) as caught:
+            verify_served_body(
+                served_body=served,
+                minted_fingerprint=self.MINTED,
+                account_salt=self.ACCOUNT,
+            )
+
+        decision = decide("all", subject, refusal=str(caught.exception))
+
+        self.assertEqual(decision.disposition, "managed")
+        self.assertEqual(decision.opens_cascade_connections, 0)
+        self.assertIn("full fingerprint", decision.reason)
+
+    def test_a_body_that_is_not_a_mapping_is_a_programmer_error(self):
+        with self.assertRaises(TypeError):
+            body_fingerprint("not-a-body", account_salt=self.ACCOUNT)
 
 
 if __name__ == "__main__":
