@@ -30,6 +30,7 @@ import {
   postFlushOverlapMs,
   playoutCutWindow,
   parseDoubleTalkOutput,
+  parseGoodbyeDrainOutput,
   parseSilenceTimeline,
   parseSilenceTimelineOutput,
   traceSilenceRef,
@@ -103,6 +104,9 @@ import {
   traceTurnPointers,
   traceTurnForVisitorSpeech,
   traceTurnsForAgentLines,
+  namesTeamInbox,
+  runnerHangUpDelayMs,
+  TEAM_INBOX_ADDRESS,
   emailInviteGate,
   formatSubScoreTable,
   hasMeasuredEvidence,
@@ -1391,7 +1395,7 @@ test("artifact diff reports gate transitions, beat deltas, reply gap and drain c
       },
     },
     replyGap: { p50Ms: 900, p95Ms: 1200, samples: 2 },
-    endCallDrain: { goodbyeCoverage: 0.95, hangUpDelayMs: 900, narratedEnding: false },
+    endCallDrain: { goodbyeCoverage: 0.95, hangUpDelayMs: 900, narratedEnding: false, inboxNamed: true },
   };
   const next = {
     ...nextBase,
@@ -1408,7 +1412,7 @@ test("artifact diff reports gate transitions, beat deltas, reply gap and drain c
       },
     },
     replyGap: { p50Ms: 1600, p95Ms: 3100, samples: 3 },
-    endCallDrain: { goodbyeCoverage: 0.7, hangUpDelayMs: 4200, narratedEnding: true },
+    endCallDrain: { goodbyeCoverage: 0.7, hangUpDelayMs: 4200, narratedEnding: true, inboxNamed: false },
   };
   const diff = diffScoreboardArtifact(prev, next);
   assert.equal(diff.changed, true);
@@ -3107,6 +3111,178 @@ test("end-call drain failure points at the trace that heard it", () => {
 
 test("end-call drain with no measured goodbye is INFO, never a false FAIL", () => {
   const gate = evaluateEndCallDrain({ goodbyeCoverage: null, hangUpDelayMs: null, narratedEnding: false });
+  assert.equal(gate.status, "INFO");
+});
+
+test("the closing line only names the team inbox when the address is actually said", () => {
+  assert.equal(TEAM_INBOX_ADDRESS, "hi@voni.cc");
+  for (const spoken of [
+    "If you'd like to try again properly, the team's at hi at voni dot c c.",
+    "the team's at hi@voni.cc",
+    "the team's at hi at voni dot cc",
+    "the team's at hi at voni dot c, c.",
+    "reach us at hi@voni.cc.",
+  ]) {
+    assert.equal(namesTeamInbox(spoken), true, spoken);
+  }
+  for (const missing of [
+    "I'll let you go for now. If you'd like to try again properly, the team's there.",
+    "Send it to test@voni.cc.",
+    "",
+  ]) {
+    assert.equal(namesTeamInbox(missing), false, missing);
+  }
+});
+
+test("the runner's GOODBYE DRAIN evidence carries the inbox verdict, coverage, and closing turn", () => {
+  const stdout = [
+    "bye-audio: 1/1",
+    'GOODBYE DRAIN {"scenario":"bye-audio","session":"sess_gd20","turn":4,"coverage":0.97,"inboxNamed":true}',
+  ].join("\n");
+  assert.deepEqual(parseGoodbyeDrainOutput(`${stdout}\n`), {
+    scenario: "bye-audio",
+    sessionId: "sess_gd20",
+    turn: 4,
+    coverage: 0.97,
+    inboxNamed: true,
+    hangUpDelayMs: null,
+  });
+  assert.equal(parseGoodbyeDrainOutput("bye-audio: 1/1\n"), null);
+});
+
+test("several goodbye runs keep the worst closing line, never a later green one", () => {
+  const stdout = [
+    'GOODBYE DRAIN {"scenario":"free-gate","session":"sess_a","turn":5,"coverage":0.98,"inboxNamed":true}',
+    'GOODBYE DRAIN {"scenario":"bye-audio","session":"sess_b","turn":3,"coverage":0.41,"inboxNamed":true}',
+  ].join("\n");
+  const parsed = parseGoodbyeDrainOutput(stdout)!;
+  assert.equal(parsed.coverage, 0.41);
+  assert.equal(parsed.turn, 3);
+  assert.equal(parsed.sessionId, "sess_b");
+
+  const inboxMissed = parseGoodbyeDrainOutput(
+    [
+      'GOODBYE DRAIN {"scenario":"bye-audio","session":"sess_b","turn":3,"coverage":0.99,"inboxNamed":false}',
+      'GOODBYE DRAIN {"scenario":"free-gate","session":"sess_a","turn":5,"coverage":0.98,"inboxNamed":true}',
+    ].join("\n"),
+  )!;
+  assert.equal(inboxMissed.inboxNamed, false);
+  assert.equal(inboxMissed.sessionId, "sess_b");
+});
+
+test("a malformed GOODBYE DRAIN line is a harness error, never a guessed measurement", () => {
+  assert.throws(
+    () => parseGoodbyeDrainOutput('GOODBYE DRAIN {"scenario":"bye-audio","turn":1,"coverage":0.9}'),
+    /inboxNamed/,
+  );
+  assert.throws(
+    () =>
+      parseGoodbyeDrainOutput(
+        'GOODBYE DRAIN {"scenario":"bye-audio","inboxNamed":true,"turn":0,"coverage":0.9}',
+      ),
+    /turn/,
+  );
+  assert.throws(
+    () =>
+      parseGoodbyeDrainOutput(
+        'GOODBYE DRAIN {"scenario":"bye-audio","inboxNamed":true,"coverage":"lots"}',
+      ),
+    /coverage/,
+  );
+});
+
+test("the runner's own hang-up line is the measured end-of-audio vs session-close delay", () => {
+  assert.equal(
+    runnerHangUpDelayMs("    hung up 912ms after the goodbye finished playing\n"),
+    912,
+  );
+  // Several runs: the worst hang-up is what the gate must see.
+  assert.equal(
+    runnerHangUpDelayMs(
+      "    hung up 912ms after the goodbye finished playing\n" +
+        "    hung up 4200ms after the goodbye finished playing\n",
+    ),
+    4200,
+  );
+  assert.equal(runnerHangUpDelayMs("hang-up-fast: 1/1\n"), null);
+});
+
+test("end-call drain fails when the closing line never named the team inbox", () => {
+  const gate = evaluateEndCallDrain({
+    goodbyeCoverage: 0.97,
+    hangUpDelayMs: 900,
+    narratedEnding: false,
+    inboxNamed: false,
+    traceRef: "call trace turn 4 (sess_gd20)",
+  });
+  assert.equal(gate.status, "FAIL");
+  assert.match(gate.detail, /hi@voni\.cc/, `detail names the missing inbox: ${gate.detail}`);
+  assert.match(gate.detail, /call trace turn 4 \(sess_gd20\)/, `detail cites the turn: ${gate.detail}`);
+});
+
+test("end-call drain passes a full goodbye that names the team inbox", () => {
+  const gate = evaluateEndCallDrain({
+    goodbyeCoverage: 0.97,
+    hangUpDelayMs: 900,
+    narratedEnding: false,
+    inboxNamed: true,
+  });
+  assert.equal(gate.status, "PASS");
+  assert.match(gate.detail, /hi@voni\.cc/, `detail names the inbox: ${gate.detail}`);
+});
+
+test("runner goodbye evidence drives the drain gate and cites its own closing turn", () => {
+  const artifact = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "bye-audio",
+    runnerStdout: "trace",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+    endCallDrain: {
+      goodbyeCoverage: 0.97,
+      hangUpDelayMs: null,
+      narratedEnding: false,
+      inboxNamed: true,
+    },
+    endCallDrainTraceRef: "call trace turn 4 (sess_gd20)",
+  });
+  assert.equal(artifact.endCallDrain.inboxNamed, true);
+  assert.equal(artifact.endCallDrain.goodbyeCoverage, 0.97);
+  const gate = artifact.gates.find((g) => g.name === "end-call-drain")!;
+  assert.equal(gate.status, "PASS");
+  assert.equal(artifact.beats["goodbye-drain"].status, "PASS");
+  assert.match(gate.detail, /hi@voni\.cc/);
+});
+
+test("a drain FAIL with no merged closing row says no turn instead of citing the session alone", () => {
+  const artifact = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "bye-audio",
+    runnerStdout: "trace",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+    traceSessionId: "sess_noturn20",
+    traceExcerpt: ['12.20s  VONI    "Sure, first the tour"  (reply_create gap 900ms)'],
+    endCallDrain: { goodbyeCoverage: 0.4, hangUpDelayMs: null, narratedEnding: false, inboxNamed: true },
+  });
+  const gate = artifact.gates.find((g) => g.name === "end-call-drain")!;
+  assert.equal(gate.status, "FAIL");
+  assert.match(gate.detail, /no turn merged \(sess_noturn20\)/, `detail states the missing turn: ${gate.detail}`);
+});
+
+test("unmeasured goodbye drain never reports PASS", () => {
+  const artifact = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "bye-audio",
+    runnerStdout: "trace",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+    endCallDrain: { goodbyeCoverage: null, hangUpDelayMs: null, narratedEnding: false, inboxNamed: null },
+  });
+  const gate = artifact.gates.find((g) => g.name === "end-call-drain")!;
   assert.equal(gate.status, "INFO");
 });
 

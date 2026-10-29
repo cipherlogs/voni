@@ -25,8 +25,10 @@
  * (--dead-air-gaps / --longest-silence-ms / --check-in-at-ms): without
  * evidence the gate stays INFO, never PASS, so an unmeasured run cannot
  * claim a quiet call. Double-talk and end-call-drain likewise gate on
- * measured evidence (--overlap-ms / --goodbye-coverage / --hang-up-delay-ms):
- * without evidence the gates stay INFO, never a false FAIL. What this module guarantees is trustworthy plumbing —
+ * measured evidence (the runner's DOUBLE TALK / GOODBYE DRAIN and hung-up
+ * lines, or the --overlap-ms / --goodbye-coverage / --goodbye-inbox-* /
+ * --hang-up-delay-ms overrides): without evidence the gates stay INFO, never
+ * a false FAIL or a false PASS. What this module guarantees is trustworthy plumbing —
  * one JSON artifact per run with redacted transcripts plus their hash, and
  * empty human-rating slots. Every failure that has a merged Call trace cites
  * its exact turn, and diffScoreboardArtifact compares a run with the prior
@@ -1419,6 +1421,18 @@ export function findInventedTags(lines: string[], tag: string = EMAIL_INVITE_TAG
   return found;
 }
 
+/** The team inbox the closing line names (said aloud, never spelled). */
+export const TEAM_INBOX_ADDRESS = "hi@voni.cc";
+
+/**
+ * Whether a closing line names the team inbox as spoken ("hi at voni dot
+ * c c", or the written form a transcript may render). The demo test inbox
+ * (`test@voni.cc`) and a vague "the team's there" do not count.
+ */
+export function namesTeamInbox(text: string): boolean {
+  return /\bhi\s*(?:@|\bat\b)\s*voni\s*(?:\.|\bdot\b)\s*c[\s.,-]*c\b/i.test(text);
+}
+
 /**
  * Any spoken email address other than the team's hi@voni.cc (eval
  * strayAddress: pilot/voni.ai/@ plus the at/dot spoken form, after removing
@@ -1833,6 +1847,8 @@ export type ScoreboardArtifact = {
     hangUpDelayMs: number | null;
     /** The model spoke again after end_call instead of letting the line close. */
     narratedEnding: boolean;
+    /** The closing line named the team inbox; null when never measured. */
+    inboxNamed: boolean | null;
   };
   deadAir: {
     gapsMs: number[];
@@ -2707,6 +2723,121 @@ export function parseDoubleTalkOutput(stdout: string): DoubleTalkEvidence | null
   return found;
 }
 
+/**
+ * The live runner's machine-readable goodbye evidence, one line per goodbye
+ * run: `GOODBYE DRAIN {"scenario":"bye-audio","session":"sess_…","turn":4,
+ * "coverage":0.97,"inboxNamed":true}`. `turn` is the 1-based VONI reply that
+ * carried the closing line (null when none played), `coverage` is the played
+ * audio time over the line's expected speaking time, and `inboxNamed` says
+ * whether that line actually said hi@voni.cc. The session id lets score-demo
+ * refuse to cite a Call trace turn from a different call.
+ */
+export const GOODBYE_DRAIN_EVIDENCE_PREFIX = "GOODBYE DRAIN ";
+
+export type GoodbyeDrainEvidence = {
+  scenario: string;
+  sessionId: string | null;
+  /** 1-based VONI reply that carried the closing line; null when none played. */
+  turn: number | null;
+  /** Played / expected speaking time; null when no closing line played. */
+  coverage: number | null;
+  /** The closing line named the team inbox as spoken. */
+  inboxNamed: boolean;
+  /** Session close minus goodbye audio end, when the run measured it. */
+  hangUpDelayMs: number | null;
+};
+
+/**
+ * Parse the runner's GOODBYE DRAIN line. Null when the run printed none
+ * (another scenario, a dry run). A present but malformed line throws:
+ * coverage is either measured or absent, never guessed from a broken payload.
+ */
+export function parseGoodbyeDrainOutput(stdout: string): GoodbyeDrainEvidence | null {
+  let found: GoodbyeDrainEvidence | null = null;
+  // Several runs: keep the worst closing line, so a chopped or inbox-less
+  // take cannot hide behind a later green one.
+  const worse = (candidate: GoodbyeDrainEvidence): boolean => {
+    if (found === null) return true;
+    if (found.inboxNamed && !candidate.inboxNamed) return true;
+    if (!found.inboxNamed && candidate.inboxNamed) return false;
+    return (
+      candidate.coverage !== null &&
+      (found.coverage === null || candidate.coverage < found.coverage)
+    );
+  };
+  for (const rawLine of stdout.split("\n")) {
+    const line = rawLine.trimStart();
+    if (!line.startsWith(GOODBYE_DRAIN_EVIDENCE_PREFIX)) continue;
+    let raw: unknown;
+    try {
+      raw = JSON.parse(line.slice(GOODBYE_DRAIN_EVIDENCE_PREFIX.length));
+    } catch (error) {
+      throw new Error(
+        `eval runner GOODBYE DRAIN line is not valid JSON: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    if (raw === null || typeof raw !== "object") {
+      throw new Error("eval runner GOODBYE DRAIN line must be a JSON object");
+    }
+    const candidate = raw as {
+      scenario?: unknown;
+      session?: unknown;
+      turn?: unknown;
+      coverage?: unknown;
+      inboxNamed?: unknown;
+      hangUpDelayMs?: unknown;
+    };
+    if (typeof candidate.scenario !== "string" || !candidate.scenario.trim()) {
+      throw new Error("eval runner GOODBYE DRAIN line needs a scenario name");
+    }
+    const session = candidate.session ?? null;
+    if (session !== null && (typeof session !== "string" || !session.trim())) {
+      throw new Error("eval runner GOODBYE DRAIN line has an invalid session id");
+    }
+    const turn = candidate.turn ?? null;
+    if (turn !== null && (typeof turn !== "number" || !Number.isInteger(turn) || turn < 1)) {
+      throw new Error("eval runner GOODBYE DRAIN line has an invalid turn");
+    }
+    const coverage = candidate.coverage ?? null;
+    if (coverage !== null && (typeof coverage !== "number" || !Number.isFinite(coverage) || coverage < 0)) {
+      throw new Error("eval runner GOODBYE DRAIN line has an invalid coverage");
+    }
+    if (typeof candidate.inboxNamed !== "boolean") {
+      throw new Error("eval runner GOODBYE DRAIN line needs inboxNamed");
+    }
+    const hangUpDelayMs = candidate.hangUpDelayMs === undefined ? null : nonNegativeMs(candidate.hangUpDelayMs);
+    if (candidate.hangUpDelayMs !== undefined && hangUpDelayMs === null) {
+      throw new Error("eval runner GOODBYE DRAIN line has an invalid hangUpDelayMs");
+    }
+    const evidence: GoodbyeDrainEvidence = {
+      scenario: candidate.scenario,
+      sessionId: session,
+      turn,
+      coverage,
+      inboxNamed: candidate.inboxNamed,
+      hangUpDelayMs,
+    };
+    if (worse(evidence)) found = evidence;
+  }
+  return found;
+}
+
+/**
+ * The runner's measured closing-line drain: `hung up Nms after the goodbye
+ * finished playing`, one line per hang-up run. Several runs report the worst
+ * hang-up, the number the gate must see. Null when no hang-up was measured.
+ */
+export function runnerHangUpDelayMs(stdout: string): number | null {
+  let worst: number | null = null;
+  for (const line of stdout.split("\n")) {
+    const match = line.match(/hung up (\d+)ms after the goodbye finished playing/);
+    if (!match) continue;
+    const ms = Number(match[1]);
+    if (worst === null || ms > worst) worst = ms;
+  }
+  return worst;
+}
+
 export type EndCallDrainInput = {
   /** Played / expected goodbye speaking time; null when never measured. */
   goodbyeCoverage: number | null;
@@ -2714,7 +2845,9 @@ export type EndCallDrainInput = {
   hangUpDelayMs: number | null;
   /** The model spoke again after end_call instead of letting the line close. */
   narratedEnding: boolean;
-  /** Trace pointer for failures, e.g. "sess_xyz / goodbye-drain". */
+  /** The closing line named the team inbox; null when never measured. */
+  inboxNamed?: boolean | null;
+  /** Trace pointer for failures, e.g. "call trace turn 4 (sess_xyz)". */
   traceRef?: string;
 };
 
@@ -2726,6 +2859,13 @@ export function evaluateEndCallDrain(input: EndCallDrainInput): ScoreboardGate {
       name: "end-call-drain",
       status: "FAIL",
       detail: `model narrated the ending after end_call (goodbye never closed the call)${trace}`,
+    };
+  }
+  if (input.inboxNamed === false) {
+    return {
+      name: "end-call-drain",
+      status: "FAIL",
+      detail: `closing line never named the team inbox ${TEAM_INBOX_ADDRESS}${trace}`,
     };
   }
   if (input.goodbyeCoverage !== null && input.goodbyeCoverage < GOODBYE_AUDIO_COVERAGE_MIN) {
@@ -2755,16 +2895,20 @@ export function evaluateEndCallDrain(input: EndCallDrainInput): ScoreboardGate {
         `> ${HANG_UP_AFTER_GOODBYE_MAX_MS}ms bar (line held)${trace}`,
     };
   }
+  // Coverage or hang-up timing must be measured before this gate claims PASS;
+  // the inbox alone is not a drain measurement.
   if (input.goodbyeCoverage === null && input.hangUpDelayMs === null) {
-    return { name: "end-call-drain", status: "INFO", detail: "no goodbye measured" };
+    const inbox = input.inboxNamed === true ? ` (${TEAM_INBOX_ADDRESS} named, audio unmeasured)` : "";
+    return { name: "end-call-drain", status: "INFO", detail: `no goodbye measured${inbox}` };
   }
   const coverage = input.goodbyeCoverage === null ? "unmeasured" : `${Math.round(input.goodbyeCoverage * 100)}%`;
   const delay = input.hangUpDelayMs === null ? "unmeasured" : `${input.hangUpDelayMs}ms`;
+  const inbox = input.inboxNamed === true ? ` ${TEAM_INBOX_ADDRESS}` : " (inbox unmeasured)";
   return {
     name: "end-call-drain",
     status: "PASS",
     detail:
-      `goodbye ${coverage} ≥ ${Math.round(GOODBYE_AUDIO_COVERAGE_MIN * 100)}%, ` +
+      `closing line${inbox}, goodbye ${coverage} ≥ ${Math.round(GOODBYE_AUDIO_COVERAGE_MIN * 100)}%, ` +
       `hang-up ${delay} after goodbye audio ` +
       `(drain ${END_CALL_POLL_MS}ms×${END_CALL_SETTLE_POLLS} + ${END_CALL_AUDIO_GRACE_MS}ms grace)`,
   };
@@ -4085,7 +4229,12 @@ export function measuredEvidenceSources(input: {
   overheardAsides?: OverheardAside[];
   deadAir?: DeadAirEvidence | null;
   doubleTalkOverlapMs?: number[];
-  endCallDrain?: { goodbyeCoverage: number | null; hangUpDelayMs: number | null; narratedEnding: boolean };
+  endCallDrain?: {
+    goodbyeCoverage: number | null;
+    hangUpDelayMs: number | null;
+    narratedEnding: boolean;
+    inboxNamed?: boolean | null;
+  };
   probes?: TimbreProbes;
   agentChannel?: AgentChannelEvidence | null;
   humanRatings?: HumanRatings;
@@ -4109,7 +4258,13 @@ export function measuredEvidenceSources(input: {
   }
   if ((input.doubleTalkOverlapMs ?? []).length > 0) sources.push("double-talk");
   const drain = input.endCallDrain;
-  if (drain && (drain.goodbyeCoverage != null || drain.hangUpDelayMs != null || drain.narratedEnding)) {
+  if (
+    drain &&
+    (drain.goodbyeCoverage != null ||
+      drain.hangUpDelayMs != null ||
+      drain.narratedEnding ||
+      drain.inboxNamed != null)
+  ) {
     sources.push("end-call-drain");
   }
   // Explicit probes (even all-zero) are a completed measurement; the artifact
@@ -4135,7 +4290,12 @@ export function hasMeasuredEvidence(input: {
   overheardAsides?: OverheardAside[];
   deadAir?: DeadAirEvidence | null;
   doubleTalkOverlapMs?: number[];
-  endCallDrain?: { goodbyeCoverage: number | null; hangUpDelayMs: number | null; narratedEnding: boolean };
+  endCallDrain?: {
+    goodbyeCoverage: number | null;
+    hangUpDelayMs: number | null;
+    narratedEnding: boolean;
+    inboxNamed?: boolean | null;
+  };
   probes?: TimbreProbes;
   agentChannel?: AgentChannelEvidence | null;
   humanRatings?: HumanRatings;
@@ -4204,7 +4364,18 @@ export function buildSkeletonArtifact(input: {
    */
   doubleTalkTraceRef?: string;
   /** Measured goodbye drain evidence; omitted means unmeasured (INFO). */
-  endCallDrain?: { goodbyeCoverage: number | null; hangUpDelayMs: number | null; narratedEnding: boolean };
+  endCallDrain?: {
+    goodbyeCoverage: number | null;
+    hangUpDelayMs: number | null;
+    narratedEnding: boolean;
+    inboxNamed?: boolean | null;
+  };
+  /**
+   * Trace pointer for a drain FAIL from evidence that measured its own closing
+   * turn (the live runner's GOODBYE DRAIN line). Wins over the excerpt-derived
+   * goodbye turn, which may belong to a different scenario's session.
+   */
+  endCallDrainTraceRef?: string;
   /** Trace pointer attached to failure details, e.g. a sess_ id. */
   traceRef?: string;
   /** Session onAudioProbe counts; zeroed in dry runs. */
@@ -4305,7 +4476,12 @@ export function buildSkeletonArtifact(input: {
       ? null
       : evaluateOverheardRecall(input.overheardAsides);
   const doubleTalkOverlapMs = input.doubleTalkOverlapMs ?? [];
-  const drain = input.endCallDrain ?? { goodbyeCoverage: null, hangUpDelayMs: null, narratedEnding: false };
+  const drain = input.endCallDrain ?? {
+    goodbyeCoverage: null,
+    hangUpDelayMs: null,
+    narratedEnding: false,
+    inboxNamed: null,
+  };
   const traceRef = input.traceRef ?? input.traceSessionId ?? undefined;
   // Turn pointers come from the merged excerpt only: the interrupted reply for
   // a double-talk cut, the reply after end_call for the goodbye drain, and the
@@ -4316,7 +4492,11 @@ export function buildSkeletonArtifact(input: {
   const cutTraceRef =
     turnPointers.cutTurn !== null ? formatTraceTurn(turnPointers.cutTurn, traceSession) : traceRef;
   const goodbyeTraceRef =
-    turnPointers.goodbyeTurn !== null ? formatTraceTurn(turnPointers.goodbyeTurn, traceSession) : traceRef;
+    turnPointers.goodbyeTurn !== null
+      ? formatTraceTurn(turnPointers.goodbyeTurn, traceSession)
+      : traceSession
+        ? `no turn merged (${traceSession})`
+        : traceRef;
   const deadAirInput = input.deadAir
     ? {
         ...input.deadAir,
@@ -4342,7 +4522,11 @@ export function buildSkeletonArtifact(input: {
   };
   const endCallDrainInput: EndCallDrainInput = {
     ...drain,
-    ...(goodbyeTraceRef ? { traceRef: goodbyeTraceRef } : {}),
+    ...(input.endCallDrainTraceRef
+      ? { traceRef: input.endCallDrainTraceRef }
+      : goodbyeTraceRef
+        ? { traceRef: goodbyeTraceRef }
+        : {}),
   };
   const timbreProbes: TimbreProbes = input.probes ?? { jump: 0, overload: 0, clip: 0, underrun: 0, inputDrop: 0 };
   const agentChannel = input.agentChannel ?? null;
@@ -4433,7 +4617,7 @@ export function buildSkeletonArtifact(input: {
       overlapMs: doubleTalkOverlapMs,
       maxMs: doubleTalkOverlapMs.length > 0 ? Math.max(...doubleTalkOverlapMs) : null,
     },
-    endCallDrain: { ...drain },
+    endCallDrain: { ...drain, inboxNamed: drain.inboxNamed ?? null },
     deadAir: {
       gapsMs: deadAirGaps,
       maxMs: deadAirGaps.length > 0 ? Math.max(...deadAirGaps) : null,
@@ -4704,6 +4888,7 @@ export function diffScoreboardArtifact(
   const drainChanged =
     prev.endCallDrain.goodbyeCoverage !== next.endCallDrain.goodbyeCoverage ||
     prev.endCallDrain.hangUpDelayMs !== next.endCallDrain.hangUpDelayMs ||
+    (prev.endCallDrain.inboxNamed ?? null) !== (next.endCallDrain.inboxNamed ?? null) ||
     endCallDrain.narratedEndingChanged;
   const priorRunner = (prev.evalRunner ?? {}) as PossiblyOlderEvalRunner;
   const nextRunner = (next.evalRunner ?? {}) as PossiblyOlderEvalRunner;

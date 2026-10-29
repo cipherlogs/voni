@@ -2017,6 +2017,179 @@ test("a hang-up before the goodbye ends fails the drain gate", () => {
   assert.ok(result.stdout.includes("end-call-drain"));
 });
 
+/** A fake eval runner that prints one GOODBYE DRAIN line (and the hang-up line). */
+function goodbyeShim(evidence: Record<string, unknown>, hangUpLine?: string) {
+  return `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === "run" && args[1] === "eval:demo-agent") {
+  console.log("  · trace session ${evidence.session ?? "sess_gd20"}");
+${hangUpLine ? `  console.log(${JSON.stringify(hangUpLine)});` : ""}
+  console.log("    GOODBYE DRAIN " + JSON.stringify(${JSON.stringify(evidence)}));
+  console.log("bye-audio: 1/1");
+  console.log("EVAL SUMMARY " + JSON.stringify({
+    scenario: "bye-audio",
+    runs: 1,
+    failures: 0,
+    scenarios: [{ name: "bye-audio", passed: 1, runs: 1 }],
+    traceSessions: [${JSON.stringify(evidence.session ?? "sess_gd20")}],
+    playout: [],
+    audioChunks: 40,
+    live: true,
+    clips: [],
+  }));
+} else if (args[0] === "run" && args[1] === "call:trace") {
+  console.log(' 1.00s  VONI    "Welcome to the demo"  (reply_create gap 700ms)');
+  console.log(' 4.00s  HEARD   "Okay, sounds good."');
+  console.log(' 5.00s  VONI    "Here is the invite"  (reply_create gap 600ms)');
+  console.log(' 6.00s  VONI    "Sure thing"  (reply_create gap 500ms)');
+  console.log(' 7.00s  TOOL    end_call {"reason":"caller asked"} 100ms');
+  console.log(' 8.00s  VONI    "I will let you go, the team is at hi at voni dot c c"  (reply_create gap 600ms)');
+}
+`;
+}
+
+function runGoodbyeShim(
+  dir: string,
+  evidence: Record<string, unknown>,
+  args: string[] = [],
+  hangUpLine?: string,
+) {
+  const bin = join(dir, "bin");
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(join(bin, "npm"), goodbyeShim(evidence, hangUpLine), { mode: 0o755 });
+  const out = join(dir, `score-${Math.random().toString(36).slice(2)}.json`);
+  const result = run(
+    ["--scenario", "bye-audio", "--out", out, "--timing-lock", join(dir, `lock-${Math.random().toString(36).slice(2)}`), ...args],
+    new URL("../", import.meta.url).pathname,
+    { PATH: `${bin}:${process.env.PATH}` },
+  );
+  return { result, out, artifact: existsSync(out) ? JSON.parse(readFileSync(out, "utf8")) as Record<string, unknown> : null };
+}
+
+test("the runner's full goodbye evidence greens end-call-drain without flags", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const { result, artifact } = runGoodbyeShim(
+    dir,
+    { scenario: "bye-audio", session: "sess_gd20", turn: 4, coverage: 0.97, inboxNamed: true },
+    [],
+    "    hung up 612ms after the goodbye finished playing",
+  );
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  const a = artifact as {
+    endCallDrain: { goodbyeCoverage: number; hangUpDelayMs: number; inboxNamed: boolean };
+    gates: { name: string; status: string; detail: string }[];
+  };
+  assert.equal(a.endCallDrain.goodbyeCoverage, 0.97);
+  assert.equal(a.endCallDrain.hangUpDelayMs, 612);
+  assert.equal(a.endCallDrain.inboxNamed, true);
+  const gate = a.gates.find((g) => g.name === "end-call-drain")!;
+  assert.equal(gate.status, "PASS");
+  assert.match(gate.detail, /hi@voni\.cc/);
+  assert.match(result.stdout, /PASS\s+end-call-drain/);
+});
+
+test("a closing line that never named the inbox fails at the runner's closing turn", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const { result, artifact } = runGoodbyeShim(dir, {
+    scenario: "bye-audio",
+    session: "sess_gd20",
+    turn: 4,
+    coverage: 0.97,
+    inboxNamed: false,
+  });
+  assert.equal(result.status, 1, result.stderr + result.stdout);
+  const gate = (artifact as { gates: { name: string; status: string; detail: string }[] }).gates.find(
+    (g) => g.name === "end-call-drain",
+  )!;
+  assert.equal(gate.status, "FAIL");
+  assert.match(gate.detail, /hi@voni\.cc/, `detail names the missing inbox: ${gate.detail}`);
+  assert.match(gate.detail, /call trace turn 4 \(sess_gd20\)/, `detail cites the turn: ${gate.detail}`);
+});
+
+test("a chopped goodbye fails with its coverage and the runner's closing turn", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const { result, artifact } = runGoodbyeShim(dir, {
+    scenario: "bye-audio",
+    session: "sess_gd20",
+    turn: 4,
+    coverage: 0.42,
+    inboxNamed: true,
+  });
+  assert.equal(result.status, 1, result.stderr + result.stdout);
+  const gate = (artifact as { gates: { name: string; status: string; detail: string }[] }).gates.find(
+    (g) => g.name === "end-call-drain",
+  )!;
+  assert.equal(gate.status, "FAIL");
+  assert.match(gate.detail, /42%/, `detail carries the measured coverage: ${gate.detail}`);
+  assert.match(gate.detail, /call trace turn 4 \(sess_gd20\)/);
+});
+
+test("explicit goodbye flags override the runner's evidence", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const { result, artifact } = runGoodbyeShim(
+    dir,
+    { scenario: "bye-audio", session: "sess_gd20", turn: 4, coverage: 0.42, inboxNamed: false },
+    ["--goodbye-coverage", "0.96", "--goodbye-inbox-named", "--hang-up-delay-ms", "900"],
+  );
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  const a = artifact as {
+    endCallDrain: { goodbyeCoverage: number; hangUpDelayMs: number; inboxNamed: boolean };
+    gates: { name: string; status: string }[];
+  };
+  assert.equal(a.endCallDrain.goodbyeCoverage, 0.96);
+  assert.equal(a.endCallDrain.hangUpDelayMs, 900);
+  assert.equal(a.endCallDrain.inboxNamed, true);
+  assert.equal(a.gates.find((g) => g.name === "end-call-drain")?.status, "PASS");
+});
+
+test("goodbye evidence from another call says no turn was merged", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const { result, artifact } = runGoodbyeShim(
+    dir,
+    { scenario: "bye-audio", session: "sess_gd20", turn: 4, coverage: 0.42, inboxNamed: true },
+    ["--trace-session", "sess_other20"],
+  );
+  assert.equal(result.status, 1, result.stderr + result.stdout);
+  const gate = (artifact as { gates: { name: string; status: string; detail: string }[] }).gates.find(
+    (g) => g.name === "end-call-drain",
+  )!;
+  assert.equal(gate.status, "FAIL");
+  assert.match(gate.detail, /no turn merged/, `detail states the missing turn: ${gate.detail}`);
+});
+
+test("a run without goodbye evidence keeps end-call-drain INFO, never PASS", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  writeFileSync(
+    join(bin, "npm"),
+    `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === "run" && args[1] === "eval:demo-agent") {
+  console.log("  · trace session sess_none20");
+  console.log("bye-audio: 1/1");
+  console.log("EVAL SUMMARY " + JSON.stringify({ scenario: "bye-audio", runs: 1, failures: 0, scenarios: [{ name: "bye-audio", passed: 1, runs: 1 }], traceSessions: ["sess_none20"], playout: [], audioChunks: 40, live: true, clips: [] }));
+} else if (args[0] === "run" && args[1] === "call:trace") {
+  console.log(' 8.00s  VONI    "I will let you go"');
+}
+`,
+    { mode: 0o755 },
+  );
+  const out = join(dir, "score.json");
+  const result = run(
+    ["--scenario", "bye-audio", "--out", out, "--timing-lock", join(dir, "lock")],
+    new URL("../", import.meta.url).pathname,
+    { PATH: `${bin}:${process.env.PATH}` },
+  );
+  // No measured evidence at all: the run fails the measurements gate, but the
+  // drain gate must still report INFO rather than a false PASS.
+  assert.equal(result.status, 1, result.stderr + result.stdout);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    gates: { name: string; status: string }[];
+  };
+  assert.equal(artifact.gates.find((g) => g.name === "end-call-drain")?.status, "INFO");
+});
+
 test("bad evidence flags break the harness fast with no artifact", () => {
   const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
   const out = join(dir, "score.json");
