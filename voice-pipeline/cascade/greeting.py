@@ -26,7 +26,12 @@ Three facts shape the implementation:
   silent open and is recorded as such. A greeting that cannot be synthesized,
   that produces no audio, or that was never flushed raises a visible
   :class:`GreetingFailure`; the caller ends the call instead of pretending the
-  opening happened.
+  opening happened. A raw socket close is classified by the voice's own close
+  policy (ticket 55), so a trigger is retried once before audio and the end
+  message carries the voice trigger, never a bare connection error.
+* **The greeting is cancellable.** :meth:`CallGreeting.start` exposes a
+  playback that can be cut with the synthesis session's ``Cancel``; the
+  pending text is discarded and the line never resumes.
 
 The audio sink is injected because the wire is the transport's business: this
 module forwards :class:`providers.SentenceAudio` and knows nothing about base64,
@@ -261,20 +266,31 @@ class GreetingPlayback:
 
         g._ledger.mark("greeting_start")
         self._started = True
-        iterator = speaker(text).__aiter__()
-        try:
-            while self._cancel_cause is None:
-                try:
-                    audio = await iterator.__anext__()
-                except StopAsyncIteration:
-                    break
-                if self._cancel_cause is not None:
-                    break
-                await self._emit(audio)
-        finally:
-            await _aclose(iterator)
-        if self._cancel_cause is not None:
-            return self._cancelled_outcome()
+        while True:
+            retry = False
+            iterator = speaker(text).__aiter__()
+            try:
+                while self._cancel_cause is None:
+                    try:
+                        audio = await iterator.__anext__()
+                    except StopAsyncIteration:
+                        break
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as error:
+                        if await self._retry_after_close(error):
+                            retry = True
+                            break
+                        raise
+                    if self._cancel_cause is not None:
+                        break
+                    await self._emit(audio)
+            finally:
+                await _aclose(iterator)
+            if self._cancel_cause is not None:
+                return self._cancelled_outcome()
+            if not retry:
+                break
         if self._frames == 0 or not self._chime_fired:
             raise GreetingSilent(text)
         g._ledger.mark("greeting_done")
@@ -287,6 +303,25 @@ class GreetingPlayback:
             sample_rate=self._sample_rate,
             chime_fired=self._chime_fired,
         )
+
+    async def _retry_after_close(self, error: BaseException) -> bool:
+        """Classify a raw socket close through the voice's close policy.
+
+        A websocket close arrives as a connection error, not as a vendor
+        ``Error`` frame. The synthesis adapter's ``handle_close`` is the one
+        place that turns its code into a trigger, a bug or a planned reconnect
+        (ticket 55), and a trigger is retried once before any audio was
+        delivered. A failure the adapter already classified is not reclassified.
+        """
+        if getattr(error, "verdict", None) is not None:
+            return False
+        code = getattr(error, "code", None)
+        handle = getattr(self._greeting._voice, "handle_close", None)
+        if code is None or not callable(handle):
+            return False
+        decision = await handle(code)
+        action = getattr(decision, "action", None)
+        return str(getattr(action, "value", action)) == "retry"
 
     async def _emit(self, audio: SentenceAudio) -> None:
         if audio.pcm and not self._chime_fired:
@@ -320,8 +355,7 @@ class GreetingPlayback:
             # It finished before the cut landed: nothing to cancel.
             return await self._task
         if self._cancel_cause is not None:
-            assert self.outcome is not None
-            return self.outcome
+            return self.outcome or self._cancelled_outcome()
         # The frame boundary first: no chunk of the old request may be emitted
         # after this synchronous line, even before Cancel is on the wire.
         self._cancel_cause = cause

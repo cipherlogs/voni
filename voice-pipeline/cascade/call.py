@@ -16,9 +16,14 @@ in the transport, so this module cannot become a second protocol.
 :class:`CallStream` is the turn layer's seam: the stream start, each STT
 event, a context update, the drain and the turn count. The orchestrator tickets
 implement it; this module only orders the call around it. The greeting is not
-part of the turn layer: the lifecycle speaks the body's greeting through the
-opened voice (ticket 77) before the stream starts, so no user audio can be
-processed ahead of it.
+part of the turn layer: the lifecycle starts the body's greeting through the
+opened voice (ticket 77) only after the synthesis session acknowledged
+``Begin``, and the opening is a listening window. Caller frames reach STT and
+provider events are buffered while the greeting sounds; a ``speechStart`` or a
+taking-the-floor partial cuts the greeting with ``Cancel`` (ticket 79) so the
+caller's turn wins, and nothing reaches the turn layer before that boundary. A
+greeting synthesis failure ends the call with the voice's own trigger on the
+end message (ticket 80); there is no silent opening.
 
 Nothing unbounded sits in the audio path. The drain, the event-pump stop and
 every vendor close read ``deploy.drain_max_wait_ms``; the greeting's synthesis
@@ -333,21 +338,47 @@ class NullStream:
 
 
 class CallFailure(RuntimeError):
-    """A named call-ending failure: no anonymous ``Exception`` on the wire."""
+    """A named call-ending failure: no anonymous ``Exception`` on the wire.
 
-    def __init__(self, *, name: str, stage: str, message: str) -> None:
+    ``trigger`` is the provider's own classified verdict (leg, code, class and
+    reason) when the failure carries one. A greeting synthesis failure is the
+    voice's failure, so the end message names the voice trigger rather than
+    reducing it to the exception's type name.
+    """
+
+    def __init__(
+        self,
+        *,
+        name: str,
+        stage: str,
+        message: str,
+        trigger: Mapping[str, Any] | None = None,
+    ) -> None:
         self.name = name
         self.stage = stage
         self.message = message
+        self.trigger = dict(trigger) if trigger is not None else None
         super().__init__(message)
 
     @classmethod
     def from_exception(cls, stage: str, error: BaseException) -> "CallFailure":
-        """Keep the real exception's name, so a caller can act on it."""
-        return cls(name=type(error).__name__, stage=stage, message=str(error))
+        """Keep the real exception's name and provider verdict, if any."""
+        return cls(
+            name=type(error).__name__,
+            stage=stage,
+            message=str(error),
+            trigger=_trigger_document(error),
+        )
 
-    def to_document(self) -> dict[str, str]:
-        return {"name": self.name, "stage": self.stage, "message": self.message}
+    def to_document(self) -> dict[str, Any]:
+        document: dict[str, Any] = {
+            "name": self.name,
+            "stage": self.stage,
+            "message": self.message,
+        }
+        if self.trigger is not None:
+            document["trigger"] = self.trigger
+        return document
 
 
 @dataclass(frozen=True)
@@ -1356,6 +1387,23 @@ async def _invoke(factory: Callable[[], Any]) -> Any:
     if inspect.isawaitable(result):
         result = await result
     return result
+
+
+def _trigger_document(error: BaseException) -> dict[str, Any] | None:
+    """A provider verdict as the end message's trigger, or ``None``."""
+    verdict = getattr(error, "verdict", None)
+    if verdict is None:
+        return None
+    leg = getattr(verdict, "leg", None)
+    failure_class = getattr(verdict, "failure_class", None)
+    if leg is None or failure_class is None:
+        return None
+    return {
+        "leg": leg,
+        "code": getattr(verdict, "code", None),
+        "class": getattr(failure_class, "value", str(failure_class)),
+        "reason": getattr(verdict, "reason", ""),
+    }
 
 
 def _failure(stage: str, error: BaseException) -> CallFailure:

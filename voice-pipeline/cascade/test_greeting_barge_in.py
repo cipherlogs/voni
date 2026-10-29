@@ -30,7 +30,7 @@ import unittest
 from cascade.assemblyai_tts import AssemblyAIStreamingTTS
 from cascade.body_map import CascadeBody, adapt_body
 from cascade.call import CallLifecycle, OpenedLeg
-from cascade.greeting import CallGreeting, GreetingFailure
+from cascade.greeting import CallGreeting
 from cascade.meta_stt import SpeechComplete, SpeechPartial, SpeechStart
 from cascade.test_call import CALL_ID, ISSUED_S, SECRET, FakeStream, signed_message
 from cascade.testing import FakeClock, ScriptedSTT
