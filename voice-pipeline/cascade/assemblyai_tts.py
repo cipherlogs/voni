@@ -340,6 +340,36 @@ class Cancellation:
     acknowledged: bool = False
 
 
+@dataclass(frozen=True)
+class Billing:
+    """The vendor's metered units for one call.
+
+    ``characters`` is the billed count and ``source`` names the ``Termination``
+    key it came from. A call that never produced a summary keeps
+    ``characters=None`` with ``measured=False``: unknown is not zero.
+    """
+
+    characters: int | None
+    measured: bool
+    source: str
+    total_input_char_length: int | None = None
+    audio_duration_seconds: float | None = None
+    session_duration_seconds: int | None = None
+    audio_bytes: int = 0
+
+
+@dataclass(frozen=True)
+class TerminationRecord:
+    """The clean end: the final flush confirmation, then the session summary."""
+
+    final_flush: SynthesisRequest | None
+    flush_done: Mapping[str, Any] | None
+    termination: Mapping[str, Any]
+    residual_audio: bytes
+    billing: Billing
+
+
+
 
 
 
@@ -401,6 +431,13 @@ class AssemblyAIStreamingTTS(StreamingTTS):
         self._discarding = False
         self._awaiting_cancel: Cancellation | None = None
         self._pending_characters = 0
+        # Billing (ticket 54): unmeasured until a Termination summary arrives.
+        self.billing = Billing(
+            characters=None,
+            measured=False,
+            source="unterminated: the session has not ended",
+            audio_bytes=0,
+        )
 
     @property
     def url(self) -> str:
@@ -708,15 +745,97 @@ class AssemblyAIStreamingTTS(StreamingTTS):
         if isinstance(start, (int, float)):
             request.audio_start_ms = start
 
-    async def terminate(self) -> Mapping[str, Any]:
-        """Ask for the session summary; the billing ticket reads it as a record."""
+    async def terminate(self) -> TerminationRecord:
+        """End the session deliberately and return its billing record.
+
+        ``Terminate`` performs the implicit flush, so the adapter sends no
+        extra ``Flush``: the vendor answers with the final ``FlushDone`` and
+        then ``Termination``. Audio still owed is kept as residual audio, and
+        a summary that never arrives leaves the billing unmeasured.
+        """
         self._require_open()
         await self._socket.send(json.dumps({"type": "Terminate"}))
+        residual = bytearray()
+        flush_done: Mapping[str, Any] | None = None
+        final_flush: SynthesisRequest | None = None
+        summary: Mapping[str, Any] | None = None
         while True:
-            frame = await self._read_frame()
-            if frame.get("type") == "Termination":
+            frame = await self._next_frame(self._cancel_generation)
+            if frame is None:
+                break
+            kind = frame.get("type")
+            if kind == "Audio":
+                pcm = self._decode_audio(frame)
+                self.audio_bytes += len(pcm)
+                residual.extend(pcm)
+            elif kind == "FlushDone":
+                flush_done = frame
+                self._record_flush_done(frame)
+                flush_id = frame.get("flush_id")
+                if isinstance(flush_id, int):
+                    final_flush = self.requests.get(flush_id)
+            elif kind == "Termination":
                 self._record_termination(frame)
-                return frame
+                summary = frame
+                break
+        await self._close_socket()
+        if summary is None:
+            self.billing = self._unmeasured_billing()
+            raise SynthesisProtocolError(
+                "synthesis session ended without a Termination summary"
+            )
+        self.billing = self._billing_from(summary)
+        return TerminationRecord(
+            final_flush=final_flush,
+            flush_done=flush_done,
+            termination=summary,
+            residual_audio=bytes(residual),
+            billing=self.billing,
+        )
+
+    async def close(self) -> None:
+        """Close the socket without a ``Terminate``: the call keeps no summary."""
+        await self._close_socket()
+        if self.termination is None:
+            self.billing = self._unmeasured_billing()
+
+    async def _close_socket(self) -> None:
+        socket, self._socket = self._socket, None
+        self._frames = None
+        if socket is not None:
+            await _close_quietly(socket)
+
+    def _unmeasured_billing(self) -> Billing:
+        return Billing(
+            characters=None,
+            measured=False,
+            source="unterminated: no Termination summary was received",
+            audio_bytes=self.audio_bytes,
+        )
+
+    def _billing_from(self, summary: Mapping[str, Any]) -> Billing:
+        total = summary.get("total_input_char_length")
+        total = total if isinstance(total, int) else None
+        billed = summary.get("billed_characters")
+        if isinstance(billed, int):
+            characters, source = billed, "billed_characters"
+        elif total is not None:
+            characters, source = total, "total_input_char_length"
+        else:
+            characters, source = None, "unmeasured: no character count in Termination"
+        audio = summary.get("audio_duration_seconds")
+        session = summary.get("session_duration_seconds")
+        return Billing(
+            characters=characters,
+            measured=characters is not None,
+            source=source,
+            total_input_char_length=total,
+            audio_duration_seconds=(
+                float(audio) if isinstance(audio, (int, float)) else None
+            ),
+            session_duration_seconds=session if isinstance(session, int) else None,
+            audio_bytes=self.audio_bytes,
+        )
 
     def resume_point(self, played_ms: float) -> ResumePoint:
         """Where the unheard tail starts, from the vendor's own timings.
