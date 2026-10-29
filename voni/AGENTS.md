@@ -61,3 +61,8 @@ the flows that already follow it.
   `RateLimitError.retryAfterSeconds` in `src/lib/voice/session.ts`) apart from
   a mic error, a dropped connection, and a normal hang-up, all of which used to
   collapse into one look.
+
+# Checks
+
+- `npm run typecheck` runs `next typegen` then `tsc --noEmit`; bare `tsc` fails on generated route types.
+- `npm test` auto-discovers every `*.test.ts` / `*.test.tsx` under `src/` and `scripts/`. Add the test file, not a path entry.

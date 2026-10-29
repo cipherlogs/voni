@@ -10,6 +10,11 @@ These rules add Leadcalls-specific requirements to the global Next.js guidance.
 - The generated `<!-- BEGIN:nextjs-agent-rules -->` block in `voni/AGENTS.md` is maintained by `next dev`; never hand-edit inside its markers.
 - If a page is not bundled, append `.md` to its nextjs.org/docs URL or use `https://nextjs.org/docs/llms.txt` as the index.
 
+## Checks
+
+- Use `npm run typecheck` from `voni/` (runs `next typegen` then `tsc --noEmit`). Bare `tsc` fails on generated `PageProps`/`LayoutProps`/`RouteContext`.
+- Use `npm test` for the full unit suite; tests are auto-discovered under `src/` and `scripts/`.
+
 ## Runtime visibility
 
 - `.mcp.json` registers `next-devtools` with `npx -y next-devtools-mcp@latest`.
