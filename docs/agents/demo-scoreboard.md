@@ -77,12 +77,16 @@ edit a budget to pass; fix the call or amend the spec first.
   paste raw artifacts or `SILENCE TIMELINE` blobs into a report.
 - `--transport stored` is the landing-demo path. `--transport inline` is for
   debugging the inline body only; do not measure the demo on it.
-- `--events /tmp/run.jsonl` records the live decision timeline
+- Every measurement run records the live decision timeline
   (`turn.user_final`, `turn.reply_start`, first audio with the one
   `anchor: true` clock mark, `reply.create`, cut, tool, drain, aside,
-  hangup); a focused run writes that file, the suite writes
-  `/tmp/run.<scenario>.jsonl` per scenario. `scoreboard:inspect --events`
-  summarizes one file.
+  hangup) by default, so the artifact always carries the per-turn split. It
+  writes `voni/scoreboard-runs/.events/<artifact stem>/<scenario>.jsonl`
+  (gitignored, one file per scenario). `--events /tmp/run.jsonl` overrides
+  the location (focused: that file; suite: `/tmp/run.<scenario>.jsonl`), and
+  `--no-events` restores the old no-stream debug path. A stream that cannot
+  be written or read is a warning, never a gate failure.
+  `scoreboard:inspect --events` summarizes one file.
 
 ## Fast LLM override
 

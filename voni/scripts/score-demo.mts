@@ -58,7 +58,7 @@
  *                           [--overlap-ms 120,350] [--goodbye-coverage 0.95]
  *                           [--goodbye-inbox-named | --goodbye-inbox-missing]
  *                           [--hang-up-delay-ms 900] [--narrated-ending]
- *                           [--events <path>]
+ *                           [--events <path> | --no-events]
  *
  * --gate-voice picks the gate voice through the shared voice registry
  * (--voice stays an alias); omitting both gates on DEFAULT_GATE_VOICE, never
@@ -70,11 +70,17 @@
  * run fails fast naming the holder instead of inflating cut latency under
  * parallel load. The lock is released on exit and a dead holder is reclaimed.
  *
- * --events <path> forwards the runner's opt-in JSONL event stream (client turn
- * marks, cuts, tool calls) to `eval:demo-agent`. A focused run writes that
- * file; the suite spawns one runner per scenario and each writer truncates its
- * own file, so it writes `<path stem>.<scenario>.jsonl` instead and no
- * scenario's stream is lost. The stream is telemetry, never a gate input.
+ * Every measurement run carries the JSONL event stream (client turn marks,
+ * cuts, tool calls): without the client marks there is no per-turn latency
+ * split, so a baseline would be unmeasured. By default it writes one file per
+ * scenario under `<out dir>/.events/<artifact stem>/<scenario>.jsonl` (inside
+ * the gitignored `scoreboard-runs/`), created lazily by the runner. A focused
+ * run writes `.../<scenario>.jsonl` there too. `--events <path>` stays the
+ * override: a focused run writes that file, the suite writes
+ * `<path stem>.<scenario>.jsonl` so one process's truncation cannot drop
+ * another's stream. `--no-events` restores the old no-stream behaviour for
+ * debugging. The stream is telemetry, never a gate input, and a stream that
+ * cannot be read only warns — it never fails a gate.
  *
  * --variant turn-window forwards the stored-agent experiment to every runner
  * section (`--variant`, plus `--turn-windows min,max,interruption_delay` when
@@ -214,8 +220,8 @@
  * failed run with no cut line FAILs and cites the interrupted greeting turn
  * from the merged Call trace (or says no turn was merged).
  */
-import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import {
   addHumanRating,
@@ -540,6 +546,40 @@ function suiteEventsPath(path: string, scenario: string): string {
 }
 
 /**
+ * Where this run's client receipt marks land. Measurement runs default the
+ * stream on, scoped to the artifact (`<out dir>/.events/<artifact stem>/`),
+ * so every baseline carries the per-turn split. `--events <path>` overrides
+ * the location; `--no-events` restores the old no-stream debug path.
+ */
+type RunEvents =
+  | { enabled: false }
+  | { enabled: true; explicit: false; dir: string }
+  | { enabled: true; explicit: true; path: string };
+
+function resolveRunEvents(argv: readonly string[], outPath: string): RunEvents {
+  const eventsIndex = argv.indexOf("--events");
+  const noEvents = argv.includes("--no-events");
+  if (noEvents && eventsIndex >= 0) {
+    throw new Error("--events and --no-events contradict each other");
+  }
+  if (noEvents) return { enabled: false };
+  if (eventsIndex >= 0) {
+    const path = argv[eventsIndex + 1] ?? "";
+    if (path.trim() === "") throw new Error("--events needs a path, got \"\"");
+    return { enabled: true, explicit: true, path };
+  }
+  const stem = basename(outPath).replace(/\.json$/i, "");
+  return { enabled: true, explicit: false, dir: join(dirname(outPath), ".events", stem) };
+}
+
+/** This scenario's JSONL; disabled events pass an empty path (no file). */
+function runEventsPath(events: RunEvents, scenario: string, suite: boolean): string {
+  if (!events.enabled) return "";
+  if (events.explicit) return suite ? suiteEventsPath(events.path, scenario) : events.path;
+  return join(events.dir, `${scenario}.jsonl`);
+}
+
+/**
  * The one-command suite (ticket 01): every gate voice scenario that carries
  * scoreboard evidence, run one at a time. Timing runs are never parallel:
  * the whole suite holds the machine-wide timing lock and each scenario gets
@@ -564,15 +604,22 @@ const SUITE_SCENARIOS = [
  * split) rather than failing the artifact write. A dry run never ran the
  * runner, so it never reads a stale file into a fresh artifact.
  */
-function readRunMarks(eventsPath: string, suite: boolean, dryRun: boolean): EvalEvent[] {
-  if (!eventsPath || dryRun) return [];
-  const paths = suite ? SUITE_SCENARIOS.map((name) => suiteEventsPath(eventsPath, name)) : [eventsPath];
+function readRunMarks(events: RunEvents, scenario: string, suite: boolean, dryRun: boolean): EvalEvent[] {
+  if (!events.enabled || dryRun) return [];
+  const names: readonly string[] = suite ? SUITE_SCENARIOS : [scenario];
   const marks: EvalEvent[] = [];
-  for (const path of paths) {
+  for (const name of names) {
+    const path = runEventsPath(events, name, suite);
     try {
       marks.push(...readEvalEvents(path));
-    } catch {
-      // No stream for this scenario: its turns simply carry no split.
+    } catch (error) {
+      // A missing stream means no split for that scenario, not a bad run. A
+      // stream that exists but cannot be read is telemetry trouble: warn,
+      // never fail a gate over it.
+      if (existsSync(path)) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.log(`events stream unreadable for ${name}: ${message}`);
+      }
     }
   }
   return marks;
@@ -1041,6 +1088,12 @@ async function main(): Promise<void> {
   if (!/^[1-9]\d*$/.test(runs)) {
     throw new Error(`--runs needs a positive int, got "${runs}"`);
   }
+  // Resolve the artifact before the runners start: the default event stream is
+  // scoped to it, so this run's split lands beside — and travels with — the
+  // artifact it measured.
+  const out = resolve(arg("--out", `scoreboard-runs/score-${stamp()}-${voice}.json`));
+  const dryRun = process.argv.includes("--dry-run");
+  const events = resolveRunEvents(process.argv, out);
   // Which transport/agent the suite measures. Defaults are untouched (no
   // extra flags reach the runner); a typo, windows without the variant, or a
   // variant on the inline debug path fails here, before the timing lock and
@@ -1066,10 +1119,9 @@ async function main(): Promise<void> {
       `variant: ${selection.variant} ${selection.variantKey} windows ${JSON.stringify(selection.turnWindows)} (source ${selection.source})`,
     );
   }
-  // Opt-in runner event stream (telemetry, never a gate input). Absent keeps
-  // the runner's live path exactly as it was.
-  const eventsPath = arg("--events", "");
-  const dryRun = process.argv.includes("--dry-run");
+  // Runner event stream (telemetry, never a gate input). Measurement runs
+  // carry it by default so the per-turn split always exists; --no-events is
+  // the debug escape hatch.
   // Timing runs go one at a time: a live run takes the machine-wide lock
   // before dialing so a parallel run cannot inflate the cut number. A held
   // lock fails fast, names the holder, and writes no artifact. The lock is
@@ -1122,14 +1174,14 @@ async function main(): Promise<void> {
       // One at a time: a timing run in parallel inflates the cut number.
       const section = runEvalRunner(voice, name, runs, {
         ...runnerOptions,
-        eventsPath: eventsPath ? suiteEventsPath(eventsPath, name) : "",
+        eventsPath: runEventsPath(events, name, true),
       });
       sections.push({ name, section });
       stdoutByScenario.set(name, section.stdout);
     }
     evalSection = mergeSuiteSections(sections, Number(runs));
   } else {
-    evalSection = runEvalRunner(voice, scenario, runs, { ...runnerOptions, eventsPath });
+    evalSection = runEvalRunner(voice, scenario, runs, { ...runnerOptions, eventsPath: runEventsPath(events, scenario, false) });
     stdoutByScenario.set(scenario, evalSection.stdout);
   }
   // Focused mode has one runner stream: every parser reads it verbatim, so a
@@ -1358,7 +1410,6 @@ async function main(): Promise<void> {
   const callerClips = dryRun ? [] : callerClipsFromRunnerStdout(evalSection.stdout);
   // The prior run is a working artifact, never committed: load it before the
   // cut gate so a changed caller clip fails comparability instead of greening.
-  const out = resolve(arg("--out", `scoreboard-runs/score-${stamp()}-${voice}.json`));
   const priorPath = arg("--prior", "");
   const prior = priorPath ? loadPriorArtifact(priorPath) : latestPriorArtifact(dirname(out), voice, out);
   // Real-cut evidence counts as measured even though it lands post-skeleton.
@@ -1493,9 +1544,9 @@ async function main(): Promise<void> {
   const runnerEvidence = buildRunnerEvidence({
     runnerStdout: evalSection.stdout,
     excerpts: evidenceExcerpts,
-    // The marks ride the existing opt-in stream; without --events no split is
-    // claimed, and every gate reads exactly what it read before.
-    marks: readRunMarks(eventsPath, suite, dryRun),
+    // The marks ride this run's stream; --no-events claims no split, and every
+    // gate reads exactly what it read before.
+    marks: readRunMarks(events, scenario, suite, dryRun),
   });
   let artifact: ScoreboardArtifact = buildSkeletonArtifact({
     voice,

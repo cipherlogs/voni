@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, existsSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { spawnSync } from "node:child_process";
 import { DEMO_VOICE_IDS } from "../src/lib/demo/voni-agent";
 
@@ -119,6 +119,8 @@ test("one command runs the gate-voice eval, merges the Call trace, and writes th
     "stop-over",
     "--runs",
     "1",
+    "--events",
+    join(dir, ".events", "score", "stop-over.jsonl"),
   ]);
   assert.deepEqual(calls[1], ["run", "call:trace", "--", "sess_loop01"]);
 
@@ -198,6 +200,8 @@ if (args[0] === "run" && args[1] === "eval:demo-agent") {
     "--transport", "stored",
     "--variant", "turn-window",
     "--turn-windows", "400,640,0",
+    "--events",
+    join(dir, ".events", "score", "stop-over.jsonl"),
   ]);
 
   const artifact = JSON.parse(readFileSync(out, "utf8")) as {
@@ -2218,6 +2222,123 @@ if (args[0] === "run" && args[1] === "eval:demo-agent") {
       return join(dir, `events.${scenario}.jsonl`);
     }),
   );
+});
+
+test("a measurement run carries the split stream by default under a gitignored run directory", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  writeFileSync(
+    join(bin, "npm"),
+    `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+const args = process.argv.slice(2);
+fs.appendFileSync(process.env.SHIM_LOG, JSON.stringify(args) + "\\n");
+if (args[0] === "run" && args[1] === "eval:demo-agent") {
+  const scenario = args[args.indexOf("--scenario") + 1];
+  const at = args.indexOf("--events");
+  if (at >= 0) {
+    fs.mkdirSync(path.dirname(args[at + 1]), { recursive: true });
+    fs.writeFileSync(args[at + 1], JSON.stringify({ atMs: 1, type: "scenario.start", scenario }) + "\\n");
+  }
+  if (scenario === "stop-over") {
+    console.log("    cut 900ms after the caller started");
+    console.log('    verdict ["yield","Wait, stop."]');
+    console.log('    answered the point after the cut: "about 200 dollars a month"');
+  }
+  console.log("EVAL SUMMARY " + JSON.stringify({
+    scenario, runs: 1, failures: 0,
+    scenarios: [{ name: scenario, passed: 1, runs: 1 }],
+    traceSessions: ["sess_default_events"], playout: [], audioChunks: 40, live: true, clips: [],
+  }));
+  console.log(scenario + ": 1/1");
+} else if (args[0] === "run" && args[1] === "call:trace") {
+  console.log(' 1.00s  VONI    "Welcome to the demo"  (reply_create gap 700ms)');
+}
+`,
+    { mode: 0o755 },
+  );
+  const log = join(dir, "invocations.log");
+  const out = join(dir, "scoreboard-runs", "score.json");
+  const result = run(["--out", out, "--timing-lock", join(dir, "timing.lock")], new URL("../", import.meta.url).pathname, {
+    PATH: `${bin}:${process.env.PATH}`,
+    SHIM_LOG: log,
+  });
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+
+  const calls = readFileSync(log, "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line) as string[])
+    .filter((args) => args[1] === "eval:demo-agent");
+  assert.equal(calls.length, 9);
+
+  // The default run writes next to the artifact, not into one shared file:
+  // each runner process truncates its own stream.
+  const runsDir = join(dir, "scoreboard-runs");
+  assert.ok(existsSync(out), "the run writes its artifact");
+  const eventsRoot = join(runsDir, ".events", "score");
+  const paths = calls.map((args) => args[args.indexOf("--events") + 1]);
+  assert.deepEqual(
+    paths,
+    calls.map((args) => join(eventsRoot, `${args[args.indexOf("--scenario") + 1]}.jsonl`)),
+  );
+  for (const path of paths) {
+    assert.ok(existsSync(path), `the split stream is written: ${path}`);
+    assert.ok(relative(dir, path).startsWith(join("scoreboard-runs", ".events")));
+  }
+
+  // The run-scoped directory rides the artifact's gitignore entry.
+  const rootIgnore = readFileSync(new URL("../../.gitignore", import.meta.url), "utf8");
+  assert.match(rootIgnore, /^voni\/scoreboard-runs\/$/m);
+});
+
+test("--no-events restores the old runner argv with no stream", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  writeFileSync(
+    join(bin, "npm"),
+    `#!/usr/bin/env node
+const fs = require("node:fs");
+const args = process.argv.slice(2);
+fs.appendFileSync(process.env.SHIM_LOG, JSON.stringify(args) + "\\n");
+if (args[0] === "run" && args[1] === "eval:demo-agent") {
+  const scenario = args[args.indexOf("--scenario") + 1];
+  if (scenario === "stop-over") {
+    console.log("    cut 900ms after the caller started");
+    console.log('    verdict ["yield","Wait, stop."]');
+    console.log('    answered the point after the cut: "about 200 dollars a month"');
+  }
+  console.log("EVAL SUMMARY " + JSON.stringify({
+    scenario, runs: 1, failures: 0,
+    scenarios: [{ name: scenario, passed: 1, runs: 1 }],
+    traceSessions: ["sess_no_events"], playout: [], audioChunks: 40, live: true, clips: [],
+  }));
+  console.log(scenario + ": 1/1");
+} else if (args[0] === "run" && args[1] === "call:trace") {
+  console.log(' 1.00s  VONI    "Welcome to the demo"  (reply_create gap 700ms)');
+}
+`,
+    { mode: 0o755 },
+  );
+  const log = join(dir, "invocations.log");
+  const out = join(dir, "scoreboard-runs", "score.json");
+  const result = run(["--no-events", "--out", out, "--timing-lock", join(dir, "timing.lock")], new URL("../", import.meta.url).pathname, {
+    PATH: `${bin}:${process.env.PATH}`,
+    SHIM_LOG: log,
+  });
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+
+  const calls = readFileSync(log, "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line) as string[])
+    .filter((args) => args[1] === "eval:demo-agent");
+  assert.equal(calls.length, 9);
+  for (const args of calls) assert.equal(args.includes("--events"), false);
+  assert.equal(existsSync(join(dir, "scoreboard-runs", ".events")), false);
 });
 
 test("suite mode scores every gate from its own scenario and merges each call's trace", () => {
