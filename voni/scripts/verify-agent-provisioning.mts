@@ -42,7 +42,8 @@ try {
       transcription_prompt?: string;
       keyterms?: string[];
       voice_focus?: string;
-      turn_detection?: { min_silence?: number; max_silence?: number };
+      /** `null` is the Turn preset; any object switches off adaptive end-of-turn. */
+      turn_detection?: null;
     };
     output?: { format?: { encoding?: string } };
     system_prompt: string;
@@ -76,8 +77,7 @@ try {
   assert.match(agent.input?.transcription_prompt ?? "", /property leads/);
   assert.ok((agent.input?.keyterms ?? []).includes("Voni"));
   assert.equal(agent.input?.voice_focus, "far-field");
-  assert.equal(agent.input?.turn_detection?.min_silence, 100);
-  assert.equal(agent.input?.turn_detection?.max_silence, 1000);
+  assert.equal(agent.input?.turn_detection, null);
   assert.equal(agent.output?.format?.encoding, "audio/pcmu");
   assert.match(agent.system_prompt, /prepare_sensitive_capture/);
   console.log(
