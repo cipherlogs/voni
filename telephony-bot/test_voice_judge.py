@@ -29,6 +29,16 @@ class BargeInTests(unittest.TestCase):
             decision, _ = classify_user_turn(text, agent_speaking_ms=3000)
             self.assertEqual(decision, "keep-speaking", text)
 
+    def test_elongated_filler_never_yields(self):
+        # "Okaay so" and "Sooo" are the caller's habit, not content. The
+        # browser squeezes repeats before judging filler
+        # (voni/src/lib/voice/barge-in.ts); the phone must reach the same
+        # verdict so a filler resumes the tail instead of taking the floor
+        # (voice-parity 70).
+        for text in ["Okaay so", "Sooo", "mm-hmm", "Riiight", "Uh-huh, okay"]:
+            decision, _ = classify_user_turn(text, agent_speaking_ms=3000)
+            self.assertEqual(decision, "keep-speaking", text)
+
     def test_bare_assent_never_hard_cuts(self):
         # Soft-confirm path: the settled final pivots gracefully instead.
         for text in ["yes", "yeah"]:

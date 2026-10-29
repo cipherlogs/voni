@@ -1,0 +1,62 @@
+{
+  "contract": "barge-in-recovery/1",
+  "recordedAt": "2026-10-29",
+  "recordedWith": "the browser's own cut in voni/src/lib/voice/session-lifecycle.test.ts (playMs(14 * CAPTION_MS_PER_CHAR) -> 'I'd handle booking')",
+  "comment": "One behavioural table for the unheard-tail barge-in recovery, read by BOTH the browser test (voni/src/lib/voice/barge-in-recovery.test.ts) and the phone test (telephony-bot/test_barge_in_recovery.py). heard = the words whose start played; rest = the exact unheard tail from the last heard word (the browser keeps it as a one-word overlap because the cut landed mid-word); instruction = what the agent is told to say next, or null when the tail is too short to be worth resuming (RESUME_MIN_WORDS).",
+  "cases": [
+    {
+      "name": "a filler barge-in resumes the exact unheard tail from the last heard word",
+      "line": "I'd handle booking and reminders for you",
+      "playedMs": 812,
+      "heard": "I'd handle booking",
+      "rest": "booking and reminders for you",
+      "callerText": "Okaay so",
+      "instruction": "The caller only said \"Okaay so\" while you were speaking; it wasn't a request to stop. Finish your sentence: say exactly this and nothing else, word for word: \"booking and reminders for you\""
+    },
+    {
+      "name": "a noise with no caller words still resumes the unheard tail",
+      "line": "I'd handle booking and reminders for you",
+      "playedMs": 812,
+      "heard": "I'd handle booking",
+      "rest": "booking and reminders for you",
+      "callerText": "",
+      "instruction": "A noise on the caller's side cut you off; they didn't say anything. Finish your sentence: say exactly this and nothing else, word for word: \"booking and reminders for you\""
+    },
+    {
+      "name": "a cut after the last word has nothing left unheard",
+      "line": "Ready?",
+      "playedMs": 60000,
+      "heard": "Ready?",
+      "rest": "Ready?",
+      "callerText": "mm-hmm",
+      "instruction": null
+    },
+    {
+      "name": "a tail of three words or fewer is not worth resuming",
+      "line": "Let me check now.",
+      "playedMs": 232,
+      "heard": "Let me",
+      "rest": "me check now.",
+      "callerText": "okay",
+      "instruction": null
+    },
+    {
+      "name": "hearing only the first word keeps the whole line, heard word included",
+      "line": "I'd handle booking and reminders for you",
+      "playedMs": 100,
+      "heard": "I'd",
+      "rest": "I'd handle booking and reminders for you",
+      "callerText": "uh-huh",
+      "instruction": "The caller only said \"uh-huh\" while you were speaking; it wasn't a request to stop. Finish your sentence: say exactly this and nothing else, word for word: \"I'd handle booking and reminders for you\""
+    },
+    {
+      "name": "a line that played in full leaves only the overlap word, never a restart",
+      "line": "Hi there friend",
+      "playedMs": 60000,
+      "heard": "Hi there friend",
+      "rest": "friend",
+      "callerText": "right",
+      "instruction": null
+    }
+  ]
+}
