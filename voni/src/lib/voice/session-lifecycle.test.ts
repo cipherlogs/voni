@@ -1474,6 +1474,62 @@ test("after the goodbye, no other reply is heard, captioned, or requested", () =
   assert.deepEqual(replyCreates(), [], "nothing supersedes the goodbye");
 });
 
+test("the goodbye's own audio still plays when the platform omits its reply id", () => {
+  // ADR-0005/ ticket 20: the closing line must play in full. A platform that
+  // omits reply_id on the goodbye's own audio cannot be proven to be a later
+  // reply while the goodbye still owns the floor, so silence must not win yet.
+  const { session, handle, internals, played } = midReply();
+  withDemoTools(internals, session);
+  handle({ type: "reply.done", reply_id: "r1", status: "completed" });
+  handle({ type: "reply.started", reply_id: "bye" });
+  endCall(handle, "e20", { closing_line: "Okay, bye!" });
+  const before = played.length;
+  handle({ type: "reply.audio", data: "" }); // no reply_id
+  handle({ type: "transcript.agent", text: "Okay, bye!" }); // no reply_id
+  assert.ok(played.length > before, "the id-less goodbye audio is heard, not silenced");
+  const captions: string[] = [];
+  // (the caption handler above was not wired in midReply; assert the drop guard directly)
+  assert.equal(internals["endCallSignaled"], true);
+  assert.equal(internals["goodbyeFinished"], false, "the goodbye still owns the floor");
+});
+
+test("the goodbye still plays when end_call was spoken without a reply id", () => {
+  // A spoken end_call inside a reply that carries no id leaves endCallReplyId
+  // null. The goodbye that follows is then unidentifiable; dropping every
+  // id-carrying reply would silence it too.
+  const captions: string[] = [];
+  const { session, handle, internals, played } = midReply({}, {
+    onTranscript: (turn) => captions.push(turn.text),
+  });
+  withDemoTools(internals, session);
+  handle({ type: "reply.done", reply_id: "r1", status: "completed" });
+  handle({ type: "reply.started", reply_id: "bye" });
+  handle({ type: "transcript.agent", text: "Thanks for calling. end_call" }); // no reply_id
+  const before = played.length;
+  handle({ type: "reply.audio", reply_id: "bye", data: "" });
+  handle({ type: "transcript.agent", reply_id: "bye", text: "Okay, bye!" });
+  assert.ok(played.length > before, "the goodbye audio plays");
+  assert.deepEqual(captions, ["Thanks for calling.", "Okay, bye!"], "the goodbye is captioned");
+});
+
+test("an id-less reply after the goodbye completes is dropped whole", () => {
+  const captions: string[] = [];
+  const { session, handle, internals, played } = midReply({}, {
+    onTranscript: (turn) => captions.push(turn.text),
+  });
+  withDemoTools(internals, session);
+  handle({ type: "reply.done", reply_id: "r1", status: "completed" });
+  handle({ type: "reply.started", reply_id: "bye" });
+  endCall(handle, "e23", { closing_line: "Okay, bye!" });
+  handle({ type: "reply.audio", data: "" }); // the goodbye's id-less audio
+  handle({ type: "reply.done", reply_id: "bye", status: "completed" });
+  const before = played.length;
+  handle({ type: "reply.audio", data: "" });
+  handle({ type: "transcript.agent", text: "The call has ended." });
+  assert.equal(played.length, before, "nothing after the goodbye plays");
+  assert.deepEqual(captions, [], "nothing after the goodbye is captioned");
+});
+
 test("a post-goodbye reply that omits its reply id is dropped whole", () => {
   // The drop guards identify the goodbye by reply id. A message that carries
   // no id matched "no id = not dropped", so the model's post-End call line

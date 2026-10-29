@@ -102,6 +102,19 @@ test("a keyed line replaces the waiting one: never said twice", () => {
   assert.deepEqual(sent, ["invite 2"]);
 });
 
+test("the line a cut would interrupt is known before reply.done (the cut is stamped when built)", () => {
+  const { floor } = rig();
+  floor.speak({ instructions: "still there?", droppable: true });
+  floor.replyStarted();
+  assert.equal(floor.currentDroppable(), true, "the playing check-in is optional");
+  floor.replyDone(true);
+
+  const other = rig();
+  other.floor.speak({ instructions: "the answer" });
+  other.floor.replyStarted();
+  assert.equal(other.floor.currentDroppable(), false, "a real line is never dropped");
+});
+
 test("our line cut by the caller for real is said again, whole; a check-in is not", () => {
   const { floor, sent, advance } = rig();
   floor.speak({ instructions: "found it" });

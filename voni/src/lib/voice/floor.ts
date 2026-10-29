@@ -140,8 +140,13 @@ export class Floor {
    * filler, or a noise — ends it for good: it is never resumed over a caller
    * who has taken the floor.
    */
-  cutDroppable(): boolean {
-    return this.cut?.droppable === true;
+  /**
+   * Whether the line playing right now is optional (a check-in). Read when a
+   * barge-in cut is recorded, before `replyDone` moves it aside, so the
+   * droppable verdict is part of the cut itself instead of patched in after.
+   */
+  currentDroppable(): boolean {
+    return this.current?.droppable === true;
   }
 
   callerSpeechStarted(): void {
