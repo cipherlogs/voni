@@ -2920,6 +2920,20 @@ export const ARTIFACT_SECTIONS = [
 export type ArtifactSection = (typeof ARTIFACT_SECTIONS)[number];
 
 
+/**
+ * The committed vendor floor an artifact was judged against (ticket 126), by
+ * reference: the file's path and sha256 plus the provenance that says which
+ * voice, locale, day and method produced it. Never the audio.
+ */
+export type ArtifactVendorFloor = {
+  readonly path: string;
+  readonly sha256: string;
+  readonly voice: string;
+  readonly locale: string;
+  readonly capturedOn: string;
+  readonly method: string;
+};
+
 export type ScoreboardArtifact = {
   schemaVersion: typeof SCOREBOARD_SCHEMA_VERSION;
   recordedAt: string;
@@ -2966,6 +2980,12 @@ export type ScoreboardArtifact = {
    * the field existed. A cascade artifact never claims the platform leg.
    */
   captures?: ArtifactCaptures;
+  /**
+   * The committed vendor floor the reference was judged against (W0, ticket
+   * 126). Present only where the subject has one (`anna`/en); a voice without a
+   * floor is compared to its own reference and records no floor.
+   */
+  vendorFloor?: ArtifactVendorFloor;
   /**
    * The cascade call's ledger summary (M13): the marks the three cascade gaps
    * are derived from. A reader holding the marks can re-derive every row, so a
@@ -5932,12 +5952,23 @@ export type ArtifactEngineInput = {
   cost?: ArtifactCost;
   events?: ArtifactEventRecord[];
   ledger?: ArtifactLedger;
+  /** The committed floor the reference was judged against, where one exists (W0). */
+  vendorFloor?: ArtifactVendorFloor;
 };
 
 /** One section's value exactly as the artifact carries it. */
 type ArtifactShape = Pick<
   ScoreboardArtifact,
-  "pipeline" | "run" | "providers" | "latency" | "cost" | "captures" | "eligibility" | "events" | "ledger"
+  | "pipeline"
+  | "run"
+  | "providers"
+  | "latency"
+  | "cost"
+  | "captures"
+  | "eligibility"
+  | "events"
+  | "ledger"
+  | "vendorFloor"
 >;
 
 function captureRecord(leg: ArtifactCaptureLeg, captures: ArtifactCaptures, pipeline: ArtifactPipeline): ArtifactCapture {
@@ -6014,6 +6045,7 @@ export function buildArtifactShape(
     eligibility: engine.eligibility,
     ...(engine.events !== undefined ? { events: engine.events } : {}),
     ...(engine.ledger !== undefined ? { ledger: engine.ledger } : {}),
+    ...(engine.vendorFloor !== undefined ? { vendorFloor: engine.vendorFloor } : {}),
   };
 }
 

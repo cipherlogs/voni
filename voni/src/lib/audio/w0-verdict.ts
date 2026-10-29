@@ -32,6 +32,7 @@ import {
   type BudgetUnit,
 } from "../demo/scoreboard-budgets";
 import type { TwoCaptureComparison, TwoCaptureRole } from "./comparison";
+import type { ReferenceFloorFinding } from "./reference-floor";
 import { wordChangeCount } from "./verdict";
 
 /** The four causal layers, in the order they are judged. */
@@ -59,7 +60,7 @@ export const W0_AUDIO_METRICS = [
 export type W0Metric = (typeof W0_AUDIO_METRICS)[number];
 
 /** The non-audio facts a layer also rests on. */
-export type W0Fact = "capture" | "onset" | "format" | "line" | "text" | "voice" | "language";
+export type W0Fact = "capture" | "onset" | "format" | "line" | "text" | "voice" | "language" | "floor";
 
 export type W0CheckName = W0Metric | W0Fact;
 
@@ -137,6 +138,12 @@ export type W0VerdictInput = {
   intent?: W0Intent;
   /** What the delivered capture was measured to carry. */
   delivered?: W0DeliveredFacts;
+  /**
+   * The reference's standing against its baseline (ticket 126). A committed
+   * floor that the reference is worse than is a vendor-voice regression; a
+   * voice with no floor is its own baseline and is not compared externally.
+   */
+  referenceFloor?: ReferenceFloorFinding;
 };
 
 function bar(key: BudgetKey): W0Threshold {
@@ -178,7 +185,8 @@ function minutes(value: number): string {
 
 // ── Layer 1: the vendor's voice ─────────────────────────────────────────────
 
-function referenceChecks(comparison: TwoCaptureComparison): W0Check[] {
+function referenceChecks(input: W0VerdictInput): W0Check[] {
+  const { comparison } = input;
   const checks: W0Check[] = [];
   const capture = comparison.captures.find((entry) => entry.role === "reference");
   const problem = capture?.problem ?? null;
@@ -310,6 +318,31 @@ function referenceChecks(comparison: TwoCaptureComparison): W0Check[] {
         },
       ),
     );
+  }
+
+  // The baseline is external only where a committed floor exists (ticket 126):
+  // the reference is the vendor's own render, so being worse than that floor is
+  // a vendor-voice regression even when the file is self-consistent.
+  const floor = input.referenceFloor;
+  if (floor !== undefined) {
+    const base = { layer: "vendor voice" as const, metric: "floor" as const, subject: "reference" as const, producer: "reference-floor.compareReferenceToFloor" };
+    if (floor.status === "regression") {
+      checks.push(
+        check(base, { status: "FAIL", value: null, bar: null, reason: floor.sentence }),
+      );
+    } else if (floor.status === "within-floor") {
+      checks.push(
+        check(base, { status: "PASS", value: null, bar: null, reason: floor.sentence }),
+      );
+    } else if (floor.status === "unmeasured") {
+      checks.push(
+        check(base, { status: "UNMEASURED", value: null, bar: null, reason: floor.sentence }),
+      );
+    } else {
+      checks.push(
+        check(base, { status: "SKIPPED", value: null, bar: null, reason: floor.sentence }),
+      );
+    }
   }
   return checks;
 }
@@ -651,7 +684,7 @@ function clientChecks(comparison: TwoCaptureComparison): W0Check[] {
  */
 export function evaluateW0Checks(input: W0VerdictInput): W0Check[] {
   return [
-    ...referenceChecks(input.comparison),
+    ...referenceChecks(input),
     ...modelTextChecks(input),
     ...pipelineChecks(input),
     ...clientChecks(input.comparison),

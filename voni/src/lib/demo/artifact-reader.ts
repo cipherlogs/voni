@@ -23,6 +23,7 @@ import {
   type ScoreboardArtifact,
 } from "./scoreboard";
 import { CASCADE_ONLY_EVENT_TYPES, isCascadeOnlyEvent } from "./event-envelope";
+import { GATE_CAPTURE_LEGS, malformedCaptureReason } from "./capture-evidence";
 import {
   CASCADE_NO_COMMIT_MARK_ABSENCE,
   MANAGED_NO_COMMIT_MARK_ABSENCE,
@@ -141,6 +142,7 @@ export function parseScoreboardArtifact(raw: unknown, source: string): Scoreboar
 
   const pipeline = pipelineOfArtifact(record as Pick<ScoreboardArtifact, "pipeline">, source);
   const captures = parseCaptures(record.captures, source);
+  parseVendorFloor(record.vendorFloor, source);
   if (pipeline === "cascade" && isPresentCapture(captures?.platform)) {
     throw new ArtifactReadError(
       source,
@@ -268,12 +270,45 @@ function parseCaptures(raw: unknown, source: string): ArtifactCaptures | undefin
         `capture leg "${leg}" needs path/sha256 (never audio bytes) or a named absence`,
       );
     }
+    const malformed = malformedCaptureReason(capture);
+    if (malformed !== null) {
+      throw new ArtifactReadError(source, `captures.${leg}`, malformed.reason);
+    }
   }
   return record as ArtifactCaptures;
 }
 
-/** A capture that names a file, as opposed to a named N/A or a legacy null. */
-function isPresentCapture(capture: ArtifactCapture | undefined): boolean {
+/**
+ * The committed floor an artifact records (ticket 126): a file and its sha256,
+ * plus the voice, locale, capture day and method that make it evidence. The
+ * shape is validated here; whether those bytes *are* the committed floor is
+ * checked where the floor is loaded, by `assertVendorFloorEvidenceIsCommitted`,
+ * because this reader never opens a capture.
+ */
+function parseVendorFloor(raw: unknown, source: string): void {
+  if (raw === undefined) return;
+  const malformed = malformedCaptureReason(raw);
+  if (malformed !== null) {
+    const sha = (raw as Record<string, unknown> | null)?.sha256;
+    const field =
+      sha !== undefined && (typeof sha !== "string" || !/^[0-9a-f]{64}$/.test(sha))
+        ? "vendorFloor.sha256"
+        : "vendorFloor";
+    throw new ArtifactReadError(source, field, malformed.reason);
+  }
+  const record = raw as Record<string, unknown>;
+  for (const field of ["voice", "locale", "capturedOn", "method"] as const) {
+    if (typeof record[field] !== "string" || (record[field] as string).trim() === "") {
+      throw new ArtifactReadError(
+        source,
+        `vendorFloor.${field}`,
+        `vendorFloor.${field} is missing or empty; the floor names the voice, locale, capture day and method it came from`,
+      );
+    }
+  }
+}
+
+/** A capture that names a file, as opposed to a named N/A or a legacy null. */function isPresentCapture(capture: ArtifactCapture | undefined): boolean {
   return capture !== null && capture !== undefined && !isArtifactAbsence(capture);
 }
 
@@ -842,10 +877,10 @@ function assertEligibilityAgreesWithEvents(
 /**
  * Gates fed by a capture, and the legs each needs (W0/M3). A gate that claims
  * PASS while its capture is missing outran its evidence; the run is not clean.
+ * The registry lives in `capture-evidence.ts` so the gate rule and the capture
+ * verifier read one list; it is re-exported here for the reader's callers.
  */
-export const GATE_CAPTURE_LEGS: Readonly<Record<string, readonly ArtifactCaptureLeg[]>> = {
-  "timbre-probes": ["reference", "delivered"],
-};
+export { GATE_CAPTURE_LEGS };
 
 /** The event fields eligibility reads; the full envelope satisfies it. */
 export type RunEventFact = {

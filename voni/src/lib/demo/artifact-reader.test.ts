@@ -274,6 +274,43 @@ test("an unknown capture leg is refused by name", () => {
   );
 });
 
+test("a capture record that embeds audio bytes is refused by name", () => {
+  const raw = cascadeArtifact({
+    captures: {
+      reference: capture("reference"),
+      platform: { absent: CASCADE_PLATFORM_CAPTURE_ABSENCE },
+      delivered: { ...capture("delivered"), data: "UklGRiQAAABXQVZF" },
+    },
+  });
+
+  assert.throws(
+    () => parseScoreboardArtifact(raw, "bytes-in-artifact.json"),
+    (error: unknown) =>
+      error instanceof ArtifactReadError &&
+      error.field === "captures.delivered" &&
+      /data/.test(error.message) &&
+      /never audio bytes/.test(error.message),
+  );
+});
+
+test("a capture hash that is not a sha256 is refused by name", () => {
+  const raw = cascadeArtifact({
+    captures: {
+      reference: capture("reference"),
+      platform: { absent: CASCADE_PLATFORM_CAPTURE_ABSENCE },
+      delivered: { path: "artifacts/delivered.wav", sha256: "not-a-hash" },
+    },
+  });
+
+  assert.throws(
+    () => parseScoreboardArtifact(raw, "bad-hash.json"),
+    (error: unknown) =>
+      error instanceof ArtifactReadError &&
+      error.field === "captures.delivered" &&
+      /sha256/.test(error.message),
+  );
+});
+
 test("a malformed artifact file is refused with its path", () => {
   const path = join(mkdtempSync(join(tmpdir(), "artifact-reader-")), "broken.json");
   writeFileSync(path, "{ not json", { mode: 0o600 });
@@ -1054,6 +1091,87 @@ test("the one writer refuses an invalid capture combination before writing", () 
       }),
     /platform capture/,
     "a managed artifact records all three legs",
+  );
+});
+
+test("the artifact records the committed vendor floor by path and hash", () => {
+  const vendorFloor = {
+    path: "evidence/vendor-floor/anna-en.wav",
+    sha256: "c".repeat(64),
+    voice: "anna",
+    locale: "en",
+    capturedOn: "2026-10-29",
+    method: "vendor-tts-http",
+  };
+  const raw = cascadeArtifact({ vendorFloor });
+
+  const parsed = parseScoreboardArtifact(raw, "floor-record.json");
+  assert.deepEqual(parsed.vendorFloor, vendorFloor);
+
+  const written = buildArtifactShape({
+    pipeline: "cascade",
+    run: {
+      runId: "run-floor",
+      variant: "cascade-anna-1",
+      startedAt: "2026-10-29T10:00:00.000Z",
+      finishedAt: "2026-10-29T10:00:03.000Z",
+    },
+    captures: {
+      reference: capture("reference"),
+      platform: { absent: CASCADE_PLATFORM_CAPTURE_ABSENCE },
+      delivered: capture("delivered"),
+    },
+    eligibility: { eligible: true },
+    vendorFloor,
+  });
+  assert.deepEqual(written.vendorFloor, vendorFloor);
+});
+
+test("a vendor floor record that carries audio, or no hash, is refused by name", () => {
+  const base = {
+    path: "evidence/vendor-floor/anna-en.wav",
+    sha256: "c".repeat(64),
+    voice: "anna",
+    locale: "en",
+    capturedOn: "2026-10-29",
+    method: "vendor-tts-http",
+  };
+  assert.throws(
+    () =>
+      parseScoreboardArtifact(
+        cascadeArtifact({ vendorFloor: { ...base, data: "UklGRiQAAABXQVZF" } }),
+        "floor-bytes.json",
+      ),
+    (error: unknown) =>
+      error instanceof ArtifactReadError &&
+      error.field === "vendorFloor" &&
+      /never audio bytes/.test(error.message),
+  );
+  assert.throws(
+    () =>
+      parseScoreboardArtifact(
+        cascadeArtifact({ vendorFloor: { ...base, sha256: "recomputed" } }),
+        "floor-hash.json",
+      ),
+    (error: unknown) =>
+      error instanceof ArtifactReadError &&
+      error.field === "vendorFloor.sha256" &&
+      /sha256/.test(error.message),
+  );
+});
+
+test("the working captures are gitignored and only the floor is committed", () => {
+  const ignore = readFileSync(new URL("../../../../.gitignore", import.meta.url), "utf8");
+  const lines = ignore.split("\n").map((line) => line.trim());
+  for (const working of ["voni/.captures/", "voni/.voice-references/", "voice-captures/"]) {
+    assert.ok(lines.includes(working), `${working} is a gitignored working directory`);
+  }
+  // The committed floor sits inside `voni/evidence/`, which no rule ignores, so
+  // the one capture a gate rests on is the one capture that cannot move unseen.
+  assert.equal(
+    lines.some((line) => /^!?voni\/evidence\/vendor-floor\/?$/.test(line)),
+    false,
+    "the committed vendor floor is not ignored",
   );
 });
 
