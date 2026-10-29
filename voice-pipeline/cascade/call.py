@@ -27,14 +27,25 @@ end message (ticket 80); there is no silent opening.
 
 Nothing unbounded sits in the audio path. The drain, the event-pump stop and
 every vendor close read ``deploy.drain_max_wait_ms``; the greeting's synthesis
-await reads the settled ``tts.idle_timeout_ms``; and the turn layer's reply
-task, stall guard, tool hop and reconnect handshake run through
-:meth:`CallLifecycle.run_reply_task`, :meth:`~CallLifecycle.run_stall_guard`,
-:meth:`~CallLifecycle.run_tool` and
+await and the second-failure goodbye read the settled ``tts.idle_timeout_ms``;
+and the turn layer's reply task, stall guard, tool hop and reconnect handshake
+run through :meth:`CallLifecycle.run_reply_task`,
+:meth:`~CallLifecycle.run_stall_guard`, :meth:`~CallLifecycle.run_tool` and
 :meth:`~CallLifecycle.run_reconnect_handshake`, each reading its named bound
 from :mod:`cascade.thresholds`. While a bound is open, the wait ends with a
 named ``UnsetBoundError`` instead of inventing a number; a timeout is a
 recorded :class:`BoundOutcome` and travels on the end message.
+
+A second failure ends the call cleanly (ticket 99). The turn layer drains its
+own turn-level failures and surfaces only the ones that end the call; an
+exception escaping the event pump is that seam, so the supervisor stops waiting
+for browser input instead of leaving a dead line open. The call drains, speaks
+the localized goodbye (``GOODBYE_LINES``) through the voice only when the voice
+is healthy — a second voice failure ends with no goodbye, because a dead socket
+is never written into — and then sends the one end message. The reconnect
+budget is the ticket-94 :class:`~cascade.reconnect.ReconnectBudget` the adapters
+use; the call reports it and never counts a failure a second time, and a
+planned reconnect is never a failure.
 
 Every frame the call emits has one monotonic ``seq`` that belongs to the call,
 not to the TTS ``flush_id`` and not to the provider session (ticket 98).
@@ -51,8 +62,10 @@ The end message carries the facts a reader can act on and never a guess:
 * the cost, where an unmeasured unit is ``None`` and the total is ``null`` —
   never zero, because zero is a price;
 * the eligibility facts, including the predicate and reason of a refusal;
-* the greeting's outcome (spoken, or intentionally absent) and every bounded
-  wait the call ran with the registry name it read.
+* the reconnect budget's per-leg counters and its reconnect events;
+* the greeting's outcome (spoken, or intentionally absent), the second-failure
+  goodbye's outcome, and every bounded wait the call ran with the registry name
+  it read.
 """
 
 from __future__ import annotations
@@ -63,6 +76,7 @@ import logging
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Any, Protocol
 
 from cascade.body_map import BodyFieldError, CascadeBody, adapt_body
@@ -70,8 +84,9 @@ from cascade.eligibility import EligibilityDecision
 from cascade.envelope import EnvelopeError, verify_envelope
 from cascade.greeting import CallGreeting, GreetingOutcome, GreetingPlayback
 from cascade.meta_stt import SpeechPartial, SpeechStart
+from cascade.reconnect import ReconnectBudget
 from cascade.thresholds import ThresholdError, require_bound
-from cascade.voice_binding import VoiceBindingError
+from cascade.voice_binding import VoiceBindingError, bind_voice
 from metrics import TimingLedger
 from providers import SentenceAudio
 from turns import is_backchannel
@@ -90,6 +105,9 @@ BOUNDED_WAITS: dict[str, tuple[str, str]] = {
     "close": ("deploy.drain_max_wait_ms", "DrainTimedOut"),
     "reconnect": ("reconnect.handshake_ms", "ReconnectHandshakeTimedOut"),
     "greeting": ("tts.idle_timeout_ms", "GreetingTimedOut"),
+    # A second failure's goodbye is a synthesis request like the greeting, so
+    # it reads the same settled synthesis idle bound; no new number is invented.
+    "goodbye": ("tts.idle_timeout_ms", "GoodbyeTimedOut"),
 }
 
 #: The drain/close/event wait's bound name (ticket 76 owns the value in
@@ -102,6 +120,42 @@ LEGS: tuple[str, ...] = ("stt", "llm", "tts")
 #: How a call ended: the browser said stop, the socket dropped, the body was
 #: refused, or a vendor/stream failure ended it.
 ENDED_BY = ("stop", "dropped", "refused", "error")
+
+#: The line the caller hears when a second failure ends a call, one per Locale
+#: the catalogue can bind (ticket 99). It is the goodbye analogue of the
+#: localized hold line (``cascade.tools.HOLD_LINES``): keyed by our Locale code,
+#: never a vendor name, and an unknown Locale refuses by name instead of
+#: inventing a language. Ticket 105's ceiling goodbye reads this same table.
+GOODBYE_LINES: Mapping[str, str] = MappingProxyType(
+    {
+        "en": "Sorry, I have to end the call here. Goodbye.",
+        "es": "Lo siento, tengo que terminar la llamada aquí. Adiós.",
+        "fr": "Désolé, je dois mettre fin à l'appel ici. Au revoir.",
+        "de": "Entschuldigung, ich muss das Gespräch hier beenden. Auf Wiedersehen.",
+        "it": "Mi dispiace, devo terminare la chiamata qui. Arrivederci.",
+        "pt": "Desculpe, preciso terminar a chamada aqui. Até logo.",
+    }
+)
+
+
+class UnknownGoodbyeLineError(LookupError):
+    """No goodbye line exists for this Locale, so nothing may be spoken."""
+
+    def __init__(self, locale_code: str) -> None:
+        self.locale_code = locale_code
+        known = ", ".join(sorted(GOODBYE_LINES))
+        super().__init__(
+            f'no goodbye line for Locale "{locale_code}": the catalogue has '
+            f"lines for {known}"
+        )
+
+
+def goodbye_line(locale_code: str) -> str:
+    """The localized goodbye, or the named reason there is none."""
+    line = GOODBYE_LINES.get(locale_code)
+    if line is None:
+        raise UnknownGoodbyeLineError(locale_code)
+    return line
 
 
 # ---------------------------------------------------------------------------
@@ -658,6 +712,33 @@ class BoundOutcome:
 
 
 @dataclass(frozen=True)
+class GoodbyeOutcome:
+    """What the second-failure goodbye actually did, on the end message.
+
+    ``spoken=False`` is a recorded decision, not a dropped step: a voice second
+    failure has no voice left to speak it, and a closed session is never written
+    into. ``reason`` names which of those it was.
+    """
+
+    spoken: bool
+    reason: str
+    text: str = ""
+    frames: int = 0
+    audio_bytes: int = 0
+    sample_rate: int = 0
+
+    def to_document(self) -> dict[str, Any]:
+        return {
+            "spoken": self.spoken,
+            "reason": self.reason,
+            "text": self.text,
+            "frames": self.frames,
+            "audioBytes": self.audio_bytes,
+            "sampleRate": self.sample_rate,
+        }
+
+
+@dataclass(frozen=True)
 class CallEnd:
     """The one message a finished call sends."""
 
@@ -672,6 +753,8 @@ class CallEnd:
     greeting: GreetingOutcome | None = None
     bounds: tuple[BoundOutcome, ...] = ()
     error: CallFailure | None = None
+    goodbye: GoodbyeOutcome | None = None
+    reconnects: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if self.ended_by not in ENDED_BY:
@@ -692,8 +775,12 @@ class CallEnd:
             "drain": self.drain.to_document(),
             "bounds": [outcome.to_document() for outcome in self.bounds],
         }
+        if self.reconnects is not None:
+            document["reconnect"] = dict(self.reconnects)
         if self.greeting is not None:
             document["greeting"] = self.greeting.to_document()
+        if self.goodbye is not None:
+            document["goodbye"] = self.goodbye.to_document()
         if self.error is not None:
             document["error"] = self.error.to_document()
         return document
@@ -737,6 +824,7 @@ class CallLifecycle:
         cost_meter: CostMeter | None = None,
         eligibility: EligibilityDecision | None = None,
         chime: Callable[[], None] | None = None,
+        reconnect_budget: ReconnectBudget | None = None,
     ) -> None:
         self._message = message
         self._secret = secret
@@ -770,9 +858,18 @@ class CallLifecycle:
         self.bound_outcomes: list[BoundOutcome] = []
         self._cost_meter = cost_meter
         self._eligibility = eligibility
+        #: The call's one reconnect ledger (ticket 94). The adapters are given
+        #: this same object, so the call never counts a failure a second time;
+        #: it only reports the budget and reacts to the decision it produced.
+        self.reconnect_budget = (
+            reconnect_budget
+            if reconnect_budget is not None
+            else ReconnectBudget(ledger=self._ledger, now=self._clock)
+        )
         self._event_failure: CallFailure | None = None
         self._verified: CascadeBody | None = None
         self._greeting: GreetingOutcome | None = None
+        self._goodbye: GoodbyeOutcome | None = None
         # The connected chime's trigger (ticket 78): the client's earcon fires
         # when the greeting's first audible sample reaches it. The call records
         # the trigger and passes it on; it never schedules or waits for it.
@@ -859,7 +956,9 @@ class CallLifecycle:
             raise
         except Exception as error:
             failure = _failure("greeting", error)
-            drain = await self._close_all(opened, event_task=None)
+            drain = await self._close_all(
+                opened, event_task=None, drain_stream=False
+            )
             return await self._finish(
                 ended_by="error",
                 opened=opened,
@@ -881,7 +980,13 @@ class CallLifecycle:
         stop_reasons: list[str] = []
         delivery_lock = asyncio.Lock()
         streaming = False
+        stream_started = False
         stream_failure: CallFailure | None = None
+        # One leg failure that ends the call (a spent reconnect, a bug, a
+        # dropped socket's final close) sets this: the supervisor stops waiting
+        # for browser input instead of leaving a dead line open. It is the only
+        # way a call ends without the browser asking (ticket 99).
+        failure_event = asyncio.Event()
 
         async def deliver(event: Any) -> None:
             async with delivery_lock:
@@ -906,7 +1011,13 @@ class CallLifecycle:
             except asyncio.CancelledError:
                 raise
             except Exception as error:
-                self._event_failure = CallFailure.from_exception("event", error)
+                # An exception escaping the turn layer is a call-ending leg
+                # failure, never a hang: the turn layer drains its own
+                # turn-level failures (a turn bug, an interrupted reply) and
+                # surfaces only the ones that end the call.
+                self._event_failure = _leg_failure(error)
+                stop_reasons.append("error")
+                failure_event.set()
 
         async def receive() -> None:
             nonlocal stream_failure
@@ -942,6 +1053,7 @@ class CallLifecycle:
         event_task = asyncio.ensure_future(pump())
         receive_task = asyncio.ensure_future(receive())
         barge_task = asyncio.ensure_future(barge.wait())
+        failure_task = asyncio.ensure_future(failure_event.wait())
 
         ended_by = "dropped"
         failure: CallFailure | None = None
@@ -949,11 +1061,18 @@ class CallLifecycle:
         try:
             boundary = [
                 task
-                for task in (greeting_task, greeting_gate, receive_task, barge_task)
+                for task in (
+                    greeting_task,
+                    greeting_gate,
+                    receive_task,
+                    barge_task,
+                    failure_task,
+                )
                 if task is not None
             ]
             while not (
                 barge.is_set()
+                or failure_event.is_set()
                 or receive_task.done()
                 or (greeting_gate is not None and greeting_gate.done())
                 or (greeting_task is not None and greeting_task.done())
@@ -967,6 +1086,7 @@ class CallLifecycle:
                 greeting is not None
                 and receive_task.done()
                 and not barge.is_set()
+                and not failure_event.is_set()
                 and not (greeting_gate is not None and greeting_gate.done())
                 and not (greeting_task is not None and greeting_task.done())
             )
@@ -998,44 +1118,70 @@ class CallLifecycle:
                         self._greeting = result
                     else:
                         self._greeting = await greeting_task
-                stage = "stream"
-                await self._stream.start()
-                async with delivery_lock:
-                    for event in buffered_events:
-                        await self._stream.event(event)
-                    buffered_events.clear()
-                    for text in buffered_contexts:
-                        await self._stream.context(text)
-                    buffered_contexts.clear()
-                    streaming = True
-                stage = "call"
-                await receive_task
-                ended_by = stop_reasons[0] if stop_reasons else "dropped"
-                if stream_failure is not None:
+                if failure_event.is_set():
+                    # The leg failed while the greeting sounded: the call is
+                    # already over, so the turn layer is never started.
                     ended_by = "error"
-                    failure = stream_failure
+                    failure = self._event_failure
+                else:
+                    stage = "stream"
+                    await self._stream.start()
+                    stream_started = True
+                    async with delivery_lock:
+                        for event in buffered_events:
+                            await self._stream.event(event)
+                        buffered_events.clear()
+                        for text in buffered_contexts:
+                            await self._stream.context(text)
+                        buffered_contexts.clear()
+                        streaming = True
+                    stage = "call"
+                    if not failure_event.is_set():
+                        await asyncio.wait(
+                            (receive_task, failure_task),
+                            return_when=asyncio.FIRST_COMPLETED,
+                        )
+                    if failure_event.is_set():
+                        # A leg failure ended the call: do not wait for the
+                        # caller to hang up a line that is already dead.
+                        ended_by = "error"
+                        failure = self._event_failure
+                    else:
+                        await receive_task
+                        ended_by = stop_reasons[0] if stop_reasons else "dropped"
+                        if stream_failure is not None:
+                            ended_by = "error"
+                            failure = stream_failure
         except asyncio.CancelledError:
             raise
         except Exception as error:
             failure = _failure(stage, error)
             ended_by = "error"
 
-        for task in (barge_task, greeting_gate):
+        for task in (barge_task, greeting_gate, failure_task):
             if task is not None:
                 task.cancel()
         await asyncio.gather(
-            *[task for task in (barge_task, greeting_gate) if task is not None],
+            *[
+                task
+                for task in (barge_task, greeting_gate, failure_task)
+                if task is not None
+            ],
             return_exceptions=True,
         )
         drain = await self._close_all(
-            opened, event_task=event_task, receive_task=receive_task
+            opened,
+            event_task=event_task,
+            receive_task=receive_task,
+            drain_stream=stream_started,
+            failure=failure,
         )
         if self._event_failure is not None:
             if failure is None:
                 failure = self._event_failure
                 ended_by = "error"
-            if drain.ok:
-                drain = DrainOutcome(False, self._event_failure)
+                if drain.ok:
+                    drain = DrainOutcome(False, self._event_failure)
         return await self._finish(
             ended_by=ended_by,
             opened=opened,
@@ -1072,7 +1218,14 @@ class CallLifecycle:
         return outbound
 
     def session_reconnected(self, *, epoch: int | None = None) -> int:
-        """A provider leg opened a new session; the call seq keeps going."""
+        """A provider leg opened a new session; the call seq keeps going.
+
+        A planned reconnect (the speech session's 60-minute limit, the voice
+        session's expiry, our own rotation) is recorded by the adapter that owns
+        the leg, in the ticket-94 budget's planned bucket — never here, so the
+        call can never count a planned reconnect twice or mistake it for a
+        failure (ticket 99). The call only advances its own session epoch.
+        """
         return self.sequence.reconnect(epoch=epoch)
 
     def _start_greeting(
@@ -1129,13 +1282,17 @@ class CallLifecycle:
         event_task: asyncio.Future | None,
         receive_task: asyncio.Future | None = None,
         drain_stream: bool = True,
+        failure: CallFailure | None = None,
     ) -> DrainOutcome:
-        """Drain the turn layer, then close every opened leg under the bound.
+        """Drain the turn layer, say the failure goodbye, then close every leg.
 
         ``drain_stream`` is false when the call never reached the turn layer:
-        there is nothing to drain, only sockets to unwind.
+        there is nothing to drain, only sockets to unwind. The goodbye is
+        spoken only for a call-ending leg failure and only through a voice that
+        is still open (ticket 99); a voice second failure ends with no goodbye
+        because there is no voice left to speak it.
         """
-        failure = (
+        failure_outcome = (
             await self._bounded("drain", self._stream.drain)
             if drain_stream
             else None
@@ -1147,21 +1304,150 @@ class CallLifecycle:
         for task in (receive_task, event_task):
             if task is not None:
                 candidate = await self._stop_task(task)
-                failure = failure or candidate
+                failure_outcome = failure_outcome or candidate
         speech = by_leg.get("stt")
         if speech is not None:
             closer = _closer(speech.session)
             if closer is not None:
                 candidate = await self._bounded("close", closer)
-                failure = failure or candidate
+                failure_outcome = failure_outcome or candidate
+        # The voice is still open here, and only here: the goodbye is spoken
+        # after the reply has drained and before the synthesis socket is closed.
+        # A call that never got past the opening has no second failure to say
+        # goodbye to, and its greeting failure is already named on the message.
+        if failure is not None and failure.stage != "greeting":
+            try:
+                await self._speak_goodbye(by_leg.get("tts"), failure)
+            except Exception as error:  # the end message must still go out
+                self._goodbye = GoodbyeOutcome(
+                    spoken=False,
+                    reason=(
+                        "the goodbye path failed before it could speak: "
+                        f"{type(error).__name__}: {error}"
+                    ),
+                )
         for name in ("tts", "llm"):
             leg = by_leg.get(name)
             if leg is not None:
                 closer = _closer(leg.session)
                 if closer is not None:
                     candidate = await self._bounded("close", closer)
-                    failure = failure or candidate
-        return DrainOutcome(failure is None, failure)
+                    failure_outcome = failure_outcome or candidate
+        return DrainOutcome(failure_outcome is None, failure_outcome)
+
+    async def _speak_goodbye(
+        self, voice_leg: OpenedLeg | None, failure: CallFailure
+    ) -> GoodbyeOutcome | None:
+        """Speak the localized goodbye for a second failure, or record why not.
+
+        Four facts decide, in this order, and each refusal is named on the end
+        message rather than dropped: the failure must be a leg failure; the
+        failing leg must not be the voice; a voice session must have opened;
+        and that session must not already be closed. The attempt is bounded by
+        ``tts.idle_timeout_ms`` and a synthesis error is recorded, never raised:
+        the call is already ending and the end message must still go out.
+        """
+        outcome = self._goodbye_decision(voice_leg, failure)
+        if outcome is not None:
+            self._goodbye = outcome
+            return outcome
+
+        assert voice_leg is not None and voice_leg.session is not None
+        voice = voice_leg.session
+        body = self._verified
+        assert body is not None
+        try:
+            text = goodbye_line(bind_voice(body.voice_id).locale.code)
+        except (VoiceBindingError, UnknownGoodbyeLineError) as error:
+            self._goodbye = GoodbyeOutcome(
+                spoken=False, reason=f"the goodbye cannot be localized: {error}"
+            )
+            return self._goodbye
+
+        async def speak() -> GoodbyeOutcome:
+            frames = 0
+            audio_bytes = 0
+            sample_rate = 0
+            speak_text = getattr(voice, "speak", None)
+            if not callable(speak_text):
+                raise CallFailure(
+                    name="GoodbyeUnavailable",
+                    stage="goodbye",
+                    message=(
+                        f'the opened voice has no speak path, so the localized '
+                        f"goodbye {text!r} cannot be spoken"
+                    ),
+                )
+            async for audio in speak_text(text):
+                frames += 1
+                audio_bytes += len(audio.pcm)
+                sample_rate = audio.sample_rate
+                await self.emit_audio(audio, kind="goodbye")
+            return GoodbyeOutcome(
+                spoken=frames > 0,
+                reason=(
+                    "spoken after the second failure"
+                    if frames > 0
+                    else "the synthesis path produced no audio"
+                ),
+                text=text,
+                frames=frames,
+                audio_bytes=audio_bytes,
+                sample_rate=sample_rate,
+            )
+
+        result, bound = await self.run_bounded("goodbye", speak)
+        if not bound.ok or result is None:
+            assert bound.error is not None
+            self._goodbye = GoodbyeOutcome(
+                spoken=False,
+                reason=(
+                    f"the goodbye did not finish ({bound.bound}): "
+                    f"{bound.error.name}: {bound.error.message}"
+                ),
+                text=text,
+            )
+            return self._goodbye
+        self._goodbye = result
+        return result
+
+    def _goodbye_decision(
+        self, voice_leg: OpenedLeg | None, failure: CallFailure
+    ) -> GoodbyeOutcome | None:
+        """``None`` means speak it; an outcome means it is refused, by name."""
+        trigger = failure.trigger or {}
+        leg = trigger.get("leg")
+        if leg is None:
+            return GoodbyeOutcome(
+                spoken=False,
+                reason=(
+                    "the call did not end on a leg failure, so there is no "
+                    "second-failure goodbye to speak"
+                ),
+            )
+        if leg == "tts":
+            return GoodbyeOutcome(
+                spoken=False,
+                reason=(
+                    "the voice leg is the failure; there is no voice left to "
+                    "speak a goodbye through, and a dead socket is never written "
+                    "into"
+                ),
+            )
+        if voice_leg is None or voice_leg.session is None:
+            return GoodbyeOutcome(
+                spoken=False,
+                reason="the voice leg never opened, so there is no voice to speak it",
+            )
+        if _voice_closed(voice_leg.session):
+            return GoodbyeOutcome(
+                spoken=False,
+                reason=(
+                    "the voice session is already closed, so the goodbye is not "
+                    "written into a dead socket"
+                ),
+            )
+        return None
 
     # -- bounds -----------------------------------------------------------
 
@@ -1351,6 +1637,8 @@ class CallLifecycle:
             greeting=self._greeting,
             bounds=tuple(self.bound_outcomes),
             error=error,
+            goodbye=self._goodbye,
+            reconnects=self.reconnect_budget.to_document(),
         )
         try:
             await self._transport.send(end.to_document())
@@ -1390,8 +1678,15 @@ async def _invoke(factory: Callable[[], Any]) -> Any:
 
 
 def _trigger_document(error: BaseException) -> dict[str, Any] | None:
-    """A provider verdict as the end message's trigger, or ``None``."""
+    """A provider verdict as the end message's trigger, or ``None``.
+
+    A synthesis/speech adapter puts its verdict on the exception; a model
+    failure keeps it on its recorded decision. Both are read, so the end
+    message always names the failure leg and the reason (ticket 99).
+    """
     verdict = getattr(error, "verdict", None)
+    if verdict is None:
+        verdict = getattr(getattr(error, "decision", None), "verdict", None)
     if verdict is None:
         return None
     leg = getattr(verdict, "leg", None)
@@ -1404,6 +1699,43 @@ def _trigger_document(error: BaseException) -> dict[str, Any] | None:
         "class": getattr(failure_class, "value", str(failure_class)),
         "reason": getattr(verdict, "reason", ""),
     }
+
+
+def _leg_failure(error: BaseException) -> CallFailure:
+    """A failure that escaped the turn layer, named as the call-ending leg it is.
+
+    A leg failure carries its provider verdict, so the end message names the leg
+    and the reason. Anything else keeps its own exception name: it is still a
+    call-ending failure, but not a provider's.
+    """
+    trigger = _trigger_document(error)
+    if trigger is None:
+        return CallFailure.from_exception("call", error)
+    return CallFailure(
+        name="LegFailure",
+        stage="call",
+        message=(
+            f"the {trigger['leg']} leg's failure ends the call "
+            f"({trigger['class']}, code {trigger['code']!r}): "
+            f"{trigger['reason']}"
+        ),
+        trigger=trigger,
+    )
+
+
+def _voice_closed(voice: Any) -> bool:
+    """Whether the opened voice is already closed, when it says so.
+
+    The synthesis session exposes no health call, so this checks the states an
+    adapter or a fake can report; an adapter that reports none is assumed open
+    (the leg rule above already refuses a voice that is the failure).
+    """
+    for name, closed in (("closed", True), ("dead", True), ("is_open", False)):
+        value = getattr(voice, name, None)
+        if isinstance(value, bool) and value is closed:
+            return True
+    return False
+
 
 
 def _failure(stage: str, error: BaseException) -> CallFailure:

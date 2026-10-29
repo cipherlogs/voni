@@ -265,9 +265,21 @@ def lifecycle_with(
             frames.append(outbound)
             sink_log.append("audio")
 
+    class Speech:
+        """An idle speech session: open, but nothing arrives (ticket 99's
+        pump treats an exception from ``events()`` as a call-ending failure, so
+        a stand-in with no iterator would end the call)."""
+
+        async def events(self):
+            if False:  # pragma: no cover - an async iterator that yields none
+                yield None
+
+        async def close(self) -> None:
+            return None
+
     async def open_speech(_body):
         log.append("speech-open")
-        return OpenedLeg("stt", "meta", "primary", "speech leg is closed", object())
+        return OpenedLeg("stt", "meta", "primary", "speech leg is closed", Speech())
 
     async def open_voice(_body):
         log.append("voice-open")
