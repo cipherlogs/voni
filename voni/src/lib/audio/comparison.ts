@@ -34,6 +34,7 @@ import {
   measureSpectralBalance,
   type SpectralBalance,
 } from "./spectral-balance";
+import { SCOREBOARD_BUDGETS } from "../demo/scoreboard-budgets";
 
 /** The three captures, in table order: reference, platform, delivered. */
 export const CAPTURE_ROLES = ["reference", "platform", "delivered"] as const;
@@ -85,7 +86,7 @@ export type ComparisonCell =
   | { kind: "text"; text: string }
   | { kind: "unmeasured"; reason: string };
 
-export type ComparisonRow = {
+export type ComparisonRow<Role extends string = CaptureRole> = {
   id: ComparisonRowId;
   group: ComparisonGroup;
   /** Printed at the left of the row. A per-band row carries its centre. */
@@ -94,8 +95,31 @@ export type ComparisonRow = {
   decimals: number;
   /** A delta keeps its direction in the sign, so a tilt never reads unsigned. */
   signed?: boolean;
-  cells: Record<CaptureRole, ComparisonCell>;
+  /**
+   * The module and entry point that produced the reading. A metric with no
+   * named producer is not evidence: a reader can open the implementation
+   * rather than trusting a number that appeared in a table.
+   */
+  producer: MetricProducer;
+  cells: Record<Role, ComparisonCell>;
 };
+
+/**
+ * The one producer name per metric family. These are the modules beside this
+ * one; the table never reimplements a measurement.
+ */
+export const METRIC_PRODUCERS = {
+  formatFacts: "format-facts.decodeWav",
+  onset: "comparison.measureOnset",
+  level: "level-facts.analyseLevel",
+  distortion: "distortion-crest.distortionResidual",
+  crest: "distortion-crest.crestFactor",
+  spectrum: "spectral-balance.measureSpectralBalance",
+  modulation: "envelope-modulation.measureEnvelopeModulation",
+  breakups: "breakups.detectBreakups",
+} as const;
+
+export type MetricProducer = (typeof METRIC_PRODUCERS)[keyof typeof METRIC_PRODUCERS];
 
 /** A metric the file cannot carry, named rather than guessed. */
 export type Reading<T> = { measured: true; value: T } | { measured: false; reason: string };
@@ -106,8 +130,8 @@ export type DistortionReading =
   | { kind: "measured"; residual: DistortionResidual }
   | { kind: "unmeasured"; reason: string };
 
-export type CaptureFacts = {
-  role: CaptureRole;
+export type CaptureFacts<Role extends string = CaptureRole> = {
+  role: Role;
   path: string;
   format: DecodedAudio["facts"];
   /** Where the first audible frame starts; the verdict needs it to see misalignment. */
@@ -142,12 +166,26 @@ export class ComparisonError extends Error {
   }
 }
 
-function emptyCells(): Record<CaptureRole, ComparisonCell> {
-  return {
-    reference: { kind: "unmeasured", reason: "not measured" },
-    platform: { kind: "unmeasured", reason: "not measured" },
-    delivered: { kind: "unmeasured", reason: "not measured" },
-  };
+function emptyCells<Role extends string>(roles: readonly Role[]): Record<Role, ComparisonCell> {
+  return Object.fromEntries(
+    roles.map((role) => [role, { kind: "unmeasured" as const, reason: "not measured" }]),
+  ) as Record<Role, ComparisonCell>;
+}
+
+/** A role whose capture could not be read; every one of its cells says why. */
+export type MissingCapture<Role extends string = CaptureRole> = {
+  role: Role;
+  missingReason: string;
+};
+
+export type RowCapture<Role extends string = CaptureRole> =
+  | CaptureFacts<Role>
+  | MissingCapture<Role>;
+
+function isMissing<Role extends string>(
+  capture: RowCapture<Role>,
+): capture is MissingCapture<Role> {
+  return "missingReason" in capture;
 }
 
 /**
@@ -172,18 +210,23 @@ function orderCaptures(inputs: readonly CaptureInput[]): CaptureInput[] {
   return ordered;
 }
 
-function formatRows(captures: readonly CaptureFacts[]): ComparisonRow[] {
+function formatRows<Role extends string>(
+  roles: readonly Role[],
+  captures: readonly RowCapture<Role>[],
+): ComparisonRow<Role>[] {
   const row = (
     id: ComparisonRowId,
     label: string,
     decimals: number,
-    pick: (capture: CaptureFacts) => number,
-  ): ComparisonRow => {
-    const cells = emptyCells();
+    pick: (capture: CaptureFacts<Role>) => number,
+  ): ComparisonRow<Role> => {
+    const cells = emptyCells(roles);
     for (const capture of captures) {
-      cells[capture.role] = { kind: "value", value: pick(capture) };
+      cells[capture.role] = isMissing(capture)
+        ? { kind: "unmeasured", reason: capture.missingReason }
+        : { kind: "value", value: pick(capture) };
     }
-    return { id, group: "format", label, decimals, cells };
+    return { id, group: "format", label, decimals, producer: METRIC_PRODUCERS.formatFacts, cells };
   };
 
   return [
@@ -247,36 +290,59 @@ function measureLevel(audio: DecodedAudio): Reading<MeasuredLevel> {
  * file cannot carry it. Every metric row is built here, so the three columns
  * cannot disagree about what "unmeasured" looks like.
  */
-function readingRow<T>(
-  captures: readonly CaptureFacts[],
+function readingRow<Role extends string, T>(
+  roles: readonly Role[],
+  captures: readonly RowCapture<Role>[],
   group: ComparisonGroup,
   id: ComparisonRowId,
   label: string,
   decimals: number,
-  reading: (capture: CaptureFacts) => Reading<T>,
+  producer: MetricProducer,
+  reading: (capture: CaptureFacts<Role>) => Reading<T>,
   pick: (value: T) => number,
-): ComparisonRow {
-  const cells = emptyCells();
+): ComparisonRow<Role> {
+  const cells = emptyCells(roles);
   for (const capture of captures) {
+    if (isMissing(capture)) {
+      cells[capture.role] = { kind: "unmeasured", reason: capture.missingReason };
+      continue;
+    }
     const value = reading(capture);
     cells[capture.role] = value.measured
       ? { kind: "value", value: pick(value.value) }
       : { kind: "unmeasured", reason: value.reason };
   }
-  return { id, group, label, decimals, cells };
+  return { id, group, label, decimals, producer, cells };
 }
 
-function onsetRows(captures: readonly CaptureFacts[]): ComparisonRow[] {
+function onsetRows<Role extends string>(
+  roles: readonly Role[],
+  captures: readonly RowCapture<Role>[],
+): ComparisonRow<Role>[] {
   return [
-    readingRow(captures, "format", "onset", "onset (s)", 3, (capture) => capture.onset, (onset) => onset.seconds),
+    readingRow(
+      roles,
+      captures,
+      "format",
+      "onset",
+      "onset (s)",
+      3,
+      METRIC_PRODUCERS.onset,
+      (capture) => capture.onset,
+      (onset) => onset.seconds,
+    ),
   ];
 }
 
-function levelRows(captures: readonly CaptureFacts[]): ComparisonRow[] {  const level = (capture: CaptureFacts) => capture.level;
+function levelRows<Role extends string>(
+  roles: readonly Role[],
+  captures: readonly RowCapture<Role>[],
+): ComparisonRow<Role>[] {
+  const level = (capture: CaptureFacts<Role>) => capture.level;
   return [
-    readingRow(captures, "level", "integrated", "integrated (LUFS)", 2, level, (facts) => facts.integratedLufs),
-    readingRow(captures, "level", "rms", "RMS (dBFS)", 2, level, (facts) => facts.rmsDbfs),
-    readingRow(captures, "level", "true-peak", "true peak (dBTP)", 2, level, (facts) => facts.truePeakDbtp),
+    readingRow(roles, captures, "level", "integrated", "integrated (LUFS)", 2, METRIC_PRODUCERS.level, level, (facts) => facts.integratedLufs),
+    readingRow(roles, captures, "level", "rms", "RMS (dBFS)", 2, METRIC_PRODUCERS.level, level, (facts) => facts.rmsDbfs),
+    readingRow(roles, captures, "level", "true-peak", "true peak (dBTP)", 2, METRIC_PRODUCERS.level, level, (facts) => facts.truePeakDbtp),
   ];
 }
 
@@ -290,8 +356,8 @@ function formatPair(facts: DecodedAudio["facts"]): string {
  * resampling would move the rate defect into the measurement.
  */
 function measureDistortion(
-  reference: CaptureInput,
-  capture: CaptureInput,
+  reference: { audio: DecodedAudio },
+  capture: { role: string; audio: DecodedAudio },
 ): DistortionReading {
   if (capture.role === "reference") return { kind: "baseline" };
   try {
@@ -314,10 +380,18 @@ function measureCrest(audio: DecodedAudio): Reading<CrestFactor> {
     : { measured: false, reason: "silent signal" };
 }
 
-function shapeRows(captures: readonly CaptureFacts[]): ComparisonRow[] {
-  const distortion = emptyCells();
-  const crest = emptyCells();
+function shapeRows<Role extends string>(
+  roles: readonly Role[],
+  captures: readonly RowCapture<Role>[],
+): ComparisonRow<Role>[] {
+  const distortion = emptyCells(roles);
+  const crest = emptyCells(roles);
   for (const capture of captures) {
+    if (isMissing(capture)) {
+      distortion[capture.role] = { kind: "unmeasured", reason: capture.missingReason };
+      crest[capture.role] = { kind: "unmeasured", reason: capture.missingReason };
+      continue;
+    }
     const reading = capture.distortion;
     if (reading.kind === "baseline") {
       distortion[capture.role] = { kind: "text", text: "reference" };
@@ -339,8 +413,22 @@ function shapeRows(captures: readonly CaptureFacts[]): ComparisonRow[] {
   }
 
   return [
-    { id: "distortion", group: "shape", label: "distortion vs reference (dB)", decimals: 1, cells: distortion },
-    { id: "crest", group: "shape", label: "crest factor (peak/RMS)", decimals: 3, cells: crest },
+    {
+      id: "distortion",
+      group: "shape",
+      label: "distortion vs reference (dB)",
+      decimals: 1,
+      producer: METRIC_PRODUCERS.distortion,
+      cells: distortion,
+    },
+    {
+      id: "crest",
+      group: "shape",
+      label: "crest factor (peak/RMS)",
+      decimals: 3,
+      producer: METRIC_PRODUCERS.crest,
+      cells: crest,
+    },
   ];
 }
 
@@ -411,32 +499,41 @@ function measureBreakups(audio: DecodedAudio): Reading<BreakupReport> {
   }
 }
 
-function breakupRows(captures: readonly CaptureFacts[]): ComparisonRow[] {
-  const breakups = (capture: CaptureFacts) => capture.breakups;
+function breakupRows<Role extends string>(
+  roles: readonly Role[],
+  captures: readonly RowCapture<Role>[],
+): ComparisonRow<Role>[] {
+  const breakups = (capture: CaptureFacts<Role>) => capture.breakups;
   return [
-    readingRow(captures, "breakups", "breakup-count", "breakup count", 0, breakups, (report) => report.count),
-    readingRow(captures, "breakups", "breakup-total", "breakup total silence (s)", 3, breakups, (report) => report.totalSeconds),
-    readingRow(captures, "breakups", "breakup-longest", "breakup longest silence (s)", 3, breakups, (report) => report.longestSeconds),
+    readingRow(roles, captures, "breakups", "breakup-count", "breakup count", 0, METRIC_PRODUCERS.breakups, breakups, (report) => report.count),
+    readingRow(roles, captures, "breakups", "breakup-total", "breakup total silence (s)", 3, METRIC_PRODUCERS.breakups, breakups, (report) => report.totalSeconds),
+    readingRow(roles, captures, "breakups", "breakup-longest", "breakup longest silence (s)", 3, METRIC_PRODUCERS.breakups, breakups, (report) => report.longestSeconds),
   ];
 }
 
-function spectrumRows(
-  captures: readonly CaptureFacts[],
+function spectrumRows<Role extends string>(
+  roles: readonly Role[],
+  captures: readonly RowCapture<Role>[],
   context: SpectralContext,
-): ComparisonRow[] {
+): ComparisonRow<Role>[] {
   const cellFor = (
-    capture: CaptureFacts,
+    capture: RowCapture<Role>,
     pick: (spectrum: SpectralBalance) => number,
   ): ComparisonCell => {
+    if (isMissing(capture)) return { kind: "unmeasured", reason: capture.missingReason };
     if (!capture.spectrum.measured) {
       return { kind: "unmeasured", reason: capture.spectrum.reason };
     }
     return { kind: "value", value: pick(capture.spectrum.value) };
   };
 
-  const bandRows: ComparisonRow[] = context.bands.map((centreHz) => {
-    const cells = emptyCells();
+  const bandRows: ComparisonRow<Role>[] = context.bands.map((centreHz) => {
+    const cells = emptyCells(roles);
     for (const capture of captures) {
+      if (isMissing(capture)) {
+        cells[capture.role] = { kind: "unmeasured", reason: capture.missingReason };
+        continue;
+      }
       const band = capture.spectrum.measured
         ? capture.spectrum.value.bands.find((entry) => entry.centreHz === centreHz)
         : undefined;
@@ -454,12 +551,13 @@ function spectrumRows(
       group: "spectrum",
       label: `${centreHz} Hz band (dBFS)`,
       decimals: 1,
+      producer: METRIC_PRODUCERS.spectrum,
       cells,
     };
   });
 
-  const spread = emptyCells();
-  const delta = emptyCells();
+  const spread = emptyCells(roles);
+  const delta = emptyCells(roles);
   for (const capture of captures) {
     spread[capture.role] = cellFor(capture, (spectrum) => spectrum.spreadDb);
     delta[capture.role] = cellFor(capture, (spectrum) => spectrum.tilt.deltaDb);
@@ -472,35 +570,51 @@ function spectrumRows(
 
   return [
     ...bandRows,
-    { id: "band-spread", group: "spectrum", label: "band spread (dB)", decimals: 1, cells: spread },
+    {
+      id: "band-spread",
+      group: "spectrum",
+      label: "band spread (dB)",
+      decimals: 1,
+      producer: METRIC_PRODUCERS.spectrum,
+      cells: spread,
+    },
     {
       id: "band-delta",
       group: "spectrum",
       label: tiltLabel,
       decimals: 1,
       signed: true,
+      producer: METRIC_PRODUCERS.spectrum,
       cells: delta,
     },
   ];
 }
 
-function modulationRows(captures: readonly CaptureFacts[]): ComparisonRow[] {
-  const modulation = (capture: CaptureFacts) => capture.modulation;
+function modulationRows<Role extends string>(
+  roles: readonly Role[],
+  captures: readonly RowCapture<Role>[],
+): ComparisonRow<Role>[] {
+  const modulation = (capture: CaptureFacts<Role>) => capture.modulation;
   return [
-    readingRow(captures, "modulation", "modulation-rate", "modulation rate (Hz)", 1, modulation, (reading) => reading.rateHz),
-    readingRow(captures, "modulation", "modulation-depth", "modulation depth (%)", 1, modulation, (reading) => reading.depth * 100),
+    readingRow(roles, captures, "modulation", "modulation-rate", "modulation rate (Hz)", 1, METRIC_PRODUCERS.modulation, modulation, (reading) => reading.rateHz),
+    readingRow(roles, captures, "modulation", "modulation-depth", "modulation depth (%)", 1, METRIC_PRODUCERS.modulation, modulation, (reading) => reading.depth * 100),
   ];
 }
 
-/** Measure the three captures and build every table row. Pure over its input. */
-export function compareCaptures(inputs: readonly CaptureInput[]): AudioComparison {
-  const ordered = orderCaptures(inputs);
-  const commonBands = ordered
+/** The octave bands every capture can measure, and the one tilt pair. */
+function spectralContextFor(inputs: readonly { audio: DecodedAudio }[]): SpectralContext {
+  const commonBands = inputs
     .map((input) => availableBands(input.audio.facts.sampleRate))
     .reduce((shared, bands) => shared.filter((centre) => bands.includes(centre)));
-  const spectral: SpectralContext = { bands: commonBands, tilt: tiltPairFor(commonBands) };
+  return { bands: commonBands, tilt: tiltPairFor(commonBands) };
+}
 
-  const captures: CaptureFacts[] = ordered.map((input) => ({
+/** Measure one capture against the reference and attach its per-file readings. */
+function measureFacts<Role extends string>(
+  ordered: readonly { role: Role; path: string; audio: DecodedAudio }[],
+  spectral: SpectralContext,
+): CaptureFacts<Role>[] {
+  return ordered.map((input) => ({
     role: input.role,
     path: input.path,
     format: input.audio.facts,
@@ -512,18 +626,417 @@ export function compareCaptures(inputs: readonly CaptureInput[]): AudioCompariso
     modulation: measureModulation(input.audio),
     breakups: measureBreakups(input.audio),
   }));
+}
 
-  const rows = [
-    ...formatRows(captures),
-    ...onsetRows(captures),
-    ...levelRows(captures),
-    ...shapeRows(captures),
-    ...spectrumRows(captures, spectral),
-    ...modulationRows(captures),
-    ...breakupRows(captures),
+/** Every row, in the one order the verdict keys off. */
+function buildRows<Role extends string>(
+  roles: readonly Role[],
+  captures: readonly RowCapture<Role>[],
+  spectral: SpectralContext,
+): ComparisonRow<Role>[] {
+  return [
+    ...formatRows(roles, captures),
+    ...onsetRows(roles, captures),
+    ...levelRows(roles, captures),
+    ...shapeRows(roles, captures),
+    ...spectrumRows(roles, captures, spectral),
+    ...modulationRows(roles, captures),
+    ...breakupRows(roles, captures),
   ];
+}
+
+/** Measure the three captures and build every table row. Pure over its input. */
+export function compareCaptures(inputs: readonly CaptureInput[]): AudioComparison {
+  const ordered = orderCaptures(inputs);
+  const spectral = spectralContextFor(ordered);
+  const captures = measureFacts(ordered, spectral);
+  const rows = buildRows(CAPTURE_ROLES, captures, spectral);
   return {
     captures,
+    octaveBandsHz: spectral.bands,
+    tilt: spectral.tilt,
+    rows,
+  };
+}
+
+// ── W0: one table over the reference and the delivered capture ───────────────
+
+/**
+ * A cascade call has no platform recording (spec W0), so the comparison is one
+ * table over exactly two captures. The role list is the contract: a third
+ * column would be a platform leg the cascade does not have.
+ */
+export const TWO_CAPTURE_ROLES = ["reference", "delivered"] as const;
+export type TwoCaptureRole = (typeof TWO_CAPTURE_ROLES)[number];
+
+/** A decoded capture. Decoding happens before the table is built. */
+export type TwoCaptureDecoded = { path: string; audio: DecodedAudio };
+
+/** A capture that could not be compared, named by what went wrong. */
+export type TwoCaptureFailure = {
+  path: string;
+  reason: string;
+  /** Defaults to `unreadable`; a caller may name a missing or truncated file. */
+  kind?: "missing" | "truncated" | "unreadable";
+};
+
+export type TwoCaptureSlot = TwoCaptureDecoded | TwoCaptureFailure;
+
+/**
+ * The marker that says what part of the capture is the line. A whole call
+ * without one is incomplete: comparing a full conversation to a one-sentence
+ * reference would blame the sentence for every later turn.
+ */
+export type TwoCaptureLine =
+  | {
+      kind: "greeting";
+      /** The exact line the reference renders, so a different line is visible. */
+      text: string;
+    }
+  | {
+      kind: "segment";
+      text: string;
+      /** Start and end of the marked line in the delivered capture, in seconds. */
+      startSeconds: number;
+      endSeconds: number;
+    };
+
+export type TwoCaptureRequest = {
+  reference: TwoCaptureSlot | null;
+  delivered: TwoCaptureSlot | null;
+  line: TwoCaptureLine | null;
+  /** The transcript's rendering of the same line; a mismatch is unresolved. */
+  spokenLine?: string;
+};
+
+export type TwoCaptureCapture = {
+  role: TwoCaptureRole;
+  path: string;
+  present: boolean;
+  /** Why the capture is not present; null when it is. */
+  reason: string | null;
+};
+
+export type TwoCaptureComparison = {
+  profile: "w0-two-capture";
+  status: "measured" | "unresolved";
+  /** Every reason the table cannot compare sample-for-sample; empty only when measured. */
+  unresolvedReasons: string[];
+  /** The cascade has no gain stage: the table reads the captures at native level. */
+  gainStage: "none";
+  line: TwoCaptureLine | null;
+  alignment: {
+    /** Reference onset minus delivered onset, in seconds; null when unmeasured. */
+    onsetDeltaSeconds: number | null;
+    /**
+     * The bar from the frozen budget record (`comparisonOnsetToleranceS`), never
+     * a number restated here.
+     */
+    toleranceSeconds: number;
+    withinTolerance: boolean | null;
+    /** True only when both captures are present, same format and aligned. */
+    sampleAligned: boolean;
+  };
+  captures: TwoCaptureCapture[];
+  /** Octave bands every capture can measure, ascending. */
+  octaveBandsHz: readonly number[];
+  tilt: { fromCentreHz: number; toCentreHz: number } | null;
+  rows: ComparisonRow<TwoCaptureRole>[];
+};
+
+function isDecoded(slot: TwoCaptureSlot | null): slot is TwoCaptureDecoded {
+  return slot !== null && "audio" in slot;
+}
+
+function failureReason(role: TwoCaptureRole, slot: TwoCaptureSlot | null): string {
+  if (slot === null) return `${role} capture missing: no file supplied`;
+  if (isDecoded(slot)) return `${role} capture is present`;
+  const kind = slot.kind ?? "unreadable";
+  return `${role} capture ${kind}: ${slot.path}: ${slot.reason}`;
+}
+
+function normalizedWords(text: string): string[] {
+  return text
+    .normalize("NFC")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+function sameLine(intended: string, spoken: string): boolean {
+  const left = normalizedWords(intended);
+  const right = normalizedWords(spoken);
+  return left.length === right.length && left.every((word, index) => word === right[index]);
+}
+
+/** A sample-exact window of a decoded file. Frames are per channel. */
+function sliceAudio(audio: DecodedAudio, startFrame: number, frameCount: number): DecodedAudio {
+  const channels = audio.facts.channels;
+  const totalFrames = audio.facts.frameCount;
+  const start = Math.max(0, Math.min(Math.round(startFrame), totalFrames));
+  const count = Math.max(0, Math.min(Math.round(frameCount), totalFrames - start));
+  return {
+    samples: audio.samples.subarray(start * channels, (start + count) * channels),
+    facts: {
+      ...audio.facts,
+      dataBytes: count * channels * 2,
+      frameCount: count,
+      durationSeconds: count / audio.facts.sampleRate,
+    },
+  };
+}
+
+function onsetFrame(reading: Reading<{ seconds: number }>, sampleRate: number): number | null {
+  return reading.measured ? Math.round(reading.value.seconds * sampleRate) : null;
+}
+
+type AlignedPair = {
+  reference: DecodedAudio;
+  delivered: DecodedAudio;
+  onsetDeltaSeconds: number | null;
+};
+
+/**
+ * Slice both captures to the same window. The line marker decides the window:
+ * the greeting starts at the delivered onset, a marked segment starts where the
+ * caller marked it. Both windows start at their own audible onset, so the
+ * samples line up and a lead-in is a reported fact rather than a divergence.
+ */
+function alignPair(
+  reference: DecodedAudio,
+  delivered: DecodedAudio,
+  line: TwoCaptureLine | null,
+  reasons: string[],
+): AlignedPair {
+  if (line === null) {
+    return { reference, delivered, onsetDeltaSeconds: null };
+  }
+
+  const toleranceFrames = Math.round(
+    SCOREBOARD_BUDGETS.comparisonOnsetToleranceS.value * reference.facts.sampleRate,
+  );
+  const referenceOnset = measureOnset(reference);
+  if (!referenceOnset.measured) {
+    reasons.push(`reference has no audible onset: ${referenceOnset.reason}`);
+    return { reference, delivered, onsetDeltaSeconds: null };
+  }
+
+  if (line.kind === "segment") {
+    const start = line.startSeconds;
+    const end = line.endSeconds;
+    if (
+      !Number.isFinite(start) ||
+      !Number.isFinite(end) ||
+      start < 0 ||
+      end <= start ||
+      end > delivered.facts.durationSeconds + toleranceFrames / delivered.facts.sampleRate
+    ) {
+      reasons.push(
+        `line marker invalid: segment ${start}..${end}s is outside the delivered capture ` +
+          `(${delivered.facts.durationSeconds.toFixed(3)}s)`,
+      );
+      return { reference, delivered, onsetDeltaSeconds: null };
+    }
+    const segment = sliceAudio(
+      delivered,
+      Math.round(start * delivered.facts.sampleRate),
+      Math.round((end - start) * delivered.facts.sampleRate),
+    );
+    return alignWindows(reference, segment, referenceOnset, reasons, toleranceFrames);
+  }
+
+  const deliveredOnset = measureOnset(delivered);
+  if (!deliveredOnset.measured) {
+    reasons.push(`delivered has no audible onset: ${deliveredOnset.reason}`);
+    return { reference, delivered, onsetDeltaSeconds: null };
+  }
+  const referenceStart = onsetFrame(referenceOnset, reference.facts.sampleRate)!;
+  const deliveredStart = onsetFrame(deliveredOnset, delivered.facts.sampleRate)!;
+  const lineFrames = reference.facts.frameCount - referenceStart;
+  if (lineFrames <= 0) {
+    reasons.push("reference has no samples after its onset");
+    return { reference, delivered, onsetDeltaSeconds: null };
+  }
+  const deltaSeconds = Math.abs(
+    deliveredOnset.value.seconds - referenceOnset.value.seconds,
+  );
+  if (deltaSeconds * reference.facts.sampleRate > toleranceFrames) {
+    reasons.push(
+      `reference and delivered onsets differ by ${deltaSeconds.toFixed(3)} s, beyond the ` +
+        `${SCOREBOARD_BUDGETS.comparisonOnsetToleranceS.value.toFixed(3)} s bar; a lead-in is reported, never blamed`,
+    );
+  }
+  const deliveredRemaining = delivered.facts.frameCount - deliveredStart;
+  if (deliveredRemaining < lineFrames - toleranceFrames) {
+    const missing = (lineFrames - deliveredRemaining) / reference.facts.sampleRate;
+    reasons.push(
+      `delivered capture truncated: the greeting line needs ${(lineFrames / reference.facts.sampleRate).toFixed(3)} s ` +
+        `after its onset but only ${(deliveredRemaining / delivered.facts.sampleRate).toFixed(3)} s is present (${missing.toFixed(3)} s short)`,
+    );
+  }
+  const frames = Math.min(lineFrames, deliveredRemaining);
+  return {
+    reference: sliceAudio(reference, referenceStart, frames),
+    delivered: sliceAudio(delivered, deliveredStart, frames),
+    onsetDeltaSeconds: deltaSeconds,
+  };
+}
+
+/** Align a reference and a marked delivered segment by their onsets. */
+function alignWindows(
+  reference: DecodedAudio,
+  segment: DecodedAudio,
+  referenceOnset: Reading<{ seconds: number }>,
+  reasons: string[],
+  toleranceFrames: number,
+): AlignedPair {
+  if (!referenceOnset.measured) {
+    reasons.push(`reference has no audible onset: ${referenceOnset.reason}`);
+    return { reference, delivered: segment, onsetDeltaSeconds: null };
+  }
+  const segmentOnset = measureOnset(segment);
+  if (!segmentOnset.measured) {
+    reasons.push(`marked segment has no audible onset: ${segmentOnset.reason}`);
+    return { reference, delivered: segment, onsetDeltaSeconds: null };
+  }
+  const referenceStart = onsetFrame(referenceOnset, reference.facts.sampleRate)!;
+  const segmentStart = onsetFrame(segmentOnset, segment.facts.sampleRate)!;
+  const referenceFrames = reference.facts.frameCount - referenceStart;
+  const segmentFrames = segment.facts.frameCount - segmentStart;
+  if (Math.abs(referenceFrames - segmentFrames) > toleranceFrames) {
+    reasons.push(
+      `marked segment is ${(segmentFrames / segment.facts.sampleRate).toFixed(3)} s but the reference line is ` +
+        `${(referenceFrames / reference.facts.sampleRate).toFixed(3)} s; a different line or a truncated capture is unresolved`,
+    );
+  }
+  const deltaSeconds = Math.abs(
+    segmentOnset.value.seconds - referenceOnset.value.seconds,
+  );
+  if (deltaSeconds * reference.facts.sampleRate > toleranceFrames) {
+    reasons.push(
+      `reference and marked segment onsets differ by ${deltaSeconds.toFixed(3)} s, beyond the ` +
+        `${SCOREBOARD_BUDGETS.comparisonOnsetToleranceS.value.toFixed(3)} s bar`,
+    );
+  }
+  const frames = Math.min(referenceFrames, segmentFrames);
+  return {
+    reference: sliceAudio(reference, referenceStart, frames),
+    delivered: sliceAudio(segment, segmentStart, frames),
+    onsetDeltaSeconds: deltaSeconds,
+  };
+}
+
+/**
+ * Compare a reference rendering with a delivered capture, and nothing else.
+ *
+ * Pure over decoded audio: the caller owns file reading, so a saved capture can
+ * be re-analysed without a browser or a network. A missing, truncated,
+ * unreadable or format-mismatched capture is `unresolved`, never a pass; the
+ * rows still print what each file could carry, so the cause is visible beside
+ * the numbers.
+ */
+export function compareReferenceAndDelivered(
+  input: TwoCaptureRequest,
+): TwoCaptureComparison {
+  const reasons: string[] = [];
+  const toleranceSeconds = SCOREBOARD_BUDGETS.comparisonOnsetToleranceS.value;
+  const slots: Record<TwoCaptureRole, TwoCaptureSlot | null> = {
+    reference: input.reference,
+    delivered: input.delivered,
+  };
+
+  if (input.line === null) {
+    reasons.push(
+      "no line marker: a whole-call capture is incomplete; the greeting line or a marked segment is required",
+    );
+  } else if (input.spokenLine !== undefined && !sameLine(input.line.text, input.spokenLine)) {
+    reasons.push(
+      `different line: the reference renders ${JSON.stringify(input.line.text)} but the transcript says ` +
+        `${JSON.stringify(input.spokenLine)}`,
+    );
+  }
+
+  const captureHeaders: TwoCaptureCapture[] = TWO_CAPTURE_ROLES.map((role) => {
+    const slot = slots[role];
+    const present = isDecoded(slot);
+    const reason = present ? null : failureReason(role, slot);
+    if (!present) reasons.push(reason!);
+    return { role, path: slot?.path ?? "(no path)", present, reason };
+  });
+
+  const reference = isDecoded(slots.reference) ? slots.reference.audio : null;
+  const delivered = isDecoded(slots.delivered) ? slots.delivered.audio : null;
+
+  let alignedReference = reference;
+  let alignedDelivered = delivered;
+  let onsetDeltaSeconds: number | null = null;
+
+  if (reference && delivered) {
+    const sameFormat =
+      reference.facts.sampleRate === delivered.facts.sampleRate &&
+      reference.facts.channels === delivered.facts.channels;
+    if (!sameFormat) {
+      reasons.push(
+        `format mismatch: reference is ${reference.facts.sampleRate} Hz x${reference.facts.channels}ch, ` +
+          `delivered is ${delivered.facts.sampleRate} Hz x${delivered.facts.channels}ch; resample or refuse, never guess`,
+      );
+    } else {
+      const aligned = alignPair(reference, delivered, input.line, reasons);
+      alignedReference = aligned.reference;
+      alignedDelivered = aligned.delivered;
+      onsetDeltaSeconds = aligned.onsetDeltaSeconds;
+    }
+  }
+
+  const present = [
+    ...(alignedReference
+      ? [{ role: "reference" as const, path: slots.reference!.path, audio: alignedReference }]
+      : []),
+    ...(alignedDelivered
+      ? [{ role: "delivered" as const, path: slots.delivered!.path, audio: alignedDelivered }]
+      : []),
+  ];
+  const spectral = spectralContextFor(present);
+  const facts = measureFacts(present, spectral);
+  if (reference === null) {
+    // Distortion is relative: with no reference there is no baseline, so the
+    // delivered column says why instead of reporting zero against itself.
+    for (const fact of facts) {
+      fact.distortion = {
+        kind: "unmeasured",
+        reason: failureReason("reference", slots.reference),
+      };
+    }
+  }
+  const rowCaptures: RowCapture<TwoCaptureRole>[] = TWO_CAPTURE_ROLES.map((role) => {
+    const fact = facts.find((capture) => capture.role === role);
+    if (fact) return fact;
+    return { role, missingReason: failureReason(role, slots[role]) };
+  });
+  const rows = buildRows(TWO_CAPTURE_ROLES, rowCaptures, spectral);
+
+  const withinTolerance =
+    onsetDeltaSeconds === null ? null : onsetDeltaSeconds <= toleranceSeconds;
+  return {
+    profile: "w0-two-capture",
+    status: reasons.length === 0 ? "measured" : "unresolved",
+    unresolvedReasons: reasons,
+    gainStage: "none",
+    line: input.line,
+    alignment: {
+      onsetDeltaSeconds,
+      toleranceSeconds,
+      withinTolerance,
+      sampleAligned:
+        input.line !== null &&
+        reference !== null &&
+        delivered !== null &&
+        reference.facts.sampleRate === delivered.facts.sampleRate &&
+        reference.facts.channels === delivered.facts.channels &&
+        withinTolerance === true,
+    },
+    captures: captureHeaders,
     octaveBandsHz: spectral.bands,
     tilt: spectral.tilt,
     rows,
@@ -542,18 +1055,29 @@ export function formatCell(cell: ComparisonCell, decimals: number, signed = fals
   return `unmeasured: ${cell.reason}`;
 }
 
+type RenderableCapture<Role extends string> = {
+  role: Role;
+  path: string;
+  /** Appended to the column's file line, e.g. why a capture is missing. */
+  note?: string | null;
+};
+
 /**
- * Render the comparison as a deterministic aligned table. File paths, rows and
- * rounding are fixed, so the same three files print the same table twice.
+ * Render a comparison as a deterministic aligned table. File paths, rows and
+ * rounding are fixed, so the same files print the same table twice. The
+ * producer legend names the module behind every metric, so a number in the
+ * table is always attributable to an implementation.
  */
-export function formatComparisonTable(comparison: AudioComparison): string {
-  const roles = CAPTURE_ROLES;
-  const labelWidth = Math.max(
-    5,
-    comparison.rows.reduce((width, row) => Math.max(width, row.label.length), 0),
-  );
+function renderComparisonTable<Role extends string>(opts: {
+  title: string;
+  roles: readonly Role[];
+  captures: readonly RenderableCapture<Role>[];
+  rows: readonly ComparisonRow<Role>[];
+}): string {
+  const { title, roles, captures, rows } = opts;
+  const labelWidth = Math.max(5, rows.reduce((width, row) => Math.max(width, row.label.length), 0));
   const columnWidths = roles.map((role) =>
-    comparison.rows.reduce(
+    rows.reduce(
       (width, row) => Math.max(width, formatCell(row.cells[role], row.decimals, row.signed).length),
       role.length,
     ),
@@ -568,18 +1092,21 @@ export function formatComparisonTable(comparison: AudioComparison): string {
   const header = line("metric", roles);
   const separator = "    " + "-".repeat(header.length - 4);
   const lines: string[] = [
-    "Voice-parity audio comparison",
-    ...comparison.captures.map((capture) => `  ${capture.role.padEnd(10)} ${capture.path}`),
+    title,
+    ...captures.map(
+      (capture) =>
+        `  ${capture.role.padEnd(10)} ${capture.path}${capture.note ? ` (${capture.note})` : ""}`,
+    ),
     "",
     header,
     separator,
   ];
 
   for (const group of COMPARISON_GROUPS) {
-    const rows = comparison.rows.filter((row) => row.group === group);
-    if (rows.length === 0) continue;
+    const grouped = rows.filter((row) => row.group === group);
+    if (grouped.length === 0) continue;
     lines.push(`  ${group}`);
-    for (const row of rows) {
+    for (const row of grouped) {
       lines.push(
         line(
           row.label,
@@ -589,5 +1116,37 @@ export function formatComparisonTable(comparison: AudioComparison): string {
     }
   }
 
+  const producers = [...new Set(rows.map((row) => row.producer))].sort();
+  if (producers.length > 0) {
+    lines.push("", "  producers");
+    for (const producer of producers) lines.push(`    ${producer}`);
+  }
   return lines.join("\n");
+}
+
+/**
+ * Render the three-way comparison. Kept identical to the pre-cascade output so
+ * existing evidence and tests read the same table.
+ */
+export function formatComparisonTable(comparison: AudioComparison): string {
+  return renderComparisonTable({
+    title: "Voice-parity audio comparison",
+    roles: CAPTURE_ROLES,
+    captures: comparison.captures.map((capture) => ({ role: capture.role, path: capture.path })),
+    rows: comparison.rows,
+  });
+}
+
+/** Render the W0 two-capture comparison, with no platform column. */
+export function formatTwoCaptureTable(comparison: TwoCaptureComparison): string {
+  return renderComparisonTable({
+    title: "W0 two-capture comparison",
+    roles: TWO_CAPTURE_ROLES,
+    captures: comparison.captures.map((capture) => ({
+      role: capture.role,
+      path: capture.path,
+      note: capture.present ? null : capture.reason,
+    })),
+    rows: comparison.rows,
+  });
 }
