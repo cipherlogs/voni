@@ -167,3 +167,29 @@ _Avoid_: system prompt (the whole artifact), compiler rules
 **Demo scenario**:
 The demo-only business flow: test tag, invite-once, work-email gate, code check, stakes ladder, talk clock. Composes on top of agent rules and session mechanics; never applies to a tenant agent.
 _Avoid_: demo rules, demo prompt
+
+### Cascade pipeline
+
+**Managed path**:
+The AssemblyAI Voice Agent call path, where the vendor owns turn-taking, model choice and tool dispatch. The routing default, and it stays live until the cascade is proven.
+_Avoid_: old path, legacy, default engine
+
+**Cascade pipeline**:
+Our own speech-to-text → language-model → speech-synthesis path: one core, two transports. The vendor supplies components; it does not orchestrate the call. A specific engine, not a synonym for Session mechanics.
+_Avoid_: pipeline (unqualified), new engine
+
+**Turn boundary**:
+The moment the caller has finished speaking. Owned by the speech recogniser's endpointing, because Meta exposes no per-turn commit; we never decide it.
+_Avoid_: commit, end-of-turn (the managed Turn preset's word)
+
+**Floor arbitration**:
+Our decision, while the agent holds the floor, whether an utterance is an interruption (take the floor), a backchannel (counted, answered with nothing), or a wait. It arbitrates the floor; it does not commit a turn.
+_Avoid_: commit gate, barge-in (the caller's action, not our decision)
+
+**Provider breaker**:
+The durable per-leg switch that sends a leg's traffic to its fallback rung after a rejected request, and returns it once a probe proves the provider healthy. Shared, persisted, visible; never a per-call decision.
+_Avoid_: fallback (the rung it selects), circuit breaker (unqualified)
+
+**Fallback-contaminated run**:
+A measured run in which any leg used its fallback, or the budget stopped the call. Ineligible for a green, because the stack that produced the number is not the stack being judged.
+_Avoid_: degraded run, flaky run
