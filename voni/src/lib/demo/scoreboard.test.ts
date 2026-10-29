@@ -60,7 +60,13 @@ import {
   checkLoudnessSanity,
   checkRegressionVoice,
   checkTimbreProbes,
+  codeFingerprintFromGit,
   diffScoreboardArtifact,
+  evaluateScoreStreak,
+  formatStreakVerdict,
+  parseBehaviorRunEvidence,
+  STREAK_INFORMATIONAL_GATES,
+  STREAK_REQUIRED_GATES,
   emptyHumanRatings,
   evaluateHumanGate,
   evaluateTimbreGate,
@@ -127,7 +133,11 @@ import {
   findInventedTags,
   findStrayAddresses,
   hasDigitSplitTag,
+  type BehaviorRunEvidence,
+  type CodeFingerprint,
   type ScoreboardArtifact,
+  type ScoreboardGate,
+  type StreakArtifact,
 } from "./scoreboard";
 import {
   SCOREBOARD_BUDGETS,
@@ -4491,6 +4501,19 @@ test("artifact records a run id with an empty beat-quarantine stub", () => {
     runId: "run-manual",
   });
   assert.equal(named.runId, "run-manual");
+  // Tests inject the fingerprint; the real CLI reads it from git.
+  const injected: CodeFingerprint = { head: "a".repeat(40), dirty: true, dirtyHash: sha256Hex("dirty") };
+  const fingerprinted = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "greeting-cut",
+    runnerStdout: "ok",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+    dryRun: true,
+    codeFingerprint: injected,
+  });
+  assert.deepEqual(fingerprinted.codeFingerprint, injected);
 });
 
 test("manual and external checks stay INFO, never a false green", () => {
@@ -4645,4 +4668,232 @@ test("golden window guard rejects a window edit that leaves the budget alone", (
   assert.equal(drift[0].field, "max");
   assert.equal(drift[0].script, 1800);
   assert.equal(drift[0].budget, 1500);
+});
+
+// ── Ticket 29: triple green + candidate behavior suite ──────────────────────
+
+const STREAK_FP: CodeFingerprint = {
+  head: "a".repeat(40),
+  dirty: false,
+  dirtyHash: sha256Hex("clean\n"),
+};
+
+function greenBehavior(codeFingerprint: CodeFingerprint = STREAK_FP): BehaviorRunEvidence {
+  return {
+    kind: "voni-behavior-run",
+    schemaVersion: 1,
+    mode: "behavior",
+    passed: true,
+    exitCode: 0,
+    recordedAt: "2026-10-29T12:00:00.000Z",
+    command: "npm run test:e2e:behavior",
+    codeFingerprint,
+  };
+}
+
+function streakGates(overrides: Record<string, ScoreboardArtifact["gates"][number]> = {}) {
+  const required = STREAK_REQUIRED_GATES.map((name) => ({
+    name,
+    status: "PASS" as const,
+    detail: `${name} measured`,
+  }));
+  const provenance = [
+    { name: "measurements", status: "INFO" as const, detail: "measured evidence present (gaps, real-cut)" },
+  ];
+  const informational = STREAK_INFORMATIONAL_GATES.map((name) => ({
+    name,
+    status: "INFO" as const,
+    detail: `${name} manual`,
+  }));
+  const all: ScoreboardGate[] = [...required, ...provenance, ...informational];
+  return all.filter((gate) => overrides[gate.name] === undefined).concat(Object.values(overrides));
+}
+
+function streakArtifact(
+  index: number,
+  overrides: Partial<StreakArtifact> = {},
+): StreakArtifact {
+  return {
+    runId: `run-${index}`,
+    recordedAt: new Date(Date.UTC(2026, 9, 29, 12, index)).toISOString(),
+    voice: DEFAULT_GATE_VOICE,
+    schemaVersion: 4,
+    gates: streakGates(),
+    codeFingerprint: STREAK_FP,
+    ...overrides,
+  };
+}
+
+function runStreak(artifacts: StreakArtifact[], behavior: BehaviorRunEvidence | null = greenBehavior()) {
+  return evaluateScoreStreak({
+    artifacts,
+    gateVoice: DEFAULT_GATE_VOICE,
+    behavior,
+  });
+}
+
+test("triple green: three all-required-PASS artifacts on one code fingerprint pass", () => {
+  const result = runStreak([streakArtifact(1), streakArtifact(2), streakArtifact(3)]);
+  assert.equal(result.ok, true, formatStreakVerdict(result));
+  assert.deepEqual(result.failures, []);
+  assert.equal(result.runs, 3);
+  assert.match(formatStreakVerdict(result), /streak: PASS/);
+  assert.match(formatStreakVerdict(result), /behavior: PASS/);
+  // The required set is explicit and the manual rows are never in it.
+  assert.ok(STREAK_REQUIRED_GATES.includes("barge-in-cut"));
+  for (const manual of STREAK_INFORMATIONAL_GATES) {
+    assert.ok(!(STREAK_REQUIRED_GATES as readonly string[]).includes(manual), `${manual} is informational`);
+  }
+});
+
+test("a required gate INFO or FAIL fails the streak and names the run and gate", () => {
+  const info = runStreak([
+    streakArtifact(1),
+    streakArtifact(2, {
+      gates: streakGates({ "reply-gap": { name: "reply-gap", status: "INFO", detail: "unmeasured" } }),
+    }),
+    streakArtifact(3),
+  ]);
+  assert.equal(info.ok, false);
+  assert.ok(info.failures.some((failure) => failure.run === "run-2" && failure.gate === "reply-gap"), JSON.stringify(info.failures));
+  assert.match(formatStreakVerdict(info), /run-2/);
+  assert.match(formatStreakVerdict(info), /reply-gap/);
+
+  const fail = runStreak([
+    streakArtifact(1),
+    streakArtifact(2),
+    streakArtifact(3, {
+      gates: streakGates({ "dead-air": { name: "dead-air", status: "FAIL", detail: "uncovered 3200ms" } }),
+    }),
+  ]);
+  assert.equal(fail.ok, false);
+  assert.ok(fail.failures.some((failure) => failure.run === "run-3" && failure.gate === "dead-air"), JSON.stringify(fail.failures));
+});
+
+test("a differing code fingerprint fails the streak naming the run that differs", () => {
+  const other: CodeFingerprint = { head: "b".repeat(40), dirty: true, dirtyHash: sha256Hex("dirty\n") };
+  const result = runStreak([streakArtifact(1), streakArtifact(2), streakArtifact(3, { codeFingerprint: other })]);
+  assert.equal(result.ok, false);
+  assert.ok(result.failures.some((failure) => failure.code === "fingerprint-differs" && failure.run === "run-3"));
+  assert.match(formatStreakVerdict(result), /code fingerprint/);
+});
+
+test("non-increasing timestamps, voice drift, schema drift, and a missing fingerprint fail", () => {
+  const equal = runStreak([streakArtifact(1), streakArtifact(2), streakArtifact(3, { recordedAt: "2026-10-29T12:02:00.000Z" })]);
+  assert.equal(equal.ok, false);
+  assert.ok(equal.failures.some((failure) => failure.code === "recorded-at-not-increasing"));
+
+  const voice = runStreak([streakArtifact(1), streakArtifact(2, { voice: DEMO_VOICE_IDS[1] }), streakArtifact(3)]);
+  assert.equal(voice.ok, false);
+  assert.ok(voice.failures.some((failure) => failure.code === "voice-mismatch" && failure.run === "run-2"));
+
+  const schema = runStreak([streakArtifact(1), streakArtifact(2, { schemaVersion: 3 as unknown as 4 }), streakArtifact(3)]);
+  assert.equal(schema.ok, false);
+  assert.ok(schema.failures.some((failure) => failure.code === "schema-mismatch" && failure.run === "run-2"));
+
+  const missing = runStreak([streakArtifact(1), streakArtifact(2, { codeFingerprint: null }), streakArtifact(3)]);
+  assert.equal(missing.ok, false);
+  assert.ok(missing.failures.some((failure) => failure.code === "fingerprint-missing" && failure.run === "run-2"));
+});
+
+test("unmeasured prospect-capture memory is the only email-invite INFO a streak allows", () => {
+  const memoryOnly = runStreak([
+    streakArtifact(1, {
+      gates: streakGates({
+        "email-invite": {
+          name: "email-invite",
+          status: "INFO",
+          detail: "unmeasured - provide a before/after Hold return pair",
+        },
+      }),
+    }),
+    streakArtifact(2),
+    streakArtifact(3),
+  ]);
+  assert.equal(memoryOnly.ok, true, formatStreakVerdict(memoryOnly));
+
+  const otherInfo = runStreak([
+    streakArtifact(1),
+    streakArtifact(2, {
+      gates: streakGates({
+        "email-invite": { name: "email-invite", status: "INFO", detail: "unmeasured - show the chip first" },
+      }),
+    }),
+    streakArtifact(3),
+  ]);
+  assert.equal(otherInfo.ok, false);
+  assert.ok(otherInfo.failures.some((failure) => failure.gate === "email-invite" && failure.run === "run-2"));
+});
+
+test("accent ballots, the real-phone checklist, and Talk pinning never block the streak", () => {
+  const result = runStreak([
+    streakArtifact(1, {
+      gates: streakGates({
+        "accent-human": { name: "accent-human", status: "FAIL", detail: "one rater" },
+        "phone-checklist": { name: "phone-checklist", status: "FAIL", detail: "not run" },
+        "talk-hold-pinned": { name: "talk-hold-pinned", status: "INFO", detail: "external" },
+      }),
+    }),
+    streakArtifact(2, {
+      gates: streakGates().filter((gate) => gate.name !== "phone-checklist" && gate.name !== "talk-hold-pinned"),
+    }),
+    streakArtifact(3),
+  ]);
+  assert.equal(result.ok, true, formatStreakVerdict(result));
+
+  const unknownInfo = runStreak([
+    streakArtifact(1, {
+      gates: streakGates({ "new-unmeasured-gate": { name: "new-unmeasured-gate", status: "INFO", detail: "future" } }),
+    }),
+    streakArtifact(2),
+    streakArtifact(3),
+  ]);
+  assert.equal(unknownInfo.ok, false, "a new non-informational INFO gate still blocks green");
+});
+
+test("the behavior run must be present, green, and on the same code fingerprint", () => {
+  const missing = runStreak([streakArtifact(1), streakArtifact(2), streakArtifact(3)], null);
+  assert.equal(missing.ok, false);
+  assert.ok(missing.failures.some((failure) => failure.code === "behavior-missing"));
+
+  const red = runStreak([streakArtifact(1), streakArtifact(2), streakArtifact(3)], {
+    ...greenBehavior(),
+    passed: false,
+    exitCode: 1,
+  });
+  assert.equal(red.ok, false);
+  assert.ok(red.failures.some((failure) => failure.code === "behavior-failed"));
+
+  const otherCode = runStreak([streakArtifact(1), streakArtifact(2), streakArtifact(3)], greenBehavior({
+    head: "c".repeat(40),
+    dirty: false,
+    dirtyHash: STREAK_FP.dirtyHash,
+  }));
+  assert.equal(otherCode.ok, false);
+  assert.ok(otherCode.failures.some((failure) => failure.code === "behavior-code-differs"));
+});
+
+test("behavior evidence is validated instead of trusted", () => {
+  assert.throws(() => parseBehaviorRunEvidence({ kind: "something-else" }), /not a behavior-run evidence file/);
+  assert.throws(
+    () => parseBehaviorRunEvidence({ ...greenBehavior(), mode: "instant" }),
+    /mode must be "behavior"/,
+  );
+  assert.throws(
+    () => parseBehaviorRunEvidence({ ...greenBehavior(), codeFingerprint: { head: "x" } }),
+    /codeFingerprint/,
+  );
+  const parsed = parseBehaviorRunEvidence(greenBehavior());
+  assert.equal(parsed.passed, true);
+  assert.equal(parsed.codeFingerprint?.head, STREAK_FP.head);
+});
+
+test("code fingerprint hashes HEAD plus uncommitted status and diff", () => {
+  const clean = codeFingerprintFromGit({ head: "abc123", status: "", diff: "" });
+  const dirty = codeFingerprintFromGit({ head: "abc123", status: " M voni/a.ts\n", diff: "diff --git a/x b/x" });
+  assert.equal(clean?.head, "abc123");
+  assert.equal(clean?.dirty, false);
+  assert.equal(dirty?.dirty, true);
+  assert.notEqual(clean?.dirtyHash, dirty?.dirtyHash);
+  assert.equal(codeFingerprintFromGit({ head: "" }), null, "no HEAD is no fingerprint, never a fake clean one");
 });

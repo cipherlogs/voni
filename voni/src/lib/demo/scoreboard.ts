@@ -47,6 +47,7 @@
  * helpers only) once a second consumer needs one; keep this module's
  * exports stable so the orchestrator and matrix never change imports.
  */
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { getVoice, VOICE_OUTPUT_VOLUME, voicePlaybackGain } from "../agents/voices";
 import { BARGE_IN_JUDGE_MS, judgeOverlap, type OverlapVerdict } from "../voice/barge-in";
@@ -1907,6 +1908,12 @@ export type ScoreboardArtifact = {
   } | null;
   /** Unique id for this run (reproducibility: three consecutive greens on the reference desktop). */
   runId: string;
+  /**
+   * Exact code the run executed on (git HEAD + dirty hash, ticket 29). Null
+   * when git could not report it — the streak then refuses to claim comparable
+   * greens instead of pretending a clean tree.
+   */
+  codeFingerprint: CodeFingerprint | null;
   /**
    * Quarantined beats, by name, excluded from gating while flaky (empty
    * stub: quarantine by beat name, never by loosening thresholds).
@@ -4403,6 +4410,8 @@ export function buildSkeletonArtifact(input: {
   emailInviteEvidencePresent?: boolean;
   /** Unique id for this run; generated when omitted. */
   runId?: string;
+  /** Exact code the run executed on; tests inject it, the CLI reads git. */
+  codeFingerprint?: CodeFingerprint | null;
   /** Session the gaps were merged from (trace pointer for a failing gate). */
   traceSessionId?: string | null;
   /** Stored agent body input for the end-of-turn check (undefined = not checked). */
@@ -4737,6 +4746,7 @@ export function buildSkeletonArtifact(input: {
     },
     callerClips: input.callerClips ?? [],
     runId: input.runId ?? `run-${input.voice}-${Date.now().toString(36)}`,
+    codeFingerprint: input.codeFingerprint ?? null,
     quarantinedBeats: [],
   };
 }
@@ -5432,4 +5442,418 @@ export function formatMatrixTable(matrix: RegressionMatrix): string {
     ...rows,
     formatVoiceGainTable(matrix.gains),
   ].join("\n");
+}
+
+// ── Streak: three consecutive greens on one code + candidate behavior run ───
+// (ticket 29, owner: exit claim). The streak is a pure judgement over stored
+// artifacts: no live audio, no thresholds, no invented evidence. It refuses a
+// green claim when the code moved, when a required gate is anything but PASS,
+// or when the candidate behavior suite never ran green on the same code.
+
+/**
+ * Exact repository state a run executed on (ticket 29): the committed HEAD
+ * plus a hash of the uncommitted working tree. `git status --porcelain` alone
+ * misses content of modified tracked files, so both porcelain output and the
+ * full `git diff HEAD` are hashed. A missing HEAD is null, never a fake clean
+ * fingerprint — the streak then refuses to claim comparable runs.
+ */
+export type CodeFingerprint = {
+  head: string;
+  dirty: boolean;
+  dirtyHash: string;
+};
+
+/** Pure fingerprint from the three git outputs; null when git has no HEAD. */
+export function codeFingerprintFromGit(
+  input: { head?: string | null; status?: string | null; diff?: string | null } | null | undefined,
+): CodeFingerprint | null {
+  const head = input?.head?.trim();
+  if (!head) return null;
+  const status = input?.status ?? "";
+  const diff = input?.diff ?? "";
+  return {
+    head,
+    dirty: status.trim() !== "" || diff.trim() !== "",
+    dirtyHash: sha256Hex(`${status}\n${diff}`),
+  };
+}
+
+/**
+ * Read the fingerprint from git at run time (score-demo writes it into the
+ * artifact; the streak command reads the behavior runner's copy). Both read
+ * the same repository root so a change anywhere in the repo moves the hash,
+ * including a change outside `voni/`. Null when git cannot answer: a missing
+ * HEAD must fail the streak, never look clean.
+ */
+export function readCodeFingerprint(cwd = process.cwd()): CodeFingerprint | null {
+  try {
+    const git = (args: string[]): string =>
+      execFileSync("git", args, { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 }).trim();
+    const top = git(["rev-parse", "--show-toplevel"]);
+    const head = git(["-C", top, "rev-parse", "HEAD"]);
+    const status = git(["-C", top, "status", "--porcelain=v1"]);
+    const diff = git(["-C", top, "diff", "HEAD"]);
+    return codeFingerprintFromGit({ head, status, diff });
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Gates a triple-green streak requires to be PASS. Manual/external rows
+ * (accent ballots, real-phone checklist, Talk/Hold pinning) are deliberately
+ * absent: they stay informational and can never block the exit claim.
+ */
+export const STREAK_REQUIRED_GATES = [
+  "plumbing",
+  "reply-gap",
+  "end-of-turn",
+  "greeting-cut",
+  "barge-in-cut",
+  "filler-resume",
+  "overheard-recall",
+  "email-invite",
+  "double-talk",
+  "dead-air",
+  "end-call-drain",
+  "timbre-probes",
+] as const;
+
+/**
+ * Rows whose only truthful status is INFO when evidence exists: the
+ * measurements gate reports provenance, not a measurement. It must be PASS or
+ * INFO "measured evidence present"; FAIL (a run with no measurements) blocks.
+ */
+export const STREAK_PROVENANCE_GATES = ["measurements"] as const;
+
+/** Review-only rows: FAIL/INFO/missing here never fails the streak. */
+export const STREAK_INFORMATIONAL_GATES = [
+  "accent-human",
+  "phone-checklist",
+  "talk-hold-pinned",
+] as const;
+
+export const STREAK_SIZE = 3;
+
+export type StreakFailureCode =
+  | "too-few-runs"
+  | "recorded-at-invalid"
+  | "recorded-at-not-increasing"
+  | "voice-mismatch"
+  | "schema-mismatch"
+  | "fingerprint-missing"
+  | "fingerprint-differs"
+  | "gate-not-pass"
+  | "unexpected-gate-not-pass"
+  | "behavior-missing"
+  | "behavior-failed"
+  | "behavior-code-missing"
+  | "behavior-code-differs";
+
+export type StreakFailure = {
+  code: StreakFailureCode;
+  /** Run id the problem belongs to; null for the streak or behavior as a whole. */
+  run: string | null;
+  /** Gate name when the problem is a gate row; null otherwise. */
+  gate: string | null;
+  detail: string;
+};
+
+/** The artifact fields the streak judges; a full ScoreboardArtifact satisfies it. */
+export type StreakArtifact = {
+  schemaVersion: number;
+  recordedAt: string;
+  voice: string;
+  runId: string;
+  gates: ScoreboardGate[];
+  codeFingerprint: CodeFingerprint | null;
+};
+
+export type StreakResult = {
+  ok: boolean;
+  gateVoice: string;
+  runs: number;
+  requiredGates: readonly string[];
+  informationalGates: readonly string[];
+  artifacts: StreakArtifact[];
+  behavior: BehaviorRunEvidence | null;
+  failures: StreakFailure[];
+};
+
+/** Ticket 27: the only non-PASS email-invite row a green streak tolerates. */
+export function isUnmeasuredMemoryEmailInvite(gate: ScoreboardGate): boolean {
+  return (
+    gate.status === "INFO" &&
+    /unmeasured/i.test(gate.detail) &&
+    /before\/after|hold return/i.test(gate.detail)
+  );
+}
+
+function sameFingerprint(a: CodeFingerprint, b: CodeFingerprint): boolean {
+  return a.head === b.head && a.dirtyHash === b.dirtyHash && a.dirty === b.dirty;
+}
+
+function describeFingerprint(fingerprint: CodeFingerprint | null): string {
+  if (!fingerprint) return "missing";
+  return `${fingerprint.head.slice(0, 12)}${fingerprint.dirty ? "+dirty" : ""}`;
+}
+
+/**
+ * Judge the last three artifacts (oldest first) plus the candidate behavior
+ * run. Every required gate PASSes, every artifacts shares one voice, schema
+ * and code fingerprint, timestamps strictly increase, and the behavior suite
+ * passed on the same code. All problems are collected so the verdict names
+ * every differing run and gate, not just the first.
+ */
+export function evaluateScoreStreak(input: {
+  artifacts: StreakArtifact[];
+  gateVoice: string;
+  requiredGates?: readonly string[];
+  provenanceGates?: readonly string[];
+  informationalGates?: readonly string[];
+  expectedSchemaVersion?: number;
+  behavior?: BehaviorRunEvidence | null;
+}): StreakResult {
+  const requiredGates = input.requiredGates ?? STREAK_REQUIRED_GATES;
+  const provenanceGates = input.provenanceGates ?? STREAK_PROVENANCE_GATES;
+  const informationalGates = input.informationalGates ?? STREAK_INFORMATIONAL_GATES;
+  const expectedSchemaVersion = input.expectedSchemaVersion ?? SCOREBOARD_SCHEMA_VERSION;
+  const artifacts = input.artifacts.slice(-STREAK_SIZE);
+  const failures: StreakFailure[] = [];
+  const fail = (code: StreakFailureCode, run: string | null, gate: string | null, detail: string) =>
+    failures.push({ code, run, gate, detail });
+
+  if (artifacts.length < STREAK_SIZE) {
+    fail(
+      "too-few-runs",
+      null,
+      null,
+      `need ${STREAK_SIZE} consecutive artifacts for ${input.gateVoice}, found ${artifacts.length}`,
+    );
+  }
+
+  const known = new Set<string>([...requiredGates, ...provenanceGates, ...informationalGates]);
+  let baselineFingerprint: CodeFingerprint | null = null;
+
+  artifacts.forEach((artifact, index) => {
+    const run = artifact.runId || `artifact ${index + 1}`;
+    if (artifact.voice !== input.gateVoice) {
+      fail("voice-mismatch", run, null, `gate voice is ${input.gateVoice}, artifact voice is ${artifact.voice}`);
+    }
+    if (artifact.schemaVersion !== expectedSchemaVersion) {
+      fail(
+        "schema-mismatch",
+        run,
+        null,
+        `schemaVersion ${artifact.schemaVersion} is not ${expectedSchemaVersion}`,
+      );
+    }
+    const recorded = Date.parse(artifact.recordedAt);
+    if (!Number.isFinite(recorded)) {
+      fail("recorded-at-invalid", run, null, `recordedAt is not a timestamp: ${artifact.recordedAt}`);
+    } else if (index > 0) {
+      const prior = Date.parse(artifacts[index - 1].recordedAt);
+      if (!(recorded > prior)) {
+        fail(
+          "recorded-at-not-increasing",
+          run,
+          null,
+          `recordedAt ${artifact.recordedAt} is not after ${artifacts[index - 1].recordedAt}`,
+        );
+      }
+    }
+
+    if (!artifact.codeFingerprint) {
+      fail("fingerprint-missing", run, null, "artifact carries no code fingerprint (git HEAD + dirty hash)");
+    } else if (baselineFingerprint === null) {
+      baselineFingerprint = artifact.codeFingerprint;
+    } else if (!sameFingerprint(baselineFingerprint, artifact.codeFingerprint)) {
+      fail(
+        "fingerprint-differs",
+        run,
+        null,
+        `code fingerprint ${describeFingerprint(artifact.codeFingerprint)} differs from ${describeFingerprint(baselineFingerprint)}`,
+      );
+    }
+
+    const gates = new Map(artifact.gates.map((gate) => [gate.name, gate] as const));
+    for (const name of requiredGates) {
+      const gate = gates.get(name);
+      if (!gate) {
+        fail("gate-not-pass", run, name, "required gate is missing from the artifact");
+        continue;
+      }
+      if (gate.status === "PASS") continue;
+      if (name === "email-invite" && isUnmeasuredMemoryEmailInvite(gate)) continue;
+      fail("gate-not-pass", run, name, `${gate.status} — ${gate.detail}`);
+    }
+    for (const name of provenanceGates) {
+      const gate = gates.get(name);
+      if (!gate) {
+        fail("gate-not-pass", run, name, "provenance gate is missing from the artifact");
+        continue;
+      }
+      if (gate.status === "PASS") continue;
+      if (gate.status === "INFO" && /measured evidence present/i.test(gate.detail)) continue;
+      fail("gate-not-pass", run, name, `${gate.status} — ${gate.detail}`);
+    }
+    for (const gate of artifact.gates) {
+      if (known.has(gate.name) || gate.status === "PASS") continue;
+      fail(
+        "unexpected-gate-not-pass",
+        run,
+        gate.name,
+        `${gate.status} — only PASS or a listed informational row is green`,
+      );
+    }
+  });
+
+  const behavior = input.behavior ?? null;
+  if (!behavior) {
+    fail(
+      "behavior-missing",
+      null,
+      null,
+      "no candidate behavior run evidence; produce one with npm run test:e2e:behavior -- --evidence <path>",
+    );
+  } else if (!behavior.passed || behavior.exitCode !== 0) {
+    fail(
+      "behavior-failed",
+      null,
+      null,
+      `candidate behavior run is red (passed=${String(behavior.passed)}, exit ${behavior.exitCode})`,
+    );
+  } else if (!behavior.codeFingerprint) {
+    fail("behavior-code-missing", null, null, "behavior-run evidence carries no code fingerprint");
+  } else {
+    const artifactFingerprint =
+      baselineFingerprint ?? artifacts.find((artifact) => artifact.codeFingerprint)?.codeFingerprint ?? null;
+    if (!artifactFingerprint) {
+      fail("behavior-code-missing", null, null, "no artifact code fingerprint to compare the behavior run against");
+    } else if (!sameFingerprint(artifactFingerprint, behavior.codeFingerprint)) {
+      fail(
+        "behavior-code-differs",
+        null,
+        null,
+        `behavior code ${describeFingerprint(behavior.codeFingerprint)} differs from the green streak's ${describeFingerprint(artifactFingerprint)}`,
+      );
+    }
+  }
+
+  return {
+    ok: failures.length === 0,
+    gateVoice: input.gateVoice,
+    runs: artifacts.length,
+    requiredGates,
+    informationalGates,
+    artifacts,
+    behavior,
+    failures,
+  };
+}
+
+/** Console verdict: the claim, the runs it covers, and every differing run/gate. */
+export function formatStreakVerdict(result: StreakResult): string {
+  const lines = [
+    `demo streak (gate ${result.gateVoice}, ${result.runs} runs, ${result.requiredGates.length} required gates)`,
+    ...result.artifacts.map(
+      (artifact, index) =>
+        `  run ${index + 1}  ${artifact.runId.padEnd(28)} ${artifact.recordedAt}  code ${describeFingerprint(artifact.codeFingerprint)}`,
+    ),
+  ];
+  const behavior = result.behavior;
+  lines.push(
+    behavior
+      ? `  behavior  ${behavior.command}  ${behavior.passed ? "PASS" : "FAIL"} (exit ${behavior.exitCode})  code ${describeFingerprint(behavior.codeFingerprint)}`
+      : "  behavior  missing (npm run test:e2e:behavior -- --evidence <path>)",
+  );
+  if (result.ok) {
+    lines.push(
+      `streak: PASS — ${result.runs} consecutive all-required-PASS artifacts on ${result.gateVoice} with one code fingerprint; behavior: PASS`,
+    );
+  } else {
+    lines.push(`streak: FAIL — ${result.failures.length} problem(s)`);
+    for (const failure of result.failures) {
+      const where =
+        failure.run !== null
+          ? `run ${failure.run}${failure.gate !== null ? ` gate ${failure.gate}` : ""}`
+          : "behavior";
+      lines.push(`  - ${where}: ${failure.detail}`);
+    }
+  }
+  return lines.join("\n");
+}
+
+// ── Candidate behavior-run evidence (ticket 29) ──────────────────────────────
+// `npm run test:e2e:behavior` builds and serves an isolated candidate bundle,
+// then runs the behavior Playwright specs against it. The runner writes this
+// evidence file on both green and red so a streak claim can never silently
+// omit the browser run.
+
+export const BEHAVIOR_RUN_EVIDENCE_KIND = "voni-behavior-run";
+export const BEHAVIOR_RUN_EVIDENCE_SCHEMA_VERSION = 1;
+
+export type BehaviorRunEvidence = {
+  kind: typeof BEHAVIOR_RUN_EVIDENCE_KIND;
+  schemaVersion: typeof BEHAVIOR_RUN_EVIDENCE_SCHEMA_VERSION;
+  mode: "behavior";
+  passed: boolean;
+  exitCode: number;
+  recordedAt: string;
+  command: string;
+  codeFingerprint: CodeFingerprint | null;
+};
+
+function readCodeFingerprintEvidence(raw: unknown, label: string): CodeFingerprint | null {
+  if (raw === null || raw === undefined) return null;
+  if (typeof raw !== "object") throw new Error(`${label} codeFingerprint must be an object`);
+  const record = raw as Record<string, unknown>;
+  if (typeof record.head !== "string" || record.head.trim() === "") {
+    throw new Error(`${label} codeFingerprint.head must be a git HEAD string`);
+  }
+  if (typeof record.dirtyHash !== "string" || record.dirtyHash.trim() === "") {
+    throw new Error(`${label} codeFingerprint.dirtyHash must be a sha256 string`);
+  }
+  if (typeof record.dirty !== "boolean") {
+    throw new Error(`${label} codeFingerprint.dirty must be a boolean`);
+  }
+  return { head: record.head, dirtyHash: record.dirtyHash, dirty: record.dirty };
+}
+
+/** Validate a behavior-run evidence file instead of trusting its shape. */
+export function parseBehaviorRunEvidence(raw: unknown): BehaviorRunEvidence {
+  if (raw === null || typeof raw !== "object") {
+    throw new Error("behavior-run evidence is not a JSON object");
+  }
+  const record = raw as Record<string, unknown>;
+  if (record.kind !== BEHAVIOR_RUN_EVIDENCE_KIND) {
+    throw new Error(`not a behavior-run evidence file (kind "${String(record.kind)}")`);
+  }
+  if (record.schemaVersion !== BEHAVIOR_RUN_EVIDENCE_SCHEMA_VERSION) {
+    throw new Error(
+      `behavior-run evidence schemaVersion ${String(record.schemaVersion)} is not ${BEHAVIOR_RUN_EVIDENCE_SCHEMA_VERSION}`,
+    );
+  }
+  if (record.mode !== "behavior") {
+    throw new Error(`behavior-run evidence mode must be "behavior", got "${String(record.mode)}"`);
+  }
+  if (typeof record.passed !== "boolean" || typeof record.exitCode !== "number" || !Number.isFinite(record.exitCode)) {
+    throw new Error("behavior-run evidence needs boolean passed and numeric exitCode");
+  }
+  if (typeof record.recordedAt !== "string" || !Number.isFinite(Date.parse(record.recordedAt))) {
+    throw new Error("behavior-run evidence recordedAt must be an ISO timestamp");
+  }
+  if (typeof record.command !== "string" || record.command.trim() === "") {
+    throw new Error("behavior-run evidence command must name the command that ran");
+  }
+  return {
+    kind: BEHAVIOR_RUN_EVIDENCE_KIND,
+    schemaVersion: BEHAVIOR_RUN_EVIDENCE_SCHEMA_VERSION,
+    mode: "behavior",
+    passed: record.passed,
+    exitCode: record.exitCode,
+    recordedAt: record.recordedAt,
+    command: record.command,
+    codeFingerprint: readCodeFingerprintEvidence(record.codeFingerprint, "behavior-run evidence"),
+  };
 }
