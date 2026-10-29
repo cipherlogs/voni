@@ -10,6 +10,7 @@ import {
   type TurnTaking,
 } from "@/lib/agents/body";
 import { agentBodyFingerprint } from "@/lib/agents/fingerprint";
+import { agentUpdatePayload } from "@/lib/agents/provision";
 import { DEMO_VOICE_IDS, VONI_AGENT_ID, voniConfig } from "./voni-agent";
 import { toRestTool } from "@/lib/tools/definitions";
 import { DEMO_VOICE_TOOLS } from "./demo-tools";
@@ -577,10 +578,10 @@ async function remoteCall(
   // Updates never clear an absent field: a previously-set `llm` override
   // survives a PUT whose body omits it (seen live: gateway model the account
   // can't access kept failing turns after the override was removed from the
-  // body). Send the documented revert (`"llm": []` → managed model) so a
-  // refresh always converges instead of stranding the stale override.
-  const payload =
-    method === "PUT" && !("llm" in body) ? { ...body, llm: [] } : { ...body };
+  // body). A refresh sends the one removal path's payload (ticket 63) — the
+  // same function the tenant deployment uses — so a refresh always converges
+  // instead of stranding the stale override.
+  const payload = method === "PUT" ? agentUpdatePayload(body) : { ...body };
   let res: Response;
   try {
     res = await fetch(url, {
