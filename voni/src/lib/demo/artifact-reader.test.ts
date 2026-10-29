@@ -213,8 +213,14 @@ test("a managed artifact carrying a provider fallback event is refused by name",
 });
 
 test("a cascade artifact may carry its own fallback event", () => {
+  // The event is the cascade's own fact; the artifact's eligibility flag must
+  // agree with it (ticket 143 refuses a fallback event beside eligible: true).
   const raw = cascadeArtifact({
     events: [{ type: "provider_fallback", leg: "llm", from: "meta", to: "gateway", phase: "connect" }],
+    eligibility: {
+      eligible: false,
+      reasons: ["provider fallback (leg llm, at connect); a fallback-contaminated run is not a clean run"],
+    },
   });
 
   assert.equal(pipelineOfArtifact(parseScoreboardArtifact(raw, "cascade.json")), "cascade");

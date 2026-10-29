@@ -39,6 +39,12 @@ jobs:
       # or renamed module fails by name; `npm test` already discovers it.
       - name: Anti-lie reply gap
         run: node --import tsx --test src/lib/demo/anti-lie-reply-gap.test.ts
+      # Ticket 143: a fallback-contaminated run (any leg, any phase, connect
+      # included), a budget stop, a missing capture and a harness break cannot
+      # be green. The proof is a committed test, so deleting the eligibility
+      # branch or the flag/stream refusal fails this step by name.
+      - name: Anti-lie contaminated run
+        run: node --import tsx --test src/lib/demo/anti-lie-contaminated-run.test.ts
 
   # Seam 4 (ticket 149): a real Chromium runs the real browser client, the real
   # mic path and the real playout worklet against a deterministic fake
@@ -159,6 +165,12 @@ jobs:
           ../.venv/bin/python -m unittest \
             cascade.test_admission \
             cascade.test_rollback
+      # Ticket 146: every fallback is emitted, including at connect, and a run
+      # whose frozen rung says fallback without the event is refused by name.
+      # The proof is a committed test: deleting the emission fails this step.
+      - name: Anti-lie fallback emission
+        working-directory: voice-pipeline
+        run: ../.venv/bin/python -m unittest cascade.test_anti_lie_fallback_emission
 
   # AC4: a skipped or cancelled Python job must not report success. A job that
   # never runs produces no failing check, so branch protection must require
