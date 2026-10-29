@@ -20,6 +20,7 @@ import {
   defaultSubject,
   formatSubject,
   resolveSubject,
+  sameSubject,
   subjectOrLegacy,
   type SubjectRecord,
 } from "./subject";
@@ -33,6 +34,7 @@ import {
 } from "./scoreboard";
 import { buildInspectReport, formatInspectReport } from "./scoreboard-report";
 import { parseServedDemoAgentBody } from "./stored-agents";
+import { evalRunnerArgv, parseEvalAgentId } from "./eval-transport";
 
 const SCRIPT = new URL("../../../scripts/score-demo.mts", import.meta.url).pathname;
 
@@ -90,6 +92,33 @@ test("the featured voice is one subject, not the owner of the axis", () => {
   }
 });
 
+test("a prior diff is scoped to the subject, never to a shared voice id", () => {
+  const featured = defaultSubject();
+  const legacy = subjectOrLegacy({ voice: DEFAULT_GATE_VOICE });
+  assert.ok(sameSubject(featured, legacy), "provenance is not part of the identity");
+  const tenant = resolveSubject({
+    agent: "agent_tenant_42",
+    voice: DEFAULT_GATE_VOICE,
+    locale: "en",
+    explicit: true,
+  });
+  assert.ok(
+    !sameSubject(tenant, featured),
+    "a tenant agent and a demo voice with the same id are different subjects",
+  );
+  assert.ok(
+    !sameSubject(resolveSubject({ voice: "lola", explicit: true }), featured),
+    "another voice is another subject",
+  );
+  assert.ok(
+    !sameSubject(
+      resolveSubject({ agent: "agent_a", voice: "lola", locale: "es", explicit: true }),
+      resolveSubject({ agent: "agent_b", voice: "lola", locale: "es", explicit: true }),
+    ),
+    "another tenant agent is another subject",
+  );
+});
+
 test("a tenant agent is a subject, measurable through the same harness", () => {
   const subject = resolveSubject({
     agent: "agent_tenant_42",
@@ -105,6 +134,34 @@ test("a tenant agent is a subject, measurable through the same harness", () => {
     source: "flag",
   });
   assert.equal(formatSubject(subject), "tenant agent_tenant_42 (es, phone)");
+});
+
+test("a tenant subject is measurable through the same runner", () => {
+  assert.equal(parseEvalAgentId(["--voice", "lola"]), null);
+  assert.equal(parseEvalAgentId(["--agent", "agent_tenant_42"]), "agent_tenant_42");
+  assert.throws(() => parseEvalAgentId(["--agent", ""]), /needs a tenant agent id/);
+  assert.deepEqual(
+    evalRunnerArgv({
+      voice: "lola",
+      scenario: "greeting-cut",
+      runs: "1",
+      agentId: "agent_tenant_42",
+    }),
+    [
+      "run",
+      "eval:demo-agent",
+      "--",
+      "--voice",
+      "lola",
+      "--scenario",
+      "greeting-cut",
+      "--runs",
+      "1",
+      "--agent",
+      "agent_tenant_42",
+    ],
+    "the tenant agent rides the same runner invocation, not a second harness",
+  );
 });
 
 test("an unknown voice, agent or Locale fails by name", () => {
@@ -373,6 +430,42 @@ test("score-demo runs a tenant subject through the same command", () => {
   assert.deepEqual(artifact.subject?.agent, { kind: "tenant", agentId: "agent_tenant_42" });
   assert.equal(artifact.subject?.transport, "phone");
   assert.deepEqual(artifact.regressionVoices, []);
+});
+
+test("score-demo refuses to diff one subject against another's artifact", () => {
+  const dir = mkdtempSync(join(tmpdir(), "subject-"));
+  const first = join(dir, "anna.json");
+  const cwd = new URL("../../../", import.meta.url).pathname;
+  const firstRun = spawnSync(
+    "node",
+    ["--import", "tsx", SCRIPT, "--dry-run", "--out", first],
+    { encoding: "utf8", cwd },
+  );
+  assert.equal(firstRun.status, 0, firstRun.stderr + firstRun.stdout);
+  const out = join(dir, "lola.json");
+  const crossed = spawnSync(
+    "node",
+    [
+      "--import",
+      "tsx",
+      SCRIPT,
+      "--dry-run",
+      "--voice",
+      "lola",
+      "--out",
+      out,
+      "--prior",
+      first,
+    ],
+    { encoding: "utf8", cwd },
+  );
+  assert.notEqual(crossed.status, 0);
+  assert.match(
+    crossed.stderr + crossed.stdout,
+    /a diff only compares the same subject/,
+    "a prior from another subject is refused by name",
+  );
+  assert.ok(!existsSync(out), "no artifact is written for a cross-subject diff");
 });
 
 test("score-demo fails by name before writing an artifact for a bad subject", () => {

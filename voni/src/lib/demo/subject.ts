@@ -271,3 +271,20 @@ export function formatSubject(subject: SubjectRecord): string {
       : `tenant ${subject.agent.agentId}`;
   return `${agent} (${subject.locale}, ${subject.transport})`;
 }
+
+/**
+ * Are two records the same subject? Provenance (`source`) is not part of the
+ * identity: a legacy artifact derived from the featured voice and a new run of
+ * that voice are the same subject.
+ */
+export function sameSubject(left: SubjectRecord, right: SubjectRecord): boolean {
+  if (left.locale !== right.locale || left.transport !== right.transport) return false;
+  if (left.agent.kind === "tenant" || right.agent.kind === "tenant") {
+    return (
+      left.agent.kind === "tenant" &&
+      right.agent.kind === "tenant" &&
+      left.agent.agentId === right.agent.agentId
+    );
+  }
+  return left.agent.voice === right.agent.voice;
+}

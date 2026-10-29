@@ -279,6 +279,7 @@ import {
   readCodeFingerprint,
   redactLines,
   sha256Hex,
+  subjectOfArtifact,
   traceSilenceRef,
   traceCheckInRef,
   traceTurnForVisitorSpeech,
@@ -330,6 +331,8 @@ import { acquireTimingLock, DEFAULT_TIMING_LOCK_PATH } from "../src/lib/demo/tim
 import {
   formatSubject,
   resolveSubject,
+  sameSubject,
+  type SubjectRecord,
   type SubjectRequest,
 } from "../src/lib/demo/subject";
 
@@ -832,14 +835,16 @@ function readScoreboardArtifact(path: string): ScoreboardArtifact | null {
 }
 
 /**
- * Latest artifact for the same voice in the artifact directory (the new run's
- * own output path is skipped so a rerun to the same file never diffs against
- * itself). Ties on recordedAt fall back to file mtime, so two runs inside one
- * second still order by when they landed.
+ * Latest artifact for the same subject in the artifact directory (the new
+ * run's own output path is skipped so a rerun to the same file never diffs
+ * against itself). A subject is `{agent, Locale, transport}` (ticket 72): a
+ * tenant agent's artifact never diffs against a demo voice's, even when they
+ * share a voice id. Ties on recordedAt fall back to file mtime, so two runs
+ * inside one second still order by when they landed.
  */
 function latestPriorArtifact(
   dir: string,
-  voice: string,
+  subject: SubjectRecord,
   skipPath: string,
 ): { path: string; artifact: ScoreboardArtifact } | null {
   let entries: string[];
@@ -854,7 +859,7 @@ function latestPriorArtifact(
     const path = resolve(dir, entry);
     if (path === skipPath) continue;
     const artifact = readScoreboardArtifact(path);
-    if (!artifact || artifact.voice !== voice) continue;
+    if (!artifact || !sameSubject(subjectOfArtifact(artifact), subject)) continue;
     const recorded = Date.parse(artifact.recordedAt);
     let mtime = 0;
     try {
@@ -1472,7 +1477,15 @@ async function main(): Promise<void> {
   // The prior run is a working artifact, never committed: load it before the
   // cut gate so a changed caller clip fails comparability instead of greening.
   const priorPath = arg("--prior", "");
-  const prior = priorPath ? loadPriorArtifact(priorPath) : latestPriorArtifact(dirname(out), voice, out);
+  const prior = priorPath ? loadPriorArtifact(priorPath) : latestPriorArtifact(dirname(out), subject, out);
+  // A diff compares two runs of one subject. An explicit --prior from another
+  // subject would turn the featured voice's transition into this subject's.
+  if (prior && !sameSubject(subjectOfArtifact(prior.artifact), subject)) {
+    throw new Error(
+      `--prior artifact ${prior.path} measured ${formatSubject(subjectOfArtifact(prior.artifact))}; ` +
+        `this run measures ${formatSubject(subject)} (a diff only compares the same subject)`,
+    );
+  }
   // Real-cut evidence counts as measured even though it lands post-skeleton.
   // The stop-over call's own trace names the answer (or resume) turn.
   const stopTrace = traceForScenario("stop-over");
