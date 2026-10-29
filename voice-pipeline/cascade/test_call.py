@@ -388,6 +388,9 @@ class CallLifecycleTest(unittest.TestCase):
         lifecycle = self.make(
             transport=transport,
             voice=HangingGreetingVoice(),
+            # No caller event: this test is the greeting's bound, not barge-in
+            # (a speechStart now cuts the greeting before it can hang).
+            speech=ScriptedSTT([], clock=self.clock),
             bounds={"tts.idle_timeout_ms": 10},
         )
 
