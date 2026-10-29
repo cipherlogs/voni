@@ -41,6 +41,8 @@
  * or an unwritable artifact.
  *
  *   npm run scoreboard:demo -- [--gate-voice <demo-voice-id>] [--scenario all | <name>] [--runs 1]
+ *                           [--transport stored|inline] [--variant turn-window]
+ *                           [--turn-windows 400,640,0 | -,-,0]
  *                           [--out scoreboard-runs/score-<ts>-<voice>.json] [--dry-run]
  *                           [--prior <path>]
  *                           [--timing-lock /tmp/voni-demo-timing.lock]
@@ -73,6 +75,15 @@
  * file; the suite spawns one runner per scenario and each writer truncates its
  * own file, so it writes `<path stem>.<scenario>.jsonl` instead and no
  * scenario's stream is lost. The stream is telemetry, never a gate input.
+ *
+ * --variant turn-window forwards the stored-agent experiment to every runner
+ * section (`--variant`, plus `--turn-windows min,max,interruption_delay` when
+ * given; `-` omits a part, so rung 3 is `-,-,0`). The same selection also comes
+ * from DEMO_AGENT_VARIANT / DEMO_TURN_*, but the flag wins. A typo, windows
+ * without the variant, or a variant on `--transport inline` fails before the
+ * lock is taken: inline is a debug path and is never measured. Each artifact's
+ * run identity records `variant`, `variantKey`, the agent id/fingerprint and
+ * the configured `turnWindows`; `scoreboard:inspect` prints them.
  *
  * Every artifact records a codeFingerprint (git HEAD plus a hash of the
  * uncommitted status and diff). `npm run scoreboard:streak` reads the last
@@ -276,7 +287,15 @@ import {
   type TimbreProbes,
   type TraceGap,
 } from "../src/lib/demo/scoreboard";
-import { buildDemoAgentBody } from "../src/lib/demo/stored-agents";
+import { buildDemoAgentBody, demoAgentVariantFromEnv, demoTurnWindowsFromEnv, type DemoAgentVariant, type DemoTurnWindows } from "../src/lib/demo/stored-agents";
+import {
+  evalRunnerArgv,
+  parseEvalTransport,
+  parseEvalTurnWindowsArg,
+  parseEvalVariantArg,
+  resolveEvalVariantSelection,
+  type EvalTransport,
+} from "../src/lib/demo/eval-transport";
 import { buildRunnerEvidence } from "../src/lib/demo/runner-evidence";
 import { judgeOverlap } from "../src/lib/voice/barge-in";
 import { acquireTimingLock, DEFAULT_TIMING_LOCK_PATH } from "../src/lib/demo/timing-lock";
@@ -485,11 +504,22 @@ function stamp(date = new Date()): string {
   return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
 }
 
-function runEvalRunner(voice: string, scenario: string, runs: string, eventsPath = ""): { stdout: string; exitCode: number | null; durationMs: number; evalError: string | null } {
+function runEvalRunner(
+  voice: string,
+  scenario: string,
+  runs: string,
+  options: {
+    transport?: EvalTransport | null;
+    variant?: DemoAgentVariant | null;
+    turnWindows?: DemoTurnWindows | null;
+    eventsPath?: string | null;
+  } = {},
+): { stdout: string; exitCode: number | null; durationMs: number; evalError: string | null } {
   const started = Date.now();
-  const args = ["run", "eval:demo-agent", "--", "--voice", voice, "--scenario", scenario, "--runs", runs];
-  if (eventsPath) args.push("--events", eventsPath);
-  const result = spawnSync("npm", args, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  const result = spawnSync("npm", evalRunnerArgv({ voice, scenario, runs, ...options }), {
+    encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024,
+  });
   const stdout = `${result.stdout ?? ""}${result.stderr ?? ""}`;
   // A spawn failure (missing binary, killed) surfaces as result.error, not
   // an exit code: record it so the artifact marks a harness break.
@@ -549,6 +579,10 @@ type SectionSummary = {
   agentId?: string | null;
   agentFingerprint?: string | null;
   llmModel?: string | null;
+  /** Which stored body bound: production | turn-window (ticket 09). */
+  variant?: DemoAgentVariant | null;
+  variantKey?: string | null;
+  turnWindows?: DemoTurnWindows | null;
 };
 
 function sectionSummary(stdout: string): SectionSummary | null {
@@ -592,6 +626,22 @@ function mergeSuiteSections(sections: { name: string; section: EvalSection }[], 
   // can still prove the fast-model stored agent produced its evidence. A
   // stored section wins if the suite ever mixed transports.
   const bound = summaries.find((summary) => summary.transport === "stored") ?? summaries.find((summary) => summary.transport);
+  // One suite is one experiment: sections that disagree about the stored-agent
+  // variant would make the artifact's identity a half-truth, so refuse loudly.
+  const boundVariants = new Set(
+    summaries.map((summary) =>
+      JSON.stringify({
+        variant: summary.variant ?? null,
+        variantKey: summary.variantKey ?? null,
+        turnWindows: summary.turnWindows ?? null,
+      }),
+    ),
+  );
+  if (boundVariants.size > 1) {
+    throw new Error(
+      `suite sections bound different stored-agent variants: ${[...boundVariants].join(" vs ")}`,
+    );
+  }
   const merged = {
     scenario: "suite",
     runs,
@@ -607,6 +657,13 @@ function mergeSuiteSections(sections: { name: string; section: EvalSection }[], 
           agentId: bound.agentId ?? null,
           agentFingerprint: bound.agentFingerprint ?? null,
           llmModel: bound.llmModel ?? "managed",
+        }
+      : {}),
+    ...(bound?.variant !== undefined
+      ? {
+          variant: bound.variant,
+          variantKey: bound.variantKey ?? null,
+          ...(bound.turnWindows ? { turnWindows: bound.turnWindows } : {}),
         }
       : {}),
     ...(uniqueClips.length > 0 ? { clips: uniqueClips } : {}),
@@ -952,7 +1009,7 @@ function deadAirEvidenceFromTimeline(
   };
 }
 
-function main(): void {
+async function main(): Promise<void> {
   const voice = resolveGateVoice(arg("--gate-voice", "") || arg("--voice", DEFAULT_GATE_VOICE));
   // Default is the full gate suite: a plain `npm run scoreboard:demo` must
   // exercise every gate, not leave most of them INFO on one focused scenario.
@@ -962,6 +1019,31 @@ function main(): void {
   const runs = arg("--runs", "1");
   if (!/^[1-9]\d*$/.test(runs)) {
     throw new Error(`--runs needs a positive int, got "${runs}"`);
+  }
+  // Which transport/agent the suite measures. Defaults are untouched (no
+  // extra flags reach the runner); a typo, windows without the variant, or a
+  // variant on the inline debug path fails here, before the timing lock and
+  // before any audio is spent — never a silent fallback to production.
+  const transport = parseEvalTransport(process.argv);
+  const transportExplicit = process.argv.includes("--transport");
+  const variantFlag = parseEvalVariantArg(process.argv);
+  const turnWindowsFlag = parseEvalTurnWindowsArg(process.argv);
+  const selection = resolveEvalVariantSelection({
+    argv: process.argv,
+    transport,
+    voiceId: voice,
+    envVariant: await demoAgentVariantFromEnv(),
+    envWindows: await demoTurnWindowsFromEnv(),
+  });
+  const runnerOptions = {
+    ...(transportExplicit ? { transport } : {}),
+    ...(variantFlag ? { variant: variantFlag } : {}),
+    ...(turnWindowsFlag ? { turnWindows: turnWindowsFlag } : {}),
+  };
+  if (selection.variant !== "production") {
+    console.log(
+      `variant: ${selection.variant} ${selection.variantKey} windows ${JSON.stringify(selection.turnWindows)} (source ${selection.source})`,
+    );
   }
   // Opt-in runner event stream (telemetry, never a gate input). Absent keeps
   // the runner's live path exactly as it was.
@@ -1017,13 +1099,16 @@ function main(): void {
     const sections: { name: string; section: EvalSection }[] = [];
     for (const name of SUITE_SCENARIOS) {
       // One at a time: a timing run in parallel inflates the cut number.
-      const section = runEvalRunner(voice, name, runs, eventsPath ? suiteEventsPath(eventsPath, name) : "");
+      const section = runEvalRunner(voice, name, runs, {
+        ...runnerOptions,
+        eventsPath: eventsPath ? suiteEventsPath(eventsPath, name) : "",
+      });
       sections.push({ name, section });
       stdoutByScenario.set(name, section.stdout);
     }
     evalSection = mergeSuiteSections(sections, Number(runs));
   } else {
-    evalSection = runEvalRunner(voice, scenario, runs, eventsPath);
+    evalSection = runEvalRunner(voice, scenario, runs, { ...runnerOptions, eventsPath });
     stdoutByScenario.set(scenario, evalSection.stdout);
   }
   // Focused mode has one runner stream: every parser reads it verbatim, so a
@@ -1532,9 +1617,7 @@ function main(): void {
   }
 }
 
-try {
-  main();
-} catch (error) {
+main().catch((error: unknown) => {
   console.error(error instanceof Error ? error.message : String(error));
   process.exitCode = 1;
-}
+});

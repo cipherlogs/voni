@@ -10,6 +10,9 @@ const EVIDENCE: RunnerEvidence = {
   agentId: "agent_d66c02a12f904b73a940a42032dbd36d",
   agentFingerprint: "fingerprint-abc",
   llmModel: "google/gemini-2.5-flash",
+  variant: "turn-window",
+  variantKey: "anna:exp",
+  turnWindows: { min_silence: 400, max_silence: 640, interruption_delay: 0 },
   scenarios: [
     { name: "stop-over", passed: 1, runs: 1, wallClockMs: 27213 },
     { name: "over-talk", passed: 0, runs: 1, wallClockMs: 31768 },
@@ -109,6 +112,13 @@ test("the report maps run identity, scenario verdicts, gates and sub-scores", ()
   assert.equal(report.run.transport, "stored");
   assert.equal(report.run.agentId, "agent_d66c02a12f904b73a940a42032dbd36d");
   assert.equal(report.run.llmModel, "google/gemini-2.5-flash");
+  assert.equal(report.run.variant, "turn-window");
+  assert.equal(report.run.variantKey, "anna:exp");
+  assert.deepEqual(report.run.turnWindows, {
+    min_silence: 400,
+    max_silence: 640,
+    interruption_delay: 0,
+  });
   assert.deepEqual(report.run.code, { head: "f7d1d4e2abcdef", dirty: true });
   assert.deepEqual(report.scenarios, EVIDENCE.scenarios);
   assert.equal(report.gates.length, artifact().gates.length);
@@ -155,6 +165,8 @@ test("the console formatter is compact and carries identity, turns, drain and fa
   assert.match(text, /demo scoreboard inspect/);
   assert.match(text, /transport\s+stored/);
   assert.match(text, /agent\s+agent_d66c/);
+  assert.match(text, /variant\s+turn-window\s+anna:exp/);
+  assert.match(text, /windows min 400 \/ max 640 \/ interruption_delay 0/);
   assert.match(text, /scenarios \(2\)/);
   assert.match(text, /FAIL over-talk\s+0\/1\s+31768ms/);
   assert.match(text, /call-trace sessions \(1\)/);
@@ -181,6 +193,9 @@ test("an artifact without runnerEvidence still shows its merged Call-trace turns
   const report = buildInspectReport(fallback);
   assert.equal(report.run.transport, "unknown");
   assert.equal(report.run.agentId, null);
+  assert.equal(report.run.variant, null, "an old artifact's variant is unknown, never guessed");
+  assert.equal(report.run.variantKey, null);
+  assert.equal(report.run.turnWindows, null);
   assert.equal(report.sessions.length, 1);
   assert.equal(report.sessions[0].id, "sess_fallback");
   assert.deepEqual(

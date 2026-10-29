@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildRunnerEvidence, turnRowsFromTraceExcerpt } from "./runner-evidence";
+import { buildRunnerEvidence, configTraceLine, turnRowsFromTraceExcerpt } from "./runner-evidence";
 
 const SUMMARY = `EVAL SUMMARY ${JSON.stringify({
   scenario: "suite",
@@ -111,6 +111,48 @@ test("the aside is timing/flags only: no caller words enter runnerEvidence", () 
   assert.doesNotMatch(serialized, /bakery/i);
   assert.doesNotMatch(serialized, /Wait, stop/i);
   assert.doesNotMatch(serialized, /caller/i);
+});
+
+test("the variant identity rides runner evidence, so a rung artifact names its agent", () => {
+  const summary = `EVAL SUMMARY ${JSON.stringify({
+    scenario: "suite",
+    runs: 1,
+    failures: 0,
+    scenarios: [{ name: "stop-over", passed: 1, runs: 1 }],
+    traceSessions: [],
+    playout: [],
+    audioChunks: 1,
+    live: true,
+    transport: "stored",
+    agentId: "agent_exp",
+    agentFingerprint: "fingerprint-exp",
+    llmModel: "managed",
+    variant: "turn-window",
+    variantKey: "anna:exp",
+    turnWindows: { min_silence: 200, max_silence: 400, interruption_delay: 0 },
+  })}`;
+  const evidence = buildRunnerEvidence({ runnerStdout: summary });
+  assert.ok(evidence);
+  assert.equal(evidence.variant, "turn-window");
+  assert.equal(evidence.variantKey, "anna:exp");
+  assert.deepEqual(evidence.turnWindows, {
+    min_silence: 200,
+    max_silence: 400,
+    interruption_delay: 0,
+  });
+  assert.equal(evidence.agentId, "agent_exp");
+});
+
+test("a CONFIG trace row names the agent whose turn detection it changed", () => {
+  const line = configTraceLine(
+    "13.00s",
+    { min_silence: 400, max_silence: 640, interruption_delay: 0 },
+    "agent_exp",
+  );
+  assert.match(line, /^13\.00s {2}CONFIG {2}turn_detection /);
+  assert.match(line, /"min_silence":400/);
+  assert.match(line, /agent=agent_exp$/, "the variant agent is attributed, not just the session");
+  assert.equal(configTraceLine("1.00s", { min_silence: 1 }, null), '1.00s  CONFIG  turn_detection {"min_silence":1}  agent=inline');
 });
 
 test("an unmeasured run yields null, never an empty evidence object", () => {

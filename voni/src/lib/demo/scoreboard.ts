@@ -4340,6 +4340,12 @@ export type EvalRunnerSummary = {
   agentId?: string | null;
   agentFingerprint?: string | null;
   llmModel?: string | null;
+  /** Which stored body ran (production by default); absent on older summaries. */
+  variant?: "production" | "turn-window" | null;
+  /** The variant's row key (`<voice>:exp`), null for production. */
+  variantKey?: string | null;
+  /** The windows the variant body carried; null for production. */
+  turnWindows?: { min_silence?: number; max_silence?: number; interruption_delay?: number } | null;
 };
 
 /** Why the harness broke, never why a gate failed. */
@@ -4452,6 +4458,17 @@ export function parseEvalSummary(stdout: string): EvalRunnerSummary | null {
           ? { agentFingerprint: raw.agentFingerprint ?? null }
           : {}),
         ...(typeof raw.llmModel === "string" || raw.llmModel === null ? { llmModel: raw.llmModel ?? null } : {}),
+        // Which stored body ran (ticket 09). Absent stays absent so an older
+        // artifact reports unknown rather than assuming production.
+        ...(raw.variant === "production" || raw.variant === "turn-window"
+          ? { variant: raw.variant }
+          : {}),
+        ...(typeof raw.variantKey === "string" || raw.variantKey === null
+          ? { variantKey: raw.variantKey ?? null }
+          : {}),
+        ...(raw.turnWindows && typeof raw.turnWindows === "object"
+          ? { turnWindows: raw.turnWindows }
+          : {}),
       };
     } catch {
       return null;
