@@ -140,7 +140,7 @@ export type RunnerEvidence = {
 
 type TraceRow =
   | { kind: "voni"; ms: number; gapMs: number | null; cutMs: number | null; ttfaMs: number | null }
-  | { kind: "heard"; ms: number; endMs: number }
+  | { kind: "heard"; ms: number; endMs: number | null }
   | { kind: "other"; ms: number };
 
 const TRACE_ROW = /^\s*(\d+(?:\.\d+)?)s\s+(VONI|HEARD|TOOL|CLIENT|CONFIG|SYSTEM)\b(.*)$/;
@@ -172,7 +172,9 @@ function traceRows(excerpt: string[]): TraceRow[] {
       rows.push({
         kind: "heard",
         ms,
-        endMs: window ? Math.round(Number(window[2]) * 1000) : ms,
+        // A HEARD row whose end never printed has no end mark. Falling back to
+        // the speech start would turn the whole utterance into endpointing.
+        endMs: window ? Math.round(Number(window[2]) * 1000) : null,
       });
     } else {
       rows.push({ kind: "other", ms });
@@ -217,7 +219,8 @@ export function turnRowsFromTraceExcerpt(
     // to the next turn's gap and never marks this one.
     const heardOnTurn =
       row.gapMs !== null ||
-      (row.cutMs !== null && heard.some((span) => span.ms <= row.cutMs! && span.endMs >= row.ms));
+      (row.cutMs !== null &&
+        heard.some((span) => span.ms <= row.cutMs! && span.endMs !== null && span.endMs >= row.ms));
     const turnIndex = index + 1;
     if (row.cutMs !== null && firstCutTurn === null) firstCutTurn = turnIndex;
     turnRows.push({
@@ -252,6 +255,8 @@ type TraceCallerTurn = {
   /** 1-based VONI reply this caller turn was answered by; null when none merged. */
   replyTurnIndex: number | null;
   replyStartMs: number | null;
+  /** The answered reply's own speech end → reply start wait; null when unanswered. */
+  gapMs: number | null;
   ttfaMs: number | null;
   /** The interrupted reply's end, when the previous reply was cut under speech. */
   previousReplyEndedMs: number | null;
@@ -260,7 +265,10 @@ type TraceCallerTurn = {
 /**
  * Pair each HEARD row (one caller turn) with the first VONI reply after it.
  * Ordinals follow HEARD order, so a caller turn whose reply never merged does
- * not shift the turn the following marks belong to.
+ * not shift the turn the following marks belong to. A reply only answers the
+ * caller when the trace printed its gap (a user_speech reply): a greeting or
+ * tool-result reply that follows the HEARD row is agent-initiated, so it is
+ * never claimed as the caller's answer.
  */
 function callerTurnsFromTrace(excerpt: string[]): TraceCallerTurn[] {
   const rows = traceRows(excerpt);
@@ -288,7 +296,8 @@ function callerTurnsFromTrace(excerpt: string[]): TraceCallerTurn[] {
     }
     if (row.kind !== "heard") return;
     const replyIndex = rows.findIndex((candidate, at) => at > index && candidate.kind === "voni");
-    const reply = replyIndex >= 0 ? replies.get(replyIndex) ?? null : null;
+    const next = replyIndex >= 0 ? replies.get(replyIndex) ?? null : null;
+    const reply = next?.gapMs != null ? next : null;
     callerTurns.push({
       ordinal: callerTurns.length + 1,
       speechStartedMs: row.ms,
@@ -297,6 +306,7 @@ function callerTurnsFromTrace(excerpt: string[]): TraceCallerTurn[] {
       speechEndedMs: reply?.gapMs != null ? reply.ms - reply.gapMs : row.endMs,
       replyTurnIndex: reply?.turnIndex ?? null,
       replyStartMs: reply?.ms ?? null,
+      gapMs: reply?.gapMs ?? null,
       ttfaMs: reply?.ttfaMs ?? null,
       // Only an interrupted previous reply has a printed end; a reply that was
       // not cut carries no end mark, and the band then reads ordinary.
@@ -309,6 +319,7 @@ function callerTurnsFromTrace(excerpt: string[]): TraceCallerTurn[] {
 /** One caller turn's three client receipts, rebuilt from the event stream. */
 type MarkTurn = {
   turnId: string;
+  /** 1-based caller turn in this call (the runner's `turn-N` order). */
   ordinal: number;
   userFinalAtMs: number | null;
   replyStartAtMs: number | null;
@@ -363,6 +374,12 @@ function markTurnsForSession(
  * receipt paired with the trace's own reply start + time-to-first-audio, so
  * every client mark is read on the Call trace clock once per call. A turn with
  * no marks, no anchor or no merged reply keeps no `latency` field at all.
+ *
+ * Mark turns are walked against the trace's caller turns in order, but a client
+ * turn whose final transcript arrives before the server's end of speech cannot
+ * be that caller turn's final: the server folded it into another utterance, so
+ * it consumes no trace turn and the next mark turn keeps its place instead of
+ * shifting every later turn onto the wrong reply.
  */
 function attachLatencySplits(
   turns: RunnerEvidenceTurn[],
@@ -377,14 +394,24 @@ function attachLatencySplits(
   const anchorTrace = anchorTurn ? callerTurns[anchorTurn.ordinal - 1] : undefined;
   if (!anchorTrace || anchorTrace.replyStartMs === null || anchorTrace.ttfaMs === null) return;
   const serverAtMs = anchorTrace.replyStartMs + anchorTrace.ttfaMs;
+  const offsetMs = serverAtMs - marks.anchor.clientAtMs;
 
+  let cursor = 0;
   for (const markTurn of marks.turns) {
-    const traceTurn = callerTurns[markTurn.ordinal - 1];
-    if (!traceTurn || traceTurn.replyTurnIndex === null) continue;
+    const traceTurn = callerTurns[cursor];
+    if (!traceTurn) break;
+    const finalOnTraceMs = markTurn.userFinalAtMs === null ? null : markTurn.userFinalAtMs + offsetMs;
+    if (finalOnTraceMs !== null && traceTurn.speechEndedMs !== null && finalOnTraceMs < traceTurn.speechEndedMs) {
+      // A client-only fragment the server never heard as its own turn.
+      continue;
+    }
+    cursor += 1;
+    if (traceTurn.replyTurnIndex === null) continue;
     const split = latencySplit({
       turn: {
         user_speech_started_at_ms: traceTurn.speechStartedMs,
         user_speech_ended_at_ms: traceTurn.speechEndedMs,
+        gapMs: traceTurn.gapMs,
       },
       marks: {
         userFinalAtMs: markTurn.userFinalAtMs,

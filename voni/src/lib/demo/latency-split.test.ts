@@ -125,6 +125,35 @@ test("a previous reply with no end mark cannot be classified, so it yields no sa
   assert.equal(latencySplit(sample), null);
 });
 
+test("a negative wait yields no sample, never a clamped or fabricated duration", () => {
+  // Each receipt must follow the one before it. A final transcript that
+  // claims to arrive before the server's own end of speech, a reply start
+  // before its final transcript, or first audio before its reply start is a
+  // mis-paired mark, so the turn keeps no sample at all.
+  const negatives = [
+    ["endpointing", input({ ...ordinary, userFinalMs: ordinary.speechEndedMs - 1 })],
+    ["generation", input({ ...ordinary, replyStartMs: ordinary.userFinalMs - 1 })],
+    ["delivery", input({ ...ordinary, firstAudioMs: ordinary.replyStartMs - 1 })],
+  ] as const;
+
+  for (const [wait, sample] of negatives) {
+    assert.equal(latencySplit(sample), null, `negative ${wait}`);
+  }
+});
+
+test("a reply-start receipt that disagrees with the trace's own gap yields no sample", () => {
+  // endpointing + generation is the speech end → reply start prefix, the same
+  // instant the trace prints as `gap Nms`. Agreement within the trace's print
+  // resolution is the pairing's proof; a different reply was joined otherwise.
+  const agreed = input(ordinary);
+  agreed.turn.gapMs = 520; // 300 + 200, within the 10ms trace rounding
+  assert.ok(latencySplit(agreed), "a correctly paired turn keeps its sample");
+
+  const disagreed = input(ordinary);
+  disagreed.turn.gapMs = 2_000;
+  assert.equal(latencySplit(disagreed), null);
+});
+
 test("the anchor reconciles the two clocks once: a non-zero offset yields the same true durations", () => {
   // The same call instants, read by a client whose clock is a day behind.
   const shifted = input(ordinary, { offsetMs: 86_400_000 + OFFSET_MS });
