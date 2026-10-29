@@ -41,6 +41,9 @@ npm run scoreboard:demo
 | `voni/src/lib/demo/latency-split.ts` | per-turn endpointing/generation/delivery arithmetic, ordinary vs post-cut |
 | `voni/src/lib/demo/playout-preroll.ts` | the fixed playback pre-roll constant (report-only `perceived`, never a gate input) |
 | `voni/src/lib/demo/turn-windows.ts` | one formatter for turn-window evidence (gate detail + inspect report) |
+| `voni/src/lib/voice/silent-greeting.ts` | one silent-greeting session: the line as the greeting, native level (caller clips + reference capture) |
+| `voni/src/lib/demo/reference-render.ts` | reference cache (voice + text), PCM WAV writer, default line = the voice's greeting |
+| `voni/scripts/render-reference.mts` | `npm run voice:reference`: render one line in one voice outside a conversation (W0) |
 | `docs/demo-latency-ladder.md` | turn-window experiment rulebook, stop rule, and ledger (not a gate or budget owner) |
 
 Evidence flow: runner stdout -> parsers in `score-demo` -> gate inputs in
@@ -69,6 +72,18 @@ detail strings are the audit trail; a FAIL must name its session/turn.
 
 Thresholds live only in `scoreboard-budgets.ts` and its JSON record. Do not
 edit a budget to pass; fix the call or amend the spec first.
+
+## Reference capture (W0)
+
+`npm run voice:reference -- --voice lola` renders one line in one voice
+outside a conversation. It reuses the silent-greeting session the runner uses
+for caller clips: a session told to stay silent, with the line as its greeting,
+so no model is in the audio. The cache key is voice + text under
+`voni/.voice-references/` (gitignored), and the file is a PCM WAV at the
+voice's native level — no client gain, no limiter, no normalisation. The
+default line is that voice's own greeting, in its own Locale; `--text` renders
+another sentence so a mid-call defect is attributed to the text rather than the
+greeting.
 
 ## Live-run rules
 
