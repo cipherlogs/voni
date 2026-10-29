@@ -4299,17 +4299,46 @@ test("timbre probes pass only when every count is zero", () => {
   }
 });
 
-test("per-voice gain matches every voice back to the loudness reference", () => {
-  assert.equal(TIMBRE_REFERENCE_LUFS, -23.1);
-  assert.equal(TIMBRE_LUFS_TOLERANCE_DB, 1.5);
-  assert.equal(matchedLoudnessLufs("anna"), -23.1);
+test("the level leg's verdict moves with the measured files, not the loudness formula", () => {
+  // Same voice, same probes, same served body at the registry's unity volume —
+  // where the retired native + gain + volume formula lands exactly on the
+  // reference and would PASS by construction. Only the delivered capture
+  // changes, so a moved verdict can only be the measurement's (ticket 17).
+  const gateFor = (deliveredRms: number) =>
+    evaluateTimbreGate({
+      probes: ZERO_PROBES,
+      voiceId: "anna",
+      agentChannel: null,
+      servedAgentBody: servedBody(VOICE_OUTPUT_VOLUME),
+      measuredLevel: measuredLevel(-23.1, deliveredRms),
+    });
+
+  const measuredPass = gateFor(-23.2);
+  assert.equal(measuredPass.status, "PASS", measuredPass.detail);
+  assert.match(measuredPass.detail, /level agrees within 0\.20 LU/);
+  assert.match(measuredPass.detail, /captures\/delivered-anna-en\.wav/);
+
+  // 6.0 LU below the reference, thirty times the tolerance. The formula still
+  // lands on -23.1 at volume 100: if it were the input, this run would PASS.
+  const measuredFail = gateFor(-29.1);
+  assert.equal(measuredFail.status, "FAIL", measuredFail.detail);
+  assert.match(measuredFail.detail, /level differs by 6\.00 LU/);
+  assert.match(measuredFail.detail, /-23\.\d\d LUFS vs -29\.\d\d LUFS/);
+  assert.match(measuredFail.detail, /captures\/delivered-anna-en\.wav/);
+
+  // Both runs name the same stored body at the same served level, so the only
+  // thing that moved between PASS and FAIL is what the files measured.
+  const bodyRef = /served by stored agent agent_stored at volume 100/;
+  assert.match(measuredPass.detail, bodyRef);
+  assert.match(measuredFail.detail, bodyRef);
+});
+
+test("the gain table keeps its review number per voice, separate from the gate", () => {
+  // `matchedLoudnessLufs` survives only as the per-voice gain table's review
+  // number (ticket 25); it is not a gate input (ticket 17). Every demo voice
+  // has one, and a voice outside the native table has none.
   for (const voice of DEMO_VOICE_IDS) {
-    const matched = matchedLoudnessLufs(voice);
-    assert.ok(matched !== null, `${voice} has a native measurement plus a gain`);
-    assert.ok(
-      Math.abs(matched - TIMBRE_REFERENCE_LUFS) <= TIMBRE_LUFS_TOLERANCE_DB,
-      `${voice} lands at ${matched} LUFS, outside tolerance`,
-    );
+    assert.ok(matchedLoudnessLufs(voice) !== null, `${voice} has a native measurement plus a gain`);
   }
   assert.equal(matchedLoudnessLufs("not-a-voice"), null);
 });
@@ -5737,6 +5766,15 @@ const PINNED_BUDGETS: Record<string, number> = {
   humanRatersRequired: 2,
   humanRatingScaleMin: 1,
   humanRatingScaleMax: 5,
+  comparisonLevelLu: 1.5,
+  comparisonModulationDepth: 0.05,
+  comparisonBandDeltaDb: 3,
+  comparisonDistortionDb: -45,
+  comparisonDistortionDeltaDb: 3,
+  comparisonBreakupCount: 1,
+  comparisonOnsetToleranceS: 0.05,
+  comparisonModelTextWordChanges: 0,
+  comparisonReferenceClipDbtp: -0.1,
 };
 
 const BUDGET_RECORD_URL = new URL("./scoreboard-budgets.json", import.meta.url);
