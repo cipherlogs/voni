@@ -30,6 +30,12 @@
  * silences from it, so dead air is measured from the call's own events rather
  * than typed in by an operator.
  *
+ * Each goodbye run prints one `GOODBYE DRAIN {...}` line: the closing reply's
+ * turn, its played/expected audio coverage, and whether it named the team
+ * inbox (hi@voni.cc, said "hi at voni dot c c"). bye-audio and free-gate both
+ * assert the inbox and the 80% coverage bar; score-demo gates the measured
+ * numbers and cites the closing turn on a FAIL.
+ *
  * Scenarios (raw socket):
  *   hang-up       "I want you to hang up." → a real end_call tool call, and
  *                 the tool name is never spoken.
@@ -127,9 +133,12 @@ import {
   DOUBLE_TALK_MAX_OVERLAP_MS,
   EMAIL_INVITE_EVIDENCE_PREFIX,
   fillerHandlingFor,
+  GOODBYE_DRAIN_EVIDENCE_PREFIX,
   greetingCutFailure,
   GREETING_CUT_MAX_MS,
   heardPoint,
+  namesTeamInbox,
+  TEAM_INBOX_ADDRESS,
   isResumeInstructions,
   isSilenceCheckInInstructions,
   judgePostCutAnswer,
@@ -1507,14 +1516,69 @@ const strayAddress = (o: ToolOutcome) =>
 const timedOutTool = (o: ToolOutcome) =>
   o.tools.find((t) => t.name !== END_CALL_VOICE_TOOL.name && (t.resultAt ?? Date.now()) - t.at > 30_000);
 
-/** The goodbye's audio must arrive in full: ≥80% of its words' speaking time. */
-function goodbyeCut(o: ToolOutcome, bye: ReplyRecord | undefined): string | null {
-  if (!bye) return "no goodbye";
+/**
+ * The closing line the visitor heard: the reply that names the team inbox,
+ * else the last audible reply (so a goodbye that forgot the inbox is still
+ * measured, never excused as "no goodbye").
+ */
+function goodbyeReply(o: ToolOutcome): ReplyRecord | undefined {
+  const audible = o.replies.filter((reply) => !reply.replaced && reply.text.trim().length > 0);
+  return (
+    audible.find((reply) => namesTeamInbox(reply.text)) ??
+    audible.filter((reply) => /voni dot c|hi@voni|voni\.cc|try again/i.test(reply.text)).at(-1) ??
+    audible.at(-1)
+  );
+}
+
+/** What the runner measured about the closing line, for the pass check and evidence. */
+function goodbyeReading(o: ToolOutcome): {
+  bye: ReplyRecord | undefined;
+  turn: number | null;
+  coverage: number | null;
+  inboxNamed: boolean;
+} {
+  const bye = goodbyeReply(o);
+  if (!bye) return { bye: undefined, turn: null, coverage: null, inboxNamed: false };
   const words = bye.text.split(/\s+/).filter(Boolean).length;
   const expected = words / 3.6; // measured: the greeting speaks ~3.6 words/s
   const played = bye.audioBytes / 48_000;
-  return played < expected * 0.8 ? `goodbye audio ${played.toFixed(1)}s for ~${expected.toFixed(1)}s of words: "${bye.text.trim()}"` : null;
+  return {
+    bye,
+    turn: o.replies.indexOf(bye) + 1,
+    coverage: expected > 0 ? played / expected : null,
+    inboxNamed: namesTeamInbox(bye.text),
+  };
 }
+
+/** The closing line must name the team inbox and its audio must arrive in full. */
+function goodbyeCheck(o: ToolOutcome): string | null {
+  const reading = goodbyeReading(o);
+  if (!reading.bye) return "no goodbye";
+  if (!reading.inboxNamed) {
+    return `the goodbye never named ${TEAM_INBOX_ADDRESS} as spoken: "${reading.bye.text.trim()}"`;
+  }
+  if (reading.coverage === null) return null;
+  if (reading.coverage >= 0.8) return null;
+  const words = reading.bye.text.split(/\s+/).filter(Boolean).length;
+  const expected = words / 3.6;
+  const played = reading.bye.audioBytes / 48_000;
+  return `goodbye audio ${played.toFixed(1)}s for ~${expected.toFixed(1)}s of words: "${reading.bye.text.trim()}"`;
+}
+
+/** One machine-readable goodbye measurement per goodbye run, for score-demo. */
+function goodbyeDrainLine(scenario: string, o: ToolOutcome): string {
+  const reading = goodbyeReading(o);
+  return `${GOODBYE_DRAIN_EVIDENCE_PREFIX}${JSON.stringify({
+    scenario,
+    session: o.sessionId ?? null,
+    turn: reading.turn,
+    coverage: reading.coverage,
+    inboxNamed: reading.inboxNamed,
+  })}`;
+}
+
+/** Runs whose closing line is scored for the team inbox and full playback. */
+const GOODBYE_SCENARIOS = ["bye-audio", "free-gate"] as const;
 
 const EMAIL_SCENARIOS: { name: string; run: (voiceId: string) => Promise<[string | null, ToolOutcome | null]> }[] = [
   {
@@ -1526,8 +1590,7 @@ const EMAIL_SCENARIOS: { name: string; run: (voiceId: string) => Promise<[string
         await api.until((o) => o.endCalled, 20000);
       });
       if (!o.endCalled) return ["never hung up", o];
-      const bye = o.replies.find((r) => /voni dot c|hi@voni|voni\.cc|try again/i.test(r.text));
-      return [goodbyeCut(o, bye), o];
+      return [goodbyeCheck(o), o];
     },
   },
   {
@@ -1611,13 +1674,7 @@ const EMAIL_SCENARIOS: { name: string; run: (voiceId: string) => Promise<[string
       if (failed) return [failed, o];
       if (!agentText(o).some((t) => /work email/i.test(t))) return ["never asked for a work email", o];
       if (!o.endCalled) return ["never hung up after the gate", o];
-      const bye = o.replies.find((r) => /voni dot c|hi@voni|voni\.cc/i.test(r.text));
-      if (!bye) return ["the goodbye never named hi@voni.cc", o];
-      const words = bye.text.split(/\s+/).filter(Boolean).length;
-      const expected = words / 3.6; // measured: the greeting speaks ~3.6 words/s
-      const played = bye.audioBytes / 48_000;
-      if (played < expected * 0.8) return [`goodbye audio ${played.toFixed(1)}s for ~${expected.toFixed(1)}s of words: "${bye.text}"`, o];
-      return [null, o];
+      return [goodbyeCheck(o), o];
     },
   },
   {
@@ -1813,6 +1870,9 @@ for (const scenario of EMAIL_SCENARIOS.filter((s) => !only || s.name === only)) 
     noteSession(outcome?.sessionId);
     if (scenario.name === "invite-tag" && outcome) {
       console.log(`${EMAIL_INVITE_EVIDENCE_PREFIX}${JSON.stringify(emailInviteEvidence(outcome))}`);
+    }
+    if ((GOODBYE_SCENARIOS as readonly string[]).includes(scenario.name) && outcome) {
+      console.log(goodbyeDrainLine(scenario.name, outcome));
     }
     if (reason === null) passed += 1;
     else {

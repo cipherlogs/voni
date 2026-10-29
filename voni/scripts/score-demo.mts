@@ -41,6 +41,7 @@
  *                           [--check-in-at-ms 15200] [--check-in-over-caller]
  *                           [--silence-json silence.json]
  *                           [--overlap-ms 120,350] [--goodbye-coverage 0.95]
+ *                           [--goodbye-inbox-named | --goodbye-inbox-missing]
  *                           [--hang-up-delay-ms 900] [--narrated-ending]
  *
  * --gate-voice picks the gate voice through the shared voice registry
@@ -116,11 +117,15 @@
  * the flush, never time-to-cut — and feeds the gate automatically; a FAIL
  * cites the Call trace turn of the interrupted reply (or states that no turn
  * was merged when the overlap came from a different call). --overlap-ms
- * overrides it with audible overlap per cut (FAIL past 400ms). --goodbye-
- * coverage is played/expected goodbye speaking time (FAIL below 80%),
- * --hang-up-delay-ms is session end minus goodbye audio end (FAIL when
- * negative or past 1500ms), --narrated-ending flags a model reply after
- * end_call. Omitted evidence is INFO, never a false FAIL.
+ * overrides it with audible overlap per cut (FAIL past 400ms). The runner's
+ * `GOODBYE DRAIN {...}` line (bye-audio/free-gate) feeds the drain gate
+ * automatically: played/expected goodbye coverage, whether the closing line
+ * named hi@voni.cc as spoken, and the runner's own closing turn; its
+ * `hung up Nms` line feeds the end-of-audio-to-session-close delay. A FAIL
+ * cites that turn (or states no turn was merged when the evidence came from
+ * a different call). --goodbye-coverage, --goodbye-inbox-named/-missing and
+ * --hang-up-delay-ms override the runner's numbers; --narrated-ending flags
+ * a model reply after end_call. Omitted evidence is INFO, never a false PASS.
  *
  * --probe-json carries the session onAudioProbe counts plus the optional
  * qa-voice-session agent-channel PCM analysis; it drives the timbre-probes
@@ -202,11 +207,13 @@ import {
   overheardFromTraceExcerpt,
   parseEmailInviteOutput,
   parseFillerRunOutput,
+  parseGoodbyeDrainOutput,
   parseHeardLedgerOutput,
   parseDoubleTalkOutput,
   parseSilenceTimeline,
   parseSilenceTimelineOutput,
   parseTraceGaps,
+  runnerHangUpDelayMs,
   redactLines,
   resolveGateVoice,
   sha256Hex,
@@ -302,6 +309,24 @@ function readEmailInviteJson(path: string): EmailInviteEvidenceFile {
     throw new Error(`--email-json ${path} is not valid JSON: ${error instanceof Error ? error.message : String(error)}`);
   }
   return validateEmailInviteEvidence(parsed, `--email-json ${path}`, { requireSession: true });
+}
+
+/**
+ * Trace pointer for the runner's GOODBYE DRAIN evidence: its own closing turn
+ * only when the evidence came from the merged call. Another call's session
+ * means no turn was merged, stated explicitly rather than guessed.
+ */
+function goodbyeEvidenceTraceRef(
+  evidence: { sessionId: string | null; turn: number | null },
+  traceSession: string,
+): string {
+  if (evidence.sessionId && traceSession && evidence.sessionId !== traceSession) {
+    return `${evidence.sessionId} (no turn merged: trace session ${traceSession} is a different call)`;
+  }
+  if (evidence.turn !== null && evidence.sessionId && evidence.sessionId === traceSession) {
+    return formatTraceTurn(evidence.turn, traceSession);
+  }
+  return `no turn merged${evidence.sessionId ? ` (${evidence.sessionId})` : ""}`;
 }
 
 /** Format one evidence turn: a number becomes a Call trace pointer, a string is already one. */
@@ -878,6 +903,23 @@ function main(): void {
   // Greeting-cut evidence comes from the fixed caller clip's own scenario;
   // score-demo gates the measured ms and cites the interrupted greeting turn.
   const greetingCut = extractGreetingCutEvidence(evalSection.stdout, excerpt ?? [], traceSession || null);
+  // Goodbye drain producer: the live runner's GOODBYE DRAIN line (coverage
+  // plus whether the closing line named the team inbox) and its own measured
+  // hang-up line. Explicit --goodbye-* flags stay the operator override.
+  const runnerGoodbye = dryRun ? null : parseGoodbyeDrainOutput(evalSection.stdout);
+  const inboxNamedFlagged = process.argv.includes("--goodbye-inbox-named");
+  const inboxMissingFlagged = process.argv.includes("--goodbye-inbox-missing");
+  if (inboxNamedFlagged && inboxMissingFlagged) {
+    throw new Error("--goodbye-inbox-named and --goodbye-inbox-missing contradict each other");
+  }
+  const goodbyeCoverage =
+    parseOptionalNumber(arg("--goodbye-coverage", ""), "--goodbye-coverage") ?? runnerGoodbye?.coverage ?? null;
+  const hangUpDelayMs =
+    parseOptionalNumber(arg("--hang-up-delay-ms", ""), "--hang-up-delay-ms") ??
+    (dryRun ? null : runnerHangUpDelayMs(evalSection.stdout)) ??
+    null;
+  const inboxNamed = inboxMissingFlagged ? false : inboxNamedFlagged ? true : (runnerGoodbye?.inboxNamed ?? null);
+  const goodbyeTraceRef = runnerGoodbye ? goodbyeEvidenceTraceRef(runnerGoodbye, traceSession) : undefined;
   const hasCutFlags =
     cutMsArg !== "" ||
     process.argv.includes("--cut-never") ||
@@ -906,10 +948,12 @@ function main(): void {
     doubleTalkOverlapMs,
     ...(doubleTalkTraceRef ? { doubleTalkTraceRef } : {}),
     endCallDrain: {
-      goodbyeCoverage: parseOptionalNumber(arg("--goodbye-coverage", ""), "--goodbye-coverage"),
-      hangUpDelayMs: parseOptionalNumber(arg("--hang-up-delay-ms", ""), "--hang-up-delay-ms"),
+      goodbyeCoverage,
+      hangUpDelayMs,
       narratedEnding: process.argv.includes("--narrated-ending"),
+      inboxNamed,
     },
+    ...(goodbyeTraceRef ? { endCallDrainTraceRef: goodbyeTraceRef } : {}),
     traceRef: traceSession || undefined,
     probes: timbreProbes,
     agentChannel,
