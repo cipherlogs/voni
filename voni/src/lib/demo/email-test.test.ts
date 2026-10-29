@@ -22,6 +22,18 @@ import {
   type InboxMessage,
 } from "./email-test";
 import { TALK_BASE_S } from "./talk-clock";
+import { EN_RECOGNITION, LOCALE_RECOGNITION, type CompleteRecognition } from "@/lib/voice/recognition";
+
+/**
+ * A Spanish call's recognition: Spanish digits and address words, with English
+ * standing in for the slots that arrive with their own tickets. The fixture is
+ * the test's, never a production fallback.
+ */
+const spanishRecognition: CompleteRecognition = {
+  ...EN_RECOGNITION,
+  ...LOCALE_RECOGNITION.es,
+  locale: "es",
+};
 
 const msg = (id: string, from: string, receivedAt: number, extra: Partial<InboxMessage> = {}): InboxMessage => ({
   id,
@@ -41,6 +53,43 @@ test("a spoken or written claim normalizes to one address", () => {
   assert.equal(normalizeClaim("andres underscore g at acme dot io"), "andres_g@acme.io");
   assert.equal(normalizeClaim("my work email"), null);
   assert.equal(normalizeClaim("andres@acme"), null, "a domain needs a dot");
+});
+
+test("a spoken claim is read in the call's Locale, and not in another", () => {
+  assert.equal(normalizeClaim("andres arroba acme punto com", spanishRecognition), "andres@acme.com");
+  assert.equal(
+    normalizeClaim("andres arroba acme punto com"),
+    null,
+    "an English call does not read Spanish separator words",
+  );
+  assert.equal(
+    normalizeClaim("andres at acme dot com", spanishRecognition),
+    null,
+    "a Spanish call does not read English separator words",
+  );
+});
+
+test("check: a Spanish claim is found in the call's Locale", async () => {
+  const result = await checkEmail("andres arroba acme punto com", {
+    listInbox: listed([msg("m1", "andres@acme.com", 1)]),
+    recognition: spanishRecognition,
+  });
+  assert.equal(result.status === "found" && result.address, "andres@acme.com");
+});
+
+test("an address is never split across two turns", async () => {
+  // Each half of an address said over two turns is a fragment, not a claim:
+  // neither resolves, and neither is worth reading the inbox for.
+  for (const turn of ["andres arroba acme", "punto com"]) {
+    assert.equal(normalizeClaim(turn, spanishRecognition), null, turn);
+    const result = await checkEmail(turn, {
+      listInbox: async () => assert.fail(`inbox read on the fragment "${turn}"`),
+      recognition: spanishRecognition,
+    });
+    assert.deepEqual(result, { status: "invalid" }, turn);
+  }
+  // The whole address, said in one turn, is the one that resolves.
+  assert.equal(normalizeClaim("andres arroba acme punto com", spanishRecognition), "andres@acme.com");
 });
 
 test("the free-email gate is a plain domain list", () => {

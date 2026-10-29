@@ -1,5 +1,7 @@
 import type { RecognitionSlots } from "../../types";
 import { ES_VOCABULARY } from "./vocabulary";
+import { ES_ADDRESS } from "./address";
+import { ES_DIGITS } from "./digits";
 
 /**
  * Spanish recognition: the slots Spanish renders so far.
@@ -10,4 +12,6 @@ import { ES_VOCABULARY } from "./vocabulary";
  */
 export const ES_RECOGNITION: RecognitionSlots = {
   vocabulary: ES_VOCABULARY,
+  digits: ES_DIGITS,
+  address: ES_ADDRESS,
 };

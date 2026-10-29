@@ -3,6 +3,7 @@ import { EN_RECOGNITION } from "./en";
 import { LOCALE_RECOGNITION } from "./locales";
 import {
   RECOGNITION_SLOTS,
+  type CompleteRecognition,
   type RecognitionBundle,
   type RecognitionLocale,
   type RecognitionResolution,
@@ -104,4 +105,15 @@ export function resolveRecognition(locale: string): RecognitionResolution {
   const bundle = isRecognitionLocale(locale) ? REGISTRY[locale] : undefined;
   if (!bundle) return { status: "missing", locale };
   return resolveBundle(bundle);
+}
+
+/**
+ * The whole bundle a Locale matches with, or `null` when it is not whole.
+ * Never another key's words: an incomplete rendering matches nothing rather
+ * than quietly matching English. Automatic detection is the caller's decision
+ * (`EN_RECOGNITION`, the documented exception), not this function's.
+ */
+export function completeRecognitionFor(locale: string): CompleteRecognition | null {
+  const resolution = resolveRecognition(locale);
+  return resolution.status === "complete" ? resolution.recognition : null;
 }
