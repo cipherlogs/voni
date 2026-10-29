@@ -161,7 +161,6 @@ import {
 } from "./scoreboard-budgets";
 import { judgeOverlap } from "../voice/barge-in";
 import { DEMO_VOICE_IDS, SILENCE_CHECK_IN_INSTRUCTIONS, SILENCE_CHECK_IN_MS } from "./voni-agent";
-import { buildDemoAgentBody } from "./stored-agents";
 import type { RunnerEvidence } from "./runner-evidence";
 import { VOICE_OUTPUT_VOLUME, voicePlaybackGain } from "../agents/voices";
 
@@ -668,7 +667,11 @@ test("all-fast merged turn passes every per-turn budget and keeps meaning-based 
     '14.20s  VONI    "Two bedrooms"  (reply_create gap 1200ms)',
     '15.40s  VONI    "Here is the tag"  (reply_create gap 1300ms)',
   ];
-  const agentInput = buildDemoAgentBody(DEFAULT_GATE_VOICE).input;
+  const servedAgentBody = {
+    agentId: "agent_fast",
+    fingerprint: null,
+    input: { turn_detection: null },
+  };
   const artifact = buildSkeletonArtifact({
     voice: DEFAULT_GATE_VOICE,
     scenario: "stop-over",
@@ -679,16 +682,17 @@ test("all-fast merged turn passes every per-turn budget and keeps meaning-based 
     traceGaps: parseTraceGaps(excerpt),
     traceExcerpt: excerpt,
     traceSessionId: "sess_fast",
-    agentInput,
+    servedAgentBody,
   });
   const gate = artifact.gates.find((g) => g.name === "reply-gap")!;
   assert.equal(gate.status, "PASS", gate.detail);
   assert.match(gate.detail, /p50 1100ms/, `every turn is inside budget: ${gate.detail}`);
   // Ticket 24 stays intact: per-turn judgment introduces no turn-detection
   // object on the managed path and the merged excerpt carries no CONFIG line.
-  assert.equal(agentInput.turn_detection, null);
+  assert.equal(servedAgentBody.input.turn_detection, null);
   assert.ok(!excerpt.some((line) => line.includes("turn_detection")));
   assert.equal(artifact.gates.find((g) => g.name === "end-of-turn")?.status, "PASS");
+  assert.equal(artifact.agentBody?.agentId, "agent_fast");
 });
 
 test("the suite's per-scenario traces keep their own session and beat attribution", () => {
@@ -840,7 +844,11 @@ test("a variant artifact whose CONFIG line carries its own windows passes on the
     exitCode: 0,
     durationMs: 10,
     runs: 1,
-    agentInput: { turn_detection: null },
+    servedAgentBody: {
+      agentId: "agent_stored",
+      fingerprint: null,
+      input: { turn_detection: null },
+    },
     traceExcerpt: [LIVE_VARIANT_CONFIG_LINE],
     endOfTurnExperiment: { variant: "turn-window", variantKey: "anna:exp", turnWindows, agentId: "agent_exp" },
   });
@@ -916,7 +924,11 @@ test("a variant artifact whose CONFIG line reports different windows still fails
     exitCode: 0,
     durationMs: 10,
     runs: 1,
-    agentInput: { turn_detection: null },
+    servedAgentBody: {
+      agentId: "agent_stored",
+      fingerprint: null,
+      input: { turn_detection: null },
+    },
     traceExcerpt: [stray],
     endOfTurnExperiment: { variant: "turn-window", variantKey: "anna:exp", turnWindows, agentId: "agent_exp" },
   });
@@ -966,7 +978,11 @@ test("a variant artifact records its windows in a dedicated experimental evidenc
     exitCode: 0,
     durationMs: 10,
     runs: 1,
-    agentInput: { turn_detection: null },
+    servedAgentBody: {
+      agentId: "agent_stored",
+      fingerprint: null,
+      input: { turn_detection: null },
+    },
     endOfTurnExperiment: { variant: "turn-window", variantKey: "anna:exp", turnWindows, agentId: "agent_exp" },
   });
   const gate = artifact.gates.find((row) => row.name === "end-of-turn");
@@ -989,7 +1005,11 @@ test("a production artifact with a turn-detection object still fails with the ex
     exitCode: 0,
     durationMs: 10,
     runs: 1,
-    agentInput: { turn_detection: { min_silence: 100 } },
+    servedAgentBody: {
+      agentId: "agent_stored",
+      fingerprint: null,
+      input: { turn_detection: { min_silence: 100 } },
+    },
   });
   const gate = artifact.gates.find((row) => row.name === "end-of-turn");
   assert.equal(gate?.status, "FAIL");
@@ -1008,12 +1028,104 @@ test("a production artifact carries no experimental end-of-turn evidence", () =>
     exitCode: 0,
     durationMs: 10,
     runs: 1,
-    agentInput: { turn_detection: null },
+    servedAgentBody: {
+      agentId: "agent_stored",
+      fingerprint: null,
+      input: { turn_detection: null },
+    },
   });
   const gate = artifact.gates.find((row) => row.name === "end-of-turn");
   assert.equal(gate?.status, "PASS");
   assert.match(gate?.detail ?? "", /^meaning-based end-of-turn preserved/);
   assert.equal(artifact.endOfTurn, undefined);
+});
+
+test("end-of-turn fails on an explicit object in the served stored body", () => {
+  const artifact = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "suite",
+    runnerStdout: "suite",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+    servedAgentBody: {
+      agentId: "agent_stored",
+      fingerprint: "fp_stored",
+      input: { turn_detection: { min_silence: 100 } },
+    },
+  });
+  const gate = artifact.gates.find((row) => row.name === "end-of-turn");
+  assert.equal(gate?.status, "FAIL");
+  assert.match(gate?.detail ?? "", /turn_detection object sent/);
+});
+
+test("end-of-turn passes on the Turn preset served by the stored body", () => {
+  const artifact = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "suite",
+    runnerStdout: "suite",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+    servedAgentBody: {
+      agentId: "agent_stored",
+      fingerprint: null,
+      input: { turn_detection: null },
+    },
+  });
+  const gate = artifact.gates.find((row) => row.name === "end-of-turn");
+  assert.equal(gate?.status, "PASS", gate?.detail);
+});
+
+test("a served body with no turn_detection key is the Turn preset", () => {
+  const artifact = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "suite",
+    runnerStdout: "suite",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+    servedAgentBody: { agentId: "agent_stored", fingerprint: null, input: {} },
+  });
+  const gate = artifact.gates.find((row) => row.name === "end-of-turn");
+  assert.equal(gate?.status, "PASS", gate?.detail);
+});
+
+test("the artifact records which stored body the end-of-turn gate measured", () => {
+  const artifact = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "suite",
+    runnerStdout: "suite",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+    servedAgentBody: {
+      agentId: "agent_stored",
+      fingerprint: "fp_stored",
+      input: { turn_detection: null },
+    },
+  });
+  assert.deepEqual(artifact.agentBody, {
+    source: "stored-agent",
+    agentId: "agent_stored",
+    fingerprint: "fp_stored",
+    turnDetection: null,
+  });
+});
+
+test("an artifact with no served body records no measured body and stays unmeasured", () => {
+  const artifact = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "suite",
+    runnerStdout: "suite",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+  });
+  const gate = artifact.gates.find((row) => row.name === "end-of-turn");
+  assert.equal(gate?.status, "INFO");
+  assert.match(gate?.detail ?? "", /unmeasured/);
+  assert.equal(artifact.agentBody, undefined);
 });
 
 test("artifact with measured gaps fills per-beat gaps and enforces the reply-gap gate", () => {
@@ -5127,7 +5239,11 @@ test("sub-scores aggregate the five human-likeness areas in spec priority", () =
     exitCode: 0,
     durationMs: 10,
     runs: 1,
-    agentInput: { turn_detection: null },
+    servedAgentBody: {
+      agentId: "agent_stored",
+      fingerprint: null,
+      input: { turn_detection: null },
+    },
     gaps: { "greeting-cut": [900] },
     doubleTalkOverlapMs: [120, 650],
   });
