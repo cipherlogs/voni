@@ -40,6 +40,7 @@ type LevelMessage = {
   queuedMs: number;
   cushionMs: number;
   targetCushionMs: number;
+  correctionPct: number;
   playing: boolean;
   idle: boolean;
   consumed: number;
@@ -258,31 +259,52 @@ test("target cushion: a stall that starved the old buffer does not modulate the 
   assert.equal(posts.filter((p) => p.message.idle).length, 1);
 });
 
-test("target cushion: the gain is constant, so a stalled stream changes no sample", () => {
-  // Same audio, same start; only the second half's arrival moves. With the
-  // gain derived from the queue these two renders differ everywhere after the
-  // stall. With a constant gain they are the same stream.
-  const healthy = render(healthyTrace(), 3.2).out;
-  const starving = render(starvingTrace(), 3.2).out;
-  const samples = Math.round(2.5 * OUT);
-  for (let i = 0; i < samples; i++) {
-    if (healthy[i] !== starving[i]) {
-      assert.fail(`sample ${i} (${(i / OUT).toFixed(3)}s): healthy ${healthy[i]}, stalled ${starving[i]}`);
+test("target cushion: the gain is constant, so a stalled stream changes no amplitude", () => {
+  // Same audio, same start; only the second half's arrival moves. With the gain
+  // derived from the queue every 10 ms window of the stalled reply loses
+  // amplitude against the healthy one. With a constant gain the waveform is the
+  // same, sample for sample — except in timing: since ticket 26 the cushion
+  // also moves the playback *rate* (by at most 1%), so the two renders are the
+  // same voice at very nearly the same speed, never the same arrays.
+  const healthy = render(healthyTrace(), 3.2);
+  const starving = render(starvingTrace(), 3.2);
+  const windowSamples = Math.round(CHUNK_S * OUT);
+  /** The largest |sample| in a window: what the ear hears as that window's level. */
+  const peak = (x: Float32Array, start: number) => {
+    let p = 0;
+    for (let j = start; j < start + windowSamples; j++) p = Math.max(p, Math.abs(x[j]!));
+    return p;
+  };
+  let worst = 0;
+  let at = 0;
+  for (let i = 0; i + windowSamples <= Math.round(2.5 * OUT); i += windowSamples) {
+    const moved = Math.abs(peak(starving.out, i) - peak(healthy.out, i)) / AMP;
+    if (moved > worst) {
+      worst = moved;
+      at = i / OUT;
     }
   }
+  assert.ok(worst <= 0.01, `a 10 ms window at ${at.toFixed(2)}s moves ${(worst * 100).toFixed(1)}% in level`);
 
-  // The same statement as a listener hears it: every 10 ms window of a starving
-  // reply reaches full amplitude, so the voice is not pumped once per chunk.
-  const audio = decoded(starving);
-  const reply = played(audio, starving);
-  const windowSamples = Math.round(CHUNK_S * OUT);
+  // And the same statement as a listener hears it: every 10 ms window of a
+  // starving reply reaches full amplitude, so the voice is not pumped once per
+  // chunk.
+  const audio = decoded(starving.out);
+  const reply = played(audio, starving.out);
   let lowest = Infinity;
   for (let i = 0; i + windowSamples <= reply.samples.length; i += windowSamples) {
-    let peak = 0;
-    for (let j = i; j < i + windowSamples; j++) peak = Math.max(peak, Math.abs(reply.samples[j] / 32767));
-    lowest = Math.min(lowest, peak);
+    let p = 0;
+    for (let j = i; j < i + windowSamples; j++) p = Math.max(p, Math.abs(reply.samples[j]! / 32767));
+    lowest = Math.min(lowest, p);
   }
   assert.ok(lowest >= 0.49, `a chunk window only reaches ${lowest} of ${AMP}`);
+
+  // What the stall does move is timing, and only inside the inaudible bound.
+  const corrections = starving.posts
+    .filter((p) => p.message.type === "level" && p.message.playing)
+    .map((p) => Math.abs(p.message.correctionPct));
+  assert.ok(corrections.length > 0, "the worklet reports nothing while sounding");
+  assert.ok(Math.max(...corrections) <= 1, `the stall moves the rate ${Math.max(...corrections)}%`);
 });
 
 test("target cushion: the worklet reports the cushion it holds and the target it starts at", () => {
