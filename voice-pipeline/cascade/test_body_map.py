@@ -177,6 +177,82 @@ class ToolTests(unittest.TestCase):
         self.assertEqual(caught.exception.path, "tools[1].name")
 
 
+class ToolSchemaTests(unittest.TestCase):
+    def test_a_missing_root_type_is_supplied(self):
+        tool = {
+            "name": "book_viewing",
+            "description": "Book a viewing.",
+            "parameters": {"properties": {"reference": {"type": "string"}}},
+        }
+
+        config = adapt_body({**MINIMAL_BODY, "tools": [tool]})
+
+        parameters = config.tools[0]["function"]["parameters"]
+        self.assertEqual(parameters["type"], "object")
+        self.assertEqual(
+            parameters["properties"], {"reference": {"type": "string"}}
+        )
+
+    def test_an_existing_root_type_is_passed_through_unchanged(self):
+        schema = {
+            "type": "object",
+            "properties": {"reference": {"type": "string"}},
+            "required": ["reference"],
+            "additionalProperties": False,
+        }
+        config = adapt_body(
+            {**MINIMAL_BODY, "tools": [{**REST_TOOL, "parameters": schema}]}
+        )
+
+        self.assertEqual(config.tools[0]["function"]["parameters"], schema)
+
+    def test_a_tool_without_a_schema_gets_no_invented_one(self):
+        config = adapt_body({**MINIMAL_BODY, "tools": [{"name": "end_call"}]})
+
+        self.assertEqual(
+            config.tools,
+            ({"type": "function", "function": {"name": "end_call"}},),
+        )
+
+    def test_a_parameters_schema_that_is_not_an_object_is_refused_by_name(self):
+        tool = {"name": "book_viewing", "parameters": "not-a-schema"}
+
+        with self.assertRaises(BodyFieldError) as caught:
+            adapt_body({**MINIMAL_BODY, "tools": [tool, REST_TOOL]})
+
+        self.assertEqual(caught.exception.path, "tools[0].parameters")
+
+    def test_one_body_tool_round_trips_through_the_built_request(self):
+        config = adapt_body({**MINIMAL_BODY, "tools": [REST_TOOL]})
+
+        request = build_chat_request(
+            model="muse-spark-1.3",
+            messages=build_messages(system_prompt=config.system_prompt),
+            tools=list(config.tools),
+            reasoning_effort="low",
+        )
+
+        self.assertEqual(
+            request["tools"],
+            [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "book_viewing",
+                        "description": "Book a viewing for a property.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"reference": {"type": "string"}},
+                            "required": ["reference"],
+                        },
+                    },
+                }
+            ],
+        )
+        self.assertEqual(request["tool_choice"], "auto")
+
+
+
 class SystemPromptContractTests(unittest.TestCase):
     def test_a_missing_system_prompt_is_refused_as_a_contract_violation(self):
         body = {key: value for key, value in MINIMAL_BODY.items() if key != "system_prompt"}

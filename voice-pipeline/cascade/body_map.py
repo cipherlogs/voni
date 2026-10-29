@@ -32,7 +32,8 @@ Two rules keep the map honest about languages and tools:
   shape (``name``/``description``/``parameters`` plus execution metadata);
   Chat Completions wants ``{"type": "function", "function": {…}}``. Only the
   three model-visible keys are copied, so REST-only metadata can never leak
-  into a request.
+  into a request. The parameter schema is passed through, with a missing root
+  ``type`` supplied as ``"object"`` (ticket 62).
 
 The ignore set (ticket 58) is the other half of the rule: every body field the
 cascade must *not* read is listed there with the reason it is ignored, and
@@ -226,6 +227,11 @@ def _function_tool(path: str, index: int, tool: object) -> dict[str, Any]:
     ``timeout_seconds``, ``response_instructions`` and ``http`` stay with the
     tool loop (M08), which reads them from the body. Name validity is an
     eligibility question (ticket 61), not a conversion one.
+
+    The parameters schema is passed through untouched except for one addition:
+    a schema without a root ``type`` gets ``"type": "object"`` here, because a
+    cascade must not rely on the vendor to repair a request. A tool with no
+    schema at all carries none — nothing is invented.
     """
     where = f"{path}[{index}]"
     if not isinstance(tool, Mapping):
@@ -235,10 +241,19 @@ def _function_tool(path: str, index: int, tool: object) -> dict[str, Any]:
         raise BodyFieldError(f"{where}.name", "a tool must have a name")
     if not _TOOL_NAME.match(name):
         raise InvalidToolNameError(f"{where}.name", name)
-    return {
-        "type": "function",
-        "function": {key: tool[key] for key in TOOL_FUNCTION_FIELDS if key in tool},
+    function: dict[str, Any] = {
+        key: tool[key] for key in TOOL_FUNCTION_FIELDS if key in tool
     }
+    if "parameters" in function:
+        parameters = function["parameters"]
+        if not isinstance(parameters, Mapping):
+            raise BodyFieldError(
+                f"{where}.parameters",
+                f"expected a parameters schema object, got {type(parameters).__name__}",
+            )
+        if "type" not in parameters:
+            function["parameters"] = {"type": "object", **parameters}
+    return {"type": "function", "function": function}
 
 
 def _tools(path: str, value: object) -> tuple[dict[str, Any], ...]:
