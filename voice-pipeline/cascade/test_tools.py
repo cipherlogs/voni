@@ -10,14 +10,15 @@ Seams under test:
 
 * ``ToolExecutor`` -> the route wire (URL, method, headers, JSON body, timeout)
   and the bounded wait. Catches a re-pointed call, an unauthenticated request
-  and an unbounded hop; misses which HTTP conditions become failure results
-  (ticket 84).
+  and an unbounded hop; the per-status failure mapping is copied out to
+  ``test_tools_failures.py`` (ticket 84) and multi-call order to
+  ``test_tools_order.py`` (ticket 86).
 * ``ToolResult.tool_message`` -> the ``role: "tool"`` message the model reads.
   Catches a lost or mismatched call id; misses narration and the hold line
   (ticket 85).
 * ``continue_after_tool`` -> one new model request in the same logical turn.
-  Catches a dropped result or a second tool execution; misses the loop cap
-  (ticket 87) and multi-call ordering (ticket 86).
+  Catches a dropped result or a result answering an unrequested call; the cap is
+  ticket 87 and several-call ordering is ticket 86.
 * ``EndCallSignal`` -> call control, never HTTP. Catches an ``end_call`` that
   opens a request or speaks; misses the closing line and the hangup (87).
 """
@@ -39,11 +40,10 @@ from cascade.tools import (
     EndCallSignal,
     ToolContextError,
     ToolExecutor,
+    ToolFailure,
     ToolRequest,
     ToolResult,
-    ToolRouteError,
     ToolSecretError,
-    ToolTimeout,
     ToolTurnError,
     continue_after_tool,
 )
@@ -253,13 +253,14 @@ class HopBoundTests(unittest.TestCase):
         route = HangingRoute()
         executor = make_executor(route, timeout_ms=10)
 
-        with self.assertRaises(ToolTimeout) as raised:
-            asyncio.run(
-                asyncio.wait_for(executor.execute(a_call()), timeout=2.0)
-            )
+        outcome = asyncio.run(
+            asyncio.wait_for(executor.execute(a_call()), timeout=2.0)
+        )
 
-        self.assertEqual(raised.exception.timeout_ms, 10)
-        self.assertIn(TOOL_TIMEOUT_BOUND, str(raised.exception))
+        # Ticket 84: the bound is reported as a failure result, not raised.
+        self.assertIsInstance(outcome, ToolFailure)
+        self.assertTrue(outcome.indeterminate)
+        self.assertIn(TOOL_TIMEOUT_BOUND, outcome.reason)
         self.assertEqual(len(route.sessions), 1)
 
 
@@ -487,16 +488,11 @@ class ContinuationTests(unittest.TestCase):
         )
         self.assertEqual(continued.content_text, "Two properties match.")
 
-    def test_a_turn_with_several_calls_is_refused_rather_than_half_answered(self):
-        turn = MetaLLMTurn(
-            finish_reason="tool_calls",
-            tool_calls=[
-                MetaToolCall(index=0, call_id="call_1", name="search_properties"),
-                MetaToolCall(index=1, call_id="call_2", name="check_availability"),
-            ],
+    def test_a_result_for_a_call_the_turn_did_not_request_is_refused(self):
+        turn = tool_turn()
+        result = ToolResult(
+            name="search_properties", tool_call_id="call_2", payload={"ok": True}
         )
-        turn.close()
-        result = ToolResult(name="search_properties", tool_call_id="call_1", payload={"ok": True})
         llm = ScriptedLLM([])
         history = MessageHistory()
 
@@ -507,7 +503,7 @@ class ContinuationTests(unittest.TestCase):
                 )
             )
 
-        self.assertIn("one call", str(raised.exception))
+        self.assertIn("call_2", str(raised.exception))
         self.assertEqual(llm.requests, [])
         self.assertEqual(history.messages, ())
 
@@ -559,19 +555,22 @@ class SignedIdentityTests(unittest.TestCase):
             ToolExecutor(base_url=BASE_URL, call_id="")
 
 
-class RouteFailureNamingTests(unittest.TestCase):
-    def test_a_route_failure_is_named_and_never_an_anonymous_crash(self):
-        for status, body, expected in (
-            (500, b"boom", "HTTP 500"),
-            (200, b"<html>not json</html>", "not readable JSON"),
-            (200, b'["ok"]', "not an object"),
+class RouteFailureMappingTests(unittest.TestCase):
+    def test_a_route_failure_is_mapped_to_the_tool_that_named_it(self):
+        for status, body, code in (
+            (500, b"boom", "tool_http_error"),
+            (200, b"<html>not json</html>", "tool_unreadable_body"),
+            (200, b'["ok"]', "tool_malformed_result"),
         ):
             with self.subTest(status=status, body=body):
                 factory = ScriptedSessionFactory([Response(status=status, body=body)])
                 executor = make_executor(factory)
 
-                with self.assertRaises(ToolRouteError) as raised:
-                    asyncio.run(executor.execute(a_call()))
+                outcome = asyncio.run(executor.execute(a_call()))
 
-                self.assertIn(expected, str(raised.exception))
-                self.assertIn("search_properties", str(raised.exception))
+                # Ticket 84 moved these conditions from a raise to a result.
+                self.assertIsInstance(outcome, ToolFailure)
+                self.assertEqual(outcome.name, "search_properties")
+                self.assertEqual(outcome.tool_call_id, "call_1")
+                self.assertEqual(outcome.code, code)
+                self.assertFalse(outcome.ok)
