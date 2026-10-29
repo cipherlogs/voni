@@ -107,6 +107,19 @@ dead-end proves the explicit-window API is reachable, not that every possible
 pair must fail; a different result would need platform behaviour this effort
 does not control, or the owned pipeline in ticket 17.
 
+### Final close-out artifact
+
+`score-20261029-093933-anna-final.json` / sha256
+`8c46c66151f4ec2ea6e6283bb37eafd8edfdf4aa10bb063452bbdbd10126db07`, run
+`run-20261029-104426-anna`, code fingerprint `e2a1867d8f3c` (dirty false),
+stored production transport, 9/9 scenarios, taken alone under the timing lock.
+The frozen Reply gap gate is **FAIL**: p50 1923ms / p95 2181ms / n=8 (median
+breach, tail inside 2500ms); every other required gate PASS; the budget table
+is byte-identical to `main` (`git diff main...HEAD -- …scoreboard-budgets.*`
+empty). Per-band: ordinary `1891 / 1 / 1903 / 4295` (n=7) · post-cut
+`2241 / 1 / 2241 / 4983` (n=1). This is the close-out artifact only: with no
+adopted pair it is not a green claim.
+
 Consequences recorded here:
 
 - production keeps `turn_detection: null`; no window pair was adopted, so no
