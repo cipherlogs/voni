@@ -1,10 +1,10 @@
-"""Turn orchestrator: STT partials → commit gate → LLM stream → ordered TTS (P1).
+"""Turn orchestrator: STT partials → floor arbitration → LLM stream → ordered TTS (P1).
 
-One committed turn flows: user Final → llm.complete() (adopting any matching
+One answered turn flows: user Final → llm.complete() (adopting any matching
 prefetch) → producer splits completed sentences as tokens arrive → consumer
 synthesizes in order → on_audio per chunk. Meanwhile user partials either
-prefetch (agent silent) or hit the commit gate (agent speaking): real
-interruptions stop playout via flag + task cancel, backchannels only count.
+prefetch (agent silent) or reach the floor gate (agent speaking): a partial
+that takes the floor stops playout via flag + task cancel, backchannels only count.
 
 Ledger marks every gap: audio_in, first_partial, final, first_token,
 first_sentence_audio, first_playout. Nothing here awaits network in an audio
@@ -32,7 +32,7 @@ from providers import (
     TokenDelta,
     ToolCallRequest,
 )
-from turns import BARGE_IN_THRESHOLD, commit_decision, is_command_overlap
+from turns import BARGE_IN_THRESHOLD, floor_decision, is_command_overlap
 
 
 @dataclass
@@ -109,7 +109,7 @@ class TurnOrchestrator:
         self._speaking = False
         self._speech_start = 0.0
         self._interrupted = False
-        # Soft-yield: a committed barge-in finishes the current sentence
+        # Soft-yield: a floor-taking barge-in finishes the current sentence
         # before pivoting (no mid-word cut), so the gate stashes the
         # interrupting text here instead of stopping audio immediately.
         self._pending_redirect: str | None = None
@@ -123,8 +123,8 @@ class TurnOrchestrator:
         self._turn_task: Optional[asyncio.Task] = None
         self._floor_held = False
         # Counted once per turn: a partial arrived while the agent held the
-        # floor. Heard-but-not-committed overlap still registers, even when
-        # the gate waits and the reply continues.
+        # floor. Overlap that did not take the floor still registers, even
+        # when the gate waits and the reply continues.
         self._overheard_counted = False
         self.turn_results: list[TurnResult] = []
 
@@ -225,7 +225,7 @@ class TurnOrchestrator:
         if self._speaking or turn_active:
             # Gate path: the agent holds the floor (speaking, thinking, or
             # reply winding down). A live-but-silent turn counts as
-            # established — its final was already committed.
+            # established — its final already took the floor.
             if not self._overheard_counted:
                 self._overheard_counted = True
                 self.ledger.count("overheard")
@@ -234,8 +234,8 @@ class TurnOrchestrator:
             else:
                 ms = 5000.0
             prob = self._scorer(text, ms)
-            decision = commit_decision(text, ms, prob)
-            if decision == "commit":
+            decision = floor_decision(text, ms, prob)
+            if decision == "take_floor":
                 self.ledger.count("yield")
                 # Graceful, not abrupt: the consumer finishes the sentence
                 # it is speaking, then pivots. The producer stops at once
@@ -275,7 +275,7 @@ class TurnOrchestrator:
         await self._emit("user_final", {"text": text})
         self._last_partial = ""
         self._overheard_counted = False
-        # A committed overlap redirected this turn: the caller steered while
+        # A floor-taking overlap redirected this turn: the caller steered while
         # the agent held the floor. Steering goes to the LLM in context so
         # IT chooses transition-vs-continue — the gate only guarantees it
         # is heard, with a human pivot (acknowledge briefly first, never

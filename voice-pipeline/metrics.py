@@ -3,7 +3,8 @@
 Same scoreboard as the managed path so the P1 A/B is apples-to-apples:
 - audio_in -> first_partial: screen latency (words visible while spoken)
 - final -> first_token: think start (LLM engaged)
-- final/commit -> first_playout: reply gap (commit wins when early-commit fires)
+- final/floor_take -> first_playout: reply gap (floor_take wins when the caller
+  takes the floor early)
 - counts: judge outcomes + prefetch lifecycle + tool denies
 
 First mark wins; missing marks yield None gaps, never exceptions. Clock is
@@ -21,7 +22,7 @@ MARKS = (
     "audio_in",
     "first_partial",
     "final",
-    "commit",
+    "floor_take",
     "first_token",
     "first_sentence_audio",
     "first_playout",
@@ -70,8 +71,9 @@ class TimingLedger:
                 "audio_in_to_first_partial": self._gap("audio_in", "first_partial"),
                 "final_to_first_token": self._gap("final", "first_token"),
                 "final_to_first_playout": self._gap("final", "first_playout"),
-                "commit_to_first_playout": self._gap(
-                    "commit" if "commit" in self._marks else "final", "first_playout"
+                "floor_take_to_first_playout": self._gap(
+                    "floor_take" if "floor_take" in self._marks else "final",
+                    "first_playout",
                 ),
             },
             "counts": dict(self._counts),

@@ -1,14 +1,16 @@
-"""Turn commit gate for the cascade pipeline (P0).
+"""Floor arbitration for the cascade pipeline (P0).
 
-Answers ONE question per user partial: has intent arrived (commit), is this
-backchannel noise (backchannel — never commit, never interrupt), or must the
-pipeline keep waiting (wait)? Fail-closed: unsure means wait.
+Answers ONE question per user partial while the agent holds the floor: does the
+caller take it (take_floor), is this backchannel noise (backchannel — counted,
+never answered, never a cut), or must the pipeline keep waiting (wait)?
+Fail-closed: unsure means wait.
 
-The barge probability comes from the existing judge heuristics
-(telephony-bot/voice_judge.py); this gate adds the commit policy on top:
-multi-word content from an established turn commits, early-turn speech and
-thin partials wait even at high probability (talk-over/echo guard, same rule
-as the browser gate's 800ms establishment window).
+The provider owns the Turn boundary, so nothing here decides a turn: this gate
+only arbitrates the floor. The barge probability comes from the existing judge
+heuristics (telephony-bot/voice_judge.py); the gate adds the floor policy on
+top: multi-word content from an established turn takes the floor, early-turn
+speech and thin partials wait even at high probability (talk-over/echo guard,
+same rule as the browser gate's 800ms establishment window).
 
 Backchannel wording is the third mirror of the canonical pattern
 (telephony-bot/voice_judge.py, voni jev-judges.ts) — test_turns.py asserts
@@ -21,13 +23,13 @@ import re
 import string
 from typing import Callable, Literal
 
-CommitAction = Literal["commit", "wait", "backchannel"]
+FloorAction = Literal["take_floor", "wait", "backchannel"]
 
 BARGE_IN_THRESHOLD = 0.65
 ESTABLISHED_MS = 800.0
-MIN_COMMIT_WORDS = 2
+MIN_FLOOR_WORDS = 2
 
-# Command words that always commit once the turn is established, bypassing
+# Command words always take the floor once the turn is established, bypassing
 # the word-count floor AND the probability threshold: stop/wait/no/repeat
 # are steering, not content — the LLM (which sees the overlap in context)
 # decides transition-vs-continue, the gate only guarantees it is heard.
@@ -39,8 +41,8 @@ COMMAND_TOKENS = frozenset(
     {"stop", "wait", "no", "nope", "repeat", "again", "sorry", "listen"}
 )
 
-# Filler-only tokens that must never commit a turn while the agent holds the
-# floor (breath mishears, hmm, got-it continuers). "yes"/"no"/"yeah" are
+# Filler-only tokens that must never take the floor while the agent holds it
+# (breath mishears, hmm, got-it continuers). "yes"/"no"/"yeah" are
 # deliberately ABSENT: a bare confirmation is meaningful — it takes the
 # soft-confirm path (finish the sentence, then "Sorry — did you say no?")
 # instead of being dropped as junk. Mirrors telephony-bot/voice_judge.py and
@@ -58,7 +60,7 @@ _PUNCT_STRIP = str.maketrans("", "", string.punctuation)
 
 
 def is_backchannel(text: str) -> bool:
-    """True when every token is filler — never commit, never interrupt."""
+    """True when every token is filler — never takes the floor, never cuts."""
     words = (text or "").lower().translate(_PUNCT_STRIP).split()
     return bool(words) and all(token in FILLER_TOKENS for token in words)
 
@@ -75,14 +77,14 @@ def _word_count(text: str) -> int:
     return len(text.strip().split())
 
 
-def commit_decision(
+def floor_decision(
     partial_text: str,
     agent_speaking_ms: float,
     barge_probability: float,
     *,
     threshold: float = BARGE_IN_THRESHOLD,
     is_backchannel_fn: Callable[[str], bool] = is_backchannel,
-) -> CommitAction:
+) -> FloorAction:
     """Decide what a user partial means. Pure; no I/O, no clock."""
     text = (partial_text or "").strip()
     if not text:
@@ -96,7 +98,7 @@ def commit_decision(
     # (notably bare yes/yeah) still wait for the settled final's
     # soft-confirm path instead of hard-cutting audio.
     if is_command_overlap(text):
-        return "commit"
-    if barge_probability >= threshold and _word_count(text) >= MIN_COMMIT_WORDS:
-        return "commit"
+        return "take_floor"
+    if barge_probability >= threshold and _word_count(text) >= MIN_FLOOR_WORDS:
+        return "take_floor"
     return "wait"

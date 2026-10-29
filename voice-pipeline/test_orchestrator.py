@@ -1,7 +1,7 @@
 """Tests for the cascade turn orchestrator.
 
 Fakes stand in for all three providers; the scripts below prove the turn
-loop: partials prefetch, finals commit, tokens become ordered audio,
+loop: partials prefetch, finals are answered, tokens become ordered audio,
 barge-in interrupts, backchannels don't, bad tools are denied.
 """
 
@@ -249,7 +249,8 @@ class BargeInTests(unittest.TestCase):
         self.assertGreaterEqual(counts["yield"] + counts["interruption"], 1)
 
     def test_soft_yield_suppresses_stale_reply(self):
-        # Commit arrives while the reply is still one held sentence: no
+        # A floor-taking partial arrives while the reply is still one held
+        # sentence: no
         # stale audio plays, the turn still records the yield, and the
         # interrupting turn speaks normally.
         async def run():
@@ -294,8 +295,8 @@ class BargeInTests(unittest.TestCase):
         self.assertFalse(any(r.interrupted for r in results))
         self.assertTrue(audio_out)
 
-    def test_overlap_registers_even_when_uncommitted(self):
-        # Heard-but-not-committed still counts: one "overheard" per
+    def test_overlap_registers_even_when_floor_not_taken(self):
+        # Overlap that did not take the floor still counts: one "overheard" per
         # floor-holding episode, no matter how many partials streamed.
         async def run():
             stt = FakeSTT([])
@@ -315,7 +316,7 @@ class BargeInTests(unittest.TestCase):
         self.assertEqual(counts["yield"], 0)
 
     def test_command_overlap_steers_the_llm_in_context(self):
-        # A committed "stop" reaches the model with a pivot note appended,
+        # A floor-taking "stop" reaches the model with a pivot note appended,
         # so IT chooses transition-vs-continue instead of resuming.
         async def run():
             stt = FakeSTT([FinalTranscript(text="stop that")])

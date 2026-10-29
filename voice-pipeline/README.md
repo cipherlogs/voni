@@ -2,9 +2,10 @@
 
 Cascade voice pipeline: streaming STT → speculative LLM → streaming TTS, one
 pipeline core with two transports (browser WS @ 24 kHz PCM, Telnyx WS @ 8 kHz
-mu-law). Replaces turn-based waiting with early commit: partials drive
-prefetch, the commit gate fires the LLM the moment intent is complete, tokens
-stream to TTS per sentence so audio starts while the LLM still generates.
+mu-law). Replaces turn-based waiting with floor arbitration: partials drive
+prefetch, the floor gate lets the caller take the floor the moment an overlap
+is a real interruption, tokens stream to TTS per sentence so audio starts
+while the LLM still generates.
 
 ## Why this exists
 
@@ -18,9 +19,11 @@ leg now, which is why this is back.
 
 - `providers.py` — `StreamingSTT` / `LLMStream` / `StreamingTTS` contracts plus
   event types. No vendor SDKs here.
-- `turns.py` — turn commit gate (`commit` / `wait` / `backchannel`),
-  fail-closed. Backchannel wording mirrors `telephony-bot/voice_judge.py` and
-  `voni` jev-judges.ts; parity is tested, not assumed.
+- `turns.py` — floor arbitration (`take_floor` / `wait` / `backchannel`),
+  fail-closed. The provider owns the Turn boundary; this gate only decides
+  whether an overlap takes the floor. Backchannel wording mirrors
+  `telephony-bot/voice_judge.py` and `voni` jev-judges.ts; parity is tested,
+  not assumed.
 - `metrics.py` — `TimingLedger`: the A/B scoreboard.
 - `config.py` — per-call pipeline config with validation.
 
@@ -28,8 +31,8 @@ leg now, which is why this is back.
 
 - `audio_in_to_first_partial` — screen latency
 - `final_to_first_token` — think start
-- `final_to_first_playout` / `commit_to_first_playout` — reply gap
-- counts: `backchannel`, `yield`, `interruption`, `prefetch_*`, `tool_denied`, `end_call`, `overheard` (partials heard while the agent held the floor, committed or not)
+- `final_to_first_playout` / `floor_take_to_first_playout` — reply gap
+- counts: `backchannel`, `yield`, `interruption`, `prefetch_*`, `tool_denied`, `end_call`, `overheard` (partials heard while the agent held the floor, whether or not they took it)
 
 ## Safety invariant
 
@@ -39,7 +42,7 @@ it on all three gap metrics for two consecutive test rounds.
 
 ## Phases
 
-- P0 (here): contracts, commit gate, metric rig, config schema.
+- P0 (here): contracts, floor arbitration, metric rig, config schema.
 - P1: browser vertical slice — AssemblyAI STT, gateway LLM, Cartesia TTS.
 - P2: PSTN adapter (8 kHz, recording/timeline parity).
 - P3: Deepgram backend + admin provider UI.
