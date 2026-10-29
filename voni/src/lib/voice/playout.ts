@@ -10,8 +10,13 @@
 export type Playout = {
   /** Queue one little-endian PCM16 mono chunk. */
   play: (pcm: Uint8Array, sampleRate: number) => void;
-  /** Fade out and drop everything queued (barge-in, hang-up). */
-  flush: (fadeS?: number) => void;
+  /**
+   * Fade out and drop everything queued (barge-in, hang-up). A barge-in keeps
+   * the cushion: the interrupted reply's audio is dropped, but the new reply is
+   * not charged a second pre-roll. A deliberate hang-up passes `keepCushion:
+   * false` and keeps nothing.
+   */
+  flush: (fadeS?: number, keepCushion?: boolean) => void;
   /**
    * Fires once, when the worklet first emits audio for this playout — the
    * first sample the caller can hear, not when a chunk was queued. The
@@ -108,8 +113,8 @@ export function createWorkletPlayout(node: AudioWorkletNode): WorkletPlayout {
         samples.buffer,
       ]);
     },
-    flush(fadeS = 0.04) {
-      node.port.postMessage({ type: "flush", fadeS });
+    flush(fadeS = 0.04, keepCushion = true) {
+      node.port.postMessage({ type: "flush", fadeS, keepCushion });
       busy = false;
       queuedMs = 0;
       cushionMs = 0;

@@ -23,7 +23,8 @@
  *     from how much audio is left.
  *
  * Messages in:  {type:"play", seq, rate, samples: Float32Array}
- *               {type:"flush", fadeS}
+ *               {type:"flush", fadeS, keepCushion}  a barge-in keeps the cushion
+ *               deadline (see flush); a hang-up passes keepCushion:false
  *               {type:"probe", on}  dev pop recorder (see POP_*), off by default
  *               {type:"tap", on}  dev delivered capture, off by default
  * Messages out: {type:"level", seq, queuedMs, cushionMs, targetCushionMs,
@@ -139,6 +140,19 @@ class PlayoutProcessor extends AudioWorkletProcessor {
     this.holdLeft = 0; // samples left in that fade-out; 0 when not fading
     /** When the source last ran dry: the window in which later audio resumes it. */
     this.dryAt = -Infinity;
+    /**
+     * The time by which a reply may start on the cushion a barge-in already
+     * cost, instead of waiting for a fresh target. A flush drops the
+     * interrupted reply's queued audio — speech the caller has already talked
+     * over — but it keeps this deadline so the new reply is not charged a
+     * second pre-roll. Infinity means no credit: an ordinary cold start.
+     *
+     * Audio that arrives inside the window still starts on the remainder of it
+     * (the target is preserved, never shortened). Audio that arrives later —
+     * the normal case, because the server has to end-point, judge and generate
+     * — starts at once instead of waiting out an artificial half second.
+     */
+    this.cushionBy = Infinity;
     /** EDGE_S in output samples, and the matching per-sample gain step. */
     this.edgeSamples = Math.round(EDGE_S * sampleRate);
     this.gainStep = 1 / (EDGE_S * sampleRate);
@@ -174,7 +188,9 @@ class PlayoutProcessor extends AudioWorkletProcessor {
       this.lastPush = currentTime;
       this.idle = false;
     } else if (msg.type === "flush") {
-      this.flush(msg.fadeS);
+      // A barge-in keeps the cushion unless the caller says otherwise (a
+      // deliberate hang-up passes false).
+      this.flush(msg.fadeS, msg.keepCushion !== false);
     } else if (msg.type === "probe") {
       this.popProbe = Boolean(msg.on);
     } else if (msg.type === "tap") {
@@ -240,6 +256,9 @@ class PlayoutProcessor extends AudioWorkletProcessor {
     this.hold = 0;
     this.holdLeft = 0;
     this.dryAt = -Infinity;
+    // The barge-in credit is spent by this start: a later reply waits for the
+    // target like any reply, so a barge-in never removes the jitter budget.
+    this.cushionBy = Infinity;
     // A reply starts on the target cushion, so there is nothing to correct yet.
     this.adjust = 0;
     this.drift = 0;
@@ -267,9 +286,11 @@ class PlayoutProcessor extends AudioWorkletProcessor {
     this.adjust += Math.max(-maxDelta, Math.min(maxDelta, want - this.adjust));
   }
 
-  flush(fadeS) {
-    // Render the fade from the audio already sounding, then drop the rest.
-    // The next reply starts from a clean state and the tail mixes over it.
+  flush(fadeS, keepCushion = true) {
+    // Render the fade from the audio already sounding, then drop the rest: the
+    // interrupted reply is speech the caller has already talked over and must
+    // never sound again. The next reply starts from a clean buffer and the tail
+    // mixes over it.
     const n = Math.round(fadeS * sampleRate);
     const tail = new Float32Array(n);
     const prev = this.tail;
@@ -290,6 +311,10 @@ class PlayoutProcessor extends AudioWorkletProcessor {
     this.adjust = 0;
     this.drift = 0;
     this.dryAt = -Infinity;
+    // A barge-in carries the cushion's deadline across the flush, so the new
+    // reply is not charged a second pre-roll (see the constructor). A hang-up
+    // keeps nothing: it holds no credit for audio that will never come.
+    this.cushionBy = keepCushion ? currentTime + TARGET_CUSHION_S : Infinity;
   }
 
   /** Dev pop recorder: flag what the speaker is about to click on. */
@@ -348,16 +373,21 @@ class PlayoutProcessor extends AudioWorkletProcessor {
     const out = outputs[0][0];
     // Start only on the target cushion, or once arrivals have paused for the
     // defined lull. A reply shorter than the cushion therefore still plays, and
-    // a jitter trace never starts on less than the target. The one exception is
-    // a reply that just ran dry: audio arriving inside the resume window is the
+    // a jitter trace never starts on less than the target. The exceptions are a
+    // reply that just ran dry: audio arriving inside the resume window is the
     // rest of that reply and starts at once, on whatever short cushion arrived;
-    // the corrector refills it. Never start under a flush tail: tail + a loud
-    // new reply summed past full scale (measured 1.49), which the device clips
-    // into a crackle — the tail is ≤40ms.
+    // the corrector refills it — and a reply after a barge-in: the cushion's
+    // deadline survived the flush, so once the barge-in itself has cost the
+    // target the next reply starts on its first audio instead of paying for a
+    // fresh pre-roll. Never start under a flush tail: tail + a loud new reply
+    // summed past full scale (measured 1.49), which the device clips into a
+    // crackle — the tail is ≤40ms.
     if (!this.playing && this.queued > 0 && !this.tail && this.holdLeft === 0) {
       const lull = currentTime - this.lastPush >= LULL_S;
       const resuming = currentTime - this.dryAt <= RESUME_WINDOW_S;
-      if (resuming || this.queued >= TARGET_CUSHION_S * this.rate || lull) this.start();
+      const cushioned = currentTime >= this.cushionBy;
+      const buffered = this.queued >= TARGET_CUSHION_S * this.rate;
+      if (resuming || cushioned || buffered || lull) this.start();
     }
     const dt = out.length / sampleRate;
     if (this.playing) this.correct(dt, DRIFT_SLEW_PER_S * dt);
