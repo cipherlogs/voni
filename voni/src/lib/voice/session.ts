@@ -725,8 +725,6 @@ export class VoiceSession {
   private greetingAudioSent = false;
   /** session.ready re-fires on resume — timing still marks once per start. */
   private sessionReadySent = false;
-  /** Client playback gain for the active voice (1.0 = native). See voices.ts. */
-  private outputGain = 1.0;
   /**
    * Output format the server resolved for this session, from the
    * `session.ready` confirmation. Null until confirmed: audio is never played
@@ -734,7 +732,7 @@ export class VoiceSession {
    */
   private outputSampleRate: number | null = null;
   private outputEncoding: OutputEncoding | null = null;
-  /** Dev pop recorder: worklet jumps/overloads and gain clamps become probes. */
+  /** Dev pop recorder: worklet jumps/overloads become probes. */
   private popProbe = false;
   /** Dev delivered capture (`?delivercapture=1`): tap the playout worklet. */
   private deliveredCaptureOn = false;
@@ -829,7 +827,6 @@ export class VoiceSession {
     this.firstUpdateAcked = false;
     this.greetingAudioSent = false;
     this.sessionReadySent = false;
-    this.outputGain = 1.0;
     this.inputDropped = 0;
     this.lastInputDropProbe = 0;
     this.preReadyDropped = 0;
@@ -2113,11 +2110,6 @@ export class VoiceSession {
     this.deliveredCaptureOn = on;
   }
 
-  /** Relative playback gain for the active voice (see VOICE_PLAYBACK_GAIN). */
-  setOutputGain(gain: number): void {
-    this.outputGain = Number.isFinite(gain) && gain > 0 ? gain : 1.0;
-  }
-
   /**
    * Take the output format the server resolved in `session.ready`. A resume
    * re-emits ready on the same session; a confirmation that echoes no config
@@ -2192,20 +2184,6 @@ export class VoiceSession {
       // Corruption is surfaced, never dropped in as silence.
       this.reportFormatFailure(error, this.sessionId);
       return;
-    }
-    const gain = this.outputGain;
-    if (gain !== 1.0 && pcm.length >= 2) {
-      // Per-voice linear gain; server volume caps at 100 so this is the only
-      // place the 12 dB native gap can close. Peaks pass a soft knee, never a
-      // hard clamp: squared-off peaks are the crackle on loud voices.
-      const view = new DataView(pcm.buffer, pcm.byteOffset, pcm.length);
-      let clamped = 0;
-      for (let i = 0; i + 1 < pcm.length; i += 2) {
-        const g = view.getInt16(i, true) * gain;
-        if (g > 32767 || g < -32768) clamped += 1;
-        view.setInt16(i, Math.round(softLimit(g)), true);
-      }
-      if (clamped > 0 && this.popProbe) this.probe("clip", undefined, { size: clamped });
     }
     this.playout?.play(pcm, rate);
   }
@@ -2392,17 +2370,6 @@ async function postTool(
   } finally {
     clearTimeout(timeout);
   }
-}
-
-/** Above this, gained samples bend toward full scale instead of clipping. */
-const SOFT_KNEE = 0.8 * 32767;
-
-/** Soft limiter for gained PCM16: linear below the knee, tanh above, never past ±32767. */
-export function softLimit(x: number): number {
-  const a = Math.abs(x);
-  if (a <= SOFT_KNEE) return x;
-  const room = 32767 - SOFT_KNEE;
-  return Math.sign(x) * (SOFT_KNEE + room * Math.tanh((a - SOFT_KNEE) / room));
 }
 
 /** Chunk the conversion: String.fromCharCode(...bytes) blows the stack on big inputs. */

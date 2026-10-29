@@ -147,30 +147,6 @@ export function getVoice(id: string): Voice | undefined {
  */
 export const VOICE_OUTPUT_VOLUME = 100;
 
-/**
- * Client-side playback gain per voice, measured from `public/voices/*.mp3`
- * integrated loudness relative to `anna` (-23.1 LUFS):
- * lola -22.5, rafael -23.8, juergen -28.8, estelle -30.3, giovanni -34.9.
- * Linear gain = 10^(delta/20). Peaks keep ~7 dB headroom after gain, so no
- * clipping. Unknown voices play at 1.0.
- *
- * Server `output.volume` is capped at 100 and cannot close a 12 dB native
- * gap alone (it scales every voice the same way), so the client applies the
- * relative match here in `VoiceSession.schedule`.
- */
-export const VOICE_PLAYBACK_GAIN: Record<string, number> = {
-  anna: 1.0,
-  lola: 0.93,
-  rafael: 1.08,
-  juergen: 1.92,
-  estelle: 2.29,
-  giovanni: 3.89,
-};
-
-export function voicePlaybackGain(id: string): number {
-  return VOICE_PLAYBACK_GAIN[id] ?? 1.0;
-}
-
 /** Title-case a voice id for display. The ids are first names. */
 export function voiceLabel(id: string): string {
   return id.charAt(0).toUpperCase() + id.slice(1);
