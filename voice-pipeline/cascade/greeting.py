@@ -10,8 +10,14 @@ Three facts shape the implementation:
 
 * **The bound voice speaks it.** The opened session is expected to expose
   ``speak_greeting`` — the adapter path that sends one ``Generate`` + ``Flush``
-  with the first sentence flushed immediately (ticket 49). A session bound to a
-  different voice refuses by name rather than speaking in the wrong Locale.
+  with the first sentence flushed immediately (ticket 49). The session must
+  have acknowledged ``Begin``: a greeting sent into an unconfirmed socket is
+  refused by name. A session bound to a different voice refuses by name rather
+  than speaking in the wrong Locale.
+* **The chime is the first audible sample.** The call's connected earcon is
+  triggered by the first frame with PCM, once per greeting, before that frame
+  is handed to the sink. The trigger is never awaited, so it cannot delay the
+  first word; a greeting with no audible frame never chimes.
 * **The greeting is not a turn.** It writes ``greeting_start``,
   ``greeting_first_audio`` and ``greeting_done`` and nothing else. It never
   writes ``first_playout`` or ``speech_complete``, so it cannot enter a
@@ -42,6 +48,11 @@ from providers import SentenceAudio
 #: with the call-level sequence and the transport.
 AudioSink = Callable[[SentenceAudio], Awaitable[None] | None]
 
+#: The connected chime's trigger. It fires on the first audible sample and is
+#: never awaited: the earcon belongs to the client, and waiting for it would
+#: put a second delay between the greeting's first word and the caller.
+ChimeSink = Callable[[], None]
+
 #: The marks this module owns, in the order a spoken greeting writes them.
 GREETING_MARKS: tuple[str, ...] = (
     "greeting_start",
@@ -55,6 +66,18 @@ class GreetingFailure(RuntimeError):
 
     stage = "greeting"
     visible = True
+
+
+class GreetingNotConnected(GreetingFailure):
+    """The synthesis session has not acknowledged ``Begin`` yet."""
+
+    def __init__(self, voice_id: str) -> None:
+        self.voice_id = voice_id
+        super().__init__(
+            f'voice "{voice_id}" has not acknowledged Begin; the greeting is '
+            "sent only after the synthesis session is confirmed, never into a "
+            "socket that has not answered"
+        )
 
 
 class GreetingUnavailable(GreetingFailure):
@@ -101,6 +124,7 @@ class GreetingOutcome:
     frames: int = 0
     audio_bytes: int = 0
     sample_rate: int = 0
+    chime_fired: bool = False
 
     @classmethod
     def silent(cls, reason: str) -> "GreetingOutcome":
@@ -115,6 +139,7 @@ class GreetingOutcome:
             "frames": self.frames,
             "audioBytes": self.audio_bytes,
             "sampleRate": self.sample_rate,
+            "chimeFired": self.chime_fired,
         }
 
 
@@ -127,10 +152,12 @@ class CallGreeting:
         voice: Any,
         ledger: TimingLedger,
         sink: AudioSink | None = None,
+        chime: ChimeSink | None = None,
     ) -> None:
         self._voice = voice
         self._ledger = ledger
         self._sink = sink
+        self._chime = chime
 
     async def speak(self, body: CascadeBody) -> GreetingOutcome:
         """Speak ``body.greeting`` now, or record that the body has none."""
@@ -144,6 +171,9 @@ class CallGreeting:
         if not callable(speaker):
             raise GreetingUnavailable(_voice_id(self._voice, body))
 
+        if not _acknowledged(self._voice):
+            raise GreetingNotConnected(_voice_id(self._voice, body))
+
         binding = getattr(self._voice, "binding", None)
         opened = getattr(binding, "voice_id", None)
         if isinstance(opened, str) and opened != body.voice_id:
@@ -153,9 +183,16 @@ class CallGreeting:
         frames = 0
         audio_bytes = 0
         sample_rate = 0
+        chime_fired = False
         async for audio in speaker(text):
-            if frames == 0:
+            if audio.pcm and not chime_fired:
+                # The first audible sample is the call going live: fire the
+                # client's earcon before the frame is handed on, and never
+                # await it (the chime cannot delay the first word).
+                chime_fired = True
                 self._ledger.mark("greeting_first_audio")
+                if self._chime is not None:
+                    self._chime()
             frames += 1
             audio_bytes += len(audio.pcm)
             sample_rate = audio.sample_rate
@@ -163,7 +200,7 @@ class CallGreeting:
                 result = self._sink(audio)
                 if inspect.isawaitable(result):
                     await result
-        if frames == 0:
+        if frames == 0 or not chime_fired:
             raise GreetingSilent(text)
         self._ledger.mark("greeting_done")
         return GreetingOutcome(
@@ -173,7 +210,22 @@ class CallGreeting:
             frames=frames,
             audio_bytes=audio_bytes,
             sample_rate=sample_rate,
+            chime_fired=chime_fired,
         )
+
+
+_NO_BEGIN = object()
+
+
+def _acknowledged(voice: Any) -> bool:
+    """Whether the session confirmed its handshake, when it carries one.
+
+    The real adapter sets ``begin`` from its first frame; a test fake that does
+    not model a handshake is allowed through, but a session that exposes
+    ``begin`` and has not filled it is refused.
+    """
+    begin = getattr(voice, "begin", _NO_BEGIN)
+    return begin is _NO_BEGIN or begin is not None
 
 
 def _voice_id(voice: Any, body: CascadeBody) -> str:

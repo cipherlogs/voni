@@ -703,6 +703,7 @@ class CallLifecycle:
         bounds: Mapping[str, float] | None = None,
         cost_meter: CostMeter | None = None,
         eligibility: EligibilityDecision | None = None,
+        chime: Callable[[], None] | None = None,
     ) -> None:
         self._message = message
         self._secret = secret
@@ -739,6 +740,12 @@ class CallLifecycle:
         self._event_failure: CallFailure | None = None
         self._verified: CascadeBody | None = None
         self._greeting: GreetingOutcome | None = None
+        # The connected chime's trigger (ticket 78): the client's earcon fires
+        # when the greeting's first audible sample reaches it. The call records
+        # the trigger and passes it on; it never schedules or waits for it.
+        self._chime = chime
+        self.chime_calls = 0
+        self.chime_at: float | None = None
 
     # -- verification -----------------------------------------------------
 
@@ -944,7 +951,10 @@ class CallLifecycle:
             await self.emit_audio(audio, kind="greeting")
 
         greeting = CallGreeting(
-            voice=voice, ledger=self._ledger, sink=greeting_audio
+            voice=voice,
+            ledger=self._ledger,
+            sink=greeting_audio,
+            chime=self._connected_chime,
         )
         result, outcome = await self.run_bounded(
             "greeting", lambda: greeting.speak(body)
@@ -953,6 +963,13 @@ class CallLifecycle:
             assert outcome.error is not None
             raise outcome.error
         return result
+
+    def _connected_chime(self) -> None:
+        """The greeting's first audible sample: fire the connected chime once."""
+        self.chime_calls += 1
+        self.chime_at = self._clock()
+        if self._chime is not None:
+            self._chime()
 
     async def _pump(self, session: Any) -> None:
         """Forward provider events to the turn layer until the stream ends."""
