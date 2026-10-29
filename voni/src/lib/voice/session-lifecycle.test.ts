@@ -22,6 +22,7 @@ import {
   MICROPHONE_UNMUTED_CONTEXT,
 } from "./context";
 import { DEMO_VOICE_IDS, SILENCE_CHECK_IN_INSTRUCTIONS } from "@/lib/demo/voni-agent";
+import { evalToolExecutor } from "@/lib/demo/eval-transport";
 import { VOICE_OUTPUT_VOLUME, voicePlaybackGain } from "@/lib/agents/voices";
 
 // Minimal WebSocket shape: updateConfig only touches readyState + send.
@@ -2026,5 +2027,93 @@ test("wake reports a mic that cannot come back", async () => {
     assert.deepEqual(errors, ["mic"]);
   } finally {
     if (navigatorDescriptor) Object.defineProperty(globalThis, "navigator", navigatorDescriptor);
+  }
+});
+
+test("a bound agent with an injected executor answers every stored tool, never the demo route", async () => {
+  // The live eval binds the landing demo's stored agent and answers its tools
+  // locally. Bound mode without a call token used to fall to
+  // `installLocalEndCall`, which answers only show_test_address/end_call: the
+  // other three would stall the turn for 30s.
+  const g = globalThis as unknown as Record<string, unknown>;
+  const savedWebSocket = g.WebSocket;
+  const savedFetch = globalThis.fetch;
+  type FakeSocket = { url: string; readyState: number; sent: string[]; emit: (type: string) => void };
+  const sockets: FakeSocket[] = [];
+  g.WebSocket = class {
+    static OPEN = 1;
+    readyState = 1;
+    sent: string[] = [];
+    private listeners = new Map<string, ((event: unknown) => void)[]>();
+    constructor(public url: string) {
+      sockets.push(this as unknown as FakeSocket);
+    }
+    addEventListener(type: string, fn: (event: unknown) => void) {
+      this.listeners.set(type, [...(this.listeners.get(type) ?? []), fn]);
+    }
+    send(data: string) {
+      this.sent.push(data);
+    }
+    close() {}
+    emit(type: string) {
+      for (const fn of this.listeners.get(type) ?? []) fn({ data: "", code: 1000 });
+    }
+  };
+  // Any browser tool-route call would be a bug: the eval has no call token.
+  globalThis.fetch = (async () => {
+    throw new Error("the eval must not call the demo tool route");
+  }) as typeof fetch;
+  try {
+    const answered: string[] = [];
+    const executor = evalToolExecutor({
+      testTag: "Lime 42",
+      checkEmail: async () => ({ ok: true, data: { status: "not_arrived" } }),
+    });
+    const session = new VoiceSession(
+      {},
+      {
+        toolExecutor: async (call) => {
+          answered.push(call.name);
+          return executor(call);
+        },
+      },
+    );
+    const internals = session as unknown as {
+      connect: (token: string, config: unknown, gen: number) => void;
+      generation: { begin: () => number };
+      handle: (raw: string) => void;
+      callToken: string | null;
+    };
+    // Even with a call token present, an injected executor wins: the caller
+    // owns how a bound agent's tools are answered.
+    internals.callToken = "call-token";
+    internals.connect("tok", { mode: "agent", agentId: "agent_1" }, internals.generation.begin());
+    const ws = sockets[0]!;
+    ws.emit("open");
+    const update = JSON.parse(ws.sent[0]!);
+    assert.equal(update.type, "session.update");
+    assert.deepEqual(update.session, { agent_id: "agent_1" }, "bound mode sends only the binding");
+
+    const calls: [string, Record<string, unknown>][] = [
+      ["show_test_address", {}],
+      ["check_email", {}],
+      ["send_code_reply", { warm_line: "hi" }],
+      ["check_code", { code: "1234" }],
+      ["end_call", { closing_line: "Bye!" }],
+    ];
+    for (const [name, args] of calls) {
+      internals.handle(JSON.stringify({ type: "tool.call", call_id: `c-${name}`, name, arguments: args }));
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.deepEqual([...answered].sort(), calls.map(([name]) => name).sort(), "every tool reached the executor");
+    const results = ws.sent
+      .map((raw) => JSON.parse(raw))
+      .filter((msg) => msg.type === "tool.result");
+    assert.equal(results.length, calls.length, "no tool call is left unanswered");
+    const endCall = results.find((msg) => msg.call_id === "c-end_call");
+    assert.match(endCall.result, /"hangup":true/);
+  } finally {
+    g.WebSocket = savedWebSocket;
+    globalThis.fetch = savedFetch;
   }
 });

@@ -525,6 +525,11 @@ type SectionSummary = {
   audioChunks: number | null;
   live: boolean;
   clips?: { text: string; bytes: number; durationMs: number; sha256: string }[];
+  /** Transport and agent the evidence came from (newer runners; optional for old ones). */
+  transport?: string;
+  agentId?: string | null;
+  agentFingerprint?: string | null;
+  llmModel?: string | null;
 };
 
 function sectionSummary(stdout: string): SectionSummary | null {
@@ -564,6 +569,10 @@ function mergeSuiteSections(sections: { name: string; section: EvalSection }[], 
     (sum, summary) => sum + (Number.isFinite(summary.failures) ? summary.failures : 0),
     0,
   );
+  // Which agent/model the suite bound, carried through so a merged artifact
+  // can still prove the fast-model stored agent produced its evidence. A
+  // stored section wins if the suite ever mixed transports.
+  const bound = summaries.find((summary) => summary.transport === "stored") ?? summaries.find((summary) => summary.transport);
   const merged = {
     scenario: "suite",
     runs,
@@ -573,6 +582,14 @@ function mergeSuiteSections(sections: { name: string; section: EvalSection }[], 
     playout,
     audioChunks,
     live: summaries.some((summary) => summary.live),
+    ...(bound
+      ? {
+          transport: bound.transport,
+          agentId: bound.agentId ?? null,
+          agentFingerprint: bound.agentFingerprint ?? null,
+          llmModel: bound.llmModel ?? "managed",
+        }
+      : {}),
     ...(uniqueClips.length > 0 ? { clips: uniqueClips } : {}),
   };
   const stdout = [

@@ -903,6 +903,11 @@ export class VoiceSession {
           context: { kind: "test", agentId: testAgentId },
         });
       });
+    } else if (this.injectedExecutor) {
+      // Bound agent with an injected executor (the live eval and tests): the
+      // stored agent owns the tool list, so the caller must answer all of it.
+      // Hold like the demo browser does: a result sent mid-line cuts the line.
+      this.installTools(this.injectedExecutor, true);
     } else if (this.callToken) {
       this.installDemoTools();
     } else {
