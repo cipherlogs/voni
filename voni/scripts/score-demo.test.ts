@@ -1552,6 +1552,62 @@ if (args[0] === "run" && args[1] === "eval:demo-agent") {
   assert.match(result.stdout, /overheard recall 1\/1/);
 });
 
+test("the runner's OVERHEARD ASIDE marker is the fallback when the trace has no overlap proof", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  writeFileSync(
+    join(bin, "npm"),
+    `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === "run" && args[1] === "eval:demo-agent") {
+  console.log("  · trace session sess_fail01");
+  if (process.env.SHIM_LEDGER === "1") {
+    console.log('    heard ledger ["We\\'re a bakery, actually."]');
+  }
+  console.log('OVERHEARD ASIDE {"scenario":"over-talk","session":"sess_fail01","text":"We\\'re a bakery, actually.","agentText":"I\\'ll show you by doing it","replyId":"reply_1","startMs":16230,"endMs":null,"cutMs":17040}');
+  console.log("over-talk: 1/1");
+} else if (args[0] === "run" && args[1] === "call:trace") {
+  // No VONI reply precedes the HEARD row, so the trace alone yields no aside.
+  console.log('8.43s  HEARD   "Tell me in detail, step by step."  (8.43s-13.13s)');
+}
+`,
+    { mode: 0o755 },
+  );
+  const score = (name: string, ledger: boolean) => {
+    const out = join(dir, name, "score.json");
+    mkdirSync(join(dir, name), { recursive: true });
+    const result = run(
+      ["--scenario", "over-talk", "--out", out, "--timing-lock", join(dir, name, "timing.lock")],
+      new URL("../", import.meta.url).pathname,
+      { PATH: `${bin}:${process.env.PATH}`, ...(ledger ? { SHIM_LEDGER: "1" } : {}) },
+    );
+    const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+      overheard: { recalled: number; total: number; asides: { text: string; inLedger: boolean; tracePointer: string }[] };
+      gates: { name: string; status: string; detail: string }[];
+    };
+    return { result, artifact };
+  };
+
+  const counted = score("counted", true);
+  assert.equal(counted.result.status, 0, counted.result.stderr + counted.result.stdout);
+  assert.equal(counted.artifact.overheard.recalled, 1);
+  assert.equal(counted.artifact.overheard.total, 1);
+  assert.equal(counted.artifact.overheard.asides[0].inLedger, true);
+  assert.match(counted.artifact.overheard.asides[0].tracePointer, /runner cut 17\.04s/);
+  const pass = counted.artifact.gates.find((g) => g.name === "overheard-recall")!;
+  assert.equal(pass.status, "PASS", pass.detail);
+  assert.match(counted.result.stdout, /overheard recall 1\/1/);
+
+  // The marker alone is not ledger evidence: without the heard ledger line the
+  // aside was never proven counted, so the gate FAILs honestly.
+  const unledgered = score("unledgered", false);
+  const fail = unledgered.artifact.gates.find((g) => g.name === "overheard-recall")!;
+  assert.equal(fail.status, "FAIL");
+  assert.match(fail.detail, /ledger/);
+  assert.equal(unledgered.result.status, 1);
+});
+
 test("an aside the caption marked but the session ledger never counted FAILs and cites the turn", () => {
   const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
   const bin = join(dir, "bin");
@@ -1858,6 +1914,8 @@ if (args[0] === "run" && args[1] === "eval:demo-agent") {
     scenarios: [{ name, passed: 1, runs: 1 }],
     traceSessions: ["sess_suite"], playout: [{ scenario: name, run: 1, wallClockMs: 1000 }],
     audioChunks: 40, live: true, clips: [],
+    transport: "stored", agentId: "agent_suite", agentFingerprint: "abc123",
+    llmModel: "google/gemini-2.5-flash",
   }));
   console.log("  · trace session sess_suite");
   if (scenario === "greeting-cut") {
@@ -1930,7 +1988,12 @@ if (args[0] === "run" && args[1] === "eval:demo-agent") {
   );
 
   const artifact = JSON.parse(readFileSync(out, "utf8")) as {
-    evalRunner: { scenario: string; status: string; timings: { scenarioRuns: { scenario: string }[] } };
+    evalRunner: {
+      scenario: string;
+      status: string;
+      timings: { scenarioRuns: { scenario: string }[] };
+    };
+    transcripts: { redacted: string[] };
     doubleTalk: { overlapMs: number[] };
     deadAir: { checkIns: { atSilenceMs: number }[] };
     emailInvite: { tagMentions: number } | null;
@@ -1939,6 +2002,13 @@ if (args[0] === "run" && args[1] === "eval:demo-agent") {
   };
   assert.equal(artifact.evalRunner.scenario, "suite");
   assert.equal(artifact.evalRunner.status, "ok");
+  // The merged summary still names the transport and agent/model the evidence
+  // came from, so a suite artifact can prove the stored fast-model agent ran.
+  const redacted = artifact.transcripts.redacted.join("\n");
+  assert.match(redacted, /"transport":"stored"/);
+  assert.match(redacted, /"agentId":"agent_suite"/);
+  assert.match(redacted, /"agentFingerprint":"abc123"/);
+  assert.match(redacted, /"llmModel":"google\/gemini-2\.5-flash"/);
   assert.deepEqual(artifact.doubleTalk.overlapMs, [40], "over-talk's own line is merged");
   assert.deepEqual(artifact.deadAir.checkIns.map((c) => c.atSilenceMs), [15_200], "silence-check-in's own timeline is merged");
   assert.equal(artifact.emailInvite?.tagMentions, 1, "invite-tag's own line is merged");

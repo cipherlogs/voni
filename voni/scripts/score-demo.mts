@@ -228,12 +228,14 @@ import {
   formatVoiceGainTable,
   GOLDEN_BEATS,
   HANG_UP_AFTER_GOODBYE_MAX_MS,
+  overheardFromRunEvidence,
   overheardFromTraceExcerpt,
   parseEmailInviteOutput,
   parseFillerRunOutput,
   parseGoodbyeDrainOutput,
   parseHeardLedgerOutput,
   parseDoubleTalkOutput,
+  parseOverheardAsideOutput,
   parseSilenceTimeline,
   parseSilenceTimelineOutput,
   parseRunnerHangUp,
@@ -525,6 +527,11 @@ type SectionSummary = {
   audioChunks: number | null;
   live: boolean;
   clips?: { text: string; bytes: number; durationMs: number; sha256: string }[];
+  /** Transport and agent the evidence came from (newer runners; optional for old ones). */
+  transport?: string;
+  agentId?: string | null;
+  agentFingerprint?: string | null;
+  llmModel?: string | null;
 };
 
 function sectionSummary(stdout: string): SectionSummary | null {
@@ -564,6 +571,10 @@ function mergeSuiteSections(sections: { name: string; section: EvalSection }[], 
     (sum, summary) => sum + (Number.isFinite(summary.failures) ? summary.failures : 0),
     0,
   );
+  // Which agent/model the suite bound, carried through so a merged artifact
+  // can still prove the fast-model stored agent produced its evidence. A
+  // stored section wins if the suite ever mixed transports.
+  const bound = summaries.find((summary) => summary.transport === "stored") ?? summaries.find((summary) => summary.transport);
   const merged = {
     scenario: "suite",
     runs,
@@ -573,6 +584,14 @@ function mergeSuiteSections(sections: { name: string; section: EvalSection }[], 
     playout,
     audioChunks,
     live: summaries.some((summary) => summary.live),
+    ...(bound
+      ? {
+          transport: bound.transport,
+          agentId: bound.agentId ?? null,
+          agentFingerprint: bound.agentFingerprint ?? null,
+          llmModel: bound.llmModel ?? "managed",
+        }
+      : {}),
     ...(uniqueClips.length > 0 ? { clips: uniqueClips } : {}),
   };
   const stdout = [
@@ -1105,24 +1124,32 @@ function main(): void {
       : undefined);
   // Overheard asides come from the over-talk call's own words and ledger.
   const asideTrace = traceForScenario("over-talk");
+  const overTalkLedger = dryRun ? null : parseHeardLedgerOutput(scenarioStdout("over-talk"));
   const traceAsides =
     asideTrace
       ? overheardFromTraceExcerpt(asideTrace.excerpt, asideTrace.sessionId, "overheard-aside", {
           // The runner's session ledger (`transcript.user` finals) proves the
           // same words were counted, independent of the merged trace.
-          ...(dryRun
-            ? {}
-            : { ledger: parseHeardLedgerOutput(scenarioStdout("over-talk")) ?? undefined }),
+          ...(dryRun ? {} : { ledger: overTalkLedger ?? undefined }),
         })
       : excerpt && traceSession
         ? overheardFromTraceExcerpt(excerpt, traceSession, "overheard-aside", {
-            ...(dryRun
-              ? {}
-              : { ledger: parseHeardLedgerOutput(scenarioStdout("over-talk")) ?? undefined }),
+            ...(dryRun ? {} : { ledger: overTalkLedger ?? undefined }),
           })
         : [];
+  // Fallback: the runner's own asserted marker (printed only when it measured
+  // a sounding reply cut at/after the caller's start). Used only when the
+  // merged trace yields no aside, so it cannot mask a trace regression. The
+  // ledger still has to count the words, or the gate FAILs honestly.
+  const runnerAside = dryRun ? null : parseOverheardAsideOutput(scenarioStdout("over-talk"));
+  const runAsides = runnerAside
+    ? overheardFromRunEvidence(runnerAside, "overheard-aside", overTalkLedger ?? undefined)
+    : [];
+  const observedAsides = traceAsides.length > 0 ? traceAsides : runAsides;
   const overheardAsides =
-    explicitAsides !== null || traceAsides.length > 0 ? [...(explicitAsides ?? []), ...traceAsides] : undefined;
+    explicitAsides !== null || observedAsides.length > 0
+      ? [...(explicitAsides ?? []), ...observedAsides]
+      : undefined;
   // Invite/tag/chip evidence: an explicit --email-json (browser probe, replay)
   // wins; otherwise the live runner's own EMAIL INVITE line. Omitted evidence
   // leaves the email gate INFO (unmeasured), never PASS.

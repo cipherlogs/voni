@@ -1,10 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
   buildDemoAgentBody,
+  DEMO_LLM_BASE_URL,
+  DEMO_LLM_MODEL,
   demoAgentFingerprint,
   demoAgentName,
   demoAgentStorageKey,
+  demoLlmOverride,
 } from "./stored-agents";
 import { END_CALL_TOOL } from "@/lib/tools/definitions";
 import { VONI_GREETINGS, DEMO_VOICE_IDS } from "./voni-agent";
@@ -65,7 +69,7 @@ test("demo body carries call control, tuning, and per-agent vocabulary", () => {
     body.tools.map((tool) => tool.name),
     [END_CALL_TOOL, "show_test_address", "check_email", "send_code_reply", "check_code"],
   );
-  assert.equal(body.input.transcription_mode, "max_accuracy");
+  assert.equal(body.input.transcription_mode, "balanced");
   assert.equal(body.input.turn_detection, null, "adaptive defaults; clears any stored object");
   assert.equal(body.input.voice_focus, "near-field");
   assert.deepEqual(body.output, { volume: 100 }, "loudest level; client gain matches voices");
@@ -106,9 +110,102 @@ test("fingerprints are stable and move with platform content", () => {
   // invalidate the cache: any body difference flips the fingerprint.
   const changed = {
     ...buildDemoAgentBody("anna"),
-    input: { ...buildDemoAgentBody("anna").input, transcription_mode: "min_latency" },
+    system_prompt: `${buildDemoAgentBody("anna").system_prompt} One more rule.`,
   };
   assert.notEqual(demoAgentFingerprint(changed), a);
+});
+
+test("the fast LLM override rides the body only when supplied", () => {
+  const llm = [
+    {
+      base_url: DEMO_LLM_BASE_URL,
+      model: DEMO_LLM_MODEL,
+      api_key: "sk-write-only",
+    },
+  ];
+  const overridden = buildDemoAgentBody("anna", { llm });
+  assert.deepEqual(overridden.llm, llm, "the exact connect-your-own-LLM config");
+  assert.equal(overridden.name, buildDemoAgentBody("anna").name, "same agent row, same name");
+
+  // The managed default must stay byte-identical, or every cached demo agent
+  // would refresh just for shipping this.
+  const managed = buildDemoAgentBody("anna");
+  assert.ok(!("llm" in managed), "no key at all on the managed body");
+  assert.deepEqual(
+    buildDemoAgentBody("anna", { llm: [] }).llm,
+    [],
+    "[] is the documented revert to the managed model",
+  );
+
+  // The body is hashed whole, so a model swap refreshes the cached agent.
+  assert.notEqual(
+    demoAgentFingerprint(overridden, "account"),
+    demoAgentFingerprint(managed, "account"),
+    "a different LLM is a different fingerprint",
+  );
+  assert.notEqual(
+    demoAgentFingerprint(overridden, "account"),
+    demoAgentFingerprint(buildDemoAgentBody("anna", { llm: [{ ...llm[0], model: "openai/gpt-4.1-nano" }] }), "account"),
+    "a different model is a different fingerprint too",
+  );
+  assert.doesNotMatch(
+    demoAgentFingerprint(overridden, "account"),
+    /sk-write-only/,
+    "the fingerprint never carries the key",
+  );
+  // The resume variant must agree with its intro sibling about the LLM.
+  const resume = buildDemoAgentBody("anna", { resume: true, llm });
+  assert.deepEqual(resume.llm, llm);
+  assert.ok(!("greeting" in resume), "resume still drops the greeting");
+});
+
+test("the LLM override comes from the gateway key, with the fast model by default", async () => {
+  const keys = ["AI_GATEWAY_API_KEY", "DEMO_LLM_BASE_URL", "DEMO_LLM_MODEL", "DEMO_LLM_REASONING_EFFORT"] as const;
+  const saved = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  try {
+    for (const key of keys) delete process.env[key];
+    assert.equal(await demoLlmOverride(), null, "no key, no override: managed model");
+
+    process.env.AI_GATEWAY_API_KEY = "gw-key";
+    assert.deepEqual(await demoLlmOverride(), [
+      {
+        base_url: DEMO_LLM_BASE_URL,
+        model: DEMO_LLM_MODEL,
+        api_key: "gw-key",
+        reasoning_effort: "none",
+      },
+    ]);
+    assert.equal(DEMO_LLM_MODEL, "google/gemini-2.5-flash");
+
+    process.env.DEMO_LLM_MODEL = "google/gemini-2.5-flash";
+    process.env.DEMO_LLM_BASE_URL = "https://llm.example.test/v1";
+    assert.deepEqual(await demoLlmOverride(), [
+      {
+        base_url: "https://llm.example.test/v1",
+        model: "google/gemini-2.5-flash",
+        api_key: "gw-key",
+        reasoning_effort: "none",
+      },
+    ]);
+  } finally {
+    for (const key of keys) {
+      if (saved[key] === undefined) delete process.env[key];
+      else process.env[key] = saved[key];
+    }
+  }
+});
+
+test("the browser never receives the write-only LLM key", () => {
+  // getOrCreateDemoAgent's result carries agentId/fingerprint/model, all safe
+  // to log; the route returns only the client fields, and the key exists
+  // nowhere but the agent body (write-only on the platform too).
+  const route = readFileSync(
+    new URL("../../app/api/demo/token/route.ts", import.meta.url),
+    "utf8",
+  );
+  assert.doesNotMatch(route, /api_key/, "the token response never names the key");
+  assert.doesNotMatch(route, /\bllm\b/, "the token route never forwards the override");
+  assert.match(route, /agentId: agent\.agentId/);
 });
 
 test("ladder and time-up instructions describe hanging up without naming the tool", async () => {

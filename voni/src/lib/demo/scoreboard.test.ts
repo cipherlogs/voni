@@ -103,8 +103,10 @@ import {
   judgePostCutAnswer,
   meaningBasedEndOfTurnGate,
   measureCutLatency,
+  overheardFromRunEvidence,
   overheardFromTraceExcerpt,
   parseHeardLedgerOutput,
+  parseOverheardAsideOutput,
   parseTraceGaps,
   percentile,
   postCutAnswerText,
@@ -2294,6 +2296,96 @@ test("the runner's session ledger marker parses to transcript rows", () => {
   assert.equal(parseHeardLedgerOutput("no ledger marker"), null);
   assert.equal(parseHeardLedgerOutput("    heard ledger []"), null, "an empty ledger is absent evidence");
   assert.equal(parseHeardLedgerOutput("    heard ledger not-json"), null);
+});
+
+test("a start-only HEARD span still proves the aside when the cut follows it", () => {
+  // The exact 044716 over-talk excerpt: the API omitted the aside's speech end
+  // (`(16.23s–  –  )`), but the reply's real CUT at 17.04s is after the start.
+  const excerpt = [
+    '0.71s  VONI    "Hi, I\'m Voni! Let\'s try something cool: I\'ll show you what I can do while we talk. Ready?"  (greeting ttfa 660ms)',
+    '8.43s  HEARD   "Tell me in detail, step by step, how you would help a dental clinic with its phone calls."  (8.43s–13.13s)',
+    '14.40s  VONI    "I\'ll show you by doing it"  (user_speech ttfa 1258ms gap 1261ms)  CUT at 17.04s',
+    '16.23s  HEARD   "We\'re a bakery, actually."  (16.23s–  –  )',
+    '19.07s  VONI    "That sounds delicious. Want to try the test first?"  (greeting ttfa 2027ms)',
+  ];
+  const asides = overheardFromTraceExcerpt(
+    excerpt,
+    "sess_ed67132dfbee46fc9e0f36b2a3a3d987",
+    "overheard-aside",
+    { ledger: ["Tell me in detail, step by step, how you would help a dental clinic with its phone calls.", "We're a bakery, actually."] },
+  );
+  assert.equal(asides.length, 1, "only the bakery aside overlapped a reply");
+  assert.equal(asides[0].text, "We're a bakery, actually.");
+  assert.equal(asides[0].markedOverheard, true);
+  assert.equal(asides[0].inLedger, true);
+  assert.match(asides[0].tracePointer, /call trace turn 2/);
+  assert.ok(asides[0].tracePointer.includes("sess_ed67132dfbee46fc9e0f36b2a3a3d987"));
+  const evaluation = evaluateOverheardRecall(asides);
+  assert.equal(evaluation.recalled, 1);
+  assert.equal(evaluation.total, 1);
+  assert.equal(evaluation.gate.status, "PASS");
+});
+
+test("a start-only HEARD span with no cut is ordinary speech, not an aside", () => {
+  const noCut = overheardFromTraceExcerpt(
+    [
+      '10.20s  VONI    "handling booking"  (reply.create gap 900ms)',
+      '16.23s  HEARD   "We\'re a bakery, actually."  (16.23s–  –  )',
+    ],
+    "sess_abc",
+  );
+  assert.deepEqual(noCut, [], "a free floor never marks an aside");
+
+  // The cut predates the words: the reply was already silent when they began.
+  const beforeStart = overheardFromTraceExcerpt(
+    [
+      '10.20s  VONI    "handling booking"  (reply.create)  CUT at 12.00s',
+      '16.23s  HEARD   "We\'re a bakery, actually."  (16.23s–  –  )',
+    ],
+    "sess_abc",
+  );
+  assert.deepEqual(beforeStart, []);
+});
+
+test("the runner's OVERHEARD ASIDE marker parses only a proven, well-formed overlap", () => {
+  const line =
+    'OVERHEARD ASIDE {"scenario":"over-talk","session":"sess_over14","text":"We\'re a bakery, actually.",' +
+    '"agentText":"I\'ll show you by doing it","replyId":"reply_1","startMs":16230,"endMs":null,"cutMs":17040}';
+  const evidence = parseOverheardAsideOutput(`  · trace session sess_over14\n${line}`);
+  assert.ok(evidence);
+  assert.equal(evidence!.sessionId, "sess_over14");
+  assert.equal(evidence!.text, "We're a bakery, actually.");
+  assert.equal(evidence!.startMs, 16_230);
+  assert.equal(evidence!.cutMs, 17_040);
+  assert.equal(evidence!.endMs, null);
+  assert.equal(parseOverheardAsideOutput("no marker here"), null);
+
+  const rejects = (stdout: string, pattern: RegExp) =>
+    assert.throws(() => parseOverheardAsideOutput(stdout), pattern);
+  rejects("OVERHEARD ASIDE {not json", /not valid JSON/);
+  rejects('OVERHEARD ASIDE {"scenario":"over-talk","session":"sess_a","text":"","startMs":1,"cutMs":2}', /aside text/);
+  rejects('OVERHEARD ASIDE {"scenario":"over-talk","session":"loop01","text":"hi","startMs":1,"cutMs":2}', /session id/);
+  rejects('OVERHEARD ASIDE {"scenario":"over-talk","session":"sess_a","startMs":1,"cutMs":2}', /aside text/);
+  rejects(
+    'OVERHEARD ASIDE {"scenario":"over-talk","session":"sess_a","text":"hi","startMs":5000,"cutMs":4000}',
+    /cut before the aside/,
+  );
+
+  const counted = overheardFromRunEvidence(evidence!, "overheard-aside", ["We're a bakery, actually."]);
+  assert.equal(counted.length, 1);
+  assert.equal(counted[0].markedOverheard, true);
+  assert.equal(counted[0].inLedger, true);
+  assert.equal(counted[0].handling, "heard-only");
+  assert.match(counted[0].tracePointer, /16\.23s HEARD/);
+  assert.match(counted[0].tracePointer, /runner cut 17\.04s/);
+  assert.equal(evaluateOverheardRecall(counted).gate.status, "PASS");
+
+  // A missing ledger is not evidence: the marker alone can never pass the gate.
+  const unledgered = overheardFromRunEvidence(evidence!, "overheard-aside", ["We run a dental clinic."]);
+  assert.equal(unledgered[0].inLedger, false);
+  const gate = evaluateOverheardRecall(unledgered).gate;
+  assert.equal(gate.status, "FAIL");
+  assert.match(gate.detail, /ledger/);
 });
 
 test("dead-air bars quote the pipeline contracts (2s ceiling, 15s check-in)", () => {
