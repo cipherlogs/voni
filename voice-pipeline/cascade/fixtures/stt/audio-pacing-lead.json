@@ -1,0 +1,66 @@
+{
+  "name": "audio-pacing-lead",
+  "description": "The caller pushes ten 0.5 s frames with the clock stopped: exactly 5 s of audio reaches the vendor. The next 0.1 s frame is refused because it would run more than 5 s ahead of processing, and once the clock catches up by one second a 0.5 s frame fits again. The dropped frame is counted, not retried and not silently trimmed.",
+  "kind": "audio",
+  "plans": [
+    [
+      {
+        "json": {
+          "sessionId": "call-123:0",
+          "status": "ready"
+        }
+      }
+    ]
+  ],
+  "audio": [
+    {"audio_ms": 500, "value": 1},
+    {"audio_ms": 500, "value": 1},
+    {"audio_ms": 500, "value": 1},
+    {"audio_ms": 500, "value": 1},
+    {"audio_ms": 500, "value": 1},
+    {"audio_ms": 500, "value": 1},
+    {"audio_ms": 500, "value": 1},
+    {"audio_ms": 500, "value": 1},
+    {"audio_ms": 500, "value": 1},
+    {"audio_ms": 500, "value": 1},
+    {"audio_ms": 100, "value": 1},
+    {"advance_ms": 1000},
+    {"audio_ms": 500, "value": 1}
+  ],
+  "expect": {
+    "sent": [
+      [
+        {
+          "authorization": {
+            "accessToken": "Bearer test-meta-key"
+          },
+          "audioEncoding": "PCM_24KHZ",
+          "model": "muse-voice-transcribe-1.0",
+          "mode": "ENDPOINTING",
+          "partialMode": "CUMULATIVE",
+          "emitAudioProgress": false,
+          "languageBias": [],
+          "keywords": []
+        },
+        {"bytes": 24000, "sha256": "160a2f88b1043e28", "silence": false},
+        {"bytes": 24000, "sha256": "160a2f88b1043e28", "silence": false},
+        {"bytes": 24000, "sha256": "160a2f88b1043e28", "silence": false},
+        {"bytes": 24000, "sha256": "160a2f88b1043e28", "silence": false},
+        {"bytes": 24000, "sha256": "160a2f88b1043e28", "silence": false},
+        {"bytes": 24000, "sha256": "160a2f88b1043e28", "silence": false},
+        {"bytes": 24000, "sha256": "160a2f88b1043e28", "silence": false},
+        {"bytes": 24000, "sha256": "160a2f88b1043e28", "silence": false},
+        {"bytes": 24000, "sha256": "160a2f88b1043e28", "silence": false},
+        {"bytes": 24000, "sha256": "160a2f88b1043e28", "silence": false},
+        {"bytes": 24000, "sha256": "160a2f88b1043e28", "silence": false}
+      ]
+    ],
+    "connections": 1,
+    "session_ids": ["call-123:0"],
+    "acked": true,
+    "epoch": 0,
+    "error": null,
+    "events": [],
+    "dropped_frames": 1
+  }
+}

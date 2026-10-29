@@ -1,0 +1,61 @@
+{
+  "name": "close-1000",
+  "description": "The vendor closes normally with 1000 after an established session. The close is clean: the call is not failed, nothing is retried, no leg opens or alerts, and the speech-session ledger records a normal end with no endStream (this is the vendor's close, not ours).",
+  "kind": "close",
+  "plans": [
+    [
+      {
+        "json": {
+          "sessionId": "call-123:0",
+          "status": "ready"
+        }
+      }
+    ]
+  ],
+  "close": {
+    "code": 1000,
+    "reason": "done"
+  },
+  "expect": {
+    "sent": [
+      [
+        {
+          "authorization": {
+            "accessToken": "Bearer test-meta-key"
+          },
+          "audioEncoding": "PCM_24KHZ",
+          "model": "muse-voice-transcribe-1.0",
+          "mode": "ENDPOINTING",
+          "partialMode": "CUMULATIVE",
+          "emitAudioProgress": false,
+          "languageBias": [],
+          "keywords": []
+        }
+      ]
+    ],
+    "connections": 1,
+    "session_ids": ["call-123:0"],
+    "acked": true,
+    "epoch": 0,
+    "error": null,
+    "events": [],
+    "action": "clean",
+    "failure_class": "do_not_open",
+    "retried": false,
+    "backoff": false,
+    "reconnects": 0,
+    "failures": [],
+    "breaker_opens": 0,
+    "alerts": 0,
+    "session_endings": [
+      {
+        "epoch": 0,
+        "kind": "normal",
+        "code": 1000,
+        "planned": false,
+        "end_stream_sent": false
+      }
+    ],
+    "ledger_marks": []
+  }
+}

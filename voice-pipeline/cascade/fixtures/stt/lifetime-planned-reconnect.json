@@ -1,0 +1,144 @@
+{
+  "name": "lifetime-planned-reconnect",
+  "description": "A turn completes with five seconds left on the vendor's 60-minute session limit — inside the bounded handshake margin. The adapter replaces the session at that speechComplete boundary, spends no retry, records a planned lifetime ending for epoch 0, marks the call ledger's reconnect and continues the next turn on epoch 1 with the same vendor turnId.",
+  "kind": "lifetime",
+  "plans": [
+    [
+      {
+        "json": {
+          "sessionId": "call-123:0",
+          "status": "ready"
+        }
+      },
+      {
+        "json": {
+          "type": "speechStart",
+          "turnId": "turn-1"
+        },
+        "delay_ms": 3595000
+      },
+      {
+        "json": {
+          "type": "speechEnd",
+          "turnId": "turn-1"
+        }
+      },
+      {
+        "json": {
+          "type": "speechComplete",
+          "turnId": "turn-1",
+          "text": "hello"
+        }
+      }
+    ],
+    [
+      {
+        "json": {
+          "sessionId": "call-123:1",
+          "status": "ready"
+        }
+      },
+      {
+        "json": {
+          "type": "speechStart",
+          "turnId": "turn-1"
+        }
+      },
+      {
+        "json": {
+          "type": "speechComplete",
+          "turnId": "turn-1",
+          "text": "world"
+        }
+      },
+      {
+        "close_code": 1000
+      }
+    ]
+  ],
+  "expect": {
+    "sent": [
+      [
+        {
+          "authorization": {
+            "accessToken": "Bearer test-meta-key"
+          },
+          "audioEncoding": "PCM_24KHZ",
+          "model": "muse-voice-transcribe-1.0",
+          "mode": "ENDPOINTING",
+          "partialMode": "CUMULATIVE",
+          "emitAudioProgress": false,
+          "languageBias": [],
+          "keywords": []
+        }
+      ],
+      [
+        {
+          "authorization": {
+            "accessToken": "Bearer test-meta-key"
+          },
+          "audioEncoding": "PCM_24KHZ",
+          "model": "muse-voice-transcribe-1.0",
+          "mode": "ENDPOINTING",
+          "partialMode": "CUMULATIVE",
+          "emitAudioProgress": false,
+          "languageBias": [],
+          "keywords": []
+        }
+      ]
+    ],
+    "connections": 2,
+    "session_ids": ["call-123:0", "call-123:1"],
+    "acked": true,
+    "epoch": 1,
+    "error": null,
+    "events": [
+      {
+        "type": "SpeechStart",
+        "turn_id": "turn-1",
+        "session_epoch": 0
+      },
+      {
+        "type": "SpeechEnd",
+        "turn_id": "turn-1",
+        "session_epoch": 0
+      },
+      {
+        "type": "SpeechComplete",
+        "text": "hello",
+        "turn_id": "turn-1",
+        "session_epoch": 0
+      },
+      {
+        "type": "SpeechStart",
+        "turn_id": "turn-1",
+        "session_epoch": 1
+      },
+      {
+        "type": "SpeechComplete",
+        "text": "world",
+        "turn_id": "turn-1",
+        "session_epoch": 1
+      }
+    ],
+    "reconnects": 1,
+    "failures": [],
+    "session_endings": [
+      {
+        "epoch": 0,
+        "kind": "lifetime",
+        "code": "session_limit",
+        "planned": true,
+        "end_stream_sent": false
+      },
+      {
+        "epoch": 1,
+        "kind": "normal",
+        "code": 1000,
+        "planned": false,
+        "end_stream_sent": false
+      }
+    ],
+    "ledger_marks": ["reconnect"]
+  }
+}

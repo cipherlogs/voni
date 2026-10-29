@@ -1,0 +1,80 @@
+{
+  "name": "close-1011",
+  "description": "The vendor closes with 1011 on an established session: a retryable internal failure. The adapter spends its one retry on a new session and the epoch moves to 1. The close is recorded as a trigger, the leg is not opened yet (one retry is not a trip), and no session ending is claimed for a socket that was replaced.",
+  "kind": "close",
+  "plans": [
+    [
+      {
+        "json": {
+          "sessionId": "call-123:0",
+          "status": "ready"
+        }
+      }
+    ],
+    [
+      {
+        "json": {
+          "sessionId": "call-123:1",
+          "status": "ready"
+        }
+      }
+    ]
+  ],
+  "close": {
+    "code": 1011,
+    "reason": "internal"
+  },
+  "expect": {
+    "sent": [
+      [
+        {
+          "authorization": {
+            "accessToken": "Bearer test-meta-key"
+          },
+          "audioEncoding": "PCM_24KHZ",
+          "model": "muse-voice-transcribe-1.0",
+          "mode": "ENDPOINTING",
+          "partialMode": "CUMULATIVE",
+          "emitAudioProgress": false,
+          "languageBias": [],
+          "keywords": []
+        }
+      ],
+      [
+        {
+          "authorization": {
+            "accessToken": "Bearer test-meta-key"
+          },
+          "audioEncoding": "PCM_24KHZ",
+          "model": "muse-voice-transcribe-1.0",
+          "mode": "ENDPOINTING",
+          "partialMode": "CUMULATIVE",
+          "emitAudioProgress": false,
+          "languageBias": [],
+          "keywords": []
+        }
+      ]
+    ],
+    "connections": 2,
+    "session_ids": ["call-123:0", "call-123:1"],
+    "acked": true,
+    "epoch": 1,
+    "error": null,
+    "events": [],
+    "action": "retry",
+    "failure_class": "trigger",
+    "retried": true,
+    "backoff": false,
+    "reconnects": 1,
+    "failures": [
+      {
+        "code": 1011,
+        "class": "trigger"
+      }
+    ],
+    "breaker_opens": 0,
+    "alerts": 0,
+    "session_endings": [],
+    "ledger_marks": []
+  }
+}

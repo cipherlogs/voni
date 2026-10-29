@@ -1,0 +1,112 @@
+{
+  "name": "lifetime-idle-close",
+  "description": "The socket drops with no code and the vendor's reason names idle input. That is a session end, not our pacing bug and not an outage: the adapter opens a new session, spends no retry, records a planned idle ending for epoch 0, and input continues on epoch 1.",
+  "kind": "lifetime",
+  "plans": [
+    [
+      {
+        "json": {
+          "sessionId": "call-123:0",
+          "status": "ready"
+        }
+      },
+      {
+        "error": "no_code",
+        "reason": "idle: no audio received"
+      }
+    ],
+    [
+      {
+        "json": {
+          "sessionId": "call-123:1",
+          "status": "ready"
+        }
+      },
+      {
+        "json": {
+          "type": "speechStart",
+          "turnId": "turn-2"
+        }
+      },
+      {
+        "json": {
+          "type": "speechComplete",
+          "turnId": "turn-2",
+          "text": "after"
+        }
+      },
+      {
+        "close_code": 1000
+      }
+    ]
+  ],
+  "expect": {
+    "sent": [
+      [
+        {
+          "authorization": {
+            "accessToken": "Bearer test-meta-key"
+          },
+          "audioEncoding": "PCM_24KHZ",
+          "model": "muse-voice-transcribe-1.0",
+          "mode": "ENDPOINTING",
+          "partialMode": "CUMULATIVE",
+          "emitAudioProgress": false,
+          "languageBias": [],
+          "keywords": []
+        }
+      ],
+      [
+        {
+          "authorization": {
+            "accessToken": "Bearer test-meta-key"
+          },
+          "audioEncoding": "PCM_24KHZ",
+          "model": "muse-voice-transcribe-1.0",
+          "mode": "ENDPOINTING",
+          "partialMode": "CUMULATIVE",
+          "emitAudioProgress": false,
+          "languageBias": [],
+          "keywords": []
+        }
+      ]
+    ],
+    "connections": 2,
+    "session_ids": ["call-123:0", "call-123:1"],
+    "acked": true,
+    "epoch": 1,
+    "error": null,
+    "events": [
+      {
+        "type": "SpeechStart",
+        "turn_id": "turn-2",
+        "session_epoch": 1
+      },
+      {
+        "type": "SpeechComplete",
+        "text": "after",
+        "turn_id": "turn-2",
+        "session_epoch": 1
+      }
+    ],
+    "reconnects": 1,
+    "failures": [],
+    "session_endings": [
+      {
+        "epoch": 0,
+        "kind": "idle",
+        "code": null,
+        "planned": true,
+        "end_stream_sent": false
+      },
+      {
+        "epoch": 1,
+        "kind": "normal",
+        "code": 1000,
+        "planned": false,
+        "end_stream_sent": false
+      }
+    ],
+    "ledger_marks": ["reconnect"]
+  }
+}

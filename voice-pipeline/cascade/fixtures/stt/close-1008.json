@@ -1,0 +1,66 @@
+{
+  "name": "close-1008",
+  "description": "The vendor closes with 1008: the frame or pacing was ours to get right. The call fails visibly, a human is alerted with the verdict, and the speech leg's breaker is left closed because retrying our own bug would hide it. No new session is opened.",
+  "kind": "close",
+  "plans": [
+    [
+      {
+        "json": {
+          "sessionId": "call-123:0",
+          "status": "ready"
+        }
+      }
+    ]
+  ],
+  "close": {
+    "code": 1008,
+    "reason": "invalid pacing"
+  },
+  "expect": {
+    "sent": [
+      [
+        {
+          "authorization": {
+            "accessToken": "Bearer test-meta-key"
+          },
+          "audioEncoding": "PCM_24KHZ",
+          "model": "muse-voice-transcribe-1.0",
+          "mode": "ENDPOINTING",
+          "partialMode": "CUMULATIVE",
+          "emitAudioProgress": false,
+          "languageBias": [],
+          "keywords": []
+        }
+      ]
+    ],
+    "connections": 1,
+    "session_ids": ["call-123:0"],
+    "acked": false,
+    "epoch": 0,
+    "error": "SpeechCallFailure",
+    "events": [],
+    "action": "fail",
+    "failure_class": "bug",
+    "retried": false,
+    "backoff": false,
+    "reconnects": 0,
+    "failures": [
+      {
+        "code": 1008,
+        "class": "bug"
+      }
+    ],
+    "breaker_opens": 0,
+    "alerts": 1,
+    "session_endings": [
+      {
+        "epoch": 0,
+        "kind": "failed",
+        "code": 1008,
+        "planned": false,
+        "end_stream_sent": false
+      }
+    ],
+    "ledger_marks": []
+  }
+}

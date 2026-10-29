@@ -1,0 +1,124 @@
+{
+  "name": "events-unknown-ignored",
+  "description": "The same turn with vendor noise around it: an audioProgress event, a future event type, a binary server frame, non-JSON text, and known events carrying additive fields (serverTick, confidence, words). None of it is on the contract, so the mapped sequence is exactly start, partial, complete and the turn state is unchanged.",
+  "kind": "events",
+  "plans": [
+    [
+      {
+        "json": {
+          "sessionId": "call-123:0",
+          "status": "ready"
+        }
+      },
+      {
+        "json": {
+          "type": "audioProgress",
+          "progress": 0.5
+        }
+      },
+      {
+        "json": {
+          "type": "speechStart",
+          "turnId": "turn-1",
+          "serverTick": 7
+        }
+      },
+      {
+        "json": {
+          "type": "transcript",
+          "text": "hi",
+          "confidence": 0.93,
+          "words": [
+            {
+              "word": "hi",
+              "start": 0.1,
+              "end": 0.2
+            }
+          ]
+        }
+      },
+      {
+        "json": {
+          "type": "vendorFutureEvent",
+          "turnId": "turn-9",
+          "payload": {
+            "confidence": 0.99
+          }
+        }
+      },
+      {
+        "binary_hex": "00ff"
+      },
+      {
+        "text": "not json"
+      },
+      {
+        "json": {
+          "type": "speechComplete",
+          "turnId": "turn-1",
+          "text": "hi",
+          "confidence": 0.99
+        }
+      },
+      {
+        "json": {
+          "type": "brandNewEvent",
+          "text": "ignored"
+        }
+      }
+    ]
+  ],
+  "expect": {
+    "sent": [
+      [
+        {
+          "authorization": {
+            "accessToken": "Bearer test-meta-key"
+          },
+          "audioEncoding": "PCM_24KHZ",
+          "model": "muse-voice-transcribe-1.0",
+          "mode": "ENDPOINTING",
+          "partialMode": "CUMULATIVE",
+          "emitAudioProgress": false,
+          "languageBias": [],
+          "keywords": []
+        }
+      ]
+    ],
+    "connections": 1,
+    "session_ids": ["call-123:0"],
+    "acked": true,
+    "epoch": 0,
+    "error": null,
+    "events": [
+      {
+        "type": "SpeechStart",
+        "turn_id": "turn-1",
+        "session_epoch": 0
+      },
+      {
+        "type": "SpeechPartial",
+        "text": "hi",
+        "session_epoch": 0
+      },
+      {
+        "type": "SpeechComplete",
+        "text": "hi",
+        "turn_id": "turn-1",
+        "session_epoch": 0
+      }
+    ],
+    "turns": [
+      {
+        "session_epoch": 0,
+        "turn_id": "turn-1",
+        "phase": "finalised",
+        "partial_text": "hi",
+        "partial_updates": 1,
+        "final_text": "hi",
+        "duplicate_finals": 0
+      }
+    ],
+    "stale_events": 0
+  }
+}

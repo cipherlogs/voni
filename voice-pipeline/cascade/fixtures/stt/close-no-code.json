@@ -1,0 +1,88 @@
+{
+  "name": "close-no-code",
+  "description": "The socket drops without a close frame. That is the same retryable class as 1011, so the adapter spends its one retry on a new session, but the speech-session ledger keeps the two facts apart: a dropped session (no code, no endStream) is not a failure close and not our deliberate end.",
+  "kind": "close",
+  "plans": [
+    [
+      {
+        "json": {
+          "sessionId": "call-123:0",
+          "status": "ready"
+        }
+      }
+    ],
+    [
+      {
+        "json": {
+          "sessionId": "call-123:1",
+          "status": "ready"
+        }
+      }
+    ]
+  ],
+  "close": {
+    "code": null,
+    "reason": "socket vanished"
+  },
+  "expect": {
+    "sent": [
+      [
+        {
+          "authorization": {
+            "accessToken": "Bearer test-meta-key"
+          },
+          "audioEncoding": "PCM_24KHZ",
+          "model": "muse-voice-transcribe-1.0",
+          "mode": "ENDPOINTING",
+          "partialMode": "CUMULATIVE",
+          "emitAudioProgress": false,
+          "languageBias": [],
+          "keywords": []
+        }
+      ],
+      [
+        {
+          "authorization": {
+            "accessToken": "Bearer test-meta-key"
+          },
+          "audioEncoding": "PCM_24KHZ",
+          "model": "muse-voice-transcribe-1.0",
+          "mode": "ENDPOINTING",
+          "partialMode": "CUMULATIVE",
+          "emitAudioProgress": false,
+          "languageBias": [],
+          "keywords": []
+        }
+      ]
+    ],
+    "connections": 2,
+    "session_ids": ["call-123:0", "call-123:1"],
+    "acked": true,
+    "epoch": 1,
+    "error": null,
+    "events": [],
+    "action": "retry",
+    "failure_class": "trigger",
+    "retried": true,
+    "backoff": false,
+    "reconnects": 1,
+    "failures": [
+      {
+        "code": null,
+        "class": "trigger"
+      }
+    ],
+    "breaker_opens": 0,
+    "alerts": 0,
+    "session_endings": [
+      {
+        "epoch": 0,
+        "kind": "dropped",
+        "code": null,
+        "planned": false,
+        "end_stream_sent": false
+      }
+    ],
+    "ledger_marks": []
+  }
+}
