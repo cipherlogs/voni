@@ -4367,13 +4367,13 @@ function skeletonGates(
   const replyGate =
     replySamples.length > 0
       ? replyGapGate(replySamples, traceSessionId ?? undefined)
-      : { name: "reply-gap", status: "INFO" as const, detail: "skeleton: gating lands in the reply-gap ticket" };
+      : { name: "reply-gap", status: "INFO" as const, detail: "unmeasured: run --scenario all or pass --trace-session/--gap beat=ms to gate reply gaps" };
   const endOfTurn =
     agentInput === undefined
-      ? { name: "end-of-turn", status: "INFO" as const, detail: "skeleton: agent body not checked" }
+      ? { name: "end-of-turn", status: "INFO" as const, detail: "unmeasured: agent body not checked" }
       : meaningBasedEndOfTurnGate(agentInput, traceExcerpt);
   const filler: ScoreboardGate =
-    fillerGate ?? { name: "filler-resume", status: "INFO", detail: "skeleton: gating lands in the filler ticket" };
+    fillerGate ?? { name: "filler-resume", status: "INFO", detail: "unmeasured: run --scenario filler-over or pass --filler-* evidence to gate filler recovery" };
   const deadAirGate: ScoreboardGate = deadAir
     ? evaluateDeadAir(deadAir)
     : {
@@ -4413,8 +4413,8 @@ function skeletonGates(
     },
     filler,
     overheardGate ??
-      { name: "overheard-recall", status: "INFO", detail: "skeleton: gating lands in the overheard ticket" },
-    { name: "email-invite", status: "INFO", detail: "skeleton: invite/tag evidence not yet scored" },
+      { name: "overheard-recall", status: "INFO", detail: "unmeasured: run --scenario over-talk or pass --overheard-json to gate overheard recall" },
+    { name: "email-invite", status: "INFO", detail: "unmeasured: run --scenario invite-tag or pass --email-json to gate the invite and chip" },
     doubleTalkGate,
     deadAirGate,
     endCallDrainGate,
