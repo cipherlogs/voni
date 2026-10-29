@@ -21,6 +21,13 @@ frame is sent or played. A non-empty ``unknown_params`` list is a configuration
 bug. The session's ``expires_at`` and ``configuration.limits`` are recorded as
 call facts.
 
+Each ``FlushDone`` is an audio-integrity checkpoint: its
+``audio_duration_ms`` must agree with the bytes received for that request at
+the session's own rate and sample width, or the call fails as audio loss and
+the delta is recorded. The rate is the one ``Begin`` echoed and the width is
+the encoding's, so the phone leg is measured as 8 kHz mu-law rather than as the
+browser's 24 kHz 16-bit; an ``Audio`` frame that ends mid-sample is refused.
+
 One socket carries the whole call. ``speak`` sends one request per sentence and
 flushes the first sentence immediately; ``Cancel`` stops in-flight synthesis,
 drops the old request's frames until the vendor acknowledges, and reads the
@@ -61,6 +68,16 @@ GENERATE_CHAR_CAP = int(require_bound("tts.generate_char_cap"))
 #: session announced in ``Begin``.
 CONTROL_WINDOW_S = 1.0
 
+#: How far the vendor's reported flush duration may sit from the duration the
+#: received bytes actually are, from the one threshold registry.
+AUDIO_LOSS_TOLERANCE_MS = float(require_bound("tts.audio_loss_tolerance_ms"))
+
+#: Bytes per sample for every encoding a transport carries. ``pcm_mulaw`` is
+#: one byte per sample, so an even byte count is not what makes it whole.
+ENCODING_SAMPLE_BYTES: Mapping[str, int] = MappingProxyType(
+    {"pcm_s16le": 2, "pcm_mulaw": 1}
+)
+
 #: A sentence ends after its closing punctuation and the whitespace that
 #: follows it; the whitespace stays in the piece because ``Generate`` frames
 #: are joined by the vendor with no separator.
@@ -85,6 +102,14 @@ class TransportFormat:
     sample_rate: int
     encoding: str
 
+    @property
+    def bytes_per_sample(self) -> int:
+        """The sample width the encoding implies, never an assumed 16-bit."""
+        try:
+            return ENCODING_SAMPLE_BYTES[self.encoding]
+        except KeyError:
+            raise UnknownEncodingError(self.encoding) from None
+
 
 # The transport chooses the format; the voice and the request do not.
 # `telnyx` is the phone leg: the carrier carries 8 kHz mu-law.
@@ -108,12 +133,44 @@ class UnknownTransportError(LookupError):
         )
 
 
+class UnknownEncodingError(LookupError):
+    """No sample width is defined for the encoding."""
+
+    def __init__(self, encoding: str) -> None:
+        self.encoding = encoding
+        known = ", ".join(sorted(ENCODING_SAMPLE_BYTES))
+        super().__init__(
+            f'unknown synthesis encoding "{encoding}": no sample width is '
+            f"defined for it (known encodings: {known})"
+        )
+
+
 class SynthesisHandshakeError(RuntimeError):
     """The session did not open with a ``Begin`` frame."""
 
 
 class SynthesisProtocolError(RuntimeError):
     """A frame that cannot be read, or a socket that closed mid-request."""
+
+
+class PartialSampleError(SynthesisProtocolError):
+    """An ``Audio`` frame that ends in the middle of a sample.
+
+    Whole samples only: a trailing half sample is a corrupt frame, not audio to
+    decode leniently.
+    """
+
+    def __init__(
+        self, *, byte_count: int, bytes_per_sample: int, encoding: str
+    ) -> None:
+        self.byte_count = byte_count
+        self.bytes_per_sample = bytes_per_sample
+        self.encoding = encoding
+        super().__init__(
+            f"Audio frame carries {byte_count} bytes, which is not a whole "
+            f"number of {bytes_per_sample}-byte {encoding} samples: whole "
+            "samples only"
+        )
 
 
 class SynthesisCallFailure(RuntimeError):
@@ -156,6 +213,48 @@ class ControlFramePacingError(SynthesisCallFailure):
                 f"control frames exceeded the session's {limit:g}/s budget "
                 f"({count} sent in the last second at {at:.3f}s): 3010 "
                 "text/control pacing bug — do not retry blindly"
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class AudioLoss:
+    """One request whose received bytes disagree with the vendor's duration.
+
+    ``delta_ms`` is derived minus reported: negative means audio is missing,
+    positive means more bytes arrived than the vendor accounted for.
+    """
+
+    flush_id: int | None
+    reported_ms: int
+    derived_ms: float
+    delta_ms: float
+    tolerance_ms: float
+    audio_bytes: int
+
+
+class AudioLossError(SynthesisCallFailure):
+    """The bytes received for one flush are not the audio the vendor reported.
+
+    Dropped audio is a fact once the two accounts disagree, so the call fails
+    visibly instead of playing a reply with a hole in it. The delta is recorded
+    on the call (``audio_losses``) and on the error.
+    """
+
+    def __init__(
+        self, *, loss: AudioLoss, verdict: FailureVerdict, stage: str
+    ) -> None:
+        self.loss = loss
+        super().__init__(
+            verdict=verdict,
+            stage=stage,
+            reason=(
+                f"audio loss at flush {loss.flush_id}: the vendor reported "
+                f"{loss.reported_ms} ms, but {loss.audio_bytes} bytes are "
+                f"{loss.derived_ms:.3f} ms at the session's rate and sample "
+                f"width (delta {loss.delta_ms:+.3f} ms, tolerance "
+                f"{loss.tolerance_ms:g} ms): the call ends rather than plays "
+                "audio with a hole in it"
             ),
         )
 
@@ -357,6 +456,7 @@ class SynthesisRequest:
     audio_start_ms: float | None = None
     audio_duration_ms: int | None = None
     audio_bytes: int = 0
+    derived_audio_duration_ms: float | None = None
     words: tuple[WordBoundary, ...] = field(default_factory=tuple)
 
 
@@ -478,6 +578,8 @@ class AssemblyAIStreamingTTS(StreamingTTS):
         self.control_frames_sent = 0
         self.flush_id: int | None = None
         self.audio_bytes: int = 0
+        # Audio integrity (ticket 50): every flush is checked against its bytes.
+        self.audio_losses: list[AudioLoss] = []
         self.termination: Mapping[str, Any] | None = None
         # Per-request facts (ticket 51): keyed by the flush id the vendor sent.
         self.requests: dict[int, SynthesisRequest] = {}
@@ -646,6 +748,19 @@ class AssemblyAIStreamingTTS(StreamingTTS):
         echoed = self.configuration.get("sample_rate")
         return echoed if isinstance(echoed, int) else self.format.sample_rate
 
+    @property
+    def bytes_per_sample(self) -> int:
+        """The session's sample width, from the encoding it was opened with.
+
+        ``Begin`` asserts the echoed encoding equals this one (ticket 48), so
+        the wire bytes and the width cannot disagree once the call is open.
+        """
+        return self.format.bytes_per_sample
+
+    def audio_duration_ms_for(self, audio_bytes: int) -> float:
+        """How long ``audio_bytes`` is at the session's own rate and width."""
+        return audio_bytes / (self.audio_sample_rate * self.bytes_per_sample) * 1000
+
     def _require_open(self) -> None:
         if self._socket is None:
             raise RuntimeError("the synthesis session is not open")
@@ -751,6 +866,12 @@ class AssemblyAIStreamingTTS(StreamingTTS):
         failure = SynthesisCallFailure(
             verdict=verdict, stage=self._stage, reason=reason
         )
+        return self._record_failure(verdict, failure)
+
+    def _record_failure(
+        self, verdict: FailureVerdict, failure: SynthesisCallFailure
+    ) -> SynthesisCallFailure:
+        """Book-keep a call-ending failure and return it for raising."""
         self.failures.append(verdict)
         if verdict.opens_breaker:
             self.breaker_opens.append(verdict)
@@ -841,9 +962,43 @@ class AssemblyAIStreamingTTS(StreamingTTS):
         if isinstance(flush_id, int):
             self.flush_id = flush_id
         request = self._request_for(flush_id, text=text)
+        # What the request's received bytes are, at this session's own rate and
+        # sample width. Recorded even when the vendor reports no duration.
+        request.derived_audio_duration_ms = self.audio_duration_ms_for(
+            request.audio_bytes
+        )
         duration = frame.get("audio_duration_ms")
         if isinstance(duration, int):
             request.audio_duration_ms = duration
+            self._assert_audio_intact(request)
+
+    def _assert_audio_intact(self, request: SynthesisRequest) -> None:
+        """Fail the call when the flush's bytes and reported duration disagree.
+
+        The vendor's duration is the independent account; the bytes we hold are
+        ours. A difference beyond the named tolerance means audio was lost (or
+        duplicated), and a reply with a hole in it must not be played.
+        """
+        derived = request.derived_audio_duration_ms
+        if request.audio_duration_ms is None or derived is None:
+            return
+        delta = derived - request.audio_duration_ms
+        if abs(delta) <= AUDIO_LOSS_TOLERANCE_MS:
+            return
+        loss = AudioLoss(
+            flush_id=request.flush_id,
+            reported_ms=request.audio_duration_ms,
+            derived_ms=derived,
+            delta_ms=delta,
+            tolerance_ms=AUDIO_LOSS_TOLERANCE_MS,
+            audio_bytes=request.audio_bytes,
+        )
+        self.audio_losses.append(loss)
+        # 3005 is the vendor's own "no output while a FlushDone was owed";
+        # bytes missing from a flush are the same fact seen from our side.
+        verdict = classify_tts(3005)
+        failure = AudioLossError(loss=loss, verdict=verdict, stage=self._stage)
+        raise self._record_failure(verdict, failure)
 
     def _record_termination(self, frame: Mapping[str, Any]) -> None:
         self.termination = frame
@@ -925,6 +1080,9 @@ class AssemblyAIStreamingTTS(StreamingTTS):
             if kind == "Audio":
                 pcm = self._decode_audio(frame)
                 self.audio_bytes += len(pcm)
+                # Attribute the implicit flush's audio to its request, so the
+                # final FlushDone is checked against the bytes it produced.
+                self._request_for(frame.get("flush_id")).audio_bytes += len(pcm)
                 residual.extend(pcm)
             elif kind == "FlushDone":
                 flush_done = frame
@@ -1131,11 +1289,19 @@ class AssemblyAIStreamingTTS(StreamingTTS):
         if not isinstance(payload, str):
             raise SynthesisProtocolError(f"Audio frame has no audio payload: {frame!r}")
         try:
-            return base64.b64decode(payload)
+            pcm = base64.b64decode(payload)
         except ValueError:
             raise SynthesisProtocolError(
                 "Audio frame carries a payload that is not base64"
             ) from None
+        width = self.bytes_per_sample
+        if len(pcm) % width:
+            raise PartialSampleError(
+                byte_count=len(pcm),
+                bytes_per_sample=width,
+                encoding=self.format.encoding,
+            )
+        return pcm
 
     async def _first_frame(self) -> Any:
         try:

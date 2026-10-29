@@ -19,11 +19,12 @@ from cascade.assemblyai_tts import (
 )
 from cascade.test_tts_support import (
     audio,
+    audio_ms,
     begin,
     flush_done,
     make_session,
     open_session,
-    pcm,
+    pcm_ms,
     sent_texts,
     sent_types,
 )
@@ -52,7 +53,7 @@ def session_plan(sentence_count, *, delay_ms=SENTENCE_MS, clock=None, start=0):
     frames = [begin()]
     for index in range(start, start + sentence_count):
         frames.append(
-            Frame(audio(pcm(index), flush_id=index), delay_ms=delay_ms or 0.0)
+            Frame(audio_ms(1200, flush_id=index, sample=index), delay_ms=delay_ms or 0.0)
         )
         frames.append(flush_done(flush_id=index))
     return open_session(frames, clock=clock if clock is not None else FakeClock())
@@ -90,13 +91,13 @@ class FirstSentenceTests(unittest.TestCase):
         self.assertEqual(sent_texts(factory)[0], "Hi there. ")
 
     def test_audio_is_yielded_per_sentence_with_its_request_text(self):
-        block = pcm(7, -2)
+        block = pcm_ms(1200, sample=7)
         tts, _ = open_session(
             [
                 begin(),
                 audio(block, flush_id=0),
                 flush_done(flush_id=0),
-                audio(pcm(9), flush_id=1),
+                audio(pcm_ms(1200, sample=9), flush_id=1),
                 flush_done(flush_id=1),
             ]
         )

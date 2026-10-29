@@ -17,13 +17,12 @@ from cascade.assemblyai_tts import (
 )
 from cascade.failures import SESSION_LIMIT, FailureClass
 from cascade.test_tts_support import (
-    audio,
+    audio_ms,
     begin,
     error,
     flush_done,
     make_session,
     open_session,
-    pcm,
 )
 from cascade.testing import ScriptedSocketFactory
 
@@ -66,7 +65,7 @@ class TriggerTests(unittest.TestCase):
         tts, factory = open_session(
             [
                 begin(),
-                audio(pcm(1), flush_id=0),
+                audio_ms(800, flush_id=0),
                 flush_done(flush_id=0, audio_duration_ms=800),
             ]
         )

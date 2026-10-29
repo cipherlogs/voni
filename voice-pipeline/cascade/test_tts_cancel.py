@@ -13,12 +13,14 @@ import unittest
 
 from cascade.test_tts_support import (
     audio,
+    audio_ms,
     begin,
     cancelled,
     flush_done,
     make_session,
     open_session,
     pcm,
+    pcm_ms,
     sent_texts,
     sent_types,
 )
@@ -40,11 +42,11 @@ class DiscardTests(unittest.TestCase):
         tts, factory = open_session(
             [
                 begin(),
-                audio(pcm(1), flush_id=0),
+                audio_ms(1000, flush_id=0),
                 flush_done(flush_id=0, audio_duration_ms=1000),
-                audio(pcm(2), flush_id=1),
+                audio_ms(500, flush_id=1),
                 flush_done(flush_id=1, audio_duration_ms=500),
-                audio(pcm(3), flush_id=2),
+                audio_ms(500, flush_id=2),
                 flush_done(flush_id=2, audio_duration_ms=500),
             ]
         )
@@ -79,11 +81,11 @@ class DiscardTests(unittest.TestCase):
 class AcknowledgementTests(unittest.TestCase):
     def test_audio_between_cancel_and_cancelled_is_dropped(self):
         old_tail = pcm(42, 43)
-        new_audio = pcm(7)
+        new_audio = pcm_ms(300, sample=7)
         tts, factory = open_session(
             [
                 begin(),
-                audio(pcm(1), flush_id=0),
+                audio_ms(1000, flush_id=0),
                 flush_done(flush_id=0, audio_duration_ms=1000),
                 audio(old_tail, flush_id=0),
                 cancelled(audio_duration_seconds=0.4),
@@ -112,9 +114,9 @@ class AcknowledgementTests(unittest.TestCase):
         tts, factory = open_session(
             [
                 begin(),
-                audio(pcm(1), flush_id=0),
+                audio_ms(1000, flush_id=0),
                 cancelled(audio_duration_seconds=0.4),
-                audio(pcm(7), flush_id=7),
+                audio(pcm_ms(300, sample=7), flush_id=7),
                 flush_done(flush_id=7, audio_duration_ms=300),
             ]
         )
@@ -136,9 +138,9 @@ class AcknowledgementTests(unittest.TestCase):
         tts, factory = open_session(
             [
                 begin(),
-                audio(pcm(1), flush_id=0),
+                audio_ms(1000, flush_id=0),
                 cancelled(audio_duration_seconds=0.4),
-                audio(pcm(9), flush_id=4),
+                audio(pcm_ms(200, sample=9), flush_id=4),
                 flush_done(flush_id=4, audio_duration_ms=200),
             ]
         )
@@ -152,7 +154,7 @@ class AcknowledgementTests(unittest.TestCase):
 
         chunks = asyncio.run(scenario())
 
-        self.assertEqual([chunk.pcm for chunk in chunks], [pcm(9)])
+        self.assertEqual([chunk.pcm for chunk in chunks], [pcm_ms(200, sample=9)])
         self.assertEqual(sent_texts(factory), ["First.", "The tail."])
         self.assertEqual(
             sent_types(factory),
@@ -160,7 +162,7 @@ class AcknowledgementTests(unittest.TestCase):
         )
 
     def test_a_cancel_with_nothing_in_flight_acks_zero_and_the_client_flush_runs(self):
-        new_audio = pcm(5)
+        new_audio = pcm_ms(200, sample=5)
         tts, factory = open_session(
             [
                 begin(),
