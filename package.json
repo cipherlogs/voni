@@ -1,5 +1,8 @@
 {
   "devDependencies": {
     "typescript": "^7.0.2"
+  },
+  "scripts": {
+    "worktree:setup": "bash scripts/worktree-setup.sh"
   }
 }
