@@ -15,11 +15,10 @@
  * unreadable artifact (or event file) is a clear error and exit 1; the command
  * never invents a blank report.
  */
-import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { readEvalEvents, summarizeEvalEvents } from "../src/lib/demo/eval-events";
 import { buildInspectReport, formatInspectReport } from "../src/lib/demo/scoreboard-report";
-import type { ScoreboardArtifact } from "../src/lib/demo/scoreboard";
+import { readScoreboardArtifactFile } from "../src/lib/demo/artifact-reader";
 
 const USAGE = `Usage: npm run scoreboard:inspect -- --artifact <path> [options]
 
@@ -36,20 +35,6 @@ function arg(name: string, fallback = ""): string {
   return index === -1 ? fallback : (process.argv[index + 1] ?? fallback);
 }
 
-function readArtifact(path: string): ScoreboardArtifact {
-  const resolved = resolve(path);
-  if (!existsSync(resolved)) throw new Error(`artifact ${path} does not exist`);
-  let raw: unknown;
-  try {
-    raw = JSON.parse(readFileSync(resolved, "utf8"));
-  } catch (error) {
-    throw new Error(
-      `artifact ${path} is not valid JSON (${error instanceof Error ? error.message : String(error)})`,
-    );
-  }
-  return raw as ScoreboardArtifact;
-}
-
 function main(): void {
   if (process.argv.includes("--help") || process.argv.includes("-h")) {
     console.log(USAGE);
@@ -57,7 +42,9 @@ function main(): void {
   }
   const artifactPath = arg("--artifact", "");
   if (!artifactPath) throw new Error("--artifact <path> is required (see --help)");
-  const artifact = readArtifact(artifactPath);
+  // The one reader: the same parse the runner and the matrix use, so a cascade
+  // artifact and a managed artifact go through exactly one code path.
+  const artifact = readScoreboardArtifactFile(resolve(artifactPath));
   const eventsPath = arg("--events", "");
   const events = eventsPath ? summarizeEvalEvents(readEvalEvents(resolve(eventsPath))) : null;
   const sessionId = arg("--session", "") || null;

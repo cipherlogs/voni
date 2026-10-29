@@ -36,6 +36,7 @@
  */
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, resolve } from "node:path";
+import { readScoreboardArtifactFile } from "../src/lib/demo/artifact-reader";
 import {
   DEFAULT_GATE_VOICE,
   evaluateScoreStreak,
@@ -95,17 +96,19 @@ type ReadResult = { artifact: StreakArtifact } | { broken: UnreadableArtifact };
  * skipped, so a crashed run still names itself in the verdict.
  */
 function readArtifact(path: string): ReadResult {
+  const name = basename(path);
   let raw: unknown;
   try {
-    raw = JSON.parse(readFileSync(path, "utf8"));
+    // The one reader: the streak never casts an artifact blindly, so an
+    // unknown schema or a missing shared section breaks the claim by name.
+    raw = readScoreboardArtifactFile(path);
   } catch (error) {
-    return { broken: { name: basename(path), reason: `not valid JSON (${error instanceof Error ? error.message : String(error)})` } };
+    return { broken: { name, reason: error instanceof Error ? error.message : String(error) } };
   }
-  const name = basename(path);
   if (raw === null || typeof raw !== "object") {
     return { broken: { name, reason: "not a scoreboard artifact object" } };
   }
-  const record = raw as Record<string, unknown>;
+  const record = raw as unknown as Record<string, unknown>;
   if (
     typeof record.voice !== "string" ||
     typeof record.recordedAt !== "string" ||

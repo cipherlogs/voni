@@ -8,6 +8,19 @@ import { spawnSync } from "node:child_process";
 import { DEMO_VOICE_IDS } from "../src/lib/demo/voni-agent";
 import { SUITE_SCENARIOS } from "../src/lib/demo/scenario-names";
 import { pcm16Wav } from "../src/lib/demo/reference-render";
+import {
+  CASCADE_NO_COMMIT_MARK_ABSENCE,
+  CASCADE_PLATFORM_CAPTURE_ABSENCE,
+  ONE_CALL_NO_P95_ABSENCE,
+  VENDOR_BILLED_COST_ABSENCE,
+  VENDOR_OWNED_PROVIDER_ABSENCE,
+} from "../src/lib/demo/scoreboard";
+import {
+  artifactSectionGaps,
+  pipelineOfArtifact,
+  readScoreboardArtifactFile,
+} from "../src/lib/demo/artifact-reader";
+import { buildInspectReport } from "../src/lib/demo/scoreboard-report";
 
 const SCRIPT = new URL("./score-demo.mts", import.meta.url).pathname;
 const GATE_BEATS = [
@@ -187,6 +200,234 @@ if (args[0] === "run" && args[1] === "eval:demo-agent") {
   console.log('12.20s  VONI    "Sorry about that"  (reply_create gap 900ms)');
 }
 `;
+
+/**
+ * The cascade call's end message (cascade/call.py `CallEnd.to_document()`),
+ * reduced to the facts score-demo reads. Marks are ledger seconds.
+ */
+function cascadeLedger(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    type: "end",
+    callId: "call_cascade_1",
+    startedAt: "2026-10-29T10:00:00.000Z",
+    finishedAt: "2026-10-29T10:00:03.000Z",
+    metrics: {
+      marks: {
+        audio_in: 0,
+        first_partial: 0.18,
+        speech_complete: 0.6,
+        first_token: 0.84,
+        first_playout: 1.11,
+        greeting_start: 0,
+        greeting_first_audio: 0.05,
+        greeting_done: 1.2,
+      },
+      gaps_ms: { screen_latency_ms: 180, think_ms: 240, reply_gap_ms: 510 },
+      counts: { backchannel: 0, yield: 0 },
+    },
+    providers: {
+      stt: { leg: "stt", provider: "meta-speech-to-text", rung: "primary", reason: "" },
+      llm: { leg: "llm", provider: "meta-llama-3.3", rung: "primary", reason: "" },
+      tts: { leg: "tts", provider: "meta-speech", rung: "primary", reason: "" },
+    },
+    cost: {
+      measured: false,
+      rateTableVersion: null,
+      totalUsd: null,
+      legs: {},
+      unmeasuredReason: "no cost meter is wired",
+    },
+    eligibility: { disposition: "cascade", predicates: [], reasons: [] },
+    turns: 1,
+    endedBy: "stop",
+    ...overrides,
+  };
+}
+
+test("--pipeline cascade writes the one shared artifact from the cascade ledger", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const reference = join(dir, "reference.wav");
+  const delivered = join(dir, "delivered.wav");
+  writeToneWav(reference, -20);
+  writeToneWav(delivered, -20);
+  const ledger = join(dir, "ledger.json");
+  writeFileSync(ledger, JSON.stringify(cascadeLedger()));
+  const out = join(dir, "cascade.json");
+
+  const result = run(
+    [
+      "--pipeline",
+      "cascade",
+      "--ledger",
+      ledger,
+      "--reference",
+      reference,
+      "--delivered",
+      delivered,
+      "--voice",
+      DEMO_VOICE_IDS[0],
+      "--out",
+      out,
+    ],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  assert.ok(existsSync(out), "the cascade artifact is written by the same runner");
+  assert.match(result.stdout, /pipeline cascade/);
+  assert.match(result.stdout, /screen latency\s+180ms/);
+  assert.match(result.stdout, /commit to playout\s+N\/A/);
+
+  // The one reader the inspect CLI uses, not a private parse.
+  const artifact = readScoreboardArtifactFile(out);
+  assert.equal(pipelineOfArtifact(artifact), "cascade");
+  assert.equal(artifact.runId, artifact.run?.runId, "the run block and artifact name one run");
+  assert.ok(artifact.runId.trim().length > 0);
+  assert.deepEqual(artifact.captures?.platform, { absent: CASCADE_PLATFORM_CAPTURE_ABSENCE });
+  assert.equal(artifact.providers?.stt, "meta-speech-to-text");
+  assert.deepEqual(artifact.eligibility, { eligible: true });
+  assert.deepEqual(artifact.latency, {
+    screenToFirstPartialMs: 180,
+    speechCompleteToFirstTokenMs: 240,
+    replyGapP50Ms: 510,
+    replyGapP95Ms: { absent: ONE_CALL_NO_P95_ABSENCE },
+    commitToFirstPlayoutMs: { absent: CASCADE_NO_COMMIT_MARK_ABSENCE },
+  });
+  assert.deepEqual(artifact.ledger?.marks, (cascadeLedger().metrics as { marks: unknown }).marks);
+});
+
+test("--pipeline cascade derives the three gaps from marks, never from a final fallback", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const reference = join(dir, "reference.wav");
+  const delivered = join(dir, "delivered.wav");
+  writeToneWav(reference, -20);
+  writeToneWav(delivered, -20);
+  const ledger = join(dir, "ledger.json");
+  const document = cascadeLedger();
+  delete (document.metrics as { gaps_ms?: unknown }).gaps_ms; // only marks remain
+  writeFileSync(ledger, JSON.stringify(document));
+  const out = join(dir, "cascade.json");
+
+  const result = run(
+    [
+      "--pipeline",
+      "cascade",
+      "--ledger",
+      ledger,
+      "--reference",
+      reference,
+      "--delivered",
+      delivered,
+      "--voice",
+      DEMO_VOICE_IDS[0],
+      "--out",
+      out,
+    ],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  const artifact = readScoreboardArtifactFile(out);
+  assert.equal(artifact.latency?.screenToFirstPartialMs, 180);
+  assert.equal(artifact.latency?.speechCompleteToFirstTokenMs, 240);
+  assert.equal(artifact.latency?.replyGapP50Ms, 510);
+
+  // Same marks, but the caller's final landed and `speech_complete` never did:
+  // the two provider-anchored rows are N/A, never the managed final→playout.
+  const noComplete = join(dir, "no-speech-complete.json");
+  const fallbackDoc = cascadeLedger({
+    metrics: {
+      marks: { audio_in: 0, first_partial: 0.2, final: 0.5, first_token: 0.8, first_playout: 1.2 },
+      counts: {},
+    },
+  });
+  writeFileSync(noComplete, JSON.stringify(fallbackDoc));
+  const missingOut = join(dir, "missing.json");
+  const missing = run(
+    [
+      "--pipeline",
+      "cascade",
+      "--ledger",
+      noComplete,
+      "--reference",
+      reference,
+      "--delivered",
+      delivered,
+      "--voice",
+      DEMO_VOICE_IDS[0],
+      "--out",
+      missingOut,
+    ],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.equal(missing.status, 0, missing.stderr + missing.stdout);
+  const missingArtifact = readScoreboardArtifactFile(missingOut);
+  assert.match(
+    (missingArtifact.latency?.speechCompleteToFirstTokenMs as { absent: string }).absent,
+    /speech_complete/,
+  );
+  assert.match(
+    (missingArtifact.latency?.replyGapP50Ms as { absent: string }).absent,
+    /speech_complete/,
+  );
+  assert.match(missing.stdout, /reply gap p50\s+N\/A .*speech_complete/);
+});
+
+test("the managed runner writes the same shared shape when all three captures are named", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  writeFileSync(join(bin, "npm"), EVAL_SHIM, { mode: 0o755 });
+  const reference = join(dir, "reference.wav");
+  const delivered = join(dir, "delivered.wav");
+  const platform = join(dir, "platform.wav");
+  writeToneWav(reference, -20);
+  writeToneWav(delivered, -20);
+  writeToneWav(platform, -20);
+  const out = join(dir, "managed.json");
+  const lock = join(dir, "timing.lock");
+
+  const result = run(
+    [
+      "--scenario",
+      "stop-over",
+      "--trace-session",
+      "sess_loop01",
+      "--reference",
+      reference,
+      "--delivered",
+      delivered,
+      "--platform",
+      platform,
+      "--out",
+      out,
+      "--timing-lock",
+      lock,
+    ],
+    new URL("../", import.meta.url).pathname,
+    { PATH: `${bin}:${process.env.PATH}`, SHIM_LOG: join(dir, "npm-calls.log") },
+  );
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+
+  const artifact = readScoreboardArtifactFile(out);
+  assert.equal(pipelineOfArtifact(artifact), "managed");
+  assert.deepEqual(artifactSectionGaps(artifact), [], "the managed run carries the one shared shape");
+  assert.deepEqual(artifact.providers, {
+    stt: { absent: VENDOR_OWNED_PROVIDER_ABSENCE },
+    llm: { absent: VENDOR_OWNED_PROVIDER_ABSENCE },
+    tts: { absent: VENDOR_OWNED_PROVIDER_ABSENCE },
+  });
+  assert.deepEqual(artifact.cost, { absent: VENDOR_BILLED_COST_ABSENCE });
+  assert.deepEqual(artifact.captures?.platform, {
+    path: platform,
+    sha256: createHash("sha256").update(readFileSync(platform)).digest("hex"),
+  });
+  assert.deepEqual(artifact.eligibility, { eligible: true });
+  const inspect = buildInspectReport(artifact);
+  assert.deepEqual(
+    inspect.gaps.rows.map((row) => row.row),
+    ["screenToFirstPartialMs", "speechCompleteToFirstTokenMs", "replyGapP50Ms", "replyGapP95Ms", "commitToFirstPlayoutMs"],
+  );
+  assert.equal(inspect.gaps.rows.find((row) => row.row === "replyGapP50Ms")?.ms, 900);
+});
 
 test("one command runs the gate-voice eval, merges the Call trace, and writes the artifact", () => {
   const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));

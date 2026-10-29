@@ -146,6 +146,10 @@ export function parseScoreboardArtifact(raw: unknown, source: string): Scoreboar
   parseLatency(record.latency, pipeline, source);
   parseCost(record.cost, source);
   parseEligibility(record.eligibility, source);
+  const ledger = parseLedger(record.ledger, source);
+  if (pipeline === "cascade" && ledger !== undefined) {
+    assertCascadeLatencyFromLedger(record.latency, ledger, source);
+  }
 
   const eventTypes = parseArtifactEventTypes(record.events, source);
   if (pipeline === "managed") {
@@ -402,6 +406,121 @@ const UNAVAILABLE_GAPS: Record<ArtifactPipeline, readonly ArtifactLatencyGap[]> 
   cascade: ["commitToFirstPlayoutMs"],
   managed: ["screenToFirstPartialMs", "speechCompleteToFirstTokenMs"],
 };
+
+/**
+ * The three cascade gaps and the ledger marks each one is anchored on (M13).
+ * `speech_complete` is the provider-owned turn boundary; `final` is the managed
+ * anchor and never substitutes for it, and no row is ever borrowed from another.
+ */
+export const CASCADE_GAP_ROWS = [
+  { row: "screenToFirstPartialMs", start: "audio_in", end: "first_partial" },
+  { row: "speechCompleteToFirstTokenMs", start: "speech_complete", end: "first_token" },
+  { row: "replyGapP50Ms", start: "speech_complete", end: "first_playout" },
+] as const satisfies readonly { row: ArtifactLatencyGap; start: string; end: string }[];
+
+/** A ledger mark value in seconds, or null when the mark was not recorded. */
+function ledgerMark(marks: Readonly<Record<string, number>>, name: string): number | null {
+  const value = marks[name];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+/**
+ * The three cascade gaps, computed from the ledger marks alone (ticket 114).
+ *
+ * `marks` is `TimingLedger.summary()["marks"]` — the ledger's own clock in
+ * seconds — so a reader holding only the end-of-call summary derives every row
+ * without the ledger object. A missing anchor is a named N/A, never zero and
+ * never another mark: the greeting's marks are not read, and a cut cannot move
+ * a row because the marks are write-once.
+ */
+export function cascadeLatencyFromMarks(marks: Readonly<Record<string, number>>): ArtifactLatency {
+  const latency: ArtifactLatency = {};
+  for (const { row, start, end } of CASCADE_GAP_ROWS) {
+    const from = ledgerMark(marks, start);
+    const to = ledgerMark(marks, end);
+    if (from !== null && to !== null) {
+      latency[row] = Math.round((to - from) * 1000);
+      continue;
+    }
+    const missing = [start, end].filter((mark) => ledgerMark(marks, mark) === null);
+    const named = missing.map((mark) => `"${mark}"`).join(" or ");
+    latency[row] =
+      row === "replyGapP50Ms"
+        ? { absent: `N/A — the cascade ledger has no ${named} mark; the reply gap is never "final"` }
+        : { absent: `N/A — the cascade ledger has no ${named} mark` };
+  }
+  return latency;
+}
+
+/**
+ * A cascade artifact's latency rows must be the rows its own ledger marks
+ * derive. A number where the mark is absent (a copied reply gap, a fallback to
+ * `final`) is refused by field, so the artifact cannot claim a gap it did not
+ * measure.
+ */
+function assertCascadeLatencyFromLedger(
+  rawLatency: unknown,
+  ledger: { marks: Readonly<Record<string, number>> },
+  source: string,
+): void {
+  if (rawLatency === undefined || rawLatency === null || typeof rawLatency !== "object" || Array.isArray(rawLatency)) {
+    return; // completeness/parseLatency names a malformed or missing section
+  }
+  const latency = rawLatency as Record<string, unknown>;
+  const derived = cascadeLatencyFromMarks(ledger.marks);
+  for (const { row, start, end } of CASCADE_GAP_ROWS) {
+    const expected = derived[row];
+    const written = latency[row];
+    if (typeof expected === "number") {
+      if (typeof written !== "number" || Math.abs(written - expected) > 1e-6) {
+        throw new ArtifactReadError(
+          source,
+          `latency.${row}`,
+          `records ${showValue(written)} but the ledger marks derive ${expected}ms (${start} → ${end}); the row is computed from marks, never copied from another row`,
+        );
+      }
+      continue;
+    }
+    if (typeof written === "number") {
+      const missing = [start, end].filter((mark) => ledgerMark(ledger.marks, mark) === null);
+      const named = missing.map((mark) => `"${mark}"`).join(" or ");
+      throw new ArtifactReadError(
+        source,
+        `latency.${row}`,
+        `records ${written}ms but the ledger has no ${named} mark; the row is a named N/A, never borrowed from another mark (a "final" mark is not the cascade anchor)`,
+      );
+    }
+  }
+}
+
+/** The ledger summary a cascade artifact may carry, with finite mark values. */
+function parseLedger(raw: unknown, source: string): { marks: Record<string, number>; counts?: Record<string, number> } | undefined {
+  if (raw === undefined) return undefined;
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new ArtifactReadError(source, "ledger", `ledger is not an object (${showValue(raw)})`);
+  }
+  const record = raw as Record<string, unknown>;
+  const table = (value: unknown, field: string): Record<string, number> => {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) {
+      throw new ArtifactReadError(source, field, `${field} is not an object of finite numbers`);
+    }
+    const numbers: Record<string, number> = {};
+    for (const [name, entry] of Object.entries(value)) {
+      if (typeof entry !== "number" || !Number.isFinite(entry)) {
+        throw new ArtifactReadError(
+          source,
+          `${field}.${name}`,
+          `${field}.${name} is not a finite number (${showValue(entry)})`,
+        );
+      }
+      numbers[name] = entry;
+    }
+    return numbers;
+  };
+  const marks = table(record.marks, "ledger.marks");
+  const counts = record.counts === undefined ? undefined : table(record.counts, "ledger.counts");
+  return { marks, ...(counts !== undefined ? { counts } : {}) };
+}
 
 /**
  * The latency rows (M13): a finite non-negative number, or the named N/A for a

@@ -4,7 +4,13 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { buildSkeletonArtifact, DEFAULT_GATE_VOICE } from "../src/lib/demo/scoreboard";
+import {
+  CASCADE_NO_COMMIT_MARK_ABSENCE,
+  CASCADE_PLATFORM_CAPTURE_ABSENCE,
+  ONE_CALL_NO_P95_ABSENCE,
+  buildSkeletonArtifact,
+  DEFAULT_GATE_VOICE,
+} from "../src/lib/demo/scoreboard";
 import type { RunnerEvidence } from "../src/lib/demo/runner-evidence";
 
 const SCRIPT = new URL("./scoreboard-inspect.mts", import.meta.url).pathname;
@@ -133,6 +139,91 @@ test("inspect prints the compact triage view", () => {
   assert.match(result.stdout, /✗ stop-over #1/);
 });
 
+test("inspect reads a cascade artifact through the one reader and prints the same gap rows", () => {
+  const dir = mkdtempSync(join(tmpdir(), "inspect-"));
+  const path = join(dir, "cascade.json");
+  writeFileSync(
+    path,
+    JSON.stringify({
+      ...buildSkeletonArtifact({
+        voice: DEFAULT_GATE_VOICE,
+        scenario: "all",
+        runnerStdout: "",
+        exitCode: 0,
+        durationMs: 0,
+        runs: 1,
+        dryRun: true,
+        runId: "run-cascade-inspect",
+      }),
+      pipeline: "cascade",
+      subject: {
+        agent: { kind: "demo", voice: "anna", agentId: null },
+        locale: "en",
+        transport: "browser",
+        source: "flag",
+        pipeline: "cascade",
+      },
+      run: {
+        runId: "run-cascade-inspect",
+        variant: "cascade",
+        startedAt: "2026-10-29T10:00:00.000Z",
+        finishedAt: "2026-10-29T10:00:03.000Z",
+      },
+      providers: { stt: "assemblyai-meta", llm: "meta-llama-3.3", tts: "meta-speech" },
+      latency: {
+        screenToFirstPartialMs: 180,
+        speechCompleteToFirstTokenMs: 240,
+        replyGapP50Ms: 510,
+        replyGapP95Ms: { absent: ONE_CALL_NO_P95_ABSENCE },
+        commitToFirstPlayoutMs: { absent: CASCADE_NO_COMMIT_MARK_ABSENCE },
+      },
+      cost: {
+        currency: "USD",
+        rateTableVersion: "rates-2026-10-29",
+        legs: { stt: 0.0031, llm: 0.0024, tts: 0.0045 },
+        total: 0.01,
+      },
+      captures: {
+        reference: { path: "artifacts/reference.wav", sha256: "a".repeat(64) },
+        platform: { absent: CASCADE_PLATFORM_CAPTURE_ABSENCE },
+        delivered: { path: "artifacts/delivered.wav", sha256: "b".repeat(64) },
+      },
+      eligibility: { eligible: true },
+    }),
+  );
+
+  const result = run(["--artifact", path]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /pipeline\s+cascade/);
+  assert.match(result.stdout, /screen latency\s+180ms/);
+  assert.match(result.stdout, /think\s+240ms/);
+  assert.match(result.stdout, /reply gap p50\s+510ms/);
+  assert.match(result.stdout, /commit to playout\s+N\/A — the cascade has no commit mark/);
+});
+
+test("inspect refuses an unknown schema version instead of casting it blindly", () => {
+  const dir = mkdtempSync(join(tmpdir(), "inspect-"));
+  const path = join(dir, "future.json");
+  writeFileSync(
+    path,
+    JSON.stringify({
+      schemaVersion: 99,
+      voice: "anna",
+      runId: "run-future",
+      recordedAt: "2026-10-29T10:00:00.000Z",
+      gates: [],
+      subScores: [],
+      beats: {},
+      replyGap: { p50Ms: null, p95Ms: null, samples: 0 },
+      endCallDrain: {},
+    }),
+  );
+  const result = run(["--artifact", path]);
+  assert.equal(result.status, 1, result.stdout);
+  assert.match(result.stderr, /schemaVersion/);
+  assert.match(result.stderr, /99/);
+});
+
 test("--json prints the same compact structure", () => {
   const path = writeFixture();
   const result = run(["--artifact", path, "--json"]);
@@ -237,7 +328,8 @@ test("--events summarizes the eval JSONL compactly", () => {
 test("a missing artifact is a clear error with exit 1", () => {
   const result = run(["--artifact", "/tmp/definitely-not-a-scoreboard.json"]);
   assert.equal(result.status, 1);
-  assert.match(result.stderr, /does not exist/);
+  assert.match(result.stderr, /cannot read artifact/);
+  assert.match(result.stderr, /definitely-not-a-scoreboard\.json/);
   assert.doesNotMatch(result.stdout, /demo scoreboard inspect/);
 });
 
@@ -247,7 +339,7 @@ test("an unreadable artifact and a broken event stream exit 1", () => {
   writeFileSync(broken, "{");
   const result = run(["--artifact", broken]);
   assert.equal(result.status, 1);
-  assert.match(result.stderr, /not valid JSON/);
+  assert.match(result.stderr, /is not JSON/);
 
   const path = writeFixture();
   const events = join(dir, "events.jsonl");
