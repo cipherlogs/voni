@@ -45,6 +45,9 @@ OPEN_BOUNDS = {
     "tool.timeout_ms": "76",
     "reconnect.handshake_ms": "76",
     "probe.model_max_completion_tokens": "20",
+    # Ticket 64 declared the signed body envelope's lifetime; ticket 04 records
+    # the value. The envelope refuses to sign while this stays open.
+    "envelope.ttl_ms": "04",
 }
 
 
