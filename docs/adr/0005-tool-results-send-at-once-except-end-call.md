@@ -5,7 +5,7 @@ AssemblyAI's client-tools page says to hold an interactive tool's result until `
 ## Consequences
 
 - A held `end_call` result is still sent when its goodbye is interrupted: the platform waits for it either way. The session only hangs up while the hang-up is still armed. A caller who cut in has taken the floor back. A goodbye cut by pure noise is resumed and re-armed.
-- If the platform holds the goodbye open waiting for the result (measured ~1 in 10: a 12.6s hang-up), 3s without goodbye audio releases it (`HELD_RESULT_RELEASE_MS`).
+- If the platform holds the goodbye open waiting for the result (measured ~1 in 10: a 12.6s hang-up), the result is released as soon as the goodbye has drained — the hang-up's own settled-streak plus audio grace (`END_CALL_SETTLE_POLLS` × `END_CALL_POLL_MS` and `END_CALL_AUDIO_GRACE_MS`). The flat 3s (`HELD_RESULT_RELEASE_MS`) stays only for a goodbye that never started, where there is no drained line to prove; sending before it begins is what cuts it. This keeps the fast hang-up inside the 1500ms drain budget without chopping the closing line.
 - Still-running results of an interrupted reply are dropped, as before.
 - The platform's own reply to a tool result is not reliable enough to carry exact data. It skipped, garbled ("demo 102") or repeated the demo's Test tag in ~1 in 3 runs. The demo replaces that reply with its own (`VoiceSession.replaceNextReply`). The platform ignores the replacement ~3 in 10 times, and it is then resent once the replaced reply ends.
 - Evals: `bye-audio` (goodbye plays whole), `invite-tag`, plus `EVAL_HOLD_INTERACTIVE=1` and `EVAL_END_CALL=now`, which replay the old behaviours.
