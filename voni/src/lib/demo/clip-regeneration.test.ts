@@ -275,6 +275,41 @@ test("the comparison is deterministic for one take", (t) => {
   });
 });
 
+test("the live path actually renders one clip and compares it within tolerance", (t) => {
+  // Opt-in: a real vendor render needs the key. Absent, this is a named skip,
+  // never a silent pass. The deterministic committed-take test above stays the
+  // gate CI runs; this one proves the render itself still matches.
+  if (!process.env.ASSEMBLYAI_API_KEY) {
+    t.skip("ASSEMBLYAI_API_KEY is not set: live regeneration was not run");
+    return;
+  }
+  if (!requireEncoder(t)) return;
+  const result = spawnSync(
+    process.execPath,
+    [
+      "--import",
+      "tsx",
+      "scripts/render-audition-clips.mts",
+      "--verify-regeneration",
+      "--voice",
+      "anna",
+    ],
+    {
+      cwd: fileURLToPath(ROOT),
+      env: process.env,
+      encoding: "utf8",
+      timeout: 180_000,
+    },
+  );
+  assert.equal(
+    result.status,
+    0,
+    `live regeneration failed:\n${result.stderr || result.stdout}`,
+  );
+  assert.match(result.stdout, /rendered anna now: \d+ ms/, "the fresh take was really rendered");
+  assert.match(result.stdout, /regeneration PASS: anna is within/);
+});
+
 test("a committed clip in the wrong Locale fails even if the take is right", () => {
   const clip = auditionClipFor("anna");
   const committed = committedAnna();
