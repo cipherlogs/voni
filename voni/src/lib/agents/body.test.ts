@@ -92,15 +92,18 @@ test("every demo body variant is the same builder call with its own profile", ()
 
 // Pinned from the two builders before they were unified. A change here means
 // the unification altered a wire body (and would refresh every stored agent).
+// Ticket 64 moves only the two tenant pins: their `turn_detection` object
+// became the Turn preset (`null`). Every demo pin is unchanged, which is the
+// proof the demo body is byte-identical.
 const PUBLISHED_BYTES = {
   demoAnna: "9554dbda4854f8df0eaf25e9bbfe3357df60427c90bc6ed48466f6a50b91b597",
   demoResume: "3583837d631550d7c37e6be83587c55909544c93e7a281e8614c4b67e608db20",
   demoModel: "3451afdccde5603b77744bb39c989762806121ac459ecf49585a327ca43dd22c",
   demoExperiment: "50391e87369a16dd2e4db59f2c62bf62edd21655b2bcf4eceaaf536068725937",
   demoLola: "fddbc7bf159546cc44cec7ff9b3c0a21af3e7f6244ac4b5338540e61773a25f0",
-  tenant: "c454b3bb26cb789e3f049bbe2693d69200a695c4afb91dd58c61eca1c2f8cb64",
+  tenant: "57650aa5dd12bb77dc1f3efc91919b067b584e194072e27fda84f135a574896f",
   tenantLanguages:
-    "29e34674e289c2ab3814bfe7366c4dc89eefe16e9232e6dc6bbc818425160032",
+    "6248ce46d206ff1ba3f6cc3a4f59dbf2991e9836492c86f991cedb5ec77a48f7",
 };
 
 test("the unified builder leaves every published body byte-identical", () => {
@@ -222,9 +225,7 @@ test("the fingerprint covers every field of the stored body", () => {
     ["input.keyterms", mutate((body) => { body.input.keyterms.push("Layla"); })],
     ["input.voice_focus", mutate((body) => { body.input.voice_focus = "near-field"; })],
     ["input.voice_focus_threshold", mutate((body) => { body.input.voice_focus_threshold = 0.5; })],
-    ["input.turn_detection.min_silence", mutate((body) => {
-      body.input.turn_detection = { ...(body.input.turn_detection as Record<string, number | boolean>), min_silence: 200 };
-    })],
+    ["input.turn_detection", mutate((body) => { body.input.turn_detection = { ...TENANT_LEGACY_TURN_DETECTION }; })],
   ];
 
   const seen = new Map<string, string>([[agentBodyFingerprint(base), "the base body"]]);
@@ -293,10 +294,25 @@ test("an unchanged body keeps its fingerprint, whatever the key order", () => {
 // subset (which omitted the model override). Pinned so a later change to the
 // whole-body contract is a reviewable diff, not a silent refresh of every
 // deployed tenant agent.
-test("the tenant refresh fingerprint is pinned", () => {
+//
+// It moved again in ticket 64: the body swapped the explicit turn-detection
+// object for the Turn preset (`turn_detection: null`), so every tenant agent is
+// owed exactly one redeploy. The pre-64 value is kept so the change is proved,
+// not merely repinned.
+const PRE_64_TENANT_FINGERPRINT =
+  "0006f91074018cfb8cc554d8d82e6691f3f3299040d0b3ea08dfb8c5403d06ce";
+
+test("the tenant fingerprint moves when the Turn preset replaces the legacy object", () => {
+  const fingerprint = deploymentFingerprint("Layla", REAL_ESTATE_TEMPLATE);
+  assert.notEqual(
+    fingerprint,
+    PRE_64_TENANT_FINGERPRINT,
+    "the body changed, so the stored fingerprint must change with it",
+  );
   assert.equal(
-    deploymentFingerprint("Layla", REAL_ESTATE_TEMPLATE),
-    "0006f91074018cfb8cc554d8d82e6691f3f3299040d0b3ea08dfb8c5403d06ce",
+    fingerprint,
+    "dbbed9a5d246f2efee8fd83fd626e9035c25621969427e97d55511dee60b95cc",
+    "the post-64 tenant fingerprint is pinned",
   );
 });
 
@@ -456,18 +472,89 @@ test("the profile type admits only the whitelisted fields", () => {
   assert.equal([withRules, withTurns, withTerms, withLanguage].length, 4);
 });
 
-// ── Turn-taking stays the builder's, unchanged by this ticket ──────────────
+// ── The Turn preset reaches every agent (ticket 64) ────────────────────────
 
-test("turn-taking is the builder's, and this ticket changes neither path", () => {
+// `CONTEXT.md` **Turn preset**: "The single turn-taking setting shared by every
+// demo call, test call, and copilot session: meaning-based end-of-turn, and a
+// barge-in delay that holds out while the agent explains and drops while it
+// asks something." A stored body sends `turn_detection: null`; any object
+// disables adaptive end-of-turn and measured 3.6–4.7s replies (ADR-0003).
+test("the Turn preset reaches every persona and platform, browser and phone", () => {
+  const demoConfig = voniConfig("anna");
+  const tenantConfig = REAL_ESTATE_TEMPLATE;
+
+  const bodies: Array<[label: string, body: StoredAgentBody]> = [
+    ["demo/browser", buildDemoAgentBody("anna")],
+    [
+      "demo/phone",
+      buildStoredAgent({
+        name: "demo:voni:anna",
+        config: demoConfig,
+        profile: { ...demoAgentProfile(), platform: "phone" },
+      }),
+    ],
+    ["tenant/phone", storedAgentBody("Layla", tenantConfig)],
+    [
+      "tenant/browser",
+      buildStoredAgent({
+        name: "Layla",
+        config: tenantConfig,
+        profile: { ...tenantAgentProfile(tenantConfig), platform: "browser" },
+      }),
+    ],
+  ];
+
+  for (const [label, body] of bodies) {
+    assert.ok(
+      "turn_detection" in body.input,
+      `${label}: the body shape is unchanged; null is how the Turn preset is sent`,
+    );
+    assert.equal(
+      body.input.turn_detection,
+      null,
+      `${label}: the Turn preset (meaning-based end-of-turn), never an object`,
+    );
+  }
+});
+
+test("no profile can produce the tenant legacy turn-detection object", () => {
+  const profiles: AgentProfile[] = [
+    demoAgentProfile(),
+    demoAgentProfile({ resume: true }),
+    { ...demoAgentProfile(), platform: "phone" },
+    tenantAgentProfile(REAL_ESTATE_TEMPLATE),
+    { ...tenantAgentProfile(REAL_ESTATE_TEMPLATE), platform: "browser" },
+    { ...tenantAgentProfile(REAL_ESTATE_TEMPLATE), format: null, greeting: false },
+  ];
+
+  for (const profile of profiles) {
+    const body = buildStoredAgent({
+      name: "Layla",
+      config: REAL_ESTATE_TEMPLATE,
+      profile,
+    });
+    assert.equal(
+      body.input.turn_detection,
+      null,
+      `${profile.persona}/${profile.platform}: profile cannot reintroduce the legacy object`,
+    );
+    assert.notDeepEqual(
+      body.input.turn_detection,
+      TENANT_LEGACY_TURN_DETECTION,
+      `${profile.persona}/${profile.platform}: the pre-64 object is unreachable`,
+    );
+  }
+
+  // The explicit preset input is the same value as the default; the legacy
+  // constant survives only for ticket 65's removal proof.
   assert.equal(
-    buildDemoAgentBody("anna").input.turn_detection,
+    buildStoredAgent({
+      name: "Layla",
+      config: REAL_ESTATE_TEMPLATE,
+      profile: tenantAgentProfile(REAL_ESTATE_TEMPLATE),
+      turnTaking: { kind: "preset" },
+    }).input.turn_detection,
     null,
-    "the demo stays on the Turn preset (adaptive end-of-turn)",
-  );
-  assert.deepEqual(
-    storedAgentBody("Layla", REAL_ESTATE_TEMPLATE).input.turn_detection,
-    TENANT_LEGACY_TURN_DETECTION,
-    "the tenant body still carries its pre-64 object until ticket 64/65 removes it",
   );
 });
 
