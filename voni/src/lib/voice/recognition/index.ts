@@ -3,6 +3,7 @@ import { EN_RECOGNITION } from "./en";
 import { LOCALE_RECOGNITION } from "./locales";
 import {
   RECOGNITION_SLOTS,
+  type CompleteRecognition,
   type RecognitionBundle,
   type RecognitionLocale,
   type RecognitionResolution,
@@ -64,6 +65,42 @@ export function callRecognitionLocale(source: CallLanguageSource): RecognitionLo
     if (isRecognitionLocale(code)) return code;
   }
   return null;
+}
+
+/**
+ * No words at all, filled slot by slot. A Locale that has not rendered a slot
+ * matches nothing there — never English's words.
+ */
+const NO_WORDS: Omit<CompleteRecognition, "locale"> = {
+  vocabulary: [],
+  scene: () => "",
+  digits: { 0: [], 1: [], 2: [], 3: [], 4: [], 5: [], 6: [], 7: [], 8: [], 9: [] },
+  address: { at: [], dot: [], hyphen: [], underscore: [] },
+  filler: [],
+  bargeIn: [],
+  commands: { stop: [], wait: [], deny: [], repeat: [], listen: [], interject: [] },
+  endCall: [],
+  goodbye: [],
+};
+
+/**
+ * The recognition a call runs under, for the code that has to decide *now* —
+ * a barge-in, a back-channel, a goodbye — from what the call says about its
+ * Locale.
+ *
+ * - A pinned Locale is that Locale's own words. A slot it has not rendered yet
+ *   contributes nothing (see `NO_WORDS`): a hole matches nothing, which is a
+ *   visible miss, while English words would be a silent wrong call. The hole
+ *   itself is reported by `resolveRecognition` / `recognitionCompleteness`.
+ * - Automatic detection (nothing pinned) is the one documented English
+ *   scaffolding exception, the same one `NEUTRAL_KEYTERMS` records: the
+ *   recogniser cannot know the Locale before the caller speaks, and a guardrail
+ *   with no words at all would answer every "okay".
+ */
+export function callRecognition(source: CallLanguageSource): CompleteRecognition {
+  const locale = callRecognitionLocale(source);
+  if (locale === null) return EN_RECOGNITION;
+  return { ...NO_WORDS, ...(REGISTRY[locale]?.slots ?? {}), locale };
 }
 
 /**

@@ -5,7 +5,9 @@ import {
   COMMAND_INTENTS,
   DIGITS,
   EN_RECOGNITION,
+  LOCALE_RECOGNITION,
   RECOGNITION_SLOTS,
+  callRecognition,
   commandIntents,
   isCommandBargeIn,
   isEndCallRequest,
@@ -19,6 +21,11 @@ import {
   resolveBundle,
   resolveRecognition,
 } from "./index";
+import { DE_FILLER } from "./locales/de/filler";
+import { ES_FILLER } from "./locales/es/filler";
+import { FR_FILLER } from "./locales/fr/filler";
+import { IT_FILLER } from "./locales/it/filler";
+import { PT_FILLER } from "./locales/pt/filler";
 
 test("English is one rendering: it resolves as a complete recognition bundle", () => {
   const resolution = resolveRecognition("en");
@@ -210,12 +217,124 @@ test("each spoken Locale is registered with the vocabulary slot filled and the r
     assert.equal(resolution.status, "incomplete", locale);
     if (resolution.status !== "incomplete") continue;
     assert.equal(resolution.missing.includes("vocabulary"), false, locale);
-    assert.deepEqual(
-      resolution.missing,
-      ["scene", "digits", "address", "filler", "bargeIn", "commands", "endCall", "goodbye"],
-      locale,
-    );
+    assert.deepEqual(resolution.missing, ["scene", "digits", "address"], locale);
   }
+});
+
+/**
+ * Filler, barge-in, commands, end-call and goodbyes are what a passing remark
+ * and an end request are judged by, so they are tested as the caller's own
+ * words: a Spanish back-channel is never answered, a Spanish command is
+ * steering, a Spanish goodbye ends the call, and English words do not decide
+ * any of it.
+ */
+
+test("a Spanish back-channel is filler and is never answered", () => {
+  const es = callRecognition({ conversationLanguage: "es" });
+  for (const text of ["Vale, vale.", "Pues...", "Ajá", "Mmm", "Bueno, gracias"]) {
+    assert.equal(isFillerOnly(text, es), true, text);
+  }
+  for (const text of ["Vale, pero quiero una cita", "Somos una panadería", ""]) {
+    assert.equal(isFillerOnly(text, es), false, text);
+  }
+});
+
+test("a Spanish command token is recognised as a command", () => {
+  const es = callRecognition({ conversationLanguage: "es" });
+  assert.deepEqual(commandIntents("Para, espera un momento.", es), ["stop", "wait"]);
+  assert.deepEqual(commandIntents("No, repite eso.", es), ["deny", "repeat"]);
+  assert.equal(isCommandBargeIn("Para", es), true);
+  assert.equal(isCommandBargeIn("Somos una panadería", es), false);
+});
+
+test("a Spanish goodbye is recognised as an ending", () => {
+  const es = callRecognition({ conversationLanguage: "es" });
+  for (const text of ["Adiós", "Cuelga la llamada", "Me tengo que ir", "Hasta luego"]) {
+    assert.equal(isEndCallRequest(text, es), true, text);
+  }
+  for (const text of ["Somos una panadería", "Espera un momento", ""]) {
+    assert.equal(isEndCallRequest(text, es), false, text);
+  }
+  for (const text of ["Adiós", "Hasta luego", "Cuídate"]) {
+    assert.equal(isGoodbyeLine(text, es), true, text);
+  }
+  for (const text of ["Cuelga la llamada", "Somos una panadería", ""]) {
+    assert.equal(isGoodbyeLine(text, es), false, text);
+  }
+});
+
+test("English tokens do not leak into the Spanish set", () => {
+  const es = callRecognition({ conversationLanguage: "es" });
+  const spanish = [
+    ...es.filler,
+    ...es.bargeIn,
+    ...es.endCall,
+    ...es.goodbye,
+    ...COMMAND_INTENTS.flatMap((intent) => es.commands[intent]),
+  ].map((word) => word.toLowerCase());
+  const englishOnly = [
+    "stop", "wait", "bye", "goodbye", "thanks", "hold on", "hang on",
+    "repeat", "listen", "sorry", "excuse me", "see you", "take care",
+    "talk soon", "okay", "right", "sure", "gotta go",
+  ];
+  for (const word of englishOnly) {
+    assert.equal(spanish.includes(word), false, `"${word}" is English, not Spanish`);
+  }
+  for (const text of ["stop", "hang up", "goodbye", "okay", "sorry"]) {
+    assert.equal(isCommandBargeIn(text, es), false, text);
+    assert.equal(isEndCallRequest(text, es), false, text);
+    assert.equal(isGoodbyeLine(text, es), false, text);
+    assert.equal(isFillerOnly(text, es), false, text);
+  }
+  // And the reverse: English does not accept Spanish words.
+  assert.equal(isCommandBargeIn("Para", EN_RECOGNITION), false);
+  assert.equal(isFillerOnly("Vale", EN_RECOGNITION), false);
+});
+
+test("each spoken Locale renders filler, barge-in, commands, end call and goodbye from its own file", () => {
+  const fillerFiles = {
+    es: ES_FILLER,
+    fr: FR_FILLER,
+    de: DE_FILLER,
+    it: IT_FILLER,
+    pt: PT_FILLER,
+  } as const;
+  for (const locale of SPOKEN_NON_ENGLISH) {
+    const slots = LOCALE_RECOGNITION[locale];
+    assert.equal(slots.filler, fillerFiles[locale], `${locale}: filler is wired from filler.ts`);
+    assert.ok((slots.filler ?? []).length > 0, locale);
+    assert.ok((slots.bargeIn ?? []).length > 0, `${locale}: bargeIn`);
+    assert.ok((slots.endCall ?? []).length > 0, `${locale}: endCall`);
+    assert.ok((slots.goodbye ?? []).length > 0, `${locale}: goodbye`);
+    assert.deepEqual(
+      Object.keys(slots.commands ?? {}).sort(),
+      [...COMMAND_INTENTS].sort(),
+      `${locale}: commands are keyed by intent`,
+    );
+    for (const intent of COMMAND_INTENTS) {
+      assert.ok((slots.commands?.[intent] ?? []).length > 0, `${locale}: ${intent}`);
+    }
+    // The Locale's own words steer a call in that Locale.
+    const recognition = callRecognition({ conversationLanguage: locale });
+    assert.equal(isCommandBargeIn(slots.commands?.stop?.[0] ?? "", recognition), true, locale);
+    assert.equal(isGoodbyeLine(slots.goodbye?.[0] ?? "", recognition), true, locale);
+  }
+});
+
+test("an unpinned call runs on the documented English scaffolding, a pinned one never does", () => {
+  // Automatic detection cannot know the Locale before the caller speaks: the
+  // one documented exception (see NEUTRAL_KEYTERMS in ./transcription).
+  assert.equal(callRecognition({}), EN_RECOGNITION);
+  assert.equal(callRecognition({ languageCodes: [] }), EN_RECOGNITION);
+  assert.equal(callRecognition({ languageCodes: ["ar", "hi"] }), EN_RECOGNITION);
+
+  const spanish = callRecognition({ languageCodes: ["es"] });
+  assert.equal(spanish.locale, "es");
+  assert.equal(isEndCallRequest("Adiós", spanish), true);
+  assert.equal(isFillerOnly("Vale", spanish), true);
+  // The scaffolding is English scaffolding: it does not become the Spanish set.
+  assert.equal(isEndCallRequest("Adiós", callRecognition({})), false);
+  assert.equal(isFillerOnly("Vale", callRecognition({})), false);
 });
 
 test("a call's Locale comes from its conversation language, then its pinned language list", () => {

@@ -311,6 +311,7 @@ import {
   resolveScenarioName,
 } from "../src/lib/demo/scenario-names";
 import { judgeOverlap } from "../src/lib/voice/barge-in";
+import { EN_RECOGNITION } from "../src/lib/voice/recognition";
 import { acquireTimingLock, DEFAULT_TIMING_LOCK_PATH } from "../src/lib/demo/timing-lock";
 
 function arg(name: string, fallback = ""): string {
@@ -900,7 +901,8 @@ function readFillerEvidence(traceSession: string): FillerResumeEvidence | undefi
   const agentText = arg("--filler-agent-text", "");
   const verdictRaw = arg("--filler-verdict", "");
   const verdict: FillerVerdict = (
-    verdictRaw ? verdictRaw : judgeOverlap(visitorText, agentText)
+    // The filler-over evidence words are English scenario fixtures.
+    verdictRaw ? verdictRaw : judgeOverlap(visitorText, agentText, EN_RECOGNITION)
   ) as FillerVerdict;
   if (!["yield", "ignore", "judge", "keep"].includes(verdict)) {
     throw new Error(`--filler-verdict needs one of yield|ignore|judge|keep, got "${verdictRaw}"`);
