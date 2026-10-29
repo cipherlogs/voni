@@ -15,9 +15,13 @@
  * per-turn skew guess.
  *
  * A mark that never arrived yields no sample at all, never a zero or a partial
- * duration. `perceivedMs` is the report-only number a caller would feel: the
- * three waits plus the playout pre-roll; the pre-roll is never added to
- * `deliveryMs` or to any gate input.
+ * duration. The same holds for a mark set that cannot be true: endpointing,
+ * generation and delivery are intervals in that order, so any negative one is
+ * a mis-paired receipt and yields no sample; when the trace printed its own
+ * `gap Nms`, `endpointing + generation` must reconcile with it. `perceivedMs`
+ * is the report-only number a caller would feel: the three waits plus the
+ * playout pre-roll; the pre-roll is never added to `deliveryMs` or to any gate
+ * input.
  */
 import { PLAYOUT_PREROLL_MS } from "./playout-preroll";
 
@@ -28,6 +32,12 @@ export type LatencyBand = "ordinary" | "post-cut";
 export type LatencySplitTurn = {
   user_speech_started_at_ms?: number | null;
   user_speech_ended_at_ms?: number | null;
+  /**
+   * The trace's own printed `gap Nms` for the reply this turn was paired with:
+   * speech end → reply start. `endpointing + generation` must reconcile with
+   * it, or the marks and the trace turn are not the same exchange.
+   */
+  gapMs?: number | null;
 };
 
 /** The three client receipts for one measured turn, call-relative ms. */
@@ -75,6 +85,14 @@ export type LatencySplit = {
 const finite = (value: number | null | undefined): number | null =>
   typeof value === "number" && Number.isFinite(value) ? value : null;
 
+/**
+ * How far `endpointing + generation` may sit from the trace's printed gap. The
+ * trace prints `at` to 10ms and the gap to 1ms, and the client's reply-start
+ * receipt lands a localhost round trip after the server start (observed single
+ * digits of ms). A bigger disagreement means a different reply was joined.
+ */
+const TRACE_GAP_TOLERANCE_MS = 50;
+
 export function latencySplit(input: LatencySplitInput): LatencySplit | null {
   const speechStartedMs = finite(input.turn.user_speech_started_at_ms);
   const speechEndedMs = finite(input.turn.user_speech_ended_at_ms);
@@ -115,6 +133,18 @@ export function latencySplit(input: LatencySplitInput): LatencySplit | null {
   const endpointingMs = onTrace(userFinalMs) - speechEndedMs;
   const generationMs = onTrace(replyStartMs) - onTrace(userFinalMs);
   const deliveryMs = onTrace(firstAudioMs) - onTrace(replyStartMs);
+
+  // The three waits are consecutive intervals: each must be at or after the
+  // instant before it. A negative one is a mark from another exchange, so the
+  // turn keeps no sample rather than a clamped or zero-filled number.
+  if (endpointingMs < 0 || generationMs < 0 || deliveryMs < 0) return null;
+
+  // Pairing proof: the speech end → reply start prefix must be the trace's own
+  // gap. A reply-start receipt that disagrees belongs to a different reply.
+  const gapMs = finite(input.turn.gapMs);
+  if (gapMs !== null && Math.abs(endpointingMs + generationMs - gapMs) > TRACE_GAP_TOLERANCE_MS) {
+    return null;
+  }
 
   return {
     endpointingMs,

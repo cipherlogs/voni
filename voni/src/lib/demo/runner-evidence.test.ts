@@ -274,7 +274,7 @@ test("a caller turn cut short before its reply does not shift the next turn's ma
     // turn-1's reply never started: only its final transcript arrived.
     { atMs: 900, type: "turn.user_final", sessionId: "sess_cut", turnId: "turn-1", callMs: 900 },
     { atMs: 500, type: "turn.user_final", sessionId: "sess_cut", turnId: "turn-2", callMs: 500 },
-    { atMs: 700, type: "turn.reply_start", sessionId: "sess_cut", turnId: "turn-2", replyId: "reply_2", callMs: 700 },
+    { atMs: 800, type: "turn.reply_start", sessionId: "sess_cut", turnId: "turn-2", replyId: "reply_2", callMs: 800 },
     { atMs: 1_000, type: "reply.first_audio", sessionId: "sess_cut", turnId: "turn-2", replyId: "reply_2", callMs: 1_000, anchor: true },
   ];
   const evidence = buildRunnerEvidence({
@@ -289,11 +289,100 @@ test("a caller turn cut short before its reply does not shift the next turn's ma
   assert.deepEqual(second.latency, {
     turnId: "turn-2",
     endpointingMs: 100,
-    generationMs: 200,
-    deliveryMs: 300,
+    generationMs: 300,
+    deliveryMs: 200,
     band: "post-cut",
     perceivedMs: 1_100,
   });
+});
+
+test("a client turn the server folded into one utterance never steals the next reply's sample", () => {
+  // The client finalized a sentence fragment 335ms before the server's own
+  // end of speech; its reply marks are real, but that trace turn is the answer
+  // to the later final. Pairing by mark ordinal invents a negative
+  // endpointing and hides the final that actually follows the trace turn.
+  const excerpt = [
+    "sess_fold  agent=agent_d66c  30.0s  end=client_end",
+    '0.70s  VONI    "Hi."  (greeting ttfa 600ms)',
+    '7.36s  HEARD   "First question."  (7.36s–11.76s)',
+    '12.93s  VONI    "First answer."  (user_speech ttfa 1170ms gap 1172ms)',
+    '14.66s  HEARD   "Second question."  (14.66s–16.76s)',
+    '17.69s  VONI    "Second answer."  (user_speech ttfa 2425ms gap 933ms)',
+  ];
+  const marks: EvalEvent[] = [
+    { atMs: 12_466, type: "turn.user_final", sessionId: "sess_fold", turnId: "turn-1" },
+    { atMs: 12_473, type: "turn.reply_start", sessionId: "sess_fold", turnId: "turn-1", replyId: "reply_1" },
+    { atMs: 13_649, type: "reply.first_audio", sessionId: "sess_fold", turnId: "turn-1", replyId: "reply_1", anchor: true },
+    { atMs: 15_971, type: "turn.user_final", sessionId: "sess_fold", turnId: "turn-2" },
+    { atMs: 15_971, type: "turn.reply_start", sessionId: "sess_fold", turnId: "turn-2", replyId: "reply_2" },
+    { atMs: 18_410, type: "reply.first_audio", sessionId: "sess_fold", turnId: "turn-2", replyId: "reply_2" },
+    { atMs: 16_749, type: "turn.user_final", sessionId: "sess_fold", turnId: "turn-3" },
+    { atMs: 17_239, type: "turn.reply_start", sessionId: "sess_fold", turnId: "turn-3", replyId: "reply_3" },
+    { atMs: 19_664, type: "reply.first_audio", sessionId: "sess_fold", turnId: "turn-3", replyId: "reply_3" },
+  ];
+  const evidence = buildRunnerEvidence({
+    runnerStdout: "",
+    excerpts: [{ sessionId: "sess_fold", excerpt }],
+    marks,
+  });
+
+  assert.ok(evidence);
+  const [, first, second] = evidence.sessions[0].turns;
+  assert.deepEqual(first.latency, {
+    turnId: "turn-1",
+    endpointingMs: 1_159,
+    generationMs: 7,
+    deliveryMs: 1_176,
+    band: "ordinary",
+    perceivedMs: 2_842,
+  });
+  // trace 16.757s end → 17.200s final is endpointing 443; 17.690s reply start
+  // is generation 490 (sum 933 = the trace's own gap); 20.115s audio is 2425.
+  assert.deepEqual(second.latency, {
+    turnId: "turn-3",
+    endpointingMs: 443,
+    generationMs: 490,
+    deliveryMs: 2_425,
+    band: "ordinary",
+    perceivedMs: 3_858,
+  });
+  assert.equal(
+    evidence.sessions[0].turns.some((turn) => turn.latency?.turnId === "turn-2"),
+    false,
+    "the folded fragment never gets a sample",
+  );
+});
+
+test("a caller turn with no server end of speech yields no sample, never a wait from speech start", () => {
+  // The HEARD row never printed an end and the following reply was
+  // agent-initiated, so nothing ties a caller wait to this trace turn: a
+  // 5.4s "endpointing" from the speech start would be invented.
+  const excerpt = [
+    "sess_unended  agent=agent_d66c  107.7s  end=client_end",
+    '11.65s  HEARD   "First."  (11.65s–14.82s)',
+    '16.71s  VONI    "First answer."  (user_speech ttfa 1888ms gap 1892ms)',
+    '33.15s  HEARD   "Second."  (33.15s–  –)',
+    '42.57s  VONI    "Still there?"  (greeting)',
+  ];
+  const marks: EvalEvent[] = [
+    { atMs: 15_373, type: "turn.user_final", sessionId: "sess_unended", turnId: "turn-1" },
+    { atMs: 15_376, type: "turn.reply_start", sessionId: "sess_unended", turnId: "turn-1", replyId: "reply_1" },
+    { atMs: 17_264, type: "reply.first_audio", sessionId: "sess_unended", turnId: "turn-1", replyId: "reply_1", anchor: true },
+    { atMs: 37_200, type: "turn.user_final", sessionId: "sess_unended", turnId: "turn-2" },
+    { atMs: 37_211, type: "turn.reply_start", sessionId: "sess_unended", turnId: "turn-2", replyId: "reply_2" },
+    { atMs: 39_718, type: "reply.first_audio", sessionId: "sess_unended", turnId: "turn-2", replyId: "reply_2" },
+  ];
+  const evidence = buildRunnerEvidence({
+    runnerStdout: "",
+    excerpts: [{ sessionId: "sess_unended", excerpt }],
+    marks,
+  });
+
+  assert.ok(evidence);
+  const [first, second] = evidence.sessions[0].turns;
+  assert.ok(first.latency, "the turn with a printed end keeps its sample");
+  assert.equal(second.gapMs, null);
+  assert.equal(second.latency, undefined);
 });
 
 test("the split rides in evidence without moving a single gate or reply-gap sample", () => {
