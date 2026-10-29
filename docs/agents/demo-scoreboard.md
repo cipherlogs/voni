@@ -21,7 +21,8 @@ npm run scoreboard:demo
 - `scoreboard:streak` reads the last artifacts and checks a code fingerprint;
   it never runs audio itself.
 - `scoreboard:inspect` prints a compact artifact/report (use it instead of
-  dumping raw JSON).
+  dumping raw JSON). For machine-readable output, pipe
+  `npm run --silent scoreboard:inspect -- --artifact <path> --json`.
 
 ## File map
 
