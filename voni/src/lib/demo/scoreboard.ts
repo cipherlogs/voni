@@ -2750,18 +2750,123 @@ export type ArtifactPipeline = "managed" | "cascade";
 /** The capture legs an artifact may claim (W0 keeps two on the cascade). */
 export type ArtifactCaptureLeg = "reference" | "platform" | "delivered";
 
-/** One capture's provenance — a gitignored working file, never audio bytes. */
-export type ArtifactCapture = { path: string; sha256: string } | null;
+/**
+ * A value the pipeline cannot produce, named instead of zeroed or invented
+ * (spec: `N/A — …`, never `0`). One shape for a missing capture, a vendor-owned
+ * provider leg and a gap the engine has no mark for.
+ */
+export type ArtifactAbsence = { readonly absent: string };
+
+export function isArtifactAbsence(value: unknown): value is ArtifactAbsence {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    typeof (value as Record<string, unknown>).absent === "string"
+  );
+}
 
 /**
- * Capture evidence by leg. A cascade artifact marks `platform` null
- * (`N/A — no platform capture on the cascade`); a managed artifact carries all
- * three. Read-only in this ticket: no writer emits it yet.
+ * The cascade's platform leg is absent by construction (W0): a cascade call has
+ * no platform recording, so the leg is named N/A, never faked and never zero.
+ */
+export const CASCADE_PLATFORM_CAPTURE_ABSENCE = "N/A — no platform capture on the cascade";
+
+/** A managed run's provider table is vendor-owned; the cascade names its legs. */
+export const VENDOR_OWNED_PROVIDER_ABSENCE = "N/A — vendor-owned";
+
+/** Managed cost is paid by the platform; it is N/A, never a fabricated zero. */
+export const VENDOR_BILLED_COST_ABSENCE = "N/A — vendor-billed";
+
+/** One capture's provenance — a gitignored working file, never audio bytes. */
+export type ArtifactCapture = { path: string; sha256: string } | ArtifactAbsence | null;
+
+/**
+ * Capture evidence by leg. A cascade artifact carries `{reference, delivered}`
+ * and marks `platform` absent with a named reason; a managed artifact carries
+ * all three.
  */
 export type ArtifactCaptures = Partial<Record<ArtifactCaptureLeg, ArtifactCapture>>;
 
 /** One call-scoped event's discriminator as carried by an artifact (M12). */
 export type ArtifactEventRecord = { type: string };
+
+/** The provider legs every turn attributes (M12). */
+export const ARTIFACT_PROVIDER_LEGS = ["stt", "llm", "tts"] as const;
+export type ArtifactProviderLeg = (typeof ARTIFACT_PROVIDER_LEGS)[number];
+
+/** A leg's provider name, or the named N/A for a vendor-owned managed leg. */
+export type ArtifactProvider = string | ArtifactAbsence;
+
+/** The provider table a run recorded, per leg. */
+export type ArtifactProviders = Partial<Record<ArtifactProviderLeg, ArtifactProvider>>;
+
+/** The gaps the A/B reports (M13): three on the cascade, reply gap on both. */
+export const ARTIFACT_LATENCY_GAPS = [
+  "screenToFirstPartialMs",
+  "speechCompleteToFirstTokenMs",
+  "replyGapP50Ms",
+  "replyGapP95Ms",
+  "commitToFirstPlayoutMs",
+] as const;
+export type ArtifactLatencyGap = (typeof ARTIFACT_LATENCY_GAPS)[number];
+
+/** A gap in milliseconds, or the named N/A an engine cannot produce. */
+export type ArtifactLatency = Partial<Record<ArtifactLatencyGap, number | ArtifactAbsence>>;
+
+/** The billable legs (M3/M12): per leg and total, never a partial sum. */
+export const ARTIFACT_COST_LEGS = ["stt", "llm", "tts"] as const;
+export type ArtifactCostLeg = (typeof ARTIFACT_COST_LEGS)[number];
+
+/** A unit the vendor did not report is `unmeasured`, never zero (M3). */
+export type ArtifactCostAmount = number | "unmeasured";
+
+export type ArtifactCostRecord = {
+  readonly currency: string;
+  readonly rateTableVersion: string;
+  readonly legs: Partial<Record<ArtifactCostLeg, ArtifactCostAmount>>;
+  readonly total: ArtifactCostAmount;
+};
+
+/** A run's cost in the rate table's currency, or the managed N/A record. */
+export type ArtifactCost = ArtifactCostRecord | ArtifactAbsence;
+
+/**
+ * A run is eligible only when it is clean (M13); an ineligible run names every
+ * reason and never falls through as a silent `false`.
+ */
+export type ArtifactEligibility = {
+  readonly eligible: boolean;
+  readonly reasons?: readonly string[];
+};
+
+/** The run block (spec M12): which run this artifact is, and its window. */
+export type ArtifactRun = {
+  readonly runId: string;
+  /** The A/B variant the run belongs to (M13). */
+  readonly variant: string;
+  readonly startedAt: string;
+  readonly finishedAt: string;
+};
+
+/**
+ * The ten sections one artifact carries for either engine (spec M12, ticket
+ * 112). The reader checks exactly these names, so a second shape is visible.
+ */
+export const ARTIFACT_SECTIONS = [
+  "subject",
+  "run",
+  "pipeline",
+  "providers",
+  "gates",
+  "latency",
+  "cost",
+  "captures",
+  "eligibility",
+  "beats",
+] as const;
+export type ArtifactSection = (typeof ARTIFACT_SECTIONS)[number];
+
 
 export type ScoreboardArtifact = {
   schemaVersion: typeof SCOREBOARD_SCHEMA_VERSION;
@@ -2779,6 +2884,31 @@ export type ScoreboardArtifact = {
    * written before the cascade; readers take that as `managed`.
    */
   pipeline?: ArtifactPipeline;
+  /**
+   * The run block (spec M12): the run's own id (matching `runId`), the A/B
+   * variant it belongs to and its window. Absent on artifacts written before
+   * the cascade.
+   */
+  run?: ArtifactRun;
+  /**
+   * The provider table the run recorded, per leg (M12): the names actually
+   * used, or the named N/A for a vendor-owned managed leg.
+   */
+  providers?: ArtifactProviders;
+  /**
+   * The gaps the run measured (M13), in milliseconds, or the named N/A an
+   * engine cannot produce — never zero.
+   */
+  latency?: ArtifactLatency;
+  /**
+   * Per-leg and total cost in the rate table's currency (M3/M12). A managed
+   * run is vendor-billed (`N/A`), never zero.
+   */
+  cost?: ArtifactCost;
+  /**
+   * The run's own eligibility verdict and every reason it was refused (M13).
+   */
+  eligibility?: ArtifactEligibility;
   /**
    * The capture legs the run recorded (W0). Absent on artifacts written before
    * the field existed. A cascade artifact never claims the platform leg.

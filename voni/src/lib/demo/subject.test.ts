@@ -15,10 +15,22 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { DEMO_VOICE_IDS } from "./voni-agent";
+import { CONVERSATION_LANGUAGES } from "@/lib/agents/wizard";
+import { getVoice } from "@/lib/agents/voices";
+import { UNMEASURED_VOICE_LEVELS } from "@/lib/agents/voice-levels";
 import {
+  LOCALE_SUBJECT_STATUSES,
   SubjectError,
+  UNBOUND_VOICES,
+  UnknownVoiceError,
+  UnboundVoiceError,
+  bindCascadeVoice,
+  cascadeSubjectList,
   defaultSubject,
   formatSubject,
+  isCascadeSubjectVoice,
+  localeSubjectStatus,
+  resolveCascadeSubject,
   resolveSubject,
   sameSubject,
   subjectOrLegacy,
@@ -488,4 +500,141 @@ test("score-demo fails by name before writing an artifact for a bad subject", ()
   assert.notEqual(badAgent.status, 0);
   assert.ok(!existsSync(out), "no artifact for a missing tenant agent");
   assert.match(badAgent.stderr + badAgent.stdout, /needs an agent id/);
+});
+
+// ── No voice without a binding (ticket 131, W1) ─────────────────────────────
+
+test("a voice that cannot be bound to one Locale is not a cascade subject", () => {
+  assert.equal(isCascadeSubjectVoice("lola"), true);
+  assert.equal(isCascadeSubjectVoice("juergen"), false, "German has no serving binding today");
+  assert.equal(isCascadeSubjectVoice("not-a-voice"), false);
+
+  assert.throws(
+    () => bindCascadeVoice("juergen"),
+    (error: unknown) =>
+      error instanceof UnboundVoiceError &&
+      error.voiceId === "juergen" &&
+      error.locale === "de" &&
+      /voice_not_found/.test(error.message) &&
+      /stays open/.test(error.message),
+    "the refusal names the voice, its Locale and why it is unbound",
+  );
+  assert.throws(
+    () => bindCascadeVoice("not-a-voice"),
+    (error: unknown) =>
+      error instanceof UnknownVoiceError &&
+      error.voiceId === "not-a-voice" &&
+      /not in the voice binding table/.test(error.message),
+  );
+  assert.deepEqual(bindCascadeVoice("lola"), {
+    voiceId: "lola",
+    locale: "es",
+    language: "Spanish",
+  });
+
+  assert.throws(
+    () => resolveCascadeSubject({ voice: "juergen", explicit: true }),
+    (error: unknown) =>
+      error instanceof UnboundVoiceError &&
+      error.voiceId === "juergen" &&
+      error.locale === "de",
+    "a run cannot measure a cascade subject it cannot bind",
+  );
+});
+
+test("the German Locale stays open: not beta, not dropped, not cut over", () => {
+  const german = localeSubjectStatus("de");
+  assert.equal(german.locale, "de");
+  assert.equal(german.status, "open");
+  assert.deepEqual(german.voices, [], "no voice is silently substituted for German");
+  assert.match(german.openReason ?? "", /voice_not_found/);
+  assert.match(german.openReason ?? "", /stays open/);
+
+  assert.deepEqual(
+    LOCALE_SUBJECT_STATUSES,
+    ["bound", "open"],
+    "the vocabulary has no beta, dropped or cut-over state to hide behind",
+  );
+
+  // The refusal is a routing fact, not a mutation: German is still listed after
+  // a run is refused, in the same state it was in before.
+  const before = cascadeSubjectList();
+  assert.throws(() => resolveCascadeSubject({ voice: "juergen" }), UnboundVoiceError);
+  assert.deepEqual(cascadeSubjectList(), before, "a refused voice never quietly drops its Locale");
+
+  // The managed subject axis still knows the voice: it is open work, not deleted.
+  assert.equal(resolveSubject({ voice: "juergen" }).locale, "de");
+});
+
+test("the subject list names each Locale's status explicitly", () => {
+  const rows = cascadeSubjectList();
+
+  assert.deepEqual(
+    rows.map((row) => row.locale),
+    [...CONVERSATION_LANGUAGES],
+    "one row per offered Locale, in the product's order",
+  );
+  for (const row of rows) {
+    assert.ok(
+      row.status === "bound" || row.status === "open",
+      `${row.locale} names its status explicitly, not by omission`,
+    );
+    assert.equal(row.status === "open", row.voices.length === 0, `${row.locale} is consistent`);
+  }
+
+  const bound = Object.fromEntries(rows.filter((row) => row.status === "bound").map((row) => [row.locale, row.voices]));
+  assert.deepEqual(bound, {
+    en: ["anna"],
+    es: ["lola"],
+    fr: ["estelle"],
+    it: ["giovanni"],
+    pt: ["rafael"],
+  });
+  assert.equal(localeSubjectStatus("de").status, "open", "German is open, and says so");
+});
+
+test("the unbound table mirrors the registry and the measured evidence", () => {
+  for (const [voiceId, unbound] of Object.entries(UNBOUND_VOICES)) {
+    const voice = getVoice(voiceId);
+    assert.ok(voice, `${voiceId} stays in the registry so its Locale is visible`);
+    assert.equal(voice.languageCode, unbound.locale, `${voiceId}'s unbound Locale is its declared one`);
+  }
+  for (const row of UNMEASURED_VOICE_LEVELS) {
+    assert.ok(
+      UNBOUND_VOICES[row.voice],
+      `${row.voice} has no measured reference, so it cannot be bound`,
+    );
+    assert.match(row.unmeasuredReason ?? "", /voice_not_found/);
+  }
+});
+
+test("a cascade subject carries its pipeline axis, so the A/B cannot merge", () => {
+  const cascade = resolveCascadeSubject({ voice: "lola", explicit: true });
+  assert.equal(cascade.pipeline, "cascade");
+  assert.equal(formatSubject(cascade), "demo lola (es, browser, cascade)");
+
+  const managed = resolveSubject({ voice: "lola", explicit: true });
+  assert.equal(managed.pipeline, undefined, "a managed subject written before the axis stays managed");
+  assert.equal(formatSubject(managed), "demo lola (es, browser)");
+
+  assert.ok(!sameSubject(cascade, managed), "the same voice on two engines is two subjects");
+  assert.ok(
+    sameSubject(cascade, resolveCascadeSubject({ voice: "lola", explicit: true })),
+    "two cascade runs of one voice are one subject",
+  );
+});
+
+test("the TS binding table and the Python binding table name the same unbound voice", () => {
+  const python = readFileSync(
+    new URL("../../../../voice-pipeline/cascade/voice_binding.py", import.meta.url),
+    "utf8",
+  );
+  const unbound = python.slice(python.indexOf("UNBOUND_VOICES"));
+  for (const voiceId of Object.keys(UNBOUND_VOICES)) {
+    assert.match(
+      unbound,
+      new RegExp(`"${voiceId}"`),
+      `${voiceId} is unbound in the Python table too, or the two engines disagree about its Locale`,
+    );
+  }
 });

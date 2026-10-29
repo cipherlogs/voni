@@ -1,15 +1,31 @@
 import { readFileSync } from "node:fs";
 import {
+  ARTIFACT_COST_LEGS,
+  ARTIFACT_LATENCY_GAPS,
+  ARTIFACT_PROVIDER_LEGS,
+  ARTIFACT_SECTIONS,
   SCOREBOARD_SCHEMA_VERSION,
+  isArtifactAbsence,
   parseGateRows,
+  type ArtifactCapture,
   type ArtifactCaptureLeg,
   type ArtifactCaptures,
+  type ArtifactCost,
+  type ArtifactCostAmount,
+  type ArtifactCostLeg,
+  type ArtifactEligibility,
+  type ArtifactLatency,
+  type ArtifactLatencyGap,
   type ArtifactPipeline,
+  type ArtifactProviders,
+  type ArtifactRun,
+  type ArtifactSection,
   type ScoreboardArtifact,
 } from "./scoreboard";
 import { CASCADE_ONLY_EVENT_TYPES, isCascadeOnlyEvent } from "./event-envelope";
 
-export { CASCADE_ONLY_EVENT_TYPES, isCascadeOnlyEvent };
+export { ARTIFACT_SECTIONS, CASCADE_ONLY_EVENT_TYPES, isCascadeOnlyEvent };
+export type { ArtifactSection };
 
 /**
  * The shared artifact reader (meta-cascade M12): the managed artifact and the
@@ -62,6 +78,21 @@ function showValue(value: unknown): string {
   return JSON.stringify(value);
 }
 
+/** A named N/A is a non-empty reason; an empty one explains nothing. */
+function assertNamedAbsence(
+  absence: { absent: string },
+  field: string,
+  source: string,
+): void {
+  if (absence.absent.trim() === "") {
+    throw new ArtifactReadError(
+      source,
+      field,
+      `${field} is marked absent with an empty reason; a named N/A must say why`,
+    );
+  }
+}
+
 /**
  * Read one artifact, whoever wrote it. Pure: the caller owns the bytes.
  *
@@ -99,13 +130,22 @@ export function parseScoreboardArtifact(raw: unknown, source: string): Scoreboar
 
   const pipeline = pipelineOfArtifact(record as Pick<ScoreboardArtifact, "pipeline">, source);
   const captures = parseCaptures(record.captures, source);
-  if (pipeline === "cascade" && captures?.platform) {
+  if (pipeline === "cascade" && isPresentCapture(captures?.platform)) {
     throw new ArtifactReadError(
       source,
       "captures.platform",
       "cascade artifact claims a platform capture; the cascade carries {reference, delivered} only, so the platform leg must be N/A",
     );
   }
+  assertCaptureLegs(captures, pipeline, source);
+
+  // Present sections are validated whether or not the artifact claims the full
+  // shape; completeness is checked once every substantive rule has had its say.
+  parseRun(record.run, source, record.runId as string);
+  parseProviders(record.providers, source);
+  parseLatency(record.latency, pipeline, source);
+  parseCost(record.cost, source);
+  parseEligibility(record.eligibility, source);
 
   const eventTypes = parseArtifactEventTypes(record.events, source);
   if (pipeline === "managed") {
@@ -119,10 +159,40 @@ export function parseScoreboardArtifact(raw: unknown, source: string): Scoreboar
     }
   }
 
+  // A declared pipeline claims the one shared shape (ticket 112); an artifact
+  // with no discriminator predates the cascade and is read expand-only so old
+  // evidence still parses.
+  if (record.pipeline !== undefined) {
+    const gaps = artifactSectionGaps(record as Partial<Record<ArtifactSection, unknown>>);
+    if (gaps.length > 0) {
+      throw new ArtifactReadError(
+        source,
+        gaps[0],
+        `${pipeline} artifact is missing ${gaps.join(", ")} of the one shared shape (${ARTIFACT_SECTIONS.join(", ")})`,
+      );
+    }
+  }
+
   return {
     ...(record as unknown as ScoreboardArtifact),
     gates: parseGateRows(record.gates, source),
   };
+}
+
+/**
+ * Which sections of the one shared shape this artifact is missing (ticket 112).
+ * Order is `ARTIFACT_SECTIONS`, so the first gap is the one a refusal names.
+ *
+ * An artifact that carries no `pipeline` predates the cascade and is read
+ * expand-only (the writer never emitted these sections); an artifact that
+ * declares its pipeline is claiming the shared shape and must carry all ten.
+ */
+export function artifactSectionGaps(
+  artifact: Partial<Record<ArtifactSection, unknown>>,
+): ArtifactSection[] {
+  return ARTIFACT_SECTIONS.filter(
+    (section) => artifact[section] === undefined || artifact[section] === null,
+  );
 }
 
 /**
@@ -146,9 +216,9 @@ export function pipelineOfArtifact(
 }
 
 /**
- * Validate the readable capture record. A `null` leg is an explicit N/A (the
- * cascade's platform leg); a claimed leg names a file and its hash, never
- * audio bytes.
+ * Validate the readable capture record. A claimed leg names a file and its
+ * hash, never audio bytes; a leg the pipeline cannot produce is a named
+ * absence (`{absent}`) or, on a legacy artifact, a bare `null`.
  */
 function parseCaptures(raw: unknown, source: string): ArtifactCaptures | undefined {
   if (raw === undefined) return undefined;
@@ -165,6 +235,10 @@ function parseCaptures(raw: unknown, source: string): ArtifactCaptures | undefin
       );
     }
     if (capture === null) continue;
+    if (isArtifactAbsence(capture)) {
+      assertNamedAbsence(capture, `captures.${leg}`, source);
+      continue;
+    }
     const entry = capture as Record<string, unknown>;
     if (
       typeof capture !== "object" ||
@@ -175,11 +249,58 @@ function parseCaptures(raw: unknown, source: string): ArtifactCaptures | undefin
       throw new ArtifactReadError(
         source,
         `captures.${leg}`,
-        `capture leg "${leg}" needs path/sha256 (never audio bytes)`,
+        `capture leg "${leg}" needs path/sha256 (never audio bytes) or a named absence`,
       );
     }
   }
   return record as ArtifactCaptures;
+}
+
+/** A capture that names a file, as opposed to a named N/A or a legacy null. */
+function isPresentCapture(capture: ArtifactCapture | undefined): boolean {
+  return capture !== null && capture !== undefined && !isArtifactAbsence(capture);
+}
+
+/**
+ * The legs each pipeline must account for (ticket 112): the cascade carries
+ * `{reference, delivered}` and names the platform leg absent; the managed path
+ * carries all three. A leg that is simply missing is refused by name.
+ */
+function assertCaptureLegs(
+  captures: ArtifactCaptures | undefined,
+  pipeline: ArtifactPipeline,
+  source: string,
+): void {
+  if (captures === undefined) return; // completeness names the whole section
+  if (pipeline === "cascade") {
+    for (const leg of ["reference", "delivered"] as const) {
+      if (!isPresentCapture(captures[leg])) {
+        throw new ArtifactReadError(
+          source,
+          `captures.${leg}`,
+          `cascade artifact carries no ${leg} capture; the cascade records {reference, delivered}`,
+        );
+      }
+    }
+    const platform = captures.platform;
+    if (platform === null || platform === undefined) {
+      throw new ArtifactReadError(
+        source,
+        "captures.platform",
+        "cascade artifact leaves the platform leg unexplained; it must be marked absent with a named reason (N/A — no platform capture on the cascade)",
+      );
+    }
+    return;
+  }
+  for (const leg of ARTIFACT_CAPTURE_LEGS) {
+    if (!isPresentCapture(captures[leg])) {
+      throw new ArtifactReadError(
+        source,
+        `captures.${leg}`,
+        `managed artifact carries no ${leg} capture; the managed path records all three legs`,
+      );
+    }
+  }
 }
 
 /** Validate the readable event list and return its types for the pipeline check. */
@@ -201,8 +322,284 @@ function parseArtifactEventTypes(raw: unknown, source: string): string[] {
   });
 }
 
-/** Read and parse an artifact file; a bad file is named by its path. */
-export function readScoreboardArtifactFile(path: string): ScoreboardArtifact {
+/**
+ * The run block (M12). The artifact and its run block name the same run, so a
+ * copied or stitched artifact is visible instead of plausible.
+ */
+function parseRun(raw: unknown, source: string, artifactRunId: string): ArtifactRun | undefined {
+  if (raw === undefined) return undefined;
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new ArtifactReadError(source, "run", `run is not an object (${showValue(raw)})`);
+  }
+  const record = raw as Record<string, unknown>;
+  for (const field of ["runId", "variant", "startedAt", "finishedAt"] as const) {
+    if (typeof record[field] !== "string" || (record[field] as string).trim() === "") {
+      throw new ArtifactReadError(source, `run.${field}`, `run.${field} is missing or empty`);
+    }
+  }
+  if (record.runId !== artifactRunId) {
+    throw new ArtifactReadError(
+      source,
+      "run.runId",
+      `run.runId ${showValue(record.runId)} does not name this artifact's run ${showValue(artifactRunId)}`,
+    );
+  }
+  for (const field of ["startedAt", "finishedAt"] as const) {
+    if (Number.isNaN(Date.parse(record[field] as string))) {
+      throw new ArtifactReadError(
+        source,
+        `run.${field}`,
+        `run.${field} ${showValue(record[field])} is not a timestamp`,
+      );
+    }
+  }
+  return record as ArtifactRun;
+}
+
+/**
+ * The provider table (M12): every leg names the provider it used, or the named
+ * N/A a managed leg records. No leg is silently absent and no leg is invented.
+ */
+function parseProviders(raw: unknown, source: string): ArtifactProviders | undefined {
+  if (raw === undefined) return undefined;
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new ArtifactReadError(source, "providers", `providers is not an object (${showValue(raw)})`);
+  }
+  const record = raw as Record<string, unknown>;
+  for (const [leg, provider] of Object.entries(record)) {
+    if (!(ARTIFACT_PROVIDER_LEGS as readonly string[]).includes(leg)) {
+      throw new ArtifactReadError(
+        source,
+        `providers.${leg}`,
+        `unknown provider leg "${leg}"; expected one of ${ARTIFACT_PROVIDER_LEGS.join(", ")}`,
+      );
+    }
+    if (typeof provider === "string" && provider.trim() !== "") continue;
+    if (isArtifactAbsence(provider)) {
+      assertNamedAbsence(provider, `providers.${leg}`, source);
+      continue;
+    }
+    throw new ArtifactReadError(
+      source,
+      `providers.${leg}`,
+      `provider leg "${leg}" needs a provider name or a named N/A`,
+    );
+  }
+  for (const leg of ARTIFACT_PROVIDER_LEGS) {
+    if (record[leg] === undefined) {
+      throw new ArtifactReadError(
+        source,
+        `providers.${leg}`,
+        `provider leg "${leg}" is missing; every turn names the stt/llm/tts it used, or the named N/A`,
+      );
+    }
+  }
+  return record as ArtifactProviders;
+}
+
+/** Gaps each engine cannot produce: recorded as a named N/A, never zero (M13). */
+const UNAVAILABLE_GAPS: Record<ArtifactPipeline, readonly ArtifactLatencyGap[]> = {
+  cascade: ["commitToFirstPlayoutMs"],
+  managed: ["screenToFirstPartialMs", "speechCompleteToFirstTokenMs"],
+};
+
+/**
+ * The latency rows (M13): a finite non-negative number, or the named N/A for a
+ * gap the engine has no mark for. An engine's unavailable gap must say so, so
+ * it is never silently absent and never a copy of another row.
+ */
+function parseLatency(
+  raw: unknown,
+  pipeline: ArtifactPipeline,
+  source: string,
+): ArtifactLatency | undefined {
+  if (raw === undefined) return undefined;
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new ArtifactReadError(source, "latency", `latency is not an object (${showValue(raw)})`);
+  }
+  const record = raw as Record<string, unknown>;
+  for (const [gap, value] of Object.entries(record)) {
+    if (!(ARTIFACT_LATENCY_GAPS as readonly string[]).includes(gap)) {
+      throw new ArtifactReadError(
+        source,
+        `latency.${gap}`,
+        `unknown latency gap "${gap}"; expected one of ${ARTIFACT_LATENCY_GAPS.join(", ")}`,
+      );
+    }
+    if (typeof value === "number") {
+      if (!Number.isFinite(value) || value < 0) {
+        throw new ArtifactReadError(
+          source,
+          `latency.${gap}`,
+          `latency gap "${gap}" must be finite and non-negative, got ${showValue(value)}`,
+        );
+      }
+      continue;
+    }
+    if (isArtifactAbsence(value)) {
+      assertNamedAbsence(value, `latency.${gap}`, source);
+      continue;
+    }
+    throw new ArtifactReadError(
+      source,
+      `latency.${gap}`,
+      `latency gap "${gap}" needs a number or a named N/A`,
+    );
+  }
+  for (const gap of UNAVAILABLE_GAPS[pipeline]) {
+    const value = record[gap];
+    if (value === undefined) {
+      throw new ArtifactReadError(
+        source,
+        `latency.${gap}`,
+        `${pipeline} run leaves "${gap}" silently absent; it must record the named N/A (the gap does not exist on this engine)`,
+      );
+    }
+    if (typeof value === "number") {
+      throw new ArtifactReadError(
+        source,
+        `latency.${gap}`,
+        `${pipeline} run records "${gap}" as ${showValue(value)}; the gap does not exist on this engine and must be N/A`,
+      );
+    }
+  }
+  return record as ArtifactLatency;
+}
+
+/**
+ * The cost record (M3/M12). One unmeasured unit makes the total `unmeasured`;
+ * a partial sum presented as complete is refused, naming the leg. An absent leg
+ * is refused rather than read as zero.
+ */
+function parseCost(raw: unknown, source: string): ArtifactCost | undefined {
+  if (raw === undefined) return undefined;
+  if (isArtifactAbsence(raw)) {
+    assertNamedAbsence(raw, "cost", source);
+    return raw;
+  }
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new ArtifactReadError(source, "cost", `cost is not an object (${showValue(raw)})`);
+  }
+  const record = raw as Record<string, unknown>;
+  for (const field of ["currency", "rateTableVersion"] as const) {
+    if (typeof record[field] !== "string" || (record[field] as string).trim() === "") {
+      throw new ArtifactReadError(source, `cost.${field}`, `cost.${field} is missing or empty`);
+    }
+  }
+  if (record.legs === null || typeof record.legs !== "object" || Array.isArray(record.legs)) {
+    throw new ArtifactReadError(source, "cost.legs", `cost.legs is not an object (${showValue(record.legs)})`);
+  }
+  const legs = record.legs as Record<string, unknown>;
+  for (const [leg, amount] of Object.entries(legs)) {
+    if (!(ARTIFACT_COST_LEGS as readonly string[]).includes(leg)) {
+      throw new ArtifactReadError(
+        source,
+        `cost.legs.${leg}`,
+        `unknown cost leg "${leg}"; expected one of ${ARTIFACT_COST_LEGS.join(", ")}`,
+      );
+    }
+    if (amount === "unmeasured") continue;
+    if (typeof amount !== "number" || !Number.isFinite(amount) || amount < 0) {
+      throw new ArtifactReadError(
+        source,
+        `cost.legs.${leg}`,
+        `cost leg "${leg}" must be a finite, non-negative amount or "unmeasured", got ${showValue(amount)}`,
+      );
+    }
+  }
+  for (const leg of ARTIFACT_COST_LEGS) {
+    if (legs[leg] === undefined) {
+      throw new ArtifactReadError(
+        source,
+        "cost.legs",
+        `cost leg "${leg}" is missing; an unreported unit is "unmeasured", never zero`,
+      );
+    }
+  }
+  const derived = artifactCostTotal(legs as Partial<Record<ArtifactCostLeg, ArtifactCostAmount>>);
+  const total = record.total;
+  if (derived === "unmeasured") {
+    if (total !== "unmeasured") {
+      const unmeasured = ARTIFACT_COST_LEGS.filter((leg) => legs[leg] === "unmeasured");
+      throw new ArtifactReadError(
+        source,
+        "cost.total",
+        `cost total is ${showValue(total)} but leg(s) ${unmeasured.join(", ")} are unmeasured; an unmeasured unit makes the total unmeasured`,
+      );
+    }
+    return record as ArtifactCost;
+  }
+  if (typeof total !== "number" || Math.abs(total - derived) > 1e-9) {
+    throw new ArtifactReadError(
+      source,
+      "cost.total",
+      `cost total is ${showValue(total)} but its legs sum to ${derived}; the total is derived, never re-invented`,
+    );
+  }
+  return record as ArtifactCost;
+}
+
+/**
+ * The sum of a run's measured legs, or `unmeasured` when any leg is. The one
+ * derivation, so no caller presents a partial sum as a total.
+ */
+export function artifactCostTotal(
+  legs: Partial<Record<ArtifactCostLeg, ArtifactCostAmount>>,
+): ArtifactCostAmount {
+  const amounts = Object.values(legs);
+  if (amounts.length === 0 || amounts.some((amount) => amount === "unmeasured")) return "unmeasured";
+  return amounts.reduce((sum: number, amount) => sum + (amount as number), 0);
+}
+
+/**
+ * The run's eligibility verdict (M13): an ineligible run names at least one
+ * reason and an eligible one carries none, so neither state is a silent flag.
+ */
+function parseEligibility(raw: unknown, source: string): ArtifactEligibility | undefined {
+  if (raw === undefined) return undefined;
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new ArtifactReadError(
+      source,
+      "eligibility",
+      `eligibility is not an object (${showValue(raw)})`,
+    );
+  }
+  const record = raw as Record<string, unknown>;
+  if (typeof record.eligible !== "boolean") {
+    throw new ArtifactReadError(
+      source,
+      "eligibility.eligible",
+      `eligibility.eligible must be a boolean, got ${showValue(record.eligible)}`,
+    );
+  }
+  const reasons = record.reasons;
+  if (reasons !== undefined) {
+    if (!Array.isArray(reasons) || reasons.some((reason) => typeof reason !== "string" || reason.trim() === "")) {
+      throw new ArtifactReadError(
+        source,
+        "eligibility.reasons",
+        "every eligibility reason must be a non-empty string",
+      );
+    }
+    if (record.eligible === true && reasons.length > 0) {
+      throw new ArtifactReadError(
+        source,
+        "eligibility.reasons",
+        "an eligible run carries no refusal reason",
+      );
+    }
+  }
+  if (record.eligible === false && (!Array.isArray(reasons) || reasons.length === 0)) {
+    throw new ArtifactReadError(
+      source,
+      "eligibility.reasons",
+      "an ineligible run is BLOCKED with a named reason, not a silent false",
+    );
+  }
+  return record as ArtifactEligibility;
+}
+
+/** Read and parse an artifact file; a bad file is named by its path. */export function readScoreboardArtifactFile(path: string): ScoreboardArtifact {
   let text: string;
   try {
     text = readFileSync(path, "utf8");
