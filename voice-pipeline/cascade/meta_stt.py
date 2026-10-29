@@ -27,6 +27,15 @@ retries once with a new session, and ``1013`` refuses to retry, opens the
 speech leg through the ticket-22 ``CallRungs`` seam and fails visibly. A
 ``1011`` whose reason is the vendor's max session duration is a planned
 reconnect: a new session, no failure recorded, no retry budget spent.
+
+Turns can overlap: a later ``speechStart`` may arrive before an earlier
+``speechComplete``. The adapter keeps one :class:`cascade.turn_state.TurnState`
+per ``(session epoch, provider turnId)``, so both turns stay distinct and a
+partial — which carries no ``turnId`` — lands on the most recent start. Every
+event is stamped with the local session epoch, which the adapter owns and bumps
+on every new socket. A late event from a replaced session is counted and logged,
+then ignored; a vendor ``turnId`` reused after a reconnect cannot collide with
+the old turn.
 """
 
 from __future__ import annotations
@@ -44,6 +53,7 @@ from urllib.parse import urlencode
 from cascade.failures import FailureClass, FailureVerdict, classify_stt
 from cascade.testing.clock import RealClock
 from cascade.thresholds import require_bound
+from cascade.turn_state import TurnState, TurnStateStore
 from cascade.voice_binding import LOCALES
 from providers import FinalTranscript, PartialTranscript, StreamingSTT
 
@@ -256,9 +266,14 @@ class AudioFrameRejected(ValueError):
 
 @dataclass(frozen=True)
 class SpeechStart:
-    """``speechStart``: a provider turn opened, named by the vendor's turn id."""
+    """``speechStart``: a provider turn opened, named by the vendor's turn id.
+
+    ``session_epoch`` is the adapter's local session counter; with ``turn_id``
+    it forms the logical turn identity a reconnect cannot reuse.
+    """
 
     turn_id: str
+    session_epoch: int = 0
 
 
 @dataclass(frozen=True)
@@ -266,6 +281,18 @@ class SpeechEnd:
     """``speechEnd``: the provider's boundary. Records, never finalises."""
 
     turn_id: str
+    session_epoch: int = 0
+
+
+@dataclass(frozen=True)
+class SpeechPartial(PartialTranscript):
+    """``transcript``: cumulative text for the most recent start, epoch-stamped.
+
+    It deliberately has no ``turnId``: the vendor does not send one, and the
+    turn it belongs to is the adapter's most recent ``speechStart``.
+    """
+
+    session_epoch: int = 0
 
 
 @dataclass(frozen=True)
@@ -273,10 +300,12 @@ class SpeechComplete(FinalTranscript):
     """``speechComplete``: the authoritative turn text.
 
     A ``FinalTranscript`` so existing turn handling reads it as the one final,
-    with the provider ``turn_id`` added for the logical-turn store.
+    with the provider ``turn_id`` and the local ``session_epoch`` added for the
+    logical-turn store.
     """
 
     turn_id: str = ""
+    session_epoch: int = 0
 
 
 class MetaStreamingSTT(StreamingSTT):
@@ -306,8 +335,13 @@ class MetaStreamingSTT(StreamingSTT):
         self._session = ""
         self._handshake_timeout_s = handshake_timeout_s
         self._failure_reason: str | None = None
-        self._latest_turn: str | None = None
         self._clock = clock if clock is not None else RealClock()
+        # The adapter owns the epoch; the store starts one below the first
+        # session so ``open()`` advances both in lockstep to 0.
+        self._turns = TurnStateStore(
+            clock=self._clock, source="meta", start_epoch=-1
+        )
+        self._stale_events = 0
         self._audio_end = 0.0
         self._dropped_frames = 0
         self._last_close_code: int | None = None
@@ -329,6 +363,21 @@ class MetaStreamingSTT(StreamingSTT):
     def last_close_code(self) -> int | None:
         """The vendor's close code on the most recent session, if it sent one."""
         return self._last_close_code
+
+    @property
+    def epoch(self) -> int:
+        """The current session epoch; every yielded event is stamped with it."""
+        return self._epoch
+
+    @property
+    def turns(self) -> tuple[TurnState, ...]:
+        """The adapter's logical turn state, in the order the provider opened it."""
+        return self._turns.turns()
+
+    @property
+    def stale_events(self) -> int:
+        """Events from a replaced session that were marked, logged and ignored."""
+        return self._stale_events
 
     @property
     def failures(self) -> tuple[FailureVerdict, ...]:
@@ -413,9 +462,11 @@ class MetaStreamingSTT(StreamingSTT):
             self._language_bias = language_bias(language_codes)
 
         self._epoch += 1
+        # The store's epoch is the logical-id half; the adapter decides when it
+        # moves (a new socket, never a vendor frame).
+        self._turns.new_epoch()
         session = session_id(self._call_id, self._epoch)
         self._session = session
-        self._latest_turn = None
         self._audio_end = float(self._clock())
         self._last_close_code = None
         url = f"{REALTIME_URL}?{urlencode({'sessionId': session})}"
@@ -584,11 +635,12 @@ class MetaStreamingSTT(StreamingSTT):
             raise RuntimeError("meta speech session has no acknowledgement yet")
         while True:
             frames = self._frames
+            source_epoch = self._epoch
             if frames is None:
                 return
             try:
                 async for raw in frames:
-                    mapped = self._map_frame(raw)
+                    mapped = self.map_event(raw, epoch=source_epoch)
                     if mapped is not None:
                         yield mapped
                 return
@@ -715,8 +767,26 @@ class MetaStreamingSTT(StreamingSTT):
         if self._alert_sink is not None:
             self._alert_sink(verdict, reason)
 
-    def _map_frame(self, raw: Any) -> Any:
-        """Map one inbound frame; ``None`` means ignore it."""
+    def map_event(self, raw: Any, *, epoch: int | None = None) -> Any:
+        """Map one inbound frame; ``None`` means ignore it.
+
+        ``epoch`` is the session the frame came from (the current one when
+        omitted). A frame from a replaced session is marked — counted in
+        :attr:`stale_events` and logged — and ignored before it can touch turn
+        state, so an old ``turnId`` can never be read as the new epoch's turn.
+        """
+        source_epoch = self._epoch if epoch is None else epoch
+        if source_epoch != self._epoch:
+            self._stale_events += 1
+            _log.warning(
+                "meta speech session %s: ignoring a late event from session "
+                "epoch %s (current epoch %s)",
+                self._session,
+                source_epoch,
+                self._epoch,
+            )
+            return None
+
         if not isinstance(raw, str):
             # The vendor's binary frames carry no transcript.
             return None
@@ -737,21 +807,29 @@ class MetaStreamingSTT(StreamingSTT):
                     self._session,
                 )
                 return None
-            self._latest_turn = turn_id
-            return SpeechStart(turn_id)
+            state = self._turns.open(turn_id, epoch=source_epoch)
+            if state is None:
+                _log.warning(
+                    "meta speech session %s: speechStart for closed turn %r",
+                    self._session,
+                    turn_id,
+                )
+                return None
+            return SpeechStart(turn_id=turn_id, session_epoch=source_epoch)
 
         if kind == "transcript":
             text = message.get("text")
-            if self._latest_turn is None:
+            if not isinstance(text, str) or not text:
+                return None
+            state = self._turns.partial(text, epoch=source_epoch)
+            if state is None:
                 _log.warning(
-                    "meta speech session %s: ignoring a partial with no "
-                    "preceding speechStart",
+                    "meta speech session %s: ignoring a partial that belongs "
+                    "to no open turn",
                     self._session,
                 )
                 return None
-            if not isinstance(text, str) or not text:
-                return None
-            return PartialTranscript(text)
+            return SpeechPartial(text=text, session_epoch=source_epoch)
 
         if kind == "speechEnd":
             turn_id = _turn_id(message)
@@ -761,7 +839,16 @@ class MetaStreamingSTT(StreamingSTT):
                     self._session,
                 )
                 return None
-            return SpeechEnd(turn_id)
+            state = self._turns.end(turn=turn_id, epoch=source_epoch)
+            if state is None:
+                _log.warning(
+                    "meta speech session %s: speechEnd for unknown or closed "
+                    "turn %r",
+                    self._session,
+                    turn_id,
+                )
+                return None
+            return SpeechEnd(turn_id=turn_id, session_epoch=source_epoch)
 
         if kind == "speechComplete":
             turn_id = _turn_id(message)
@@ -772,8 +859,30 @@ class MetaStreamingSTT(StreamingSTT):
                 )
                 return None
             text = message.get("text")
+            authored = text if isinstance(text, str) else ""
+            before = self._turns.get(turn_id)
+            was_finalised = before is not None and before.is_finalised
+            state = self._turns.finalise(
+                authored, turn=turn_id, epoch=source_epoch
+            )
+            if state is None:
+                _log.warning(
+                    "meta speech session %s: speechComplete for unknown or "
+                    "closed turn %r",
+                    self._session,
+                    turn_id,
+                )
+                return None
+            if was_finalised:
+                _log.warning(
+                    "meta speech session %s: ignoring a duplicate "
+                    "speechComplete for turn %r",
+                    self._session,
+                    turn_id,
+                )
+                return None
             return SpeechComplete(
-                text=text if isinstance(text, str) else "", turn_id=turn_id
+                text=authored, turn_id=turn_id, session_epoch=source_epoch
             )
 
         if kind == "error":
@@ -802,7 +911,6 @@ class MetaStreamingSTT(StreamingSTT):
         socket, self._socket = self._socket, None
         frames, self._frames = self._frames, None
         was_acked, self._acked = self._acked, False
-        self._latest_turn = None
         if socket is None:
             return
         if not was_acked:
