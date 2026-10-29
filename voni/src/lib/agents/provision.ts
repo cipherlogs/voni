@@ -1,9 +1,16 @@
-import { compileSystemPrompt } from "./compile";
+import { createHash } from "node:crypto";
 import type { AgentConfig } from "./config";
 import { compileVoiceTools, toRestTool } from "@/lib/tools/definitions";
-import { TRANSCRIPTION_MODE, buildAgentKeyterms, buildAgentTranscriptionPrompt } from "@/lib/voice/transcription";
-import { voiceOutputVolume } from "./voice-levels";
+import {
+  buildStoredAgent,
+  stableJson,
+  type AgentProfile,
+  type StoredAgentBody,
+  type StoredAudioFormat,
+} from "./body";
 import { resolveCredential } from "@/lib/platform/credentials";
+
+export { stableJson } from "./body";
 
 const AGENTS_URL = "https://agents.assemblyai.com/v1/agents";
 
@@ -11,39 +18,25 @@ export type AgentDeploymentResult =
   | { ok: true; agentId: string }
   | { ok: false; error: string };
 
-export function storedAgentBody(name: string, config: AgentConfig) {
+/** Every tenant deployment is a phone call: the platform's μ-law, 8 kHz. */
+export const TENANT_AUDIO_FORMAT: StoredAudioFormat = {
+  encoding: "audio/pcmu",
+  sample_rate: 8000,
+};
+
+/**
+ * The tenant's persona/platform profile: the one visible line where a tenant
+ * differs from the demo. Everything else — rules, turn-taking, recognition
+ * vocabulary, language policy — comes from `buildStoredAgent` (ADR-0006).
+ */
+export function tenantAgentProfile(config: AgentConfig): AgentProfile {
   return {
-    name,
-    system_prompt: compileSystemPrompt(config),
-    greeting: config.greeting,
-    voice: { voice_id: config.voiceId },
-    input: {
-      format: { encoding: "audio/pcmu", sample_rate: 8000 },
-      transcription_mode: TRANSCRIPTION_MODE,
-      // Scene + vocabulary for the opening turn; PSTN callers are on
-      // handsets/speakerphone, so far-field isolation fits the mic.
-      transcription_prompt: buildAgentTranscriptionPrompt(config),
-      keyterms: buildAgentKeyterms(config),
-      voice_focus: "far-field",
-      voice_focus_threshold: 0.8,
-      turn_detection: {
-        min_silence: 100,
-        max_silence: 1000,
-        interrupt_response: true,
-        interruption_delay: 500,
-      },
-      ...(config.languageCodes.length > 0
-        ? { language_codes: config.languageCodes }
-        : {}),
-    },
-    output: {
-      voice: config.voiceId,
-      format: { encoding: "audio/pcmu", sample_rate: 8000 },
-      // The voice's level, decided from its measured reference (voice-parity
-      // ticket 37). Same field and source as the demo body; the browser never
-      // applies a level of its own.
-      volume: voiceOutputVolume(config.voiceId),
-    },
+    persona: "tenant",
+    platform: "phone",
+    format: TENANT_AUDIO_FORMAT,
+    // PSTN callers are on handsets/speakerphone, so far-field isolation fits
+    // the mic.
+    microphoneFocus: { mode: "far-field", threshold: 0.8 },
     // REST shape (no `type`): the Agents API tool object has no such field —
     // sending it risks the tool being dropped while the prompt still
     // mentions it. See `toRestTool`.
@@ -51,10 +44,18 @@ export function storedAgentBody(name: string, config: AgentConfig) {
   };
 }
 
+export function storedAgentBody(name: string, config: AgentConfig): StoredAgentBody {
+  return buildStoredAgent({ name, config, profile: tenantAgentProfile(config) });
+}
+
 /**
  * The exact tenant-body fields the deployment fingerprint covers. Exported so
  * a test can prove a field (the per-voice level, voice-parity ticket 37) is
  * inside the fingerprint input without rebuilding the whole body.
+ *
+ * This subset is the pre-62 tenant fingerprint. Ticket 62 replaces it with the
+ * whole `StoredAgentBody` (both paths hashing one shape); until then the demo
+ * and tenant fingerprints deliberately stay as they ship.
  */
 export function comparableAgent(value: Record<string, unknown>) {
   const voice = (value.voice ?? {}) as Record<string, unknown>;
@@ -90,18 +91,6 @@ export function comparableAgent(value: Record<string, unknown>) {
     },
     tools,
   };
-}
-
-/** Canonical JSON for fingerprints. Exported for demo-agent parity. */
-export function stableJson(value: unknown): string {  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
-  if (value && typeof value === "object") {
-    return `{${Object.entries(value as Record<string, unknown>)
-      .filter(([, item]) => item !== undefined)
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([key, item]) => `${JSON.stringify(key)}:${stableJson(item)}`)
-      .join(",")}}`;
-  }
-  return JSON.stringify(value);
 }
 
 export function deploymentFingerprint(name: string, config: AgentConfig): string {
@@ -214,7 +203,6 @@ export async function provisionAgent(
     };
   }
 }
-import { createHash } from "node:crypto";
 
 export type RemoteDeleteResult =
   | { ok: true; alreadyGone: boolean }
