@@ -43,6 +43,7 @@ npm run scoreboard:demo
 | `voni/src/lib/demo/turn-windows.ts` | one formatter for turn-window evidence (gate detail + inspect report) |
 | `voni/src/lib/voice/silent-greeting.ts` | one silent-greeting session: the line as the greeting, native level (caller clips + reference capture) |
 | `voni/src/lib/demo/reference-render.ts` | reference cache (voice + text), PCM WAV writer, default line = the voice's greeting |
+| `voni/src/lib/demo/gate-producers.ts` | the one gate → producer-scenario table, its coverage assertion, and the startup summary |
 | `voni/scripts/render-reference.mts` | `npm run voice:reference`: render one line in one voice outside a conversation (W0) |
 | `docs/demo-latency-ladder.md` | turn-window experiment rulebook, stop rule, and ledger (not a gate or budget owner) |
 
@@ -52,6 +53,12 @@ detail strings are the audit trail; a FAIL must name its session/turn.
 
 ## Gate -> producer -> artifact
 
+`voni/src/lib/demo/gate-producers.ts` is the single source for the scenario
+producers below; `score-demo` reads it at startup (before the timing lock) and
+fails when a gate's producer is not in the default suite, so a gate cannot
+report INFO forever on evidence nobody runs. Gates with no scenario producer
+declare why there (`run`, `operator`, `manual`) instead of staying silent.
+
 | Gate | Producer | Artifact |
 | --- | --- | --- |
 | plumbing | `classifyRunnerOutcome` | `evalRunner.status/breakReason` |
@@ -59,13 +66,13 @@ detail strings are the audit trail; a FAIL must name its session/turn.
 | reply-gap | Call trace gaps / `--gap` | `replyGap`, `beats.*.gapSamples`, `callTrace` |
 | end-of-turn | stored body + trace CONFIG scan | `gates` detail |
 | greeting-cut | greeting-cut scenario | `beats["greeting-cut"].cutMs` |
-| barge-in-cut | stop-over / hang-up-over | `beats["real-cut-answered"]`, `runnerEvidence` |
+| barge-in-cut | stop-over | `beats["real-cut-answered"]`, `runnerEvidence` |
 | filler-resume | filler-over line | `beats["filler-ignored"]` |
 | overheard-recall | over-talk trace + `OVERHEARD ASIDE` | `overheard` |
 | email-invite | invite-tag / `--email-json` | `emailInvite` |
 | double-talk | over-talk `DOUBLE TALK` | `doubleTalk` |
 | dead-air | silence-check-in `SILENCE TIMELINE` | `deadAir` |
-| end-call-drain | bye-audio + both hang-up scenarios | `endCallDrain` |
+| end-call-drain | bye-audio + free-gate coverage, then both hang-up scenarios | `endCallDrain` |
 | timbre-probes | `--probe-json` / session evidence | `probes`, `loudness` |
 | accent-human | `--rate` + `--recording` | `humanRatings`, `humanReview` |
 | phone-checklist, talk-hold-pinned | manual/external | informational rows only |
@@ -89,7 +96,8 @@ greeting.
 
 - Run live timing scenarios **one at a time**; `score-demo` takes
   `/tmp/voni-demo-timing.lock`. Parallel live runs inflate cut/reply numbers.
-- `npm run scoreboard:demo` defaults to the full 9-scenario suite; use
+- `npm run scoreboard:demo` defaults to the full default suite
+  (`SUITE_SCENARIOS`: 10 scenarios, both goodbye-drain paths included); use
   `--scenario <name>` for focused triage. A dry run spawns nothing.
 - Live runs need `voni/.dev.vars` (AssemblyAI + AI Gateway keys) and, for the
   stored path, `DATABASE_URL` (Neon) so the demo agent can be provisioned.
