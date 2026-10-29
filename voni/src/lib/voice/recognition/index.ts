@@ -12,6 +12,7 @@ import {
 
 export * from "./types";
 export * from "./match";
+export * from "./completeness";
 export { EN_RECOGNITION } from "./en";
 
 /**
