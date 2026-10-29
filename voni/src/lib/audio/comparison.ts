@@ -29,6 +29,7 @@ import {
 import { measureEnvelopeModulation, type EnvelopeModulation } from "./envelope-modulation";
 import type { DecodedAudio } from "./format-facts";
 import { analyseLevel, LevelFactsError, type LevelFacts } from "./level-facts";
+import { NATIVE_GAIN_STAGE, assertNoLevelStage } from "./native-level";
 import {
   SPEECH_OCTAVE_CENTRES,
   measureSpectralBalance,
@@ -1632,6 +1633,9 @@ function buildPipelineAudit(
 export function compareReferenceAndDelivered(
   input: TwoCaptureRequest,
 ): TwoCaptureComparison {
+  // The cascade has no gain stage: a level knob on the request is refused by
+  // name before any sample is read, so a comparison can only be native.
+  assertNoLevelStage(input as unknown as Record<string, unknown>, "comparison request");
   const reasons: string[] = [];
   const toleranceSeconds = SCOREBOARD_BUDGETS.comparisonOnsetToleranceS.value;
   const slots: Record<TwoCaptureRole, TwoCaptureSlot | null> = {
@@ -1751,7 +1755,7 @@ export function compareReferenceAndDelivered(
     profile: "w0-two-capture",
     status: reasons.length === 0 ? "measured" : "unresolved",
     unresolvedReasons: reasons,
-    gainStage: "none",
+    gainStage: NATIVE_GAIN_STAGE,
     line: input.line,
     alignment: {
       onsetDeltaSeconds,

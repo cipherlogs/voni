@@ -42,6 +42,7 @@ from typing import Any
 
 from cascade.assemblyai_tts import MODEL_ID, TTS_BASE_URL, SocketFactory
 from cascade.body_map import CascadeBody, adapt_body
+from cascade.native_level import NATIVE_GAIN_STAGE
 from cascade.reference_render import (
     WAV_HEADER_BYTES,
     ReferenceFormat,
@@ -398,7 +399,7 @@ async def render_clip(
         format=fmt.to_document(),
         endpoint={"url": TTS_BASE_URL, "model": MODEL_ID},
         level=level,
-        gain_stage="none",
+        gain_stage=NATIVE_GAIN_STAGE,
         generated_on=generated_on or date.today().isoformat(),
     )
 
@@ -554,7 +555,7 @@ def clip_record_problems(plan: ClipPlan, record: ClipRecord) -> list[str]:
         problems.append(
             f'clip endpoint {dict(record.endpoint)} is not the call\'s {_clip_endpoint()}'
         )
-    if record.gain_stage != "none":
+    if record.gain_stage != NATIVE_GAIN_STAGE:
         problems.append(
             f'clip declares a gain stage "{record.gain_stage}": the cascade carries no '
             "output.volume, gain, limiter or normalisation"
@@ -625,7 +626,7 @@ def manifest_document(
         ),
         "endpoint": _clip_endpoint(),
         "format": clip_format().to_document(),
-        "gainStage": "none",
+        "gainStage": NATIVE_GAIN_STAGE,
         "clips": clips,
         "open": open_rows,
         "blockers": [blocker.to_document() for blocker in blockers],
@@ -744,7 +745,7 @@ def audit_manifest(
         problems.append(
             f"manifest format {document_format} is not the call's native {expected_format}"
         )
-    if manifest.get("gainStage") != "none":
+    if manifest.get("gainStage") != NATIVE_GAIN_STAGE:
         problems.append(
             f'manifest declares gainStage "{manifest.get("gainStage")}": the cascade '
             "carries no gain stage"
