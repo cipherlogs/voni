@@ -33,7 +33,8 @@ import os
 import re
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from enum import Enum
 from types import MappingProxyType
 from typing import Any
 from urllib.parse import urlencode
@@ -277,6 +278,51 @@ def schedule(text: str) -> tuple[str, ...]:
     return tuple(chunks)
 
 
+#: The only ``word_boundaries_status`` value that licenses a word-level cut.
+WORD_BOUNDARIES_COMPLETE = "complete"
+
+
+@dataclass(frozen=True)
+class WordBoundary:
+    """One word's position on the session's continuous audio timeline."""
+
+    word: str
+    start_ms: float
+    end_ms: float
+    confidence: float = 0.0
+
+
+@dataclass
+class SynthesisRequest:
+    """One flushed request: its text, its audio, and what the vendor timed."""
+
+    flush_id: int | None
+    text: str = ""
+    audio_start_ms: float | None = None
+    audio_duration_ms: int | None = None
+    audio_bytes: int = 0
+    words: tuple[WordBoundary, ...] = field(default_factory=tuple)
+
+
+class ResumeGranularity(str, Enum):
+    """How much of the cut reply the barge-in path re-synthesizes."""
+
+    WORD = "word"
+    SENTENCE = "sentence"
+
+
+@dataclass(frozen=True)
+class ResumePoint:
+    """Where the unheard tail starts, and how precisely that is known."""
+
+    granularity: ResumeGranularity
+    text: str
+    flush_id: int | None
+    word_index: int | None
+    reason: str
+
+
+
 
 
 def transport_format(transport: str) -> TransportFormat:
@@ -325,6 +371,10 @@ class AssemblyAIStreamingTTS(StreamingTTS):
         self.flush_id: int | None = None
         self.audio_bytes: int = 0
         self.termination: Mapping[str, Any] | None = None
+        # Per-request facts (ticket 51): keyed by the flush id the vendor sent.
+        self.requests: dict[int, SynthesisRequest] = {}
+        self.request_order: list[int] = []
+        self.word_boundaries_status: str | None = None
 
     @property
     def url(self) -> str:
@@ -420,13 +470,15 @@ class AssemblyAIStreamingTTS(StreamingTTS):
             if kind == "Audio":
                 pcm = self._decode_audio(frame)
                 self.audio_bytes += len(pcm)
+                request = self._request_for(frame.get("flush_id"), text=chunks[index])
+                request.audio_bytes += len(pcm)
                 yield SentenceAudio(
                     pcm=pcm,
                     sample_rate=self.audio_sample_rate,
                     text=chunks[index],
                 )
             elif kind == "FlushDone":
-                self._record_flush_done(frame)
+                self._record_flush_done(frame, text=chunks[index])
                 index += 1
                 if index >= len(chunks):
                     return
@@ -483,14 +535,213 @@ class AssemblyAIStreamingTTS(StreamingTTS):
         if recent >= limit:
             raise ControlFramePacingError(float(limit), recent, now)
 
-    def _record_flush_done(self, frame: Mapping[str, Any]) -> None:
+    def _record_flush_done(self, frame: Mapping[str, Any], *, text: str = "") -> None:
         flush_id = frame.get("flush_id")
         if isinstance(flush_id, int):
             self.flush_id = flush_id
+        request = self._request_for(flush_id, text=text)
+        duration = frame.get("audio_duration_ms")
+        if isinstance(duration, int):
+            request.audio_duration_ms = duration
 
     def _record_termination(self, frame: Mapping[str, Any]) -> None:
-        """Kept for the termination/billing ticket; nothing reads it yet."""
         self.termination = frame
+        status = frame.get("word_boundaries_status")
+        if isinstance(status, str):
+            self.word_boundaries_status = status
+
+    def _request_for(
+        self, flush_id: Any, *, text: str = ""
+    ) -> SynthesisRequest:
+        """The record for one flush id, created on its first frame.
+
+        Frames are matched by ``flush_id`` and never by arrival order: a
+        sentence's ``WordBoundaries`` may land after the next request's audio.
+        """
+        key = flush_id if isinstance(flush_id, int) else self.flush_id
+        if key is None:
+            key = -1
+        request = self.requests.get(key)
+        if request is None:
+            request = SynthesisRequest(flush_id=key if key >= 0 else None)
+            self.requests[key] = request
+            self.request_order.append(key)
+        if text and not request.text:
+            request.text = text
+        return request
+
+    def _record_word_boundaries(self, frame: Mapping[str, Any]) -> None:
+        entries = frame.get("words")
+        boundaries: list[WordBoundary] = []
+        for entry in entries if isinstance(entries, list) else []:
+            if not isinstance(entry, Mapping):
+                continue
+            word = entry.get("word")
+            start = entry.get("start")
+            end = entry.get("end")
+            if (
+                not isinstance(word, str)
+                or not isinstance(start, (int, float))
+                or not isinstance(end, (int, float))
+            ):
+                continue
+            confidence = entry.get("confidence")
+            boundaries.append(
+                WordBoundary(
+                    word=word,
+                    start_ms=start,
+                    end_ms=end,
+                    confidence=(
+                        float(confidence) if isinstance(confidence, (int, float)) else 0.0
+                    ),
+                )
+            )
+        request = self._request_for(frame.get("flush_id"))
+        request.words = tuple(boundaries)
+        start = frame.get("audio_start_ms")
+        if isinstance(start, (int, float)):
+            request.audio_start_ms = start
+
+    async def terminate(self) -> Mapping[str, Any]:
+        """Ask for the session summary; the billing ticket reads it as a record."""
+        self._require_open()
+        await self._socket.send(json.dumps({"type": "Terminate"}))
+        while True:
+            frame = await self._read_frame()
+            if frame.get("type") == "Termination":
+                self._record_termination(frame)
+                return frame
+
+    def resume_point(self, played_ms: float) -> ResumePoint:
+        """Where the unheard tail starts, from the vendor's own timings.
+
+        A word-level cut needs the vendor to report ``word_boundaries_status``
+        ``complete`` (or the call to still be running, before a summary
+        exists) and a ``WordBoundaries`` frame for the request at the cut.
+        Anything else falls back to the first sentence not fully played, by
+        name; the sentence text is never re-cut into guessed word offsets.
+        """
+        timeline = self._timeline()
+        if not timeline:
+            raise ValueError("no synthesis request is available to resume from")
+
+        position = next(
+            (
+                index
+                for index, (_, _, end) in enumerate(timeline)
+                if played_ms < end
+            ),
+            None,
+        )
+        if position is None:
+            request = timeline[-1][0]
+            return ResumePoint(
+                granularity=ResumeGranularity.SENTENCE,
+                text="",
+                flush_id=request.flush_id,
+                word_index=None,
+                reason="the whole reply has been played",
+            )
+
+        request = timeline[position][0]
+        status = self.word_boundaries_status
+        if status is not None and status != WORD_BOUNDARIES_COMPLETE:
+            return self._sentence_resume(
+                timeline, position, f"word_boundaries_status={status}"
+            )
+        if not request.words:
+            return self._sentence_resume(
+                timeline, position, "no WordBoundaries frame for this request"
+            )
+
+        word_index = next(
+            (
+                index
+                for index, word in enumerate(request.words)
+                if word.end_ms > played_ms
+            ),
+            None,
+        )
+        if word_index is None:
+            if position + 1 < len(timeline):
+                return self._sentence_resume(
+                    timeline, position + 1, "every word of this request was heard"
+                )
+            return ResumePoint(
+                granularity=ResumeGranularity.SENTENCE,
+                text="",
+                flush_id=request.flush_id,
+                word_index=None,
+                reason="the whole reply has been played",
+            )
+
+        tail = self._tail_from(timeline, position, word_index)
+        if tail is None:
+            return self._sentence_resume(
+                timeline, position, "the word boundaries do not match the request text"
+            )
+        return ResumePoint(
+            granularity=ResumeGranularity.WORD,
+            text=tail,
+            flush_id=request.flush_id,
+            word_index=word_index,
+            reason="word boundaries are complete",
+        )
+
+    def _timeline(self) -> list[tuple[SynthesisRequest, float, float]]:
+        """Each request with its start and end on the session's audio timeline."""
+        timeline: list[tuple[SynthesisRequest, float, float]] = []
+        cursor = 0.0
+        for key in self.request_order:
+            request = self.requests[key]
+            start = request.audio_start_ms
+            if start is None:
+                start = cursor
+            end = start + (request.audio_duration_ms or 0)
+            timeline.append((request, start, end))
+            cursor = end
+        return timeline
+
+    def _sentence_resume(
+        self,
+        timeline: list[tuple[SynthesisRequest, float, float]],
+        position: int,
+        reason: str,
+    ) -> ResumePoint:
+        request = timeline[position][0]
+        return ResumePoint(
+            granularity=ResumeGranularity.SENTENCE,
+            text=request.text,
+            flush_id=request.flush_id,
+            word_index=None,
+            reason=reason,
+        )
+
+    def _tail_from(
+        self,
+        timeline: list[tuple[SynthesisRequest, float, float]],
+        position: int,
+        word_index: int,
+    ) -> str | None:
+        """The unheard text from one word on, cut from the original request text.
+
+        The vendor guarantees one word entry per whitespace-delimited token of
+        the request, in order, so the tail is the same tokens taken from the
+        original text: case and punctuation survive, and nothing is guessed. A
+        count that disagrees means the boundaries are unusable, not a licence
+        to approximate.
+        """
+        parts: list[str] = []
+        for offset, (request, _, _) in enumerate(timeline[position:]):
+            tokens = request.text.split()
+            first = word_index if offset == 0 else 0
+            if offset == 0 and len(request.words) != len(tokens):
+                return None
+            if first > len(tokens):
+                return None
+            if tokens[first:]:
+                parts.append(" ".join(tokens[first:]))
+        return " ".join(parts)
 
     def _decode_audio(self, frame: Mapping[str, Any]) -> bytes:
         payload = frame.get("audio")
@@ -533,6 +784,9 @@ class AssemblyAIStreamingTTS(StreamingTTS):
                 "synthesis session failed: "
                 f"Error {frame.get('error_code')}: {frame.get('error')}"
             )
+        if frame.get("type") == "WordBoundaries":
+            self._record_word_boundaries(frame)
+            return await self._read_frame()
         return frame
 
     def _read_begin(self, raw: Any) -> Mapping[str, Any]:
