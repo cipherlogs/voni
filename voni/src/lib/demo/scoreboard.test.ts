@@ -105,6 +105,7 @@ import {
   traceTurnForVisitorSpeech,
   traceTurnsForAgentLines,
   namesTeamInbox,
+  parseRunnerHangUp,
   runnerHangUpDelayMs,
   TEAM_INBOX_ADDRESS,
   emailInviteGate,
@@ -3205,6 +3206,28 @@ test("the runner's own hang-up line is the measured end-of-audio vs session-clos
     4200,
   );
   assert.equal(runnerHangUpDelayMs("hang-up-fast: 1/1\n"), null);
+});
+
+test("the runner's hang-up line carries the call whose drain ran long", () => {
+  // A slow hang-up must cite its own closing turn, never another scenario's.
+  assert.deepEqual(
+    parseRunnerHangUp("    hung up 4200ms after the goodbye finished playing (session sess_drain21)\n"),
+    { ms: 4200, sessionId: "sess_drain21" },
+  );
+  // A line without a session still measures the delay; the turn is unmerged.
+  assert.deepEqual(
+    parseRunnerHangUp("    hung up 912ms after the goodbye finished playing\n"),
+    { ms: 912, sessionId: null },
+  );
+  // Several runs: the worst delay wins, with its own session.
+  assert.deepEqual(
+    parseRunnerHangUp(
+      "    hung up 4200ms after the goodbye finished playing (session sess_fast)\n" +
+        "    hung up 4800ms after the goodbye finished playing (session sess_over)\n",
+    ),
+    { ms: 4800, sessionId: "sess_over" },
+  );
+  assert.equal(parseRunnerHangUp("hang-up-fast: 1/1\n"), null);
 });
 
 test("end-call drain fails when the closing line never named the team inbox", () => {

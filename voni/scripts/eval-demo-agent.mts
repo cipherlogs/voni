@@ -913,6 +913,15 @@ const LONG_ASK = "Tell me in detail, step by step, how you would help a dental c
 const STOP_OVER_POINT = "price";
 const STOP_OVER_POINT_LINE = "What is the price?";
 
+/**
+ * The measured drain: session close minus the goodbye's audio end, with the
+ * call's own session so score-demo can cite that call's closing turn on a
+ * slow FAIL instead of guessing one.
+ */
+function hangUpLine(ms: number, sessionId: string | null): string {
+  return `    hung up ${ms}ms after the goodbye finished playing${sessionId ? ` (session ${sessionId})` : ""}`;
+}
+
 /** After the long ask, wait until the agent's answer is audibly under way. */
 async function askAndWaitForSpeech(ctx: Parameters<Parameters<typeof runClient>[2]>[0]) {
   await ctx.waitFor(() => ctx.replies() >= 1); // greeting done
@@ -1089,7 +1098,7 @@ const CLIENT_SCENARIOS: { name: string; run: () => Promise<string | null> }[] = 
       });
       if (o.endedAt === null) return "never hung up";
       const ms = o.endedAt - o.lastAudioEnd;
-      console.log(`    hung up ${ms}ms after the goodbye finished playing`);
+      console.log(hangUpLine(ms, o.sessionId));
       return ms <= 1500 ? null : `hang-up too slow: ${ms}ms`;
     },
   },
@@ -1103,7 +1112,7 @@ const CLIENT_SCENARIOS: { name: string; run: () => Promise<string | null> }[] = 
       });
       if (o.creates.some((c) => isResumeInstructions(c))) return "resumed instead of ending";
       if (o.endedAt === null) return "never hung up";
-      console.log(`    hung up ${o.endedAt - o.lastAudioEnd}ms after the goodbye finished playing`);
+      console.log(hangUpLine(o.endedAt - o.lastAudioEnd, o.sessionId));
       return null;
     },
   },

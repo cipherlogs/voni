@@ -2822,20 +2822,34 @@ export function parseGoodbyeDrainOutput(stdout: string): GoodbyeDrainEvidence | 
   return found;
 }
 
+/** One measured hang-up line: the delay and the call it ran long on. */
+export type RunnerHangUpEvidence = {
+  /** Session close minus the goodbye's audio end. */
+  ms: number;
+  /** The call's own session, so a FAIL cites that call's turn, never another's. */
+  sessionId: string | null;
+};
+
 /**
  * The runner's measured closing-line drain: `hung up Nms after the goodbye
- * finished playing`, one line per hang-up run. Several runs report the worst
- * hang-up, the number the gate must see. Null when no hang-up was measured.
+ * finished playing (session sess_…)`, one line per hang-up run. Several runs
+ * report the worst hang-up, with its own session, the number and call the
+ * gate must see. Null when no hang-up was measured.
  */
-export function runnerHangUpDelayMs(stdout: string): number | null {
-  let worst: number | null = null;
+export function parseRunnerHangUp(stdout: string): RunnerHangUpEvidence | null {
+  let worst: RunnerHangUpEvidence | null = null;
   for (const line of stdout.split("\n")) {
-    const match = line.match(/hung up (\d+)ms after the goodbye finished playing/);
+    const match = line.match(/hung up (\d+)ms after the goodbye finished playing(?: \(session (\S+)\))?/);
     if (!match) continue;
     const ms = Number(match[1]);
-    if (worst === null || ms > worst) worst = ms;
+    if (worst === null || ms > worst.ms) worst = { ms, sessionId: match[2] ?? null };
   }
   return worst;
+}
+
+/** The worst measured hang-up delay, in ms; null when none was measured. */
+export function runnerHangUpDelayMs(stdout: string): number | null {
+  return parseRunnerHangUp(stdout)?.ms ?? null;
 }
 
 export type EndCallDrainInput = {

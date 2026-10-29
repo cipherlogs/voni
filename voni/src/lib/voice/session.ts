@@ -449,9 +449,13 @@ const FLOOR_TICK_MS = 150;
 /** A resume after a cut says the rest only when more than this many words were unheard. */
 const RESUME_MIN_WORDS = 3;
 /**
- * A held end_call result with no goodbye audio for this long: the platform is
- * waiting for it (measured 1 in 10), so send it. A real goodbye streams audio
- * steadily until its reply.done; 3s also covers a goodbye slow to start.
+ * A held end_call result with no goodbye audio at all for this long: the
+ * platform is waiting for it (measured 1 in 10), so send it. Once the goodbye
+ * has spoken, the result goes back on the hang-up's own drain handshake
+ * (END_CALL_SETTLE_POLLS settled polls plus END_CALL_AUDIO_GRACE_MS), so the
+ * fast path never pays a flat 3s. This stays the slow-start backstop: a
+ * result sent before the goodbye begins makes the platform cut it
+ * (ADR-0005); 3s also covers a goodbye slow to start.
  */
 export const HELD_RESULT_RELEASE_MS = 3000;
 /**
@@ -1439,10 +1443,15 @@ export class VoiceSession {
   /**
    * The platform may hold the reply open until the result arrives, so a held
    * result can't always wait for reply.done. Release it once nothing is left
-   * to cut: after 3s without audio (end_call, measured), or, for demo tools,
-   * once this reply's line has played out (two settled polls in a row, so a
-   * dry gap between chunks doesn't count) or it never spoke at all. Chunks
-   * arrive faster than they play, so "no new audio" alone isn't "done".
+   * to cut: for end_call, the goodbye has drained (the same settled-streak
+   * plus audio grace the hang-up uses, so the result never lands mid-line);
+   * for demo tools, this reply's line has played out (two settled polls in a
+   * row, so a dry gap between chunks doesn't count) or it never spoke at all.
+   * A goodbye that never started keeps the flat HELD_RESULT_RELEASE_MS:
+   * nothing has played, so the drain handshake can't say it is done, and a
+   * result sent before the goodbye begins makes the platform cut it
+   * (ADR-0005). Chunks arrive faster than they play, so "no new audio" alone
+   * isn't "done".
    */
   private watchHeldResult(): void {
     const heldAt = Date.now();
@@ -1455,17 +1464,35 @@ export class VoiceSession {
       }
       const now = Date.now();
       const spoke = this.lastAudioAt > 0 && this.lastAudioAt >= this.replyStartedAt;
-      settledPolls = spoke && this.playbackSettled() ? settledPolls + 1 : 0;
       const demoOnly = !coordinator.holds(END_CALL_TOOL);
+      const quiet = now - this.lastAudioAt >= END_CALL_AUDIO_GRACE_MS;
+      // end_call's streak is the hang-up's own handshake: a poll only counts
+      // when the worklet is settled and the audio grace has passed, so fresh
+      // audio (or a dry gap) restarts the count instead of releasing early.
+      settledPolls = spoke && this.playbackSettled() && (demoOnly || quiet) ? settledPolls + 1 : 0;
       const lineDone = (spoke ? settledPolls >= 2 : now - heldAt >= SILENT_TOOL_RELEASE_MS);
       const release = demoOnly
         ? lineDone || now - heldAt >= HELD_DEMO_RESULT_MAX_MS
-        : now - Math.max(this.lastAudioAt, heldAt) >= HELD_RESULT_RELEASE_MS;
+        : (spoke && this.audioDrained(settledPolls)) ||
+          now - Math.max(this.lastAudioAt, heldAt) >= HELD_RESULT_RELEASE_MS;
       if (release) {
         clearInterval(timer);
         coordinator.releaseHeld();
       }
     }, 250);
+  }
+
+  /**
+   * The goodbye has drained: END_CALL_SETTLE_POLLS settled polls in a row
+   * and END_CALL_AUDIO_GRACE_MS since the last audio arrived. The hang-up and
+   * the held end_call result both wait for this, so the result can never cut
+   * the closing line and the call never pays one drain per wait.
+   */
+  private audioDrained(settledPolls: number): boolean {
+    return (
+      settledPolls >= END_CALL_SETTLE_POLLS &&
+      Date.now() - this.lastAudioAt >= END_CALL_AUDIO_GRACE_MS
+    );
   }
 
   /**
@@ -1725,7 +1752,7 @@ export class VoiceSession {
       settledPolls =
         this.playbackSettled() && audioQuiet() ? settledPolls + 1 : 0;
       if (
-        settledPolls >= END_CALL_SETTLE_POLLS ||
+        this.audioDrained(settledPolls) ||
         Date.now() - started > END_CALL_DRAIN_TIMEOUT_MS
       ) {
         this.disarmEndCallTimer();

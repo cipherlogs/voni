@@ -204,6 +204,7 @@ import {
   formatTraceTurn,
   formatVoiceGainTable,
   GOLDEN_BEATS,
+  HANG_UP_AFTER_GOODBYE_MAX_MS,
   overheardFromTraceExcerpt,
   parseEmailInviteOutput,
   parseFillerRunOutput,
@@ -212,8 +213,8 @@ import {
   parseDoubleTalkOutput,
   parseSilenceTimeline,
   parseSilenceTimelineOutput,
+  parseRunnerHangUp,
   parseTraceGaps,
-  runnerHangUpDelayMs,
   redactLines,
   resolveGateVoice,
   sha256Hex,
@@ -235,6 +236,7 @@ import {
   type HumanRatings,
   type OverheardAside,
   type RealCutEvidence,
+  type RunnerHangUpEvidence,
   type ScoreboardArtifact,
   type SilenceTimeline,
   type TimbreProbes,
@@ -326,6 +328,25 @@ function goodbyeEvidenceTraceRef(
   if (evidence.turn !== null && evidence.sessionId && evidence.sessionId === traceSession) {
     return formatTraceTurn(evidence.turn, traceSession);
   }
+  return `no turn merged${evidence.sessionId ? ` (${evidence.sessionId})` : ""}`;
+}
+
+/**
+ * Trace pointer for a slow hang-up: the closing turn of the call whose drain
+ * ran long, read from that call's merged excerpt. Another call's session means
+ * no turn was merged, stated explicitly rather than citing a turn that did
+ * not run long.
+ */
+function hangUpEvidenceTraceRef(
+  evidence: RunnerHangUpEvidence,
+  traceSession: string,
+  excerpt: string[] | null,
+): string {
+  if (evidence.sessionId && traceSession && evidence.sessionId !== traceSession) {
+    return `${evidence.sessionId} (no turn merged: trace session ${traceSession} is a different call)`;
+  }
+  const turn = excerpt ? traceTurnPointers(excerpt).goodbyeTurn : null;
+  if (turn !== null) return formatTraceTurn(turn, traceSession || evidence.sessionId || null);
   return `no turn merged${evidence.sessionId ? ` (${evidence.sessionId})` : ""}`;
 }
 
@@ -914,12 +935,20 @@ function main(): void {
   }
   const goodbyeCoverage =
     parseOptionalNumber(arg("--goodbye-coverage", ""), "--goodbye-coverage") ?? runnerGoodbye?.coverage ?? null;
-  const hangUpDelayMs =
-    parseOptionalNumber(arg("--hang-up-delay-ms", ""), "--hang-up-delay-ms") ??
-    (dryRun ? null : runnerHangUpDelayMs(evalSection.stdout)) ??
-    null;
+  const flaggedHangUpMs = parseOptionalNumber(arg("--hang-up-delay-ms", ""), "--hang-up-delay-ms");
+  const runnerHangUp = flaggedHangUpMs === null && !dryRun ? parseRunnerHangUp(evalSection.stdout) : null;
+  const hangUpDelayMs = flaggedHangUpMs ?? runnerHangUp?.ms ?? null;
   const inboxNamed = inboxMissingFlagged ? false : inboxNamedFlagged ? true : (runnerGoodbye?.inboxNamed ?? null);
   const goodbyeTraceRef = runnerGoodbye ? goodbyeEvidenceTraceRef(runnerGoodbye, traceSession) : undefined;
+  // A hang-up past (or before) the drain window is the measurement that ran
+  // long: cite that call's own closing turn, never the GOODBYE DRAIN
+  // scenario's turn (a different live call).
+  const hangUpRanLong =
+    hangUpDelayMs !== null && (hangUpDelayMs < 0 || hangUpDelayMs > HANG_UP_AFTER_GOODBYE_MAX_MS);
+  const drainTraceRef =
+    runnerHangUp && hangUpRanLong
+      ? hangUpEvidenceTraceRef(runnerHangUp, traceSession, excerpt)
+      : goodbyeTraceRef;
   const hasCutFlags =
     cutMsArg !== "" ||
     process.argv.includes("--cut-never") ||
@@ -953,7 +982,7 @@ function main(): void {
       narratedEnding: process.argv.includes("--narrated-ending"),
       inboxNamed,
     },
-    ...(goodbyeTraceRef ? { endCallDrainTraceRef: goodbyeTraceRef } : {}),
+    ...(drainTraceRef ? { endCallDrainTraceRef: drainTraceRef } : {}),
     traceRef: traceSession || undefined,
     probes: timbreProbes,
     agentChannel,

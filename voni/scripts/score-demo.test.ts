@@ -2157,6 +2157,44 @@ test("goodbye evidence from another call says no turn was merged", () => {
   assert.match(gate.detail, /no turn merged/, `detail states the missing turn: ${gate.detail}`);
 });
 
+test("a slow hang-up cites the closing turn of the call whose drain ran long", () => {
+  // The GOODBYE DRAIN evidence comes from another scenario's call, so its
+  // turn cannot explain this hang-up. The measured hang-up line names its own
+  // session; merged, that call's closing turn is the one the FAIL must cite.
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const { result, artifact } = runGoodbyeShim(
+    dir,
+    { scenario: "bye-audio", session: "sess_bye20", turn: 4, coverage: 0.97, inboxNamed: true },
+    ["--trace-session", "sess_drain21"],
+    "    hung up 4200ms after the goodbye finished playing (session sess_drain21)",
+  );
+  assert.equal(result.status, 1, result.stderr + result.stdout);
+  const gate = (artifact as { gates: { name: string; status: string; detail: string }[] }).gates.find(
+    (g) => g.name === "end-call-drain",
+  )!;
+  assert.equal(gate.status, "FAIL");
+  assert.match(gate.detail, /4200/, `detail carries the measured delay: ${gate.detail}`);
+  assert.match(gate.detail, /call trace turn 4 \(sess_drain21\)/, `detail cites the drained turn: ${gate.detail}`);
+  assert.doesNotMatch(gate.detail, /no turn merged/, "the drained call was merged, so its turn is known");
+});
+
+test("a slow hang-up from an unmerged call says no turn was merged", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const { result, artifact } = runGoodbyeShim(
+    dir,
+    { scenario: "bye-audio", session: "sess_bye20", turn: 4, coverage: 0.97, inboxNamed: true },
+    ["--trace-session", "sess_other21"],
+    "    hung up 4200ms after the goodbye finished playing (session sess_drain21)",
+  );
+  assert.equal(result.status, 1, result.stderr + result.stdout);
+  const gate = (artifact as { gates: { name: string; status: string; detail: string }[] }).gates.find(
+    (g) => g.name === "end-call-drain",
+  )!;
+  assert.equal(gate.status, "FAIL");
+  assert.match(gate.detail, /sess_drain21/, `detail names the call that ran long: ${gate.detail}`);
+  assert.match(gate.detail, /no turn merged/, `never cites another call's turn: ${gate.detail}`);
+});
+
 test("a run without goodbye evidence keeps end-call-drain INFO, never PASS", () => {
   const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
   const bin = join(dir, "bin");

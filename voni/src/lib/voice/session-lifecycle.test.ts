@@ -1,4 +1,4 @@
-import test from "node:test";
+import test, { mock } from "node:test";
 import assert from "node:assert/strict";
 import type { AudioGraph } from "./mic-capture";
 import {
@@ -763,10 +763,13 @@ test("a caller cutting into the goodbye: the held result is still sent, and the 
   assert.equal(internals["explicitStop"], false, "the caller took the floor back: no hang-up");
 });
 
-test("a held end_call result is released when the platform waits for it (no goodbye audio for 2s)", async () => {
+test("a held end_call result is released when the platform waits for it (no goodbye audio at all)", async () => {
   // Measured 1 in 10 live: the platform sometimes holds the goodbye reply
   // open until the result arrives; holding the result then stalled until the
-  // tool's timeout (a 12.6s hang-up).
+  // tool's timeout (a 12.6s hang-up). A goodbye that has not started is the
+  // one case the flat 3s backstop still covers: releasing the result before
+  // it begins makes the platform cut it (ADR-0005). Once audio has played,
+  // the drain handshake releases it instead (next two tests).
   const { session, sent, handle, internals } = makeSession();
   withDemoTools(internals, session);
   internals["playout"] = { play: () => undefined, flush: () => undefined, settled: () => true, queuedMs: () => 0 };
@@ -779,6 +782,87 @@ test("a held end_call result is released when the platform waits for it (no good
   assert.equal(results().length, 0, "still held: the goodbye may be slow to start");
   await new Promise((resolve) => setTimeout(resolve, 1000));
   assert.equal(results().length, 1, "released: the platform is waiting on us");
+});
+
+test("a held end_call result is released once the goodbye has drained, not on a flat 3s", async () => {
+  // Fast hang-up baseline ~4.2s = ~3s held-result release + ~1s drain. The
+  // result now goes back on the same handshake the hang-up uses — three
+  // settled polls (3 x 250ms) inside the 500ms audio grace — so the goodbye
+  // still plays whole and the end lands inside the 1500ms budget. The flat
+  // HELD_RESULT_RELEASE_MS stays only for a goodbye that never starts.
+  mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+  try {
+    // The mocked clock starts at epoch 0, where lastAudioAt's 0 means "never".
+    mock.timers.setTime(1_700_000_000_000);
+    const { session, sent, handle, internals } = makeSession();
+    withDemoTools(internals, session);
+    let settled = false;
+    internals["playout"] = { play: () => undefined, flush: () => undefined, settled: () => settled, queuedMs: () => 0 };
+    handle({ type: "session.ready", session_id: "s1" });
+    handle({ type: "reply.started", reply_id: "bye" });
+    handle({ type: "reply.audio", reply_id: "bye", data: "" });
+    endCall(handle, "e21");
+    await new Promise((resolve) => setImmediate(resolve));
+    const results = () =>
+      sent.map((raw) => JSON.parse(raw)).filter((m) => m.type === "tool.result" && m.call_id === "e21");
+
+    // Still sounding: a result now would cut the goodbye (ADR-0005).
+    mock.timers.tick(2000);
+    assert.equal(results().length, 0, "never send the result while the goodbye is sounding");
+
+    const drainedAt = Date.now();
+    settled = true; // the last chunk has played out
+    mock.timers.tick(500); // two settled polls: not enough
+    assert.equal(results().length, 0, "a momentary dry gap between chunks is not the end of the line");
+    mock.timers.tick(250); // third settled poll: the line has drained
+    assert.equal(results().length, 1, "released on the drain handshake, not after a flat 3s");
+    assert.ok(
+      Date.now() - drainedAt <= 1000,
+      `release stayed inside the 1500ms budget (${Date.now() - drainedAt}ms of the allowance)`,
+    );
+
+    // The platform can finish the held reply now; the hang-up lands at once.
+    handle({ type: "reply.done", reply_id: "bye", status: "completed" });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(internals["explicitStop"], true, "the call ends on the drained goodbye");
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test("fresh goodbye audio resets the drain streak and never releases the held result early", async () => {
+  // The streak plus audio grace is what keeps the goodbye whole: two settled
+  // polls followed by more audio must start the count again, exactly like
+  // the hang-up's own drain.
+  mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+  try {
+    mock.timers.setTime(1_700_000_000_000);
+    const { session, sent, handle, internals } = makeSession();
+    withDemoTools(internals, session);
+    let settled = false;
+    internals["playout"] = { play: () => undefined, flush: () => undefined, settled: () => settled, queuedMs: () => 0 };
+    handle({ type: "session.ready", session_id: "s1" });
+    handle({ type: "reply.started", reply_id: "bye" });
+    handle({ type: "reply.audio", reply_id: "bye", data: "" });
+    endCall(handle, "e22");
+    await new Promise((resolve) => setImmediate(resolve));
+    const results = () =>
+      sent.map((raw) => JSON.parse(raw)).filter((m) => m.type === "tool.result" && m.call_id === "e22");
+
+    settled = true;
+    mock.timers.tick(500); // two settled polls
+    assert.equal(results().length, 0);
+    settled = false; // the next chunk arrives and is still queued
+    handle({ type: "reply.audio", reply_id: "bye", data: "" });
+    mock.timers.tick(250);
+    settled = true;
+    mock.timers.tick(500); // audio grace elapsed: two settled polls, not three
+    assert.equal(results().length, 0, "the streak restarts after fresh audio");
+    mock.timers.tick(250); // third settled poll after the last audio
+    assert.equal(results().length, 1, "three settled polls after the last audio release it");
+  } finally {
+    mock.timers.reset();
+  }
 });
 
 test("a demo tool's result waits until Voni's line has played, then goes out", async () => {
