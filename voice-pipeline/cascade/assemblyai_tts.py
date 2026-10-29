@@ -1,4 +1,4 @@
-"""AssemblyAI streaming synthesis connect (ticket 47).
+"""AssemblyAI streaming synthesis: connect and the Begin echo (tickets 47, 48).
 
 One synthesis socket per call, opened at call start before the first user
 frame. The connection is built from exactly two authorities and nothing else:
@@ -14,11 +14,15 @@ request cannot mix a voice with another language or a rate the transport does
 not carry. An unknown voice or transport refuses by name before a socket is
 opened.
 
-The opening ``Begin`` frame is the session's own record of what it got. It is
-read here and kept on ``begin``; comparing it with the request (the echo
-assertion), recording ``expires_at``/``limits`` and refusing unknown query
-parameters are ticket 48's work, added at that seam. Sentence scheduling
-(``speak``) is ticket 49's.
+The opening ``Begin`` frame is the session's own record of what it got, and it
+is an assertion: the echoed voice, language, sample rate, encoding and model
+are compared with the request, and any mismatch fails the call before a single
+frame is sent or played. A non-empty ``unknown_params`` list is a configuration
+bug. The session's ``expires_at`` and ``configuration.limits`` are recorded as
+call facts.
+
+Sentence scheduling (``speak``) is ticket 49; word boundaries, cancel,
+termination and the close policy follow at their own seams.
 """
 
 from __future__ import annotations
@@ -82,6 +86,104 @@ class SynthesisHandshakeError(RuntimeError):
     """The session did not open with a ``Begin`` frame."""
 
 
+@dataclass(frozen=True)
+class EchoMismatch:
+    """One ``Begin`` field that disagrees with what the request asked for."""
+
+    field: str
+    requested: Any
+    echoed: Any
+
+
+class SynthesisEchoError(SynthesisHandshakeError):
+    """The session is not the session the request asked for.
+
+    Fails the call visibly before any audio exists: a voice, language, rate,
+    encoding or model that differs from the request is a configuration bug,
+    not a session to use anyway.
+    """
+
+    def __init__(self, mismatches: tuple[EchoMismatch, ...]) -> None:
+        self.mismatches = mismatches
+        detail = "; ".join(
+            f"{mismatch.field} requested {mismatch.requested!r}, "
+            f"session echoed {mismatch.echoed!r}"
+            for mismatch in mismatches
+        )
+        super().__init__(f"synthesis Begin disagrees with the request: {detail}")
+
+
+class SynthesisConfigurationError(SynthesisHandshakeError):
+    """The vendor ignored a query parameter we sent; that is our bug."""
+
+    def __init__(self, unknown_params: tuple[str, ...]) -> None:
+        self.unknown_params = unknown_params
+        super().__init__(
+            "synthesis Begin reports unknown query parameters "
+            f"{', '.join(repr(name) for name in unknown_params)}: a configuration "
+            "bug, not a warning to ignore"
+        )
+
+
+#: The five ``Begin.configuration`` fields the echo assertion compares.
+ECHO_FIELDS: tuple[str, ...] = (
+    "voice_id",
+    "language",
+    "sample_rate",
+    "encoding",
+    "model",
+)
+
+
+def _normalise(field: str, value: Any) -> Any:
+    """Compare in the shape the vendor echoes: strings lowercased, rate as int.
+
+    The vendor normalizes ``language`` and ``voice_id`` to lowercase and
+    reports the rate as an integer; a case difference is not a mismatch.
+    """
+    if isinstance(value, str):
+        return value.strip().lower()
+    if field == "sample_rate":
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return value
+    return value
+
+
+def echo_mismatches(
+    begin_frame: Mapping[str, Any],
+    *,
+    voice_id: str,
+    language: str,
+    sample_rate: int,
+    encoding: str,
+    model: str,
+) -> tuple[EchoMismatch, ...]:
+    """Compare the session's echo with the request, field by field."""
+    configuration = begin_frame.get("configuration")
+    if not isinstance(configuration, Mapping):
+        configuration = {}
+    requested = {
+        "voice_id": voice_id,
+        "language": language,
+        "sample_rate": sample_rate,
+        "encoding": encoding,
+        "model": model,
+    }
+    mismatches: list[EchoMismatch] = []
+    for field in ECHO_FIELDS:
+        echoed = configuration.get(field)
+        if _normalise(field, echoed) != _normalise(field, requested[field]):
+            mismatches.append(
+                EchoMismatch(
+                    field=field, requested=requested[field], echoed=echoed
+                )
+            )
+    return tuple(mismatches)
+
+
+
 def transport_format(transport: str) -> TransportFormat:
     """The rate and encoding the transport carries, or refuse it by name."""
     try:
@@ -113,6 +215,13 @@ class AssemblyAIStreamingTTS(StreamingTTS):
         self._socket_factory = socket_factory or _default_socket_factory
         self._socket: Any = None
         self.begin: Mapping[str, Any] | None = None
+        # The call's own record of the session it got (ticket 48).
+        self.configuration: Mapping[str, Any] = MappingProxyType({})
+        self.limits: Mapping[str, Any] = MappingProxyType({})
+        self.expires_at: int | None = None
+        self.begin_id: str | None = None
+        self.unknown_params: tuple[str, ...] = ()
+        self.begin_mismatches: tuple[EchoMismatch, ...] = ()
 
     @property
     def url(self) -> str:
@@ -128,7 +237,12 @@ class AssemblyAIStreamingTTS(StreamingTTS):
         return f"{TTS_BASE_URL}?{urlencode(params)}"
 
     async def open(self) -> None:
-        """Open the call's single socket and read the session's ``Begin`` frame."""
+        """Open the call's single socket, then assert the session's ``Begin``.
+
+        The echo is an assertion, not a log line: a mismatched voice,
+        language, rate, encoding or model, or a non-empty ``unknown_params``
+        list, refuses the call before any text or audio frame is sent.
+        """
         if self._socket is not None:
             raise RuntimeError(
                 "the synthesis session is already open: one socket per call"
@@ -139,9 +253,45 @@ class AssemblyAIStreamingTTS(StreamingTTS):
             self.url, {"Authorization": self._api_key}
         )
         self._socket = socket
-        self.begin = self._read_begin(await self._first_frame(socket))
-        # Ticket 48 asserts `begin` against the request here, records
-        # `expires_at` and `configuration.limits`, and refuses unknown_params.
+        try:
+            self.begin = self._read_begin(await self._first_frame(socket))
+            self._record_begin(self.begin)
+            self._assert_begin()
+        except BaseException:
+            await _close_quietly(socket)
+            self._socket = None
+            raise
+
+    def _record_begin(self, frame: Mapping[str, Any]) -> None:
+        """Keep the session's own account of what it got as call facts."""
+        configuration = frame.get("configuration")
+        if not isinstance(configuration, Mapping):
+            configuration = {}
+        self.configuration = MappingProxyType(dict(configuration))
+        limits = configuration.get("limits")
+        self.limits = MappingProxyType(dict(limits) if isinstance(limits, Mapping) else {})
+        expires_at = frame.get("expires_at")
+        self.expires_at = expires_at if isinstance(expires_at, int) else None
+        begin_id = frame.get("id")
+        self.begin_id = begin_id if isinstance(begin_id, str) else None
+        unknown = configuration.get("unknown_params")
+        self.unknown_params = (
+            tuple(str(name) for name in unknown) if isinstance(unknown, list) else ()
+        )
+        self.begin_mismatches = echo_mismatches(
+            frame,
+            voice_id=self.binding.voice_id,
+            language=self.binding.language,
+            sample_rate=self.format.sample_rate,
+            encoding=self.format.encoding,
+            model=self.model_id,
+        )
+
+    def _assert_begin(self) -> None:
+        if self.unknown_params:
+            raise SynthesisConfigurationError(self.unknown_params)
+        if self.begin_mismatches:
+            raise SynthesisEchoError(self.begin_mismatches)
 
     async def speak(self, text: str) -> AsyncIterator[SentenceAudio]:
         """Not this ticket: sentence scheduling and Flush land with ticket 49."""
@@ -179,3 +329,11 @@ class AssemblyAIStreamingTTS(StreamingTTS):
                 f"{frame.get('type')!r}"
             )
         return frame
+
+
+async def _close_quietly(socket: Any) -> None:
+    """Close a socket that must not stay open; a close failure is not the story."""
+    try:
+        await socket.close()
+    except Exception:
+        pass
