@@ -31,6 +31,13 @@ from :mod:`cascade.thresholds`. While a bound is open, the wait ends with a
 named ``UnsetBoundError`` instead of inventing a number; a timeout is a
 recorded :class:`BoundOutcome` and travels on the end message.
 
+Every frame the call emits has one monotonic ``seq`` that belongs to the call,
+not to the TTS ``flush_id`` and not to the provider session (ticket 98).
+:class:`CallSequence` never resets, a reconnect advances only the epoch, and
+:class:`CallPlayout` is the receiving contract: a frame that is not newer is
+dropped, a gap is logged and playback continues, and a duplicate is never
+played twice.
+
 The end message carries the facts a reader can act on and never a guess:
 
 * the ledger summary, as the managed path already writes it;
@@ -47,6 +54,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import logging
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
@@ -55,10 +63,13 @@ from typing import Any, Protocol
 from cascade.body_map import BodyFieldError, CascadeBody, adapt_body
 from cascade.eligibility import EligibilityDecision
 from cascade.envelope import EnvelopeError, verify_envelope
-from cascade.greeting import AudioSink, CallGreeting, GreetingOutcome
+from cascade.greeting import CallGreeting, GreetingOutcome
 from cascade.thresholds import ThresholdError, require_bound
 from cascade.voice_binding import VoiceBindingError
 from metrics import TimingLedger
+from providers import SentenceAudio
+
+_log = logging.getLogger(__name__)
 
 #: Every wait that can outlive a turn, its registry bound and the named
 #: outcome a timeout records. The numbers live in ``cascade/thresholds.json``;
@@ -128,6 +139,159 @@ class AudioFrame:
     """One already-decoded caller audio frame."""
 
     pcm: bytes
+
+
+# ---------------------------------------------------------------------------
+# The call-level audio sequence
+# ---------------------------------------------------------------------------
+
+#: One audio frame on its way to the browser. ``seq`` is the call's own
+#: monotonic number; ``flush_id`` is the TTS request that produced the audio
+#: and never stands in for it.
+@dataclass(frozen=True)
+class OutboundAudio:
+    seq: int
+    epoch: int
+    pcm: bytes
+    sample_rate: int
+    kind: str = "reply"
+    flush_id: int | None = None
+
+
+#: Where one outbound frame goes: the browser transport ticket 65 implements.
+AudioSender = Callable[[OutboundAudio], Awaitable[None]]
+
+
+@dataclass(frozen=True)
+class SequenceGap:
+    """The client expected ``expected`` and received ``received``."""
+
+    expected: int
+    received: int
+
+
+@dataclass(frozen=True)
+class DroppedFrame:
+    """A frame the playout refused because its ``seq`` was not greater."""
+
+    seq: int
+    reason: str
+    different_bytes: bool = False
+
+
+class CallSequence:
+    """The call's monotonic audio sequence; a reconnect never resets it.
+
+    The counter belongs to the call, so a new provider session (a new
+    ``epoch``) continues it. It is deliberately independent of the TTS
+    ``flush_id``: the vendor's per-request id repeats after a ``Cancel`` and
+    resets with a new session, and the browser must never replay audio because
+    one of those ids came back around.
+    """
+
+    def __init__(self, *, start: int = 0, epoch: int = 0) -> None:
+        if start < 0:
+            raise ValueError(f"a call sequence cannot start negative: {start!r}")
+        if epoch < 0:
+            raise ValueError(f"a session epoch cannot start negative: {epoch!r}")
+        self._current = int(start)
+        self._epoch = int(epoch)
+
+    @property
+    def current(self) -> int:
+        """The last sequence number handed out."""
+        return self._current
+
+    @property
+    def epoch(self) -> int:
+        """The current provider session epoch."""
+        return self._epoch
+
+    def next(self) -> int:
+        """The next call-level sequence number."""
+        self._current += 1
+        return self._current
+
+    def reconnect(self, *, epoch: int | None = None) -> int:
+        """Begin a new session epoch; the sequence continues, never resets."""
+        target = self._epoch + 1 if epoch is None else int(epoch)
+        if target <= self._epoch:
+            raise ValueError(
+                f"a reconnect must advance the session epoch past {self._epoch}, "
+                f"got {target}"
+            )
+        self._epoch = target
+        return self._epoch
+
+    def frame(
+        self,
+        *,
+        pcm: bytes,
+        sample_rate: int,
+        kind: str = "reply",
+        flush_id: int | None = None,
+    ) -> OutboundAudio:
+        """One outbound frame: the next call ``seq`` plus the current epoch."""
+        return OutboundAudio(
+            seq=self.next(),
+            epoch=self._epoch,
+            pcm=pcm,
+            sample_rate=sample_rate,
+            kind=kind,
+            flush_id=flush_id,
+        )
+
+
+class CallPlayout:
+    """The receiving contract: never play a frame that is not newer.
+
+    This is the shape the browser's playout must implement (and the TS client
+    mirrors). A frame whose ``seq`` is not greater than the highest played is
+    dropped; a gap is recorded and playback continues; a duplicate carrying
+    different bytes is dropped and recorded with that fact. The gate is keyed
+    on ``seq`` alone, so it works across session epochs.
+    """
+
+    def __init__(self) -> None:
+        self.played: list[OutboundAudio] = []
+        self.gaps: list[SequenceGap] = []
+        self.duplicates: list[DroppedFrame] = []
+        self._pcm_by_seq: dict[int, bytes] = {}
+        self._highest = 0
+
+    @property
+    def highest_played(self) -> int:
+        return self._highest
+
+    def accept(self, frame: OutboundAudio) -> bool:
+        """Play the frame when it is newer, else drop and log it."""
+        if frame.seq <= self._highest:
+            previous = self._pcm_by_seq.get(frame.seq)
+            different = previous is not None and previous != frame.pcm
+            self.duplicates.append(
+                DroppedFrame(frame.seq, "not greater than the highest played", different)
+            )
+            _log.warning(
+                "dropped duplicate audio frame seq=%s; the highest played is %s%s",
+                frame.seq,
+                self._highest,
+                "; different bytes from the frame already played"
+                if different
+                else "",
+            )
+            return False
+        if frame.seq > self._highest + 1:
+            self.gaps.append(SequenceGap(self._highest + 1, frame.seq))
+            _log.warning(
+                "audio sequence gap: expected seq %s, received %s; the call "
+                "continues",
+                self._highest + 1,
+                frame.seq,
+            )
+        self.played.append(frame)
+        self._pcm_by_seq[frame.seq] = frame.pcm
+        self._highest = frame.seq
+        return True
 
 
 @dataclass(frozen=True)
@@ -531,7 +695,7 @@ class CallLifecycle:
         open_voice: LegFactory,
         open_model: LegFactory | None = None,
         stream: CallStream | None = None,
-        send_audio: AudioSink | None = None,
+        send_audio: AudioSender | None = None,
         ledger: TimingLedger | None = None,
         clock: Callable[[], float] | None = None,
         envelope_clock: Callable[[], float] = time.time,
@@ -549,6 +713,9 @@ class CallLifecycle:
         self._open_model = open_model
         self._stream: CallStream = stream if stream is not None else NullStream()
         self._send_audio = send_audio
+        #: The call-level audio sequence and every frame this call emitted.
+        self.sequence = CallSequence()
+        self.audio_frames: list[OutboundAudio] = []
         self._clock = clock if clock is not None else time.monotonic
         self._ledger = (
             ledger if ledger is not None else TimingLedger(now=self._clock)
@@ -719,6 +886,34 @@ class CallLifecycle:
 
     # -- streaming and drain ----------------------------------------------
 
+    async def emit_audio(
+        self,
+        audio: SentenceAudio,
+        *,
+        kind: str = "reply",
+        flush_id: int | None = None,
+    ) -> OutboundAudio:
+        """Put one synthesized frame on the wire with the next call-level seq.
+
+        The turn layer and the greeting both come through here, so no audio
+        path can emit a frame without a sequence and none can restart the
+        counter.
+        """
+        outbound = self.sequence.frame(
+            pcm=audio.pcm,
+            sample_rate=audio.sample_rate,
+            kind=kind,
+            flush_id=flush_id,
+        )
+        self.audio_frames.append(outbound)
+        if self._send_audio is not None:
+            await self._send_audio(outbound)
+        return outbound
+
+    def session_reconnected(self, *, epoch: int | None = None) -> int:
+        """A provider leg opened a new session; the call seq keeps going."""
+        return self.sequence.reconnect(epoch=epoch)
+
     async def _speak_greeting(
         self, body: CascadeBody, opened: list[OpenedLeg]
     ) -> GreetingOutcome | None:
@@ -744,8 +939,12 @@ class CallLifecycle:
         voice = next(
             (leg.session for leg in opened if leg.leg == "tts"), None
         )
+
+        async def greeting_audio(audio: SentenceAudio) -> None:
+            await self.emit_audio(audio, kind="greeting")
+
         greeting = CallGreeting(
-            voice=voice, ledger=self._ledger, sink=self._send_audio
+            voice=voice, ledger=self._ledger, sink=greeting_audio
         )
         result, outcome = await self.run_bounded(
             "greeting", lambda: greeting.speak(body)

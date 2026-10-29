@@ -34,6 +34,7 @@ from cascade.call import (
     CostSummary,
     LegCost,
     OpenedLeg,
+    OutboundAudio,
 )
 from cascade.eligibility import evaluate_body
 from cascade.envelope import sign_body
@@ -158,11 +159,11 @@ class RecordingAudioSink:
     """The lifecycle's audio seam: records frames and what had been heard."""
 
     def __init__(self, probe=None) -> None:
-        self.frames: list[SentenceAudio] = []
+        self.frames: list[OutboundAudio] = []
         self.probe = probe
         self.heard_at_frame: list[list[bytes]] = []
 
-    async def __call__(self, audio: SentenceAudio) -> None:
+    async def __call__(self, audio: OutboundAudio) -> None:
         self.frames.append(audio)
         if self.probe is not None:
             self.heard_at_frame.append(self.probe())
