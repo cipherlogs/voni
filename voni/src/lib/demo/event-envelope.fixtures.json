@@ -1,0 +1,32 @@
+{
+  "note": "Canonical lines for the one call-event envelope (ticket 107). The Python writer (voice-pipeline/cascade/events.py) must build these objects byte-for-byte and the TS reader (event-envelope.ts) must parse them. Managed and cascade differ only by the pipeline value.",
+  "managedCallScoped": {
+    "schemaVersion": 1,
+    "pipeline": "managed",
+    "callId": "call-107",
+    "type": "turn.reply_start",
+    "subject": "demo anna (en, browser)",
+    "turn": "turn-1",
+    "atMs": 1200,
+    "phase": "turn"
+  },
+  "cascadeCallScoped": {
+    "schemaVersion": 1,
+    "pipeline": "cascade",
+    "callId": "call-107",
+    "type": "turn.reply_start",
+    "subject": "demo anna (en, browser)",
+    "turn": "turn-1",
+    "atMs": 1200,
+    "phase": "turn"
+  },
+  "cascadeOperational": {
+    "schemaVersion": 1,
+    "pipeline": "cascade",
+    "callId": "call-107",
+    "type": "breaker.transition",
+    "leg": "llm",
+    "atMs": 4200,
+    "phase": "turn"
+  }
+}
