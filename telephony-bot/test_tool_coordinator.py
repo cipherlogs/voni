@@ -14,8 +14,12 @@ class FakeWebSocket:
 
 
 class StubCoordinator(ToolCoordinator):
-    def __init__(self, websocket, result):
-        super().__init__(websocket, "00000000-0000-0000-0000-000000000001")
+    def __init__(self, websocket, result, load_turn_detection=None):
+        super().__init__(
+            websocket,
+            "00000000-0000-0000-0000-000000000001",
+            load_turn_detection=load_turn_detection,
+        )
         self.stub_result = result
 
     async def _call_voni(self, call_id, name, arguments):
@@ -108,6 +112,118 @@ class ToolCoordinatorTests(unittest.IsolatedAsyncioTestCase):
         )
         await asyncio.sleep(0)
         self.assertTrue(websocket.messages[0]["is_error"])
+        await coordinator.close()
+
+    async def test_sensitive_capture_uses_the_stored_body_and_restores_it(self):
+        websocket = FakeWebSocket()
+        served = {
+            "min_silence": 1600,
+            "max_silence": 5200,
+            "interruption_delay": 250,
+        }
+        calls = []
+
+        async def load():
+            calls.append("read")
+            return served
+
+        coordinator = StubCoordinator(
+            websocket, {"ok": True, "data": {}}, load_turn_detection=load
+        )
+        await coordinator.handle_event({"type": "reply.started", "reply_id": "r5"})
+        await coordinator.handle_event(
+            {
+                "type": "tool.call",
+                "call_id": "t5",
+                "name": "prepare_sensitive_capture",
+                "arguments": {"field_key": "email"},
+            }
+        )
+        await asyncio.sleep(0)
+        self.assertEqual(len(websocket.messages), 1)
+        self.assertEqual(
+            websocket.messages[0],
+            {
+                "type": "session.update",
+                "session": {
+                    "input": {
+                        "turn_detection": {
+                            "min_silence": 1600,
+                            "max_silence": 5200,
+                            "interrupt_response": True,
+                            "interruption_delay": 0,
+                        }
+                    }
+                },
+            },
+        )
+        await coordinator.handle_event({"type": "session.updated"})
+        await asyncio.sleep(0)
+        self.assertEqual(websocket.messages[1]["type"], "tool.result")
+
+        # The boundary: the caller's next final turn puts the body's own
+        # setting back, not a bridge guess.
+        await coordinator.handle_event(
+            {"type": "transcript.user", "item_id": "u1", "text": "a@b.com"}
+        )
+        await asyncio.sleep(0)
+        await coordinator.handle_event({"type": "session.updated"})
+        self.assertEqual(
+            websocket.messages[2],
+            {
+                "type": "session.update",
+                "session": {"input": {"turn_detection": served}},
+            },
+        )
+        self.assertEqual(calls, ["read"])
+        await coordinator.close()
+
+    async def test_sensitive_capture_on_the_turn_preset_restores_null(self):
+        websocket = FakeWebSocket()
+        reads = []
+
+        async def load():
+            reads.append("read")
+            return None
+
+        coordinator = StubCoordinator(
+            websocket, {"ok": True, "data": {}}, load_turn_detection=load
+        )
+        await coordinator.handle_event({"type": "reply.started", "reply_id": "r6"})
+        await coordinator.handle_event(
+            {
+                "type": "tool.call",
+                "call_id": "t6",
+                "name": "prepare_sensitive_capture",
+                "arguments": {"field_key": "phone"},
+            }
+        )
+        await asyncio.sleep(0)
+        self.assertEqual(
+            websocket.messages[0]["session"]["input"]["turn_detection"],
+            {
+                "min_silence": 1400,
+                "max_silence": 4000,
+                "interrupt_response": True,
+                "interruption_delay": 0,
+            },
+        )
+        await coordinator.handle_event({"type": "session.updated"})
+        await asyncio.sleep(0)
+        await coordinator.handle_event(
+            {"type": "transcript.user", "item_id": "u2", "text": "555 0100"}
+        )
+        await asyncio.sleep(0)
+        await coordinator.handle_event({"type": "session.updated"})
+        self.assertEqual(
+            websocket.messages[2],
+            {
+                "type": "session.update",
+                "session": {"input": {"turn_detection": None}},
+            },
+        )
+        # Read once per call: the same body widens and restores.
+        self.assertEqual(reads, ["read"])
         await coordinator.close()
 
     async def test_sensitive_pacing_failure_becomes_tool_error(self):

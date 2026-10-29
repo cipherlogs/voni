@@ -79,6 +79,7 @@ import {
 import { SCOREBOARD_BUDGETS } from "./scoreboard-budgets";
 import {
   formatSubject,
+  sameSubject,
   subjectForRunVoice,
   subjectOrLegacy,
   SubjectError,
@@ -6297,130 +6298,207 @@ export function resolveMatrixVoices(csv: string): string[] {
   return voices.length > 0 ? voices : [...DEMO_VOICE_IDS];
 }
 
-export type RegressionVoiceInput = {
-  voice: string;
-  probes: TimbreProbes;
-  tagLines: string[];
+/**
+ * One matrix row's input (voice-parity ticket 73): the subject and that
+ * subject's own run. There is no gate-voice parameter and no carried verdict:
+ * the row derives its status from the one artifact it is given.
+ */
+export type RegressionSubjectInput = {
+  subject: SubjectRecord;
+  /**
+   * The subject's own run artifact. Absent means the run is missing; the row
+   * reports MISSING and inherits nothing from another subject.
+   */
+  artifact?: ScoreboardArtifact;
   expectedTag?: string;
-  /** Gate artifact rows carried verbatim (read only from the gate voice's artifact). */
-  gates?: ScoreboardGate[];
-  /** Gate artifact sub-scores carried verbatim (never recomputed by the matrix). */
-  subScores?: SubScore[];
+};
+
+/** A row's status: the artifact's own gate status, or MISSING with no run. */
+export type RegressionSubjectStatus = GateStatus | "MISSING";
+
+export type RegressionSubjectResult = {
+  subject: SubjectRecord;
+  /** Stable row identity (`demo:lola@es/browser`), unique across subjects. */
+  key: string;
+  /** The subject in one line (`demo lola (es, browser)`); the table's name. */
+  label: string;
+  /** The voice key the artifact carries; null when the run is missing. */
+  voice: string | null;
+  /**
+   * The featured default subject carries report emphasis only. It never
+   * supplies another row's verdict.
+   */
+  isFeatured: boolean;
+  status: RegressionSubjectStatus;
+  detail: string;
+  /**
+   * This subject's gate verdict, derived by `subjectGateVerdict` from the row's
+   * own artifact. Null only when the run is missing.
+   */
+  verdict: SubjectGateVerdict | null;
+  /** Five sub-scores from this row's own artifact (empty when missing). */
+  subScores: SubScore[];
+  /** Probe counts from this row's own artifact; null when missing. */
+  probes: TimbreProbes | null;
+  /** Tag discipline from this row's own artifact; null when missing. */
+  tag: TagDiscipline | null;
 };
 
 /**
- * The gate verdict a matrix run reports, carried from the gate voice's own
- * score artifact. The matrix reads these rows and never re-evaluates them, so
- * a regression voice cannot turn required green into red (or red into green).
+ * A stable, human-readable key for one subject row. Provenance is not part of
+ * identity, so a legacy artifact and a new run of the same subject share a key.
  */
-export type MatrixGateVerdict = {
-  voice: string;
-  status: GateStatus;
-  detail: string;
-  /** Names of carried gates that FAIL; empty means no required gate failed. */
-  failing: string[];
-  gates: ScoreboardGate[];
-  subScores: SubScore[];
-};
+export function subjectRowKey(subject: SubjectRecord): string {
+  const agent =
+    subject.agent.kind === "demo"
+      ? `demo:${subject.agent.voice}`
+      : `tenant:${subject.agent.agentId}`;
+  return `${agent}@${subject.locale}/${subject.transport}`;
+}
 
-/** Carry the gate artifact's verdict: FAIL if any carried gate failed, else PASS. */
-export function gateVerdictFromArtifact(
-  voice: string,
-  gates: ScoreboardGate[] | undefined,
-  subScores: SubScore[] | undefined,
-): MatrixGateVerdict {
-  if (!gates) {
+/** Derive one row from its own artifact. Missing means missing, never copied. */
+function regressionSubjectRow(
+  input: RegressionSubjectInput,
+  featured: SubjectRecord,
+  expectedTag: string,
+): RegressionSubjectResult {
+  const label = formatSubject(input.subject);
+  const artifact = input.artifact;
+  if (!artifact) {
     return {
-      voice,
-      status: "INFO",
-      detail: `gate ${voice}: INFO (not judged; no gates carried from its score artifact)`,
-      failing: [],
-      gates: [],
-      subScores: subScores ?? [],
+      subject: input.subject,
+      key: subjectRowKey(input.subject),
+      label,
+      voice: null,
+      isFeatured: sameSubject(input.subject, featured),
+      status: "MISSING",
+      detail: "MISSING (no run artifact for this subject; no verdict copied)",
+      verdict: null,
+      subScores: [],
+      probes: null,
+      tag: null,
     };
   }
-  const failing = gates.filter((gate) => gate.status === "FAIL").map((gate) => gate.name);
-  const informational = gates.filter((gate) => gate.status === "INFO").map((gate) => gate.name);
+  // A row reads only its own subject's run. A mismatched pair is a harness
+  // error, never a way to give one subject another subject's verdict.
+  const artifactSubject = subjectOfArtifact(artifact);
+  if (!sameSubject(artifactSubject, input.subject)) {
+    throw new Error(
+      `matrix row ${label} was handed the artifact of ${formatSubject(artifactSubject)} ` +
+        `(a row only reads its own subject's run)`,
+    );
+  }
+  const verdict = subjectGateVerdict(artifact);
+  const probes = validateProbeCounts(
+    artifact.probes as unknown as Record<string, unknown>,
+    `matrix cannot read ${label}`,
+  );
+  const tag = analyzeTagMentions(artifact.transcripts.redacted, input.expectedTag ?? expectedTag);
+  const regression = checkRegressionVoice({
+    voice: artifact.voice,
+    isGate: sameSubject(input.subject, featured),
+    probes,
+    tag,
+  });
+  const status: RegressionSubjectStatus =
+    verdict.status === "FAIL" || regression.status === "FAIL"
+      ? "FAIL"
+      : verdict.status === "INFO"
+        ? "INFO"
+        : "PASS";
+  const gateDetail =
+    verdict.status === "FAIL"
+      ? `FAIL in ${verdict.runId} (${verdict.failing.join(", ")})`
+      : verdict.status === "INFO"
+        ? `INFO in ${verdict.runId} (this run reports no gates)`
+        : `PASS in ${verdict.runId} (no required gate failed)`;
   return {
-    voice,
-    status: failing.length > 0 ? "FAIL" : "PASS",
-    detail:
-      failing.length > 0
-        ? `gate ${voice}: FAIL (${failing.join(", ")})`
-        : `gate ${voice}: PASS (no required gate failed${informational.length > 0 ? `; ${informational.length} informational` : ""})`,
-    failing,
-    gates,
-    subScores: subScores ?? [],
+    subject: input.subject,
+    key: subjectRowKey(input.subject),
+    label,
+    voice: artifact.voice,
+    isFeatured: sameSubject(input.subject, featured),
+    status,
+    detail: `${gateDetail}; ${regression.status === "PASS" ? "regression clean" : regression.detail}`,
+    verdict,
+    subScores: artifact.subScores ?? [],
+    probes,
+    tag,
   };
 }
 
 export type RegressionMatrix = {
   schemaVersion: typeof SCOREBOARD_SCHEMA_VERSION;
   recordedAt: string;
-  gateVoice: string;
   expectedTag: string;
-  voices: string[];
-  results: RegressionVoiceResult[];
-  /** The gate voice's carried verdict; regression rows never modify it. */
-  gate: MatrixGateVerdict;
+  /** The featured default subject: named for report emphasis, never a verdict source. */
+  featuredSubject: SubjectRecord;
+  /** Every subject measured, in row order. */
+  subjects: SubjectRecord[];
+  results: RegressionSubjectResult[];
   gates: ScoreboardGate[];
 };
 
-/** Full matrix verdict: one regression row per voice plus the overall row. */
+/**
+ * Full matrix verdict: one row per subject, each derived from that subject's
+ * own artifact. There is deliberately no `gateVoice` or carried `gate` field —
+ * there is no value through which the featured voice's verdict could travel.
+ */
 export function buildRegressionMatrix(input: {
-  gateVoice: string;
-  entries: RegressionVoiceInput[];
+  featuredSubject?: SubjectRecord;
+  entries: RegressionSubjectInput[];
   expectedTag?: string;
 }): RegressionMatrix {
-  const gateVoice = resolveGateVoice(input.gateVoice);
+  const featured = input.featuredSubject ?? subjectForRunVoice(DEMO_VOICE_IDS[0]);
   const expectedTag = input.expectedTag ?? "Lime 42";
-  const results = input.entries.map((entry) => {
-    resolveGateVoice(entry.voice);
-    return checkRegressionVoice({
-      voice: entry.voice,
-      isGate: entry.voice === gateVoice,
-      probes: entry.probes,
-      tag: analyzeTagMentions(entry.tagLines, entry.expectedTag ?? expectedTag),
-    });
-  });
+  const results = input.entries.map((entry) => regressionSubjectRow(entry, featured, expectedTag));
+  const seen = new Set<string>();
+  for (const row of results) {
+    if (seen.has(row.key)) throw new Error(`matrix has two rows for subject ${row.label}`);
+    seen.add(row.key);
+  }
   const clean = results.filter((result) => result.status === "PASS").length;
-  const gateEntry = input.entries.find((entry) => entry.voice === gateVoice);
-  const gates: ScoreboardGate[] = results.map((result) => ({
-    name: `regression:${result.voice}`,
-    status: result.status,
-    detail: result.detail,
+  const missing = results.filter((result) => result.status === "MISSING").length;
+  const gates: ScoreboardGate[] = results.map((row) => ({
+    name: `subject:${row.key}`,
+    // A missing run is never clean: the matrix cannot claim a subject it did
+    // not measure.
+    status: row.status === "MISSING" ? "FAIL" : row.status,
+    detail: `${row.label}: ${row.detail}`,
   }));
   gates.push({
     name: "matrix",
-    status: clean === results.length ? "PASS" : "FAIL",
-    detail: `${clean}/${results.length} voices regression-clean (gate ${gateVoice}; no clip, pop, jump, underrun, input-drop, or invented tag)`,
+    status: results.length === 0 ? "INFO" : clean === results.length ? "PASS" : "FAIL",
+    detail: `${clean}/${results.length} subjects clean${missing > 0 ? `, ${missing} missing` : ""} (each verdict derived from its own run)`,
   });
   return {
     schemaVersion: SCOREBOARD_SCHEMA_VERSION,
     recordedAt: new Date().toISOString(),
-    gateVoice,
     expectedTag,
-    voices: results.map((result) => result.voice),
+    featuredSubject: featured,
+    subjects: results.map((result) => result.subject),
     results,
-    gate: gateVerdictFromArtifact(gateVoice, gateEntry?.gates, gateEntry?.subScores),
     gates,
   };
 }
 
-/** Console table: gate verdict plus one row per voice and the summary. */
+/** Console table: one named subject per row plus the summary. */
 export function formatMatrixTable(matrix: RegressionMatrix): string {
   const clean = matrix.results.filter((result) => result.status === "PASS").length;
-  const subScores =
-    matrix.gate.subScores.length > 0
-      ? `; sub-scores ${matrix.gate.subScores.map((sub) => `${sub.name} ${sub.status}`).join(", ")}`
-      : "";
-  const gateRow = `${"GATE".padEnd(6)} ${matrix.gate.voice.padEnd(12)} ${matrix.gate.detail}${subScores}`;
-  const rows = matrix.results.map(
-    (result) => `${result.status.padEnd(6)} ${result.voice.padEnd(12)} ${result.detail}`,
-  );
+  const missing = matrix.results.filter((result) => result.status === "MISSING").length;
+  const summary = [`${clean}/${matrix.results.length} clean`];
+  if (missing > 0) summary.push(`${missing} missing`);
+  const width = Math.max(12, ...matrix.results.map((row) => row.label.length));
+  const rows = matrix.results.map((row) => {
+    const status = row.status === "MISSING" ? "MISS" : row.status;
+    const subScores =
+      row.isFeatured && row.subScores.length > 0
+        ? `; sub-scores ${row.subScores.map((sub) => `${sub.name} ${sub.status}`).join(", ")}`
+        : "";
+    return `${status.padEnd(6)} ${row.label.padEnd(width)} ${row.detail}${subScores}`;
+  });
   return [
-    `demo voice matrix (gate ${matrix.gateVoice}, ${matrix.results.length} voices, ${clean}/${matrix.results.length} clean)`,
-    gateRow,
+    `subject matrix (featured ${formatSubject(matrix.featuredSubject)}, ${matrix.results.length} subjects, ${summary.join(", ")})`,
     ...rows,
   ].join("\n");
 }
