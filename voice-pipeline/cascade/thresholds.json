@@ -54,6 +54,15 @@
       "date": "2026-10-29",
       "note": "Refusing cascade is a routing decision, not a fallback event."
     },
+    "breaker.probe_interval_ms": {
+      "unit": "ms",
+      "gate": "breaker.probe",
+      "ticket": "18",
+      "value": 30000,
+      "source": "spec: M1 state transitions — a probe is due at least 30 s after the last probe, and three probe successes each at least 30 s apart close the leg",
+      "date": "2026-10-29",
+      "note": "One number for both rules: the due interval and the minimum spacing between counted successes. Staleness is 2x this. Breaker.from_registry() reads it; the breaker never defaults one."
+    },
     "stt.handshake_ms": {
       "unit": "ms",
       "gate": "stt.handshake",
