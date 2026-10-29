@@ -44,7 +44,9 @@ the call carries.
 The unknown-key refusal (ticket 59) is the whitelist rule over that data: a key
 at the top level, inside ``input``, ``output`` or ``voice`` that neither set
 names fails by name, before any vendor socket opens. The LLM override refusal
-(60) and the eligibility refusals (61) are not this module's job yet.
+(60) is the one-body rule's consequence: a non-empty ``llm`` array routes the
+call managed, while ``llm: []`` is the documented revert. The eligibility
+refusals (61) are the next gate, not this module's job.
 """
 
 from __future__ import annotations
@@ -93,6 +95,26 @@ class UnknownBodyKeyError(BodyFieldError):
             "so it cannot become a cascade setting"
         )
         super().__init__(path, self.reason)
+
+
+class LlmOverrideRefusal(BodyFieldError):
+    """The body carries a bring-your-own-model override.
+
+    The cascade runs the managed model; replacing a tenant's model silently
+    would be the one-body rule's worst failure. ``llm: []`` is the documented
+    revert and is not an override, so it never reaches this refusal.
+    """
+
+    def __init__(self, models: tuple[str, ...]) -> None:
+        self.models = models
+        named = ", ".join(f'"{model}"' for model in models) or "an unnamed model"
+        super().__init__(
+            "llm",
+            f"the body carries a non-empty LLM override ({named}); a tenant's "
+            "bring-your-own model is never silently replaced, so this agent "
+            "routes managed",
+        )
+
 
 
 
@@ -312,6 +334,25 @@ def _reject_unknown_keys(body: Mapping[str, Any]) -> None:
                 raise UnknownBodyKeyError(f"{section}.{key}" if section else str(key))
 
 
+def _reject_llm_override(body: Mapping[str, Any]) -> None:
+    """Refuse a non-empty ``llm`` array; ``[]`` is the documented revert."""
+    value = body.get("llm", _MISSING)
+    if value is _MISSING or value is None:
+        return
+    if not isinstance(value, (list, tuple)):
+        raise BodyFieldError(
+            "llm", f"expected a list of model overrides, got {type(value).__name__}"
+        )
+    if not value:
+        return
+    models = tuple(
+        str(entry.get("model", "")) if isinstance(entry, Mapping) else repr(entry)
+        for entry in value
+    )
+    raise LlmOverrideRefusal(models)
+
+
+
 @dataclass(frozen=True)
 class CascadeBody:
     """What the cascade reads out of a stored body — no more, no less."""
@@ -353,6 +394,7 @@ def adapt_body(body: Mapping[str, Any]) -> CascadeBody:
     if not isinstance(body, Mapping):
         raise TypeError(f"a stored agent body must be a mapping, got {type(body).__name__}")
     _reject_unknown_keys(body)
+    _reject_llm_override(body)
     produced = {
         field.attribute: field.parse(path, _read(body, path))
         for path, field in FIELD_MAP.items()

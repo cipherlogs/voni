@@ -25,6 +25,7 @@ from cascade.body_map import (
     BodyFieldError,
     CascadeBody,
     IgnoredField,
+    LlmOverrideRefusal,
     UnknownBodyKeyError,
     UnknownLanguageCodeError,
     adapt_body,
@@ -32,6 +33,7 @@ from cascade.body_map import (
 )
 from cascade.meta_llm import build_chat_request, build_messages
 from cascade.meta_stt import MetaStreamingSTT
+from cascade.routing import CallSubject, decide
 from cascade.testing.socket_factory import ScriptedSocketFactory
 from cascade.voice_binding import Locale, UnboundVoiceError, UnknownVoiceError, VoiceBinding
 
@@ -546,6 +548,62 @@ class BindingReuseTests(unittest.TestCase):
         with self.assertRaises(BodyFieldError) as caught:
             adapt_body(body)
         self.assertIn("voice.voice_id", str(caught.exception))
+
+
+class LlmOverrideTests(unittest.TestCase):
+    def test_a_non_empty_model_override_refuses_the_cascade_by_name(self):
+        body = {
+            **MINIMAL_BODY,
+            "llm": [
+                {
+                    "base_url": "https://models.example/v1",
+                    "model": "gpt-4o-mini",
+                    "api_key": "sk-tenant",
+                }
+            ],
+        }
+        with self.assertRaises(LlmOverrideRefusal) as caught:
+            adapt_body(body)
+
+        self.assertEqual(caught.exception.path, "llm")
+        self.assertIn("gpt-4o-mini", str(caught.exception))
+
+    def test_an_absent_or_empty_model_array_is_not_an_override(self):
+        for llm in (None, []):
+            with self.subTest(llm=llm):
+                body = dict(MINIMAL_BODY)
+                if llm is not None:
+                    body["llm"] = llm
+                self.assertEqual(adapt_body(body).voice_id, "lola")
+
+    def test_a_non_list_model_override_is_refused_by_name(self):
+        with self.assertRaises(BodyFieldError) as caught:
+            adapt_body({**MINIMAL_BODY, "llm": {"model": "gpt-4o-mini"}})
+
+        self.assertEqual(caught.exception.path, "llm")
+
+    def test_the_refusal_routes_managed_with_the_recorded_reason(self):
+        subject = CallSubject("acme", "tenant")
+        with self.assertRaises(LlmOverrideRefusal) as caught:
+            adapt_body({**MINIMAL_BODY, "llm": [{"model": "gpt-4o-mini"}]})
+
+        decision = decide("all", subject, refusal=str(caught.exception))
+
+        self.assertEqual(decision.disposition, "managed")
+        self.assertEqual(decision.opens_cascade_connections, 0)
+        self.assertIn("gpt-4o-mini", decision.reason)
+
+    def test_the_refusal_does_not_contaminate_a_later_cascade_run(self):
+        subject = CallSubject("acme", "tenant")
+        with self.assertRaises(LlmOverrideRefusal):
+            adapt_body({**MINIMAL_BODY, "llm": [{"model": "gpt-4o-mini"}]})
+
+        later = adapt_body({**MINIMAL_BODY, "llm": []})
+        decision = decide("all", subject)
+
+        self.assertEqual(later.voice_id, "lola")
+        self.assertEqual(decision.disposition, "cascade")
+        self.assertEqual(decision.reason, "")
 
 
 if __name__ == "__main__":
