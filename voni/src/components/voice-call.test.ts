@@ -45,15 +45,11 @@ test("the public demo transcript has no scripted tool rows or chip model", () =>
   );
 });
 
-test("the demo call has one loudness path: registry output level plus per-voice gain", () => {
+test("the demo call has no client level stage: level ships in the agent body", () => {
   const call = readRepo("components/voice-call.tsx");
-  const gainCalls = call.match(/setOutputGain\(/g) ?? [];
-  assert.equal(gainCalls.length, 1, "one client gain call, never a second gain stage");
-  assert.match(
-    call,
-    /setOutputGain\(debug\.gain \?\? voicePlaybackGain\(/,
-    "client gain comes from the shared voice registry",
-  );
+  assert.doesNotMatch(call, /setOutputGain\(/, "the browser never sets a playback level");
+  assert.doesNotMatch(call, /voicePlaybackGain|VOICE_PLAYBACK_GAIN/, "no per-voice gain table");
+  assert.doesNotMatch(call, /params\.get\("gain"\)/, "no dev gain dial");
   assert.doesNotMatch(call, /output\.volume\s*=/, "no per-call server volume retune");
   assert.match(
     readRepo("lib/voice/session.ts"),

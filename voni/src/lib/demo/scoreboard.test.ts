@@ -67,9 +67,7 @@ import {
   analyzeTagMentions,
   buildRegressionMatrix,
   checkEvidenceTimbre,
-  checkLoudness,
   checkMeasuredLevel,
-  checkServedLoudness,
   checkRegressionVoice,
   type MeasuredLevelFile,
   type MeasuredLevelInput,
@@ -92,7 +90,6 @@ import {
   formatEvalRunnerReport,
   formatMatrixTable,
   formatTraceTurn,
-  matchedLoudnessLufs,
   resolveMatrixVoices,
   classifyOverheard,
   evaluateOverheardRecall,
@@ -139,9 +136,6 @@ import {
   measuredEvidenceSources,
   persistsEmailAcrossMemory,
   validateProbeCounts,
-  formatVoiceGainTable,
-  voiceGainRow,
-  voiceGainTable,
   type OverheardAside,
   EMAIL_INVITE_TAG,
   applyEmailInvite,
@@ -170,7 +164,7 @@ import { EN_RECOGNITION } from "../voice/recognition";
 import { DEMO_VOICE_IDS, SILENCE_CHECK_IN_INSTRUCTIONS, SILENCE_CHECK_IN_MS } from "./voni-agent";
 import type { RunnerEvidence } from "./runner-evidence";
 import { buildDemoAgentBody, parseServedDemoAgentBody } from "./stored-agents";
-import { VOICE_OUTPUT_VOLUME, voicePlaybackGain } from "../agents/voices";
+import { VOICE_OUTPUT_VOLUME } from "../agents/voices";
 
 /**
  * A platform-read run body for gate tests (voice-parity ticket 24): every test
@@ -377,12 +371,12 @@ test("default gate voice resolves through the registry, never as a literal", () 
   assert.equal(resolveGateVoice(DEFAULT_GATE_VOICE), DEFAULT_GATE_VOICE);
 });
 
-test("gate voice playback takes its level from the served body, gain from the registry", () => {
+test("gate voice playback takes its level from the served body and has no playback gain", () => {
   for (const id of DEMO_VOICE_IDS) {
     const unread = gateVoicePlayback(id);
     assert.equal(unread.id, id);
     assert.equal(unread.outputVolume, null, "no body read means the level is unmeasured");
-    assert.equal(unread.playbackGain, voicePlaybackGain(id));
+    assert.equal("playbackGain" in unread, false, "there is no client playback gain");
     const served = gateVoicePlayback(id, runBodyOf(62, { fingerprint: null }));
     assert.equal(served.outputVolume, 62, "the served level reaches playback unchanged");
   }
@@ -1183,7 +1177,6 @@ test("every body gate follows the one served body when it is swapped", () => {
     second.gates.find((g) => g.name === "timbre-probes")?.detail ?? "",
     /at volume 62/,
   );
-  assert.equal(second.loudness.voices[0]?.outputVolume, 62);
   assert.equal(second.agentBody?.agentId, "agent_second");
   assert.equal(second.agentBody?.fingerprint, "fp_second");
   assert.deepEqual(second.agentBody?.turnDetection, { min_silence: 100 });
@@ -1244,7 +1237,6 @@ test("a body read failure is recorded once and every body gate is INFO", () => {
   assert.equal(artifact.agentBody?.agentId, "agent_missing");
   assert.equal(artifact.agentBody?.reason, failed.reason);
   assert.equal(artifact.loudness.ok, false);
-  assert.match(artifact.loudness.voices[0]?.detail ?? "", /unmeasured.*agent_missing read failed 404/);
   assert.equal("body" in artifact.loudness, false, "one identity record per run");
 });
 
@@ -4429,101 +4421,73 @@ test("the level leg's verdict moves with the measured files, not the loudness fo
   assert.match(measuredFail.detail, bodyRef);
 });
 
-test("the gain table keeps its review number per voice, separate from the gate", () => {
-  // `matchedLoudnessLufs` survives only as the per-voice gain table's review
-  // number (ticket 25); it is not a gate input (ticket 17). Every demo voice
-  // has one, and a voice outside the native table has none.
-  for (const voice of DEMO_VOICE_IDS) {
-    assert.ok(matchedLoudnessLufs(voice) !== null, `${voice} has a native measurement plus a gain`);
-  }
-  assert.equal(matchedLoudnessLufs("not-a-voice"), null);
-});
+test("the scoreboard reports no client gain: level is the served body and measured files", () => {
+  const withMeasured = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "greeting-cut",
+    runnerStdout: "",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+    runBody: servedBody(VOICE_OUTPUT_VOLUME),
+    measuredLevel: {
+      reference: measuredTone("captures/reference-anna-en.wav", -23.1),
+      delivered: measuredTone("captures/delivered-anna-en.wav", -23.2),
+    },
+  });
+  // The gain row and its review number are deleted, not merely unused.
+  assert.equal("gain" in withMeasured.loudness, false, "no client gain on the artifact");
+  assert.equal("voices" in withMeasured.loudness, false, "no per-voice gain table on the artifact");
+  assert.equal("matchedLufs" in withMeasured.loudness, false, "no gain-derived level number");
+  assert.equal(withMeasured.loudness.outputVolume, VOICE_OUTPUT_VOLUME, "the served level remains");
+  assert.equal(withMeasured.loudness.measured.status, "PASS", "the measured leg remains the level gate");
 
-test("loudness sanity fails a misgained voice by the numbers", () => {
-  const good = checkLoudness({ nativeLufs: -23.1, gain: 1.0, volume: VOICE_OUTPUT_VOLUME });
-  assert.equal(good.ok, true);
-  assert.ok(good.detail.includes("-23.1"));
-  // 4x gain on a reference-level voice lands ~12 dB hot: must fail.
-  const hot = checkLoudness({ nativeLufs: -23.1, gain: 4.0, volume: VOICE_OUTPUT_VOLUME });
-  assert.equal(hot.ok, false);
-  assert.ok(hot.detail.includes("-11.06"), `detail shows the hot level: ${hot.detail}`);
-  // A served level below unity is a quiet voice by the same arithmetic.
-  const quiet = checkLoudness({ nativeLufs: -23.1, gain: 1.0, volume: 50 });
-  assert.equal(quiet.ok, false);
-  assert.equal(quiet.matchedLufs, -29.12);
-  const sanity = checkServedLoudness("giovanni", servedBody(VOICE_OUTPUT_VOLUME));
-  assert.equal(sanity.ok, true);
-  assert.ok(sanity.detail.includes("3.89"), `detail cites the registry gain: ${sanity.detail}`);
-  assert.ok(sanity.detail.includes("served volume 100 on agent_stored"), sanity.detail);
-});
-
-test("per-voice gain table greens the gate voice from the served body, never a registry level", () => {
-  const table = voiceGainTable("anna", servedBody(VOICE_OUTPUT_VOLUME));
-  assert.deepEqual(
-    table.map((row) => row.voice),
-    ["anna", ...regressionVoices("anna")],
-    "gate first, every regression voice included",
-  );
-  assert.deepEqual(
-    [...table.map((row) => row.voice)].sort(),
-    [...DEMO_VOICE_IDS].sort(),
-    "no demo voice is missing from the gain table",
-  );
-  const [gate, ...regression] = table;
-  assert.equal(gate?.isGate, true);
-  assert.equal(gate?.outputVolume, VOICE_OUTPUT_VOLUME, "the gate row carries the served level");
-  assert.equal(gate?.gain, voicePlaybackGain("anna"), "client gain comes from the registry");
-  assert.equal(gate?.status, "PASS");
-  for (const row of regression) {
-    assert.equal(row.isGate, false);
-    assert.equal(row.outputVolume, null, `${row.voice} was not read this run`);
-    assert.equal(row.matchedLufs, null, `${row.voice} must not be matched by arithmetic`);
-    assert.equal(row.status, "INFO", `${row.voice} is reported, never greened`);
-    assert.equal(row.gain, voicePlaybackGain(row.voice), "the gain is still reviewable");
-  }
-  // A different gate voice flips the gate row, never the served body.
-  const lola = voiceGainTable("lola", servedBody(VOICE_OUTPUT_VOLUME));
-  assert.equal(lola[0]?.voice, "lola");
-  assert.equal(lola[0]?.isGate, true);
-  assert.equal(lola.find((row) => row.voice === "anna")?.isGate, false);
-  assert.equal(lola.find((row) => row.voice === "anna")?.outputVolume, null);
-});
-
-test("an unmeasured voice is reported INFO, never failed", () => {
-  // alba is in the voice registry but has no native loudness measurement.
-  const row = voiceGainRow("alba", "alba", servedBody(VOICE_OUTPUT_VOLUME));
-  assert.equal(row.gain, 1.0, "an unknown gain stays the registry default");
-  assert.equal(row.outputVolume, VOICE_OUTPUT_VOLUME, "the served level is still recorded");
-  assert.equal(row.nativeLufs, null);
-  assert.equal(row.matchedLufs, null);
-  assert.equal(row.status, "INFO");
-  assert.ok(row.detail.includes("no native loudness measurement"), row.detail);
-  assert.ok(formatVoiceGainTable([row]).includes("INFO"), "printed as INFO, never FAIL");
-
-  const sanity = checkServedLoudness("alba", servedBody(VOICE_OUTPUT_VOLUME));
-  assert.equal(sanity.unmeasured, true);
-  assert.equal(sanity.matchedLufs, null);
-  const gate = evaluateTimbreGate({
-    probes: ZERO_PROBES,
-    voiceId: "alba",
-    agentChannel: null,
+  // A served body with no measured file cannot green the level by arithmetic:
+  // there is no formula left to PASS from.
+  const bodyOnly = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "greeting-cut",
+    runnerStdout: "",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
     runBody: servedBody(VOICE_OUTPUT_VOLUME),
   });
-  assert.equal(gate.status, "INFO", "unmeasured level never fails the timbre gate, and never passes it");
-  assert.match(gate.detail, /unmeasured level/);
-});
+  assert.equal(bodyOnly.loudness.measured.status, "INFO");
+  assert.equal(bodyOnly.loudness.ok, false);
+  assert.equal(
+    bodyOnly.gates.find((gate) => gate.name === "timbre-probes")?.status,
+    "INFO",
+    "a served level alone can never PASS the timbre gate",
+  );
 
-test("gain table output names every voice with its served level and client gain", () => {
-  const table = voiceGainTable("anna", servedBody(VOICE_OUTPUT_VOLUME));
-  const printed = formatVoiceGainTable(table);
-  for (const row of table) {
-    assert.ok(printed.includes(row.voice), `printed table missing ${row.voice}`);
-  }
-  assert.ok(printed.includes(`vol=${VOICE_OUTPUT_VOLUME}`));
-  assert.ok(printed.includes("vol=unmeasured"), "an unread regression voice prints unmeasured");
-  assert.ok(printed.includes("gain=3.89"), "giovanni's registry gain is visible");
-});
+  const matrix = buildRegressionMatrix({
+    gateVoice: "anna",
+    entries: [
+      {
+        voice: "anna",
+        probes: { jump: 0, overload: 0, clip: 0, underrun: 0, inputDrop: 0 },
+        tagLines: ["Lime 42 in the subject"],
+        expectedTag: "Lime 42",
+      },
+      {
+        voice: "lola",
+        probes: { jump: 0, overload: 0, clip: 0, underrun: 0, inputDrop: 0 },
+        tagLines: ["Lime 42 in the subject"],
+        expectedTag: "Lime 42",
+      },
+    ],
+  });
+  assert.equal("gains" in matrix, false, "the matrix carries no gain rows");
+  assert.doesNotMatch(formatMatrixTable(matrix), /gain=/, "a gain table is never printed");
 
+  const source = readFileSync(new URL("./scoreboard.ts", import.meta.url), "utf8");
+  assert.doesNotMatch(
+    source,
+    /voicePlaybackGain|playbackGain|VoiceGainRow|voiceGainRow|voiceGainTable|formatVoiceGainTable|NATIVE_VOICE_LUFS|matchedLoudnessLufs|checkLoudness|checkServedLoudness/,
+    "scoreboard gain math or a gain table survived the deletion",
+  );
+});
 
 test("timbre gate passes clean and fails named defects", () => {
   // A clean gate needs the measured level leg: probes, evidence and a measured
@@ -4664,7 +4628,6 @@ test("the artifact records the body identity beside the level it measured", () =
   // One run-level identity: the level no longer carries a second copy.
   assert.equal("body" in unmeasured.loudness, false, "loudness has no second body identity");
   assert.equal(unmeasured.loudness.outputVolume, 62);
-  assert.equal(unmeasured.loudness.matchedLufs, -27.25, "the gain table's review number stays reviewable");
   assert.equal(unmeasured.loudness.measured.status, "INFO");
   assert.equal(unmeasured.loudness.ok, false);
   assert.equal(unmeasured.gates.find((gate) => gate.name === "timbre-probes")?.status, "INFO");
@@ -4706,23 +4669,7 @@ test("no served body leaves the artifact level unmeasured, never a registry numb
   assert.equal("body" in artifact.loudness, false);
   assert.equal(artifact.agentBody?.measured, false);
   assert.equal(artifact.loudness.outputVolume, null);
-  assert.equal(artifact.loudness.matchedLufs, null);
   assert.match(artifact.loudness.detail, /unmeasured/);
-  assert.doesNotMatch(artifact.loudness.detail, /matched/);
-});
-
-test("the gain table greens the gate voice from the served body, never an unread voice", () => {
-  const table = voiceGainTable("anna", servedBody(62));
-  assert.equal(table[0]?.voice, "anna");
-  assert.equal(table[0]?.outputVolume, 62);
-  assert.equal(table[0]?.status, "FAIL", "the served level differs from the reference");
-  for (const row of table.slice(1)) {
-    assert.equal(row.outputVolume, null, `${row.voice}: no body was read for this voice`);
-    assert.equal(row.matchedLufs, null);
-    assert.equal(row.status, "INFO", `${row.voice} must never green on a registry default`);
-    assert.match(row.detail, /no stored body read/);
-  }
-  assert.ok(formatVoiceGainTable(table).includes("served"));
 });
 
 // ── Ticket 16: the level leg reads measured files, never the formula ────────
@@ -5051,7 +4998,6 @@ test("artifact carries human slots, the served level, and live timbre gates", ()
   assert.equal(artifact.humanRatings.accent, null);
   assert.deepEqual(artifact.humanRatings.ratings, []);
   assert.equal(artifact.humanRatings.recordingSha256, null);
-  assert.ok(Math.abs((artifact.loudness.matchedLufs ?? 0) - TIMBRE_REFERENCE_LUFS) <= TIMBRE_LUFS_TOLERANCE_DB);
   assert.equal(artifact.loudness.outputVolume, VOICE_OUTPUT_VOLUME);
   assert.equal(artifact.agentBody?.agentId, "agent_stored");
   assert.equal(artifact.loudness.measured.status, "PASS", artifact.loudness.measured.detail);
@@ -5061,31 +5007,6 @@ test("artifact carries human slots, the served level, and live timbre gates", ()
   assert.equal(timbre?.status, "PASS", timbre?.detail);
   const human = artifact.gates.find((g) => g.name === "accent-human");
   assert.equal(human?.status, "INFO");
-});
-
-test("artifact carries the per-voice gain table, not only the gate voice", () => {
-  const artifact = buildSkeletonArtifact({
-    voice: DEFAULT_GATE_VOICE,
-    scenario: "greeting-cut",
-    runnerStdout: "",
-    exitCode: 0,
-    durationMs: 10,
-    runs: 1,
-    runBody: servedBody(VOICE_OUTPUT_VOLUME),
-  });
-  const rows = artifact.loudness.voices;
-  assert.equal(rows.length, DEMO_VOICE_IDS.length, "every demo voice has a gain row");
-  assert.equal(rows[0]?.voice, DEFAULT_GATE_VOICE);
-  assert.equal(rows[0]?.isGate, true);
-  assert.equal(rows[0]?.outputVolume, VOICE_OUTPUT_VOLUME, "the gate row carries the served level");
-  for (const voice of regressionVoices(DEFAULT_GATE_VOICE)) {
-    const row = rows.find((entry) => entry.voice === voice);
-    assert.ok(row, `regression voice ${voice} missing from the artifact gain table`);
-    assert.equal(row.gain, voicePlaybackGain(voice), `${voice} gain comes from the registry`);
-    assert.equal(row.outputVolume, null, `${voice} was not read this run`);
-    assert.equal(row.status, "INFO", `${voice} is reported, never greened on a registry default`);
-  }
-  assert.ok(formatVoiceGainTable(rows).includes("giovanni"));
 });
 
 test("artifact timbre gate fails named defects and holds human ratings until auto passes", () => {
