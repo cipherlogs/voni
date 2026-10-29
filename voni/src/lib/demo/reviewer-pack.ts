@@ -25,10 +25,14 @@
  * - **No invented reviewer.** The owner supplies who can staff each Locale
  *   (spec: *Open dependency: named reviewers*); this module never fills it in.
  *
- * ── The third axis (ticket 75) ────────────────────────────────────────────
+ * ── The third axis and the weighting (tickets 74/75) ──────────────────────
  * The ballot carries timbre, accent and language naturalness. The axis is part
  * of the schema now so a reviewer is asked once and every ballot carries all
- * three; the weighted result and the report wiring are ticket 75's.
+ * three. The gate's weighted aggregation (timbre 0.5, accent 0.25, language
+ * naturalness 0.25; five out of five passes) lives with the scoreboard
+ * (`TIMBRE_BALLOT_AXIS_WEIGHTS`); the naturalness report wiring is ticket 75's.
+ * A verdict filed from a pack is the demo voice's one subject ballot on this
+ * recording — the shared cut named by the pack's sha256.
  *
  * The module is pure: no audio, no socket, no clock. The checked-in script
  * (`npm run voice:packs`) reads the clip evidence, hashes the committed bytes

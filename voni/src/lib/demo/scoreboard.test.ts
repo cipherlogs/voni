@@ -71,6 +71,10 @@ import {
   checkRegressionVoice,
   type MeasuredLevelFile,
   type MeasuredLevelInput,
+  ballotWeightedScore,
+  evaluateTimbreBallot,
+  TIMBRE_BALLOT_AXIS_WEIGHTS,
+  type HumanRatings,
   checkTimbreProbes,
   codeFingerprintFromGit,
   BEHAVIOR_RUN_EVIDENCE_KIND,
@@ -161,7 +165,7 @@ import {
   goldenWindowExpectations,
 } from "./scoreboard-budgets";
 import { judgeOverlap } from "../voice/barge-in";
-import { resolveSubject, sameSubject, type SubjectRecord } from "./subject";
+import { formatSubject, resolveSubject, sameSubject, type SubjectRecord } from "./subject";
 import { EN_RECOGNITION } from "../voice/recognition";
 import { DEMO_VOICE_IDS, SILENCE_CHECK_IN_INSTRUCTIONS, SILENCE_CHECK_IN_MS } from "./voni-agent";
 import type { RunnerEvidence } from "./runner-evidence";
@@ -198,6 +202,19 @@ function runBodyOf(
   );
   if (!parsed.ok) throw new Error(parsed.error);
   return { measured: true as const, body: parsed.body, agentId, fingerprint };
+}
+
+/**
+ * Two independent raters at five out of five on one shared recording
+ * (voice-parity ticket 74): the ballot half of the timbre gate.
+ */
+function passingBallots(recording: string = "c".repeat(64)): HumanRatings {
+  const one = addHumanRating(
+    emptyHumanRatings(recording),
+    { rater: "ana", timbre: 5, accent: 5 },
+    recording,
+  );
+  return addHumanRating(one, { rater: "bob", timbre: 5, accent: 5 }, recording);
 }
 
 test("golden script is locked to seven beats in fixed order", () => {
@@ -1153,6 +1170,7 @@ test("every body gate follows the one served body when it is swapped", () => {
       runs: 1,
       runBody,
       measuredLevel: measuredLevel(-23.1, -23.1),
+      humanRatings: passingBallots(),
     });
 
   const first = artifactFor(
@@ -4404,6 +4422,7 @@ test("the level leg's verdict moves with the measured files, not the loudness fo
       agentChannel: null,
       runBody: servedBody(SERVED_LEVEL),
       measuredLevel: measuredLevel(-23.1, deliveredRms),
+      humanRatings: passingBallots(),
     });
 
   const measuredPass = gateFor(-23.2);
@@ -4490,6 +4509,7 @@ test("timbre gate passes clean and fails named defects", () => {
       reference: measuredTone("captures/reference-anna-en.wav", -23.1),
       delivered: measuredTone("captures/delivered-anna-en.wav", -23.2),
     },
+    humanRatings: passingBallots(),
   });
   assert.equal(clean.name, "timbre-probes");
   assert.equal(clean.status, "PASS", clean.detail);
@@ -4538,6 +4558,7 @@ test("the timbre gate reads the served body's level, never the registry constant
     agentChannel: null,
     runBody: servedBody(SERVED_LEVEL),
     measuredLevel: measured,
+    humanRatings: passingBallots(),
   });
   assert.equal(atRegistryVolume.status, "PASS", atRegistryVolume.detail);
   assert.match(
@@ -4571,6 +4592,7 @@ test("a served level reaches the timbre gate unchanged", () => {
       agentChannel: null,
       runBody: servedBody(volume),
       measuredLevel: measured,
+      humanRatings: passingBallots(),
     });
     assert.ok(
       gate.detail.includes(`at volume ${volume}`),
@@ -4694,13 +4716,14 @@ function measuredLevel(referenceRms: number, deliveredRms: number): MeasuredLeve
   };
 }
 
-test("a measured level within tolerance passes the timbre gate", () => {
+test("a measured level within tolerance passes the measured leg of the timbre gate", () => {
   const gate = evaluateTimbreGate({
     probes: ZERO_PROBES,
     voiceId: "anna",
     agentChannel: null,
     runBody: servedBody(SERVED_LEVEL),
     measuredLevel: measuredLevel(-23.1, -23.2),
+    humanRatings: passingBallots(),
   });
   assert.equal(gate.status, "PASS", gate.detail);
   assert.match(gate.detail, /captures\/reference-anna-en\.wav/, "names the reference file");
@@ -4793,6 +4816,196 @@ test("the derived constant cannot make the level leg pass", () => {
   assert.match(noBody.detail, /no stored body read/);
 });
 
+// ── Ticket 74: the timbre gate is a measured result plus a weighted ballot ──
+//
+// Spec W5: a subject passes timbre only when the measured axes pass AND two
+// independent raters file a weighted ballot at five out of five on one shared
+// recording. Neither half can green the gate alone.
+
+const GATE_RECORDING = "c".repeat(64);
+const OTHER_RECORDING = "d".repeat(64);
+
+function gateSubject(voice = DEFAULT_GATE_VOICE): SubjectRecord {
+  return resolveSubject({ voice });
+}
+
+function ballotsFor(
+  first: { timbre: number; accent: number; languageNaturalness?: number },
+  second: { timbre: number; accent: number; languageNaturalness?: number },
+  recording = GATE_RECORDING,
+): HumanRatings {
+  const one = addHumanRating(emptyHumanRatings(recording), { rater: "ana", ...first }, recording);
+  return addHumanRating(one, { rater: "bob", ...second }, recording);
+}
+
+function measuredPass(): MeasuredLevelInput {
+  return {
+    reference: measuredTone("captures/reference-anna-en.wav", -23.1),
+    delivered: measuredTone("captures/delivered-anna-en.wav", -23.2),
+  };
+}
+
+function timbreGateFor(input: {
+  measuredLevel?: MeasuredLevelInput | null;
+  humanRatings?: HumanRatings | null;
+  subject?: SubjectRecord;
+} = {}) {
+  return evaluateTimbreGate({
+    probes: ZERO_PROBES,
+    voiceId: DEFAULT_GATE_VOICE,
+    agentChannel: null,
+    runBody: servedBody(SERVED_LEVEL),
+    subject: input.subject ?? gateSubject(),
+    measuredLevel: input.measuredLevel === undefined ? measuredPass() : input.measuredLevel,
+    humanRatings: input.humanRatings ?? null,
+  });
+}
+
+test("a measured pass with no ballot is INFO/unmeasured, never a timbre PASS", () => {
+  const gate = timbreGateFor();
+  assert.equal(gate.status, "INFO", gate.detail);
+  assert.match(gate.detail, /measured timbre PASS/, "the measured result is quoted");
+  assert.match(gate.detail, /level/);
+  assert.match(gate.detail, /true peak/i);
+  assert.match(gate.detail, /distortion/i);
+  assert.match(gate.detail, /crest/i);
+  assert.match(gate.detail, /spectral/i);
+  assert.match(gate.detail, /breakup/i);
+  assert.match(gate.detail, /ballot|awaiting/i, "the missing ballot is named");
+});
+
+test("a measured fail fails the timbre gate even with a five-out-of-five ballot", () => {
+  const gate = timbreGateFor({
+    measuredLevel: {
+      reference: measuredTone("captures/reference-anna-en.wav", -23.1),
+      delivered: measuredTone("captures/delivered-anna-en.wav", -29.1),
+    },
+    humanRatings: ballotsFor({ timbre: 5, accent: 5 }, { timbre: 5, accent: 5 }),
+  });
+  assert.equal(gate.status, "FAIL", gate.detail);
+  assert.match(gate.detail, /level/);
+});
+
+test("a five-out-of-five ballot from one rater is not a pass", () => {
+  const one = addHumanRating(
+    emptyHumanRatings(GATE_RECORDING),
+    { rater: "ana", timbre: 5, accent: 5 },
+    GATE_RECORDING,
+  );
+  const gate = timbreGateFor({ humanRatings: one });
+  assert.equal(gate.status, "INFO", gate.detail);
+  assert.match(gate.detail, /1\/2|one rater/i);
+});
+
+test("two raters at five out of five on one shared recording pass the timbre gate", () => {
+  const gate = timbreGateFor({
+    humanRatings: ballotsFor({ timbre: 5, accent: 5 }, { timbre: 5, accent: 5 }),
+  });
+  assert.equal(gate.status, "PASS", gate.detail);
+  for (const axis of [/level/, /true peak/i, /distortion/i, /crest/i, /spectral/i, /breakup/i]) {
+    assert.match(gate.detail, axis, `the gate names ${axis}: ${gate.detail}`);
+  }
+  assert.match(gate.detail, /5\.00\/5|five out of five/i);
+  assert.ok(gate.detail.includes(GATE_RECORDING.slice(0, 12)), "the shared recording is named");
+});
+
+test("two raters on different recordings are not one shared recording and never pass", () => {
+  const mixed: HumanRatings = {
+    timbre: 5,
+    accent: 5,
+    weighted: 5,
+    recordingSha256: GATE_RECORDING,
+    ratings: [
+      { rater: "ana", timbre: 5, accent: 5, recordingSha256: GATE_RECORDING },
+      { rater: "bob", timbre: 5, accent: 5, recordingSha256: OTHER_RECORDING },
+    ],
+  };
+  const gate = timbreGateFor({ humanRatings: mixed });
+  assert.equal(gate.status, "FAIL", gate.detail);
+  assert.match(gate.detail, /different recordings|one shared recording/i);
+});
+
+test("the weighted ballot aggregates the axes and a four blocks below five", () => {
+  // Weights: timbre 0.5, accent 0.25, language naturalness 0.25.
+  assert.deepEqual(TIMBRE_BALLOT_AXIS_WEIGHTS, {
+    timbre: 0.5,
+    accent: 0.25,
+    languageNaturalness: 0.25,
+  });
+  assert.equal(
+    ballotWeightedScore({ rater: "ana", timbre: 5, accent: 4, languageNaturalness: 5 }),
+    4.75,
+  );
+  assert.equal(
+    ballotWeightedScore({ rater: "ana", timbre: 5, accent: 5, languageNaturalness: 4 }),
+    4.75,
+  );
+  const ballots = ballotsFor(
+    { timbre: 5, accent: 4, languageNaturalness: 5 },
+    { timbre: 5, accent: 5, languageNaturalness: 5 },
+  );
+  const ballot = evaluateTimbreBallot(ballots, gateSubject());
+  assert.equal(ballot.status, "FAIL", ballot.detail);
+  assert.equal(ballot.weighted, 4.88, "the two raters' weighted scores average to 4.88");
+  assert.match(ballot.detail, /accent/);
+  assert.match(ballot.detail, /4\.88/);
+  const gate = timbreGateFor({ humanRatings: ballots });
+  assert.equal(gate.status, "FAIL", gate.detail);
+  assert.match(gate.detail, /below five|4\.88/);
+});
+
+test("a ballot below five names the rater's stated reason and blocks", () => {
+  let slots = addHumanRating(
+    emptyHumanRatings(GATE_RECORDING),
+    {
+      rater: "ana",
+      timbre: 4,
+      accent: 5,
+      reasons: { timbre: "thin upper register on the first sentence" },
+    },
+    GATE_RECORDING,
+  );
+  slots = addHumanRating(slots, { rater: "bob", timbre: 5, accent: 5 }, GATE_RECORDING);
+  const ballot = evaluateTimbreBallot(slots, gateSubject());
+  assert.equal(ballot.status, "FAIL");
+  assert.match(ballot.detail, /thin upper register/);
+  assert.equal(timbreGateFor({ humanRatings: slots }).status, "FAIL");
+});
+
+test("a ballot judged on another subject is never this subject's pass", () => {
+  const lola = resolveSubject({ voice: "lola" });
+  const ballots: HumanRatings = {
+    ...ballotsFor({ timbre: 5, accent: 5 }, { timbre: 5, accent: 5 }),
+    subject: lola,
+  };
+  const ballot = evaluateTimbreBallot(ballots, gateSubject());
+  assert.equal(ballot.status, "FAIL", ballot.detail);
+  assert.match(ballot.detail, /lola|another subject/i);
+  const gate = timbreGateFor({ humanRatings: ballots });
+  assert.equal(gate.status, "FAIL", gate.detail);
+});
+
+test("an artifact binds the ballots to its own subject and records the weighted score", () => {
+  const artifact = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "greeting-cut",
+    runnerStdout: "",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+    runBody: servedBody(SERVED_LEVEL),
+    measuredLevel: measuredPass(),
+    humanRatings: ballotsFor({ timbre: 5, accent: 5 }, { timbre: 5, accent: 5 }),
+  });
+  const timbre = artifact.gates.find((gate) => gate.name === "timbre-probes");
+  assert.equal(timbre?.status, "PASS", timbre?.detail);
+  assert.equal(artifact.humanRatings.subject?.agent.kind, "demo");
+  assert.equal(artifact.humanReview.subject, formatSubject(artifact.subject!));
+  assert.equal(artifact.humanReview.weighted, 5);
+  assert.equal(artifact.humanReview.counted, true);
+  assert.match(formatHumanReview(artifact.humanReview), /weighted 5\.00\/5/);
+});
+
 // ── Ticket 10, slice 2: blind human slots ─────────────────────────────────
 
 const RECORDING = "a".repeat(64);
@@ -4826,20 +5039,25 @@ test("human ratings need 1-5 ints, one ballot per rater, one shared recording", 
   assert.throws(() => addHumanRating(slots, { rater: "", timbre: 4, accent: 4 }, RECORDING), /rater/);
 });
 
-test("human gate counts only after two raters and a passing auto gate", () => {
+test("the human gate needs two raters at five out of five, after the measured result", () => {
   const none = emptyHumanRatings(RECORDING);
   const awaiting = evaluateHumanGate(true, none);
   assert.equal(awaiting.name, "accent-human");
   assert.equal(awaiting.status, "INFO");
   assert.ok(awaiting.detail.includes("awaiting"));
-  const one = addHumanRating(none, { rater: "ana", timbre: 5, accent: 4 }, RECORDING);
-  assert.equal(evaluateHumanGate(true, one).status, "INFO");
-  const two = addHumanRating(one, { rater: "bob", timbre: 4, accent: 4 }, RECORDING);
-  assert.equal(two.timbre, 4.5);
-  assert.equal(two.accent, 4);
+  const one = addHumanRating(none, { rater: "ana", timbre: 5, accent: 5 }, RECORDING);
+  assert.equal(evaluateHumanGate(true, one).status, "INFO", "one ballot is reported, never counted");
+  // A four is a delivered judgement, not a missing one: it blocks.
+  const four = addHumanRating(
+    one,
+    { rater: "bob", timbre: 4, accent: 4, reasons: { timbre: "thin", accent: "marked" } },
+    RECORDING,
+  );
+  assert.equal(evaluateHumanGate(true, four).status, "FAIL", "a ballot below five blocks");
+  const two = addHumanRating(one, { rater: "bob", timbre: 5, accent: 5 }, RECORDING);
   const counted = evaluateHumanGate(true, two);
   assert.equal(counted.status, "PASS");
-  assert.ok(counted.detail.includes("4.5"), `means stay reviewable: ${counted.detail}`);
+  assert.match(counted.detail, /weighted 5\.00\/5/, counted.detail);
   const blocked = evaluateHumanGate(false, two);
   assert.equal(blocked.status, "INFO");
   assert.ok(blocked.detail.includes("auto"), `auto must pass first: ${blocked.detail}`);
@@ -4878,8 +5096,8 @@ test("auto timbre failure reports ballots but never counts them", () => {
 
 test("artifact makes the shared-recording ballot protocol reviewable", () => {
   const two = addHumanRating(
-    addHumanRating(emptyHumanRatings(RECORDING), { rater: "ana", timbre: 5, accent: 4 }, RECORDING),
-    { rater: "bob", timbre: 4, accent: 4 },
+    addHumanRating(emptyHumanRatings(RECORDING), { rater: "ana", timbre: 5, accent: 5 }, RECORDING),
+    { rater: "bob", timbre: 5, accent: 5 },
     RECORDING,
   );
   const artifact = buildSkeletonArtifact({
@@ -4936,10 +5154,14 @@ test("artifact makes the shared-recording ballot protocol reviewable", () => {
   assert.match(formatHumanReview(unbound.humanReview), /--recording/);
 });
 
-test("a low ballot never fails a run: taste stays informational", () => {
+test("a ballot below five blocks the timbre gate even on a measured pass", () => {
   const low = addHumanRating(
-    addHumanRating(emptyHumanRatings(RECORDING), { rater: "ana", timbre: 1, accent: 1 }, RECORDING),
-    { rater: "bob", timbre: 1, accent: 1 },
+    addHumanRating(
+      emptyHumanRatings(RECORDING),
+      { rater: "ana", timbre: 1, accent: 1, reasons: { timbre: "robotic", accent: "wrong stress" } },
+      RECORDING,
+    ),
+    { rater: "bob", timbre: 1, accent: 1, reasons: { timbre: "robotic", accent: "wrong stress" } },
     RECORDING,
   );
   const artifact = buildSkeletonArtifact({
@@ -4957,15 +5179,18 @@ test("a low ballot never fails a run: taste stays informational", () => {
     },
     dryRun: true,
   });
+  const timbre = artifact.gates.find((g) => g.name === "timbre-probes");
+  assert.equal(timbre?.status, "FAIL", "a ballot below five blocks the timbre gate");
+  assert.match(timbre?.detail ?? "", /below five/);
+  assert.match(timbre?.detail ?? "", /robotic/, "the rater's stated reason is recorded");
   const human = artifact.gates.find((g) => g.name === "accent-human");
-  assert.equal(human?.status, "PASS", "counting raters, not taste, decides the human slot");
-  assert.match(human?.detail ?? "", /timbre 1 \/ accent 1/);
-  assert.ok(!artifact.gates.some((gate) => gate.name === "accent-human" && gate.status === "FAIL"));
-  assert.equal(subjectGateVerdict(artifact).status, "PASS");
+  assert.equal(human?.status, "INFO", "a measured failure keeps the human slot reported, not counted");
+  assert.match(human?.detail ?? "", /not counted/);
+  assert.equal(subjectGateVerdict(artifact).status, "FAIL", "a below-five ballot is never a green run");
 
   const missing = evaluateHumanGate(true, emptyHumanRatings(RECORDING));
   assert.equal(missing.status, "INFO", "missing ballots stay INFO");
-  assert.ok(missing.detail.includes(RECORDING.slice(0, 12)), "INFO names the recording awaiting ballots");
+  assert.match(missing.detail, /awaiting/);
 });
 
 test("artifact carries human slots, the served level, and live timbre gates", () => {
@@ -4992,8 +5217,11 @@ test("artifact carries human slots, the served level, and live timbre gates", ()
   assert.equal(artifact.loudness.measured.status, "PASS", artifact.loudness.measured.detail);
   assert.equal(artifact.loudness.measured.deliveredFile, "captures/delivered-anna-en.wav");
   assert.ok(artifact.loudness.ok);
+  // A measured result with no ballot is INFO/unmeasured, never a timbre PASS
+  // (ticket 74): the machine half alone cannot green the gate.
   const timbre = artifact.gates.find((g) => g.name === "timbre-probes");
-  assert.equal(timbre?.status, "PASS", timbre?.detail);
+  assert.equal(timbre?.status, "INFO", timbre?.detail);
+  assert.match(timbre?.detail ?? "", /awaiting the weighted ballot/);
   const human = artifact.gates.find((g) => g.name === "accent-human");
   assert.equal(human?.status, "INFO");
 });
@@ -5945,6 +6173,16 @@ const PINNED_BUDGETS: Record<string, number> = {
   comparisonOnsetToleranceS: 0.05,
   comparisonModelTextWordChanges: 0,
   comparisonReferenceClipDbtp: -0.1,
+  timbreMeasuredTruePeakDbtp: -1,
+  timbreMeasuredDistortionDb: -45,
+  timbreMeasuredCrestMin: 1.2,
+  timbreMeasuredBandDeltaDb: 3,
+  timbreMeasuredBreakupMax: 0,
+  timbreBallotWeightTimbre: 0.5,
+  timbreBallotWeightAccent: 0.25,
+  timbreBallotWeightLanguageNaturalness: 0.25,
+  timbreBallotPassScore: 5,
+  timbreBallotRatersRequired: 2,
 };
 
 const BUDGET_RECORD_URL = new URL("./scoreboard-budgets.json", import.meta.url);

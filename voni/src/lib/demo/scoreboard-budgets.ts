@@ -10,7 +10,7 @@
  * `scoreboard-budgets.json` together — the freeze guard fails otherwise.
  */
 
-export type BudgetUnit = "ms" | "s" | "count" | "ratio" | "db" | "lufs";
+export type BudgetUnit = "ms" | "s" | "count" | "ratio" | "db" | "dbtp" | "lufs";
 
 export type BudgetEntry = {
   value: number;
@@ -239,6 +239,70 @@ const BUDGETS = {
     unit: "db",
     gate: "audio-comparison",
     source: "spec W0: a reference at the full-scale ceiling cannot be the baseline for peak or distortion",
+  },
+  // W5 timbre gate bars (voice-parity ticket 74). New records only: the
+  // comparison and scoreboard thresholds above are untouched, so a green
+  // there keeps its meaning. Each is the bar the measured result is judged
+  // against, never a value re-derived from the pipeline.
+  timbreMeasuredTruePeakDbtp: {
+    value: -1,
+    unit: "dbtp",
+    gate: "timbre-probes",
+    source: "spec W5: delivered true peak keeps 1 dBTP of encode headroom; a peak at the ceiling is a clip risk, not parity",
+  },
+  timbreMeasuredDistortionDb: {
+    value: -45,
+    unit: "db",
+    gate: "timbre-probes",
+    source: "ticket 14 probe: a 1% third harmonic reads -40 dB, so -45 dB separates a clean delivery from reshaping with margin",
+  },
+  timbreMeasuredCrestMin: {
+    value: 1.2,
+    unit: "ratio",
+    gate: "timbre-probes",
+    source: "ticket 14: crest 1.2 sits between a square wave (1.0) and a sine (1.414), the lowest crest a clean voiced signal shows",
+  },
+  timbreMeasuredBandDeltaDb: {
+    value: 3,
+    unit: "db",
+    gate: "timbre-probes",
+    source: "spec W0/W5: a band-to-band move above 3 dB is a timbre change a re-encode does not make",
+  },
+  timbreMeasuredBreakupMax: {
+    value: 0,
+    unit: "count",
+    gate: "timbre-probes",
+    source: "spec stories 4, 12 and W5: an inserted silence the reference does not have is a hole; the delivered cut carries none",
+  },
+  timbreBallotWeightTimbre: {
+    value: 0.5,
+    unit: "ratio",
+    gate: "timbre-probes",
+    source: "spec W5: the timbre gate weights timbre half of the weighted ballot (the axis this gate claims)",
+  },
+  timbreBallotWeightAccent: {
+    value: 0.25,
+    unit: "ratio",
+    gate: "timbre-probes",
+    source: "spec W5: accent is one quarter of the weighted ballot, equal to language naturalness",
+  },
+  timbreBallotWeightLanguageNaturalness: {
+    value: 0.25,
+    unit: "ratio",
+    gate: "timbre-probes",
+    source: "spec W5: language naturalness is one quarter of the weighted ballot (ticket 75 wires the axis; the weight is fixed here)",
+  },
+  timbreBallotPassScore: {
+    value: 5,
+    unit: "count",
+    gate: "timbre-probes",
+    source: "spec W5: a subject passes timbre at five out of five, never at four",
+  },
+  timbreBallotRatersRequired: {
+    value: 2,
+    unit: "count",
+    gate: "timbre-probes",
+    source: "spec W5/testing: two independent raters on one shared recording per subject",
   },
 } as const satisfies Record<string, BudgetEntry>;
 

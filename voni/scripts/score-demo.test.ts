@@ -3166,24 +3166,28 @@ test("--probe-json agent-channel evidence fails the same gate on clipped PCM", (
   assert.equal(artifact.gates.find((g) => g.name === "timbre-probes")?.status, "FAIL");
 });
 
-test("--rate files two blind ballots and passes accent-human on the same recording", () => {
+test("--rate files two blind ballots at five out of five on one shared recording", () => {
   const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
   const out = join(dir, "human.json");
   const result = run(
-    ["--dry-run", "--voice", DEMO_VOICE_IDS[0], "--out", out, "--recording", RECORDING_SHA, "--rate", "ana:5,4", "--rate", "bob:4,4"],
+    ["--dry-run", "--voice", DEMO_VOICE_IDS[0], "--out", out, "--recording", RECORDING_SHA, "--rate", "ana:5,5", "--rate", "bob:5,5"],
     new URL("../", import.meta.url).pathname,
   );
   assert.equal(result.status, 0, result.stderr + result.stdout);
   const artifact = JSON.parse(readFileSync(out, "utf8")) as {
-    humanRatings: { timbre: number; accent: number; recordingSha256: string; ratings: unknown[] };
+    humanRatings: { timbre: number; accent: number; weighted: number; recordingSha256: string; ratings: unknown[] };
     gates: { name: string; status: string; detail: string }[];
   };
-  assert.equal(artifact.humanRatings.timbre, 4.5);
-  assert.equal(artifact.humanRatings.accent, 4);
+  assert.equal(artifact.humanRatings.timbre, 5);
+  assert.equal(artifact.humanRatings.accent, 5);
+  assert.equal(artifact.humanRatings.weighted, 5);
   assert.equal(artifact.humanRatings.recordingSha256, RECORDING_SHA);
   assert.equal(artifact.humanRatings.ratings.length, 2);
+  // Doctrine (ticket 74): a dry run has no measured result, so the ballot is
+  // reported at five out of five but the gate is INFO — never a machine-only PASS.
   const human = artifact.gates.find((g) => g.name === "accent-human");
-  assert.equal(human?.status, "PASS");
+  assert.equal(human?.status, "INFO");
+  assert.match(human?.detail ?? "", /measured timbre/);
   assert.match(result.stdout, /accent-human/);
 });
 
@@ -3203,9 +3207,9 @@ test("--recording-file binds ballots to the harness-computed recording sha256", 
       "--recording-file",
       recording,
       "--rate",
-      "ana:5,4",
+      "ana:5,5",
       "--rate",
-      "bob:4,4",
+      "bob:5,5",
     ],
     new URL("../", import.meta.url).pathname,
   );
@@ -3220,7 +3224,8 @@ test("--recording-file binds ballots to the harness-computed recording sha256", 
   assert.equal(artifact.humanReview.raterCount, 2);
   assert.equal(artifact.humanReview.requiredRaters, 2);
   assert.match(artifact.humanReview.protocol, /blind/);
-  assert.equal(artifact.gates.find((g) => g.name === "accent-human")?.status, "PASS");
+  // No measured result in a dry run, so the ballot does not count yet.
+  assert.equal(artifact.gates.find((g) => g.name === "accent-human")?.status, "INFO");
   assert.ok(result.stdout.includes(expected), "console prints the shared recording sha256");
   assert.match(result.stdout, /blind human ballots/);
 
@@ -3281,7 +3286,7 @@ test("ballots on a failing auto gate are recorded but leave the run red", () => 
   assert.match(result.stdout, /reported, not counted/);
 });
 
-test("a low ballot after a passing auto gate never fails the run", () => {
+test("a ballot below five blocks the run instead of auto-passing a dry run", () => {
   const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
   const out = join(dir, "low.json");
   const result = run(
@@ -3300,14 +3305,17 @@ test("a low ballot after a passing auto gate never fails the run", () => {
     ],
     new URL("../", import.meta.url).pathname,
   );
-  assert.equal(result.status, 0, "taste never fails a run");
+  assert.equal(result.status, 1, "a ballot below five blocks the timbre gate");
   const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    humanRatings: { weighted: number };
     gates: { name: string; status: string; detail: string }[];
   };
+  assert.equal(artifact.humanRatings.weighted, 1);
+  const timbre = artifact.gates.find((g) => g.name === "timbre-probes");
+  assert.equal(timbre?.status, "FAIL", timbre?.detail);
+  assert.match(timbre?.detail ?? "", /below five/);
   const human = artifact.gates.find((g) => g.name === "accent-human");
-  assert.equal(human?.status, "PASS");
-  assert.match(human?.detail ?? "", /timbre 1 \/ accent 1/);
-  assert.ok(!artifact.gates.some((gate) => gate.status === "FAIL"));
+  assert.equal(human?.status, "INFO", "the human slot is reported, not counted against the measurement");
 });
 
 test("--rate without --recording fails fast with no artifact", () => {

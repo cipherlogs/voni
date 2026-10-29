@@ -37,6 +37,16 @@
     "comparisonBreakupCount": 1,
     "comparisonOnsetToleranceS": 0.05,
     "comparisonModelTextWordChanges": 0,
-    "comparisonReferenceClipDbtp": -0.1
+    "comparisonReferenceClipDbtp": -0.1,
+    "timbreMeasuredTruePeakDbtp": -1,
+    "timbreMeasuredDistortionDb": -45,
+    "timbreMeasuredCrestMin": 1.2,
+    "timbreMeasuredBandDeltaDb": 3,
+    "timbreMeasuredBreakupMax": 0,
+    "timbreBallotWeightTimbre": 0.5,
+    "timbreBallotWeightAccent": 0.25,
+    "timbreBallotWeightLanguageNaturalness": 0.25,
+    "timbreBallotPassScore": 5,
+    "timbreBallotRatersRequired": 2
   }
 }
