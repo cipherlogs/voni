@@ -32,15 +32,40 @@ Two rules keep the map honest about languages and tools:
   shape (``name``/``description``/``parameters`` plus execution metadata);
   Chat Completions wants ``{"type": "function", "function": {…}}``. Only the
   three model-visible keys are copied, so REST-only metadata can never leak
-  into a request.
+  into a request. The parameter schema is passed through, with a missing root
+  ``type`` supplied as ``"object"`` (ticket 62).
 
-The ignore set (ticket 58), the unknown-key refusal (ticket 59), the LLM
-override refusal (60) and the eligibility refusals (61) are not this module's
-job yet: this map is what they check against.
+The ignore set (ticket 58) is the other half of the rule: every body field the
+cascade must *not* read is listed there with the reason it is ignored, and
+:func:`ignored_fields` records each one that is present, so a
+recognition-carrying field such as ``input.transcription_prompt`` cannot
+disappear silently. Ignored is not dropped: the record travels on the config
+the call carries.
+
+The unknown-key refusal (ticket 59) is the whitelist rule over that data: a key
+at the top level, inside ``input``, ``output`` or ``voice`` that neither set
+names fails by name, before any vendor socket opens. The LLM override refusal
+(60) is the one-body rule's consequence: a non-empty ``llm`` array routes the
+call managed, while ``llm: []`` is the documented revert.
+
+This adapter refuses what it cannot *represent*: an unbound voice, an unknown
+language code, a missing prompt, a tool name the vendor would reject. What the
+body may still not be *eligible* for — automatic language detection, more
+keyterms than the vendor accepts — is :mod:`cascade.eligibility`'s gate, which
+turns every refusal here into a routing reason (ticket 61).
+
+The signed body's fingerprint also lives here (ticket 63): :func:`stable_json`,
+:func:`body_fingerprint` and :func:`verify_served_body` hash the *whole* served
+body under the account salt and refuse a body that is not the one the app
+minted. The test pins one vector computed by the TypeScript implementation, so
+the two languages cannot drift apart silently.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
+import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
@@ -72,6 +97,127 @@ class UnknownLanguageCodeError(BodyFieldError):
         super().__init__(path, f'unknown language code "{code}"; the catalogue speaks {known}')
 
 
+class UnknownBodyKeyError(BodyFieldError):
+    """A body key is neither mapped nor deliberately ignored.
+
+    This is the profile-whitelist rule: a smuggled key is a visible error, not a
+    cascade feature, and it fails before any vendor socket opens.
+    """
+
+    def __init__(self, path: str) -> None:
+        self.reason = (
+            "unknown key: it is neither in the field map nor in the ignore set, "
+            "so it cannot become a cascade setting"
+        )
+        super().__init__(path, self.reason)
+
+
+class LlmOverrideRefusal(BodyFieldError):
+    """The body carries a bring-your-own-model override.
+
+    The cascade runs the managed model; replacing a tenant's model silently
+    would be the one-body rule's worst failure. ``llm: []`` is the documented
+    revert and is not an override, so it never reaches this refusal.
+    """
+
+    def __init__(self, models: tuple[str, ...]) -> None:
+        self.models = models
+        named = ", ".join(f'"{model}"' for model in models) or "an unnamed model"
+        super().__init__(
+            "llm",
+            f"the body carries a non-empty LLM override ({named}); a tenant's "
+            "bring-your-own model is never silently replaced, so this agent "
+            "routes managed",
+        )
+
+
+class MissingSystemPromptError(BodyFieldError):
+    """The body has no prompt to send as the system message.
+
+    A compiled prompt is part of the stored body's contract; an empty one is a
+    builder defect, not a valid silent agent.
+    """
+
+    def __init__(self, path: str = "system_prompt") -> None:
+        super().__init__(
+            path,
+            "a cascade body must carry a system prompt; a missing or blank "
+            "prompt is a body contract violation",
+        )
+
+
+class BodyFingerprintMismatch(ValueError):
+    """The body the app read back is not the body the app minted.
+
+    A call cannot run a body nobody fingerprinted. The two fingerprints are
+    named; the account salt that was mixed into them is never printed.
+    """
+
+    def __init__(self, minted: str, served: str) -> None:
+        self.minted = minted
+        self.served = served
+        super().__init__(
+            f'the served body\'s full fingerprint "{served}" does not match the '
+            f'minted fingerprint "{minted}"; a call cannot run a body nobody '
+            "fingerprinted"
+        )
+
+
+def stable_json(value: object) -> str:
+    """Canonical JSON: sorted keys, compact separators, unescaped unicode.
+
+    This is the canonical form ``stableJson`` in
+    ``voni/src/lib/agents/body.ts`` produces (it only additionally drops
+    ``undefined``, which Python does not have), so both languages fingerprint
+    the same body to the same bytes.
+    """
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def body_fingerprint(body: Mapping[str, Any], *, account_salt: str) -> str:
+    """The full fingerprint of a stored body under one account.
+
+    Everything on the body is hashed, because the body is hashed whole — an
+    ignored field is still part of the fingerprint. The account salt is mixed
+    in after the body, exactly as the vitest-minted fingerprint does, so the
+    same body under another account is a different fingerprint.
+    """
+    if not isinstance(body, Mapping):
+        raise TypeError(f"a stored agent body must be a mapping, got {type(body).__name__}")
+    if not isinstance(account_salt, str):
+        raise ValueError(
+            f"the account salt must be a string, got {account_salt!r}; the "
+            "fingerprint is scoped to the account that minted it"
+        )
+    digest = hashlib.sha256()
+    digest.update(stable_json(body).encode("utf-8"))
+    digest.update(b"\0")
+    digest.update(account_salt.encode("utf-8"))
+    return digest.hexdigest()
+
+
+def verify_served_body(
+    *,
+    served_body: Mapping[str, Any],
+    minted_fingerprint: str,
+    account_salt: str,
+) -> str:
+    """Compare the served body's full fingerprint with the minted one.
+
+    The body passed here is the body the app *read back*, never the body it
+    intended to write: verifying the intention would pass by construction. A
+    mismatch is a named refusal, not a warning.
+    """
+    served = body_fingerprint(served_body, account_salt=account_salt)
+    if served != minted_fingerprint:
+        raise BodyFingerprintMismatch(minted_fingerprint, served)
+    return served
+
+
+
+
+
+
 @dataclass(frozen=True)
 class MappedField:
     """One body path and the config field it is allowed to produce."""
@@ -80,12 +226,42 @@ class MappedField:
     parse: Callable[[str, object], object]
 
 
+# The vendor's function-name rule: letters, digits, underscores and dashes,
+# with at most one dot (the namespace separator). A name outside it is an HTTP
+# 400 at the vendor, so the adapter refuses it instead of dropping the tool.
+_TOOL_NAME = re.compile(r"^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)?$")
+
+
+class InvalidToolNameError(BodyFieldError):
+    """A tool name the vendor would reject, so the tool cannot be represented."""
+
+    def __init__(self, path: str, name: str) -> None:
+        self.name = name
+        super().__init__(
+            path,
+            f'tool name "{name}" violates the vendor function-name rule: '
+            "letters, digits, underscores and dashes, with at most one dot",
+        )
+
+
+
 def _text(path: str, value: object) -> str:
     """A body string; absent means the empty string."""
     if value is _MISSING or value is None:
         return ""
     if not isinstance(value, str):
         raise BodyFieldError(path, f"expected a string, got {type(value).__name__}")
+    return value
+
+
+def _system_prompt(path: str, value: object) -> str:
+    """The compiled prompt; a missing or blank one is a contract violation."""
+    if value is _MISSING or value is None:
+        raise MissingSystemPromptError(path)
+    if not isinstance(value, str):
+        raise BodyFieldError(path, f"expected a string, got {type(value).__name__}")
+    if not value.strip():
+        raise MissingSystemPromptError(path)
     return value
 
 
@@ -128,6 +304,11 @@ def _function_tool(path: str, index: int, tool: object) -> dict[str, Any]:
     ``timeout_seconds``, ``response_instructions`` and ``http`` stay with the
     tool loop (M08), which reads them from the body. Name validity is an
     eligibility question (ticket 61), not a conversion one.
+
+    The parameters schema is passed through untouched except for one addition:
+    a schema without a root ``type`` gets ``"type": "object"`` here, because a
+    cascade must not rely on the vendor to repair a request. A tool with no
+    schema at all carries none — nothing is invented.
     """
     where = f"{path}[{index}]"
     if not isinstance(tool, Mapping):
@@ -135,10 +316,21 @@ def _function_tool(path: str, index: int, tool: object) -> dict[str, Any]:
     name = tool.get("name")
     if not isinstance(name, str) or not name:
         raise BodyFieldError(f"{where}.name", "a tool must have a name")
-    return {
-        "type": "function",
-        "function": {key: tool[key] for key in TOOL_FUNCTION_FIELDS if key in tool},
+    if not _TOOL_NAME.match(name):
+        raise InvalidToolNameError(f"{where}.name", name)
+    function: dict[str, Any] = {
+        key: tool[key] for key in TOOL_FUNCTION_FIELDS if key in tool
     }
+    if "parameters" in function:
+        parameters = function["parameters"]
+        if not isinstance(parameters, Mapping):
+            raise BodyFieldError(
+                f"{where}.parameters",
+                f"expected a parameters schema object, got {type(parameters).__name__}",
+            )
+        if "type" not in parameters:
+            function["parameters"] = {"type": "object", **parameters}
+    return {"type": "function", "function": function}
 
 
 def _tools(path: str, value: object) -> tuple[dict[str, Any], ...]:
@@ -153,7 +345,7 @@ def _tools(path: str, value: object) -> tuple[dict[str, Any], ...]:
 FIELD_MAP: Mapping[str, MappedField] = MappingProxyType(
     {
         # The prompt's own map: sent unchanged as the system message.
-        "system_prompt": MappedField("system_prompt", _text),
+        "system_prompt": MappedField("system_prompt", _system_prompt),
         # Absent or empty means the call opens silently.
         "greeting": MappedField("greeting", _text),
         # The voice, and through it the one Locale synthesis speaks.
@@ -168,6 +360,66 @@ FIELD_MAP: Mapping[str, MappedField] = MappingProxyType(
 )
 
 
+# The spec's ignore set, verbatim: every body field the cascade must not read,
+# each with the reason it is ignored (spec "Ignore set, each with a reason").
+# This is data on purpose — extending it is one edit here, never a conditional
+# somewhere in the adapter.
+IGNORE_SET: Mapping[str, str] = MappingProxyType(
+    {
+        # A label the stored body carries; it never influences a call.
+        "name": "a call label the platform stores, not behaviour",
+        # Managed-only gain stage; the cascade has no equivalent.
+        "output.volume": (
+            "managed-only; direct synthesis has no volume parameter and the "
+            "cascade carries no gain stage"
+        ),
+        # Redundant with the mapped voice id.
+        "output.voice": "redundant with voice.voice_id, which the map already reads",
+        # The transport owns both directions' formats.
+        "output.format": "the transport chooses the output format, not the body",
+        "input.format": "the transport chooses the input format, not the body",
+        # Meta's recognition mode is fixed; there is no knob to set.
+        "input.transcription_mode": (
+            "Meta's recognition mode is fixed at ENDPOINTING; there is no "
+            "equivalent knob"
+        ),
+        # Recognition words that must be represented in keyterms before cutover.
+        "input.transcription_prompt": (
+            "Meta exposes no free-form recognition prompt; the words it carries "
+            "must be represented in keyterms before cutover, so the field is "
+            "recorded as ignored for the pre-cutover recognition check"
+        ),
+        # The browser mic path already owns capture.
+        "input.voice_focus": (
+            "no Meta equivalent; the browser microphone path already owns capture"
+        ),
+        "input.voice_focus_threshold": (
+            "no Meta equivalent; the browser microphone path already owns capture"
+        ),
+        # The provider owns the turn boundary.
+        "input.turn_detection": (
+            "the provider owns the turn boundary; there is no turn-detection "
+            "object to set"
+        ),
+    }
+)
+
+
+@dataclass(frozen=True)
+class IgnoredField:
+    """One body field the cascade deliberately does not read, and why.
+
+    ``value`` is the field's value as served. It exists so a recorded ignore is
+    inspectable — the pre-cutover recognition check has to read the words a
+    ``transcription_prompt`` carried, not just note that it was there.
+    """
+
+    path: str
+    reason: str
+    value: Any
+
+
+
 def _read(body: Mapping[str, Any], path: str) -> object:
     """The value at a dotted body path, or ``_MISSING``."""
     node: object = body
@@ -176,6 +428,75 @@ def _read(body: Mapping[str, Any], path: str) -> object:
             return _MISSING
         node = node[key]
     return node
+
+
+def ignored_fields(body: Mapping[str, Any]) -> tuple[IgnoredField, ...]:
+    """Every ignored field the body actually carries, with its reason."""
+    if not isinstance(body, Mapping):
+        raise TypeError(f"a stored agent body must be a mapping, got {type(body).__name__}")
+    recorded: list[IgnoredField] = []
+    for path in sorted(IGNORE_SET):
+        value = _read(body, path)
+        if value is not _MISSING:
+            recorded.append(IgnoredField(path, IGNORE_SET[path], value))
+    return tuple(recorded)
+
+
+def _allowed_children() -> Mapping[str, frozenset[str]]:
+    """The keys each checked body section may carry, derived from the two sets.
+
+    Derived per call, so extending either set is the whole change: a module
+    constant computed at import would go stale the moment a set grows.
+    ``llm`` is the one top-level key that is neither mapped nor ignored: it is
+    a documented refusal (ticket 60), so it must reach the adapter to be
+    refused by name rather than as an unknown key.
+    """
+    allowed: dict[str, set[str]] = {"": {"llm"}, "voice": set()}
+    for path in (*FIELD_MAP, *IGNORE_SET):
+        parts = path.split(".")
+        for depth, key in enumerate(parts):
+            parent = ".".join(parts[:depth])
+            allowed.setdefault(parent, set()).add(key)
+    return MappingProxyType({parent: frozenset(keys) for parent, keys in allowed.items()})
+
+
+# The sections whose keys are a closed set. A key in any other object is the
+# object's own business (a tool's parameters schema, an LLM override's body).
+CHECKED_SECTIONS = ("", "input", "output", "voice")
+
+
+def _reject_unknown_keys(body: Mapping[str, Any]) -> None:
+    """Refuse any key in a checked section that neither set names."""
+    allowed_keys = _allowed_children()
+    for section in CHECKED_SECTIONS:
+        node = body if not section else body.get(section, _MISSING)
+        if node is _MISSING:
+            continue
+        if not isinstance(node, Mapping):
+            raise BodyFieldError(section, f"expected an object, got {type(node).__name__}")
+        allowed = allowed_keys.get(section, frozenset())
+        for key in node:
+            if key not in allowed:
+                raise UnknownBodyKeyError(f"{section}.{key}" if section else str(key))
+
+
+def _reject_llm_override(body: Mapping[str, Any]) -> None:
+    """Refuse a non-empty ``llm`` array; ``[]`` is the documented revert."""
+    value = body.get("llm", _MISSING)
+    if value is _MISSING or value is None:
+        return
+    if not isinstance(value, (list, tuple)):
+        raise BodyFieldError(
+            "llm", f"expected a list of model overrides, got {type(value).__name__}"
+        )
+    if not value:
+        return
+    models = tuple(
+        str(entry.get("model", "")) if isinstance(entry, Mapping) else repr(entry)
+        for entry in value
+    )
+    raise LlmOverrideRefusal(models)
+
 
 
 @dataclass(frozen=True)
@@ -191,6 +512,9 @@ class CascadeBody:
     keyterms: tuple[str, ...]
     # Chat Completions shape, ready for LLMStream.complete(tools=...).
     tools: tuple[dict[str, Any], ...]
+    # Every ignored field the served body carried, with its reason. Not a
+    # setting: the record exists so an ignored field is visible on the call.
+    ignored: tuple[IgnoredField, ...]
 
     @property
     def voice_id(self) -> str:
@@ -215,8 +539,10 @@ def adapt_body(body: Mapping[str, Any]) -> CascadeBody:
     """Read a stored agent body through ``FIELD_MAP`` and nothing else."""
     if not isinstance(body, Mapping):
         raise TypeError(f"a stored agent body must be a mapping, got {type(body).__name__}")
+    _reject_unknown_keys(body)
+    _reject_llm_override(body)
     produced = {
         field.attribute: field.parse(path, _read(body, path))
         for path, field in FIELD_MAP.items()
     }
-    return CascadeBody(**produced)
+    return CascadeBody(**produced, ignored=ignored_fields(body))
