@@ -21,6 +21,17 @@ import {
   type EvalRunnerSummary,
   type RunnerPlayout,
 } from "./scoreboard";
+import type { EvalEvent } from "./eval-events";
+import { latencySplit, type LatencySplit } from "./latency-split";
+
+/**
+ * One turn's latency split, joined to the Call trace by the runner's per-call
+ * turn id. Timings and identifiers only: this is evidence, never a gate input.
+ */
+export type RunnerEvidenceLatency = LatencySplit & {
+  /** The runner's stable per-call turn id (`turn-1`, …) the marks were joined on. */
+  turnId: string;
+};
 
 /** One VONI reply in a merged Call trace, reduced to observable facts. */
 export type RunnerEvidenceTurn = {
@@ -36,6 +47,11 @@ export type RunnerEvidenceTurn = {
   resume: boolean;
   /** An Overheard-aside HEARD row overlapped this reply. */
   aside: boolean;
+  /**
+   * Client-clock latency split for this turn. Absent when the turn has no
+   * marks (or no anchor): a missing sample is never a zero-filled one.
+   */
+  latency?: RunnerEvidenceLatency;
 };
 
 /** One session's aside evidence, without the caller's words. */
@@ -112,7 +128,7 @@ export type RunnerEvidence = {
 };
 
 type TraceRow =
-  | { kind: "voni"; ms: number; gapMs: number | null; cutMs: number | null }
+  | { kind: "voni"; ms: number; gapMs: number | null; cutMs: number | null; ttfaMs: number | null }
   | { kind: "heard"; ms: number; endMs: number }
   | { kind: "other"; ms: number };
 
@@ -130,11 +146,15 @@ function traceRows(excerpt: string[]): TraceRow[] {
     if (kind === "VONI") {
       const gap = /gap (\d+)ms/.exec(rest);
       const cut = /CUT at (\d+(?:\.\d+)?)s/.exec(rest);
+      // The server's own reply-start → first-audio wait: the anchor's server
+      // instant is this reply's start plus this number.
+      const ttfa = /ttfa (\d+)ms/.exec(rest);
       rows.push({
         kind: "voni",
         ms,
         gapMs: gap ? Number(gap[1]) : null,
         cutMs: cut ? Math.round(Number(cut[1]) * 1000) : null,
+        ttfaMs: ttfa ? Number(ttfa[1]) : null,
       });
     } else if (kind === "HEARD") {
       const window = HEARD_WINDOW.exec(rest);
@@ -195,6 +215,166 @@ export function turnRowsFromTraceExcerpt(
     }
   }
   return turnRows;
+}
+
+/** One caller turn as the merged Call trace saw it, in trace milliseconds. */
+type TraceCallerTurn = {
+  /** 1-based caller turn in this call (the runner's `turn-N` order). */
+  ordinal: number;
+  speechStartedMs: number;
+  /** The trace's own gap subtraction, or its HEARD window end. */
+  speechEndedMs: number | null;
+  /** 1-based VONI reply this caller turn was answered by; null when none merged. */
+  replyTurnIndex: number | null;
+  replyStartMs: number | null;
+  ttfaMs: number | null;
+  /** The interrupted reply's end, when the previous reply was cut under speech. */
+  previousReplyEndedMs: number | null;
+};
+
+/**
+ * Pair each HEARD row (one caller turn) with the first VONI reply after it.
+ * Ordinals follow HEARD order, so a caller turn whose reply never merged does
+ * not shift the turn the following marks belong to.
+ */
+function callerTurnsFromTrace(excerpt: string[]): TraceCallerTurn[] {
+  const rows = traceRows(excerpt);
+  type Reply = { turnIndex: number; ms: number; gapMs: number | null; ttfaMs: number | null; cutMs: number | null };
+  const replies = new Map<number, Reply>();
+  let voniCount = 0;
+  rows.forEach((row, index) => {
+    if (row.kind !== "voni") return;
+    voniCount += 1;
+    replies.set(index, {
+      turnIndex: voniCount,
+      ms: row.ms,
+      gapMs: row.gapMs,
+      ttfaMs: row.ttfaMs,
+      cutMs: row.cutMs,
+    });
+  });
+
+  const callerTurns: TraceCallerTurn[] = [];
+  let previousReply: Reply | null = null;
+  rows.forEach((row, index) => {
+    if (row.kind === "voni") {
+      previousReply = replies.get(index) ?? previousReply;
+      return;
+    }
+    if (row.kind !== "heard") return;
+    const replyIndex = rows.findIndex((candidate, at) => at > index && candidate.kind === "voni");
+    const reply = replyIndex >= 0 ? replies.get(replyIndex) ?? null : null;
+    callerTurns.push({
+      ordinal: callerTurns.length + 1,
+      speechStartedMs: row.ms,
+      // The trace prints `gap Nms` as reply start minus caller end; reuse the
+      // same subtraction so the split cannot disagree with the printed gap.
+      speechEndedMs: reply?.gapMs != null ? reply.ms - reply.gapMs : row.endMs,
+      replyTurnIndex: reply?.turnIndex ?? null,
+      replyStartMs: reply?.ms ?? null,
+      ttfaMs: reply?.ttfaMs ?? null,
+      // Only an interrupted previous reply has a printed end; a reply that was
+      // not cut carries no end mark, and the band then reads ordinary.
+      previousReplyEndedMs: previousReply?.cutMs ?? null,
+    });
+  });
+  return callerTurns;
+}
+
+/** One caller turn's three client receipts, rebuilt from the event stream. */
+type MarkTurn = {
+  turnId: string;
+  ordinal: number;
+  userFinalAtMs: number | null;
+  replyStartAtMs: number | null;
+  firstAudioAtMs: number | null;
+};
+
+function markTurnsForSession(
+  events: EvalEvent[],
+  sessionId: string,
+): { turns: MarkTurn[]; anchor: { turnId: string; clientAtMs: number } | null } {
+  const turns: MarkTurn[] = [];
+  const byTurnId = new Map<string, MarkTurn>();
+  const byReplyId = new Map<string, MarkTurn>();
+  let anchor: { turnId: string; clientAtMs: number } | null = null;
+
+  for (const event of events) {
+    if (event.sessionId !== sessionId) continue;
+    const atMs = Number.isFinite(event.atMs) ? event.atMs : null;
+    if (atMs === null) continue;
+    if (event.type === "turn.user_final") {
+      const turnId = typeof event.turnId === "string" ? event.turnId : null;
+      if (!turnId) continue;
+      const turn: MarkTurn = {
+        turnId,
+        ordinal: turns.length + 1,
+        userFinalAtMs: atMs,
+        replyStartAtMs: null,
+        firstAudioAtMs: null,
+      };
+      turns.push(turn);
+      byTurnId.set(turnId, turn);
+    } else if (event.type === "turn.reply_start") {
+      const turnId = typeof event.turnId === "string" ? event.turnId : null;
+      const turn = turnId ? byTurnId.get(turnId) : undefined;
+      if (!turn) continue;
+      turn.replyStartAtMs = atMs;
+      if (typeof event.replyId === "string") byReplyId.set(event.replyId, turn);
+    } else if (event.type === "reply.first_audio") {
+      const turnId = typeof event.turnId === "string" ? event.turnId : null;
+      const replyId = typeof event.replyId === "string" ? event.replyId : null;
+      const turn =
+        (turnId ? byTurnId.get(turnId) : undefined) ?? (replyId ? byReplyId.get(replyId) : undefined);
+      if (turn && turn.firstAudioAtMs === null) turn.firstAudioAtMs = atMs;
+      if (event.anchor === true && turn) anchor = { turnId: turn.turnId, clientAtMs: atMs };
+    }
+  }
+  return { turns, anchor };
+}
+
+/**
+ * Attach the per-turn split to the trace turn rows. The one anchor is a client
+ * receipt paired with the trace's own reply start + time-to-first-audio, so
+ * every client mark is read on the Call trace clock once per call. A turn with
+ * no marks, no anchor or no merged reply keeps no `latency` field at all.
+ */
+function attachLatencySplits(
+  turns: RunnerEvidenceTurn[],
+  excerpt: string[],
+  events: EvalEvent[],
+  sessionId: string,
+): void {
+  const marks = markTurnsForSession(events, sessionId);
+  if (!marks.anchor) return;
+  const callerTurns = callerTurnsFromTrace(excerpt);
+  const anchorTurn = marks.turns.find((turn) => turn.turnId === marks.anchor!.turnId);
+  const anchorTrace = anchorTurn ? callerTurns[anchorTurn.ordinal - 1] : undefined;
+  if (!anchorTrace || anchorTrace.replyStartMs === null || anchorTrace.ttfaMs === null) return;
+  const serverAtMs = anchorTrace.replyStartMs + anchorTrace.ttfaMs;
+
+  for (const markTurn of marks.turns) {
+    const traceTurn = callerTurns[markTurn.ordinal - 1];
+    if (!traceTurn || traceTurn.replyTurnIndex === null) continue;
+    const split = latencySplit({
+      turn: {
+        user_speech_started_at_ms: traceTurn.speechStartedMs,
+        user_speech_ended_at_ms: traceTurn.speechEndedMs,
+      },
+      marks: {
+        userFinalAtMs: markTurn.userFinalAtMs,
+        replyStartAtMs: markTurn.replyStartAtMs,
+        firstAudioAtMs: markTurn.firstAudioAtMs,
+      },
+      anchor: { clientAtMs: marks.anchor.clientAtMs, serverAtMs },
+      ...(traceTurn.previousReplyEndedMs !== null
+        ? { previousReply: { endedAtMs: traceTurn.previousReplyEndedMs } }
+        : {}),
+    });
+    if (!split) continue;
+    const row = turns.find((turn) => turn.turnIndex === traceTurn.replyTurnIndex);
+    if (row) row.latency = { turnId: markTurn.turnId, ...split };
+  }
 }
 
 function turnFromPointer(pointer: string): number | null {
@@ -271,6 +451,11 @@ export function buildRunnerEvidence(input: {
   scenarios?: { name: string; passed: number; runs: number }[];
   /** Overrides the summary's playout rows when supplied. */
   playout?: RunnerPlayout[];
+  /**
+   * The runner's opt-in per-turn client receipt marks. Absent (no `--events`)
+   * means no split is attached; a marked turn with no trace match stays absent.
+   */
+  marks?: EvalEvent[];
 }): RunnerEvidence | null {
   const summary = parseEvalSummary(input.runnerStdout);
   const markers =
@@ -300,6 +485,9 @@ export function buildRunnerEvidence(input: {
   for (const id of sessionIds) {
     const excerpt = excerpts.find((trace) => trace.sessionId === id)?.excerpt ?? [];
     const turns = turnRowsFromTraceExcerpt(excerpt, id);
+    if (excerpt.length > 0 && input.marks && input.marks.length > 0) {
+      attachLatencySplits(turns, excerpt, input.marks, id);
+    }
     const traceAside = excerpt.length > 0 ? traceAsides(excerpt, id)[0] : undefined;
     const sessionAside: RunnerEvidenceAside | undefined =
       markerAside?.sessionId === id

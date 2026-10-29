@@ -3517,3 +3517,82 @@ if (args[0] === "run" && args[1] === "eval:demo-agent") {
   assert.doesNotMatch(JSON.stringify(evidence), /bakery/i);
   assert.doesNotMatch(JSON.stringify(evidence), /Wait, stop/i);
 });
+
+test("the orchestrator joins the run's client marks to the merged Call trace", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  writeFileSync(
+    join(bin, "npm"),
+    `#!/usr/bin/env node
+const { writeFileSync } = require("node:fs");
+const args = process.argv.slice(2);
+if (args[0] === "run" && args[1] === "eval:demo-agent") {
+  const at = args.indexOf("--events");
+  if (at >= 0) {
+    const lines = [
+      { atMs: 100, type: "turn.user_final", sessionId: "sess_marks01", turnId: "turn-1", callMs: 100 },
+      { atMs: 200, type: "turn.reply_start", sessionId: "sess_marks01", turnId: "turn-1", replyId: "reply_1", callMs: 200 },
+      { atMs: 500, type: "reply.first_audio", sessionId: "sess_marks01", turnId: "turn-1", replyId: "reply_1", callMs: 500, anchor: true },
+    ];
+    const nl = String.fromCharCode(10);
+    writeFileSync(args[at + 1], lines.map((line) => JSON.stringify(line)).join(nl) + nl);
+  }
+  console.log("    cut 912ms after the caller started");
+  console.log('    verdict ["yield","Hi."]');
+  console.log('    answered the point after the cut: "Sure."');
+  console.log("stop-over: 1/1");
+} else if (args[0] === "run" && args[1] === "call:trace") {
+  console.log('0.50s  HEARD   "Hi."  (0.50s-1.00s)');
+  console.log('1.20s  VONI    "Sure."  (user_speech ttfa 300ms gap 200ms)');
+}
+`,
+    { mode: 0o755 },
+  );
+  const out = join(dir, "score.json");
+  const result = run(
+    [
+      "--scenario",
+      "stop-over",
+      "--trace-session",
+      "sess_marks01",
+      "--events",
+      join(dir, "run.jsonl"),
+      "--out",
+      out,
+      "--timing-lock",
+      join(dir, "timing.lock"),
+    ],
+    new URL("../", import.meta.url).pathname,
+    { PATH: `${bin}:${process.env.PATH}` },
+  );
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    runnerEvidence: {
+      sessions: {
+        id: string;
+        turns: {
+          turnIndex: number;
+          latency?: {
+            turnId: string;
+            band: string;
+            endpointingMs: number;
+            generationMs: number;
+            deliveryMs: number;
+            perceivedMs: number;
+          };
+        }[];
+      }[];
+    };
+  };
+  const session = artifact.runnerEvidence.sessions.find((row) => row.id === "sess_marks01");
+  assert.ok(session, "the session's Call trace is merged");
+  assert.deepEqual(session.turns[0].latency, {
+    turnId: "turn-1",
+    endpointingMs: 100,
+    generationMs: 100,
+    deliveryMs: 300,
+    band: "ordinary",
+    perceivedMs: 1_000,
+  });
+});
