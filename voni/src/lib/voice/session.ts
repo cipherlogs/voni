@@ -516,7 +516,38 @@ export function heardWords(line: string, playedMs: number, msPerChar = CAPTION_M
 /** The floor re-checks this often (playback settling has no event of its own). */
 const FLOOR_TICK_MS = 150;
 /** A resume after a cut says the rest only when more than this many words were unheard. */
-const RESUME_MIN_WORDS = 3;
+export const RESUME_MIN_WORDS = 3;
+
+/** A tail of a few words is the caller having got the point, not a lost thought. */
+export function worthResuming(rest: string): boolean {
+  return rest.split(/\s+/).filter(Boolean).length > RESUME_MIN_WORDS;
+}
+
+/**
+ * Tell the agent to say exactly the unheard rest, never the heard part again.
+ * Told to "carry on", the model made up a new sentence and then said it twice
+ * (sess_f78895fa…), so the tail is quoted word for word. A short goodbye that
+ * was cut resumes as the goodbye, once.
+ *
+ * Shared with the phone bridge through
+ * `barge-in-recovery.cases.json`: the same words must produce the same
+ * instruction on both transports (voice-parity 70).
+ */
+export function resumeInstructions(callerText: string, rest: string): string {
+  const trimmed = rest.trim();
+  const caller = callerText.trim();
+  const cause = caller
+    ? `The caller only said "${caller.slice(0, 200)}" while you were speaking; it wasn't a request to stop.`
+    : "A noise on the caller's side cut you off; they didn't say anything.";
+  return trimmed
+    ? `${cause} Finish your sentence: say exactly this and nothing else, word for word: "${trimmed.slice(0, 400)}"`
+    : `${cause} Say your short goodbye once more, nothing else.`;
+}
+
+/** The resume line to send, or null when there is nothing worth saying. */
+export function resumeForBargeIn(callerText: string, rest: string): string | null {
+  return worthResuming(rest) ? resumeInstructions(callerText, rest) : null;
+}
 /**
  * A held end_call result with no goodbye audio at all for this long: the
  * platform is waiting for it (measured 1 in 10), so send it. Once the goodbye
@@ -1670,21 +1701,20 @@ export class VoiceSession {
     // the visitor has taken the floor, whatever the overlap judge decided.
     if (cut.droppable) return;
     const rest = cut.rest.trim();
-    const short = rest.split(/\s+/).filter(Boolean).length <= RESUME_MIN_WORDS;
-    if (cut.goodbye && rest && short) {
+    if (cut.goodbye && rest && !worthResuming(rest)) {
       // The goodbye was all but said: hang up as it would have.
       this.goodbyeResumePending = false;
       this.signalEndCall(null);
       this.settleThenStop();
       return;
     }
-    if (!cut.goodbye && short) return;
-    const cause = text.trim()
-      ? `The caller only said "${text.slice(0, 200)}" while you were speaking; it wasn't a request to stop.`
-      : "A noise on the caller's side cut you off; they didn't say anything.";
     const instructions = rest
-      ? `${cause} Finish your sentence: say exactly this and nothing else, word for word: "${rest.slice(0, 400)}"`
-      : `${cause} Say your short goodbye once more, nothing else.`;
+      ? resumeForBargeIn(text, rest)
+      : cut.goodbye
+        ? resumeInstructions(text, rest)
+        : null;
+    // A cut with only a few words left says nothing: the caller got the point.
+    if (!instructions) return;
     // Noise or filler: the caller doesn't hold the floor, the rest goes next.
     this.floor.callerWasNoise();
     if (this.replyActive) {
