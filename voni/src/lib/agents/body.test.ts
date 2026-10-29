@@ -92,7 +92,14 @@ test("every demo body variant is the same builder call with its own profile", ()
 // Ticket 64 moves only the two tenant pins: their `turn_detection` object
 // became the Turn preset (`null`). Every demo pin is unchanged, which is the
 // proof the demo body is byte-identical.
-const PUBLISHED_BYTES = {
+//
+// Ticket 67 moves every pin at once: the persona-neutral quality floor now
+// opens every `system_prompt` in a Locale that has a rendering (English today;
+// tickets 49/50 add the rest), and the compiler's duplicate brevity/filler/
+// steering wording is gone from every prompt, so every deployed agent is owed
+// exactly one redeploy. The pre-67 values stay so the change is proved rather
+// than merely repinned.
+const PRE_67_BYTES = {
   demoAnna: "9554dbda4854f8df0eaf25e9bbfe3357df60427c90bc6ed48466f6a50b91b597",
   demoResume: "3583837d631550d7c37e6be83587c55909544c93e7a281e8614c4b67e608db20",
   demoModel: "3451afdccde5603b77744bb39c989762806121ac459ecf49585a327ca43dd22c",
@@ -102,6 +109,27 @@ const PUBLISHED_BYTES = {
   tenantLanguages:
     "6248ce46d206ff1ba3f6cc3a4f59dbf2991e9836492c86f991cedb5ec77a48f7",
 };
+
+const PUBLISHED_BYTES = {
+  demoAnna: "62c9763bbe7ad4135594b0ae38328853186b25e22a7fe787fb6a4387ebb9bc73",
+  demoResume: "d2b33aab67b0dce2aea5e0cea9c2568105642a69840c9d1fe2e7488b3e712b74",
+  demoModel: "377ad20e19cae861806c31497e40bd6bdd1ff13ccba69dd4dcb3fc58ee972a1f",
+  demoExperiment: "cf70d68304c393506071cf2a71d17f60843d707fd55fa013ca7c2f7f3cec1edf",
+  demoLola: "56fcdea9e670856d068bcfb314c902728fca54115ceed670b471d763023110a6",
+  tenant: "2aa59ba5ab270412f7ecde7c0a68545eb1c13e90883a71c3e61ef7fd007ebeb0",
+  tenantLanguages:
+    "61c8e9154d0755ce5b8266958bbed487551f050b0c56b006ba64c95910d1aff6",
+};
+
+test("the ticket-67 compiler change moved every published body", () => {
+  for (const key of Object.keys(PUBLISHED_BYTES) as Array<keyof typeof PUBLISHED_BYTES>) {
+    assert.notEqual(
+      PUBLISHED_BYTES[key],
+      PRE_67_BYTES[key],
+      `${key}: the prompt changed, so the stored body must be redeployed`,
+    );
+  }
+});
 
 test("the unified builder leaves every published body byte-identical", () => {
   assert.equal(sha(buildDemoAgentBody("anna")), PUBLISHED_BYTES.demoAnna);
@@ -141,7 +169,12 @@ test("the unified builder leaves every published body byte-identical", () => {
 test("the demo refresh fingerprint is unchanged by the unification", () => {
   assert.equal(
     demoAgentFingerprint(buildDemoAgentBody("anna"), "key"),
+    "90527ed5ed034cac1900f3f170511fff8e179a39af76e452dcb04be841b98af6",
+  );
+  assert.notEqual(
+    demoAgentFingerprint(buildDemoAgentBody("anna"), "key"),
     "6545bd6c7037614d673f1d0964dd70ffbcb1ec95fbc5d04f50b33ff2f3607a7d",
+    "ticket 67's floor moved the demo body too, so its cached agents refresh once",
   );
 });
 
@@ -296,8 +329,13 @@ test("an unchanged body keeps its fingerprint, whatever the key order", () => {
 // object for the Turn preset (`turn_detection: null`), so every tenant agent is
 // owed exactly one redeploy. The pre-64 value is kept so the change is proved,
 // not merely repinned.
+//
+// It moved a third time in ticket 67: the quality floor opens every tenant
+// prompt, so the post-64 pin is kept beside the new one for the same reason.
 const PRE_64_TENANT_FINGERPRINT =
   "0006f91074018cfb8cc554d8d82e6691f3f3299040d0b3ea08dfb8c5403d06ce";
+const PRE_67_TENANT_FINGERPRINT =
+  "dbbed9a5d246f2efee8fd83fd626e9035c25621969427e97d55511dee60b95cc";
 
 test("the tenant fingerprint moves when the Turn preset replaces the legacy object", () => {
   const fingerprint = deploymentFingerprint("Layla", REAL_ESTATE_TEMPLATE);
@@ -306,10 +344,15 @@ test("the tenant fingerprint moves when the Turn preset replaces the legacy obje
     PRE_64_TENANT_FINGERPRINT,
     "the body changed, so the stored fingerprint must change with it",
   );
+  assert.notEqual(
+    fingerprint,
+    PRE_67_TENANT_FINGERPRINT,
+    "the floor changed every tenant prompt, so its fingerprint moves too",
+  );
   assert.equal(
     fingerprint,
-    "dbbed9a5d246f2efee8fd83fd626e9035c25621969427e97d55511dee60b95cc",
-    "the post-64 tenant fingerprint is pinned",
+    "a219d6aeb07a718c1fc355c0b75a9a69d39e1b848c44ad31e2793b6047f5e3d6",
+    "the post-67 tenant fingerprint is pinned",
   );
 });
 

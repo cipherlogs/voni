@@ -1,4 +1,9 @@
 import type { AgentConfig } from "./config";
+import {
+  assertPromptCarriesQualityFloor,
+  composeAgentRules,
+  qualityFloorFor,
+} from "./quality-floor";
 import { getVoice } from "./voices";
 
 /**
@@ -9,14 +14,20 @@ import { getVoice } from "./voices";
  * caller's complaint was that the agent "sounds like a bot" — because the
  * prompt told it to be one. The fixes that followed, and why they're here:
  *
- *   - Brevity is stated FIRST. Everything after it is read in that light.
+ *   - The persona-neutral quality floor opens the prompt (ticket 67) in every
+ *     Locale that has a rendering. Brevity is stated FIRST, and everything
+ *     after it is read in that light.
  *   - The agent is given an *identity*, not a behaviour checklist. Behaviour
  *     lists produce narrated compliance ("I will pass that along to our team").
- *   - Informality is granted explicitly, because safety training defaults
- *     models to stiff and they need permission to drop it.
- *   - Mirror the caller's length — the single most effective naturalness rule.
- *   - The banned-phrase list is the exact set of tells the agent emitted.
+ *   - The floor owns brevity, the filler ban and steering in one place. This
+ *     compiler no longer restates them: a second wording is how the two
+ *     builders drifted, and how a guarantee became negotiable.
  *   - The comma self-check gives it a mechanical test it can actually apply.
+ *
+ * A tenant's mission and house rules ride on top of the floor; the demo's own
+ * scenario rides on top through the same seam. Neither is forked into the
+ * floor, and where a Locale has a rendering the floor is never optional — a
+ * profile cannot remove it.
  *
  * Keep this prompt SHORT. (1t) trimmed it 180 -> 113 words specifically to cut
  * prefill and shorten replies, and reply latency is the caller's top complaint.
@@ -25,13 +36,24 @@ import { getVoice } from "./voices";
 export function compileSystemPrompt(config: AgentConfig): string {
   const { identity } = config;
   const who = `${identity.name}, a ${identity.role}`;
+  // The prompt's Locale is the voice's (a voice speaks exactly one Locale).
+  // Only a Locale that has rendered the floor carries it: until the per-Locale
+  // renderings land (tickets 49/50) a non-English agent is a hole, never given
+  // English rules. `null` is that hole; `undefined` never reaches this call.
+  const voice = getVoice(config.voiceId);
+  const floor = voice ? qualityFloorFor(voice.languageCode) : null;
 
+  // Floor first, then identity before mission, then the persona's own rules.
+  // `config.knowledge` is a tenant's house rules and, for the demo, the Demo
+  // scenario: the caller of the builder decides which config this is, so the
+  // scenario never reaches a tenant and is never copied into platform content.
   const sections: string[] = [
-    // Front-loaded, per (1q). Do not move this below the identity.
-    "Keep every reply short. One or two sentences. This is a phone call, not an essay.",
-    `You are ${who}. ${config.mission}`,
-    "Talk like a person, not a service desk. Contractions, plain words, the occasional incomplete sentence are all fine.",
-    "Match the caller's length: short question, short answer.",
+    composeAgentRules({
+      floor,
+      identity: `You are ${who}.`,
+      mission: config.mission,
+      houseRules: config.knowledge,
+    }),
   ];
 
   if (config.detect.length > 0) {
@@ -46,10 +68,6 @@ export function compileSystemPrompt(config: AgentConfig): string {
     sections.push(
       `Before asking for any of these fields, call prepare_sensitive_capture with its field key: ${sensitive.join(", ")}. Wait for the tool result, then ask the question. Never mention this pacing tool to the caller.`,
     );
-  }
-
-  if (config.knowledge.trim().length > 0) {
-    sections.push(config.knowledge);
   }
 
   if (config.tools.length > 0) {
@@ -70,11 +88,12 @@ export function compileSystemPrompt(config: AgentConfig): string {
 
   // Interruption grace: the bridge only cuts audio on a confirmed
   // interruption, but the words still land mid-thought — and a sudden stop
-  // mid-word reads as a glitch, not a human. Finish the current phrase,
-  // pivot naturally, then follow. The pivot line is yours to phrase; the
-  // shape (acknowledge first, never resume the cut-off sentence) is not.
+  // mid-word reads as a glitch, not a human. Finish the current phrase, pivot
+  // naturally, then follow. The acknowledgment belongs to the floor's steering
+  // guarantee; the shape here (finish the phrase, never resume the cut-off
+  // sentence) is not.
   sections.push(
-    "If the caller steers mid-reply — a correction, no, stop, wait, hold on, repeat: finish your current phrase (never stop mid-word), acknowledge it briefly like 'Sorry — did you want me to stop?', then follow their new direction. Never talk over them, and never resume the cut-off sentence.",
+    "If the caller steers mid-reply — a correction, no, stop, wait, hold on, repeat: finish your current phrase (never stop mid-word), then follow their new direction. Never talk over them, and never resume the cut-off sentence.",
   );
 
   // Call control: end_call is always available (built-in, not picked). The
@@ -97,21 +116,25 @@ export function compileSystemPrompt(config: AgentConfig): string {
   // matters most for the UAE launch. Left unsaid, the model tries to reply in
   // the caller's language and the TTS has no voice for it. Naming the spoken
   // language explicitly is what makes that mismatch graceful instead of broken.
-  const voice = getVoice(config.voiceId);
   if (voice) {
     sections.push(
       `Speak ${voice.language}. If the caller uses another language, understand them and keep answering in ${voice.language} — do not apologise for it or comment on the language.`,
     );
   }
 
-  // The banned list is verbatim from (1q) — these are the phrases this exact
-  // stack produced on a real call, not a generic list of corporate-speak.
+  // One mechanical test for the floor's brevity, which is otherwise a
+  // judgement: if the sentence could stop at its comma, let it.
   sections.push(
-    'Never say: "Thank you for that feedback", "I will pass that along", "I appreciate you sharing that", "As an AI". No preambles before answering.',
     "Before you speak, check: if your sentence has a comma, could it just stop at the comma? Usually it could.",
   );
 
-  return sections.join("\n\n");
+  const prompt = sections.join("\n\n");
+  // The floor is a guarantee on every body whose Locale has a rendering, not a
+  // section a caller can drop: refuse a prompt that lost it, duplicated it, or
+  // buried it below the identity. This is also what makes a hand-built body
+  // fail loudly. A Locale with no rendering is already a hole above.
+  if (floor) assertPromptCarriesQualityFloor(prompt, floor);
+  return prompt;
 }
 
 /**

@@ -44,7 +44,8 @@ import {
  *   platform; ticket 64 moved tenants onto it and ticket 65 deleted the old
  *   explicit object and the redundant preset variant.
  * - 66/67: `compileSystemPrompt` is the rules owner; the persona-neutral floor
- *   moves into it without this file learning about personas.
+ *   opens every prompt it compiles, so this file never learns about personas to
+ *   get the guarantee (ticket 67).
  */
 
 export type AgentPersona = "demo" | "tenant";
@@ -114,12 +115,16 @@ export const AGENT_PROFILE_FIELDS = [
  * the whitelist test can prove every forbidden field has a rejection case.
  */
 export const FORBIDDEN_PROFILE_FIELDS: Readonly<Record<string, string>> = {
-  // Rules — the agent's content, compiled on every body.
+  // Rules — the agent's content, compiled on every body. The quality floor is
+  // not a profile choice either: every body carries it, and a profile may not
+  // remove or replace it (ticket 67).
   system_prompt: "rules",
   rules: "rules",
   prompt: "rules",
   mission: "rules",
   knowledge: "rules",
+  quality_floor: "rules",
+  qualityFloor: "rules",
   // Turn-taking — the Turn preset is one promise on every agent.
   turn_detection: "turn-taking",
   turnDetection: "turn-taking",
