@@ -2354,7 +2354,11 @@ function parseOverheardRows(excerpt: string[]): TraceOverheardRow[] {
     }
     if (line.includes("  HEARD   ")) {
       const text = /HEARD\s+"([^"]+)"/.exec(line)?.[1] ?? "";
-      const span = /\((\d+\.\d+)s[–-](\d+\.\d+)s\)/.exec(line);
+      // The API can omit user_speech_ended_at_ms when the server cut wins the
+      // endpoint race (call-trace renders `(16.23s–  –  )`). The start is
+      // authoritative: a CUT at >= start still proves the words began while
+      // the reply held the floor. Never require the end.
+      const span = /\((\d+\.\d+)s[–-]/.exec(line);
       rows.push({
         kind: "heard",
         line,
@@ -2967,6 +2971,135 @@ export function parseDoubleTalkOutput(stdout: string): DoubleTalkEvidence | null
     found = { scenario: candidate.scenario, sessionId: session, overlapMs, fadeMs };
   }
   return found;
+}
+
+/**
+ * The live runner's machine-readable aside evidence, one line per over-talk
+ * run: `OVERHEARD ASIDE {"scenario":"over-talk","session":"sess_…",
+ * "text":"We're a bakery, actually.","startMs":16230,"cutMs":17040,…}`.
+ * The runner prints it only after asserting the caller started speaking while
+ * Voni's reply still had queued audio AND the server cut landed at/after that
+ * start on the same reply, so the marker itself is proof of the overlap.
+ * score-demo uses it only when the merged trace yields no aside (the API can
+ * omit `user_speech_ended_at_ms`); the ledger still has to count the words.
+ */
+export const OVERHEARD_ASIDE_EVIDENCE_PREFIX = "OVERHEARD ASIDE ";
+
+export type OverheardAsideEvidence = {
+  scenario: string;
+  sessionId: string;
+  /** The visitor's words spoken over Voni. */
+  text: string;
+  /** What Voni was saying when the aside landed (may be empty). */
+  agentText: string;
+  /** The reply id the aside landed on, when the runner knew it. */
+  replyId: string | null;
+  /** Call-relative ms when the caller's speech started. */
+  startMs: number;
+  /** Call-relative ms when the caller's spoken audio ended (null when unknown). */
+  endMs: number | null;
+  /** Call-relative ms of the server cut that ended Voni's reply. */
+  cutMs: number;
+};
+
+/**
+ * Parse the runner's OVERHEARD ASIDE line. Null when the run printed none
+ * (another scenario, a dry run). A present but malformed line throws: the
+ * overlap is either proven by the runner or absent, never inferred from a
+ * broken payload. `cutMs >= startMs` is the overlap proof, so an inverted
+ * span is rejected outright.
+ */
+export function parseOverheardAsideOutput(stdout: string): OverheardAsideEvidence | null {
+  let found: OverheardAsideEvidence | null = null;
+  for (const rawLine of stdout.split("\n")) {
+    const line = rawLine.trimStart();
+    if (!line.startsWith(OVERHEARD_ASIDE_EVIDENCE_PREFIX)) continue;
+    let raw: unknown;
+    try {
+      raw = JSON.parse(line.slice(OVERHEARD_ASIDE_EVIDENCE_PREFIX.length));
+    } catch (error) {
+      throw new Error(
+        `eval runner OVERHEARD ASIDE line is not valid JSON: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    if (raw === null || typeof raw !== "object") {
+      throw new Error("eval runner OVERHEARD ASIDE line must be a JSON object");
+    }
+    const candidate = raw as {
+      scenario?: unknown;
+      session?: unknown;
+      text?: unknown;
+      agentText?: unknown;
+      replyId?: unknown;
+      startMs?: unknown;
+      endMs?: unknown;
+      cutMs?: unknown;
+    };
+    if (typeof candidate.scenario !== "string" || !candidate.scenario.trim()) {
+      throw new Error("eval runner OVERHEARD ASIDE line needs a scenario name");
+    }
+    if (typeof candidate.session !== "string" || !/^sess_[A-Za-z0-9_-]+$/.test(candidate.session)) {
+      throw new Error("eval runner OVERHEARD ASIDE line needs a session id like sess_abc");
+    }
+    if (typeof candidate.text !== "string" || !candidate.text.trim()) {
+      throw new Error("eval runner OVERHEARD ASIDE line needs the aside text");
+    }
+    const startMs = nonNegativeMs(candidate.startMs);
+    const cutMs = nonNegativeMs(candidate.cutMs);
+    if (startMs === null || cutMs === null) {
+      throw new Error("eval runner OVERHEARD ASIDE line needs non-negative startMs/cutMs");
+    }
+    if (cutMs < startMs) {
+      throw new Error(
+        `eval runner OVERHEARD ASIDE line has the cut before the aside (start ${startMs}ms, cut ${cutMs}ms)`,
+      );
+    }
+    const endMs = candidate.endMs === undefined || candidate.endMs === null ? null : nonNegativeMs(candidate.endMs);
+    if (candidate.endMs !== undefined && candidate.endMs !== null && endMs === null) {
+      throw new Error("eval runner OVERHEARD ASIDE line has an invalid endMs");
+    }
+    const agentText = typeof candidate.agentText === "string" ? candidate.agentText : "";
+    const replyId = candidate.replyId === undefined || candidate.replyId === null ? null : candidate.replyId;
+    if (replyId !== null && typeof replyId !== "string") {
+      throw new Error("eval runner OVERHEARD ASIDE line has an invalid replyId");
+    }
+    found = {
+      scenario: candidate.scenario,
+      sessionId: candidate.session,
+      text: candidate.text,
+      agentText,
+      replyId,
+      startMs: Math.round(startMs),
+      endMs: endMs === null ? null : Math.round(endMs),
+      cutMs: Math.round(cutMs),
+    };
+  }
+  return found;
+}
+
+/**
+ * Turn the runner's asserted aside marker into the gate's aside record. The
+ * marker is marked Overheard because the runner measured the overlap; ledger
+ * counting is independent (a missing ledger is a FAIL, never assumed).
+ */
+export function overheardFromRunEvidence(
+  evidence: OverheardAsideEvidence,
+  beat: GoldenBeat = "overheard-aside",
+  ledger?: string[],
+): OverheardAside[] {
+  return [
+    {
+      beat,
+      text: evidence.text,
+      ...(evidence.agentText.trim() ? { agentText: evidence.agentText } : {}),
+      markedOverheard: true,
+      inLedger: ledger !== undefined && ledger.some((entry) => sameTraceWords(entry, evidence.text)),
+      handling: "heard-only",
+      tracePointer:
+        `${evidence.sessionId} :: ${(evidence.startMs / 1000).toFixed(2)}s HEARD ` +
+        `"${evidence.text.slice(0, 120)}" (runner cut ${(evidence.cutMs / 1000).toFixed(2)}s)`,
+    },
+  ];
 }
 
 /**

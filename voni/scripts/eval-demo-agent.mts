@@ -179,6 +179,7 @@ import {
   REAL_CUT_ANSWER_PREFIX,
   REAL_CUT_MAX_MS,
   REAL_CUT_SCENARIOS,
+  OVERHEARD_ASIDE_EVIDENCE_PREFIX,
   sha256Hex,
   SILENCE_CHECK_IN_MAX_MS,
   SILENCE_CHECK_IN_TARGET_MS,
@@ -659,6 +660,12 @@ async function runClient(
     checkIns: () => number;
     /** Agent audio chunks received so far (the greeting included). */
     audioChunks: () => number;
+    /** Agent audio still queued to sound, ms: 0 means the floor is silent. */
+    agentAudioMs: () => number;
+    /** The reply whose audio is currently sounding, or null when nothing is left. */
+    soundingReply: () => string | null;
+    /** Epoch ms of the first server cut (flush), or null before one. */
+    cutAt: () => number | null;
     /** The session has ended (hung up). */
     ended: () => boolean;
     /** The first fresh agent line after the cut and the point, or null. */
@@ -1064,6 +1071,11 @@ async function runClient(
       replies: () => repliesDone,
       checkIns: () => outcome.checkIns.length,
       audioChunks: () => audioChunks,
+      // Playout truth, not an arrival counter: these are the same numbers the
+      // cut/double-talk evidence already trusts.
+      agentAudioMs: () => Math.max(0, playUntil - Date.now()),
+      soundingReply: () => (Date.now() < playUntil ? soundingReplyId : null),
+      cutAt: () => outcome.cutAt,
       ended: () => outcome.endedAt !== null,
       postCutAnswer: (point) => postCutAnswerOf(outcome, point),
       heardPoint: (point) => heardPoint(outcome.heard, point),
@@ -1115,6 +1127,15 @@ async function runClient(
 }
 
 const LONG_ASK = "Tell me in detail, step by step, how you would help a dental clinic with its phone calls.";
+/** The aside the over-talk caller speaks while Voni is still sounding. */
+const OVER_TALK_ASIDE = "We're a bakery, actually.";
+/**
+ * Eval-only lead: speak the aside while at least this much agent audio is
+ * still queued. Observed long-ask replies carry 2.5s+ of audio; 1500ms leaves
+ * room for the 400ms barge-in judge and the caller's own onset. Not a
+ * product/gate threshold.
+ */
+const OVER_TALK_ASIDE_LEAD_MS = 1500;
 /** The real point the caller adds after "Wait, stop."; it must be answered, never resumed past. */
 const STOP_OVER_POINT = "price";
 const STOP_OVER_POINT_LINE = "What is the price?";
@@ -1292,18 +1313,72 @@ const CLIENT_SCENARIOS: { name: string; run: () => Promise<string | null> }[] = 
   {
     name: "over-talk",
     run: async () => {
+      // A holder (not a bare `let`): the closure below assigns it, and TS
+      // narrows a bare `let` to its initial `null` after the await.
+      const aside = { speech: null as CallerSpeech | null };
+      let asideReplyId: string | null = null;
       const o = await runClient(
         voiceIdArg(),
-        [LONG_ASK, "We're a bakery, actually."],
+        [LONG_ASK, OVER_TALK_ASIDE],
         async (ctx) => {
-          await askAndWaitForSpeech(ctx);
-          ctx.say("We're a bakery, actually.");
-          await new Promise((resolve) => setTimeout(resolve, 15000));
+          await ctx.waitFor(() => ctx.replies() >= 1); // greeting done
+          // Long ask must enter a free floor: speaking over the greeting's
+          // tail would cut it and become the call's first (and only) cut.
+          await ctx.waitFor(() => ctx.soundingReply() === null);
+          ctx.say(LONG_ASK);
+          // Speak only while Voni is genuinely sounding with lead left. A
+          // received chunk count can already be past playout; playUntil is
+          // the playout truth. If the reply is ever shorter than the lead,
+          // this times out loudly instead of producing a free-floor turn.
+          await ctx.waitFor(
+            () => ctx.soundingReply() !== null && ctx.agentAudioMs() >= OVER_TALK_ASIDE_LEAD_MS,
+          );
+          asideReplyId = ctx.soundingReply();
+          aside.speech = ctx.say(OVER_TALK_ASIDE);
+          // Do not end the call until the server has actually cut that reply
+          // under the aside; the timeline needs the cut and the user final.
+          await ctx.waitFor(() => ctx.cutAt() !== null, TURN_TIMEOUT_MS).catch(() => undefined);
+          await new Promise((resolve) => setTimeout(resolve, 15000)); // answer + timeline settle
         },
         { doubleTalkFaultMs: DOUBLE_TALK_FAULT_MS },
       );
       // The session's own transcript ledger: the words the call counted.
       console.log(`    heard ledger ${JSON.stringify(o.heard)}`);
+      // The aside must have started under a sounding reply and the measured
+      // cut must land at/after that start on the same reply. Anything less is
+      // ordinary speech into a free floor — the gate would be unmeasured, so
+      // FAIL loudly instead of letting the run pass with no aside.
+      const said = aside.speech;
+      const asideStart = said ? callerSpeechStart(said.onset()) : null;
+      const asideEnd = said?.speechEnd() ?? null;
+      const asideReplyText =
+        o.agentTurns.find((turn) => turn.replyId === asideReplyId)?.text ?? "";
+      const cutAt = o.cutAt;
+      const cutReply = o.cutReplyId ?? asideReplyId;
+      if (
+        asideStart === null ||
+        cutAt === null ||
+        cutAt < asideStart ||
+        (asideReplyId !== null && cutReply !== asideReplyId)
+      ) {
+        return `aside never overlapped Voni's reply (aside ${asideStart}, cut ${cutAt}, ` +
+          `cut reply ${o.cutReplyId}, aside reply ${asideReplyId}; heard ${JSON.stringify(o.heard)})`;
+      }
+      // Machine-readable proof for score-demo when the API omits the speech
+      // end: printed only after the assertion, so it can never mark a
+      // non-overlap as an Overheard aside.
+      console.log(
+        `${OVERHEARD_ASIDE_EVIDENCE_PREFIX}${JSON.stringify({
+          scenario: "over-talk",
+          session: o.sessionId,
+          text: OVER_TALK_ASIDE,
+          agentText: asideReplyText,
+          replyId: asideReplyId,
+          startMs: Math.round(asideStart - o.startedAt),
+          endMs: asideEnd === null ? null : Math.round(asideEnd - o.startedAt),
+          cutMs: Math.round(cutAt - o.startedAt),
+        })}`,
+      );
       // Real producer for the double-talk gate: the fake playout recorded, for
       // every server cut, how long the caller's speech and the agent's audio
       // were both still sounding AFTER the flush. That residual — never
