@@ -59,6 +59,16 @@ SSE_DONE = "[DONE]"
 #: The ledger mark the first *content* delta records (never reasoning).
 FIRST_TOKEN_MARK = "first_token"
 
+#: Vendor contract: a tool call id is 1-64 characters (spec "Call identity").
+CALL_ID_MAX_LENGTH = 64
+
+#: Finish reasons that hand the turn to the tool loop. ``function_call`` is the
+#: legacy spelling of the same outcome (spec "Finish reasons").
+TOOL_FINISH_REASONS = frozenset({"tool_calls", "function_call"})
+
+#: The ledger counter a denied (never-executed) tool call increments.
+TOOL_DENIED_COUNTER = "tool_denied"
+
 
 class MetaLLMConfigError(RuntimeError):
     """A required piece of backend configuration is missing."""
@@ -69,6 +79,22 @@ class MetaLLMStreamError(RuntimeError):
 
     A malformed frame is a provider contract violation, not a token: parsing it
     as text would put vendor noise in the caller's ear.
+    """
+
+
+class ToolCallIdentityError(MetaLLMStreamError):
+    """A tool call id outside the vendor's 1-64 character contract.
+
+    This fails the turn: executing (or denying) a call whose identity cannot be
+    quoted back to the vendor is worse than stopping.
+    """
+
+
+class ToolArgumentsError(ValueError):
+    """The accumulated argument text is not a JSON object.
+
+    Ticket 40 turns this into a tool failure the model can correct; until then
+    the call is withheld so it can never run with invented empty arguments.
     """
 
 
@@ -181,6 +207,11 @@ class MetaLLMTurn:
     ``usage`` starts and stays :meth:`TurnUsage.unmeasured` unless the vendor's
     usage chunk arrived. An interrupted stream therefore records "we do not
     know", never a zero that a cost table would price as free.
+
+    ``tool_calls`` is the accumulated, index-ordered view of the stream's tool
+    deltas. ``denied_tool_calls`` are calls that were emitted but must not run
+    (no identity); ``rejected_tool_calls`` are calls held back for ticket 40's
+    argument validation.
     """
 
     reasoning_text: str = ""
@@ -188,6 +219,10 @@ class MetaLLMTurn:
     content_text: str = ""
     finish_reason: str | None = None
     usage: TurnUsage = field(default_factory=lambda: TurnUsage.unmeasured())
+    tool_calls: list[MetaToolCall] = field(default_factory=list)
+    denied_tool_calls: list[ToolDenial] = field(default_factory=list)
+    rejected_tool_calls: list[ToolDenial] = field(default_factory=list)
+    hold_line_required: bool = False
     finished: bool = False
     interrupted: bool = False
     closed: bool = False
@@ -290,6 +325,57 @@ def parse_usage(usage: dict[str, Any]) -> TurnUsage:
     )
 
 
+@dataclass(frozen=True, slots=True)
+class MetaToolCall:
+    """One tool call, accumulated across the deltas that carried it.
+
+    ``arguments`` is the raw JSON text the vendor streamed, joined in order.
+    Parsing it is ticket 40's concern; keeping the text means a malformed
+    payload can be reported verbatim instead of guessed at.
+    """
+
+    index: int
+    call_id: str
+    name: str
+    arguments: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class ToolDenial:
+    """A recorded reason a call was not executed, kept with the turn."""
+
+    name: str
+    reason: str
+
+
+def parse_tool_arguments(raw: str) -> dict[str, Any]:
+    """Read the accumulated argument text as a JSON object.
+
+    Only object-ness is decided here. Schema validation and the tool-failure
+    result the model can correct belong to ticket 40; what this must never do
+    is invent ``{}`` for a payload that was malformed or absent, because that
+    would execute a side effect the model never asked for.
+    """
+    if not raw.strip():
+        raise ToolArgumentsError(
+            "no arguments were streamed: a call with no argument text is not "
+            "executed with an invented empty object"
+        )
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise ToolArgumentsError(
+            f"arguments are not valid JSON ({error.msg} at character "
+            f"{error.pos}); the call is not executed"
+        ) from error
+    if not isinstance(value, dict):
+        raise ToolArgumentsError(
+            f"arguments are a JSON {type(value).__name__}, not an object; the "
+            "call is not executed"
+        )
+    return value
+
+
 class _SSEParser:
     """Incremental Server-Sent Events reader over a stream of byte chunks.
 
@@ -355,6 +441,11 @@ class _SSEParser:
         return None
 
 
+def _text(value: Any) -> str:
+    """A streamed string field, or empty when the vendor omitted it."""
+    return value if isinstance(value, str) else ""
+
+
 def _reasoning_delta(delta: dict[str, Any]) -> str:
     """The reasoning text in one delta, under either vendor spelling."""
     for key in ("reasoning_content", "reasoning"):
@@ -376,8 +467,12 @@ class _TurnStream:
     def __init__(self, turn: MetaLLMTurn, ledger: Any = None) -> None:
         self.turn = turn
         self._ledger = ledger
+        #: index -> {"id", "name", "arguments"} as streamed. One slot per index
+        #: so a split id, name or argument string joins into one call.
+        self._calls: dict[int, dict[str, str]] = {}
+        self._emitted_indices: set[int] = set()
 
-    def consume(self, payload: str) -> list[TokenDelta]:
+    def consume(self, payload: str) -> list[TokenDelta | ToolCallRequest]:
         try:
             data = json.loads(payload)
         except json.JSONDecodeError as error:
@@ -393,15 +488,104 @@ class _TurnStream:
             parsed = parse_usage(usage)
             if parsed.measured:
                 self.turn.usage = parsed
-        emitted: list[TokenDelta] = []
+        emitted: list[TokenDelta | ToolCallRequest] = []
         for choice in data.get("choices") or ():
             delta = choice.get("delta") or {}
             self._record_reasoning(_reasoning_delta(delta))
             emitted.extend(self._content(delta.get("content")))
+            self._accumulate_tool_calls(delta)
             finish = choice.get("finish_reason")
             if finish:
                 self.turn.finish_reason = finish
+                if finish in TOOL_FINISH_REASONS:
+                    emitted.extend(self.finish())
         return emitted
+
+    def finish(self) -> list[ToolCallRequest]:
+        """Emit one request per accumulated index, in index order.
+
+        Called when ``finish_reason`` is a tool handoff *and* again when the
+        stream ends; the emitted-index set makes the second call a no-op, so a
+        split delta can never produce two executions.
+        """
+        calls = [
+            MetaToolCall(
+                index=index,
+                call_id=slot["id"],
+                name=slot["name"],
+                arguments=slot["arguments"],
+            )
+            for index, slot in sorted(self._calls.items())
+        ]
+        self.turn.tool_calls = calls
+        emitted: list[ToolCallRequest] = []
+        for call in calls:
+            if call.index in self._emitted_indices:
+                continue
+            self._emitted_indices.add(call.index)
+            request = self._request_for(call)
+            if request is not None:
+                emitted.append(request)
+        return emitted
+
+    def _request_for(self, call: MetaToolCall) -> ToolCallRequest | None:
+        if len(call.call_id) > CALL_ID_MAX_LENGTH:
+            raise ToolCallIdentityError(
+                f"tool call id is {len(call.call_id)} characters; the vendor "
+                f"contract is 1-{CALL_ID_MAX_LENGTH} (call {call.name!r})"
+            )
+        if not call.call_id:
+            # Emitted with an empty id so the tool loop can see the intent, but
+            # an empty id is never executable: the turn closes with a hold line.
+            self._deny(
+                call,
+                "call_id is missing or empty; the call is not executed and the "
+                "turn closes with a hold line",
+            )
+            return ToolCallRequest(name=call.name, arguments={}, call_id="")
+        try:
+            arguments = parse_tool_arguments(call.arguments)
+        except ToolArgumentsError as error:
+            self.turn.rejected_tool_calls.append(
+                ToolDenial(name=call.name, reason=str(error))
+            )
+            return None
+        return ToolCallRequest(
+            name=call.name, arguments=arguments, call_id=call.call_id
+        )
+
+    def _deny(self, call: MetaToolCall, reason: str) -> None:
+        self.turn.denied_tool_calls.append(
+            ToolDenial(name=call.name, reason=reason)
+        )
+        self.turn.hold_line_required = True
+        if self._ledger is not None:
+            self._ledger.count(TOOL_DENIED_COUNTER)
+
+    def _accumulate_tool_calls(self, delta: dict[str, Any]) -> None:
+        batches = delta.get("tool_calls")
+        if isinstance(batches, list):
+            for batch in batches:
+                if not isinstance(batch, dict):
+                    continue
+                index = batch.get("index")
+                slot = self._slot(index if isinstance(index, int) else 0)
+                slot["id"] += _text(batch.get("id"))
+                function = batch.get("function")
+                if isinstance(function, dict):
+                    slot["name"] += _text(function.get("name"))
+                    slot["arguments"] += _text(function.get("arguments"))
+        legacy = delta.get("function_call")
+        if isinstance(legacy, dict):
+            # The deprecated single-call shape carries no id and no index.
+            slot = self._slot(0)
+            slot["name"] += _text(legacy.get("name"))
+            slot["arguments"] += _text(legacy.get("arguments"))
+
+    def _slot(self, index: int) -> dict[str, str]:
+        return self._calls.setdefault(
+            index, {"id": "", "name": "", "arguments": ""}
+        )
 
     def _record_reasoning(self, text: str) -> None:
         if not text:
@@ -575,12 +759,15 @@ class MetaLLM(LLMStream):
                     for frame in parser.close():
                         for event in stream.consume(frame):
                             yield event
+                    for event in stream.finish():
+                        yield event
                     record.finished = True
         finally:
             record.close()
 
 
 __all__ = [
+    "CALL_ID_MAX_LENGTH",
     "CHAT_COMPLETIONS_PATH",
     "FIRST_TOKEN_MARK",
     "META_BASE_URL",
@@ -591,10 +778,17 @@ __all__ = [
     "MetaLLMRequestError",
     "MetaLLMStreamError",
     "MetaLLMTurn",
+    "MetaToolCall",
     "ReasoningEffortError",
+    "TOOL_DENIED_COUNTER",
+    "TOOL_FINISH_REASONS",
+    "ToolArgumentsError",
+    "ToolCallIdentityError",
+    "ToolDenial",
     "TurnUsage",
     "build_chat_request",
     "build_messages",
+    "parse_tool_arguments",
     "parse_usage",
     "resolve_reasoning_effort",
 ]
