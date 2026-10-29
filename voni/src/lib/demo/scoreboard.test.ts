@@ -70,6 +70,8 @@ import {
   checkRegressionVoice,
   checkTimbreProbes,
   codeFingerprintFromGit,
+  BEHAVIOR_RUN_EVIDENCE_KIND,
+  BEHAVIOR_RUN_EVIDENCE_SCHEMA_VERSION,
   diffScoreboardArtifact,
   evaluateScoreStreak,
   formatStreakVerdict,
@@ -4774,8 +4776,8 @@ const STREAK_FP: CodeFingerprint = {
 
 function greenBehavior(codeFingerprint: CodeFingerprint = STREAK_FP): BehaviorRunEvidence {
   return {
-    kind: "voni-behavior-run",
-    schemaVersion: 1,
+    kind: BEHAVIOR_RUN_EVIDENCE_KIND,
+    schemaVersion: BEHAVIOR_RUN_EVIDENCE_SCHEMA_VERSION,
     mode: "behavior",
     passed: true,
     exitCode: 0,

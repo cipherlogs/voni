@@ -61,6 +61,11 @@ import {
   unheardRest,
 } from "../voice/session";
 import { SCOREBOARD_BUDGETS } from "./scoreboard-budgets";
+import {
+  BEHAVIOR_RUN_EVIDENCE_KIND,
+  BEHAVIOR_RUN_EVIDENCE_SCHEMA_VERSION,
+  codeFingerprintFromGit,
+} from "./behavior-evidence.mjs";
 import { DEMO_VOICE_IDS, SILENCE_CHECK_IN_INSTRUCTIONS } from "./voni-agent";
 import { DEMO_INBOX_ADDRESS } from "./email-test";
 import { TAG_WORDS, containsTag, countTags } from "./test-tag";
@@ -5618,20 +5623,9 @@ export type CodeFingerprint = {
   dirtyHash: string;
 };
 
-/** Pure fingerprint from the three git outputs; null when git has no HEAD. */
-export function codeFingerprintFromGit(
-  input: { head?: string | null; status?: string | null; diff?: string | null } | null | undefined,
-): CodeFingerprint | null {
-  const head = input?.head?.trim();
-  if (!head) return null;
-  const status = input?.status ?? "";
-  const diff = input?.diff ?? "";
-  return {
-    head,
-    dirty: status.trim() !== "" || diff.trim() !== "",
-    dirtyHash: sha256Hex(`${status}\n${diff}`),
-  };
-}
+// The pure fingerprint helper (and the evidence kind) live in the shared ESM
+// module so scripts/e2e-run.mjs writes exactly what this scorer validates.
+export { BEHAVIOR_RUN_EVIDENCE_KIND, BEHAVIOR_RUN_EVIDENCE_SCHEMA_VERSION, codeFingerprintFromGit };
 
 /**
  * Read the fingerprint from git at run time (score-demo writes it into the
@@ -5955,9 +5949,6 @@ export function formatStreakVerdict(result: StreakResult): string {
 // then runs the behavior Playwright specs against it. The runner writes this
 // evidence file on both green and red so a streak claim can never silently
 // omit the browser run.
-
-export const BEHAVIOR_RUN_EVIDENCE_KIND = "voni-behavior-run";
-export const BEHAVIOR_RUN_EVIDENCE_SCHEMA_VERSION = 1;
 
 export type BehaviorRunEvidence = {
   kind: typeof BEHAVIOR_RUN_EVIDENCE_KIND;

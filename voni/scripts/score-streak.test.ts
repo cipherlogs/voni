@@ -6,6 +6,8 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { DEMO_VOICE_IDS } from "../src/lib/demo/voni-agent";
 import {
+  BEHAVIOR_RUN_EVIDENCE_KIND,
+  BEHAVIOR_RUN_EVIDENCE_SCHEMA_VERSION,
   STREAK_INFORMATIONAL_GATES,
   STREAK_REQUIRED_GATES,
   type ScoreboardGate,
@@ -62,8 +64,8 @@ function writeArtifact(dir: string, index: number, overrides: Record<string, unk
 
 function greenBehavior(overrides: Record<string, unknown> = {}) {
   return {
-    kind: "voni-behavior-run",
-    schemaVersion: 1,
+    kind: BEHAVIOR_RUN_EVIDENCE_KIND,
+    schemaVersion: BEHAVIOR_RUN_EVIDENCE_SCHEMA_VERSION,
     mode: "behavior",
     passed: true,
     exitCode: 0,
