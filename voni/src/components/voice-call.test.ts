@@ -122,6 +122,18 @@ test("a visitor aside while the agent speaks is marked Overheard and kept in the
   assert.equal(agent.overheard, undefined, "an agent final never inherits the visitor's mark");
 });
 
+test("the test call resolves recognition language from the agent's Locale", () => {
+  // Both Test-call paths (managed inline and cascade) hand the agent's
+  // conversation language to the one shared rule. A dropped argument would
+  // silently lock a Spanish agent's call to English again.
+  const call = readRepo("components/voice-call.tsx");
+  const sites = call.match(/effectiveInlineLanguages\([\s\S]{0,160}?\)/g) ?? [];
+  assert.equal(sites.length, 2, "managed inline and cascade both resolve it");
+  for (const site of sites) {
+    assert.match(site, /conversationLanguage/, "the agent's Locale reaches the rule");
+  }
+});
+
 test("the contact chip has one render site, gated on the invite, the inbox and the call tag", () => {
   const call = readRepo("components/voice-call.tsx");
   assert.equal((call.match(/<DemoAddressChip\b/g) ?? []).length, 1, "one chip, never a second");

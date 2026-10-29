@@ -8,6 +8,7 @@ import {
   buildInlineSessionUpdate,
   buildResumeMessage,
   decideReconnectOnClose,
+  effectiveInlineLanguages,
   SessionGeneration,
   softLimit,
   stripSpokenToolCall,
@@ -15,9 +16,17 @@ import {
   VoiceSession,
   CAPTION_MS_PER_CHAR,
   heardWords,
+  type SessionConfig,
   type TranscriptPartial,
 } from "./session";
 import { DEFAULT_OUTPUT_SAMPLE_RATE } from "./output-format";
+import {
+  buildAgentKeyterms,
+  buildAgentTranscriptionPrompt,
+  DEMO_TRANSCRIPTION_MODE,
+  NEUTRAL_KEYTERMS,
+} from "./transcription";
+import { REAL_ESTATE_TEMPLATE, type AgentConfig } from "@/lib/agents/config";
 import {
   buildConversationMessage,
   HOLD_OFF_CONTEXT,
@@ -2109,6 +2118,7 @@ test("softLimit: linear below the knee, smooth and bounded above it", () => {
 async function startedSession(
   handlers: ConstructorParameters<typeof VoiceSession>[0] = {},
   startOpts: Parameters<VoiceSession["start"]>[2] = {},
+  config: Parameters<VoiceSession["start"]>[0] = { mode: "agent", agentId: "" },
 ) {
   const g = globalThis as unknown as Record<string, unknown>;
   const navigatorDescriptor = Object.getOwnPropertyDescriptor(globalThis, "navigator");
@@ -2165,7 +2175,7 @@ async function startedSession(
   });
   let tokens = 0;
   await session.start(
-    { mode: "agent", agentId: "" },
+    config,
     async () => ({ token: `tok${(tokens += 1)}`, agentId: "a1", callToken: "call" }),
     startOpts,
   );
@@ -2578,4 +2588,111 @@ test("a resume's confirmation never downgrades the resolved encoding", () => {
   assert.equal(played.length, 1);
   assert.equal(played[0]?.rate, 8000);
   assert.deepEqual(int16Samples(played[0]!.pcm), [0]);
+});
+
+// ── Test call: recognition follows the agent's Locale ────────────────────
+
+/**
+ * The recognition block a dashboard Test call puts on the wire, assembled the
+ * same way `voice-call.tsx` does: the agent's language picker, its Locale's
+ * scene and vocabulary.
+ */
+function testCallConfig(config: AgentConfig): Extract<SessionConfig, { mode: "inline" }> {
+  return {
+    mode: "inline" as const,
+    systemPrompt: "compiled prompt",
+    greeting: config.greeting,
+    voiceId: config.voiceId,
+    languageCodes: effectiveInlineLanguages(config.languageCodes, config.conversationLanguage),
+    transcriptionMode: DEMO_TRANSCRIPTION_MODE,
+    transcriptionPrompt: buildAgentTranscriptionPrompt(config),
+    keyterms: buildAgentKeyterms(config),
+    tools: [],
+  };
+}
+
+const SPANISH_AGENT: AgentConfig = {
+  ...REAL_ESTATE_TEMPLATE,
+  mission: "Agenda visitas y responde dudas de propiedades.",
+  identity: { name: "Lucía", role: "asesora inmobiliaria" },
+  voiceId: "lola",
+  languageCodes: [],
+  conversationLanguage: "es",
+  greeting: "Hola, soy Lucía. ¿Me escuchas bien?",
+};
+
+test("a Spanish agent's Test call sends Spanish recognition settings", async () => {
+  const config = testCallConfig(SPANISH_AGENT);
+  const t = await startedSession({}, {}, config);
+  try {
+    t.sockets[0]?.emit("open");
+    const update = t.sockets[0]?.sent.find((message) => message.type === "session.update");
+    const session = update?.["session"] as Record<string, unknown>;
+    const input = session["input"] as Record<string, unknown>;
+    assert.deepEqual(input["language_codes"], ["es"], "the call is recognised in its Locale");
+    const keyterms = input["keyterms"] as string[];
+    assert.ok(keyterms.includes("teléfono"), keyterms.join(", "));
+    assert.equal(keyterms.includes("phone"), false, "no English scaffold in a Spanish repertoire");
+    assert.match(String(input["transcription_prompt"]), /llamada telefónica/);
+    assert.doesNotMatch(String(input["transcription_prompt"]), /phone call|Callers mention/);
+  } finally {
+    await t.restore();
+  }
+});
+
+test("an explicitly configured language list is passed through untouched", async () => {
+  const pinned: AgentConfig = {
+    ...SPANISH_AGENT,
+    languageCodes: ["fr", "de"],
+  };
+  const resolved = effectiveInlineLanguages(pinned.languageCodes, pinned.conversationLanguage);
+  assert.deepEqual(resolved, ["fr", "de"], "the owner's list wins over the Locale");
+  assert.notEqual(resolved, pinned.languageCodes, "a copy, never the caller's array");
+
+  const t = await startedSession({}, {}, testCallConfig(pinned));
+  try {
+    t.sockets[0]?.emit("open");
+    const update = t.sockets[0]?.sent.find((message) => message.type === "session.update");
+    const session = update?.["session"] as Record<string, unknown>;
+    const input = session["input"] as Record<string, unknown>;
+    assert.deepEqual(input["language_codes"], ["fr", "de"]);
+  } finally {
+    await t.restore();
+  }
+});
+
+test("automatic detection keeps the documented English-scaffolding exception", async () => {
+  const automatic: AgentConfig = {
+    ...SPANISH_AGENT,
+    conversationLanguage: undefined,
+    languageCodes: [],
+  };
+  const t = await startedSession({}, {}, testCallConfig(automatic));
+  try {
+    t.sockets[0]?.emit("open");
+    const update = t.sockets[0]?.sent.find((message) => message.type === "session.update");
+    const session = update?.["session"] as Record<string, unknown>;
+    const input = session["input"] as Record<string, unknown>;
+    assert.deepEqual(input["language_codes"], ["en"], "nothing pinned still locks to English");
+    const keyterms = input["keyterms"] as string[];
+    for (const term of NEUTRAL_KEYTERMS) assert.ok(keyterms.includes(term), term);
+    assert.equal(keyterms.includes("teléfono"), false);
+    assert.match(String(input["transcription_prompt"]), /phone call/);
+  } finally {
+    await t.restore();
+  }
+});
+
+test("the Demo call's stored path carries no browser-supplied recognition", async () => {
+  // The demo binds a stored agent: the body (pinned to the voice's language)
+  // is the only recognition source. A Test-call language rule must never
+  // reach it, so the wire message is the binding and nothing else.
+  const t = await startedSession({}, {}, { mode: "agent", agentId: "" });
+  try {
+    t.sockets[0]?.emit("open");
+    const update = t.sockets[0]?.sent.find((message) => message.type === "session.update");
+    assert.deepEqual(update, { type: "session.update", session: { agent_id: "a1" } });
+  } finally {
+    await t.restore();
+  }
 });
