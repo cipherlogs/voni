@@ -34,13 +34,11 @@
 import {
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   readdirSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { VOICES, getVoice } from "../src/lib/agents/voices";
@@ -48,10 +46,8 @@ import { voiceLevelMeasurement } from "../src/lib/agents/voice-levels";
 import {
   AUDITION_ASSET_DIR,
   AUDITION_BITRATE_KBPS,
-  AUDITION_ENCODE_LEVEL_TOLERANCE_LU,
   AUDITION_LEVEL_TOLERANCE_LU,
   AUDITION_MANIFEST_PATH,
-  AUDITION_SAMPLE_RATE,
   AUDITION_SECOND_ENCODE_KBPS,
   AUDITION_SOURCE_DIR,
   MIN_SURVIVING_BITRATE_KBPS,
@@ -64,17 +60,10 @@ import {
   type AuditionPending,
 } from "../src/lib/demo/audition-clips";
 import { mp3Facts } from "../src/lib/demo/mp3-facts";
-import { pcm16Wav, referencePath, renderReference } from "../src/lib/demo/reference-render";
-import { decodePcm, decodeWav, type DecodedAudio } from "../src/lib/audio/format-facts";
-import { crestFactor } from "../src/lib/audio/distortion-crest";
-import { analyseLevel } from "../src/lib/audio/level-facts";
+import { referencePath, renderReference } from "../src/lib/demo/reference-render";
 import { collectSilentGreeting } from "../src/lib/voice/silent-greeting";
-import {
-  AUDITION_CHANNELS,
-  decodeAuditionMp3,
-  encodeAuditionMp3,
-  hasFfmpeg,
-} from "./lib/mp3-encode";
+import { produceAuditionClip } from "./lib/audition-produce";
+import { hasFfmpeg } from "./lib/mp3-encode";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const ASSET_DIR = join(ROOT, AUDITION_ASSET_DIR);
@@ -112,10 +101,6 @@ function today(): string {
   return `${now.getFullYear()}-${month}-${day}`;
 }
 
-function round(value: number): number {
-  return Math.round(value * 100) / 100;
-}
-
 async function token(): Promise<string> {
   const apiKey = process.env.ASSEMBLYAI_API_KEY;
   if (!apiKey) {
@@ -127,104 +112,6 @@ async function token(): Promise<string> {
   const response = await fetch(url, { headers: { Authorization: `Bearer ${apiKey}` } });
   if (!response.ok) throw new Error(`token ${response.status}: ${await response.text()}`);
   return ((await response.json()) as { token: string }).token;
-}
-
-/** Decode raw s16le at the clip's own format. */
-function decodeAtClipFormat(bytes: Uint8Array): DecodedAudio {
-  return decodePcm(bytes, { sampleRate: AUDITION_SAMPLE_RATE, channels: AUDITION_CHANNELS });
-}
-
-/** Measure a decoded file's level, naming the absence rather than guessing. */
-function levelOf(audio: DecodedAudio) {
-  const facts = analyseLevel(audio);
-  if (!facts.measured) {
-    throw new Error(`the render has no measurable level (${facts.absence})`);
-  }
-  return facts;
-}
-
-/** Peak over RMS in dB, the waveform fact a re-encode must not flatten. */
-function crestDb(audio: DecodedAudio): number {
-  return 20 * Math.log10(crestFactor(audio).crestFactor);
-}
-
-function wavLevel(path: string) {
-  const facts = analyseLevel(decodeWav(new Uint8Array(readFileSync(path))));
-  if (!facts.measured) {
-    throw new Error(`the native render has no measurable level (${facts.absence})`);
-  }
-  return facts;
-}
-
-/** Encode, measure, and prove a delivery re-encode does not move the level. */
-function produceClip(opts: { sourceWav: string; out: string; voiceId: string }): {
-  facts: AuditionClipRecord["facts"];
-  level: AuditionClipRecord["level"];
-} {
-  const scratch = mkdtempSync(join(tmpdir(), "voni-audition-"));
-  try {
-    const encoded = join(scratch, "clip.mp3");
-    encodeAuditionMp3({ input: opts.sourceWav, output: encoded });
-
-    const facts = mp3Facts(new Uint8Array(readFileSync(encoded)));
-    if (facts.sampleRate !== AUDITION_SAMPLE_RATE || facts.channels !== AUDITION_CHANNELS) {
-      throw new Error(`encoder produced ${facts.sampleRate} Hz x ${facts.channels}ch, not 24 kHz mono`);
-    }
-    if (facts.bitrateKbps !== AUDITION_BITRATE_KBPS) {
-      throw new Error(`encoder produced ${facts.bitrateKbps} kbps, not ${AUDITION_BITRATE_KBPS}`);
-    }
-
-    const source = wavLevel(opts.sourceWav);
-    const decoded = decodeAuditionMp3(encoded);
-    const assetAudio = decodeAtClipFormat(decoded);
-    const asset = levelOf(assetAudio);
-    if (Math.abs(asset.integratedLufs - source.integratedLufs) > AUDITION_ENCODE_LEVEL_TOLERANCE_LU) {
-      throw new Error(
-        `encoding moved the native level by ${(asset.integratedLufs - source.integratedLufs).toFixed(2)} LU`,
-      );
-    }
-
-    // The delivery re-encode: same audio, 128 kbps, measured again.
-    const secondWav = join(scratch, "second.wav");
-    writeFileSync(secondWav, pcm16Wav(Buffer.from(decoded)));
-    const secondMp3 = join(scratch, "second.mp3");
-    encodeAuditionMp3({ input: secondWav, output: secondMp3, bitrateKbps: AUDITION_SECOND_ENCODE_KBPS });
-    const secondAudio = decodeAtClipFormat(decodeAuditionMp3(secondMp3));
-    const second = levelOf(secondAudio);
-    if (Math.abs(second.integratedLufs - asset.integratedLufs) > AUDITION_ENCODE_LEVEL_TOLERANCE_LU) {
-      throw new Error(
-        `a ${AUDITION_SECOND_ENCODE_KBPS} kbps second encode moves the level by ` +
-          `${(second.integratedLufs - asset.integratedLufs).toFixed(2)} LU`,
-      );
-    }
-
-    mkdirSync(dirname(opts.out), { recursive: true });
-    writeFileSync(opts.out, readFileSync(encoded));
-    return {
-      facts: {
-        sampleRate: facts.sampleRate,
-        channels: facts.channels,
-        bitrateKbps: facts.bitrateKbps,
-        frames: facts.frames,
-        durationMs: facts.durationMs,
-      },
-      level: {
-        sourceIntegratedLufs: round(source.integratedLufs),
-        assetIntegratedLufs: round(asset.integratedLufs),
-        assetTruePeakDbtp: round(asset.truePeakDbtp),
-        assetCrestDb: round(crestDb(assetAudio)),
-        secondEncodeLufs: round(second.integratedLufs),
-        secondEncodeTruePeakDbtp: round(second.truePeakDbtp),
-        secondEncodeCrestDb: round(crestDb(secondAudio)),
-        // Audit only: the standalone TTS measurement, when the voice has one.
-        // The session and TTS paths normalize differently, so this is recorded,
-        // never used as the clip's level gate.
-        referenceIntegratedLufs: voiceLevelMeasurement(opts.voiceId)?.integratedLufs ?? null,
-      },
-    };
-  } finally {
-    rmSync(scratch, { recursive: true, force: true });
-  }
 }
 
 async function renderVoice(voiceId: string, opts: { force: boolean }): Promise<AuditionClipRecord> {
@@ -256,7 +143,7 @@ async function renderVoice(voiceId: string, opts: { force: boolean }): Promise<A
       }),
   });
 
-  const produced = produceClip({ sourceWav: rendered.path, out: assetPath, voiceId: clip.voiceId });
+  const produced = produceAuditionClip({ sourceWav: rendered.path, output: assetPath });
   const record: AuditionClipRecord = {
     voice: clip.voiceId,
     locale: clip.locale,
@@ -266,7 +153,13 @@ async function renderVoice(voiceId: string, opts: { force: boolean }): Promise<A
     url: clip.url,
     volume: clip.volume,
     facts: produced.facts,
-    level: produced.level,
+    level: {
+      ...produced.level,
+      // Audit only: the standalone TTS measurement, when the voice has one.
+      // The session and TTS paths normalize differently, so this is recorded,
+      // never used as the clip's level gate.
+      referenceIntegratedLufs: voiceLevelMeasurement(clip.voiceId)?.integratedLufs ?? null,
+    },
     generatedOn: today(),
   };
 
