@@ -111,7 +111,11 @@ class ReconnectBudget:
         self._events: list[ReconnectEvent] = []
 
     def failed(
-        self, verdict: FailureVerdict, *, mid_reply: bool = False
+        self,
+        verdict: FailureVerdict,
+        *,
+        mid_reply: bool = False,
+        immediate: bool = True,
     ) -> ReconnectDecision:
         """Decide what one classified leg failure may do.
 
@@ -119,6 +123,12 @@ class ReconnectBudget:
         Only the model leg reacts to it: a restart there would say the same
         sentence twice, so the caller drains instead (ticket 96). Every
         failure still counts against its leg, so a second one ends the call.
+
+        ``immediate=False`` is a retryable failure the adapter may not recover
+        from on the spot — speech ``1013`` rate limiting, where an immediate
+        reconnect would be a retry storm (spec "Trigger set is closed"). The
+        failure still spends the leg's one reconnect, so no later failure can
+        claim it, but no reconnect is reported because none happened.
         """
         if not isinstance(verdict, FailureVerdict):
             raise ReconnectError(
@@ -166,6 +176,17 @@ class ReconnectBudget:
                     f"{verdict.reason}; the reply is already being spoken, so "
                     "the completion is not restarted (a restart would repeat "
                     "speech); drain to the last complete sentence"
+                ),
+            )
+        if not immediate:
+            return self._decide(
+                leg=leg,
+                action=ReconnectAction.FAIL,
+                verdict=verdict,
+                planned=False,
+                reason=(
+                    f"{verdict.reason}; no immediate retry is allowed, so the "
+                    "call fails now and the leg's one reconnect is spent"
                 ),
             )
         self._failure_reconnects[leg] += 1

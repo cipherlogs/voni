@@ -246,6 +246,26 @@ class NonReconnectableFailureTest(unittest.TestCase):
         self.assertEqual(ReconnectAction.RECONNECT, later.action)
         self.assertEqual(1, budget.counters("llm").failure_reconnects)
 
+    def test_a_failure_with_no_immediate_retry_spends_the_budget(self):
+        """Speech 1013 is a trigger, but a reconnect now would be a storm."""
+        budget = ReconnectBudget(now=FakeClock())
+
+        decision = budget.failed(classify_stt(1013), immediate=False)
+
+        self.assertEqual(ReconnectAction.FAIL, decision.action)
+        self.assertTrue(decision.opens_breaker)
+        self.assertEqual(1, budget.counters("stt").failures)
+        self.assertEqual(0, budget.counters("stt").failure_reconnects)
+        self.assertEqual(0, budget.counters("stt").budget_left)
+
+    def test_a_no_immediate_retry_cannot_leave_the_budget_for_a_later_claim(self):
+        budget = ReconnectBudget(now=FakeClock())
+
+        budget.failed(classify_stt(1013), immediate=False)
+        later = budget.failed(classify_stt(1011))
+
+        self.assertEqual(ReconnectAction.END, later.action)
+
 
 class VisibleBudgetTest(unittest.TestCase):
     """The counters reach the end message and the ledger (ticket 94)."""

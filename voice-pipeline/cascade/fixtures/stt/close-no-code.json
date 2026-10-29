@@ -83,6 +83,8 @@
         "end_stream_sent": false
       }
     ],
-    "ledger_marks": []
+    "ledger_marks": [
+      "reconnect"
+    ]
   }
 }

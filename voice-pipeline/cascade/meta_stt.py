@@ -28,6 +28,18 @@ speech leg through the ticket-22 ``CallRungs`` seam and fails visibly. A
 ``1011`` whose reason is the vendor's max session duration is a planned
 reconnect: a new session, no failure recorded, no retry budget spent.
 
+Every recovery decision is the call's one
+:class:`cascade.reconnect.ReconnectBudget` (ticket 94): a retryable close, the
+deliberate session rotation and an idle session end all spend or preserve the
+same per-leg budget, and the adapter keeps no retry counter of its own. A
+dropped socket mid-turn opens a new session with a new epoch and re-sends the
+unanswered audio of every open logical turn in call order; the new session's
+first
+``speechStart`` is bound to that existing logical turn, its transcript is
+joined with the partial the old session had already produced, and the turn's
+one final is delivered once. A late event from the replaced session is
+counted, logged and ignored (ticket 95).
+
 Session lifetime belongs to the vendor: a realtime session runs up to
 ``stt.session_max_ms`` (60 minutes) and has no resume token. The adapter
 replaces the socket before that bound at a ``speechComplete`` boundary, and the
@@ -67,9 +79,10 @@ from cascade.failures import (
     FailureVerdict,
     classify_stt,
 )
+from cascade.reconnect import DELIBERATE, ReconnectAction, ReconnectBudget
 from cascade.testing.clock import RealClock
 from cascade.thresholds import require_bound
-from cascade.turn_state import TurnPhase, TurnState, TurnStateStore
+from cascade.turn_state import LogicalTurnId, TurnPhase, TurnState, TurnStateStore
 from cascade.voice_binding import LOCALES
 from providers import FinalTranscript, PartialTranscript, StreamingSTT
 
@@ -389,6 +402,7 @@ class MetaStreamingSTT(StreamingSTT):
         ledger: Any = None,
         leg_failures: SpeechLegFailures | None = None,
         alert: Callable[[FailureVerdict, str], None] | None = None,
+        budget: ReconnectBudget | None = None,
     ) -> None:
         self._call_id = call_id
         self._api_key = api_key or os.environ.get(API_KEY_ENV)
@@ -417,12 +431,24 @@ class MetaStreamingSTT(StreamingSTT):
         self._last_close_code: int | None = None
         self._leg_failures = leg_failures
         self._alert_sink = alert
-        self._retry_used = False
+        # Ticket 94 owns every recovery decision: the failure budget and the
+        # planned-reconnect bucket are this call's one counters, so the adapter
+        # can never disagree with the end message about what it spent.
+        self._budget = budget or ReconnectBudget(ledger=ledger, now=self._clock)
         self._needs_reconnect = False
         self._reconnects = 0
         self._failures: list[FailureVerdict] = []
         self._breaker_opens: list[FailureVerdict] = []
         self._alerts: list[tuple[FailureVerdict, str]] = []
+        # Ticket 95: the unanswered audio of every open logical turn, keyed by
+        # the turn (not the vendor id, which changes on reconnect). Frames are
+        # kept with their call-level send order so an overlapping turn's replay
+        # is the union in order, never the same frame twice.
+        self._turn_audio: dict[LogicalTurnId, list[tuple[int, bytes]]] = {}
+        self._audio_seq = 0
+        #: The logical turns the currently replayed audio belongs to, in the
+        #: order the new session's ``speechStart`` events must be bound to.
+        self._replay_targets: list[TurnState] = []
 
     @property
     def dropped_frames(self) -> int:
@@ -470,9 +496,14 @@ class MetaStreamingSTT(StreamingSTT):
         return self._reconnects
 
     @property
+    def reconnect_budget(self) -> ReconnectBudget:
+        """The call's one reconnect ledger (ticket 94); the adapter never counts."""
+        return self._budget
+
+    @property
     def retry_used(self) -> bool:
         """Whether the one retryable close allowed per call has been spent."""
-        return self._retry_used
+        return self._budget.counters("stt").budget_left == 0
 
     @property
     def needs_reconnect(self) -> bool:
@@ -482,7 +513,11 @@ class MetaStreamingSTT(StreamingSTT):
     @property
     def retry_allowed(self) -> bool:
         """One retryable close may open a new session; a second one fails."""
-        return not self._retry_used and self._socket is not None and self._acked
+        return (
+            self._budget.counters("stt").budget_left > 0
+            and self._socket is not None
+            and self._acked
+        )
 
     @property
     def acked(self) -> bool:
@@ -697,6 +732,9 @@ class MetaStreamingSTT(StreamingSTT):
 
         await self._socket.send(payload)
         self._audio_end += duration
+        self._audio_seq += 1
+        for frames in self._turn_audio.values():
+            frames.append((self._audio_seq, payload))
 
     async def send_silence(self, seconds: float | None = None) -> None:
         """Send PCM silence for ``seconds`` (default one 20 ms frame).
@@ -830,12 +868,14 @@ class MetaStreamingSTT(StreamingSTT):
                 # deliberate ``close()`` to make its one end-of-stream attempt.
                 self._record_ending(SessionEndKind.NORMAL, code, verdict.reason)
                 return CloseDecision(verdict=verdict, action=CloseAction.CLEAN)
+            self._budget.failed(verdict)
             await self._close_socket()
             raise await self._fail(
                 verdict, f"speech close {code!r}: {verdict.reason}"
             )
 
         if verdict.failure_class is FailureClass.BUG:
+            self._budget.failed(verdict)
             await self._close_socket()
             raise await self._fail(
                 verdict, f"speech close {code!r}: {verdict.reason}"
@@ -848,6 +888,9 @@ class MetaStreamingSTT(StreamingSTT):
             return await self._planned_reconnect(verdict)
 
         if code == 1013:
+            # A trigger the adapter may not retry on the spot: the budget
+            # spends the leg's one reconnect and the call fails with backoff.
+            self._budget.failed(verdict, immediate=False)
             await self._close_socket()
             raise await self._fail(
                 verdict,
@@ -855,17 +898,19 @@ class MetaStreamingSTT(StreamingSTT):
                 backoff=True,
             )
 
-        if self.retry_allowed:
-            self._retry_used = True
+        decision = self._budget.failed(verdict)
+        if decision.action is ReconnectAction.RECONNECT:
             self._failures.append(verdict)
-            await self._reopen()
+            await self._reopen(replay=True)
             return CloseDecision(
                 verdict=verdict, action=CloseAction.RETRY, retried=True
             )
 
         await self._close_socket()
         raise await self._fail(
-            verdict, f"speech close {code!r}: {verdict.reason}"
+            verdict,
+            f"speech close {code!r}: {verdict.reason}; "
+            f"{decision.reason}",
         )
 
     async def _planned_reconnect(
@@ -877,16 +922,19 @@ class MetaStreamingSTT(StreamingSTT):
         """A session limit, not a failure: open a new session with no penalty."""
         await self._close_socket()
         self._record_ending(kind, verdict.code, verdict.reason, planned=True)
-        if self._ledger is not None:
-            # The call ledger's one reconnect mark; the session ledger above
-            # carries every entry, including the ones a mark cannot count.
-            self._ledger.mark("reconnect")
+        if verdict.failure_class is FailureClass.PLANNED_RECONNECT:
+            # The budget owns the bucket (and the call ledger's reconnect mark).
+            self._budget.planned("stt", code=verdict.code)
+        else:
+            # An idle close is an operational session end with no wire code of
+            # its own; it is deliberate in the sense the budget means.
+            self._budget.planned("stt", code=DELIBERATE, reason=verdict.reason)
         if self._language_bias is None:  # pragma: no cover - close implies open
             self._needs_reconnect = True
             return CloseDecision(
                 verdict=verdict, action=CloseAction.PLANNED_RECONNECT
             )
-        await self._reopen()
+        await self._reopen(replay=True)
         return CloseDecision(verdict=verdict, action=CloseAction.PLANNED_RECONNECT)
 
     def _record_ending(
@@ -911,12 +959,60 @@ class MetaStreamingSTT(StreamingSTT):
             )
         )
 
-    async def _reopen(self) -> None:
-        """Replace the dead session with a new one, never with ``endStream``."""
+    async def _reopen(self, *, replay: bool = False) -> None:
+        """Replace the dead session with a new one, never with ``endStream``.
+
+        ``replay`` re-sends the unanswered audio of every open logical turn on
+        the new (already acknowledged) session. The frames are the ones the old
+        session received, in call order, so two overlapping turns replay the
+        shared stream once. The replay is behind the audio timeline, so it is
+        not charged against the lead budget (ticket 95).
+        """
+        targets = self._replay_plan() if replay else []
         await self._close_socket()
         self._needs_reconnect = False
         self._reconnects += 1
+        self._replay_targets = []
         await self.open(language_codes=[], sample_rate=SAMPLE_RATE)
+        if not targets:
+            return
+        frames = self._replay_frames(targets)
+        if not frames:
+            return
+        for payload in frames:
+            await self._socket.send(payload)
+        self._replay_targets = targets
+        _log.info(
+            "meta speech session %s: replayed %s audio frame(s) for turn(s) %s",
+            self._session,
+            len(frames),
+            ", ".join(state.id.event_id for state in targets),
+        )
+
+    def _latest_open_turn(self) -> TurnState | None:
+        """The open turn an unlabelled partial belongs to (the newest start)."""
+        open_turns = [state for state in self._turns.turns() if state.is_open]
+        if not open_turns:
+            return None
+        return max(open_turns, key=lambda state: (state.last_speech_start, state.seq))
+
+    def _replay_plan(self) -> list[TurnState]:
+        """The open logical turns whose unanswered audio must be re-sent."""
+        states = [
+            state
+            for turn_id in self._turn_audio
+            if (state := self._turns.get(turn_id)) is not None
+            and not state.is_finalised
+        ]
+        return sorted(states, key=lambda state: state.seq)
+
+    def _replay_frames(self, targets: list[TurnState]) -> list[bytes]:
+        """The union of the targets' frames in call order, never twice."""
+        ordered: dict[int, bytes] = {}
+        for state in targets:
+            for sequence, payload in self._turn_audio.get(state.id, ()):
+                ordered.setdefault(sequence, payload)
+        return [ordered[sequence] for sequence in sorted(ordered)]
 
     async def _close_socket(self) -> None:
         """Detach and close the current socket; ``close()`` is the deliberate end."""
@@ -990,6 +1086,18 @@ class MetaStreamingSTT(StreamingSTT):
                     self._session,
                 )
                 return None
+            target = self._replay_targets[0] if self._replay_targets else None
+            if target is not None:
+                bound = self._turns.bind(turn_id, target, epoch=source_epoch)
+                if bound is not None:
+                    self._replay_targets.pop(0)
+                    _log.info(
+                        "meta speech session %s: replayed turn %s is now "
+                        "provider turn %r",
+                        self._session,
+                        bound.event_id,
+                        turn_id,
+                    )
             state = self._turns.open(turn_id, epoch=source_epoch)
             if state is None:
                 _log.warning(
@@ -998,13 +1106,26 @@ class MetaStreamingSTT(StreamingSTT):
                     turn_id,
                 )
                 return None
+            self._turn_audio.setdefault(state.id, [])
             return SpeechStart(turn_id=turn_id, session_epoch=source_epoch)
 
         if kind == "transcript":
             text = message.get("text")
             if not isinstance(text, str) or not text:
                 return None
-            state = self._turns.partial(text, epoch=source_epoch)
+            # A replayed session starts its cumulative transcript from the
+            # beginning of the replayed audio, so it may lag the partial the
+            # old session had already produced. Join by keeping the longer
+            # text: a reconnect must never lose words the caller said.
+            latest = self._latest_open_turn()
+            joined = text
+            if (
+                latest is not None
+                and latest.attribution_history
+                and len(latest.partial_text) > len(text)
+            ):
+                joined = latest.partial_text
+            state = self._turns.partial(joined, epoch=source_epoch)
             if state is None:
                 _log.warning(
                     "meta speech session %s: ignoring a partial that belongs "
@@ -1012,7 +1133,7 @@ class MetaStreamingSTT(StreamingSTT):
                     self._session,
                 )
                 return None
-            return SpeechPartial(text=text, session_epoch=source_epoch)
+            return SpeechPartial(text=joined, session_epoch=source_epoch)
 
         if kind == "speechEnd":
             turn_id = _turn_id(message)
@@ -1045,6 +1166,15 @@ class MetaStreamingSTT(StreamingSTT):
             authored = text if isinstance(text, str) else ""
             before = self._turns.get(turn_id)
             was_finalised = before is not None and before.is_finalised
+            replayed = before is not None and bool(before.attribution_history)
+            if replayed and before.partial_text.strip():
+                # The replayed session may produce a shorter final than the
+                # partial the old session had (its transcript starts from the
+                # replayed audio). Join the transcripts by keeping the fuller
+                # text: a reconnect must never shrink the caller's turn, and an
+                # empty replay final must not answer nothing.
+                if len(before.partial_text) > len(authored):
+                    authored = before.partial_text
             state = self._turns.finalise(
                 authored, turn=turn_id, epoch=source_epoch
             )
@@ -1057,6 +1187,8 @@ class MetaStreamingSTT(StreamingSTT):
                 )
                 return None
             if was_finalised:
+                # The turn's one final was already delivered: a replayed or
+                # duplicated speechComplete never answers the same turn twice.
                 _log.warning(
                     "meta speech session %s: ignoring a duplicate "
                     "speechComplete for turn %r",
@@ -1064,6 +1196,7 @@ class MetaStreamingSTT(StreamingSTT):
                     turn_id,
                 )
                 return None
+            self._turn_audio.pop(state.id, None)
             return SpeechComplete(
                 text=authored, turn_id=turn_id, session_epoch=source_epoch
             )
@@ -1113,6 +1246,9 @@ class MetaStreamingSTT(StreamingSTT):
             )
         await self._await_vendor_close(frames)
         await _close_quietly(socket)
+        # The call is over: no audio will ever be replayed.
+        self._turn_audio.clear()
+        self._replay_targets = []
         self._record_ending(
             SessionEndKind.DELIBERATE,
             self._last_close_code,
