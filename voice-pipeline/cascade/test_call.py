@@ -21,9 +21,11 @@ import asyncio
 import json
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from cascade import thresholds
 from cascade.call import (
+    BOUNDED_WAITS,
     AudioFrame,
     BrowserStop,
     CallLifecycle,
@@ -32,13 +34,16 @@ from cascade.call import (
     CostSummary,
     LegCost,
     OpenedLeg,
+    OutboundAudio,
 )
 from cascade.eligibility import evaluate_body
 from cascade.envelope import sign_body
 from cascade.body_map import body_fingerprint
 from cascade.meta_stt import SpeechComplete, SpeechStart
 from cascade.testing import FakeClock, ScriptedSTT
+from cascade.voice_binding import bind_voice
 from metrics import TimingLedger
+from providers import SentenceAudio
 
 VECTORS = json.loads(
     Path(__file__).with_name("envelope_vectors.json").read_text(encoding="utf-8")
@@ -51,6 +56,9 @@ CALL_ID = VECTORS["call_id"]
 AGENT_ID = VECTORS["agent_id"]
 TTL_MS = VECTORS["expires_at_ms"] - VECTORS["issued_at_ms"]
 ISSUED_S = VECTORS["issued_at_ms"] / 1000.0
+
+#: "No argument given": distinct from an explicit ``send_audio=None``.
+_UNSET = object()
 
 
 def signed_message(body=None) -> dict:
@@ -127,16 +135,52 @@ class HangingDrainStream(FakeStream):
 
 
 class FakeVoice:
-    def __init__(self) -> None:
+    """The opened synthesis session: a bound voice and its greeting path."""
+
+    def __init__(self, *, fail=None, greeting_failure=None) -> None:
+        self.binding = bind_voice("lola")
         self.closed = False
+        self.greeted: list[str] = []
+        self.greeting_chunks = (b"\x10\x00", b"\x11\x00")
+        self.greeting_failure = fail if fail is not None else greeting_failure
+
+    async def speak_greeting(self, text: str):
+        self.greeted.append(text)
+        if self.greeting_failure is not None:
+            raise self.greeting_failure
+        for chunk in self.greeting_chunks:
+            yield SentenceAudio(pcm=chunk, sample_rate=24000, text=text)
 
     async def close(self) -> None:
         self.closed = True
 
 
+class RecordingAudioSink:
+    """The lifecycle's audio seam: records frames and what had been heard."""
+
+    def __init__(self, probe=None) -> None:
+        self.frames: list[OutboundAudio] = []
+        self.probe = probe
+        self.heard_at_frame: list[list[bytes]] = []
+
+    async def __call__(self, audio: OutboundAudio) -> None:
+        self.frames.append(audio)
+        if self.probe is not None:
+            self.heard_at_frame.append(self.probe())
+
+
 class HangingCloseVoice(FakeVoice):
     async def close(self) -> None:
         await asyncio.Event().wait()
+
+
+class HangingGreetingVoice(FakeVoice):
+    """A voice whose greeting synthesis never produces its first frame."""
+
+    async def speak_greeting(self, text: str):
+        self.greeted.append(text)
+        await asyncio.Event().wait()
+        yield  # pragma: no cover - the bound cancels this wait
 
 
 class CallLifecycleTest(unittest.TestCase):
@@ -161,6 +205,8 @@ class CallLifecycleTest(unittest.TestCase):
         log=None,
         fail_voice=None,
         model_session=None,
+        send_audio=_UNSET,
+        bounds=None,
     ):
         self.opens = [] if opens is None else opens
         self.log = [] if log is None else log
@@ -170,6 +216,11 @@ class CallLifecycleTest(unittest.TestCase):
         ) if speech is None else speech
         self.voice = FakeVoice() if voice is None else voice
         self.stream = FakeStream(self.log) if stream is None else stream
+        if send_audio is _UNSET:
+            send_audio = RecordingAudioSink(
+                lambda: (list(self.speech.audio), self.stream.started)
+            )
+        self.sink = send_audio
 
         async def open_speech(_body):
             self.opens.append("speech")
@@ -199,10 +250,12 @@ class CallLifecycleTest(unittest.TestCase):
             open_voice=open_voice,
             open_model=open_the_model if open_model else None,
             stream=self.stream,
+            send_audio=send_audio,
             ledger=TimingLedger(now=self.clock),
             clock=self.clock,
             envelope_clock=self.envelope_clock,
             drain_bound_ms=drain_bound_ms,
+            bounds=bounds,
             cost_meter=cost_meter,
             eligibility=eligibility,
         )
@@ -234,6 +287,118 @@ class CallLifecycleTest(unittest.TestCase):
         self.assertTrue(self.stream.drained)
         self.assertEqual("stop", end.ended_by)
         self.assertTrue(end.drain.ok)
+        self.assertEqual("end", transport.sent[-1]["type"])
+        self.assertTrue(transport.closed)
+
+    # -- the greeting is spoken before any caller audio (ticket 77) -------
+
+    def test_the_greeting_is_spoken_before_any_user_audio_or_stream_start(self):
+        transport = FakeTransport([AudioFrame(b"\xaa\xbb"), BrowserStop()])
+
+        self.run_call(self.make(transport=transport))
+
+        self.assertEqual(["Hi, this is Voni."], self.voice.greeted)
+        self.assertEqual(
+            [b"\x10\x00", b"\x11\x00"], [frame.pcm for frame in self.sink.frames]
+        )
+        # At the first greeting frame no caller audio had been forwarded and
+        # the turn layer had not started.
+        self.assertEqual([([], False)], self.sink.heard_at_frame[:1])
+        self.assertEqual([b"\xaa\xbb"], self.speech.audio)
+
+    def test_the_greeting_marks_are_recorded_and_it_is_not_a_turn(self):
+        transport = FakeTransport([])
+
+        end = self.run_call(
+            self.make(
+                transport=transport, speech=ScriptedSTT([], clock=self.clock)
+            )
+        )
+
+        marks = end.metrics["marks"]
+        for name in ("greeting_start", "greeting_first_audio", "greeting_done"):
+            self.assertIn(name, marks)
+        self.assertNotIn("first_playout", marks)
+        self.assertIsNone(end.metrics["gaps_ms"]["floor_take_to_first_playout"])
+        self.assertEqual(0, end.turns)
+        self.assertTrue(self.stream.drained)
+
+    def test_a_call_with_no_user_audio_speaks_the_greeting_and_ends_with_a_drain(self):
+        transport = FakeTransport([])
+
+        end = self.run_call(self.make(transport=transport))
+
+        self.assertTrue(self.voice.greeted)
+        self.assertEqual("dropped", end.ended_by)
+        self.assertTrue(end.drain.ok)
+        self.assertIn("greeting_done", end.metrics["marks"])
+        self.assertTrue(self.stream.drained)
+
+    def test_a_body_without_a_greeting_opens_silently_and_records_the_absence(self):
+        body = json.loads(json.dumps(BODY))
+        body["greeting"] = ""
+        transport = FakeTransport([BrowserStop()])
+
+        end = self.run_call(self.make(transport=transport, body=body))
+
+        self.assertEqual([], self.voice.greeted)
+        self.assertEqual([], self.sink.frames)
+        self.assertNotIn("greeting_start", end.metrics["marks"])
+        self.assertTrue(self.stream.started)
+        self.assertIsNotNone(end.greeting)
+        self.assertFalse(end.greeting.spoken)
+        document = transport.sent[-1]
+        self.assertFalse(document["greeting"]["spoken"])
+        self.assertIn("no greeting", document["greeting"]["reason"])
+
+    def test_a_greeting_failure_ends_the_call_visibly_before_the_stream_starts(self):
+        transport = FakeTransport([BrowserStop()])
+
+        end = self.run_call(
+            self.make(
+                transport=transport,
+                voice=FakeVoice(fail=RuntimeError("synthesis refused")),
+            )
+        )
+
+        self.assertFalse(self.stream.started)
+        self.assertEqual("error", end.ended_by)
+        self.assertEqual("RuntimeError", end.error.name)
+        self.assertEqual("greeting", end.error.stage)
+        self.assertTrue(self.speech.closed)
+        self.assertTrue(self.voice.closed)
+        self.assertEqual("end", transport.sent[-1]["type"])
+        self.assertTrue(transport.closed)
+
+    def test_a_greeting_without_an_audio_sink_never_opens_silently(self):
+        transport = FakeTransport([BrowserStop()])
+
+        end = self.run_call(
+            self.make(transport=transport, send_audio=None)
+        )
+
+        self.assertFalse(self.stream.started)
+        self.assertEqual("error", end.ended_by)
+        self.assertEqual("NoAudioSink", end.error.name)
+        self.assertEqual("greeting", end.error.stage)
+        self.assertEqual([], self.voice.greeted)
+
+    def test_a_hanging_greeting_is_bounded_and_ends_the_call_visibly(self):
+        transport = FakeTransport([BrowserStop()])
+        lifecycle = self.make(
+            transport=transport,
+            voice=HangingGreetingVoice(),
+            bounds={"tts.idle_timeout_ms": 10},
+        )
+
+        end = asyncio.run(asyncio.wait_for(lifecycle.run(), timeout=2.0))
+
+        self.assertFalse(self.stream.started)
+        self.assertEqual("error", end.ended_by)
+        self.assertEqual("GreetingTimedOut", end.error.name)
+        self.assertEqual("greeting", end.error.stage)
+        self.assertIn("tts.idle_timeout_ms", str(end.error))
+        self.assertTrue(self.speech.closed)
         self.assertEqual("end", transport.sent[-1]["type"])
         self.assertTrue(transport.closed)
 
@@ -373,6 +538,11 @@ class CallLifecycleTest(unittest.TestCase):
         self.assertEqual("DrainTimedOut", end.drain.error.name)
         self.assertEqual("end", transport.sent[-1]["type"])
         self.assertTrue(transport.closed)
+        recorded = transport.sent[-1]["bounds"]
+        drain = next(item for item in recorded if item["stage"] == "drain")
+        self.assertEqual("deploy.drain_max_wait_ms", drain["bound"])
+        self.assertFalse(drain["ok"])
+        self.assertEqual("DrainTimedOut", drain["error"]["name"])
 
     def test_an_unset_drain_bound_is_named_and_never_invented(self):
         bound = thresholds.bound("deploy.drain_max_wait_ms")
@@ -480,6 +650,104 @@ class CallLifecycleTest(unittest.TestCase):
         self.assertEqual([], self.opens)
         self.assertEqual("LlmOverrideRefusal", end.error.name)
         self.assertFalse(self.stream.started)
+
+
+class BoundedWaitTest(unittest.TestCase):
+    """Five named waits plus the audio path's synthesis wait (ticket 76)."""
+
+    STAGES = ("reply_task", "stall_guard", "tool", "drain", "reconnect")
+
+    def lifecycle(self, bounds=None):
+        async def unused(_body):
+            raise AssertionError("a bound-only test opens no leg")
+
+        return CallLifecycle(
+            message={},
+            secret="secret",
+            call_id="bound-test",
+            transport=FakeTransport(),
+            open_speech=unused,
+            open_voice=unused,
+            bounds=bounds,
+        )
+
+    def test_each_named_wait_reads_a_declared_registry_bound(self):
+        expected = {
+            "reply_task": "turn.reply_task_ms",
+            "stall_guard": "turn.stall_guard_ms",
+            "tool": "tool.timeout_ms",
+            "drain": "deploy.drain_max_wait_ms",
+            "reconnect": "reconnect.handshake_ms",
+            "greeting": "tts.idle_timeout_ms",
+        }
+        for stage, name in expected.items():
+            with self.subTest(stage=stage):
+                self.assertEqual(name, BOUNDED_WAITS[stage][0])
+                # ``thresholds.bound`` refuses an undeclared name by name.
+                self.assertEqual(name, thresholds.bound(name).name)
+
+    def test_each_never_completing_wait_times_out_by_name_and_is_recorded(self):
+        for stage in self.STAGES:
+            with self.subTest(stage=stage):
+                lifecycle = self.lifecycle({BOUNDED_WAITS[stage][0]: 10})
+
+                result, outcome = asyncio.run(
+                    asyncio.wait_for(
+                        lifecycle.run_bounded(stage, _never), timeout=2.0
+                    )
+                )
+
+                self.assertIsNone(result)
+                self.assertFalse(outcome.ok)
+                self.assertEqual(BOUNDED_WAITS[stage][1], outcome.error.name)
+                self.assertEqual(stage, outcome.error.stage)
+                self.assertIn(BOUNDED_WAITS[stage][0], str(outcome.error))
+                self.assertEqual([outcome], lifecycle.bound_outcomes)
+
+    def test_an_unbounded_wait_hangs_which_is_why_the_bound_is_there(self):
+        async def scenario():
+            # The direct await never finishes; the test-level deadline is the
+            # only thing that ends it. That is the bug the named bound removes.
+            with self.assertRaises(asyncio.TimeoutError):
+                await asyncio.wait_for(_never(), timeout=0.01)
+            return await self.lifecycle({"tool.timeout_ms": 10}).run_bounded(
+                "tool", _never
+            )
+
+        result, outcome = asyncio.run(scenario())
+
+        self.assertIsNone(result)
+        self.assertEqual("ToolTimedOut", outcome.error.name)
+
+    def test_an_unset_bound_raises_by_name_and_is_never_defaulted(self):
+        name = "turn.reply_task_ms"
+        entry = thresholds.bound(name)
+
+        with mock.patch(
+            "cascade.call.require_bound",
+            side_effect=thresholds.UnsetBoundError(entry),
+        ):
+            result, outcome = asyncio.run(
+                self.lifecycle().run_bounded("reply_task", _never)
+            )
+
+        self.assertIsNone(result)
+        self.assertEqual("UnsetBoundError", outcome.error.name)
+        self.assertIn(name, str(outcome.error))
+
+    def test_a_zero_or_negative_bound_is_refused_not_used(self):
+        result, outcome = asyncio.run(
+            self.lifecycle({"tool.timeout_ms": 0}).run_bounded("tool", _never)
+        )
+
+        self.assertIsNone(result)
+        self.assertEqual("InvalidBound", outcome.error.name)
+        self.assertIn("tool.timeout_ms", str(outcome.error))
+
+
+async def _never():
+    """A stand-in for the dependency that never answers."""
+    await asyncio.Event().wait()
 
 
 if __name__ == "__main__":
