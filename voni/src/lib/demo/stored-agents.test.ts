@@ -16,10 +16,65 @@ import {
   demoLlmOverride,
   demoTurnWindowsFromEnv,
   planDemoAgent,
+  readServedDemoAgentBody,
 } from "./stored-agents";
 import { END_CALL_TOOL } from "@/lib/tools/definitions";
 import { VONI_GREETINGS, DEMO_VOICE_IDS } from "./voni-agent";
 import { VOICE_OUTPUT_VOLUME, voicePlaybackGain } from "@/lib/agents/voices";
+
+test("the served stored body is read from the platform, never rebuilt", async () => {
+  const calls: string[] = [];
+  const result = await readServedDemoAgentBody("agent_stored", {
+    apiKey: "test-key",
+    fetchFn: (async (url: string | URL | Request) => {
+      calls.push(String(url));
+      return new Response(
+        JSON.stringify({
+          id: "agent_stored",
+          name: "demo:voni:anna",
+          greeting: "Dropped body field",
+          input: { turn_detection: null, language_codes: ["en"] },
+          output: { volume: 1 },
+        }),
+        { status: 200 },
+      );
+    }) as typeof fetch,
+  });
+  assert.deepEqual(calls, ["https://agents.assemblyai.com/v1/agents/agent_stored"]);
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.body.agentId, "agent_stored");
+  assert.deepEqual(result.body.input, { turn_detection: null, language_codes: ["en"] });
+});
+
+test("a served body that cannot be read reports an error, never a body", async () => {
+  const result = await readServedDemoAgentBody("agent_missing", {
+    apiKey: "test-key",
+    fetchFn: (async () => new Response("not found", { status: 404 })) as typeof fetch,
+  });
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.match(result.error, /agent_missing/);
+});
+
+test("a served body with no input object reports an error, never a body", async () => {
+  const result = await readServedDemoAgentBody("agent_stored", {
+    apiKey: "test-key",
+    fetchFn: (async () =>
+      new Response(JSON.stringify({ id: "agent_stored" }), { status: 200 })) as typeof fetch,
+  });
+  assert.equal(result.ok, false);
+});
+
+test("the served body read refuses to invent a body without an API key", async () => {
+  const result = await readServedDemoAgentBody("agent_stored", {
+    apiKey: null,
+    fetchFn: (async () => {
+      throw new Error("must not fetch without a key");
+    }) as typeof fetch,
+  });
+  assert.equal(result.ok, false);
+});
 
 test("demo agent names are deterministic per voice", () => {
   assert.equal(demoAgentName("anna"), "demo:voni:anna");
