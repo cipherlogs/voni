@@ -135,6 +135,15 @@ export class Floor {
     if (line) this.requeue(line);
   }
 
+  /**
+   * The line just cut was optional (a check-in). Any cut — a real point, a
+   * filler, or a noise — ends it for good: it is never resumed over a caller
+   * who has taken the floor.
+   */
+  cutDroppable(): boolean {
+    return this.cut?.droppable === true;
+  }
+
   callerSpeechStarted(): void {
     this.callerUntil = this.now() + CALLER_SPEECH_MAX_MS;
     this.freeSince = null;

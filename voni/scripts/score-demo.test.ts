@@ -1718,7 +1718,7 @@ if (args[0] === "run" && args[1] === "eval:demo-agent") {
   assert.match(gate.detail, /call trace turn 1/, "the FAIL cites the surrounding turn");
 });
 
-test("a live silence-check-in timeline gates zero, one and two check-ins with a call trace turn", () => {
+test("a live silence-check-in timeline gates zero, one, two and over-caller check-ins with a call trace turn", () => {
   const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
   const bin = join(dir, "bin");
   mkdirSync(bin);
@@ -1734,7 +1734,9 @@ if (args[0] === "run" && args[1] === "eval:demo-agent") {
       ? { scenario: "silence-check-in", session: "sess_check", startedMs: 0, endedMs: 18000, agentAudio: [{ startMs: 0, endMs: 1000 }], callerSpeech: [], coverage: [], checkIns: [] }
       : mode === "two"
         ? { scenario: "silence-check-in", session: "sess_check", startedMs: 0, endedMs: 34000, agentAudio: [{ startMs: 0, endMs: 1000 }], callerSpeech: [], coverage: [], checkIns: [{ atMs: 16200 }, { atMs: 32400 }] }
-        : { scenario: "silence-check-in", session: "sess_check", startedMs: 0, endedMs: 18000, agentAudio: [{ startMs: 0, endMs: 1000 }, { startMs: 16200, endMs: 17500 }], callerSpeech: [], coverage: [], checkIns: [{ atMs: 16200 }] };
+        : mode === "over"
+          ? { scenario: "silence-check-in", session: "sess_check", startedMs: 0, endedMs: 18000, agentAudio: [{ startMs: 0, endMs: 1000 }], callerSpeech: [{ startMs: 16000, endMs: 16800 }], coverage: [], checkIns: [{ atMs: 16200, overCaller: true }] }
+          : { scenario: "silence-check-in", session: "sess_check", startedMs: 0, endedMs: 18000, agentAudio: [{ startMs: 0, endMs: 1000 }, { startMs: 16200, endMs: 17500 }], callerSpeech: [], coverage: [], checkIns: [{ atMs: 16200 }] };
   console.log("    SILENCE TIMELINE " + JSON.stringify(timeline));
   console.log("    check-ins " + timeline.checkIns.length + " at " + (timeline.checkIns[0]?.atMs ?? 0) + "ms");
   console.log("silence-check-in: 1/1");
@@ -1782,6 +1784,16 @@ if (args[0] === "run" && args[1] === "eval:demo-agent") {
   assert.match(twoGate.detail, /2 check-ins/);
   assert.match(twoGate.detail, /call trace turn/, twoGate.detail);
   assert.match(twoGate.detail, /31400ms/, "cites the extra check-in");
+
+  const over = score("over");
+  assert.notEqual(over.result.status, 0, over.result.stderr + over.result.stdout);
+  assert.deepEqual(over.artifact.deadAir.checkIns, [
+    { atMs: 16_200, atSilenceMs: 15_200, overCaller: true, trace: "call trace turn 2 (sess_check)" },
+  ]);
+  const overGate = over.artifact.gates.find((g) => g.name === "dead-air")!;
+  assert.equal(overGate.status, "FAIL");
+  assert.match(overGate.detail, /over caller speech/, overGate.detail);
+  assert.match(overGate.detail, /call trace turn 2 \(sess_check\)/, "cites the turn the check-in talked over the visitor");
 });
 
 test("--silence-json feeds dead-air automatically, and explicit CLI flags still override it", () => {

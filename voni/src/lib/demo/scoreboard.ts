@@ -961,12 +961,14 @@ export function deriveFreeFloorSilence(timeline: SilenceTimeline): FreeFloorSile
 
   // Coverage is matched against each stretch, not the merged busy window.
   const measured: DeadAirSilence[] = [];
+  const assigned = new Set<number>();
   for (const silence of silences) {
     const insideCoverage = coverageAt.some((atMs) => atMs >= silence.startMs && atMs <= silence.endMs);
     const insideCheckIns = checkInEvents.filter((entry) => entry.atMs >= silence.startMs && entry.atMs <= silence.endMs);
     const coveredBy = insideCheckIns.length > 0 ? "check-in" : insideCoverage ? "agent" : null;
     measured.push({ ...silence, coveredBy });
     for (const checkIn of insideCheckIns) {
+      assigned.add(checkInEvents.indexOf(checkIn));
       const atMs = Math.max(0, Math.round(checkIn.atMs));
       const atSilenceMs = Math.max(0, atMs - silence.startMs);
       checkIns.push({
@@ -977,6 +979,21 @@ export function deriveFreeFloorSilence(timeline: SilenceTimeline): FreeFloorSile
       });
     }
   }
+  // A check-in over caller speech lands in the caller's busy window, so no
+  // silence contains it. It is still the exact evidence ticket 19 gates on:
+  // attach it to the free-floor stretch it interrupted, never drop it.
+  checkInEvents.forEach((entry, index) => {
+    if (assigned.has(index) || entry.overCaller !== true) return;
+    const atMs = Math.max(0, Math.round(entry.atMs));
+    const prior = [...measured].reverse().find((silence) => silence.startMs <= atMs) ?? measured[0];
+    if (!prior) return;
+    checkIns.push({
+      atMs,
+      atSilenceMs: Math.max(0, atMs - prior.startMs),
+      overCaller: true,
+      ...(entry.trace ? { trace: entry.trace } : {}),
+    });
+  });
   const gapWindows = measured.filter(
     (silence) => silence.coveredBy === null && silence.durationMs > DEAD_AIR_MAX_MS,
   );
@@ -1151,6 +1168,27 @@ export function traceSilenceRef(
   return null;
 }
 
+/**
+ * The Call trace turn a check-in became: the first VONI reply at or after the
+ * request time. A check-in over caller speech is that reply, so a FAIL cites
+ * the exact turn the visitor was talked over. Null when no reply started after
+ * the request — the FAIL then says no turn was merged instead of guessing.
+ */
+export function traceCheckInRef(
+  excerpt: string[],
+  atMs: number,
+  sessionId?: string | null,
+): string | null {
+  let turn = 0;
+  for (const line of excerpt) {
+    if (!line.includes("  VONI    ")) continue;
+    turn += 1;
+    const match = /^\s*(\d+(?:\.\d+)?)s\s+VONI\s/.exec(line);
+    if (!match) continue;
+    if (Math.round(Number(match[1]) * 1000) >= atMs) return formatTraceTurn(turn, sessionId);
+  }
+  return null;
+}
 
 /**
  * The dead-air gate: zero uncovered silence over 2s, and a 15s silence
@@ -1226,7 +1264,7 @@ export function evaluateDeadAir(evidence: DeadAirEvidence): ScoreboardGate {
   const overlapping = checkIns.filter((c) => c.overCaller);
   if (overlapping.length > 0) {
     const where = overlapping
-      .map((c) => `${c.atSilenceMs}ms${c.trace ? ` (${c.trace})` : ""}`)
+      .map((c) => `${c.atSilenceMs}ms (${c.trace ?? `${noTurn} for this check-in`})`)
       .join(", ");
     reasons.push(
       `check-in over caller speech at ${where} silence — never talk over the visitor (silence-check-in beat${traceSuffix})`,
@@ -4282,11 +4320,14 @@ export function buildSkeletonArtifact(input: {
   const deadAirInput = input.deadAir
     ? {
         ...input.deadAir,
-        checkIns: input.deadAir.checkIns.map((checkIn) =>
-          checkIn.overCaller && !checkIn.trace && turnPointers.cutTurn !== null
-            ? { ...checkIn, trace: formatTraceTurn(turnPointers.cutTurn, traceSession) }
-            : checkIn,
-        ),
+        checkIns: input.deadAir.checkIns.map((checkIn) => {
+          if (checkIn.overCaller !== true || checkIn.trace || checkIn.atMs === undefined) return checkIn;
+          // The actual turn: the VONI reply the check-in request became. A
+          // later reply is the only honest derivation; without one the FAIL
+          // states that no turn was merged.
+          const trace = traceCheckInRef(input.traceExcerpt ?? [], checkIn.atMs, traceSession);
+          return trace ? { ...checkIn, trace } : checkIn;
+        }),
       }
     : input.deadAir;
   const deadAirGaps = deadAirInput?.gapsMs ?? [];
