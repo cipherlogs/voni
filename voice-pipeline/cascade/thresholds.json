@@ -161,6 +161,12 @@
       "gate": "reconnect",
       "ticket": "76",
       "note": "OPEN — a reconnect handshake is bounded; the STT first-frame ack uses stt.handshake_ms."
+    },
+    "envelope.ttl_ms": {
+      "unit": "ms",
+      "gate": "envelope.expiry",
+      "ticket": "04",
+      "note": "OPEN — the spec fixes the behaviour (the signed body envelope is short-lived and an expired one is refused at the service before any vendor socket) but states no number. A body is never signed with an invented TTL: envelope.sign_body refuses until ticket 04 records value + source + date."
     }
   }
 }

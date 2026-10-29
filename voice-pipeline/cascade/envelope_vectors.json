@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "note": "Cross-language parity vector for the signed body envelope (ticket 64). TEST-ONLY secret and account salt: this file lives in the test suite and must never be copied into a deployment. The body hash and minted fingerprint were computed with Node's crypto (stableJson + sha256, exactly voni/src/lib/agents/fingerprint.ts), and the signature was computed with Node's HMAC-SHA-256 and cross-checked against `openssl dgst -sha256 -hmac`, so the Python verifier and the app's signer cannot drift apart silently. The expiry is a vector value, not the production TTL: that number is the open bound envelope.ttl_ms owned by ticket 04.",
+  "secret": "test-only-envelope-hmac-secret",
+  "account_salt": "acct_test_vector_64",
+  "call_id": "call_vector_64",
+  "agent_id": "agent_vector_64",
+  "issued_at_ms": 1761771000000,
+  "expires_at_ms": 1761771060000,
+  "body": {
+    "name": "vector-agent",
+    "system_prompt": "You are Voni, a careful voice agent.",
+    "greeting": "Hi, this is Voni.",
+    "voice": { "voice_id": "lola" },
+    "input": {
+      "format": "pcm_24000",
+      "language_codes": ["es"],
+      "transcription_mode": "accurate",
+      "transcription_prompt": "",
+      "keyterms": ["Voni"],
+      "voice_focus": "near-field",
+      "voice_focus_threshold": 0.4,
+      "turn_detection": null
+    },
+    "output": { "voice": "lola", "format": "pcm_24000", "volume": 0.851 },
+    "tools": [],
+    "llm": []
+  },
+  "body_hash": "7657c61465de61de10f63829fd03587fc171a25bd127617b16b166dc84c8027c",
+  "minted_fingerprint": "3374dc16b69b6f5a44894df1354b9aa48f37f978e9927f641f47e8658887683e",
+  "signature": "5c6f79490e9ed3f41425cdb26cb5e779687b3938aeb4c4afc8119ca5f88992f1"
+}
