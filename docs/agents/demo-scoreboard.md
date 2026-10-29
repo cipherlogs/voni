@@ -107,6 +107,22 @@ refuses a missing, unreadable, tampered or misdescribed floor by name — there
 is no empty floor a comparison could silently pass against. See the README in
 that directory for the provenance fields and the measured baseline.
 
+## Re-audition pack (W2, ticket 41)
+
+`npm run voice:reaudition -- --voice lola --locale es --pending --out reaudition-runs/lola-es-pending`
+writes a `pending-live-call` template with the exact operator steps. A complete
+pack needs the reference render, the platform agent channel and the browser
+delivered WAV, plus the platform transcript; any missing capture leaves the
+pack `incomplete` and the verdict `unresolved`, never a pass.
+
+The automated verdict is content-only, because the gate is about the words:
+`accept` means the content did not hold up (the per-locale rendering layer is
+justified), `withdraw` means it held up (not justified to fix quality), and
+`unresolved` means the pack cannot decide. `--adr` writes the section into the
+locale-rendering decision record (ADR 0008); an unresolved pack leaves it
+`proposed`. `src/lib/demo/reaudition.test.ts` covers assembly, the verdict
+rules, named missing-capture errors and the pending path with synthetic WAVs.
+
 ## Live-run rules
 
 - Run live timing scenarios **one at a time**; `score-demo` takes
