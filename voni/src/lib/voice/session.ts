@@ -2,7 +2,9 @@
  * Browser client for the AssemblyAI Voice Agent API.
  *
  * Audio contract (from the API's audio-format reference):
- *   - Both directions are base64, mono, `audio/pcm` = 16-bit signed LE @ 24 kHz.
+ *   - Both directions are base64, mono. The output rate and encoding are read
+ *     from the session confirmation, never assumed (`audio/pcm` is 16-bit
+ *     signed LE; `audio/pcmu`/`audio/pcma` are 8 kHz G.711).
  *   - Send `input.audio` continuously at real time; frames beyond ~1s of audio
  *     per second of wall clock are DROPPED, not buffered.
  *   - Wait for `session.ready` before the first chunk or it is discarded.
@@ -59,7 +61,7 @@ import {
   type CaptureWrite,
   type DeliveredCapture,
 } from "./delivered-capture";
-import { resolveOutputSampleRate } from "./output-format";
+import { decodeOutputAudio, resolveOutputFormat, type OutputEncoding } from "./output-format";
 import { VOICE_OUTPUT_VOLUME } from "@/lib/agents/voices";
 
 export { TARGET_SAMPLE_RATE, VOICE_MIC_CONSTRAINTS } from "./mic-capture";
@@ -671,11 +673,12 @@ export class VoiceSession {
   /** Client playback gain for the active voice (1.0 = native). See voices.ts. */
   private outputGain = 1.0;
   /**
-   * Output sample rate the server resolved for this session, from the
-   * `session.ready` confirmation. Null until confirmed: audio is never
-   * played at a guessed rate.
+   * Output format the server resolved for this session, from the
+   * `session.ready` confirmation. Null until confirmed: audio is never played
+   * at a guessed rate or encoding.
    */
   private outputSampleRate: number | null = null;
+  private outputEncoding: OutputEncoding | null = null;
   /** Dev pop recorder: worklet jumps/overloads and gain clamps become probes. */
   private popProbe = false;
   /** Dev delivered capture (`?delivercapture=1`): tap the playout worklet. */
@@ -1069,7 +1072,12 @@ export class VoiceSession {
     switch (msg.type) {
       case "session.ready":
         this.ready = true;
-        this.confirmOutputFormat(msg.config);
+        this.confirmOutputFormat(
+          msg.config,
+          typeof msg.session_id === "string" && msg.session_id.length > 0
+            ? msg.session_id
+            : this.sessionId,
+        );
         if (!this.floorTimer) {
           this.floorTimer = setInterval(() => this.floor.tick(), FLOOR_TICK_MS);
           // Node (tests) only: a live floor never keeps the process alive.
@@ -2040,28 +2048,41 @@ export class VoiceSession {
   }
 
   /**
-   * Take the output rate the server resolved in `session.ready`. A resume
+   * Take the output format the server resolved in `session.ready`. A resume
    * re-emits ready on the same session; a confirmation that echoes no config
-   * must not downgrade a rate we already resolved.
+   * must not downgrade a format we already resolved.
    */
-  private confirmOutputFormat(config: unknown): void {
+  private confirmOutputFormat(config: unknown, sessionId: string | null): void {
     if (config === undefined) {
-      this.outputSampleRate ??= resolveOutputSampleRate(undefined);
+      const fallback = resolveOutputFormat(undefined);
+      this.outputSampleRate ??= fallback.sampleRate;
+      this.outputEncoding ??= fallback.encoding;
       return;
     }
     try {
-      this.outputSampleRate = resolveOutputSampleRate(config);
+      const format = resolveOutputFormat(config);
+      this.outputSampleRate = format.sampleRate;
+      this.outputEncoding = format.encoding;
     } catch (error) {
-      // Never play a format we cannot render: keep playback refused and say so.
+      // Never play a format we cannot render: keep playback refused and say
+      // which encoding and session failed.
       this.outputSampleRate = null;
-      this.handlers.onError?.({
-        message:
-          error instanceof Error
-            ? error.message
-            : "The call's audio format is unsupported. Start a new call.",
-        code: "config",
-      });
+      this.outputEncoding = null;
+      this.reportFormatFailure(error, sessionId);
     }
+  }
+
+  /** One visible failure naming what could not be played, and for which call. */
+  private reportFormatFailure(error: unknown, sessionId: string | null): void {
+    const detail =
+      error instanceof Error && error.message
+        ? error.message
+        : "The call's audio format is unsupported.";
+    const session = sessionId ? ` Session ${sessionId}.` : "";
+    this.handlers.onError?.({
+      message: `${detail}${session} Start a new call.`,
+      code: "config",
+    });
   }
 
   /**
@@ -2080,12 +2101,21 @@ export class VoiceSession {
     }
   }
 
-  /** Queue one base64 PCM16 chunk on the playout worklet. */
+  /** Queue one base64 chunk, decoded from the resolved encoding, on the playout. */
   private schedule(base64: string) {
-    // A rate the server has not confirmed — or refused — is never guessed at.
+    // A rate or encoding the server has not confirmed — or refused — is never
+    // guessed at.
     const rate = this.outputSampleRate;
-    if (rate === null) return;
-    const pcm = fromBase64(base64);
+    const encoding = this.outputEncoding;
+    if (rate === null || encoding === null) return;
+    let pcm: Uint8Array;
+    try {
+      pcm = decodeOutputAudio(fromBase64(base64), encoding);
+    } catch (error) {
+      // Corruption is surfaced, never dropped in as silence.
+      this.reportFormatFailure(error, this.sessionId);
+      return;
+    }
     const gain = this.outputGain;
     if (gain !== 1.0 && pcm.length >= 2) {
       // Per-voice linear gain; server volume caps at 100 so this is the only

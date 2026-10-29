@@ -36,7 +36,8 @@
  * a harness break (exit 1, plumbing FAIL, evalRunner status failed) — distinct
  * from a measured gate FAIL (exit 1). Live scenario playout is printed as
  * wall clock under `evalRunner.timings` and never folded into a gate.
- * Non-zero exit otherwise means the harness broke: unknown voice, bad
+ * Non-zero exit otherwise means the harness broke: unknown voice, an unknown
+ * --scenario name (listed with the valid ones, before any artifact), bad
  * --runs/--gap/--filler/--cut/--overheard-json/--email-json/--dead-air-gaps/--overlap-ms/--goodbye-coverage/--hang-up-delay-ms/--trace-beat flag, spawn failure,
  * or an unwritable artifact.
  *
@@ -304,6 +305,11 @@ import {
 } from "../src/lib/demo/eval-transport";
 import { buildRunnerEvidence } from "../src/lib/demo/runner-evidence";
 import { readEvalEvents, type EvalEvent } from "../src/lib/demo/eval-events";
+import {
+  SUITE_SCENARIOS,
+  isAllScenarioSelector,
+  resolveScenarioName,
+} from "../src/lib/demo/scenario-names";
 import { judgeOverlap } from "../src/lib/voice/barge-in";
 import { acquireTimingLock, DEFAULT_TIMING_LOCK_PATH } from "../src/lib/demo/timing-lock";
 
@@ -585,18 +591,10 @@ function runEventsPath(events: RunEvents, scenario: string, suite: boolean): str
  * the whole suite holds the machine-wide timing lock and each scenario gets
  * its own sequential invocation, so cut latencies stay comparable. The
  * free-gate goodbye path is covered by bye-audio; it is not repeated.
+ *
+ * The list lives in `src/lib/demo/scenario-names.ts` beside the runner's own
+ * registry, so the suite and the runner can never mean different names.
  */
-const SUITE_SCENARIOS = [
-  "greeting-cut",
-  "filler-over",
-  "stop-over",
-  "over-talk",
-  "silence-check-in",
-  "invite-tag",
-  "bye-audio",
-  "hang-up-fast",
-  "hang-up-over",
-] as const;
 
 /**
  * Read the run's opt-in client receipt marks for the latency split. The stream
@@ -1081,9 +1079,12 @@ async function main(): Promise<void> {
   const voice = resolveGateVoice(arg("--gate-voice", "") || arg("--voice", DEFAULT_GATE_VOICE));
   // Default is the full gate suite: a plain `npm run scoreboard:demo` must
   // exercise every gate, not leave most of them INFO on one focused scenario.
+  // A misspelt focused name is a named failure here — before the timing lock,
+  // before any runner spawn and before the artifact path is opened — so a typo
+  // can never write a passing artifact that measured nothing.
   const requestedScenario = arg("--scenario", "all");
-  const suite = requestedScenario === "all" || requestedScenario === "suite";
-  const scenario = suite ? "suite" : requestedScenario;
+  const suite = isAllScenarioSelector(requestedScenario);
+  const scenario = suite ? "suite" : resolveScenarioName(requestedScenario);
   const runs = arg("--runs", "1");
   if (!/^[1-9]\d*$/.test(runs)) {
     throw new Error(`--runs needs a positive int, got "${runs}"`);

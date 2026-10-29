@@ -17,8 +17,9 @@
  * any field. So NOTHING here names a vertical. Vocabulary comes from the
  * agent's own config — its name, the fields it listens for, the tools it
  * carries, and the owner's explicit "words to listen for" — plus a tiny
- * neutral fallback. Vertical flavor belongs to templates and seed data
- * (`REAL_ESTATE_TEMPLATE.keyterms`), never to platform defaults.
+ * neutral fallback in the call's own Locale. Vertical flavor belongs to
+ * templates and seed data (`REAL_ESTATE_TEMPLATE.keyterms`), never to
+ * platform defaults.
  *
  * Budget: the recogniser takes ~100 terms. Prefer proper nouns the model
  * genuinely mishears; common words dilute the list and cause
@@ -27,7 +28,12 @@
  */
 
 import type { AgentConfig } from "@/lib/agents/config";
-import { EN_RECOGNITION } from "@/lib/voice/recognition";
+import {
+  EN_RECOGNITION,
+  callRecognitionLocale,
+  recognitionVocabulary,
+  type RecognitionLocale,
+} from "@/lib/voice/recognition";
 
 /**
  * The transcription mode for every call surface. `balanced` is the API's
@@ -44,8 +50,27 @@ export const TRANSCRIPTION_MODE = "balanced";
  */
 export const DEMO_TRANSCRIPTION_MODE = "balanced";
 
-/** Words every Voni call hears correctly without asking: the product name and the channels it answers on. */
+/**
+ * Words a call hears correctly without asking, in the automatic-detection
+ * case: the product name and the channels it answers on. This is the one
+ * documented English-scaffolding exception — automatic detection cannot know
+ * the Locale before the caller speaks, so the neutral English fallback primes
+ * it. A pinned Locale never uses this list; it uses its own vocabulary.
+ */
 export const NEUTRAL_KEYTERMS: string[] = [...EN_RECOGNITION.vocabulary];
+
+/**
+ * The neutral terms a call is primed with, in the call's own Locale.
+ *
+ * `null` is automatic detection (see `NEUTRAL_KEYTERMS`). A Locale with no
+ * vocabulary rendering contributes nothing: the hole is not filled from
+ * English, because English words in a Spanish request teach the recogniser the
+ * wrong language.
+ */
+export function neutralKeytermsFor(locale: RecognitionLocale | null): readonly string[] {
+  if (locale === null) return NEUTRAL_KEYTERMS;
+  return recognitionVocabulary(locale) ?? [];
+}
 
 /**
  * Recognition nouns contributed by each built-in tool, keyed by tool name.
@@ -79,11 +104,20 @@ function wordsOf(label: string): string[] {
 }
 
 /**
- * Per-agent vocabulary: neutral fallback + the agent's spoken name, the
- * fields it listens for, nouns from its enabled tools and custom-tool
+ * Per-agent vocabulary: the Locale's neutral fallback + the agent's spoken
+ * name, the fields it listens for, nouns from its enabled tools and custom-tool
  * labels, and the owner's explicit list. Capped at 100, deduped.
+ *
+ * `locale` defaults to the call's own Locale (`callRecognitionLocale`). The
+ * built-in tool nouns are English platform scaffolding, so they prime an
+ * English or automatic-detection call only; a pinned non-English Locale hears
+ * its own vocabulary and the owner's own config, never a platform English noun.
+ * Owner keyterms are the owner's whatever their language.
  */
-export function buildAgentKeyterms(config: AgentConfig): string[] {
+export function buildAgentKeyterms(
+  config: AgentConfig,
+  locale: RecognitionLocale | null = callRecognitionLocale(config),
+): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
   const push = (term: string) => {
@@ -94,13 +128,15 @@ export function buildAgentKeyterms(config: AgentConfig): string[] {
     seen.add(key);
     out.push(clean);
   };
-  for (const term of NEUTRAL_KEYTERMS) push(term);
+  for (const term of neutralKeytermsFor(locale)) push(term);
   push(config.identity.name);
   for (const field of config.detect ?? []) {
     for (const word of wordsOf(field.label)) push(word);
   }
-  for (const name of config.tools ?? []) {
-    for (const noun of TOOL_NOUN_HINTS[name] ?? []) push(noun);
+  if (locale === null || locale === "en") {
+    for (const name of config.tools ?? []) {
+      for (const noun of TOOL_NOUN_HINTS[name] ?? []) push(noun);
+    }
   }
   for (const tool of config.customTools ?? []) {
     for (const word of wordsOf(tool.label)) push(word);
