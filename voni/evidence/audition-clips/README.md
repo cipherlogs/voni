@@ -76,6 +76,20 @@ Refresh the take when the greeting or the voice changes, with
 `npm run voice:reference -- --voice anna --out-dir <empty dir>`, then update
 `takes/anna-en.json` (file name, sha256, duration) and the line hash together.
 
+## Previews are covered by the clip test (ticket 79)
+
+The picker's preview is gated per voice, not only for the featured voice.
+`src/lib/demo/preview-clips.ts` checks all sixteen offered previews against
+their voice binding: one voice, its own Locale, its own `/voices/<id>.mp3`, the
+greeting the agent speaks, the recorded 24 kHz mono bitrate, and the native
+level from this evidence file. `src/lib/demo/preview-clips.test.ts` drives it.
+
+The frame facts and the evidence record need no decoder and no credential. The
+stronger leg decodes the committed bytes and re-measures their level (catching
+a swapped file); it needs ffmpeg, which is a named skip locally and a named
+failure in CI. A preview whose Locale or level does not match its voice fails by
+name — `voice "juergen" (de): speaks English, not its own Locale de`.
+
 ## Pending voices
 
 A voice the generator cannot render gets **no audio** — no placeholder, no
