@@ -6,9 +6,9 @@
  * evidence JSON file, then optionally soft-deletes the remote test session.
  * Raw audio and pre-signed URLs never leave the temporary directory or logs.
  *
- * `--keep-audio [dir]` writes the agent channel as a WAV at the recording's
- * own rate and prints the path with the session id, so a human can pair it
- * with the browser capture. The directory defaults to gitignored
+ * `--keep-audio [dir]` writes the caller and agent channels as two WAVs at the
+ * recording's own rate and prints both paths with the session id, so a human
+ * can pair them with the browser capture. The directory defaults to gitignored
  * `voice-captures/`. Keeping a file never deletes anything; remote deletion
  * stays behind `--delete`.
  */
@@ -21,9 +21,9 @@ import { resolveCredential } from "../src/lib/platform/credentials";
 import {
   RecordingCaptureError,
   agentChannelPcm,
-  captureFilePath,
+  captureChannels,
   channelPcm,
-  encodeMonoWav,
+  describeCaptures,
   parseCaptureFlags,
   resolveRecordingFormat,
 } from "../src/lib/platform/recording-capture";
@@ -287,20 +287,26 @@ async function main() {
     }
 
     if (capture.keepAudioDir) {
-      if (!right) {
-        throw new RecordingCaptureError(
-          "decoder-unavailable",
-          `Session ${sessionId}: the recording could not be decoded; no agent channel was written.`,
-        );
-      }
       const keepDir = resolve(capture.keepAudioDir);
       await mkdir(keepDir, { recursive: true });
-      const agentPath = captureFilePath(keepDir, session.id, format.sampleRate);
-      await writeFile(agentPath, encodeMonoWav(right, format.sampleRate), { mode: 0o600 });
-      const seconds = (right.byteLength / 2 / format.sampleRate).toFixed(2);
-      console.log(
-        `Agent channel for session ${session.id} kept at ${agentPath} (${format.sampleRate} Hz, ${seconds} s).`,
-      );
+      // Both channels come from the one decode above, at the recording's own
+      // rate. A channel that cannot be taken is printed as absent, so nobody
+      // pairs a caller file that is really the agent's.
+      const report = captureChannels(interleaved, format, {
+        directory: keepDir,
+        sessionId: session.id,
+      });
+      for (const kept of report.kept) {
+        await writeFile(kept.path, kept.wav, { mode: 0o600 });
+      }
+      for (const line of describeCaptures(report)) console.log(line);
+      if (!report.kept.some((kept) => kept.channel === "agent")) {
+        const reason = report.absent.find((entry) => entry.channel === "agent")?.reason;
+        throw new RecordingCaptureError(
+          "decoder-unavailable",
+          `Session ${sessionId}: no agent channel was written (${reason ?? "unknown reason"}).`,
+        );
+      }
     }
 
     if (shouldDelete) {
