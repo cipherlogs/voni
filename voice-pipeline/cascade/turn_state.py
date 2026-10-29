@@ -8,8 +8,9 @@ provider id alone is not an identity, and the epoch alone is not a turn.
 
 Every piece of turn state hangs off one :class:`TurnState`: partial text, the
 speech start/end timestamps, the authoritative final text, the tool loop, the
-reply, the audio cut point and which provider session produced the turn. Two
-turns are two objects; nothing is shared between them.
+reply, the audio cut point, which provider session produced the turn and which
+providers served it (:attr:`TurnState.providers`). Two turns are two objects;
+nothing is shared between them.
 
 :class:`TurnStateStore` owns the lifecycle tickets 67-78 build on:
 
@@ -23,10 +24,14 @@ turns are two objects; nothing is shared between them.
   authoritative text; a duplicate is idempotent.
 * :meth:`~TurnStateStore.reply` — the reply slot carries its own logical turn
   and the authoritative final it answers.
+* :meth:`~TurnStateStore.attribute` — the providers that served the turn, keyed
+  by its logical id, recorded after the turn closed as well as before.
 * :meth:`~TurnStateStore.user_text` — the only text a user caption may carry;
   a partial is never a caption source.
 * :meth:`~TurnStateStore.close` — the turn ended (answered, suppressed,
   abandoned or the call drained) and carries the reason.
+* :meth:`~TurnStateStore.provider_table` — the end message's call-level
+  ``{stt, llm, tts}`` table, derived from the turns so the two cannot disagree.
 
 A stale event — one stamped with a session epoch the call has already replaced
 — is ignored by every method and reported as ``None``. So is an unknown or
@@ -47,7 +52,19 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+from cascade.breaker import LEGS
+from cascade.events import (
+    VENDOR_OWNED,
+    AttributionError,
+    LegAttribution,
+    TurnAttribution,
+    turn_key,
+)
+
+if TYPE_CHECKING:
+    from cascade.call import ProviderTable
 
 #: A callable clock in seconds. ``FakeClock`` satisfies it directly.
 Clock = Callable[[], float]
@@ -73,6 +90,11 @@ class LogicalTurnId:
 
     session_epoch: int
     provider_turn_id: str
+
+    @property
+    def event_id(self) -> str:
+        """The one string a turn is written as in an event's ``turn`` field."""
+        return turn_key(self)
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,6 +164,7 @@ class TurnState:
     closed_at: float | None = None
     close_reason: str = ""
     attribution_history: list[ProviderAttribution] = field(default_factory=list)
+    providers: TurnAttribution | None = None
 
     @property
     def is_open(self) -> bool:
@@ -155,6 +178,22 @@ class TurnState:
     def is_empty_final(self) -> bool:
         """A ``speechComplete`` with no speech is counted, never answered."""
         return self.is_finalised and not self.final_text.strip()
+
+    def provider_attribution(self) -> TurnAttribution:
+        """Which providers served this turn, or a named unmeasured record.
+
+        A turn whose attribution was never recorded never returns a fabricated
+        provider: it returns an ``unmeasured`` record naming the logical turn
+        and the reason, so an operator can tell "no model ran" (a ``null`` leg)
+        from "nobody wrote down what ran" (``unmeasured``).
+        """
+        if self.providers is not None:
+            return self.providers
+        return TurnAttribution.unmeasured(
+            self.id.event_id,
+            f"no attribution was recorded for turn {self.id.event_id}; its "
+            "providers are unmeasured, not guessed",
+        )
 
 
 #: A turn may be named by its identity, its state, or the provider's id (which
@@ -403,6 +442,98 @@ class TurnStateStore:
         if state.cut_point is None:
             state.cut_point = self.now() if at is None else float(at)
         return state
+
+    def attribute(
+        self,
+        attribution: TurnAttribution,
+        *,
+        turn: TurnKey | None = None,
+        epoch: int | None = None,
+    ) -> TurnState | None:
+        """Record which providers served the turn, keyed by its logical id.
+
+        One attribution per turn: a later record for the same turn replaces the
+        earlier one (a mid-turn rung change is a new snapshot of the same turn,
+        never a merge with another turn's legs). The record's ``turn`` must be
+        the turn it lands on, so a reply for another turn cannot rewrite this
+        one's model. It may land after the turn closed — the reply's providers
+        are known at the end — but never from a replaced session epoch.
+        """
+        if not isinstance(attribution, TurnAttribution):
+            raise TypeError(
+                f"attribute needs a TurnAttribution, got {attribution!r}"
+            )
+        state = self._state(turn, epoch=epoch, open_only=False)
+        if state is None:
+            return None
+        if attribution.turn != state.id.event_id:
+            raise AttributionError(
+                "turn",
+                f'the attribution is for turn "{attribution.turn}", not '
+                f'"{state.id.event_id}"; a turn never carries another turn\'s providers',
+            )
+        state.providers = attribution
+        return state
+
+    def provider_table(self, *, missing_reason: str) -> "ProviderTable":
+        """The call-level ``{stt, llm, tts}`` table, derived from the turns.
+
+        Deriving the end message's table from the attributions is what keeps a
+        turn and the table from disagreeing: each row is the provider of the
+        most recent turn that used that leg, so a mid-call rung change shows the
+        rung that is actually serving. A backchannel turn does not erase a leg,
+        an unmeasured turn contributes no provider, and a leg no turn used is
+        ``null`` with ``missing_reason`` rather than a guess.
+
+        The managed pipeline has no vendor choice: if any turn is vendor-owned,
+        every row is ``N/A — vendor-owned``.
+        """
+        if not isinstance(missing_reason, str) or not missing_reason.strip():
+            raise ValueError(
+                "a derived provider table needs the reason a leg is missing, "
+                f"got {missing_reason!r}"
+            )
+        # Deferred: the event schema and the turn layer must not import the call
+        # lifecycle at module load (the lifecycle's owner imports them).
+        from cascade.call import ProviderRow, ProviderTable
+
+        recorded = [
+            state.providers for state in self._turns.values() if state.providers is not None
+        ]
+        if any(record.vendor_owned for record in recorded):
+            return ProviderTable(
+                tuple(
+                    ProviderRow(
+                        name,
+                        VENDOR_OWNED,
+                        None,
+                        "the managed pipeline is vendor-owned",
+                    )
+                    for name in LEGS
+                )
+            )
+
+        latest: dict[str, LegAttribution] = {}
+        for record in recorded:
+            if record.state != "measured":
+                continue
+            for name in LEGS:
+                served = record.leg(name)
+                if served is not None:
+                    latest[name] = served
+        return ProviderTable(
+            tuple(
+                ProviderRow(
+                    name,
+                    latest[name].provider,
+                    latest[name].rung,
+                    latest[name].reason,
+                )
+                if name in latest
+                else ProviderRow(name, None, None, missing_reason)
+                for name in LEGS
+            )
+        )
 
     def close(
         self,
