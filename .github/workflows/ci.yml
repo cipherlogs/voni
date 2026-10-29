@@ -35,9 +35,10 @@ jobs:
       - name: Tests
         run: npm test
 
-  # The two Python suites (telephony-bot/: 74 tests, voice-pipeline/: 92).
-  # No vendor key and no network beyond the package install. Deliberately no
-  # `paths:` filter and no job-level `if:`: this job must run on every PR.
+  # The Python suites: telephony-bot/ plus voice-pipeline/, which includes the
+  # three recorded provider fixture suites and their manifest. No vendor key
+  # and no network beyond the package install. Deliberately no `paths:` filter
+  # and no job-level `if:`: this job must run on every PR.
   python:
     runs-on: ubuntu-latest
     timeout-minutes: 10 # a hang must fail, not sit for the 6 h default
@@ -75,6 +76,21 @@ jobs:
         run: .venv/bin/python -m unittest discover -s telephony-bot -p "test_*.py"
       - name: Pipeline suite
         run: .venv/bin/python -m unittest discover -s voice-pipeline -p "test_*.py"
+      # Ticket 142: one suite per provider over recorded frames (STT 34, model
+      # stream 45, voice 56), all offline and key-free. They are already inside
+      # the discovery above, but naming them here makes a broken recording fail
+      # in a step that says which provider. The manifest re-runs each suite
+      # with a recorder, so a fixture on disk that no test replays fails by
+      # name; it also refuses to let this workflow drop a suite, add a path
+      # filter, continue on error, or take a vendor key.
+      - name: Provider fixture suites (STT, LLM, TTS)
+        working-directory: voice-pipeline
+        run: |
+          ../.venv/bin/python -m unittest \
+            cascade.test_meta_stt_fixtures \
+            cascade.test_meta_llm_fixtures \
+            cascade.test_tts_fixtures \
+            test_fixture_manifest
 
   # AC4: a skipped or cancelled Python job must not report success. A job that
   # never runs produces no failing check, so branch protection must require
