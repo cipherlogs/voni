@@ -244,7 +244,7 @@
  * failed run with no cut line FAILs and cites the interrupted greeting turn
  * from the merged Call trace (or says no turn was merged).
  */
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import {
@@ -338,6 +338,24 @@ import {
   producersFor,
 } from "../src/lib/demo/gate-producers";
 import { readMeasuredLevelInput } from "../src/lib/demo/measured-captures";
+import {
+  ARTIFACT_LATENCY_GAPS,
+  ARTIFACT_LATENCY_LABELS,
+  CASCADE_NO_COMMIT_MARK_ABSENCE,
+  CASCADE_NO_COST_METER_ABSENCE,
+  CASCADE_NO_PROVIDER_TABLE_ABSENCE,
+  CASCADE_PLATFORM_CAPTURE_ABSENCE,
+  ONE_CALL_NO_P95_ABSENCE,
+  writeScoreboardArtifactFile,
+  type ArtifactAbsence,
+  type ArtifactCapture,
+  type ArtifactCost,
+  type ArtifactEligibility,
+  type ArtifactLatency,
+  type ArtifactPipeline,
+  type ArtifactProviders,
+} from "../src/lib/demo/scoreboard";
+import { readScoreboardArtifactFile } from "../src/lib/demo/artifact-reader";
 import { judgeOverlap } from "../src/lib/voice/barge-in";
 import { EN_RECOGNITION } from "../src/lib/voice/recognition";
 import { acquireTimingLock, DEFAULT_TIMING_LOCK_PATH } from "../src/lib/demo/timing-lock";
@@ -347,6 +365,7 @@ import {
 } from "../src/lib/demo/reviewer-pack";
 import {
   formatSubject,
+  resolveCascadeSubject,
   resolveSubject,
   sameSubject,
   type SubjectRecord,
@@ -889,25 +908,13 @@ function runCallTraceWhenReady(sessionId: string, attempts = 6, waitMs = 2500): 
   throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
 
-/** Parse a previously written scoreboard artifact; null when the file is not one. */
-function readScoreboardArtifact(path: string): ScoreboardArtifact | null {
+/**
+ * Parse a previously written artifact through the one reader; null when the
+ * file is not one (a directory scan may meet a matrix or evidence file).
+ */
+function tryReadScoreboardArtifact(path: string): ScoreboardArtifact | null {
   try {
-    const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<ScoreboardArtifact> | null;
-    if (
-      parsed === null ||
-      typeof parsed !== "object" ||
-      typeof parsed.voice !== "string" ||
-      !Array.isArray(parsed.gates) ||
-      typeof parsed.beats !== "object" ||
-      parsed.beats === null ||
-      typeof parsed.replyGap !== "object" ||
-      parsed.replyGap === null ||
-      typeof parsed.endCallDrain !== "object" ||
-      parsed.endCallDrain === null
-    ) {
-      return null;
-    }
-    return parsed as ScoreboardArtifact;
+    return readScoreboardArtifactFile(path);
   } catch {
     return null;
   }
@@ -937,7 +944,7 @@ function latestPriorArtifact(
     if (!entry.endsWith(".json")) continue;
     const path = resolve(dir, entry);
     if (path === skipPath) continue;
-    const artifact = readScoreboardArtifact(path);
+    const artifact = tryReadScoreboardArtifact(path);
     if (!artifact || !sameSubject(subjectOfArtifact(artifact), subject)) continue;
     const recorded = Date.parse(artifact.recordedAt);
     let mtime = 0;
@@ -966,9 +973,253 @@ function latestPriorArtifact(
 /** Explicit --prior: a bad path or non-artifact is a harness error, never a silent first run. */
 function loadPriorArtifact(path: string): { path: string; artifact: ScoreboardArtifact } {
   const resolved = resolve(path);
-  const artifact = readScoreboardArtifact(resolved);
+  const artifact = tryReadScoreboardArtifact(resolved);
   if (!artifact) throw new Error(`--prior ${path} is not a scoreboard artifact`);
   return { path: resolved, artifact };
+}
+
+/**
+ * One capture leg from a file the run wrote: a path and its hash, never the
+ * audio bytes (the artifact reader refuses a leg without both).
+ */
+function captureFromFile(path: string): ArtifactCapture {
+  const resolved = resolve(path);
+  try {
+    return { path: resolved, sha256: sha256Hex(readFileSync(resolved)) };
+  } catch (error) {
+    throw new Error(`capture ${path} cannot be read (${error instanceof Error ? error.message : String(error)})`);
+  }
+}
+
+/** The cascade call's end-message document, as `cascade/call.py` writes it. */
+type CascadeLedgerDocument = Record<string, unknown>;
+
+/** Read the ledger JSON and require the one object that carries the marks. */
+function readCascadeLedger(path: string): {
+  document: CascadeLedgerDocument;
+  metrics: Record<string, unknown>;
+} {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(resolve(path), "utf8"));
+  } catch (error) {
+    throw new Error(`--ledger ${path} is not readable JSON (${error instanceof Error ? error.message : String(error)})`);
+  }
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error(`--ledger ${path} is not the cascade call's end-message object`);
+  }
+  const document = raw as CascadeLedgerDocument;
+  const metrics =
+    document.metrics !== undefined
+      ? document.metrics
+      : document.marks !== undefined
+        ? document
+        : undefined;
+  if (metrics === null || typeof metrics !== "object" || Array.isArray(metrics)) {
+    throw new Error(`--ledger ${path} carries no metrics.marks; a cascade artifact cannot be invented`);
+  }
+  const marks = (metrics as Record<string, unknown>).marks;
+  if (marks === null || typeof marks !== "object" || Array.isArray(marks)) {
+    throw new Error(`--ledger ${path} metrics.marks is not an object of ledger marks`);
+  }
+  for (const [name, value] of Object.entries(marks)) {
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+      throw new Error(`--ledger ${path} mark "${name}" is not a finite number (${String(value)})`);
+    }
+  }
+  return { document, metrics: metrics as Record<string, unknown> };
+}
+
+/** A ledger count table, when the summary carries one. */
+function ledgerCounts(metrics: Record<string, unknown>): Record<string, number> | undefined {
+  const counts = metrics.counts;
+  if (counts === null || typeof counts !== "object" || Array.isArray(counts)) return undefined;
+  const value: Record<string, number> = {};
+  for (const [name, count] of Object.entries(counts)) {
+    if (typeof count === "number" && Number.isFinite(count)) value[name] = count;
+  }
+  return value;
+}
+
+/** The cascade's three reportable gaps, from the ledger's `gaps_ms` summary. */
+function cascadeLatencyFromLedger(metrics: Record<string, unknown>): ArtifactLatency {
+  const gaps = metrics.gaps_ms;
+  const table = gaps !== null && typeof gaps === "object" && !Array.isArray(gaps)
+    ? (gaps as Record<string, unknown>)
+    : {};
+  const row = (name: string): number | undefined => {
+    const value = table[name];
+    return typeof value === "number" && Number.isFinite(value) ? Math.round(value) : undefined;
+  };
+  const screen = row("screen_latency_ms");
+  const think = row("think_ms");
+  const reply = row("reply_gap_ms");
+  return {
+    ...(screen !== undefined
+      ? { screenToFirstPartialMs: screen }
+      : { screenToFirstPartialMs: { absent: "N/A — the ledger records no screen_latency_ms" } }),
+    ...(think !== undefined
+      ? { speechCompleteToFirstTokenMs: think }
+      : { speechCompleteToFirstTokenMs: { absent: "N/A — the ledger records no think_ms" } }),
+    ...(reply !== undefined
+      ? { replyGapP50Ms: reply }
+      : { replyGapP50Ms: { absent: "N/A — the ledger records no reply_gap_ms" } }),
+    replyGapP95Ms: { absent: ONE_CALL_NO_P95_ABSENCE },
+    commitToFirstPlayoutMs: { absent: CASCADE_NO_COMMIT_MARK_ABSENCE },
+  };
+}
+
+/** The end message's per-leg provider table, or a named N/A for a leg that never ran. */
+function cascadeProvidersFromLedger(raw: unknown): ArtifactProviders {
+  const absent = (leg: string): ArtifactAbsence => ({
+    absent: `${CASCADE_NO_PROVIDER_TABLE_ABSENCE} for ${leg}`,
+  });
+  if (raw === undefined || raw === null) {
+    return { stt: absent("stt"), llm: absent("llm"), tts: absent("tts") };
+  }
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("the ledger providers table is not an object");
+  }
+  const table = raw as Record<string, unknown>;
+  const leg = (name: "stt" | "llm" | "tts") => {
+    const row = table[name];
+    if (row === null || row === undefined) return absent(name);
+    if (typeof row !== "object" || Array.isArray(row)) {
+      throw new Error(`the ledger provider row "${name}" is not an object`);
+    }
+    const record = row as Record<string, unknown>;
+    if (typeof record.provider === "string" && record.provider.trim() !== "") return record.provider;
+    const reason = typeof record.reason === "string" && record.reason.trim() !== "" ? record.reason : "";
+    return { absent: `N/A — no ${name} provider served${reason ? ` (${reason})` : ""}` };
+  };
+  return { stt: leg("stt"), llm: leg("llm"), tts: leg("tts") };
+}
+
+/**
+ * A priced cost record when the ledger carries one (`artifactCost`). The end
+ * message's own cost reports units and a total, not per-leg USD; a rate table
+ * prices that (ticket 101), so this reader never folds units into dollars.
+ */
+function cascadeCostFromLedger(document: CascadeLedgerDocument): ArtifactCost {
+  const priced = document.artifactCost;
+  if (priced !== null && typeof priced === "object" && !Array.isArray(priced)) {
+    return priced as ArtifactCost;
+  }
+  return { absent: CASCADE_NO_COST_METER_ABSENCE };
+}
+
+/** The end message's eligibility verdict; a missing one is ineligible by name. */
+function cascadeEligibilityFromLedger(raw: unknown): ArtifactEligibility {
+  if (raw !== null && typeof raw === "object" && !Array.isArray(raw)) {
+    const record = raw as Record<string, unknown>;
+    const reasons = Array.isArray(record.reasons)
+      ? record.reasons.filter((reason): reason is string => typeof reason === "string" && reason.trim() !== "")
+      : [];
+    if (record.disposition === "cascade") return { eligible: true };
+    if (record.disposition === "refused") {
+      return {
+        eligible: false,
+        reasons: reasons.length > 0 ? reasons : ["the ledger refuses the run without naming a reason"],
+      };
+    }
+  }
+  return {
+    eligible: false,
+    reasons: ["the ledger carries no eligibility verdict; a clean run must say so"],
+  };
+}
+
+/**
+ * The cascade artifact: the same builder and the same writer the managed run
+ * uses, with the cascade's own evidence. A live cascade call exports its end
+ * message; `scoreboard:demo --pipeline cascade --ledger <path>` writes the
+ * artifact from it, so no second runner and no second schema exists.
+ */
+function runCascadeArtifact(input: {
+  subject: SubjectRecord;
+  voice: string;
+  out: string;
+  runs: string;
+}): void {
+  const ledgerPath = arg("--ledger", "");
+  if (!ledgerPath) throw new Error("--pipeline cascade needs --ledger <end-message.json>");
+  if (process.argv.includes("--platform")) {
+    throw new Error("the cascade has no platform capture; --platform belongs to a managed run");
+  }
+  const referencePath = arg("--reference", "");
+  const deliveredPath = arg("--delivered", "");
+  if (!referencePath || !deliveredPath) {
+    throw new Error("--pipeline cascade needs --reference and --delivered captures; the platform leg stays N/A");
+  }
+  const { document, metrics } = readCascadeLedger(ledgerPath);
+  const marks = metrics.marks as Record<string, number>;
+  const counts = ledgerCounts(metrics);
+  const runId =
+    typeof document.runId === "string" && document.runId.trim() !== ""
+      ? document.runId
+      : `run-${stamp()}-${input.voice}-cascade`;
+  let ledgerMtime = new Date().toISOString();
+  try {
+    ledgerMtime = statSync(resolve(ledgerPath)).mtime.toISOString();
+  } catch {
+    // The file was read a moment ago; the recorded time is only provenance.
+  }
+  const startedAt =
+    typeof document.startedAt === "string" && !Number.isNaN(Date.parse(document.startedAt))
+      ? document.startedAt
+      : ledgerMtime;
+  const finishedAt =
+    typeof document.finishedAt === "string" && !Number.isNaN(Date.parse(document.finishedAt))
+      ? document.finishedAt
+      : ledgerMtime;
+
+  const artifact = buildSkeletonArtifact({
+    voice: input.voice,
+    scenario: "cascade",
+    // The managed eval runner did not run: this artifact reports the cascade
+    // call's own ledger, not a managed scenario suite.
+    runnerStdout: `cascade call ${basename(ledgerPath)}\n`,
+    exitCode: null,
+    durationMs: 0,
+    runs: Number(input.runs),
+    dryRun: true,
+    subject: input.subject,
+    runId,
+    codeFingerprint: readCodeFingerprint(),
+    engine: {
+      pipeline: "cascade",
+      run: {
+        runId,
+        variant: "cascade",
+        startedAt,
+        finishedAt,
+      },
+      captures: {
+        reference: captureFromFile(referencePath),
+        platform: { absent: CASCADE_PLATFORM_CAPTURE_ABSENCE },
+        delivered: captureFromFile(deliveredPath),
+      },
+      eligibility: cascadeEligibilityFromLedger(document.eligibility),
+      latency: cascadeLatencyFromLedger(metrics),
+      providers: cascadeProvidersFromLedger(document.providers),
+      cost: cascadeCostFromLedger(document),
+      ledger: { marks, ...(counts !== undefined ? { counts } : {}) },
+    },
+  });
+
+  writeScoreboardArtifactFile(input.out, artifact);
+  console.log("pipeline cascade");
+  for (const gap of ARTIFACT_LATENCY_GAPS) {
+    const value = artifact.latency?.[gap];
+    const text =
+      typeof value === "number"
+        ? `${value}ms`
+        : value !== null && typeof value === "object" && "absent" in value
+          ? value.absent
+          : "unmeasured";
+    console.log(`  ${ARTIFACT_LATENCY_LABELS[gap].padEnd(18)} ${text}`);
+  }
+  console.log(`artifact: ${input.out}`);
 }
 
 /** Repeatable --gap beat=ms: measured reply gaps per beat (one per run). */
@@ -1187,11 +1438,17 @@ function deadAirEvidenceFromTimeline(
 }
 
 async function main(): Promise<void> {
+  const runStartedAt = new Date().toISOString();
   // A subject is `{agent, Locale, transport}` (voice-parity ticket 72). The
   // featured voice is one subject, not the owner of the axis: a run can name
   // another demo voice, a tenant agent (--agent) or the phone transport, and
   // an unknown or missing field fails by name here — before the timing lock,
   // before any runner spawn and before the artifact path is opened.
+  const pipelineFlag = arg("--pipeline", "managed");
+  if (pipelineFlag !== "managed" && pipelineFlag !== "cascade") {
+    throw new Error(`--pipeline needs managed or cascade, got "${pipelineFlag}"`);
+  }
+  const pipeline: ArtifactPipeline = pipelineFlag;
   const voiceFlag = arg("--gate-voice", "") || arg("--voice", "");
   const subjectRequest: SubjectRequest = {
     ...(voiceFlag ? { voice: voiceFlag } : {}),
@@ -1209,7 +1466,9 @@ async function main(): Promise<void> {
       process.argv.includes("--subject-locale") ||
       process.argv.includes("--subject-transport"),
   };
-  const subject = resolveSubject(subjectRequest);
+  // The cascade's binding gate runs before any audio is spent: a voice that
+  // cannot be bound to one Locale is refused by name here (W1).
+  const subject = pipeline === "cascade" ? resolveCascadeSubject(subjectRequest) : resolveSubject(subjectRequest);
   // A tenant agent has no demo voice to derive its Locale from, so the
   // resolver requires `--voice` beside `--agent`; that voice is the artifact's
   // voice-keyed row and the caller's recognition locale.
@@ -1249,6 +1508,12 @@ async function main(): Promise<void> {
   // artifact it measured.
   const out = resolve(arg("--out", `scoreboard-runs/score-${stamp()}-${voice}.json`));
   const dryRun = process.argv.includes("--dry-run");
+  // A cascade run writes the one artifact from its own end message; the
+  // managed suite below never runs. Same builder, same writer, same reader.
+  if (pipeline === "cascade") {
+    runCascadeArtifact({ subject, voice, out, runs });
+    return;
+  }
   const events = resolveRunEvents(process.argv, out);
   // Which transport/agent the suite measures. Defaults are untouched (no
   // extra flags reach the runner); a typo, windows without the variant, or a
@@ -1327,10 +1592,25 @@ async function main(): Promise<void> {
   // unreadable file is a named error, never a half-measured score. Without
   // them the measured leg stays INFO (a human/ballot gate does not fail-close
   // the whole run for a missing capture).
+  const referenceCapturePath = arg("--reference", "");
+  const deliveredCapturePath = arg("--delivered", "");
+  const platformCapturePath = arg("--platform", "");
   const measuredLevel = readMeasuredLevelInput({
-    ...(arg("--reference", "") ? { reference: resolve(arg("--reference", "")) } : {}),
-    ...(arg("--delivered", "") ? { delivered: resolve(arg("--delivered", "")) } : {}),
+    ...(referenceCapturePath ? { reference: resolve(referenceCapturePath) } : {}),
+    ...(deliveredCapturePath ? { delivered: resolve(deliveredCapturePath) } : {}),
   });
+  // `--platform` opts a managed run into the one shared shape: the managed path
+  // records all three capture legs, so a half-named set fails before the
+  // artifact is written rather than producing an artifact the reader refuses.
+  const managedShapeRequested = platformCapturePath !== "";
+  if (managedShapeRequested && dryRun) {
+    throw new Error("--platform claims a measured shared artifact; a dry run cannot produce one");
+  }
+  if (managedShapeRequested && (!referenceCapturePath || !deliveredCapturePath)) {
+    throw new Error(
+      "--platform needs --reference and --delivered too; the managed artifact records all three capture legs",
+    );
+  }
 
   /** Per-scenario stdout: every evidence parser reads only its own producer. */
   const stdoutByScenario = new Map<string, string>();
@@ -1761,6 +2041,32 @@ async function main(): Promise<void> {
           agentId: runnerEvidence?.agentId ?? null,
         }
       : null;
+  const runId = `run-${stamp()}-${voice}`;
+  // A managed run that names all three captures claims the one shared shape;
+  // its provider table and cost are vendor-owned by construction, and its two
+  // same-engine gaps stay named N/As.
+  const managedEngine = managedShapeRequested
+    ? {
+        pipeline: "managed" as const,
+        run: {
+          runId,
+          variant: selection.variant === "production" ? "managed" : selection.variant,
+          startedAt: runStartedAt,
+          finishedAt: new Date().toISOString(),
+        },
+        captures: {
+          reference: captureFromFile(referenceCapturePath),
+          platform: captureFromFile(platformCapturePath),
+          delivered: captureFromFile(deliveredCapturePath),
+        },
+        eligibility: evalSection.evalError
+          ? {
+              eligible: false,
+              reasons: [`the eval runner did not finish: ${evalSection.evalError}`],
+            }
+          : { eligible: true as const },
+      }
+    : undefined;
   let artifact: ScoreboardArtifact = buildSkeletonArtifact({
     voice,
     scenario,
@@ -1801,9 +2107,10 @@ async function main(): Promise<void> {
     callerClips,
     runnerEvidence,
     ...(emailEvidence ? { emailInviteEvidencePresent: true } : {}),
-    runId: `run-${stamp()}-${voice}`,
+    runId,
     // Ticket 29: the streak compares the exact code, not just the voice.
     codeFingerprint: readCodeFingerprint(),
+    ...(managedEngine ? { engine: managedEngine } : {}),
   });
   if (parsed || hasCutFlags) {
     const base: RealCutEvidence = parsed ?? {
@@ -1869,8 +2176,7 @@ async function main(): Promise<void> {
     };
   }
 
-  mkdirSync(dirname(out), { recursive: true });
-  writeFileSync(out, `${JSON.stringify(artifact, null, 2)}\n`, { mode: 0o600 });
+  writeScoreboardArtifactFile(out, artifact);
 
   console.log(
     subject.agent.kind === "demo"

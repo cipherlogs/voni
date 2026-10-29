@@ -19,12 +19,18 @@
  * rows via the same turn parser.
  */
 import {
+  ARTIFACT_LATENCY_GAPS,
+  ARTIFACT_LATENCY_LABELS,
   EMAIL_INVITE_TAG,
+  isArtifactAbsence,
   percentile,
   subjectOfArtifact,
+  type ArtifactLatencyGap,
+  type ArtifactPipeline,
   type RunnerPlayout,
   type ScoreboardArtifact,
 } from "./scoreboard";
+import { pipelineOfArtifact } from "./artifact-reader";
 import type { SubjectRecord } from "./subject";
 import { formatSubject } from "./subject";
 import type { EvalEventSummary } from "./eval-events";
@@ -47,10 +53,31 @@ import {
   type AnsweredQuestionCount,
 } from "./answered-question";
 
+/**
+ * One A/B gap row. Both engines print the same five rows in the same order;
+ * the value or the named absence says which engine could produce it, so a
+ * cascade and a managed artifact are compared like with like.
+ */
+export type InspectGapRow = {
+  row: ArtifactLatencyGap;
+  label: string;
+  /** The measured milliseconds, or null when the row is a named N/A. */
+  ms: number | null;
+  /** Why the row is absent, or null when it was measured. */
+  absent: string | null;
+};
+
+export type InspectGaps = {
+  pipeline: ArtifactPipeline;
+  rows: InspectGapRow[];
+};
+
 export type InspectRunIdentity = {
   voice: string;
   /** What this run measured: agent, Locale and transport (voice-parity 72). */
   subject: SubjectRecord;
+  /** The engine that produced the run; an absent discriminator means managed. */
+  pipeline: ArtifactPipeline;
   runId: string;
   recordedAt: string;
   schemaVersion: number;
@@ -184,6 +211,8 @@ export type InspectReport = {
   subScores: { name: string; status: string }[];
   sessions: InspectSession[];
   latency: InspectLatency;
+  /** The A/B gap rows (M13): five rows, identical shape on both engines. */
+  gaps: InspectGaps;
   adoption: InspectAdoption;
   /**
    * The report-only English-leak counter (voice-parity 76): agent turns that
@@ -584,6 +613,28 @@ function endOfTurnInput(artifact: ScoreboardArtifact): InspectEndOfTurn {
 }
 
 /**
+ * The five A/B gap rows, in one order for both engines. A row the artifact does
+ * not carry is a named N/A in the report, never a zero and never another row's
+ * number (ticket 113/114).
+ */
+function inspectGaps(artifact: ScoreboardArtifact): InspectGaps {
+  const pipeline = pipelineOfArtifact(artifact, "artifact");
+  return {
+    pipeline,
+    rows: ARTIFACT_LATENCY_GAPS.map((row) => {
+      const value = artifact.latency?.[row];
+      if (typeof value === "number" && Number.isFinite(value)) {
+        return { row, label: ARTIFACT_LATENCY_LABELS[row], ms: value, absent: null };
+      }
+      const absent = isArtifactAbsence(value)
+        ? value.absent
+        : "N/A — the artifact records no value for this gap";
+      return { row, label: ARTIFACT_LATENCY_LABELS[row], ms: null, absent };
+    }),
+  };
+}
+
+/**
  * Turn one artifact into the compact report. Throws on something that is not a
  * scoreboard artifact; an unreadable file is the CLI's error, not a report.
  */
@@ -631,6 +682,7 @@ export function buildInspectReport(
     run: {
       voice: artifact.voice,
       subject,
+      pipeline: pipelineOfArtifact(artifact, "artifact"),
       runId: artifact.runId,
       recordedAt: artifact.recordedAt,
       schemaVersion: artifact.schemaVersion,
@@ -650,6 +702,7 @@ export function buildInspectReport(
     subScores: artifact.subScores.map((sub) => ({ name: sub.name, status: sub.status })),
     sessions: filtered,
     latency: latencyBands(filtered),
+    gaps: inspectGaps(artifact),
     adoption: {
       gates: gateTally(gates),
       fragmentRisk: fragmentRisk(transcripts, fragmentTag),
@@ -736,6 +789,20 @@ function formatLatency(latency: InspectLatency): string[] {
     lines.push(formatStats("generation", band.measured.generation));
     lines.push(formatStats("delivery", band.measured.delivery));
     lines.push(`${formatStats("perceived", band.perceived)}  (report-only)`);
+  }
+  return lines;
+}
+
+/**
+ * The A/B gap rows. One row per gap on both engines: a measured ms, or the
+ * named N/A the artifact carries. The label column is fixed so the two engines'
+ * outputs line up when compared side by side.
+ */
+function formatGaps(gaps: InspectGaps): string[] {
+  const lines = [`gaps (pipeline ${gaps.pipeline})`];
+  for (const row of gaps.rows) {
+    const value = row.ms === null ? row.absent ?? "unmeasured" : `${Math.round(row.ms)}ms`;
+    lines.push(`  ${row.label.padEnd(18)} ${value}`);
   }
   return lines;
 }
@@ -932,6 +999,7 @@ export function formatInspectReport(report: InspectReport): string {
     `  code         ${code}`,
     `  transport    ${run.transport}`,
     `  subject      ${formatSubject(run.subject)}`,
+    `  pipeline     ${run.pipeline}`,
     `  agent        ${run.agentId ?? "unknown"}  (llm ${run.llmModel ?? "unknown"})`,
   ];
   if (run.agentFingerprint) lines.push(`  fingerprint  ${run.agentFingerprint.slice(0, 12)}`);
@@ -971,6 +1039,7 @@ export function formatInspectReport(report: InspectReport): string {
   }
 
   lines.push("", ...formatLatency(report.latency));
+  lines.push("", ...formatGaps(report.gaps));
   lines.push("", ...formatAdoption(report.adoption));
   lines.push("", ...formatEnglishLeak(report.englishLeak));
   lines.push("", ...formatAnsweredQuestion(report.answeredQuestion));

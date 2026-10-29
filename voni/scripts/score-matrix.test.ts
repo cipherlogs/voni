@@ -51,6 +51,10 @@ function readMatrix(path: string): MatrixJson {
 
 function scoreArtifact(voice: string, probes: Record<string, number>, redacted: string[], extra: Record<string, unknown> = {}) {
   return {
+    schemaVersion: 4,
+    recordedAt: "2026-10-29T12:00:00.000Z",
+    gates: [],
+    subScores: [],
     voice,
     runId: `run-${voice}`,
     evalRunner: { scenario: "greeting-cut" },

@@ -1,14 +1,23 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  CASCADE_NO_COMMIT_MARK_ABSENCE,
   CASCADE_PLATFORM_CAPTURE_ABSENCE,
+  MANAGED_NO_COMMIT_MARK_ABSENCE,
+  MANAGED_NO_PARTIALS_ABSENCE,
+  MANAGED_NO_TOKEN_STREAM_ABSENCE,
+  ONE_CALL_NO_P95_ABSENCE,
   VENDOR_BILLED_COST_ABSENCE,
   VENDOR_OWNED_PROVIDER_ABSENCE,
+  buildArtifactShape,
   buildSkeletonArtifact,
   DEFAULT_GATE_VOICE,
+  writeScoreboardArtifactFile,
+  type ArtifactLatency,
+  type ArtifactPipeline,
 } from "./scoreboard";
 import {
   ARTIFACT_SECTIONS,
@@ -19,6 +28,7 @@ import {
   pipelineOfArtifact,
   readScoreboardArtifactFile,
 } from "./artifact-reader";
+import { buildInspectReport } from "./scoreboard-report";
 
 /** Today's writer, so the reader is exercised against a real managed artifact. */
 function managedArtifact() {
@@ -675,4 +685,160 @@ test("a provider table names all three legs", () => {
       error.field === "providers.tts" &&
       /missing/.test(error.message),
   );
+});
+
+// ── One runner, one reader (ticket 113, M12/M13) ────────────────────────────
+
+/** The measured rows each engine's writer derives; the structural N/As are added by the writer. */
+const ENGINE_LATENCY: Record<ArtifactPipeline, ArtifactLatency> = {
+  managed: {
+    screenToFirstPartialMs: { absent: MANAGED_NO_PARTIALS_ABSENCE },
+    speechCompleteToFirstTokenMs: { absent: MANAGED_NO_TOKEN_STREAM_ABSENCE },
+    replyGapP50Ms: 900,
+    replyGapP95Ms: 900,
+  },
+  cascade: {
+    screenToFirstPartialMs: 180,
+    speechCompleteToFirstTokenMs: 240,
+    replyGapP50Ms: 510,
+  },
+};
+
+/** Build one engine's artifact through the one artifact builder, not a fixture. */
+function engineArtifact(pipeline: ArtifactPipeline, runId: string): unknown {
+  return buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "stop-over",
+    runnerStdout: "",
+    exitCode: 0,
+    durationMs: 0,
+    runs: 1,
+    dryRun: true,
+    runId,
+    engine: {
+      pipeline,
+      run: {
+        runId,
+        variant: pipeline,
+        startedAt: "2026-10-29T10:00:00.000Z",
+        finishedAt: "2026-10-29T10:00:03.000Z",
+      },
+      captures:
+        pipeline === "cascade"
+          ? {
+              reference: capture("reference"),
+              platform: { absent: CASCADE_PLATFORM_CAPTURE_ABSENCE },
+              delivered: capture("delivered"),
+            }
+          : {
+              reference: capture("reference"),
+              platform: capture("platform"),
+              delivered: capture("delivered"),
+            },
+      eligibility: { eligible: true },
+      latency: ENGINE_LATENCY[pipeline],
+      providers:
+        pipeline === "cascade"
+          ? { stt: "assemblyai-meta", llm: "meta-llama-3.3", tts: "meta-speech" }
+          : undefined,
+      cost:
+        pipeline === "cascade"
+          ? {
+              currency: "USD",
+              rateTableVersion: "rates-2026-10-29",
+              legs: { stt: 0.0031, llm: 0.0024, tts: 0.0045 },
+              total: 0.01,
+            }
+          : undefined,
+    },
+  });
+}
+
+test("one writer and one reader: a managed and a cascade artifact round-trip through the same entry point", () => {
+  const dir = mkdtempSync(join(tmpdir(), "artifact-reader-"));
+  const read: Partial<Record<ArtifactPipeline, ReturnType<typeof buildInspectReport>>> = {};
+
+  for (const pipeline of ["managed", "cascade"] as const) {
+    const runId = `run-${pipeline}-1`;
+    const path = join(dir, `${pipeline}.json`);
+    // The one writer the runner calls, and the one reader the CLI calls.
+    writeScoreboardArtifactFile(path, engineArtifact(pipeline, runId) as never);
+    const artifact = readScoreboardArtifactFile(path);
+
+    assert.equal(pipelineOfArtifact(artifact), pipeline);
+    assert.equal(artifact.runId, runId);
+    assert.deepEqual(artifactSectionGaps(artifact), [], `${pipeline} carries every section of the one shape`);
+    assert.deepEqual(artifact.latency, {
+      ...ENGINE_LATENCY[pipeline],
+      ...(pipeline === "cascade"
+        ? {
+            replyGapP95Ms: { absent: ONE_CALL_NO_P95_ABSENCE },
+            commitToFirstPlayoutMs: { absent: CASCADE_NO_COMMIT_MARK_ABSENCE },
+          }
+        : { commitToFirstPlayoutMs: { absent: MANAGED_NO_COMMIT_MARK_ABSENCE } }),
+    });
+    read[pipeline] = buildInspectReport(artifact);
+  }
+
+  const managed = read.managed!;
+  const cascade = read.cascade!;
+  assert.equal(managed.gaps.pipeline, "managed");
+  assert.equal(cascade.gaps.pipeline, "cascade");
+  assert.deepEqual(
+    managed.gaps.rows.map((row) => row.row),
+    cascade.gaps.rows.map((row) => row.row),
+    "both engines print the same comparable gap rows",
+  );
+  assert.deepEqual(
+    managed.gaps.rows.map((row) => row.label),
+    cascade.gaps.rows.map((row) => row.label),
+  );
+
+  const row = (report: typeof managed, name: string) => report.gaps.rows.find((entry) => entry.row === name)!;
+  assert.equal(row(managed, "screenToFirstPartialMs").absent, MANAGED_NO_PARTIALS_ABSENCE);
+  assert.equal(row(cascade, "screenToFirstPartialMs").ms, 180);
+  assert.equal(row(managed, "speechCompleteToFirstTokenMs").absent, MANAGED_NO_TOKEN_STREAM_ABSENCE);
+  assert.equal(row(cascade, "speechCompleteToFirstTokenMs").ms, 240);
+  assert.equal(row(managed, "replyGapP50Ms").ms, 900);
+  assert.equal(row(cascade, "replyGapP50Ms").ms, 510);
+  assert.equal(row(managed, "commitToFirstPlayoutMs").absent, "N/A — no commit mark on the managed artifact");
+  assert.equal(row(cascade, "commitToFirstPlayoutMs").absent, CASCADE_NO_COMMIT_MARK_ABSENCE);
+});
+
+test("the one writer refuses an invalid capture combination before writing", () => {
+  const run = {
+    runId: "run-write",
+    variant: "managed",
+    startedAt: "2026-10-29T10:00:00.000Z",
+    finishedAt: "2026-10-29T10:00:03.000Z",
+  };
+  assert.throws(
+    () =>
+      buildArtifactShape({
+        pipeline: "cascade",
+        run,
+        captures: { reference: capture("reference"), platform: capture("platform"), delivered: capture("delivered") },
+        eligibility: { eligible: true },
+      }),
+    /platform capture/,
+    "a cascade artifact cannot claim a platform capture",
+  );
+  assert.throws(
+    () =>
+      buildArtifactShape({
+        pipeline: "managed",
+        run,
+        captures: { reference: capture("reference"), delivered: capture("delivered") },
+        eligibility: { eligible: true },
+      }),
+    /platform capture/,
+    "a managed artifact records all three legs",
+  );
+});
+
+test("the scoreboard scripts read artifacts only through the one reader", () => {
+  for (const file of ["score-demo.mts", "scoreboard-inspect.mts", "score-matrix.mts", "score-streak.mts"]) {
+    const source = readFileSync(new URL(`../../../scripts/${file}`, import.meta.url), "utf8");
+    assert.match(source, /artifact-reader/, `${file} must read through the shared artifact reader`);
+  }
 });

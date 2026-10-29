@@ -51,6 +51,7 @@ function artifact(index: number, overrides: Record<string, unknown> = {}) {
     voice: GATE_VOICE,
     runId: `run-${index}`,
     gates: gates(),
+    subScores: [],
     codeFingerprint: FP,
     ...overrides,
   };

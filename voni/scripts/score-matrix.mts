@@ -47,7 +47,7 @@
  * Exit 0 once the matrix artifact is written, even with FAIL/MISSING rows (like
  * score-demo: non-zero means the harness broke). --strict is the CI gate.
  */
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
@@ -68,6 +68,7 @@ import {
   type ScoreboardGate,
   type SubScore,
 } from "../src/lib/demo/scoreboard";
+import { readScoreboardArtifactFile } from "../src/lib/demo/artifact-reader";
 import {
   resolveSubject,
   sameSubject,
@@ -114,16 +115,18 @@ type MatrixRun = {
  * filename or from this invocation's flags.
  */
 function readScoreArtifact(path: string): MatrixRun {
-  let parsed: unknown;
+  // The one reader: a managed or cascade artifact parses through the same
+  // schema check (ticket 113), then this command adds its own row checks.
+  let parsed: ScoreboardArtifact;
   try {
-    parsed = JSON.parse(readFileSync(path, "utf8"));
+    parsed = readScoreboardArtifactFile(path);
   } catch (error) {
     throw new Error(`matrix cannot read ${path}: ${error instanceof Error ? error.message : String(error)}`);
   }
   if (typeof parsed !== "object" || parsed === null) {
     throw new Error(`matrix cannot read ${path}: not a score artifact`);
   }
-  const record = parsed as Record<string, unknown>;
+  const record = parsed as unknown as Record<string, unknown>;
   if (typeof record.voice !== "string") throw new Error(`matrix cannot read ${path}: no voice`);
   const voice = resolveGateVoice(record.voice);
   // Probe-count shape lives in scoreboard.ts (validateProbeCounts): one

@@ -63,6 +63,8 @@
  */
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { getVoice } from "../agents/voices";
 import { BARGE_IN_JUDGE_MS, judgeOverlap, type OverlapVerdict } from "../voice/barge-in";
 import { EN_RECOGNITION } from "../voice/recognition";
@@ -2814,6 +2816,37 @@ export type ArtifactLatencyGap = (typeof ARTIFACT_LATENCY_GAPS)[number];
 /** A gap in milliseconds, or the named N/A an engine cannot produce. */
 export type ArtifactLatency = Partial<Record<ArtifactLatencyGap, number | ArtifactAbsence>>;
 
+/** One label per gap row, so both engines print the same comparable rows. */
+export const ARTIFACT_LATENCY_LABELS: Readonly<Record<ArtifactLatencyGap, string>> = {
+  screenToFirstPartialMs: "screen latency",
+  speechCompleteToFirstTokenMs: "think",
+  replyGapP50Ms: "reply gap p50",
+  replyGapP95Ms: "reply gap p95",
+  commitToFirstPlayoutMs: "commit to playout",
+};
+
+/**
+ * A latency row an engine cannot produce, named with the reason (M13). Zero is
+ * a measurement; these strings are the honest absence of one.
+ */
+export const MANAGED_NO_PARTIALS_ABSENCE = "N/A — no partials";
+export const MANAGED_NO_TOKEN_STREAM_ABSENCE = "N/A — no token stream";
+export const MANAGED_NO_COMMIT_MARK_ABSENCE = "N/A — no commit mark on the managed artifact";
+export const CASCADE_NO_COMMIT_MARK_ABSENCE = "N/A — the cascade has no commit mark";
+export const NO_REPLY_GAP_ABSENCE = "N/A — no reply-gap samples";
+export const ONE_CALL_NO_P95_ABSENCE = "N/A — one measured call has no p95";
+export const CASCADE_NO_PROVIDER_TABLE_ABSENCE = "N/A — the ledger carries no provider table";
+export const CASCADE_NO_COST_METER_ABSENCE = "N/A — the ledger carries no priced cost";
+
+/**
+ * The ledger summary a cascade run records (M13): its marks are the ledger's
+ * own clock in seconds (`TimingLedger.summary()`), never re-based by a writer.
+ */
+export type ArtifactLedger = {
+  readonly marks: Readonly<Record<string, number>>;
+  readonly counts?: Readonly<Record<string, number>>;
+};
+
 /** The billable legs (M3/M12): per leg and total, never a partial sum. */
 export const ARTIFACT_COST_LEGS = ["stt", "llm", "tts"] as const;
 export type ArtifactCostLeg = (typeof ARTIFACT_COST_LEGS)[number];
@@ -2914,6 +2947,12 @@ export type ScoreboardArtifact = {
    * the field existed. A cascade artifact never claims the platform leg.
    */
   captures?: ArtifactCaptures;
+  /**
+   * The cascade call's ledger summary (M13): the marks the three cascade gaps
+   * are derived from. A reader holding the marks can re-derive every row, so a
+   * latency value copied from another row is visible rather than plausible.
+   */
+  ledger?: ArtifactLedger;
   /**
    * The call-scoped events the artifact carries (M12). Absent today; a managed
    * artifact may never claim a cascade-only event.
@@ -5852,6 +5891,122 @@ function emptyOverheardByBeat(): Record<GoldenBeat, { recalled: number; total: n
   ) as Record<GoldenBeat, { recalled: number; total: number }>;
 }
 
+/**
+ * The one shared-shape input (M12/ticket 113). A run that has the evidence for
+ * all ten sections declares its pipeline; the builder fills only the structural
+ * absences (a managed vendor-owned provider, the cascade's missing platform
+ * capture, a gap the engine cannot produce) and never a measured number.
+ */
+export type ArtifactEngineInput = {
+  pipeline: ArtifactPipeline;
+  /** The run's own identity and window; `run.runId` must be the artifact's. */
+  run: ArtifactRun;
+  /** The capture legs; the cascade's platform leg is named N/A here. */
+  captures: ArtifactCaptures;
+  /** Eligibility is recorded, never defaulted: a run must say whether it is clean. */
+  eligibility: ArtifactEligibility;
+  /** Measured latency rows; structural N/As are added by the builder. */
+  latency?: ArtifactLatency;
+  /** The provider table; a managed run is vendor-owned by construction. */
+  providers?: ArtifactProviders;
+  /** The cost record; a managed run is vendor-billed by construction. */
+  cost?: ArtifactCost;
+  events?: ArtifactEventRecord[];
+  ledger?: ArtifactLedger;
+};
+
+/** One section's value exactly as the artifact carries it. */
+type ArtifactShape = Pick<
+  ScoreboardArtifact,
+  "pipeline" | "run" | "providers" | "latency" | "cost" | "captures" | "eligibility" | "events" | "ledger"
+>;
+
+function captureRecord(leg: ArtifactCaptureLeg, captures: ArtifactCaptures, pipeline: ArtifactPipeline): ArtifactCapture {
+  const capture = captures[leg];
+  const present = capture !== undefined && capture !== null && !isArtifactAbsence(capture);
+  if (pipeline === "cascade") {
+    if (leg === "platform") {
+      if (present) {
+        throw new Error("a cascade artifact cannot claim a platform capture; the leg is N/A by construction");
+      }
+      return capture ?? { absent: CASCADE_PLATFORM_CAPTURE_ABSENCE };
+    }
+    if (capture === undefined || capture === null || isArtifactAbsence(capture)) {
+      throw new Error(`a cascade artifact needs a ${leg} capture; a missing leg is not a named N/A`);
+    }
+    return capture;
+  }
+  if (capture === undefined || capture === null || isArtifactAbsence(capture)) {
+    throw new Error(`a managed artifact needs a ${leg} capture; the managed path records all three legs`);
+  }
+  return capture;
+}
+
+/**
+ * The one writer of the shared shape (M12). Both engines call it through
+ * `buildSkeletonArtifact`; neither re-declares a section, so a second artifact
+ * shape is visible in review.
+ */
+export function buildArtifactShape(
+  engine: ArtifactEngineInput,
+  replyGap: { p50Ms: number | null; p95Ms: number | null } = { p50Ms: null, p95Ms: null },
+): ArtifactShape {
+  const { pipeline } = engine;
+  const measured = engine.latency ?? {};
+  const latency: ArtifactLatency = { ...measured };
+  if (pipeline === "managed") {
+    latency.screenToFirstPartialMs ??= { absent: MANAGED_NO_PARTIALS_ABSENCE };
+    latency.speechCompleteToFirstTokenMs ??= { absent: MANAGED_NO_TOKEN_STREAM_ABSENCE };
+    latency.replyGapP50Ms ??=
+      replyGap.p50Ms === null ? { absent: NO_REPLY_GAP_ABSENCE } : replyGap.p50Ms;
+    latency.replyGapP95Ms ??=
+      replyGap.p95Ms === null ? { absent: NO_REPLY_GAP_ABSENCE } : replyGap.p95Ms;
+    latency.commitToFirstPlayoutMs ??= { absent: MANAGED_NO_COMMIT_MARK_ABSENCE };
+  } else {
+    latency.replyGapP95Ms ??= { absent: ONE_CALL_NO_P95_ABSENCE };
+    latency.commitToFirstPlayoutMs ??= { absent: CASCADE_NO_COMMIT_MARK_ABSENCE };
+  }
+
+  const providers: ArtifactProviders =
+    engine.providers ??
+    (pipeline === "managed"
+      ? {
+          stt: { absent: VENDOR_OWNED_PROVIDER_ABSENCE },
+          llm: { absent: VENDOR_OWNED_PROVIDER_ABSENCE },
+          tts: { absent: VENDOR_OWNED_PROVIDER_ABSENCE },
+        }
+      : {
+          stt: { absent: CASCADE_NO_PROVIDER_TABLE_ABSENCE },
+          llm: { absent: CASCADE_NO_PROVIDER_TABLE_ABSENCE },
+          tts: { absent: CASCADE_NO_PROVIDER_TABLE_ABSENCE },
+        });
+
+  return {
+    pipeline,
+    run: engine.run,
+    providers,
+    latency,
+    cost: engine.cost ?? (pipeline === "managed" ? { absent: VENDOR_BILLED_COST_ABSENCE } : { absent: CASCADE_NO_COST_METER_ABSENCE }),
+    captures: {
+      reference: captureRecord("reference", engine.captures, pipeline),
+      platform: captureRecord("platform", engine.captures, pipeline),
+      delivered: captureRecord("delivered", engine.captures, pipeline),
+    },
+    eligibility: engine.eligibility,
+    ...(engine.events !== undefined ? { events: engine.events } : {}),
+    ...(engine.ledger !== undefined ? { ledger: engine.ledger } : {}),
+  };
+}
+
+/**
+ * The one artifact write (mode 0600). `score-demo` calls this for every
+ * engine, so the managed and cascade artifacts are serialized identically.
+ */
+export function writeScoreboardArtifactFile(path: string, artifact: ScoreboardArtifact): void {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, `${JSON.stringify(artifact, null, 2)}\n`, { mode: 0o600 });
+}
+
 export function buildSkeletonArtifact(input: {
   voice: string;
   scenario: string;
@@ -5957,6 +6112,12 @@ export function buildSkeletonArtifact(input: {
    * subject (derived, never a second default), so every artifact carries one.
    */
   subject?: SubjectRecord;
+  /**
+   * The shared shape (M12/ticket 113): set only when the run has the evidence
+   * for all ten sections. Omitted, the artifact stays expand-only — today's
+   * dry-run and legacy managed runs are unchanged.
+   */
+  engine?: ArtifactEngineInput;
 }): ScoreboardArtifact {
   const subject = input.subject ?? subjectForRunVoice(input.voice);
   assertSubjectMatchesArtifactVoice(subject, input.voice);
@@ -6240,11 +6401,20 @@ export function buildSkeletonArtifact(input: {
     };
   }
   const transcriptLines = redactLines(input.runnerStdout);
+  // Ticket 113: the one writer places the shared shape; the builder never
+  // invents a measured row (see `buildArtifactShape`).
+  const engineShape = input.engine
+    ? buildArtifactShape(input.engine, {
+        p50Ms: overall?.p50Ms ?? null,
+        p95Ms: overall?.p95Ms ?? null,
+      })
+    : {};
   return {
     schemaVersion: SCOREBOARD_SCHEMA_VERSION,
     recordedAt: new Date().toISOString(),
     voice: input.voice,
     subject,
+    ...engineShape,
     runs: input.runs,
     goldenScript: {
       vertical: GOLDEN_VERTICAL,
