@@ -212,7 +212,8 @@ if (args[0] === "run" && args[1] === "eval:demo-agent") {
       variant: string;
       variantKey: string;
       turnWindows: { min_silence: number; max_silence: number; interruption_delay: number };
-      productionTurnDetection: null;
+      /** Absent when the production body was not read: no invented null. */
+      productionTurnDetection?: null;
     };
     runnerEvidence: {
       variant: string;
@@ -238,8 +239,12 @@ if (args[0] === "run" && args[1] === "eval:demo-agent") {
     variant: "turn-window",
     variantKey: "anna:exp",
     turnWindows: { min_silence: 400, max_silence: 640, interruption_delay: 0 },
-    productionTurnDetection: null,
   });
+  assert.equal(
+    "productionTurnDetection" in (artifact.endOfTurn ?? {}),
+    false,
+    "a body nobody read cannot claim the Turn preset",
+  );
 });
 
 test("an unknown variant flag or inline+variant fails loudly, before any runner", () => {
@@ -928,13 +933,14 @@ test("dry run has no served stored body, so end-of-turn stays unmeasured", () =>
   const artifact = JSON.parse(readFileSync(out, "utf8")) as {
     gates: { name: string; status: string; detail: string }[];
     endOfTurn?: unknown;
-    agentBody?: unknown;
+    agentBody?: { measured: boolean; agentId: string | null; reason: string | null };
   };
   const gate = artifact.gates.find((g) => g.name === "end-of-turn");
   assert.equal(gate?.status, "INFO", "a dry run reads no stored body: INFO, never a reconstructed PASS");
   assert.match(gate?.detail ?? "", /unmeasured/);
   assert.equal(artifact.endOfTurn, undefined);
-  assert.equal(artifact.agentBody, undefined);
+  assert.equal(artifact.agentBody?.measured, false, "the run still carries one unmeasured identity");
+  assert.match(artifact.agentBody?.reason ?? "", /dry run/);
 });
 
 test("dry run with filler evidence passes the filler-resume gate and names it", () => {

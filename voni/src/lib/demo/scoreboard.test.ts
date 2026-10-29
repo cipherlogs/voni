@@ -39,6 +39,7 @@ import {
   cutOverlapMs,
   parseGateRow,
   parseGateRows,
+  runBodyServedBody,
   playoutCutWindow,
   parseDoubleTalkOutput,
   parseGoodbyeDrainOutput,
@@ -152,6 +153,7 @@ import {
   hasDigitSplitTag,
   type BehaviorRunEvidence,
   type CodeFingerprint,
+  type RunBody,
   type ScoreboardArtifact,
   type ScoreboardGate,
   type StreakArtifact,
@@ -167,7 +169,37 @@ import { judgeOverlap } from "../voice/barge-in";
 import { EN_RECOGNITION } from "../voice/recognition";
 import { DEMO_VOICE_IDS, SILENCE_CHECK_IN_INSTRUCTIONS, SILENCE_CHECK_IN_MS } from "./voni-agent";
 import type { RunnerEvidence } from "./runner-evidence";
+import { buildDemoAgentBody, parseServedDemoAgentBody } from "./stored-agents";
 import { VOICE_OUTPUT_VOLUME, voicePlaybackGain } from "../agents/voices";
+
+/**
+ * A platform-read run body for gate tests (voice-parity ticket 24): every test
+ * goes through the same read result the orchestrator passes, never a naked
+ * body object. `volume: undefined` = the platform served no level.
+ */
+function runBodyOf(
+  volume: number | undefined,
+  opts: {
+    agentId?: string;
+    fingerprint?: string | null;
+    turnDetection?: unknown;
+    hasTurnKey?: boolean;
+  } = {},
+) {
+  const agentId = opts.agentId ?? "agent_stored";
+  const fingerprint = opts.fingerprint === undefined ? "fp_stored" : opts.fingerprint;
+  const hasTurnKey = opts.hasTurnKey !== false;
+  const parsed = parseServedDemoAgentBody(
+    agentId,
+    {
+      input: hasTurnKey ? { turn_detection: opts.turnDetection ?? null } : {},
+      ...(volume === undefined ? {} : { output: { volume } }),
+    },
+    fingerprint,
+  );
+  if (!parsed.ok) throw new Error(parsed.error);
+  return { measured: true as const, body: parsed.body, agentId, fingerprint };
+}
 
 test("golden script is locked to seven beats in fixed order", () => {
   assert.deepEqual([...GOLDEN_BEATS], [
@@ -351,12 +383,7 @@ test("gate voice playback takes its level from the served body, gain from the re
     assert.equal(unread.id, id);
     assert.equal(unread.outputVolume, null, "no body read means the level is unmeasured");
     assert.equal(unread.playbackGain, voicePlaybackGain(id));
-    const served = gateVoicePlayback(id, {
-      agentId: "agent_stored",
-      fingerprint: null,
-      input: {},
-      output: { volume: 62 },
-    });
+    const served = gateVoicePlayback(id, runBodyOf(62, { fingerprint: null }));
     assert.equal(served.outputVolume, 62, "the served level reaches playback unchanged");
   }
   assert.throws(() => gateVoicePlayback("not-a-voice"), /unknown gate voice/);
@@ -679,12 +706,7 @@ test("all-fast merged turn passes every per-turn budget and keeps meaning-based 
     '14.20s  VONI    "Two bedrooms"  (reply_create gap 1200ms)',
     '15.40s  VONI    "Here is the tag"  (reply_create gap 1300ms)',
   ];
-  const servedAgentBody = {
-    agentId: "agent_fast",
-    fingerprint: null,
-    input: { turn_detection: null },
-    output: { volume: 100 },
-  };
+  const runBody = runBodyOf(100, { agentId: "agent_fast", fingerprint: null });
   const artifact = buildSkeletonArtifact({
     voice: DEFAULT_GATE_VOICE,
     scenario: "stop-over",
@@ -695,14 +717,14 @@ test("all-fast merged turn passes every per-turn budget and keeps meaning-based 
     traceGaps: parseTraceGaps(excerpt),
     traceExcerpt: excerpt,
     traceSessionId: "sess_fast",
-    servedAgentBody,
+    runBody,
   });
   const gate = artifact.gates.find((g) => g.name === "reply-gap")!;
   assert.equal(gate.status, "PASS", gate.detail);
   assert.match(gate.detail, /p50 1100ms/, `every turn is inside budget: ${gate.detail}`);
   // Ticket 24 stays intact: per-turn judgment introduces no turn-detection
   // object on the managed path and the merged excerpt carries no CONFIG line.
-  assert.equal(servedAgentBody.input.turn_detection, null);
+  assert.equal(runBodyServedBody(runBody)?.input.turn_detection, null);
   assert.ok(!excerpt.some((line) => line.includes("turn_detection")));
   assert.equal(artifact.gates.find((g) => g.name === "end-of-turn")?.status, "PASS");
   assert.equal(artifact.agentBody?.agentId, "agent_fast");
@@ -857,12 +879,7 @@ test("a variant artifact whose CONFIG line carries its own windows passes on the
     exitCode: 0,
     durationMs: 10,
     runs: 1,
-    servedAgentBody: {
-      agentId: "agent_stored",
-      fingerprint: null,
-      input: { turn_detection: null },
-      output: { volume: VOICE_OUTPUT_VOLUME },
-    },
+    runBody: runBodyOf(VOICE_OUTPUT_VOLUME, { fingerprint: null }),
     traceExcerpt: [LIVE_VARIANT_CONFIG_LINE],
     endOfTurnExperiment: { variant: "turn-window", variantKey: "anna:exp", turnWindows, agentId: "agent_exp" },
   });
@@ -938,12 +955,7 @@ test("a variant artifact whose CONFIG line reports different windows still fails
     exitCode: 0,
     durationMs: 10,
     runs: 1,
-    servedAgentBody: {
-      agentId: "agent_stored",
-      fingerprint: null,
-      input: { turn_detection: null },
-      output: { volume: VOICE_OUTPUT_VOLUME },
-    },
+    runBody: runBodyOf(VOICE_OUTPUT_VOLUME, { fingerprint: null }),
     traceExcerpt: [stray],
     endOfTurnExperiment: { variant: "turn-window", variantKey: "anna:exp", turnWindows, agentId: "agent_exp" },
   });
@@ -993,12 +1005,7 @@ test("a variant artifact records its windows in a dedicated experimental evidenc
     exitCode: 0,
     durationMs: 10,
     runs: 1,
-    servedAgentBody: {
-      agentId: "agent_stored",
-      fingerprint: null,
-      input: { turn_detection: null },
-      output: { volume: VOICE_OUTPUT_VOLUME },
-    },
+    runBody: runBodyOf(VOICE_OUTPUT_VOLUME, { fingerprint: null }),
     endOfTurnExperiment: { variant: "turn-window", variantKey: "anna:exp", turnWindows, agentId: "agent_exp" },
   });
   const gate = artifact.gates.find((row) => row.name === "end-of-turn");
@@ -1021,12 +1028,7 @@ test("a production artifact with a turn-detection object still fails with the ex
     exitCode: 0,
     durationMs: 10,
     runs: 1,
-    servedAgentBody: {
-      agentId: "agent_stored",
-      fingerprint: null,
-      input: { turn_detection: { min_silence: 100 } },
-      output: { volume: VOICE_OUTPUT_VOLUME },
-    },
+    runBody: runBodyOf(VOICE_OUTPUT_VOLUME, { fingerprint: null, turnDetection: { min_silence: 100 } }),
   });
   const gate = artifact.gates.find((row) => row.name === "end-of-turn");
   assert.equal(gate?.status, "FAIL");
@@ -1045,12 +1047,7 @@ test("a production artifact carries no experimental end-of-turn evidence", () =>
     exitCode: 0,
     durationMs: 10,
     runs: 1,
-    servedAgentBody: {
-      agentId: "agent_stored",
-      fingerprint: null,
-      input: { turn_detection: null },
-      output: { volume: VOICE_OUTPUT_VOLUME },
-    },
+    runBody: runBodyOf(VOICE_OUTPUT_VOLUME, { fingerprint: null }),
   });
   const gate = artifact.gates.find((row) => row.name === "end-of-turn");
   assert.equal(gate?.status, "PASS");
@@ -1066,12 +1063,9 @@ test("end-of-turn fails on an explicit object in the served stored body", () => 
     exitCode: 0,
     durationMs: 10,
     runs: 1,
-    servedAgentBody: {
-      agentId: "agent_stored",
-      fingerprint: "fp_stored",
-      input: { turn_detection: { min_silence: 100 } },
-      output: { volume: VOICE_OUTPUT_VOLUME },
-    },
+    runBody: runBodyOf(VOICE_OUTPUT_VOLUME, {
+      turnDetection: { min_silence: 100 },
+    }),
   });
   const gate = artifact.gates.find((row) => row.name === "end-of-turn");
   assert.equal(gate?.status, "FAIL");
@@ -1086,12 +1080,7 @@ test("end-of-turn passes on the Turn preset served by the stored body", () => {
     exitCode: 0,
     durationMs: 10,
     runs: 1,
-    servedAgentBody: {
-      agentId: "agent_stored",
-      fingerprint: null,
-      input: { turn_detection: null },
-      output: { volume: VOICE_OUTPUT_VOLUME },
-    },
+    runBody: runBodyOf(VOICE_OUTPUT_VOLUME, { fingerprint: null }),
   });
   const gate = artifact.gates.find((row) => row.name === "end-of-turn");
   assert.equal(gate?.status, "PASS", gate?.detail);
@@ -1105,7 +1094,7 @@ test("a served body with no turn_detection key is the Turn preset", () => {
     exitCode: 0,
     durationMs: 10,
     runs: 1,
-    servedAgentBody: { agentId: "agent_stored", fingerprint: null, input: {}, output: { volume: VOICE_OUTPUT_VOLUME } },
+    runBody: runBodyOf(VOICE_OUTPUT_VOLUME, { fingerprint: null, hasTurnKey: false }),
   });
   const gate = artifact.gates.find((row) => row.name === "end-of-turn");
   assert.equal(gate?.status, "PASS", gate?.detail);
@@ -1119,22 +1108,19 @@ test("the artifact records which stored body the end-of-turn gate measured", () 
     exitCode: 0,
     durationMs: 10,
     runs: 1,
-    servedAgentBody: {
-      agentId: "agent_stored",
-      fingerprint: "fp_stored",
-      input: { turn_detection: null },
-      output: { volume: VOICE_OUTPUT_VOLUME },
-    },
+    runBody: runBodyOf(VOICE_OUTPUT_VOLUME),
   });
   assert.deepEqual(artifact.agentBody, {
     source: "stored-agent",
+    measured: true,
     agentId: "agent_stored",
     fingerprint: "fp_stored",
     turnDetection: null,
+    reason: null,
   });
 });
 
-test("an artifact with no served body records no measured body and stays unmeasured", () => {
+test("an artifact with no served body records one unmeasured identity and stays INFO", () => {
   const artifact = buildSkeletonArtifact({
     voice: DEFAULT_GATE_VOICE,
     scenario: "suite",
@@ -1145,8 +1131,121 @@ test("an artifact with no served body records no measured body and stays unmeasu
   });
   const gate = artifact.gates.find((row) => row.name === "end-of-turn");
   assert.equal(gate?.status, "INFO");
-  assert.match(gate?.detail ?? "", /unmeasured/);
-  assert.equal(artifact.agentBody, undefined);
+  assert.match(gate?.detail ?? "", /unmeasured/i);
+  assert.deepEqual(artifact.agentBody, {
+    source: "stored-agent",
+    measured: false,
+    agentId: null,
+    fingerprint: null,
+    reason: "no stored body read",
+  });
+});
+
+// ── Ticket 24: one stored-body seam for every gate ─────────────────────────
+
+test("every body gate follows the one served body when it is swapped", () => {
+  const artifactFor = (runBody: RunBody) =>
+    buildSkeletonArtifact({
+      voice: DEFAULT_GATE_VOICE,
+      scenario: "suite",
+      runnerStdout: "suite",
+      exitCode: 0,
+      durationMs: 10,
+      runs: 1,
+      runBody,
+      measuredLevel: measuredLevel(-23.1, -23.1),
+    });
+
+  const first = artifactFor(
+    runBodyOf(VOICE_OUTPUT_VOLUME, { agentId: "agent_first", fingerprint: "fp_first" }),
+  );
+  assert.equal(first.gates.find((g) => g.name === "end-of-turn")?.status, "PASS");
+  assert.equal(first.gates.find((g) => g.name === "timbre-probes")?.status, "PASS");
+  assert.equal(first.loudness.outputVolume, VOICE_OUTPUT_VOLUME);
+  assert.equal(first.agentBody?.agentId, "agent_first");
+  assert.equal(first.agentBody?.fingerprint, "fp_first");
+
+  const second = artifactFor(
+    runBodyOf(62, {
+      agentId: "agent_second",
+      fingerprint: "fp_second",
+      turnDetection: { min_silence: 100 },
+    }),
+  );
+  // End-of-turn, the level legs and the identity all moved with the body.
+  assert.equal(second.gates.find((g) => g.name === "end-of-turn")?.status, "FAIL");
+  assert.match(
+    second.gates.find((g) => g.name === "end-of-turn")?.detail ?? "",
+    /turn_detection object sent/,
+  );
+  assert.equal(second.loudness.outputVolume, 62);
+  assert.match(
+    second.gates.find((g) => g.name === "timbre-probes")?.detail ?? "",
+    /at volume 62/,
+  );
+  assert.equal(second.loudness.voices[0]?.outputVolume, 62);
+  assert.equal(second.agentBody?.agentId, "agent_second");
+  assert.equal(second.agentBody?.fingerprint, "fp_second");
+  assert.deepEqual(second.agentBody?.turnDetection, { min_silence: 100 });
+});
+
+test("a demo-builder reconstruction cannot pass any body gate", () => {
+  const reconstruction = buildDemoAgentBody(DEFAULT_GATE_VOICE);
+  const smuggled: RunBody = {
+    measured: true,
+    agentId: "agent_reconstructed",
+    fingerprint: "fp_reconstructed",
+    // @ts-expect-error a builder body is not a platform-read body
+    body: reconstruction,
+  };
+  const artifact = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "suite",
+    runnerStdout: "suite",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+    runBody: smuggled,
+    measuredLevel: measuredLevel(-23.1, -23.1),
+  });
+  for (const name of ["end-of-turn", "timbre-probes"]) {
+    const gate = artifact.gates.find((row) => row.name === name);
+    assert.equal(gate?.status, "INFO", `${name} must not PASS on a reconstruction: ${gate?.detail}`);
+    assert.match(gate?.detail ?? "", /reconstruction/);
+  }
+  assert.equal(artifact.loudness.outputVolume, null, "no served level, no registry default");
+  assert.equal(artifact.agentBody?.measured, false);
+  assert.match(artifact.agentBody?.reason ?? "", /reconstruction/);
+});
+
+test("a body read failure is recorded once and every body gate is INFO", () => {
+  const failed: RunBody = {
+    measured: false,
+    agentId: "agent_missing",
+    fingerprint: "fp_missing",
+    reason: "stored agent agent_missing read failed 404: not found",
+  };
+  const artifact = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "suite",
+    runnerStdout: "suite",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+    runBody: failed,
+    measuredLevel: measuredLevel(-23.1, -23.1),
+  });
+  for (const name of ["end-of-turn", "timbre-probes"]) {
+    const gate = artifact.gates.find((row) => row.name === name);
+    assert.equal(gate?.status, "INFO", `${name} must be INFO after a read failure`);
+    assert.match(gate?.detail ?? "", /agent_missing read failed 404/);
+  }
+  assert.equal(artifact.agentBody?.measured, false);
+  assert.equal(artifact.agentBody?.agentId, "agent_missing");
+  assert.equal(artifact.agentBody?.reason, failed.reason);
+  assert.equal(artifact.loudness.ok, false);
+  assert.match(artifact.loudness.voices[0]?.detail ?? "", /unmeasured.*agent_missing read failed 404/);
+  assert.equal("body" in artifact.loudness, false, "one identity record per run");
 });
 
 test("artifact with measured gaps fills per-beat gaps and enforces the reply-gap gate", () => {
@@ -4282,13 +4381,9 @@ test("artifact carries double-talk overlaps and end-call drain evidence with bot
 
 const ZERO_PROBES = { jump: 0, overload: 0, clip: 0, underrun: 0, inputDrop: 0 };
 
-/** A served body as the platform returns it; `undefined` output = no level served. */
-const servedBody = (volume: number | undefined, agentId = "agent_stored", fingerprint: string | null = "fp_stored") => ({
-  agentId,
-  fingerprint,
-  input: { turn_detection: null },
-  output: volume === undefined ? {} : { volume },
-});
+/** The run's platform-read body; `undefined` output = no level served. */
+const servedBody = (volume: number | undefined, agentId = "agent_stored", fingerprint: string | null = "fp_stored") =>
+  runBodyOf(volume, { agentId, fingerprint });
 
 test("timbre probes pass only when every count is zero", () => {
   const clean = checkTimbreProbes(ZERO_PROBES);
@@ -4310,7 +4405,7 @@ test("the level leg's verdict moves with the measured files, not the loudness fo
       probes: ZERO_PROBES,
       voiceId: "anna",
       agentChannel: null,
-      servedAgentBody: servedBody(VOICE_OUTPUT_VOLUME),
+      runBody: servedBody(VOICE_OUTPUT_VOLUME),
       measuredLevel: measuredLevel(-23.1, deliveredRms),
     });
 
@@ -4412,7 +4507,7 @@ test("an unmeasured voice is reported INFO, never failed", () => {
     probes: ZERO_PROBES,
     voiceId: "alba",
     agentChannel: null,
-    servedAgentBody: servedBody(VOICE_OUTPUT_VOLUME),
+    runBody: servedBody(VOICE_OUTPUT_VOLUME),
   });
   assert.equal(gate.status, "INFO", "unmeasured level never fails the timbre gate, and never passes it");
   assert.match(gate.detail, /unmeasured level/);
@@ -4437,7 +4532,7 @@ test("timbre gate passes clean and fails named defects", () => {
     probes: ZERO_PROBES,
     voiceId: "anna",
     agentChannel: null,
-    servedAgentBody: servedBody(VOICE_OUTPUT_VOLUME),
+    runBody: servedBody(VOICE_OUTPUT_VOLUME),
     measuredLevel: {
       reference: measuredTone("captures/reference-anna-en.wav", -23.1),
       delivered: measuredTone("captures/delivered-anna-en.wav", -23.2),
@@ -4488,7 +4583,7 @@ test("the timbre gate reads the served body's level, never the registry constant
     probes: ZERO_PROBES,
     voiceId: "anna",
     agentChannel: null,
-    servedAgentBody: servedBody(VOICE_OUTPUT_VOLUME),
+    runBody: servedBody(VOICE_OUTPUT_VOLUME),
     measuredLevel: measured,
   });
   assert.equal(atRegistryVolume.status, "PASS", atRegistryVolume.detail);
@@ -4504,7 +4599,7 @@ test("the timbre gate reads the served body's level, never the registry constant
     probes: ZERO_PROBES,
     voiceId: "anna",
     agentChannel: null,
-    servedAgentBody: servedBody(62),
+    runBody: servedBody(62),
   });
   assert.equal(quieter.status, "INFO", quieter.detail);
   assert.match(quieter.detail, /unmeasured level/);
@@ -4521,7 +4616,7 @@ test("a served level reaches the timbre gate unchanged", () => {
       probes: ZERO_PROBES,
       voiceId: "anna",
       agentChannel: null,
-      servedAgentBody: servedBody(volume),
+      runBody: servedBody(volume),
       measuredLevel: measured,
     });
     assert.ok(
@@ -4536,7 +4631,7 @@ test("an unread served level is reported unmeasured, never passed by a registry 
     probes: ZERO_PROBES,
     voiceId: "anna",
     agentChannel: null,
-    servedAgentBody: servedBody(undefined),
+    runBody: servedBody(undefined),
   });
   assert.equal(noLevel.status, "INFO", "probes still gate; the level is unmeasured");
   assert.match(noLevel.detail, /unmeasured level/);
@@ -4556,13 +4651,18 @@ test("the artifact records the body identity beside the level it measured", () =
     exitCode: 0,
     durationMs: 10,
     runs: 1,
-    servedAgentBody: servedBody(62),
+    runBody: servedBody(62),
   });
-  assert.deepEqual(unmeasured.loudness.body, {
+  assert.deepEqual(unmeasured.agentBody, {
     source: "stored-agent",
+    measured: true,
     agentId: "agent_stored",
     fingerprint: "fp_stored",
+    turnDetection: null,
+    reason: null,
   });
+  // One run-level identity: the level no longer carries a second copy.
+  assert.equal("body" in unmeasured.loudness, false, "loudness has no second body identity");
   assert.equal(unmeasured.loudness.outputVolume, 62);
   assert.equal(unmeasured.loudness.matchedLufs, -27.25, "the gain table's review number stays reviewable");
   assert.equal(unmeasured.loudness.measured.status, "INFO");
@@ -4570,7 +4670,6 @@ test("the artifact records the body identity beside the level it measured", () =
   assert.equal(unmeasured.gates.find((gate) => gate.name === "timbre-probes")?.status, "INFO");
   // The end-of-turn gate read the same body: one source for both gates.
   assert.equal(unmeasured.gates.find((gate) => gate.name === "end-of-turn")?.status, "PASS");
-  assert.equal(unmeasured.agentBody?.agentId, unmeasured.loudness.body?.agentId);
 
   const measured = buildSkeletonArtifact({
     voice: DEFAULT_GATE_VOICE,
@@ -4579,7 +4678,7 @@ test("the artifact records the body identity beside the level it measured", () =
     exitCode: 0,
     durationMs: 10,
     runs: 1,
-    servedAgentBody: servedBody(62),
+    runBody: servedBody(62),
     measuredLevel: {
       reference: measuredTone("captures/reference-anna-en.wav", -23.1),
       delivered: measuredTone("captures/delivered-anna-en.wav", -25.0),
@@ -4604,7 +4703,8 @@ test("no served body leaves the artifact level unmeasured, never a registry numb
     durationMs: 10,
     runs: 1,
   });
-  assert.equal(artifact.loudness.body, null);
+  assert.equal("body" in artifact.loudness, false);
+  assert.equal(artifact.agentBody?.measured, false);
   assert.equal(artifact.loudness.outputVolume, null);
   assert.equal(artifact.loudness.matchedLufs, null);
   assert.match(artifact.loudness.detail, /unmeasured/);
@@ -4620,7 +4720,7 @@ test("the gain table greens the gate voice from the served body, never an unread
     assert.equal(row.outputVolume, null, `${row.voice}: no body was read for this voice`);
     assert.equal(row.matchedLufs, null);
     assert.equal(row.status, "INFO", `${row.voice} must never green on a registry default`);
-    assert.match(row.detail, /not read/);
+    assert.match(row.detail, /no stored body read/);
   }
   assert.ok(formatVoiceGainTable(table).includes("served"));
 });
@@ -4663,7 +4763,7 @@ test("a measured level within tolerance passes the timbre gate", () => {
     probes: ZERO_PROBES,
     voiceId: "anna",
     agentChannel: null,
-    servedAgentBody: servedBody(VOICE_OUTPUT_VOLUME),
+    runBody: servedBody(VOICE_OUTPUT_VOLUME),
     measuredLevel: measuredLevel(-23.1, -23.2),
   });
   assert.equal(gate.status, "PASS", gate.detail);
@@ -4687,7 +4787,7 @@ test("a measured level out of tolerance fails the timbre gate with both measured
     probes: ZERO_PROBES,
     voiceId: "anna",
     agentChannel: null,
-    servedAgentBody: servedBody(VOICE_OUTPUT_VOLUME),
+    runBody: servedBody(VOICE_OUTPUT_VOLUME),
     measuredLevel: measuredLevel(-23.1, -25.0),
   });
   assert.equal(gate.status, "FAIL", gate.detail);
@@ -4703,7 +4803,7 @@ test("a missing measurement is INFO, never PASS", () => {
     probes: ZERO_PROBES,
     voiceId: "anna",
     agentChannel: null,
-    servedAgentBody: servedBody(VOICE_OUTPUT_VOLUME),
+    runBody: servedBody(VOICE_OUTPUT_VOLUME),
   });
   assert.equal(noFiles.status, "INFO", noFiles.detail);
   assert.match(noFiles.detail, /unmeasured level/);
@@ -4713,7 +4813,7 @@ test("a missing measurement is INFO, never PASS", () => {
     probes: ZERO_PROBES,
     voiceId: "anna",
     agentChannel: null,
-    servedAgentBody: servedBody(VOICE_OUTPUT_VOLUME),
+    runBody: servedBody(VOICE_OUTPUT_VOLUME),
     measuredLevel: {
       reference: measuredTone("captures/reference-anna-en.wav", -23.1),
       delivered: silentTone("captures/delivered-anna-en.wav"),
@@ -4731,7 +4831,7 @@ test("the derived constant cannot make the level leg pass", () => {
     probes: ZERO_PROBES,
     voiceId: "anna",
     agentChannel: null,
-    servedAgentBody: servedBody(VOICE_OUTPUT_VOLUME),
+    runBody: servedBody(VOICE_OUTPUT_VOLUME),
   });
   assert.equal(arithmeticOnly.status, "INFO", "the formula alone never passes the level leg");
 
@@ -4740,7 +4840,7 @@ test("the derived constant cannot make the level leg pass", () => {
     probes: ZERO_PROBES,
     voiceId: "anna",
     agentChannel: null,
-    servedAgentBody: servedBody(VOICE_OUTPUT_VOLUME),
+    runBody: servedBody(VOICE_OUTPUT_VOLUME),
     measuredLevel: measuredLevel(-23.1, -28.1),
   });
   assert.equal(measuredFail.status, "FAIL");
@@ -4754,7 +4854,7 @@ test("the derived constant cannot make the level leg pass", () => {
     measuredLevel: measuredLevel(-23.1, -23.2),
   });
   assert.equal(noBody.status, "INFO", noBody.detail);
-  assert.match(noBody.detail, /served body/);
+  assert.match(noBody.detail, /no stored body read/);
 });
 
 // ── Ticket 10, slice 2: blind human slots ─────────────────────────────────
@@ -4853,7 +4953,7 @@ test("artifact makes the shared-recording ballot protocol reviewable", () => {
     exitCode: 0,
     durationMs: 10,
     runs: 1,
-    servedAgentBody: servedBody(VOICE_OUTPUT_VOLUME),
+    runBody: servedBody(VOICE_OUTPUT_VOLUME),
     measuredLevel: {
       reference: measuredTone("captures/reference-anna-en.wav", -23.1),
       delivered: measuredTone("captures/delivered-anna-en.wav", -23.2),
@@ -4914,7 +5014,7 @@ test("a low ballot never fails a run: taste stays informational", () => {
     durationMs: 10,
     runs: 1,
     humanRatings: low,
-    servedAgentBody: servedBody(VOICE_OUTPUT_VOLUME),
+    runBody: servedBody(VOICE_OUTPUT_VOLUME),
     measuredLevel: {
       reference: measuredTone("captures/reference-anna-en.wav", -23.1),
       delivered: measuredTone("captures/delivered-anna-en.wav", -23.1),
@@ -4940,7 +5040,7 @@ test("artifact carries human slots, the served level, and live timbre gates", ()
     exitCode: 0,
     durationMs: 1234,
     runs: 1,
-    servedAgentBody: servedBody(VOICE_OUTPUT_VOLUME),
+    runBody: servedBody(VOICE_OUTPUT_VOLUME),
     measuredLevel: {
       reference: measuredTone("captures/reference-anna-en.wav", -23.1),
       delivered: measuredTone("captures/delivered-anna-en.wav", -23.2),
@@ -4953,7 +5053,7 @@ test("artifact carries human slots, the served level, and live timbre gates", ()
   assert.equal(artifact.humanRatings.recordingSha256, null);
   assert.ok(Math.abs((artifact.loudness.matchedLufs ?? 0) - TIMBRE_REFERENCE_LUFS) <= TIMBRE_LUFS_TOLERANCE_DB);
   assert.equal(artifact.loudness.outputVolume, VOICE_OUTPUT_VOLUME);
-  assert.equal(artifact.loudness.body?.agentId, "agent_stored");
+  assert.equal(artifact.agentBody?.agentId, "agent_stored");
   assert.equal(artifact.loudness.measured.status, "PASS", artifact.loudness.measured.detail);
   assert.equal(artifact.loudness.measured.deliveredFile, "captures/delivered-anna-en.wav");
   assert.ok(artifact.loudness.ok);
@@ -4971,7 +5071,7 @@ test("artifact carries the per-voice gain table, not only the gate voice", () =>
     exitCode: 0,
     durationMs: 10,
     runs: 1,
-    servedAgentBody: servedBody(VOICE_OUTPUT_VOLUME),
+    runBody: servedBody(VOICE_OUTPUT_VOLUME),
   });
   const rows = artifact.loudness.voices;
   assert.equal(rows.length, DEMO_VOICE_IDS.length, "every demo voice has a gain row");
@@ -5628,12 +5728,7 @@ test("sub-scores aggregate the five human-likeness areas in spec priority", () =
     exitCode: 0,
     durationMs: 10,
     runs: 1,
-    servedAgentBody: {
-      agentId: "agent_stored",
-      fingerprint: null,
-      input: { turn_detection: null },
-      output: { volume: VOICE_OUTPUT_VOLUME },
-    },
+    runBody: runBodyOf(VOICE_OUTPUT_VOLUME, { fingerprint: null }),
     gaps: { "greeting-cut": [900] },
     doubleTalkOverlapMs: [120, 650],
   });
