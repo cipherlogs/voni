@@ -5,8 +5,9 @@
  *
  * Reads one scoreboard artifact and prints the triage view: run identity,
  * scenario verdicts, gates/sub-scores, per-session Call-trace turn rows
- * (gap/cut/heard/resume/aside), drain/aside/hang-up numbers, playout timings
- * and only the last failures. `--events <path>` summarizes the eval's opt-in
+ * (gap/cut/heard/resume/aside) with each turn's latency split and band, the
+ * ordinary vs post-cut summary (`perceived` report-only), drain/aside/hang-up
+ * numbers, playout timings and only the last failures. `--events <path>` summarizes the eval's opt-in
  * JSONL stream (`eval:demo-agent -- --events <path>`). `--json` prints the
  * same compact structure for a machine.
  *
