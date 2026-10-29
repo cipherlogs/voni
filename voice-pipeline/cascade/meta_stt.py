@@ -28,6 +28,17 @@ speech leg through the ticket-22 ``CallRungs`` seam and fails visibly. A
 ``1011`` whose reason is the vendor's max session duration is a planned
 reconnect: a new session, no failure recorded, no retry budget spent.
 
+Session lifetime belongs to the vendor: a realtime session runs up to
+``stt.session_max_ms`` (60 minutes) and has no resume token. The adapter
+replaces the socket before that bound at a ``speechComplete`` boundary, and the
+replacement handshake (bounded by ``stt.handshake_ms``) is the margin, so no
+second number is invented. An idle-input close is a session end too, never an
+audio-path error; the client's PCM silence is what normally prevents it. Every
+session end — normal, lifetime, idle, dropped, deliberate or failed — is
+recorded in the speech-session ledger (:class:`SessionEnding`), because a
+dropped socket and our deliberate end both stop input but only the deliberate
+end drains, sends ``endStream`` and reads to the vendor's ``1000``.
+
 Turns can overlap: a later ``speechStart`` may arrive before an earlier
 ``speechComplete``. The adapter keeps one :class:`cascade.turn_state.TurnState`
 per ``(session epoch, provider turnId)``, so both turns stay distinct and a
@@ -50,10 +61,15 @@ from enum import Enum
 from typing import Any, Protocol
 from urllib.parse import urlencode
 
-from cascade.failures import FailureClass, FailureVerdict, classify_stt
+from cascade.failures import (
+    SESSION_LIMIT,
+    FailureClass,
+    FailureVerdict,
+    classify_stt,
+)
 from cascade.testing.clock import RealClock
 from cascade.thresholds import require_bound
-from cascade.turn_state import TurnState, TurnStateStore
+from cascade.turn_state import TurnPhase, TurnState, TurnStateStore
 from cascade.voice_binding import LOCALES
 from providers import FinalTranscript, PartialTranscript, StreamingSTT
 
@@ -61,6 +77,10 @@ _log = logging.getLogger(__name__)
 
 #: The registry bound that caps the wait for the acknowledgement (ticket 27).
 HANDSHAKE_BOUND = "stt.handshake_ms"
+
+#: The vendor's realtime session length (ticket 32). A planned reconnect must
+#: land before it; there is no resume token, so a new socket is a new session.
+SESSION_MAX_BOUND = "stt.session_max_ms"
 
 REALTIME_URL = "wss://api.meta.ai/v1/asr/realtime"
 MODEL = "muse-voice-transcribe-1.0"
@@ -111,6 +131,16 @@ _MAX_DURATION_REASONS = (
     "session duration exceeded",
 )
 
+#: Close reasons that mean the vendor ended a session for lack of input. The
+#: client sends PCM silence during a pause so this should not fire; when it
+#: does, it is a session end, never an audio-path error.
+_IDLE_REASONS = (
+    "idle",
+    "no audio",
+    "no input",
+    "inactivity",
+)
+
 SocketFactory = Callable[[str, dict[str, str]], Awaitable[Any]]
 
 
@@ -149,6 +179,42 @@ class CloseDecision:
     action: CloseAction
     retried: bool = False
     backoff: bool = False
+
+
+class SessionEndKind(str, Enum):
+    """Why a speech session stopped taking input.
+
+    A planned reconnect (the 60-minute limit) and an idle close are session
+    ends, never failures. A dropped socket also ends input, but it is not our
+    deliberate end: no ``endStream`` could be sent on it. The difference has to
+    survive the call, so it is recorded rather than inferred later.
+    """
+
+    NORMAL = "normal"
+    LIFETIME = "lifetime"
+    IDLE = "idle"
+    DROPPED = "dropped"
+    DELIBERATE = "deliberate"
+    FAILED = "failed"
+
+
+@dataclass(frozen=True)
+class SessionEnding:
+    """One entry in the speech-session ledger.
+
+    ``planned`` is true for a session end that must not count as a failure:
+    the lifetime limit and the idle close. ``end_stream_sent`` is true only
+    when the deliberate end drained, sent ``endStream`` and read the vendor's
+    close on this session.
+    """
+
+    epoch: int
+    kind: SessionEndKind
+    code: int | str | None
+    reason: str
+    at: float
+    planned: bool = False
+    end_stream_sent: bool = False
 
 
 class SpeechCallFailure(RuntimeError):
@@ -320,11 +386,14 @@ class MetaStreamingSTT(StreamingSTT):
         keyterms: Iterable[str] = (),
         handshake_timeout_s: float | None = None,
         clock: Any = None,
+        ledger: Any = None,
         leg_failures: SpeechLegFailures | None = None,
         alert: Callable[[FailureVerdict, str], None] | None = None,
     ) -> None:
         self._call_id = call_id
         self._api_key = api_key or os.environ.get(API_KEY_ENV)
+        self._session_started_at: float | None = None
+        self._session_endings: list[SessionEnding] = []
         self._socket_factory = socket_factory or _default_socket_factory
         self._keywords = keywords(keyterms)
         self._language_bias: tuple[str, ...] | None = None
@@ -336,6 +405,7 @@ class MetaStreamingSTT(StreamingSTT):
         self._handshake_timeout_s = handshake_timeout_s
         self._failure_reason: str | None = None
         self._clock = clock if clock is not None else RealClock()
+        self._ledger = ledger
         # The adapter owns the epoch; the store starts one below the first
         # session so ``open()`` advances both in lockstep to 0.
         self._turns = TurnStateStore(
@@ -425,6 +495,56 @@ class MetaStreamingSTT(StreamingSTT):
         return self._failure_reason
 
     @property
+    def session_ledger(self) -> tuple[SessionEnding, ...]:
+        """How each speech session ended, in order (ticket 32).
+
+        This is the speech half of the call ledger: it keeps the difference
+        between a planned reconnect, an idle close, a dropped socket and our
+        deliberate end, which the call-level counters do not carry.
+        """
+        return tuple(self._session_endings)
+
+    @property
+    def session_limit_s(self) -> float:
+        """The vendor's session length, read from ``stt.session_max_ms``."""
+        return float(require_bound(SESSION_MAX_BOUND)) / 1000.0
+
+    @property
+    def session_elapsed_s(self) -> float:
+        """Seconds since the current session connected, on the injected clock."""
+        if self._session_started_at is None:
+            return 0.0
+        return max(0.0, float(self._clock()) - self._session_started_at)
+
+    @property
+    def session_remaining_s(self) -> float:
+        """Seconds left before the vendor's session limit."""
+        return max(0.0, self.session_limit_s - self.session_elapsed_s)
+
+    @property
+    def turn_in_flight(self) -> bool:
+        """Whether a provider turn has started and not yet been finalised.
+
+        Turns may overlap, so a completed turn is not a boundary while a later
+        ``speechStart`` still has no ``speechComplete``. A planned reconnect
+        waits for that one too; cutting it would lose its audio mid-speech.
+        """
+        return any(
+            state.phase in (TurnPhase.SPEAKING, TurnPhase.ENDPOINTED)
+            for state in self._turns.turns()
+        )
+
+    @property
+    def reconnect_due(self) -> bool:
+        """Whether a planned reconnect can no longer wait for another turn.
+
+        The margin is the bounded handshake (``stt.handshake_ms``): replacing
+        the session only helps if the new one can be acknowledged before the
+        old one's limit. No separate margin number exists, so none is invented.
+        """
+        return self._acked and self.session_remaining_s <= self.handshake_timeout_s
+
+    @property
     def handshake_timeout_s(self) -> float:
         """The bounded wait for the ack: the registry bound, in seconds.
 
@@ -482,6 +602,8 @@ class MetaStreamingSTT(StreamingSTT):
         }
 
         socket = await self._socket_factory(url, {})
+        # The vendor's limit counts from the connection, not from the ack.
+        self._session_started_at = float(self._clock())
         try:
             await socket.send(json.dumps(frame))
             self._frames = socket.__aiter__()
@@ -639,14 +761,9 @@ class MetaStreamingSTT(StreamingSTT):
             if frames is None:
                 return
             try:
-                async for raw in frames:
-                    mapped = self.map_event(raw, epoch=source_epoch)
-                    if mapped is not None:
-                        yield mapped
+                raw = await frames.__anext__()
+            except StopAsyncIteration:
                 return
-            except MetaStreamError:
-                # The vendor's error event fails the call; it is not a close.
-                raise
             except Exception as error:
                 decision = await self.handle_close(
                     getattr(error, "code", None),
@@ -658,6 +775,24 @@ class MetaStreamingSTT(StreamingSTT):
                 ):
                     continue
                 return
+            # A vendor ``error`` event is not a close: ``map_event`` raises
+            # ``MetaStreamError`` and it propagates untouched.
+            mapped = self.map_event(raw, epoch=source_epoch)
+            if mapped is None:
+                continue
+            yield mapped
+            # A turn boundary is the only safe place to replace a session:
+            # ``speechEnd`` does not carry the final text, so the planned
+            # reconnect waits for ``speechComplete``.
+            if (
+                isinstance(mapped, SpeechComplete)
+                and self.reconnect_due
+                and not self.turn_in_flight
+            ):
+                await self._planned_reconnect(
+                    classify_stt(SESSION_LIMIT),
+                    kind=SessionEndKind.LIFETIME,
+                )
 
     async def handle_close(self, code: Any = None, *, reason: str = "") -> CloseDecision:
         """Classify one close and act on it, once.
@@ -675,10 +810,25 @@ class MetaStreamingSTT(StreamingSTT):
         if isinstance(code, int):
             self._last_close_code = code
 
+        # The vendor's reason names the cause. Idle input ends the session; it
+        # is not our pacing bug (1008) and not a dropped socket (no code), so
+        # it is handled before the code table can call it either.
+        if is_idle_close(reason):
+            return await self._planned_reconnect(verdict, kind=SessionEndKind.IDLE)
+
+        # A close with no code is a dropped socket: input ends here, and no
+        # end-of-stream could have been sent on it. The retry policy below
+        # still applies; the ledger keeps the two facts apart.
+        if code is None:
+            self._record_ending(
+                SessionEndKind.DROPPED, None, "socket dropped without a close code"
+            )
+
         if verdict.failure_class is FailureClass.DO_NOT_OPEN:
             if code == 1000:
                 # The vendor closed normally. The socket is left for the
                 # deliberate ``close()`` to make its one end-of-stream attempt.
+                self._record_ending(SessionEndKind.NORMAL, code, verdict.reason)
                 return CloseDecision(verdict=verdict, action=CloseAction.CLEAN)
             await self._close_socket()
             raise await self._fail(
@@ -718,9 +868,19 @@ class MetaStreamingSTT(StreamingSTT):
             verdict, f"speech close {code!r}: {verdict.reason}"
         )
 
-    async def _planned_reconnect(self, verdict: FailureVerdict) -> CloseDecision:
+    async def _planned_reconnect(
+        self,
+        verdict: FailureVerdict,
+        *,
+        kind: SessionEndKind = SessionEndKind.LIFETIME,
+    ) -> CloseDecision:
         """A session limit, not a failure: open a new session with no penalty."""
         await self._close_socket()
+        self._record_ending(kind, verdict.code, verdict.reason, planned=True)
+        if self._ledger is not None:
+            # The call ledger's one reconnect mark; the session ledger above
+            # carries every entry, including the ones a mark cannot count.
+            self._ledger.mark("reconnect")
         if self._language_bias is None:  # pragma: no cover - close implies open
             self._needs_reconnect = True
             return CloseDecision(
@@ -728,6 +888,28 @@ class MetaStreamingSTT(StreamingSTT):
             )
         await self._reopen()
         return CloseDecision(verdict=verdict, action=CloseAction.PLANNED_RECONNECT)
+
+    def _record_ending(
+        self,
+        kind: SessionEndKind,
+        code: int | str | None,
+        reason: str,
+        *,
+        planned: bool = False,
+        end_stream_sent: bool = False,
+    ) -> None:
+        """Append one speech-session ledger entry, stamped by the call clock."""
+        self._session_endings.append(
+            SessionEnding(
+                epoch=self._epoch,
+                kind=kind,
+                code=code,
+                reason=reason,
+                at=float(self._clock()),
+                planned=planned,
+                end_stream_sent=end_stream_sent,
+            )
+        )
 
     async def _reopen(self) -> None:
         """Replace the dead session with a new one, never with ``endStream``."""
@@ -752,6 +934,7 @@ class MetaStreamingSTT(StreamingSTT):
             verdict=verdict, stage="stream", reason=reason, backoff=backoff
         )
         self._failures.append(verdict)
+        self._record_ending(SessionEndKind.FAILED, verdict.code, reason)
         if verdict.opens_breaker:
             self._breaker_opens.append(verdict)
             if self._leg_failures is not None:
@@ -917,9 +1100,11 @@ class MetaStreamingSTT(StreamingSTT):
             await _close_quietly(socket)
             return
 
+        end_stream_sent = False
         try:
             await self._drain_audio()
             await socket.send(END_STREAM_FRAME)
+            end_stream_sent = True
         except Exception as error:
             _log.warning(
                 "meta speech session %s: endStream could not be sent (%s)",
@@ -928,6 +1113,12 @@ class MetaStreamingSTT(StreamingSTT):
             )
         await self._await_vendor_close(frames)
         await _close_quietly(socket)
+        self._record_ending(
+            SessionEndKind.DELIBERATE,
+            self._last_close_code,
+            "deliberate end: drained, endStream, read to the vendor close",
+            end_stream_sent=end_stream_sent,
+        )
 
     async def _drain_audio(self) -> None:
         """Wait out the audio already handed to the vendor, bounded by the lead."""
@@ -985,6 +1176,17 @@ def language_bias(codes: Iterable[str]) -> tuple[str, ...]:
         if locale.language not in names:
             names.append(locale.language)
     return tuple(names)
+
+
+def is_idle_close(reason: str) -> bool:
+    """Whether a close reason names the vendor's idle-input session end.
+
+    Like the duration limit, the vendor sends free text, so the match is
+    case- and whitespace-insensitive. A reason that does not name idle input
+    is an ordinary close and is never guessed into a session end.
+    """
+    text = " ".join(str(reason).lower().split())
+    return any(phrase in text for phrase in _IDLE_REASONS)
 
 
 def is_max_duration(reason: str) -> bool:
