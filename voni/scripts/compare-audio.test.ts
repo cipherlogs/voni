@@ -2,10 +2,15 @@
  * The comparison CLI runs on three saved files and prints one table. These
  * tests drive it as a user would: a missing or unreadable file must fail before
  * any table is printed, and three readable files must produce the table.
+ *
+ * Floor mode (`--floor`) is also driven through the CLI, because that is where
+ * the committed floor is loaded: a subject that matches the floor clears it, a
+ * subject that is worse fails and names the axis, and a missing required flag
+ * is a usage error rather than a verdict.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -145,4 +150,81 @@ test("three saved files print one table with every metric and no live call", () 
   assert.ok(result.stdout.includes(files.platform));
   assert.ok(result.stdout.includes(files.delivered));
   assert.doesNotMatch(result.stderr, /ASSEMBLYAI|fetch|session/i, "no call is placed");
+});
+
+/** The committed floor, copied to a working directory as a subject capture. */
+function floorCopy(dir: string, name: string): string {
+  const source = new URL("../evidence/vendor-floor/anna-en.wav", import.meta.url);
+  const path = join(dir, name);
+  writeFileSync(path, readFileSync(source));
+  return path;
+}
+
+/** The same PCM16 file at a different gain, so an axis can be made worse. */
+function gainWav(bytes: Buffer, gain: number): Buffer {
+  const out = Buffer.from(bytes);
+  const dataStart = out.indexOf("data") + 8;
+  for (let offset = dataStart; offset < out.length; offset += 2) {
+    out.writeInt16LE(Math.round(out.readInt16LE(offset) * gain), offset);
+  }
+  return out;
+}
+
+test("--floor clears a subject that matches the committed vendor floor", () => {
+  const dir = mkdtempSync(join(tmpdir(), "compare-floor-"));
+  const reference = floorCopy(dir, "reference.wav");
+  const delivered = floorCopy(dir, "delivered.wav");
+  const result = run(["--floor", "--reference", reference, "--delivered", delivered]);
+
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  assert.match(result.stdout, /Floor mode/);
+  assert.match(result.stdout, /anna\/en at .*evidence\/vendor-floor\/anna-en\.wav/);
+  assert.match(result.stdout, /PASSES against the vendor floor/);
+  assert.doesNotMatch(result.stdout, /Voice-parity audio comparison/, "no table in floor mode");
+});
+
+test("--floor fails a subject that is worse than the floor and names the axis", () => {
+  const dir = mkdtempSync(join(tmpdir(), "compare-floor-worse-"));
+  const reference = floorCopy(dir, "reference.wav");
+  const delivered = join(dir, "delivered-quiet.wav");
+  writeFileSync(delivered, gainWav(readFileSync(reference), 0.5));
+  const result = run(["--floor", "--reference", reference, "--delivered", delivered]);
+
+  assert.equal(result.status, 1, result.stderr + result.stdout);
+  assert.match(result.stdout, /FAILS against the vendor floor/);
+  assert.match(result.stdout, /worse on level/);
+  assert.match(result.stdout, /anna-en\.wav/);
+});
+
+test("--floor without a reference is a usage error, not a verdict", () => {
+  const dir = mkdtempSync(join(tmpdir(), "compare-floor-usage-"));
+  const delivered = floorCopy(dir, "delivered.wav");
+  const result = run(["--floor", "--delivered", delivered]);
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /--reference is required/);
+  assert.equal(result.stdout.trim(), "");
+});
+
+test("--floor with a platform file prints the table and then the verdict", () => {
+  const dir = mkdtempSync(join(tmpdir(), "compare-floor-table-"));
+  const reference = floorCopy(dir, "reference.wav");
+  const platform = floorCopy(dir, "platform.wav");
+  const delivered = floorCopy(dir, "delivered.wav");
+  const result = run([
+    "--floor",
+    "--reference",
+    reference,
+    "--platform",
+    platform,
+    "--delivered",
+    delivered,
+  ]);
+
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  assert.match(result.stdout, /Voice-parity audio comparison/);
+  assert.match(result.stdout, /Floor mode/);
+  assert.ok(
+    result.stdout.indexOf("Floor mode") > result.stdout.indexOf("Voice-parity audio comparison"),
+  );
 });
