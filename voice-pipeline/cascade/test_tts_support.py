@@ -69,6 +69,43 @@ def pcm(*values: int) -> bytes:
     return b"".join(int(value).to_bytes(2, "little", signed=True) for value in values)
 
 
+def pcm_ms(
+    duration_ms: int,
+    *,
+    sample: int = 1,
+    sample_rate: int = 24000,
+    bytes_per_sample: int = 2,
+) -> bytes:
+    """Exactly ``duration_ms`` of one repeated sample, in whole samples.
+
+    The vendor's ``FlushDone.audio_duration_ms`` is checked against the bytes
+    received, so a fixture that reports a duration must carry the audio that
+    duration means at the session's rate and sample width.
+    """
+    count = duration_ms * sample_rate // 1000
+    return int(sample).to_bytes(bytes_per_sample, "little", signed=True) * count
+
+
+def audio_ms(
+    duration_ms: int,
+    *,
+    flush_id: int = 0,
+    sample: int = 1,
+    sample_rate: int = 24000,
+    bytes_per_sample: int = 2,
+) -> str:
+    """One ``Audio`` frame holding exactly ``duration_ms`` of audio."""
+    return audio(
+        pcm_ms(
+            duration_ms,
+            sample=sample,
+            sample_rate=sample_rate,
+            bytes_per_sample=bytes_per_sample,
+        ),
+        flush_id=flush_id,
+    )
+
+
 def audio(payload: bytes, *, flush_id: int = 0) -> str:
     """One ``Audio`` frame: base64 codec bytes under their request's id."""
     return json.dumps(
@@ -80,15 +117,16 @@ def audio(payload: bytes, *, flush_id: int = 0) -> str:
     )
 
 
-def flush_done(*, flush_id: int = 0, audio_duration_ms: int = 1200) -> str:
-    """One ``FlushDone`` frame: that request's audio has left the vendor."""
-    return json.dumps(
-        {
-            "type": "FlushDone",
-            "flush_id": flush_id,
-            "audio_duration_ms": audio_duration_ms,
-        }
-    )
+def flush_done(*, flush_id: int = 0, audio_duration_ms: int | None = 1200) -> str:
+    """One ``FlushDone`` frame: that request's audio has left the vendor.
+
+    ``audio_duration_ms=None`` omits the duration, for a session that does not
+    report one.
+    """
+    frame: dict[str, Any] = {"type": "FlushDone", "flush_id": flush_id}
+    if audio_duration_ms is not None:
+        frame["audio_duration_ms"] = audio_duration_ms
+    return json.dumps(frame)
 
 
 def words(*entries: tuple[str, int, int]) -> list[dict[str, Any]]:

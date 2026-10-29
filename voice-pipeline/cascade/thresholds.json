@@ -90,6 +90,15 @@
       "date": "2026-10-29",
       "note": "Flushing per token is forbidden; this is the sentence ceiling."
     },
+    "tts.audio_loss_tolerance_ms": {
+      "unit": "ms",
+      "gate": "tts.format-echo-and-loss",
+      "ticket": "50",
+      "value": 5,
+      "source": "spec: FlushDone.audio_duration_ms is compared with the bytes received and a difference beyond a few milliseconds fails the call as audio loss; 5 ms covers the vendor's whole-millisecond report rounding (at most 1 ms) and leaves every real dropped frame visible",
+      "date": "2026-10-29",
+      "note": "One 24 kHz 16-bit audio frame is normally 10-20 ms, so a lost frame is far outside this bound. Not to be restated in code."
+    },
     "probe.model_max_completion_tokens": {
       "unit": "tokens",
       "gate": "breaker.probe",

@@ -12,10 +12,11 @@ import unittest
 
 from cascade.test_tts_support import (
     audio,
+    audio_ms,
     begin,
     flush_done,
     open_session,
-    pcm,
+    pcm_ms,
     sent_types,
     termination,
 )
@@ -33,8 +34,9 @@ class FinalFlushTests(unittest.TestCase):
         tts, _ = open_session(
             [
                 begin(),
-                audio(pcm(1), flush_id=0),
+                audio_ms(800, flush_id=0),
                 flush_done(flush_id=0, audio_duration_ms=800),
+                audio_ms(120, flush_id=1),
                 flush_done(flush_id=1, audio_duration_ms=120),
                 termination(total_input_char_length=96, billed_characters=96),
             ]
@@ -53,8 +55,9 @@ class FinalFlushTests(unittest.TestCase):
         tts, factory = open_session(
             [
                 begin(),
-                audio(pcm(1), flush_id=0),
+                audio_ms(800, flush_id=0),
                 flush_done(flush_id=0, audio_duration_ms=800),
+                audio_ms(120, flush_id=1),
                 flush_done(flush_id=1, audio_duration_ms=120),
                 termination(),
             ]
@@ -68,11 +71,11 @@ class FinalFlushTests(unittest.TestCase):
         )
 
     def test_audio_delivered_after_terminate_is_kept_not_dropped(self):
-        residual = pcm(11, 12)
+        residual = pcm_ms(120)
         tts, _ = open_session(
             [
                 begin(),
-                audio(pcm(1), flush_id=0),
+                audio_ms(800, flush_id=0),
                 flush_done(flush_id=0, audio_duration_ms=800),
                 audio(residual, flush_id=1),
                 flush_done(flush_id=1, audio_duration_ms=120),
@@ -84,7 +87,7 @@ class FinalFlushTests(unittest.TestCase):
         record = asyncio.run(tts.terminate())
 
         self.assertEqual(record.residual_audio, residual)
-        self.assertEqual(record.billing.audio_bytes, len(pcm(1)) + len(residual))
+        self.assertEqual(record.billing.audio_bytes, len(pcm_ms(800)) + len(residual))
 
 
 class BillingTests(unittest.TestCase):
@@ -92,7 +95,7 @@ class BillingTests(unittest.TestCase):
         tts, _ = open_session(
             [
                 begin(),
-                audio(pcm(1), flush_id=0),
+                audio_ms(800, flush_id=0),
                 flush_done(flush_id=0, audio_duration_ms=800),
                 termination(**summary),
             ]
@@ -148,7 +151,7 @@ class UnterminatedTests(unittest.TestCase):
         tts, _ = open_session(
             [
                 begin(),
-                audio(pcm(1), flush_id=0),
+                audio_ms(800, flush_id=0),
                 flush_done(flush_id=0, audio_duration_ms=800),
             ]
         )
@@ -160,13 +163,13 @@ class UnterminatedTests(unittest.TestCase):
         self.assertFalse(tts.billing.measured)
         self.assertNotEqual(tts.billing.characters, 0)
         self.assertIn("unterminated", tts.billing.source)
-        self.assertEqual(tts.billing.audio_bytes, len(pcm(1)))
+        self.assertEqual(tts.billing.audio_bytes, len(pcm_ms(800)))
 
     def test_close_after_terminate_keeps_the_measured_billing(self):
         tts, _ = open_session(
             [
                 begin(),
-                audio(pcm(1), flush_id=0),
+                audio_ms(800, flush_id=0),
                 flush_done(flush_id=0, audio_duration_ms=800),
                 termination(billed_characters=12),
             ]

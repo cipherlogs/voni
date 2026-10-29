@@ -17,11 +17,10 @@ from cascade.assemblyai_tts import (
     schedule,
 )
 from cascade.test_tts_support import (
-    audio,
+    audio_ms,
     begin,
     flush_done,
     open_session,
-    pcm,
     termination,
     word_boundaries,
     words,
@@ -39,14 +38,14 @@ def two_sentences(*, status):
     """A recorded reply where each sentence has its own boundaries and audio."""
     return [
         begin(),
-        audio(pcm(1), flush_id=0),
+        audio_ms(700, flush_id=0),
         flush_done(flush_id=0, audio_duration_ms=700),
         word_boundaries(
             flush_id=0,
             audio_start_ms=0,
             entries=words(("hello", 0, 300), ("there.", 300, 700)),
         ),
-        audio(pcm(2), flush_id=1),
+        audio_ms(400, flush_id=1),
         flush_done(flush_id=1, audio_duration_ms=400),
         word_boundaries(
             flush_id=1,
@@ -79,11 +78,11 @@ class CaptureTests(unittest.TestCase):
         tts, _ = open_session(
             [
                 begin(),
-                audio(pcm(1), flush_id=0),
+                audio_ms(700, flush_id=0),
                 flush_done(flush_id=0, audio_duration_ms=700),
                 # The next request's audio arrives before the first request's
                 # boundaries, as the vendor documents it can.
-                audio(pcm(2), flush_id=1),
+                audio_ms(400, flush_id=1),
                 word_boundaries(
                     flush_id=0,
                     audio_start_ms=0,
@@ -196,7 +195,7 @@ class IncompleteBoundaryResumeTests(unittest.TestCase):
         tts, _ = open_session(
             [
                 begin(),
-                audio(pcm(1), flush_id=0),
+                audio_ms(700, flush_id=0),
                 flush_done(flush_id=0, audio_duration_ms=700),
                 termination(word_boundaries_status="complete"),
             ]
