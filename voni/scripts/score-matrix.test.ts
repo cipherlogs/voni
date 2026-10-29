@@ -68,6 +68,12 @@ function scoreArtifact(voice: string, probes: Record<string, number>, redacted: 
   };
 }
 
+test("the matrix spawn order and the row order share one featured-first rule", () => {
+  const source = readFileSync(SCRIPT, "utf8");
+  assert.match(source, /orderFeaturedFirst/, "the CLI orders its spawn list with the shared rule");
+  assert.doesNotMatch(source, /function featuredFirst\(/, "there is no second copy of the ordering rule");
+});
+
 test("dry-run matrix writes one subject row per demo voice and a table that names each subject", () => {
   const dir = mkdtempSync(join(tmpdir(), "matrix-"));
   const out = join(dir, "matrix.json");

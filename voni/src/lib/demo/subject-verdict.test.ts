@@ -20,6 +20,7 @@ import {
 } from "./scoreboard";
 import {
   formatMatrixTable,
+  orderFeaturedFirst,
   subjectGateVerdict,
   subjectRowKey,
   buildRegressionMatrix,
@@ -215,6 +216,153 @@ test("a subject with no artifact is unresolved with a named reason, never a pass
   assert.equal(missingRow?.verdict, null);
   assert.match(missingRow?.detail ?? "", /no run artifact/);
   assert.notEqual(missingRow?.status, "PASS");
+});
+
+test("the featured subject is fixed to anna/en, not a flag: lola cannot be judged first", () => {
+  const anna = resolveSubject({ voice: DEFAULT_GATE_VOICE });
+  const lola = resolveSubject({ voice: "lola" });
+
+  // Re-ordering the matrix by naming `lola` as the featured subject is the
+  // exact bug W5 is about; it is refused by name, not silently accepted.
+  assert.throws(
+    () =>
+      buildRegressionMatrix({
+        featuredSubject: lola,
+        entries: [
+          { subject: lola, artifact: runFor(lola) },
+          { subject: anna, artifact: runFor(anna) },
+        ],
+      }),
+    /featured subject/,
+  );
+  assert.throws(
+    () =>
+      buildRegressionMatrix({
+        featuredSubject: lola,
+        entries: [{ subject: lola, artifact: runFor(lola) }],
+      }),
+    /demo anna \(en, browser\)/,
+    "the refusal names the subject that must lead",
+  );
+});
+
+test("one ordering function puts the featured subject first and keeps the rest in order", () => {
+  const anna = resolveSubject({ voice: DEFAULT_GATE_VOICE });
+  const lola = resolveSubject({ voice: "lola" });
+  const tenant = resolveSubject({ agent: "agent_en_1", voice: "alba", locale: "en" });
+
+  assert.deepEqual(
+    orderFeaturedFirst([lola, tenant, anna], anna, (subject) => subject).map(subjectRowKey),
+    [subjectRowKey(anna), subjectRowKey(lola), subjectRowKey(tenant)],
+    "the featured subject leads; the rest keep their order",
+  );
+  assert.deepEqual(
+    orderFeaturedFirst([anna, lola], anna, (subject) => subject).map(subjectRowKey),
+    [subjectRowKey(anna), subjectRowKey(lola)],
+    "a list that already leads with the featured subject is unchanged",
+  );
+  // The same function guards the measure order: naming lola cannot re-point it.
+  assert.throws(
+    () => orderFeaturedFirst([anna, lola], lola, (subject) => subject),
+    /featured subject/,
+  );
+});
+
+test("a reordering that judged lola first fails: the featured row leads the results", () => {
+  const anna = resolveSubject({ voice: DEFAULT_GATE_VOICE });
+  const lola = resolveSubject({ voice: "lola" });
+  const matrix = buildRegressionMatrix({
+    entries: [
+      { subject: lola, artifact: runFor(lola, { runId: "run-lola" }) },
+      {
+        subject: anna,
+        artifact: runFor(anna, {
+          runId: "run-anna",
+          gates: [{ name: "barge-in-cut", status: "FAIL", detail: "cut 1841ms exceeds 1500ms" }],
+        }),
+      },
+    ],
+  });
+
+  assert.deepEqual(
+    matrix.subjects.map(subjectRowKey),
+    [subjectRowKey(anna), subjectRowKey(lola)],
+    "the featured subject leads even when the caller listed it last",
+  );
+  assert.equal(matrix.results[0]?.isFeatured, true);
+  assert.equal(matrix.results[1]?.status, "BLOCKED", "lola carries no verdict behind a failing anna");
+  assert.equal(matrix.results[1]?.verdict, null);
+  assert.deepEqual(matrix.ordering.blocked, [subjectRowKey(lola)]);
+
+  const dataRows = formatMatrixTable(matrix).split("\n").slice(2);
+  assert.match(dataRows[0] ?? "", /demo anna \(en, browser\)/);
+  assert.match(dataRows[1] ?? "", /BLOCK\s+demo lola \(es, browser\).*featured subject demo anna/);
+});
+
+test("blocked rows are recorded while the featured subject has not passed, whatever blocked them", () => {
+  const anna = resolveSubject({ voice: DEFAULT_GATE_VOICE });
+  const lola = resolveSubject({ voice: "lola" });
+  const matrix = buildRegressionMatrix({
+    entries: [
+      {
+        subject: anna,
+        artifact: runFor(anna, {
+          gates: [{ name: "barge-in-cut", status: "FAIL", detail: "cut 1841ms exceeds 1500ms" }],
+        }),
+      },
+      {
+        subject: lola,
+        artifact: runFor(lola, {
+          eligibility: { eligible: false, reasons: ["a provider fallback at connect"] },
+        }),
+      },
+    ],
+  });
+
+  assert.equal(matrix.ordering.featuredStatus, "FAIL");
+  assert.deepEqual(
+    matrix.ordering.blocked,
+    [subjectRowKey(lola)],
+    "the artifact records every row the shut gate left unjudged, not only the ones it re-labelled",
+  );
+  assert.match(matrix.ordering.detail, /1 subject not judged/);
+  assert.match(formatMatrixTable(matrix), /BLOCK\s+demo lola \(es, browser\).*fallback/);
+});
+
+test("once the featured subject passes, each row is judged from its own artifact", () => {
+  const anna = resolveSubject({ voice: DEFAULT_GATE_VOICE });
+  const lola = resolveSubject({ voice: "lola" });
+  const tenant = resolveSubject({ agent: "agent_en_1", voice: "alba", locale: "en" });
+  const matrix = buildRegressionMatrix({
+    entries: [
+      { subject: lola, artifact: runFor(lola, { runId: "run-lola" }) },
+      { subject: anna, artifact: runFor(anna, { runId: "run-anna" }) },
+      {
+        subject: tenant,
+        artifact: runFor(tenant, {
+          runId: "run-tenant",
+          gates: [{ name: "barge-in-cut", status: "FAIL", detail: "cut 1841ms exceeds 1500ms" }],
+        }),
+      },
+      { subject: resolveSubject({ voice: "estelle" }) },
+    ],
+  });
+
+  assert.equal(matrix.ordering.featuredStatus, "PASS");
+  assert.deepEqual(matrix.ordering.blocked, []);
+  const byVoice = new Map(
+    matrix.results.map((row) => [row.subject.agent.kind === "demo" ? row.subject.agent.voice : "tenant", row]),
+  );
+  assert.equal(byVoice.get("lola")?.status, "PASS");
+  assert.equal(byVoice.get("lola")?.verdict?.runId, "run-lola");
+  assert.equal(byVoice.get("tenant")?.status, "FAIL", "a later row keeps its own failing gate");
+  assert.equal(byVoice.get("tenant")?.verdict?.runId, "run-tenant");
+  assert.equal(byVoice.get("estelle")?.status, "MISSING", "a missing run stays missing, not judged");
+  assert.match(
+    matrix.ordering.detail,
+    /featured subject demo anna \(en, browser\) passed; 2 other subjects judged after it/,
+    "the recorded detail counts the rows actually judged after the featured one",
+  );
 });
 
 test("a carried verdict is constructed and observed to fail", () => {
