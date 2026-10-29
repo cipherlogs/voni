@@ -30,8 +30,10 @@ Stream parsing lives in :class:`MetaLLMTurn` and the SSE reader: content deltas
 are the only speech, ``reasoning_content`` is recorded for usage and telemetry
 and never yielded, and the first content delta marks ``first_token``. The turn
 record also holds usage, the accumulated tool calls and the finish disposition.
-Argument schema validation and the failure/retry policy are tickets 40 and 42;
-the seams they fill are documented where they are.
+Tool arguments are parsed and validated against the tool's declared schema
+before a request is emitted; a correctable failure becomes a ``tool`` result the
+model fixes next request, while an unenforceable schema fails the turn. The
+failure/retry policy is ticket 42; the seam it fills is documented where it is.
 
 The per-turn record is how a caller reads what the stream produced without
 re-parsing it: pass a :class:`MetaLLMTurn` to ``complete()`` (or read
@@ -44,6 +46,7 @@ import codecs
 import hashlib
 import json
 import os
+import re
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
@@ -75,6 +78,72 @@ TOOL_FINISH_REASONS = frozenset({"tool_calls", "function_call"})
 #: The ledger counter a denied (never-executed) tool call increments.
 TOOL_DENIED_COUNTER = "tool_denied"
 
+#: Stable codes a withheld call carries back to the model. A correctable failure
+#: has a call id, so the tool loop can answer it with a ``role: "tool"`` result
+#: and the model can fix the call on its next request.
+TOOL_ARGUMENTS_MISSING = "missing_arguments"
+TOOL_ARGUMENTS_INVALID_JSON = "invalid_json"
+TOOL_ARGUMENTS_NOT_AN_OBJECT = "not_an_object"
+TOOL_ARGUMENTS_SCHEMA = "schema_violation"
+TOOL_CALL_ID_MISSING = "missing_call_id"
+
+#: The codes that describe something the model can correct.
+TOOL_FAILURE_CODES = frozenset(
+    {
+        TOOL_ARGUMENTS_MISSING,
+        TOOL_ARGUMENTS_INVALID_JSON,
+        TOOL_ARGUMENTS_NOT_AN_OBJECT,
+        TOOL_ARGUMENTS_SCHEMA,
+    }
+)
+
+#: Schema keywords the cascade enforces. An enforced subset is deliberate: a
+#: keyword outside it raises :class:`ToolSchemaError` by name rather than
+#: letting a call through unvalidated ("A tool that cannot be represented
+#: refuses the cascade by name", ticket 57).
+_ANNOTATION_KEYWORDS = frozenset(
+    {
+        "$comment",
+        "$id",
+        "$schema",
+        "default",
+        "deprecated",
+        "description",
+        "examples",
+        "format",
+        "readOnly",
+        "title",
+        "writeOnly",
+    }
+)
+_VALIDATION_KEYWORDS = frozenset(
+    {
+        "additionalProperties",
+        "allOf",
+        "anyOf",
+        "const",
+        "enum",
+        "exclusiveMaximum",
+        "exclusiveMinimum",
+        "items",
+        "maxItems",
+        "maxLength",
+        "maxProperties",
+        "maximum",
+        "minItems",
+        "minLength",
+        "minProperties",
+        "minimum",
+        "not",
+        "oneOf",
+        "pattern",
+        "properties",
+        "required",
+        "type",
+    }
+)
+_SUPPORTED_KEYWORDS = _ANNOTATION_KEYWORDS | _VALIDATION_KEYWORDS
+
 #: Deployment secret that salts the model identifier. The salt never leaves the
 #: process: the request carries the digest, not the salt (ticket 44).
 IDENTIFIER_SALT_ENV = "META_IDENTIFIER_SALT"
@@ -101,10 +170,24 @@ class ToolCallIdentityError(MetaLLMStreamError):
 
 
 class ToolArgumentsError(ValueError):
-    """The accumulated argument text is not a JSON object.
+    """The accumulated argument text cannot be handed to a tool.
 
-    Ticket 40 turns this into a tool failure the model can correct; until then
-    the call is withheld so it can never run with invented empty arguments.
+    The model can correct every failure this type describes (malformed JSON, a
+    non-object value, arguments outside the declared schema), so it is returned
+    as a tool result rather than failing the turn. ``code`` is the stable
+    machine-readable reason the result carries.
+    """
+
+    def __init__(self, reason: str, *, code: str = TOOL_ARGUMENTS_SCHEMA) -> None:
+        super().__init__(reason)
+        self.code = code
+
+
+class ToolSchemaError(MetaLLMStreamError):
+    """A tool schema uses a keyword the cascade cannot enforce.
+
+    This is our bug (an unrepresentable body tool, ticket 57), never the
+    model's: the turn fails by name instead of executing an unvalidated call.
     """
 
 
@@ -272,6 +355,15 @@ class MetaLLMTurn:
     def filtered(self) -> bool:
         return self.disposition is not None and self.disposition.filtered
 
+    @property
+    def tool_failures(self) -> list[ToolDenial]:
+        """Withheld calls the model can correct from a tool result.
+
+        A denial without a call id is not here: the vendor cannot be answered
+        without an identity, so that turn closes with a hold line instead.
+        """
+        return [denial for denial in self.rejected_tool_calls if denial.correctable]
+
     def close(self) -> None:
         """Finalise the record; safe to call more than once."""
         if self.closed:
@@ -388,10 +480,39 @@ class MetaToolCall:
 
 @dataclass(frozen=True, slots=True)
 class ToolDenial:
-    """A recorded reason a call was not executed, kept with the turn."""
+    """A recorded reason a call was not executed, kept with the turn.
+
+    ``code`` is the stable failure code; ``call_id`` is the identity the vendor
+    expects back. A correctable denial (argument failure on a call that has an
+    id) can be turned into the ``role: "tool"`` result the model corrects from;
+    a denial without an id cannot, because there is nothing to quote back.
+    """
 
     name: str
     reason: str
+    call_id: str = ""
+    code: str = ""
+
+    @property
+    def correctable(self) -> bool:
+        return bool(self.call_id) and self.code in TOOL_FAILURE_CODES
+
+    def as_tool_message(self) -> dict[str, Any]:
+        """The tool result for this failure; refuses an unanswerable denial."""
+        if not self.correctable:
+            raise ValueError(
+                f"tool denial for {self.name!r} has no usable call id or is not "
+                "a correctable argument failure; it cannot be returned as a "
+                "tool result"
+            )
+        return {
+            "role": "tool",
+            "tool_call_id": self.call_id,
+            "content": json.dumps(
+                {"error": self.code, "message": self.reason},
+                ensure_ascii=False,
+            ),
+        }
 
 
 class ReplyOutcome(str, Enum):
@@ -485,29 +606,317 @@ def reply_disposition(turn: MetaLLMTurn) -> ReplyDisposition:
 def parse_tool_arguments(raw: str) -> dict[str, Any]:
     """Read the accumulated argument text as a JSON object.
 
-    Only object-ness is decided here. Schema validation and the tool-failure
-    result the model can correct belong to ticket 40; what this must never do
-    is invent ``{}`` for a payload that was malformed or absent, because that
-    would execute a side effect the model never asked for.
+    The parse owns malformed JSON and object-ness; :func:`validate_tool_arguments`
+    owns the declared schema. What this must never do is invent ``{}`` for a
+    payload that was malformed or absent, because that would execute a side
+    effect the model never asked for.
     """
     if not raw.strip():
         raise ToolArgumentsError(
             "no arguments were streamed: a call with no argument text is not "
-            "executed with an invented empty object"
+            "executed with an invented empty object",
+            code=TOOL_ARGUMENTS_MISSING,
         )
     try:
         value = json.loads(raw)
     except json.JSONDecodeError as error:
         raise ToolArgumentsError(
             f"arguments are not valid JSON ({error.msg} at character "
-            f"{error.pos}); the call is not executed"
+            f"{error.pos}); the call is not executed",
+            code=TOOL_ARGUMENTS_INVALID_JSON,
         ) from error
     if not isinstance(value, dict):
         raise ToolArgumentsError(
             f"arguments are a JSON {type(value).__name__}, not an object; the "
-            "call is not executed"
+            "call is not executed",
+            code=TOOL_ARGUMENTS_NOT_AN_OBJECT,
         )
     return value
+
+
+def _json_type(value: Any) -> str:
+    """The JSON type name, with bool kept apart from integer."""
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, int):
+        return "integer"
+    if isinstance(value, float):
+        return "number"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, list):
+        return "array"
+    if isinstance(value, dict):
+        return "object"
+    return type(value).__name__
+
+
+def _matches_type(value: Any, name: str, path: str) -> bool:
+    if name == "object":
+        return isinstance(value, dict)
+    if name == "array":
+        return isinstance(value, list)
+    if name == "string":
+        return isinstance(value, str)
+    if name == "boolean":
+        return isinstance(value, bool)
+    if name == "null":
+        return value is None
+    if name == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if name == "number":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    raise ToolSchemaError(
+        f"tool schema at {path} declares unsupported type {name!r}; the "
+        "cascade validates only JSON Schema type names"
+    )
+
+
+def _violation(path: str, reason: str) -> ToolArgumentsError:
+    return ToolArgumentsError(
+        f"{path}: {reason}; the call is not executed and the failure is "
+        "returned to the model",
+        code=TOOL_ARGUMENTS_SCHEMA,
+    )
+
+
+def _check_combinations(value: Any, schema: dict[str, Any], path: str) -> None:
+    for keyword in ("allOf",):
+        branches = schema.get(keyword)
+        if branches is None:
+            continue
+        if not isinstance(branches, list):
+            raise ToolSchemaError(f"tool schema {keyword} at {path} is not a list")
+        for index, branch in enumerate(branches):
+            _validate(value, branch, f"{path} ({keyword}[{index}])")
+
+    if "anyOf" in schema:
+        branches = schema["anyOf"]
+        if not isinstance(branches, list) or not branches:
+            raise ToolSchemaError(f"tool schema anyOf at {path} is not a list")
+        errors = []
+        matched_any = False
+        for index, branch in enumerate(branches):
+            try:
+                _validate(value, branch, path)
+                matched_any = True
+                break
+            except ToolArgumentsError as error:
+                errors.append(f"[{index}] {error}")
+        if not matched_any:
+            raise _violation(path, "matches none of anyOf: " + " | ".join(errors))
+
+    if "oneOf" in schema:
+        branches = schema["oneOf"]
+        if not isinstance(branches, list) or not branches:
+            raise ToolSchemaError(f"tool schema oneOf at {path} is not a list")
+        matched = 0
+        for branch in branches:
+            try:
+                _validate(value, branch, path)
+                matched += 1
+            except ToolArgumentsError:
+                continue
+        if matched != 1:
+            raise _violation(
+                path, f"matches {matched} oneOf branches; exactly one is required"
+            )
+
+    if "not" in schema:
+        try:
+            _validate(value, schema["not"], path)
+        except ToolArgumentsError:
+            pass
+        else:
+            raise _violation(path, "matches a 'not' schema")
+
+
+def _validate_enum(value: Any, schema: dict[str, Any], path: str) -> None:
+    if "const" in schema and value != schema["const"]:
+        raise _violation(
+            path, f"const: must equal {schema['const']!r}, got {value!r}"
+        )
+    if "enum" in schema:
+        allowed = schema["enum"]
+        if not isinstance(allowed, list):
+            raise ToolSchemaError(f"tool schema enum at {path} is not a list")
+        if not any(
+            value == candidate and _json_type(value) == _json_type(candidate)
+            for candidate in allowed
+        ):
+            raise _violation(
+                path, f"enum: must be one of {allowed!r}, got {value!r}"
+            )
+
+
+def _validate_object(value: Any, schema: dict[str, Any], path: str) -> None:
+    if not isinstance(value, dict):
+        raise _violation(path, f"must be an object, got {_json_type(value)}")
+    required = schema.get("required", [])
+    if not isinstance(required, list):
+        raise ToolSchemaError(f"tool schema required at {path} is not a list")
+    missing = [name for name in required if name not in value]
+    if missing:
+        raise _violation(path, f"missing required property {missing[0]!r}")
+    properties = schema.get("properties", {})
+    if not isinstance(properties, dict):
+        raise ToolSchemaError(f"tool schema properties at {path} is not an object")
+    for name, subschema in properties.items():
+        if name in value:
+            _validate(value[name], subschema, f"{path}.{name}")
+    extra = [name for name in value if name not in properties]
+    additional = schema.get("additionalProperties", True)
+    if additional is False and extra:
+        raise _violation(
+            path,
+            f"property {extra[0]!r} is not declared and additional properties "
+            "are refused",
+        )
+    if isinstance(additional, dict):
+        for name in extra:
+            _validate(value[name], additional, f"{path}.{name}")
+    if "minProperties" in schema and len(value) < schema["minProperties"]:
+        raise _violation(path, f"needs at least {schema['minProperties']} properties")
+    if "maxProperties" in schema and len(value) > schema["maxProperties"]:
+        raise _violation(path, f"allows at most {schema['maxProperties']} properties")
+
+
+def _validate_array(value: Any, schema: dict[str, Any], path: str) -> None:
+    if not isinstance(value, list):
+        raise _violation(path, f"must be an array, got {_json_type(value)}")
+    items = schema.get("items")
+    if items is not None:
+        if not isinstance(items, dict):
+            raise ToolSchemaError(
+                f"tool schema uses array-form 'items' at {path}; the cascade "
+                "validates a single item schema"
+            )
+        for index, item in enumerate(value):
+            _validate(item, items, f"{path}[{index}]")
+    if "minItems" in schema and len(value) < schema["minItems"]:
+        raise _violation(path, f"needs at least {schema['minItems']} items")
+    if "maxItems" in schema and len(value) > schema["maxItems"]:
+        raise _violation(path, f"allows at most {schema['maxItems']} items")
+
+
+def _validate_string(value: Any, schema: dict[str, Any], path: str) -> None:
+    if not isinstance(value, str):
+        raise _violation(path, f"must be a string, got {_json_type(value)}")
+    if "minLength" in schema and len(value) < schema["minLength"]:
+        raise _violation(path, f"needs at least {schema['minLength']} characters")
+    if "maxLength" in schema and len(value) > schema["maxLength"]:
+        raise _violation(path, f"allows at most {schema['maxLength']} characters")
+    if "pattern" in schema:
+        try:
+            matched = re.search(schema["pattern"], value)
+        except re.error as error:
+            raise ToolSchemaError(
+                f"tool schema pattern at {path} is not a valid regex: {error}"
+            ) from error
+        if matched is None:
+            raise _violation(path, f"must match pattern {schema['pattern']!r}")
+
+
+def _validate_number(value: Any, schema: dict[str, Any], path: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise _violation(path, f"must be a number, got {_json_type(value)}")
+    for keyword, comparison, wording in (
+        ("minimum", lambda bound: value >= bound, "at least"),
+        ("maximum", lambda bound: value <= bound, "at most"),
+        ("exclusiveMinimum", lambda bound: value > bound, "greater than"),
+        ("exclusiveMaximum", lambda bound: value < bound, "less than"),
+    ):
+        if keyword not in schema:
+            continue
+        bound = schema[keyword]
+        if isinstance(bound, bool) or not isinstance(bound, (int, float)):
+            raise ToolSchemaError(
+                f"tool schema {keyword} at {path} is not a number"
+            )
+        if not comparison(bound):
+            raise _violation(
+                path, f"{keyword}: must be {wording} {bound!r}"
+            )
+
+
+def _validate(value: Any, schema: Any, path: str) -> None:
+    if not isinstance(schema, dict):
+        raise ToolSchemaError(f"tool schema at {path} is not an object")
+    unsupported = sorted(set(schema) - _SUPPORTED_KEYWORDS)
+    if unsupported:
+        raise ToolSchemaError(
+            f"tool schema at {path} uses unsupported keyword(s) "
+            f"{', '.join(unsupported)}; the cascade refuses a schema it cannot "
+            "enforce instead of executing an unvalidated call"
+        )
+    _validate_enum(value, schema, path)
+    _check_combinations(value, schema, path)
+
+    if "type" in schema:
+        declared = schema["type"]
+        names = [declared] if isinstance(declared, str) else list(declared)
+        if not names:
+            raise ToolSchemaError(f"tool schema type at {path} is empty")
+        if not any(_matches_type(value, name, path) for name in names):
+            expected = " or ".join(names)
+            raise _violation(
+                path, f"must be {expected}, got {_json_type(value)}"
+            )
+
+    object_keywords = {
+        "additionalProperties",
+        "maxProperties",
+        "minProperties",
+        "properties",
+        "required",
+    }
+    if object_keywords & set(schema) or isinstance(value, dict):
+        _validate_object(value, schema, path)
+    if {"items", "maxItems", "minItems"} & set(schema) or isinstance(value, list):
+        _validate_array(value, schema, path)
+    if isinstance(value, str):
+        _validate_string(value, schema, path)
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        _validate_number(value, schema, path)
+
+
+def validate_tool_arguments(
+    arguments: dict[str, Any], schema: dict[str, Any] | None
+) -> None:
+    """Refuse arguments outside the tool's declared schema, before execution.
+
+    A ``None`` schema means the tool declared no parameters, so there is
+    nothing to check; the JSON object-ness was already decided by
+    :func:`parse_tool_arguments`. An enforced keyword outside the documented
+    subset raises :class:`ToolSchemaError` (a turn failure) so a schema can
+    never be silently under-enforced.
+    """
+    if not isinstance(arguments, dict):
+        raise ToolArgumentsError(
+            f"arguments are a JSON {type(arguments).__name__}, not an object",
+            code=TOOL_ARGUMENTS_NOT_AN_OBJECT,
+        )
+    if schema is None:
+        return
+    _validate(arguments, schema, "arguments")
+
+
+def _tool_schemas(tools: Sequence[dict[str, Any]] | None) -> dict[str, Any]:
+    """The declared parameter schema per tool name, for calls we may receive."""
+    schemas: dict[str, Any] = {}
+    for tool in tools or ():
+        if not isinstance(tool, dict):
+            continue
+        function = tool.get("function")
+        if not isinstance(function, dict):
+            continue
+        name = function.get("name")
+        parameters = function.get("parameters")
+        if isinstance(name, str) and isinstance(parameters, dict):
+            schemas[name] = parameters
+    return schemas
 
 
 class _SSEParser:
@@ -625,9 +1034,17 @@ class _TurnStream:
     accumulation, usage, finish disposition) is kept here, not re-parsed later.
     """
 
-    def __init__(self, turn: MetaLLMTurn, ledger: Any = None) -> None:
+    def __init__(
+        self,
+        turn: MetaLLMTurn,
+        ledger: Any = None,
+        tools: Sequence[dict[str, Any]] | None = None,
+    ) -> None:
         self.turn = turn
         self._ledger = ledger
+        #: name -> declared parameter schema. A call whose name has no schema
+        #: cannot be validated; the tool loop's invented-name rule owns it.
+        self._schemas = _tool_schemas(tools)
         #: index -> {"id", "name", "arguments"} as streamed. One slot per index
         #: so a split id, name or argument string joins into one call.
         self._calls: dict[int, dict[str, str]] = {}
@@ -702,22 +1119,31 @@ class _TurnStream:
                 call,
                 "call_id is missing or empty; the call is not executed and the "
                 "turn closes with a hold line",
+                code=TOOL_CALL_ID_MISSING,
             )
             return ToolCallRequest(name=call.name, arguments={}, call_id="")
         try:
             arguments = parse_tool_arguments(call.arguments)
+            validate_tool_arguments(arguments, self._schemas.get(call.name))
         except ToolArgumentsError as error:
+            # Withheld, never executed, and answerable: the tool loop appends
+            # ``denial.as_tool_message()`` so the model corrects next request.
             self.turn.rejected_tool_calls.append(
-                ToolDenial(name=call.name, reason=str(error))
+                ToolDenial(
+                    name=call.name,
+                    reason=str(error),
+                    call_id=call.call_id,
+                    code=error.code,
+                )
             )
             return None
         return ToolCallRequest(
             name=call.name, arguments=arguments, call_id=call.call_id
         )
 
-    def _deny(self, call: MetaToolCall, reason: str) -> None:
+    def _deny(self, call: MetaToolCall, reason: str, *, code: str = "") -> None:
         self.turn.denied_tool_calls.append(
-            ToolDenial(name=call.name, reason=reason)
+            ToolDenial(name=call.name, reason=reason, call_id=call.call_id, code=code)
         )
         self.turn.hold_line_required = True
         if self._ledger is not None:
@@ -913,7 +1339,7 @@ class MetaLLM(LLMStream):
         url = f"{self._base_url}{CHAT_COMPLETIONS_PATH}"
         record = turn if turn is not None else MetaLLMTurn()
         self._last_turn = record
-        stream = _TurnStream(record, self._ledger)
+        stream = _TurnStream(record, self._ledger, tools)
         parser = _SSEParser()
         session = self._session_factory(timeout_s=self._timeout_s)
         try:
@@ -942,6 +1368,14 @@ __all__ = [
     "IDENTIFIER_SALT_ENV",
     "META_BASE_URL",
     "SSE_DONE",
+    "TOOL_ARGUMENTS_INVALID_JSON",
+    "TOOL_ARGUMENTS_MISSING",
+    "TOOL_ARGUMENTS_NOT_AN_OBJECT",
+    "TOOL_ARGUMENTS_SCHEMA",
+    "TOOL_CALL_ID_MISSING",
+    "TOOL_DENIED_COUNTER",
+    "TOOL_FAILURE_CODES",
+    "TOOL_FINISH_REASONS",
     "UNAVAILABLE_REASONING_EFFORT",
     "MetaLLM",
     "MetaLLMConfigError",
@@ -952,17 +1386,17 @@ __all__ = [
     "ReasoningEffortError",
     "ReplyDisposition",
     "ReplyOutcome",
-    "TOOL_DENIED_COUNTER",
-    "TOOL_FINISH_REASONS",
     "ToolArgumentsError",
     "ToolCallIdentityError",
     "ToolDenial",
+    "ToolSchemaError",
     "TurnUsage",
     "build_chat_request",
     "build_messages",
     "parse_tool_arguments",
-    "privacy_identifier",
     "parse_usage",
+    "privacy_identifier",
     "reply_disposition",
     "resolve_reasoning_effort",
+    "validate_tool_arguments",
 ]
