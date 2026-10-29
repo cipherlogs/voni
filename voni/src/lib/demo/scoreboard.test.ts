@@ -164,6 +164,7 @@ import {
   goldenWindowExpectations,
 } from "./scoreboard-budgets";
 import { judgeOverlap } from "../voice/barge-in";
+import { EN_RECOGNITION } from "../voice/recognition";
 import { DEMO_VOICE_IDS, SILENCE_CHECK_IN_INSTRUCTIONS, SILENCE_CHECK_IN_MS } from "./voni-agent";
 import type { RunnerEvidence } from "./runner-evidence";
 import { VOICE_OUTPUT_VOLUME, voicePlaybackGain } from "../agents/voices";
@@ -1187,15 +1188,15 @@ test("artifact with measured gaps fills per-beat gaps and enforces the reply-gap
 
 test("overlap judge ignores filler, back-channels and agent echo but yields commands", () => {
   for (const filler of ["mm-hmm", "yeah", "Okaay so"]) {
-    assert.equal(judgeOverlap(filler, "We help dental clinics answer every call"), "ignore", `${filler} must never steal the floor`);
+    assert.equal(judgeOverlap(filler, "We help dental clinics answer every call", EN_RECOGNITION), "ignore", `${filler} must never steal the floor`);
   }
   assert.equal(
-    judgeOverlap("help dental clinics", "We help dental clinics answer every call"),
+    judgeOverlap("help dental clinics", "We help dental clinics answer every call", EN_RECOGNITION),
     "ignore",
     "agent echo must never steal the floor",
   );
-  assert.equal(judgeOverlap("Wait, stop.", "We help dental clinics answer every call"), "yield", "steering always yields");
-  assert.equal(judgeOverlap("I want you to hang up.", "Thanks for calling"), "yield", "end-call always yields");
+  assert.equal(judgeOverlap("Wait, stop.", "We help dental clinics answer every call", EN_RECOGNITION), "yield", "steering always yields");
+  assert.equal(judgeOverlap("I want you to hang up.", "Thanks for calling", EN_RECOGNITION), "yield", "end-call always yields");
 });
 
 test("the runner's filler-over line is parsed into a passing never-cut gate", () => {
