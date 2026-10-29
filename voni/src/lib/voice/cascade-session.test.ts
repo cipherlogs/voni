@@ -98,6 +98,108 @@ test("audio messages decode base64 pcm", () => {
   assert.equal(decodeAudioMessage(JSON.stringify({ type: "caption" })), null);
 });
 
+test("a call-level seq survives decode, and a frame without one has none", () => {
+  const withSeq = decodeAudioMessage(
+    JSON.stringify({
+      type: "audio",
+      data: Buffer.from([9, 9]).toString("base64"),
+      sample_rate: 16000,
+      seq: 7,
+    }),
+  );
+  assert.deepEqual(withSeq, { pcm: new Uint8Array([9, 9]), sampleRate: 16000, seq: 7 });
+
+  const withoutSeq = decodeAudioMessage(
+    JSON.stringify({ type: "audio", data: Buffer.from([9, 9]).toString("base64"), sample_rate: 16000 }),
+  );
+  assert.equal(withoutSeq && "seq" in withoutSeq, false, "an unnumbered frame is not invented a seq");
+});
+
+// ── Sequence dedupe (ticket 68's contract, mirrored in the browser) ──────
+// voice-pipeline/cascade/call.py documents CallPlayout as "the shape the
+// browser's playout must implement": a frame whose seq is not greater than the
+// highest played is dropped, never played twice. A replay after a reconnect
+// continues the sequence; a duplicate is silence.
+
+function sequenceSession() {
+  const socket = makeSocket();
+  const played: number[] = [];
+  const heard: number[] = [];
+  const debug: string[] = [];
+  const original = console.debug;
+  console.debug = (...args: unknown[]) => debug.push(args.map(String).join(" "));
+  const session = new CascadeSession(
+    { onAudio: (pcm) => heard.push(pcm.length) },
+    {
+      socketFactory: () => socket as unknown as WebSocket,
+      startMic: async () => ({ stop: () => {} }),
+      createPlayout: () => ({
+        play: (pcm) => played.push(pcm.length),
+        flush: () => {},
+      }),
+    },
+  );
+  return { socket, played, heard, debug, restore: () => (console.debug = original), session };
+}
+
+function audioFrame(seq: number | null, bytes: number[]): string {
+  return JSON.stringify({
+    type: "audio",
+    data: Buffer.from(bytes).toString("base64"),
+    sample_rate: 16000,
+    ...(seq === null ? {} : { seq }),
+  });
+}
+
+test("a duplicate audio seq is dropped, not played twice", async () => {
+  const { socket, played, heard, debug, restore, session } = sequenceSession();
+  try {
+    await session.start(CONFIG, "test-owner");
+    socket.readyState = socket.OPEN;
+    socket.emit(audioFrame(1, [1, 1]));
+    socket.emit(audioFrame(2, [2, 2]));
+    socket.emit(audioFrame(2, [2, 2])); // the same frame replayed
+    socket.emit(audioFrame(1, [1, 1])); // an older frame, also not newer
+    assert.deepEqual(played, [2, 2], "only the newer frames reached the playout");
+    assert.deepEqual(heard, [2, 2], "and only those reached the caller");
+    assert.ok(
+      debug.some((line) => line.includes("dropped") && line.includes("seq=2")),
+      `the drop is named in the log: ${JSON.stringify(debug)}`,
+    );
+  } finally {
+    await session.stop();
+    restore();
+  }
+});
+
+test("a seq gap is played through: the call continues after a missing frame", async () => {
+  const { socket, played, restore, session } = sequenceSession();
+  try {
+    await session.start(CONFIG, "test-owner");
+    socket.readyState = socket.OPEN;
+    socket.emit(audioFrame(1, [1, 1]));
+    socket.emit(audioFrame(4, [4, 4]));
+    assert.deepEqual(played, [2, 2], "a gap drops nothing that arrived");
+  } finally {
+    await session.stop();
+    restore();
+  }
+});
+
+test("an unnumbered audio frame still plays (a service that predates seq)", async () => {
+  const { socket, played, restore, session } = sequenceSession();
+  try {
+    await session.start(CONFIG, "test-owner");
+    socket.readyState = socket.OPEN;
+    socket.emit(audioFrame(null, [1, 1]));
+    socket.emit(audioFrame(null, [1, 1]));
+    assert.deepEqual(played, [2, 2], "without a seq there is nothing to compare");
+  } finally {
+    await session.stop();
+    restore();
+  }
+});
+
 // ── Guard: the cascade path has its own deliberate rate contract ──────────
 // The pipeline stamps every audio frame with its own rate
 // (voice-pipeline/transport.py). A frame that omits it can only be our own

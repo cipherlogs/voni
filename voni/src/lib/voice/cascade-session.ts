@@ -156,6 +156,12 @@ export function parseServerMessage(raw: string): ServerEvent | null {
 export function decodeAudioMessage(raw: string): {
   pcm: Uint8Array;
   sampleRate: number;
+  /**
+   * The call-level monotonic number the service stamped (`seq`), when present.
+   * Absent on a service that predates the sequence (and in unit fixtures).
+   * It belongs to the call, not the TTS flush, so a reconnect continues it.
+   */
+  seq?: number;
 } | null {
   let message: unknown;
   try {
@@ -166,6 +172,10 @@ export function decodeAudioMessage(raw: string): {
   if (typeof message !== "object" || message === null) return null;
   const record = message as Record<string, unknown>;
   if (record.type !== "audio" || typeof record.data !== "string") return null;
+  const seq =
+    typeof record.seq === "number" && Number.isInteger(record.seq) && record.seq >= 0
+      ? record.seq
+      : undefined;
   return {
     pcm: base64Decode(record.data),
     // The pipeline's own contract (voice-pipeline/transport.py): every frame
@@ -177,6 +187,7 @@ export function decodeAudioMessage(raw: string): {
       typeof record.sample_rate === "number"
         ? record.sample_rate
         : DEFAULT_OUTPUT_SAMPLE_RATE,
+    ...(seq === undefined ? {} : { seq }),
   };
 }
 
@@ -233,6 +244,14 @@ export class CascadeSession {
   private configSent = false;
   private inputMuted = false;
   /**
+   * The highest call-level audio `seq` already played. The receiving contract
+   * (`CallPlayout` in voice-pipeline/cascade/call.py) is: a frame whose seq is
+   * not greater is dropped, never played twice. A gap is played through; the
+   * number is per call, so a reconnect continues it. Reset with the session,
+   * because one connection is one call.
+   */
+  private highestPlayedSeq = 0;
+  /**
    * Agent-initiated hangup, armed by the server's end_call event. The
    * closing line may still be draining through the worklet, so stop waits
    * for playback to settle (bounded ~10s). Disarmed by caller speech or
@@ -262,6 +281,7 @@ export class CascadeSession {
     this.ended = false;
     this.inputMuted = false;
     this.configSent = false;
+    this.highestPlayedSeq = 0;
     const socketFactory = this.deps.socketFactory ?? ((url: string) => new WebSocket(url));
     const ws = socketFactory(config.serviceUrl);
     this.ws = ws;
@@ -345,6 +365,18 @@ export class CascadeSession {
     if (!raw) return;
     const audio = decodeAudioMessage(raw);
     if (audio) {
+      if (audio.seq !== undefined) {
+        if (audio.seq <= this.highestPlayedSeq) {
+          // The call-level contract: an audio frame that is not newer is never
+          // played twice. A replay after a reconnect arrives as an old seq, so
+          // this is also the reconnect guard.
+          console.debug(
+            `[cascade-session] dropped duplicate audio seq=${audio.seq}; the highest played is ${this.highestPlayedSeq}`,
+          );
+          return;
+        }
+        this.highestPlayedSeq = audio.seq;
+      }
       this.playout?.play(audio.pcm, audio.sampleRate);
       this.handlers.onAudio?.(audio.pcm, audio.sampleRate);
       return;
