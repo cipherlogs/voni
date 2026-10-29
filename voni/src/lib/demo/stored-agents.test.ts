@@ -17,6 +17,7 @@ import {
   demoTurnWindowsFromEnv,
   planDemoAgent,
   readServedDemoAgentBody,
+  servedAgentOutputVolume,
 } from "./stored-agents";
 import { END_CALL_TOOL } from "@/lib/tools/definitions";
 import { VONI_GREETINGS, DEMO_VOICE_IDS } from "./voni-agent";
@@ -45,6 +46,57 @@ test("the served stored body is read from the platform, never rebuilt", async ()
   if (!result.ok) return;
   assert.equal(result.body.agentId, "agent_stored");
   assert.deepEqual(result.body.input, { turn_detection: null, language_codes: ["en"] });
+});
+
+test("the served body carries the output level the visitor actually receives", async () => {
+  const result = await readServedDemoAgentBody("agent_stored", {
+    apiKey: "test-key",
+    fetchFn: (async () =>
+      new Response(
+        JSON.stringify({
+          id: "agent_stored",
+          input: { turn_detection: null },
+          output: { volume: 62 },
+        }),
+        { status: 200 },
+      )) as typeof fetch,
+  });
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.deepEqual(result.body.output, { volume: 62 }, "the served output object is kept verbatim");
+  assert.equal(servedAgentOutputVolume(result.body), 62);
+});
+
+test("a served body with no readable level is unmeasured, never the registry default", async () => {
+  const withVolume = async (output: unknown) => {
+    const result = await readServedDemoAgentBody("agent_stored", {
+      apiKey: "test-key",
+      fetchFn: (async () =>
+        new Response(JSON.stringify({ id: "agent_stored", input: {}, output }), {
+          status: 200,
+        })) as typeof fetch,
+    });
+    assert.equal(result.ok, true);
+    return result.ok ? result.body : null;
+  };
+
+  const cases: Array<[unknown, number | null]> = [
+    [undefined, null],
+    [{}, null],
+    [{ volume: null }, null],
+    [{ volume: "100" }, null],
+    [{ volume: 62 }, 62],
+    [{ volume: 100 }, 100],
+  ];
+  for (const [output, expected] of cases) {
+    const body = await withVolume(output);
+    if (!body) return;
+    assert.equal(
+      servedAgentOutputVolume(body),
+      expected,
+      `${JSON.stringify(output)} must read as ${expected}, never the registry volume`,
+    );
+  }
 });
 
 test("a served body that cannot be read reports an error, never a body", async () => {

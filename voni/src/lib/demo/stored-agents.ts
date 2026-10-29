@@ -355,7 +355,25 @@ export type ServedDemoAgentBody = {
   fingerprint?: string | null;
   /** The served `input` object (turn settings, language, transcription). */
   input: { turn_detection?: unknown } & Record<string, unknown>;
+  /**
+   * The served `output` object verbatim — the level the visitor's session
+   * receives. `{}` when the platform served none: the level is then
+   * unmeasured, never filled in from the registry (voice-parity ticket 21).
+   */
+  output: { volume?: unknown } & Record<string, unknown>;
 };
+
+/**
+ * The served `output.volume` in the platform's own units, or null when the
+ * body serves no readable level. This is the only level a gate may judge:
+ * `VOICE_OUTPUT_VOLUME` is what the builder ships, not what the visitor's
+ * stored agent necessarily carries (voice-parity ticket 21).
+ */
+export function servedAgentOutputVolume(body: ServedDemoAgentBody): number | null {
+  const volume = body.output?.volume;
+  return typeof volume === "number" && Number.isFinite(volume) ? volume : null;
+}
+
 
 export type ServedDemoAgentBodyResult =
   | { ok: true; body: ServedDemoAgentBody }
@@ -408,9 +426,17 @@ export async function readServedDemoAgentBody(
   if (input === null || typeof input !== "object" || Array.isArray(input)) {
     return { ok: false, error: `stored agent ${agentId} served no input object` };
   }
+  const servedOutput =
+    payload !== null && typeof payload === "object"
+      ? (payload as { output?: unknown }).output
+      : undefined;
+  const output =
+    servedOutput !== null && typeof servedOutput === "object" && !Array.isArray(servedOutput)
+      ? (servedOutput as ServedDemoAgentBody["output"])
+      : {};
   return {
     ok: true,
-    body: { agentId, input: input as ServedDemoAgentBody["input"] },
+    body: { agentId, input: input as ServedDemoAgentBody["input"], output },
   };
 }
 
