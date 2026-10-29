@@ -63,6 +63,7 @@ function runPlayout(
   seconds: number,
   flushAt?: number,
   probe = false,
+  sourceRate = SRC,
   tap = false,
 ) {
   const { proc, scope } = load("playout-processor.js", OUT);
@@ -75,7 +76,7 @@ function runPlayout(
   for (let q = 0; q * 128 < seconds * OUT; q++) {
     scope.currentTime = (q * 128) / OUT;
     while (next < arrivals.length && arrivals[next][0] <= scope.currentTime) {
-      proc.port.onmessage!({ data: { type: "play", seq: ++seq, rate: SRC, samples: arrivals[next][1] } });
+      proc.port.onmessage!({ data: { type: "play", seq: ++seq, rate: sourceRate, samples: arrivals[next][1] } });
       next++;
     }
     if (flushAt !== undefined && !flushed && scope.currentTime >= flushAt) {
@@ -118,6 +119,21 @@ function jitteryReply(seed = 7) {
   }
   return arrivals;
 }
+
+test("playout: a wrong rate is a detectable speed change in the delivered capture", () => {
+  // The same 200 ms of source audio, declared at 24 kHz and then at 16 kHz.
+  // A client that assumes the wrong rate cannot hide it: the delivered
+  // capture is 1.5x longer, so a capture comparison sees the speed change.
+  const chunk = sineChunk(0, SRC * 0.2);
+  const soundingMs = (rate: number) => {
+    const { out } = runPlayout([[0, chunk]], 1.2, undefined, false, rate);
+    return (out.filter((y) => y !== 0).length / OUT) * 1000;
+  };
+  const at24k = soundingMs(24_000);
+  const at16k = soundingMs(16_000);
+  assert.ok(Math.abs(at24k - 200) < 10, `24 kHz delivered ${at24k}ms`);
+  assert.ok(Math.abs(at16k / at24k - 1.5) < 0.05, `24 kHz ${at24k}ms, 16 kHz ${at16k}ms`);
+});
 
 test("playout: jittery chunks play as one seamless stream", () => {
   const { out, posted } = runPlayout(jitteryReply(), 2);
@@ -216,7 +232,7 @@ function assertSameSamples(actual: number[], expected: number[], label: string) 
 }
 
 test("delivered capture: the tap posts exactly the samples the worklet emitted", () => {
-  const { out, posted } = runPlayout(jitteryReply(), 2, undefined, false, true);
+  const { out, posted } = runPlayout(jitteryReply(), 2, undefined, false, SRC, true);
   const captured = tappedSamples(posted);
   assertSameSamples(captured, out, "capture vs emitted stream");
   // The ack follows the final block, so teardown can await a complete file.
@@ -225,12 +241,12 @@ test("delivered capture: the tap posts exactly the samples the worklet emitted",
 
 test("delivered capture: enabling the tap does not change the emitted samples", () => {
   const plain = runPlayout(jitteryReply(), 2);
-  const tapped = runPlayout(jitteryReply(), 2, undefined, false, true);
+  const tapped = runPlayout(jitteryReply(), 2, undefined, false, SRC, true);
   assertSameSamples(tapped.out, plain.out, "tapped vs plain output");
 });
 
 test("delivered capture: a flush mid-reply is captured through its fade", () => {
-  const { out, posted } = runPlayout([[0, sineChunk(0, SRC)]], 1.2, 0.8, false, true);
+  const { out, posted } = runPlayout([[0, sineChunk(0, SRC)]], 1.2, 0.8, false, SRC, true);
   assertSameSamples(tappedSamples(posted), out, "capture across a flush");
 });
 
@@ -240,7 +256,7 @@ test("delivered capture: off by default, no tap buffers are posted", () => {
 });
 
 test("delivered capture: a tapped run writes a readable WAV of what the speaker got", async () => {
-  const { out, posted } = runPlayout(jitteryReply(), 1.5, undefined, false, true);
+  const { out, posted } = runPlayout(jitteryReply(), 1.5, undefined, false, SRC, true);
   const files: Uint8Array[] = [];
   const capture = new DeliveredCapture({
     sampleRate: OUT,

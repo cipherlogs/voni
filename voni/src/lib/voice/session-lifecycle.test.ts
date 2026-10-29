@@ -14,6 +14,7 @@ import {
   heardWords,
   type TranscriptPartial,
 } from "./session";
+import { DEFAULT_OUTPUT_SAMPLE_RATE } from "./output-format";
 import {
   buildConversationMessage,
   HOLD_OFF_CONTEXT,
@@ -1154,15 +1155,91 @@ test("interrupted reply probes the cut before flushing", () => {
   assert.deepEqual(kinds, ["reply-cut", "flush"]);
 });
 
-test("reply audio goes to the playout at 24 kHz", () => {
-  const { handle, internals } = makeSession();
+/** A session whose playout records the rate every chunk is played at. */
+function recordPlayedRates(
+  handlers: ConstructorParameters<typeof VoiceSession>[0] = {},
+) {
+  const made = makeSession(handlers);
   const played: [number, number][] = [];
-  internals["playout"] = {
+  made.internals["playout"] = {
     ...fakePlayout().playout,
     play: (pcm: Uint8Array, rate: number) => played.push([pcm.length, rate]),
   };
-  handle({ type: "reply.audio", data: Buffer.from(new Uint8Array(480)).toString("base64") });
-  assert.deepEqual(played, [[480, 24000]]);
+  const audio = (samples = 480) =>
+    made.handle({ type: "reply.audio", data: Buffer.from(new Uint8Array(samples)).toString("base64") });
+  return { ...made, played, audio };
+}
+
+test("reply audio plays at the resolved rate from the session confirmation", () => {
+  const { handle, played, audio } = recordPlayedRates();
+  handle({
+    type: "session.ready",
+    session_id: "s16",
+    config: { output: { format: { encoding: "audio/pcm", sample_rate: 16000 } } },
+  });
+  audio(480);
+  // The handle is told 16 kHz, not a module constant: 480 source samples are
+  // 30 ms here, not the 20 ms 24 kHz would imply.
+  assert.deepEqual(played, [[480, 16000]]);
+});
+
+test("a resolved rate other than the default is never replaced by 24 kHz", () => {
+  const { handle, played, audio } = recordPlayedRates();
+  handle({
+    type: "session.ready",
+    session_id: "s48",
+    config: { output: { format: { encoding: "audio/pcm", sample_rate: 48000 } } },
+  });
+  audio(960);
+  assert.deepEqual(played, [[960, 48000]]);
+});
+
+test("a confirmation with no rate plays at the named default", () => {
+  const { handle, played, audio } = recordPlayedRates();
+  handle({
+    type: "session.ready",
+    session_id: "s_default",
+    config: { output: { format: { encoding: "audio/pcm" } } },
+  });
+  audio(480);
+  assert.deepEqual(played, [[480, DEFAULT_OUTPUT_SAMPLE_RATE]]);
+});
+
+test("an unplayable resolved rate is a visible failure, never a guessed speed", () => {
+  const errors: { message: string; code?: string }[] = [];
+  const { handle, played, audio } = recordPlayedRates({
+    onError: (error) => errors.push(error),
+  });
+  handle({
+    type: "session.ready",
+    session_id: "s_bad",
+    config: { output: { format: { encoding: "audio/pcm", sample_rate: 0 } } },
+  });
+  audio(480);
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0]?.code, "config");
+  assert.match(errors[0]?.message ?? "", /sample rate \(0\)/);
+  assert.deepEqual(played, []);
+});
+
+test("a resume's confirmation never downgrades the resolved rate", () => {
+  const { handle, played, audio } = recordPlayedRates();
+  handle({
+    type: "session.ready",
+    session_id: "s16",
+    config: { output: { format: { encoding: "audio/pcm", sample_rate: 16000 } } },
+  });
+  // A resume re-emits session.ready on the same conversation; if that echo
+  // carries no config, the rate already resolved still governs playback.
+  handle({ type: "session.ready", session_id: "s16" });
+  audio(320);
+  assert.deepEqual(played, [[320, 16000]]);
+});
+
+test("audio is never played before the confirmation resolves a rate", () => {
+  const { played, audio } = recordPlayedRates();
+  audio(480);
+  assert.deepEqual(played, []);
 });
 
 test("first session.update ships recognition tuning, not defaults", () => {

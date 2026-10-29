@@ -59,6 +59,7 @@ import {
   type CaptureWrite,
   type DeliveredCapture,
 } from "./delivered-capture";
+import { resolveOutputSampleRate } from "./output-format";
 import { VOICE_OUTPUT_VOLUME } from "@/lib/agents/voices";
 
 export { TARGET_SAMPLE_RATE, VOICE_MIC_CONSTRAINTS } from "./mic-capture";
@@ -669,6 +670,12 @@ export class VoiceSession {
   private sessionReadySent = false;
   /** Client playback gain for the active voice (1.0 = native). See voices.ts. */
   private outputGain = 1.0;
+  /**
+   * Output sample rate the server resolved for this session, from the
+   * `session.ready` confirmation. Null until confirmed: audio is never
+   * played at a guessed rate.
+   */
+  private outputSampleRate: number | null = null;
   /** Dev pop recorder: worklet jumps/overloads and gain clamps become probes. */
   private popProbe = false;
   /** Dev delivered capture (`?delivercapture=1`): tap the playout worklet. */
@@ -1062,6 +1069,7 @@ export class VoiceSession {
     switch (msg.type) {
       case "session.ready":
         this.ready = true;
+        this.confirmOutputFormat(msg.config);
         if (!this.floorTimer) {
           this.floorTimer = setInterval(() => this.floor.tick(), FLOOR_TICK_MS);
           // Node (tests) only: a live floor never keeps the process alive.
@@ -1705,7 +1713,9 @@ export class VoiceSession {
     const playout = this.playout;
     if (!playout?.consumedSamples || !playout.sentSamples) return this.currentAgentText;
     if (this.replyAudioStart === null) return "";
-    const playedMs = ((playout.consumedSamples() - this.replyAudioStart) / TARGET_SAMPLE_RATE) * 1000;
+    // Consumed samples are at the resolved rate, not a module constant.
+    if (this.outputSampleRate === null) return this.currentAgentText;
+    const playedMs = ((playout.consumedSamples() - this.replyAudioStart) / this.outputSampleRate) * 1000;
     return heardWords(this.currentAgentText, playedMs);
   }
 
@@ -2030,6 +2040,31 @@ export class VoiceSession {
   }
 
   /**
+   * Take the output rate the server resolved in `session.ready`. A resume
+   * re-emits ready on the same session; a confirmation that echoes no config
+   * must not downgrade a rate we already resolved.
+   */
+  private confirmOutputFormat(config: unknown): void {
+    if (config === undefined) {
+      this.outputSampleRate ??= resolveOutputSampleRate(undefined);
+      return;
+    }
+    try {
+      this.outputSampleRate = resolveOutputSampleRate(config);
+    } catch (error) {
+      // Never play a format we cannot render: keep playback refused and say so.
+      this.outputSampleRate = null;
+      this.handlers.onError?.({
+        message:
+          error instanceof Error
+            ? error.message
+            : "The call's audio format is unsupported. Start a new call.",
+        code: "config",
+      });
+    }
+  }
+
+  /**
    * Ask the agent to speak right now (idle check-ins, status updates).
    * Best-effort: a dead session just means the idle timer will end things.
    */
@@ -2047,6 +2082,9 @@ export class VoiceSession {
 
   /** Queue one base64 PCM16 chunk on the playout worklet. */
   private schedule(base64: string) {
+    // A rate the server has not confirmed — or refused — is never guessed at.
+    const rate = this.outputSampleRate;
+    if (rate === null) return;
     const pcm = fromBase64(base64);
     const gain = this.outputGain;
     if (gain !== 1.0 && pcm.length >= 2) {
@@ -2062,7 +2100,7 @@ export class VoiceSession {
       }
       if (clamped > 0 && this.popProbe) this.probe("clip", undefined, { size: clamped });
     }
-    this.playout?.play(pcm, TARGET_SAMPLE_RATE);
+    this.playout?.play(pcm, rate);
   }
 
   /**
