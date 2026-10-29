@@ -175,6 +175,7 @@ import {
 } from "../src/lib/voice/session";
 import { tryJevGateway } from "../src/lib/voice/voice-judge";
 import { isEndCallRequest, isGoodbyeLine } from "../src/lib/voice/jev-judges";
+import { collectSilentGreeting } from "../src/lib/voice/silent-greeting";
 import {
   callerClipDrift,
   callerClipFingerprint,
@@ -415,31 +416,12 @@ async function speak(line: string): Promise<Buffer> {
 }
 
 async function speakOnce(line: string): Promise<Buffer> {
-  const ws = new WebSocket(`${WS}?token=${await token()}`);
-  const chunks: Buffer[] = [];
-  const pcm = await new Promise<Buffer>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("speech timed out")), TURN_TIMEOUT_MS);
-    ws.addEventListener("open", () =>
-      ws.send(
-        JSON.stringify({
-          type: "session.update",
-          session: { system_prompt: "Stay silent.", greeting: line, output: { voice: CALLER_VOICE } },
-        }),
-      ),
-    );
-    ws.addEventListener("message", (event) => {
-      const msg = JSON.parse(String(event.data));
-      if (msg.type === "reply.audio") chunks.push(Buffer.from(msg.data, "base64"));
-      if (msg.type === "reply.done") {
-        clearTimeout(timer);
-        resolve(Buffer.concat(chunks));
-      }
-    });
-    ws.addEventListener("error", () => reject(new Error("speech socket error")));
+  return collectSilentGreeting({
+    voiceId: CALLER_VOICE,
+    text: line,
+    token: await token(),
+    timeoutMs: TURN_TIMEOUT_MS,
   });
-  ws.send(JSON.stringify({ type: "session.end" }));
-  ws.close();
-  return pcm;
 }
 
 async function runSession(voiceId: string, steps: Step[]): Promise<Outcome> {

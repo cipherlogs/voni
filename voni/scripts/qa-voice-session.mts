@@ -5,6 +5,12 @@
  * OGG into a temporary directory, computes sanitized measurements, writes an
  * evidence JSON file, then optionally soft-deletes the remote test session.
  * Raw audio and pre-signed URLs never leave the temporary directory or logs.
+ *
+ * `--keep-audio [dir]` writes the agent channel as a WAV at the recording's
+ * own rate and prints the path with the session id, so a human can pair it
+ * with the browser capture. The directory defaults to gitignored
+ * `voice-captures/`. Keeping a file never deletes anything; remote deletion
+ * stays behind `--delete`.
  */
 import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
@@ -12,6 +18,15 @@ import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { resolveCredential } from "../src/lib/platform/credentials";
+import {
+  RecordingCaptureError,
+  agentChannelPcm,
+  captureFilePath,
+  channelPcm,
+  encodeMonoWav,
+  parseCaptureFlags,
+  resolveRecordingFormat,
+} from "../src/lib/platform/recording-capture";
 
 type Artifact = {
   type: "audio" | "timeline" | "metadata";
@@ -68,12 +83,8 @@ function sanitizeTranscript(value: string | null | undefined): string | null {
     .replace(/\b(?:sk|key|token)[-_][A-Za-z0-9_-]{12,}\b/gi, "[credential]");
 }
 
-function analyzePcm(buffer: Buffer) {
-  const samples = new Int16Array(
-    buffer.buffer,
-    buffer.byteOffset,
-    Math.floor(buffer.byteLength / 2),
-  );
+function analyzePcm(pcm: Uint8Array, sampleRate: number) {
+  const samples = new Int16Array(pcm.buffer, pcm.byteOffset, pcm.byteLength / 2);
   let sumSquares = 0;
   let peak = 0;
   let clipped = 0;
@@ -105,14 +116,18 @@ function analyzePcm(buffer: Buffer) {
     peakDbfs:
       peak === 0 ? null : Number((20 * Math.log10(peak / 32768)).toFixed(2)),
     clippedSampleRatio: count === 0 ? null : Number((clipped / count).toFixed(8)),
-    longestDigitalSilenceMs: Number(((longestSilence / 24000) * 1000).toFixed(2)),
+    longestDigitalSilenceMs: Number(((longestSilence / sampleRate) * 1000).toFixed(2)),
     largestAdjacentStep: largestStep,
     nonSilent: peak > 8,
   };
 }
 
-function decodeChannel(audioPath: string, channel: "left" | "right"): Buffer | null {
-  const channelIndex = channel === "left" ? "FL" : "FR";
+/**
+ * Decode the whole recording to interleaved s16le at the rate it was recorded
+ * at. No `-ar` and no per-channel `pan`: a resampled copy would hide the rate
+ * defect the capture exists to expose.
+ */
+function decodeRecording(audioPath: string): Buffer | null {
   const result = spawnSync(
     "ffmpeg",
     [
@@ -121,19 +136,18 @@ function decodeChannel(audioPath: string, channel: "left" | "right"): Buffer | n
       "error",
       "-i",
       audioPath,
-      "-af",
-      `pan=mono|c0=${channelIndex}`,
-      "-ar",
-      "24000",
+      "-vn",
       "-acodec",
       "pcm_s16le",
       "-f",
       "s16le",
       "pipe:1",
     ],
-    { encoding: null, maxBuffer: 128 * 1024 * 1024 },
+    { encoding: null, maxBuffer: 256 * 1024 * 1024 },
   );
-  return result.status === 0 && Buffer.isBuffer(result.stdout)
+  return result.status === 0 &&
+    Buffer.isBuffer(result.stdout) &&
+    result.stdout.byteLength > 0
     ? result.stdout
     : null;
 }
@@ -150,7 +164,8 @@ async function main() {
   const sessionId = arg("--session") ?? process.env.ASSEMBLYAI_SESSION_ID;
   const evidenceArg = arg("--evidence-out");
   const profile = arg("--profile") ?? null;
-  const shouldDelete = process.argv.includes("--delete");
+  const capture = parseCaptureFlags(process.argv.slice(2));
+  const shouldDelete = capture.deleteRemote;
   if (!sessionId || !/^sess_[A-Za-z0-9_-]+$/.test(sessionId)) {
     throw new Error("Pass a valid session with --session or ASSEMBLYAI_SESSION_ID.");
   }
@@ -198,8 +213,13 @@ async function main() {
       agent: turn.agent_text ?? null,
       status: turn.status ?? null,
     }));
-    const left = decodeChannel(audioPath, "left");
-    const right = decodeChannel(audioPath, "right");
+    const format = resolveRecordingFormat({
+      sample_rate: metadata.sample_rate,
+      channels: metadata.channels,
+    });
+    const interleaved = decodeRecording(audioPath);
+    const left = interleaved ? channelPcm(interleaved, format, 0) : null;
+    const right = interleaved ? agentChannelPcm(interleaved, format) : null;
     const evidence = {
       schemaVersion: 1,
       recordedAt: new Date().toISOString(),
@@ -250,8 +270,8 @@ async function main() {
         channels: metadata.channels ?? null,
         channelLayout: metadata.channel_layout ?? null,
         sampleRate: metadata.sample_rate ?? null,
-        userChannel: left ? analyzePcm(left) : null,
-        agentChannel: right ? analyzePcm(right) : null,
+        userChannel: left ? analyzePcm(left, format.sampleRate) : null,
+        agentChannel: right ? analyzePcm(right, format.sampleRate) : null,
         decoder: right ? "ffmpeg" : "unavailable",
       },
     };
@@ -264,6 +284,23 @@ async function main() {
       console.log(`Voice QA evidence written to ${evidencePath}.`);
     } else {
       process.stdout.write(serialized);
+    }
+
+    if (capture.keepAudioDir) {
+      if (!right) {
+        throw new RecordingCaptureError(
+          "decoder-unavailable",
+          `Session ${sessionId}: the recording could not be decoded; no agent channel was written.`,
+        );
+      }
+      const keepDir = resolve(capture.keepAudioDir);
+      await mkdir(keepDir, { recursive: true });
+      const agentPath = captureFilePath(keepDir, session.id, format.sampleRate);
+      await writeFile(agentPath, encodeMonoWav(right, format.sampleRate), { mode: 0o600 });
+      const seconds = (right.byteLength / 2 / format.sampleRate).toFixed(2);
+      console.log(
+        `Agent channel for session ${session.id} kept at ${agentPath} (${format.sampleRate} Hz, ${seconds} s).`,
+      );
     }
 
     if (shouldDelete) {
