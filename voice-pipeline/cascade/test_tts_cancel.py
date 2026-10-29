@@ -154,7 +154,10 @@ class AcknowledgementTests(unittest.TestCase):
 
         self.assertEqual([chunk.pcm for chunk in chunks], [pcm(9)])
         self.assertEqual(sent_texts(factory), ["First.", "The tail."])
-        self.assertEqual(sent_types(factory), ["Generate", "Flush", "Cancel", "Generate", "Flush"])
+        self.assertEqual(
+            sent_types(factory),
+            ["Generate", "Flush", "Cancel", "Generate", "Flush"],
+        )
 
     def test_a_cancel_with_nothing_in_flight_acks_zero_and_the_client_flush_runs(self):
         new_audio = pcm(5)

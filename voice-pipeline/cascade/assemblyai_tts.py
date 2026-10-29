@@ -21,8 +21,12 @@ frame is sent or played. A non-empty ``unknown_params`` list is a configuration
 bug. The session's ``expires_at`` and ``configuration.limits`` are recorded as
 call facts.
 
-Sentence scheduling (``speak``) is ticket 49; word boundaries, cancel,
-termination and the close policy follow at their own seams.
+One socket carries the whole call. ``speak`` sends one request per sentence and
+flushes the first sentence immediately; ``Cancel`` stops in-flight synthesis,
+drops the old request's frames until the vendor acknowledges, and reads the
+next ``flush_id`` from the wire; ``terminate`` takes the implicit flush and the
+billing record; and ``handle_close`` turns a close code into a retry, a planned
+reconnect, or a visible call failure. There is no second voice vendor.
 """
 
 from __future__ import annotations
@@ -42,6 +46,7 @@ from urllib.parse import urlencode
 
 from providers import SentenceAudio, StreamingTTS
 
+from cascade.failures import FailureClass, FailureVerdict, classify_tts
 from cascade.thresholds import require_bound
 from cascade.voice_binding import VoiceBinding, bind_voice
 
@@ -111,11 +116,33 @@ class SynthesisProtocolError(RuntimeError):
     """A frame that cannot be read, or a socket that closed mid-request."""
 
 
-class ControlFramePacingError(RuntimeError):
+class SynthesisCallFailure(RuntimeError):
+    """A synthesis failure that ends the call, visibly.
+
+    There is no second voice vendor, so ``fallback`` is always ``None`` and
+    ``call_ended`` is always true. ``visible`` is what the browser needs in
+    order to show the failure instead of an opening that never speaks.
+    """
+
+    fallback = None
+
+    def __init__(self, *, verdict: FailureVerdict, stage: str, reason: str) -> None:
+        self.verdict = verdict
+        self.stage = stage
+        self.reason = reason
+        self.visible = True
+        self.call_ended = True
+        super().__init__(
+            f"{stage} synthesis failed ({verdict.failure_class.value}): {reason}"
+        )
+
+
+class ControlFramePacingError(SynthesisCallFailure):
     """The client sent control frames faster than the session accepts them.
 
     This is our bug (close ``3010``), not an outage: the vendor would close the
-    session, so the adapter refuses the frame instead of tripping it.
+    session, so the adapter refuses the frame instead of tripping it. It fails
+    the call visibly and alerts; it never opens the voice leg's breaker.
     """
 
     def __init__(self, limit: float, count: int, at: float) -> None:
@@ -123,10 +150,38 @@ class ControlFramePacingError(RuntimeError):
         self.count = count
         self.at = at
         super().__init__(
-            f"synthesis control frames exceeded the session's {limit:g}/s budget "
-            f"({count} sent in the last second at {at:.3f}s): 3010 text/control "
-            "pacing bug — do not retry blindly"
+            verdict=classify_tts(3010),
+            stage="reply",
+            reason=(
+                f"control frames exceeded the session's {limit:g}/s budget "
+                f"({count} sent in the last second at {at:.3f}s): 3010 "
+                "text/control pacing bug — do not retry blindly"
+            ),
         )
+
+
+class CloseAction(str, Enum):
+    """What one close means for the call."""
+
+    CLEAN = "clean"
+    RETRY = "retry"
+    PLANNED_RECONNECT = "planned_reconnect"
+    FAIL = "fail"
+
+
+@dataclass(frozen=True)
+class CloseDecision:
+    """A close that does not end the call, and why."""
+
+    verdict: FailureVerdict
+    action: CloseAction
+    retried: bool = False
+
+    @property
+    def fallback(self) -> None:
+        """Synthesis has no second rung: a close never hands over to managed."""
+        return None
+
 
 
 @dataclass(frozen=True)
@@ -398,6 +453,7 @@ class AssemblyAIStreamingTTS(StreamingTTS):
         api_key: str | None = None,
         socket_factory: SocketFactory | None = None,
         clock: Callable[[], float] | None = None,
+        alert: Callable[[FailureVerdict, str], None] | None = None,
     ) -> None:
         self.binding: VoiceBinding = bind_voice(voice_id)
         self.format: TransportFormat = transport_format(transport)
@@ -405,8 +461,10 @@ class AssemblyAIStreamingTTS(StreamingTTS):
         self._api_key = api_key or os.environ.get("ASSEMBLYAI_API_KEY")
         self._socket_factory = socket_factory or _default_socket_factory
         self._clock = clock or time.monotonic
+        self._alert_sink = alert
         self._socket: Any = None
         self._frames: Any = None
+        self._stage = "reply"
         self.begin: Mapping[str, Any] | None = None
         # The call's own record of the session it got (ticket 48).
         self.configuration: Mapping[str, Any] = MappingProxyType({})
@@ -417,6 +475,7 @@ class AssemblyAIStreamingTTS(StreamingTTS):
         self.begin_mismatches: tuple[EchoMismatch, ...] = ()
         # Send-time facts the pacing guard and the call ledger read.
         self.control_frame_times: list[float] = []
+        self.control_frames_sent = 0
         self.flush_id: int | None = None
         self.audio_bytes: int = 0
         self.termination: Mapping[str, Any] | None = None
@@ -438,6 +497,13 @@ class AssemblyAIStreamingTTS(StreamingTTS):
             source="unterminated: the session has not ended",
             audio_bytes=0,
         )
+        # Close policy (ticket 55).
+        self.failures: list[FailureVerdict] = []
+        self.alerts: list[tuple[FailureVerdict, str]] = []
+        self.breaker_opens: list[FailureVerdict] = []
+        self.reconnects = 0
+        self.needs_reconnect = False
+        self._retry_used = False
 
     @property
     def url(self) -> str:
@@ -562,10 +628,17 @@ class AssemblyAIStreamingTTS(StreamingTTS):
 
         A greeting goes through the same scheduler as a reply: one
         ``Generate`` + ``Flush``, split at sentence boundaries. A greeting that
-        is never flushed is a bug, so there is no separate unflushed path.
+        is never flushed is a bug, so there is no separate unflushed path. A
+        failure here ends the call visibly with ``stage="greeting"``; there is
+        no silent opening.
         """
-        async for audio in self.speak(text):
-            yield audio
+        previous = self._stage
+        self._stage = "greeting"
+        try:
+            async for audio in self.speak(text):
+                yield audio
+        finally:
+            self._stage = previous
 
     @property
     def audio_sample_rate(self) -> int:
@@ -592,6 +665,7 @@ class AssemblyAIStreamingTTS(StreamingTTS):
         self._check_control_budget()
         await self._socket.send(json.dumps(frame))
         self.control_frame_times.append(self._clock())
+        self.control_frames_sent += 1
 
     def _check_control_budget(self) -> None:
         """Refuse to send a frame the session would answer with ``3010``."""
@@ -599,11 +673,95 @@ class AssemblyAIStreamingTTS(StreamingTTS):
         if not isinstance(limit, (int, float)) or limit <= 0:
             return
         now = self._clock()
-        recent = sum(
-            1 for moment in self.control_frame_times if now - moment < CONTROL_WINDOW_S
+        # Keep only the window that matters: a long call must not grow this
+        # list without bound, and the budget is a one-second rate.
+        self.control_frame_times = [
+            moment
+            for moment in self.control_frame_times
+            if now - moment < CONTROL_WINDOW_S
+        ]
+        if len(self.control_frame_times) >= limit:
+            failure = ControlFramePacingError(
+                float(limit), len(self.control_frame_times), now
+            )
+            self.failures.append(failure.verdict)
+            self._alert(failure.verdict, str(failure))
+            raise failure
+
+    async def handle_close(self, code: Any = None) -> CloseDecision:
+        """Classify one close and act on it.
+
+        A retryable close is retried once, and only before any audio was
+        delivered — restarting mid-reply would repeat speech. A configuration
+        or pacing close is our bug: the call fails, an alert fires, and the
+        voice leg's breaker is left closed. ``3008`` and the expiry sentinel are
+        planned reconnects: drain this reply, open a new session next turn.
+        """
+        verdict = classify_tts(code)
+        if verdict.failure_class is FailureClass.PLANNED_RECONNECT:
+            await self._close_socket()
+            self.needs_reconnect = True
+            return CloseDecision(verdict=verdict, action=CloseAction.PLANNED_RECONNECT)
+        if verdict.failure_class is FailureClass.DO_NOT_OPEN:
+            await self._close_socket()
+            if code == 1000:
+                return CloseDecision(verdict=verdict, action=CloseAction.CLEAN)
+            raise self._fail(
+                verdict, f"synthesis close {code!r}: {verdict.reason}"
+            )
+        if verdict.failure_class is FailureClass.TRIGGER and self.retry_allowed:
+            self._retry_used = True
+            self.failures.append(verdict)
+            await self._reopen()
+            return CloseDecision(
+                verdict=verdict, action=CloseAction.RETRY, retried=True
+            )
+        failure = self._fail(
+            verdict, f"synthesis close {code!r}: {verdict.reason}"
         )
-        if recent >= limit:
-            raise ControlFramePacingError(float(limit), recent, now)
+        await self._close_socket()
+        raise failure
+
+    @property
+    def retry_allowed(self) -> bool:
+        """Whether a trigger close may be retried with a new session.
+
+        Once, and only before any audio was delivered: a retry after speech
+        would repeat it. The failed attempt is still recorded.
+        """
+        return (
+            not self._retry_used
+            and self.audio_bytes == 0
+            and self._socket is not None
+        )
+
+    async def _reopen(self) -> None:
+        """Replace the failed session with a new one, asserting its Begin too."""
+        await self._close_socket()
+        self._discarding = False
+        self._pending_cancels.clear()
+        self._awaiting_cancel = None
+        self._cancel_generation += 1
+        self.needs_reconnect = False
+        self.reconnects += 1
+        await self.open()
+
+    def _fail(self, verdict: FailureVerdict, reason: str) -> SynthesisCallFailure:
+        """Record one call-ending failure: breaker for triggers, alert for bugs."""
+        failure = SynthesisCallFailure(
+            verdict=verdict, stage=self._stage, reason=reason
+        )
+        self.failures.append(verdict)
+        if verdict.opens_breaker:
+            self.breaker_opens.append(verdict)
+        if verdict.failure_class is FailureClass.BUG:
+            self._alert(verdict, str(failure))
+        return failure
+
+    def _alert(self, verdict: FailureVerdict, reason: str) -> None:
+        self.alerts.append((verdict, reason))
+        if self._alert_sink is not None:
+            self._alert_sink(verdict, reason)
 
     async def cancel(self) -> Cancellation:
         """Stop in-flight synthesis and discard everything not yet heard.
@@ -988,31 +1146,33 @@ class AssemblyAIStreamingTTS(StreamingTTS):
             ) from None
 
     async def _read_frame(self) -> Mapping[str, Any]:
-        try:
-            raw = await self._frames.__anext__()
-        except StopAsyncIteration:
-            raise SynthesisProtocolError(
-                "synthesis socket closed while a request was in flight"
-            ) from None
-        try:
-            frame = json.loads(raw)
-        except (json.JSONDecodeError, TypeError):
-            raise SynthesisProtocolError(
-                f"synthesis session sent a non-JSON frame: {raw!r}"
-            ) from None
-        if not isinstance(frame, Mapping):
-            raise SynthesisProtocolError(
-                f"synthesis session sent a non-object frame: {frame!r}"
-            )
-        if frame.get("type") == "Error":
-            raise SynthesisProtocolError(
-                "synthesis session failed: "
-                f"Error {frame.get('error_code')}: {frame.get('error')}"
-            )
-        if frame.get("type") == "WordBoundaries":
-            self._record_word_boundaries(frame)
-            return await self._read_frame()
-        return frame
+        while True:
+            try:
+                raw = await self._frames.__anext__()
+            except StopAsyncIteration:
+                raise SynthesisProtocolError(
+                    "synthesis socket closed while a request was in flight"
+                ) from None
+            try:
+                frame = json.loads(raw)
+            except (json.JSONDecodeError, TypeError):
+                raise SynthesisProtocolError(
+                    f"synthesis session sent a non-JSON frame: {raw!r}"
+                ) from None
+            if not isinstance(frame, Mapping):
+                raise SynthesisProtocolError(
+                    f"synthesis session sent a non-object frame: {frame!r}"
+                )
+            if frame.get("type") == "Error":
+                code = frame.get("error_code")
+                raise self._fail(
+                    classify_tts(code),
+                    f"Error {code}: {frame.get('error')}",
+                )
+            if frame.get("type") == "WordBoundaries":
+                self._record_word_boundaries(frame)
+                continue
+            return frame
 
     def _read_begin(self, raw: Any) -> Mapping[str, Any]:
         try:

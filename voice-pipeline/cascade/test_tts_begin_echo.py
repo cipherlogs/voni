@@ -58,7 +58,13 @@ class EchoMismatchTests(unittest.TestCase):
         self.assertIn(field, str(raised.exception))
         self.assertEqual(
             tts.begin_mismatches,
-            (EchoMismatch(field=field, requested=self.requested(field), echoed=expected_echoed),),
+            (
+                EchoMismatch(
+                    field=field,
+                    requested=self.requested(field),
+                    echoed=expected_echoed,
+                ),
+            ),
         )
         # Fails visibly, plays no audio, and sends nothing on the open socket.
         self.assertEqual(sent(factory), [])
