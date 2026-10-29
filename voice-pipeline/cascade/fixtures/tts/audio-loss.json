@@ -1,0 +1,84 @@
+{
+  "name": "audio-loss",
+  "description": "One FlushDone reports 8 ms but only 2 ms of whole 24 kHz samples arrived. The 6 ms gap is far outside the named tolerance, so the call ends as audio loss, the delta is recorded, and the reply is not played with a hole in it.",
+  "kind": "speak",
+  "transport": "browser",
+  "voice_id": "anna",
+  "begin": {
+    "type": "Begin",
+    "id": "10885144-0d4b-4928-9eff-ef292a352937",
+    "configuration": {
+      "language": "English",
+      "sample_rate": 24000,
+      "encoding": "pcm_s16le",
+      "voice_id": "anna",
+      "model": "assemblyai-tts-1",
+      "word_boundaries": true,
+      "limits": {
+        "max_generate_text_length": 2000,
+        "max_control_frames_per_sec": 20.0,
+        "max_egress_audio_buffer_ms": 300000,
+        "text_throttle_max_chars_per_sec": 100.0,
+        "text_max_buffer_chars": 8000,
+        "session_ttl_grace_sec": 60
+      },
+      "unknown_params": []
+    },
+    "expires_at": 1789556741
+  },
+  "text": "Your rate is 6.2 percent.",
+  "frames": [
+    {
+      "type": "Audio",
+      "audio": "AQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEA",
+      "flush_id": 0
+    },
+    {
+      "type": "FlushDone",
+      "flush_id": 0,
+      "audio_duration_ms": 8
+    }
+  ],
+  "expect": {
+    "sent": [
+      {
+        "type": "Generate",
+        "text": "Your rate is 6.2 percent."
+      },
+      {
+        "type": "Flush"
+      }
+    ],
+    "sent_at_first_audio": 2,
+    "chunks": [
+      {
+        "text": "Your rate is 6.2 percent.",
+        "sample_rate": 24000,
+        "bytes": 96
+      }
+    ],
+    "audio_bytes": 96,
+    "flush_math": [
+      {
+        "flush_id": 0,
+        "reported_ms": 8,
+        "derived_ms": 2.0,
+        "delta_ms": -6.0
+      }
+    ],
+    "audio_losses": [
+      {
+        "flush_id": 0,
+        "reported_ms": 8,
+        "derived_ms": 2.0,
+        "delta_ms": -6.0,
+        "audio_bytes": 96
+      }
+    ],
+    "flush_id": 0,
+    "failures": [
+      "trigger"
+    ],
+    "error": "AudioLossError"
+  }
+}

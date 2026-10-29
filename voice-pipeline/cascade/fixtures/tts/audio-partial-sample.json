@@ -1,0 +1,56 @@
+{
+  "name": "audio-partial-sample",
+  "description": "An Audio frame carries 3 bytes, which is not a whole number of 16-bit samples. Whole samples only: the corrupt frame is refused before anything is played.",
+  "kind": "speak",
+  "transport": "browser",
+  "voice_id": "anna",
+  "begin": {
+    "type": "Begin",
+    "id": "10885144-0d4b-4928-9eff-ef292a352937",
+    "configuration": {
+      "language": "English",
+      "sample_rate": 24000,
+      "encoding": "pcm_s16le",
+      "voice_id": "anna",
+      "model": "assemblyai-tts-1",
+      "word_boundaries": true,
+      "limits": {
+        "max_generate_text_length": 2000,
+        "max_control_frames_per_sec": 20.0,
+        "max_egress_audio_buffer_ms": 300000,
+        "text_throttle_max_chars_per_sec": 100.0,
+        "text_max_buffer_chars": 8000,
+        "session_ttl_grace_sec": 60
+      },
+      "unknown_params": []
+    },
+    "expires_at": 1789556741
+  },
+  "text": "Hello.",
+  "frames": [
+    {
+      "type": "Audio",
+      "audio": "AQID",
+      "flush_id": 0
+    }
+  ],
+  "expect": {
+    "sent": [
+      {
+        "type": "Generate",
+        "text": "Hello."
+      },
+      {
+        "type": "Flush"
+      }
+    ],
+    "sent_at_first_audio": null,
+    "chunks": [],
+    "audio_bytes": 0,
+    "flush_math": [],
+    "audio_losses": [],
+    "flush_id": 0,
+    "failures": [],
+    "error": "PartialSampleError"
+  }
+}

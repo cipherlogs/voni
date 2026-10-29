@@ -1,0 +1,112 @@
+{
+  "name": "termination-billing",
+  "description": "Terminate performs the implicit flush: no extra Flush is sent, the vendor answers with a final FlushDone and then Termination, and the summary's billed character count, audio duration and session duration are recorded as call facts. The 4 ms of audio still owed is kept as residual audio.",
+  "kind": "terminate",
+  "transport": "browser",
+  "voice_id": "anna",
+  "begin": {
+    "type": "Begin",
+    "id": "10885144-0d4b-4928-9eff-ef292a352937",
+    "configuration": {
+      "language": "English",
+      "sample_rate": 24000,
+      "encoding": "pcm_s16le",
+      "voice_id": "anna",
+      "model": "assemblyai-tts-1",
+      "word_boundaries": true,
+      "limits": {
+        "max_generate_text_length": 2000,
+        "max_control_frames_per_sec": 20.0,
+        "max_egress_audio_buffer_ms": 300000,
+        "text_throttle_max_chars_per_sec": 100.0,
+        "text_max_buffer_chars": 8000,
+        "session_ttl_grace_sec": 60
+      },
+      "unknown_params": []
+    },
+    "expires_at": 1789556741
+  },
+  "text": "Hello there.",
+  "frames": [
+    {
+      "type": "Audio",
+      "audio": "AQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEA",
+      "flush_id": 0
+    },
+    {
+      "type": "FlushDone",
+      "flush_id": 0,
+      "audio_duration_ms": 8
+    },
+    {
+      "type": "Audio",
+      "audio": "AQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEA",
+      "flush_id": 1
+    },
+    {
+      "type": "FlushDone",
+      "flush_id": 1,
+      "audio_duration_ms": 4
+    },
+    {
+      "type": "Termination",
+      "session_duration_seconds": 8,
+      "total_input_char_length": 96,
+      "billed_characters": 96,
+      "audio_duration_seconds": 5.304,
+      "word_boundaries_status": "complete"
+    }
+  ],
+  "expect": {
+    "sent": [
+      {
+        "type": "Generate",
+        "text": "Hello there."
+      },
+      {
+        "type": "Flush"
+      },
+      {
+        "type": "Terminate"
+      }
+    ],
+    "chunks": [
+      {
+        "text": "Hello there.",
+        "sample_rate": 24000,
+        "bytes": 384
+      }
+    ],
+    "final_flush": {
+      "flush_id": 1,
+      "reported_ms": 4,
+      "derived_ms": 4.0
+    },
+    "residual_audio_bytes": 192,
+    "billing": {
+      "characters": 96,
+      "measured": true,
+      "source": "billed_characters",
+      "total_input_char_length": 96,
+      "audio_duration_seconds": 5.304,
+      "session_duration_seconds": 8,
+      "audio_bytes": 576
+    },
+    "word_boundaries_status": "complete",
+    "flush_math": [
+      {
+        "flush_id": 0,
+        "reported_ms": 8,
+        "derived_ms": 8.0,
+        "delta_ms": 0.0
+      },
+      {
+        "flush_id": 1,
+        "reported_ms": 4,
+        "derived_ms": 4.0,
+        "delta_ms": 0.0
+      }
+    ],
+    "error": null
+  }
+}

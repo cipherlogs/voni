@@ -1,0 +1,134 @@
+{
+  "name": "sentence-scheduling",
+  "description": "One reply scheduled as three sentence requests. The first Generate+Flush is sent before any audio is read, and each later sentence is generated only after its predecessor's FlushDone. An additive unknown vendor frame sits between two known frames and is ignored.",
+  "kind": "speak",
+  "transport": "browser",
+  "voice_id": "anna",
+  "begin": {
+    "type": "Begin",
+    "id": "10885144-0d4b-4928-9eff-ef292a352937",
+    "configuration": {
+      "language": "English",
+      "sample_rate": 24000,
+      "encoding": "pcm_s16le",
+      "voice_id": "anna",
+      "model": "assemblyai-tts-1",
+      "word_boundaries": true,
+      "limits": {
+        "max_generate_text_length": 2000,
+        "max_control_frames_per_sec": 20.0,
+        "max_egress_audio_buffer_ms": 300000,
+        "text_throttle_max_chars_per_sec": 100.0,
+        "text_max_buffer_chars": 8000,
+        "session_ttl_grace_sec": 60
+      },
+      "unknown_params": []
+    },
+    "expires_at": 1789556741
+  },
+  "text": "Hello there. Your rate is 6.2 percent. Goodbye.",
+  "frames": [
+    {
+      "type": "Audio",
+      "audio": "AQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEA",
+      "flush_id": 0
+    },
+    {
+      "type": "VendorTrace",
+      "trace_id": "not part of the contract"
+    },
+    {
+      "type": "FlushDone",
+      "flush_id": 0,
+      "audio_duration_ms": 8
+    },
+    {
+      "type": "Audio",
+      "audio": "AQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEA",
+      "flush_id": 1
+    },
+    {
+      "type": "FlushDone",
+      "flush_id": 1,
+      "audio_duration_ms": 12
+    },
+    {
+      "type": "Audio",
+      "audio": "AQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEA",
+      "flush_id": 2
+    },
+    {
+      "type": "FlushDone",
+      "flush_id": 2,
+      "audio_duration_ms": 4
+    }
+  ],
+  "expect": {
+    "sent": [
+      {
+        "type": "Generate",
+        "text": "Hello there. "
+      },
+      {
+        "type": "Flush"
+      },
+      {
+        "type": "Generate",
+        "text": "Your rate is 6.2 percent. "
+      },
+      {
+        "type": "Flush"
+      },
+      {
+        "type": "Generate",
+        "text": "Goodbye."
+      },
+      {
+        "type": "Flush"
+      }
+    ],
+    "sent_at_first_audio": 2,
+    "chunks": [
+      {
+        "text": "Hello there. ",
+        "sample_rate": 24000,
+        "bytes": 384
+      },
+      {
+        "text": "Your rate is 6.2 percent. ",
+        "sample_rate": 24000,
+        "bytes": 576
+      },
+      {
+        "text": "Goodbye.",
+        "sample_rate": 24000,
+        "bytes": 192
+      }
+    ],
+    "audio_bytes": 1152,
+    "flush_math": [
+      {
+        "flush_id": 0,
+        "reported_ms": 8,
+        "derived_ms": 8.0,
+        "delta_ms": 0.0
+      },
+      {
+        "flush_id": 1,
+        "reported_ms": 12,
+        "derived_ms": 12.0,
+        "delta_ms": 0.0
+      },
+      {
+        "flush_id": 2,
+        "reported_ms": 4,
+        "derived_ms": 4.0,
+        "delta_ms": 0.0
+      }
+    ],
+    "audio_losses": [],
+    "flush_id": 2,
+    "failures": [],
+    "error": null
+  }
+}
