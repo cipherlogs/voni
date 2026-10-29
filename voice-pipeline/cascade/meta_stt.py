@@ -9,19 +9,31 @@ no test opens a real socket.
 Session identity is a query parameter built from the call id and a local session
 epoch, never a secret. The acknowledgement is a text frame without a ``type``
 field; any other frame arriving before it is a protocol error, and no audio
-leaves the client before the ack.
+leaves the client before the ack. The wait for that acknowledgement is bounded
+by ``stt.handshake_ms`` (the registry, not a literal); a missing ack fails
+visibly and records the reason, and a close during the wait is classified
+through the shared speech-leg table so the caller can open the leg.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import os
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 from typing import Any
 from urllib.parse import urlencode
 
+from cascade.failures import FailureVerdict, classify_stt
+from cascade.thresholds import require_bound
 from cascade.voice_binding import LOCALES
 from providers import StreamingSTT
+
+_log = logging.getLogger(__name__)
+
+#: The registry bound that caps the wait for the acknowledgement (ticket 27).
+HANDSHAKE_BOUND = "stt.handshake_ms"
 
 REALTIME_URL = "wss://api.meta.ai/v1/asr/realtime"
 MODEL = "muse-voice-transcribe-1.0"
@@ -52,6 +64,31 @@ class MetaHandshakeError(RuntimeError):
 
 class MetaHandshakeProtocolError(MetaHandshakeError):
     """A frame arrived before the acknowledgement that cannot be the ack."""
+
+
+class MetaHandshakeTimeout(MetaHandshakeError):
+    """No acknowledgement arrived inside the bounded handshake wait."""
+
+    def __init__(self, session_id: str, timeout_s: float) -> None:
+        self.timeout_s = timeout_s
+        super().__init__(
+            session_id,
+            f"no acknowledgement within {timeout_s:g} s "
+            f"(bound {HANDSHAKE_BOUND!r})",
+        )
+
+
+class MetaHandshakeClosed(MetaHandshakeError):
+    """The socket closed while the session was still waiting for the ack."""
+
+    def __init__(self, session_id: str, verdict: FailureVerdict) -> None:
+        self.verdict = verdict
+        code = "no code" if verdict.code is None else f"code {verdict.code}"
+        super().__init__(
+            session_id,
+            f"socket closed during the handshake with {code} "
+            f"({verdict.failure_class.value}: {verdict.reason})",
+        )
 
 
 class UnknownLanguageCodeError(ValueError):
@@ -86,6 +123,7 @@ class MetaStreamingSTT(StreamingSTT):
         api_key: str | None = None,
         socket_factory: SocketFactory | None = None,
         keyterms: Iterable[str] = (),
+        handshake_timeout_s: float | None = None,
     ) -> None:
         self._call_id = call_id
         self._api_key = api_key or os.environ.get(API_KEY_ENV)
@@ -96,11 +134,30 @@ class MetaStreamingSTT(StreamingSTT):
         self._frames: Any = None
         self._epoch = -1
         self._acked = False
+        self._session = ""
+        self._handshake_timeout_s = handshake_timeout_s
+        self._failure_reason: str | None = None
 
     @property
     def acked(self) -> bool:
         """Whether the current session's acknowledgement was received."""
         return self._acked
+
+    @property
+    def failure_reason(self) -> str | None:
+        """The recorded reason the last session could not be established."""
+        return self._failure_reason
+
+    @property
+    def handshake_timeout_s(self) -> float:
+        """The bounded wait for the ack: the registry bound, in seconds.
+
+        Tests may inject a shorter bound, never a default. Production always
+        reads ``stt.handshake_ms`` (ticket 27).
+        """
+        if self._handshake_timeout_s is not None:
+            return float(self._handshake_timeout_s)
+        return float(require_bound(HANDSHAKE_BOUND)) / 1000.0
 
     def __repr__(self) -> str:
         # The credential is deliberately absent from every representation.
@@ -131,6 +188,7 @@ class MetaStreamingSTT(StreamingSTT):
 
         self._epoch += 1
         session = session_id(self._call_id, self._epoch)
+        self._session = session
         url = f"{REALTIME_URL}?{urlencode({'sessionId': session})}"
         frame = {
             "authorization": {"accessToken": f"Bearer {self._api_key}"},
@@ -155,29 +213,64 @@ class MetaStreamingSTT(StreamingSTT):
         self._acked = True
 
     async def _await_ack(self, session_id: str) -> None:
-        """Consume exactly the acknowledgement frame.
+        """Consume exactly the acknowledgement frame inside the bounded wait.
 
         A text JSON object without ``type`` is the ack. A typed frame may not
-        arrive first, and a binary or non-JSON frame can never be the ack; both
-        fail by session name. The bounded wait and its classification are
-        ticket 27's.
+        arrive first, a binary or non-object frame can never be the ack, and a
+        socket that ends first fails by name. The wait is bounded by
+        ``stt.handshake_ms``; a close during the wait is classified through the
+        shared speech-leg table so the caller can open the leg.
         """
+        timeout_s = self.handshake_timeout_s
         try:
-            raw = await self._frames.__anext__()
+            raw = await asyncio.wait_for(
+                self._frames.__anext__(), timeout=timeout_s
+            )
         except StopAsyncIteration:
+            self._record_failure(session_id, "socket closed before the acknowledgement")
             raise MetaHandshakeError(
                 session_id, "socket closed before the acknowledgement"
             ) from None
+        except TimeoutError:
+            reason = (
+                f"no acknowledgement within {timeout_s:g} s "
+                f"(bound {HANDSHAKE_BOUND!r})"
+            )
+            self._record_failure(session_id, reason)
+            raise MetaHandshakeTimeout(session_id, timeout_s) from None
+        except Exception as error:
+            code = getattr(error, "code", None)
+            verdict = classify_stt(code if isinstance(code, int) else None)
+            self._record_failure(
+                session_id,
+                f"socket closed during the handshake with code "
+                f"{verdict.code!r} ({verdict.failure_class.value}: {verdict.reason})",
+            )
+            raise MetaHandshakeClosed(session_id, verdict) from error
+
         ack = _json_object(raw)
         if ack is None:
+            self._record_failure(
+                session_id, "a non-object frame arrived before the acknowledgement"
+            )
             raise MetaHandshakeProtocolError(
-                session_id, "a non-JSON frame arrived before the acknowledgement"
+                session_id,
+                "a frame that is not a JSON object arrived before the acknowledgement",
             )
         if "type" in ack:
+            self._record_failure(
+                session_id,
+                f"a frame of type {ack['type']!r} arrived before the acknowledgement",
+            )
             raise MetaHandshakeProtocolError(
                 session_id,
                 f"a frame of type {ack['type']!r} arrived before the acknowledgement",
             )
+
+    def _record_failure(self, session_id: str, reason: str) -> None:
+        """Record why a session could not be established, without the credential."""
+        self._failure_reason = f"meta speech session {session_id}: {reason}"
+        _log.warning("%s", self._failure_reason)
 
     async def send_audio(self, pcm: bytes) -> None:
         """Forward one binary PCM frame; pacing and framing land in ticket 28."""
