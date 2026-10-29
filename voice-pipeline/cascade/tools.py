@@ -14,8 +14,10 @@ The hop carries four facts and never a fifth:
 * **the signed call's id** as ``context.callId``. Ticket 64's envelope (or
   ticket 65's token channel) minted the call before anything vendor-facing
   existed, so the model and the browser never supply a call identity;
-* **the model's call id** as ``toolCallId``, so the route can dedupe (ticket 82
-  validates it; this module only carries it);
+* **the model's call id** as ``toolCallId``, so the route can dedupe. Ticket 82
+  owns the rule: only an id of 1 to 64 characters is executable; a missing or
+  blank id is denied without a request (the turn holds), and an overlength id
+  fails the turn as a provider contract violation;
 * **the model's arguments** unchanged. Argument validation is ticket 40's and
   happens before a call reaches here.
 
@@ -31,6 +33,18 @@ instead of inventing a number. It is also off the audio path: :meth:`start`
 returns a :class:`ToolHop` immediately and the continuation awaits it, so the
 reply stream never blocks on a side effect.
 
+Ticket 83's idempotency lives in :class:`ToolCallMemo`: inside one logical turn
+a ``(name, canonical arguments)`` pair executes once, and a repeat — including
+one after the model reconnects mid-turn — replays the memoised result
+re-addressed to the repeated call id. A new logical turn clears the memo, so a
+deliberate repeat in a later turn is a real call again.
+
+Ticket 85's narration hold lives in :class:`ToolNarrationHold`: on a turn that
+hands off to a tool, the model's content never reaches the caller. Any narration
+in flight is cancelled and the Locale's hold line is spoken instead, while
+history still records the assistant message verbatim so the model's next request
+sees what it actually said.
+
 ``end_call`` is not a tool. It is a pure signal (:class:`EndCallSignal`): no
 request is made and nothing speakable follows it. The closing line and the
 hangup are ticket 87's.
@@ -39,17 +53,29 @@ hangup are ticket 87's.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import os
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Any
 from urllib.parse import quote
 
 from cascade.envelope import VerifiedBody
-from cascade.meta_llm import MetaLLMTurn, tool_result_message
+from cascade.meta_llm import (
+    CALL_ID_MAX_LENGTH,
+    TOOL_CALL_ID_MISSING,
+    TOOL_DENIED_COUNTER,
+    MetaLLMTurn,
+    ToolCallIdentityError,
+    ToolDenial,
+    reply_disposition,
+    tool_result_message,
+)
 from cascade.thresholds import require_bound
-from providers import TokenDelta, ToolCallRequest
+from metrics import TimingLedger
+from providers import SentenceAudio, TokenDelta, ToolCallRequest
 
 #: The app's existing tool route. The name is one path segment, never a body
 #: field, because that is the route the managed path already serves.
@@ -68,6 +94,40 @@ END_CALL_TOOL = "end_call"
 #: The only context kind a cascade call sends. A test context is the app's
 #: own dry-run path, not something a live call may claim.
 CALL_CONTEXT_KIND = "call"
+
+#: The line the caller hears while a tool runs, one per Locale the catalogue
+#: speaks (ticket 85). The model's own narration is never spoken on a tool turn;
+#: this is what replaces it. Keyed by our Locale code, never a vendor name.
+HOLD_LINES: Mapping[str, str] = MappingProxyType(
+    {
+        "en": "One moment.",
+        "es": "Un momento.",
+        "fr": "Un instant.",
+        "de": "Einen Moment.",
+        "it": "Un attimo.",
+        "pt": "Um momento.",
+    }
+)
+
+
+class UnknownHoldLineError(LookupError):
+    """No hold line exists for this Locale, so nothing may be spoken for it."""
+
+    def __init__(self, locale_code: str) -> None:
+        self.locale_code = locale_code
+        known = ", ".join(sorted(HOLD_LINES))
+        super().__init__(
+            f'no hold line for Locale "{locale_code}": the catalogue has lines '
+            f"for {known}"
+        )
+
+
+def hold_line(locale_code: str) -> str:
+    """The localized hold line, or the named reason there is none."""
+    line = HOLD_LINES.get(locale_code)
+    if line is None:
+        raise UnknownHoldLineError(locale_code)
+    return line
 
 
 class ToolHopError(RuntimeError):
@@ -103,6 +163,64 @@ class ToolRequestError(ToolHopError):
 
     def __init__(self, reason: str) -> None:
         super().__init__(f"the tool request cannot be built: {reason}")
+
+
+class ToolCallIdError(ToolHopError):
+    """The model's call id cannot identify an executed call (ticket 82)."""
+
+    def __init__(self, name: str, call_id: Any, reason: str) -> None:
+        self.name = name
+        self.call_id = call_id
+        super().__init__(f'tool "{name}": {reason}')
+
+
+class ToolCallIdMissing(ToolCallIdError):
+    """The call has no id, so there is nothing the route could dedupe on.
+
+    Not executed and not answered: the vendor cannot be sent a ``tool`` result
+    for a call it never identified, so the turn closes with a hold line and the
+    denial is recorded instead.
+    """
+
+    def __init__(self, name: str, call_id: Any = "") -> None:
+        super().__init__(
+            name,
+            call_id,
+            "call_id is missing or empty; the call is not executed and the turn "
+            "closes with a hold line",
+        )
+
+
+class ToolCallIdOverlong(ToolCallIdentityError, ToolHopError):
+    """The call id is outside the vendor's 1-64 character contract (ticket 82).
+
+    A provider contract violation, not a tool result: executing (or denying) a
+    call whose identity cannot be quoted back to the vendor would leave the
+    turn unanswerable, so the turn fails instead.
+    """
+
+    def __init__(self, name: str, call_id: str) -> None:
+        self.name = name
+        self.call_id = call_id
+        super().__init__(
+            f'tool "{name}": call_id is {len(call_id)} characters; the vendor '
+            f"contract is 1-{CALL_ID_MAX_LENGTH}"
+        )
+
+
+def require_call_id(name: str, call_id: Any) -> str:
+    """The one call-id rule both the executor and the request enforce.
+
+    A missing or blank id is denied (the turn holds); an overlength id is a
+    provider contract violation. Splitting the two matters: one is a model
+    mistake the caller hears a hold line for, the other means this turn cannot
+    be answered at all.
+    """
+    if not isinstance(call_id, str) or not call_id.strip():
+        raise ToolCallIdMissing(name, call_id)
+    if len(call_id) > CALL_ID_MAX_LENGTH:
+        raise ToolCallIdOverlong(name, call_id)
+    return call_id
 
 
 class ToolBoundError(ToolHopError):
@@ -185,8 +303,7 @@ class ToolRequest:
             raise ToolRequestError("the tool name is empty")
         if not isinstance(self.call_id, str) or not self.call_id.strip():
             raise ToolContextError("it is empty")
-        if not isinstance(self.tool_call_id, str):
-            raise ToolRequestError("the model's call id is not a string")
+        require_call_id(self.name, self.tool_call_id)
         if not isinstance(self.arguments, Mapping):
             raise ToolRequestError(
                 f"arguments must be an object, got {type(self.arguments).__name__}"
@@ -215,18 +332,108 @@ class ToolRequest:
         }
 
 
+def _canonical_value(value: Any) -> Any:
+    """One argument value in its canonical form; JSON scalars only."""
+    if isinstance(value, Mapping):
+        canonical: dict[str, Any] = {}
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise ToolRequestError(
+                    f"argument keys must be strings, got {type(key).__name__}"
+                )
+            canonical[key] = _canonical_value(item)
+        return canonical
+    if isinstance(value, (list, tuple)):
+        return [_canonical_value(item) for item in value]
+    if isinstance(value, bool) or value is None or isinstance(value, str):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        # ``1`` and ``1.0`` are one call, not two: the memo keys on meaning.
+        return int(value) if value.is_integer() else value
+    raise ToolRequestError(
+        f"argument values must be JSON scalars, got {type(value).__name__}"
+    )
+
+
+def canonical_arguments(arguments: Mapping[str, Any]) -> str:
+    """The memo key's argument half: sorted keys, normalised scalars.
+
+    Two spellings of one call (a different key order, ``1`` versus ``1.0``)
+    must produce one key, or a model retry becomes a second side effect. The
+    result is JSON, so an artifact or a log can carry it.
+    """
+    if not isinstance(arguments, Mapping):
+        raise ToolRequestError(
+            f"arguments must be an object, got {type(arguments).__name__}"
+        )
+    return json.dumps(
+        _canonical_value(arguments),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+
+
+class ToolCallMemo:
+    """The per-logical-turn memo of tool results (ticket 83).
+
+    One memo belongs to the call; :meth:`begin_turn` labels the logical turn
+    the memo is answering. A reconnect in the same turn re-labels with the same
+    key, so a replayed call still hits the memo; a new turn clears it. The key
+    itself carries the turn as well, so a stale entry can never answer a new
+    turn even if a caller forgets to re-label.
+    """
+
+    def __init__(self, turn_key: str = "") -> None:
+        self._turn = turn_key
+        self._entries: dict[tuple[str, str, str], ToolResult] = {}
+
+    @property
+    def turn_key(self) -> str:
+        return self._turn
+
+    def __len__(self) -> int:
+        return len(self._entries)
+
+    def begin_turn(self, turn_key: str) -> None:
+        """Label the logical turn; a different turn discards the old memo."""
+        if turn_key == self._turn:
+            return
+        self._entries.clear()
+        self._turn = turn_key
+
+    def key(self, name: str, arguments: Mapping[str, Any]) -> tuple[str, str, str]:
+        """The memo key: the turn, the tool and its canonical arguments."""
+        return (self._turn, name, canonical_arguments(arguments))
+
+    def get(self, name: str, arguments: Mapping[str, Any]) -> ToolResult | None:
+        """The result this turn already produced for this call, if any."""
+        return self._entries.get(self.key(name, arguments))
+
+    def put(
+        self, name: str, arguments: Mapping[str, Any], result: ToolResult
+    ) -> None:
+        """Remember one executed result for the rest of this logical turn."""
+        self._entries[self.key(name, arguments)] = result
+
+
 @dataclass(frozen=True)
 class ToolResult:
     """The route's answer, ready to become the model's ``role: "tool"`` message.
 
     The payload is carried verbatim: a ``{"ok": false, "error": …}`` answer is
     a tool result the model can speak, not an outage. Transport failures never
-    reach this type (ticket 84 owns their mapping).
+    reach this type (ticket 84 owns their mapping). ``replayed`` is true only
+    when this outcome came from the turn's memo instead of the route (ticket
+    83); the payload is then the first call's, re-addressed to this call id.
     """
 
     name: str
     tool_call_id: str
     payload: Mapping[str, Any]
+    replayed: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.payload, Mapping):
@@ -273,6 +480,32 @@ class EndCallSignal:
 ToolOutcome = ToolResult | EndCallSignal
 
 
+@dataclass(frozen=True)
+class DeniedCall:
+    """A call that was not executed because it has no executable identity.
+
+    ``hold`` is always true: a denied call closes the turn with a hold line
+    (ticket 85 speaks it) instead of a tool result the vendor cannot match. The
+    denial is carried here so the turn can record it without re-deriving why.
+    """
+
+    name: str
+    denial: ToolDenial
+    hold: bool = True
+
+    @property
+    def tool_call_id(self) -> str:
+        """The id the call carried; empty when none was supplied."""
+        return self.denial.call_id
+
+    def __post_init__(self) -> None:
+        if self.denial.code != TOOL_CALL_ID_MISSING:
+            raise ValueError(
+                f"a denied call carries the missing-call-id denial, got "
+                f"{self.denial.code!r}"
+            )
+
+
 class ToolHop:
     """One in-flight hop: the audio path starts it, the continuation awaits it."""
 
@@ -300,6 +533,160 @@ class ToolHop:
         return await self._task
 
 
+#: Where one synthesized hold frame goes; the same sink the reply audio uses.
+HoldSink = Callable[[SentenceAudio], Awaitable[None] | None]
+
+
+@dataclass(frozen=True)
+class HoldOutcome:
+    """What the hold actually did, so the call can record it honestly."""
+
+    spoken: bool
+    reason: str
+    text: str = ""
+    frames: int = 0
+    audio_bytes: int = 0
+    cancelled: bool = False
+
+    @classmethod
+    def skipped(cls, reason: str, *, cancelled: bool = False) -> "HoldOutcome":
+        """Nothing was spoken; ``reason`` is the named reason."""
+        return cls(spoken=False, reason=reason, cancelled=cancelled)
+
+    def to_document(self) -> dict[str, Any]:
+        return {
+            "spoken": self.spoken,
+            "reason": self.reason,
+            "text": self.text,
+            "frames": self.frames,
+            "audioBytes": self.audio_bytes,
+            "cancelled": self.cancelled,
+        }
+
+
+class ToolNarrationHold:
+    """Speak the localized hold line instead of the model thinking out loud.
+
+    On a turn that hands off to a tool, the model's content is never spoken: any
+    narration already in flight is cut with the voice's ``Cancel``, then the
+    Locale's hold line is spoken through the same session, so the caller hears a
+    deliberate line rather than dead air or the model's notes (ticket 85).
+
+    The hold is spoken *before* the hop is awaited — it is what fills the wait —
+    and it is skipped when the tool already answered, because a hold that
+    outlives its wait is just a slower reply. A barge-in cancels it with
+    :meth:`cancel`; the tool result still lands in history either way.
+    """
+
+    def __init__(
+        self,
+        *,
+        voice: Any,
+        locale_code: str,
+        sink: HoldSink | None = None,
+    ) -> None:
+        # Resolve the line now: an unbound Locale must refuse before a call.
+        self._line = hold_line(locale_code)
+        self._locale_code = locale_code
+        self._voice = voice
+        self._sink = sink
+        self._cancelled = False
+
+    @property
+    def text(self) -> str:
+        """The line this hold speaks."""
+        return self._line
+
+    @property
+    def cancelled(self) -> bool:
+        return self._cancelled
+
+    async def cancel(self) -> None:
+        """Stop the hold line; a barge-in owns the floor from here.
+
+        Idempotent, and it also cancels the voice so a frame already in flight
+        cannot reach the caller after the interruption.
+        """
+        self._cancelled = True
+        await self._cancel_voice()
+
+    async def speak(
+        self, *, turn: MetaLLMTurn, hop: ToolHop | None = None
+    ) -> HoldOutcome:
+        """Discard the narration and speak the hold, unless it is not needed."""
+        if self._cancelled:
+            return HoldOutcome.skipped("the hold was cancelled", cancelled=True)
+        if not _owes_hold(turn):
+            return HoldOutcome.skipped(
+                "the turn is not a tool handoff, so its reply is spoken as generated"
+            )
+        if turn.content_text.strip():
+            # The model narrated before calling the tool. Cut it, so the caller
+            # never hears the model thinking out loud.
+            await self._cancel_voice()
+        if hop is not None and hop.done:
+            return HoldOutcome.skipped(
+                "the tool answered before a hold was needed, so nothing was spoken"
+            )
+        if self._cancelled:
+            return HoldOutcome.skipped("the hold was cancelled", cancelled=True)
+
+        frames = 0
+        audio_bytes = 0
+        async for audio in self._voice.speak(self._line):
+            if self._cancelled:
+                return HoldOutcome(
+                    spoken=frames > 0,
+                    reason="the hold was cancelled by a barge-in",
+                    text=self._line,
+                    frames=frames,
+                    audio_bytes=audio_bytes,
+                    cancelled=True,
+                )
+            frames += 1
+            audio_bytes += len(audio.pcm)
+            if self._sink is not None:
+                result = self._sink(audio)
+                if inspect.isawaitable(result):
+                    await result
+        if self._cancelled:
+            return HoldOutcome(
+                spoken=frames > 0,
+                reason="the hold was cancelled by a barge-in",
+                text=self._line,
+                frames=frames,
+                audio_bytes=audio_bytes,
+                cancelled=True,
+            )
+        if frames == 0:
+            return HoldOutcome.skipped(
+                "the hold synthesis produced no audio; the caller heard nothing"
+            )
+        return HoldOutcome(
+            spoken=True,
+            reason="spoken",
+            text=self._line,
+            frames=frames,
+            audio_bytes=audio_bytes,
+        )
+
+    async def _cancel_voice(self) -> None:
+        """Cut whatever the session is synthesizing, if the voice can."""
+        cancel = getattr(self._voice, "cancel", None)
+        if not callable(cancel):
+            return
+        result = cancel()
+        if inspect.isawaitable(result):
+            await result
+
+
+def _owes_hold(turn: MetaLLMTurn) -> bool:
+    """Whether this turn hands off to a tool and therefore owes a hold line."""
+    if turn.hold_line_required:
+        return True
+    return reply_disposition(turn).hold_line
+
+
 class ToolExecutor:
     """Executes one model tool call against the app's existing route.
 
@@ -315,6 +702,7 @@ class ToolExecutor:
         secret: str | None = None,
         session_factory: Any = None,
         timeout_ms: float | None = None,
+        memo: ToolCallMemo | None = None,
     ) -> None:
         if not isinstance(base_url, str) or not base_url.strip():
             raise ToolEndpointError()
@@ -327,6 +715,14 @@ class ToolExecutor:
         self._secret = secret
         self._session_factory = session_factory
         self._timeout_ms = timeout_ms
+        # The turn's memo, when the call hands one in: it lives for the logical
+        # turn, so a retried call replays instead of paying twice (ticket 83).
+        self._memo = memo
+
+    @property
+    def memo(self) -> ToolCallMemo | None:
+        """The turn-keyed memo this executor consults, if any."""
+        return self._memo
 
     @property
     def call_id(self) -> str:
@@ -379,7 +775,13 @@ class ToolExecutor:
         return float(require_bound(TOOL_TIMEOUT_BOUND))
 
     def start(self, call: ToolCallRequest) -> ToolHop:
-        """Begin the hop and return at once; nothing here awaits the network."""
+        """Begin the hop and return at once; nothing here awaits the network.
+
+        Call control first: ``end_call`` is a signal, not a tool, so it has no
+        identity requirement. Every other call must carry a vendor-valid id
+        (ticket 82): a missing or blank id returns a denied outcome without a
+        request, and an overlength id fails the turn here, before any request.
+        """
         if call.name == END_CALL_TOOL:
             return ToolHop(
                 task=None,
@@ -387,6 +789,24 @@ class ToolExecutor:
                     call_id=self._call_id, tool_call_id=call.call_id
                 ),
             )
+        try:
+            require_call_id(call.name, call.call_id)
+        except ToolCallIdMissing as error:
+            return ToolHop(
+                task=None,
+                outcome=DeniedCall(
+                    name=call.name,
+                    denial=ToolDenial(
+                        name=call.name,
+                        reason=str(error),
+                        call_id=call.call_id if isinstance(call.call_id, str) else "",
+                        code=TOOL_CALL_ID_MISSING,
+                    ),
+                ),
+            )
+        memoized = self._memo.get(call.name, call.arguments) if self._memo else None
+        if memoized is not None:
+            return ToolHop(task=None, outcome=_replayed(memoized, call))
         return ToolHop(task=asyncio.ensure_future(self._hop(call)), outcome=None)
 
     async def execute(self, call: ToolCallRequest) -> ToolOutcome:
@@ -412,9 +832,12 @@ class ToolExecutor:
             )
         except asyncio.TimeoutError as error:
             raise ToolTimeout(call.name, self._call_id, timeout_ms) from error
-        return ToolResult(
+        result = ToolResult(
             name=call.name, tool_call_id=call.call_id, payload=payload
         )
+        if self._memo is not None:
+            self._memo.put(call.name, call.arguments, result)
+        return result
 
     async def _exchange(
         self,
@@ -449,6 +872,16 @@ class ToolExecutor:
         return secret
 
 
+def _replayed(result: ToolResult, call: ToolCallRequest) -> ToolResult:
+    """The memo's result re-addressed to the call that repeated it (ticket 83)."""
+    return ToolResult(
+        name=result.name,
+        tool_call_id=call.call_id,
+        payload=result.payload,
+        replayed=True,
+    )
+
+
 def _payload(name: str, call_id: str, body: bytes) -> Mapping[str, Any]:
     """The route's JSON object, or a named unreadable-body failure."""
     try:
@@ -479,15 +912,24 @@ async def continue_after_tool(
     outcome: ToolOutcome,
     tools: list[dict[str, Any]] | None = None,
     record: MetaLLMTurn | None = None,
+    ledger: TimingLedger | None = None,
 ) -> AsyncIterator[TokenDelta | ToolCallRequest]:
     """Continue the same logical turn with a new model request, or nothing.
 
     A :class:`ToolResult` is recorded with the assistant message that asked for
     it and the next request sees both, which is the only shape the vendor
-    accepts. An :class:`EndCallSignal` yields no event at all: end call is call
-    control, so nothing speakable follows it.
+    accepts. A :class:`DeniedCall` closes the turn instead: its denial is
+    recorded on the turn (once — the LLM layer may already have recorded it when
+    it emitted the identity-less request) and a hold line is owed (ticket 85),
+    but no request is made, because a ``tool`` message cannot answer a call the
+    vendor never identified. An :class:`EndCallSignal` yields no event at all:
+    end call is call control, so nothing speakable follows it.
     """
     if isinstance(outcome, EndCallSignal):
+        return
+    if isinstance(outcome, DeniedCall):
+        _record_denial(turn, outcome.denial, ledger=ledger)
+        turn.hold_line_required = True
         return
     if len(turn.tool_calls) != 1:
         raise ToolTurnError(len(turn.tool_calls))
@@ -499,3 +941,23 @@ async def continue_after_tool(
         messages=history.request_messages(), tools=tools, **kwargs
     ):
         yield event
+
+
+def _record_denial(
+    turn: MetaLLMTurn, denial: ToolDenial, *, ledger: TimingLedger | None = None
+) -> None:
+    """Record a denial once, counting it when this call is the first to see it.
+
+    Identity is ``(name, call_id, code)``, never the prose: the LLM layer and
+    the tool layer describe the same denial in their own words, and counting the
+    same refusal twice would overstate how often the model was denied.
+    """
+    identity = (denial.name, denial.call_id, denial.code)
+    if any(
+        (recorded.name, recorded.call_id, recorded.code) == identity
+        for recorded in turn.denied_tool_calls
+    ):
+        return
+    turn.denied_tool_calls.append(denial)
+    if ledger is not None:
+        ledger.count(TOOL_DENIED_COUNTER)
