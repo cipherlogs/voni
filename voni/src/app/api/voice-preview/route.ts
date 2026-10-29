@@ -12,14 +12,18 @@ import {
 /**
  * Voice preview grant for the agent-wizard Personality step.
  *
- * WHY A GRANT, NOT AUDIO BYTES: AssemblyAI offers no standalone text-to-speech
- * endpoint — TTS exists only inside the live Voice Agent pipeline (see
- * `/faq/do-you-offer-voice-to-voice-or-text-to-speech-tts`: "AssemblyAI does
- * not offer standalone text-to-speech as a separate service"). Hallucinating a
- * `POST /v1/tts` call would 404 at runtime, so this route validates + gates
- * and returns the sanitized sample text, and the client speaks it with the
- * browser's speech synthesis as an explicitly-labelled approximation. If a
- * real TTS provider is ever wired up, only this route's success branch needs
+ * WHY A GRANT, NOT AUDIO BYTES HERE: AssemblyAI does offer standalone streaming
+ * TTS (`wss://tts.us.assemblyai.com/v1/ws`), and Voni renders its cascade
+ * previews from that endpoint at native level — the committed, hash-pinned
+ * clips in `voni/evidence/cascade-clips` (`voice-pipeline/cascade/clips.py`),
+ * checked by the clip test. This route is deliberately not a second renderer:
+ * synthesizing per tap would open a vendor socket inside a request, produce
+ * audio no committed gate has checked, and bypass the native-level promise
+ * (the cascade carries no gain stage). So the route validates, rate-limits and
+ * returns the sample text and the voice's Locale; the client speaks it with the
+ * browser's speech synthesis as an explicitly-labelled approximation until the
+ * picker plays the committed native clip from `CASCADE_PREVIEW_PREFIX`. If the
+ * preview path is wired to those clips, only this route's success branch needs
  * to change — the client contract (`voiceId`, `text`, `locale`) stays.
  *
  * What this route still enforces server-side:

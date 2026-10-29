@@ -25,9 +25,16 @@ import struct
 import unittest
 from urllib.parse import parse_qs, urlparse
 
-from cascade.assemblyai_tts import AssemblyAIStreamingTTS
+from cascade.assemblyai_tts import MODEL_ID, TTS_BASE_URL, AssemblyAIStreamingTTS
 from cascade.body_map import adapt_body
-from cascade.clips import ClipError, ClipLevel, clip_plan_for, clip_record_problems, measure_wav
+from cascade.clips import (
+    ClipError,
+    ClipLevel,
+    clip_plan_for,
+    clip_record_problems,
+    line_sha256,
+    measure_wav,
+)
 from cascade.native_level import (
     CASCADE_GAIN_STAGES,
     LEVEL_STAGE_KEYS,
@@ -220,46 +227,24 @@ class MeasuredLevelIsNativeTests(unittest.TestCase):
 
 def make_record(plan, *, gain_stage: str):
     """A complete clip record for ``plan`` at native level."""
-    from cascade.clips import clip_format
+    from cascade.clips import ClipRecord, clip_format
 
-    return type(
-        "ClipRecord",
-        (),
-        {
-            "voice": plan.voice_id,
-            "locale": plan.locale,
-            "language": plan.language,
-            "line": plan.greeting,
-            "line_sha256": _line_sha(plan.greeting),
-            "asset": plan.asset,
-            "sha256": "0" * 64,
-            "audio_bytes": 4800,
-            "duration_ms": 100,
-            "format": clip_format().to_document(),
-            "endpoint": {"url": _tts_url(), "model": _tts_model()},
-            "level": ClipLevel(sample_peak_dbfs=-20.0, rms_dbfs=-23.0),
-            "gain_stage": gain_stage,
-            "generated_on": "2026-10-30",
-        },
-    )()
-
-
-def _line_sha(text: str) -> str:
-    from cascade.clips import line_sha256
-
-    return line_sha256(text)
-
-
-def _tts_url() -> str:
-    from cascade.assemblyai_tts import TTS_BASE_URL
-
-    return TTS_BASE_URL
-
-
-def _tts_model() -> str:
-    from cascade.assemblyai_tts import MODEL_ID
-
-    return MODEL_ID
+    return ClipRecord(
+        voice=plan.voice_id,
+        locale=plan.locale,
+        language=plan.language,
+        line=plan.greeting,
+        line_sha256=line_sha256(plan.greeting),
+        asset=plan.asset or "",
+        sha256="0" * 64,
+        audio_bytes=4800,
+        duration_ms=100,
+        format=clip_format().to_document(),
+        endpoint={"url": TTS_BASE_URL, "model": MODEL_ID},
+        level=ClipLevel(sample_peak_dbfs=-20.0, rms_dbfs=-23.0),
+        gain_stage=gain_stage,
+        generated_on="2026-10-30",
+    )
 
 
 if __name__ == "__main__":
