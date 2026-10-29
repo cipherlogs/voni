@@ -21,9 +21,11 @@ import asyncio
 import json
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from cascade import thresholds
 from cascade.call import (
+    BOUNDED_WAITS,
     AudioFrame,
     BrowserStop,
     CallLifecycle,
@@ -171,6 +173,15 @@ class HangingCloseVoice(FakeVoice):
         await asyncio.Event().wait()
 
 
+class HangingGreetingVoice(FakeVoice):
+    """A voice whose greeting synthesis never produces its first frame."""
+
+    async def speak_greeting(self, text: str):
+        self.greeted.append(text)
+        await asyncio.Event().wait()
+        yield  # pragma: no cover - the bound cancels this wait
+
+
 class CallLifecycleTest(unittest.TestCase):
     def setUp(self):
         self.clock = FakeClock()
@@ -194,6 +205,7 @@ class CallLifecycleTest(unittest.TestCase):
         fail_voice=None,
         model_session=None,
         send_audio=_UNSET,
+        bounds=None,
     ):
         self.opens = [] if opens is None else opens
         self.log = [] if log is None else log
@@ -242,6 +254,7 @@ class CallLifecycleTest(unittest.TestCase):
             clock=self.clock,
             envelope_clock=self.envelope_clock,
             drain_bound_ms=drain_bound_ms,
+            bounds=bounds,
             cost_meter=cost_meter,
             eligibility=eligibility,
         )
@@ -368,6 +381,25 @@ class CallLifecycleTest(unittest.TestCase):
         self.assertEqual("NoAudioSink", end.error.name)
         self.assertEqual("greeting", end.error.stage)
         self.assertEqual([], self.voice.greeted)
+
+    def test_a_hanging_greeting_is_bounded_and_ends_the_call_visibly(self):
+        transport = FakeTransport([BrowserStop()])
+        lifecycle = self.make(
+            transport=transport,
+            voice=HangingGreetingVoice(),
+            bounds={"tts.idle_timeout_ms": 10},
+        )
+
+        end = asyncio.run(asyncio.wait_for(lifecycle.run(), timeout=2.0))
+
+        self.assertFalse(self.stream.started)
+        self.assertEqual("error", end.ended_by)
+        self.assertEqual("GreetingTimedOut", end.error.name)
+        self.assertEqual("greeting", end.error.stage)
+        self.assertIn("tts.idle_timeout_ms", str(end.error))
+        self.assertTrue(self.speech.closed)
+        self.assertEqual("end", transport.sent[-1]["type"])
+        self.assertTrue(transport.closed)
 
     def test_a_browser_stop_drains_and_ends_without_waiting_for_more_audio(self):
         transport = FakeTransport([BrowserStop()])
@@ -505,6 +537,11 @@ class CallLifecycleTest(unittest.TestCase):
         self.assertEqual("DrainTimedOut", end.drain.error.name)
         self.assertEqual("end", transport.sent[-1]["type"])
         self.assertTrue(transport.closed)
+        recorded = transport.sent[-1]["bounds"]
+        drain = next(item for item in recorded if item["stage"] == "drain")
+        self.assertEqual("deploy.drain_max_wait_ms", drain["bound"])
+        self.assertFalse(drain["ok"])
+        self.assertEqual("DrainTimedOut", drain["error"]["name"])
 
     def test_an_unset_drain_bound_is_named_and_never_invented(self):
         bound = thresholds.bound("deploy.drain_max_wait_ms")
@@ -612,6 +649,104 @@ class CallLifecycleTest(unittest.TestCase):
         self.assertEqual([], self.opens)
         self.assertEqual("LlmOverrideRefusal", end.error.name)
         self.assertFalse(self.stream.started)
+
+
+class BoundedWaitTest(unittest.TestCase):
+    """Five named waits plus the audio path's synthesis wait (ticket 76)."""
+
+    STAGES = ("reply_task", "stall_guard", "tool", "drain", "reconnect")
+
+    def lifecycle(self, bounds=None):
+        async def unused(_body):
+            raise AssertionError("a bound-only test opens no leg")
+
+        return CallLifecycle(
+            message={},
+            secret="secret",
+            call_id="bound-test",
+            transport=FakeTransport(),
+            open_speech=unused,
+            open_voice=unused,
+            bounds=bounds,
+        )
+
+    def test_each_named_wait_reads_a_declared_registry_bound(self):
+        expected = {
+            "reply_task": "turn.reply_task_ms",
+            "stall_guard": "turn.stall_guard_ms",
+            "tool": "tool.timeout_ms",
+            "drain": "deploy.drain_max_wait_ms",
+            "reconnect": "reconnect.handshake_ms",
+            "greeting": "tts.idle_timeout_ms",
+        }
+        for stage, name in expected.items():
+            with self.subTest(stage=stage):
+                self.assertEqual(name, BOUNDED_WAITS[stage][0])
+                # ``thresholds.bound`` refuses an undeclared name by name.
+                self.assertEqual(name, thresholds.bound(name).name)
+
+    def test_each_never_completing_wait_times_out_by_name_and_is_recorded(self):
+        for stage in self.STAGES:
+            with self.subTest(stage=stage):
+                lifecycle = self.lifecycle({BOUNDED_WAITS[stage][0]: 10})
+
+                result, outcome = asyncio.run(
+                    asyncio.wait_for(
+                        lifecycle.run_bounded(stage, _never), timeout=2.0
+                    )
+                )
+
+                self.assertIsNone(result)
+                self.assertFalse(outcome.ok)
+                self.assertEqual(BOUNDED_WAITS[stage][1], outcome.error.name)
+                self.assertEqual(stage, outcome.error.stage)
+                self.assertIn(BOUNDED_WAITS[stage][0], str(outcome.error))
+                self.assertEqual([outcome], lifecycle.bound_outcomes)
+
+    def test_an_unbounded_wait_hangs_which_is_why_the_bound_is_there(self):
+        async def scenario():
+            # The direct await never finishes; the test-level deadline is the
+            # only thing that ends it. That is the bug the named bound removes.
+            with self.assertRaises(asyncio.TimeoutError):
+                await asyncio.wait_for(_never(), timeout=0.01)
+            return await self.lifecycle({"tool.timeout_ms": 10}).run_bounded(
+                "tool", _never
+            )
+
+        result, outcome = asyncio.run(scenario())
+
+        self.assertIsNone(result)
+        self.assertEqual("ToolTimedOut", outcome.error.name)
+
+    def test_an_unset_bound_raises_by_name_and_is_never_defaulted(self):
+        name = "turn.reply_task_ms"
+        entry = thresholds.bound(name)
+
+        with mock.patch(
+            "cascade.call.require_bound",
+            side_effect=thresholds.UnsetBoundError(entry),
+        ):
+            result, outcome = asyncio.run(
+                self.lifecycle().run_bounded("reply_task", _never)
+            )
+
+        self.assertIsNone(result)
+        self.assertEqual("UnsetBoundError", outcome.error.name)
+        self.assertIn(name, str(outcome.error))
+
+    def test_a_zero_or_negative_bound_is_refused_not_used(self):
+        result, outcome = asyncio.run(
+            self.lifecycle({"tool.timeout_ms": 0}).run_bounded("tool", _never)
+        )
+
+        self.assertIsNone(result)
+        self.assertEqual("InvalidBound", outcome.error.name)
+        self.assertIn("tool.timeout_ms", str(outcome.error))
+
+
+async def _never():
+    """A stand-in for the dependency that never answers."""
+    await asyncio.Event().wait()
 
 
 if __name__ == "__main__":

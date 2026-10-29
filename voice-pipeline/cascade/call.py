@@ -20,19 +20,27 @@ part of the turn layer: the lifecycle speaks the body's greeting through the
 opened voice (ticket 77) before the stream starts, so no user audio can be
 processed ahead of it.
 
-Nothing unbounded sits on the end path. Every drain, close and event-pump wait
-reads ``deploy.drain_max_wait_ms`` from :mod:`cascade.thresholds` (ticket 76
-wires the value); while the bound is open, the call ends with a named
-``UnsetBoundError`` instead of inventing a number or hanging.
+Nothing unbounded sits in the audio path. The drain, the event-pump stop and
+every vendor close read ``deploy.drain_max_wait_ms``; the greeting's synthesis
+await reads the settled ``tts.idle_timeout_ms``; and the turn layer's reply
+task, stall guard, tool hop and reconnect handshake run through
+:meth:`CallLifecycle.run_reply_task`, :meth:`~CallLifecycle.run_stall_guard`,
+:meth:`~CallLifecycle.run_tool` and
+:meth:`~CallLifecycle.run_reconnect_handshake`, each reading its named bound
+from :mod:`cascade.thresholds`. While a bound is open, the wait ends with a
+named ``UnsetBoundError`` instead of inventing a number; a timeout is a
+recorded :class:`BoundOutcome` and travels on the end message.
 
-The end message carries four facts and never a guess:
+The end message carries the facts a reader can act on and never a guess:
 
 * the ledger summary, as the managed path already writes it;
 * the call-level provider table (``stt``, ``llm``, ``tts``), with a leg that
   never ran named as ``null`` rather than a fabricated provider;
 * the cost, where an unmeasured unit is ``None`` and the total is ``null`` —
   never zero, because zero is a price;
-* the eligibility facts, including the predicate and reason of a refusal.
+* the eligibility facts, including the predicate and reason of a refusal;
+* the greeting's outcome (spoken, or intentionally absent) and every bounded
+  wait the call ran with the registry name it read.
 """
 
 from __future__ import annotations
@@ -52,9 +60,23 @@ from cascade.thresholds import ThresholdError, require_bound
 from cascade.voice_binding import VoiceBindingError
 from metrics import TimingLedger
 
-#: The registry bound every drain/close/event wait reads (ticket 76 owns the
-#: value in ``thresholds.json``; this module never restates it).
-DRAIN_BOUND = "deploy.drain_max_wait_ms"
+#: Every wait that can outlive a turn, its registry bound and the named
+#: outcome a timeout records. The numbers live in ``cascade/thresholds.json``;
+#: this table only says which bound a step reads. An unset bound raises
+#: ``UnsetBoundError`` by name — no default is substituted here.
+BOUNDED_WAITS: dict[str, tuple[str, str]] = {
+    "reply_task": ("turn.reply_task_ms", "ReplyTaskTimedOut"),
+    "stall_guard": ("turn.stall_guard_ms", "StallGuardTimedOut"),
+    "tool": ("tool.timeout_ms", "ToolTimedOut"),
+    "drain": ("deploy.drain_max_wait_ms", "DrainTimedOut"),
+    "close": ("deploy.drain_max_wait_ms", "DrainTimedOut"),
+    "reconnect": ("reconnect.handshake_ms", "ReconnectHandshakeTimedOut"),
+    "greeting": ("tts.idle_timeout_ms", "GreetingTimedOut"),
+}
+
+#: The drain/close/event wait's bound name (ticket 76 owns the value in
+#: ``thresholds.json``; this module never restates it).
+DRAIN_BOUND = BOUNDED_WAITS["drain"][0]
 
 #: The three call-level legs, in table order.
 LEGS: tuple[str, ...] = ("stt", "llm", "tts")
@@ -416,6 +438,29 @@ class DrainOutcome:
 
 
 @dataclass(frozen=True)
+class BoundOutcome:
+    """One bounded wait's outcome: which bound was read and whether it held.
+
+    A timeout is a recorded, named outcome, never a hang and never an
+    anonymous exception. ``bound`` is the registry name, so the end message
+    shows the reviewer exactly which number governed the wait.
+    """
+
+    stage: str
+    bound: str
+    ok: bool
+    error: CallFailure | None = None
+
+    def to_document(self) -> dict[str, Any]:
+        return {
+            "stage": self.stage,
+            "bound": self.bound,
+            "ok": self.ok,
+            "error": None if self.error is None else self.error.to_document(),
+        }
+
+
+@dataclass(frozen=True)
 class CallEnd:
     """The one message a finished call sends."""
 
@@ -428,6 +473,7 @@ class CallEnd:
     ended_by: str
     drain: DrainOutcome
     greeting: GreetingOutcome | None = None
+    bounds: tuple[BoundOutcome, ...] = ()
     error: CallFailure | None = None
 
     def __post_init__(self) -> None:
@@ -447,6 +493,7 @@ class CallEnd:
             "turns": self.turns,
             "endedBy": self.ended_by,
             "drain": self.drain.to_document(),
+            "bounds": [outcome.to_document() for outcome in self.bounds],
         }
         if self.greeting is not None:
             document["greeting"] = self.greeting.to_document()
@@ -467,9 +514,10 @@ class CallLifecycle:
     """One call, from the signed body to the end message.
 
     The order is fixed: verify the body and its bindings, open speech, voice
-    (and the optional model), start the turn layer, pump audio and events until
-    a stop or a dropped socket, drain under a named bound, then send the end
-    message and close the transport. A refusal at verification opens nothing.
+    (and the optional model), speak the body's greeting, start the turn layer,
+    pump audio and events until a stop or a dropped socket, drain under a named
+    bound, then send the end message and close the transport. A refusal at
+    verification opens nothing.
     """
 
     def __init__(
@@ -488,6 +536,7 @@ class CallLifecycle:
         clock: Callable[[], float] | None = None,
         envelope_clock: Callable[[], float] = time.time,
         drain_bound_ms: float | None = None,
+        bounds: Mapping[str, float] | None = None,
         cost_meter: CostMeter | None = None,
         eligibility: EligibilityDecision | None = None,
     ) -> None:
@@ -506,6 +555,18 @@ class CallLifecycle:
         )
         self._envelope_clock = envelope_clock
         self._drain_bound_ms = drain_bound_ms
+        self._bound_overrides: dict[str, float] = {}
+        for name, value in (bounds or {}).items():
+            if name not in {bound for bound, _ in BOUNDED_WAITS.values()}:
+                raise ValueError(
+                    f"unknown bound override {name!r}; the bounded waits read "
+                    + ", ".join(sorted({bound for bound, _ in BOUNDED_WAITS.values()}))
+                )
+            self._bound_overrides[name] = float(value)
+        if drain_bound_ms is not None:
+            self._bound_overrides[DRAIN_BOUND] = float(drain_bound_ms)
+        #: Every bounded wait this call ran, in order, with its named outcome.
+        self.bound_outcomes: list[BoundOutcome] = []
         self._cost_meter = cost_meter
         self._eligibility = eligibility
         self._event_failure: CallFailure | None = None
@@ -686,7 +747,13 @@ class CallLifecycle:
         greeting = CallGreeting(
             voice=voice, ledger=self._ledger, sink=self._send_audio
         )
-        return await greeting.speak(body)
+        result, outcome = await self.run_bounded(
+            "greeting", lambda: greeting.speak(body)
+        )
+        if not outcome.ok:
+            assert outcome.error is not None
+            raise outcome.error
+        return result
 
     async def _pump(self, session: Any) -> None:
         """Forward provider events to the turn layer until the stream ends."""
@@ -738,49 +805,105 @@ class CallLifecycle:
 
     # -- bounds -----------------------------------------------------------
 
-    def _bound_seconds(self) -> tuple[float | None, CallFailure | None]:
-        """The drain bound in seconds, or the named reason it is unavailable."""
-        if self._drain_bound_ms is not None:
-            value = float(self._drain_bound_ms)
-            if value <= 0:
-                return None, CallFailure(
+    def _bound_for(
+        self, stage: str
+    ) -> tuple[float | None, str, CallFailure | None]:
+        """The named bound in seconds, or the named reason it is unavailable."""
+        try:
+            name = BOUNDED_WAITS[stage][0]
+        except KeyError:
+            raise ValueError(
+                f"unknown bounded wait stage {stage!r}; declared: "
+                + ", ".join(sorted(BOUNDED_WAITS))
+            ) from None
+        value: float
+        if name in self._bound_overrides:
+            value = self._bound_overrides[name]
+        else:
+            try:
+                value = float(require_bound(name))
+            except ThresholdError as error:
+                return None, name, _failure(stage, error)
+            except (TypeError, ValueError) as error:
+                return None, name, CallFailure(
                     name="InvalidBound",
-                    stage="drain",
+                    stage=stage,
                     message=(
-                        f"the injected drain bound must be positive, got "
-                        f"{self._drain_bound_ms!r} ms"
+                        f"bound {name!r} is not a number: "
+                        f"{type(error).__name__}: {error}"
                     ),
                 )
-            return value / 1000.0, None
+        if value <= 0:
+            return None, name, CallFailure(
+                name="InvalidBound",
+                stage=stage,
+                message=(
+                    f"bound {name!r} must be positive, got {value!r} ms; "
+                    "a zero or negative bound is not a bound"
+                ),
+            )
+        return value / 1000.0, name, None
+
+    def _record(self, outcome: BoundOutcome) -> BoundOutcome:
+        self.bound_outcomes.append(outcome)
+        return outcome
+
+    async def run_bounded(
+        self, stage: str, factory: Callable[[], Any]
+    ) -> tuple[Any, BoundOutcome]:
+        """Await one step under its named bound; a timeout is a named outcome.
+
+        ``factory`` may return a coroutine or a plain value. The bound is read
+        from :mod:`cascade.thresholds` (or an injected test value), never from
+        a literal here, and an unset bound ends the wait with
+        ``UnsetBoundError`` rather than an invented number.
+        """
+        seconds, name, unavailable = self._bound_for(stage)
+        if unavailable is not None:
+            return None, self._record(BoundOutcome(stage, name, False, unavailable))
+        assert seconds is not None
         try:
-            return float(require_bound(DRAIN_BOUND)) / 1000.0, None
-        except ThresholdError as error:
-            return None, CallFailure.from_exception("drain", error)
+            result = await asyncio.wait_for(_invoke(factory), timeout=seconds)
+        except asyncio.TimeoutError:
+            failure = CallFailure(
+                name=BOUNDED_WAITS[stage][1],
+                stage=stage,
+                message=(
+                    f"{stage} did not finish within {seconds * 1000:g} ms "
+                    f"({name}); the call moved on instead of hanging"
+                ),
+            )
+            return None, self._record(BoundOutcome(stage, name, False, failure))
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            return None, self._record(
+                BoundOutcome(stage, name, False, _failure(stage, error))
+            )
+        return result, self._record(BoundOutcome(stage, name, True))
+
+    async def run_reply_task(self, factory: Callable[[], Any]):
+        """The reply task's bounded await (``turn.reply_task_ms``)."""
+        return await self.run_bounded("reply_task", factory)
+
+    async def run_stall_guard(self, factory: Callable[[], Any]):
+        """The reply-ordering stall guard's bounded await."""
+        return await self.run_bounded("stall_guard", factory)
+
+    async def run_tool(self, factory: Callable[[], Any]):
+        """One tool hop's bounded await (``tool.timeout_ms``)."""
+        return await self.run_bounded("tool", factory)
+
+    async def run_reconnect_handshake(self, factory: Callable[[], Any]):
+        """A reconnect handshake's bounded await (``reconnect.handshake_ms``)."""
+        return await self.run_bounded("reconnect", factory)
 
     async def _bounded(
         self, stage: str, factory: Callable[[], Any]
     ) -> CallFailure | None:
         """Await one end-path step under the named bound; never hang."""
-        seconds, unavailable = self._bound_seconds()
-        if unavailable is not None:
-            return unavailable
-        assert seconds is not None
-        try:
-            await asyncio.wait_for(_invoke(factory), timeout=seconds)
-        except asyncio.TimeoutError:
-            return CallFailure(
-                name="DrainTimedOut",
-                stage=stage,
-                message=(
-                    f"{stage} did not finish within {seconds * 1000:g} ms "
-                    f"({DRAIN_BOUND}); the call ended instead of hanging"
-                ),
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception as error:
-            return CallFailure.from_exception(stage, error)
-        return None
+        _, outcome = await self.run_bounded(stage, factory)
+        return None if outcome.ok else outcome.error
 
     async def _stop_task(self, task: asyncio.Future) -> CallFailure | None:
         """Cancel the event pump and wait for its cancellation under the bound.
@@ -789,30 +912,12 @@ class CallLifecycle:
         the pump first keeps a single reader. ``return_exceptions=True`` treats
         the task's own cancellation as success, not as a call failure.
         """
-        seconds, unavailable = self._bound_seconds()
-        if unavailable is not None:
-            return unavailable
-        assert seconds is not None
         if not task.done():
             task.cancel()
-        try:
-            await asyncio.wait_for(
-                asyncio.gather(task, return_exceptions=True), timeout=seconds
-            )
-        except asyncio.TimeoutError:
-            return CallFailure(
-                name="DrainTimedOut",
-                stage="close",
-                message=(
-                    f"the event pump did not stop within {seconds * 1000:g} ms "
-                    f"({DRAIN_BOUND}); the call ended instead of hanging"
-                ),
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception as error:
-            return CallFailure.from_exception("close", error)
-        return None
+        _, outcome = await self.run_bounded(
+            "close", lambda: asyncio.gather(task, return_exceptions=True)
+        )
+        return None if outcome.ok else outcome.error
 
     # -- opening ----------------------------------------------------------
 
@@ -884,6 +989,7 @@ class CallLifecycle:
             ended_by=ended_by,
             drain=drain,
             greeting=self._greeting,
+            bounds=tuple(self.bound_outcomes),
             error=error,
         )
         try:
@@ -898,11 +1004,12 @@ class CallLifecycle:
         return end
 
 
-async def _invoke(factory: Callable[[], Any]) -> None:
+async def _invoke(factory: Callable[[], Any]) -> Any:
     """Call one step and await its result when it is awaitable."""
     result = factory()
     if inspect.isawaitable(result):
-        await result
+        result = await result
+    return result
 
 
 def _failure(stage: str, error: BaseException) -> CallFailure:
