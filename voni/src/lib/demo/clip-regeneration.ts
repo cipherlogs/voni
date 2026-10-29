@@ -300,6 +300,9 @@ export type RegenerationPrerequisiteDecision =
  * sees exactly what did not run. In CI it is a **named failure**: the
  * regeneration gate is the point of the run there, and a gate that skips in CI
  * is a gate that cannot fail. (CI installs ffmpeg; see `.github/workflows`.)
+ *
+ * The preview gate (`preview-clips.ts`) uses the same policy for its decode
+ * leg, so "ffmpeg absent" means one thing across both gates.
  */
 export function regenerationPrerequisite(input: {
   name: string;
@@ -309,7 +312,7 @@ export function regenerationPrerequisite(input: {
 }): RegenerationPrerequisiteDecision {
   if (input.present) return { action: "run" };
   const reason =
-    `${input.name} is not on PATH: the audition-clip regeneration gate cannot run without it; ` +
+    `${input.name} is not on PATH: the audition-clip gate cannot run without it; ` +
     input.remedy;
   return { action: input.ci ? "fail" : "skip", reason };
 }

@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "voice": "lola",
+  "locale": "es",
+  "recording": {
+    "voice": "lola",
+    "locale": "es",
+    "asset": "public/voices/lola.mp3",
+    "url": "/voices/lola.mp3",
+    "sha256": "c2bdfd1a03f5b8cc7f9fcf9974d232cac786fa236bf9fc04cf0075e14ed58a79",
+    "line": "¡Hola, soy Voni! Probemos algo genial: te muestro lo que puedo hacer mientras hablamos. ¿Listo?",
+    "lineSha256": "6201fc2c3e7d4105ff48c2a3a54b1aaab57778cb077accf505979876d19b1af3",
+    "durationMs": 9624,
+    "sampleRate": 24000,
+    "channels": 1,
+    "bitrateKbps": 160,
+    "source": "audition-clip"
+  },
+  "ballot": {
+    "axes": [
+      "timbre",
+      "accent",
+      "languageNaturalness"
+    ],
+    "scale": {
+      "min": 1,
+      "max": 5,
+      "pass": 5
+    },
+    "reasonRequiredBelow": 5
+  },
+  "verdict": null,
+  "generatedOn": "2026-10-29",
+  "source": "evidence/audition-clips/clips.json"
+}
