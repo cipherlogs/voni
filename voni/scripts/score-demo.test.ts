@@ -2141,6 +2141,63 @@ if (args[0] === "run" && args[1] === "eval:demo-agent") {
   assert.ok(artifact.evalRunner.timings.scenarioRuns.length >= 9);
 });
 
+test("--events forwards one stream per suite scenario to the runner", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  writeFileSync(
+    join(bin, "npm"),
+    `#!/usr/bin/env node
+const fs = require("node:fs");
+const args = process.argv.slice(2);
+fs.appendFileSync(process.env.SHIM_LOG, JSON.stringify(args) + "\\n");
+if (args[0] === "run" && args[1] === "eval:demo-agent") {
+  const i = args.indexOf("--scenario");
+  const scenario = i >= 0 ? args[i + 1] : "(none)";
+  if (scenario === "stop-over") {
+    console.log("    cut 900ms after the caller started");
+    console.log('    verdict ["yield","Wait, stop."]');
+    console.log('    answered the point after the cut: "about 200 dollars a month"');
+  }
+  console.log("EVAL SUMMARY " + JSON.stringify({
+    scenario, runs: 1, failures: 0,
+    scenarios: [{ name: scenario, passed: 1, runs: 1 }],
+    traceSessions: ["sess_events"], playout: [], audioChunks: 40, live: true, clips: [],
+  }));
+  console.log(scenario + ": 1/1");
+} else if (args[0] === "run" && args[1] === "call:trace") {
+  console.log(' 1.00s  VONI    "Welcome to the demo"  (reply_create gap 700ms)');
+}
+`,
+    { mode: 0o755 },
+  );
+  const log = join(dir, "invocations.log");
+  const events = join(dir, "events.jsonl");
+  const out = join(dir, "score.json");
+  const result = run(
+    ["--events", events, "--out", out, "--timing-lock", join(dir, "timing.lock")],
+    new URL("../", import.meta.url).pathname,
+    { PATH: `${bin}:${process.env.PATH}`, SHIM_LOG: log },
+  );
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+
+  const calls = readFileSync(log, "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line) as string[])
+    .filter((args) => args[1] === "eval:demo-agent");
+  assert.equal(calls.length, 9, "every suite scenario is invoked once");
+  // One writer per process truncates its own file, so the suite keeps one
+  // stream per scenario instead of losing eight behind the ninth.
+  assert.deepEqual(
+    calls.map((args) => args[args.indexOf("--events") + 1]),
+    calls.map((args) => {
+      const scenario = args[args.indexOf("--scenario") + 1];
+      return join(dir, `events.${scenario}.jsonl`);
+    }),
+  );
+});
+
 test("suite mode scores every gate from its own scenario and merges each call's trace", () => {
   const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
   const bin = join(dir, "bin");

@@ -188,6 +188,8 @@ export function evalRunnerArgv(input: {
   transport?: EvalTransport | null;
   variant?: DemoAgentVariant | null;
   turnWindows?: DemoTurnWindows | null;
+  /** Opt-in JSONL event stream (ticket 01); absent writes no file. */
+  eventsPath?: string | null;
 }): string[] {
   const argv = [
     "run",
@@ -205,6 +207,7 @@ export function evalRunnerArgv(input: {
   // the child's environment. Absent (`null`/undefined) leaves the env alone.
   if (input.variant) argv.push("--variant", input.variant);
   if (input.turnWindows) argv.push("--turn-windows", formatEvalTurnWindows(input.turnWindows));
+  if (input.eventsPath) argv.push("--events", input.eventsPath);
   return argv;
 }
 

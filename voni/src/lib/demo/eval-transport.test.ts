@@ -255,6 +255,18 @@ test("the runner argv is unchanged by default and carries each rung's flag addit
     ["--variant", "production"],
     "an explicit production flag reaches the child so an env variant cannot win",
   );
+  assert.deepEqual(
+    evalRunnerArgv({
+      voice: "anna",
+      scenario: "stop-over",
+      runs: "1",
+      variant: "turn-window",
+      turnWindows: { min_silence: 400, max_silence: 640, interruption_delay: 0 },
+      eventsPath: "/tmp/run.jsonl",
+    }).slice(-4),
+    ["--turn-windows", "400,640,0", "--events", "/tmp/run.jsonl"],
+    "the opt-in event stream rides the same invocation, last, without disturbing the rest",
+  );
 });
 
 test("the summary names the transport, agent, fingerprint and model", () => {

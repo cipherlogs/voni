@@ -58,6 +58,7 @@
  *                           [--overlap-ms 120,350] [--goodbye-coverage 0.95]
  *                           [--goodbye-inbox-named | --goodbye-inbox-missing]
  *                           [--hang-up-delay-ms 900] [--narrated-ending]
+ *                           [--events <path>]
  *
  * --gate-voice picks the gate voice through the shared voice registry
  * (--voice stays an alias); omitting both gates on DEFAULT_GATE_VOICE, never
@@ -68,6 +69,21 @@
  * dir, override with --timing-lock) so timing runs go one at a time; a second
  * run fails fast naming the holder instead of inflating cut latency under
  * parallel load. The lock is released on exit and a dead holder is reclaimed.
+ *
+ * --events <path> forwards the runner's opt-in JSONL event stream (client turn
+ * marks, cuts, tool calls) to `eval:demo-agent`. A focused run writes that
+ * file; the suite spawns one runner per scenario and each writer truncates its
+ * own file, so it writes `<path stem>.<scenario>.jsonl` instead and no
+ * scenario's stream is lost. The stream is telemetry, never a gate input.
+ *
+ * --variant turn-window forwards the stored-agent experiment to every runner
+ * section (`--variant`, plus `--turn-windows min,max,interruption_delay` when
+ * given; `-` omits a part, so rung 3 is `-,-,0`). The same selection also comes
+ * from DEMO_AGENT_VARIANT / DEMO_TURN_*, but the flag wins. A typo, windows
+ * without the variant, or a variant on `--transport inline` fails before the
+ * lock is taken: inline is a debug path and is never measured. Each artifact's
+ * run identity records `variant`, `variantKey`, the agent id/fingerprint and
+ * the configured `turnWindows`; `scoreboard:inspect` prints them.
  *
  * Every artifact records a codeFingerprint (git HEAD plus a hash of the
  * uncommitted status and diff). `npm run scoreboard:streak` reads the last
@@ -496,6 +512,7 @@ function runEvalRunner(
     transport?: EvalTransport | null;
     variant?: DemoAgentVariant | null;
     turnWindows?: DemoTurnWindows | null;
+    eventsPath?: string | null;
   } = {},
 ): { stdout: string; exitCode: number | null; durationMs: number; evalError: string | null } {
   const started = Date.now();
@@ -508,6 +525,17 @@ function runEvalRunner(
   // an exit code: record it so the artifact marks a harness break.
   const evalError = result.error instanceof Error ? result.error.message : null;
   return { stdout, exitCode: evalError ? null : result.status, durationMs: Date.now() - started, evalError };
+}
+
+/**
+ * One event-stream file per suite scenario: the runner's writer truncates on
+ * create, so nine processes sharing a path would leave only the last one's
+ * lines. `<dir>/run.jsonl` becomes `<dir>/run.greeting-cut.jsonl`, …
+ */
+function suiteEventsPath(path: string, scenario: string): string {
+  const suffix = path.endsWith(".jsonl") ? ".jsonl" : "";
+  const stem = suffix ? path.slice(0, -suffix.length) : path;
+  return `${stem}.${scenario}${suffix || ".jsonl"}`;
 }
 
 /**
@@ -1017,6 +1045,9 @@ async function main(): Promise<void> {
       `variant: ${selection.variant} ${selection.variantKey} windows ${JSON.stringify(selection.turnWindows)} (source ${selection.source})`,
     );
   }
+  // Opt-in runner event stream (telemetry, never a gate input). Absent keeps
+  // the runner's live path exactly as it was.
+  const eventsPath = arg("--events", "");
   const dryRun = process.argv.includes("--dry-run");
   // Timing runs go one at a time: a live run takes the machine-wide lock
   // before dialing so a parallel run cannot inflate the cut number. A held
@@ -1068,13 +1099,16 @@ async function main(): Promise<void> {
     const sections: { name: string; section: EvalSection }[] = [];
     for (const name of SUITE_SCENARIOS) {
       // One at a time: a timing run in parallel inflates the cut number.
-      const section = runEvalRunner(voice, name, runs, runnerOptions);
+      const section = runEvalRunner(voice, name, runs, {
+        ...runnerOptions,
+        eventsPath: eventsPath ? suiteEventsPath(eventsPath, name) : "",
+      });
       sections.push({ name, section });
       stdoutByScenario.set(name, section.stdout);
     }
     evalSection = mergeSuiteSections(sections, Number(runs));
   } else {
-    evalSection = runEvalRunner(voice, scenario, runs, runnerOptions);
+    evalSection = runEvalRunner(voice, scenario, runs, { ...runnerOptions, eventsPath });
     stdoutByScenario.set(scenario, evalSection.stdout);
   }
   // Focused mode has one runner stream: every parser reads it verbatim, so a
