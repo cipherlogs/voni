@@ -3066,23 +3066,38 @@ test("post-flush overlap counts only the caller audio and agent playout that sur
   assert.equal(postFlushOverlapMs({ cutAt: 1200, flushAt: 1200, agentUntil: 1240, caller: null }), 0);
 });
 
-test("a delayed flush is audible double talk the residual bar must catch", () => {
-  // The cut is triggered when the caller starts talking over the agent; the
-  // flush that fades the playout is processed later. With a prompt flush the
-  // caller hears only the 40ms fade; a flush 500ms late leaves both sounding
-  // for 540ms. The post-flush residual stays 40ms either way, which is why
-  // the gate must score from the cut, not from the flush.
-  const caller = { start: 1000, end: 2000 };
-  const prompt = playoutCutWindow({ cutAt: 1200, flushAt: 1200, playUntil: 5000, fadeMs: 40, caller });
+test("a 1200ms cut latency with a prompt flush passes double talk", () => {
+  // The caller starts at 0 and the server cut lands at 1200ms: that 1200ms is
+  // cut latency, budgeted by barge-in-cut (1500ms). It must NOT be scored as
+  // double talk. The flush drops the queue, so only the 40ms fade remains.
+  const caller = { start: 0, end: 2000 };
+  const prompt = playoutCutWindow({ cutAt: 0, flushAt: 1200, playUntil: 5000, fadeMs: 40, caller });
   assert.equal(prompt.agentUntil, 1240);
   assert.equal(postFlushOverlapMs(prompt), 40);
-  assert.equal(cutOverlapMs(prompt), 40);
+  assert.equal(cutOverlapMs(prompt), 1240, "cut latency is diagnosed, never gated as double talk");
+  const gate = evaluateDoubleTalk({ overlapMs: [postFlushOverlapMs(prompt)], traceRef: "sess_cut / over-talk" });
+  assert.equal(gate.status, "PASS", gate.detail);
+});
 
-  const late = playoutCutWindow({ cutAt: 1200, flushAt: 1700, playUntil: 5000, fadeMs: 40, caller });
-  assert.equal(late.agentUntil, 1740);
-  assert.equal(postFlushOverlapMs(late), 40, "the post-flush residual is honest: only the fade remains");
-  assert.equal(cutOverlapMs(late), 540, "but the caller heard 540ms of double talk from their cut");
-  assert.ok(cutOverlapMs(late) > DOUBLE_TALK_MAX_OVERLAP_MS, "a delayed flush must be able to FAIL");
+test("an ineffective flush leaves agent audio sounding and fails at the cut turn", () => {
+  // The flush was processed at 1200ms but failed to drop the queue: audio
+  // keeps sounding for 650ms after it (then fades). The post-flush residual
+  // is 690ms, a real talk-over rather than an assumption that flush == stop.
+  const caller = { start: 1000, end: 3000 };
+  const failed = playoutCutWindow({
+    cutAt: 1200,
+    flushAt: 1200,
+    playUntil: 5000,
+    fadeMs: 40,
+    keepSoundingMs: 650,
+    caller,
+  });
+  assert.equal(failed.agentUntil, 1890);
+  assert.equal(postFlushOverlapMs(failed), 690);
+  const gate = evaluateDoubleTalk({ overlapMs: [postFlushOverlapMs(failed)], traceRef: "sess_fault / over-talk" });
+  assert.equal(gate.status, "FAIL", gate.detail);
+  assert.match(gate.detail, /690/);
+  assert.match(gate.detail, /call trace|sess_fault/);
 });
 
 test("the over-talk runner line is the overlap evidence the gate scores", () => {
@@ -3153,7 +3168,10 @@ test("fake-playout timings turn a flush into the post-flush overlap window", () 
   const long = playoutCutWindow({ cutAt: 1200, playUntil: 5000, fadeMs: 900, caller });
   assert.equal(long.agentUntil, 2100);
   assert.equal(postFlushOverlapMs(long), 800);
-  assert.equal(cutOverlapMs(long), 800);
+  // An ineffective flush keeps queued audio sounding after the fade.
+  const kept = playoutCutWindow({ cutAt: 1200, playUntil: 5000, fadeMs: 40, keepSoundingMs: 650, caller });
+  assert.equal(kept.agentUntil, 1890);
+  assert.equal(postFlushOverlapMs(kept), 690);
   // The caller arriving mid-fade still only overlaps the fade's remainder.
   assert.equal(
     postFlushOverlapMs(playoutCutWindow({ cutAt: 1200, playUntil: 5000, fadeMs: 40, caller: { start: 1230, end: 2000 } })),
@@ -3161,13 +3179,15 @@ test("fake-playout timings turn a flush into the post-flush overlap window", () 
   );
 });
 
-test("a delayed flush fails the double-talk gate at the cut turn", () => {
-  const caller = { start: 1000, end: 2000 };
-  const late = playoutCutWindow({ cutAt: 1200, flushAt: 1700, playUntil: 5000, fadeMs: 40, caller });
-  const gate = evaluateDoubleTalk({ overlapMs: [postFlushOverlapMs(late), cutOverlapMs(late)], traceRef: "sess_late / over-talk" });
-  assert.equal(gate.status, "FAIL");
-  assert.match(gate.detail, /540/);
-  assert.match(gate.detail, /sess_late/);
+test("a flush that stops the agent late still passes: only the post-flush residual counts", () => {
+  // The server cut lands at 1700ms (after 1200ms of cut latency); the flush
+  // itself is prompt, so the residual is the fade. Double talk cannot fail
+  // for cut latency, which the barge-in-cut gate budgets separately.
+  const caller = { start: 0, end: 2000 };
+  const lateCut = playoutCutWindow({ cutAt: 0, flushAt: 1700, playUntil: 5000, fadeMs: 40, caller });
+  assert.equal(lateCut.agentUntil, 1740);
+  assert.equal(postFlushOverlapMs(lateCut), 40);
+  assert.equal(evaluateDoubleTalk({ overlapMs: [postFlushOverlapMs(lateCut)] }).status, "PASS");
 });
 
 test("double-talk passes when every cut fades inside 400ms", () => {

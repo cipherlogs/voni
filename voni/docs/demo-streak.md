@@ -10,9 +10,11 @@ Timing runs go one at a time; the scoreboard takes an exclusive timing lock.
 
 ```sh
 cd voni
-npm run scoreboard:demo -- --scenario <scenario> [evidence flags]
-# repeat with the same code until scoreboard-runs/ holds three gate-voice
-# artifacts whose required gates are all PASS
+npm run scoreboard:demo [--scenario <name>] [evidence flags]
+# default: the full gate suite (every evidence-producing scenario, one at a
+# time). --scenario <name> is the focused mode for triage. Repeat with the same
+# code until scoreboard-runs/ holds three gate-voice artifacts whose required
+# gates are all PASS.
 ```
 
 Every artifact records `codeFingerprint` (git HEAD + a sha256 of

@@ -149,7 +149,7 @@ import {
   measureCutLatency,
   playoutCutWindow,
   postCutAnswerText,
-  cutOverlapMs,
+  postFlushOverlapMs,
   REAL_CUT_ANSWER_PREFIX,
   REAL_CUT_MAX_MS,
   REAL_CUT_SCENARIOS,
@@ -468,6 +468,13 @@ type ClientOptions = {
    * is never shortened for the eval.
    */
   silenceCheckIn?: boolean;
+  /**
+   * Fault injection for the double-talk producer: after the flush, leave the
+   * queued agent audio sounding this long instead of dropping it. 0 is a
+   * healthy flush (fade only); the over-talk scenario can be run with
+   * --double-talk-fault-ms to prove the gate FAILs an ineffective flush.
+   */
+  doubleTalkFaultMs?: number;
 };
 
 /**
@@ -695,21 +702,28 @@ async function runClient(
     },
     flush: (fadeS = 0) => {
       const at = Date.now();
-      // The flush drops whatever had not played: end the sounding window here
-      // so the silence timeline never claims audio the caller never heard.
+      const fadeMs = Math.max(0, fadeS * 1000);
+      // What was queued when the flush landed. A healthy flush drops it; the
+      // fault knob models a flush that fails to stop the agent, leaving the
+      // queue sounding (never an assumption that audio stops at flush+fade).
+      const queuedUntil = playUntil;
+      const keepSoundingMs = live ? Math.max(0, options.doubleTalkFaultMs ?? 0) : 0;
+      const audibleUntil = Math.min(queuedUntil, at + fadeMs + keepSoundingMs);
+      // End the sounding window where the caller actually stopped hearing it.
       if (lastAgentWindow) {
-        const playedEnd = Math.max(lastAgentWindow.startMs, at - t0);
+        const playedEnd = Math.max(lastAgentWindow.startMs, audibleUntil - t0);
         lastAgentWindow.endMs = Math.max(lastAgentWindow.startMs, Math.min(lastAgentWindow.endMs, playedEnd));
       }
+      // The session's playout now believes what the flush really did: a
+      // healthy flush is silent at the cut; a failed flush keeps sounding.
+      playUntil = keepSoundingMs > 0 ? audibleUntil : at;
       if (live) {
-        // The session flushes with FADE_OUT_S: what is sounding ramps to
-        // silence over the fade and the rest is dropped. Record what the
-        // caller actually still heard under their own speech after the flush.
-        const fadeMs = Math.max(0, fadeS * 1000);
+        // The session flushes with FADE_OUT_S: a healthy flush ramps what is
+        // sounding to silence over the fade and drops the rest. Record what
+        // the caller actually still heard under their own speech AFTER the
+        // flush — the 400ms double-talk bar governs this residual, never the
+        // cut latency (barge-in-cut budgets that separately, up to 1500ms).
         outcome.lastFadeMs = fadeMs;
-        // The cut trigger is the caller's speech start (they spoke over the
-        // agent); the flush is processed now. A delayed flush leaves audible
-        // double talk between the two, which the residual alone cannot see.
         const caller = callerWindowAt(at);
         // Ticket 19: if the cut stopped a check-in the visitor had started
         // speaking over, the time from their speech start to this flush is
@@ -722,12 +736,13 @@ async function runClient(
         const window = playoutCutWindow({
           cutAt: caller ? Math.min(caller.start, at) : at,
           flushAt: at,
-          playUntil,
+          playUntil: queuedUntil,
           fadeMs,
+          keepSoundingMs,
           caller,
         });
         outcome.cutWindows.push(window);
-        outcome.overlapMs.push(cutOverlapMs(window));
+        outcome.overlapMs.push(postFlushOverlapMs(window));
       }
       if (live && outcome.cutAt === null) {
         outcome.cutAt = at;
@@ -1073,19 +1088,25 @@ const CLIENT_SCENARIOS: { name: string; run: () => Promise<string | null> }[] = 
   {
     name: "over-talk",
     run: async () => {
-      const o = await runClient(voiceIdArg(), [LONG_ASK, "We're a bakery, actually."], async (ctx) => {
-        await askAndWaitForSpeech(ctx);
-        ctx.say("We're a bakery, actually.");
-        await new Promise((resolve) => setTimeout(resolve, 15000));
-      });
+      const o = await runClient(
+        voiceIdArg(),
+        [LONG_ASK, "We're a bakery, actually."],
+        async (ctx) => {
+          await askAndWaitForSpeech(ctx);
+          ctx.say("We're a bakery, actually.");
+          await new Promise((resolve) => setTimeout(resolve, 15000));
+        },
+        { doubleTalkFaultMs: DOUBLE_TALK_FAULT_MS },
+      );
       // The session's own transcript ledger: the words the call counted.
       console.log(`    heard ledger ${JSON.stringify(o.heard)}`);
       // Real producer for the double-talk gate: the fake playout recorded, for
-      // every server cut, how long the caller's speech and the faded agent
-      // audio were both still sounding after the flush. That residual — never
+      // every server cut, how long the caller's speech and the agent's audio
+      // were both still sounding AFTER the flush. That residual — never
       // time-to-cut, which the barge-in-cut gate budgets separately — is what
       // the 400ms bar governs. The line is machine-readable so score-demo
-      // scores the same numbers; the scenario asserts them too.
+      // scores the same numbers; the scenario asserts them too. Fault injection
+      // (--double-talk-fault-ms) leaves the queue sounding to prove a FAIL.
       const overlaps = o.overlapMs;
       const maxOverlap = overlaps.length > 0 ? Math.max(...overlaps) : null;
       console.log(
@@ -1100,7 +1121,9 @@ const CLIENT_SCENARIOS: { name: string; run: () => Promise<string | null> }[] = 
       console.log(
         `    double talk ${
           maxOverlap === null ? "unmeasured (no cut)" : `${maxOverlap}ms max after ${overlaps.length} cut${overlaps.length === 1 ? "" : "s"}`
-        } (cuts: ${cuts || "none"}ms; budget ${DOUBLE_TALK_MAX_OVERLAP_MS}ms; fade ${DOUBLE_TALK_FADE_OUT_S}s)`,
+        } (cuts: ${cuts || "none"}ms; budget ${DOUBLE_TALK_MAX_OVERLAP_MS}ms; fade ${DOUBLE_TALK_FADE_OUT_S}s${
+          DOUBLE_TALK_FAULT_MS > 0 ? `; injected flush fault ${DOUBLE_TALK_FAULT_MS}ms` : ""
+        })`,
       );
       if (!o.heard.some((t) => /bakery/i.test(t))) {
         return `never heard (heard: ${JSON.stringify(o.heard)})`;
@@ -1851,6 +1874,16 @@ const SCENARIOS: { name: string; steps: Step[]; pass: (o: Outcome) => string | n
     },
   },
 ];
+
+/**
+ * Test knob: simulate a flush that fails to stop the agent for this many ms.
+ * 0 (default) is the healthy flush. It exists so the double-talk gate can be
+ * shown to FAIL an ineffective flush; real runs leave it at 0.
+ */
+const DOUBLE_TALK_FAULT_MS = Number(arg("--double-talk-fault-ms", "0"));
+if (!Number.isFinite(DOUBLE_TALK_FAULT_MS) || DOUBLE_TALK_FAULT_MS < 0) {
+  throw new Error(`--double-talk-fault-ms needs milliseconds >= 0, got "${arg("--double-talk-fault-ms", "")}"`);
+}
 
 const runs = Number(arg("--runs", "5"));
 const voiceId = arg("--voice", DEMO_VOICE_IDS[0]);

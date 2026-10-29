@@ -1838,7 +1838,7 @@ test("a measured check-in yield is gated against the quoted cut budget", () => {
   assert.match(gate.detail, /1500ms/);
 });
 
-test("one command runs the whole gate suite once, sequentially, into one artifact", () => {
+test("a default run executes the whole gate suite once, sequentially, into one artifact", () => {
   const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
   const bin = join(dir, "bin");
   mkdirSync(bin);
@@ -1905,7 +1905,7 @@ if (args[0] === "run" && args[1] === "eval:demo-agent") {
   writeFileSync(join(bin, "npm"), shim, { mode: 0o755 });
   const out = join(dir, "suite.json");
   const result = run(
-    ["--scenario", "all", "--out", out, "--timing-lock", join(dir, "suite.lock")],
+    ["--out", out, "--timing-lock", join(dir, "suite.lock")],
     new URL("../", import.meta.url).pathname,
     { PATH: `${bin}:${process.env.PATH}`, SUITE_LOG: log },
   );
@@ -1948,7 +1948,7 @@ if (args[0] === "run" && args[1] === "eval:demo-agent") {
   assert.ok(artifact.evalRunner.timings.scenarioRuns.length >= 9);
 });
 
-test("a suite dry run spawns nothing", () => {
+test("default, all and suite dry runs spawn nothing and select the suite", () => {
   const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
   const bin = join(dir, "bin");
   mkdirSync(bin);
@@ -1958,17 +1958,23 @@ test("a suite dry run spawns nothing", () => {
     `#!/usr/bin/env node\nrequire("node:fs").writeFileSync(${JSON.stringify(marker)}, "spawned");\n`,
     { mode: 0o755 },
   );
-  const out = join(dir, "suite-dry.json");
-  const result = run(
-    ["--scenario", "all", "--dry-run", "--out", out],
-    new URL("../", import.meta.url).pathname,
-    { PATH: `${bin}:${process.env.PATH}` },
-  );
-  assert.equal(result.status, 0, result.stderr + result.stdout);
-  assert.equal(existsSync(marker), false, "the dry run never spawned the runner");
-  const artifact = JSON.parse(readFileSync(out, "utf8")) as { evalRunner: { scenario: string; status: string } };
-  assert.equal(artifact.evalRunner.scenario, "suite");
-  assert.equal(artifact.evalRunner.status, "skipped");
+  for (const [label, args] of [
+    ["default", []],
+    ["all", ["--scenario", "all"]],
+    ["suite", ["--scenario", "suite"]],
+  ] as const) {
+    const out = join(dir, `${label}.json`);
+    const result = run(
+      [...args, "--dry-run", "--out", out],
+      new URL("../", import.meta.url).pathname,
+      { PATH: `${bin}:${process.env.PATH}` },
+    );
+    assert.equal(result.status, 0, `${label}: ${result.stderr}${result.stdout}`);
+    const artifact = JSON.parse(readFileSync(out, "utf8")) as { evalRunner: { scenario: string; status: string } };
+    assert.equal(artifact.evalRunner.scenario, "suite", `${label} routes to the suite`);
+    assert.equal(artifact.evalRunner.status, "skipped");
+  }
+  assert.equal(existsSync(marker), false, "no dry run spawned the runner");
 });
 
 test("--silence-json feeds dead-air automatically, and explicit CLI flags still override it", () => {

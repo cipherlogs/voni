@@ -16,10 +16,10 @@
  * (non-dry) run with zero measured evidence fails too ("no measurements -
  * run real audio or pass evidence flags"): --dry-run stays exit 0 INFO
  * (explicit dry), but a real run may never green on zero measurements.
- * `--scenario all` (alias `suite`) is the one-command suite: it runs every
- * gate-voice scenario that produces scoreboard evidence, one at a time under
- * one timing lock, and merges each producer's own stdout into one artifact.
- * `--scenario <name>` stays the focused mode for triage and tests.
+ * The default (and `--scenario all`, alias `suite`) is the one-command suite:
+ * it runs every gate-voice scenario that produces scoreboard evidence, one at
+ * a time under one timing lock, and merges each producer's own stdout into
+ * one artifact. `--scenario <name>` stays the focused mode for triage/tests.
  * Plumbing and judgment are separate: an eval runner that finished (its
  * summary printed, whatever the exit code) is plumbing PASS even when a
  * scenario or a measured gate FAILs. A spawn failure, a kill, a crash, no
@@ -884,7 +884,9 @@ function deadAirEvidenceFromTimeline(
 
 function main(): void {
   const voice = resolveGateVoice(arg("--gate-voice", "") || arg("--voice", DEFAULT_GATE_VOICE));
-  const requestedScenario = arg("--scenario", "greeting-cut");
+  // Default is the full gate suite: a plain `npm run scoreboard:demo` must
+  // exercise every gate, not leave most of them INFO on one focused scenario.
+  const requestedScenario = arg("--scenario", "all");
   const suite = requestedScenario === "all" || requestedScenario === "suite";
   const scenario = suite ? "suite" : requestedScenario;
   const runs = arg("--runs", "1");
