@@ -814,6 +814,69 @@ test("a variant run passes only as labelled experimental evidence, never as a pr
   assert.doesNotMatch(gate.detail, /meaning-based end-of-turn preserved/);
 });
 
+// Rung 1, 2026-10-29: the live variant call's own server CONFIG row echoed the
+// variant windows (plus the server's normalized fields) and the production
+// CONFIG guard failed the run. The same live-shaped line is used below so the
+// experiment's own row is evidence, while a production trace stays a FAIL.
+const LIVE_VARIANT_CONFIG_LINE =
+  '0.07s  CONFIG  turn_detection {"type":null,"vad_threshold":0.5,"interrupt_response":true,' +
+  '"min_silence":400,"max_silence":640,"interruption_delay":0,"uninterruptible_turns":[]}  agent=agent_exp';
+const LIVE_VARIANT_CONFIG_PREFIX =
+  '0.07s  CONFIG  turn_detection {"type":null,"vad_threshold":0.5,"interrupt_response":true,"min_silence":400,"max_silence":640,"interruption_delay":0,"uninterrupt';
+
+test("a variant artifact whose CONFIG line carries its own windows passes as experimental evidence", () => {
+  const turnWindows = { min_silence: 400, max_silence: 640, interruption_delay: 0 };
+  const artifact = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "suite",
+    runnerStdout: "suite",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+    agentInput: { turn_detection: null },
+    traceExcerpt: [LIVE_VARIANT_CONFIG_LINE],
+    endOfTurnExperiment: { variant: "turn-window", variantKey: "anna:exp", turnWindows },
+  });
+  const gate = artifact.gates.find((row) => row.name === "end-of-turn");
+  assert.equal(gate?.status, "PASS", gate?.detail);
+  assert.equal(
+    gate?.detail,
+    "experimental turn-window variant (anna:exp): windows min_silence 400, max_silence 640, interruption_delay 0 recorded as experiment evidence, not a production pass; production body still sends turn_detection: null (adaptive preserved)",
+  );
+  assert.equal(artifact.endOfTurn?.experimental, true);
+});
+
+test("a production trace with that same CONFIG line still fails with the existing contract detail", () => {
+  const gate = meaningBasedEndOfTurnGate({ turn_detection: null }, [LIVE_VARIANT_CONFIG_LINE]);
+  assert.equal(gate.status, "FAIL");
+  assert.equal(
+    gate.detail,
+    `call trace shows a turn_detection CONFIG line (${LIVE_VARIANT_CONFIG_PREFIX}): no turn-detection object may be sent on the managed session path (ADR-0003)`,
+  );
+});
+
+test("a variant artifact whose CONFIG line reports different windows still fails", () => {
+  const turnWindows = { min_silence: 400, max_silence: 640, interruption_delay: 0 };
+  const stray = '0.07s  CONFIG  turn_detection {"min_silence":100,"max_silence":640,"interruption_delay":0}  agent=agent_exp';
+  const artifact = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "suite",
+    runnerStdout: "suite",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+    agentInput: { turn_detection: null },
+    traceExcerpt: [stray],
+    endOfTurnExperiment: { variant: "turn-window", variantKey: "anna:exp", turnWindows },
+  });
+  const gate = artifact.gates.find((row) => row.name === "end-of-turn");
+  assert.equal(gate?.status, "FAIL");
+  assert.equal(
+    gate?.detail,
+    `call trace shows a turn_detection CONFIG line (${stray}): no turn-detection object may be sent on the managed session path (ADR-0003)`,
+  );
+});
+
 test("a variant run never loosens the production object contract", () => {
   const gate = meaningBasedEndOfTurnGate({ turn_detection: { min_silence: 200 } }, [], {
     variant: "turn-window",
