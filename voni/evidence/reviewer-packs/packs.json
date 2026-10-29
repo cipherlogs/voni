@@ -1,0 +1,190 @@
+{
+  "schemaVersion": 1,
+  "generatedOn": "2026-10-29",
+  "command": "cd voni && npm run voice:packs",
+  "source": "evidence/audition-clips/clips.json",
+  "counts": {
+    "total": 16,
+    "pending": 16,
+    "complete": 0,
+    "incomplete": 0
+  },
+  "packs": [
+    {
+      "voice": "alba",
+      "locale": "en",
+      "asset": "public/voices/alba.mp3",
+      "url": "/voices/alba.mp3",
+      "recordingSha256": "e7102ff2d6a0067f4fb6c9f71d26252d86044216b5c2b37c3b778ea160fb4e49",
+      "status": "pending",
+      "reviewer": null,
+      "reviewedOn": null,
+      "pack": "evidence/reviewer-packs/alba.json"
+    },
+    {
+      "voice": "eve",
+      "locale": "en",
+      "asset": "public/voices/eve.mp3",
+      "url": "/voices/eve.mp3",
+      "recordingSha256": "3332ea1218d3e87107332e4efb27a6d460cb13ed18479c38c7bffcb91122385a",
+      "status": "pending",
+      "reviewer": null,
+      "reviewedOn": null,
+      "pack": "evidence/reviewer-packs/eve.json"
+    },
+    {
+      "voice": "jane",
+      "locale": "en",
+      "asset": "public/voices/jane.mp3",
+      "url": "/voices/jane.mp3",
+      "recordingSha256": "b74258e243b1005f4b4fcf213f366e73400afef4e67a7f3204c2c234373a0d77",
+      "status": "pending",
+      "reviewer": null,
+      "reviewedOn": null,
+      "pack": "evidence/reviewer-packs/jane.json"
+    },
+    {
+      "voice": "mary",
+      "locale": "en",
+      "asset": "public/voices/mary.mp3",
+      "url": "/voices/mary.mp3",
+      "recordingSha256": "c8b2a589eb62bcdcc0c171ed10b08df53ded6ff679d417c9b70e9d70390cbd9e",
+      "status": "pending",
+      "reviewer": null,
+      "reviewedOn": null,
+      "pack": "evidence/reviewer-packs/mary.json"
+    },
+    {
+      "voice": "george",
+      "locale": "en",
+      "asset": "public/voices/george.mp3",
+      "url": "/voices/george.mp3",
+      "recordingSha256": "01f7b536c5e68775a094c86a92b9a01b9aad30fd373682c8801213206425e8ba",
+      "status": "pending",
+      "reviewer": null,
+      "reviewedOn": null,
+      "pack": "evidence/reviewer-packs/george.json"
+    },
+    {
+      "voice": "michael",
+      "locale": "en",
+      "asset": "public/voices/michael.mp3",
+      "url": "/voices/michael.mp3",
+      "recordingSha256": "596cc44d23c5d5fcddebb714dacaf6eb0f9b41331db4ef0ea584bda093be8526",
+      "status": "pending",
+      "reviewer": null,
+      "reviewedOn": null,
+      "pack": "evidence/reviewer-packs/michael.json"
+    },
+    {
+      "voice": "jean",
+      "locale": "en",
+      "asset": "public/voices/jean.mp3",
+      "url": "/voices/jean.mp3",
+      "recordingSha256": "0d34f2e5e53d963410cb14397177d7c3b9f57775040bd97569daf3ea8139dac5",
+      "status": "pending",
+      "reviewer": null,
+      "reviewedOn": null,
+      "pack": "evidence/reviewer-packs/jean.json"
+    },
+    {
+      "voice": "anna",
+      "locale": "en",
+      "asset": "public/voices/anna.mp3",
+      "url": "/voices/anna.mp3",
+      "recordingSha256": "8b4c4212816f1bf9a9cabc4fc2e55f658632a3035ce999566eb22dc637fae554",
+      "status": "pending",
+      "reviewer": null,
+      "reviewedOn": null,
+      "pack": "evidence/reviewer-packs/anna.json"
+    },
+    {
+      "voice": "vera",
+      "locale": "en",
+      "asset": "public/voices/vera.mp3",
+      "url": "/voices/vera.mp3",
+      "recordingSha256": "95837b210b1eaabb68bfb68402c50ece7e8372063c8e992accf37087334e71fa",
+      "status": "pending",
+      "reviewer": null,
+      "reviewedOn": null,
+      "pack": "evidence/reviewer-packs/vera.json"
+    },
+    {
+      "voice": "charles",
+      "locale": "en",
+      "asset": "public/voices/charles.mp3",
+      "url": "/voices/charles.mp3",
+      "recordingSha256": "fb64966de7ba43a6f24ad9ee2608b934441c9e932629d63a315f55cdf9488e4d",
+      "status": "pending",
+      "reviewer": null,
+      "reviewedOn": null,
+      "pack": "evidence/reviewer-packs/charles.json"
+    },
+    {
+      "voice": "paul",
+      "locale": "en",
+      "asset": "public/voices/paul.mp3",
+      "url": "/voices/paul.mp3",
+      "recordingSha256": "a3d7dd1615a0e9f0fbde17b9739bc5bf622c4735d64888f982d8bc44165e8e3f",
+      "status": "pending",
+      "reviewer": null,
+      "reviewedOn": null,
+      "pack": "evidence/reviewer-packs/paul.json"
+    },
+    {
+      "voice": "giovanni",
+      "locale": "it",
+      "asset": "public/voices/giovanni.mp3",
+      "url": "/voices/giovanni.mp3",
+      "recordingSha256": "b2c1754a0377b3a8833ca7b843de48b31d295eead691777d6e035268bfffbafa",
+      "status": "pending",
+      "reviewer": null,
+      "reviewedOn": null,
+      "pack": "evidence/reviewer-packs/giovanni.json"
+    },
+    {
+      "voice": "lola",
+      "locale": "es",
+      "asset": "public/voices/lola.mp3",
+      "url": "/voices/lola.mp3",
+      "recordingSha256": "c2bdfd1a03f5b8cc7f9fcf9974d232cac786fa236bf9fc04cf0075e14ed58a79",
+      "status": "pending",
+      "reviewer": null,
+      "reviewedOn": null,
+      "pack": "evidence/reviewer-packs/lola.json"
+    },
+    {
+      "voice": "juergen",
+      "locale": "de",
+      "asset": "public/voices/juergen.mp3",
+      "url": "/voices/juergen.mp3",
+      "recordingSha256": "763d97ffe04cfeb5003eb4c68bf987f79312871e21f1ffdd4463584efab22993",
+      "status": "pending",
+      "reviewer": null,
+      "reviewedOn": null,
+      "pack": "evidence/reviewer-packs/juergen.json"
+    },
+    {
+      "voice": "rafael",
+      "locale": "pt",
+      "asset": "public/voices/rafael.mp3",
+      "url": "/voices/rafael.mp3",
+      "recordingSha256": "c81b8eb909c11d72e37d6acaa422eda595728cd88cdf8aafc4ae61329b034af9",
+      "status": "pending",
+      "reviewer": null,
+      "reviewedOn": null,
+      "pack": "evidence/reviewer-packs/rafael.json"
+    },
+    {
+      "voice": "estelle",
+      "locale": "fr",
+      "asset": "public/voices/estelle.mp3",
+      "url": "/voices/estelle.mp3",
+      "recordingSha256": "f9609eb7475640d2e20564a36828b7241ad95aafe9c2f7e76a31ae7d089400bc",
+      "status": "pending",
+      "reviewer": null,
+      "reviewedOn": null,
+      "pack": "evidence/reviewer-packs/estelle.json"
+    }
+  ]
+}

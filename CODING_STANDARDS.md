@@ -26,7 +26,9 @@ linter, tests, or CI, not here. Read this with the diff, not during exploration.
 - The stored-agent path is the product path; inline is a debug surface. A
   behavior claim must be measured on the stored path.
 - Keep the end-of-turn meaning-based: no `turn_detection` object on the managed
-  path. The one sensitive-field override stays narrow and scoped.
+  path. Every stored body ships `turn_detection: null` (the Turn preset); the
+  tenant's pre-64 object is deleted, not merely unused. The one sensitive-field
+  override stays narrow and scoped.
 - The end-call result is a pure signal. Nothing speakable follows it; the
   closing line is spoken before the signal.
 - Fast-model and prompt changes are product changes: prove them on all required

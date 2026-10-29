@@ -82,9 +82,17 @@ export const AUDITION_CREST_TOLERANCE_DB = 0.75;
  * A regenerated take is not byte-identical: the vendor's synthesis is not
  * deterministic. Measured on two alba takes, duration moved 96 ms (1.8 %).
  * Ticket 39 compares a fresh render within these.
+ *
+ * The crest gets a wider regeneration tolerance than the encoder's 0.75 dB
+ * because the performance itself moves it: three anna takes of the same line
+ * measured 15.6, 16.8 and 17.2 dB (a 1.7 dB span). A clipped, gain-baked
+ * preview — the old hand captures — collapses to about 7.5 dB when four times
+ * the level is clamped, so 3 dB still separates a fresh performance from a
+ * flattened preview.
  */
 export const AUDITION_REGENERATION_DURATION_RATIO = 0.05;
 export const AUDITION_REGENERATION_LEVEL_TOLERANCE_LU = 1;
+export const AUDITION_REGENERATION_CREST_TOLERANCE_DB = 3;
 
 /** Committed previews, played by the picker at `/voices/<id>.mp3`. */
 export const AUDITION_ASSET_DIR = "public/voices";

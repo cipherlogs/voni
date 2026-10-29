@@ -78,6 +78,13 @@ import {
 } from "../voice/session";
 import { SCOREBOARD_BUDGETS } from "./scoreboard-budgets";
 import {
+  formatSubject,
+  subjectForRunVoice,
+  subjectOrLegacy,
+  SubjectError,
+  type SubjectRecord,
+} from "./subject";
+import {
   BEHAVIOR_RUN_EVIDENCE_KIND,
   BEHAVIOR_RUN_EVIDENCE_SCHEMA_VERSION,
   codeFingerprintFromGit,
@@ -85,6 +92,7 @@ import {
 import { DEMO_VOICE_IDS, SILENCE_CHECK_IN_INSTRUCTIONS } from "./voni-agent";
 import { DEMO_INBOX_ADDRESS } from "./email-test";
 import { TAG_WORDS, containsTag, countTags } from "./test-tag";
+import { englishLeakForArtifact, type EnglishLeakCount } from "./english-leak";
 import type { RunnerEvidence } from "./runner-evidence";
 import type { LatencyBand } from "./latency-split";
 import type {
@@ -1057,6 +1065,51 @@ export function runBodyUnmeasuredReason(
   runBody: RunBody | null | undefined,
 ): string {
   return runBodyEvidence(runBody).reason ?? "unmeasured";
+}
+
+/**
+ * A demo subject's voice is the voice the artifact's voice-keyed rows describe
+ * (voice-parity ticket 72). A mismatch would let an artifact claim a subject it
+ * did not measure, so it is refused by name before any gate reads it.
+ */
+export function assertSubjectMatchesArtifactVoice(
+  subject: SubjectRecord,
+  voice: string,
+): void {
+  if (subject.agent.kind !== "demo") return;
+  if (subject.agent.voice === voice) return;
+  throw new SubjectError(
+    "agent",
+    subject.agent.voice,
+    `artifact voice "${voice}" is not the demo subject's voice "${subject.agent.voice}" ` +
+      `(a subject carries the voice it measured)`,
+  );
+}
+
+/**
+ * The run's body identity, narrowed to the subject it belongs to. A tenant
+ * subject is one specific stored agent: a body read from another agent cannot
+ * gate it, so the read is recorded as unmeasured with both ids named rather
+ * than silently judging a different agent's audio.
+ */
+export function runBodyEvidenceForSubject(
+  subject: SubjectRecord,
+  runBody: RunBody | null | undefined,
+): AgentBodyEvidence {
+  const evidence = runBodyEvidence(runBody);
+  if (subject.agent.kind !== "tenant" || !evidence.measured || evidence.agentId === null) {
+    return evidence;
+  }
+  if (evidence.agentId === subject.agent.agentId) return evidence;
+  return {
+    source: "stored-agent",
+    measured: false,
+    agentId: evidence.agentId,
+    fingerprint: evidence.fingerprint,
+    reason:
+      `served body ${evidence.agentId} is not the subject's agent ${subject.agent.agentId}: ` +
+      `a gate cannot judge another agent's audio`,
+  };
 }
 
 /**
@@ -2245,6 +2298,12 @@ export type ScoreboardArtifact = {
   recordedAt: string;
   /** Gate voice, resolved through the shared voice registry. */
   voice: string;
+  /**
+   * Which subject this artifact measured (voice-parity ticket 72): the agent,
+   * the Locale and the transport. New artifacts always carry it; an artifact
+   * written before the axis derives it from its voice (`subjectOfArtifact`).
+   */
+  subject?: SubjectRecord;
   runs: number;
   /** The locked golden script this run scores against (fixed order/wording/windows). */
   goldenScript: {
@@ -2293,6 +2352,13 @@ export type ScoreboardArtifact = {
   /** The measured level leg and the served body level; no client gain row. */
   loudness: ScoreboardLoudness;
   transcripts: { sha256: string; redacted: string[] };
+  /**
+   * The report-only English-leak counter (voice-parity ticket 76), read from
+   * `transcripts`. It never adds a gate, never moves a PASS/FAIL; the count,
+   * the rate and the promotion decision travel with it so the artifact records
+   * both. Absent on an artifact written before the counter existed.
+   */
+  englishLeak?: EnglishLeakCount;
   humanRatings: HumanRatings;
   /** Blind-ballot binding as reviewable evidence: recording sha256, raters, protocol (ticket 28). */
   humanReview: HumanReview;
@@ -5261,7 +5327,15 @@ export function buildSkeletonArtifact(input: {
    * synthesized here.
    */
   runnerEvidence?: RunnerEvidence | null;
+  /**
+   * The subject this run measured (voice-parity ticket 72): any demo voice, a
+   * tenant agent, any transport. Absent means the run's own voice is the
+   * subject (derived, never a second default), so every artifact carries one.
+   */
+  subject?: SubjectRecord;
 }): ScoreboardArtifact {
+  const subject = input.subject ?? subjectForRunVoice(input.voice);
+  assertSubjectMatchesArtifactVoice(subject, input.voice);
   const fillerGate = input.fillerResume ? evaluateFillerResumeGate(input.fillerResume) : null;
   const samples: ReplyGapSample[] = [];
   const finiteGaps = (beat: GoldenBeat): number[] => (input.gaps?.[beat] ?? []).filter((n) => Number.isFinite(n));
@@ -5460,7 +5534,7 @@ export function buildSkeletonArtifact(input: {
   // was not read leaves the level and turn setting unmeasured rather than
   // rebuilding a body nobody heard.
   const runBody = input.runBody ?? null;
-  const bodyEvidence = runBodyEvidence(runBody);
+  const bodyEvidence = runBodyEvidenceForSubject(subject, runBody);
   const servedBody = runBodyServedBody(runBody);
   // Ticket 16: the level leg's verdict comes from the measured files. There is
   // no client-gain formula left to produce a level number (ticket 36).
@@ -5535,17 +5609,20 @@ export function buildSkeletonArtifact(input: {
       note: measured ? goodbyeDrainGate.detail : prior.note,
     };
   }
+  const transcriptLines = redactLines(input.runnerStdout);
   return {
     schemaVersion: SCOREBOARD_SCHEMA_VERSION,
     recordedAt: new Date().toISOString(),
     voice: input.voice,
+    subject,
     runs: input.runs,
     goldenScript: {
       vertical: GOLDEN_VERTICAL,
       budgetS: GOLDEN_SCRIPT_BUDGET_S,
       beats: GOLDEN_SCRIPT,
     },
-    regressionVoices: regressionVoices(input.voice),
+    regressionVoices:
+      subject.agent.kind === "demo" ? regressionVoices(subject.agent.voice) : [],
     beats,
     replyGap: { p50Ms: overall?.p50Ms ?? null, p95Ms: overall?.p95Ms ?? null, samples: overall?.count ?? 0 },
     overheard: evaluation
@@ -5574,8 +5651,14 @@ export function buildSkeletonArtifact(input: {
     },
     transcripts: {
       sha256: sha256Hex(input.runnerStdout),
-      redacted: redactLines(input.runnerStdout),
+      redacted: transcriptLines,
     },
+    // Report-only (voice-parity ticket 76): the count and the promotion
+    // decision are recorded, never folded into a gate.
+    englishLeak: englishLeakForArtifact({
+      subject,
+      transcripts: { redacted: transcriptLines },
+    }),
     humanRatings,
     humanReview: humanReview(
       humanRatings,
@@ -6312,6 +6395,62 @@ export function formatMatrixTable(matrix: RegressionMatrix): string {
     gateRow,
     ...rows,
   ].join("\n");
+}
+
+// ── Subject: the verdict belongs to the run that measured it (ticket 72) ─────
+
+/**
+ * The subject an artifact measured. New artifacts carry the record the run
+ * resolved; a pre-axis artifact derives it from its voice, never from the
+ * featured default (ticket 72).
+ */
+export function subjectOfArtifact(
+  artifact: Pick<ScoreboardArtifact, "subject" | "voice">,
+): SubjectRecord {
+  return subjectOrLegacy({ subject: artifact.subject, voice: artifact.voice });
+}
+
+/**
+ * One subject's gate verdict, derived from that subject's own artifact.
+ *
+ * This is the seam ticket 73 reads per subject: the function takes exactly one
+ * artifact, so there is no parameter through which the featured voice's verdict
+ * could be carried in. A subject with a failing gate row is FAIL regardless of
+ * what any other subject's artifact says.
+ */
+export type SubjectGateVerdict = {
+  subject: SubjectRecord;
+  /** The run the verdict was derived from, so a reader can open that artifact. */
+  runId: string;
+  scenario: string;
+  status: GateStatus;
+  failing: string[];
+  detail: string;
+  gates: ScoreboardGate[];
+};
+
+export function subjectGateVerdict(
+  artifact: ScoreboardArtifact,
+): SubjectGateVerdict {
+  const subject = subjectOfArtifact(artifact);
+  const failing = artifact.gates.filter((gate) => gate.status === "FAIL").map((gate) => gate.name);
+  const status: GateStatus =
+    artifact.gates.length === 0 ? "INFO" : failing.length > 0 ? "FAIL" : "PASS";
+  return {
+    subject,
+    runId: artifact.runId,
+    scenario: artifact.evalRunner.scenario,
+    status,
+    failing,
+    detail:
+      `subject ${formatSubject(subject)} (${artifact.runId}, ${artifact.evalRunner.scenario}): ` +
+      (status === "PASS"
+        ? `PASS (no required gate failed in this run's own artifact)`
+        : status === "FAIL"
+          ? `FAIL (${failing.join(", ")})`
+          : "INFO (this artifact reports no gates)"),
+    gates: artifact.gates,
+  };
 }
 
 // ── Streak: three consecutive greens on one code + candidate behavior run ───
