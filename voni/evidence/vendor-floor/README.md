@@ -87,6 +87,36 @@ audition clips were measured at. That is a fact about the old clips (pre-gained
 and re-encoded by hand), not a target: the floor is the audio the owner called
 superb, and it is this file.
 
+## Judge a subject
+
+Floor mode compares one subject — its reference rendering plus its delivered
+capture — against this floor. It fails only when the subject is **worse** than
+the floor on a measured axis; being merely different does not fail.
+
+```bash
+cd voni
+npm run voice:compare -- --floor \
+  --reference .voice-references/anna-<hash>.wav \
+  --delivered .captures/delivered-<stamp>.wav
+```
+
+`--platform` is optional; when given, the three-way table prints first and the
+floor verdict follows. Exit codes: `0` pass, `1` fail, `2` inconclusive.
+
+The directions, so no reader has to infer a sign from a number:
+
+| axis | worse when |
+| --- | --- |
+| level | integrated loudness deviates from the floor's by more than 0.2 LU in **either** direction (too loud clips, too quiet is unintelligible) |
+| peak | the subject has **less** true-peak headroom (a less negative dBTP) than the floor |
+| distortion | the subject's residual against its own reference is **larger** than the floor's residual against the same reference, above the −60 dB clean-file bar |
+| breakups | more inserted silence (count, total or longest) than the floor |
+| modulation | a **deeper** periodic envelope swing than the floor's |
+
+An axis the subject's file cannot carry is `inconclusive`, never a pass. The
+module is `voni/src/lib/audio/floor-mode.ts`, and `loadVendorFloor` is the only
+reader of this directory.
+
 ## Owner-supplied capture
 
 If the floor must be a literal browser-playground recording instead of the
