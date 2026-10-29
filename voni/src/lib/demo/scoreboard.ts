@@ -35,17 +35,31 @@
  * artifact (gate transitions, beat deltas, reply gap, drain) without ever
  * committing the artifacts.
  *
- * Gate ownership (one gate, one section below; keep gate logic inside its
- * own section — no unrelated edits in one function):
- *   plumbing / measurements .... skeleton (ticket 01/06: finished vs harness break, dry-run only)
- *   reply-gap ................... ticket 03 | end-of-turn ............. ADR-0003 contract
- *   barge-in-cut ................ ticket 05 | filler-resume ........... ticket 04
- *   overheard-recall ............ ticket 06 | dead-air ................ ticket 07
- *   email-invite ................ ticket 08 | double-talk / end-call-drain ticket 09
- *   timbre-probes / accent-human  ticket 10 | phone-checklist / talk-hold-pinned review stubs (manual/external)
- * TODO: split each gate section into scoreboard/gates/<name>.ts (pure
- * helpers only) once a second consumer needs one; keep this module's
- * exports stable so the orchestrator and matrix never change imports.
+ * Gate ownership (one gate, one section below, in file order; keep gate
+ * logic inside its own section — no unrelated edits in one function):
+ *   reply-gap .......................... ticket 03
+ *   end-of-turn ........................ ADR-0003 contract
+ *   dead-air (incl. check-in once/yield) ticket 07 / 18 / 19
+ *   email-invite ....................... ticket 08
+ *   artifact shape (ScoreboardArtifact) shared plumbing, ticket 01
+ *   overheard-recall ................... ticket 06
+ *   voice registry (gate voice lock) ... ticket 02
+ *   timbre-probes / accent-human ....... ticket 10
+ *   double-talk + end-call-drain ....... ticket 09 (shared section: both
+ *                                        read the same cut/drain timings)
+ *   filler-resume ...................... ticket 04
+ *   barge-in-cut ....................... ticket 05
+ *   greeting-cut ....................... ticket 08
+ *   fixed-clip cut measurement ......... ticket 05 (feeds barge-in-cut)
+ *   skeleton: plumbing/measurements/assembly ticket 01 / 06
+ *   artifact diff ...................... ticket 07
+ *   streak / behavior evidence ......... ticket 29
+ *   phone-checklist / talk-hold-pinned . review stubs (manual/external)
+ * TODO: this module is ~5.8k lines. Split double-talk and end-call-drain
+ * into separate scoreboard/gates/*.ts files, and then each gate section,
+ * once a second consumer needs one; until then keep the exports stable so
+ * the orchestrator and matrix never change imports. The shared section is
+ * a known sequencing compromise, not an ownership rule.
  */
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -2371,7 +2385,7 @@ function sameTraceWords(left: string, right: string): boolean {
   return a.length > 0 && b.length > 0 && (a.includes(b) || b.includes(a));
 }
 
-// ── Gate: voice registry (ticket 02, owner: voice section) ───────────────────
+// ── Gate: voice registry (ticket 02, owner: voice-registry section) ──────────
 
 /**
  * The locked gate default: the first demo voice, resolved through the
@@ -2685,7 +2699,7 @@ export function formatBudgetReport(): string {
   return lines.join("\n");
 }
 
-// ── Gate: double-talk + end-call-drain (ticket 09, owner: drain section) ──────
+// ── Gate: double-talk + end-call-drain (ticket 09, shared cut/drain section) ───
 
 /**
  * Double-talk bar (spec story 8): zero audible overlap longer than 400ms
