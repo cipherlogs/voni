@@ -40,8 +40,9 @@ import {
  *   field-subset hash (`comparableAgent`), which had omitted the model override.
  *   `stableJson` is its canonical form.
  * - 64/65: `turnDetectionFor` below is the single turn-taking switch. It
- *   returns the Turn preset (`turn_detection: null`) for the demo; the tenant
- *   branch is the pre-64 object that 64/65 removes.
+ *   returns the Turn preset (`turn_detection: null`) for every persona and
+ *   platform; ticket 64 moved tenants off the pre-64 object and ticket 65
+ *   removes the leftover constant.
  * - 66/67: `compileSystemPrompt` is the rules owner; the persona-neutral floor
  *   moves into it without this file learning about personas.
  */
@@ -232,7 +233,7 @@ export type TurnWindowSettings = {
 
 /**
  * Turn-taking is session mechanics, so it is a builder input — never a
- * profile field. Production callers omit it and get the persona default.
+ * profile field. Production callers omit it and get the Turn preset.
  */
 export type TurnTaking =
   /** The Turn preset: adaptive end-of-turn, no object on the body. */
@@ -241,9 +242,10 @@ export type TurnTaking =
   | { readonly kind: "windows"; readonly windows: TurnWindowSettings };
 
 /**
- * The tenant body's explicit turn-detection object, unchanged until ticket 64
- * replaces it with the Turn preset (ticket 65 removes it). It is exported so a
- * test can prove its removal rather than read it from a comment.
+ * The tenant body's pre-64 explicit turn-detection object. Ticket 64 stopped
+ * sending it (every body now carries the Turn preset); ticket 65 removes this
+ * export and its docs. It is kept only so a test can prove no profile produces
+ * it, rather than leaving the absence to a comment.
  */
 export const TENANT_LEGACY_TURN_DETECTION = Object.freeze({
   min_silence: 100,
@@ -272,7 +274,15 @@ function windowsToTurnDetection(
   return turnDetection;
 }
 
-/** The single turn-taking switch (ticket 64/65 owns the tenant branch). */
+/**
+ * The single turn-taking switch. Every persona and platform sends the Turn
+ * preset (`turn_detection: null`, adaptive meaning-based end-of-turn); the one
+ * exception is the demo latency experiment's explicit windows, which stay
+ * demo-only and never reach a production body.
+ *
+ * Ticket 64 moved tenants here from their pre-64 object; ticket 65 removes the
+ * leftover constant and its docs.
+ */
 function turnDetectionFor(
   persona: AgentPersona,
   requested: TurnTaking | undefined,
@@ -283,8 +293,7 @@ function turnDetectionFor(
     }
     return windowsToTurnDetection(requested.windows);
   }
-  if (requested?.kind === "preset") return null;
-  return persona === "tenant" ? { ...TENANT_LEGACY_TURN_DETECTION } : null;
+  return null;
 }
 
 /**
@@ -388,8 +397,8 @@ export type StoredAgentInput = {
   config: AgentConfig;
   profile: AgentProfile;
   /**
-   * Session mechanics override. Production callers omit it; only the demo
-   * latency experiment (`:exp`) passes windows. Ticket 64 removes both.
+   * Session mechanics override. Production callers omit it and get the Turn
+   * preset; only the demo latency experiment (`:exp`) passes windows.
    */
   turnTaking?: TurnTaking;
 };
