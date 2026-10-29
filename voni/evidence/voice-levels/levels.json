@@ -1,0 +1,218 @@
+{
+  "schemaVersion": 1,
+  "measuredOn": "2026-10-29",
+  "method": "POST https://tts.us.assemblyai.com/v1/speech, stream=false, container=wav, encoding=pcm_s16le, sample_rate=24000, one call per take, each voice's own greeting in its own Locale",
+  "measuredWith": "src/lib/audio/level-facts.ts (BS.1770-4 gated integrated loudness, 4x true peak)",
+  "reference": {
+    "voice": "anna",
+    "file": "evidence/vendor-floor/anna-en.wav",
+    "integratedLufs": -20.04,
+    "capturedOn": "2026-10-29"
+  },
+  "decision": "output.volume = 100 for every measured voice: its own measured reference is the level target, and 100 is the native (unprocessed) level. output.volume attenuates only, so no voice is boosted; no measured voice is louder than the reference floor beyond the gate's 0.20 LU tolerance and no take clips (every true peak below 0 dBTP), so none needs attenuation. An unmeasured voice keeps the named default 100.",
+  "voices": [
+    {
+      "voice": "alba",
+      "locale": "en",
+      "line": "Hi, I'm Voni! Let's try something cool: I'll show you what I can do while we talk. Ready?",
+      "takes": [
+        -21.78,
+        -22.22,
+        -21.54
+      ],
+      "integratedLufs": -21.78,
+      "truePeakDbtp": -5.93,
+      "volume": 100
+    },
+    {
+      "voice": "eve",
+      "locale": "en",
+      "line": "Hi, I'm Voni! Let's try something cool: I'll show you what I can do while we talk. Ready?",
+      "takes": [
+        -20.98,
+        -22.33,
+        -22.24
+      ],
+      "integratedLufs": -22.24,
+      "truePeakDbtp": -2.65,
+      "volume": 100
+    },
+    {
+      "voice": "jane",
+      "locale": "en",
+      "line": "Hi, I'm Voni! Let's try something cool: I'll show you what I can do while we talk. Ready?",
+      "takes": [
+        -20.19,
+        -20.57,
+        -20.85
+      ],
+      "integratedLufs": -20.57,
+      "truePeakDbtp": -3.39,
+      "volume": 100
+    },
+    {
+      "voice": "mary",
+      "locale": "en",
+      "line": "Hi, I'm Voni! Let's try something cool: I'll show you what I can do while we talk. Ready?",
+      "takes": [
+        -21.03,
+        -21.32,
+        -20.28
+      ],
+      "integratedLufs": -21.03,
+      "truePeakDbtp": -3.19,
+      "volume": 100
+    },
+    {
+      "voice": "george",
+      "locale": "en",
+      "line": "Hi, I'm Voni! Let's try something cool: I'll show you what I can do while we talk. Ready?",
+      "takes": [
+        -20.73,
+        -22.79,
+        -22.39
+      ],
+      "integratedLufs": -22.39,
+      "truePeakDbtp": -2.52,
+      "volume": 100
+    },
+    {
+      "voice": "michael",
+      "locale": "en",
+      "line": "Hi, I'm Voni! Let's try something cool: I'll show you what I can do while we talk. Ready?",
+      "takes": [
+        -22.63,
+        -22.23,
+        -22.89
+      ],
+      "integratedLufs": -22.63,
+      "truePeakDbtp": -2.77,
+      "volume": 100
+    },
+    {
+      "voice": "jean",
+      "locale": "en",
+      "line": "Hi, I'm Voni! Let's try something cool: I'll show you what I can do while we talk. Ready?",
+      "takes": [
+        -21.89,
+        -22.09,
+        -21.88
+      ],
+      "integratedLufs": -21.89,
+      "truePeakDbtp": -5.2,
+      "volume": 100
+    },
+    {
+      "voice": "anna",
+      "locale": "en",
+      "line": "Hi, I'm Voni! Let's try something cool: I'll show you what I can do while we talk. Ready?",
+      "takes": [
+        -19.99,
+        -20.11,
+        -20.81
+      ],
+      "integratedLufs": -20.11,
+      "truePeakDbtp": -4.05,
+      "volume": 100
+    },
+    {
+      "voice": "vera",
+      "locale": "en",
+      "line": "Hi, I'm Voni! Let's try something cool: I'll show you what I can do while we talk. Ready?",
+      "takes": [
+        -21.21,
+        -21.75,
+        -20.17
+      ],
+      "integratedLufs": -21.21,
+      "truePeakDbtp": -3.85,
+      "volume": 100
+    },
+    {
+      "voice": "charles",
+      "locale": "en",
+      "line": "Hi, I'm Voni! Let's try something cool: I'll show you what I can do while we talk. Ready?",
+      "takes": [
+        -21.01,
+        -20.06,
+        -20.64
+      ],
+      "integratedLufs": -20.64,
+      "truePeakDbtp": -1.88,
+      "volume": 100
+    },
+    {
+      "voice": "paul",
+      "locale": "en",
+      "line": "Hi, I'm Voni! Let's try something cool: I'll show you what I can do while we talk. Ready?",
+      "takes": [
+        -22.82,
+        -22.04,
+        -20.81
+      ],
+      "integratedLufs": -22.04,
+      "truePeakDbtp": -1.48,
+      "volume": 100
+    },
+    {
+      "voice": "giovanni",
+      "locale": "it",
+      "line": "Ciao, sono Voni! Proviamo una cosa forte: ti mostro cosa so fare mentre parliamo. Pronti?",
+      "takes": [
+        -25.29,
+        -25.56,
+        -25.81
+      ],
+      "integratedLufs": -25.56,
+      "truePeakDbtp": -2.24,
+      "volume": 100
+    },
+    {
+      "voice": "lola",
+      "locale": "es",
+      "line": "\u00a1Hola, soy Voni! Probemos algo genial: te muestro lo que puedo hacer mientras hablamos. \u00bfListo?",
+      "takes": [
+        -23.75,
+        -23.46,
+        -23.89
+      ],
+      "integratedLufs": -23.75,
+      "truePeakDbtp": -6.58,
+      "volume": 100
+    },
+    {
+      "voice": "rafael",
+      "locale": "pt",
+      "line": "Ol\u00e1, aqui \u00e9 Voni! Vamos testar algo legal: mostro o que sei fazer enquanto conversamos. Pronto?",
+      "takes": [
+        -26.41,
+        -27.29,
+        -25.79
+      ],
+      "integratedLufs": -26.41,
+      "truePeakDbtp": -6.58,
+      "volume": 100
+    },
+    {
+      "voice": "estelle",
+      "locale": "fr",
+      "line": "Bonjour, ici Voni ! On essaie un truc sympa : je vous montre ce que je sais faire pendant qu'on parle. On y va ?",
+      "takes": [
+        -25.34,
+        -24.91,
+        -26.43
+      ],
+      "integratedLufs": -25.34,
+      "truePeakDbtp": -9.62,
+      "volume": 100
+    }
+  ],
+  "unmeasured": [
+    {
+      "voice": "juergen",
+      "locale": "de",
+      "volume": 100,
+      "reason": "vendor /v1/speech did not serve a measurable reference: 422 voice_not_found"
+    }
+  ]
+}

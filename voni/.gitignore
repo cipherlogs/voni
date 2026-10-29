@@ -46,6 +46,12 @@ yarn-error.log*
 next-env.d.ts
 .neon
 
+# audition-clip working files: native renders; the committed previews are in public/voices
+.voice-clips/
+
+# re-audition evidence packs: call audio, transcripts and verdicts are working files
+reaudition-runs/
+
 # local design artifacts (prototype screenshots and similar)
 /artifacts/
 

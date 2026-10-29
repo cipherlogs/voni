@@ -1,19 +1,31 @@
 import test, { mock } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { AudioGraph } from "./mic-capture";
 import {
   buildInlineSessionUpdate,
   buildResumeMessage,
   decideReconnectOnClose,
+  effectiveInlineLanguages,
   SessionGeneration,
-  softLimit,
   stripSpokenToolCall,
   VOICE_MIC_CONSTRAINTS,
   VoiceSession,
   CAPTION_MS_PER_CHAR,
   heardWords,
+  type SessionConfig,
   type TranscriptPartial,
 } from "./session";
+import { DEFAULT_OUTPUT_SAMPLE_RATE } from "./output-format";
+import {
+  buildAgentKeyterms,
+  buildAgentTranscriptionPrompt,
+  DEMO_TRANSCRIPTION_MODE,
+  NEUTRAL_KEYTERMS,
+} from "./transcription";
+import { REAL_ESTATE_TEMPLATE, type AgentConfig } from "@/lib/agents/config";
 import {
   buildConversationMessage,
   HOLD_OFF_CONTEXT,
@@ -23,7 +35,8 @@ import {
 } from "./context";
 import { DEMO_VOICE_IDS, SILENCE_CHECK_IN_INSTRUCTIONS } from "@/lib/demo/voni-agent";
 import { evalToolExecutor } from "@/lib/demo/eval-transport";
-import { VOICE_OUTPUT_VOLUME, voicePlaybackGain } from "@/lib/agents/voices";
+import { voiceOutputVolume } from "@/lib/agents/voice-levels";
+import { decodeWav } from "@/lib/audio/format-facts";
 
 // Minimal WebSocket shape: updateConfig only touches readyState + send.
 (globalThis as unknown as { WebSocket: unknown }).WebSocket = { OPEN: 1 };
@@ -1153,16 +1166,204 @@ test("interrupted reply probes the cut before flushing", () => {
   assert.deepEqual(kinds, ["reply-cut", "flush"]);
 });
 
-test("reply audio goes to the playout at 24 kHz", () => {
-  const { handle, internals } = makeSession();
+/** A session whose playout records the rate every chunk is played at. */
+function recordPlayedRates(
+  handlers: ConstructorParameters<typeof VoiceSession>[0] = {},
+) {
+  const made = makeSession(handlers);
   const played: [number, number][] = [];
-  internals["playout"] = {
+  made.internals["playout"] = {
     ...fakePlayout().playout,
     play: (pcm: Uint8Array, rate: number) => played.push([pcm.length, rate]),
   };
-  handle({ type: "reply.audio", data: Buffer.from(new Uint8Array(480)).toString("base64") });
-  assert.deepEqual(played, [[480, 24000]]);
+  const audio = (samples = 480) =>
+    made.handle({ type: "reply.audio", data: Buffer.from(new Uint8Array(samples)).toString("base64") });
+  return { ...made, played, audio };
+}
+
+test("reply audio plays at the resolved rate from the session confirmation", () => {
+  const { handle, played, audio } = recordPlayedRates();
+  handle({
+    type: "session.ready",
+    session_id: "s16",
+    config: { output: { format: { encoding: "audio/pcm", sample_rate: 16000 } } },
+  });
+  audio(480);
+  // The handle is told 16 kHz, not a module constant: 480 source samples are
+  // 30 ms here, not the 20 ms 24 kHz would imply.
+  assert.deepEqual(played, [[480, 16000]]);
 });
+
+test("a resolved rate other than the default is never replaced by 24 kHz", () => {
+  const { handle, played, audio } = recordPlayedRates();
+  handle({
+    type: "session.ready",
+    session_id: "s48",
+    config: { output: { format: { encoding: "audio/pcm", sample_rate: 48000 } } },
+  });
+  audio(960);
+  assert.deepEqual(played, [[960, 48000]]);
+});
+
+test("a confirmation with no rate plays at the named default", () => {
+  const { handle, played, audio } = recordPlayedRates();
+  handle({
+    type: "session.ready",
+    session_id: "s_default",
+    config: { output: { format: { encoding: "audio/pcm" } } },
+  });
+  audio(480);
+  assert.deepEqual(played, [[480, DEFAULT_OUTPUT_SAMPLE_RATE]]);
+});
+
+test("an unplayable resolved rate is a visible failure, never a guessed speed", () => {
+  const errors: { message: string; code?: string }[] = [];
+  const { handle, played, audio } = recordPlayedRates({
+    onError: (error) => errors.push(error),
+  });
+  handle({
+    type: "session.ready",
+    session_id: "s_bad",
+    config: { output: { format: { encoding: "audio/pcm", sample_rate: 0 } } },
+  });
+  audio(480);
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0]?.code, "config");
+  assert.match(errors[0]?.message ?? "", /sample rate \(0\)/);
+  assert.deepEqual(played, []);
+});
+
+test("a resume's confirmation never downgrades the resolved rate", () => {
+  const { handle, played, audio } = recordPlayedRates();
+  handle({
+    type: "session.ready",
+    session_id: "s16",
+    config: { output: { format: { encoding: "audio/pcm", sample_rate: 16000 } } },
+  });
+  // A resume re-emits session.ready on the same conversation; if that echo
+  // carries no config, the rate already resolved still governs playback.
+  handle({ type: "session.ready", session_id: "s16" });
+  audio(320);
+  assert.deepEqual(played, [[320, 16000]]);
+});
+
+test("audio is never played before the confirmation resolves a rate", () => {
+  const { played, audio } = recordPlayedRates();
+  audio(480);
+  assert.deepEqual(played, []);
+});
+
+test("reply audio before the confirmation probes the drop instead of vanishing silently", () => {
+  mock.timers.enable({ apis: ["Date"] });
+  try {
+    mock.timers.setTime(1_700_000_000_000);
+    const probes: { kind: string; dropped?: number }[] = [];
+    const { played, audio } = recordPlayedRates({
+      onAudioProbe: (event) => probes.push(event),
+    });
+    audio(480);
+    audio(480);
+    // Never a guessed rate — and never silent either: one throttled probe,
+    // so a missing first word can be told apart from a lost socket (the
+    // mirror of the mic's input-drop probe).
+    assert.deepEqual(played, []);
+    const drops = () => probes.filter((probe) => probe.kind === "pre-ready-drop");
+    assert.equal(drops().length, 1, "one event per throttle window, not per chunk");
+    assert.equal(drops()[0]?.dropped, 1);
+    // The chunk swallowed by the window is reported with the next event's count.
+    mock.timers.tick(2_001);
+    audio(480);
+    assert.equal(drops().length, 2);
+    assert.equal(drops()[1]?.dropped, 2);
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+// ── Guard: the managed playback rate has one source ───────────────────────
+// A rate literal is exactly the defect the format contract exists to prevent,
+// and a behavioural test cannot tell a resolved 24 kHz from a hardcoded one —
+// both play at 24 kHz until a format change makes one of them a speed change.
+// So the guard reads the managed path's source: a literal or module constant
+// that reaches `play` fails, and the only value it may pass is the resolved
+// format's own `sampleRate`.
+
+const SESSION_SOURCE = readFileSync(
+  join(dirname(fileURLToPath(import.meta.url)), "session.ts"),
+  "utf8",
+);
+
+/** The rate argument of every `play(...)` call in a source file. */
+function playbackRateArguments(source: string): string[] {
+  return [...source.matchAll(/\.play\(([^)]*)\)/g)].map((match) => {
+    const args = match[1] ?? "";
+    return args.slice(args.lastIndexOf(",") + 1).trim();
+  });
+}
+
+test("no managed playback call passes a literal or a constant rate", () => {
+  const rates = playbackRateArguments(SESSION_SOURCE);
+  assert.ok(rates.length > 0, "the guard found no managed playback call");
+  for (const rate of rates) {
+    assert.doesNotMatch(rate, /\d/, `a literal rate reached the playout: ${rate}`);
+    // TARGET_SAMPLE_RATE is the mic's input rate; using it here would play the
+    // agent's stream at the caller's capture rate.
+    assert.doesNotMatch(
+      rate,
+      /\b[A-Z][A-Z0-9_]{2,}\b/,
+      `a module constant supplied the playout rate: ${rate}`,
+    );
+  }
+  // The concrete default belongs to output-format.ts, behind the resolver.
+  assert.doesNotMatch(SESSION_SOURCE, /24_000|24000/);
+});
+
+test("the resolved session format is the only source of the managed playback rate", () => {
+  const rates = playbackRateArguments(SESSION_SOURCE);
+  assert.ok(rates.length > 0, "the guard found no managed playback call");
+  for (const rate of rates) {
+    const field = playbackRateField(rate);
+    const assigned = [
+      ...SESSION_SOURCE.matchAll(
+        // `=` or `??=`, never the `==`/`===` of a refusal check.
+        new RegExp(
+          `this\\.${field}\\s*(?:\\?\\?=|(?<![=!<>+\\-*/%&|^])=(?!=))\\s*([^;]+);`,
+          "g",
+        ),
+      ),
+    ].map((match) => (match[1] ?? "").trim());
+    assert.ok(assigned.length > 0, `${field} reaches play but is never assigned`);
+    for (const value of assigned) {
+      // `null` is the refusal state (no playback at all); anything else must be
+      // a rate the resolver read, never a number written in this file.
+      assert.match(
+        value,
+        /^(?:null|\w+(?:\.\w+)*\.sampleRate)$/,
+        `${field} was assigned ${value}, not a resolved sampleRate`,
+      );
+    }
+  }
+});
+
+/** The field behind a play call's rate argument, following a local read. */
+function playbackRateField(rate: string): string {
+  if (rate.startsWith("this.")) {
+    const field = rate.slice("this.".length);
+    assert.match(field, /^[A-Za-z_$][\w$]*$/, `the playout rate is not a field: ${rate}`);
+    return field;
+  }
+  const fields = [
+    ...SESSION_SOURCE.matchAll(
+      new RegExp(`(?:const|let)\\s+${rate}\\s*=\\s*this\\.([A-Za-z_$][\\w$]*)\\s*;`, "g"),
+    ),
+  ].map((match) => match[1] ?? "");
+  assert.equal(
+    fields.length,
+    1,
+    `the playout rate ${rate} is neither a field nor one read of a field`,
+  );
+  return fields[0]!;
+}
 
 test("first session.update ships recognition tuning, not defaults", () => {
   const update = buildInlineSessionUpdate({
@@ -1305,6 +1506,47 @@ test("sensitive capture widens from the adaptive default and restores null", asy
   });
   handle({ type: "session.updated" });
   assert.equal(internals["activeTurnDetection"] ?? null, null);
+});
+
+test("sensitive capture follows a body whose windows exceed the floor", async () => {
+  const { session, sent, handle, internals } = makeSession();
+  const body = {
+    min_silence: 1600,
+    max_silence: 5200,
+    interrupt_response: false,
+    interruption_delay: 250,
+  };
+  internals["activeTurnDetection"] = body;
+  const prepare = (
+    session as unknown as {
+      prepareSensitiveCapture: () => Promise<unknown>;
+    }
+  ).prepareSensitiveCapture.bind(session);
+
+  const prepared = prepare();
+  assert.deepEqual(JSON.parse(sent[0]), {
+    type: "session.update",
+    session: {
+      input: {
+        turn_detection: {
+          min_silence: 1600,
+          max_silence: 5200,
+          interrupt_response: true,
+          interruption_delay: 0,
+        },
+      },
+    },
+  });
+  handle({ type: "session.updated" });
+  await prepared;
+
+  handle({ type: "transcript.user", item_id: "u-wide", text: "value" });
+  assert.deepEqual(JSON.parse(sent[1]), {
+    type: "session.update",
+    session: { input: { turn_detection: body } },
+  });
+  handle({ type: "session.updated" });
+  assert.deepEqual(internals["activeTurnDetection"], body);
 });
 
 test("muted mic drops frames without tearing down the call", () => {
@@ -1698,6 +1940,103 @@ test("start connects as soon as the graph is ready (no setup awaits in between)"
   }
 });
 
+/**
+ * A started session over a fake graph whose playout records the delivered
+ * capture tap. The WAV sink is injected so the test never touches the network.
+ */
+async function captureSession(fields: { capture: boolean; taps: boolean[]; written: { name: string; bytes: Uint8Array }[] }) {
+  const g = globalThis as unknown as Record<string, unknown>;
+  const navigatorDescriptor = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+  const savedWebSocket = g.WebSocket;
+  Object.defineProperty(globalThis, "navigator", {
+    value: { mediaDevices: { getUserMedia: async () => ({ getTracks: () => [] }) } },
+    configurable: true,
+  });
+  g.WebSocket = class {
+    static OPEN = 1;
+    readyState = 1;
+    addEventListener() {}
+    send() {}
+    close() {
+      this.readyState = 3;
+    }
+  };
+  let onTap: ((samples: Float32Array) => void) | undefined;
+  const playout = {
+    play() {},
+    flush() {},
+    settled: () => true,
+    queuedMs: () => 0,
+    tap(on: boolean) {
+      fields.taps.push(on);
+      return Promise.resolve();
+    },
+    get onTap() {
+      return onTap;
+    },
+    set onTap(fn: ((samples: Float32Array) => void) | undefined) {
+      onTap = fn;
+    },
+  };
+  const session = new VoiceSession(
+    {},
+    {
+      micOwner: `delivered-capture-${Math.random()}`,
+      startGraph: async () =>
+        ({
+          audioCtx: { sampleRate: 48000, state: "running", resume: async () => undefined, close: async () => undefined },
+          worklet: { port: { close() {} }, disconnect() {} },
+          playout,
+          stop() {},
+        }) as unknown as AudioGraph,
+      writeCapture: (name, bytes) => {
+        fields.written.push({ name, bytes });
+      },
+    },
+  );
+  if (fields.capture) session.setDeliveredCapture(true);
+  await session.start({ mode: "agent", agentId: "" }, async () => ({ token: "tok", agentId: "a1" }));
+  const restore = async () => {
+    await session.stop().catch(() => undefined);
+    if (navigatorDescriptor) Object.defineProperty(globalThis, "navigator", navigatorDescriptor);
+    g.WebSocket = savedWebSocket;
+  };
+  return { session, pushTap: (samples: Float32Array) => onTap?.(samples), restore };
+}
+
+test("delivered capture: flag on taps the worklet and writes its output as a WAV on hang-up", async () => {
+  const fields = { capture: true, taps: [] as boolean[], written: [] as { name: string; bytes: Uint8Array }[] };
+  const { pushTap, restore } = await captureSession(fields);
+  try {
+    assert.deepEqual(fields.taps, [true], "the worklet tap starts with the call");
+    pushTap(new Float32Array([0.25, -0.25, 0.5]));
+    await restore();
+    assert.deepEqual(fields.taps, [true, false], "and flushes before teardown");
+    assert.equal(fields.written.length, 1);
+    assert.match(fields.written[0]!.name, /^delivered-.*\.wav$/);
+    const wav = decodeWav(fields.written[0]!.bytes);
+    assert.equal(wav.facts.sampleRate, 48000, "at the worklet's output rate");
+    assert.deepEqual(Array.from(wav.samples), [8192, -8192, 16384]);
+  } finally {
+    await restore();
+  }
+});
+
+test("delivered capture: flag off touches no tap and writes no file", async () => {
+  const fields = { capture: false, taps: [] as boolean[], written: [] as { name: string; bytes: Uint8Array }[] };
+  const { session, pushTap, restore } = await captureSession(fields);
+  try {
+    const playout = (session as unknown as { playout: { onTap?: unknown } }).playout;
+    assert.equal(playout.onTap, undefined);
+    pushTap(new Float32Array([0.25]));
+    await restore();
+    assert.deepEqual(fields.taps, []);
+    assert.deepEqual(fields.written, []);
+  } finally {
+    await restore();
+  }
+});
+
 test("pre-ready mic frames probe an input-drop instead of vanishing silently", () => {
   const probes: { kind: string; dropped?: number }[] = [];
   const { session } = makeSession({ onAudioProbe: (e) => probes.push(e) });
@@ -1708,7 +2047,7 @@ test("pre-ready mic frames probe an input-drop instead of vanishing silently", (
   assert.equal(probes[0]?.dropped, 1);
 });
 
-test("inline session update pins the registry output level for every demo voice", () => {
+test("inline session update carries the measured level for every demo voice", () => {
   for (const voiceId of DEMO_VOICE_IDS) {
     const update = buildInlineSessionUpdate({
       mode: "inline",
@@ -1717,7 +2056,7 @@ test("inline session update pins the registry output level for every demo voice"
       voiceId,
       tools: [],
     });
-    assert.deepEqual(update["output"], { voice: voiceId, volume: VOICE_OUTPUT_VOLUME });
+    assert.deepEqual(update["output"], { voice: voiceId, volume: voiceOutputVolume(voiceId) });
   }
   const update = buildInlineSessionUpdate({
     mode: "inline",
@@ -1729,84 +2068,96 @@ test("inline session update pins the registry output level for every demo voice"
   assert.deepEqual(update["output"], { voice: "lola", volume: 100 });
 });
 
-test("managed session loudness has one stage: registry gain applied once, never compounded", () => {
+test("agent samples reach the playout bit-identical: no gain, knee or limiter", () => {
   const { handle, internals } = makeSession();
-  const peaks: number[] = [];
+  const played: { bytes: Uint8Array; rate: number }[] = [];
   internals["playout"] = {
-    play: (pcm: Uint8Array) => {
-      const view = new DataView(pcm.buffer, pcm.byteOffset, pcm.length);
-      let peak = 0;
-      for (let i = 0; i + 1 < pcm.length; i += 2) {
-        peak = Math.max(peak, Math.abs(view.getInt16(i, true)));
-      }
-      peaks.push(peak);
+    play: (pcm: Uint8Array, rate: number) => {
+      played.push({ bytes: Uint8Array.from(pcm), rate });
     },
     flush: () => undefined,
     settled: () => true,
     queuedMs: () => 0,
   };
-  handle({ type: "session.ready", session_id: "s-one-gain" });
-  const session = internals as unknown as { setOutputGain: (gain: number) => void };
-  // 1000 PCM16 steps, far below the soft knee: gain stays exactly linear.
-  const pcm = new Uint8Array([0xe8, 0x03]);
-  const base64 = Buffer.from(pcm).toString("base64");
-  // No gain was set: the session must not apply a hidden loudness stage.
-  handle({ type: "reply.audio", reply_id: "r0", data: base64 });
-  assert.equal(peaks[0], 1000, "unset gain plays the server level untouched");
-  session.setOutputGain(voicePlaybackGain("juergen"));
-  handle({ type: "reply.audio", reply_id: "r1", data: base64 });
-  assert.equal(peaks[1], Math.round(1000 * voicePlaybackGain("juergen")));
-  // Setting the same registry gain again replaces it; it never stacks.
-  session.setOutputGain(voicePlaybackGain("juergen"));
-  handle({ type: "reply.audio", reply_id: "r2", data: base64 });
-  assert.equal(peaks[2], peaks[1], "gain is one stage, not a new stage per call");
+  handle({ type: "session.ready", session_id: "s-transparent" });
+  // A full-scale square would bend under any soft knee applied at any gain;
+  // a quiet clip would be scaled up by a per-voice gain. Both must arrive
+  // sample-for-sample as the server sent them.
+  const clips = [
+    Int16Array.from([32767, -32768, 32767, -32768, 12345, -12345]),
+    Int16Array.from([100, -100, 0, 1, -1, 2]),
+    Int16Array.from([-32768, 32767, -1, 1]),
+  ];
+  clips.forEach((samples, index) => {
+    const bytes = new Uint8Array(samples.buffer, samples.byteOffset, samples.byteLength);
+    handle({
+      type: "reply.audio",
+      reply_id: `r${index}`,
+      data: Buffer.from(bytes).toString("base64"),
+    });
+    const sent = played[index];
+    assert.ok(sent, `chunk ${index} never reached the playout`);
+    assert.equal(sent.bytes.length, bytes.length, "the client resampled or repacked the chunk");
+    assert.ok(
+      Buffer.from(sent.bytes).equals(Buffer.from(bytes)),
+      `chunk ${index} was altered on the clean path (no client level stage is allowed)`,
+    );
+  });
+  assert.equal(played.length, clips.length, "no chunk was split, merged or dropped");
 });
 
-
-test("playback gain scales agent audio under a soft knee, never a hard clamp", () => {
+test("removing client gain changes no timing: one play per chunk at the resolved rate", () => {
   const { handle, internals } = makeSession();
-  const played: { len: number; peak: number }[] = [];
+  const played: { length: number; rate: number }[] = [];
   internals["playout"] = {
-    play: (pcm: Uint8Array) => {
-      const view = new DataView(pcm.buffer, pcm.byteOffset, pcm.length);
-      let peak = 0;
-      for (let i = 0; i + 1 < pcm.length; i += 2) {
-        peak = Math.max(peak, Math.abs(view.getInt16(i, true)));
-      }
-      played.push({ len: pcm.length, peak });
-    },
+    play: (pcm: Uint8Array, rate: number) =>
+      played.push({ length: pcm.length, rate }),
     flush: () => undefined,
     settled: () => true,
     queuedMs: () => 0,
   };
-  handle({ type: "session.ready", session_id: "s-gain" });
-  const session = internals as unknown as {
-    setOutputGain: (gain: number) => void;
-  };
-  session.setOutputGain(2.0);
-  // 1000 * 2 = 2000 stays linear; 20000 * 2 bends under full scale.
-  const pcm = new Uint8Array([0xe8, 0x03, 0x20, 0x4e]);
-  const base64 = Buffer.from(pcm).toString("base64");
-  handle({ type: "reply.audio", reply_id: "r1", data: base64 });
-  assert.equal(played.length, 1);
-  assert.ok((played[0]?.peak ?? 0) > 30000 && (played[0]?.peak ?? 0) <= 32767, `peak ${played[0]?.peak}`);
-});
-
-test("softLimit: linear below the knee, smooth and bounded above it", () => {
-  assert.equal(softLimit(2000), 2000);
-  assert.equal(softLimit(-2000), -2000);
-  assert.ok(softLimit(40000) < 32767 && softLimit(40000) > 30000);
-  assert.ok(softLimit(1e6) <= 32767);
-  assert.ok(softLimit(-1e6) >= -32767);
-  // Monotonic: louder in never comes out quieter (no fold-back distortion).
-  let last = -Infinity;
-  for (let x = 0; x <= 130000; x += 500) {
-    assert.ok(softLimit(x) >= last);
-    last = softLimit(x);
+  handle({ type: "session.ready", session_id: "s-timing" });
+  const chunk = new Uint8Array([0x01, 0x00, 0x02, 0x00, 0x03, 0x00]);
+  for (let index = 0; index < 3; index++) {
+    handle({
+      type: "reply.audio",
+      reply_id: `r${index}`,
+      data: Buffer.from(chunk).toString("base64"),
+    });
   }
-  // Continuous at the knee: no step where the curve changes.
-  const knee = 0.8 * 32767;
-  assert.ok(Math.abs(softLimit(knee + 1) - softLimit(knee)) < 2);
+  // Level processing used to rewrite every sample before the same `play`
+  // call; the schedule therefore cannot move with it. The worklet owns timing.
+  assert.equal(played.length, 3, "each server chunk is scheduled once");
+  for (const call of played) {
+    assert.equal(call.length, chunk.length, "duration unchanged by the level stage");
+    assert.equal(call.rate, DEFAULT_OUTPUT_SAMPLE_RATE);
+  }
+});
+
+test("the voice path carries no client gain, knee, limiter or gain table", () => {
+  // A deleted stage cannot be asserted through a public API: absence is the
+  // contract, so the guard reads the voice path's own source.
+  assert.doesNotMatch(
+    SESSION_SOURCE,
+    /setOutputGain|outputGain|softLimit|SOFT_KNEE|Math\.tanh/,
+    "session playback still alters the agent's samples",
+  );
+  const voicesDir = join(dirname(fileURLToPath(import.meta.url)), "..", "agents");
+  const voicesSource = readFileSync(join(voicesDir, "voices.ts"), "utf8");
+  assert.doesNotMatch(
+    voicesSource,
+    /VOICE_PLAYBACK_GAIN|voicePlaybackGain|playbackGain/,
+    "the per-voice client gain table still exists",
+  );
+  const callSource = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), "..", "..", "components", "voice-call.tsx"),
+    "utf8",
+  );
+  assert.doesNotMatch(
+    callSource,
+    /setOutputGain|voicePlaybackGain|\bgain\b/i,
+    "the call still applies a client level stage",
+  );
 });
 
 // ── Hold: park, resume, reload resume, background wake ───────────────────
@@ -1819,6 +2170,7 @@ test("softLimit: linear below the knee, smooth and bounded above it", () => {
 async function startedSession(
   handlers: ConstructorParameters<typeof VoiceSession>[0] = {},
   startOpts: Parameters<VoiceSession["start"]>[2] = {},
+  config: Parameters<VoiceSession["start"]>[0] = { mode: "agent", agentId: "" },
 ) {
   const g = globalThis as unknown as Record<string, unknown>;
   const navigatorDescriptor = Object.getOwnPropertyDescriptor(globalThis, "navigator");
@@ -1875,7 +2227,7 @@ async function startedSession(
   });
   let tokens = 0;
   await session.start(
-    { mode: "agent", agentId: "" },
+    config,
     async () => ({ token: `tok${(tokens += 1)}`, agentId: "a1", callToken: "call" }),
     startOpts,
   );
@@ -2152,5 +2504,282 @@ test("a bound agent with an injected executor answers every stored tool, never t
   } finally {
     g.WebSocket = savedWebSocket;
     globalThis.fetch = savedFetch;
+  }
+});
+
+/** A session whose playout records the exact PCM16 bytes and rate it is fed. */
+function recordPlayedAudio(
+  handlers: ConstructorParameters<typeof VoiceSession>[0] = {},
+) {
+  const made = makeSession(handlers);
+  const played: { pcm: Uint8Array; rate: number }[] = [];
+  made.internals["playout"] = {
+    ...fakePlayout().playout,
+    play: (pcm: Uint8Array, rate: number) =>
+      played.push({ pcm: Uint8Array.from(pcm), rate }),
+  };
+  const audio = (bytes: Uint8Array) =>
+    made.handle({
+      type: "reply.audio",
+      data: Buffer.from(bytes).toString("base64"),
+    });
+  return { ...made, played, audio };
+}
+
+function int16Samples(pcm: Uint8Array): number[] {
+  const view = new DataView(pcm.buffer, pcm.byteOffset, pcm.length);
+  return Array.from({ length: pcm.length / 2 }, (_, i) =>
+    view.getInt16(i * 2, true),
+  );
+}
+
+test("mu-law reply audio is decoded before it reaches the playout", () => {
+  const { handle, played, audio } = recordPlayedAudio();
+  handle({
+    type: "session.ready",
+    session_id: "sess_mu",
+    config: { output: { format: { encoding: "audio/pcmu", sample_rate: 8000 } } },
+  });
+  audio(Uint8Array.from([0xff, 0x00, 0x7f]));
+  assert.equal(played.length, 1);
+  // 8 kHz, one G.711 byte per sample: silence, full-scale negative, silence.
+  assert.equal(played[0]?.rate, 8000);
+  assert.deepEqual(int16Samples(played[0]!.pcm), [0, -32124, 0]);
+});
+
+test("an encoding-only confirmation plays G.711 at its own 8 kHz rate", () => {
+  const { handle, played, audio } = recordPlayedAudio();
+  handle({
+    type: "session.ready",
+    session_id: "sess_mu_default",
+    config: { output: { format: { encoding: "audio/pcmu" } } },
+  });
+  audio(Uint8Array.from([0x00]));
+  assert.equal(played.length, 1);
+  // 8 kHz, not the 24 kHz PCM16 fallback: one source byte is 0.125 ms.
+  assert.equal(played[0]?.rate, 8000);
+  assert.deepEqual(int16Samples(played[0]!.pcm), [-32124]);
+});
+
+test("A-law reply audio is decoded before it reaches the playout", () => {
+  const { handle, played, audio } = recordPlayedAudio();
+  handle({
+    type: "session.ready",
+    session_id: "sess_a",
+    config: { output: { format: { encoding: "audio/pcma", sample_rate: 8000 } } },
+  });
+  audio(Uint8Array.from([0xd5, 0xaa]));
+  assert.equal(played[0]?.rate, 8000);
+  assert.deepEqual(int16Samples(played[0]!.pcm), [8, 32256]);
+});
+
+test("a silent G.711 chunk plays as silence, never as a format error", () => {
+  const errors: { message: string; code?: string }[] = [];
+  const { handle, played, audio } = recordPlayedAudio({
+    onError: (error) => errors.push(error),
+  });
+  handle({
+    type: "session.ready",
+    session_id: "sess_silent",
+    config: { output: { format: { encoding: "audio/pcmu", sample_rate: 8000 } } },
+  });
+  audio(new Uint8Array(160).fill(0xff));
+  assert.deepEqual(errors, []);
+  assert.equal(played.length, 1);
+  assert.ok(int16Samples(played[0]!.pcm).every((sample) => sample === 0));
+});
+
+test("an unsupported resolved encoding fails visibly and never plays", () => {
+  const errors: { message: string; code?: string }[] = [];
+  const { handle, played, audio } = recordPlayedAudio({
+    onError: (error) => errors.push(error),
+  });
+  handle({
+    type: "session.ready",
+    session_id: "sess_opus",
+    config: { output: { format: { encoding: "audio/opus", sample_rate: 8000 } } },
+  });
+  audio(Uint8Array.from([0xff, 0x00]));
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0]?.code, "config");
+  // The failure names both the encoding and the session a support engineer needs.
+  assert.match(errors[0]?.message ?? "", /audio\/opus/);
+  assert.match(errors[0]?.message ?? "", /sess_opus/);
+  assert.deepEqual(played, []);
+});
+
+test("a malformed PCM16 chunk fails visibly instead of playing as silence", () => {
+  const errors: { message: string; code?: string }[] = [];
+  const { handle, played, audio } = recordPlayedAudio({
+    onError: (error) => errors.push(error),
+  });
+  handle({
+    type: "session.ready",
+    session_id: "sess_corrupt",
+    config: { output: { format: { encoding: "audio/pcm", sample_rate: 24000 } } },
+  });
+  audio(Uint8Array.from([1, 2, 3]));
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0]?.code, "config");
+  assert.match(errors[0]?.message ?? "", /malformed/i);
+  assert.match(errors[0]?.message ?? "", /sess_corrupt/);
+  assert.deepEqual(played, []);
+});
+
+test("a resume's confirmation never downgrades the resolved encoding", () => {
+  const { handle, played, audio } = recordPlayedAudio();
+  handle({
+    type: "session.ready",
+    session_id: "sess_mu",
+    config: { output: { format: { encoding: "audio/pcmu", sample_rate: 8000 } } },
+  });
+  // A resume re-emits session.ready on the same conversation; an echo with no
+  // config must not fall back to PCM16 and play G.711 bytes as noise.
+  handle({ type: "session.ready", session_id: "sess_mu" });
+  audio(Uint8Array.from([0xff]));
+  assert.equal(played.length, 1);
+  assert.equal(played[0]?.rate, 8000);
+  assert.deepEqual(int16Samples(played[0]!.pcm), [0]);
+});
+
+// ── Test call: recognition follows the agent's Locale ────────────────────
+
+/**
+ * The recognition block a dashboard Test call puts on the wire, assembled the
+ * same way `voice-call.tsx` does: the agent's language picker, its Locale's
+ * scene and vocabulary.
+ */
+function testCallConfig(config: AgentConfig): Extract<SessionConfig, { mode: "inline" }> {
+  return {
+    mode: "inline" as const,
+    systemPrompt: "compiled prompt",
+    greeting: config.greeting,
+    voiceId: config.voiceId,
+    languageCodes: effectiveInlineLanguages(config.languageCodes, config.conversationLanguage),
+    transcriptionMode: DEMO_TRANSCRIPTION_MODE,
+    transcriptionPrompt: buildAgentTranscriptionPrompt(config),
+    keyterms: buildAgentKeyterms(config),
+    tools: [],
+  };
+}
+
+const SPANISH_AGENT: AgentConfig = {
+  ...REAL_ESTATE_TEMPLATE,
+  mission: "Agenda visitas y responde dudas de propiedades.",
+  identity: { name: "Lucía", role: "asesora inmobiliaria" },
+  voiceId: "lola",
+  languageCodes: [],
+  conversationLanguage: "es",
+  greeting: "Hola, soy Lucía. ¿Me escuchas bien?",
+};
+
+test("a Spanish agent's Test call sends Spanish recognition settings", async () => {
+  const config = testCallConfig(SPANISH_AGENT);
+  const t = await startedSession({}, {}, config);
+  try {
+    t.sockets[0]?.emit("open");
+    const update = t.sockets[0]?.sent.find((message) => message.type === "session.update");
+    const session = update?.["session"] as Record<string, unknown>;
+    const input = session["input"] as Record<string, unknown>;
+    assert.deepEqual(input["language_codes"], ["es"], "the call is recognised in its Locale");
+    const keyterms = input["keyterms"] as string[];
+    assert.ok(keyterms.includes("teléfono"), keyterms.join(", "));
+    assert.equal(keyterms.includes("phone"), false, "no English scaffold in a Spanish repertoire");
+    assert.match(String(input["transcription_prompt"]), /llamada telefónica/);
+    assert.doesNotMatch(String(input["transcription_prompt"]), /phone call|Callers mention/);
+  } finally {
+    await t.restore();
+  }
+});
+
+test("an explicitly configured language list is passed through untouched", async () => {
+  const pinned: AgentConfig = {
+    ...SPANISH_AGENT,
+    languageCodes: ["fr", "de"],
+  };
+  const resolved = effectiveInlineLanguages(pinned.languageCodes, pinned.conversationLanguage);
+  assert.deepEqual(resolved, ["fr", "de"], "the owner's list wins over the Locale");
+  assert.notEqual(resolved, pinned.languageCodes, "a copy, never the caller's array");
+
+  const t = await startedSession({}, {}, testCallConfig(pinned));
+  try {
+    t.sockets[0]?.emit("open");
+    const update = t.sockets[0]?.sent.find((message) => message.type === "session.update");
+    const session = update?.["session"] as Record<string, unknown>;
+    const input = session["input"] as Record<string, unknown>;
+    assert.deepEqual(input["language_codes"], ["fr", "de"]);
+  } finally {
+    await t.restore();
+  }
+});
+
+test("automatic detection keeps the English-scaffolding words, not an English pin", async () => {
+  const automatic: AgentConfig = {
+    ...SPANISH_AGENT,
+    conversationLanguage: undefined,
+    languageCodes: [],
+  };
+  const t = await startedSession({}, {}, testCallConfig(automatic));
+  try {
+    t.sockets[0]?.emit("open");
+    const update = t.sockets[0]?.sent.find((message) => message.type === "session.update");
+    const session = update?.["session"] as Record<string, unknown>;
+    const input = session["input"] as Record<string, unknown>;
+    assert.equal(
+      "language_codes" in input,
+      false,
+      "nothing pinned omits the key, so the recogniser keeps automatic detection",
+    );
+    const keyterms = input["keyterms"] as string[];
+    for (const term of NEUTRAL_KEYTERMS) assert.ok(keyterms.includes(term), term);
+    assert.equal(keyterms.includes("teléfono"), false);
+    assert.match(String(input["transcription_prompt"]), /phone call/);
+  } finally {
+    await t.restore();
+  }
+});
+
+test("a picker-set Spanish Locale gives the session Spanish filler, command and goodbye words", async () => {
+  // `languageCodes` may list several languages; the picker's Locale is the
+  // one the call is conducted in, so the session's own guardrails must read
+  // Spanish even though the code list starts with French.
+  const t = await startedSession(
+    {},
+    {},
+    { mode: "agent", agentId: "", languageCodes: ["fr"], conversationLanguage: "es" },
+  );
+  try {
+    const recognition = (t.session as unknown as {
+      recognition: {
+        locale: string;
+        filler: readonly string[];
+        commands: { stop: readonly string[] };
+        goodbye: readonly string[];
+        endCall: readonly string[];
+      };
+    }).recognition;
+    assert.equal(recognition.locale, "es");
+    assert.ok(recognition.filler.includes("vale"), recognition.filler.join(", "));
+    assert.equal(recognition.filler.includes("okay"), false, "no English filler on a Spanish call");
+    assert.ok(recognition.commands.stop.includes("para"));
+    assert.equal(recognition.commands.stop.includes("stop"), false);
+    assert.ok(recognition.goodbye.includes("adiós"));
+    assert.ok(recognition.endCall.includes("adiós"));
+  } finally {
+    await t.restore();
+  }
+});
+
+test("the Demo call's stored path carries no browser-supplied recognition", async () => {
+  // The demo binds a stored agent: the body (pinned to the voice's language)
+  // is the only recognition source. A Test-call language rule must never
+  // reach it, so the wire message is the binding and nothing else.
+  const t = await startedSession({}, {}, { mode: "agent", agentId: "" });
+  try {
+    t.sockets[0]?.emit("open");
+    const update = t.sockets[0]?.sent.find((message) => message.type === "session.update");
+    assert.deepEqual(update, { type: "session.update", session: { agent_id: "a1" } });
+  } finally {
+    await t.restore();
   }
 });

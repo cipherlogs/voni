@@ -36,17 +36,22 @@
  * a harness break (exit 1, plumbing FAIL, evalRunner status failed) — distinct
  * from a measured gate FAIL (exit 1). Live scenario playout is printed as
  * wall clock under `evalRunner.timings` and never folded into a gate.
- * Non-zero exit otherwise means the harness broke: unknown voice, bad
+ * Non-zero exit otherwise means the harness broke: unknown voice, an unknown
+ * --scenario name (listed with the valid ones, before any artifact), bad
  * --runs/--gap/--filler/--cut/--overheard-json/--email-json/--dead-air-gaps/--overlap-ms/--goodbye-coverage/--hang-up-delay-ms/--trace-beat flag, spawn failure,
  * or an unwritable artifact.
  *
  *   npm run scoreboard:demo -- [--gate-voice <demo-voice-id>] [--scenario all | <name>] [--runs 1]
+ *                           [--agent <tenant-agent-id> --voice <voice-id> --subject-locale <code>]
+ *                           [--subject-transport browser|phone]
  *                           [--transport stored|inline] [--variant turn-window]
  *                           [--turn-windows 400,640,0 | -,-,0]
  *                           [--out scoreboard-runs/score-<ts>-<voice>.json] [--dry-run]
  *                           [--prior <path>]
  *                           [--timing-lock /tmp/voni-demo-timing.lock]
- *                           [--trace-session sess_...] [--trace-beat greeting-cut] [--probe-json probes.json] [--recording <sha256> | --recording-file <path>] [--rate rater:timbre,accent ...]
+ *                           [--trace-session sess_...] [--trace-beat greeting-cut] [--probe-json probes.json]
+ *                           [--reference <reference.wav> --delivered <delivered.wav>]
+ *                           [--recording <sha256> | --recording-file <path>] [--rate rater:timbre,accent[,naturalness] ...] [--reviewer-pack evidence/reviewer-packs/<voice>.json]
  *                           [--gap beat=ms ...]
  *                           [--filler-text "Okaay so" --filler-cut-ms 320 ...]
  *                           [--cut-ms <n> | --cut-never] [--cut-verdict <v>] [--cut-answered]
@@ -64,6 +69,16 @@
  * (--voice stays an alias); omitting both gates on DEFAULT_GATE_VOICE, never
  * on a literal in this file. New voices deploy as a registry entry plus a
  * regression run: the dry run lists the gate plus the regression set.
+ *
+ * A **subject** is `{agent, Locale, transport}` (voice-parity ticket 72). By
+ * default the subject is the featured demo voice, its own Locale and the
+ * browser. `--gate-voice`/`--voice` name another demo subject; `--agent <id>`
+ * with `--voice`, `--subject-locale` and optional `--subject-transport phone`
+ * measure a tenant agent through the same runner (the agent is bound as served,
+ * never provisioned or refreshed here). The artifact records the subject and
+ * derives its gates from that run's own evidence; an unknown voice, agent or
+ * Locale fails by name before the timing lock. A tenant run is measured through
+ * the live client scenarios, not the raw-socket ones that rebuild a demo body.
  *
  * A live (non-dry) run takes an exclusive timing lock (default in the OS temp
  * dir, override with --timing-lock) so timing runs go one at a time; a second
@@ -177,10 +192,19 @@
  * --probe-json carries the session onAudioProbe counts plus the optional
  * qa-voice-session agent-channel PCM analysis; it drives the timbre-probes
  * gate (any clip, pop, jump, underrun, or input-drop FAILs the gate but the
- * artifact is still written). --rate files blind 1-5 human ballots, all
- * bound to one shared golden recording via --recording or --recording-file;
- * auto timbre checks must pass before ballots count, and a ballot without a
- * recording is rejected (see voni/docs/blind-human-ballots.md).
+ * artifact is still written). --reference <wav> and --delivered <wav> are the
+ * two measured captures the gate's six axes compare: the reference render of
+ * the line the agent speaks, and the audio the caller actually received
+ * (e.g. `npm run voice:reference -- --voice lola` plus the browser delivered
+ * capture). Both are decoded through `MeasuredLevelFile` before the runner
+ * starts; an unreadable file is a named error and no artifact is written, and
+ * a run without them keeps the measured leg INFO (never a machine-only PASS).
+ * --rate files blind 1-5 human ballots on three
+ * axes — `rater:timbre,accent[,naturalness]` — all bound to one shared golden
+ * recording via --recording or --recording-file; auto timbre checks must pass
+ * before ballots count, and a ballot without a recording is rejected. The
+ * third axis is required wherever the subject's Locale is not English; English
+ * is the one named N/A (see voni/docs/blind-human-ballots.md).
  *
  * Extensions kept beyond the ticket scope (documented, not silent):
  * agent-channel PCM evidence rides in --probe-json (offline
@@ -228,10 +252,10 @@ import {
   applyEmailInvite,
   applyGreetingCutGate,
   applyRealCutGate,
+  bindBallotsToSubject,
   buildSkeletonArtifact,
   callerClipChanges,
   callerClipsFromRunnerStdout,
-  DEFAULT_GATE_VOICE,
   deriveFreeFloorSilence,
   diffScoreboardArtifact,
   emptyHumanRatings,
@@ -249,7 +273,6 @@ import {
   formatReplyGapReport,
   formatSubScoreTable,
   formatTraceTurn,
-  formatVoiceGainTable,
   GOLDEN_BEATS,
   HANG_UP_AFTER_GOODBYE_MAX_MS,
   overheardFromRunEvidence,
@@ -267,8 +290,8 @@ import {
   parseTraceGaps,
   readCodeFingerprint,
   redactLines,
-  resolveGateVoice,
   sha256Hex,
+  subjectOfArtifact,
   traceSilenceRef,
   traceCheckInRef,
   traceTurnForVisitorSpeech,
@@ -293,7 +316,7 @@ import {
   type TimbreProbes,
   type TraceGap,
 } from "../src/lib/demo/scoreboard";
-import { buildDemoAgentBody, demoAgentVariantFromEnv, demoTurnWindowsFromEnv, type DemoAgentVariant, type DemoTurnWindows } from "../src/lib/demo/stored-agents";
+import { demoAgentVariantFromEnv, demoTurnWindowsFromEnv, findCachedDemoAgent, readServedAgentBodyForRun, type DemoAgentVariant, type DemoTurnWindows } from "../src/lib/demo/stored-agents";
 import {
   evalRunnerArgv,
   parseEvalTransport,
@@ -304,8 +327,31 @@ import {
 } from "../src/lib/demo/eval-transport";
 import { buildRunnerEvidence } from "../src/lib/demo/runner-evidence";
 import { readEvalEvents, type EvalEvent } from "../src/lib/demo/eval-events";
+import {
+  SUITE_SCENARIOS,
+  isAllScenarioSelector,
+  resolveScenarioName,
+} from "../src/lib/demo/scenario-names";
+import {
+  assertGateProducersInSuite,
+  gateProducerSummary,
+  producersFor,
+} from "../src/lib/demo/gate-producers";
+import { readMeasuredLevelInput } from "../src/lib/demo/measured-captures";
 import { judgeOverlap } from "../src/lib/voice/barge-in";
+import { EN_RECOGNITION } from "../src/lib/voice/recognition";
 import { acquireTimingLock, DEFAULT_TIMING_LOCK_PATH } from "../src/lib/demo/timing-lock";
+import {
+  humanRatingsFromPack,
+  type ReviewerPack,
+} from "../src/lib/demo/reviewer-pack";
+import {
+  formatSubject,
+  resolveSubject,
+  sameSubject,
+  type SubjectRecord,
+  type SubjectRequest,
+} from "../src/lib/demo/subject";
 
 function arg(name: string, fallback = ""): string {
   const i = process.argv.indexOf(name);
@@ -481,26 +527,88 @@ function readRecordingBinding(recording: string, recordingFile: string): string 
 }
 
 /**
- * File blind ballots from `--rate rater:timbre,accent` (repeatable) against
- * the shared golden recording (`--recording <sha256>` or
+ * Read a reviewer pack from disk. Only its shape is checked here: the pack's
+ * own validation (recording, Locale, a complete verdict) belongs to the
+ * adapter, which refuses a half-filled pack by name instead of loading it.
+ */
+function readReviewerPack(path: string): ReviewerPack {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(resolve(path), "utf8"));
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(`--reviewer-pack ${path}: cannot read the pack JSON (${reason})`);
+  }
+  if (typeof raw !== "object" || raw === null) {
+    throw new Error(`--reviewer-pack ${path}: not a reviewer pack object`);
+  }
+  const pack = raw as ReviewerPack;
+  if (typeof pack.voice !== "string" || typeof pack.locale !== "string") {
+    throw new Error(
+      `--reviewer-pack ${path}: a pack must name its voice and Locale (a ballot is per subject)`,
+    );
+  }
+  return pack;
+}
+
+/**
+ * File blind ballots from `--rate rater:timbre,accent[,naturalness]`
+ * (repeatable) against the shared golden recording (`--recording <sha256>` or
  * `--recording-file <path>`). Ballots without a recording are rejected:
  * unbound ears never count.
+ *
+ * Ticket 75: the ballot carries a third axis, language naturalness. The
+ * subject is bound before the first ballot is filed, so a non-English subject
+ * refuses a two-score ballot by name at the CLI — an incomplete ballot never
+ * reaches an artifact and is never renormalised into a pass. English is the one
+ * named N/A (see `naturalnessApplies`), where two scores remain valid.
+ *
+ * `--reviewer-pack <path>` loads a reviewer's filed verdict through the same
+ * adapter the pack tooling writes (`humanRatingsFromPack`), so the ballot the
+ * gate reads is the ballot the reviewer filled — naturalness included. A
+ * `--rate` ballot may then join it on the pack's one shared cut.
  */
-function readHumanRatings(rates: string[], recording: string): HumanRatings {
-  if (rates.length > 0 && !recording) {
+function readHumanRatings(
+  rates: string[],
+  recording: string,
+  subject: SubjectRecord,
+  packPath: string,
+): HumanRatings {
+  if (rates.length > 0 && !recording && !packPath) {
     throw new Error("--rate ballots need --recording <sha256 of the golden recording they judge>");
   }
   if (recording && !/^[0-9a-f]{64}$/i.test(recording)) {
     throw new Error(`--recording needs a sha256 hex digest, got "${recording}"`);
   }
-  let slots = emptyHumanRatings(recording || null);
+  let slots = bindBallotsToSubject(emptyHumanRatings(recording || null), subject);
+  if (packPath) {
+    const fromPack = humanRatingsFromPack(readReviewerPack(packPath), subject);
+    if (recording && fromPack.recordingSha256 !== recording) {
+      throw new Error(
+        `--recording ${recording} does not match --reviewer-pack's shared cut ` +
+          `${fromPack.recordingSha256} (ballots judge one shared recording)`,
+      );
+    }
+    slots = fromPack;
+  }
+  const cut = recording || slots.recordingSha256 || "";
   for (const rate of rates) {
-    const match = /^([^:]+):([^,]+),([^,]+)$/.exec(rate.trim());
-    if (!match) throw new Error(`--rate needs rater:timbre,accent (ints 1-5), got "${rate}"`);
+    const match = /^([^:]+):(\d+),(\d+)(?:,(\d+))?$/.exec(rate.trim());
+    if (!match) {
+      throw new Error(
+        `--rate needs rater:timbre,accent[,naturalness] (ints 1-5), got "${rate}"`,
+      );
+    }
+    const naturalness = match[4] === undefined ? undefined : Number(match[4]);
     slots = addHumanRating(
       slots,
-      { rater: match[1].trim(), timbre: Number(match[2]), accent: Number(match[3]) },
-      recording,
+      {
+        rater: match[1].trim(),
+        timbre: Number(match[2]),
+        accent: Number(match[3]),
+        ...(naturalness !== undefined ? { languageNaturalness: naturalness } : {}),
+      },
+      cut,
     );
   }
   return slots;
@@ -519,6 +627,8 @@ function runEvalRunner(
     transport?: EvalTransport | null;
     variant?: DemoAgentVariant | null;
     turnWindows?: DemoTurnWindows | null;
+    /** A tenant agent the run binds instead of a provisioned demo agent. */
+    agentId?: string | null;
     eventsPath?: string | null;
   } = {},
 ): { stdout: string; exitCode: number | null; durationMs: number; evalError: string | null } {
@@ -583,20 +693,16 @@ function runEventsPath(events: RunEvents, scenario: string, suite: boolean): str
  * The one-command suite (ticket 01): every gate voice scenario that carries
  * scoreboard evidence, run one at a time. Timing runs are never parallel:
  * the whole suite holds the machine-wide timing lock and each scenario gets
- * its own sequential invocation, so cut latencies stay comparable. The
- * free-gate goodbye path is covered by bye-audio; it is not repeated.
+ * its own sequential invocation, so cut latencies stay comparable. Both
+ * goodbye-drain paths run (bye-audio and free-gate), so the end-call-drain
+ * gate keeps a measured closing line if one invite flow changes.
+ *
+ * The list lives in `src/lib/demo/scenario-names.ts` beside the runner's own
+ * registry, so the suite and the runner can never mean different names. The
+ * gate-to-producer table lives in `src/lib/demo/gate-producers.ts`; startup
+ * asserts every gate's producer runs here, so a gate cannot silently lose its
+ * evidence and report INFO forever.
  */
-const SUITE_SCENARIOS = [
-  "greeting-cut",
-  "filler-over",
-  "stop-over",
-  "over-talk",
-  "silence-check-in",
-  "invite-tag",
-  "bye-audio",
-  "hang-up-fast",
-  "hang-up-over",
-] as const;
 
 /**
  * Read the run's opt-in client receipt marks for the latency split. The stream
@@ -808,14 +914,16 @@ function readScoreboardArtifact(path: string): ScoreboardArtifact | null {
 }
 
 /**
- * Latest artifact for the same voice in the artifact directory (the new run's
- * own output path is skipped so a rerun to the same file never diffs against
- * itself). Ties on recordedAt fall back to file mtime, so two runs inside one
- * second still order by when they landed.
+ * Latest artifact for the same subject in the artifact directory (the new
+ * run's own output path is skipped so a rerun to the same file never diffs
+ * against itself). A subject is `{agent, Locale, transport}` (ticket 72): a
+ * tenant agent's artifact never diffs against a demo voice's, even when they
+ * share a voice id. Ties on recordedAt fall back to file mtime, so two runs
+ * inside one second still order by when they landed.
  */
 function latestPriorArtifact(
   dir: string,
-  voice: string,
+  subject: SubjectRecord,
   skipPath: string,
 ): { path: string; artifact: ScoreboardArtifact } | null {
   let entries: string[];
@@ -830,7 +938,7 @@ function latestPriorArtifact(
     const path = resolve(dir, entry);
     if (path === skipPath) continue;
     const artifact = readScoreboardArtifact(path);
-    if (!artifact || artifact.voice !== voice) continue;
+    if (!artifact || !sameSubject(subjectOfArtifact(artifact), subject)) continue;
     const recorded = Date.parse(artifact.recordedAt);
     let mtime = 0;
     try {
@@ -902,7 +1010,8 @@ function readFillerEvidence(traceSession: string): FillerResumeEvidence | undefi
   const agentText = arg("--filler-agent-text", "");
   const verdictRaw = arg("--filler-verdict", "");
   const verdict: FillerVerdict = (
-    verdictRaw ? verdictRaw : judgeOverlap(visitorText, agentText)
+    // The filler-over evidence words are English scenario fixtures.
+    verdictRaw ? verdictRaw : judgeOverlap(visitorText, agentText, EN_RECOGNITION)
   ) as FillerVerdict;
   if (!["yield", "ignore", "judge", "keep"].includes(verdict)) {
     throw new Error(`--filler-verdict needs one of yield|ignore|judge|keep, got "${verdictRaw}"`);
@@ -1078,12 +1187,59 @@ function deadAirEvidenceFromTimeline(
 }
 
 async function main(): Promise<void> {
-  const voice = resolveGateVoice(arg("--gate-voice", "") || arg("--voice", DEFAULT_GATE_VOICE));
+  // A subject is `{agent, Locale, transport}` (voice-parity ticket 72). The
+  // featured voice is one subject, not the owner of the axis: a run can name
+  // another demo voice, a tenant agent (--agent) or the phone transport, and
+  // an unknown or missing field fails by name here — before the timing lock,
+  // before any runner spawn and before the artifact path is opened.
+  const voiceFlag = arg("--gate-voice", "") || arg("--voice", "");
+  const subjectRequest: SubjectRequest = {
+    ...(voiceFlag ? { voice: voiceFlag } : {}),
+    ...(process.argv.includes("--agent") ? { agent: arg("--agent", "") } : {}),
+    ...(process.argv.includes("--subject-locale")
+      ? { locale: arg("--subject-locale", "") }
+      : {}),
+    ...(process.argv.includes("--subject-transport")
+      ? { transport: arg("--subject-transport", "") }
+      : {}),
+    explicit:
+      process.argv.includes("--gate-voice") ||
+      process.argv.includes("--voice") ||
+      process.argv.includes("--agent") ||
+      process.argv.includes("--subject-locale") ||
+      process.argv.includes("--subject-transport"),
+  };
+  const subject = resolveSubject(subjectRequest);
+  // A tenant agent has no demo voice to derive its Locale from, so the
+  // resolver requires `--voice` beside `--agent`; that voice is the artifact's
+  // voice-keyed row and the caller's recognition locale.
+  const voice =
+    subject.agent.kind === "demo"
+      ? subject.agent.voice
+      : (subjectRequest.voice ?? "").trim();
+  const tenantAgent = subject.agent.kind === "tenant" ? subject.agent.agentId : null;
+  console.log(`subject: ${formatSubject(subject)}${subject.source === "default" ? " (default)" : ""}`);
   // Default is the full gate suite: a plain `npm run scoreboard:demo` must
   // exercise every gate, not leave most of them INFO on one focused scenario.
+  // A misspelt focused name is a named failure here — before the timing lock,
+  // before any runner spawn and before the artifact path is opened — so a typo
+  // can never write a passing artifact that measured nothing.
   const requestedScenario = arg("--scenario", "all");
-  const suite = requestedScenario === "all" || requestedScenario === "suite";
-  const scenario = suite ? "suite" : requestedScenario;
+  const suite = isAllScenarioSelector(requestedScenario);
+  const scenario = suite ? "suite" : resolveScenarioName(requestedScenario);
+  // Harness integrity (ticket 23): every gate must keep the scenario that
+  // produces its evidence. Pure table check — before the timing lock, the
+  // runner and the artifact — so a gate that silently lost its producer fails
+  // the command instead of reporting INFO forever.
+  assertGateProducersInSuite();
+  {
+    const producers = gateProducerSummary();
+    console.log(
+      `gate producers: ${producers.gates} gates, ${producers.scenarioProducers} scenario producers across ` +
+        `${producers.suiteScenarios} default-suite scenarios, ${producers.nonScenarioGates} declared without a ` +
+        `scenario — every gate has its producer in the default suite`,
+    );
+  }
   const runs = arg("--runs", "1");
   if (!/^[1-9]\d*$/.test(runs)) {
     throw new Error(`--runs needs a positive int, got "${runs}"`);
@@ -1113,6 +1269,7 @@ async function main(): Promise<void> {
     ...(transportExplicit ? { transport } : {}),
     ...(variantFlag ? { variant: variantFlag } : {}),
     ...(turnWindowsFlag ? { turnWindows: turnWindowsFlag } : {}),
+    ...(tenantAgent ? { agentId: tenantAgent } : {}),
   };
   if (selection.variant !== "production") {
     console.log(
@@ -1161,7 +1318,19 @@ async function main(): Promise<void> {
   const humanRatings: HumanRatings = readHumanRatings(
     argAll("--rate"),
     readRecordingBinding(arg("--recording", ""), arg("--recording-file", "")),
+    subject,
+    arg("--reviewer-pack", ""),
   );
+  // A real run earns the timbre gate by measuring the two captures the caller
+  // received: the reference render of the line and the Delivered WAV. Both
+  // files are decoded before any runner spawn or artifact path is opened; an
+  // unreadable file is a named error, never a half-measured score. Without
+  // them the measured leg stays INFO (a human/ballot gate does not fail-close
+  // the whole run for a missing capture).
+  const measuredLevel = readMeasuredLevelInput({
+    ...(arg("--reference", "") ? { reference: resolve(arg("--reference", "")) } : {}),
+    ...(arg("--delivered", "") ? { delivered: resolve(arg("--delivered", "")) } : {}),
+  });
 
   /** Per-scenario stdout: every evidence parser reads only its own producer. */
   const stdoutByScenario = new Map<string, string>();
@@ -1360,7 +1529,6 @@ async function main(): Promise<void> {
       ? `${session} (no turn merged: trace session ${traceSession} is a different call)`
       : undefined;
   })();
-  const agentInput = buildDemoAgentBody(voice).input;
   // Explicit --filler-* flags are the operator override. Without them, the
   // live runner's own `filler …` line is the observed behavior and scores the
   // gate, so a filler-over run no longer stays INFO until a human retypes it.
@@ -1400,7 +1568,15 @@ async function main(): Promise<void> {
   // The prior run is a working artifact, never committed: load it before the
   // cut gate so a changed caller clip fails comparability instead of greening.
   const priorPath = arg("--prior", "");
-  const prior = priorPath ? loadPriorArtifact(priorPath) : latestPriorArtifact(dirname(out), voice, out);
+  const prior = priorPath ? loadPriorArtifact(priorPath) : latestPriorArtifact(dirname(out), subject, out);
+  // A diff compares two runs of one subject. An explicit --prior from another
+  // subject would turn the featured voice's transition into this subject's.
+  if (prior && !sameSubject(subjectOfArtifact(prior.artifact), subject)) {
+    throw new Error(
+      `--prior artifact ${prior.path} measured ${formatSubject(subjectOfArtifact(prior.artifact))}; ` +
+        `this run measures ${formatSubject(subject)} (a diff only compares the same subject)`,
+    );
+  }
   // Real-cut evidence counts as measured even though it lands post-skeleton.
   // The stop-over call's own trace names the answer (or resume) turn.
   const stopTrace = traceForScenario("stop-over");
@@ -1416,8 +1592,13 @@ async function main(): Promise<void> {
   );
   // Goodbye drain producer: the live runner's GOODBYE DRAIN line (coverage
   // plus whether the closing line named the team inbox) and its own measured
-  // hang-up line. Explicit --goodbye-* flags stay the operator override.
-  const runnerGoodbye = dryRun ? null : parseGoodbyeDrainOutput(scenarioStdout("bye-audio"));
+  // hang-up line. The producers come from `gate-producers.ts` — the same list
+  // the coverage assertion checks — so the gate and the suite cannot disagree
+  // about which goodbye-drain scenario supplies the evidence. Explicit
+  // --goodbye-* flags stay the operator override.
+  const runnerGoodbye = dryRun
+    ? null
+    : parseGoodbyeDrainOutput(scenarioStdout(...producersFor("end-call-drain", "goodbye-drain")));
   const inboxNamedFlagged = process.argv.includes("--goodbye-inbox-named");
   const inboxMissingFlagged = process.argv.includes("--goodbye-inbox-missing");
   if (inboxNamedFlagged && inboxMissingFlagged) {
@@ -1436,9 +1617,10 @@ async function main(): Promise<void> {
   let missingGoodbye: { sessionId: string | null } | null = null;
   let missingScenarioName: string | null = null;
   if (flaggedHangUpMs === null && !dryRun) {
-    const hangUpNames = suite
-      ? (["hang-up-fast", "hang-up-over"] as const)
-      : [scenario];
+    // Both hang-up paths come from the same producer map as the coverage
+    // check, so a dropped hang-up scenario fails at startup instead of
+    // leaving the drain gate with half its evidence.
+    const hangUpNames = suite ? producersFor("end-call-drain", "hang-up-delay") : [scenario];
     for (const name of hangUpNames) {
       const sectionStdout = scenarioStdout(name);
       const missing = parseRunnerMissingGoodbye(sectionStdout);
@@ -1537,10 +1719,39 @@ async function main(): Promise<void> {
     // gate reads exactly what it read before.
     marks: readRunMarks(events, scenario, suite, dryRun),
   });
-  // Ticket 10: the gate keeps checking the production body (explicitly null),
-  // so a variant run cannot loosen the ADR-0003 contract. The experiment's
-  // windows are labelled alongside it instead of replacing it; the bound
-  // agent id lets the gate tell the variant's own CONFIG rows from production.
+  // Voice-parity tickets 20/24: every gate and the artifact's single identity
+  // record read the stored body a visitor's session actually binds, read back
+  // from the platform — never `buildDemoAgentBody`, which describes the body
+  // the harness intended to store rather than the copy the platform serves (a
+  // failed refresh or stray override differs). A variant run still verdicts
+  // the production body (ticket 10), so it reads the cached production row. A
+  // dry run or an unreadable body stays explicitly unmeasured (INFO), never a
+  // reconstruction.
+  const cachedProduction =
+    selection.variant === "production" ? null : await findCachedDemoAgent(voice);
+  const servedAgentId =
+    selection.variant === "production"
+      ? (runnerEvidence?.agentId ?? null)
+      : (cachedProduction?.agentId ?? null);
+  const servedAgentFingerprint =
+    selection.variant === "production"
+      ? (runnerEvidence?.agentFingerprint ?? null)
+      : (cachedProduction?.fingerprint ?? null);
+  const runBody = await readServedAgentBodyForRun({
+    agentId: servedAgentId,
+    fingerprint: servedAgentFingerprint,
+    dryRun,
+  });
+  if (!runBody.measured) {
+    console.warn(
+      `[scoreboard] stored body unmeasured: ${runBody.reason} (body gates stay unmeasured, never a reconstruction)`,
+    );
+  }
+  // Ticket 10: the gate keeps checking the production body (read above from
+  // the platform, never rebuilt), so a variant run cannot loosen the ADR-0003
+  // contract. The experiment's windows are labelled alongside it instead of
+  // replacing it; the bound agent id lets the gate tell the variant's own
+  // CONFIG rows from production.
   const endOfTurnExperiment =
     selection.variant === "turn-window"
       ? {
@@ -1561,7 +1772,8 @@ async function main(): Promise<void> {
     traceGaps,
     ...(traceBeatRaw ? { traceBeat: traceBeatRaw as GoldenBeat } : {}),
     traceSessionId: traceSession || null,
-    agentInput,
+    runBody,
+    subject,
     ...(endOfTurnExperiment ? { endOfTurnExperiment } : {}),
     traceExcerpt: excerpt ?? [],
     fillerResume,
@@ -1581,6 +1793,7 @@ async function main(): Promise<void> {
     probes: timbreProbes,
     agentChannel,
     humanRatings,
+    ...(measuredLevel ? { measuredLevel } : {}),
     dryRun,
     evalError: evalSection.evalError,
     ...(greetingCut ? { greetingCutEvidencePresent: true } : {}),
@@ -1659,7 +1872,11 @@ async function main(): Promise<void> {
   mkdirSync(dirname(out), { recursive: true });
   writeFileSync(out, `${JSON.stringify(artifact, null, 2)}\n`, { mode: 0o600 });
 
-  console.log(formatGoldenScript(voice));
+  console.log(
+    subject.agent.kind === "demo"
+      ? formatGoldenScript(voice, runBody)
+      : `subject: ${formatSubject(subject)} (tenant agent; the demo golden voice rows do not apply)`,
+  );
   console.log(formatBudgetReport());
   console.log(formatGateTable(artifact));
   // Plumbing health first (ticket 06), then what moved since the prior run
@@ -1689,7 +1906,6 @@ async function main(): Promise<void> {
     console.log("trace session: none printed by the eval runner; pass --trace-session <sess_...> to merge per-turn gaps");
   }
   console.log(formatSubScoreTable(artifact));
-  console.log(formatVoiceGainTable(artifact.loudness.voices));
   console.log(formatHumanReview(artifact.humanReview));
   console.log(formatOverheardReport(artifact));
   console.log(`artifact: ${out}`);

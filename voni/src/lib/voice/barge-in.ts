@@ -1,4 +1,5 @@
-import { cleanTokens, FILLER_TOKENS, isCommandBargeIn, isEndCallRequest } from "./jev-judges";
+import { cleanTokens, isCommandBargeIn, isEndCallRequest } from "./jev-judges";
+import type { CompleteRecognition } from "./recognition";
 
 /**
  * Barge-in: the server stops the agent, the session recovers
@@ -21,18 +22,30 @@ export type OverlapVerdict = "yield" | "ignore" | "judge";
 /** "okaay" → "okay", "sooo" → "so", "mmhmm" → "mhm": elongation is still filler. */
 const squeezeRepeats = (token: string) => token.replace(/(.)\1+/g, "$1");
 
-const OVERLAP_FILLER = new Set(
-  [...FILLER_TOKENS, "so", "well", "like", "yeah", "yes", "yep", "cool", "nice", "wow", "ok"].map(squeezeRepeats),
-);
+/**
+ * The words that never take the floor, owned by the recognition bundle and
+ * read here in the call's own rendering (the caller passes `callRecognition`):
+ * a Spanish "vale" is a back-channel in Spanish, and an English "okay" is not
+ * one in Spanish. Squeezed, because elongation is the caller's habit, not
+ * another word.
+ */
+function overlapFiller(recognition: CompleteRecognition): Set<string> {
+  return new Set([...recognition.filler, ...recognition.bargeIn].map(squeezeRepeats));
+}
 
 /** Share of the caller's words found in the agent's current sentence that marks echo. */
 const ECHO_SHARE = 0.6;
 
-export function judgeOverlap(text: string, agentText: string): OverlapVerdict {
+export function judgeOverlap(
+  text: string,
+  agentText: string,
+  recognition: CompleteRecognition,
+): OverlapVerdict {
   const tokens = cleanTokens(text);
   if (tokens.length === 0) return "ignore";
-  if (isCommandBargeIn(text) || isEndCallRequest(text)) return "yield";
-  if (tokens.every((token) => OVERLAP_FILLER.has(squeezeRepeats(token)))) return "ignore";
+  if (isCommandBargeIn(text, recognition) || isEndCallRequest(text, recognition)) return "yield";
+  const filler = overlapFiller(recognition);
+  if (tokens.every((token) => filler.has(squeezeRepeats(token)))) return "ignore";
   const agentWords = new Set(cleanTokens(agentText));
   const echoed = tokens.filter((token) => agentWords.has(token)).length;
   if (tokens.length >= 2 && echoed / tokens.length >= ECHO_SHARE) return "ignore";

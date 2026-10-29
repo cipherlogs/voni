@@ -21,9 +21,12 @@
 import {
   EMAIL_INVITE_TAG,
   percentile,
+  subjectOfArtifact,
   type RunnerPlayout,
   type ScoreboardArtifact,
 } from "./scoreboard";
+import type { SubjectRecord } from "./subject";
+import { formatSubject } from "./subject";
 import type { EvalEventSummary } from "./eval-events";
 import type { LatencyBand } from "./latency-split";
 import {
@@ -36,9 +39,18 @@ import {
 } from "./runner-evidence";
 import type { DemoAgentVariant, DemoTurnWindows } from "./stored-agents";
 import { formatTurnWindows } from "./turn-windows";
+import { englishLeakForArtifact, type EnglishLeakCount } from "./english-leak";
+import {
+  ANSWERED_QUESTION_ENGLISH_FP,
+  answeredQuestionForArtifact,
+  formatAnswerCategory,
+  type AnsweredQuestionCount,
+} from "./answered-question";
 
 export type InspectRunIdentity = {
   voice: string;
+  /** What this run measured: agent, Locale and transport (voice-parity 72). */
+  subject: SubjectRecord;
   runId: string;
   recordedAt: string;
   schemaVersion: number;
@@ -108,8 +120,11 @@ export type InspectEndOfTurn = {
   variant: string | null;
   variantKey: string | null;
   turnWindows: DemoTurnWindows | null;
-  /** The production body the gate checked stays adaptive (`turn_detection: null`). */
-  productionTurnDetection: null;
+  /**
+   * The production body's served turn setting (null = the Turn preset).
+   * Undefined when no served body was read: the report never invents one.
+   */
+  productionTurnDetection: unknown;
 };
 
 /** Compact gate tally; the full rows stay in `gates`, so nothing is hidden. */
@@ -170,6 +185,19 @@ export type InspectReport = {
   sessions: InspectSession[];
   latency: InspectLatency;
   adoption: InspectAdoption;
+  /**
+   * The report-only English-leak counter (voice-parity 76): agent turns that
+   * leaked English words in a non-English call, their rate, and — on English —
+   * the measured false-positive baseline. Evidence only: no gate reads it.
+   */
+  englishLeak: EnglishLeakCount;
+  /**
+   * The report-only already-answered counter (voice-parity 77): agent turns
+   * that asked for a value the caller had already supplied, their rate, and —
+   * on English — the run's own flagged-request baseline beside the measured
+   * English false-positive rate. Evidence only: no gate reads it.
+   */
+  answeredQuestion: AnsweredQuestionCount;
   drain: InspectDrain;
   overTalkAside: RunnerEvidenceAside | null;
   hangUps: RunnerEvidenceHangUp[];
@@ -540,7 +568,10 @@ function endOfTurnInput(artifact: ScoreboardArtifact): InspectEndOfTurn {
       variant: null,
       variantKey: null,
       turnWindows: null,
-      productionTurnDetection: null,
+      productionTurnDetection:
+        artifact.agentBody?.measured === true
+          ? (artifact.agentBody.turnDetection ?? null)
+          : undefined,
     };
   }
   return {
@@ -548,7 +579,7 @@ function endOfTurnInput(artifact: ScoreboardArtifact): InspectEndOfTurn {
     variant: experiment.variant,
     variantKey: experiment.variantKey,
     turnWindows: experiment.turnWindows,
-    productionTurnDetection: null,
+    productionTurnDetection: experiment.productionTurnDetection,
   };
 }
 
@@ -595,9 +626,11 @@ export function buildInspectReport(
   const gates = artifact.gates.map((gate) => ({ name: gate.name, status: gate.status }));
   const transcripts = callerTranscripts(artifact, opts.sessionId);
   const fragmentTag = artifact.emailInvite?.tag ?? EMAIL_INVITE_TAG;
+  const subject = subjectOfArtifact(artifact);
   return {
     run: {
       voice: artifact.voice,
+      subject,
       runId: artifact.runId,
       recordedAt: artifact.recordedAt,
       schemaVersion: artifact.schemaVersion,
@@ -624,6 +657,24 @@ export function buildInspectReport(
       interruptedTurns: interruptedTurnCount(filtered, artifact, opts.sessionId),
       endOfTurn: endOfTurnInput(artifact),
     },
+    // The artifact's own count is canonical (it is what the run recorded);
+    // `--session` narrows the transcript, so that scope re-reads it.
+    englishLeak:
+      artifact.englishLeak && !opts.sessionId
+        ? artifact.englishLeak
+        : englishLeakForArtifact(artifact, {
+            locale: subject.locale,
+            sessionId: opts.sessionId ?? null,
+          }),
+    // Same rule as the English-leak counter: the artifact's own count is
+    // canonical, and `--session` narrows the transcript so that scope re-reads.
+    answeredQuestion:
+      artifact.answeredQuestion && !opts.sessionId
+        ? artifact.answeredQuestion
+        : answeredQuestionForArtifact(artifact, {
+            locale: subject.locale,
+            sessionId: opts.sessionId ?? null,
+          }),
     drain: {
       goodbyeCoverage: artifact.endCallDrain.goodbyeCoverage,
       hangUpDelayMs: artifact.endCallDrain.hangUpDelayMs,
@@ -750,6 +801,103 @@ function formatAdoption(adoption: InspectAdoption): string[] {
   return lines;
 }
 
+/**
+ * The report-only English-leak counter, compact and clearly not a verdict.
+ * A non-English call shows the leaking turns and their rate; English shows the
+ * measured false-positive baseline instead, because the counter never applies
+ * to the language it detects. The promotion line always says report-only until
+ * a new record lands.
+ */
+function formatEnglishLeak(leak: EnglishLeakCount): string[] {
+  const rate = (value: number) => value.toFixed(2);
+  const lines = ["english-leak (report-only, never gated)", `  locale       ${leak.locale}`];
+  if (leak.status === "not-applicable") {
+    const why =
+      leak.locale === "en"
+        ? "a Locale-scoped counter is not applied to English"
+        : "the Locale is undetermined, and English is not assumed";
+    lines.push(`  applicable   no: ${why}`);
+  } else if (leak.status === "unmeasured") {
+    lines.push("  turns        unmeasured: no agent turn in the transcript");
+  } else {
+    lines.push(
+      `  turns        ${leak.count} of ${leak.turns} agent turns leak (${rate(leak.rate ?? 0)})`,
+    );
+    for (const finding of leak.findings) {
+      const where =
+        finding.turn !== null
+          ? `${finding.sessionId ?? "unknown session"} turn ${finding.turn}`
+          : "an unnamed agent turn";
+      lines.push(`  leak         ${where}: ${finding.words.join(", ")}`);
+    }
+  }
+  if (leak.englishBaseline) {
+    const baseline = leak.englishBaseline;
+    const scoped = `${rate(baseline.scopedRate ?? 0)} (${baseline.scopedFlagged}/${baseline.turns})`;
+    const unscoped = `${rate(baseline.unscopedRate ?? 0)} (${baseline.unscopedFlagged}/${baseline.turns})`;
+    lines.push(`  baseline     FP ${scoped} locale-scoped; unscoped scan ${unscoped}`);
+  }
+  lines.push(
+    `  promotion    ${leak.promotion.gating ? "GATING" : "report-only (never gated)"}` +
+      `${leak.promotion.decidedAt ? ` since ${leak.promotion.decidedAt}` : ""}` +
+      " — the record is appended, never edited",
+  );
+  return lines;
+}
+
+/**
+ * The report-only already-answered counter, compact and clearly not a verdict.
+ * A subject shows the repeated requests and their rate against the requests it
+ * made; English shows the run's own flagged-request baseline beside the
+ * measured English false-positive rate the promotion decision cites. The
+ * promotion line always says report-only until a new record lands.
+ */
+function formatAnsweredQuestion(count: AnsweredQuestionCount): string[] {
+  const rate = (value: number | null) => (value === null ? "—" : value.toFixed(2));
+  const lines = [
+    "answered-question (report-only, never gated)",
+    `  locale       ${count.locale}`,
+  ];
+  if (count.status === "not-applicable") {
+    lines.push(
+      "  applicable   no: the Locale is undetermined, and no cue lexicon is assumed",
+    );
+  } else if (count.status === "unmeasured") {
+    lines.push("  turns        unmeasured: no agent turn in the transcript");
+  } else {
+    lines.push(
+      `  requests     ${count.count} of ${count.requests} requests repeat an answer (${rate(count.rate)})`,
+    );
+    for (const finding of count.findings) {
+      const where =
+        finding.turn !== null
+          ? `${finding.sessionId ?? "unknown session"} turn ${finding.turn}`
+          : "an unnamed agent turn";
+      const categories = finding.categories.map(formatAnswerCategory).join(", ");
+      lines.push(
+        `  repeated     ${where}: ${categories} already answered at turn ${finding.answeredAt.turn} (${finding.answeredAt.value})`,
+      );
+    }
+  }
+  const fp = ANSWERED_QUESTION_ENGLISH_FP;
+  lines.push(
+    `  english-fp   ${rate(fp.falsePositiveRate)} over ${fp.cases} labelled cases ` +
+      `(${fp.falsePositives} false positives of ${fp.flagged} flagged, ${fp.missed} missed)`,
+  );
+  if (count.englishBaseline) {
+    const baseline = count.englishBaseline;
+    lines.push(
+      `  baseline     this run ${baseline.flagged} of ${baseline.requests} requests flagged (${rate(baseline.rate)})`,
+    );
+  }
+  lines.push(
+    `  promotion    ${count.promotion.gating ? "GATING" : "report-only (never gated)"}` +
+      `${count.promotion.decidedAt ? ` since ${count.promotion.decidedAt}` : ""}` +
+      " — the record is appended, never edited",
+  );
+  return lines;
+}
+
 function formatDrain(drain: InspectDrain): string {
   const coverage =
     drain.goodbyeCoverage === null ? "unmeasured" : drain.goodbyeCoverage.toFixed(2);
@@ -783,6 +931,7 @@ export function formatInspectReport(report: InspectReport): string {
     `  schema       ${run.schemaVersion}`,
     `  code         ${code}`,
     `  transport    ${run.transport}`,
+    `  subject      ${formatSubject(run.subject)}`,
     `  agent        ${run.agentId ?? "unknown"}  (llm ${run.llmModel ?? "unknown"})`,
   ];
   if (run.agentFingerprint) lines.push(`  fingerprint  ${run.agentFingerprint.slice(0, 12)}`);
@@ -823,6 +972,8 @@ export function formatInspectReport(report: InspectReport): string {
 
   lines.push("", ...formatLatency(report.latency));
   lines.push("", ...formatAdoption(report.adoption));
+  lines.push("", ...formatEnglishLeak(report.englishLeak));
+  lines.push("", ...formatAnsweredQuestion(report.answeredQuestion));
   lines.push("", formatDrain(report.drain));
   const aside = formatAside(report.overTalkAside);
   if (aside) lines.push(aside);

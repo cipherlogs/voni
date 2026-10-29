@@ -19,6 +19,7 @@ import {
   MICROPHONE_MUTED_CONTEXT,
   MICROPHONE_UNMUTED_CONTEXT,
 } from "./context";
+import { DEFAULT_OUTPUT_SAMPLE_RATE } from "./output-format";
 
 export type CascadeCaption = {
   role: "user" | "agent";
@@ -50,6 +51,8 @@ export type CascadeHandlers = {
   onMetrics?: (metrics: unknown, turns: number) => void;
   onError?: (message: string) => void;
   onEnd?: (info: { turns: number }) => void;
+  /** The playout emitted its first audible sample for this connection (once). */
+  onFirstAudible?: () => void;
 };
 
 export type ServerEvent =
@@ -60,12 +63,11 @@ export type ServerEvent =
   | { kind: "error"; message: string };
 
 export function buildConfigMessage(config: CascadeCallConfig): string {
+  // No language_codes key when the caller pinned none: the pipeline detects
+  // automatically. A default ["en"] here would silently disable detection.
   return JSON.stringify({
     type: "config",
-    pipeline: {
-      ...config.pipeline,
-      language_codes: config.pipeline.language_codes ?? ["en"],
-    },
+    pipeline: { ...config.pipeline },
     system_prompt: config.systemPrompt,
     tools: config.tools ?? [],
     agent_name: config.agentName ?? "",
@@ -151,7 +153,15 @@ export function decodeAudioMessage(raw: string): {
   if (record.type !== "audio" || typeof record.data !== "string") return null;
   return {
     pcm: base64Decode(record.data),
-    sampleRate: typeof record.sample_rate === "number" ? record.sample_rate : 24000,
+    // The pipeline's own contract (voice-pipeline/transport.py): every frame
+    // stamps the rate the TTS produced, so a frame that omits it can only be
+    // our default PCM16 stream. The fallback is output-format's named default,
+    // the same rate the managed path resolves when its confirmation carries
+    // none — never a second, drifting copy of 24 kHz.
+    sampleRate:
+      typeof record.sample_rate === "number"
+        ? record.sample_rate
+        : DEFAULT_OUTPUT_SAMPLE_RATE,
   };
 }
 
@@ -240,6 +250,8 @@ export class CascadeSession {
     });
     this.micStop = handle.stop;
     this.playout = this.deps.createPlayout?.(handle.audioCtx) ?? handle.playout ?? null;
+    // Chime trigger: the worklet's first audible sample, not the queued frame.
+    if (this.playout) this.playout.onFirstAudible = () => this.handlers.onFirstAudible?.();
     this.started = true;
     // Socket may already be open (fake sockets, fast localhost): flush config now.
     if (ws.readyState === ws.OPEN) this.sendConfig(config);

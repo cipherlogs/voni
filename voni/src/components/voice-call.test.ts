@@ -45,20 +45,16 @@ test("the public demo transcript has no scripted tool rows or chip model", () =>
   );
 });
 
-test("the demo call has one loudness path: registry output level plus per-voice gain", () => {
+test("the demo call has no client level stage: level ships in the agent body", () => {
   const call = readRepo("components/voice-call.tsx");
-  const gainCalls = call.match(/setOutputGain\(/g) ?? [];
-  assert.equal(gainCalls.length, 1, "one client gain call, never a second gain stage");
-  assert.match(
-    call,
-    /setOutputGain\(debug\.gain \?\? voicePlaybackGain\(/,
-    "client gain comes from the shared voice registry",
-  );
+  assert.doesNotMatch(call, /setOutputGain\(/, "the browser never sets a playback level");
+  assert.doesNotMatch(call, /voicePlaybackGain|VOICE_PLAYBACK_GAIN/, "no per-voice gain table");
+  assert.doesNotMatch(call, /params\.get\("gain"\)/, "no dev gain dial");
   assert.doesNotMatch(call, /output\.volume\s*=/, "no per-call server volume retune");
   assert.match(
     readRepo("lib/voice/session.ts"),
-    /volume: VOICE_OUTPUT_VOLUME/,
-    "the server output level is the registry constant, not a literal",
+    /volume: voiceOutputVolume\(config\.voiceId\)/,
+    "the server output level is the measured registry value for the voice, not a literal",
   );
 });
 
@@ -120,6 +116,18 @@ test("a visitor aside while the agent speaks is marked Overheard and kept in the
 
   const agent = settleOverheardTurn({ role: "agent", text: "Noted." }, true);
   assert.equal(agent.overheard, undefined, "an agent final never inherits the visitor's mark");
+});
+
+test("the test call resolves recognition language from the agent's Locale", () => {
+  // Both Test-call paths (managed inline and cascade) hand the agent's
+  // conversation language to the one shared rule. A dropped argument would
+  // silently lock a Spanish agent's call to English again.
+  const call = readRepo("components/voice-call.tsx");
+  const sites = call.match(/effectiveInlineLanguages\([\s\S]{0,160}?\)/g) ?? [];
+  assert.equal(sites.length, 2, "managed inline and cascade both resolve it");
+  for (const site of sites) {
+    assert.match(site, /conversationLanguage/, "the agent's Locale reaches the rule");
+  }
 });
 
 test("the contact chip has one render site, gated on the invite, the inbox and the call tag", () => {

@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { decodePcm } from "../audio/format-facts";
+import { DEFAULT_DISTORTION_CREST_THRESHOLDS } from "../audio/distortion-crest";
+import { LEVEL_TOLERANCE_DB, TRUE_PEAK_TOLERANCE_DB } from "../audio/level-facts";
 import {
   END_CALL_AUDIO_GRACE_MS as SESSION_END_CALL_AUDIO_GRACE_MS,
   END_CALL_DRAIN_TIMEOUT_MS as SESSION_END_CALL_DRAIN_TIMEOUT_MS,
@@ -38,6 +41,7 @@ import {
   cutOverlapMs,
   parseGateRow,
   parseGateRows,
+  runBodyServedBody,
   playoutCutWindow,
   parseDoubleTalkOutput,
   parseGoodbyeDrainOutput,
@@ -63,11 +67,19 @@ import {
   TIMBRE_REFERENCE_LUFS,
   addHumanRating,
   analyzeTagMentions,
+  bindBallotsToSubject,
   buildRegressionMatrix,
   checkEvidenceTimbre,
-  checkLoudness,
-  checkLoudnessSanity,
+  checkMeasuredLevel,
   checkRegressionVoice,
+  type MeasuredLevelFile,
+  type MeasuredLevelInput,
+  ballotWeightedScore,
+  evaluateTimbreBallot,
+  TIMBRE_BALLOT_AXIS_WEIGHTS,
+  NATURALNESS_NA_REASON,
+  naturalnessApplies,
+  type HumanRatings,
   checkTimbreProbes,
   codeFingerprintFromGit,
   BEHAVIOR_RUN_EVIDENCE_KIND,
@@ -87,15 +99,15 @@ import {
   formatEvalRunnerReport,
   formatMatrixTable,
   formatTraceTurn,
-  matchedLoudnessLufs,
   resolveMatrixVoices,
+  subjectGateVerdict,
+  subjectRowKey,
   classifyOverheard,
   evaluateOverheardRecall,
   formatGateTable,
   formatGoldenScript,
   formatOverheardReport,
   formatReplyGapReport,
-  gateVerdictFromArtifact,
   gateVoicePlayback,
   isRealCutExpected,
   isResumeInstructions,
@@ -134,9 +146,6 @@ import {
   measuredEvidenceSources,
   persistsEmailAcrossMemory,
   validateProbeCounts,
-  formatVoiceGainTable,
-  voiceGainRow,
-  voiceGainTable,
   type OverheardAside,
   EMAIL_INVITE_TAG,
   applyEmailInvite,
@@ -148,6 +157,7 @@ import {
   hasDigitSplitTag,
   type BehaviorRunEvidence,
   type CodeFingerprint,
+  type RunBody,
   type ScoreboardArtifact,
   type ScoreboardGate,
   type StreakArtifact,
@@ -160,10 +170,59 @@ import {
   goldenWindowExpectations,
 } from "./scoreboard-budgets";
 import { judgeOverlap } from "../voice/barge-in";
+import { FLOOR_AXIS_THRESHOLDS } from "../audio/floor-mode";
+import { BREAKUP_MATCH_SECONDS } from "./timbre-measurement";
+import { formatSubject, resolveSubject, sameSubject, type SubjectRecord } from "./subject";
+import { EN_RECOGNITION } from "../voice/recognition";
 import { DEMO_VOICE_IDS, SILENCE_CHECK_IN_INSTRUCTIONS, SILENCE_CHECK_IN_MS } from "./voni-agent";
-import { buildDemoAgentBody } from "./stored-agents";
 import type { RunnerEvidence } from "./runner-evidence";
-import { VOICE_OUTPUT_VOLUME, voicePlaybackGain } from "../agents/voices";
+import { buildDemoAgentBody, parseServedDemoAgentBody } from "./stored-agents";
+import { voiceOutputVolume } from "../agents/voice-levels";
+
+/** The gate voice's measured output level on the stored body (voice-parity 37). */
+const SERVED_LEVEL = voiceOutputVolume(DEFAULT_GATE_VOICE);
+
+/**
+ * A platform-read run body for gate tests (voice-parity ticket 24): every test
+ * goes through the same read result the orchestrator passes, never a naked
+ * body object. `volume: undefined` = the platform served no level.
+ */
+function runBodyOf(
+  volume: number | undefined,
+  opts: {
+    agentId?: string;
+    fingerprint?: string | null;
+    turnDetection?: unknown;
+    hasTurnKey?: boolean;
+  } = {},
+) {
+  const agentId = opts.agentId ?? "agent_stored";
+  const fingerprint = opts.fingerprint === undefined ? "fp_stored" : opts.fingerprint;
+  const hasTurnKey = opts.hasTurnKey !== false;
+  const parsed = parseServedDemoAgentBody(
+    agentId,
+    {
+      input: hasTurnKey ? { turn_detection: opts.turnDetection ?? null } : {},
+      ...(volume === undefined ? {} : { output: { volume } }),
+    },
+    fingerprint,
+  );
+  if (!parsed.ok) throw new Error(parsed.error);
+  return { measured: true as const, body: parsed.body, agentId, fingerprint };
+}
+
+/**
+ * Two independent raters at five out of five on one shared recording
+ * (voice-parity ticket 74): the ballot half of the timbre gate.
+ */
+function passingBallots(recording: string = "c".repeat(64)): HumanRatings {
+  const one = addHumanRating(
+    emptyHumanRatings(recording),
+    { rater: "ana", timbre: 5, accent: 5 },
+    recording,
+  );
+  return addHumanRating(one, { rater: "bob", timbre: 5, accent: 5 }, recording);
+}
 
 test("golden script is locked to seven beats in fixed order", () => {
   assert.deepEqual([...GOLDEN_BEATS], [
@@ -341,12 +400,14 @@ test("default gate voice resolves through the registry, never as a literal", () 
   assert.equal(resolveGateVoice(DEFAULT_GATE_VOICE), DEFAULT_GATE_VOICE);
 });
 
-test("gate voice playback comes from the shared registry (volume plus per-voice gain)", () => {
+test("gate voice playback takes its level from the served body and has no playback gain", () => {
   for (const id of DEMO_VOICE_IDS) {
-    const playback = gateVoicePlayback(id);
-    assert.equal(playback.id, id);
-    assert.equal(playback.outputVolume, VOICE_OUTPUT_VOLUME);
-    assert.equal(playback.playbackGain, voicePlaybackGain(id));
+    const unread = gateVoicePlayback(id);
+    assert.equal(unread.id, id);
+    assert.equal(unread.outputVolume, null, "no body read means the level is unmeasured");
+    assert.equal("playbackGain" in unread, false, "there is no client playback gain");
+    const served = gateVoicePlayback(id, runBodyOf(62, { fingerprint: null }));
+    assert.equal(served.outputVolume, 62, "the served level reaches playback unchanged");
   }
   assert.throws(() => gateVoicePlayback("not-a-voice"), /unknown gate voice/);
 });
@@ -668,7 +729,7 @@ test("all-fast merged turn passes every per-turn budget and keeps meaning-based 
     '14.20s  VONI    "Two bedrooms"  (reply_create gap 1200ms)',
     '15.40s  VONI    "Here is the tag"  (reply_create gap 1300ms)',
   ];
-  const agentInput = buildDemoAgentBody(DEFAULT_GATE_VOICE).input;
+  const runBody = runBodyOf(100, { agentId: "agent_fast", fingerprint: null });
   const artifact = buildSkeletonArtifact({
     voice: DEFAULT_GATE_VOICE,
     scenario: "stop-over",
@@ -679,16 +740,17 @@ test("all-fast merged turn passes every per-turn budget and keeps meaning-based 
     traceGaps: parseTraceGaps(excerpt),
     traceExcerpt: excerpt,
     traceSessionId: "sess_fast",
-    agentInput,
+    runBody,
   });
   const gate = artifact.gates.find((g) => g.name === "reply-gap")!;
   assert.equal(gate.status, "PASS", gate.detail);
   assert.match(gate.detail, /p50 1100ms/, `every turn is inside budget: ${gate.detail}`);
   // Ticket 24 stays intact: per-turn judgment introduces no turn-detection
   // object on the managed path and the merged excerpt carries no CONFIG line.
-  assert.equal(agentInput.turn_detection, null);
+  assert.equal(runBodyServedBody(runBody)?.input.turn_detection, null);
   assert.ok(!excerpt.some((line) => line.includes("turn_detection")));
   assert.equal(artifact.gates.find((g) => g.name === "end-of-turn")?.status, "PASS");
+  assert.equal(artifact.agentBody?.agentId, "agent_fast");
 });
 
 test("the suite's per-scenario traces keep their own session and beat attribution", () => {
@@ -840,7 +902,7 @@ test("a variant artifact whose CONFIG line carries its own windows passes on the
     exitCode: 0,
     durationMs: 10,
     runs: 1,
-    agentInput: { turn_detection: null },
+    runBody: runBodyOf(SERVED_LEVEL, { fingerprint: null }),
     traceExcerpt: [LIVE_VARIANT_CONFIG_LINE],
     endOfTurnExperiment: { variant: "turn-window", variantKey: "anna:exp", turnWindows, agentId: "agent_exp" },
   });
@@ -916,7 +978,7 @@ test("a variant artifact whose CONFIG line reports different windows still fails
     exitCode: 0,
     durationMs: 10,
     runs: 1,
-    agentInput: { turn_detection: null },
+    runBody: runBodyOf(SERVED_LEVEL, { fingerprint: null }),
     traceExcerpt: [stray],
     endOfTurnExperiment: { variant: "turn-window", variantKey: "anna:exp", turnWindows, agentId: "agent_exp" },
   });
@@ -966,7 +1028,7 @@ test("a variant artifact records its windows in a dedicated experimental evidenc
     exitCode: 0,
     durationMs: 10,
     runs: 1,
-    agentInput: { turn_detection: null },
+    runBody: runBodyOf(SERVED_LEVEL, { fingerprint: null }),
     endOfTurnExperiment: { variant: "turn-window", variantKey: "anna:exp", turnWindows, agentId: "agent_exp" },
   });
   const gate = artifact.gates.find((row) => row.name === "end-of-turn");
@@ -989,7 +1051,7 @@ test("a production artifact with a turn-detection object still fails with the ex
     exitCode: 0,
     durationMs: 10,
     runs: 1,
-    agentInput: { turn_detection: { min_silence: 100 } },
+    runBody: runBodyOf(SERVED_LEVEL, { fingerprint: null, turnDetection: { min_silence: 100 } }),
   });
   const gate = artifact.gates.find((row) => row.name === "end-of-turn");
   assert.equal(gate?.status, "FAIL");
@@ -1008,12 +1070,205 @@ test("a production artifact carries no experimental end-of-turn evidence", () =>
     exitCode: 0,
     durationMs: 10,
     runs: 1,
-    agentInput: { turn_detection: null },
+    runBody: runBodyOf(SERVED_LEVEL, { fingerprint: null }),
   });
   const gate = artifact.gates.find((row) => row.name === "end-of-turn");
   assert.equal(gate?.status, "PASS");
   assert.match(gate?.detail ?? "", /^meaning-based end-of-turn preserved/);
   assert.equal(artifact.endOfTurn, undefined);
+});
+
+test("end-of-turn fails on an explicit object in the served stored body", () => {
+  const artifact = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "suite",
+    runnerStdout: "suite",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+    runBody: runBodyOf(SERVED_LEVEL, {
+      turnDetection: { min_silence: 100 },
+    }),
+  });
+  const gate = artifact.gates.find((row) => row.name === "end-of-turn");
+  assert.equal(gate?.status, "FAIL");
+  assert.match(gate?.detail ?? "", /turn_detection object sent/);
+});
+
+test("end-of-turn passes on the Turn preset served by the stored body", () => {
+  const artifact = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "suite",
+    runnerStdout: "suite",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+    runBody: runBodyOf(SERVED_LEVEL, { fingerprint: null }),
+  });
+  const gate = artifact.gates.find((row) => row.name === "end-of-turn");
+  assert.equal(gate?.status, "PASS", gate?.detail);
+});
+
+test("a served body with no turn_detection key is the Turn preset", () => {
+  const artifact = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "suite",
+    runnerStdout: "suite",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+    runBody: runBodyOf(SERVED_LEVEL, { fingerprint: null, hasTurnKey: false }),
+  });
+  const gate = artifact.gates.find((row) => row.name === "end-of-turn");
+  assert.equal(gate?.status, "PASS", gate?.detail);
+});
+
+test("the artifact records which stored body the end-of-turn gate measured", () => {
+  const artifact = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "suite",
+    runnerStdout: "suite",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+    runBody: runBodyOf(SERVED_LEVEL),
+  });
+  assert.deepEqual(artifact.agentBody, {
+    source: "stored-agent",
+    measured: true,
+    agentId: "agent_stored",
+    fingerprint: "fp_stored",
+    turnDetection: null,
+    reason: null,
+  });
+});
+
+test("an artifact with no served body records one unmeasured identity and stays INFO", () => {
+  const artifact = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "suite",
+    runnerStdout: "suite",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+  });
+  const gate = artifact.gates.find((row) => row.name === "end-of-turn");
+  assert.equal(gate?.status, "INFO");
+  assert.match(gate?.detail ?? "", /unmeasured/i);
+  assert.deepEqual(artifact.agentBody, {
+    source: "stored-agent",
+    measured: false,
+    agentId: null,
+    fingerprint: null,
+    reason: "no stored body read",
+  });
+});
+
+// ── Ticket 24: one stored-body seam for every gate ─────────────────────────
+
+test("every body gate follows the one served body when it is swapped", () => {
+  const artifactFor = (runBody: RunBody) =>
+    buildSkeletonArtifact({
+      voice: DEFAULT_GATE_VOICE,
+      scenario: "suite",
+      runnerStdout: "suite",
+      exitCode: 0,
+      durationMs: 10,
+      runs: 1,
+      runBody,
+      measuredLevel: measuredLevel(-23.1, -23.1),
+      humanRatings: passingBallots(),
+      agentChannel: CLEAN_CHANNEL,
+    });
+
+  const first = artifactFor(
+    runBodyOf(SERVED_LEVEL, { agentId: "agent_first", fingerprint: "fp_first" }),
+  );
+  assert.equal(first.gates.find((g) => g.name === "end-of-turn")?.status, "PASS");
+  assert.equal(first.gates.find((g) => g.name === "timbre-probes")?.status, "PASS");
+  assert.equal(first.loudness.outputVolume, SERVED_LEVEL);
+  assert.equal(first.agentBody?.agentId, "agent_first");
+  assert.equal(first.agentBody?.fingerprint, "fp_first");
+
+  const second = artifactFor(
+    runBodyOf(62, {
+      agentId: "agent_second",
+      fingerprint: "fp_second",
+      turnDetection: { min_silence: 100 },
+    }),
+  );
+  // End-of-turn, the level legs and the identity all moved with the body.
+  assert.equal(second.gates.find((g) => g.name === "end-of-turn")?.status, "FAIL");
+  assert.match(
+    second.gates.find((g) => g.name === "end-of-turn")?.detail ?? "",
+    /turn_detection object sent/,
+  );
+  assert.equal(second.loudness.outputVolume, 62);
+  assert.match(
+    second.gates.find((g) => g.name === "timbre-probes")?.detail ?? "",
+    /at volume 62/,
+  );
+  assert.equal(second.agentBody?.agentId, "agent_second");
+  assert.equal(second.agentBody?.fingerprint, "fp_second");
+  assert.deepEqual(second.agentBody?.turnDetection, { min_silence: 100 });
+});
+
+test("a demo-builder reconstruction cannot pass any body gate", () => {
+  const reconstruction = buildDemoAgentBody(DEFAULT_GATE_VOICE);
+  const smuggled: RunBody = {
+    measured: true,
+    agentId: "agent_reconstructed",
+    fingerprint: "fp_reconstructed",
+    // @ts-expect-error a builder body is not a platform-read body
+    body: reconstruction,
+  };
+  const artifact = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "suite",
+    runnerStdout: "suite",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+    runBody: smuggled,
+    measuredLevel: measuredLevel(-23.1, -23.1),
+  });
+  for (const name of ["end-of-turn", "timbre-probes"]) {
+    const gate = artifact.gates.find((row) => row.name === name);
+    assert.equal(gate?.status, "INFO", `${name} must not PASS on a reconstruction: ${gate?.detail}`);
+    assert.match(gate?.detail ?? "", /reconstruction/);
+  }
+  assert.equal(artifact.loudness.outputVolume, null, "no served level, no registry default");
+  assert.equal(artifact.agentBody?.measured, false);
+  assert.match(artifact.agentBody?.reason ?? "", /reconstruction/);
+});
+
+test("a body read failure is recorded once and every body gate is INFO", () => {
+  const failed: RunBody = {
+    measured: false,
+    agentId: "agent_missing",
+    fingerprint: "fp_missing",
+    reason: "stored agent agent_missing read failed 404: not found",
+  };
+  const artifact = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "suite",
+    runnerStdout: "suite",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+    runBody: failed,
+    measuredLevel: measuredLevel(-23.1, -23.1),
+  });
+  for (const name of ["end-of-turn", "timbre-probes"]) {
+    const gate = artifact.gates.find((row) => row.name === name);
+    assert.equal(gate?.status, "INFO", `${name} must be INFO after a read failure`);
+    assert.match(gate?.detail ?? "", /agent_missing read failed 404/);
+  }
+  assert.equal(artifact.agentBody?.measured, false);
+  assert.equal(artifact.agentBody?.agentId, "agent_missing");
+  assert.equal(artifact.agentBody?.reason, failed.reason);
+  assert.equal(artifact.loudness.ok, false);
+  assert.equal("body" in artifact.loudness, false, "one identity record per run");
 });
 
 test("artifact with measured gaps fills per-beat gaps and enforces the reply-gap gate", () => {
@@ -1055,15 +1310,15 @@ test("artifact with measured gaps fills per-beat gaps and enforces the reply-gap
 
 test("overlap judge ignores filler, back-channels and agent echo but yields commands", () => {
   for (const filler of ["mm-hmm", "yeah", "Okaay so"]) {
-    assert.equal(judgeOverlap(filler, "We help dental clinics answer every call"), "ignore", `${filler} must never steal the floor`);
+    assert.equal(judgeOverlap(filler, "We help dental clinics answer every call", EN_RECOGNITION), "ignore", `${filler} must never steal the floor`);
   }
   assert.equal(
-    judgeOverlap("help dental clinics", "We help dental clinics answer every call"),
+    judgeOverlap("help dental clinics", "We help dental clinics answer every call", EN_RECOGNITION),
     "ignore",
     "agent echo must never steal the floor",
   );
-  assert.equal(judgeOverlap("Wait, stop.", "We help dental clinics answer every call"), "yield", "steering always yields");
-  assert.equal(judgeOverlap("I want you to hang up.", "Thanks for calling"), "yield", "end-call always yields");
+  assert.equal(judgeOverlap("Wait, stop.", "We help dental clinics answer every call", EN_RECOGNITION), "yield", "steering always yields");
+  assert.equal(judgeOverlap("I want you to hang up.", "Thanks for calling", EN_RECOGNITION), "yield", "end-call always yields");
 });
 
 test("the runner's filler-over line is parsed into a passing never-cut gate", () => {
@@ -4149,6 +4404,13 @@ test("artifact carries double-talk overlaps and end-call drain evidence with bot
 
 const ZERO_PROBES = { jump: 0, overload: 0, clip: 0, underrun: 0, inputDrop: 0 };
 
+/** A measured agent channel with no clip and no pop-scale jump. */
+const CLEAN_CHANNEL = { peakDbfs: -7.2, clippedSampleRatio: 0, largestAdjacentStep: 120 };
+
+/** The run's platform-read body; `undefined` output = no level served. */
+const servedBody = (volume: number | undefined, agentId = "agent_stored", fingerprint: string | null = "fp_stored") =>
+  runBodyOf(volume, { agentId, fingerprint });
+
 test("timbre probes pass only when every count is zero", () => {
   const clean = checkTimbreProbes(ZERO_PROBES);
   assert.equal(clean.ok, true);
@@ -4159,97 +4421,113 @@ test("timbre probes pass only when every count is zero", () => {
   }
 });
 
-test("per-voice gain matches every voice back to the loudness reference", () => {
-  assert.equal(TIMBRE_REFERENCE_LUFS, -23.1);
-  assert.equal(TIMBRE_LUFS_TOLERANCE_DB, 1.5);
-  assert.equal(matchedLoudnessLufs("anna"), -23.1);
-  for (const voice of DEMO_VOICE_IDS) {
-    const matched = matchedLoudnessLufs(voice);
-    assert.ok(matched !== null, `${voice} has a native measurement plus a gain`);
-    assert.ok(
-      Math.abs(matched - TIMBRE_REFERENCE_LUFS) <= TIMBRE_LUFS_TOLERANCE_DB,
-      `${voice} lands at ${matched} LUFS, outside tolerance`,
-    );
-  }
-  assert.equal(matchedLoudnessLufs("not-a-voice"), null);
+test("the level leg's verdict moves with the measured files, not the loudness formula", () => {
+  // Same voice, same probes, same served body at the registry's unity volume —
+  // where the retired native + gain + volume formula lands exactly on the
+  // reference and would PASS by construction. Only the delivered capture
+  // changes, so a moved verdict can only be the measurement's (ticket 17).
+  const gateFor = (deliveredRms: number) =>
+    evaluateTimbreGate({
+      probes: ZERO_PROBES,
+      voiceId: "anna",
+      agentChannel: CLEAN_CHANNEL,
+      runBody: servedBody(SERVED_LEVEL),
+      measuredLevel: measuredLevel(-23.1, deliveredRms),
+      humanRatings: passingBallots(),
+    });
+
+  const measuredPass = gateFor(-23.2);
+  assert.equal(measuredPass.status, "PASS", measuredPass.detail);
+  assert.match(measuredPass.detail, /level agrees within 0\.20 LU/);
+  assert.match(measuredPass.detail, /captures\/delivered-anna-en\.wav/);
+
+  // 6.0 LU below the reference, thirty times the tolerance. The formula still
+  // lands on -23.1 at volume 100: if it were the input, this run would PASS.
+  const measuredFail = gateFor(-29.1);
+  assert.equal(measuredFail.status, "FAIL", measuredFail.detail);
+  assert.match(measuredFail.detail, /level differs by 6\.00 LU/);
+  assert.match(measuredFail.detail, /-23\.\d\d LUFS vs -29\.\d\d LUFS/);
+  assert.match(measuredFail.detail, /captures\/delivered-anna-en\.wav/);
+
+  // Both runs name the same stored body at the same served level, so the only
+  // thing that moved between PASS and FAIL is what the files measured.
+  const bodyRef = /served by stored agent agent_stored at volume 100/;
+  assert.match(measuredPass.detail, bodyRef);
+  assert.match(measuredFail.detail, bodyRef);
 });
 
-test("loudness sanity fails a misgained voice by the numbers", () => {
-  const good = checkLoudness({ nativeLufs: -23.1, gain: 1.0 });
-  assert.equal(good.ok, true);
-  assert.ok(good.detail.includes("-23.1"));
-  // 4x gain on a reference-level voice lands ~12 dB hot: must fail.
-  const hot = checkLoudness({ nativeLufs: -23.1, gain: 4.0 });
-  assert.equal(hot.ok, false);
-  assert.ok(hot.detail.includes("-11.06"), `detail shows the hot level: ${hot.detail}`);
-  const sanity = checkLoudnessSanity("giovanni");
-  assert.equal(sanity.ok, true);
-  assert.ok(sanity.detail.includes("3.89"), `detail cites the registry gain: ${sanity.detail}`);
-});
+test("the scoreboard reports no client gain: level is the served body and measured files", () => {
+  const withMeasured = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "greeting-cut",
+    runnerStdout: "",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+    runBody: servedBody(SERVED_LEVEL),
+    measuredLevel: {
+      reference: measuredTone("captures/reference-anna-en.wav", -23.1),
+      delivered: measuredTone("captures/delivered-anna-en.wav", -23.2),
+    },
+  });
+  // The gain row and its review number are deleted, not merely unused.
+  assert.equal("gain" in withMeasured.loudness, false, "no client gain on the artifact");
+  assert.equal("voices" in withMeasured.loudness, false, "no per-voice gain table on the artifact");
+  assert.equal("matchedLufs" in withMeasured.loudness, false, "no gain-derived level number");
+  assert.equal(withMeasured.loudness.outputVolume, SERVED_LEVEL, "the served level remains");
+  assert.equal(withMeasured.loudness.measured.status, "PASS", "the measured leg remains the level gate");
 
-test("per-voice gain table is complete: gate plus every regression voice from the registry", () => {
-  const table = voiceGainTable("anna");
-  assert.deepEqual(
-    table.map((row) => row.voice),
-    ["anna", ...regressionVoices("anna")],
-    "gate first, every regression voice included",
+  // A served body with no measured file cannot green the level by arithmetic:
+  // there is no formula left to PASS from.
+  const bodyOnly = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "greeting-cut",
+    runnerStdout: "",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+    runBody: servedBody(SERVED_LEVEL),
+  });
+  assert.equal(bodyOnly.loudness.measured.status, "INFO");
+  assert.equal(bodyOnly.loudness.ok, false);
+  assert.equal(
+    bodyOnly.gates.find((gate) => gate.name === "timbre-probes")?.status,
+    "INFO",
+    "a served level alone can never PASS the timbre gate",
   );
-  assert.deepEqual(
-    [...table.map((row) => row.voice)].sort(),
-    [...DEMO_VOICE_IDS].sort(),
-    "no demo voice is missing from the gain table",
+
+  const matrix = buildRegressionMatrix({ entries: [] });
+  assert.equal("gains" in matrix, false, "the matrix carries no gain rows");
+  assert.doesNotMatch(formatMatrixTable(matrix), /gain=/, "a gain table is never printed");
+
+  const source = readFileSync(new URL("./scoreboard.ts", import.meta.url), "utf8");
+  assert.doesNotMatch(
+    source,
+    /voicePlaybackGain|playbackGain|VoiceGainRow|voiceGainRow|voiceGainTable|formatVoiceGainTable|NATIVE_VOICE_LUFS|matchedLoudnessLufs|checkLoudness|checkServedLoudness/,
+    "scoreboard gain math or a gain table survived the deletion",
   );
-  for (const row of table) {
-    assert.equal(row.isGate, row.voice === "anna");
-    assert.equal(row.outputVolume, VOICE_OUTPUT_VOLUME, `${row.voice} server level is the registry constant`);
-    assert.equal(row.gain, voicePlaybackGain(row.voice), `${row.voice} client gain comes from the registry`);
-    assert.ok(Math.abs((row.matchedLufs ?? 0) - TIMBRE_REFERENCE_LUFS) <= TIMBRE_LUFS_TOLERANCE_DB);
-    assert.equal(row.status, "PASS");
-  }
-  // A different gate voice flips the gate row, never the registry values.
-  const lola = voiceGainTable("lola");
-  assert.equal(lola[0]?.voice, "lola");
-  assert.equal(lola[0]?.isGate, true);
-  assert.equal(lola.find((row) => row.voice === "anna")?.isGate, false);
 });
-
-test("an unmeasured voice is reported INFO, never failed", () => {
-  // alba is in the voice registry but has no native loudness measurement.
-  const row = voiceGainRow("alba", "anna");
-  assert.equal(row.gain, 1.0, "an unknown gain stays the registry default");
-  assert.equal(row.nativeLufs, null);
-  assert.equal(row.matchedLufs, null);
-  assert.equal(row.status, "INFO");
-  assert.ok(row.detail.includes("no native loudness measurement"), row.detail);
-  assert.ok(formatVoiceGainTable([row]).includes("INFO"), "printed as INFO, never FAIL");
-
-  const sanity = checkLoudnessSanity("alba");
-  assert.equal(sanity.unmeasured, true);
-  assert.equal(sanity.matchedLufs, null);
-  const gate = evaluateTimbreGate({ probes: ZERO_PROBES, voiceId: "alba", agentChannel: null });
-  assert.equal(gate.status, "PASS", "unmeasured loudness never fails the timbre gate");
-  assert.ok(gate.detail.includes("no native loudness measurement"));
-});
-
-test("gain table output names every voice with its server level and client gain", () => {
-  const table = voiceGainTable("anna");
-  const printed = formatVoiceGainTable(table);
-  for (const row of table) {
-    assert.ok(printed.includes(row.voice), `printed table missing ${row.voice}`);
-  }
-  assert.ok(printed.includes(`vol=${VOICE_OUTPUT_VOLUME}`));
-  assert.ok(printed.includes("gain=3.89"), "giovanni's registry gain is visible");
-});
-
 
 test("timbre gate passes clean and fails named defects", () => {
-  const clean = evaluateTimbreGate({ probes: ZERO_PROBES, voiceId: "anna", agentChannel: null });
+  // A clean gate needs the measured level leg: probes, evidence and a measured
+  // pass inside tolerance (ticket 16).
+  const clean = evaluateTimbreGate({
+    probes: ZERO_PROBES,
+    voiceId: "anna",
+    agentChannel: CLEAN_CHANNEL,
+    runBody: servedBody(SERVED_LEVEL),
+    measuredLevel: {
+      reference: measuredTone("captures/reference-anna-en.wav", -23.1),
+      delivered: measuredTone("captures/delivered-anna-en.wav", -23.2),
+    },
+    humanRatings: passingBallots(),
+  });
   assert.equal(clean.name, "timbre-probes");
-  assert.equal(clean.status, "PASS");
+  assert.equal(clean.status, "PASS", clean.detail);
   const clipped = evaluateTimbreGate({
     probes: { ...ZERO_PROBES, clip: 2 },
     voiceId: "anna",
-    agentChannel: null,
+    agentChannel: CLEAN_CHANNEL,
   });
   assert.equal(clipped.status, "FAIL");
   assert.ok(clipped.detail.includes("clip"));
@@ -4264,18 +4542,621 @@ test("timbre gate passes clean and fails named defects", () => {
 
 test("session evidence flags clipped samples and playout-scale jumps", () => {
   assert.equal(POP_JUMP_INT16, 9830);
-  const clean = checkEvidenceTimbre({ peakDbfs: -7.2, clippedSampleRatio: 0, largestAdjacentStep: 120 });
-  assert.equal(clean.ok, true);
+  const clean = checkEvidenceTimbre(CLEAN_CHANNEL);
+  assert.equal(clean.status, "PASS");
   assert.ok(clean.detail.includes("-7.2"), `peak stays reviewable: ${clean.detail}`);
   const clipped = checkEvidenceTimbre({ peakDbfs: -0.4, clippedSampleRatio: 0.0001, largestAdjacentStep: 120 });
-  assert.equal(clipped.ok, false);
+  assert.equal(clipped.status, "FAIL");
   assert.ok(clipped.detail.includes("clip"));
   const stepped = checkEvidenceTimbre({ peakDbfs: -6.0, clippedSampleRatio: 0, largestAdjacentStep: 20000 });
-  assert.equal(stepped.ok, false);
+  assert.equal(stepped.status, "FAIL");
   assert.ok(stepped.detail.includes("jump"));
   const missing = checkEvidenceTimbre(null);
-  assert.equal(missing.ok, true);
+  assert.equal(missing.status, "INFO", "unmeasured is INFO, never PASS");
   assert.ok(missing.detail.includes("no agent-channel evidence"));
+});
+
+test("a dry run's missing agent channel is INFO and cannot contribute a PASS", () => {
+  // Every other half passes; the only unmeasured input is the agent-channel
+  // PCM evidence a dry run never produces. It must keep the gate INFO, not
+  // let the measured files and ballot green it (CODING_STANDARDS.md §Gates).
+  const dry = evaluateTimbreGate({
+    probes: ZERO_PROBES,
+    voiceId: "anna",
+    agentChannel: null,
+    runBody: servedBody(SERVED_LEVEL),
+    measuredLevel: measuredLevel(-23.1, -23.2),
+    humanRatings: passingBallots(),
+  });
+  assert.equal(dry.status, "INFO", dry.detail);
+  assert.match(dry.detail, /no agent-channel evidence/);
+  assert.match(dry.detail, /unmeasured agent channel/);
+
+  const artifact = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "suite",
+    runnerStdout: "",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+    dryRun: true,
+    runBody: servedBody(SERVED_LEVEL),
+    measuredLevel: measuredLevel(-23.1, -23.2),
+    humanRatings: passingBallots(),
+    agentChannel: null,
+  });
+  const timbre = artifact.gates.find((gate) => gate.name === "timbre-probes");
+  assert.equal(timbre?.status, "INFO", timbre?.detail);
+  assert.match(timbre?.detail ?? "", /no agent-channel evidence/);
+});
+
+// ── Ticket 21: the level leg reads the stored body a visitor receives ─────
+
+test("the timbre gate reads the served body's level, never the registry constant", () => {
+  const measured = {
+    reference: measuredTone("captures/reference-anna-en.wav", -23.1),
+    delivered: measuredTone("captures/delivered-anna-en.wav", -23.2),
+  };
+  const atRegistryVolume = evaluateTimbreGate({
+    probes: ZERO_PROBES,
+    voiceId: "anna",
+    agentChannel: CLEAN_CHANNEL,
+    runBody: servedBody(SERVED_LEVEL),
+    measuredLevel: measured,
+    humanRatings: passingBallots(),
+  });
+  assert.equal(atRegistryVolume.status, "PASS", atRegistryVolume.detail);
+  assert.match(
+    atRegistryVolume.detail,
+    /served by stored agent agent_stored at volume 100/,
+    "the verdict names the body it was measured against",
+  );
+
+  // 62 is not the registry's 100. With no measured file the level is
+  // unmeasured, never greened by the registry constant.
+  const quieter = evaluateTimbreGate({
+    probes: ZERO_PROBES,
+    voiceId: "anna",
+    agentChannel: CLEAN_CHANNEL,
+    runBody: servedBody(62),
+  });
+  assert.equal(quieter.status, "INFO", quieter.detail);
+  assert.match(quieter.detail, /unmeasured level/);
+  assert.doesNotMatch(quieter.detail, /level agrees/);
+});
+
+test("a served level reaches the timbre gate unchanged", () => {
+  const measured = {
+    reference: measuredTone("captures/reference-anna-en.wav", -23.1),
+    delivered: measuredTone("captures/delivered-anna-en.wav", -23.2),
+  };
+  for (const volume of [100, 90, 62, 40]) {
+    const gate = evaluateTimbreGate({
+      probes: ZERO_PROBES,
+      voiceId: "anna",
+      agentChannel: CLEAN_CHANNEL,
+      runBody: servedBody(volume),
+      measuredLevel: measured,
+      humanRatings: passingBallots(),
+    });
+    assert.ok(
+      gate.detail.includes(`at volume ${volume}`),
+      `served volume ${volume} must be reported verbatim: ${gate.detail}`,
+    );
+  }
+});
+
+test("an unread served level is reported unmeasured, never passed by a registry default", () => {
+  const noLevel = evaluateTimbreGate({
+    probes: ZERO_PROBES,
+    voiceId: "anna",
+    agentChannel: CLEAN_CHANNEL,
+    runBody: servedBody(undefined),
+  });
+  assert.equal(noLevel.status, "INFO", "probes still gate; the level is unmeasured");
+  assert.match(noLevel.detail, /unmeasured level/);
+  assert.doesNotMatch(noLevel.detail, /level agrees/);
+
+  const noBody = evaluateTimbreGate({ probes: ZERO_PROBES, voiceId: "anna", agentChannel: CLEAN_CHANNEL });
+  assert.equal(noBody.status, "INFO");
+  assert.match(noBody.detail, /unmeasured level/);
+  assert.doesNotMatch(noBody.detail, /level agrees/);
+});
+
+test("the artifact records the body identity beside the level it measured", () => {
+  const unmeasured = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "suite",
+    runnerStdout: "suite",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+    runBody: servedBody(62),
+  });
+  assert.deepEqual(unmeasured.agentBody, {
+    source: "stored-agent",
+    measured: true,
+    agentId: "agent_stored",
+    fingerprint: "fp_stored",
+    turnDetection: null,
+    reason: null,
+  });
+  // One run-level identity: the level no longer carries a second copy.
+  assert.equal("body" in unmeasured.loudness, false, "loudness has no second body identity");
+  assert.equal(unmeasured.loudness.outputVolume, 62);
+  assert.equal(unmeasured.loudness.measured.status, "INFO");
+  assert.equal(unmeasured.loudness.ok, false);
+  assert.equal(unmeasured.gates.find((gate) => gate.name === "timbre-probes")?.status, "INFO");
+  // The end-of-turn gate read the same body: one source for both gates.
+  assert.equal(unmeasured.gates.find((gate) => gate.name === "end-of-turn")?.status, "PASS");
+
+  const measured = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "suite",
+    runnerStdout: "suite",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+    runBody: servedBody(62),
+    measuredLevel: {
+      reference: measuredTone("captures/reference-anna-en.wav", -23.1),
+      delivered: measuredTone("captures/delivered-anna-en.wav", -25.0),
+    },
+  });
+  assert.equal(measured.loudness.measured.status, "FAIL");
+  assert.match(measured.loudness.detail, /captures\/delivered-anna-en\.wav/);
+  assert.equal(measured.loudness.ok, false);
+  assert.equal(measured.gates.find((gate) => gate.name === "timbre-probes")?.status, "FAIL");
+  assert.match(
+    measured.gates.find((gate) => gate.name === "timbre-probes")?.detail ?? "",
+    /at volume 62/,
+  );
+});
+
+test("no served body leaves the artifact level unmeasured, never a registry number", () => {
+  const artifact = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "suite",
+    runnerStdout: "suite",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+  });
+  assert.equal("body" in artifact.loudness, false);
+  assert.equal(artifact.agentBody?.measured, false);
+  assert.equal(artifact.loudness.outputVolume, null);
+  assert.match(artifact.loudness.detail, /unmeasured/);
+});
+
+// ── Ticket 16: the level leg reads measured files, never the formula ────────
+//
+// Synthetic 1 kHz tones at a known RMS: the level analyser's own conformance
+// case, so the delta between two files is a measured number rather than
+// something the gate could derive from a native constant plus a gain.
+
+function measuredTone(path: string, rmsDbfs: number): MeasuredLevelFile {
+  const sampleRate = 24_000;
+  const frames = sampleRate;
+  const bytes = Buffer.alloc(frames * 2);
+  const amplitude = 32_768 * 10 ** (rmsDbfs / 20) * Math.SQRT2;
+  for (let frame = 0; frame < frames; frame++) {
+    const value = Math.round(amplitude * Math.sin((2 * Math.PI * 1000 * frame) / sampleRate));
+    bytes.writeInt16LE(Math.max(-32768, Math.min(32767, value)), frame * 2);
+  }
+  return { path, audio: decodePcm(bytes, { sampleRate, channels: 1 }) };
+}
+
+function silentTone(path: string): MeasuredLevelFile {
+  const sampleRate = 24_000;
+  return {
+    path,
+    audio: decodePcm(Buffer.alloc(sampleRate * 2), { sampleRate, channels: 1 }),
+  };
+}
+
+function measuredLevel(referenceRms: number, deliveredRms: number): MeasuredLevelInput {
+  return {
+    reference: measuredTone("captures/reference-anna-en.wav", referenceRms),
+    delivered: measuredTone("captures/delivered-anna-en.wav", deliveredRms),
+  };
+}
+
+test("a measured level within tolerance passes the measured leg of the timbre gate", () => {
+  const gate = evaluateTimbreGate({
+    probes: ZERO_PROBES,
+    voiceId: "anna",
+    agentChannel: CLEAN_CHANNEL,
+    runBody: servedBody(SERVED_LEVEL),
+    measuredLevel: measuredLevel(-23.1, -23.2),
+    humanRatings: passingBallots(),
+  });
+  assert.equal(gate.status, "PASS", gate.detail);
+  assert.match(gate.detail, /captures\/reference-anna-en\.wav/, "names the reference file");
+  assert.match(gate.detail, /captures\/delivered-anna-en\.wav/, "names the delivered file");
+  assert.match(gate.detail, /level agrees within 0\.20 LU/);
+  assert.match(gate.detail, /-23\.\d\d LUFS vs -23\.\d\d LUFS/);
+});
+
+test("a measured level out of tolerance fails the timbre gate with both measured values", () => {
+  const leg = checkMeasuredLevel(measuredLevel(-23.1, -25.0));
+  assert.equal(leg.status, "FAIL");
+  assert.equal(leg.toleranceDb, 0.2, "the existing level tolerance decides");
+  assert.ok(
+    leg.deltaLu !== null && Math.abs(leg.deltaLu + 1.9) < 0.1,
+    `the measured margin is the known ~1.9 LU: ${leg.deltaLu}`,
+  );
+  assert.equal(leg.deliveredFile, "captures/delivered-anna-en.wav");
+
+  const gate = evaluateTimbreGate({
+    probes: ZERO_PROBES,
+    voiceId: "anna",
+    agentChannel: CLEAN_CHANNEL,
+    runBody: servedBody(SERVED_LEVEL),
+    measuredLevel: measuredLevel(-23.1, -25.0),
+  });
+  assert.equal(gate.status, "FAIL", gate.detail);
+  assert.match(gate.detail, /level differs by 1\.\d\d LU/);
+  assert.match(gate.detail, /-23\.\d\d LUFS/, "cites the measured reference");
+  assert.match(gate.detail, /-25\.\d\d LUFS/, "cites the measured delivery");
+  assert.match(gate.detail, /over the 0\.20 LU tolerance/);
+  assert.match(gate.detail, /captures\/delivered-anna-en\.wav/);
+});
+
+test("a missing measurement is INFO, never PASS", () => {
+  const noFiles = evaluateTimbreGate({
+    probes: ZERO_PROBES,
+    voiceId: "anna",
+    agentChannel: CLEAN_CHANNEL,
+    runBody: servedBody(SERVED_LEVEL),
+  });
+  assert.equal(noFiles.status, "INFO", noFiles.detail);
+  assert.match(noFiles.detail, /unmeasured level/);
+  assert.doesNotMatch(noFiles.detail, /level agrees/);
+
+  const silent = evaluateTimbreGate({
+    probes: ZERO_PROBES,
+    voiceId: "anna",
+    agentChannel: CLEAN_CHANNEL,
+    runBody: servedBody(SERVED_LEVEL),
+    measuredLevel: {
+      reference: measuredTone("captures/reference-anna-en.wav", -23.1),
+      delivered: silentTone("captures/delivered-anna-en.wav"),
+    },
+  });
+  assert.equal(silent.status, "INFO", silent.detail);
+  assert.match(silent.detail, /digital-silence/);
+  assert.match(silent.detail, /captures\/delivered-anna-en\.wav/);
+});
+
+test("the derived constant cannot make the level leg pass", () => {
+  // At volume 100 the old arithmetic lands exactly on the reference. With no
+  // measured file present that must be INFO, not PASS.
+  const arithmeticOnly = evaluateTimbreGate({
+    probes: ZERO_PROBES,
+    voiceId: "anna",
+    agentChannel: CLEAN_CHANNEL,
+    runBody: servedBody(SERVED_LEVEL),
+  });
+  assert.equal(arithmeticOnly.status, "INFO", "the formula alone never passes the level leg");
+
+  // A measured fail outranks the arithmetic pass.
+  const measuredFail = evaluateTimbreGate({
+    probes: ZERO_PROBES,
+    voiceId: "anna",
+    agentChannel: CLEAN_CHANNEL,
+    runBody: servedBody(SERVED_LEVEL),
+    measuredLevel: measuredLevel(-23.1, -28.1),
+  });
+  assert.equal(measuredFail.status, "FAIL");
+
+  // A measured file with no served body identity is still unmeasured: the
+  // gate cannot say which body the audio came from.
+  const noBody = evaluateTimbreGate({
+    probes: ZERO_PROBES,
+    voiceId: "anna",
+    agentChannel: CLEAN_CHANNEL,
+    measuredLevel: measuredLevel(-23.1, -23.2),
+  });
+  assert.equal(noBody.status, "INFO", noBody.detail);
+  assert.match(noBody.detail, /no stored body read/);
+});
+
+// ── Ticket 74: the timbre gate is a measured result plus a weighted ballot ──
+//
+// Spec W5: a subject passes timbre only when the measured axes pass AND two
+// independent raters file a weighted ballot at five out of five on one shared
+// recording. Neither half can green the gate alone.
+
+const GATE_RECORDING = "c".repeat(64);
+const OTHER_RECORDING = "d".repeat(64);
+
+function gateSubject(voice = DEFAULT_GATE_VOICE): SubjectRecord {
+  return resolveSubject({ voice });
+}
+
+function ballotsFor(
+  first: { timbre: number; accent: number; languageNaturalness?: number },
+  second: { timbre: number; accent: number; languageNaturalness?: number },
+  recording = GATE_RECORDING,
+): HumanRatings {
+  const one = addHumanRating(emptyHumanRatings(recording), { rater: "ana", ...first }, recording);
+  return addHumanRating(one, { rater: "bob", ...second }, recording);
+}
+
+function measuredPass(): MeasuredLevelInput {
+  return {
+    reference: measuredTone("captures/reference-anna-en.wav", -23.1),
+    delivered: measuredTone("captures/delivered-anna-en.wav", -23.2),
+  };
+}
+
+function timbreGateFor(input: {
+  measuredLevel?: MeasuredLevelInput | null;
+  humanRatings?: HumanRatings | null;
+  subject?: SubjectRecord;
+} = {}) {
+  return evaluateTimbreGate({
+    probes: ZERO_PROBES,
+    voiceId: DEFAULT_GATE_VOICE,
+    agentChannel: CLEAN_CHANNEL,
+    runBody: servedBody(SERVED_LEVEL),
+    subject: input.subject ?? gateSubject(),
+    measuredLevel: input.measuredLevel === undefined ? measuredPass() : input.measuredLevel,
+    humanRatings: input.humanRatings ?? null,
+  });
+}
+
+test("a measured pass with no ballot is INFO/unmeasured, never a timbre PASS", () => {
+  const gate = timbreGateFor();
+  assert.equal(gate.status, "INFO", gate.detail);
+  assert.match(gate.detail, /measured timbre PASS/, "the measured result is quoted");
+  assert.match(gate.detail, /level/);
+  assert.match(gate.detail, /true peak/i);
+  assert.match(gate.detail, /distortion/i);
+  assert.match(gate.detail, /crest/i);
+  assert.match(gate.detail, /spectral/i);
+  assert.match(gate.detail, /breakup/i);
+  assert.match(gate.detail, /ballot|awaiting/i, "the missing ballot is named");
+});
+
+test("a measured fail fails the timbre gate even with a five-out-of-five ballot", () => {
+  const gate = timbreGateFor({
+    measuredLevel: {
+      reference: measuredTone("captures/reference-anna-en.wav", -23.1),
+      delivered: measuredTone("captures/delivered-anna-en.wav", -29.1),
+    },
+    humanRatings: ballotsFor({ timbre: 5, accent: 5 }, { timbre: 5, accent: 5 }),
+  });
+  assert.equal(gate.status, "FAIL", gate.detail);
+  assert.match(gate.detail, /level/);
+});
+
+test("a five-out-of-five ballot from one rater is not a pass", () => {
+  const one = addHumanRating(
+    emptyHumanRatings(GATE_RECORDING),
+    { rater: "ana", timbre: 5, accent: 5 },
+    GATE_RECORDING,
+  );
+  const gate = timbreGateFor({ humanRatings: one });
+  assert.equal(gate.status, "INFO", gate.detail);
+  assert.match(gate.detail, /1\/2|one rater/i);
+});
+
+test("two raters at five out of five on one shared recording pass the timbre gate", () => {
+  const gate = timbreGateFor({
+    humanRatings: ballotsFor({ timbre: 5, accent: 5 }, { timbre: 5, accent: 5 }),
+  });
+  assert.equal(gate.status, "PASS", gate.detail);
+  for (const axis of [/level/, /true peak/i, /distortion/i, /crest/i, /spectral/i, /breakup/i]) {
+    assert.match(gate.detail, axis, `the gate names ${axis}: ${gate.detail}`);
+  }
+  assert.match(gate.detail, /5\.00\/5|five out of five/i);
+  assert.ok(gate.detail.includes(GATE_RECORDING.slice(0, 12)), "the shared recording is named");
+});
+
+test("two raters on different recordings are not one shared recording and never pass", () => {
+  const mixed: HumanRatings = {
+    timbre: 5,
+    accent: 5,
+    languageNaturalness: null,
+    weighted: 5,
+    recordingSha256: GATE_RECORDING,
+    ratings: [
+      { rater: "ana", timbre: 5, accent: 5, recordingSha256: GATE_RECORDING },
+      { rater: "bob", timbre: 5, accent: 5, recordingSha256: OTHER_RECORDING },
+    ],
+  };
+  const gate = timbreGateFor({ humanRatings: mixed });
+  assert.equal(gate.status, "FAIL", gate.detail);
+  assert.match(gate.detail, /different recordings|one shared recording/i);
+});
+
+test("the weighted ballot aggregates the axes and a four blocks below five", () => {
+  // Weights: timbre 0.5, accent 0.25, language naturalness 0.25.
+  assert.deepEqual(TIMBRE_BALLOT_AXIS_WEIGHTS, {
+    timbre: 0.5,
+    accent: 0.25,
+    languageNaturalness: 0.25,
+  });
+  assert.equal(
+    ballotWeightedScore({ rater: "ana", timbre: 5, accent: 4, languageNaturalness: 5 }),
+    4.75,
+  );
+  assert.equal(
+    ballotWeightedScore({ rater: "ana", timbre: 5, accent: 5, languageNaturalness: 4 }),
+    4.75,
+  );
+  const ballots = ballotsFor(
+    { timbre: 5, accent: 4, languageNaturalness: 5 },
+    { timbre: 5, accent: 5, languageNaturalness: 5 },
+  );
+  const ballot = evaluateTimbreBallot(ballots, gateSubject());
+  assert.equal(ballot.status, "FAIL", ballot.detail);
+  assert.equal(ballot.weighted, 4.88, "the two raters' weighted scores average to 4.88");
+  assert.match(ballot.detail, /accent/);
+  assert.match(ballot.detail, /4\.88/);
+  const gate = timbreGateFor({ humanRatings: ballots });
+  assert.equal(gate.status, "FAIL", gate.detail);
+  assert.match(gate.detail, /below five|4\.88/);
+});
+
+// ── Ticket 75: the third axis, language naturalness ─────────────────────────
+
+test("the weighted result includes naturalness: changing only that axis changes the score and the verdict", () => {
+  const es = resolveSubject({ voice: "lola" });
+  assert.equal(es.locale, "es");
+
+  const naturalness = (score: number): HumanRatings =>
+    ballotsFor(
+      { timbre: 5, accent: 5, languageNaturalness: score },
+      { timbre: 5, accent: 5, languageNaturalness: score },
+    );
+
+  // 0.5×5 + 0.25×5 + 0.25×n, worked out independently of the implementation.
+  const five = evaluateTimbreBallot(naturalness(5), es);
+  assert.equal(five.status, "PASS", five.detail);
+  assert.equal(five.weighted, 5);
+
+  const four = evaluateTimbreBallot(naturalness(4), es);
+  assert.equal(four.status, "FAIL", four.detail);
+  assert.equal(four.weighted, 4.75, "naturalness is a quarter of the weighted ballot");
+  assert.match(four.detail, /languageNaturalness/);
+  assert.match(four.detail, /4\.75/);
+
+  const three = evaluateTimbreBallot(naturalness(3), es);
+  assert.equal(three.weighted, 4.5);
+  assert.notEqual(three.weighted, four.weighted);
+  assert.equal(timbreGateFor({ humanRatings: naturalness(4), subject: es }).status, "FAIL");
+});
+
+test("a Spanish subject's two-axis ballot is incomplete, never a renormalised pass", () => {
+  const es = resolveSubject({ voice: "lola" });
+  // A record built before the axis existed: five out of five on the two axes
+  // it carries. Renormalisation would score it 5.00 and pass it.
+  const twoAxis = ballotsFor({ timbre: 5, accent: 5 }, { timbre: 5, accent: 5 });
+
+  const ballot = evaluateTimbreBallot(twoAxis, es);
+  assert.equal(ballot.status, "FAIL", ballot.detail);
+  assert.equal(ballot.weighted, null, "an incomplete ballot has no weighted score");
+  assert.match(ballot.detail, /incomplete/i);
+  assert.match(ballot.detail, /language naturalness/i);
+  assert.match(ballot.detail, /ana, bob/);
+
+  const gate = timbreGateFor({ humanRatings: twoAxis, subject: es });
+  assert.equal(gate.status, "FAIL", gate.detail);
+  assert.match(gate.detail, /incomplete/i);
+});
+
+test("filing a two-axis ballot for a bound Spanish subject is refused by name", () => {
+  const es = resolveSubject({ voice: "lola" });
+  const bound = bindBallotsToSubject(emptyHumanRatings(GATE_RECORDING), es);
+  assert.throws(
+    () => addHumanRating(bound, { rater: "ana", timbre: 5, accent: 5 }, GATE_RECORDING),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.match(error.message, /incomplete/);
+      assert.match(error.message, /languageNaturalness/);
+      return true;
+    },
+  );
+
+  const filed = addHumanRating(
+    bound,
+    { rater: "ana", timbre: 5, accent: 5, languageNaturalness: 5 },
+    GATE_RECORDING,
+  );
+  assert.equal(filed.languageNaturalness, 5, "the third axis has its own mean");
+  assert.equal(filed.weighted, 5);
+});
+
+test("English is the one named N/A: the axis renormalises with a stated reason and still reports its weight", () => {
+  assert.equal(naturalnessApplies("en"), false);
+  assert.equal(naturalnessApplies("es"), true);
+  assert.equal(naturalnessApplies(null), true, "an unnamed Locale never drops an axis");
+
+  const ballots = ballotsFor({ timbre: 5, accent: 5 }, { timbre: 5, accent: 5 });
+  const ballot = evaluateTimbreBallot(ballots, gateSubject());
+  assert.equal(ballot.status, "PASS", ballot.detail);
+  assert.equal(ballot.weighted, 5, "timbre and accent renormalise over themselves for English");
+  assert.match(ballot.detail, /language naturalness N\/A/);
+  assert.match(ballot.detail, /featured baseline Locale/);
+
+  const artifact = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "greeting-cut",
+    runnerStdout: "",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+    runBody: servedBody(SERVED_LEVEL),
+    measuredLevel: measuredPass(),
+    humanRatings: ballots,
+    agentChannel: CLEAN_CHANNEL,
+  });
+  const axis = artifact.humanReview.axes.find((entry) => entry.axis === "languageNaturalness");
+  assert.equal(axis?.status, "na");
+  assert.equal(axis?.weight, 0.25, "the report keeps the axis's weight even where it is N/A");
+  assert.match(axis?.reason ?? "", /English is the featured baseline Locale/);
+  assert.equal(artifact.humanReview.counted, true);
+  assert.equal(artifact.humanRatings.notApplicable?.languageNaturalness, NATURALNESS_NA_REASON);
+
+  const report = formatHumanReview(artifact.humanReview);
+  assert.match(report, /languageNaturalness: N\/A ×0\.25/);
+  assert.match(report, /featured baseline/);
+  assert.match(report, /timbre: 5\.0 mean ×0\.5/);
+});
+
+test("a ballot below five names the rater's stated reason and blocks", () => {
+  let slots = addHumanRating(
+    emptyHumanRatings(GATE_RECORDING),
+    {
+      rater: "ana",
+      timbre: 4,
+      accent: 5,
+      reasons: { timbre: "thin upper register on the first sentence" },
+    },
+    GATE_RECORDING,
+  );
+  slots = addHumanRating(slots, { rater: "bob", timbre: 5, accent: 5 }, GATE_RECORDING);
+  const ballot = evaluateTimbreBallot(slots, gateSubject());
+  assert.equal(ballot.status, "FAIL");
+  assert.match(ballot.detail, /thin upper register/);
+  assert.equal(timbreGateFor({ humanRatings: slots }).status, "FAIL");
+});
+
+test("a ballot judged on another subject is never this subject's pass", () => {
+  const lola = resolveSubject({ voice: "lola" });
+  const ballots: HumanRatings = {
+    ...ballotsFor({ timbre: 5, accent: 5 }, { timbre: 5, accent: 5 }),
+    subject: lola,
+  };
+  const ballot = evaluateTimbreBallot(ballots, gateSubject());
+  assert.equal(ballot.status, "FAIL", ballot.detail);
+  assert.match(ballot.detail, /lola|another subject/i);
+  const gate = timbreGateFor({ humanRatings: ballots });
+  assert.equal(gate.status, "FAIL", gate.detail);
+});
+
+test("an artifact binds the ballots to its own subject and records the weighted score", () => {
+  const artifact = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "greeting-cut",
+    runnerStdout: "",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+    runBody: servedBody(SERVED_LEVEL),
+    measuredLevel: measuredPass(),
+    humanRatings: ballotsFor({ timbre: 5, accent: 5 }, { timbre: 5, accent: 5 }),
+    agentChannel: CLEAN_CHANNEL,
+  });
+  const timbre = artifact.gates.find((gate) => gate.name === "timbre-probes");
+  assert.equal(timbre?.status, "PASS", timbre?.detail);
+  assert.equal(artifact.humanRatings.subject?.agent.kind, "demo");
+  assert.equal(artifact.humanReview.subject, formatSubject(artifact.subject!));
+  assert.equal(artifact.humanReview.weighted, 5);
+  assert.equal(artifact.humanReview.counted, true);
+  assert.match(formatHumanReview(artifact.humanReview), /weighted 5\.00\/5/);
 });
 
 // ── Ticket 10, slice 2: blind human slots ─────────────────────────────────
@@ -4311,20 +5192,39 @@ test("human ratings need 1-5 ints, one ballot per rater, one shared recording", 
   assert.throws(() => addHumanRating(slots, { rater: "", timbre: 4, accent: 4 }, RECORDING), /rater/);
 });
 
-test("human gate counts only after two raters and a passing auto gate", () => {
+test("the human gate needs two raters at five out of five, after the measured result", () => {
   const none = emptyHumanRatings(RECORDING);
   const awaiting = evaluateHumanGate(true, none);
   assert.equal(awaiting.name, "accent-human");
   assert.equal(awaiting.status, "INFO");
   assert.ok(awaiting.detail.includes("awaiting"));
-  const one = addHumanRating(none, { rater: "ana", timbre: 5, accent: 4 }, RECORDING);
-  assert.equal(evaluateHumanGate(true, one).status, "INFO");
-  const two = addHumanRating(one, { rater: "bob", timbre: 4, accent: 4 }, RECORDING);
-  assert.equal(two.timbre, 4.5);
-  assert.equal(two.accent, 4);
+  const one = addHumanRating(
+    none,
+    { rater: "ana", timbre: 5, accent: 5, languageNaturalness: 5 },
+    RECORDING,
+  );
+  assert.equal(evaluateHumanGate(true, one).status, "INFO", "one ballot is reported, never counted");
+  // A four is a delivered judgement, not a missing one: it blocks.
+  const four = addHumanRating(
+    one,
+    {
+      rater: "bob",
+      timbre: 4,
+      accent: 4,
+      languageNaturalness: 4,
+      reasons: { timbre: "thin", accent: "marked", languageNaturalness: "reads as a translation" },
+    },
+    RECORDING,
+  );
+  assert.equal(evaluateHumanGate(true, four).status, "FAIL", "a ballot below five blocks");
+  const two = addHumanRating(
+    one,
+    { rater: "bob", timbre: 5, accent: 5, languageNaturalness: 5 },
+    RECORDING,
+  );
   const counted = evaluateHumanGate(true, two);
   assert.equal(counted.status, "PASS");
-  assert.ok(counted.detail.includes("4.5"), `means stay reviewable: ${counted.detail}`);
+  assert.match(counted.detail, /weighted 5\.00\/5/, counted.detail);
   const blocked = evaluateHumanGate(false, two);
   assert.equal(blocked.status, "INFO");
   assert.ok(blocked.detail.includes("auto"), `auto must pass first: ${blocked.detail}`);
@@ -4358,13 +5258,13 @@ test("auto timbre failure reports ballots but never counts them", () => {
   assert.equal(human?.status, "INFO");
   assert.match(human?.detail ?? "", /reported, not counted/);
   // Ballots on a FAILed auto gate never make the run green.
-  assert.equal(gateVerdictFromArtifact(DEFAULT_GATE_VOICE, artifact.gates, artifact.subScores).status, "FAIL");
+  assert.equal(subjectGateVerdict(artifact).status, "FAIL");
 });
 
 test("artifact makes the shared-recording ballot protocol reviewable", () => {
   const two = addHumanRating(
-    addHumanRating(emptyHumanRatings(RECORDING), { rater: "ana", timbre: 5, accent: 4 }, RECORDING),
-    { rater: "bob", timbre: 4, accent: 4 },
+    addHumanRating(emptyHumanRatings(RECORDING), { rater: "ana", timbre: 5, accent: 5 }, RECORDING),
+    { rater: "bob", timbre: 5, accent: 5 },
     RECORDING,
   );
   const artifact = buildSkeletonArtifact({
@@ -4374,7 +5274,13 @@ test("artifact makes the shared-recording ballot protocol reviewable", () => {
     exitCode: 0,
     durationMs: 10,
     runs: 1,
+    runBody: servedBody(SERVED_LEVEL),
+    measuredLevel: {
+      reference: measuredTone("captures/reference-anna-en.wav", -23.1),
+      delivered: measuredTone("captures/delivered-anna-en.wav", -23.2),
+    },
     humanRatings: two,
+    agentChannel: CLEAN_CHANNEL,
   });
   assert.equal(artifact.humanReview.recordingSha256, RECORDING);
   assert.equal(artifact.humanReview.raterCount, 2);
@@ -4416,10 +5322,14 @@ test("artifact makes the shared-recording ballot protocol reviewable", () => {
   assert.match(formatHumanReview(unbound.humanReview), /--recording/);
 });
 
-test("a low ballot never fails a run: taste stays informational", () => {
+test("a ballot below five blocks the timbre gate even on a measured pass", () => {
   const low = addHumanRating(
-    addHumanRating(emptyHumanRatings(RECORDING), { rater: "ana", timbre: 1, accent: 1 }, RECORDING),
-    { rater: "bob", timbre: 1, accent: 1 },
+    addHumanRating(
+      emptyHumanRatings(RECORDING),
+      { rater: "ana", timbre: 1, accent: 1, reasons: { timbre: "robotic", accent: "wrong stress" } },
+      RECORDING,
+    ),
+    { rater: "bob", timbre: 1, accent: 1, reasons: { timbre: "robotic", accent: "wrong stress" } },
     RECORDING,
   );
   const artifact = buildSkeletonArtifact({
@@ -4430,20 +5340,28 @@ test("a low ballot never fails a run: taste stays informational", () => {
     durationMs: 10,
     runs: 1,
     humanRatings: low,
+    runBody: servedBody(SERVED_LEVEL),
+    measuredLevel: {
+      reference: measuredTone("captures/reference-anna-en.wav", -23.1),
+      delivered: measuredTone("captures/delivered-anna-en.wav", -23.1),
+    },
     dryRun: true,
   });
+  const timbre = artifact.gates.find((g) => g.name === "timbre-probes");
+  assert.equal(timbre?.status, "FAIL", "a ballot below five blocks the timbre gate");
+  assert.match(timbre?.detail ?? "", /below five/);
+  assert.match(timbre?.detail ?? "", /robotic/, "the rater's stated reason is recorded");
   const human = artifact.gates.find((g) => g.name === "accent-human");
-  assert.equal(human?.status, "PASS", "counting raters, not taste, decides the human slot");
-  assert.match(human?.detail ?? "", /timbre 1 \/ accent 1/);
-  assert.ok(!artifact.gates.some((gate) => gate.name === "accent-human" && gate.status === "FAIL"));
-  assert.equal(gateVerdictFromArtifact(DEFAULT_GATE_VOICE, artifact.gates, artifact.subScores).status, "PASS");
+  assert.equal(human?.status, "INFO", "a measured failure keeps the human slot reported, not counted");
+  assert.match(human?.detail ?? "", /not counted/);
+  assert.equal(subjectGateVerdict(artifact).status, "FAIL", "a below-five ballot is never a green run");
 
   const missing = evaluateHumanGate(true, emptyHumanRatings(RECORDING));
   assert.equal(missing.status, "INFO", "missing ballots stay INFO");
-  assert.ok(missing.detail.includes(RECORDING.slice(0, 12)), "INFO names the recording awaiting ballots");
+  assert.match(missing.detail, /awaiting/);
 });
 
-test("artifact carries human slots, loudness sanity, and live timbre gates", () => {
+test("artifact carries human slots, the served level, and live timbre gates", () => {
   const artifact = buildSkeletonArtifact({
     voice: DEFAULT_GATE_VOICE,
     scenario: "greeting-cut",
@@ -4451,40 +5369,29 @@ test("artifact carries human slots, loudness sanity, and live timbre gates", () 
     exitCode: 0,
     durationMs: 1234,
     runs: 1,
+    runBody: servedBody(SERVED_LEVEL),
+    measuredLevel: {
+      reference: measuredTone("captures/reference-anna-en.wav", -23.1),
+      delivered: measuredTone("captures/delivered-anna-en.wav", -23.2),
+    },
   });
   assert.equal(artifact.schemaVersion, 4);
   assert.equal(artifact.humanRatings.timbre, null);
   assert.equal(artifact.humanRatings.accent, null);
   assert.deepEqual(artifact.humanRatings.ratings, []);
   assert.equal(artifact.humanRatings.recordingSha256, null);
-  assert.ok(Math.abs((artifact.loudness.matchedLufs ?? 0) - TIMBRE_REFERENCE_LUFS) <= TIMBRE_LUFS_TOLERANCE_DB);
+  assert.equal(artifact.loudness.outputVolume, SERVED_LEVEL);
+  assert.equal(artifact.agentBody?.agentId, "agent_stored");
+  assert.equal(artifact.loudness.measured.status, "PASS", artifact.loudness.measured.detail);
+  assert.equal(artifact.loudness.measured.deliveredFile, "captures/delivered-anna-en.wav");
+  assert.ok(artifact.loudness.ok);
+  // A measured result with no ballot is INFO/unmeasured, never a timbre PASS
+  // (ticket 74): the machine half alone cannot green the gate.
   const timbre = artifact.gates.find((g) => g.name === "timbre-probes");
-  assert.equal(timbre?.status, "PASS");
+  assert.equal(timbre?.status, "INFO", timbre?.detail);
+  assert.match(timbre?.detail ?? "", /awaiting the weighted ballot/);
   const human = artifact.gates.find((g) => g.name === "accent-human");
   assert.equal(human?.status, "INFO");
-});
-
-test("artifact carries the per-voice gain table, not only the gate voice", () => {
-  const artifact = buildSkeletonArtifact({
-    voice: DEFAULT_GATE_VOICE,
-    scenario: "greeting-cut",
-    runnerStdout: "",
-    exitCode: 0,
-    durationMs: 10,
-    runs: 1,
-  });
-  const rows = artifact.loudness.voices;
-  assert.equal(rows.length, DEMO_VOICE_IDS.length, "every demo voice has a gain row");
-  assert.equal(rows[0]?.voice, DEFAULT_GATE_VOICE);
-  assert.equal(rows[0]?.isGate, true);
-  for (const voice of regressionVoices(DEFAULT_GATE_VOICE)) {
-    const row = rows.find((entry) => entry.voice === voice);
-    assert.ok(row, `regression voice ${voice} missing from the artifact gain table`);
-    assert.equal(row.gain, voicePlaybackGain(voice), `${voice} gain comes from the registry`);
-    assert.equal(row.outputVolume, VOICE_OUTPUT_VOLUME);
-    assert.equal(row.status, "PASS");
-  }
-  assert.ok(formatVoiceGainTable(rows).includes("giovanni"));
 });
 
 test("artifact timbre gate fails named defects and holds human ratings until auto passes", () => {
@@ -4580,165 +5487,329 @@ test("matrix voices resolve through the registry, never as literals", () => {
   assert.throws(() => resolveMatrixVoices("lola,nope"), /unknown gate voice/);
 });
 
-test("matrix passes all-clean and fails named per voice with an overall row", () => {
-  const entries = [
-    {
-      voice: "anna",
-      probes: { jump: 0, overload: 0, clip: 0, underrun: 0, inputDrop: 0 },
-      tagLines: ["send it with Lime 42 in the subject"],
-      expectedTag: "Lime 42",
-    },
-    {
-      voice: "lola",
-      probes: { jump: 0, overload: 0, clip: 0, underrun: 0, inputDrop: 0 },
-      tagLines: ["send it with Lime 42 in the subject"],
-      expectedTag: "Lime 42",
-    },
-  ];
-  const matrix = buildRegressionMatrix({ gateVoice: "anna", entries });
-  assert.equal(matrix.schemaVersion, 4);
-  assert.equal(matrix.gateVoice, "anna");
-  assert.equal(matrix.results.length, 2);
-  assert.ok(matrix.results.every((r) => r.status === "PASS"));
-  assert.ok(matrix.results.find((r) => r.voice === "anna")?.isGate);
-  assert.ok(!matrix.results.find((r) => r.voice === "lola")?.isGate);
-  assert.equal(matrix.gates.find((g) => g.name === "matrix")?.status, "PASS");
-  const dirty = buildRegressionMatrix({
-    gateVoice: "anna",
-    entries: [
-      entries[0],
-      { ...entries[1], probes: { jump: 1, overload: 0, clip: 0, underrun: 0, inputDrop: 0 } },
-    ],
+/** One matrix row's run: a real artifact carrying the row's subject and gates. */
+function matrixRun(input: {
+  voice: string;
+  subject: SubjectRecord;
+  gates: ScoreboardGate[];
+  clip?: number;
+  runId?: string;
+}): ScoreboardArtifact {
+  const artifact = buildSkeletonArtifact({
+    voice: input.voice,
+    scenario: "greeting-cut",
+    runnerStdout: "",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+    dryRun: true,
+    subject: input.subject,
+    ...(input.runId ? { runId: input.runId } : {}),
+    probes: { jump: 0, overload: 0, clip: input.clip ?? 0, underrun: 0, inputDrop: 0 },
   });
-  const lola = dirty.results.find((r) => r.voice === "lola");
-  assert.equal(lola?.status, "FAIL");
-  assert.ok(lola?.detail.includes("jump"));
-  assert.equal(dirty.gates.find((g) => g.name === "matrix")?.status, "FAIL");
-  assert.equal(dirty.gates.filter((g) => g.name.startsWith("regression:")).length, 2);
-});
+  return {
+    ...artifact,
+    gates: input.gates,
+    transcripts: { ...artifact.transcripts, redacted: ["send it with Lime 42 in the subject"] },
+  };
+}
 
-test("matrix table names every voice with its verdict plus a summary", () => {
-  const matrix = buildRegressionMatrix({
-    gateVoice: "anna",
-    entries: [
-      {
-        voice: "anna",
-        probes: { jump: 0, overload: 0, clip: 0, underrun: 0, inputDrop: 0 },
-        tagLines: ["Lime 42 in the subject"],
-        expectedTag: "Lime 42",
-      },
-      {
-        voice: "lola",
-        probes: { jump: 0, overload: 0, clip: 1, underrun: 0, inputDrop: 0 },
-        tagLines: ["Lime 42 in the subject"],
-        expectedTag: "Lime 42",
-      },
-    ],
+/** One matrix row's run with a single gate that decides its verdict. */
+function judgedRun(
+  subject: SubjectRecord,
+  voice: string,
+  status: "PASS" | "FAIL" = "PASS",
+): ScoreboardArtifact {
+  return matrixRun({
+    voice,
+    subject,
+    gates:
+      status === "PASS"
+        ? [{ name: "plumbing", status: "PASS", detail: "eval runner finished" }]
+        : [{ name: "barge-in-cut", status: "FAIL", detail: "cut 1841ms exceeds 1500ms" }],
   });
-  const table = formatMatrixTable(matrix);
-  assert.ok(table.includes("anna"));
-  assert.ok(table.includes("lola"));
-  assert.ok(table.includes("PASS"));
-  assert.ok(table.includes("FAIL"));
-  assert.ok(table.includes("1/2"), `summary counts clean voices: ${table}`);
-});
+}
 
-test("matrix carries the gate voice verdict and sub-scores, never re-judges them", () => {
-  const gateGates = [
-    { name: "plumbing", status: "PASS" as const, detail: "eval runner finished" },
-    { name: "reply-gap", status: "PASS" as const, detail: "p50 900ms (budget 1500ms)" },
-    { name: "end-of-turn", status: "PASS" as const, detail: "meaning-based end of turn (no turn_detection object)" },
-    { name: "barge-in-cut", status: "PASS" as const, detail: "cut 912ms (budget 1500ms)" },
-    { name: "measurements", status: "INFO" as const, detail: "measured evidence present (real-cut)" },
-  ];
-  const gateSubScores = buildSubScores(gateGates);
-  const gateEntry = {
+test("each matrix row derives its gate verdict from its own subject artifact", () => {
+  const anna = resolveSubject({ voice: "anna" });
+  const lola = resolveSubject({ voice: "lola" });
+  const annaRun = matrixRun({
     voice: "anna",
-    probes: { jump: 0, overload: 0, clip: 0, underrun: 0, inputDrop: 0 },
-    tagLines: ["send it with Lime 42 in the subject"],
-    gates: gateGates,
-    subScores: gateSubScores,
-  };
-  const cleanVoice = {
+    subject: anna,
+    gates: [{ name: "plumbing", status: "PASS", detail: "eval runner finished" }],
+  });
+  const lolaRun = matrixRun({
     voice: "lola",
-    probes: { jump: 0, overload: 0, clip: 0, underrun: 0, inputDrop: 0 },
-    tagLines: ["send it with Lime 42 in the subject"],
-  };
+    subject: lola,
+    gates: [{ name: "barge-in-cut", status: "FAIL", detail: "cut 1841ms exceeds 1500ms" }],
+  });
 
-  const clean = buildRegressionMatrix({ gateVoice: "anna", entries: [gateEntry, cleanVoice] });
-  assert.equal(clean.gate.voice, "anna");
-  assert.equal(clean.gate.status, "PASS", clean.gate.detail);
-  assert.deepEqual(clean.gate.gates, gateGates);
-  assert.deepEqual(clean.gate.subScores, gateSubScores);
-
-  const table = formatMatrixTable(clean);
-  assert.match(table, /GATE\s+anna\s+gate anna: PASS/, table);
-  assert.match(table, /sub-scores responsiveness PASS/, table);
-  assert.match(table, /regression lola/, table);
-
-  // A dirty regression voice flips only its own row and the regression
-  // roll-up; the carried gate verdict, gates, and sub-scores stay identical.
-  const dirty = buildRegressionMatrix({
-    gateVoice: "anna",
+  const matrix = buildRegressionMatrix({
     entries: [
-      gateEntry,
-      { ...cleanVoice, probes: { jump: 0, overload: 0, clip: 1, underrun: 0, inputDrop: 0 } },
+      { subject: anna, artifact: annaRun },
+      { subject: lola, artifact: lolaRun },
     ],
   });
-  assert.equal(dirty.gate.status, clean.gate.status);
-  assert.deepEqual(dirty.gate.gates, gateGates);
-  assert.deepEqual(dirty.gate.subScores, gateSubScores);
-  assert.equal(dirty.results.find((r) => r.voice === "lola")?.status, "FAIL");
-  assert.equal(dirty.gates.find((g) => g.name === "regression:lola")?.status, "FAIL");
-  assert.equal(dirty.gates.find((g) => g.name === "matrix")?.status, "FAIL");
-  assert.ok(
-    !dirty.gates.some((gate) => gateGates.some((carried) => carried.name === gate.name)),
-    "gate rows are carried, not copied into the matrix's own gates",
-  );
 
-  // A red gate voice stays red no matter how clean the regression rows are.
-  const red = buildRegressionMatrix({
-    gateVoice: "anna",
-    entries: [
-      { ...gateEntry, gates: [{ name: "barge-in-cut", status: "FAIL" as const, detail: "cut 1841ms exceeds 1500ms" }] },
-      cleanVoice,
-    ],
-  });
-  assert.equal(red.gate.status, "FAIL");
-  assert.deepEqual(red.gate.failing, ["barge-in-cut"]);
-  assert.match(formatMatrixTable(red), /GATE\s+anna\s+gate anna: FAIL/);
-  assert.equal(red.gates.find((g) => g.name === "matrix")?.status, "PASS");
+  const annaRow = matrix.results.find((row) => sameSubject(row.subject, anna));
+  const lolaRow = matrix.results.find((row) => sameSubject(row.subject, lola));
+  assert.equal(annaRow?.status, "PASS", annaRow?.detail);
+  assert.equal(lolaRow?.status, "FAIL", lolaRow?.detail);
+  assert.equal(annaRow?.verdict?.runId, annaRun.runId);
+  assert.equal(lolaRow?.verdict?.runId, lolaRun.runId);
+  assert.deepEqual(lolaRow?.verdict?.failing, ["barge-in-cut"]);
+  assert.equal("gate" in matrix, false, "no carried featured-voice verdict survives");
+  assert.equal("gateVoice" in matrix, false, "the matrix is not voice-keyed");
 
-  // Without a carried gate artifact there is no verdict to invent.
-  const unmeasured = buildRegressionMatrix({ gateVoice: "anna", entries: [cleanVoice] });
-  assert.equal(unmeasured.gate.status, "INFO");
-  assert.ok(unmeasured.gate.detail.includes("not judged"));
+  const table = formatMatrixTable(matrix);
+  assert.match(table, /demo anna \(en, browser\)/, table);
+  assert.match(table, /demo lola \(es, browser\)/, table);
+  assert.match(table, /1\/2 clean/, table);
 });
 
-test("matrix reads gate rows only from the gate voice, never from a regression voice", () => {
-  const gateGates = [{ name: "plumbing", status: "PASS" as const, detail: "eval runner finished" }];
+test("a failing subject cannot borrow the featured voice's passing verdict", () => {
+  const anna = resolveSubject({ voice: "anna" });
+  const lola = resolveSubject({ voice: "lola" });
+  const passing = (subject: SubjectRecord, voice: string) =>
+    matrixRun({
+      voice,
+      subject,
+      gates: [{ name: "plumbing", status: "PASS", detail: "eval runner finished" }],
+    });
+  const failing = (subject: SubjectRecord, voice: string) =>
+    matrixRun({
+      voice,
+      subject,
+      gates: [{ name: "barge-in-cut", status: "FAIL", detail: "cut 1841ms exceeds 1500ms" }],
+    });
+
+  // The featured voice passes and a non-featured subject fails: the failure
+  // stays red.
+  const featuredGreen = buildRegressionMatrix({
+    entries: [
+      { subject: anna, artifact: passing(anna, "anna") },
+      { subject: lola, artifact: failing(lola, "lola") },
+    ],
+  });
+  assert.equal(featuredGreen.results.find((row) => sameSubject(row.subject, anna))?.status, "PASS");
+  assert.equal(featuredGreen.results.find((row) => sameSubject(row.subject, lola))?.status, "FAIL");
+  assert.equal(featuredGreen.gates.find((gate) => gate.name === "matrix")?.status, "FAIL");
+
+  // And the reverse: a red featured voice never hands its verdict to a clean
+  // subject's row — since ticket 78 that row is not judged at all.
+  const featuredRed = buildRegressionMatrix({
+    entries: [
+      { subject: anna, artifact: failing(anna, "anna") },
+      { subject: lola, artifact: passing(lola, "lola") },
+    ],
+  });
+  assert.equal(featuredRed.results.find((row) => sameSubject(row.subject, anna))?.status, "FAIL");
+  const blockedLola = featuredRed.results.find((row) => sameSubject(row.subject, lola));
+  assert.equal(blockedLola?.status, "BLOCKED");
+  assert.equal(blockedLola?.verdict, null, "a clean run is not judged before the featured subject passes");
+  assert.equal(featuredRed.gates.find((gate) => gate.name === "matrix")?.status, "FAIL");
+});
+
+test("featured first: a failing featured subject blocks a non-English subject from being judged", () => {
+  const anna = resolveSubject({ voice: "anna" });
+  const lola = resolveSubject({ voice: "lola" });
+  const matrix = buildRegressionMatrix({
+    entries: [
+      { subject: lola, artifact: judgedRun(lola, "lola") },
+      { subject: anna, artifact: judgedRun(anna, "anna", "FAIL") },
+    ],
+  });
+
+  const lolaRow = matrix.results.find((row) => sameSubject(row.subject, lola));
+  assert.equal(lolaRow?.status, "BLOCKED", "a non-English subject is not judged on an unproved instrument");
+  assert.equal(lolaRow?.verdict, null, "blocked means no verdict was derived");
+  assert.match(
+    lolaRow?.detail ?? "",
+    /blocked: featured subject demo anna \(en, browser\) has not passed/,
+  );
+  const table = formatMatrixTable(matrix);
+  assert.match(table, /BLOCK\s+demo lola \(es, browser\).*blocked: featured subject demo anna/);
+});
+
+test("featured first: once the featured subject passes, non-English subjects are judged normally", () => {
+  const anna = resolveSubject({ voice: "anna" });
+  const lola = resolveSubject({ voice: "lola" });
+  const matrix = buildRegressionMatrix({
+    entries: [
+      { subject: anna, artifact: judgedRun(anna, "anna") },
+      { subject: lola, artifact: judgedRun(lola, "lola", "FAIL") },
+    ],
+  });
+
+  const lolaRow = matrix.results.find((row) => sameSubject(row.subject, lola));
+  assert.equal(lolaRow?.status, "FAIL", "after anna passes the Locale row is judged on its own run");
+  assert.ok(lolaRow?.verdict, "the judged row cites its own run");
+  assert.doesNotMatch(lolaRow?.detail ?? "", /blocked:/);
+});
+
+test("featured first: a missing featured run blocks every other subject by name", () => {
+  const lola = resolveSubject({ voice: "lola" });
+  const matrix = buildRegressionMatrix({
+    entries: [{ subject: lola, artifact: judgedRun(lola, "lola") }],
+  });
+
+  const lolaRow = matrix.results.find((row) => sameSubject(row.subject, lola));
+  assert.equal(lolaRow?.status, "BLOCKED");
+  assert.equal(lolaRow?.verdict, null);
+  assert.match(lolaRow?.detail ?? "", /blocked: featured subject demo anna \(en, browser\) has not passed/);
+  assert.equal(matrix.ordering.featuredStatus, null, "no featured row means the gate never opened");
+});
+
+test("featured first: an English non-featured subject is ordered by the same rule", () => {
+  const anna = resolveSubject({ voice: "anna" });
+  const tenant = resolveSubject({ agent: "agent_en_1", voice: "alba", locale: "en" });
+  const blocked = buildRegressionMatrix({
+    entries: [
+      { subject: anna, artifact: judgedRun(anna, "anna", "FAIL") },
+      { subject: tenant, artifact: judgedRun(tenant, "alba") },
+    ],
+  });
+  const blockedTenant = blocked.results.find((row) => sameSubject(row.subject, tenant));
+  assert.equal(blockedTenant?.status, "BLOCKED", "ordering is not a locale rule: English rows wait too");
+  assert.equal(blockedTenant?.verdict, null);
+
+  const judged = buildRegressionMatrix({
+    entries: [
+      { subject: anna, artifact: judgedRun(anna, "anna") },
+      { subject: tenant, artifact: judgedRun(tenant, "alba") },
+    ],
+  });
+  assert.equal(judged.results.find((row) => sameSubject(row.subject, tenant))?.status, "PASS");
+});
+
+test("featured first: the artifact records the ordering rule and the featured row leads", () => {
+  const anna = resolveSubject({ voice: "anna" });
+  const lola = resolveSubject({ voice: "lola" });
+  const matrix = buildRegressionMatrix({
+    entries: [
+      { subject: lola, artifact: judgedRun(lola, "lola") },
+      { subject: anna, artifact: judgedRun(anna, "anna", "FAIL") },
+    ],
+  });
+
+  assert.equal(matrix.ordering.rule, "featured-first");
+  assert.equal(matrix.ordering.featuredStatus, "FAIL");
+  assert.deepEqual(matrix.ordering.blocked, [subjectRowKey(lola)]);
+  assert.match(matrix.ordering.detail, /featured subject demo anna \(en, browser\) has not passed/);
+  assert.equal(matrix.results[0]?.isFeatured, true, "the featured row is ordered first");
+  assert.equal(matrix.subjects[0]?.agent.kind, "demo");
+  assert.match(formatMatrixTable(matrix), /ordering featured-first/);
+  const orderingGate = matrix.gates.find((gate) => gate.name === "ordering:featured-first");
+  assert.equal(orderingGate?.status, "FAIL");
+  assert.match(orderingGate?.detail ?? "", /blocked: featured subject demo anna/);
+});
+
+test("featured first: a passing featured run opens the gate and leaves no subject blocked", () => {
+  const anna = resolveSubject({ voice: "anna" });
+  const lola = resolveSubject({ voice: "lola" });
+  const matrix = buildRegressionMatrix({
+    entries: [
+      { subject: lola, artifact: judgedRun(lola, "lola") },
+      { subject: anna, artifact: judgedRun(anna, "anna") },
+    ],
+  });
+  assert.equal(matrix.ordering.featuredStatus, "PASS");
+  assert.deepEqual(matrix.ordering.blocked, []);
+  assert.ok(matrix.results.every((row) => row.status !== "BLOCKED"));
+  assert.equal(matrix.gates.find((gate) => gate.name === "ordering:featured-first")?.status, "PASS");
+});
+
+test("a tenant subject and its demo voice are distinct rows with their own verdicts", () => {
+  const demo = resolveSubject({ voice: "lola" });
+  const tenant = resolveSubject({ agent: "agent_tenant_1", voice: "lola", locale: "es" });
+  const demoRun = matrixRun({
+    voice: "lola",
+    subject: demo,
+    runId: "run-demo-lola",
+    gates: [{ name: "plumbing", status: "PASS", detail: "eval runner finished" }],
+  });
+  const tenantRun = matrixRun({
+    voice: "lola",
+    subject: tenant,
+    runId: "run-tenant-1",
+    gates: [{ name: "barge-in-cut", status: "FAIL", detail: "cut 1841ms exceeds 1500ms" }],
+  });
+
+  const anna = resolveSubject({ voice: "anna" });
+  const matrix = buildRegressionMatrix({
+    entries: [
+      // The featured subject opens the ordering gate (ticket 78), so the
+      // tenant/demo distinction below is what decides these rows.
+      { subject: anna, artifact: judgedRun(anna, "anna") },
+      { subject: demo, artifact: demoRun },
+      { subject: tenant, artifact: tenantRun },
+    ],
+  });
+  assert.equal(matrix.results.length, 3);
+  const demoRow = matrix.results.find((row) => sameSubject(row.subject, demo));
+  const tenantRow = matrix.results.find((row) => sameSubject(row.subject, tenant));
+  assert.equal(demoRow?.status, "PASS");
+  assert.equal(tenantRow?.status, "FAIL");
+  assert.notEqual(demoRow?.label, tenantRow?.label);
+  assert.match(formatMatrixTable(matrix), /tenant agent_tenant_1 \(es, browser\)/);
+  // The demo row's verdict is not reachable through the tenant row.
+  assert.equal(tenantRow?.verdict?.runId, tenantRun.runId);
+  assert.notEqual(tenantRow?.verdict?.runId, demoRow?.verdict?.runId);
+});
+
+test("a missing subject run is reported missing, never copied from another row", () => {
+  const anna = resolveSubject({ voice: "anna" });
+  const lola = resolveSubject({ voice: "lola" });
+  const annaRun = matrixRun({
+    voice: "anna",
+    subject: anna,
+    gates: [{ name: "plumbing", status: "PASS", detail: "eval runner finished" }],
+  });
+
+  const matrix = buildRegressionMatrix({
+    entries: [{ subject: anna, artifact: annaRun }, { subject: lola }],
+  });
+  const lolaRow = matrix.results.find((row) => sameSubject(row.subject, lola));
+  assert.equal(lolaRow?.status, "MISSING");
+  assert.equal(lolaRow?.verdict, null, "no artifact, no verdict to inherit");
+  assert.equal(lolaRow?.probes, null);
+  assert.match(lolaRow?.detail ?? "", /MISSING/);
+  assert.equal(matrix.gates.find((gate) => gate.name === "matrix")?.status, "FAIL");
+  assert.match(formatMatrixTable(matrix), /MISS\s+demo lola \(es, browser\).*MISSING/);
+});
+
+test("matrix rows read gates only from their own subject artifact", () => {
+  const anna = resolveSubject({ voice: "anna" });
+  const lola = resolveSubject({ voice: "lola" });
+  const annaGates = [{ name: "plumbing", status: "PASS" as const, detail: "eval runner finished" }];
   const lolaGates = [{ name: "timbre-probes", status: "FAIL" as const, detail: "clip 1 > 0" }];
   const matrix = buildRegressionMatrix({
-    gateVoice: "anna",
     entries: [
-      {
-        voice: "anna",
-        probes: { jump: 0, overload: 0, clip: 0, underrun: 0, inputDrop: 0 },
-        tagLines: ["Lime 42 in the subject"],
-        gates: gateGates,
-      },
-      {
-        voice: "lola",
-        probes: { jump: 0, overload: 0, clip: 0, underrun: 0, inputDrop: 0 },
-        tagLines: ["Lime 42 in the subject"],
-        gates: lolaGates,
-      },
+      { subject: anna, artifact: matrixRun({ voice: "anna", subject: anna, gates: annaGates }) },
+      { subject: lola, artifact: matrixRun({ voice: "lola", subject: lola, gates: lolaGates }) },
     ],
   });
-  assert.equal(matrix.gate.voice, "anna");
-  assert.equal(matrix.gate.status, "PASS");
-  assert.deepEqual(matrix.gate.gates, gateGates);
-  assert.ok(!matrix.gate.gates.some((gate) => gate.name === "timbre-probes"));
+  const annaRow = matrix.results.find((row) => sameSubject(row.subject, anna));
+  const lolaRow = matrix.results.find((row) => sameSubject(row.subject, lola));
+  assert.deepEqual(annaRow?.verdict?.gates, annaGates);
+  assert.deepEqual(lolaRow?.verdict?.gates, lolaGates);
+  assert.ok(!annaRow?.verdict?.gates.some((gate) => gate.name === "timbre-probes"));
+  assert.ok(lolaRow?.verdict?.failing.includes("timbre-probes"));
+});
+
+test("a matrix row refuses an artifact from another subject", () => {
+  const anna = resolveSubject({ voice: "anna" });
+  const lola = resolveSubject({ voice: "lola" });
+  const lolaRun = matrixRun({
+    voice: "lola",
+    subject: lola,
+    gates: [{ name: "plumbing", status: "PASS", detail: "eval runner finished" }],
+  });
+  assert.throws(
+    () => buildRegressionMatrix({ entries: [{ subject: anna, artifact: lolaRun }] }),
+    /only reads its own subject's run/,
+    "a passing artifact from another subject is never a row's own verdict",
+  );
 });
 
 // ── Review fixes: harness break, measurements, memory INFO, attribution, sub-scores ──
@@ -5127,7 +6198,7 @@ test("sub-scores aggregate the five human-likeness areas in spec priority", () =
     exitCode: 0,
     durationMs: 10,
     runs: 1,
-    agentInput: { turn_detection: null },
+    runBody: runBodyOf(SERVED_LEVEL, { fingerprint: null }),
     gaps: { "greeting-cut": [900] },
     doubleTalkOverlapMs: [120, 650],
   });
@@ -5261,6 +6332,31 @@ const PINNED_BUDGETS: Record<string, number> = {
   humanRatersRequired: 2,
   humanRatingScaleMin: 1,
   humanRatingScaleMax: 5,
+  comparisonLevelLu: 1.5,
+  comparisonModulationDepth: 0.05,
+  comparisonBandDeltaDb: 3,
+  comparisonDistortionDb: -45,
+  comparisonDistortionDeltaDb: 3,
+  comparisonBreakupCount: 1,
+  comparisonOnsetToleranceS: 0.05,
+  comparisonModelTextWordChanges: 0,
+  comparisonReferenceClipDbtp: -0.1,
+  timbreMeasuredTruePeakDbtp: -1,
+  timbreMeasuredDistortionDb: -45,
+  timbreMeasuredCrestMin: 1.2,
+  timbreMeasuredBandDeltaDb: 3,
+  timbreMeasuredBreakupMax: 0,
+  timbreMeasuredBreakupMatchSeconds: 0.05,
+  floorLevelDeviationLu: 0.2,
+  floorPeakHeadroomDb: 0.3,
+  floorDistortionResidualDb: -60,
+  floorBreakupSeconds: 0.02,
+  floorModulationDepth: 0.01,
+  timbreBallotWeightTimbre: 0.5,
+  timbreBallotWeightAccent: 0.25,
+  timbreBallotWeightLanguageNaturalness: 0.25,
+  timbreBallotPassScore: 5,
+  timbreBallotRatersRequired: 2,
 };
 
 const BUDGET_RECORD_URL = new URL("./scoreboard-budgets.json", import.meta.url);
@@ -5329,6 +6425,43 @@ test("committed budget record matches the pinned table", () => {
   assert.match(record.note, /threshold edit/i);
   assert.deepEqual(record.budgets, PINNED_BUDGETS);
   assert.deepEqual(record.budgets, budgetValues());
+});
+
+test("floor-mode bars and the breakup matcher are the pinned records, not local literals", () => {
+  // The driver used to declare these itself. They now live only in the budget
+  // table, so a local retune must move the record (and this pin) or fail.
+  assert.equal(FLOOR_AXIS_THRESHOLDS.levelDeviationLu, PINNED_BUDGETS.floorLevelDeviationLu);
+  assert.equal(FLOOR_AXIS_THRESHOLDS.peakHeadroomDb, PINNED_BUDGETS.floorPeakHeadroomDb);
+  assert.equal(FLOOR_AXIS_THRESHOLDS.distortionResidualDb, PINNED_BUDGETS.floorDistortionResidualDb);
+  assert.equal(FLOOR_AXIS_THRESHOLDS.breakupSeconds, PINNED_BUDGETS.floorBreakupSeconds);
+  assert.equal(FLOOR_AXIS_THRESHOLDS.modulationDepth, PINNED_BUDGETS.floorModulationDepth);
+  assert.equal(BREAKUP_MATCH_SECONDS, PINNED_BUDGETS.timbreMeasuredBreakupMatchSeconds);
+  // The budget source strings quote these metric modules; if one moves alone
+  // the record (and this pin) fails instead of the two bars disagreeing.
+  assert.equal(FLOOR_AXIS_THRESHOLDS.levelDeviationLu, LEVEL_TOLERANCE_DB);
+  assert.equal(FLOOR_AXIS_THRESHOLDS.peakHeadroomDb, TRUE_PEAK_TOLERANCE_DB);
+  assert.equal(
+    FLOOR_AXIS_THRESHOLDS.distortionResidualDb,
+    DEFAULT_DISTORTION_CREST_THRESHOLDS.maxResidualDb,
+  );
+});
+
+test("bars that judge the same defect stay equal across gates", () => {
+  // `comparisonBandDeltaDb` / `timbreMeasuredBandDeltaDb` are the same octave
+  // tilt bar, and `comparisonDistortionDb` / `timbreMeasuredDistortionDb` the
+  // same clean-file residual bar, measured on two different capture pairs.
+  // Separate records keep each gate's provenance; this pin stops a retune of
+  // one from silently disagreeing with the other.
+  assert.equal(
+    SCOREBOARD_BUDGETS.comparisonBandDeltaDb.value,
+    SCOREBOARD_BUDGETS.timbreMeasuredBandDeltaDb.value,
+    "the spectral-tilt bar is one bar, whichever gate quotes it",
+  );
+  assert.equal(
+    SCOREBOARD_BUDGETS.comparisonDistortionDb.value,
+    SCOREBOARD_BUDGETS.timbreMeasuredDistortionDb.value,
+    "the clean-file distortion residual bar is one bar, whichever gate quotes it",
+  );
 });
 
 test("budget freeze guard rejects a threshold edit that does not move the record", () => {

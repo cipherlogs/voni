@@ -41,6 +41,12 @@ npm run scoreboard:demo
 | `voni/src/lib/demo/latency-split.ts` | per-turn endpointing/generation/delivery arithmetic, ordinary vs post-cut |
 | `voni/src/lib/demo/playout-preroll.ts` | the fixed playback pre-roll constant (report-only `perceived`, never a gate input) |
 | `voni/src/lib/demo/turn-windows.ts` | one formatter for turn-window evidence (gate detail + inspect report) |
+| `voni/src/lib/voice/silent-greeting.ts` | one silent-greeting session: the line as the greeting, native level (caller clips + reference capture) |
+| `voni/src/lib/demo/reference-render.ts` | reference cache (voice + text), PCM WAV writer, default line = the voice's greeting |
+| `voni/src/lib/demo/gate-producers.ts` | the one gate → producer-scenario table, its coverage assertion, and the startup summary |
+| `voni/scripts/render-reference.mts` | `npm run voice:reference`: render one line in one voice outside a conversation (W0) |
+| `voni/src/lib/audio/vendor-floor.ts` | committed vendor floor loader: provenance sidecar + PCM16 WAV, named refusals, no empty floor (W0) |
+| `voni/scripts/capture-vendor-floor.mts` | `npm run voice:vendor-floor`: capture or register the vendor floor, committed as evidence (W0) |
 | `docs/demo-latency-ladder.md` | turn-window experiment rulebook, stop rule, and ledger (not a gate or budget owner) |
 
 Evidence flow: runner stdout -> parsers in `score-demo` -> gate inputs in
@@ -49,6 +55,12 @@ detail strings are the audit trail; a FAIL must name its session/turn.
 
 ## Gate -> producer -> artifact
 
+`voni/src/lib/demo/gate-producers.ts` is the single source for the scenario
+producers below; `score-demo` reads it at startup (before the timing lock) and
+fails when a gate's producer is not in the default suite, so a gate cannot
+report INFO forever on evidence nobody runs. Gates with no scenario producer
+declare why there (`run`, `operator`, `manual`) instead of staying silent.
+
 | Gate | Producer | Artifact |
 | --- | --- | --- |
 | plumbing | `classifyRunnerOutcome` | `evalRunner.status/breakReason` |
@@ -56,25 +68,106 @@ detail strings are the audit trail; a FAIL must name its session/turn.
 | reply-gap | Call trace gaps / `--gap` | `replyGap`, `beats.*.gapSamples`, `callTrace` |
 | end-of-turn | stored body + trace CONFIG scan | `gates` detail |
 | greeting-cut | greeting-cut scenario | `beats["greeting-cut"].cutMs` |
-| barge-in-cut | stop-over / hang-up-over | `beats["real-cut-answered"]`, `runnerEvidence` |
+| barge-in-cut | stop-over | `beats["real-cut-answered"]`, `runnerEvidence` |
 | filler-resume | filler-over line | `beats["filler-ignored"]` |
 | overheard-recall | over-talk trace + `OVERHEARD ASIDE` | `overheard` |
 | email-invite | invite-tag / `--email-json` | `emailInvite` |
 | double-talk | over-talk `DOUBLE TALK` | `doubleTalk` |
 | dead-air | silence-check-in `SILENCE TIMELINE` | `deadAir` |
-| end-call-drain | bye-audio + both hang-up scenarios | `endCallDrain` |
-| timbre-probes | `--probe-json` / session evidence | `probes`, `loudness` |
+| end-call-drain | bye-audio + free-gate coverage, then both hang-up scenarios | `endCallDrain` |
+| timbre-probes | `--probe-json` / session evidence + `--reference`/`--delivered` measured captures | `probes`, `loudness` |
 | accent-human | `--rate` + `--recording` | `humanRatings`, `humanReview` |
 | phone-checklist, talk-hold-pinned | manual/external | informational rows only |
 
 Thresholds live only in `scoreboard-budgets.ts` and its JSON record. Do not
-edit a budget to pass; fix the call or amend the spec first.
+edit a budget to pass; fix the call or amend the spec first. The phone bridge
+reads the same JSON record at runtime (`VONI_SCOREBOARD_BUDGETS_JSON` overrides
+its path in a deployment without the `voni/` tree), so its drain constants
+cannot drift from the browser's.
+
+## Measured timbre captures
+
+The timbre gate's six measured axes need the reference render of the line and
+the Delivered audio the caller received. Both are saved WAVs decoded through
+`MeasuredLevelFile` before the runner starts:
+
+```
+cd voni
+npm run voice:reference -- --voice lola          # writes .voice-references/lola-*.wav
+npm run scoreboard:demo -- --voice lola \
+  --reference .voice-references/<reference>.wav \
+  --delivered <delivered-capture>.wav \
+  --probe-json <probes.json> --rate ...
+```
+
+`--delivered` is the browser delivered capture (`?delivercapture=1`) or the
+phone/agent-channel WAV. A run without the pair keeps the measured leg INFO;
+an unreadable file fails by name before any artifact is written. A measured
+PASS still needs the agent-channel PCM evidence (`--probe-json`) and the
+weighted ballot: a missing channel is INFO, never a PASS.
+
+## Subject matrix ordering (W5, ticket 78)
+
+`npm run scoreboard:matrix` judges one subject per row — `{agent, Locale,
+transport}` — and every row's verdict comes from that subject's own artifact.
+The featured subject (`anna`) is measured and judged first. Every other
+subject, English and non-English alike, stays `BLOCKED` with a named reason
+(`blocked: featured subject demo anna (en, browser) has not passed …`) until the
+featured subject's own current run in that matrix passes. A missing or
+non-passing featured run blocks too; only PASS opens the gate. The rule is
+recorded in `artifact.ordering` (rule, featured status, blocked row keys,
+detail) and in the `ordering:featured-first` gate row, and printed in the
+compact table, so a Locale is never silently judged on an unproved instrument.
+`--strict` fails while any row is blocked: a subject that was not judged is not
+clean.
+
+## Reference capture (W0)
+
+`npm run voice:reference -- --voice lola` renders one line in one voice
+outside a conversation. It reuses the silent-greeting session the runner uses
+for caller clips: a session told to stay silent, with the line as its greeting,
+so no model is in the audio. The cache key is voice + text under
+`voni/.voice-references/` (gitignored), and the file is a PCM WAV at the
+voice's native level — no client gain, no limiter, no normalisation. The
+default line is that voice's own greeting, in its own Locale; `--text` renders
+another sentence so a mid-call defect is attributed to the text rather than the
+greeting.
+
+## Vendor floor (W0)
+
+`voni/evidence/vendor-floor/anna-en.wav` (+ `anna-en.json`) is the committed
+recording every subject must clear: `anna` speaking `VONI_GREETINGS.en`,
+captured 2026-10-29 from the vendor's text-to-speech engine
+(`assemblyai-tts-1`, `aai-anna`) with no client, platform or model in the path.
+`npm run voice:vendor-floor` reproduces it (or registers an owner-supplied
+playground recording with `--from-recording`), and
+`loadVendorFloor()` in `src/lib/audio/vendor-floor.ts` is the only reader. It
+refuses a missing, unreadable, tampered or misdescribed floor by name — there
+is no empty floor a comparison could silently pass against. See the README in
+that directory for the provenance fields and the measured baseline.
+
+## Re-audition pack (W2, ticket 41)
+
+`npm run voice:reaudition -- --voice lola --locale es --pending --out reaudition-runs/lola-es-pending`
+writes a `pending-live-call` template with the exact operator steps. A complete
+pack needs the reference render, the platform agent channel and the browser
+delivered WAV, plus the platform transcript; any missing capture leaves the
+pack `incomplete` and the verdict `unresolved`, never a pass.
+
+The automated verdict is content-only, because the gate is about the words:
+`accept` means the content did not hold up (the per-locale rendering layer is
+justified), `withdraw` means it held up (not justified to fix quality), and
+`unresolved` means the pack cannot decide. `--adr` writes the section into the
+locale-rendering decision record (ADR 0008); an unresolved pack leaves it
+`proposed`. `src/lib/demo/reaudition.test.ts` covers assembly, the verdict
+rules, named missing-capture errors and the pending path with synthetic WAVs.
 
 ## Live-run rules
 
 - Run live timing scenarios **one at a time**; `score-demo` takes
   `/tmp/voni-demo-timing.lock`. Parallel live runs inflate cut/reply numbers.
-- `npm run scoreboard:demo` defaults to the full 9-scenario suite; use
+- `npm run scoreboard:demo` defaults to the full default suite
+  (`SUITE_SCENARIOS`: 10 scenarios, both goodbye-drain paths included); use
   `--scenario <name>` for focused triage. A dry run spawns nothing.
 - Live runs need `voni/.dev.vars` (AssemblyAI + AI Gateway keys) and, for the
   stored path, `DATABASE_URL` (Neon) so the demo agent can be provisioned.

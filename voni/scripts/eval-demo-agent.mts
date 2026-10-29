@@ -28,6 +28,11 @@
  * `DEMO_AGENT_VARIANT` / `DEMO_TURN_*`; the flag wins. A variant on the inline
  * debug transport is refused: inline is never measured.
  *
+ * `--scenario <name>` selects one registered scenario (`all`/`suite` runs
+ * every one). A misspelt name is a named failure raised before the event
+ * stream, a token or any audio exists — never a run whose filters match
+ * nothing and whose summary still looks finished.
+ *
  * `--events <path>` is an opt-in JSONL stream of key decisions (scenario
  * start/end, session ready, reply create/first audio, cut, tool call/result,
  * end_call, goodbye drain, hangup, aside). It carries timings and ids only —
@@ -131,6 +136,12 @@ import {
   getOrCreateDemoAgent,
 } from "../src/lib/demo/stored-agents";
 import { createEvalEventWriter } from "../src/lib/demo/eval-events";
+import {
+  assertScenariosRegistered,
+  isAllScenarioSelector,
+  resolveScenarioName,
+  type EvalScenario,
+} from "../src/lib/demo/scenario-names";
 import { createCallTurnMarks } from "../src/lib/demo/turn-marks";
 import {
   evalSummaryIdentity,
@@ -138,6 +149,7 @@ import {
   parseEvalTransport,
   resolveEvalVariantSelection,
   storedAgentBinding,
+  parseEvalAgentId,
   type EvalAgentIdentity,
   type EvalTransport,
   type EvalVariantSelection,
@@ -163,6 +175,7 @@ import {
   type CheckEmailResult,
 } from "../src/lib/demo/email-test";
 import { END_CALL_VOICE_TOOL } from "../src/lib/tools/definitions";
+import { getVoice } from "../src/lib/agents/voices";
 import {
   HELD_RESULT_RELEASE_MS,
   END_CALL_AUDIO_GRACE_MS,
@@ -175,6 +188,8 @@ import {
 } from "../src/lib/voice/session";
 import { tryJevGateway } from "../src/lib/voice/voice-judge";
 import { isEndCallRequest, isGoodbyeLine } from "../src/lib/voice/jev-judges";
+import { callRecognition } from "../src/lib/voice/recognition";
+import { collectSilentGreeting } from "../src/lib/voice/silent-greeting";
 import {
   callerClipDrift,
   callerClipFingerprint,
@@ -231,6 +246,15 @@ function arg(name: string, fallback: string): string {
 type Step = { say?: string; instructions?: string };
 type Outcome = { agent: string[]; heard: string[]; endCalled: boolean; sessionId?: string };
 
+/**
+ * `--scenario <name>`, or `all`/`suite`/absent for every scenario. Resolved
+ * here — before the event stream is created, before an API key is required and
+ * before any token or audio is spent — so a typo is a named failure instead of
+ * a run that filters every list to nothing and still reports success.
+ */
+const requestedScenario = arg("--scenario", "");
+const only = isAllScenarioSelector(requestedScenario) ? "" : resolveScenarioName(requestedScenario);
+
 const apiKey = process.env.ASSEMBLYAI_API_KEY;
 if (!apiKey) throw new Error("ASSEMBLYAI_API_KEY missing: run with --env-file=.dev.vars");
 
@@ -240,6 +264,13 @@ if (!apiKey) throw new Error("ASSEMBLYAI_API_KEY missing: run with --env-file=.d
  * unknown value is a usage error, never a silent fallback.
  */
 const TRANSPORT: EvalTransport = parseEvalTransport(process.argv);
+
+/**
+ * A tenant agent to bind (voice-parity ticket 72): the same runner measures a
+ * customer's stored agent, addressed by id, instead of provisioning the demo's
+ * per-voice agent. Absent means the run measures the demo subject.
+ */
+const TENANT_AGENT_ID: string | null = parseEvalAgentId(process.argv);
 
 /**
  * Opt-in JSONL event stream (retro #9): `--events <path>` writes one object
@@ -285,6 +316,21 @@ let storedAgentRequest: Promise<EvalAgentIdentity> | null = null;
  */
 async function storedAgentFor(voiceId: string): Promise<EvalAgentIdentity> {
   if (storedAgent) return storedAgent;
+  // A tenant subject is bound as served: the customer's body is not provisioned
+  // or refreshed here, and its Locale/voice come with the agent (ticket 72).
+  if (TENANT_AGENT_ID !== null) {
+    const identity: EvalAgentIdentity = {
+      agentId: TENANT_AGENT_ID,
+      fingerprint: null,
+      llmModel: null,
+      variant: "production",
+      variantKey: null,
+      turnWindows: null,
+    };
+    storedAgent = identity;
+    console.log(`  · tenant agent ${identity.agentId} (bound as served; not provisioned by the demo)`);
+    return identity;
+  }
   if (!storedAgentRequest) {
     storedAgentRequest = (async () => {
       // The variant selection is resolved once at startup (flag beats env);
@@ -314,7 +360,7 @@ async function storedAgentFor(voiceId: string): Promise<EvalAgentIdentity> {
       };
       storedAgent = identity;
       console.log(
-        `  · stored agent ${identity.agentId} (${VARIANT_SELECTION.variant === "turn-window" ? `${VARIANT_SELECTION.variantKey} ` : ""}fingerprint ${identity.fingerprint.slice(0, 12)}, llm ${identity.llmModel ?? "managed"})`,
+        `  · stored agent ${identity.agentId} (${VARIANT_SELECTION.variant === "turn-window" ? `${VARIANT_SELECTION.variantKey} ` : ""}fingerprint ${identity.fingerprint ? identity.fingerprint.slice(0, 12) : "none"}, llm ${identity.llmModel ?? "managed"})`,
       );
       return identity;
     })();
@@ -415,34 +461,21 @@ async function speak(line: string): Promise<Buffer> {
 }
 
 async function speakOnce(line: string): Promise<Buffer> {
-  const ws = new WebSocket(`${WS}?token=${await token()}`);
-  const chunks: Buffer[] = [];
-  const pcm = await new Promise<Buffer>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("speech timed out")), TURN_TIMEOUT_MS);
-    ws.addEventListener("open", () =>
-      ws.send(
-        JSON.stringify({
-          type: "session.update",
-          session: { system_prompt: "Stay silent.", greeting: line, output: { voice: CALLER_VOICE } },
-        }),
-      ),
-    );
-    ws.addEventListener("message", (event) => {
-      const msg = JSON.parse(String(event.data));
-      if (msg.type === "reply.audio") chunks.push(Buffer.from(msg.data, "base64"));
-      if (msg.type === "reply.done") {
-        clearTimeout(timer);
-        resolve(Buffer.concat(chunks));
-      }
-    });
-    ws.addEventListener("error", () => reject(new Error("speech socket error")));
+  return collectSilentGreeting({
+    voiceId: CALLER_VOICE,
+    text: line,
+    token: await token(),
+    timeoutMs: TURN_TIMEOUT_MS,
   });
-  ws.send(JSON.stringify({ type: "session.end" }));
-  ws.close();
-  return pcm;
 }
 
 async function runSession(voiceId: string, steps: Step[]): Promise<Outcome> {
+  if (TENANT_AGENT_ID !== null) {
+    throw new HarnessBreak(
+      `scenario rebuilds a demo agent body, but the subject is tenant agent ${TENANT_AGENT_ID}: ` +
+        "measure a tenant through the live client path (greeting-cut, stop-over, over-talk, filler-over, silence-check-in)",
+    );
+  }
   const body = buildDemoAgentBody(voiceId);
   const ws = new WebSocket(`${WS}?token=${await token()}`);
   const outcome: Outcome = { agent: [], heard: [], endCalled: false };
@@ -733,7 +766,16 @@ async function runClient(
   const liveStartedAt = Date.now();
   // Call-relative origin for the silence timeline and the playout maths.
   const t0 = Date.now();
-  const body = buildDemoAgentBody(voiceId);
+  // A stored run never reconstructs the demo body: its settings come from the
+  // agent the platform serves (score-demo reads that body back after the run).
+  // The builder is only for the inline debug transport (voice-parity ticket 24).
+  const body = TRANSPORT === "inline" ? buildDemoAgentBody(voiceId) : null;
+  // The call's Locale is the voice's own, from the shared registry — the same
+  // value the stored body pins, without rebuilding a body to read it.
+  const languageCode = getVoice(voiceId)?.languageCode;
+  const recognition = callRecognition({
+    languageCodes: languageCode ? [languageCode] : [],
+  });
   const outcome: ClientOutcome = {
     events: [], cutAt: null, creates: [], agent: [], heard: [], agentTurns: [], heardTurns: [], cutReplyId: null,
     replyAudioAt: {}, cutPlayedMs: null,
@@ -788,12 +830,12 @@ async function runClient(
         // spoken goodbye without calling the tool — still hang up after it.
         if (endRequested) {
           endRequested = false;
-          if (isGoodbyeLine(turn.text)) session.endAfterReply();
+          if (isGoodbyeLine(turn.text, recognition)) session.endAfterReply();
         }
       },
       onUserTurn: (turn) => {
         outcome.heardTurns.push({ text: turn.text, at: Date.now() });
-        if (isEndCallRequest(turn.text)) endRequested = true;
+        if (isEndCallRequest(turn.text, recognition)) endRequested = true;
       },
       onReplyDone: (info) => {
         repliesDone += 1;
@@ -999,6 +1041,7 @@ async function runClient(
     internals["tokenFetcher"] = binding.tokenFetcher;
     internals.connect(callToken, binding.config, gen);
   } else {
+    if (!body) throw new Error("inline transport must build the demo body");
     internals.connect(callToken, {
       mode: "inline",
       systemPrompt: body.system_prompt,
@@ -1284,7 +1327,7 @@ async function askAndWaitForSpeech(ctx: Parameters<Parameters<typeof runClient>[
   await new Promise((resolve) => setTimeout(resolve, 400)); // mid-sentence
 }
 
-const CLIENT_SCENARIOS: { name: string; run: () => Promise<string | null> }[] = [
+const CLIENT_SCENARIOS: { name: EvalScenario; run: () => Promise<string | null> }[] = [
   {
     name: "filler-over",
     run: async () => {
@@ -1670,6 +1713,12 @@ async function runToolSession(
   answer: (name: string, args: Record<string, unknown>) => Promise<Record<string, unknown>>,
   script: (api: ToolApi) => Promise<void>,
 ): Promise<ToolOutcome> {
+  if (TENANT_AGENT_ID !== null) {
+    throw new HarnessBreak(
+      `scenario rebuilds a demo agent body, but the subject is tenant agent ${TENANT_AGENT_ID}: ` +
+        "measure a tenant through the live client path (greeting-cut, stop-over, over-talk, filler-over, silence-check-in)",
+    );
+  }
   const body = buildDemoAgentBody(voiceId);
   const ws = new WebSocket(`${WS}?token=${await token()}`);
   const outcome: ToolOutcome = {
@@ -2150,9 +2199,9 @@ function goodbyeDrainLine(scenario: string, o: ToolOutcome): string {
 }
 
 /** Runs whose closing line is scored for the team inbox and full playback. */
-const GOODBYE_SCENARIOS = ["bye-audio", "free-gate"] as const;
+const GOODBYE_SCENARIOS = ["bye-audio", "free-gate"] as const satisfies readonly EvalScenario[];
 
-const EMAIL_SCENARIOS: { name: string; run: (voiceId: string) => Promise<[string | null, ToolOutcome | null]> }[] = [
+const EMAIL_SCENARIOS: { name: EvalScenario; run: (voiceId: string) => Promise<[string | null, ToolOutcome | null]> }[] = [
   {
     name: "bye-audio",
     run: async (voice) => {
@@ -2314,7 +2363,7 @@ function voiceIdArg(): string {
   return arg("--voice", DEMO_VOICE_IDS[0]);
 }
 
-const SCENARIOS: { name: string; steps: Step[]; pass: (o: Outcome) => string | null }[] = [
+const SCENARIOS: { name: EvalScenario; steps: Step[]; pass: (o: Outcome) => string | null }[] = [
   {
     name: "hang-up",
     steps: [{ say: "I want you to hang up." }],
@@ -2345,6 +2394,11 @@ const SCENARIOS: { name: string; steps: Step[]; pass: (o: Outcome) => string | n
   },
 ];
 
+// Every definition this file carries must be registered by name, and every
+// registered name must have one: a stale registry entry would let a typo
+// equal to it run nothing and still pass. A drift is a harness break.
+assertScenariosRegistered([...SCENARIOS, ...CLIENT_SCENARIOS, ...EMAIL_SCENARIOS].map((scenario) => scenario.name));
+
 /**
  * Test knob: simulate a flush that fails to stop the agent for this many ms.
  * 0 (default) is the healthy flush. It exists so the double-talk gate can be
@@ -2371,16 +2425,17 @@ const VARIANT_SELECTION: EvalVariantSelection = resolveEvalVariantSelection({
   envVariant: await demoAgentVariantFromEnv(),
   envWindows: await demoTurnWindowsFromEnv(),
 });
-const requestedScenario = arg("--scenario", "");
 // `--scenario all` (and `suite`) means every scenario: score-demo's one-command
 // suite may pass either name, and a filter that matched "all" literally would
-// run nothing at all.
-const only = requestedScenario === "all" || requestedScenario === "suite" ? "" : requestedScenario;
+// run nothing at all. `only` was resolved at startup (see above).
 // Say it once up front: an inline run is a debugging aid, never proof of what
 // the landing demo's stored agent runs.
 console.log(
   `transport: ${TRANSPORT}${TRANSPORT === "stored" ? " (the landing demo's stored agent)" : " (inline body: debugging only)"}`,
 );
+if (TENANT_AGENT_ID !== null) {
+  console.log(`tenant agent: ${TENANT_AGENT_ID} (voice ${voiceId}; bound as served, not provisioned by the demo)`);
+}
 console.log(
   `variant: ${VARIANT_SELECTION.variant}` +
     (VARIANT_SELECTION.variantKey

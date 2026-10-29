@@ -38,8 +38,17 @@ voni/GATES.md
 # Local video-making workspace
 /demo/
 
+# Dev delivered capture (WAV of what the playout worklet emitted; working file)
+voni/.captures/
+
 # Demo scoreboard run artifacts (regenerated per run, never committed)
 voni/scoreboard-runs/
 
+# Kept platform channel captures from session QA (audio evidence, never committed)
+voice-captures/
+
 # Fixed caller clips for the demo scoreboard (PCM cache, regenerated on miss)
 voni/.eval-clips/
+
+# W0 reference captures: one WAV per voice + line (regenerated, never committed)
+voni/.voice-references/

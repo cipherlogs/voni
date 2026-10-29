@@ -75,6 +75,124 @@ test("deleteRemoteAgent encodes the remote id", async () => {
   assert.equal(url, "https://agents.assemblyai.com/v1/agents/a%2Fb%3Fc");
 });
 
+// ── One removal path for an absent override (ticket 63) ────────────────────
+
+test("the refresh payload reverts an absent override instead of omitting it", async () => {
+  const { agentUpdatePayload, storedAgentBody } = await import("./provision");
+  const { REAL_ESTATE_TEMPLATE } = await import("./config");
+
+  const desired = storedAgentBody("Layla", REAL_ESTATE_TEMPLATE);
+  assert.ok(!("llm" in desired), "the desired body carries no override");
+
+  // The live platform keeps a previously stored `llm` when a PUT omits it, so
+  // an omitted field is not a removal. `[]` is the documented revert.
+  const payload = agentUpdatePayload(desired);
+  assert.deepEqual(payload.llm, [], "an absent override is sent as the revert");
+  const { llm: _llm, ...rest } = payload;
+  void _llm;
+  assert.deepEqual(rest, desired, "removal changes no other field");
+});
+
+const EXPERIMENT_LLM = [
+  {
+    base_url: "https://llm.example.test/v1",
+    model: "experiment",
+    api_key: "sk-write-only",
+  },
+];
+
+/**
+ * A fake Agents API with the one contract this ticket turns on: a PUT that
+ * omits `llm` keeps the deployed override, and `llm: []` reverts to the
+ * managed model. `deployed()` is what GET would return.
+ */
+function fakePlatform(initial: Record<string, unknown>) {
+  let deployed = structuredClone(initial);
+  const payloads: Array<Record<string, unknown>> = [];
+  const fetchFn = (async (_input: string | URL | Request, init?: RequestInit) => {
+    const payload = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    payloads.push(payload);
+    if (init?.method === "PUT") {
+      const next = { ...payload };
+      if (!("llm" in payload) && "llm" in deployed) next.llm = deployed.llm;
+      if (Array.isArray(next.llm) && next.llm.length === 0) delete next.llm;
+      deployed = next;
+    }
+    return new Response(JSON.stringify({ id: "agent_1" }), { status: 200 });
+  }) as typeof fetch;
+  return { deployed: () => deployed, payloads, fetchFn };
+}
+
+test("a routine refresh removes a deployed override the desired body no longer carries", async () => {
+  const { provisionAgent, storedAgentBody } = await import("./provision");
+  const { REAL_ESTATE_TEMPLATE } = await import("./config");
+
+  const desired = storedAgentBody("Layla", REAL_ESTATE_TEMPLATE);
+  const platform = fakePlatform({ ...desired, llm: EXPERIMENT_LLM });
+  assert.deepEqual(
+    platform.deployed().llm,
+    EXPERIMENT_LLM,
+    "the deployed agent starts with the experiment's override",
+  );
+
+  const result = await provisionAgent("Layla", REAL_ESTATE_TEMPLATE, "agent_1", {
+    apiKey: "key",
+    fetchFn: platform.fetchFn,
+  });
+  assert.deepEqual(result, { ok: true, agentId: "agent_1" });
+  assert.equal(platform.payloads.length, 1, "one refresh, one PUT");
+  assert.deepEqual(
+    platform.payloads[0].llm,
+    [],
+    "the refresh sends the revert; an omitted llm would leave the override in place",
+  );
+  assert.ok(
+    !("llm" in platform.deployed()),
+    "the override does not survive the refresh",
+  );
+});
+
+test("a desired override is preserved by the refresh payload", async () => {
+  const { agentUpdatePayload, tenantAgentProfile } = await import("./provision");
+  const { buildStoredAgent } = await import("./body");
+  const { REAL_ESTATE_TEMPLATE } = await import("./config");
+
+  const desired = buildStoredAgent({
+    name: "Layla",
+    config: REAL_ESTATE_TEMPLATE,
+    profile: {
+      ...tenantAgentProfile(REAL_ESTATE_TEMPLATE),
+      modelOverride: EXPERIMENT_LLM,
+    },
+  });
+
+  const payload = agentUpdatePayload(desired);
+  assert.deepEqual(payload.llm, EXPERIMENT_LLM, "an experiment in flight keeps its override");
+  assert.deepEqual(payload, desired, "the payload changes nothing but the removal it owns");
+});
+
+test("a refresh of a body that already has no override is a no-op", async () => {
+  const { provisionAgent, storedAgentBody } = await import("./provision");
+  const { REAL_ESTATE_TEMPLATE } = await import("./config");
+
+  const platform = fakePlatform(storedAgentBody("Layla", REAL_ESTATE_TEMPLATE));
+  const refresh = () =>
+    provisionAgent("Layla", REAL_ESTATE_TEMPLATE, "agent_1", {
+      apiKey: "key",
+      fetchFn: platform.fetchFn,
+    });
+
+  await refresh();
+  assert.ok(!("llm" in platform.deployed()), "the deployed agent stays on the managed model");
+  const afterFirst = structuredClone(platform.deployed());
+  await refresh();
+  assert.deepEqual(
+    platform.deployed(),
+    afterFirst,
+    "repeating the removal is idempotent: the second refresh changes nothing",
+  );
+});
+
 test("storedAgentBody ships REST-shaped tools without `type`", async () => {
   const { storedAgentBody } = await import("./provision");
   const { REAL_ESTATE_TEMPLATE } = await import("./config");
@@ -84,4 +202,133 @@ test("storedAgentBody ships REST-shaped tools without `type`", async () => {
   for (const tool of body.tools as Array<Record<string, unknown>>) {
     assert.ok(!("type" in tool), "Agents REST API has no `type` field");
   }
+});
+
+test("the tenant phone body runs the Turn preset, not an explicit object", async () => {
+  const { storedAgentBody } = await import("./provision");
+  const { REAL_ESTATE_TEMPLATE } = await import("./config");
+
+  // CONTEXT.md **Turn preset**: one turn-taking setting on every call. The
+  // phone path is a profile of the one builder, so it sends `turn_detection:
+  // null` (adaptive, meaning-based end-of-turn) like the browser demo.
+  const body = storedAgentBody("test-agent", REAL_ESTATE_TEMPLATE);
+  assert.ok("turn_detection" in body.input, "the body shape is unchanged");
+  assert.equal(body.input.turn_detection, null);
+  assert.equal(
+    JSON.stringify(body).match(/"turn_detection":/g)?.length,
+    1,
+    "the tenant body never carries a second, explicit object",
+  );
+});
+
+test("the tenant stored body carries the voice's measured level", async () => {
+  const { storedAgentBody, deploymentFingerprint } = await import("./provision");
+  const { agentBodyFingerprint } = await import("./fingerprint");
+  const { REAL_ESTATE_TEMPLATE } = await import("./config");
+  const { voiceOutputVolume } = await import("./voice-levels");
+
+  const body = storedAgentBody("test-agent", REAL_ESTATE_TEMPLATE);
+  assert.equal(typeof body.output.volume, "number", "the body carries a numeric output.volume");
+  assert.equal(body.output.volume, voiceOutputVolume(REAL_ESTATE_TEMPLATE.voiceId));
+
+  // Unknown voice: the builder still ships the named default, never a guess.
+  const unmeasured = storedAgentBody("test-agent", { ...REAL_ESTATE_TEMPLATE, voiceId: "not-a-voice" });
+  assert.equal(unmeasured.output.volume, voiceOutputVolume("not-a-voice"));
+
+  // The tenant path hashes the whole body it built, so a level change cannot
+  // hide behind a stale deployment: the level is inside the fingerprint.
+  assert.equal(
+    deploymentFingerprint("test-agent", REAL_ESTATE_TEMPLATE),
+    agentBodyFingerprint(body),
+    "the deployment fingerprint is the whole tenant body",
+  );
+  const attenuated = { ...body, output: { ...body.output, volume: body.output.volume - 1 } };
+  assert.notEqual(agentBodyFingerprint(attenuated), agentBodyFingerprint(body), "the level is inside the fingerprint");
+  assert.deepEqual(
+    { ...attenuated, output: body.output },
+    body,
+    "nothing but the level changed",
+  );
+  assert.notEqual(
+    deploymentFingerprint("test-agent", { ...REAL_ESTATE_TEMPLATE, voiceId: "anna" }),
+    deploymentFingerprint("test-agent", { ...REAL_ESTATE_TEMPLATE, voiceId: "lola" }),
+    "different voices ship different bodies (and levels) as different fingerprints",
+  );
+});
+
+test("the deployment fingerprint covers the model override", async () => {
+  const { buildStoredAgent } = await import("./body");
+  const { agentBodyFingerprint } = await import("./fingerprint");
+  const { storedAgentBody, tenantAgentProfile } = await import("./provision");
+  const { REAL_ESTATE_TEMPLATE } = await import("./config");
+
+  const llm = [
+    { base_url: "https://llm.example.test/v1", model: "m", api_key: "sk-write-only" },
+  ];
+  const overridden = buildStoredAgent({
+    name: "Layla",
+    config: REAL_ESTATE_TEMPLATE,
+    profile: { ...tenantAgentProfile(REAL_ESTATE_TEMPLATE), modelOverride: llm },
+  });
+  const managed = storedAgentBody("Layla", REAL_ESTATE_TEMPLATE);
+
+  assert.notEqual(
+    agentBodyFingerprint(overridden),
+    agentBodyFingerprint(managed),
+    "the override the tenant subset omitted is now inside the deployment fingerprint",
+  );
+  const { llm: _llm, ...rest } = overridden;
+  void _llm;
+  assert.deepEqual(rest, managed, "the override is the only difference");
+});
+
+test("a platform read-back compares equal to the body that was sent", async () => {
+  const { buildStoredAgent } = await import("./body");
+  const { agentBodyFingerprint, readBackAgentBody } = await import("./fingerprint");
+  const { tenantAgentProfile } = await import("./provision");
+  const { REAL_ESTATE_TEMPLATE } = await import("./config");
+
+  const llm = [
+    { base_url: "https://llm.example.test/v1", model: "m", api_key: "sk-write-only" },
+  ];
+  const body = buildStoredAgent({
+    name: "Layla",
+    config: REAL_ESTATE_TEMPLATE,
+    profile: { ...tenantAgentProfile(REAL_ESTATE_TEMPLATE), modelOverride: llm },
+  });
+
+  // What GET /v1/agents/{id} adds or never returns: ids and timestamps, tool
+  // ids, and the write-only LLM key. Nothing the body authors is dropped.
+  const readBack = {
+    ...body,
+    id: "agent_123",
+    created_at: "2026-10-29T00:00:00.000Z",
+    updated_at: "2026-10-29T00:00:00.000Z",
+    tools: body.tools.map((tool, index) => ({ ...tool, id: `tool_${index}`, last_set_at: "2026-10-29T00:00:00.000Z" })),
+    llm: llm.map(({ api_key: _apiKey, ...entry }) => {
+      void _apiKey;
+      return entry;
+    }),
+  };
+
+  assert.equal(
+    agentBodyFingerprint(readBackAgentBody(readBack)),
+    agentBodyFingerprint(readBackAgentBody(body)),
+    "the ambiguous-create check hashes the read-back shape of both sides",
+  );
+  assert.deepEqual(
+    readBackAgentBody(readBack),
+    readBackAgentBody(body),
+    "an ambiguous create can recognise the agent it just made",
+  );
+  assert.deepEqual(
+    Object.keys(readBackAgentBody(body)).sort(),
+    Object.keys(body).sort(),
+    "the read-back shape keeps every authored field",
+  );
+  assert.notDeepEqual(
+    readBackAgentBody({ ...readBack, system_prompt: `${readBack.system_prompt} Drifted.` }),
+    readBackAgentBody(body),
+    "a body the platform actually moved still compares different",
+  );
 });

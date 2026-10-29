@@ -1,15 +1,21 @@
-import { createHash } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { secret } from "@/lib/env";
 import { demoAgents } from "@/lib/db/schema";
-import { compileSystemPrompt } from "@/lib/agents/compile";
-import { getVoice, VOICE_OUTPUT_VOLUME } from "@/lib/agents/voices";
+import {
+  buildStoredAgent,
+  type AgentProfile,
+  type LlmOverride,
+  type StoredAgentBody,
+  type TurnTaking,
+} from "@/lib/agents/body";
+import { agentBodyFingerprint } from "@/lib/agents/fingerprint";
+import { agentUpdatePayload } from "@/lib/agents/provision";
 import { DEMO_VOICE_IDS, VONI_AGENT_ID, voniConfig } from "./voni-agent";
 import { toRestTool } from "@/lib/tools/definitions";
 import { DEMO_VOICE_TOOLS } from "./demo-tools";
-import { DEMO_TRANSCRIPTION_MODE, buildAgentKeyterms, buildAgentTranscriptionPrompt } from "@/lib/voice/transcription";
-import { stableJson } from "@/lib/agents/provision";
+
+export type { LlmOverride } from "@/lib/agents/body";
 
 /**
  * Provision (and refresh) the AssemblyAI stored agent behind a public demo.
@@ -45,20 +51,6 @@ import { stableJson } from "@/lib/agents/provision";
  */
 
 const AGENTS_URL = "https://agents.assemblyai.com/v1/agents";
-
-/**
- * A bring-your-own OpenAI-compatible LLM for the stored demo agent. Write-only
- * on the agent body (`api_key` is never returned by the platform, and this
- * module never returns it to a caller either). `llm` is an array with at most
- * one entry; `[]` reverts to the managed model.
- */
-export type LlmOverride = {
-  base_url: string;
-  model: string;
-  api_key: string;
-  /** Disable thinking on models that support it (Gemini 2.5 Flash). */
-  reasoning_effort?: string;
-};
 
 /** Vercel AI Gateway: the fastest measured tool-calling model (see research 08). */
 export const DEMO_LLM_BASE_URL = "https://ai-gateway.vercel.sh/v1";
@@ -225,6 +217,32 @@ export function demoAgentStorageKey(
   return variant === "production" ? key : `${key}${DEMO_AGENT_VARIANT_SUFFIX}`;
 }
 
+/**
+ * The demo's persona/platform profile: every demo-specific choice in one
+ * visible line. The builder owns everything else (rules, turn-taking,
+ * recognition vocabulary, language policy), so a demo-only decision cannot
+ * become a demo-only mechanic by accident.
+ */
+export function demoAgentProfile(opts?: {
+  resume?: boolean;
+  llm?: LlmOverride[] | null;
+}): AgentProfile {
+  const llm = opts?.llm;
+  return {
+    persona: "demo",
+    platform: "browser",
+    // Desktop browser callers hold a laptop mic close: near-field isolation.
+    microphoneFocus: { mode: "near-field" },
+    // Each one is answered by /api/demo/tools (see module note). REST shape
+    // (no `type`) — see `toRestTool`.
+    tools: DEMO_VOICE_TOOLS.map((tool) => toRestTool({ ...tool })),
+    // A hold rejoin binds the resume variant, whose omitted greeting waits
+    // silently for the carried-context welcome-back reply.
+    greeting: opts?.resume !== true,
+    ...(llm ? { modelOverride: llm } : {}),
+  };
+}
+
 /** The exact remote body a demo agent runs. Pure: fingerprint + tests pin it. */
 export function buildDemoAgentBody(
   voiceId: string,
@@ -234,61 +252,25 @@ export function buildDemoAgentBody(
     variant?: DemoAgentVariant;
     turnWindows?: DemoTurnWindows;
   },
-) {
-  const voice = getVoice(voiceId);
-  const config = voniConfig(voiceId);
+): StoredAgentBody {
   const resume = opts?.resume === true;
   const variant = opts?.variant ?? "production";
-  const windows = opts?.turnWindows ?? DEMO_TURN_WINDOW_DEFAULTS;
-  const turnDetection = {
-    ...(windows.min_silence !== undefined ? { min_silence: windows.min_silence } : {}),
-    ...(windows.max_silence !== undefined ? { max_silence: windows.max_silence } : {}),
-    ...(windows.interruption_delay !== undefined
-      ? { interruption_delay: windows.interruption_delay }
-      : {}),
-  };
-  if (variant === "turn-window" && Object.keys(turnDetection).length === 0) {
-    throw new Error("turn-window variant needs at least one configured window");
-  }
-  return {
+  // The experiment's windows are demo-only session mechanics: they reach the
+  // builder as a turn-taking input, never as a profile field (ticket 65 deleted
+  // the explicit preset variant and the tenant's old object).
+  const turnTaking: TurnTaking | undefined =
+    variant === "turn-window"
+      ? opts?.turnWindows ?? DEMO_TURN_WINDOW_DEFAULTS
+      : undefined;
+  return buildStoredAgent({
     name: demoAgentName(voiceId, resume, variant),
-    system_prompt: compileSystemPrompt(config),
-    // A hold rejoin opens a fresh transport on the resume variant, which has
-    // no greeting: per the platform, an omitted greeting waits silently, and
-    // the client's carried context + welcome-back reply becomes the single
-    // first utterance instead of a re-introduction stacked on one.
-    ...(resume ? {} : { greeting: config.greeting }),
-    voice: { voice_id: voiceId },
-    // Loudest server level on every voice: native levels differ by ~12 dB,
-    // so omitted volume plays each voice at its own level. Client gain in
-    // VoiceSession.schedule applies the relative match per voice.
-    output: { volume: VOICE_OUTPUT_VOLUME },
-    // Each one is answered by /api/demo/tools (see module note). REST
-    // shape (no `type`) — see `toRestTool`.
-    tools: DEMO_VOICE_TOOLS.map((tool) => toRestTool({ ...tool })),
-    // Absent unless an override is supplied: the managed default body must
-    // stay byte-identical, so no cached demo agent refreshes for nothing.
-    ...(opts?.llm ? { llm: opts.llm } : {}),
-    input: {
-      // Locked to the voice's language: detecting across all 18 languages
-      // every turn is slow. Language codes apply at speech-to-text connect,
-      // so they live on the stored agent, not in the post-ready preset.
-      language_codes: voice ? [voice.languageCode] : [],
-      transcription_mode: DEMO_TRANSCRIPTION_MODE,
-      transcription_prompt: buildAgentTranscriptionPrompt(config),
-      keyterms: buildAgentKeyterms(config),
-      voice_focus: "near-field",
-      // Null = adaptive defaults. Any turn_detection object switches off
-      // adaptive end-of-turn (ADAPTIVE_TURNS, voice/session.ts); explicit
-      // null clears the object older bodies stored. Production always sends
-      // null; only the `:exp` experiment body carries windows, and it is
-      // built from exactly these three fields.
-      turn_detection:
-        variant === "turn-window"
-          ? turnDetection
-          : null,
-    },
-  };
+    config: voniConfig(voiceId),
+    profile: demoAgentProfile({
+      resume,
+      ...(opts?.llm ? { llm: opts.llm } : {}),
+    }),
+    ...(turnTaking ? { turnTaking } : {}),
+  });
 }
 
 export type DemoAgentProvisionPlan = {
@@ -331,9 +313,259 @@ export function planDemoAgent(
  * The body, plus which API key (account) the agent lives under: a new key
  * moves the fingerprint, so its cached agents are re-checked (and recreated
  * when that account has never heard of them). Only a hash of the key.
+ *
+ * Hashed by the one whole-body function the tenant deployment also uses
+ * (voice-parity ticket 62): the override, the level, the greeting's presence
+ * and every other field are covered, so neither path can drift on its own.
  */
 export function demoAgentFingerprint(body: ReturnType<typeof buildDemoAgentBody>, apiKey = ""): string {
-  return createHash("sha256").update(stableJson(body)).update(`\0${apiKey}`).digest("hex");
+  return agentBodyFingerprint(body, apiKey);
+}
+
+/**
+ * The stored agent body the platform actually serves, read back through
+ * `GET /v1/agents/{id}`. This is the only source a gate may read settings
+ * from: `buildDemoAgentBody` describes what the harness intended to store,
+ * while a failed refresh, a stray remote override or a stale row can leave
+ * the served copy different — a difference no visitor's audio would show
+ * through a reconstruction.
+ *
+ * The nominal brand is the seam (voice-parity ticket 24): a builder body is
+ * structurally similar but cannot be assigned here, and `isServedDemoAgentBody`
+ * refuses one at runtime, so a gate can never PASS on audio nobody heard.
+ */
+const SERVED_BODY_BRAND: unique symbol = Symbol.for("voni.served-demo-agent-body");
+
+export type ServedDemoAgentBody = {
+  /** Proves the value came from the platform read, not the demo builder. */
+  readonly [SERVED_BODY_BRAND]: true;
+  /** The stored agent id this body was read from. */
+  agentId: string;
+  /**
+   * The provisioner fingerprint for the body the run bound, when the caller
+   * knows it. The read never invents one: a served body may differ from the
+   * body that fingerprint describes.
+   */
+  fingerprint?: string | null;
+  /** The served `input` object (turn settings, language, transcription). */
+  input: { turn_detection?: unknown } & Record<string, unknown>;
+  /**
+   * The served `output` object verbatim — the level the visitor's session
+   * receives. `{}` when the platform served none: the level is then
+   * unmeasured, never filled in from the registry (voice-parity ticket 21).
+   */
+  output: { volume?: unknown } & Record<string, unknown>;
+};
+
+/** Runtime half of the brand: a reconstruction is not a served body. */
+export function isServedDemoAgentBody(value: unknown): value is ServedDemoAgentBody {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as Record<PropertyKey, unknown>)[SERVED_BODY_BRAND] === true
+  );
+}
+
+/**
+ * The served `output.volume` in the platform's own units, or null when the
+ * body serves no readable level. This is the only level a gate may judge: the
+ * measured registry (`./voice-levels`) is what the builder ships, not what the
+ * visitor's stored agent necessarily carries (voice-parity ticket 21).
+ */
+export function servedAgentOutputVolume(body: ServedDemoAgentBody): number | null {
+  const volume = body.output?.volume;
+  return typeof volume === "number" && Number.isFinite(volume) ? volume : null;
+}
+
+
+export type ServedDemoAgentBodyResult =
+  | { ok: true; body: ServedDemoAgentBody }
+  | { ok: false; error: string };
+
+/**
+ * Parse one platform `GET /v1/agents/{id}` payload into a served body. This
+ * is the single mint for the brand above: the async reader uses it, and a
+ * test can parse a recorded payload without a network call. A payload with no
+ * platform `input` object is refused, so no shape can be "helpfully" filled in.
+ */
+export function parseServedDemoAgentBody(
+  agentId: string,
+  payload: unknown,
+  fingerprint: string | null = null,
+): ServedDemoAgentBodyResult {
+  const input =
+    payload !== null && typeof payload === "object"
+      ? (payload as { input?: unknown }).input
+      : undefined;
+  if (input === null || typeof input !== "object" || Array.isArray(input)) {
+    return { ok: false, error: `stored agent ${agentId} served no input object` };
+  }
+  const servedOutput =
+    payload !== null && typeof payload === "object"
+      ? (payload as { output?: unknown }).output
+      : undefined;
+  const output =
+    servedOutput !== null && typeof servedOutput === "object" && !Array.isArray(servedOutput)
+      ? (servedOutput as ServedDemoAgentBody["output"])
+      : {};
+  return {
+    ok: true,
+    body: {
+      [SERVED_BODY_BRAND]: true,
+      agentId,
+      fingerprint,
+      input: input as ServedDemoAgentBody["input"],
+      output,
+    },
+  };
+}
+
+/**
+ * Read one stored agent's served body. Injectable key/fetch keep the read
+ * testable without the platform; production resolves the same credential the
+ * provisioner uses.
+ */
+export async function readServedDemoAgentBody(
+  agentId: string,
+  deps?: { apiKey?: string | null; fetchFn?: typeof fetch },
+): Promise<ServedDemoAgentBodyResult> {
+  const apiKey =
+    deps && "apiKey" in deps ? deps.apiKey : await secret("ASSEMBLYAI_API_KEY");
+  if (!apiKey) return { ok: false, error: "AssemblyAI is not configured." };
+  const fetchFn = deps?.fetchFn ?? fetch;
+  let response: Response;
+  try {
+    response = await fetchFn(`${AGENTS_URL}/${encodeURIComponent(agentId)}`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(15000),
+    });
+  } catch (error) {
+    return {
+      ok: false,
+      error: `stored agent ${agentId} read failed: ${
+        error instanceof Error ? error.message : "transport failed"
+      }`,
+    };
+  }
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    return {
+      ok: false,
+      error: `stored agent ${agentId} read failed ${response.status}: ${detail.slice(0, 200)}`,
+    };
+  }
+  let payload: unknown;
+  try {
+    payload = await response.json();
+  } catch {
+    return { ok: false, error: `stored agent ${agentId} served unreadable JSON` };
+  }
+  return parseServedDemoAgentBody(agentId, payload);
+}
+
+/**
+ * One run's body read, with identity: the single value every gate and the
+ * artifact receive (voice-parity ticket 24). `measured: false` carries the
+ * reason so each dependent gate can report INFO instead of reconstructing a
+ * body or greening on a default.
+ */
+export type ServedAgentBodyRead =
+  | {
+      measured: true;
+      body: ServedDemoAgentBody;
+      agentId: string;
+      fingerprint: string | null;
+    }
+  | {
+      measured: false;
+      agentId: string | null;
+      fingerprint: string | null;
+      reason: string;
+    };
+
+/**
+ * Read the body this run's subject serves, once. A dry run or a run with no
+ * bound agent never fetches and is explicitly unmeasured; a failed read keeps
+ * its error as the reason. The caller threads this one value to every gate.
+ */
+export async function readServedAgentBodyForRun(input: {
+  agentId: string | null;
+  fingerprint?: string | null;
+  dryRun?: boolean;
+  apiKey?: string | null;
+  fetchFn?: typeof fetch;
+}): Promise<ServedAgentBodyRead> {
+  const fingerprint = input.fingerprint ?? null;
+  if (input.dryRun === true) {
+    return {
+      measured: false,
+      agentId: input.agentId,
+      fingerprint,
+      reason: "dry run: no stored body read",
+    };
+  }
+  if (!input.agentId) {
+    return {
+      measured: false,
+      agentId: null,
+      fingerprint,
+      reason: "no stored agent id in the run's evidence",
+    };
+  }
+  const read = await readServedDemoAgentBody(
+    input.agentId,
+    "apiKey" in input ? { apiKey: input.apiKey, fetchFn: input.fetchFn } : { fetchFn: input.fetchFn },
+  );
+  if (!read.ok) {
+    return {
+      measured: false,
+      agentId: input.agentId,
+      fingerprint,
+      reason: read.error,
+    };
+  }
+  const body = { ...read.body, fingerprint };
+  return { measured: true, body, agentId: input.agentId, fingerprint };
+}
+
+/**
+ * The cached production stored agent for a voice, read-only. A run bound to a
+ * non-production variant still verdicts the production body a visitor
+ * receives, so the scoreboard uses this to find that body's id without
+ * provisioning (and without rebuilding it).
+ */
+export async function findCachedDemoAgent(
+  voiceId: string,
+  opts?: { resume?: boolean },
+): Promise<{ agentId: string; fingerprint: string | null } | null> {
+  try {
+    const rows = await db
+      .select({
+        agentId: demoAgents.assemblyaiAgentId,
+        fingerprint: demoAgents.fingerprint,
+      })
+      .from(demoAgents)
+      .where(
+        and(
+          eq(demoAgents.personaId, VONI_AGENT_ID),
+          eq(demoAgents.voiceId, demoAgentStorageKey(voiceId, opts?.resume === true, "production")),
+        ),
+      )
+      .limit(1);
+    const row = rows[0];
+    return row
+      ? { agentId: row.agentId, fingerprint: row.fingerprint ?? null }
+      : null;
+  } catch (error) {
+    // No database (or no row yet): the caller reports the body unmeasured
+    // rather than falling back to a reconstruction.
+    console.warn(
+      `[demo-agent] production agent lookup for ${voiceId} failed: ${
+        error instanceof Error ? error.message : "unknown error"
+      }`,
+    );
+    return null;
+  }
 }
 
 async function remoteCall(
@@ -346,10 +578,10 @@ async function remoteCall(
   // Updates never clear an absent field: a previously-set `llm` override
   // survives a PUT whose body omits it (seen live: gateway model the account
   // can't access kept failing turns after the override was removed from the
-  // body). Send the documented revert (`"llm": []` → managed model) so a
-  // refresh always converges instead of stranding the stale override.
-  const payload =
-    method === "PUT" && !("llm" in body) ? { ...body, llm: [] } : { ...body };
+  // body). A refresh sends the one removal path's payload (ticket 63) — the
+  // same function the tenant deployment uses — so a refresh always converges
+  // instead of stranding the stale override.
+  const payload = method === "PUT" ? agentUpdatePayload(body) : { ...body };
   let res: Response;
   try {
     res = await fetch(url, {

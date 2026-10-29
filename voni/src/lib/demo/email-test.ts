@@ -1,6 +1,11 @@
 import { TALK_BASE_S } from "./talk-clock";
 import type { CodeStatus } from "./code-check";
 import { containsTag, countTags } from "./test-tag";
+import {
+  EN_RECOGNITION,
+  normalizeSpokenAddress,
+  type CompleteRecognition,
+} from "@/lib/voice/recognition";
 
 /**
  * The demo's email test (beats 2–4, docs/adr/0004): the visitor emails the
@@ -60,15 +65,17 @@ export type CheckEmailResult =
 
 const EMAIL = /^[a-z0-9._%+-]+@[a-z0-9-]+(\.[a-z0-9-]+)+$/;
 
-/** A claim as the model passes it, written or spelled out ("andres at casaverde dot pt"). */
-export function normalizeClaim(raw: string): string | null {
-  const address = ` ${raw.toLowerCase()} `
-    .replace(/\s+at\s+/g, "@")
-    .replace(/\s+dot\s+/g, ".")
-    .replace(/\s+(dash|hyphen)\s+/g, "-")
-    .replace(/\s+underscore\s+/g, "_")
-    .replace(/\s+/g, "")
-    .replace(/\.+$/, "");
+/**
+ * A claim as the model passes it, written or spelled out ("andres at casaverde
+ * dot pt"), read with the call's own Locale: a Spanish call hears "andres
+ * arroba casaverde punto pt" and an English one does not.
+ *
+ * English is the default because automatic detection is the documented
+ * exception (the Locale is unknown until the caller speaks); a pinned Locale
+ * always passes its own bundle.
+ */
+export function normalizeClaim(raw: string, recognition: CompleteRecognition = EN_RECOGNITION): string | null {
+  const address = normalizeSpokenAddress(raw, recognition);
   return EMAIL.test(address) ? address : null;
 }
 
@@ -147,6 +154,8 @@ export type CheckEmailDeps = {
   listInbox: () => Promise<InboxMessage[]>;
   /** The call's start (epoch ms): only email that arrived during this call can be the caller's. */
   since?: number;
+  /** The call's recognition: a spoken claim is read in its Locale (English when automatic detection). */
+  recognition?: CompleteRecognition;
   /** Jev's pick among the candidates: a message id, or null for none. Throws when Jev is unavailable. */
   jevMatch?: (claim: string, candidates: InboxMessage[]) => Promise<string | null>;
   /** Jev's spoof/spam flag on the matched email. Throws when Jev is unavailable. */
@@ -154,7 +163,7 @@ export type CheckEmailDeps = {
 };
 
 export async function checkEmail(raw: string, deps: CheckEmailDeps): Promise<CheckEmailResult> {
-  const address = normalizeClaim(raw);
+  const address = normalizeClaim(raw, deps.recognition);
   // Our own inbox is never the caller's address (a mishearing of what Voni said).
   if (!address || address === DEMO_INBOX_ADDRESS) return { status: "invalid" };
   if (isFreeEmailDomain(address.split("@")[1])) return { status: "free", address };

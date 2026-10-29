@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   BARGE_IN_THRESHOLD,
   FILLER_POOL,
+  cleanTokens,
   chooseReplyAction,
   heuristicBargeInScore,
   isEndCallRequest,
@@ -12,6 +13,7 @@ import {
   shouldFlagOffTrack,
   shouldYieldToBargeIn,
 } from "./jev-judges";
+import { EN_RECOGNITION } from "./recognition";
 
 test("backchannel never yields (fail-closed)", () => {
   for (const text of ["uh-huh", "um", "uhm", "mhm", "okay", "right", "got it"]) {
@@ -177,20 +179,51 @@ test("off-track judge sends the demo call bearer", async () => {
   assert.equal(auth, "Bearer call-tok");
 });
 
-test("a request to end the call is recognised, in any demo language", () => {
-  for (const text of ["I want you to hang up this call.", "Please end the call", "Okay, bye!", "Goodbye", "I gotta go", "Au revoir", "Tschüss", "Adiós"]) {
-    assert.equal(isEndCallRequest(text), true, text);
+test("a request to end the call is recognised in English", () => {
+  for (const text of ["I want you to hang up this call.", "Please end the call", "Okay, bye!", "Goodbye", "I gotta go"]) {
+    assert.equal(isEndCallRequest(text, EN_RECOGNITION), true, text);
   }
   for (const text of ["We run a bakery", "Hold on", "Byron Bay is where we are", "", "What's your goal?"]) {
-    assert.equal(isEndCallRequest(text), false, text);
+    assert.equal(isEndCallRequest(text, EN_RECOGNITION), false, text);
   }
+  // Another Locale's goodbye is that Locale's rendering (voice-parity 47).
+  // English no longer claims it, so a Spanish call cannot pass on English words.
+  for (const text of ["Au revoir", "Tschüss", "Adiós"]) {
+    assert.equal(isEndCallRequest(text, EN_RECOGNITION), false, text);
+  }
+});
+
+test("the English recognition words have one owner: the Locale bundle", () => {
+  for (const word of ["uhhuh", "okay", "thanks"]) {
+    assert.ok(EN_RECOGNITION.filler.includes(word), word);
+  }
+  for (const word of ["yeah", "yes", "so"]) {
+    assert.ok(EN_RECOGNITION.bargeIn.includes(word), word);
+  }
+  assert.deepEqual(cleanTokens("He's 42?"), ["hes", "42"]);
 });
 
 test("a spoken goodbye line is narrower than a request to end", () => {
   for (const text of ["Okay, bye!", "No problem. Goodbye!", "Alright, take care", "See you soon"]) {
-    assert.equal(isGoodbyeLine(text), true, text);
+    assert.equal(isGoodbyeLine(text, EN_RECOGNITION), true, text);
   }
   for (const text of ["I'll answer that after the test.", "Please hang up", "We run a bakery", ""]) {
-    assert.equal(isGoodbyeLine(text), false, text);
+    assert.equal(isGoodbyeLine(text, EN_RECOGNITION), false, text);
   }
+});
+
+/** The fallback judge is told the call's Locale, so it reads the caller's words. */
+test("a Spanish partial is judged in Spanish, and English does not leak in", () => {
+  const back = heuristicBargeInScore({ partialText: "Vale, vale.", agentSpeakingMs: 5000, locale: "es" });
+  const real = heuristicBargeInScore({ partialText: "espera, ¿cuánto cuesta?", agentSpeakingMs: 5000, locale: "es" });
+  assert.ok(back < BARGE_IN_THRESHOLD, "a Spanish back-channel never yields");
+  assert.ok(real >= BARGE_IN_THRESHOLD);
+
+  assert.equal(shouldYieldToBargeIn({ partialText: "Para", agentSpeakingMs: 3000, locale: "es" }).yield, true);
+  assert.equal(shouldYieldToBargeIn({ partialText: "Espera", agentSpeakingMs: 3000, locale: "es" }).yield, true);
+  // "stop"/"sorry" are English steering, not Spanish: a Spanish call does not
+  // hear them as commands.
+  assert.equal(shouldYieldToBargeIn({ partialText: "stop", agentSpeakingMs: 3000, locale: "es" }).yield, false);
+  // A call with no Locale yet (automatic detection) keeps the English scaffolding.
+  assert.equal(shouldYieldToBargeIn({ partialText: "stop", agentSpeakingMs: 3000 }).yield, true);
 });

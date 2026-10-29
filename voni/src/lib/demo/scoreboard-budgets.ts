@@ -10,7 +10,7 @@
  * `scoreboard-budgets.json` together — the freeze guard fails otherwise.
  */
 
-export type BudgetUnit = "ms" | "s" | "count" | "ratio" | "db" | "lufs";
+export type BudgetUnit = "ms" | "s" | "count" | "ratio" | "db" | "dbtp" | "lufs";
 
 export type BudgetEntry = {
   value: number;
@@ -183,6 +183,171 @@ const BUDGETS = {
     unit: "count",
     gate: "accent-human",
     source: "blind ballot scale 1-5",
+  },
+  // W0 verdict bars (ticket 15). New records only: the demo-scoreboard
+  // thresholds above are untouched, so a green there keeps its meaning.
+  comparisonLevelLu: {
+    value: 1.5,
+    unit: "db",
+    gate: "audio-comparison",
+    source: "spec W0 comparison + story 7: a level step above 1.5 LU is a different loudness, not a re-encode",
+  },
+  comparisonModulationDepth: {
+    value: 0.05,
+    unit: "ratio",
+    gate: "audio-comparison",
+    source: "envelope-modulation module bar: 5% peak-to-trough is the smallest detectable cushion artifact",
+  },
+  // Coupled pair: this and timbreMeasuredBandDeltaDb judge the same timbre
+  // defect (an octave tilt a re-encode does not make) on two captures. Keep
+  // them equal; the freeze test asserts the pair so the bars cannot drift.
+  comparisonBandDeltaDb: {
+    value: 3,
+    unit: "db",
+    gate: "audio-comparison",
+    source: "spec W0: an octave tilt move above 3 dB is a timbre change a re-encode does not make",
+  },
+  comparisonDistortionDb: {
+    value: -45,
+    unit: "db",
+    gate: "audio-comparison",
+    source: "ticket 14 probe: a 1% third harmonic reads -40 dB, so -45 dB separates a clean re-encode from reshaping with margin",
+  },
+  comparisonDistortionDeltaDb: {
+    value: 3,
+    unit: "db",
+    gate: "audio-comparison",
+    source: "spec W0: the delivered residual may not rise more than 3 dB above the platform's against the same reference",
+  },
+  comparisonBreakupCount: {
+    value: 1,
+    unit: "count",
+    gate: "audio-comparison",
+    source: "spec stories 4, 12: one inserted silence in a capture the other does not have is a hole",
+  },
+  comparisonOnsetToleranceS: {
+    value: 0.05,
+    unit: "s",
+    gate: "audio-comparison",
+    source: "spec W0: captures more than 50 ms apart cannot be compared sample-for-sample; a lead-in is reported, never blamed",
+  },
+  comparisonModelTextWordChanges: {
+    value: 0,
+    unit: "count",
+    gate: "audio-comparison",
+    source: "spec W0: the platform transcript must be the intended line before any audio layer is attributed",
+  },
+  comparisonReferenceClipDbtp: {
+    value: -0.1,
+    unit: "db",
+    gate: "audio-comparison",
+    source: "spec W0: a reference at the full-scale ceiling cannot be the baseline for peak or distortion",
+  },
+  // W5 timbre gate bars (voice-parity ticket 74). New records only: the
+  // comparison and scoreboard thresholds above are untouched, so a green
+  // there keeps its meaning. Each is the bar the measured result is judged
+  // against, never a value re-derived from the pipeline.
+  timbreMeasuredTruePeakDbtp: {
+    value: -1,
+    unit: "dbtp",
+    gate: "timbre-probes",
+    source: "spec W5: delivered true peak keeps 1 dBTP of encode headroom; a peak at the ceiling is a clip risk, not parity",
+  },
+  // Coupled pair: this and comparisonDistortionDb are the same clean-file
+  // residual bar measured on two captures (delivered vs the platform's). Keep
+  // them equal; the freeze test asserts the pair so the bars cannot drift.
+  timbreMeasuredDistortionDb: {
+    value: -45,
+    unit: "db",
+    gate: "timbre-probes",
+    source: "ticket 14 probe: a 1% third harmonic reads -40 dB, so -45 dB separates a clean delivery from reshaping with margin",
+  },
+  timbreMeasuredCrestMin: {
+    value: 1.2,
+    unit: "ratio",
+    gate: "timbre-probes",
+    source: "ticket 14: crest 1.2 sits between a square wave (1.0) and a sine (1.414), the lowest crest a clean voiced signal shows",
+  },
+  timbreMeasuredBandDeltaDb: {
+    value: 3,
+    unit: "db",
+    gate: "timbre-probes",
+    source: "spec W0/W5: a band-to-band move above 3 dB is a timbre change a re-encode does not make",
+  },
+  timbreMeasuredBreakupMax: {
+    value: 0,
+    unit: "count",
+    gate: "timbre-probes",
+    source: "spec stories 4, 12 and W5: an inserted silence the reference does not have is a hole; the delivered cut carries none",
+  },
+  timbreMeasuredBreakupMatchSeconds: {
+    value: 0.05,
+    unit: "s",
+    gate: "timbre-probes",
+    source: "timbre-measurement.ts: two breakups within 50 ms are the same hole in both captures, so only an unmatched hole counts",
+  },
+  // W6 floor-mode bars (review fix): the driver's comparison tolerances moved
+  // here from floor-mode.ts so every quality bar has one record. New records
+  // only: the W0/W5 bars above are untouched.
+  floorLevelDeviationLu: {
+    value: 0.2,
+    unit: "db",
+    gate: "vendor-floor",
+    source: "level-facts.ts LEVEL_TOLERANCE_DB: EBU Tech 3341 ±0.1 LU widened a tenth for 16-bit captures",
+  },
+  floorPeakHeadroomDb: {
+    value: 0.3,
+    unit: "db",
+    gate: "vendor-floor",
+    source: "level-facts.ts TRUE_PEAK_TOLERANCE_DB: the 4x-oversampled true-peak estimate's own resolution",
+  },
+  floorDistortionResidualDb: {
+    value: -60,
+    unit: "db",
+    gate: "vendor-floor",
+    source: "distortion-crest.ts DEFAULT_DISTORTION_CREST_THRESHOLDS.maxResidualDb: the clean-file residual bar",
+  },
+  floorBreakupSeconds: {
+    value: 0.02,
+    unit: "s",
+    gate: "vendor-floor",
+    source: "floor-mode.ts: breakups are found on 10 ms envelope frames; two frames absorb one edge frame",
+  },
+  floorModulationDepth: {
+    value: 0.01,
+    unit: "ratio",
+    gate: "vendor-floor",
+    source: "floor-mode.ts: one percentage point of peak-to-trough swing, twice the modulation metric's 0.5% detection floor",
+  },
+  timbreBallotWeightTimbre: {
+    value: 0.5,
+    unit: "ratio",
+    gate: "timbre-probes",
+    source: "spec W5: the timbre gate weights timbre half of the weighted ballot (the axis this gate claims)",
+  },
+  timbreBallotWeightAccent: {
+    value: 0.25,
+    unit: "ratio",
+    gate: "timbre-probes",
+    source: "spec W5: accent is one quarter of the weighted ballot, equal to language naturalness",
+  },
+  timbreBallotWeightLanguageNaturalness: {
+    value: 0.25,
+    unit: "ratio",
+    gate: "timbre-probes",
+    source: "spec W5: language naturalness is one quarter of the weighted ballot (ticket 75 wires the axis; the weight is fixed here)",
+  },
+  timbreBallotPassScore: {
+    value: 5,
+    unit: "count",
+    gate: "timbre-probes",
+    source: "spec W5: a subject passes timbre at five out of five, never at four",
+  },
+  timbreBallotRatersRequired: {
+    value: 2,
+    unit: "count",
+    gate: "timbre-probes",
+    source: "spec W5/testing: two independent raters on one shared recording per subject",
   },
 } as const satisfies Record<string, BudgetEntry>;
 

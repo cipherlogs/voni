@@ -2,10 +2,13 @@
  * Browser client for the AssemblyAI Voice Agent API.
  *
  * Audio contract (from the API's audio-format reference):
- *   - Both directions are base64, mono, `audio/pcm` = 16-bit signed LE @ 24 kHz.
+ *   - Both directions are base64, mono. The output rate and encoding are read
+ *     from the session confirmation, never assumed (`audio/pcm` is 16-bit
+ *     signed LE; `audio/pcmu`/`audio/pcma` are 8 kHz G.711).
  *   - Send `input.audio` continuously at real time; frames beyond ~1s of audio
  *     per second of wall clock are DROPPED, not buffered.
  *   - Wait for `session.ready` before the first chunk or it is discarded.
+ *     A discard is never silent: it probes `pre-ready-drop` with the count.
  *
  * Three things here are easy to get wrong and expensive when you do:
  *
@@ -43,6 +46,12 @@ import {
 import { releaseMic } from "./mic-owner";
 import { BARGE_IN_JUDGE_MS, judgeOverlap } from "./barge-in";
 import { requestVoiceJudge } from "./jev-judges";
+import {
+  callRecognition,
+  callRecognitionLocale,
+  type CompleteRecognition,
+  type RecognitionLocale,
+} from "./recognition";
 import { TRANSCRIPTION_MODE, DEMO_TRANSCRIPTION_MODE } from "./transcription";
 import {
   acquireMicStream,
@@ -53,7 +62,15 @@ import {
   type VoiceErrorCode,
 } from "./mic-capture";
 import type { WorkletPlayout } from "./playout";
-import { VOICE_OUTPUT_VOLUME } from "@/lib/agents/voices";
+import {
+  attachDeliveredCapture,
+  postDeliveredCapture,
+  type CaptureWrite,
+  type DeliveredCapture,
+} from "./delivered-capture";
+import { decodeOutputAudio, resolveOutputFormat, type OutputEncoding } from "./output-format";
+import { voiceOutputVolume } from "@/lib/agents/voice-levels";
+import { sensitiveCaptureWindows } from "./capture-windows";
 
 export { TARGET_SAMPLE_RATE, VOICE_MIC_CONSTRAINTS } from "./mic-capture";
 
@@ -83,8 +100,13 @@ export type SessionConfig =
       systemPrompt: string;
       greeting: string;
       voiceId: string;
-      /** Empty = automatic detection across all supported languages. */
+      /** Empty/omitted = automatic detection across all supported languages. */
       languageCodes?: string[];
+      /**
+       * The Locale the owner picked for this call. The guardrails (barge-in,
+       * filler, goodbye) read its words; client-side only, never on the wire.
+       */
+      conversationLanguage?: string | null;
       /**
        * Speech-recognition context, sent in the FIRST session.update so the
        * first utterance is already tuned — pushing it post-start leaves the
@@ -103,7 +125,23 @@ export type SessionConfig =
       /** Required by the server to scope signed-in browser tool tests. */
       testAgentId?: string;
     }
-  | { mode: "agent"; agentId: string };
+  | {
+      mode: "agent";
+      agentId: string;
+      /**
+       * The Locale the browser knows this agent speaks — the demo's voice
+       * pins it. Client-side only: the stored agent body stays server-owned
+       * and this never reaches the wire. It decides which words the caller's
+       * own guardrails (barge-in, filler, goodbye) run on; absent is
+       * automatic detection, the documented English-scaffolding exception.
+       */
+      languageCodes?: string[];
+      /**
+       * The Locale the agent (or the demo voice) speaks. Guardrail words read
+       * it first, so a picker-set Locale is not left with English words.
+       */
+      conversationLanguage?: string | null;
+    };
 
 /**
  * Where the token comes from. The two endpoints differ in more than their URL:
@@ -164,13 +202,24 @@ export function buildResumeMessage(sessionId: string): Record<string, unknown> {
  * tuned: fast endpointing, the screen's vocabulary, the screen's scene.
  */
 /**
- * Test-call language lock. The agent's own picker stays authoritative and
- * passes through untouched; when it is left on Automatic (empty), the test
- * call locks to English instead of paying 18-language auto-detection on
- * every turn. PSTN/provision paths keep passing the raw config untouched.
+ * Test-call language resolution. The agent's own picker stays authoritative
+ * and passes through untouched. When the picker is left on Automatic (empty),
+ * the call follows the agent's Locale — the conversation language its owner
+ * chose — so testing a Spanish agent tests Spanish.
+ *
+ * With neither an explicit code nor a conversation Locale, this returns
+ * `undefined`: the wire key is omitted and the recogniser keeps its automatic
+ * detection. Pinning `["en"]` would switch detection off for a call that was
+ * never configured for English; the documented English-scaffolding exception
+ * still covers words (keyterms/scene), never the recogniser's language set.
  */
-export function effectiveInlineLanguages(codes: string[] | undefined): string[] {
-  return codes && codes.length > 0 ? [...codes] : ["en"];
+export function effectiveInlineLanguages(
+  codes: string[] | undefined,
+  conversationLanguage?: string | null,
+): string[] | undefined {
+  if (codes && codes.length > 0) return [...codes];
+  const locale = callRecognitionLocale({ conversationLanguage, languageCodes: codes });
+  return locale === null ? undefined : [locale];
 }
 
 export function buildInlineSessionUpdate(
@@ -179,7 +228,7 @@ export function buildInlineSessionUpdate(
   return {
     system_prompt: config.systemPrompt,
     greeting: config.greeting,
-    output: { voice: config.voiceId, volume: VOICE_OUTPUT_VOLUME },
+    output: { voice: config.voiceId, volume: voiceOutputVolume(config.voiceId) },
     input: {
       transcription_mode: config.transcriptionMode ?? TRANSCRIPTION_MODE,
       // Close-talking browser mic: isolate the caller with the near-field
@@ -314,13 +363,22 @@ export type SessionEndedInfo = {
  * caused it (barge-in flush, interrupted-reply flush, or something else).
  */
 export type AudioProbeEvent = {
-  kind: "ready" | "barge-in" | "reply-cut" | "flush" | "underrun" | "input-drop" | "pop" | "clip";
+  kind:
+    | "ready"
+    | "barge-in"
+    | "reply-cut"
+    | "flush"
+    | "underrun"
+    | "input-drop"
+    | "pre-ready-drop"
+    | "pop"
+    | "clip";
   /** Wall-clock ms of the event. */
   at: number;
   /** Ms of agent audio buffered at that moment (worklet's last report). */
   queued: number;
   sessionId: string | null;
-  /** Frames dropped since the last input-drop probe (only for input-drop). */
+  /** Chunks dropped since the last drop probe (input-drop, pre-ready-drop). */
   dropped?: number;
   /** Pop recorder: "jump"/"overload" for `pop`, clamped samples for `clip`. */
   detail?: string;
@@ -359,6 +417,12 @@ export type VoiceHandlers = {
   onAgentTurn?: (turn: AgentTurn) => void;
   onReplyStarted?: () => void;
   /**
+   * The playout emitted its first audible sample for this connection. Fires
+   * once, from the worklet's own `playing` report — never when a greeting is
+   * merely scheduled. The connected chime hangs off this.
+   */
+  onFirstAudible?: () => void;
+  /**
    * The agent is ending the call: an end_call tool call arrived, or it spoke
    * the tool name instead. Fires before the session closes, so pacing can stop.
    */
@@ -387,6 +451,8 @@ export type BargeInJudge = (state: {
   text: string;
   agentText: string;
   agentSpeakingMs: number;
+  /** The call's Locale, so the offline fallback reads the caller's own words. */
+  locale: RecognitionLocale;
 }) => Promise<"yield" | "keep">;
 
 /**
@@ -399,7 +465,12 @@ export const jevBargeInJudge =
   async (state) => {
     const verdict = await requestVoiceJudge(
       "barge-in",
-      { partialText: state.text, agentSpeakingMs: state.agentSpeakingMs, agentText: state.agentText },
+      {
+        partialText: state.text,
+        agentSpeakingMs: state.agentSpeakingMs,
+        agentText: state.agentText,
+        locale: state.locale,
+      },
       { timeoutMs: BARGE_IN_JUDGE_MS, headers: headers?.() },
     );
     return verdict.source === "jev" && verdict.decision === "keep-speaking" ? "keep" : "yield";
@@ -458,8 +529,45 @@ export function heardWords(line: string, playedMs: number, msPerChar = CAPTION_M
 }
 /** The floor re-checks this often (playback settling has no event of its own). */
 const FLOOR_TICK_MS = 150;
-/** A resume after a cut says the rest only when more than this many words were unheard. */
-const RESUME_MIN_WORDS = 3;
+/**
+ * A resume after a cut says the rest only when at least this many words were
+ * unheard. Named as the minimum, not as an exclusive count: the boundary is
+ * four words, and the condition below uses `>=` so the name and the behaviour
+ * cannot disagree. This is a behaviour cut-off, not a quality bar, so it stays
+ * beside the resume logic rather than in the scoreboard budget table.
+ */
+export const RESUME_TAIL_MIN_WORDS = 4;
+
+/** A tail of a few words is the caller having got the point, not a lost thought. */
+export function worthResuming(rest: string): boolean {
+  return rest.split(/\s+/).filter(Boolean).length >= RESUME_TAIL_MIN_WORDS;
+}
+
+/**
+ * Tell the agent to say exactly the unheard rest, never the heard part again.
+ * Told to "carry on", the model made up a new sentence and then said it twice
+ * (sess_f78895fa…), so the tail is quoted word for word. A short goodbye that
+ * was cut resumes as the goodbye, once.
+ *
+ * Shared with the phone bridge through
+ * `barge-in-recovery.cases.json`: the same words must produce the same
+ * instruction on both transports (voice-parity 70).
+ */
+export function resumeInstructions(callerText: string, rest: string): string {
+  const trimmed = rest.trim();
+  const caller = callerText.trim();
+  const cause = caller
+    ? `The caller only said "${caller.slice(0, 200)}" while you were speaking; it wasn't a request to stop.`
+    : "A noise on the caller's side cut you off; they didn't say anything.";
+  return trimmed
+    ? `${cause} Finish your sentence: say exactly this and nothing else, word for word: "${trimmed.slice(0, 400)}"`
+    : `${cause} Say your short goodbye once more, nothing else.`;
+}
+
+/** The resume line to send, or null when there is nothing worth saying. */
+export function resumeForBargeIn(callerText: string, rest: string): string | null {
+  return worthResuming(rest) ? resumeInstructions(callerText, rest) : null;
+}
 /**
  * A held end_call result with no goodbye audio at all for this long: the
  * platform is waiting for it (measured 1 in 10), so send it. Once the goodbye
@@ -495,13 +603,6 @@ type QueuedUpdate = {
   reject: (error: Error) => void;
 };
 
-const SENSITIVE_TURN_DETECTION: TurnDetection = {
-  min_silence: 1400,
-  max_silence: 4000,
-  interrupt_response: true,
-  interruption_delay: 0,
-};
-
 /**
  * ADAPTIVE_TURNS: demo calls, test calls and the copilot never send
  * `turn_detection`. ANY turn_detection object, even one holding only
@@ -511,7 +612,8 @@ const SENSITIVE_TURN_DETECTION: TurnDetection = {
  * Server barge-in stays on by default, with semantic back-channel filtering.
  *
  * Only `prepareSensitiveCapture` departs from it, for one card-field turn,
- * then restores `null` (adaptive).
+ * using the floor in ./capture-windows (the same one the phone bridge pins to
+ * the stored body), then restores the body's own setting.
  */
 
 /**
@@ -571,6 +673,14 @@ export class VoiceSession {
   private endCallTimer: ReturnType<typeof setInterval> | null = null;
   /** Last `reply.audio` arrival: the drain handshake waits out fresh audio. */
   private lastAudioAt = 0;
+
+  /**
+   * The words this call's own guardrails judge by (barge-in, filler, goodbye),
+   * from the Locale the caller pinned. Until `start()` says otherwise this is
+   * the documented automatic-detection scaffolding — a call has no Locale
+   * before it starts.
+   */
+  private recognition: CompleteRecognition = callRecognition({});
 
   /** end_call was signaled for the current goodbye (tool call or spoken). */
   private endCallSignaled = false;
@@ -661,13 +771,27 @@ export class VoiceSession {
   private greetingAudioSent = false;
   /** session.ready re-fires on resume — timing still marks once per start. */
   private sessionReadySent = false;
-  /** Client playback gain for the active voice (1.0 = native). See voices.ts. */
-  private outputGain = 1.0;
-  /** Dev pop recorder: worklet jumps/overloads and gain clamps become probes. */
+  /**
+   * Output format the server resolved for this session, from the
+   * `session.ready` confirmation. Null until confirmed: audio is never played
+   * at a guessed rate or encoding.
+   */
+  private outputSampleRate: number | null = null;
+  private outputEncoding: OutputEncoding | null = null;
+  /** Dev pop recorder: worklet jumps/overloads become probes. */
   private popProbe = false;
+  /** Dev delivered capture (`?delivercapture=1`): tap the playout worklet. */
+  private deliveredCaptureOn = false;
+  /** The call's capture; null unless the flag was set before start. */
+  private deliveredCapture: DeliveredCapture | null = null;
+  /** Where a capture WAV goes; the dev route in the browser, stubbed in tests. */
+  private readonly writeCapture: CaptureWrite;
   /** Mic frames dropped since the last input-drop probe (ingestAudio gate). */
   private inputDropped = 0;
   private lastInputDropProbe = 0;
+  /** Reply chunks dropped before any format was confirmed (schedule gate). */
+  private preReadyDropped = 0;
+  private lastPreReadyDropProbe = 0;
 
   constructor(
     private handlers: VoiceHandlers = {},
@@ -692,6 +816,11 @@ export class VoiceSession {
        * browser (mic, worklets, socket all faked at the boundary).
        */
       startGraph?: typeof startAudioGraph;
+      /**
+       * Where the dev delivered-capture WAV is written. Production always uses
+       * the dev-only route; tests inject a sink to prove the file's contents.
+       */
+      writeCapture?: CaptureWrite;
     } = {},
   ) {
     this.micOwner = opts.micOwner ?? "voice-call";
@@ -699,6 +828,7 @@ export class VoiceSession {
     this.buildGraph = opts.startGraph ?? startAudioGraph;
     this.updateTimeoutMs = opts.updateTimeoutMs ?? 3000;
     this.injectedExecutor = opts.toolExecutor ?? null;
+    this.writeCapture = opts.writeCapture ?? postDeliveredCapture;
   }
 
   private setState(next: VoiceState) {
@@ -743,9 +873,18 @@ export class VoiceSession {
     this.firstUpdateAcked = false;
     this.greetingAudioSent = false;
     this.sessionReadySent = false;
-    this.outputGain = 1.0;
     this.inputDropped = 0;
     this.lastInputDropProbe = 0;
+    this.preReadyDropped = 0;
+    this.lastPreReadyDropProbe = 0;
+    // The call's own words, from the Locale it pinned. The conversation
+    // Locale wins over a bare code list, so a picker-set Locale keeps its own
+    // barge-in/filler/goodbye words. Automatic detection (nothing pinned) is
+    // the documented English scaffolding (`callRecognition`).
+    this.recognition = callRecognition({
+      conversationLanguage: config.conversationLanguage,
+      languageCodes: config.languageCodes,
+    });
     if (!this.configSynced) {
       this.configSynced = true;
       this.handlers.onConfigUncertainty?.(false);
@@ -858,6 +997,9 @@ export class VoiceSession {
       this.audioCtx = graph.audioCtx;
       this.worklet = graph.worklet;
       this.playout = graph.playout;
+      // The chime's trigger: the worklet's first audible sample, never the
+      // moment a greeting is queued (there is a whole pre-roll between them).
+      this.playout.onFirstAudible = () => this.handlers.onFirstAudible?.();
       // Ran dry before reply.done: the network stalled mid-reply.
       this.playout.onDrained = () => {
         if (this.state === "speaking") this.probe("underrun");
@@ -865,6 +1007,12 @@ export class VoiceSession {
       if (this.popProbe) {
         this.playout.probe?.(true);
         this.playout.onPop = (pop) => this.probe("pop", undefined, { detail: pop.kind, size: pop.size });
+      }
+      if (this.deliveredCaptureOn) {
+        this.deliveredCapture = attachDeliveredCapture(this.playout, {
+          sampleRate: this.audioCtx?.sampleRate ?? TARGET_SAMPLE_RATE,
+          write: this.writeCapture,
+        });
       }
       this.connect(token, resolved, gen, opts.resumeSessionId);
     } catch (e) {
@@ -1038,6 +1186,12 @@ export class VoiceSession {
     switch (msg.type) {
       case "session.ready":
         this.ready = true;
+        this.confirmOutputFormat(
+          msg.config,
+          typeof msg.session_id === "string" && msg.session_id.length > 0
+            ? msg.session_id
+            : this.sessionId,
+        );
         if (!this.floorTimer) {
           this.floorTimer = setInterval(() => this.floor.tick(), FLOOR_TICK_MS);
           // Node (tests) only: a live floor never keeps the process alive.
@@ -1313,7 +1467,7 @@ export class VoiceSession {
         : null;
       await this.updateConfig({
         input: {
-          turn_detection: SENSITIVE_TURN_DETECTION,
+          turn_detection: sensitiveCaptureWindows(this.activeTurnDetection),
         },
       });
       this.pendingTurnDetectionRestore = previous;
@@ -1572,21 +1726,20 @@ export class VoiceSession {
     // the visitor has taken the floor, whatever the overlap judge decided.
     if (cut.droppable) return;
     const rest = cut.rest.trim();
-    const short = rest.split(/\s+/).filter(Boolean).length <= RESUME_MIN_WORDS;
-    if (cut.goodbye && rest && short) {
+    if (cut.goodbye && rest && !worthResuming(rest)) {
       // The goodbye was all but said: hang up as it would have.
       this.goodbyeResumePending = false;
       this.signalEndCall(null);
       this.settleThenStop();
       return;
     }
-    if (!cut.goodbye && short) return;
-    const cause = text.trim()
-      ? `The caller only said "${text.slice(0, 200)}" while you were speaking; it wasn't a request to stop.`
-      : "A noise on the caller's side cut you off; they didn't say anything.";
     const instructions = rest
-      ? `${cause} Finish your sentence: say exactly this and nothing else, word for word: "${rest.slice(0, 400)}"`
-      : `${cause} Say your short goodbye once more, nothing else.`;
+      ? resumeForBargeIn(text, rest)
+      : cut.goodbye
+        ? resumeInstructions(text, rest)
+        : null;
+    // A cut with only a few words left says nothing: the caller got the point.
+    if (!instructions) return;
     // Noise or filler: the caller doesn't hold the floor, the rest goes next.
     this.floor.callerWasNoise();
     if (this.replyActive) {
@@ -1633,7 +1786,7 @@ export class VoiceSession {
     if (this.noWordsTimer) clearTimeout(this.noWordsTimer);
     this.noWordsTimer = null;
     if (!bargeIn) return;
-    const verdict = judgeOverlap(text, bargeIn.heard);
+    const verdict = judgeOverlap(text, bargeIn.heard, this.recognition);
     if (verdict === "yield") {
       this.handlers.onBargeIn?.({ verdict: "yield", text, source: "rule" });
       // Real: the server answers it as a normal turn; a line of ours it cut
@@ -1646,7 +1799,12 @@ export class VoiceSession {
       this.resumeAfterBargeIn(bargeIn, text);
       return;
     }
-    void this.judgeBargeIn({ text, agentText: bargeIn.heard, agentSpeakingMs: bargeIn.speakingMs })
+    void this.judgeBargeIn({
+      text,
+      agentText: bargeIn.heard,
+      agentSpeakingMs: bargeIn.speakingMs,
+      locale: this.recognition.locale,
+    })
       .catch(() => "yield" as const)
       .then((decision) => {
         if (this.state === "ended") return;
@@ -1681,7 +1839,9 @@ export class VoiceSession {
     const playout = this.playout;
     if (!playout?.consumedSamples || !playout.sentSamples) return this.currentAgentText;
     if (this.replyAudioStart === null) return "";
-    const playedMs = ((playout.consumedSamples() - this.replyAudioStart) / TARGET_SAMPLE_RATE) * 1000;
+    // Consumed samples are at the resolved rate, not a module constant.
+    if (this.outputSampleRate === null) return this.currentAgentText;
+    const playedMs = ((playout.consumedSamples() - this.replyAudioStart) / this.outputSampleRate) * 1000;
     return heardWords(this.currentAgentText, playedMs);
   }
 
@@ -1991,9 +2151,51 @@ export class VoiceSession {
     this.popProbe = on;
   }
 
-  /** Relative playback gain for the active voice (see VOICE_PLAYBACK_GAIN). */
-  setOutputGain(gain: number): void {
-    this.outputGain = Number.isFinite(gain) && gain > 0 ? gain : 1.0;
+  /**
+   * Dev delivered capture (`?delivercapture=1`): set before `start`. Taps the
+   * playout worklet's rendered output and writes one WAV on hang-up. Never
+   * enables in a production build (the caller's flag parser is inert there).
+   */
+  setDeliveredCapture(on: boolean): void {
+    this.deliveredCaptureOn = on;
+  }
+
+  /**
+   * Take the output format the server resolved in `session.ready`. A resume
+   * re-emits ready on the same session; a confirmation that echoes no config
+   * must not downgrade a format we already resolved.
+   */
+  private confirmOutputFormat(config: unknown, sessionId: string | null): void {
+    if (config === undefined) {
+      const fallback = resolveOutputFormat(undefined);
+      this.outputSampleRate ??= fallback.sampleRate;
+      this.outputEncoding ??= fallback.encoding;
+      return;
+    }
+    try {
+      const format = resolveOutputFormat(config);
+      this.outputSampleRate = format.sampleRate;
+      this.outputEncoding = format.encoding;
+    } catch (error) {
+      // Never play a format we cannot render: keep playback refused and say
+      // which encoding and session failed.
+      this.outputSampleRate = null;
+      this.outputEncoding = null;
+      this.reportFormatFailure(error, sessionId);
+    }
+  }
+
+  /** One visible failure naming what could not be played, and for which call. */
+  private reportFormatFailure(error: unknown, sessionId: string | null): void {
+    const detail =
+      error instanceof Error && error.message
+        ? error.message
+        : "The call's audio format is unsupported.";
+    const session = sessionId ? ` Session ${sessionId}.` : "";
+    this.handlers.onError?.({
+      message: `${detail}${session} Start a new call.`,
+      code: "config",
+    });
   }
 
   /**
@@ -2012,24 +2214,28 @@ export class VoiceSession {
     }
   }
 
-  /** Queue one base64 PCM16 chunk on the playout worklet. */
+  /** Queue one base64 chunk, decoded from the resolved encoding, on the playout. */
   private schedule(base64: string) {
-    const pcm = fromBase64(base64);
-    const gain = this.outputGain;
-    if (gain !== 1.0 && pcm.length >= 2) {
-      // Per-voice linear gain; server volume caps at 100 so this is the only
-      // place the 12 dB native gap can close. Peaks pass a soft knee, never a
-      // hard clamp: squared-off peaks are the crackle on loud voices.
-      const view = new DataView(pcm.buffer, pcm.byteOffset, pcm.length);
-      let clamped = 0;
-      for (let i = 0; i + 1 < pcm.length; i += 2) {
-        const g = view.getInt16(i, true) * gain;
-        if (g > 32767 || g < -32768) clamped += 1;
-        view.setInt16(i, Math.round(softLimit(g)), true);
-      }
-      if (clamped > 0 && this.popProbe) this.probe("clip", undefined, { size: clamped });
+    // A rate or encoding the server has not confirmed — or refused — is never
+    // guessed at.
+    const rate = this.outputSampleRate;
+    const encoding = this.outputEncoding;
+    if (rate === null || encoding === null) {
+      // A refused format already reported itself. Audio that beat
+      // `session.ready` had no report at all, so probe the loss rather than
+      // leave a silent hole in the first reply.
+      if (!this.ready) this.dropPreReadyChunk();
+      return;
     }
-    this.playout?.play(pcm, TARGET_SAMPLE_RATE);
+    let pcm: Uint8Array;
+    try {
+      pcm = decodeOutputAudio(fromBase64(base64), encoding);
+    } catch (error) {
+      // Corruption is surfaced, never dropped in as silence.
+      this.reportFormatFailure(error, this.sessionId);
+      return;
+    }
+    this.playout?.play(pcm, rate);
   }
 
   /**
@@ -2043,11 +2249,27 @@ export class VoiceSession {
     this.probe("flush", dropped);
   }
 
+  /**
+   * One agent-audio chunk that arrived before a format was confirmed is not
+   * played. Throttled to one probe per 2s with the count, the same shape as the
+   * mic's input-drop probe: a missing first word has to be diagnosable, and a
+   * run of silence must not read as a dead socket.
+   */
+  private dropPreReadyChunk(): void {
+    this.preReadyDropped += 1;
+    const now = Date.now();
+    if (now - this.lastPreReadyDropProbe <= 2_000) return;
+    this.lastPreReadyDropProbe = now;
+    const dropped = this.preReadyDropped;
+    this.preReadyDropped = 0;
+    this.probe("pre-ready-drop", undefined, { dropped });
+  }
+
   /** Emit one probe event. Never throws, never affects playback. */
   private probe(
     kind: AudioProbeEvent["kind"],
     queued = this.playout?.queuedMs() ?? 0,
-    extra: Pick<AudioProbeEvent, "detail" | "size"> = {},
+    extra: Pick<AudioProbeEvent, "detail" | "size" | "dropped"> = {},
   ) {
     try {
       this.handlers.onAudioProbe?.({
@@ -2124,6 +2346,20 @@ export class VoiceSession {
     // Hang-up mid-reply: let the fade finish before the context closes.
     if (wasSpeaking) await new Promise((r) => setTimeout(r, FADE_OUT_S * 1000));
 
+    // Close the delivered capture before the worklet port does. The tap-off
+    // flushes its last partial block, then the WAV is written. Dev-only, and
+    // observation must never fail a hang-up.
+    const capture = this.deliveredCapture;
+    this.deliveredCapture = null;
+    if (capture) {
+      try {
+        await this.playout?.tap(false);
+        await capture.finish();
+      } catch {
+        /* capture is dev instrumentation */
+      }
+    }
+
     try {
       this.worklet?.port.close();
       this.worklet?.disconnect();
@@ -2184,17 +2420,6 @@ async function postTool(
   } finally {
     clearTimeout(timeout);
   }
-}
-
-/** Above this, gained samples bend toward full scale instead of clipping. */
-const SOFT_KNEE = 0.8 * 32767;
-
-/** Soft limiter for gained PCM16: linear below the knee, tanh above, never past ±32767. */
-export function softLimit(x: number): number {
-  const a = Math.abs(x);
-  if (a <= SOFT_KNEE) return x;
-  const room = 32767 - SOFT_KNEE;
-  return Math.sign(x) * (SOFT_KNEE + room * Math.tanh((a - SOFT_KNEE) / room));
 }
 
 /** Chunk the conversion: String.fromCharCode(...bytes) blows the stack on big inputs. */

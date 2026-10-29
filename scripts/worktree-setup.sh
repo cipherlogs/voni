@@ -9,7 +9,7 @@ set -euo pipefail
 
 worktree_root="$(git rev-parse --show-toplevel)"
 common_git_dir="$(git rev-parse --path-format=absolute --git-common-dir)"
-main_root="$(git worktree list --porcelain | awk '/^worktree /{print $2; exit}')"
+main_root="$(git worktree list --porcelain | awk '/^worktree /{if (!found) { print $2; found = 1 }}')"
 
 if [ "$worktree_root" = "$main_root" ]; then
   echo "worktree-setup: already in the primary checkout ($worktree_root)"
@@ -19,7 +19,7 @@ fi
 link() {
   local source="$1" target="$2"
   [ -e "$source" ] || return 0
-  [ -e "$target" ] && return 0
+  if [ -e "$target" ]; then return 0; fi
   mkdir -p "$(dirname "$target")"
   ln -s "$source" "$target"
   echo "linked $target -> $source"

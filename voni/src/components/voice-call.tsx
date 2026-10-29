@@ -48,6 +48,7 @@ import {
   type VoiceState,
 } from "@/lib/voice/session";
 import { CallTimings } from "@/lib/voice/call-timings";
+import { deliveredCaptureRequested } from "@/lib/voice/delivered-capture";
 import { CascadeSession } from "@/lib/voice/cascade-session";
 import {
   FILLER_POOL,
@@ -55,6 +56,7 @@ import {
   isGoodbyeLine,
   requestVoiceJudge,
 } from "@/lib/voice/jev-judges";
+import { callRecognition } from "@/lib/voice/recognition";
 import { compileSystemPrompt } from "@/lib/agents/compile";
 import type { AgentConfig } from "@/lib/agents/config";
 import { DEMO_TRANSCRIPTION_MODE, buildAgentKeyterms, buildAgentTranscriptionPrompt } from "@/lib/voice/transcription";
@@ -69,7 +71,7 @@ import {
   getDemoCallStatus,
   getVoiceStatusText,
 } from "@/lib/voice/call-status-view";
-import { ACCENT_FLAG, getVoice, voiceLabel, voicePlaybackGain } from "@/lib/agents/voices";
+import { ACCENT_FLAG, getVoice, voiceLabel } from "@/lib/agents/voices";
 import {
   DEMO_VOICE_IDS,
   SILENCE_CHECK_IN_INSTRUCTIONS,
@@ -209,21 +211,25 @@ function useIsBelowLg() {
 
 /**
  * Dev-only A/B switches for the pop hunt, read from the page URL:
- * `?popprobe=1` logs every output jump, overload, gain clamp and underrun
- * as a `[voice-call] pop` line (merged by `npm run call:trace`), `?tick=0`
- * silences the caption tick, `?gain=1` plays the voice at native level.
- * Always empty in production.
+ * `?popprobe=1` logs every output jump, overload and underrun as a
+ * `[voice-call] pop` line (merged by `npm run call:trace`), `?tick=0`
+ * silences the caption tick, and `?delivercapture=1` writes the rendered
+ * playout to `voni/.captures/`. Always empty in production.
  */
-function callDebugFlags(): { popProbe: boolean; tickOff: boolean; gain: number | null } {
-  if (process.env.NODE_ENV === "production" || typeof window === "undefined") {
-    return { popProbe: false, tickOff: false, gain: null };
+function callDebugFlags(): {
+  popProbe: boolean;
+  tickOff: boolean;
+  deliverCapture: boolean;
+} {
+  const production = process.env.NODE_ENV === "production";
+  if (production || typeof window === "undefined") {
+    return { popProbe: false, tickOff: false, deliverCapture: false };
   }
   const params = new URLSearchParams(window.location.search);
-  const gain = Number(params.get("gain"));
   return {
     popProbe: params.get("popprobe") === "1",
     tickOff: params.get("tick") === "0",
-    gain: params.has("gain") && Number.isFinite(gain) && gain > 0 ? gain : null,
+    deliverCapture: deliveredCaptureRequested(window.location.search, production),
   };
 }
 
@@ -442,6 +448,19 @@ export function VoiceCall({
   const sounds = () => (soundsRef.current ??= new CallSounds());
   /** Connected chime fires once per call; reset every time we dial. */
   const connectedChimeRef = useRef(false);
+  /**
+   * The connected chime marks the agent actually sounding, so it hangs off the
+   * playout's first audible sample — not the moment a greeting is queued (the
+   * worklet holds that for its whole pre-roll) and not `session.ready`. A
+   * longer chime therefore starts with the first word instead of running into
+   * it from half a second early. Silent when the greeting never sounds.
+   */
+  const playConnectedChime = useCallback(() => {
+    if (connectedChimeRef.current) return;
+    connectedChimeRef.current = true;
+    sounds().stopRingback();
+    sounds().play("connected");
+  }, []);
   /** Last live caption's speaker + word count: new words strike the tick. */
   const captionWordsRef = useRef<{ role: string; words: number } | null>(null);
   /**
@@ -974,18 +993,16 @@ export function VoiceCall({
 
   // Call earcons, driven by call state (see public/sounds/README.md — a
   // missing file is silence, never an error). Ringback loops from
-  // connecting; the connected chime fires once per call on the first live
-  // state; ended plays hangup unless an error already played its tone.
+  // connecting and stops once the call is live; the connected chime is not
+  // state-driven at all: it fires from the playout's first audible sample
+  // (playConnectedChime above), so scheduling can never make it early. Ended
+  // plays hangup unless an error already played its tone.
   useEffect(() => {
     if (state === "connecting") {
       connectedChimeRef.current = false;
       sounds().startRingback();
     } else if (state === "listening" || state === "speaking") {
-      if (!connectedChimeRef.current) {
-        connectedChimeRef.current = true;
-        sounds().stopRingback();
-        sounds().play("connected");
-      }
+      sounds().stopRingback();
     } else if (state === "ended") {
       sounds().stopRingback();
       if (!error) sounds().play("hangup");
@@ -1214,6 +1231,9 @@ export function VoiceCall({
           speakingRef.current = true;
           setCallState("speaking");
         },
+        // The connected chime waits for the first audible sample, not this
+        // frame's arrival (the playout holds it for the pre-roll).
+        onFirstAudible: playConnectedChime,
         onInterrupted: () => {
           speakingRef.current = false;
           overheardRef.current = false;
@@ -1247,7 +1267,10 @@ export function VoiceCall({
               tts_voice: process.env.NEXT_PUBLIC_CASCADE_TTS_VOICE ?? "",
               tts_model: process.env.NEXT_PUBLIC_CASCADE_TTS_MODEL ?? "sonic-2",
               fallback_mode: "cascade",
-              language_codes: effectiveInlineLanguages(agentConfig.languageCodes),
+              language_codes: effectiveInlineLanguages(
+                agentConfig.languageCodes,
+                agentConfig.conversationLanguage,
+              ),
               transcription_prompt: buildAgentTranscriptionPrompt(agentConfig),
               keyterms_prompt: buildAgentKeyterms(agentConfig),
               // Seed the STT with the opening line so the first caller
@@ -1273,6 +1296,9 @@ export function VoiceCall({
       return;
     }
 
+    // The call's own words: the demo's voice pins its Locale, and an inline
+    // agent's language picker is authoritative (automatic → English scaffolding).
+    const recognition = callRecognition(config);
     const session = new VoiceSession({
       onStateChange: (next) => {
         speakingRef.current = next === "speaking";
@@ -1318,6 +1344,9 @@ export function VoiceCall({
           }
         }
       },
+      // The connected chime marks the first audible sample of the agent's
+      // voice, not the greeting's arrival on the wire.
+      onFirstAudible: playConnectedChime,
       // Barge-in recovery lives in the session (lib/voice/barge-in.ts);
       // the card only leaves a trace line for `npm run call:trace`.
       onBargeIn: (event) => {
@@ -1400,8 +1429,8 @@ export function VoiceCall({
           interruptionsRef.current += 1;
           console.debug("[voice-call] interruption", event.kind, interruptionsRef.current);
         }
-        if (event.kind === "input-drop") {
-          console.debug("[voice-call] input-drop", event.dropped ?? 1);
+        if (event.kind === "input-drop" || event.kind === "pre-ready-drop") {
+          console.debug("[voice-call]", event.kind, event.dropped ?? 1);
         }
         // Pop hunt (?popprobe=1): every candidate cause, time-stamped.
         if (event.kind === "pop" || event.kind === "clip" || event.kind === "underrun") {
@@ -1451,7 +1480,12 @@ export function VoiceCall({
         if (endRequestedRef.current) {
           endRequestedRef.current = false;
           const session = sessionRef.current;
-          if (modeKind === "demo" && !closingRef.current && isGoodbyeLine(turn.text) && session instanceof VoiceSession) {
+          if (
+            modeKind === "demo" &&
+            !closingRef.current &&
+            isGoodbyeLine(turn.text, recognition) &&
+            session instanceof VoiceSession
+          ) {
             session.endAfterReply();
           }
         }
@@ -1481,7 +1515,7 @@ export function VoiceCall({
         if (modeKind !== "demo" || closingRef.current || !turn.text.trim()) return;
         // Asking to end is never a strike: Voni says goodbye on its own, and
         // an end rung racing that goodbye repeated it.
-        if (isEndCallRequest(turn.text)) {
+        if (isEndCallRequest(turn.text, recognition)) {
           endRequestedRef.current = true;
           return;
         }
@@ -1511,7 +1545,7 @@ export function VoiceCall({
     session.setParkOnDrop(shouldParkOnDrop(modeKind === "demo", hiddenRef.current));
     const debug = callDebugFlags();
     session.setPopProbe(debug.popProbe);
-    session.setOutputGain(debug.gain ?? voicePlaybackGain(modeKind === "demo" ? voiceId : config.voiceId));
+    session.setDeliveredCapture(debug.deliverCapture);
     // Demo: one check-in after 15s of silence on a free floor (owner, 2026-09-27).
     if (modeKind === "demo") {
       session.setSilenceCheckIn({
@@ -1531,7 +1565,16 @@ export function VoiceCall({
         await session.start(
           // Placeholder id — the token endpoint returns the real one and `start`
           // prefers it, so the browser cannot choose which agent it reaches.
-          { mode: "agent", agentId: "" },
+          // The voice picked pins the Locale the browser's guardrails hear in.
+          // The conversation Locale rides along too: an explicit code list can
+          // name several languages, and the picker's Locale stays authoritative
+          // for barge-in/filler/goodbye words.
+          {
+            mode: "agent",
+            agentId: "",
+            languageCodes: config.languageCodes,
+            conversationLanguage: config.conversationLanguage,
+          },
           async () => {
             // A hold rejoin binds the greeting-less resume agent variant, so
             // the welcome-back is the single first utterance (see stored-agents).
@@ -1555,10 +1598,17 @@ export function VoiceCall({
             systemPrompt: compileSystemPrompt(config),
             greeting: config.greeting,
             voiceId: config.voiceId,
-            // The agent's own language picker stays authoritative; Automatic
-            // (empty) locks to English so the test call skips 18-language
-            // auto-detection every turn.
-            languageCodes: effectiveInlineLanguages(config.languageCodes),
+            // The agent's own language picker stays authoritative; when it is
+            // left on Automatic (empty), the call follows the agent's Locale,
+            // so testing a Spanish agent tests Spanish. Only an agent with no
+            // Locale at all keeps the documented English fallback.
+            languageCodes: effectiveInlineLanguages(
+              config.languageCodes,
+              config.conversationLanguage,
+            ),
+            // The Locale also keys the browser guardrails' words directly, so a
+            // picker-set Locale never falls back to English filler/goodbye words.
+            conversationLanguage: config.conversationLanguage,
             // Demo parity with the stored agent: balanced end-of-turn.
             transcriptionMode: DEMO_TRANSCRIPTION_MODE,
             // First-utterance STT tuning: scene + vocabulary for the opening
@@ -1576,7 +1626,7 @@ export function VoiceCall({
       setStarting(false);
       notifyPending({ ...pendingRef.current, starting: false });
     }
-  }, [modeKind, inlineAgentId, notifyPending, voiceId, config, engine, cascadeUrl, setCallState, closeCall, markClosing, setReturnPending, enterHold, setEmailTest, setTestTag, putTestUp, speak]);
+  }, [modeKind, inlineAgentId, notifyPending, voiceId, config, engine, cascadeUrl, setCallState, closeCall, markClosing, setReturnPending, enterHold, setEmailTest, setTestTag, putTestUp, speak, playConnectedChime]);
 
   const hangUp = useCallback(async () => {
     if (hangingUp) return;
