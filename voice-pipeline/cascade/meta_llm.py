@@ -41,6 +41,7 @@ import json
 import os
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any
 
 from cascade.model_guard import resolve_model
@@ -226,6 +227,15 @@ class MetaLLMTurn:
     finished: bool = False
     interrupted: bool = False
     closed: bool = False
+    disposition: ReplyDisposition | None = None
+
+    @property
+    def truncated(self) -> bool:
+        return self.disposition is not None and self.disposition.truncated
+
+    @property
+    def filtered(self) -> bool:
+        return self.disposition is not None and self.disposition.filtered
 
     def close(self) -> None:
         """Finalise the record; safe to call more than once."""
@@ -238,6 +248,7 @@ class MetaLLMTurn:
             # Restated, not recomputed: a partial count must never be read as
             # a measurement, and zero is a measurement.
             self.usage = TurnUsage.unmeasured()
+        self.disposition = reply_disposition(self)
 
 
 @dataclass(frozen=True, slots=True)
@@ -346,6 +357,94 @@ class ToolDenial:
 
     name: str
     reason: str
+
+
+class ReplyOutcome(str, Enum):
+    """What a finished stream means for the turn, independent of the wording."""
+
+    NORMAL = "normal"
+    EMPTY = "empty"
+    TRUNCATED = "truncated"
+    FILTERED = "filtered"
+    TOOL_HANDOFF = "tool_handoff"
+    INCOMPLETE = "incomplete"
+
+
+@dataclass(frozen=True, slots=True)
+class ReplyDisposition:
+    """What the orchestrator may do with the reply that was generated.
+
+    ``speak`` is the audio decision: a tool handoff and an empty reply speak
+    nothing, while a truncated or filtered reply speaks exactly what arrived.
+    ``retry_allowed`` is the one seam ticket 42 reads: a stream that died before
+    its first content token may be retried, a reply already in the caller's ear
+    may not.
+    """
+
+    outcome: ReplyOutcome
+    finish_reason: str | None
+    speak: bool
+    retry_allowed: bool
+    truncated: bool = False
+    filtered: bool = False
+    hold_line: bool = False
+
+
+def reply_disposition(turn: MetaLLMTurn) -> ReplyDisposition:
+    """Map a turn's finish reason and content to its documented speech.
+
+    ``stop`` is normal, but a stop with nothing to say is an empty turn, not a
+    reason to invent a line. ``length`` and ``content_filter`` speak what was
+    generated and never retry. ``tool_calls``/``function_call`` hand off to the
+    tool loop. An absent or unknown finish reason is ``INCOMPLETE``: guessing
+    it was a normal stop would hide a cut stream.
+    """
+    reason = turn.finish_reason
+    has_content = bool(turn.content_text.strip())
+    if reason in TOOL_FINISH_REASONS:
+        return ReplyDisposition(
+            outcome=ReplyOutcome.TOOL_HANDOFF,
+            finish_reason=reason,
+            speak=False,
+            retry_allowed=False,
+            hold_line=True,
+        )
+    if reason == "length":
+        return ReplyDisposition(
+            outcome=ReplyOutcome.TRUNCATED,
+            finish_reason=reason,
+            speak=has_content,
+            retry_allowed=False,
+            truncated=True,
+        )
+    if reason == "content_filter":
+        return ReplyDisposition(
+            outcome=ReplyOutcome.FILTERED,
+            finish_reason=reason,
+            speak=has_content,
+            retry_allowed=False,
+            filtered=True,
+        )
+    if reason == "stop":
+        if not has_content:
+            return ReplyDisposition(
+                outcome=ReplyOutcome.EMPTY,
+                finish_reason=reason,
+                speak=False,
+                retry_allowed=False,
+            )
+        return ReplyDisposition(
+            outcome=ReplyOutcome.NORMAL,
+            finish_reason=reason,
+            speak=True,
+            retry_allowed=False,
+        )
+    return ReplyDisposition(
+        outcome=ReplyOutcome.INCOMPLETE,
+        finish_reason=reason,
+        speak=has_content,
+        retry_allowed=not turn.content_text,
+    )
 
 
 def parse_tool_arguments(raw: str) -> dict[str, Any]:
@@ -780,6 +879,8 @@ __all__ = [
     "MetaLLMTurn",
     "MetaToolCall",
     "ReasoningEffortError",
+    "ReplyDisposition",
+    "ReplyOutcome",
     "TOOL_DENIED_COUNTER",
     "TOOL_FINISH_REASONS",
     "ToolArgumentsError",
@@ -790,5 +891,6 @@ __all__ = [
     "build_messages",
     "parse_tool_arguments",
     "parse_usage",
+    "reply_disposition",
     "resolve_reasoning_effort",
 ]
