@@ -1,0 +1,20 @@
+{
+  "channels": 1,
+  "duration_s": 20.0,
+  "encoding": "pcm_s16le",
+  "fixture": "caller-20s",
+  "frame_count": 480000,
+  "provenance": {
+    "created": "2026-10-29",
+    "reproduce": "cd voice-pipeline && python -m spike.fixture --write",
+    "source": "synthesized offline by spike.fixture: voiced harmonic syllable pattern, no human or vendor audio"
+  },
+  "sample_rate": 24000,
+  "sample_width_bytes": 2,
+  "sha256": "e51d09a8ba52f3f9c322d855e80cb1e43aca66c95648d040a2821adcbd6f9448",
+  "speech_end_ms": 12400.0,
+  "speech_end_sample": 297600,
+  "speech_start_sample": 9600,
+  "version": 1,
+  "wav": "caller-20s.wav"
+}
