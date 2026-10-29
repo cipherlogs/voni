@@ -51,7 +51,15 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { getVoice, VOICE_OUTPUT_VOLUME, voicePlaybackGain } from "../agents/voices";
 import { BARGE_IN_JUDGE_MS, judgeOverlap, type OverlapVerdict } from "../voice/barge-in";
-import { NO_WORDS_RESUME_MS, RESUME_WAIT_MS, unheardRest } from "../voice/session";
+import {
+  END_CALL_AUDIO_GRACE_MS,
+  END_CALL_DRAIN_TIMEOUT_MS,
+  END_CALL_POLL_MS,
+  END_CALL_SETTLE_POLLS,
+  NO_WORDS_RESUME_MS,
+  RESUME_WAIT_MS,
+  unheardRest,
+} from "../voice/session";
 import { SCOREBOARD_BUDGETS } from "./scoreboard-budgets";
 import { DEMO_VOICE_IDS, SILENCE_CHECK_IN_INSTRUCTIONS } from "./voni-agent";
 import { DEMO_INBOX_ADDRESS } from "./email-test";
@@ -2655,10 +2663,10 @@ export const DOUBLE_TALK_FADE_OUT_S = SCOREBOARD_BUDGETS.doubleTalkFadeOutS.valu
  * GOODBYE_AUDIO_COVERAGE_MIN of its speaking time, per eval bye-audio) and
  * the model must not narrate the ending.
  */
-export const END_CALL_POLL_MS = SCOREBOARD_BUDGETS.endCallPollMs.value;
-export const END_CALL_SETTLE_POLLS = SCOREBOARD_BUDGETS.endCallSettlePolls.value;
-export const END_CALL_AUDIO_GRACE_MS = SCOREBOARD_BUDGETS.endCallAudioGraceMs.value;
-export const END_CALL_DRAIN_TIMEOUT_MS = SCOREBOARD_BUDGETS.endCallDrainTimeoutMs.value;
+// The live session owns these handshake constants; the scoreboard re-exports
+// them so a retune in session.ts moves the same number the freeze guard pins
+// (the freeze test cross-checks both against the committed record).
+export { END_CALL_POLL_MS, END_CALL_SETTLE_POLLS, END_CALL_AUDIO_GRACE_MS, END_CALL_DRAIN_TIMEOUT_MS };
 /** The goodbye's audio must arrive in full: >= 80% of its words' speaking time. */
 export const GOODBYE_AUDIO_COVERAGE_MIN = SCOREBOARD_BUDGETS.goodbyeAudioCoverageMin.value;
 /** Hang-up after goodbye audio end: the golden goodbye-drain window (0-1500ms). */

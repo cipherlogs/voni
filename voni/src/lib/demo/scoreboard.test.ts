@@ -2,6 +2,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
+  END_CALL_AUDIO_GRACE_MS as SESSION_END_CALL_AUDIO_GRACE_MS,
+  END_CALL_DRAIN_TIMEOUT_MS as SESSION_END_CALL_DRAIN_TIMEOUT_MS,
+  END_CALL_POLL_MS as SESSION_END_CALL_POLL_MS,
+  END_CALL_SETTLE_POLLS as SESSION_END_CALL_SETTLE_POLLS,
+} from "../voice/session";
+import {
   applyGreetingCutGate,
   applyRealCutGate,
   callerClipChanges,
@@ -4625,28 +4631,45 @@ test("budget table pins every gate budget and timing window", () => {
   }
 });
 
-test("every gate constant derives from the frozen budget table", () => {
-  assert.equal(GOLDEN_SCRIPT_BUDGET_S, SCOREBOARD_BUDGETS.goldenScriptBudgetS.value);
-  assert.equal(REPLY_GAP_P50_BUDGET_MS, SCOREBOARD_BUDGETS.replyGapP50Ms.value);
-  assert.equal(REPLY_GAP_P95_BUDGET_MS, SCOREBOARD_BUDGETS.replyGapP95Ms.value);
-  assert.equal(REAL_CUT_MAX_MS, SCOREBOARD_BUDGETS.realCutMs.value);
-  assert.equal(FILLER_RESUME_TAIL_BUDGET_MS, SCOREBOARD_BUDGETS.fillerResumeTailMs.value);
-  assert.equal(DEAD_AIR_MAX_MS, SCOREBOARD_BUDGETS.deadAirMaxMs.value);
-  assert.equal(SILENCE_CHECK_IN_TARGET_MS, SCOREBOARD_BUDGETS.silenceCheckInTargetMs.value);
-  assert.equal(SILENCE_CHECK_IN_MAX_MS, SCOREBOARD_BUDGETS.silenceCheckInMaxMs.value);
+test("every gate constant is pinned independently of the table it derives from", () => {
+  // Expected values come from PINNED_BUDGETS (hand literals), not from the
+  // same expression the constant uses: a constant that stopped tracking the
+  // ruler still fails here.
+  assert.equal(GOLDEN_SCRIPT_BUDGET_S, PINNED_BUDGETS.goldenScriptBudgetS);
+  assert.equal(REPLY_GAP_P50_BUDGET_MS, PINNED_BUDGETS.replyGapP50Ms);
+  assert.equal(REPLY_GAP_P95_BUDGET_MS, PINNED_BUDGETS.replyGapP95Ms);
+  assert.equal(REAL_CUT_MAX_MS, PINNED_BUDGETS.realCutMs);
+  assert.equal(FILLER_RESUME_TAIL_BUDGET_MS, PINNED_BUDGETS.fillerResumeTailMs);
+  assert.equal(DEAD_AIR_MAX_MS, PINNED_BUDGETS.deadAirMaxMs);
+  assert.equal(SILENCE_CHECK_IN_TARGET_MS, PINNED_BUDGETS.silenceCheckInTargetMs);
+  assert.equal(SILENCE_CHECK_IN_MAX_MS, PINNED_BUDGETS.silenceCheckInMaxMs);
   assert.equal(SILENCE_CHECK_IN_TARGET_MS, SILENCE_CHECK_IN_MS, "the budget quotes the pipeline's check-in");
-  assert.equal(DOUBLE_TALK_MAX_OVERLAP_MS, SCOREBOARD_BUDGETS.doubleTalkMaxOverlapMs.value);
-  assert.equal(DOUBLE_TALK_FADE_OUT_S, SCOREBOARD_BUDGETS.doubleTalkFadeOutS.value);
-  assert.equal(END_CALL_POLL_MS, SCOREBOARD_BUDGETS.endCallPollMs.value);
-  assert.equal(END_CALL_SETTLE_POLLS, SCOREBOARD_BUDGETS.endCallSettlePolls.value);
-  assert.equal(END_CALL_AUDIO_GRACE_MS, SCOREBOARD_BUDGETS.endCallAudioGraceMs.value);
-  assert.equal(END_CALL_DRAIN_TIMEOUT_MS, SCOREBOARD_BUDGETS.endCallDrainTimeoutMs.value);
-  assert.equal(GOODBYE_AUDIO_COVERAGE_MIN, SCOREBOARD_BUDGETS.goodbyeAudioCoverageMin.value);
-  assert.equal(HANG_UP_AFTER_GOODBYE_MAX_MS, SCOREBOARD_BUDGETS.hangUpAfterGoodbyeMaxMs.value);
-  assert.equal(TIMBRE_REFERENCE_LUFS, SCOREBOARD_BUDGETS.timbreReferenceLufs.value);
-  assert.equal(TIMBRE_LUFS_TOLERANCE_DB, SCOREBOARD_BUDGETS.timbreLufsToleranceDb.value);
-  assert.equal(POP_JUMP_INT16, SCOREBOARD_BUDGETS.popJumpInt16.value);
-  assert.equal(HUMAN_RATERS_REQUIRED, SCOREBOARD_BUDGETS.humanRatersRequired.value);
+  assert.equal(DOUBLE_TALK_MAX_OVERLAP_MS, PINNED_BUDGETS.doubleTalkMaxOverlapMs);
+  assert.equal(DOUBLE_TALK_FADE_OUT_S, PINNED_BUDGETS.doubleTalkFadeOutS);
+  assert.equal(END_CALL_POLL_MS, PINNED_BUDGETS.endCallPollMs);
+  assert.equal(END_CALL_SETTLE_POLLS, PINNED_BUDGETS.endCallSettlePolls);
+  assert.equal(END_CALL_AUDIO_GRACE_MS, PINNED_BUDGETS.endCallAudioGraceMs);
+  assert.equal(END_CALL_DRAIN_TIMEOUT_MS, PINNED_BUDGETS.endCallDrainTimeoutMs);
+  assert.equal(GOODBYE_AUDIO_COVERAGE_MIN, PINNED_BUDGETS.goodbyeAudioCoverageMin);
+  assert.equal(HANG_UP_AFTER_GOODBYE_MAX_MS, PINNED_BUDGETS.hangUpAfterGoodbyeMaxMs);
+  assert.equal(TIMBRE_REFERENCE_LUFS, PINNED_BUDGETS.timbreReferenceLufs);
+  assert.equal(TIMBRE_LUFS_TOLERANCE_DB, PINNED_BUDGETS.timbreLufsToleranceDb);
+  assert.equal(POP_JUMP_INT16, PINNED_BUDGETS.popJumpInt16);
+  assert.equal(HUMAN_RATERS_REQUIRED, PINNED_BUDGETS.humanRatersRequired);
+});
+
+test("the live session's drain constants are the ones the freeze guard pins", () => {
+  // scoreboard.ts re-exports the session's handshake constants. Retuning the
+  // session alone must move a number this test (and the committed record)
+  // pins, so a budget edit in session.ts can never quietly escape the freeze.
+  assert.equal(SESSION_END_CALL_POLL_MS, PINNED_BUDGETS.endCallPollMs);
+  assert.equal(SESSION_END_CALL_SETTLE_POLLS, PINNED_BUDGETS.endCallSettlePolls);
+  assert.equal(SESSION_END_CALL_AUDIO_GRACE_MS, PINNED_BUDGETS.endCallAudioGraceMs);
+  assert.equal(SESSION_END_CALL_DRAIN_TIMEOUT_MS, PINNED_BUDGETS.endCallDrainTimeoutMs);
+  assert.equal(END_CALL_POLL_MS, SESSION_END_CALL_POLL_MS, "one source of truth, re-exported");
+  assert.equal(END_CALL_SETTLE_POLLS, SESSION_END_CALL_SETTLE_POLLS);
+  assert.equal(END_CALL_AUDIO_GRACE_MS, SESSION_END_CALL_AUDIO_GRACE_MS);
+  assert.equal(END_CALL_DRAIN_TIMEOUT_MS, SESSION_END_CALL_DRAIN_TIMEOUT_MS);
 });
 
 test("committed budget record matches the pinned table", () => {

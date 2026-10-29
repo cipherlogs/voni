@@ -518,10 +518,17 @@ const FADE_OUT_S = 0.04;
  * traveling to the worklet plus output latency, Bluetooth included).
  * END_CALL_DRAIN_TIMEOUT_MS stays the fail-safe: never hold the line longer.
  */
-const END_CALL_POLL_MS = 250;
-const END_CALL_SETTLE_POLLS = 3;
-const END_CALL_AUDIO_GRACE_MS = 500;
-const END_CALL_DRAIN_TIMEOUT_MS = 10000;
+export const END_CALL_POLL_MS = 250;
+export const END_CALL_SETTLE_POLLS = 3;
+export const END_CALL_AUDIO_GRACE_MS = 500;
+export const END_CALL_DRAIN_TIMEOUT_MS = 10000;
+/**
+ * A demo tool's line is done after two settled polls in a row (a dry gap
+ * between chunks is not the end of the line). This is deliberately NOT the
+ * end-call drain's three polls: the goodbye gets the extra poll because a
+ * chopped closing line is the failure the drain handshake exists to prevent.
+ */
+const DEMO_LINE_SETTLE_POLLS = 2;
 
 export class VoiceSession {
   private ws: WebSocket | null = null;  private audioCtx: AudioContext | null = null;
@@ -1484,7 +1491,9 @@ export class VoiceSession {
       // when the worklet is settled and the audio grace has passed, so fresh
       // audio (or a dry gap) restarts the count instead of releasing early.
       settledPolls = spoke && this.playbackSettled() && (demoOnly || quiet) ? settledPolls + 1 : 0;
-      const lineDone = (spoke ? settledPolls >= 2 : now - heldAt >= SILENT_TOOL_RELEASE_MS);
+      const lineDone = spoke
+        ? settledPolls >= DEMO_LINE_SETTLE_POLLS
+        : now - heldAt >= SILENT_TOOL_RELEASE_MS;
       const release = demoOnly
         ? lineDone || now - heldAt >= HELD_DEMO_RESULT_MAX_MS
         : (spoke && this.audioDrained(settledPolls)) ||
