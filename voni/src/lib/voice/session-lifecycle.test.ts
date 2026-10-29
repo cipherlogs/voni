@@ -1487,8 +1487,6 @@ test("the goodbye's own audio still plays when the platform omits its reply id",
   handle({ type: "reply.audio", data: "" }); // no reply_id
   handle({ type: "transcript.agent", text: "Okay, bye!" }); // no reply_id
   assert.ok(played.length > before, "the id-less goodbye audio is heard, not silenced");
-  const captions: string[] = [];
-  // (the caption handler above was not wired in midReply; assert the drop guard directly)
   assert.equal(internals["endCallSignaled"], true);
   assert.equal(internals["goodbyeFinished"], false, "the goodbye still owns the floor");
 });
