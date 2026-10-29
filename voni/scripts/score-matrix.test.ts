@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { DEMO_VOICE_IDS } from "../src/lib/demo/voni-agent";
+import { readCodeFingerprint } from "../src/lib/demo/scoreboard";
 import { resolveSubject, type SubjectRecord } from "../src/lib/demo/subject";
 
 const SCRIPT = new URL("./score-matrix.mts", import.meta.url).pathname;
@@ -57,6 +58,9 @@ function scoreArtifact(voice: string, probes: Record<string, number>, redacted: 
     subScores: [],
     voice,
     runId: `run-${voice}`,
+    // The matrix judges the current tree (ticket 117): a saved run without a
+    // fingerprint is historical and cannot answer for this matrix.
+    codeFingerprint: readCodeFingerprint(),
     evalRunner: { scenario: "greeting-cut" },
     probes,
     transcripts: { redacted },

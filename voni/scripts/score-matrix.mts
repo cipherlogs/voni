@@ -52,23 +52,26 @@ import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import {
-  buildRegressionMatrix,
   DEFAULT_GATE_VOICE,
-  formatMatrixTable,
   parseGateRows,
   parseSubScoreRows,
+  readCodeFingerprint,
   resolveGateVoice,
   resolveMatrixVoices,
   subjectOfArtifact,
-  subjectRowKey,
   validateProbeCounts,
-  type RegressionMatrix,
-  type RegressionSubjectInput,
   type ScoreboardArtifact,
   type ScoreboardGate,
   type SubScore,
 } from "../src/lib/demo/scoreboard";
 import { readScoreboardArtifactFile } from "../src/lib/demo/artifact-reader";
+import {
+  buildRegressionMatrix,
+  formatMatrixTable,
+  subjectRowKey,
+  type RegressionMatrix,
+  type RegressionSubjectInput,
+} from "../src/lib/demo/subject-verdict";
 import {
   resolveSubject,
   sameSubject,
@@ -324,10 +327,14 @@ function main(): void {
     }
   }
 
+  // The code under judgement. Each row's fingerprint must be this tree: a run
+  // from another HEAD is historical evidence and is blocked, never counted.
+  const expectedCode = readCodeFingerprint();
   const matrix: RegressionMatrix = buildRegressionMatrix({
     featuredSubject: featured,
     entries,
     expectedTag,
+    expectedCode,
   });
   const out = resolve(arg("--out", `scoreboard-runs/matrix-${stamp()}.json`));
   mkdirSync(dirname(out), { recursive: true });

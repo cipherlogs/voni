@@ -68,7 +68,6 @@ import {
   addHumanRating,
   analyzeTagMentions,
   bindBallotsToSubject,
-  buildRegressionMatrix,
   checkEvidenceTimbre,
   checkMeasuredLevel,
   checkRegressionVoice,
@@ -97,11 +96,8 @@ import {
   classifyRunnerOutcome,
   formatArtifactDiff,
   formatEvalRunnerReport,
-  formatMatrixTable,
   formatTraceTurn,
   resolveMatrixVoices,
-  subjectGateVerdict,
-  subjectRowKey,
   classifyOverheard,
   evaluateOverheardRecall,
   formatGateTable,
@@ -162,6 +158,12 @@ import {
   type ScoreboardGate,
   type StreakArtifact,
 } from "./scoreboard";
+import {
+  buildRegressionMatrix,
+  formatMatrixTable,
+  subjectGateVerdict,
+  subjectRowKey,
+} from "./subject-verdict";
 import {
   SCOREBOARD_BUDGETS,
   budgetValues,
@@ -5246,12 +5248,16 @@ test("auto timbre failure reports ballots but never counts them", () => {
   const artifact = buildSkeletonArtifact({
     voice: DEFAULT_GATE_VOICE,
     scenario: "greeting-cut",
-    runnerStdout: "",
+    runnerStdout:
+      'EVAL SUMMARY {"scenario":"greeting-cut","runs":1,"failures":0,' +
+      '"scenarios":[{"name":"greeting-cut","passed":1,"runs":1}],' +
+      '"traceSessions":["sess_subject"],"playout":[],"audioChunks":1,"live":true}\n',
     exitCode: 0,
     durationMs: 10,
     runs: 1,
     probes: { jump: 0, overload: 0, clip: 1, underrun: 0, inputDrop: 0 },
     humanRatings: two,
+    codeFingerprint: { head: "a".repeat(40), dirty: false, dirtyHash: "0".repeat(64) },
   });
   assert.equal(artifact.gates.find((g) => g.name === "timbre-probes")?.status, "FAIL");
   const human = artifact.gates.find((g) => g.name === "accent-human");
@@ -5346,6 +5352,7 @@ test("a ballot below five blocks the timbre gate even on a measured pass", () =>
       delivered: measuredTone("captures/delivered-anna-en.wav", -23.1),
     },
     dryRun: true,
+    codeFingerprint: { head: "a".repeat(40), dirty: false, dirtyHash: "0".repeat(64) },
   });
   const timbre = artifact.gates.find((g) => g.name === "timbre-probes");
   assert.equal(timbre?.status, "FAIL", "a ballot below five blocks the timbre gate");
@@ -5504,6 +5511,9 @@ function matrixRun(input: {
     runs: 1,
     dryRun: true,
     subject: input.subject,
+    // A verdict answers to the code it ran (ticket 117): rows without a
+    // fingerprint would be blocked before any gate could be judged.
+    codeFingerprint: { head: "a".repeat(40), dirty: false, dirtyHash: "0".repeat(64) },
     ...(input.runId ? { runId: input.runId } : {}),
     probes: { jump: 0, overload: 0, clip: input.clip ?? 0, underrun: 0, inputDrop: 0 },
   });
