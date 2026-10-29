@@ -132,7 +132,7 @@ const BAND_DELTA_MAX_DB = SCOREBOARD_BUDGETS.timbreMeasuredBandDeltaDb.value;
 const BREAKUP_MAX = SCOREBOARD_BUDGETS.timbreMeasuredBreakupMax.value;
 
 /** How close two breakups must start to be the same hole in both files. */
-const BREAKUP_MATCH_SECONDS = 0.05;
+export const BREAKUP_MATCH_SECONDS = SCOREBOARD_BUDGETS.timbreMeasuredBreakupMatchSeconds.value;
 
 function unmeasuredLevel(detail: string): MeasuredLevelCheck {
   return {

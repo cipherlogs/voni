@@ -30,6 +30,11 @@ export const CONTENT_JUDGE_VERSION = "content-judge/1";
 /**
  * The machine's no-defect ceiling. Only a named native reviewer may say 5/5,
  * so the judge never emits 5 even when the model does.
+ *
+ * Deliberately not a scoreboard budget: it is the judge's output-scale cap
+ * (its contract, pinned by `content-judge.test.ts`), not a threshold a
+ * scoreboard gate is judged against. Moving it to `scoreboard-budgets.ts`
+ * would claim a gate ownership this module does not have.
  */
 export const MACHINE_SCORE_CEILING = 4;
 
