@@ -3,12 +3,19 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
   buildDemoAgentBody,
+  DEMO_AGENT_VARIANT,
   DEMO_LLM_BASE_URL,
   DEMO_LLM_MODEL,
+  DEMO_TURN_INTERRUPTION_DELAY,
+  DEMO_TURN_MAX_SILENCE,
+  DEMO_TURN_MIN_SILENCE,
   demoAgentFingerprint,
   demoAgentName,
   demoAgentStorageKey,
+  demoAgentVariantFromEnv,
   demoLlmOverride,
+  demoTurnWindowsFromEnv,
+  planDemoAgent,
 } from "./stored-agents";
 import { END_CALL_TOOL } from "@/lib/tools/definitions";
 import { VONI_GREETINGS, DEMO_VOICE_IDS } from "./voni-agent";
@@ -50,6 +57,187 @@ test("the resume variant drops the greeting but keeps everything else", () => {
     demoAgentFingerprint(buildDemoAgentBody("anna")),
     "the variant refreshes its own cached row, never the intro agent",
   );
+});
+
+test("the experimental variant differs from production only by identity and windows", () => {
+  const production = buildDemoAgentBody("anna");
+  const variant = buildDemoAgentBody("anna", {
+    variant: "turn-window",
+    turnWindows: { min_silence: 400, max_silence: 640, interruption_delay: 0 },
+  });
+
+  assert.equal(variant.name, "demo:voni:anna:exp");
+  assert.equal(demoAgentStorageKey("anna", false, "turn-window"), "anna:exp");
+  assert.equal(production.name, "demo:voni:anna");
+  assert.equal(production.input.turn_detection, null, "production stays adaptive");
+  assert.deepEqual(variant.input.turn_detection, {
+    min_silence: 400,
+    max_silence: 640,
+    interruption_delay: 0,
+  });
+  assert.deepEqual(
+    { ...variant, name: production.name, input: { ...variant.input, turn_detection: null } },
+    production,
+    "identity and the window are the only differences: same prompt, tools, greeting, voice, model and keyterms",
+  );
+});
+
+test("an omitted window setting is ladder rung 1, and only the three fields ship", () => {
+  const variant = buildDemoAgentBody("anna", { variant: "turn-window" });
+  assert.deepEqual(variant.input.turn_detection, {
+    min_silence: 400,
+    max_silence: 640,
+    interruption_delay: 0,
+  });
+  const withStray = buildDemoAgentBody("anna", {
+    variant: "turn-window",
+    turnWindows: {
+      min_silence: 200,
+      max_silence: 400,
+      interruption_delay: 0,
+      interrupt_response: true,
+    } as never,
+  });
+  assert.deepEqual(Object.keys(withStray.input.turn_detection ?? {}), [
+    "min_silence",
+    "max_silence",
+    "interruption_delay",
+  ]);
+});
+
+test("ladder rung 3 configures interruption_delay alone, with no silence pair", () => {
+  const variant = buildDemoAgentBody("anna", {
+    variant: "turn-window",
+    turnWindows: { interruption_delay: 0 },
+  });
+  assert.deepEqual(variant.input.turn_detection, { interruption_delay: 0 });
+  assert.notEqual(
+    demoAgentFingerprint(variant, "account"),
+    demoAgentFingerprint(buildDemoAgentBody("anna"), "account"),
+    "rung 3 is still its own variant row",
+  );
+  assert.throws(
+    () => buildDemoAgentBody("anna", { variant: "turn-window", turnWindows: {} }),
+    /at least one configured window/,
+  );
+});
+
+test("a window change moves only the experimental variant's fingerprint", () => {
+  const production = buildDemoAgentBody("anna");
+  const rung1 = buildDemoAgentBody("anna", {
+    variant: "turn-window",
+    turnWindows: { min_silence: 400, max_silence: 640, interruption_delay: 0 },
+  });
+  const rung2 = buildDemoAgentBody("anna", {
+    variant: "turn-window",
+    turnWindows: { min_silence: 200, max_silence: 400, interruption_delay: 0 },
+  });
+
+  assert.notEqual(
+    demoAgentFingerprint(rung1, "account"),
+    demoAgentFingerprint(rung2, "account"),
+    "the variant fingerprint covers the window, so a rung change refreshes it",
+  );
+  assert.notEqual(
+    demoAgentFingerprint(rung1, "account"),
+    demoAgentFingerprint(production, "account"),
+    "the variant is never the production row",
+  );
+  assert.equal(
+    demoAgentFingerprint(production, "account"),
+    demoAgentFingerprint(buildDemoAgentBody("anna"), "account"),
+    "building a variant leaves the production body's hash unchanged",
+  );
+});
+
+test("a stray window object cannot reach the production body", () => {
+  const production = buildDemoAgentBody("anna");
+  const stray = buildDemoAgentBody("anna", {
+    variant: "production",
+    turnWindows: { min_silence: 1, max_silence: 2, interruption_delay: 3 },
+  });
+  assert.equal(stray.input.turn_detection, null);
+  assert.equal(
+    demoAgentFingerprint(stray, "account"),
+    demoAgentFingerprint(production, "account"),
+    "an unselected variant is byte-identical to production",
+  );
+});
+
+test("the variant is selected only by environment, production by default", async () => {
+  const keys = [
+    DEMO_AGENT_VARIANT,
+    DEMO_TURN_MIN_SILENCE,
+    DEMO_TURN_MAX_SILENCE,
+    DEMO_TURN_INTERRUPTION_DELAY,
+  ] as const;
+  const saved = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  try {
+    for (const key of keys) delete process.env[key];
+    assert.equal(await demoAgentVariantFromEnv(), "production", "no selection means production");
+    assert.deepEqual(await demoTurnWindowsFromEnv(), {
+      min_silence: 400,
+      max_silence: 640,
+      interruption_delay: 0,
+    });
+
+    const productionFingerprint = demoAgentFingerprint(buildDemoAgentBody("anna"), "account");
+    process.env[DEMO_AGENT_VARIANT] = "turn-window";
+    process.env[DEMO_TURN_MIN_SILENCE] = "200";
+    process.env[DEMO_TURN_MAX_SILENCE] = "400";
+    process.env[DEMO_TURN_INTERRUPTION_DELAY] = "0";
+    assert.equal(await demoAgentVariantFromEnv(), "turn-window");
+    assert.deepEqual(await demoTurnWindowsFromEnv(), {
+      min_silence: 200,
+      max_silence: 400,
+      interruption_delay: 0,
+    });
+    assert.equal(
+      demoAgentFingerprint(buildDemoAgentBody("anna"), "account"),
+      productionFingerprint,
+      "the experiment's environment never moves the production fingerprint",
+    );
+
+    process.env[DEMO_AGENT_VARIANT] = "turn-windw";
+    await assert.rejects(demoAgentVariantFromEnv(), /Unknown DEMO_AGENT_VARIANT/);
+  } finally {
+    for (const key of keys) {
+      if (saved[key] === undefined) delete process.env[key];
+      else process.env[key] = saved[key];
+    }
+  }
+});
+
+test("provisioning plans the variant as its own row, leaving production untouched", () => {
+  const production = planDemoAgent("anna", { variant: "production" });
+  const variant = planDemoAgent("anna", {
+    variant: "turn-window",
+    turnWindows: { min_silence: 200, max_silence: 400, interruption_delay: 0 },
+  });
+
+  assert.equal(production.storageKey, "anna");
+  assert.equal(production.body.name, "demo:voni:anna");
+  assert.equal(variant.storageKey, "anna:exp", "a distinct demo_agents row");
+  assert.equal(variant.body.name, "demo:voni:anna:exp", "a distinct remote agent");
+  assert.deepEqual(variant.body.input.turn_detection, {
+    min_silence: 200,
+    max_silence: 400,
+    interruption_delay: 0,
+  });
+  assert.deepEqual(
+    { ...variant.body, name: production.body.name, input: { ...variant.body.input, turn_detection: null } },
+    production.body,
+    "same prompt, tools, greeting, voice, model and keyterms as production",
+  );
+});
+
+test("the visitor token route can only reach the variant by environment", () => {
+  const route = readFileSync(
+    new URL("../../app/api/demo/token/route.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(route, /getOrCreateDemoAgent\(voiceId, \{ resume \}\)/);
+  assert.doesNotMatch(route, /body\.variant|variant:\s*body/, "no request field selects the experiment");
 });
 
 test("the turn preset stays meaning-based on the intro and the resume agent", () => {

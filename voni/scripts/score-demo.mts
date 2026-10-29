@@ -41,6 +41,8 @@
  * or an unwritable artifact.
  *
  *   npm run scoreboard:demo -- [--gate-voice <demo-voice-id>] [--scenario all | <name>] [--runs 1]
+ *                           [--transport stored|inline] [--variant turn-window]
+ *                           [--turn-windows 400,640,0 | -,-,0]
  *                           [--out scoreboard-runs/score-<ts>-<voice>.json] [--dry-run]
  *                           [--prior <path>]
  *                           [--timing-lock /tmp/voni-demo-timing.lock]
@@ -56,6 +58,7 @@
  *                           [--overlap-ms 120,350] [--goodbye-coverage 0.95]
  *                           [--goodbye-inbox-named | --goodbye-inbox-missing]
  *                           [--hang-up-delay-ms 900] [--narrated-ending]
+ *                           [--events <path> | --no-events]
  *
  * --gate-voice picks the gate voice through the shared voice registry
  * (--voice stays an alias); omitting both gates on DEFAULT_GATE_VOICE, never
@@ -66,6 +69,27 @@
  * dir, override with --timing-lock) so timing runs go one at a time; a second
  * run fails fast naming the holder instead of inflating cut latency under
  * parallel load. The lock is released on exit and a dead holder is reclaimed.
+ *
+ * Every measurement run carries the JSONL event stream (client turn marks,
+ * cuts, tool calls): without the client marks there is no per-turn latency
+ * split, so a baseline would be unmeasured. By default it writes one file per
+ * scenario under `<out dir>/.events/<artifact stem>/<scenario>.jsonl` (inside
+ * the gitignored `scoreboard-runs/`), created lazily by the runner. A focused
+ * run writes `.../<scenario>.jsonl` there too. `--events <path>` stays the
+ * override: a focused run writes that file, the suite writes
+ * `<path stem>.<scenario>.jsonl` so one process's truncation cannot drop
+ * another's stream. `--no-events` restores the old no-stream behaviour for
+ * debugging. The stream is telemetry, never a gate input, and a stream that
+ * cannot be read only warns — it never fails a gate.
+ *
+ * --variant turn-window forwards the stored-agent experiment to every runner
+ * section (`--variant`, plus `--turn-windows min,max,interruption_delay` when
+ * given; `-` omits a part, so rung 3 is `-,-,0`). The same selection also comes
+ * from DEMO_AGENT_VARIANT / DEMO_TURN_*, but the flag wins. A typo, windows
+ * without the variant, or a variant on `--transport inline` fails before the
+ * lock is taken: inline is a debug path and is never measured. Each artifact's
+ * run identity records `variant`, `variantKey`, the agent id/fingerprint and
+ * the configured `turnWindows`; `scoreboard:inspect` prints them.
  *
  * Every artifact records a codeFingerprint (git HEAD plus a hash of the
  * uncommitted status and diff). `npm run scoreboard:streak` reads the last
@@ -196,8 +220,8 @@
  * failed run with no cut line FAILs and cites the interrupted greeting turn
  * from the merged Call trace (or says no turn was merged).
  */
-import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import {
   addHumanRating,
@@ -269,8 +293,17 @@ import {
   type TimbreProbes,
   type TraceGap,
 } from "../src/lib/demo/scoreboard";
-import { buildDemoAgentBody } from "../src/lib/demo/stored-agents";
+import { buildDemoAgentBody, demoAgentVariantFromEnv, demoTurnWindowsFromEnv, type DemoAgentVariant, type DemoTurnWindows } from "../src/lib/demo/stored-agents";
+import {
+  evalRunnerArgv,
+  parseEvalTransport,
+  parseEvalTurnWindowsArg,
+  parseEvalVariantArg,
+  resolveEvalVariantSelection,
+  type EvalTransport,
+} from "../src/lib/demo/eval-transport";
 import { buildRunnerEvidence } from "../src/lib/demo/runner-evidence";
+import { readEvalEvents, type EvalEvent } from "../src/lib/demo/eval-events";
 import { judgeOverlap } from "../src/lib/voice/barge-in";
 import { acquireTimingLock, DEFAULT_TIMING_LOCK_PATH } from "../src/lib/demo/timing-lock";
 
@@ -478,18 +511,72 @@ function stamp(date = new Date()): string {
   return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
 }
 
-function runEvalRunner(voice: string, scenario: string, runs: string): { stdout: string; exitCode: number | null; durationMs: number; evalError: string | null } {
+function runEvalRunner(
+  voice: string,
+  scenario: string,
+  runs: string,
+  options: {
+    transport?: EvalTransport | null;
+    variant?: DemoAgentVariant | null;
+    turnWindows?: DemoTurnWindows | null;
+    eventsPath?: string | null;
+  } = {},
+): { stdout: string; exitCode: number | null; durationMs: number; evalError: string | null } {
   const started = Date.now();
-  const result = spawnSync(
-    "npm",
-    ["run", "eval:demo-agent", "--", "--voice", voice, "--scenario", scenario, "--runs", runs],
-    { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
-  );
+  const result = spawnSync("npm", evalRunnerArgv({ voice, scenario, runs, ...options }), {
+    encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024,
+  });
   const stdout = `${result.stdout ?? ""}${result.stderr ?? ""}`;
   // A spawn failure (missing binary, killed) surfaces as result.error, not
   // an exit code: record it so the artifact marks a harness break.
   const evalError = result.error instanceof Error ? result.error.message : null;
   return { stdout, exitCode: evalError ? null : result.status, durationMs: Date.now() - started, evalError };
+}
+
+/**
+ * One event-stream file per suite scenario: the runner's writer truncates on
+ * create, so nine processes sharing a path would leave only the last one's
+ * lines. `<dir>/run.jsonl` becomes `<dir>/run.greeting-cut.jsonl`, …
+ */
+function suiteEventsPath(path: string, scenario: string): string {
+  const suffix = path.endsWith(".jsonl") ? ".jsonl" : "";
+  const stem = suffix ? path.slice(0, -suffix.length) : path;
+  return `${stem}.${scenario}${suffix || ".jsonl"}`;
+}
+
+/**
+ * Where this run's client receipt marks land. Measurement runs default the
+ * stream on, scoped to the artifact (`<out dir>/.events/<artifact stem>/`),
+ * so every baseline carries the per-turn split. `--events <path>` overrides
+ * the location; `--no-events` restores the old no-stream debug path.
+ */
+type RunEvents =
+  | { enabled: false }
+  | { enabled: true; explicit: false; dir: string }
+  | { enabled: true; explicit: true; path: string };
+
+function resolveRunEvents(argv: readonly string[], outPath: string): RunEvents {
+  const eventsIndex = argv.indexOf("--events");
+  const noEvents = argv.includes("--no-events");
+  if (noEvents && eventsIndex >= 0) {
+    throw new Error("--events and --no-events contradict each other");
+  }
+  if (noEvents) return { enabled: false };
+  if (eventsIndex >= 0) {
+    const path = argv[eventsIndex + 1] ?? "";
+    if (path.trim() === "") throw new Error("--events needs a path, got \"\"");
+    return { enabled: true, explicit: true, path };
+  }
+  const stem = basename(outPath).replace(/\.json$/i, "");
+  return { enabled: true, explicit: false, dir: join(dirname(outPath), ".events", stem) };
+}
+
+/** This scenario's JSONL; disabled events pass an empty path (no file). */
+function runEventsPath(events: RunEvents, scenario: string, suite: boolean): string {
+  if (!events.enabled) return "";
+  if (events.explicit) return suite ? suiteEventsPath(events.path, scenario) : events.path;
+  return join(events.dir, `${scenario}.jsonl`);
 }
 
 /**
@@ -510,6 +597,33 @@ const SUITE_SCENARIOS = [
   "hang-up-fast",
   "hang-up-over",
 ] as const;
+
+/**
+ * Read the run's opt-in client receipt marks for the latency split. The stream
+ * is telemetry: a missing or malformed per-scenario file yields no marks (no
+ * split) rather than failing the artifact write. A dry run never ran the
+ * runner, so it never reads a stale file into a fresh artifact.
+ */
+function readRunMarks(events: RunEvents, scenario: string, suite: boolean, dryRun: boolean): EvalEvent[] {
+  if (!events.enabled || dryRun) return [];
+  const names: readonly string[] = suite ? SUITE_SCENARIOS : [scenario];
+  const marks: EvalEvent[] = [];
+  for (const name of names) {
+    const path = runEventsPath(events, name, suite);
+    try {
+      marks.push(...readEvalEvents(path));
+    } catch (error) {
+      // A missing stream means no split for that scenario, not a bad run. A
+      // stream that exists but cannot be read is telemetry trouble: warn,
+      // never fail a gate over it.
+      if (existsSync(path)) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.log(`events stream unreadable for ${name}: ${message}`);
+      }
+    }
+  }
+  return marks;
+}
 
 type EvalSection = {
   stdout: string;
@@ -533,6 +647,10 @@ type SectionSummary = {
   agentId?: string | null;
   agentFingerprint?: string | null;
   llmModel?: string | null;
+  /** Which stored body bound: production | turn-window (ticket 09). */
+  variant?: DemoAgentVariant | null;
+  variantKey?: string | null;
+  turnWindows?: DemoTurnWindows | null;
 };
 
 function sectionSummary(stdout: string): SectionSummary | null {
@@ -576,6 +694,22 @@ function mergeSuiteSections(sections: { name: string; section: EvalSection }[], 
   // can still prove the fast-model stored agent produced its evidence. A
   // stored section wins if the suite ever mixed transports.
   const bound = summaries.find((summary) => summary.transport === "stored") ?? summaries.find((summary) => summary.transport);
+  // One suite is one experiment: sections that disagree about the stored-agent
+  // variant would make the artifact's identity a half-truth, so refuse loudly.
+  const boundVariants = new Set(
+    summaries.map((summary) =>
+      JSON.stringify({
+        variant: summary.variant ?? null,
+        variantKey: summary.variantKey ?? null,
+        turnWindows: summary.turnWindows ?? null,
+      }),
+    ),
+  );
+  if (boundVariants.size > 1) {
+    throw new Error(
+      `suite sections bound different stored-agent variants: ${[...boundVariants].join(" vs ")}`,
+    );
+  }
   const merged = {
     scenario: "suite",
     runs,
@@ -591,6 +725,13 @@ function mergeSuiteSections(sections: { name: string; section: EvalSection }[], 
           agentId: bound.agentId ?? null,
           agentFingerprint: bound.agentFingerprint ?? null,
           llmModel: bound.llmModel ?? "managed",
+        }
+      : {}),
+    ...(bound?.variant !== undefined
+      ? {
+          variant: bound.variant,
+          variantKey: bound.variantKey ?? null,
+          ...(bound.turnWindows ? { turnWindows: bound.turnWindows } : {}),
         }
       : {}),
     ...(uniqueClips.length > 0 ? { clips: uniqueClips } : {}),
@@ -936,7 +1077,7 @@ function deadAirEvidenceFromTimeline(
   };
 }
 
-function main(): void {
+async function main(): Promise<void> {
   const voice = resolveGateVoice(arg("--gate-voice", "") || arg("--voice", DEFAULT_GATE_VOICE));
   // Default is the full gate suite: a plain `npm run scoreboard:demo` must
   // exercise every gate, not leave most of them INFO on one focused scenario.
@@ -947,7 +1088,40 @@ function main(): void {
   if (!/^[1-9]\d*$/.test(runs)) {
     throw new Error(`--runs needs a positive int, got "${runs}"`);
   }
+  // Resolve the artifact before the runners start: the default event stream is
+  // scoped to it, so this run's split lands beside — and travels with — the
+  // artifact it measured.
+  const out = resolve(arg("--out", `scoreboard-runs/score-${stamp()}-${voice}.json`));
   const dryRun = process.argv.includes("--dry-run");
+  const events = resolveRunEvents(process.argv, out);
+  // Which transport/agent the suite measures. Defaults are untouched (no
+  // extra flags reach the runner); a typo, windows without the variant, or a
+  // variant on the inline debug path fails here, before the timing lock and
+  // before any audio is spent — never a silent fallback to production.
+  const transport = parseEvalTransport(process.argv);
+  const transportExplicit = process.argv.includes("--transport");
+  const variantFlag = parseEvalVariantArg(process.argv);
+  const turnWindowsFlag = parseEvalTurnWindowsArg(process.argv);
+  const selection = resolveEvalVariantSelection({
+    argv: process.argv,
+    transport,
+    voiceId: voice,
+    envVariant: await demoAgentVariantFromEnv(),
+    envWindows: await demoTurnWindowsFromEnv(),
+  });
+  const runnerOptions = {
+    ...(transportExplicit ? { transport } : {}),
+    ...(variantFlag ? { variant: variantFlag } : {}),
+    ...(turnWindowsFlag ? { turnWindows: turnWindowsFlag } : {}),
+  };
+  if (selection.variant !== "production") {
+    console.log(
+      `variant: ${selection.variant} ${selection.variantKey} windows ${JSON.stringify(selection.turnWindows)} (source ${selection.source})`,
+    );
+  }
+  // Runner event stream (telemetry, never a gate input). Measurement runs
+  // carry it by default so the per-turn split always exists; --no-events is
+  // the debug escape hatch.
   // Timing runs go one at a time: a live run takes the machine-wide lock
   // before dialing so a parallel run cannot inflate the cut number. A held
   // lock fails fast, names the holder, and writes no artifact. The lock is
@@ -998,13 +1172,16 @@ function main(): void {
     const sections: { name: string; section: EvalSection }[] = [];
     for (const name of SUITE_SCENARIOS) {
       // One at a time: a timing run in parallel inflates the cut number.
-      const section = runEvalRunner(voice, name, runs);
+      const section = runEvalRunner(voice, name, runs, {
+        ...runnerOptions,
+        eventsPath: runEventsPath(events, name, true),
+      });
       sections.push({ name, section });
       stdoutByScenario.set(name, section.stdout);
     }
     evalSection = mergeSuiteSections(sections, Number(runs));
   } else {
-    evalSection = runEvalRunner(voice, scenario, runs);
+    evalSection = runEvalRunner(voice, scenario, runs, { ...runnerOptions, eventsPath: runEventsPath(events, scenario, false) });
     stdoutByScenario.set(scenario, evalSection.stdout);
   }
   // Focused mode has one runner stream: every parser reads it verbatim, so a
@@ -1222,7 +1399,6 @@ function main(): void {
   const callerClips = dryRun ? [] : callerClipsFromRunnerStdout(evalSection.stdout);
   // The prior run is a working artifact, never committed: load it before the
   // cut gate so a changed caller clip fails comparability instead of greening.
-  const out = resolve(arg("--out", `scoreboard-runs/score-${stamp()}-${voice}.json`));
   const priorPath = arg("--prior", "");
   const prior = priorPath ? loadPriorArtifact(priorPath) : latestPriorArtifact(dirname(out), voice, out);
   // Real-cut evidence counts as measured even though it lands post-skeleton.
@@ -1357,7 +1533,23 @@ function main(): void {
   const runnerEvidence = buildRunnerEvidence({
     runnerStdout: evalSection.stdout,
     excerpts: evidenceExcerpts,
+    // The marks ride this run's stream; --no-events claims no split, and every
+    // gate reads exactly what it read before.
+    marks: readRunMarks(events, scenario, suite, dryRun),
   });
+  // Ticket 10: the gate keeps checking the production body (explicitly null),
+  // so a variant run cannot loosen the ADR-0003 contract. The experiment's
+  // windows are labelled alongside it instead of replacing it; the bound
+  // agent id lets the gate tell the variant's own CONFIG rows from production.
+  const endOfTurnExperiment =
+    selection.variant === "turn-window"
+      ? {
+          variant: selection.variant,
+          variantKey: selection.variantKey,
+          turnWindows: selection.turnWindows,
+          agentId: runnerEvidence?.agentId ?? null,
+        }
+      : null;
   let artifact: ScoreboardArtifact = buildSkeletonArtifact({
     voice,
     scenario,
@@ -1370,6 +1562,7 @@ function main(): void {
     ...(traceBeatRaw ? { traceBeat: traceBeatRaw as GoldenBeat } : {}),
     traceSessionId: traceSession || null,
     agentInput,
+    ...(endOfTurnExperiment ? { endOfTurnExperiment } : {}),
     traceExcerpt: excerpt ?? [],
     fillerResume,
     ...(overheardAsides !== undefined ? { overheardAsides } : {}),
@@ -1513,9 +1706,7 @@ function main(): void {
   }
 }
 
-try {
-  main();
-} catch (error) {
+main().catch((error: unknown) => {
   console.error(error instanceof Error ? error.message : String(error));
   process.exitCode = 1;
-}
+});

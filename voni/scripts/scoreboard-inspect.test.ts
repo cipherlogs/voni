@@ -28,8 +28,38 @@ const EVIDENCE: RunnerEvidence = {
     {
       id: "sess_stop",
       turns: [
-        { turnIndex: 1, gapMs: null, cutMs: 3500, heard: true, resume: false, aside: false },
-        { turnIndex: 2, gapMs: 2210, cutMs: null, heard: true, resume: true, aside: false },
+        {
+          turnIndex: 1,
+          gapMs: null,
+          cutMs: 3500,
+          heard: true,
+          resume: false,
+          aside: false,
+          latency: {
+            turnId: "turn-1",
+            band: "post-cut",
+            endpointingMs: 150,
+            generationMs: 100,
+            deliveryMs: 30,
+            perceivedMs: 780,
+          },
+        },
+        {
+          turnIndex: 2,
+          gapMs: 2210,
+          cutMs: null,
+          heard: true,
+          resume: true,
+          aside: false,
+          latency: {
+            turnId: "turn-2",
+            band: "ordinary",
+            endpointingMs: 100,
+            generationMs: 200,
+            deliveryMs: 40,
+            perceivedMs: 840,
+          },
+        },
       ],
       gaps: [
         { turnIndex: 1, gapMs: null, cutMs: 3500 },
@@ -120,6 +150,51 @@ test("--json prints the same compact structure", () => {
   assert.deepEqual(report.scenarios.map((row) => row.name), ["stop-over"]);
   assert.equal(report.sessions[0].turns.length, 2);
   assert.ok(report.gates.some((gate) => gate.name === "reply-gap" && gate.status === "FAIL"));
+});
+
+test("--json exposes the per-turn split and the per-band summary", () => {
+  const path = writeFixture();
+  const result = run(["--artifact", path, "--json"]);
+  assert.equal(result.status, 0, result.stderr);
+  const report = JSON.parse(result.stdout) as {
+    sessions: {
+      turns: {
+        latency?: {
+          band: string;
+          endpointingMs: number;
+          generationMs: number;
+          deliveryMs: number;
+          perceivedMs: number;
+        };
+      }[];
+    }[];
+    latency: {
+      bands: {
+        band: string;
+        count: number;
+        measured: { endpointing: { medianMs: number; p95Ms: number } };
+        perceived: { medianMs: number; p95Ms: number; reportOnly: boolean };
+      }[];
+    };
+  };
+  assert.deepEqual(report.sessions[0].turns[0].latency, {
+    turnId: "turn-1",
+    band: "post-cut",
+    endpointingMs: 150,
+    generationMs: 100,
+    deliveryMs: 30,
+    perceivedMs: 780,
+  });
+  const ordinary = report.latency.bands.find((band) => band.band === "ordinary");
+  assert.ok(ordinary);
+  assert.equal(ordinary.count, 1);
+  assert.deepEqual(ordinary.measured.endpointing, { count: 1, medianMs: 100, p95Ms: 100 });
+  assert.deepEqual(ordinary.perceived, {
+    count: 1,
+    medianMs: 840,
+    p95Ms: 840,
+    reportOnly: true,
+  });
 });
 
 test("--session narrows the Call-trace rows and an unknown id exits 1", () => {

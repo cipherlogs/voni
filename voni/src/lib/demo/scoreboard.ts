@@ -85,6 +85,9 @@ import { DEMO_VOICE_IDS, SILENCE_CHECK_IN_INSTRUCTIONS } from "./voni-agent";
 import { DEMO_INBOX_ADDRESS } from "./email-test";
 import { TAG_WORDS, containsTag, countTags } from "./test-tag";
 import type { RunnerEvidence } from "./runner-evidence";
+import type { LatencyBand } from "./latency-split";
+import type { DemoAgentVariant, DemoTurnWindows } from "./stored-agents";
+import { formatTurnWindows } from "./turn-windows";
 
 /** The locked golden script: seven beats in fixed order (spec story 11). */
 export const GOLDEN_BEATS = [
@@ -515,6 +518,12 @@ export type ReplyGapSample = {
   /** 1-based VONI reply turn in the merged Call trace (null when unattributed). */
   turnIndex: number | null;
   sessionId?: string;
+  /**
+   * Interaction band, joined from the runner's per-turn latency split by
+   * (session, turn) in buildSkeletonArtifact. Naming only: the gate still
+   * pools every sample. Absent means the band was not measured.
+   */
+  band?: LatencyBand;
 };
 
 export type ReplyGapSummary = {
@@ -819,6 +828,25 @@ export function summarizeReplyGaps(samples: ReplyGapSample[]): ReplyGapSummary |
   return { count: samples.length, p50Ms, p95Ms, maxMs: worst.gapMs, worst };
 }
 
+/**
+ * Ticket 06: the interaction band each measured turn belongs to, keyed by
+ * (session, 1-based VONI turn). Joined from the runner's per-turn latency
+ * split; a turn with no split simply has no band (never guessed).
+ */
+function bandsByTurn(evidence: RunnerEvidence | null | undefined): Map<string, LatencyBand> {
+  const bands = new Map<string, LatencyBand>();
+  for (const session of evidence?.sessions ?? []) {
+    for (const turn of session.turns) {
+      if (turn.latency) bands.set(`${session.id}#${turn.turnIndex}`, turn.latency.band);
+    }
+  }
+  return bands;
+}
+
+function bandRef(band: LatencyBand | undefined): string {
+  return `band ${band ?? "unmeasured"}`;
+}
+
 function traceRef(sample: ReplyGapSample): string {
   const where =
     sample.turnIndex !== null && sample.turnIndex !== undefined
@@ -826,7 +854,7 @@ function traceRef(sample: ReplyGapSample): string {
       : sample.sessionId
         ? `call trace ${sample.sessionId}`
         : "call trace";
-  return `${sample.beat ?? "overall"} gap ${sample.gapMs}ms at ${where}`;
+  return `${bandRef(sample.band)}, ${sample.beat ?? "overall"} gap ${sample.gapMs}ms at ${where}`;
 }
 
 /**
@@ -836,8 +864,11 @@ function traceRef(sample: ReplyGapSample): string {
  * (ticket 09): a one-sample turn scope's p50 and p95 are the gap itself, so
  * the same budgets apply unchanged and one slow turn can never hide behind a
  * fast call-level distribution. The FAIL always points at the breaching Call
- * trace turn (index + session). No samples means INFO, never FAIL: an
- * unevidenced run records plumbing, it does not cry laggy.
+ * trace turn (index + session) and names its interaction band (ticket 06):
+ * the band is a label joined from the runner's per-turn split, never a filter,
+ * so post-cut turns stay in the pooled median and tail. A turn whose band was
+ * not measured says `band unmeasured` rather than guessing. No samples means
+ * INFO, never FAIL: an unevidenced run records plumbing, it does not cry laggy.
  */
 export function replyGapGate(samples: ReplyGapSample[], traceSessionId?: string): ScoreboardGate {
   if (samples.length === 0) {
@@ -909,7 +940,9 @@ export function replyGapGate(samples: ReplyGapSample[], traceSessionId?: string)
     breaches.sort((a, b) => b.value - b.budget - (a.value - a.budget));
     const first = breaches[0];
     const where = first.sample
-      ? `${first.sample.beat ? `beat ${first.sample.beat}, ` : "call-level, "}${
+      ? `${bandRef(first.sample.band)}, ${
+          first.sample.beat ? `beat ${first.sample.beat}` : "call-level"
+        }, ${
           first.sample.turnIndex !== null && first.sample.turnIndex !== undefined
             ? formatTraceTurn(first.sample.turnIndex, first.sample.sessionId ?? null)
             : "call trace"
@@ -938,6 +971,78 @@ export function replyGapGate(samples: ReplyGapSample[], traceSessionId?: string)
 // ── Gate: end-of-turn (ADR-0003 contract, owner: end-of-turn section) ─────────
 
 /**
+ * The stored-agent experiment a run bound (ticket 10). Its windows are
+ * evidence for the experiment only: they never replace the production body
+ * the gate checks, so `turn_detection: null` on production stays the contract.
+ */
+export type EndOfTurnExperiment = {
+  variant: Exclude<DemoAgentVariant, "production">;
+  /** The variant's own row key (`<voice>:exp`), so the evidence names the body. */
+  variantKey: string | null;
+  /** The windows the variant body carries. */
+  turnWindows: DemoTurnWindows | null;
+  /**
+   * The stored agent id the variant bound, so a CONFIG row can be attributed.
+   * Null means no row can be the experiment's, so every row stays production.
+   */
+  agentId: string | null;
+};
+
+/**
+ * Dedicated artifact evidence that a run bound the experiment, so the variant
+ * windows are named beside the gate's production PASS. Absent on production
+ * artifacts (the gate's existing PASS line speaks for them).
+ */
+export type EndOfTurnEvidence = {
+  experimental: true;
+  variant: Exclude<DemoAgentVariant, "production">;
+  variantKey: string | null;
+  turnWindows: DemoTurnWindows | null;
+  /** The production body the gate checked: still adaptive. */
+  productionTurnDetection: null;
+};
+
+/**
+ * Does one merged CONFIG row belong to the experimental agent? A row without
+ * an `agent=` attribution is production; so is any other agent's row.
+ */
+function configLineIsExperiment(line: string, experiment: EndOfTurnExperiment): boolean {
+  if (experiment.agentId === null) return false;
+  const agent = /\bagent=(\S+)/.exec(line)?.[1] ?? null;
+  return agent === experiment.agentId;
+}
+
+const TURN_WINDOW_KEYS = ["min_silence", "max_silence", "interruption_delay"] as const;
+
+/**
+ * Does one merged CONFIG row report exactly the variant body's windows?
+ *
+ * The server echoes the object it received with its own normalized fields
+ * added (`type`, `vad_threshold`, `interrupt_response`, …), so the window
+ * keys — not the extras — decide whether the row is the experiment's own
+ * body. A row carrying a different window, a subset or none is a stray
+ * object and must not be accepted as experiment evidence.
+ */
+function configReportsVariantWindows(line: string, windows: DemoTurnWindows | null): boolean {
+  if (!windows) return false;
+  const configured = TURN_WINDOW_KEYS.filter((key) => windows[key] !== undefined);
+  if (configured.length === 0) return false;
+  const object = /\{.*\}/.exec(line)?.[0];
+  if (!object) return false;
+  let reported: Record<string, unknown>;
+  try {
+    const parsed: unknown = JSON.parse(object);
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return false;
+    reported = parsed as Record<string, unknown>;
+  } catch {
+    return false;
+  }
+  const reportedKeys = TURN_WINDOW_KEYS.filter((key) => reported[key] !== undefined);
+  if (reportedKeys.length !== configured.length) return false;
+  return configured.every((key) => reported[key] === windows[key]);
+}
+
+/**
  * Meaning-based end-of-turn must stay on: ANY turn_detection object —
  * even one holding only an interruption delay — switches off adaptive
  * end-of-turn (ADR-0003), measured 3.6–4.7s gaps with an object versus
@@ -945,10 +1050,19 @@ export function replyGapGate(samples: ReplyGapSample[], traceSessionId?: string)
  * null; the single sensitive-field exception keeps its narrow scoped
  * override only. FAIL points at the object or at the merged trace's
  * CONFIG line.
+ *
+ * `experiment` only labels a run of the non-production stored-agent variant.
+ * The gate verdicts the production body and production-attributed CONFIG rows;
+ * the variant's own rows are evidence (named in `artifact.endOfTurn` and the
+ * report), never a PASS path. A variant row whose windows do not match the
+ * recorded windows is a stray object and FAILs. When the experiment is bound
+ * but no variant CONFIG row matches, the gate is INFO/unmeasured, never PASS:
+ * the windows were not observed to be applied.
  */
 export function meaningBasedEndOfTurnGate(
   agentInput: { turn_detection?: unknown } | null | undefined,
   traceExcerpt: string[] = [],
+  experiment: EndOfTurnExperiment | null = null,
 ): ScoreboardGate {
   const sent =
     agentInput !== null &&
@@ -963,13 +1077,49 @@ export function meaningBasedEndOfTurnGate(
       detail: `turn_detection object sent (${JSON.stringify(agentInput.turn_detection)?.slice(0, 120)}): disables adaptive end-of-turn (ADR-0003); stored demo agents must send turn_detection: null`,
     };
   }
-  const configLine = traceExcerpt.find((line) => line.includes("turn_detection"));
-  if (configLine) {
+  const configLines = traceExcerpt.filter((line) => line.includes("turn_detection"));
+  const variantLines: string[] = [];
+  const productionLines: string[] = [];
+  for (const line of configLines) {
+    if (experiment && configLineIsExperiment(line, experiment)) variantLines.push(line);
+    else productionLines.push(line);
+  }
+  // Production is strict: any production-attributed object (including a row
+  // with no attribution at all) keeps the existing contract detail verbatim.
+  const productionLine = productionLines[0];
+  if (productionLine) {
     return {
       name: "end-of-turn",
       status: "FAIL",
-      detail: `call trace shows a turn_detection CONFIG line (${configLine.trim().slice(0, 160)}): no turn-detection object may be sent on the managed session path (ADR-0003)`,
+      detail: `call trace shows a turn_detection CONFIG line (${productionLine.trim().slice(0, 160)}): no turn-detection object may be sent on the managed session path (ADR-0003)`,
     };
+  }
+  // The variant's own rows are evidence, but only when they report exactly the
+  // windows this run recorded. A mismatched variant row is a stray object.
+  const strayVariantLine = experiment
+    ? variantLines.find((line) => !configReportsVariantWindows(line, experiment.turnWindows))
+    : undefined;
+  if (strayVariantLine) {
+    return {
+      name: "end-of-turn",
+      status: "FAIL",
+      detail: `call trace shows a turn_detection CONFIG line (${strayVariantLine.trim().slice(0, 160)}): no turn-detection object may be sent on the managed session path (ADR-0003)`,
+    };
+  }
+  if (experiment) {
+    const applied =
+      experiment.turnWindows !== null &&
+      variantLines.some((line) => configReportsVariantWindows(line, experiment.turnWindows));
+    if (!applied) {
+      return {
+        name: "end-of-turn",
+        status: "INFO",
+        detail:
+          experiment.turnWindows === null
+            ? `unmeasured: experiment ${experiment.variant} has no recorded windows, so no CONFIG row can confirm them (production body still sends turn_detection: null)`
+            : `unmeasured: no CONFIG row attributed to ${experiment.agentId ?? "the experimental agent"} reports the experiment's recorded windows (${formatTurnWindows(experiment.turnWindows)}); production body still sends turn_detection: null`,
+      };
+    }
   }
   return {
     name: "end-of-turn",
@@ -2097,11 +2247,18 @@ export type ScoreboardArtifact = {
   /**
    * Structured runner evidence (retro #2): what the eval printed, reduced to
    * typed, PII-safe facts (identity, scenario verdicts, per-session turn gaps
-   * and cuts, aside/hang-up flags, playout). Additive and optional: an
-   * artifact from before this field is still valid, and the redacted
-   * transcripts stay the only place caller words appear.
+   * and cuts, aside/hang-up flags, playout). A turn with client receipt marks
+   * also carries its latency split (`turns[].latency`, demo-latency ticket 03);
+   * additive and optional, so an artifact from before either field is still
+   * valid, and the redacted transcripts stay the only place caller words appear.
    */
   runnerEvidence?: RunnerEvidence | null;
+  /**
+   * Ticket 10: present only when the run bound the non-production turn-window
+   * experiment, naming its windows so the end-of-turn PASS is never read as
+   * a production one. Additive and optional (older artifacts simply lack it).
+   */
+  endOfTurn?: EndOfTurnEvidence;
   /**
    * Exact code the run executed on (git HEAD + dirty hash, ticket 29). Null
    * when git could not report it — the streak then refuses to claim comparable
@@ -4340,6 +4497,12 @@ export type EvalRunnerSummary = {
   agentId?: string | null;
   agentFingerprint?: string | null;
   llmModel?: string | null;
+  /** Which stored body ran (production by default); absent on older summaries. */
+  variant?: "production" | "turn-window" | null;
+  /** The variant's row key (`<voice>:exp`), null for production. */
+  variantKey?: string | null;
+  /** The windows the variant body carried; null for production. */
+  turnWindows?: { min_silence?: number; max_silence?: number; interruption_delay?: number } | null;
 };
 
 /** Why the harness broke, never why a gate failed. */
@@ -4452,6 +4615,17 @@ export function parseEvalSummary(stdout: string): EvalRunnerSummary | null {
           ? { agentFingerprint: raw.agentFingerprint ?? null }
           : {}),
         ...(typeof raw.llmModel === "string" || raw.llmModel === null ? { llmModel: raw.llmModel ?? null } : {}),
+        // Which stored body ran (ticket 09). Absent stays absent so an older
+        // artifact reports unknown rather than assuming production.
+        ...(raw.variant === "production" || raw.variant === "turn-window"
+          ? { variant: raw.variant }
+          : {}),
+        ...(typeof raw.variantKey === "string" || raw.variantKey === null
+          ? { variantKey: raw.variantKey ?? null }
+          : {}),
+        ...(raw.turnWindows && typeof raw.turnWindows === "object"
+          ? { turnWindows: raw.turnWindows }
+          : {}),
       };
     } catch {
       return null;
@@ -4596,6 +4770,8 @@ function skeletonGates(
   options?: {
     measured?: boolean;
     measuredSources?: MeasuredEvidenceKind[];
+    /** Ticket 10: labels a non-production variant run as experimental evidence. */
+    endOfTurnExperiment?: EndOfTurnExperiment | null;
   },
 ): ScoreboardGate[] {
   // Ticket 06: a finished runner is plumbing health even when its scenarios
@@ -4631,7 +4807,7 @@ function skeletonGates(
   const endOfTurn =
     agentInput === undefined
       ? { name: "end-of-turn", status: "INFO" as const, detail: "unmeasured: agent body not checked" }
-      : meaningBasedEndOfTurnGate(agentInput, traceExcerpt);
+      : meaningBasedEndOfTurnGate(agentInput, traceExcerpt, options?.endOfTurnExperiment ?? null);
   const filler: ScoreboardGate =
     fillerGate ?? { name: "filler-resume", status: "INFO", detail: "unmeasured: run --scenario filler-over or pass --filler-* evidence to gate filler recovery" };
   const deadAirGate: ScoreboardGate = deadAir
@@ -4859,6 +5035,12 @@ export function buildSkeletonArtifact(input: {
   traceSessionId?: string | null;
   /** Stored agent body input for the end-of-turn check (undefined = not checked). */
   agentInput?: { turn_detection?: unknown } | null;
+  /**
+   * Ticket 10: the stored-agent experiment this run bound. Labels the
+   * end-of-turn gate as experimental and records its windows; production runs
+   * omit it and keep the gate's existing production PASS.
+   */
+  endOfTurnExperiment?: EndOfTurnExperiment | null;
   /** Merged Call trace excerpt lines (scanned for turn_detection CONFIG lines). */
   traceExcerpt?: string[];
   /** Observed filler-beat evidence: when present, the filler-resume gate evaluates instead of staying INFO. */
@@ -4969,6 +5151,17 @@ export function buildSkeletonArtifact(input: {
   }
   const traceUnverified =
     allTraceGaps.length > 0 && !traceAttributed && !explicitGreetingCut && preAttributed.length === 0;
+  // Ticket 06: label each measured turn with its interaction band, joined from
+  // the runner's per-turn split by (session, turn). Labels only — the pooled
+  // sample set above is passed to the gate untouched.
+  const bands = bandsByTurn(input.runnerEvidence);
+  if (bands.size > 0) {
+    for (const sample of samples) {
+      if (sample.turnIndex === null || sample.turnIndex === undefined || !sample.sessionId) continue;
+      const band = bands.get(`${sample.sessionId}#${sample.turnIndex}`);
+      if (band) sample.band = band;
+    }
+  }
   const overall = summarizeReplyGaps(samples);
   const beats = Object.fromEntries(
     GOLDEN_BEATS.map((beat) => {
@@ -5129,7 +5322,7 @@ export function buildSkeletonArtifact(input: {
     agentChannel,
     humanRatings,
     input.voice,
-    { measured, measuredSources },
+    { measured, measuredSources, endOfTurnExperiment: input.endOfTurnExperiment ?? null },
   );
   // Finding D: when trace gaps exist but attribution is unverified, the
   // reply-gap gate says so instead of silently implying beat attribution.
@@ -5222,6 +5415,17 @@ export function buildSkeletonArtifact(input: {
     },
     callerClips: input.callerClips ?? [],
     runnerEvidence: input.runnerEvidence ?? null,
+    ...(input.endOfTurnExperiment
+      ? {
+          endOfTurn: {
+            experimental: true as const,
+            variant: input.endOfTurnExperiment.variant,
+            variantKey: input.endOfTurnExperiment.variantKey,
+            turnWindows: input.endOfTurnExperiment.turnWindows,
+            productionTurnDetection: null,
+          },
+        }
+      : {}),
     runId: input.runId ?? `run-${input.voice}-${Date.now().toString(36)}`,
     codeFingerprint: input.codeFingerprint ?? null,
     quarantinedBeats: [],

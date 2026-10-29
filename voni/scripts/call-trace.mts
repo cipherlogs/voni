@@ -14,6 +14,7 @@
  */
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { configTraceLine } from "../src/lib/demo/runner-evidence";
 
 type Turn = {
   trigger?: string;
@@ -106,7 +107,12 @@ for (const turn of timeline.turns ?? []) {
 }
 for (const change of timeline.config_changes ?? []) {
   const td = change.update?.input?.turn_detection;
-  if (td) rows.push({ ms: change.received_at_ms, line: `${at(change.received_at_ms)}  CONFIG  turn_detection ${JSON.stringify(td)}` });
+  if (td) {
+    rows.push({
+      ms: change.received_at_ms,
+      line: configTraceLine(at(change.received_at_ms), td, session.agent_id ?? null),
+    });
+  }
 }
 
 // Browser decisions from the dev log (local HH:MM:SS.mmm, same day as the call).

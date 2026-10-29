@@ -7,6 +7,7 @@
 - For cross-agent continuity, read `docs/agents/progress.md`.
 - For voice-copilot work, read `docs/agents/voice.md`.
 - For demo scoreboard, eval, gate, matrix, or live-call work, read `docs/agents/demo-scoreboard.md`.
+- For the turn-window latency experiment, read `docs/demo-latency-ladder.md`.
 - For multi-worktree implementation, run `scripts/worktree-setup.sh` in each new worktree.
 - For code review, read `CODING_STANDARDS.md`.
 - For issue-tracker work, read `docs/agents/issue-tracker.md` and `docs/agents/triage-labels.md`.

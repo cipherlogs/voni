@@ -109,8 +109,101 @@ export async function demoLlmOverride(): Promise<LlmOverride[] | null> {
   ];
 }
 
-export function demoAgentName(voiceId: string, resume = false): string {
-  return `demo:${VONI_AGENT_ID}:${voiceId}${resume ? ":resume" : ""}`;
+/**
+ * Which stored body a caller gets. `production` is the demo every visitor
+ * binds; `turn-window` is the one stored-agent variant the end-of-turn
+ * experiment provisions under its own key. Environment selection defaults to
+ * `production`, so a deployment that never asked for the experiment cannot
+ * reach the variant.
+ */
+export const DEMO_AGENT_VARIANTS = ["production", "turn-window"] as const;
+export type DemoAgentVariant = (typeof DEMO_AGENT_VARIANTS)[number];
+
+/** The experiment's row/agent suffix, mirroring the `:resume` pattern. */
+export const DEMO_AGENT_VARIANT_SUFFIX = ":exp";
+
+/**
+ * The only settings the variant may override: the end-of-turn windows. It is
+ * one object, not a free-form `turn_detection` pass-through, so a stray
+ * object can never reach the production body. Any field may be omitted: ladder
+ * rung 3 sets `interruption_delay` alone, with no silence pair.
+ */
+export type DemoTurnWindows = {
+  min_silence?: number;
+  max_silence?: number;
+  interruption_delay?: number;
+};
+
+/** Ladder rung 1, and the defaults when an env var is unset. */
+export const DEMO_TURN_WINDOW_DEFAULTS: Readonly<Required<DemoTurnWindows>> = Object.freeze({
+  min_silence: 400,
+  max_silence: 640,
+  interruption_delay: 0,
+});
+
+/** Explicit environment selection. Absent/empty means `production`. */
+export const DEMO_AGENT_VARIANT = "DEMO_AGENT_VARIANT";
+export const DEMO_TURN_MIN_SILENCE = "DEMO_TURN_MIN_SILENCE";
+export const DEMO_TURN_MAX_SILENCE = "DEMO_TURN_MAX_SILENCE";
+export const DEMO_TURN_INTERRUPTION_DELAY = "DEMO_TURN_INTERRUPTION_DELAY";
+
+function isDemoAgentVariant(value: string): value is DemoAgentVariant {
+  return (DEMO_AGENT_VARIANTS as readonly string[]).includes(value);
+}
+
+/**
+ * Parse an environment selection. Unset/empty is production; anything else
+ * must be a known variant — a typo fails loudly rather than silently measuring
+ * production under the experiment's name.
+ */
+export function resolveDemoAgentVariant(raw: string | null | undefined): DemoAgentVariant {
+  const value = raw?.trim().toLowerCase();
+  if (!value) return "production";
+  if (isDemoAgentVariant(value)) return value;
+  throw new Error(
+    `Unknown DEMO_AGENT_VARIANT "${raw}"; use one of ${DEMO_AGENT_VARIANTS.join(", ")}.`,
+  );
+}
+
+/**
+ * The deployment's selection, read through `secret()` like the LLM override so
+ * `.dev.vars`, plain Node/CI and the Worker agree. Never defaults to the
+ * experiment: only an explicit `DEMO_AGENT_VARIANT=turn-window` selects it.
+ */
+export async function demoAgentVariantFromEnv(): Promise<DemoAgentVariant> {
+  return resolveDemoAgentVariant(await secret(DEMO_AGENT_VARIANT));
+}
+
+function windowMs(raw: string | undefined, fallback: number): number {
+  if (raw === undefined || raw.trim() === "") return fallback;
+  const value = Number(raw);
+  return Number.isFinite(value) && value >= 0 ? Math.round(value) : fallback;
+}
+
+/** The rung's windows, with ladder rung 1 filling any unset/invalid knob. */
+export async function demoTurnWindowsFromEnv(): Promise<DemoTurnWindows> {
+  const [minSilence, maxSilence, interruptionDelay] = await Promise.all([
+    secret(DEMO_TURN_MIN_SILENCE),
+    secret(DEMO_TURN_MAX_SILENCE),
+    secret(DEMO_TURN_INTERRUPTION_DELAY),
+  ]);
+  return {
+    min_silence: windowMs(minSilence, DEMO_TURN_WINDOW_DEFAULTS.min_silence),
+    max_silence: windowMs(maxSilence, DEMO_TURN_WINDOW_DEFAULTS.max_silence),
+    interruption_delay: windowMs(
+      interruptionDelay,
+      DEMO_TURN_WINDOW_DEFAULTS.interruption_delay,
+    ),
+  };
+}
+
+export function demoAgentName(
+  voiceId: string,
+  resume = false,
+  variant: DemoAgentVariant = "production",
+): string {
+  const base = `demo:${VONI_AGENT_ID}:${voiceId}${resume ? ":resume" : ""}`;
+  return variant === "production" ? base : `${base}${DEMO_AGENT_VARIANT_SUFFIX}`;
 }
 
 /**
@@ -118,21 +211,47 @@ export function demoAgentName(voiceId: string, resume = false): string {
  * stored agent per voice (same prompt and tools, no greeting): it rides the
  * existing (personaId, voiceId) unique index as a `:resume` suffix, so no
  * migration, and the suffix never reaches voice validation or the API.
+ *
+ * The experimental variant is a third row under an `:exp` suffix for the same
+ * reason: provisioning it can never touch the production row or its remote
+ * agent.
  */
-export function demoAgentStorageKey(voiceId: string, resume = false): string {
-  return resume ? `${voiceId}:resume` : voiceId;
+export function demoAgentStorageKey(
+  voiceId: string,
+  resume = false,
+  variant: DemoAgentVariant = "production",
+): string {
+  const key = resume ? `${voiceId}:resume` : voiceId;
+  return variant === "production" ? key : `${key}${DEMO_AGENT_VARIANT_SUFFIX}`;
 }
 
 /** The exact remote body a demo agent runs. Pure: fingerprint + tests pin it. */
 export function buildDemoAgentBody(
   voiceId: string,
-  opts?: { resume?: boolean; llm?: LlmOverride[] },
+  opts?: {
+    resume?: boolean;
+    llm?: LlmOverride[];
+    variant?: DemoAgentVariant;
+    turnWindows?: DemoTurnWindows;
+  },
 ) {
   const voice = getVoice(voiceId);
   const config = voniConfig(voiceId);
   const resume = opts?.resume === true;
+  const variant = opts?.variant ?? "production";
+  const windows = opts?.turnWindows ?? DEMO_TURN_WINDOW_DEFAULTS;
+  const turnDetection = {
+    ...(windows.min_silence !== undefined ? { min_silence: windows.min_silence } : {}),
+    ...(windows.max_silence !== undefined ? { max_silence: windows.max_silence } : {}),
+    ...(windows.interruption_delay !== undefined
+      ? { interruption_delay: windows.interruption_delay }
+      : {}),
+  };
+  if (variant === "turn-window" && Object.keys(turnDetection).length === 0) {
+    throw new Error("turn-window variant needs at least one configured window");
+  }
   return {
-    name: demoAgentName(voiceId, resume),
+    name: demoAgentName(voiceId, resume, variant),
     system_prompt: compileSystemPrompt(config),
     // A hold rejoin opens a fresh transport on the resume variant, which has
     // no greeting: per the platform, an omitted greeting waits silently, and
@@ -161,9 +280,50 @@ export function buildDemoAgentBody(
       voice_focus: "near-field",
       // Null = adaptive defaults. Any turn_detection object switches off
       // adaptive end-of-turn (ADAPTIVE_TURNS, voice/session.ts); explicit
-      // null clears the object older bodies stored.
-      turn_detection: null,
+      // null clears the object older bodies stored. Production always sends
+      // null; only the `:exp` experiment body carries windows, and it is
+      // built from exactly these three fields.
+      turn_detection:
+        variant === "turn-window"
+          ? turnDetection
+          : null,
     },
+  };
+}
+
+export type DemoAgentProvisionPlan = {
+  variant: DemoAgentVariant;
+  /** `demo_agents.voice_id`: the variant is its own row, never the production one. */
+  storageKey: string;
+  body: ReturnType<typeof buildDemoAgentBody>;
+};
+
+/**
+ * The row key and body a provisioning request resolves to. Pure, so the
+ * variant contract (own key, own windows, production untouched) is testable
+ * without a database or the Agents API.
+ */
+export function planDemoAgent(
+  voiceId: string,
+  opts?: {
+    resume?: boolean;
+    llm?: LlmOverride[];
+    variant?: DemoAgentVariant;
+    turnWindows?: DemoTurnWindows;
+  },
+): DemoAgentProvisionPlan {
+  const variant = resolveDemoAgentVariant(opts?.variant);
+  return {
+    variant,
+    storageKey: demoAgentStorageKey(voiceId, opts?.resume === true, variant),
+    body: buildDemoAgentBody(voiceId, {
+      resume: opts?.resume === true,
+      ...(opts?.llm ? { llm: opts.llm } : {}),
+      variant,
+      ...(variant === "turn-window" && opts?.turnWindows
+        ? { turnWindows: opts.turnWindows }
+        : {}),
+    }),
   };
 }
 
@@ -220,7 +380,7 @@ async function remoteCall(
 
 export async function getOrCreateDemoAgent(
   voiceId: string,
-  opts?: { resume?: boolean },
+  opts?: { resume?: boolean; variant?: DemoAgentVariant; turnWindows?: DemoTurnWindows },
 ): Promise<ProvisionResult> {
   // Validate against the picker first. This is what stops a caller pushing
   // an arbitrary voice id into an outbound API call.
@@ -229,7 +389,20 @@ export async function getOrCreateDemoAgent(
   }
   const personaId = VONI_AGENT_ID;
   const resume = opts?.resume === true;
-  const storageKey = demoAgentStorageKey(voiceId, resume);
+
+  // The visitor path passes no variant, so this is the one gate that keeps
+  // the experiment off production calls: only an explicit environment (or an
+  // explicit caller, i.e. the eval) selects it. A typo fails loudly instead
+  // of silently provisioning production under the experiment's name.
+  let variant: DemoAgentVariant;
+  try {
+    variant = resolveDemoAgentVariant(opts?.variant ?? (await demoAgentVariantFromEnv()));
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : "Demo agent variant is not configured.",
+    };
+  }
 
   // Via secret(), not process.env: the key lives in .dev.vars, which Next
   // does not load into process.env. See src/lib/env.ts.
@@ -241,7 +414,16 @@ export async function getOrCreateDemoAgent(
   // client response; the fingerprint below covers the whole body, so a model
   // change refreshes the agent exactly like a prompt change.
   const llm = await demoLlmOverride();
-  const body = buildDemoAgentBody(voiceId, { resume, ...(llm ? { llm } : {}) });
+  const turnWindows =
+    variant === "turn-window"
+      ? (opts?.turnWindows ?? (await demoTurnWindowsFromEnv()))
+      : undefined;
+  const { storageKey, body } = planDemoAgent(voiceId, {
+    resume,
+    variant,
+    ...(turnWindows ? { turnWindows } : {}),
+    ...(llm ? { llm } : {}),
+  });
   const fingerprint = demoAgentFingerprint(body, apiKey);
   const llmModel = llm?.[0]?.model ?? null;
 
