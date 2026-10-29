@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   buildConfigMessage,
   CascadeSession,
@@ -13,6 +16,7 @@ import {
   MICROPHONE_MUTED_CONTEXT,
   MICROPHONE_UNMUTED_CONTEXT,
 } from "./context";
+import { DEFAULT_OUTPUT_SAMPLE_RATE } from "./output-format";
 
 const CONFIG: CascadeCallConfig = {
   serviceUrl: "ws://127.0.0.1:8766/v1/browser-call",
@@ -65,6 +69,48 @@ test("audio messages decode base64 pcm", () => {
   const decoded = decodeAudioMessage(raw);
   assert.deepEqual(decoded, { pcm: new Uint8Array([9, 9]), sampleRate: 24000 });
   assert.equal(decodeAudioMessage(JSON.stringify({ type: "caption" })), null);
+});
+
+// ── Guard: the cascade path has its own deliberate rate contract ──────────
+// The pipeline stamps every audio frame with its own rate
+// (voice-pipeline/transport.py). A frame that omits it can only be our own
+// default PCM16 stream, so the fallback is output-format's named default — not
+// a literal in this file, which would drift from the managed path's default
+// without any test noticing a speed change.
+
+const CASCADE_SOURCE = readFileSync(
+  join(dirname(fileURLToPath(import.meta.url)), "cascade-session.ts"),
+  "utf8",
+);
+
+/** The rate argument of every `play(...)` call in the source. */
+function playbackRateArguments(source: string): string[] {
+  return [...source.matchAll(/\.play\(([^)]*)\)/g)].map((match) => {
+    const args = match[1] ?? "";
+    return args.slice(args.lastIndexOf(",") + 1).trim();
+  });
+}
+
+test("cascade playback takes the frame's rate, never a literal", () => {
+  const rates = playbackRateArguments(CASCADE_SOURCE);
+  assert.ok(rates.length > 0, "the guard found no cascade playback call");
+  for (const rate of rates) {
+    assert.doesNotMatch(rate, /\d/, `a literal rate reached the cascade playout: ${rate}`);
+    assert.match(rate, /\.sampleRate$/, `the frame's rate did not reach the playout: ${rate}`);
+  }
+  // The default lives in output-format.ts, behind the resolver; a bare literal
+  // here would play a frame at a rate no confirmation resolved.
+  assert.doesNotMatch(CASCADE_SOURCE, /24_000|24000/);
+});
+
+test("an audio frame with no rate falls back to the named default, not a literal", () => {
+  const decoded = decodeAudioMessage(
+    JSON.stringify({ type: "audio", data: Buffer.from([9, 9]).toString("base64") }),
+  );
+  assert.deepEqual(decoded, {
+    pcm: new Uint8Array([9, 9]),
+    sampleRate: DEFAULT_OUTPUT_SAMPLE_RATE,
+  });
 });
 
 type FakeSocket = {

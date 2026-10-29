@@ -1409,8 +1409,8 @@ export function VoiceCall({
           interruptionsRef.current += 1;
           console.debug("[voice-call] interruption", event.kind, interruptionsRef.current);
         }
-        if (event.kind === "input-drop") {
-          console.debug("[voice-call] input-drop", event.dropped ?? 1);
+        if (event.kind === "input-drop" || event.kind === "pre-ready-drop") {
+          console.debug("[voice-call]", event.kind, event.dropped ?? 1);
         }
         // Pop hunt (?popprobe=1): every candidate cause, time-stamped.
         if (event.kind === "pop" || event.kind === "clip" || event.kind === "underrun") {
