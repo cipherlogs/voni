@@ -1287,6 +1287,17 @@ async function main(): Promise<void> {
       ? `${session} (no turn merged: trace session ${traceSession} is a different call)`
       : undefined;
   })();
+  // Ticket 10: the gate keeps checking the production body (explicitly null),
+  // so a variant run cannot loosen the ADR-0003 contract. The experiment's
+  // windows are labelled alongside it instead of replacing it.
+  const endOfTurnExperiment =
+    selection.variant === "turn-window"
+      ? {
+          variant: selection.variant,
+          variantKey: selection.variantKey,
+          turnWindows: selection.turnWindows,
+        }
+      : null;
   const agentInput = buildDemoAgentBody(voice).input;
   // Explicit --filler-* flags are the operator override. Without them, the
   // live runner's own `filler …` line is the observed behavior and scores the
@@ -1474,6 +1485,7 @@ async function main(): Promise<void> {
     ...(traceBeatRaw ? { traceBeat: traceBeatRaw as GoldenBeat } : {}),
     traceSessionId: traceSession || null,
     agentInput,
+    ...(endOfTurnExperiment ? { endOfTurnExperiment } : {}),
     traceExcerpt: excerpt ?? [],
     fillerResume,
     ...(overheardAsides !== undefined ? { overheardAsides } : {}),

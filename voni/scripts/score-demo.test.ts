@@ -201,6 +201,14 @@ if (args[0] === "run" && args[1] === "eval:demo-agent") {
   ]);
 
   const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    gates: { name: string; status: string; detail: string }[];
+    endOfTurn?: {
+      experimental: boolean;
+      variant: string;
+      variantKey: string;
+      turnWindows: { min_silence: number; max_silence: number; interruption_delay: number };
+      productionTurnDetection: null;
+    };
     runnerEvidence: {
       variant: string;
       variantKey: string;
@@ -215,6 +223,18 @@ if (args[0] === "run" && args[1] === "eval:demo-agent") {
     min_silence: 400,
     max_silence: 640,
     interruption_delay: 0,
+  });
+  const endOfTurn = artifact.gates.find((gate) => gate.name === "end-of-turn");
+  assert.equal(endOfTurn?.status, "PASS");
+  assert.match(endOfTurn?.detail ?? "", /experimental/i);
+  assert.match(endOfTurn?.detail ?? "", /min_silence 400/);
+  assert.doesNotMatch(endOfTurn?.detail ?? "", /^meaning-based end-of-turn preserved/);
+  assert.deepEqual(artifact.endOfTurn, {
+    experimental: true,
+    variant: "turn-window",
+    variantKey: "anna:exp",
+    turnWindows: { min_silence: 400, max_silence: 640, interruption_delay: 0 },
+    productionTurnDetection: null,
   });
 });
 
@@ -903,10 +923,12 @@ test("dry run checks the stored agent body: end-of-turn passes with no turn-dete
   assert.equal(result.status, 0, result.stderr + result.stdout);
   const artifact = JSON.parse(readFileSync(out, "utf8")) as {
     gates: { name: string; status: string; detail: string }[];
+    endOfTurn?: unknown;
   };
   const gate = artifact.gates.find((g) => g.name === "end-of-turn");
   assert.equal(gate?.status, "PASS");
-  assert.match(gate?.detail ?? "", /turn_detection/);
+  assert.match(gate?.detail ?? "", /^meaning-based end-of-turn preserved/);
+  assert.equal(artifact.endOfTurn, undefined);
 });
 
 test("dry run with filler evidence passes the filler-resume gate and names it", () => {

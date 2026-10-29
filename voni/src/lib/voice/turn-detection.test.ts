@@ -179,6 +179,40 @@ test("bound demo agents get recognition tuning, never turn_detection, after sess
   assert.equal(sent.length, 1);
 });
 
+test("the default session path sends no turn-detection object on any outbound frame", () => {
+  const session = new VoiceSession();
+  const sent: string[] = [];
+  const internals = session as unknown as Record<string, unknown>;
+  internals["ws"] = { readyState: 1, send: (m: string) => sent.push(m) };
+  internals["boundAgent"] = true;
+  const handle = (m: Record<string, unknown>) =>
+    (session as unknown as { handle: (raw: string) => void }).handle(JSON.stringify(m));
+
+  // A visitor's stored-agent call: ready, recognition tuning, one whole turn,
+  // a barge-in, and a mid-call keyterm push. None may switch adaptive off.
+  handle({ type: "session.ready", session_id: "sess_default" });
+  handle({ type: "session.updated" });
+  handle({ type: "reply.started", reply_id: "r1" });
+  handle({ type: "transcript.agent.delta", reply_id: "r1", delta: "Hey there." });
+  handle({ type: "input.speech.started" });
+  handle({ type: "reply.done", reply_id: "r1", status: "interrupted" });
+  handle({ type: "transcript.user", item_id: "u1", text: "What does it cost?" });
+  handle({ type: "reply.started", reply_id: "r2" });
+  handle({ type: "transcript.agent.delta", reply_id: "r2", delta: "It depends." });
+  handle({ type: "reply.done", reply_id: "r2", status: "completed" });
+  void session.updateConfig({ input: { keyterms: ["Voni"] } });
+  handle({ type: "session.updated" });
+
+  assert.ok(sent.length > 1, "the default path did send frames");
+  for (const raw of sent) {
+    assert.deepEqual(
+      turnDetectionObjects(JSON.parse(raw) as Payload),
+      [],
+      `default-path frame must not carry pacing: ${raw}`,
+    );
+  }
+});
+
 test("mid-call updates on the managed path never send a turn-detection object", () => {
   const session = new VoiceSession();
   const sent: string[] = [];
