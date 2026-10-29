@@ -327,6 +327,12 @@ function isTagToken(value: unknown): value is string {
 let lastTagRaw: string | null | undefined;
 let lastTagValue: string | undefined;
 let hasTagCache = false;
+/**
+ * False once a write was refused (private mode / blocked storage). Only then
+ * is the in-page cache the only copy of the mint; a plain `null` read means
+ * the tag was cleared or expired and must clear in-page too.
+ */
+let storageWritable = true;
 
 /** Versioned read with legacy fallback + in-scope repeat cache. */
 export function loadTagToken(): string | undefined {
@@ -341,9 +347,10 @@ export function loadTagToken(): string | undefined {
   }
   if (hasTagCache && raw === lastTagRaw) return lastTagValue;
   if (!raw) {
-    // A write the browser refused (quota/private mode) leaves the cache as the
-    // only copy: keep it for this call's re-mint rather than starting over.
-    if (hasTagCache && lastTagValue !== undefined) return lastTagValue;
+    // Storage answered "nothing". If a write was refused (quota/private mode)
+    // the cache is the only copy and a hold rejoin must keep it; otherwise the
+    // tag was cleared or expired, so it clears in-page instead of resurrecting.
+    if (!storageWritable && hasTagCache && lastTagValue !== undefined) return lastTagValue;
     lastTagRaw = raw;
     hasTagCache = true;
     lastTagValue = undefined;
@@ -381,8 +388,10 @@ export function saveTagToken(token: string): void {
   hasTagCache = true;
   try {
     localStorage.setItem(TAG_TOKEN_KEY, lastTagRaw);
+    storageWritable = true;
   } catch {
-    // Private mode or blocked storage: a callback just gets a fresh tag.
+    // Private mode or blocked storage: the in-page cache is the only copy.
+    storageWritable = false;
   }
 }
 
