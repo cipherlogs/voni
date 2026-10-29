@@ -2329,3 +2329,138 @@ test("a bound agent with an injected executor answers every stored tool, never t
     globalThis.fetch = savedFetch;
   }
 });
+
+/** A session whose playout records the exact PCM16 bytes and rate it is fed. */
+function recordPlayedAudio(
+  handlers: ConstructorParameters<typeof VoiceSession>[0] = {},
+) {
+  const made = makeSession(handlers);
+  const played: { pcm: Uint8Array; rate: number }[] = [];
+  made.internals["playout"] = {
+    ...fakePlayout().playout,
+    play: (pcm: Uint8Array, rate: number) =>
+      played.push({ pcm: Uint8Array.from(pcm), rate }),
+  };
+  const audio = (bytes: Uint8Array) =>
+    made.handle({
+      type: "reply.audio",
+      data: Buffer.from(bytes).toString("base64"),
+    });
+  return { ...made, played, audio };
+}
+
+function int16Samples(pcm: Uint8Array): number[] {
+  const view = new DataView(pcm.buffer, pcm.byteOffset, pcm.length);
+  return Array.from({ length: pcm.length / 2 }, (_, i) =>
+    view.getInt16(i * 2, true),
+  );
+}
+
+test("mu-law reply audio is decoded before it reaches the playout", () => {
+  const { handle, played, audio } = recordPlayedAudio();
+  handle({
+    type: "session.ready",
+    session_id: "sess_mu",
+    config: { output: { format: { encoding: "audio/pcmu", sample_rate: 8000 } } },
+  });
+  audio(Uint8Array.from([0xff, 0x00, 0x7f]));
+  assert.equal(played.length, 1);
+  // 8 kHz, one G.711 byte per sample: silence, full-scale negative, silence.
+  assert.equal(played[0]?.rate, 8000);
+  assert.deepEqual(int16Samples(played[0]!.pcm), [0, -32124, 0]);
+});
+
+test("an encoding-only confirmation plays G.711 at its own 8 kHz rate", () => {
+  const { handle, played, audio } = recordPlayedAudio();
+  handle({
+    type: "session.ready",
+    session_id: "sess_mu_default",
+    config: { output: { format: { encoding: "audio/pcmu" } } },
+  });
+  audio(Uint8Array.from([0x00]));
+  assert.equal(played.length, 1);
+  // 8 kHz, not the 24 kHz PCM16 fallback: one source byte is 0.125 ms.
+  assert.equal(played[0]?.rate, 8000);
+  assert.deepEqual(int16Samples(played[0]!.pcm), [-32124]);
+});
+
+test("A-law reply audio is decoded before it reaches the playout", () => {
+  const { handle, played, audio } = recordPlayedAudio();
+  handle({
+    type: "session.ready",
+    session_id: "sess_a",
+    config: { output: { format: { encoding: "audio/pcma", sample_rate: 8000 } } },
+  });
+  audio(Uint8Array.from([0xd5, 0xaa]));
+  assert.equal(played[0]?.rate, 8000);
+  assert.deepEqual(int16Samples(played[0]!.pcm), [8, 32256]);
+});
+
+test("a silent G.711 chunk plays as silence, never as a format error", () => {
+  const errors: { message: string; code?: string }[] = [];
+  const { handle, played, audio } = recordPlayedAudio({
+    onError: (error) => errors.push(error),
+  });
+  handle({
+    type: "session.ready",
+    session_id: "sess_silent",
+    config: { output: { format: { encoding: "audio/pcmu", sample_rate: 8000 } } },
+  });
+  audio(new Uint8Array(160).fill(0xff));
+  assert.deepEqual(errors, []);
+  assert.equal(played.length, 1);
+  assert.ok(int16Samples(played[0]!.pcm).every((sample) => sample === 0));
+});
+
+test("an unsupported resolved encoding fails visibly and never plays", () => {
+  const errors: { message: string; code?: string }[] = [];
+  const { handle, played, audio } = recordPlayedAudio({
+    onError: (error) => errors.push(error),
+  });
+  handle({
+    type: "session.ready",
+    session_id: "sess_opus",
+    config: { output: { format: { encoding: "audio/opus", sample_rate: 8000 } } },
+  });
+  audio(Uint8Array.from([0xff, 0x00]));
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0]?.code, "config");
+  // The failure names both the encoding and the session a support engineer needs.
+  assert.match(errors[0]?.message ?? "", /audio\/opus/);
+  assert.match(errors[0]?.message ?? "", /sess_opus/);
+  assert.deepEqual(played, []);
+});
+
+test("a malformed PCM16 chunk fails visibly instead of playing as silence", () => {
+  const errors: { message: string; code?: string }[] = [];
+  const { handle, played, audio } = recordPlayedAudio({
+    onError: (error) => errors.push(error),
+  });
+  handle({
+    type: "session.ready",
+    session_id: "sess_corrupt",
+    config: { output: { format: { encoding: "audio/pcm", sample_rate: 24000 } } },
+  });
+  audio(Uint8Array.from([1, 2, 3]));
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0]?.code, "config");
+  assert.match(errors[0]?.message ?? "", /malformed/i);
+  assert.match(errors[0]?.message ?? "", /sess_corrupt/);
+  assert.deepEqual(played, []);
+});
+
+test("a resume's confirmation never downgrades the resolved encoding", () => {
+  const { handle, played, audio } = recordPlayedAudio();
+  handle({
+    type: "session.ready",
+    session_id: "sess_mu",
+    config: { output: { format: { encoding: "audio/pcmu", sample_rate: 8000 } } },
+  });
+  // A resume re-emits session.ready on the same conversation; an echo with no
+  // config must not fall back to PCM16 and play G.711 bytes as noise.
+  handle({ type: "session.ready", session_id: "sess_mu" });
+  audio(Uint8Array.from([0xff]));
+  assert.equal(played.length, 1);
+  assert.equal(played[0]?.rate, 8000);
+  assert.deepEqual(int16Samples(played[0]!.pcm), [0]);
+});
