@@ -928,6 +928,70 @@ test("hangup waits through flapping playback instead of one settled poll", async
   assert.equal(internals["explicitStop"], true);
 });
 
+test("a jittery goodbye: late audio restarts the drain streak, and the call still closes inside the budget", async () => {
+  // Jittery links report settled between chunks while the last word is still
+  // in the worklet, and a late chunk can land after reply.done. One settled
+  // poll (or the streak without its grace) chops the goodbye. The streak plus
+  // audio grace must restart on every chunk, and the hang-up must still land
+  // promptly once the line genuinely drains.
+  mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+  try {
+    mock.timers.setTime(1_700_000_000_000);
+    const { session, handle, internals } = makeSession();
+    withDemoTools(internals, session);
+    let settled = false;
+    internals["playout"] = {
+      play: () => undefined,
+      flush: () => undefined,
+      settled: () => settled,
+      queuedMs: () => 0,
+    };
+    handle({ type: "session.ready", session_id: "s1" });
+    handle({ type: "reply.started", reply_id: "bye" });
+    // The goodbye's last chunk has arrived; the playout is still draining.
+    handle({ type: "reply.audio", reply_id: "bye", data: "" });
+    const firstAudioAt = Date.now();
+    endCall(handle, "e23");
+    await new Promise((resolve) => setImmediate(resolve));
+    handle({ type: "reply.done", reply_id: "bye", status: "completed" });
+    assert.equal(internals["explicitStop"], false, "never hang up while the goodbye is sounding");
+
+    settled = true;
+    mock.timers.tick(250); // dry buffer, but the 500ms audio grace has not passed
+    assert.equal(internals["explicitStop"], false);
+    mock.timers.tick(500); // polls at 500 and 750: two settled, one short of the streak
+    assert.equal(internals["explicitStop"], false, "two settled polls never chop the goodbye");
+
+    // A late chunk lands after reply.done: the audio grace and the streak both
+    // restart, so a drain that looked imminent at 1000ms must not close.
+    const lastAudioAt = Date.now();
+    handle({ type: "reply.audio", reply_id: "bye", data: "" });
+    settled = false;
+    mock.timers.tick(250); // still sounding
+    settled = true;
+    mock.timers.tick(500); // two settled polls since the late chunk
+    assert.equal(internals["explicitStop"], false, "the late chunk restarted the streak");
+    mock.timers.tick(250); // third settled poll after the last audio, grace passed
+    assert.equal(internals["explicitStop"], true, "the call closes once the goodbye drains");
+
+    const closedAfterMs = Date.now() - lastAudioAt;
+    assert.ok(
+      closedAfterMs >= 750,
+      `waited for the settled streak (${closedAfterMs}ms from the last audio)`,
+    );
+    assert.ok(
+      closedAfterMs <= 1500,
+      `the hang-up stayed inside the 1500ms drain budget (${closedAfterMs}ms)`,
+    );
+    assert.ok(
+      Date.now() - firstAudioAt < 10_000,
+      "the jittered drain closed well inside the 10s timeout",
+    );
+  } finally {
+    mock.timers.reset();
+  }
+});
+
 test("hangup waits out fresh audio even when playback reports settled", async () => {
   // Audio still traveling to the worklet (pre-roll, output/Bluetooth
   // latency) sounds after the settled report — stop too early and the last

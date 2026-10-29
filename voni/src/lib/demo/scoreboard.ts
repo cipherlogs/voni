@@ -2568,6 +2568,22 @@ export const GOODBYE_AUDIO_COVERAGE_MIN = SCOREBOARD_BUDGETS.goodbyeAudioCoverag
 /** Hang-up after goodbye audio end: the golden goodbye-drain window (0-1500ms). */
 export const HANG_UP_AFTER_GOODBYE_MAX_MS = SCOREBOARD_BUDGETS.hangUpAfterGoodbyeMaxMs.value;
 
+/**
+ * The drain verdict both live hang-up scenarios return, so the fast and
+ * over-answer paths are held to the same bar: inside the goodbye-drain
+ * window and never closed before the goodbye's audio finished. Returns the
+ * scenario failure text, or null when the measured drain passes.
+ */
+export function hangUpDrainFailure(ms: number): string | null {
+  if (ms < 0) {
+    return `hung up ${-ms}ms before the goodbye audio ended (chopped)`;
+  }
+  if (ms > HANG_UP_AFTER_GOODBYE_MAX_MS) {
+    return `hang-up too slow: ${ms}ms > ${HANG_UP_AFTER_GOODBYE_MAX_MS}ms`;
+  }
+  return null;
+}
+
 export type DoubleTalkInput = {
   /** Audible overlap per cut, ms (fade 0.04s already accounted for by the 400ms bar). */
   overlapMs: number[];
@@ -2832,17 +2848,24 @@ export type RunnerHangUpEvidence = {
 
 /**
  * The runner's measured closing-line drain: `hung up Nms after the goodbye
- * finished playing (session sess_…)`, one line per hang-up run. Several runs
- * report the worst hang-up, with its own session, the number and call the
- * gate must see. Null when no hang-up was measured.
+ * finished playing (session sess_…)`, one line per hang-up run. A delay can
+ * be negative when the session closed before the goodbye's audio ended.
+ * Several runs report the worst hang-up, with its own session, the number
+ * and call the gate must see: an early close (chopped) outranks a slow one,
+ * because taking the largest delay would hide it. Null when no hang-up was
+ * measured.
  */
 export function parseRunnerHangUp(stdout: string): RunnerHangUpEvidence | null {
   let worst: RunnerHangUpEvidence | null = null;
   for (const line of stdout.split("\n")) {
-    const match = line.match(/hung up (\d+)ms after the goodbye finished playing(?: \(session (\S+)\))?/);
+    const match = line.match(/hung up (-?\d+)ms after the goodbye finished playing(?: \(session (\S+)\))?/);
     if (!match) continue;
     const ms = Number(match[1]);
-    if (worst === null || ms > worst.ms) worst = { ms, sessionId: match[2] ?? null };
+    const worse =
+      worst === null ||
+      (ms < 0 && (worst.ms >= 0 || ms < worst.ms)) ||
+      (ms >= 0 && worst.ms >= 0 && ms > worst.ms);
+    if (worse) worst = { ms, sessionId: match[2] ?? null };
   }
   return worst;
 }

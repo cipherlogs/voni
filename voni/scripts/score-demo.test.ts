@@ -2195,6 +2195,26 @@ test("a slow hang-up from an unmerged call says no turn was merged", () => {
   assert.match(gate.detail, /no turn merged/, `never cites another call's turn: ${gate.detail}`);
 });
 
+test("an early close cites the closing turn of the call that ended before its goodbye", () => {
+  // The session closed 200ms before the goodbye's audio finished. The FAIL
+  // must point at that call's closing turn, where the chop is visible.
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const { result, artifact } = runGoodbyeShim(
+    dir,
+    { scenario: "bye-audio", session: "sess_bye22", turn: 4, coverage: 0.97, inboxNamed: true },
+    ["--trace-session", "sess_drain22"],
+    "    hung up -200ms after the goodbye finished playing (session sess_drain22)",
+  );
+  assert.equal(result.status, 1, result.stderr + result.stdout);
+  const gate = (artifact as { gates: { name: string; status: string; detail: string }[] }).gates.find(
+    (g) => g.name === "end-call-drain",
+  )!;
+  assert.equal(gate.status, "FAIL");
+  assert.match(gate.detail, /200ms before goodbye audio ended/, `detail states the early close: ${gate.detail}`);
+  assert.match(gate.detail, /call trace turn 4 \(sess_drain22\)/, `detail cites the closed call's turn: ${gate.detail}`);
+  assert.doesNotMatch(gate.detail, /no turn merged/, "the closed call was merged, so its turn is known");
+});
+
 test("a run without goodbye evidence keeps end-call-drain INFO, never PASS", () => {
   const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
   const bin = join(dir, "bin");
