@@ -940,6 +940,14 @@ export const SILENCE_CHECK_IN_TARGET_MS = SCOREBOARD_BUDGETS.silenceCheckInTarge
 export const SILENCE_CHECK_IN_MAX_MS = SCOREBOARD_BUDGETS.silenceCheckInMaxMs.value;
 
 /**
+ * Ticket 19: how long the check-in may hold the floor after the visitor
+ * starts speaking over it. This quotes the existing barge-in cut budget
+ * (`realCutMs`) instead of introducing a new threshold: yielding is the same
+ * promise as cutting, measured from caller speech start to silence.
+ */
+export const CHECK_IN_YIELD_BUDGET_MS = SCOREBOARD_BUDGETS.realCutMs.value;
+
+/**
  * The floor makes the check-in from this exact instruction string, so the
  * runner counts a reply.create as a check-in only when it matches — never a
  * greeting, invite, or resume that happens to mention silence.
@@ -955,6 +963,11 @@ export type DeadAirCheckIn = {
   atSilenceMs: number;
   /** The check-in overlapped caller speech (a cut the floor should have yielded). */
   overCaller: boolean;
+  /**
+   * Measured ms from the visitor's speech start to the check-in going silent
+   * (ticket 19). Absent when the yield was never measured; never guessed.
+   */
+  yieldMs?: number;
   /** Call-trace pointer (turn/excerpt line) for failure triage. */
   trace?: string;
 };
@@ -1006,7 +1019,7 @@ export type SilenceTimeline = {
   /** Agent reply starts / reply.create requests: the agent is covering. */
   coverage?: { atMs: number }[];
   /** Check-ins that went out, with the silence elapsed at the sending. */
-  checkIns?: { atMs: number; overCaller?: boolean; trace?: string }[];
+  checkIns?: { atMs: number; overCaller?: boolean; yieldMs?: number; trace?: string }[];
 };
 
 export type FreeFloorSilenceEvidence = {
@@ -1074,6 +1087,7 @@ export function deriveFreeFloorSilence(timeline: SilenceTimeline): FreeFloorSile
         atMs,
         atSilenceMs,
         overCaller: checkIn.overCaller === true,
+        ...(checkIn.yieldMs !== undefined ? { yieldMs: checkIn.yieldMs } : {}),
         ...(checkIn.trace ? { trace: checkIn.trace } : {}),
       });
     }
@@ -1090,6 +1104,7 @@ export function deriveFreeFloorSilence(timeline: SilenceTimeline): FreeFloorSile
       atMs,
       atSilenceMs: Math.max(0, atMs - prior.startMs),
       overCaller: true,
+      ...(entry.yieldMs !== undefined ? { yieldMs: entry.yieldMs } : {}),
       ...(entry.trace ? { trace: entry.trace } : {}),
     });
   });
@@ -1165,14 +1180,17 @@ export function parseSilenceTimeline(raw: unknown, source: string): SilenceTimel
   const checkInsRaw = candidate.checkIns ?? [];
   if (!Array.isArray(checkInsRaw)) throw new Error(`${source}: checkIns must be an array of {atMs} entries`);
   const checkIns = checkInsRaw.map((entry, index) => {
-    const checkIn = entry as { atMs?: unknown; overCaller?: unknown; trace?: unknown } | null;
+    const checkIn = entry as { atMs?: unknown; overCaller?: unknown; yieldMs?: unknown; trace?: unknown } | null;
     const atMs = nonNegativeNumber(checkIn?.atMs, `checkIns[${index}].atMs`, source);
     if (checkIn?.trace !== undefined && (typeof checkIn.trace !== "string" || !checkIn.trace.trim())) {
       throw new Error(`${source}: checkIns[${index}].trace must be a non-empty string`);
     }
+    const yieldMs =
+      checkIn?.yieldMs === undefined ? undefined : nonNegativeNumber(checkIn.yieldMs, `checkIns[${index}].yieldMs`, source);
     return {
       atMs,
       ...(checkIn?.overCaller === true ? { overCaller: true } : {}),
+      ...(yieldMs !== undefined ? { yieldMs } : {}),
       ...(typeof checkIn?.trace === "string" ? { trace: checkIn.trace } : {}),
     };
   });
@@ -1360,7 +1378,26 @@ export function evaluateDeadAir(evidence: DeadAirEvidence): ScoreboardGate {
     );
   }
 
-  const overlapping = checkIns.filter((c) => c.overCaller);
+  // Ticket 19: a check-in that the visitor talked over must yield inside the
+  // quoted cut budget. A measured yield at or under the bar passes even
+  // though it overlapped; holding past it FAILs at the check-in's turn.
+  const held = checkIns.filter(
+    (c) => c.yieldMs !== undefined && c.yieldMs > CHECK_IN_YIELD_BUDGET_MS,
+  );
+  if (held.length > 0) {
+    const where = held
+      .map(
+        (c) =>
+          `held ${c.yieldMs}ms after the visitor started speaking (${c.trace ?? `${noTurn} for this check-in`})`,
+      )
+      .join(", ");
+    reasons.push(
+      `check-in ${where} — > ${CHECK_IN_YIELD_BUDGET_MS}ms; yield like a cut (silence-check-in beat${traceSuffix})`,
+    );
+  }
+  // An overlap with no measured yield is still the unyielding check-in that
+  // must never talk over the visitor (the existing floor bar).
+  const overlapping = checkIns.filter((c) => c.overCaller && c.yieldMs === undefined);
   if (overlapping.length > 0) {
     const where = overlapping
       .map((c) => `${c.atSilenceMs}ms (${c.trace ?? `${noTurn} for this check-in`})`)
@@ -1387,10 +1424,12 @@ export function evaluateDeadAir(evidence: DeadAirEvidence): ScoreboardGate {
     return { name: "dead-air", status: "FAIL", detail: reasons.join("; ") };
   }
   if (silenceReachedCheckIn) {
+    const yielded = checkIns.find((c) => c.yieldMs !== undefined);
+    const yieldNote = yielded ? `; yielded in ${yielded.yieldMs}ms when the visitor spoke` : ", never over the caller";
     return {
       name: "dead-air",
       status: "PASS",
-      detail: `no dead air over ${DEAD_AIR_MAX_MS}ms; 15s silence drew exactly one check-in at ${checkIns[0].atSilenceMs}ms, never over the caller${coverageNote}`,
+      detail: `no dead air over ${DEAD_AIR_MAX_MS}ms; 15s silence drew exactly one check-in at ${checkIns[0].atSilenceMs}ms${yieldNote}${coverageNote}`,
     };
   }
   const max = gaps.length > 0 ? Math.max(...gaps) : 0;

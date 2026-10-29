@@ -455,7 +455,7 @@ type ClientOutcome = {
   /** Agent reply starts / reply.create requests, call-relative ms: coverage. */
   coverageAt: { atMs: number }[];
   /** Silence check-ins that went out, call-relative ms. */
-  checkIns: { atMs: number; overCaller: boolean }[];
+  checkIns: { atMs: number; overCaller: boolean; yieldMs?: number }[];
   /** The call's free-floor silence timeline, built once the call has ended. */
   silenceTimeline: SilenceTimeline | null;
 };
@@ -639,6 +639,9 @@ async function runClient(
   let sentSamples = 0;
   const replyAudioStartSamples: Record<string, number> = {};
   let soundingReplyId: string | null = null;
+  /** The check-in reply after its reply.create, so a cut can measure its yield. */
+  let pendingCheckInReply = false;
+  let checkInReplyId: string | null = null;
   /** The playout window the last chunk opened, truncated if the flush cuts it. */
   let lastAgentWindow: { startMs: number; endMs: number } | null = null;
   const consumedSamplesNow = () => {
@@ -708,6 +711,14 @@ async function runClient(
         // agent); the flush is processed now. A delayed flush leaves audible
         // double talk between the two, which the residual alone cannot see.
         const caller = callerWindowAt(at);
+        // Ticket 19: if the cut stopped a check-in the visitor had started
+        // speaking over, the time from their speech start to this flush is
+        // the measured yield. Carried with the check-in's own evidence.
+        const checkIn = outcome.checkIns.at(-1);
+        if (checkIn && checkInReplyId !== null && soundingReplyId === checkInReplyId && caller) {
+          checkIn.overCaller = true;
+          checkIn.yieldMs = Math.max(0, Math.round(at - caller.start));
+        }
         const window = playoutCutWindow({
           cutAt: caller ? Math.min(caller.start, at) : at,
           flushAt: at,
@@ -765,6 +776,11 @@ async function runClient(
       }
       return;
     }
+    if (msg.type === "reply.started" && pendingCheckInReply) {
+      pendingCheckInReply = false;
+      checkInReplyId = typeof msg.reply_id === "string" ? msg.reply_id : null;
+      return;
+    }
     if (!process.env.EVAL_DEBUG) return;
     if (msg.type === "transcript.agent.delta") {
       if (!(globalThis as Record<string, unknown>).sawDelta) console.log(`    ${((Date.now() - t0) / 1000).toFixed(2)} first agent delta: ${msg.text}`);
@@ -786,6 +802,7 @@ async function runClient(
       // never a greeting, invite, or resume that mentions being quiet.
       if (isSilenceCheckInInstructions(instructions)) {
         outcome.checkIns.push({ atMs, overCaller: callerWindowAt(Date.now()) !== null });
+        pendingCheckInReply = true;
       }
     }
     if (process.env.EVAL_DEBUG && msg.type !== "input.audio") console.log(`    -> ${msg.type} ${JSON.stringify(msg.session?.input?.turn_detection ?? msg.instructions ?? "")}`);

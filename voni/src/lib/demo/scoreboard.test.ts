@@ -2213,6 +2213,43 @@ test("dead air: a check-in over caller speech fails even when durations pass", (
   assert.ok(gate.detail.includes("turn 12"), "failure carries the trace pointer");
 });
 
+test("dead air: a check-in that yields inside the cut budget passes and carries the measured yield", () => {
+  // Ticket 19: the visitor started speaking over the check-in; it stopped
+  // inside the same 1500ms cut budget the barge-in uses (quoted, not retuned).
+  const gate = evaluateDeadAir({
+    gapsMs: [],
+    longestSilenceMs: 16_000,
+    checkIns: [{ atSilenceMs: 15_100, overCaller: true, yieldMs: 900, trace: "turn 12" }],
+  });
+  assert.equal(gate.status, "PASS", gate.detail);
+  assert.match(gate.detail, /yielded in 900ms/);
+});
+
+test("dead air: a check-in that holds past the cut budget fails at its turn", () => {
+  const gate = evaluateDeadAir({
+    gapsMs: [],
+    longestSilenceMs: 16_000,
+    checkIns: [{ atSilenceMs: 15_100, overCaller: true, yieldMs: 1900, trace: "call trace turn 7 (sess_yield)" }],
+  });
+  assert.equal(gate.status, "FAIL", gate.detail);
+  assert.match(gate.detail, /held 1900ms/);
+  assert.match(gate.detail, /1500ms/);
+  assert.match(gate.detail, /call trace turn 7 \(sess_yield\)/);
+});
+
+test("the silence timeline carries a measured check-in yield", () => {
+  const derived = deriveFreeFloorSilence({
+    startedMs: 0,
+    endedMs: 20_000,
+    agentAudio: [{ startMs: 0, endMs: 1_000 }],
+    callerSpeech: [{ startMs: 16_500, endMs: 18_000 }],
+    coverage: [{ atMs: 15_500 }],
+    checkIns: [{ atMs: 15_400, overCaller: true, yieldMs: 800 }],
+  });
+  assert.equal(derived.checkIns.length, 1);
+  assert.equal(derived.checkIns[0].yieldMs, 800);
+});
+
 test("dead air: a check-in over caller speech with no merged turn says so explicitly", () => {
   const gate = evaluateDeadAir({
     gapsMs: [],

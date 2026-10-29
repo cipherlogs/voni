@@ -1802,6 +1802,42 @@ if (args[0] === "run" && args[1] === "eval:demo-agent") {
   assert.match(overGate.detail, /call trace turn 2 \(sess_check\)/, "cites the turn the check-in talked over the visitor");
 });
 
+test("a measured check-in yield is gated against the quoted cut budget", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const cwd = new URL("../", import.meta.url).pathname;
+  const runCase = (yieldMs: string) => {
+    const out = join(dir, `yield-${yieldMs}.json`);
+    const result = run(
+      [
+        "--dry-run",
+        "--out",
+        out,
+        "--check-in-at-ms",
+        "15200",
+        "--check-in-over-caller",
+        "--check-in-yield-ms",
+        yieldMs,
+      ],
+      cwd,
+    );
+    return { result, artifact: JSON.parse(readFileSync(out, "utf8")) as {
+      deadAir: { checkIns: { yieldMs?: number }[] };
+      gates: { name: string; status: string; detail: string }[];
+    } };
+  };
+  const prompt = runCase("900");
+  assert.equal(prompt.result.status, 0, prompt.result.stderr + prompt.result.stdout);
+  assert.equal(prompt.artifact.deadAir.checkIns[0]?.yieldMs, 900);
+  assert.equal(prompt.artifact.gates.find((g) => g.name === "dead-air")?.status, "PASS");
+
+  const late = runCase("1900");
+  assert.notEqual(late.result.status, 0, late.result.stderr + late.result.stdout);
+  const gate = late.artifact.gates.find((g) => g.name === "dead-air")!;
+  assert.equal(gate.status, "FAIL");
+  assert.match(gate.detail, /held 1900ms/);
+  assert.match(gate.detail, /1500ms/);
+});
+
 test("--silence-json feeds dead-air automatically, and explicit CLI flags still override it", () => {
   const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
   const evidencePath = join(dir, "silence.json");

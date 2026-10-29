@@ -709,10 +709,14 @@ function parseDeadAirEvidence(input: {
   longestSilenceMs: string;
   checkInAtMs: string;
   checkInOverCaller: boolean;
+  checkInYieldMs: string;
   trace?: string;
 }): DeadAirEvidence | undefined {
   const gapsMs = parseMsList(input.gaps, "--dead-air-gaps");
   const checkInAtMs = parseMsList(input.checkInAtMs, "--check-in-at-ms");
+  const yields = parseMsList(input.checkInYieldMs, "--check-in-yield-ms");
+  if (yields.length > 1) throw new Error("--check-in-yield-ms takes one measured yield, got a list");
+  const checkInYieldMs = yields[0];
   let longestSilenceMs: number | null = null;
   if (input.longestSilenceMs.trim()) {
     longestSilenceMs = Number(input.longestSilenceMs);
@@ -726,7 +730,11 @@ function parseDeadAirEvidence(input: {
   return {
     gapsMs,
     longestSilenceMs,
-    checkIns: checkInAtMs.map((atSilenceMs) => ({ atSilenceMs, overCaller: input.checkInOverCaller })),
+    checkIns: checkInAtMs.map((atSilenceMs) => ({
+      atSilenceMs,
+      overCaller: input.checkInOverCaller,
+      ...(checkInYieldMs !== undefined ? { yieldMs: checkInYieldMs } : {}),
+    })),
     ...(input.trace ? { trace: input.trace } : {}),
   };
 }
@@ -802,6 +810,7 @@ function main(): void {
     longestSilenceMs: arg("--longest-silence-ms", ""),
     checkInAtMs: arg("--check-in-at-ms", ""),
     checkInOverCaller: process.argv.includes("--check-in-over-caller"),
+    checkInYieldMs: arg("--check-in-yield-ms", ""),
     trace: requestedTraceSession || undefined,
   });
   const silenceJsonPath = arg("--silence-json", "");
