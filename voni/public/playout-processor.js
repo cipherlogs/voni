@@ -7,22 +7,26 @@
  * browser sample). That approach pops, for three reasons this file fixes:
  *
  *   - No jitter buffer. The first chunk plays at once, so a chunk that arrives
- *     a few ms late leaves a hard gap. Here a reply waits for PREROLL_S of audio
- *     (or a short lull in arrivals) before it starts.
+ *     a few ms late leaves a hard gap. Here a reply waits for the target
+ *     cushion of audio (or the defined lull in arrivals) before it starts, and
+ *     its gain never follows how much is left.
  *   - Per-chunk resampling. Each 24 kHz buffer resampled on its own to the
  *     device rate leaves a seam at every join. Here a single linear resampler
  *     carries its phase across chunks, so the joins don't exist.
- *   - Hard edges. Starts ramp in over EDGE_S, the output fades as the buffer
- *     runs dry (end of a reply, or a network stall), and `flush` fades out
- *     over the time given by the main thread.
+ *   - Hard edges. Starts ramp in over EDGE_S, the source running dry fades out
+ *     over EDGE_S, and `flush` fades out over the time given by the main thread.
  *
  * Messages in:  {type:"play", seq, rate, samples: Float32Array}
  *               {type:"flush", fadeS}
  *               {type:"probe", on}  dev pop recorder (see POP_*), off by default
  *               {type:"tap", on}  dev delivered capture, off by default
- * Messages out: {type:"level", seq, queuedMs, idle, consumed}, posted every few quanta
- *               while sounding and once on going idle. `seq` is the last play
- *               message seen, so the main thread knows the idle report is current.
+ * Messages out: {type:"level", seq, queuedMs, cushionMs, targetCushionMs,
+ *               playing, idle, consumed}, posted every few quanta while
+ *               sounding and once on going idle. `seq` is the last play message
+ *               seen, so the main thread knows the idle report is current.
+ *               `cushionMs` is the audio held ahead of the playhead — what the
+ *               jitter buffer holds — and `targetCushionMs` the cushion a
+ *               reply starts at.
  *               `consumed` counts source samples played or flushed since load:
  *               the main thread paces captions against it.
  *               {type:"pop", kind, size, at}  only while the probe is on:
@@ -36,11 +40,23 @@
  *               {type:"tap-end"} so the main thread can close a complete WAV.
  */
 /**
- * Audio arrives in real time (measured: 10ms chunks every 10ms), so this
- * pre-roll is the only cushion against a network hiccup: 80ms broke up on
- * phones. Owner call: a fixed 500ms.
+ * The target cushion: how much audio a reply holds before it starts. This is
+ * the reply's jitter budget and a named decision, not an accident of arrival
+ * timing. Audio arrives in real time (measured: 10ms chunks every 10ms), so
+ * this is the only cushion against a network hiccup: 80ms broke up on phones.
+ * Owner call: a fixed 500ms.
  */
-const PREROLL_S = 0.5;
+const TARGET_CUSHION_S = 0.5;
+/**
+ * The defined lull: no arrivals for this long means the stream has ended even
+ * though the target was never reached, so a reply shorter than the cushion
+ * still plays instead of waiting forever.
+ */
+const LULL_S = 0.5;
+/**
+ * Fade at a reply boundary: the start of a reply, and the point the source
+ * runs dry (a reply ending, or a stall). Never from how much is left.
+ */
 const EDGE_S = 0.005;
 const LEVEL_EVERY_QUANTA = 8;
 /** Speech at 48 kHz moves well under this between samples; a click does not. */
@@ -62,7 +78,12 @@ class PlayoutProcessor extends AudioWorkletProcessor {
     this.b = 0;
     this.frac = 0;
     this.playing = false;
-    this.gain = 0; // 0..1 envelope, rises at most one EDGE_S ramp at a time
+    this.gain = 0; // 0..1 envelope: a start ramp, then constant 1 for the reply
+    this.hold = 0; // last sample before the source ran dry, faded out over EDGE_S
+    this.holdLeft = 0; // samples left in that fade-out; 0 when not fading
+    /** EDGE_S in output samples, and the matching per-sample gain step. */
+    this.edgeSamples = Math.round(EDGE_S * sampleRate);
+    this.gainStep = 1 / (EDGE_S * sampleRate);
     this.lastPush = -1;
     this.seq = 0;
     this.tail = null; // pre-rendered flush fade, mixed into the output
@@ -115,20 +136,26 @@ class PlayoutProcessor extends AudioWorkletProcessor {
 
   /** Render one output sample of the stream, or 0 when not playing. */
   next() {
+    // The source ran dry (reply end, or a stall): the fade-out started at the
+    // last sample and is counted in samples, never in how much audio is left.
+    if (this.holdLeft > 0) {
+      this.holdLeft -= 1;
+      return this.hold * (this.holdLeft / this.edgeSamples);
+    }
     if (!this.playing) return 0;
-    const edge = EDGE_S * this.rate;
-    // Envelope: fade over the last EDGE_S of data so running dry (reply end
-    // or stall) never cuts a non-zero sample, and never rise faster than an
-    // EDGE_S ramp — a late chunk landing mid-fade must not snap back to 1.
-    const room = Math.max(0, (this.queued + 1 - this.frac) / edge);
-    this.gain = Math.min(room, 1, this.gain + this.step / edge);
+    // Gain: ramp in over EDGE_S when the reply starts, then constant 1. It is
+    // deliberately not a function of `queued` — a buffer that sawtooths at the
+    // chunk rate must not amplitude-modulate the voice.
+    this.gain = Math.min(1, this.gain + this.gainStep);
     const y = (this.a + (this.b - this.a) * this.frac) * this.gain;
     this.frac += this.step;
     while (this.frac >= 1) {
       const s = this.take();
       if (s === null) {
-        // Dry. The envelope already reached 0; wait for the next pre-roll.
+        // Dry. Start the fade-out from the sample just emitted.
         this.playing = false;
+        this.hold = y;
+        this.holdLeft = this.edgeSamples;
         this.a = this.b = this.frac = 0;
         break;
       }
@@ -145,6 +172,8 @@ class PlayoutProcessor extends AudioWorkletProcessor {
     this.b = first;
     this.frac = 0;
     this.gain = 0;
+    this.hold = 0;
+    this.holdLeft = 0;
     this.playing = true;
   }
 
@@ -165,6 +194,8 @@ class PlayoutProcessor extends AudioWorkletProcessor {
     this.head = 0;
     this.queued = 0;
     this.playing = false;
+    this.hold = 0;
+    this.holdLeft = 0;
     this.a = this.b = this.frac = 0;
   }
 
@@ -222,12 +253,14 @@ class PlayoutProcessor extends AudioWorkletProcessor {
 
   process(_inputs, outputs) {
     const out = outputs[0][0];
-    // Never start under a flush tail: tail + a loud new reply summed past
-    // full scale (measured 1.49), which the device clips into a crackle.
-    // The tail is ≤40ms, so the wait is inaudible.
-    if (!this.playing && this.queued > 0 && !this.tail) {
-      const lull = currentTime - this.lastPush >= PREROLL_S;
-      if (this.queued >= PREROLL_S * this.rate || lull) this.start();
+    // Start only on the target cushion, or once arrivals have paused for the
+    // defined lull. A reply shorter than the cushion therefore still plays, and
+    // a jitter trace never starts on less than the target. Never start under a
+    // flush tail: tail + a loud new reply summed past full scale (measured
+    // 1.49), which the device clips into a crackle — the tail is ≤40ms.
+    if (!this.playing && this.queued > 0 && !this.tail && this.holdLeft === 0) {
+      const lull = currentTime - this.lastPush >= LULL_S;
+      if (this.queued >= TARGET_CUSHION_S * this.rate || lull) this.start();
     }
     for (let i = 0; i < out.length; i++) {
       let y = this.next();
@@ -241,13 +274,16 @@ class PlayoutProcessor extends AudioWorkletProcessor {
     for (let c = 1; c < outputs[0].length; c++) outputs[0][c].set(out);
     if (this.tapOn) this.tapWrite(out);
 
-    const nowIdle = !this.playing && this.queued === 0 && !this.tail;
+    const nowIdle = !this.playing && this.queued === 0 && !this.tail && this.holdLeft === 0;
     this.quanta += 1;
     if ((nowIdle && !this.idle) || (!nowIdle && this.quanta % LEVEL_EVERY_QUANTA === 0)) {
       this.port.postMessage({
         type: "level",
         seq: this.seq,
         queuedMs: (this.queued / this.rate) * 1000,
+        cushionMs: (this.queued / this.rate) * 1000,
+        targetCushionMs: TARGET_CUSHION_S * 1000,
+        playing: this.playing,
         idle: nowIdle,
         consumed: this.consumed,
       });
