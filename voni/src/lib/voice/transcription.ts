@@ -11,7 +11,9 @@
  * - system_prompt steers what the agent SAYS (see `../agents/compile.ts`).
  * - transcription_prompt + keyterms steer how the caller's speech is HEARD.
  *   Describe the call (scene, never instructions — behavioral commands like
- *   "use formal punctuation" are ignored).
+ *   "use formal punctuation" are ignored), and do it in the call's own Locale:
+ *   a Spanish call is described in Spanish, and a Locale with no scene sends
+ *   no prompt rather than an English one.
  *
  * Voni is vertical-agnostic: a capable voice agent the customer connects to
  * any field. So NOTHING here names a vertical. Vocabulary comes from the
@@ -31,6 +33,7 @@ import type { AgentConfig } from "@/lib/agents/config";
 import {
   EN_RECOGNITION,
   callRecognitionLocale,
+  recognitionScene,
   recognitionVocabulary,
   type RecognitionLocale,
 } from "@/lib/voice/recognition";
@@ -145,14 +148,23 @@ export function buildAgentKeyterms(
   return out.slice(0, 100);
 }
 
-/** Scene description for speech recognition, derived from the agent's own mission and role. */
-export function buildAgentTranscriptionPrompt(config: AgentConfig): string {
+/** Scene description for speech recognition, rendered in the call's own Locale. */
+export function buildAgentTranscriptionPrompt(
+  config: AgentConfig,
+  locale: string | null = callRecognitionLocale(config),
+): string {
   const { identity, mission } = config;
   const topics = (config.detect ?? [])
     .map((field) => field.label.trim())
     .filter(Boolean)
     .slice(0, 8);
-  const scene = EN_RECOGNITION.scene({
+  // Automatic detection is the one documented English-scaffolding exception:
+  // nothing pinned means the Locale is not known before the caller speaks.
+  // A pinned Locale renders its own scene, and a Locale with no scene is a
+  // hole — no prompt at all, never an English description of a Spanish call.
+  const scene = locale === null ? EN_RECOGNITION.scene : recognitionScene(locale);
+  if (!scene) return "";
+  const prompt = scene({
     agentName: identity.name,
     role: identity.role,
     mission,
@@ -160,5 +172,5 @@ export function buildAgentTranscriptionPrompt(config: AgentConfig): string {
   });
   // The prompt rides inside session payloads with a ~1500-char context
   // budget shared with agent_context — stay far under it.
-  return scene.slice(0, 500);
+  return prompt.slice(0, 500);
 }
