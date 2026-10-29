@@ -12,14 +12,20 @@ underscores, dashes, at most one dot).
 
 from __future__ import annotations
 
+import json
 import unittest
 
 from cascade.body_map import BodyFieldError
 from cascade.eligibility import (
+    DEFAULT_RULES,
     REFUSAL_EVENT_TYPE,
+    CounterReading,
     EligibilityDecision,
+    Rule,
     evaluate_body,
+    evaluate_eligibility,
 )
+from cascade.routing import CallSubject, decide
 
 # The smallest body the builder emits for a bound voice with one fixed Locale.
 VALID_BODY = {
@@ -224,6 +230,159 @@ class AdapterErrorTests(unittest.TestCase):
             from cascade.body_map import adapt_body
 
             adapt_body({**VALID_BODY, "input": "es"})
+
+
+class ConjunctionTests(unittest.TestCase):
+    SUBJECT = CallSubject("acme", "tenant")
+    BELOW_LINE = CounterReading(spent_usd=0.0, line_usd=12.0)
+
+    def evaluate(
+        self,
+        body: dict = VALID_BODY,
+        *,
+        mode: str = "all",
+        counter: CounterReading | None = None,
+        keyterm_limit: int = KEYTERM_LIMIT,
+        rules=DEFAULT_RULES,
+    ) -> EligibilityDecision:
+        return evaluate_eligibility(
+            body,
+            subject=self.SUBJECT,
+            routing=decide(mode, self.SUBJECT),
+            counter=counter or self.BELOW_LINE,
+            keyterm_limit=keyterm_limit,
+            rules=rules,
+        )
+
+    def test_all_five_predicates_passing_permits_the_call(self):
+        decision = self.evaluate()
+
+        self.assertEqual(decision.disposition, "cascade")
+        self.assertTrue(decision.permitted)
+        self.assertEqual(decision.predicates, ())
+        self.assertEqual(decision.body.voice_id, "lola")
+        self.assertEqual([rule.name for rule in DEFAULT_RULES],
+                         ["routing", "binding", "locale", "accepted", "counter"])
+
+    def test_routing_off_refuses_the_call(self):
+        decision = self.evaluate(mode="off")
+
+        self.assertEqual(decision.disposition, "managed")
+        self.assertIn("routing", decision.predicates)
+        self.assertIn("routing is off", decision.reason)
+
+    def test_demo_routing_refuses_a_tenant_call(self):
+        decision = self.evaluate(mode="demo")
+
+        self.assertEqual(decision.disposition, "managed")
+        self.assertIn("routing", decision.predicates)
+
+    def test_an_unbound_voice_refuses_the_call(self):
+        decision = self.evaluate({**VALID_BODY, "voice": {"voice_id": "juergen"}})
+
+        self.assertEqual(decision.disposition, "managed")
+        self.assertEqual(decision.predicates, ("binding",))
+
+    def test_no_fixed_locale_refuses_the_call(self):
+        decision = self.evaluate({**VALID_BODY, "input": {}})
+
+        self.assertEqual(decision.disposition, "managed")
+        self.assertEqual(decision.predicates, ("locale",))
+
+    def test_a_body_the_adapter_rejects_refuses_the_call(self):
+        decision = self.evaluate({**VALID_BODY, "prompt": "smuggled"})
+
+        self.assertEqual(decision.disposition, "managed")
+        self.assertEqual(decision.predicates, ("accepted",))
+
+    def test_a_counter_at_or_above_its_line_refuses_the_call(self):
+        for counter in (
+            CounterReading(spent_usd=12.0, line_usd=12.0),
+            CounterReading(spent_usd=12.01, line_usd=12.0),
+        ):
+            with self.subTest(counter=counter):
+                decision = self.evaluate(counter=counter)
+
+                self.assertEqual(decision.disposition, "managed")
+                self.assertEqual(decision.predicates, ("counter",))
+                self.assertIn("daily counter", decision.reason)
+
+    def test_a_counter_below_its_line_permits_the_call(self):
+        decision = self.evaluate(counter=CounterReading(spent_usd=11.99, line_usd=12.0))
+
+        self.assertEqual(decision.disposition, "cascade")
+
+    def test_every_failing_predicate_records_its_own_reason(self):
+        decision = self.evaluate(
+            {**VALID_BODY, "input": {}},
+            mode="off",
+            counter=CounterReading(spent_usd=12.0, line_usd=12.0),
+        )
+
+        self.assertEqual(decision.predicates, ("routing", "locale", "counter"))
+        self.assertEqual(len(decision.reasons), 3)
+        for refusal in decision.reasons:
+            self.assertTrue(refusal.reason)
+
+    def test_removing_any_one_predicate_makes_the_call_eligible(self):
+        def stub(name: str, reason: str = "") -> Rule:
+            return Rule(name, lambda facts, reason=reason: reason)
+
+        for index, rule in enumerate(DEFAULT_RULES):
+            with self.subTest(removed=rule.name):
+                rules = tuple(
+                    stub(default.name, f"{default.name} refused")
+                    if position == index
+                    else stub(default.name)
+                    for position, default in enumerate(DEFAULT_RULES)
+                )
+                refused = self.evaluate(rules=rules)
+                self.assertEqual(refused.disposition, "managed")
+                self.assertEqual(refused.predicates, (rule.name,))
+
+                without = tuple(item for item in rules if item.name != rule.name)
+                self.assertEqual(self.evaluate(rules=without).disposition, "cascade")
+
+    def test_a_routing_refusal_is_never_a_provider_fallback_event(self):
+        decision = self.evaluate(mode="off")
+
+        self.assertEqual(decision.routing.disposition, "managed")
+        self.assertEqual(decision.disposition, "managed")
+        event_types = {event["type"] for event in decision.events()}
+        self.assertEqual(event_types, {REFUSAL_EVENT_TYPE})
+        self.assertNotIn("provider_fallback", json.dumps(decision.events()))
+
+    def test_the_evaluator_is_pure_over_its_inputs(self):
+        first = self.evaluate()
+        second = self.evaluate()
+
+        self.assertEqual(first, second)
+        # No clock, socket, store or event loop was involved: the whole gate is
+        # sync and repeatable from the same three inputs.
+        self.assertIsNone(first.routing.decided_at)
+
+    def test_a_refusal_does_not_contaminate_a_later_cascade_run(self):
+        refused = self.evaluate(mode="off")
+        self.assertEqual(refused.disposition, "managed")
+
+        later = self.evaluate()
+
+        self.assertEqual(later.disposition, "cascade")
+        self.assertEqual(later.reasons, ())
+
+    def test_an_incurred_refusal_names_the_routing_decision_it_read(self):
+        routing = decide("off", self.SUBJECT)
+
+        decision = evaluate_eligibility(
+            VALID_BODY,
+            subject=self.SUBJECT,
+            routing=routing,
+            counter=self.BELOW_LINE,
+            keyterm_limit=KEYTERM_LIMIT,
+        )
+
+        self.assertIs(decision.routing, routing)
+        self.assertEqual(decision.subject, self.SUBJECT)
 
 
 if __name__ == "__main__":
