@@ -16,6 +16,17 @@ The command and filler sets are the existing ones in :mod:`turns`; this module
 adds no word list of its own and no second threshold. Unsure input waits: the
 decision fails closed.
 
+The same module owns **final suppression** (:class:`FinalGate`): the final is
+the only reply trigger, so it is also the only place a reply can be withheld.
+A final that is filler or the agent's own voice is counted and produces
+nothing; a command final takes the floor and steers the next turn (and cancels
+the agent's audio only when the agent actually holds the floor); anything else
+is answered. Echo is the existing similarity rule — :func:`is_echo` is the one
+Python port of ``judgeOverlap`` in ``voni/src/lib/voice/barge-in.ts``, and the
+share is read back from that source by a parity test. The agent's own line is
+checked *before* the command set, so a played-back "please stop" can never
+steer the call.
+
 Arbitration is not a reply. The final is the only reply trigger
 (:mod:`cascade.event_rules`), so a partial or a ``speechStart`` here can never
 start one — it can only take the floor away from the agent. While the agent is
@@ -40,9 +51,16 @@ from turns import (
     BARGE_IN_THRESHOLD,
     ESTABLISHED_MS,
     FloorAction,
+    clean_tokens,
     floor_decision,
     is_backchannel,
+    is_command_overlap,
 )
+
+#: Share of the caller's words already spoken by the agent that marks an echo.
+#: Mirrors ``ECHO_SHARE`` in ``voni/src/lib/voice/barge-in.ts``; a parity test
+#: reads that source so the two mirrors cannot drift.
+ECHO_SHARE = 0.6
 
 
 class FloorHold(str, Enum):
@@ -150,6 +168,142 @@ class FloorArbiter:
         elif action == "backchannel":
             self._count("backchannel")
         return FloorDecision(action, self._hold, text, held_ms)
+
+    def _count(self, name: str) -> None:
+        if self._ledger is not None:
+            self._ledger.count(name)
+
+
+def is_echo(text: str, agent_text: str) -> bool:
+    """True when the caller's line is mostly the agent's own words coming back.
+
+    The existing similarity rule (``judgeOverlap`` in the browser's
+    ``barge-in.ts``): two words minimum, and at least :data:`ECHO_SHARE` of them
+    already in the agent's current sentence. One-word lines are never echoes —
+    a lone "no" over the agent is steering, and suppression needs evidence.
+    An empty agent line proves nothing, so nothing is suppressed.
+    """
+    tokens = clean_tokens(text)
+    if len(tokens) < 2:
+        return False
+    agent_words = set(clean_tokens(agent_text))
+    if not agent_words:
+        return False
+    echoed = sum(1 for token in tokens if token in agent_words)
+    return echoed / len(tokens) >= ECHO_SHARE
+
+
+class FinalAction(str, Enum):
+    """What one authoritative final means for the floor."""
+
+    #: A normal final: the agent takes the floor and answers.
+    REPLY = "reply"
+    #: A command final: the caller took the floor; answer with a pivot, never
+    #: by resuming the cut-off sentence.
+    STEER = "steer"
+    #: Filler or the agent's own voice: counted, never answered, never cut.
+    SUPPRESSED = "suppressed"
+
+
+class FinalReason(str, Enum):
+    """Why the final was answered the way it was. Every reason is reportable."""
+
+    NORMAL = "normal"
+    COMMAND = "command"
+    BACKCHANNEL = "backchannel"
+    ECHO = "echo"
+    EMPTY = "empty"
+
+
+@dataclass(frozen=True, slots=True)
+class FinalDecision:
+    """What one final meant, decided before anything is said.
+
+    ``text`` is the authoritative final. ``floor`` is who held the floor when
+    it landed. ``cancel`` is true only when a command took the floor away from
+    an agent that was actually holding it; a suppressed final never cancels.
+    """
+
+    action: FinalAction
+    reason: FinalReason
+    text: str = ""
+    floor: FloorHold = FloorHold.SILENT
+    cancel: bool = False
+
+    @property
+    def answered(self) -> bool:
+        """Whether this final may reach the reply seam."""
+        return self.action is not FinalAction.SUPPRESSED
+
+    @property
+    def steer_text(self) -> str:
+        """The steering the reply must acknowledge, or empty."""
+        return self.text if self.action is FinalAction.STEER else ""
+
+
+class FinalGate:
+    """Decide what one authoritative final means. No I/O; clock plus counts.
+
+    The gate is not a reply trigger and holds no sink: it returns a
+    :class:`FinalDecision` and the orchestrator keeps the one reply call site
+    (:class:`cascade.event_rules.EventRules`). Counting uses the existing
+    ledger counters — ``backchannel``, ``overheard`` and ``yield`` — so a
+    suppressed final is visible on the same scoreboard as an arbitration.
+    """
+
+    def __init__(
+        self,
+        *,
+        ledger: TimingLedger | None = None,
+        arbiter: FloorArbiter | None = None,
+        is_backchannel_fn: Callable[[str], bool] = is_backchannel,
+        is_command_fn: Callable[[str], bool] = is_command_overlap,
+        is_echo_fn: Callable[[str, str], bool] = is_echo,
+    ) -> None:
+        self._ledger = ledger
+        self._arbiter = arbiter
+        self._is_backchannel = is_backchannel_fn
+        self._is_command = is_command_fn
+        self._is_echo = is_echo_fn
+
+    def classify(self, text: str, *, agent_text: str = "") -> FinalDecision:
+        """Classify one final. Fail-closed: suppression needs evidence.
+
+        Order matters. Filler is decided first (it is never a command), then
+        the agent's own voice, then the command set: an echo that happens to
+        contain "stop" is the agent's line played back, not a caller steering.
+        """
+        text = text or ""
+        floor = self._floor()
+        if not text.strip():
+            # An empty completion is a no-speech turn: counted by the event
+            # rules as a turn, never as a backchannel.
+            return FinalDecision(FinalAction.SUPPRESSED, FinalReason.EMPTY, text, floor)
+        if self._is_backchannel(text):
+            self._count("backchannel")
+            return FinalDecision(
+                FinalAction.SUPPRESSED, FinalReason.BACKCHANNEL, text, floor
+            )
+        if self._is_echo(text, agent_text):
+            self._count("overheard")
+            return FinalDecision(
+                FinalAction.SUPPRESSED, FinalReason.ECHO, text, floor
+            )
+        if self._is_command(text):
+            # The caller steered: the agent yields the floor. There is only
+            # something to cut when the agent was actually holding it.
+            self._count("yield")
+            return FinalDecision(
+                FinalAction.STEER,
+                FinalReason.COMMAND,
+                text,
+                floor,
+                cancel=floor is not FloorHold.SILENT,
+            )
+        return FinalDecision(FinalAction.REPLY, FinalReason.NORMAL, text, floor)
+
+    def _floor(self) -> FloorHold:
+        return FloorHold.SILENT if self._arbiter is None else self._arbiter.hold
 
     def _count(self, name: str) -> None:
         if self._ledger is not None:

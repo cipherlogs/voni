@@ -59,9 +59,19 @@ FILLER_TOKENS = frozenset(
 _PUNCT_STRIP = str.maketrans("", "", string.punctuation)
 
 
+def clean_tokens(text: str) -> list[str]:
+    """The comparable words of a transcript: lowercased, punctuation removed.
+
+    One tokenizer for every cascade word rule (filler, command, echo), so a
+    mirror of a browser rule cannot disagree about where a word starts. Same
+    character set the browser's ``cleanTokens`` strips.
+    """
+    return (text or "").lower().translate(_PUNCT_STRIP).split()
+
+
 def is_backchannel(text: str) -> bool:
     """True when every token is filler — never takes the floor, never cuts."""
-    words = (text or "").lower().translate(_PUNCT_STRIP).split()
+    words = clean_tokens(text)
     return bool(words) and all(token in FILLER_TOKENS for token in words)
 
 
