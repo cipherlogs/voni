@@ -211,6 +211,7 @@ import {
   resolveGateVoice,
   sha256Hex,
   traceSilenceRef,
+  traceCheckInRef,
   traceTurnForVisitorSpeech,
   traceTurnPointers,
   traceTurnsForAgentLines,
@@ -705,8 +706,9 @@ function deadAirEvidenceFromTimeline(
     checkIns: derived.checkIns.map((checkIn) => {
       if (checkIn.trace || checkIn.atMs === undefined) return checkIn;
       // Cite the turn at the check-in itself: for a second check-in this is
-      // where the count went wrong, and a silent stretch has no row of its own.
-      const ref = traceSilenceRef(excerpt, { startMs: checkIn.atMs, endMs: checkIn.atMs + 1 }, sessionId);
+      // where the count went wrong, and an over-caller check-in is the turn
+      // the visitor was talked over. A silent stretch has no row of its own.
+      const ref = traceCheckInRef(excerpt, checkIn.atMs, sessionId);
       return ref ? { ...checkIn, trace: ref } : checkIn;
     }),
     ...(sessionId ? { trace: sessionId } : {}),

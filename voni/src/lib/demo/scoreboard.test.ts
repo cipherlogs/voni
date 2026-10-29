@@ -2141,6 +2141,17 @@ test("dead air: a check-in over caller speech fails even when durations pass", (
   assert.ok(gate.detail.includes("turn 12"), "failure carries the trace pointer");
 });
 
+test("dead air: a check-in over caller speech with no merged turn says so explicitly", () => {
+  const gate = evaluateDeadAir({
+    gapsMs: [],
+    longestSilenceMs: 16_000,
+    checkIns: [{ atSilenceMs: 15_100, overCaller: true }],
+  });
+  assert.equal(gate.status, "FAIL");
+  assert.ok(/over caller speech/.test(gate.detail), `want overlap wording, got: ${gate.detail}`);
+  assert.match(gate.detail, /no call trace turn merged for this check-in/);
+});
+
 test("dead air: an early check-in before 15s of silence fails", () => {
   const gate = evaluateDeadAir({
     gapsMs: [],
@@ -2270,6 +2281,25 @@ test("free-floor silence: two check-ins in the stretch both land at their offset
   });
   assert.equal(gate.status, "FAIL");
   assert.match(gate.detail, /2 check-ins/);
+});
+
+test("free-floor silence: a check-in over caller speech is kept as overlap evidence, not lost", () => {
+  const evidence = deriveFreeFloorSilence({
+    startedMs: 0,
+    endedMs: 18_000,
+    agentAudio: [{ startMs: 0, endMs: 1_000 }],
+    callerSpeech: [{ startMs: 16_000, endMs: 16_800 }],
+    checkIns: [{ atMs: 16_200, overCaller: true }],
+  });
+  assert.deepEqual(evidence.checkIns, [{ atMs: 16_200, atSilenceMs: 15_200, overCaller: true }]);
+  const gate = evaluateDeadAir({
+    gapsMs: evidence.gapsMs,
+    longestSilenceMs: evidence.longestSilenceMs,
+    checkIns: evidence.checkIns,
+  });
+  assert.equal(gate.status, "FAIL");
+  assert.match(gate.detail, /over caller speech/);
+  assert.match(gate.detail, /no call trace turn merged for this check-in/);
 });
 
 test("free-floor silence: a check-in before 15s of silence FAILs as early", () => {
@@ -2496,6 +2526,53 @@ test("skeleton artifact records dead-air evidence and gates it", () => {
   });
   assert.equal(good.gates.find((g) => g.name === "dead-air")?.status, "PASS");
   assert.deepEqual(good.deadAir.checkIns, [{ atSilenceMs: 15_200, overCaller: false }]);
+});
+
+test("an over-caller check-in FAIL cites the Call trace turn it became", () => {
+  const artifact = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "silence-check-in",
+    runnerStdout: "",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+    traceSessionId: "sess_check",
+    traceExcerpt: [
+      ' 1.00s  VONI    "Hi, this is Anna"  (greeting)',
+      '17.00s  VONI    "Still with me? Take your time."  (reply_create gap 900ms)',
+    ],
+    deadAir: {
+      gapsMs: [],
+      longestSilenceMs: 16_000,
+      checkIns: [{ atMs: 16_200, atSilenceMs: 15_200, overCaller: true }],
+    },
+  });
+  const gate = artifact.gates.find((g) => g.name === "dead-air")!;
+  assert.equal(gate.status, "FAIL");
+  assert.match(gate.detail, /over caller speech/);
+  assert.match(gate.detail, /call trace turn 2 \(sess_check\)/, gate.detail);
+  assert.equal(artifact.deadAir.checkIns[0].trace, "call trace turn 2 (sess_check)");
+});
+
+test("an over-caller check-in with no later VONI row says no turn was merged", () => {
+  const artifact = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "silence-check-in",
+    runnerStdout: "",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+    traceSessionId: "sess_check",
+    traceExcerpt: [' 1.00s  VONI    "Hi, this is Anna"  (greeting)'],
+    deadAir: {
+      gapsMs: [],
+      longestSilenceMs: 16_000,
+      checkIns: [{ atMs: 16_200, atSilenceMs: 15_200, overCaller: true }],
+    },
+  });
+  const gate = artifact.gates.find((g) => g.name === "dead-air")!;
+  assert.equal(gate.status, "FAIL");
+  assert.match(gate.detail, /no call trace turn merged for this check-in/);
 });
 
 const FRESH_INVITE = "Send me an email from your work address with Lime 42 in the subject, and tell me when it's sent.";

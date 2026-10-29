@@ -21,7 +21,7 @@ import {
   MICROPHONE_MUTED_CONTEXT,
   MICROPHONE_UNMUTED_CONTEXT,
 } from "./context";
-import { DEMO_VOICE_IDS } from "@/lib/demo/voni-agent";
+import { DEMO_VOICE_IDS, SILENCE_CHECK_IN_INSTRUCTIONS } from "@/lib/demo/voni-agent";
 import { VOICE_OUTPUT_VOLUME, voicePlaybackGain } from "@/lib/agents/voices";
 
 // Minimal WebSocket shape: updateConfig only touches readyState + send.
@@ -158,6 +158,15 @@ function withDemoTools(
 }
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+/** Poll until a live-session observation lands (the floor ticks on a timer). */
+async function waitUntil(predicate: () => boolean, timeoutMs = 3000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() > deadline) throw new Error("timed out waiting for the session");
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}
 
 function endCall(handle: (message: Record<string, unknown>) => void, callId: string, args: Record<string, unknown> = { closing_line: "Goodbye!" }) {
   handle({ type: "tool.call", call_id: callId, name: "end_call", arguments: args });
@@ -536,6 +545,82 @@ test("filler after a cut is resumed from, never answered, with the exact unheard
   handle({ type: "reply.started", reply_id: "r3" });
   handle({ type: "reply.audio", reply_id: "r3", data: "" });
   assert.equal(played.length, before + 1, "the resumed tail plays");
+  await session.stop();
+});
+
+test("a silence check-in the visitor speaks over is dropped, never resumed, and their point is answered", async () => {
+  const events: string[] = [];
+  const { session, handle, replyCreates, played, drain } = midReply(
+    { judgeBargeIn: async () => "yield" },
+    { onBargeIn: (e) => events.push(e.verdict) },
+  );
+  handle({ type: "reply.done", reply_id: "r1", status: "completed" });
+  drain();
+  // The floor's own 15s timer, shortened for the test only: the yield path
+  // itself uses no new budget, the server's interrupted reply.done does it.
+  session.setSilenceCheckIn({
+    afterMs: 250,
+    instructions: SILENCE_CHECK_IN_INSTRUCTIONS,
+    allowed: () => true,
+  });
+  await waitUntil(() => replyCreates().length === 1);
+  assert.equal(replyCreates()[0].instructions, SILENCE_CHECK_IN_INSTRUCTIONS);
+
+  handle({ type: "reply.started", reply_id: "ci" });
+  handle({ type: "transcript.agent.delta", reply_id: "ci", text: "Still with me? Take your time." });
+  handle({ type: "reply.audio", reply_id: "ci", data: "" });
+  const before = played.length;
+  handle({ type: "input.speech.started" });
+  handle({ type: "reply.done", reply_id: "ci", status: "interrupted" });
+  handle({ type: "input.speech.stopped" });
+  handle({ type: "transcript.user", item_id: "u1", text: "Wait, stop. What does it cost?" });
+  await settle();
+  handle({ type: "reply.started", reply_id: "answer" });
+  handle({ type: "reply.audio", reply_id: "answer", data: "" });
+  await new Promise((resolve) => setTimeout(resolve, 700));
+
+  assert.deepEqual(
+    replyCreates().map((create) => create.instructions),
+    [SILENCE_CHECK_IN_INSTRUCTIONS],
+    "the check-in is never re-said or resumed over the visitor",
+  );
+  assert.deepEqual(events, ["yield"], "a real point keeps the floor");
+  assert.equal(played.length, before + 1, "their point is answered by the server's own turn");
+  await session.stop();
+});
+
+test("a filler over the check-in drops it instead of finishing it", async () => {
+  const events: string[] = [];
+  const { session, handle, replyCreates, drain } = midReply(
+    {},
+    { onBargeIn: (e) => events.push(e.verdict) },
+  );
+  handle({ type: "reply.done", reply_id: "r1", status: "completed" });
+  drain();
+  session.setSilenceCheckIn({
+    afterMs: 250,
+    instructions: SILENCE_CHECK_IN_INSTRUCTIONS,
+    allowed: () => true,
+  });
+  await waitUntil(() => replyCreates().length === 1);
+
+  handle({ type: "reply.started", reply_id: "ci" });
+  handle({ type: "transcript.agent.delta", reply_id: "ci", text: "Still with me? Take your time." });
+  handle({ type: "reply.audio", reply_id: "ci", data: "" });
+  handle({ type: "input.speech.started" });
+  handle({ type: "reply.done", reply_id: "ci", status: "interrupted" });
+  handle({ type: "input.speech.stopped" });
+  // The overlap judge calls this filler: normally the line would resume, but
+  // an optional check-in is never worth finishing over a visitor who spoke.
+  handle({ type: "transcript.user", item_id: "u1", text: "Okaay so" });
+  await new Promise((resolve) => setTimeout(resolve, 700));
+
+  assert.deepEqual(
+    replyCreates().map((create) => create.instructions),
+    [SILENCE_CHECK_IN_INSTRUCTIONS],
+    "the check-in is dropped, not resumed",
+  );
+  assert.deepEqual(events, ["ignore"]);
   await session.stop();
 });
 

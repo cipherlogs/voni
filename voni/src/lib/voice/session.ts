@@ -575,7 +575,7 @@ export class VoiceSession {
   private droppedHeard = "";
   /** The server just stopped the agent for a barge-in: what it had said, and for how long. */
   /** `goodbye`: the cut reply was the goodbye (end_call already signaled). */
-  private bargeIn: { heard: string; rest: string; speakingMs: number; goodbye?: boolean } | null = null;
+  private bargeIn: { heard: string; rest: string; speakingMs: number; goodbye?: boolean; droppable?: boolean } | null = null;
   private noWordsTimer: ReturnType<typeof setTimeout> | null = null;
   /** The next reply is a goodbye resumed after a noise cut: it re-arms the hang-up. */
   private goodbyeResumePending = false;
@@ -1076,6 +1076,7 @@ export class VoiceSession {
         }
         this.toolCoordinator?.onReplyDone(interrupted);
         this.floor.replyDone(msg.status === "interrupted");
+        if (this.bargeIn) this.bargeIn.droppable = this.floor.cutDroppable();
         this.handlers.onReplyDone?.({ replyId: msg.reply_id ?? null, interrupted });
         this.setState("listening");
         if (this.pendingEndCall && !interrupted) {
@@ -1474,7 +1475,14 @@ export class VoiceSession {
    * with only a few words left says nothing: the caller got the point. A
    * cut goodbye always finishes, so the call still ends after it.
    */
-  private resumeAfterBargeIn(cut: { rest: string; goodbye?: boolean }, text: string, opts: { now?: boolean } = {}): void {
+  private resumeAfterBargeIn(
+    cut: { rest: string; goodbye?: boolean; droppable?: boolean },
+    text: string,
+    opts: { now?: boolean } = {},
+  ): void {
+    // An optional line (the silence check-in) is never worth resuming once
+    // the visitor has taken the floor, whatever the overlap judge decided.
+    if (cut.droppable) return;
     const rest = cut.rest.trim();
     const short = rest.split(/\s+/).filter(Boolean).length <= RESUME_MIN_WORDS;
     if (cut.goodbye && rest && short) {
