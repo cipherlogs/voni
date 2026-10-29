@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "voice": "giovanni",
+  "locale": "it",
+  "recording": {
+    "voice": "giovanni",
+    "locale": "it",
+    "asset": "public/voices/giovanni.mp3",
+    "url": "/voices/giovanni.mp3",
+    "sha256": "b2c1754a0377b3a8833ca7b843de48b31d295eead691777d6e035268bfffbafa",
+    "line": "Ciao, sono Voni! Proviamo una cosa forte: ti mostro cosa so fare mentre parliamo. Pronti?",
+    "lineSha256": "b7851e240bccefa1ebf60b9cbeabfccec6926cc3b1b3b3b2131431bf01d5b096",
+    "durationMs": 7128,
+    "sampleRate": 24000,
+    "channels": 1,
+    "bitrateKbps": 160,
+    "source": "audition-clip"
+  },
+  "ballot": {
+    "axes": [
+      "timbre",
+      "accent",
+      "languageNaturalness"
+    ],
+    "scale": {
+      "min": 1,
+      "max": 5,
+      "pass": 5
+    },
+    "reasonRequiredBelow": 5
+  },
+  "verdict": null,
+  "generatedOn": "2026-10-29",
+  "source": "evidence/audition-clips/clips.json"
+}
