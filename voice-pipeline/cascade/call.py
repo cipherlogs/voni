@@ -16,9 +16,14 @@ in the transport, so this module cannot become a second protocol.
 :class:`CallStream` is the turn layer's seam: the stream start, each STT
 event, a context update, the drain and the turn count. The orchestrator tickets
 implement it; this module only orders the call around it. The greeting is not
-part of the turn layer: the lifecycle speaks the body's greeting through the
-opened voice (ticket 77) before the stream starts, so no user audio can be
-processed ahead of it.
+part of the turn layer: the lifecycle starts the body's greeting through the
+opened voice (ticket 77) only after the synthesis session acknowledged
+``Begin``, and the opening is a listening window. Caller frames reach STT and
+provider events are buffered while the greeting sounds; a ``speechStart`` or a
+taking-the-floor partial cuts the greeting with ``Cancel`` (ticket 79) so the
+caller's turn wins, and nothing reaches the turn layer before that boundary. A
+greeting synthesis failure ends the call with the voice's own trigger on the
+end message (ticket 80); there is no silent opening.
 
 Nothing unbounded sits in the audio path. The drain, the event-pump stop and
 every vendor close read ``deploy.drain_max_wait_ms``; the greeting's synthesis
@@ -63,11 +68,13 @@ from typing import Any, Protocol
 from cascade.body_map import BodyFieldError, CascadeBody, adapt_body
 from cascade.eligibility import EligibilityDecision
 from cascade.envelope import EnvelopeError, verify_envelope
-from cascade.greeting import CallGreeting, GreetingOutcome
+from cascade.greeting import CallGreeting, GreetingOutcome, GreetingPlayback
+from cascade.meta_stt import SpeechPartial, SpeechStart
 from cascade.thresholds import ThresholdError, require_bound
 from cascade.voice_binding import VoiceBindingError
 from metrics import TimingLedger
 from providers import SentenceAudio
+from turns import is_backchannel
 
 _log = logging.getLogger(__name__)
 
@@ -331,21 +338,47 @@ class NullStream:
 
 
 class CallFailure(RuntimeError):
-    """A named call-ending failure: no anonymous ``Exception`` on the wire."""
+    """A named call-ending failure: no anonymous ``Exception`` on the wire.
 
-    def __init__(self, *, name: str, stage: str, message: str) -> None:
+    ``trigger`` is the provider's own classified verdict (leg, code, class and
+    reason) when the failure carries one. A greeting synthesis failure is the
+    voice's failure, so the end message names the voice trigger rather than
+    reducing it to the exception's type name.
+    """
+
+    def __init__(
+        self,
+        *,
+        name: str,
+        stage: str,
+        message: str,
+        trigger: Mapping[str, Any] | None = None,
+    ) -> None:
         self.name = name
         self.stage = stage
         self.message = message
+        self.trigger = dict(trigger) if trigger is not None else None
         super().__init__(message)
 
     @classmethod
     def from_exception(cls, stage: str, error: BaseException) -> "CallFailure":
-        """Keep the real exception's name, so a caller can act on it."""
-        return cls(name=type(error).__name__, stage=stage, message=str(error))
+        """Keep the real exception's name and provider verdict, if any."""
+        return cls(
+            name=type(error).__name__,
+            stage=stage,
+            message=str(error),
+            trigger=_trigger_document(error),
+        )
 
-    def to_document(self) -> dict[str, str]:
-        return {"name": self.name, "stage": self.stage, "message": self.message}
+    def to_document(self) -> dict[str, Any]:
+        document: dict[str, Any] = {
+            "name": self.name,
+            "stage": self.stage,
+            "message": self.message,
+        }
+        if self.trigger is not None:
+            document["trigger"] = self.trigger
+        return document
 
 
 @dataclass(frozen=True)
@@ -703,6 +736,7 @@ class CallLifecycle:
         bounds: Mapping[str, float] | None = None,
         cost_meter: CostMeter | None = None,
         eligibility: EligibilityDecision | None = None,
+        chime: Callable[[], None] | None = None,
     ) -> None:
         self._message = message
         self._secret = secret
@@ -739,6 +773,12 @@ class CallLifecycle:
         self._event_failure: CallFailure | None = None
         self._verified: CascadeBody | None = None
         self._greeting: GreetingOutcome | None = None
+        # The connected chime's trigger (ticket 78): the client's earcon fires
+        # when the greeting's first audible sample reaches it. The call records
+        # the trigger and passes it on; it never schedules or waits for it.
+        self._chime = chime
+        self.chime_calls = 0
+        self.chime_at: float | None = None
 
     # -- verification -----------------------------------------------------
 
@@ -814,7 +854,7 @@ class CallLifecycle:
             )
 
         try:
-            self._greeting = await self._speak_greeting(body, opened)
+            greeting = self._start_greeting(body, opened)
         except asyncio.CancelledError:
             raise
         except Exception as error:
@@ -829,46 +869,167 @@ class CallLifecycle:
                 missing_reason="the call ended before this leg opened",
             )
 
-        try:
-            await self._stream.start()
-        except asyncio.CancelledError:
-            raise
-        except Exception as error:
-            failure = CallFailure.from_exception("stream", error)
-            drain = await self._close_all(opened, event_task=None)
-            return await self._finish(
-                ended_by="error",
-                opened=opened,
-                error=failure,
-                drain=drain,
-                eligibility=self._eligibility_document(),
-                missing_reason="the call ended before this leg opened",
-            )
+        # The opening is a window, not a pause: the caller's frames reach STT
+        # and the provider's events are read while the greeting sounds, so an
+        # interruption is heard at the same moment it happens. Nothing reaches
+        # the turn layer until the greeting has finished or been cut; the
+        # buffer below is replayed in arrival order at that boundary.
+        buffered_events: list[Any] = []
+        buffered_contexts: list[str] = []
+        barge = asyncio.Event()
+        barge_causes: list[str] = []
+        stop_reasons: list[str] = []
+        delivery_lock = asyncio.Lock()
+        streaming = False
+        stream_failure: CallFailure | None = None
 
-        event_task = asyncio.ensure_future(self._pump(speech.session))
+        async def deliver(event: Any) -> None:
+            async with delivery_lock:
+                if streaming:
+                    await self._stream.event(event)
+                else:
+                    buffered_events.append(event)
+
+        async def pump() -> None:
+            try:
+                async for event in speech.session.events():
+                    if (
+                        greeting is not None
+                        and not greeting.done
+                        and not barge.is_set()
+                    ):
+                        cause = _greeting_barge_cause(event)
+                        if cause is not None:
+                            barge_causes.append(cause)
+                            barge.set()
+                    await deliver(event)
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                self._event_failure = CallFailure.from_exception("event", error)
+
+        async def receive() -> None:
+            nonlocal stream_failure
+            try:
+                while True:
+                    item = await self._transport.receive()
+                    if item is None:
+                        stop_reasons.append("dropped")
+                        return
+                    if isinstance(item, BrowserStop):
+                        stop_reasons.append("stop")
+                        return
+                    if isinstance(item, AudioFrame):
+                        self._ledger.mark("audio_in")
+                        await speech.session.send_audio(item.pcm)
+                    elif isinstance(item, ContextUpdate):
+                        if streaming:
+                            await self._stream.context(item.text)
+                        else:
+                            buffered_contexts.append(item.text)
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                stream_failure = CallFailure.from_exception("stream", error)
+                stop_reasons.append("error")
+
+        greeting_task = greeting.task if greeting is not None else None
+        greeting_gate = (
+            asyncio.ensure_future(self.run_bounded("greeting", lambda: greeting_task))
+            if greeting_task is not None
+            else None
+        )
+        event_task = asyncio.ensure_future(pump())
+        receive_task = asyncio.ensure_future(receive())
+        barge_task = asyncio.ensure_future(barge.wait())
+
         ended_by = "dropped"
         failure: CallFailure | None = None
+        stage = "greeting"
         try:
-            while True:
-                item = await self._transport.receive()
-                if item is None:
-                    ended_by = "dropped"
+            boundary = [
+                task
+                for task in (greeting_task, greeting_gate, receive_task, barge_task)
+                if task is not None
+            ]
+            while not (
+                barge.is_set()
+                or receive_task.done()
+                or (greeting_gate is not None and greeting_gate.done())
+                or (greeting_task is not None and greeting_task.done())
+            ):
+                pending = [task for task in boundary if not task.done()]
+                if not pending:
                     break
-                if isinstance(item, BrowserStop):
-                    ended_by = "stop"
-                    break
-                if isinstance(item, AudioFrame):
-                    self._ledger.mark("audio_in")
-                    await speech.session.send_audio(item.pcm)
-                elif isinstance(item, ContextUpdate):
-                    await self._stream.context(item.text)
+                await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+
+            browser_ended_first = (
+                greeting is not None
+                and receive_task.done()
+                and not barge.is_set()
+                and not (greeting_gate is not None and greeting_gate.done())
+                and not (greeting_task is not None and greeting_task.done())
+            )
+            if browser_ended_first:
+                # The socket went away mid-opening. If the greeting has not
+                # sounded at all, its own named bound still decides: a stop
+                # must not be what hides a line that was never flushed.
+                if greeting is not None and greeting.frames == 0:
+                    assert greeting_gate is not None
+                    result, outcome = await greeting_gate
+                    if not outcome.ok:
+                        assert outcome.error is not None
+                        raise outcome.error
+                    self._greeting = result
+                else:
+                    if greeting is not None:
+                        await greeting.stop()
+                    ended_by = stop_reasons[0] if stop_reasons else "dropped"
+            else:
+                if greeting is not None:
+                    if barge.is_set() and not greeting.done:
+                        self._greeting = await greeting.cancel(barge_causes[0])
+                        await asyncio.gather(greeting_task, return_exceptions=True)
+                    elif greeting_gate is not None:
+                        result, outcome = await greeting_gate
+                        if not outcome.ok:
+                            assert outcome.error is not None
+                            raise outcome.error
+                        self._greeting = result
+                    else:
+                        self._greeting = await greeting_task
+                stage = "stream"
+                await self._stream.start()
+                async with delivery_lock:
+                    for event in buffered_events:
+                        await self._stream.event(event)
+                    buffered_events.clear()
+                    for text in buffered_contexts:
+                        await self._stream.context(text)
+                    buffered_contexts.clear()
+                    streaming = True
+                stage = "call"
+                await receive_task
+                ended_by = stop_reasons[0] if stop_reasons else "dropped"
+                if stream_failure is not None:
+                    ended_by = "error"
+                    failure = stream_failure
         except asyncio.CancelledError:
             raise
         except Exception as error:
+            failure = _failure(stage, error)
             ended_by = "error"
-            failure = CallFailure.from_exception("stream", error)
 
-        drain = await self._close_all(opened, event_task=event_task)
+        for task in (barge_task, greeting_gate):
+            if task is not None:
+                task.cancel()
+        await asyncio.gather(
+            *[task for task in (barge_task, greeting_gate) if task is not None],
+            return_exceptions=True,
+        )
+        drain = await self._close_all(
+            opened, event_task=event_task, receive_task=receive_task
+        )
         if self._event_failure is not None:
             if failure is None:
                 failure = self._event_failure
@@ -914,19 +1075,22 @@ class CallLifecycle:
         """A provider leg opened a new session; the call seq keeps going."""
         return self.sequence.reconnect(epoch=epoch)
 
-    async def _speak_greeting(
+    def _start_greeting(
         self, body: CascadeBody, opened: list[OpenedLeg]
-    ) -> GreetingOutcome | None:
-        """Say the body's greeting before the turn layer may process any audio.
+    ) -> GreetingPlayback | None:
+        """Start the body's greeting before the turn layer processes any audio.
 
         A body without a greeting is an intentional silent open and is recorded
         as such. A body with a greeting but no audio sink would open silently,
-        so it fails by name instead of dropping the line.
+        so it fails by name instead of dropping the line. The returned playback
+        runs under the greeting's named bound (``tts.idle_timeout_ms``) and can
+        be cut with the synthesis session's ``Cancel`` (ticket 79).
         """
         if not body.has_greeting:
-            return GreetingOutcome.silent(
+            self._greeting = GreetingOutcome.silent(
                 "the body has no greeting; the call opens silently by design"
             )
+            return None
         if self._send_audio is None:
             raise CallFailure(
                 name="NoAudioSink",
@@ -944,31 +1108,26 @@ class CallLifecycle:
             await self.emit_audio(audio, kind="greeting")
 
         greeting = CallGreeting(
-            voice=voice, ledger=self._ledger, sink=greeting_audio
+            voice=voice,
+            ledger=self._ledger,
+            sink=greeting_audio,
+            chime=self._connected_chime,
         )
-        result, outcome = await self.run_bounded(
-            "greeting", lambda: greeting.speak(body)
-        )
-        if not outcome.ok:
-            assert outcome.error is not None
-            raise outcome.error
-        return result
+        return greeting.start(body)
 
-    async def _pump(self, session: Any) -> None:
-        """Forward provider events to the turn layer until the stream ends."""
-        try:
-            async for event in session.events():
-                await self._stream.event(event)
-        except asyncio.CancelledError:
-            raise
-        except Exception as error:
-            self._event_failure = CallFailure.from_exception("event", error)
+    def _connected_chime(self) -> None:
+        """The greeting's first audible sample: fire the connected chime once."""
+        self.chime_calls += 1
+        self.chime_at = self._clock()
+        if self._chime is not None:
+            self._chime()
 
     async def _close_all(
         self,
         opened: list[OpenedLeg],
         *,
         event_task: asyncio.Future | None,
+        receive_task: asyncio.Future | None = None,
         drain_stream: bool = True,
     ) -> DrainOutcome:
         """Drain the turn layer, then close every opened leg under the bound.
@@ -982,11 +1141,13 @@ class CallLifecycle:
             else None
         )
         by_leg = {leg.leg: leg for leg in opened}
-        # Stop the event pump before closing the speech session: one reader of
-        # the vendor socket at a time, and no read left running after drain.
-        if event_task is not None:
-            candidate = await self._stop_task(event_task)
-            failure = failure or candidate
+        # Stop the browser reader and the event pump before closing the speech
+        # session: one reader of the vendor socket at a time, and no read left
+        # running after drain.
+        for task in (receive_task, event_task):
+            if task is not None:
+                candidate = await self._stop_task(task)
+                failure = failure or candidate
         speech = by_leg.get("stt")
         if speech is not None:
             closer = _closer(speech.session)
@@ -1203,12 +1364,46 @@ class CallLifecycle:
         return end
 
 
+def _greeting_barge_cause(event: Any) -> str | None:
+    """Why one provider event takes the floor away from a sounding greeting.
+
+    A ``speechStart`` is enough during the opening: the caller has begun a real
+    turn over the agent's first line, and the greeting has no establishment
+    window to protect. A partial also takes the floor unless every word is
+    filler (``mm-hmm`` is a backchannel, not an interruption).
+    """
+    if isinstance(event, SpeechStart):
+        return "speech_start"
+    if isinstance(event, SpeechPartial):
+        text = getattr(event, "text", "") or ""
+        if text.strip() and not is_backchannel(text):
+            return "partial"
+    return None
+
+
 async def _invoke(factory: Callable[[], Any]) -> Any:
     """Call one step and await its result when it is awaitable."""
     result = factory()
     if inspect.isawaitable(result):
         result = await result
     return result
+
+
+def _trigger_document(error: BaseException) -> dict[str, Any] | None:
+    """A provider verdict as the end message's trigger, or ``None``."""
+    verdict = getattr(error, "verdict", None)
+    if verdict is None:
+        return None
+    leg = getattr(verdict, "leg", None)
+    failure_class = getattr(verdict, "failure_class", None)
+    if leg is None or failure_class is None:
+        return None
+    return {
+        "leg": leg,
+        "code": getattr(verdict, "code", None),
+        "class": getattr(failure_class, "value", str(failure_class)),
+        "reason": getattr(verdict, "reason", ""),
+    }
 
 
 def _failure(stage: str, error: BaseException) -> CallFailure:
