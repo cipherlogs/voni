@@ -7,6 +7,7 @@ import { join, relative } from "node:path";
 import { spawnSync } from "node:child_process";
 import { DEMO_VOICE_IDS } from "../src/lib/demo/voni-agent";
 import { SUITE_SCENARIOS } from "../src/lib/demo/scenario-names";
+import { pcm16Wav } from "../src/lib/demo/reference-render";
 
 const SCRIPT = new URL("./score-demo.mts", import.meta.url).pathname;
 const GATE_BEATS = [
@@ -73,6 +74,103 @@ test("dry run writes an artifact with required keys and prints a gate table", ()
   assert.match(result.stdout, /reply-gap/);
   assert.match(result.stdout, /email-invite/);
   assert.match(result.stdout, /PASS|INFO/);
+});
+
+/** A 1 kHz PCM16 WAV at a known RMS, the level analyser's conformance signal. */
+function writeToneWav(path: string, rmsDbfs: number): void {
+  const sampleRate = 24_000;
+  const frames = sampleRate;
+  const pcm = Buffer.alloc(frames * 2);
+  const amplitude = 32_768 * 10 ** (rmsDbfs / 20) * Math.SQRT2;
+  for (let frame = 0; frame < frames; frame++) {
+    const value = Math.round(amplitude * Math.sin((2 * Math.PI * 1000 * frame) / sampleRate));
+    pcm.writeInt16LE(Math.max(-32768, Math.min(32767, value)), frame * 2);
+  }
+  writeFileSync(path, pcm16Wav(pcm, sampleRate, 1));
+}
+
+test("--reference/--delivered measure the level leg into the artifact", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const reference = join(dir, "reference.wav");
+  const delivered = join(dir, "delivered.wav");
+  writeToneWav(reference, -23.1);
+  writeToneWav(delivered, -23.2);
+  const out = join(dir, "score.json");
+  const result = run(
+    [
+      "--dry-run",
+      "--voice",
+      DEMO_VOICE_IDS[0],
+      "--reference",
+      reference,
+      "--delivered",
+      delivered,
+      "--out",
+      out,
+    ],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    loudness: {
+      measured: {
+        status: string;
+        detail: string;
+        referenceFile: string | null;
+        deliveredFile: string | null;
+      };
+    };
+    gates: Array<{ name: string; status: string; detail: string }>;
+  };
+  assert.equal(artifact.loudness.measured.status, "PASS", artifact.loudness.measured.detail);
+  assert.equal(artifact.loudness.measured.referenceFile, reference);
+  assert.equal(artifact.loudness.measured.deliveredFile, delivered);
+  const timbre = artifact.gates.find((gate) => gate.name === "timbre-probes");
+  assert.match(timbre?.detail ?? "", /measured timbre PASS/, "the measured result reached the gate");
+});
+
+test("a run without measured captures keeps the level leg INFO", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const out = join(dir, "score.json");
+  const result = run(
+    ["--dry-run", "--voice", DEMO_VOICE_IDS[0], "--out", out],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    loudness: { measured: { status: string } };
+    gates: Array<{ name: string; status: string; detail: string }>;
+  };
+  assert.equal(artifact.loudness.measured.status, "INFO");
+  const timbre = artifact.gates.find((gate) => gate.name === "timbre-probes");
+  assert.equal(timbre?.status, "INFO", timbre?.detail);
+});
+
+test("an unreadable measured capture is a named error and writes no artifact", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const reference = join(dir, "reference.wav");
+  const delivered = join(dir, "not-a-wav.bin");
+  writeToneWav(reference, -23.1);
+  writeFileSync(delivered, "this is not audio");
+  const out = join(dir, "score.json");
+  const result = run(
+    [
+      "--dry-run",
+      "--voice",
+      DEMO_VOICE_IDS[0],
+      "--reference",
+      reference,
+      "--delivered",
+      delivered,
+      "--out",
+      out,
+    ],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.notEqual(result.status, 0, "an unreadable capture cannot produce a score");
+  assert.match(result.stderr, /delivered capture unreadable/);
+  assert.match(result.stderr, /not-a-wav\.bin/);
+  assert.equal(existsSync(out), false, "no artifact is written from an unreadable capture");
 });
 
 const EVAL_SHIM = `#!/usr/bin/env node

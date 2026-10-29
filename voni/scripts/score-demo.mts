@@ -49,7 +49,9 @@
  *                           [--out scoreboard-runs/score-<ts>-<voice>.json] [--dry-run]
  *                           [--prior <path>]
  *                           [--timing-lock /tmp/voni-demo-timing.lock]
- *                           [--trace-session sess_...] [--trace-beat greeting-cut] [--probe-json probes.json] [--recording <sha256> | --recording-file <path>] [--rate rater:timbre,accent[,naturalness] ...] [--reviewer-pack evidence/reviewer-packs/<voice>.json]
+ *                           [--trace-session sess_...] [--trace-beat greeting-cut] [--probe-json probes.json]
+ *                           [--reference <reference.wav> --delivered <delivered.wav>]
+ *                           [--recording <sha256> | --recording-file <path>] [--rate rater:timbre,accent[,naturalness] ...] [--reviewer-pack evidence/reviewer-packs/<voice>.json]
  *                           [--gap beat=ms ...]
  *                           [--filler-text "Okaay so" --filler-cut-ms 320 ...]
  *                           [--cut-ms <n> | --cut-never] [--cut-verdict <v>] [--cut-answered]
@@ -190,7 +192,14 @@
  * --probe-json carries the session onAudioProbe counts plus the optional
  * qa-voice-session agent-channel PCM analysis; it drives the timbre-probes
  * gate (any clip, pop, jump, underrun, or input-drop FAILs the gate but the
- * artifact is still written). --rate files blind 1-5 human ballots on three
+ * artifact is still written). --reference <wav> and --delivered <wav> are the
+ * two measured captures the gate's six axes compare: the reference render of
+ * the line the agent speaks, and the audio the caller actually received
+ * (e.g. `npm run voice:reference -- --voice lola` plus the browser delivered
+ * capture). Both are decoded through `MeasuredLevelFile` before the runner
+ * starts; an unreadable file is a named error and no artifact is written, and
+ * a run without them keeps the measured leg INFO (never a machine-only PASS).
+ * --rate files blind 1-5 human ballots on three
  * axes — `rater:timbre,accent[,naturalness]` — all bound to one shared golden
  * recording via --recording or --recording-file; auto timbre checks must pass
  * before ballots count, and a ballot without a recording is rejected. The
@@ -328,6 +337,7 @@ import {
   gateProducerSummary,
   producersFor,
 } from "../src/lib/demo/gate-producers";
+import { readMeasuredLevelInput } from "../src/lib/demo/measured-captures";
 import { judgeOverlap } from "../src/lib/voice/barge-in";
 import { EN_RECOGNITION } from "../src/lib/voice/recognition";
 import { acquireTimingLock, DEFAULT_TIMING_LOCK_PATH } from "../src/lib/demo/timing-lock";
@@ -1311,6 +1321,16 @@ async function main(): Promise<void> {
     subject,
     arg("--reviewer-pack", ""),
   );
+  // A real run earns the timbre gate by measuring the two captures the caller
+  // received: the reference render of the line and the Delivered WAV. Both
+  // files are decoded before any runner spawn or artifact path is opened; an
+  // unreadable file is a named error, never a half-measured score. Without
+  // them the measured leg stays INFO (a human/ballot gate does not fail-close
+  // the whole run for a missing capture).
+  const measuredLevel = readMeasuredLevelInput({
+    ...(arg("--reference", "") ? { reference: resolve(arg("--reference", "")) } : {}),
+    ...(arg("--delivered", "") ? { delivered: resolve(arg("--delivered", "")) } : {}),
+  });
 
   /** Per-scenario stdout: every evidence parser reads only its own producer. */
   const stdoutByScenario = new Map<string, string>();
@@ -1773,6 +1793,7 @@ async function main(): Promise<void> {
     probes: timbreProbes,
     agentChannel,
     humanRatings,
+    ...(measuredLevel ? { measuredLevel } : {}),
     dryRun,
     evalError: evalSection.evalError,
     ...(greetingCut ? { greetingCutEvidencePresent: true } : {}),

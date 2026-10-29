@@ -75,12 +75,36 @@ declare why there (`run`, `operator`, `manual`) instead of staying silent.
 | double-talk | over-talk `DOUBLE TALK` | `doubleTalk` |
 | dead-air | silence-check-in `SILENCE TIMELINE` | `deadAir` |
 | end-call-drain | bye-audio + free-gate coverage, then both hang-up scenarios | `endCallDrain` |
-| timbre-probes | `--probe-json` / session evidence | `probes`, `loudness` |
+| timbre-probes | `--probe-json` / session evidence + `--reference`/`--delivered` measured captures | `probes`, `loudness` |
 | accent-human | `--rate` + `--recording` | `humanRatings`, `humanReview` |
 | phone-checklist, talk-hold-pinned | manual/external | informational rows only |
 
 Thresholds live only in `scoreboard-budgets.ts` and its JSON record. Do not
-edit a budget to pass; fix the call or amend the spec first.
+edit a budget to pass; fix the call or amend the spec first. The phone bridge
+reads the same JSON record at runtime (`VONI_SCOREBOARD_BUDGETS_JSON` overrides
+its path in a deployment without the `voni/` tree), so its drain constants
+cannot drift from the browser's.
+
+## Measured timbre captures
+
+The timbre gate's six measured axes need the reference render of the line and
+the Delivered audio the caller received. Both are saved WAVs decoded through
+`MeasuredLevelFile` before the runner starts:
+
+```
+cd voni
+npm run voice:reference -- --voice lola          # writes .voice-references/lola-*.wav
+npm run scoreboard:demo -- --voice lola \
+  --reference .voice-references/<reference>.wav \
+  --delivered <delivered-capture>.wav \
+  --probe-json <probes.json> --rate ...
+```
+
+`--delivered` is the browser delivered capture (`?delivercapture=1`) or the
+phone/agent-channel WAV. A run without the pair keeps the measured leg INFO;
+an unreadable file fails by name before any artifact is written. A measured
+PASS still needs the agent-channel PCM evidence (`--probe-json`) and the
+weighted ballot: a missing channel is INFO, never a PASS.
 
 ## Subject matrix ordering (W5, ticket 78)
 
