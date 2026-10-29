@@ -45,6 +45,13 @@ in flight is cancelled and the Locale's hold line is spoken instead, while
 history still records the assistant message verbatim so the model's next request
 sees what it actually said.
 
+Every failure to produce a route answer is a tool result too (ticket 84). A
+non-2xx status, a timeout, an unreadable body, a malformed body or a dropped
+connection becomes a :class:`ToolFailure` with the matching call id and a
+recoverable/terminal classification, and the same turn continues. A timed-out
+or dropped hop is *indeterminate*: the side effect may have happened, so it is
+recorded as such and the turn's memo stops it being retried automatically.
+
 ``end_call`` is not a tool. It is a pure signal (:class:`EndCallSignal`): no
 request is made and nothing speakable follows it. The closing line and the
 hangup are ticket 87's.
@@ -57,7 +64,8 @@ import inspect
 import json
 import os
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from enum import Enum
 from types import MappingProxyType
 from typing import Any
 from urllib.parse import quote
@@ -90,6 +98,14 @@ TOOL_TIMEOUT_BOUND = "tool.timeout_ms"
 
 #: Call control, never an HTTP tool.
 END_CALL_TOOL = "end_call"
+
+#: Stable failure codes a :class:`ToolFailure` carries (ticket 84). They are
+#: what the model reads and what an artifact can count; the prose stays out.
+TOOL_HTTP_ERROR = "tool_http_error"
+TOOL_TIMEOUT = "tool_timeout"
+TOOL_UNREADABLE_BODY = "tool_unreadable_body"
+TOOL_MALFORMED_RESULT = "tool_malformed_result"
+TOOL_TRANSPORT_ERROR = "tool_transport_error"
 
 #: The only context kind a cascade call sends. A test context is the app's
 #: own dry-run path, not something a live call may claim.
@@ -244,13 +260,24 @@ class ToolRouteError(ToolHopError):
     """The route answered with a status or body the hop cannot read.
 
     Ticket 84 turns this into a failed tool result; this module only names it,
-    with the tool, the call and the status, and never the secret.
+    with the tool, the call, the status and a stable code, and never the
+    secret. ``status`` is absent for a body the hop cannot parse.
     """
 
-    def __init__(self, name: str, call_id: str, reason: str) -> None:
+    def __init__(
+        self,
+        name: str,
+        call_id: str,
+        reason: str,
+        *,
+        code: str = TOOL_HTTP_ERROR,
+        status: int | None = None,
+    ) -> None:
         self.name = name
         self.call_id = call_id
         self.reason = reason
+        self.code = code
+        self.status = status
         super().__init__(f'tool "{name}" for call "{call_id}": {reason}')
 
 
@@ -263,6 +290,7 @@ class ToolTimeout(ToolRouteError):
             call_id,
             f"no response within {timeout_ms:g} ms ({TOOL_TIMEOUT_BOUND}); the "
             "hop is bounded so the call never hangs on a tool",
+            code=TOOL_TIMEOUT,
         )
         self.timeout_ms = timeout_ms
 
@@ -424,10 +452,11 @@ class ToolResult:
     """The route's answer, ready to become the model's ``role: "tool"`` message.
 
     The payload is carried verbatim: a ``{"ok": false, "error": …}`` answer is
-    a tool result the model can speak, not an outage. Transport failures never
-    reach this type (ticket 84 owns their mapping). ``replayed`` is true only
-    when this outcome came from the turn's memo instead of the route (ticket
-    83); the payload is then the first call's, re-addressed to this call id.
+    a tool result the model can speak, not an outage. A transport failure is
+    the :class:`ToolFailure` subclass, which also answers the call but says it
+    failed (ticket 84). ``replayed`` is true only when this outcome came from
+    the turn's memo instead of the route (ticket 83); the payload is then the
+    first call's, re-addressed to this call id.
     """
 
     name: str
@@ -459,6 +488,73 @@ class ToolResult:
     def tool_message(self) -> dict[str, Any]:
         """The ``role: "tool"`` message answering this call, by call id."""
         return tool_result_message(self.tool_call_id, self.content())
+
+
+class ToolFailureClass(str, Enum):
+    """Whether the same call could succeed if it were tried again.
+
+    ``RECOVERABLE`` is a transient condition (a 5xx, a timeout, a dropped
+    connection, an unreadable body): the model may try again or tell the caller.
+    ``TERMINAL`` is a condition retrying cannot fix (a 4xx refusal other than
+    429/408): the tool call itself is unanswerable.
+
+    Neither classification ends the call: both become a tool result, because a
+    failed tool is something the model can speak about (ticket 84).
+    """
+
+    RECOVERABLE = "recoverable"
+    TERMINAL = "terminal"
+
+
+@dataclass(frozen=True)
+class ToolFailure(ToolResult):
+    """A tool result that says the tool failed, and why (ticket 84).
+
+    It is a :class:`ToolResult` on purpose: the vendor answers a tool call with
+    exactly one ``role: "tool"`` message, so an outage and a refusal differ in
+    payload and classification, never in message shape. ``indeterminate`` is
+    true when the request may have reached the route and applied its side
+    effect (a timeout or a dropped connection): it is recorded as unknown, and
+    the turn's memo stops it being retried behind the caller's back.
+    """
+
+    code: str = ""
+    classification: ToolFailureClass = ToolFailureClass.RECOVERABLE
+    indeterminate: bool = False
+    status: int | None = None
+
+    @classmethod
+    def from_reason(
+        cls,
+        *,
+        name: str,
+        tool_call_id: str,
+        code: str,
+        reason: str,
+        classification: ToolFailureClass = ToolFailureClass.RECOVERABLE,
+        indeterminate: bool = False,
+        status: int | None = None,
+    ) -> "ToolFailure":
+        """Build the failure result the model reads and the turn records."""
+        payload: dict[str, Any] = {
+            "ok": False,
+            "failure": True,
+            "error": reason,
+            "code": code,
+            "classification": classification.value,
+            "indeterminate": indeterminate,
+        }
+        if status is not None:
+            payload["status"] = status
+        return cls(
+            name=name,
+            tool_call_id=tool_call_id,
+            payload=payload,
+            code=code,
+            classification=classification,
+            indeterminate=indeterminate,
+            status=status,
+        )
 
 
 @dataclass(frozen=True)
@@ -497,6 +593,11 @@ class DeniedCall:
     def tool_call_id(self) -> str:
         """The id the call carried; empty when none was supplied."""
         return self.denial.call_id
+
+    @property
+    def classification(self) -> ToolFailureClass:
+        """A missing identity cannot be fixed by retrying the same call."""
+        return ToolFailureClass.TERMINAL
 
     def __post_init__(self) -> None:
         if self.denial.code != TOOL_CALL_ID_MISSING:
@@ -831,10 +932,25 @@ class ToolExecutor:
                 timeout=timeout_ms / 1000.0,
             )
         except asyncio.TimeoutError as error:
-            raise ToolTimeout(call.name, self._call_id, timeout_ms) from error
-        result = ToolResult(
-            name=call.name, tool_call_id=call.call_id, payload=payload
-        )
+            result: ToolResult = _timeout_failure(
+                ToolTimeout(call.name, self._call_id, timeout_ms), call
+            )
+        except ToolRouteError as error:
+            result = _route_failure(error, call)
+        except OSError as error:
+            # The POST may have reached the route before the socket died: the
+            # side effect is unknown, never "did not happen".
+            result = ToolFailure.from_reason(
+                name=call.name,
+                tool_call_id=call.call_id,
+                code=TOOL_TRANSPORT_ERROR,
+                reason=f"the route connection failed after the request: {error}",
+                indeterminate=True,
+            )
+        else:
+            result = ToolResult(
+                name=call.name, tool_call_id=call.call_id, payload=payload
+            )
         if self._memo is not None:
             self._memo.put(call.name, call.arguments, result)
         return result
@@ -859,7 +975,10 @@ class ToolExecutor:
                 chunks = [chunk async for chunk in response.iter_bytes()]
         if status < 200 or status >= 300:
             raise ToolRouteError(
-                request.name, self._call_id, f"the route answered HTTP {status}"
+                request.name,
+                self._call_id,
+                f"the route answered HTTP {status}",
+                status=status,
             )
         return _payload(request.name, self._call_id, b"".join(chunks))
 
@@ -872,14 +991,50 @@ class ToolExecutor:
         return secret
 
 
-def _replayed(result: ToolResult, call: ToolCallRequest) -> ToolResult:
-    """The memo's result re-addressed to the call that repeated it (ticket 83)."""
-    return ToolResult(
-        name=result.name,
+def _classification_for(status: int | None) -> ToolFailureClass:
+    """Whether a status describes a condition a retry could change.
+
+    408 and 429 are the 4xx statuses that ask for another attempt; every other
+    4xx is a refusal of the call as asked, and 5xx is the route's own failure.
+    A body failure has no status and is recoverable: the next read may work.
+    """
+    if status is None:
+        return ToolFailureClass.RECOVERABLE
+    if status in (408, 429) or status >= 500:
+        return ToolFailureClass.RECOVERABLE
+    return ToolFailureClass.TERMINAL
+
+
+def _route_failure(error: ToolRouteError, call: ToolCallRequest) -> ToolFailure:
+    """The named route failure as the tool result the model reads."""
+    return ToolFailure.from_reason(
+        name=call.name,
         tool_call_id=call.call_id,
-        payload=result.payload,
-        replayed=True,
+        code=error.code,
+        reason=error.reason,
+        classification=_classification_for(error.status),
+        status=error.status,
     )
+
+
+def _timeout_failure(error: ToolTimeout, call: ToolCallRequest) -> ToolFailure:
+    """A bounded hop that never answered; the side effect is unknown."""
+    return ToolFailure.from_reason(
+        name=call.name,
+        tool_call_id=call.call_id,
+        code=TOOL_TIMEOUT,
+        reason=error.reason,
+        indeterminate=True,
+    )
+
+
+def _replayed(result: ToolResult, call: ToolCallRequest) -> ToolResult:
+    """The memo's result re-addressed to the call that repeated it (ticket 83).
+
+    ``replace`` keeps the concrete type, so a replayed failure is still a
+    failure and a replayed indeterminate side effect stays indeterminate.
+    """
+    return replace(result, tool_call_id=call.call_id, replayed=True)
 
 
 def _payload(name: str, call_id: str, body: bytes) -> Mapping[str, Any]:
@@ -888,11 +1043,17 @@ def _payload(name: str, call_id: str, body: bytes) -> Mapping[str, Any]:
         value = json.loads(body.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise ToolRouteError(
-            name, call_id, f"the route body is not readable JSON ({error})"
+            name,
+            call_id,
+            f"the route body is not readable JSON ({error})",
+            code=TOOL_UNREADABLE_BODY,
         ) from error
     if not isinstance(value, dict):
         raise ToolRouteError(
-            name, call_id, f"the route body is a JSON {type(value).__name__}, not an object"
+            name,
+            call_id,
+            f"the route body is a JSON {type(value).__name__}, not an object",
+            code=TOOL_MALFORMED_RESULT,
         )
     return value
 

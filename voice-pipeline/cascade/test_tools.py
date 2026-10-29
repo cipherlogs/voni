@@ -39,11 +39,10 @@ from cascade.tools import (
     EndCallSignal,
     ToolContextError,
     ToolExecutor,
+    ToolFailure,
     ToolRequest,
     ToolResult,
-    ToolRouteError,
     ToolSecretError,
-    ToolTimeout,
     ToolTurnError,
     continue_after_tool,
 )
@@ -253,13 +252,14 @@ class HopBoundTests(unittest.TestCase):
         route = HangingRoute()
         executor = make_executor(route, timeout_ms=10)
 
-        with self.assertRaises(ToolTimeout) as raised:
-            asyncio.run(
-                asyncio.wait_for(executor.execute(a_call()), timeout=2.0)
-            )
+        outcome = asyncio.run(
+            asyncio.wait_for(executor.execute(a_call()), timeout=2.0)
+        )
 
-        self.assertEqual(raised.exception.timeout_ms, 10)
-        self.assertIn(TOOL_TIMEOUT_BOUND, str(raised.exception))
+        # Ticket 84: the bound is reported as a failure result, not raised.
+        self.assertIsInstance(outcome, ToolFailure)
+        self.assertTrue(outcome.indeterminate)
+        self.assertIn(TOOL_TIMEOUT_BOUND, outcome.reason)
         self.assertEqual(len(route.sessions), 1)
 
 
@@ -559,19 +559,22 @@ class SignedIdentityTests(unittest.TestCase):
             ToolExecutor(base_url=BASE_URL, call_id="")
 
 
-class RouteFailureNamingTests(unittest.TestCase):
-    def test_a_route_failure_is_named_and_never_an_anonymous_crash(self):
-        for status, body, expected in (
-            (500, b"boom", "HTTP 500"),
-            (200, b"<html>not json</html>", "not readable JSON"),
-            (200, b'["ok"]', "not an object"),
+class RouteFailureMappingTests(unittest.TestCase):
+    def test_a_route_failure_is_mapped_to_the_tool_that_named_it(self):
+        for status, body, code in (
+            (500, b"boom", "tool_http_error"),
+            (200, b"<html>not json</html>", "tool_unreadable_body"),
+            (200, b'["ok"]', "tool_malformed_result"),
         ):
             with self.subTest(status=status, body=body):
                 factory = ScriptedSessionFactory([Response(status=status, body=body)])
                 executor = make_executor(factory)
 
-                with self.assertRaises(ToolRouteError) as raised:
-                    asyncio.run(executor.execute(a_call()))
+                outcome = asyncio.run(executor.execute(a_call()))
 
-                self.assertIn(expected, str(raised.exception))
-                self.assertIn("search_properties", str(raised.exception))
+                # Ticket 84 moved these conditions from a raise to a result.
+                self.assertIsInstance(outcome, ToolFailure)
+                self.assertEqual(outcome.name, "search_properties")
+                self.assertEqual(outcome.tool_call_id, "call_1")
+                self.assertEqual(outcome.code, code)
+                self.assertFalse(outcome.ok)
