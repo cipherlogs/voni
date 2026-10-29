@@ -54,6 +54,13 @@
  * run fails fast naming the holder instead of inflating cut latency under
  * parallel load. The lock is released on exit and a dead holder is reclaimed.
  *
+ * Every artifact records a codeFingerprint (git HEAD plus a hash of the
+ * uncommitted status and diff). `npm run scoreboard:streak` reads the last
+ * three gate-voice artifacts and refuses the exit claim when the fingerprint
+ * moved, a required gate is not PASS, or the candidate behavior run is
+ * missing/red. Artifacts with no fingerprint (git unavailable) cannot form a
+ * streak.
+ *
  * --prior <path> pins the artifact a run diffs against; omit it and the
  * latest same-voice artifact in this run's output directory is used. The diff
  * prints right after the gate table (gate status transitions, per-beat metric
@@ -218,6 +225,7 @@ import {
   parseSilenceTimelineOutput,
   parseRunnerHangUp,
   parseTraceGaps,
+  readCodeFingerprint,
   redactLines,
   resolveGateVoice,
   sha256Hex,
@@ -1002,6 +1010,8 @@ function main(): void {
     callerClips,
     ...(emailEvidence ? { emailInviteEvidencePresent: true } : {}),
     runId: `run-${stamp()}-${voice}`,
+    // Ticket 29: the streak compares the exact code, not just the voice.
+    codeFingerprint: readCodeFingerprint(),
   });
   if (parsed || hasCutFlags) {
     const base: RealCutEvidence = parsed ?? {

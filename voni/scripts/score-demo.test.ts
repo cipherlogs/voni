@@ -49,9 +49,15 @@ test("dry run writes an artifact with required keys and prints a gate table", ()
     "emailInvite",
     "evalRunner",
     "callerClips",
+    "codeFingerprint",
   ]) {
     assert.ok(key in artifact, `artifact missing ${key}`);
   }
+  const fingerprint = artifact.codeFingerprint as { head: string; dirty: boolean; dirtyHash: string } | null;
+  assert.ok(fingerprint, "the artifact records the code it ran on");
+  assert.match(fingerprint.head, /^[0-9a-f]{7,64}$/);
+  assert.equal(typeof fingerprint.dirty, "boolean");
+  assert.match(fingerprint.dirtyHash, /^[0-9a-f]{64}$/);
   assert.match(result.stdout, /reply-gap/);
   assert.match(result.stdout, /email-invite/);
   assert.match(result.stdout, /PASS|INFO/);
