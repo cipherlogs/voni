@@ -346,12 +346,35 @@ export type ScoreboardLoudness = {
 /**
  * The ballot's axes and their fixed weights (voice-parity ticket 74). Timbre
  * carries half because this is the timbre gate; accent and language
- * naturalness split the other half. A ballot that does not carry an axis yet
- * (ticket 75 wires language naturalness) is renormalised over the axes it
- * does carry, so no weight is silently dropped.
+ * naturalness split the other half. Every ballot carries all three axes
+ * (ticket 75); the one exception is named below, never inferred.
  */
 export const TIMBRE_BALLOT_AXES = ["timbre", "accent", "languageNaturalness"] as const;
 export type TimbreBallotAxis = (typeof TIMBRE_BALLOT_AXES)[number];
+
+/**
+ * The one Locale the language-naturalness axis does not apply to (ticket 75).
+ * English is the featured baseline: a native English rater has no second
+ * language to judge the voice against, so the axis is N/A there and its weight
+ * renormalises over timbre and accent. Any other Locale must carry the axis —
+ * a missing naturalness score is an incomplete ballot, never a renormalised
+ * pass.
+ */
+export const NATURALNESS_BASELINE_LOCALE = "en";
+
+/** The named reason the axis is N/A for the baseline Locale. */
+export const NATURALNESS_NA_REASON =
+  "English is the featured baseline Locale, so language naturalness is N/A and its weight " +
+  "renormalises over timbre and accent";
+
+/**
+ * Whether a ballot for this Locale must carry language naturalness. An unknown
+ * or unbound Locale is treated as applying: the axis is only ever dropped for
+ * the named baseline, never because nobody named the Locale.
+ */
+export function naturalnessApplies(locale: string | null | undefined): boolean {
+  return (locale ?? "").trim().toLowerCase() !== NATURALNESS_BASELINE_LOCALE;
+}
 
 export const TIMBRE_BALLOT_AXIS_WEIGHTS: Record<TimbreBallotAxis, number> = {
   timbre: SCOREBOARD_BUDGETS.timbreBallotWeightTimbre.value,
@@ -377,7 +400,7 @@ export type HumanRating = {
   rater: string;
   timbre: number;
   accent: number;
-  /** Third axis (ticket 75): optional until the pack wiring lands. */
+  /** Third axis (ticket 75): required wherever the axis applies. */
   languageNaturalness?: number;
   /** The recording this ballot judged; absent = the record's shared cut. */
   recordingSha256?: string;
@@ -390,31 +413,53 @@ export type HumanRating = {
  * judges the same shared recording, independently, by two raters at five out
  * of five. `subject` is the subject the ballots judged — a ballot is per
  * subject, not per voice — and the artifact build binds it before gating.
+ * `notApplicable` names any axis the subject's Locale excuses, with its reason
+ * (ticket 75: English language naturalness), so a renormalisation is never
+ * silent.
  */
 export type HumanRatings = {
   timbre: number | null;
   accent: number | null;
+  /** Mean of the ballots' language-naturalness scores; null until scored. */
+  languageNaturalness: number | null;
   /** The raters' weighted score, 1-5; null until a ballot exists. */
   weighted: number | null;
   recordingSha256: string | null;
   subject?: SubjectRecord;
+  /** Axis → the named reason it does not apply to this subject. */
+  notApplicable?: Partial<Record<TimbreBallotAxis, string>>;
   ratings: HumanRating[];
 };
 
 export function emptyHumanRatings(recordingSha256: string | null): HumanRatings {
-  return { timbre: null, accent: null, weighted: null, recordingSha256, ratings: [] };
+  return {
+    timbre: null,
+    accent: null,
+    languageNaturalness: null,
+    weighted: null,
+    recordingSha256,
+    ratings: [],
+  };
 }
 
 /**
  * Bind the ballot record to the subject it judged. The artifact builder calls
  * this for every run, so a stored ballot always names its subject even when
- * the operator only supplied ballots and a recording.
+ * the operator only supplied ballots and a recording. It also records the one
+ * axis a subject's Locale can excuse (ticket 75): English language naturalness
+ * is N/A, with the named reason, and nothing else is ever dropped silently.
  */
 export function bindBallotsToSubject(
   human: HumanRatings,
   subject: SubjectRecord,
 ): HumanRatings {
-  return { ...human, subject };
+  return {
+    ...human,
+    subject,
+    notApplicable: naturalnessApplies(subject.locale)
+      ? undefined
+      : { languageNaturalness: NATURALNESS_NA_REASON },
+  };
 }
 
 function mean1(values: number[]): number {
@@ -427,8 +472,10 @@ function round2(value: number): number {
 
 /**
  * One ballot's weighted score over the axes it carries. Weights are the fixed
- * budget records; a missing axis renormalises over the axes present, so an
- * unwired language-naturalness axis cannot silently count as a zero.
+ * budget records; a missing axis renormalises over the axes present. Since
+ * ticket 75 the only axis a ballot may legitimately omit is language
+ * naturalness for the English baseline (named by `notApplicable`), and the
+ * gate refuses any other omission as incomplete before it reads this score.
  */
 export function ballotWeightedScore(ballot: {
   rater?: string;
@@ -457,10 +504,26 @@ function weightedAcross(ratings: readonly HumanRating[]): number | null {
   return round2(scores.reduce((sum, score) => sum + score, 0) / scores.length);
 }
 
-const BALLOT_WEIGHT_NOTE =
-  `weights timbre ×${TIMBRE_BALLOT_AXIS_WEIGHTS.timbre}, ` +
-  `accent ×${TIMBRE_BALLOT_AXIS_WEIGHTS.accent}, ` +
-  `language naturalness ×${TIMBRE_BALLOT_AXIS_WEIGHTS.languageNaturalness}`;
+const BALLOT_AXIS_LABELS: Record<TimbreBallotAxis, string> = {
+  timbre: "timbre",
+  accent: "accent",
+  languageNaturalness: "language naturalness",
+};
+
+/**
+ * The weights as a sentence. An axis the subject's Locale excuses is printed
+ * as N/A with its named reason instead of its weight: the report never shows a
+ * weight the ballot did not carry.
+ */
+function ballotWeightNote(notApplicable?: Partial<Record<TimbreBallotAxis, string>>): string {
+  const parts = TIMBRE_BALLOT_AXES.map((axis) => {
+    const reason = notApplicable?.[axis];
+    return reason
+      ? `${BALLOT_AXIS_LABELS[axis]} N/A (${reason})`
+      : `${BALLOT_AXIS_LABELS[axis]} ×${TIMBRE_BALLOT_AXIS_WEIGHTS[axis]}`;
+  });
+  return `weights ${parts.join(", ")}`;
+}
 
 /**
  * File one blind ballot. Every ballot must score the same shared recording
@@ -468,6 +531,12 @@ const BALLOT_WEIGHT_NOTE =
  * once: a second ballot from the same rater is a protocol violation, not a
  * second opinion. A score below five is accepted (it blocks, and its reason is
  * recorded) — refusing it would hide the rater's judgement.
+ *
+ * Ticket 75: a ballot bound to a non-English subject must carry language
+ * naturalness. The missing axis is refused by name at filing time, so the
+ * operator learns before the run spends audio rather than reading a
+ * renormalised score later. An unbound record is permissive here because the
+ * gate re-checks every ballot against the subject it actually judged.
  */
 export function addHumanRating(
   current: HumanRatings,
@@ -489,7 +558,15 @@ export function addHumanRating(
       );
     }
   }
-  if (rating.languageNaturalness !== undefined) {
+  const locale = current.subject?.locale ?? null;
+  if (rating.languageNaturalness === undefined) {
+    if (current.subject !== undefined && naturalnessApplies(locale)) {
+      throw new Error(
+        `incomplete ballot: languageNaturalness is missing for ${rating.rater} on the ${locale} ` +
+          "subject — the third axis applies, so a missing score is rejected, never renormalised away",
+      );
+    }
+  } else {
     const value = rating.languageNaturalness;
     if (
       !Number.isInteger(value) ||
@@ -510,12 +587,20 @@ export function addHumanRating(
   }
   const filed: HumanRating = { ...rating, recordingSha256 };
   const ratings = [...current.ratings, filed];
+  // An axis no ballot scored has no mean: `null` says unmeasured, where a 1 or
+  // a 0 would invent a judgement nobody made.
+  const naturalnessScores = ratings
+    .map((ballot) => ballot.languageNaturalness)
+    .filter((score): score is number => score !== undefined);
   return {
     recordingSha256: current.recordingSha256 ?? recordingSha256,
     subject: current.subject,
+    notApplicable: current.notApplicable,
     ratings,
     timbre: mean1(ratings.map((ballot) => ballot.timbre)),
     accent: mean1(ratings.map((ballot) => ballot.accent)),
+    languageNaturalness:
+      naturalnessScores.length === 0 ? null : mean1(naturalnessScores),
     weighted: weightedAcross(ratings),
   };
 }
@@ -528,9 +613,11 @@ export function addHumanRating(
  */
 export const HUMAN_BALLOT_PROTOCOL =
   "blind: one shared recording per subject, two independent raters, one ballot per rater " +
-  `(weighted 1-5: timbre ${TIMBRE_BALLOT_AXIS_WEIGHTS.timbre}, accent ${TIMBRE_BALLOT_AXIS_WEIGHTS.accent}, ` +
-  `language naturalness ${TIMBRE_BALLOT_AXIS_WEIGHTS.languageNaturalness}); a measured timbre result must pass first; ` +
-  `five out of five passes, and a ballot below five blocks with the rater's stated reason`;
+  "(weighted 1-5: timbre 0.5, accent 0.25, language naturalness 0.25); every ballot carries all three axes, " +
+  "and language naturalness is required wherever the subject's Locale is not the English baseline " +
+  "(missing = incomplete, never renormalised), while English is N/A with that named reason and its weight " +
+  "renormalises over timbre and accent; a measured timbre result must pass first; five out of five passes, " +
+  "and a ballot below five blocks with the rater's stated reason";
 
 /** The weighted ballot's verdict, which the timbre gate requires beside the measurement. */
 export type TimbreBallotCheck = {
@@ -548,14 +635,30 @@ export type TimbreBallotCheck = {
  * Judge the subject's blind ballot: two independent raters, one shared
  * recording, weighted to a single score at five out of five. Missing or single
  * ballots are INFO (unmeasured, never a pass); a ballot below five, a mixed
- * set of recordings, or a ballot filed for another subject is a protocol
- * failure the gate reports as FAIL.
+ * set of recordings, a ballot filed for another subject, or — ticket 75 — a
+ * ballot missing an axis the subject's Locale requires is a protocol failure
+ * the gate reports as FAIL. The one axis a Locale may excuse is language
+ * naturalness for English, whose weight then renormalises with the named
+ * reason already recorded on the ballot.
  */
 export function evaluateTimbreBallot(
   human: HumanRatings,
   subject?: SubjectRecord,
 ): TimbreBallotCheck {
   const raters = human.ratings.map((ballot) => ballot.rater);
+  const judged = subject ?? human.subject;
+  const locale = judged?.locale ?? null;
+  const naturalnessRequired = naturalnessApplies(locale);
+  // An axis the Locale excuses is printed as N/A with its named reason; every
+  // other axis keeps its weight, so the note never advertises a weight that
+  // was not carried.
+  const naAxes: Partial<Record<TimbreBallotAxis, string>> | undefined = naturalnessRequired
+    ? undefined
+    : {
+        languageNaturalness:
+          human.notApplicable?.languageNaturalness ?? NATURALNESS_NA_REASON,
+      };
+  const weightNote = ballotWeightNote(naAxes);
   const base = {
     requiredScore: TIMBRE_BALLOT_PASS_SCORE,
     requiredRaters: TIMBRE_BALLOT_RATERS_REQUIRED,
@@ -581,8 +684,29 @@ export function evaluateTimbreBallot(
       weighted: null,
       detail:
         `awaiting the weighted ballot (0/${TIMBRE_BALLOT_RATERS_REQUIRED} independent raters at ` +
-        `${TIMBRE_BALLOT_PASS_SCORE}/5 on one shared recording per subject; ${BALLOT_WEIGHT_NOTE})`,
+        `${TIMBRE_BALLOT_PASS_SCORE}/5 on one shared recording per subject; ${weightNote})`,
     };
+  }
+  // Ticket 75: the third axis is required wherever it applies. A missing one is
+  // an incomplete ballot, reported as such — never weighted over the axes that
+  // happen to be present, because that silently renormalises a judgement
+  // nobody made.
+  if (naturalnessRequired) {
+    const missing = human.ratings.filter(
+      (ballot) => ballot.languageNaturalness === undefined,
+    );
+    if (missing.length > 0) {
+      return {
+        ...base,
+        status: "FAIL",
+        weighted: null,
+        detail:
+          `incomplete ballot: language naturalness (the third axis) is missing from ` +
+          `${missing.map((ballot) => ballot.rater).join(", ")} on the ${locale ?? "unnamed"} subject — ` +
+          "the axis applies, so a missing score is rejected, never renormalised away; " +
+          "file the third score per rater",
+      };
+    }
   }
 
   const recording = human.recordingSha256;
@@ -647,7 +771,7 @@ export function evaluateTimbreBallot(
       weighted,
       detail:
         `ballot below five blocks: ${below.join("; ")} — weighted ${weighted?.toFixed(2) ?? "unmeasured"}/5 ` +
-        `(the bar is ${TIMBRE_BALLOT_PASS_SCORE}; ${BALLOT_WEIGHT_NOTE})`,
+        `(the bar is ${TIMBRE_BALLOT_PASS_SCORE}; ${weightNote})`,
     };
   }
   if (weighted === null || weighted < TIMBRE_BALLOT_PASS_SCORE) {
@@ -657,7 +781,7 @@ export function evaluateTimbreBallot(
       weighted,
       detail:
         `weighted ballot ${weighted?.toFixed(2) ?? "unmeasured"}/5 is below the ${TIMBRE_BALLOT_PASS_SCORE}/5 bar ` +
-        `(${BALLOT_WEIGHT_NOTE})`,
+        `(${weightNote})`,
     };
   }
   const perRater = human.ratings
@@ -669,14 +793,31 @@ export function evaluateTimbreBallot(
     weighted,
     detail:
       `weighted ${weighted.toFixed(2)}/5 from ${raters.length} independent raters ` +
-      `(${perRater}) on shared recording ${recording.slice(0, 12)} (${BALLOT_WEIGHT_NOTE})`,
+      `(${perRater}) on shared recording ${recording.slice(0, 12)} (${weightNote})`,
   };
 }
 
 /**
+ * One axis as the review reports it: its weight, its mean ballot score, and
+ * whether it was required for this subject or excused with a named reason.
+ */
+export type HumanReviewAxis = {
+  axis: TimbreBallotAxis;
+  /** The weight this axis carries when it applies (spec W5 budget record). */
+  weight: number;
+  /** Mean of the ballots that scored it; null when no ballot scored it. */
+  mean: number | null;
+  /** `required` where the Locale requires it; `na` for the named exception. */
+  status: "required" | "na";
+  /** The named reason the axis is N/A; null where it is required. */
+  reason: string | null;
+};
+
+/**
  * The human slot as reviewable evidence: which subject and recording every
  * ballot judged, how many independent raters filed one, the weighted score,
- * and whether the measured timbre result let those ballots count.
+ * every axis with its weight (ticket 75 adds language naturalness), and
+ * whether the measured timbre result let those ballots count.
  */
 export type HumanReview = {
   /** The subject the ballots judged (a ballot is per subject, not per voice). */
@@ -692,6 +833,8 @@ export type HumanReview = {
   weighted: number | null;
   /** Spec W5: the score a subject must reach, five out of five. */
   requiredScore: number;
+  /** All three axes, each with its weight and whether this Locale requires it. */
+  axes: HumanReviewAxis[];
   /** The measured timbre gate was PASS before ballots count. */
   autoTimbrePassed: boolean;
   /** Measured timbre passed and the weighted ballot is five out of five. */
@@ -705,6 +848,25 @@ export function humanReview(
   subject?: SubjectRecord,
 ): HumanReview {
   const ballot = evaluateTimbreBallot(human, subject);
+  const judged = subject ?? human.subject;
+  const naturalnessRequired = naturalnessApplies(judged?.locale ?? null);
+  const naturalnessMean =
+    human.ratings.length === 0 ? null : human.languageNaturalness;
+  const axes: HumanReviewAxis[] = TIMBRE_BALLOT_AXES.map((axis) => {
+    const reason = naturalnessRequired ? null : NATURALNESS_NA_REASON;
+    return {
+      axis,
+      weight: TIMBRE_BALLOT_AXIS_WEIGHTS[axis],
+      mean:
+        axis === "languageNaturalness"
+          ? naturalnessMean
+          : human.ratings.length === 0
+            ? null
+            : human[axis],
+      status: axis === "languageNaturalness" && !naturalnessRequired ? "na" : "required",
+      reason: axis === "languageNaturalness" ? reason : null,
+    };
+  });
   return {
     subject: subject ? formatSubject(subject) : human.subject ? formatSubject(human.subject) : null,
     recordingSha256: human.recordingSha256,
@@ -713,13 +875,27 @@ export function humanReview(
     raters: human.ratings.map((entry) => entry.rater),
     weighted: ballot.weighted,
     requiredScore: TIMBRE_BALLOT_PASS_SCORE,
+    axes,
     autoTimbrePassed,
     counted: autoTimbrePassed && ballot.status === "PASS",
     protocol: HUMAN_BALLOT_PROTOCOL,
   };
 }
 
-/** Console block: the subject, the shared recording, the raters and the weighted ballot. */
+/**
+ * One axis line: its weight, its mean, and — where the Locale excuses it — the
+ * named reason it renormalises instead of scoring.
+ */
+function formatAxisLine(axis: HumanReviewAxis): string {
+  const weight = `×${axis.weight}`;
+  if (axis.status === "na") {
+    return `  ${axis.axis}: N/A ${weight} — ${axis.reason}`;
+  }
+  const mean = axis.mean === null ? "unscored" : `${axis.mean.toFixed(1)} mean`;
+  return `  ${axis.axis}: ${mean} ${weight} (required)`;
+}
+
+/** Console block: the subject, the shared recording, the raters, every axis and the weighted ballot. */
 export function formatHumanReview(review: HumanReview): string {
   const recording = review.recordingSha256
     ? `sha256 ${review.recordingSha256}`
@@ -736,6 +912,7 @@ export function formatHumanReview(review: HumanReview): string {
     `  recording: ${recording}`,
     `  raters: ${review.raterCount}/${review.requiredRaters} (${raters})`,
     `  ballot: ${weighted}`,
+    ...review.axes.map(formatAxisLine),
     `  measured timbre: ${gate}`,
     `  protocol: ${review.protocol}`,
   ].join("\n");

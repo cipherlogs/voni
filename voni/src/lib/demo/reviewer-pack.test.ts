@@ -12,6 +12,7 @@ import {
   carryVerdict,
   fileVerdict,
   formatReviewerPack,
+  humanRatingsFromPack,
   packMissing,
   packStatus,
   recordingBytesProblem,
@@ -20,6 +21,7 @@ import {
   type ReviewerPack,
   type ReviewerVerdict,
 } from "./reviewer-pack";
+import { resolveSubject } from "./subject";
 
 /**
  * W5 parity proof (voice-parity ticket 58): the reviewer pack and verdict
@@ -341,6 +343,80 @@ test("a complete pack's sheet records the reviewer, the date and the reasons", (
   assert.match(sheet, /a named native reviewer/);
   assert.match(sheet, /2026-10-29/);
   assert.match(sheet, /the \/r\/ is tapped/);
+});
+
+// ── Ticket 75: a filed verdict becomes the weighted ballot's third axis ─────
+
+test("a filed verdict loads into the weighted ballot with language naturalness", () => {
+  const pack = fileVerdict(packFixture("lola"), {
+    reviewer: "a named native reviewer",
+    reviewedOn: "2026-10-29",
+    locale: "es",
+    scores: { timbre: 5, accent: 5, languageNaturalness: 4 },
+    reasons: { languageNaturalness: "the greeting reads like a translation of the English" },
+  });
+
+  const human = humanRatingsFromPack(pack);
+  assert.equal(human.ratings.length, 1, "one reviewer is one ballot");
+  assert.equal(human.ratings[0]?.rater, "a named native reviewer");
+  assert.equal(human.ratings[0]?.timbre, 5);
+  assert.equal(human.ratings[0]?.accent, 5);
+  assert.equal(human.ratings[0]?.languageNaturalness, 4, "the third axis crosses into the ballot");
+  assert.equal(
+    human.ratings[0]?.reasons?.languageNaturalness,
+    "the greeting reads like a translation of the English",
+    "the reviewer's reason is kept with the score",
+  );
+  assert.equal(human.recordingSha256, pack.recording?.sha256, "the ballot judges the pack's shared cut");
+  assert.equal(human.ratings[0]?.recordingSha256, pack.recording?.sha256);
+  assert.equal(human.subject?.locale, "es", "the ballot is per subject, derived from the pack's voice");
+  assert.equal(human.languageNaturalness, 4);
+  // 0.5×5 + 0.25×5 + 0.25×4 = 4.75, worked out independently of the module.
+  assert.equal(human.weighted, 4.75);
+});
+
+test("a pending pack yields an empty ballot bound to its recording, never an invented score", () => {
+  const human = humanRatingsFromPack(reviewerPackFor(clipFixture("lola"), RECORDING_SHA));
+  assert.deepEqual(human.ratings, []);
+  assert.equal(human.recordingSha256, RECORDING_SHA);
+  assert.equal(human.subject?.locale, "es");
+  assert.equal(human.weighted, null);
+  assert.equal(human.languageNaturalness, null);
+});
+
+test("the adapter refuses a verdict that drops the third axis instead of loading it", () => {
+  const pack = packFixture("lola");
+  const verdict = verdictFixture();
+  delete verdict.scores.languageNaturalness;
+  // A pack read back from disk is not trusted: the adapter revalidates it.
+  const withVerdict: ReviewerPack = { ...pack, verdict };
+
+  assert.throws(
+    () => humanRatingsFromPack(withVerdict),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.match(error.message, /languageNaturalness/);
+      return true;
+    },
+  );
+});
+
+test("a pack is one subject's ballot: it never loads against another Locale's subject", () => {
+  const pack = fileVerdict(packFixture("lola"), verdictFixture());
+  const anna = resolveSubject({ voice: "anna" });
+  assert.throws(
+    () => humanRatingsFromPack(pack, anna),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.match(error.message, /locale|Spanish|es/);
+      return true;
+    },
+  );
+  // The subject it names loads unchanged.
+  const lola = resolveSubject({ voice: "lola" });
+  const human = humanRatingsFromPack(pack, lola);
+  assert.equal(human.subject?.agent.kind, "demo");
+  assert.equal(human.weighted, 5);
 });
 
 // ── Regeneration: a new recording invalidates the old verdict ────────────────

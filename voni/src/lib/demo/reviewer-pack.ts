@@ -27,10 +27,13 @@
  *
  * ── The third axis and the weighting (tickets 74/75) ──────────────────────
  * The ballot carries timbre, accent and language naturalness. The axis is part
- * of the schema now so a reviewer is asked once and every ballot carries all
- * three. The gate's weighted aggregation (timbre 0.5, accent 0.25, language
- * naturalness 0.25; five out of five passes) lives with the scoreboard
- * (`TIMBRE_BALLOT_AXIS_WEIGHTS`); the naturalness report wiring is ticket 75's.
+ * of the schema so a reviewer is asked once and every ballot carries all
+ * three; a verdict that drops it is refused by name. The gate's weighted
+ * aggregation (timbre 0.5, accent 0.25, language naturalness 0.25; five out of
+ * five passes) lives with the scoreboard (`TIMBRE_BALLOT_AXIS_WEIGHTS`), and
+ * `humanRatingsFromPack` loads a filed verdict into that weighted ballot —
+ * naturalness included, on the pack's one shared recording, for its subject.
+ * English is the one named N/A for naturalness; every other Locale requires it.
  * A verdict filed from a pack is the demo voice's one subject ballot on this
  * recording — the shared cut named by the pack's sha256.
  *
@@ -42,6 +45,13 @@ import { createHash } from "node:crypto";
 import { getVoice, type Voice } from "@/lib/agents/voices";
 import { CONVERSATION_LANGUAGES } from "@/lib/agents/wizard";
 import type { AuditionClipRecord } from "./audition-clips";
+import {
+  addHumanRating,
+  bindBallotsToSubject,
+  emptyHumanRatings,
+  type HumanRatings,
+} from "./scoreboard";
+import { formatSubject, resolveSubject, type SubjectRecord } from "./subject";
 
 export const REVIEWER_PACK_SCHEMA_VERSION = 1;
 
@@ -460,6 +470,78 @@ export function fileVerdict(pack: ReviewerPack, verdict: ReviewerVerdict): Revie
     throw new ReviewerPackError(problems, `reviewer pack ${pack.voice} (${pack.locale})`);
   }
   return filed;
+}
+
+/**
+ * The pack→ballot adapter (ticket 75): load a reviewer's filed verdict into the
+ * scoreboard's weighted ballot, so the pack a reviewer fills is the ballot the
+ * gate reads — including the third axis, language naturalness.
+ *
+ * The pack is revalidated on the way in: a JSON file on disk is not trusted to
+ * be complete, and a verdict missing an axis is refused by name instead of
+ * being renormalised into a score nobody gave. A pending pack is not a defect:
+ * it loads as an empty ballot bound to its recording and subject, reported and
+ * never counted. One pack is one subject's ballot; a subject from another
+ * Locale is refused rather than judging the wrong language.
+ */
+export function humanRatingsFromPack(
+  pack: ReviewerPack,
+  subject?: SubjectRecord,
+): HumanRatings {
+  const problems = reviewerPackProblems(pack);
+  if (problems.length > 0) {
+    throw new ReviewerPackError(problems, `reviewer pack ${pack.voice} (${pack.locale})`);
+  }
+  const recording = pack.recording;
+  if (!recording) {
+    // `recordingProblems` already refused this; the check keeps the types honest.
+    throw new ReviewerPackError(
+      [{ field: "recording", message: "recording is missing: a ballot judges one committed clip" }],
+      `reviewer pack ${pack.voice} (${pack.locale})`,
+    );
+  }
+
+  // A demo subject is derived from the pack's voice (a voice speaks exactly one
+  // Locale); a caller measuring a tenant agent passes its subject explicitly.
+  const judged = subject ?? resolveSubject({ voice: pack.voice, explicit: true });
+  if (judged.locale !== pack.locale) {
+    throw new ReviewerPackError(
+      [
+        {
+          field: "locale",
+          message:
+            `the pack judges ${pack.locale}, but the subject is ${judged.locale} ` +
+            `(${formatSubject(judged)}): a ballot is per subject, and one Locale's verdict never passes another`,
+        },
+      ],
+      `reviewer pack ${pack.voice}`,
+    );
+  }
+
+  const bound = bindBallotsToSubject(emptyHumanRatings(recording.sha256), judged);
+  const verdict = pack.verdict;
+  if (!verdict) return bound;
+
+  const { timbre, accent, languageNaturalness } = verdict.scores;
+  if (timbre === undefined || accent === undefined) {
+    // `verdictProblems` refused this already; keep the adapter total.
+    throw new ReviewerPackError(
+      [{ field: "score", message: "the verdict is missing timbre or accent" }],
+      `reviewer pack ${pack.voice}`,
+    );
+  }
+
+  return addHumanRating(
+    bound,
+    {
+      rater: verdict.reviewer,
+      timbre,
+      accent,
+      ...(languageNaturalness !== undefined ? { languageNaturalness } : {}),
+      reasons: verdict.reasons,
+    },
+    recording.sha256,
+  );
 }
 
 /**

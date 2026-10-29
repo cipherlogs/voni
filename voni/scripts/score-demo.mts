@@ -49,7 +49,7 @@
  *                           [--out scoreboard-runs/score-<ts>-<voice>.json] [--dry-run]
  *                           [--prior <path>]
  *                           [--timing-lock /tmp/voni-demo-timing.lock]
- *                           [--trace-session sess_...] [--trace-beat greeting-cut] [--probe-json probes.json] [--recording <sha256> | --recording-file <path>] [--rate rater:timbre,accent ...]
+ *                           [--trace-session sess_...] [--trace-beat greeting-cut] [--probe-json probes.json] [--recording <sha256> | --recording-file <path>] [--rate rater:timbre,accent[,naturalness] ...] [--reviewer-pack evidence/reviewer-packs/<voice>.json]
  *                           [--gap beat=ms ...]
  *                           [--filler-text "Okaay so" --filler-cut-ms 320 ...]
  *                           [--cut-ms <n> | --cut-never] [--cut-verdict <v>] [--cut-answered]
@@ -190,10 +190,12 @@
  * --probe-json carries the session onAudioProbe counts plus the optional
  * qa-voice-session agent-channel PCM analysis; it drives the timbre-probes
  * gate (any clip, pop, jump, underrun, or input-drop FAILs the gate but the
- * artifact is still written). --rate files blind 1-5 human ballots, all
- * bound to one shared golden recording via --recording or --recording-file;
- * auto timbre checks must pass before ballots count, and a ballot without a
- * recording is rejected (see voni/docs/blind-human-ballots.md).
+ * artifact is still written). --rate files blind 1-5 human ballots on three
+ * axes — `rater:timbre,accent[,naturalness]` — all bound to one shared golden
+ * recording via --recording or --recording-file; auto timbre checks must pass
+ * before ballots count, and a ballot without a recording is rejected. The
+ * third axis is required wherever the subject's Locale is not English; English
+ * is the one named N/A (see voni/docs/blind-human-ballots.md).
  *
  * Extensions kept beyond the ticket scope (documented, not silent):
  * agent-channel PCM evidence rides in --probe-json (offline
@@ -241,6 +243,7 @@ import {
   applyEmailInvite,
   applyGreetingCutGate,
   applyRealCutGate,
+  bindBallotsToSubject,
   buildSkeletonArtifact,
   callerClipChanges,
   callerClipsFromRunnerStdout,
@@ -328,6 +331,10 @@ import {
 import { judgeOverlap } from "../src/lib/voice/barge-in";
 import { EN_RECOGNITION } from "../src/lib/voice/recognition";
 import { acquireTimingLock, DEFAULT_TIMING_LOCK_PATH } from "../src/lib/demo/timing-lock";
+import {
+  humanRatingsFromPack,
+  type ReviewerPack,
+} from "../src/lib/demo/reviewer-pack";
 import {
   formatSubject,
   resolveSubject,
@@ -510,26 +517,88 @@ function readRecordingBinding(recording: string, recordingFile: string): string 
 }
 
 /**
- * File blind ballots from `--rate rater:timbre,accent` (repeatable) against
- * the shared golden recording (`--recording <sha256>` or
+ * Read a reviewer pack from disk. Only its shape is checked here: the pack's
+ * own validation (recording, Locale, a complete verdict) belongs to the
+ * adapter, which refuses a half-filled pack by name instead of loading it.
+ */
+function readReviewerPack(path: string): ReviewerPack {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(resolve(path), "utf8"));
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(`--reviewer-pack ${path}: cannot read the pack JSON (${reason})`);
+  }
+  if (typeof raw !== "object" || raw === null) {
+    throw new Error(`--reviewer-pack ${path}: not a reviewer pack object`);
+  }
+  const pack = raw as ReviewerPack;
+  if (typeof pack.voice !== "string" || typeof pack.locale !== "string") {
+    throw new Error(
+      `--reviewer-pack ${path}: a pack must name its voice and Locale (a ballot is per subject)`,
+    );
+  }
+  return pack;
+}
+
+/**
+ * File blind ballots from `--rate rater:timbre,accent[,naturalness]`
+ * (repeatable) against the shared golden recording (`--recording <sha256>` or
  * `--recording-file <path>`). Ballots without a recording are rejected:
  * unbound ears never count.
+ *
+ * Ticket 75: the ballot carries a third axis, language naturalness. The
+ * subject is bound before the first ballot is filed, so a non-English subject
+ * refuses a two-score ballot by name at the CLI — an incomplete ballot never
+ * reaches an artifact and is never renormalised into a pass. English is the one
+ * named N/A (see `naturalnessApplies`), where two scores remain valid.
+ *
+ * `--reviewer-pack <path>` loads a reviewer's filed verdict through the same
+ * adapter the pack tooling writes (`humanRatingsFromPack`), so the ballot the
+ * gate reads is the ballot the reviewer filled — naturalness included. A
+ * `--rate` ballot may then join it on the pack's one shared cut.
  */
-function readHumanRatings(rates: string[], recording: string): HumanRatings {
-  if (rates.length > 0 && !recording) {
+function readHumanRatings(
+  rates: string[],
+  recording: string,
+  subject: SubjectRecord,
+  packPath: string,
+): HumanRatings {
+  if (rates.length > 0 && !recording && !packPath) {
     throw new Error("--rate ballots need --recording <sha256 of the golden recording they judge>");
   }
   if (recording && !/^[0-9a-f]{64}$/i.test(recording)) {
     throw new Error(`--recording needs a sha256 hex digest, got "${recording}"`);
   }
-  let slots = emptyHumanRatings(recording || null);
+  let slots = bindBallotsToSubject(emptyHumanRatings(recording || null), subject);
+  if (packPath) {
+    const fromPack = humanRatingsFromPack(readReviewerPack(packPath), subject);
+    if (recording && fromPack.recordingSha256 !== recording) {
+      throw new Error(
+        `--recording ${recording} does not match --reviewer-pack's shared cut ` +
+          `${fromPack.recordingSha256} (ballots judge one shared recording)`,
+      );
+    }
+    slots = fromPack;
+  }
+  const cut = recording || slots.recordingSha256 || "";
   for (const rate of rates) {
-    const match = /^([^:]+):([^,]+),([^,]+)$/.exec(rate.trim());
-    if (!match) throw new Error(`--rate needs rater:timbre,accent (ints 1-5), got "${rate}"`);
+    const match = /^([^:]+):(\d+),(\d+)(?:,(\d+))?$/.exec(rate.trim());
+    if (!match) {
+      throw new Error(
+        `--rate needs rater:timbre,accent[,naturalness] (ints 1-5), got "${rate}"`,
+      );
+    }
+    const naturalness = match[4] === undefined ? undefined : Number(match[4]);
     slots = addHumanRating(
       slots,
-      { rater: match[1].trim(), timbre: Number(match[2]), accent: Number(match[3]) },
-      recording,
+      {
+        rater: match[1].trim(),
+        timbre: Number(match[2]),
+        accent: Number(match[3]),
+        ...(naturalness !== undefined ? { languageNaturalness: naturalness } : {}),
+      },
+      cut,
     );
   }
   return slots;
@@ -1239,6 +1308,8 @@ async function main(): Promise<void> {
   const humanRatings: HumanRatings = readHumanRatings(
     argAll("--rate"),
     readRecordingBinding(arg("--recording", ""), arg("--recording-file", "")),
+    subject,
+    arg("--reviewer-pack", ""),
   );
 
   /** Per-scenario stdout: every evidence parser reads only its own producer. */
