@@ -89,7 +89,10 @@ const finite = (value: number | null | undefined): number | null =>
  * How far `endpointing + generation` may sit from the trace's printed gap. The
  * trace prints `at` to 10ms and the gap to 1ms, and the client's reply-start
  * receipt lands a localhost round trip after the server start (observed single
- * digits of ms). A bigger disagreement means a different reply was joined.
+ * digits of ms). A bigger disagreement means a different reply was joined, so
+ * this admits or rejects a split sample; it is an evidence-admission tolerance,
+ * not a gate threshold. Every gate budget stays single-source in
+ * `scoreboard-budgets.ts` and is not edited here.
  */
 const TRACE_GAP_TOLERANCE_MS = 50;
 

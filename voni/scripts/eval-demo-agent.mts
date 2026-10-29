@@ -131,7 +131,7 @@ import {
   getOrCreateDemoAgent,
 } from "../src/lib/demo/stored-agents";
 import { createEvalEventWriter } from "../src/lib/demo/eval-events";
-import { createTurnMarks } from "../src/lib/demo/turn-marks";
+import { createCallTurnMarks } from "../src/lib/demo/turn-marks";
 import {
   evalSummaryIdentity,
   evalToolExecutor,
@@ -744,12 +744,10 @@ async function runClient(
   // Per-call turn receipt marks for the latency split (ticket 01). Null when
   // the stream is off, so a live call that did not ask for a file pays
   // nothing: `mark` is the only work a call with `--events` adds.
-  const MARKS = EVENTS.path ? createTurnMarks(EVENTS) : null;
-  const mark = (msg: { type: string; reply_id?: unknown }) =>
-    MARKS?.observe(msg, {
-      sessionId: outcome.sessionId,
-      atMs: Math.max(0, Math.round(Date.now() - t0)),
-    });
+  const mark = createCallTurnMarks(EVENTS, () => ({
+    sessionId: outcome.sessionId,
+    atMs: Date.now() - t0,
+  }));
   let repliesDone = 0;
   let audioChunks = 0;
   /** The caller asked to end; a spoken goodbye with no tool call still ends. */
@@ -1700,12 +1698,10 @@ async function runToolSession(
   const modes = new Map(DEMO_VOICE_TOOLS.map((t) => [t.name, t.execution_mode]));
   const t0 = Date.now();
   // Same per-call turn marks as `runClient`: null when the stream is off.
-  const MARKS = EVENTS.path ? createTurnMarks(EVENTS) : null;
-  const mark = (msg: { type: string; reply_id?: unknown }) =>
-    MARKS?.observe(msg, {
-      sessionId: outcome.sessionId ?? null,
-      atMs: Math.max(0, Math.round(Date.now() - t0)),
-    });
+  const mark = createCallTurnMarks(EVENTS, () => ({
+    sessionId: outcome.sessionId ?? null,
+    atMs: Date.now() - t0,
+  }));
   let replyActive = false;
   let current: ReplyRecord | null = null;
   let lastWasToolResult = false;

@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createEvalEventWriter, readEvalEvents } from "./eval-events";
-import { createTurnMarks } from "./turn-marks";
+import { createCallTurnMarks, createTurnMarks } from "./turn-marks";
 
 const dir = () => mkdtempSync(join(tmpdir(), "turn-marks-"));
 
@@ -105,4 +105,25 @@ test("a disabled stream records nothing", () => {
   assert.equal(marks.observe({ type: "transcript.user" }, { sessionId: "sess_a", atMs: 1 }), null);
   assert.equal(marks.observe({ type: "reply.started", reply_id: "r1" }, { sessionId: "sess_a", atMs: 2 }), null);
   assert.equal(marks.observe({ type: "reply.audio", reply_id: "r1" }, { sessionId: "sess_a", atMs: 3 }), null);
+});
+
+test("the call helper reads the call context when the mark fires and rounds to whole ms", () => {
+  const path = join(dir(), "events.jsonl");
+  const writer = createEvalEventWriter(path, { startedAtMs: 0, now: () => 0 });
+  let sessionId: string | null = "sess_a";
+  let elapsedMs = 1_234.6;
+  const mark = createCallTurnMarks(writer, () => ({ sessionId, atMs: elapsedMs }));
+  mark({ type: "transcript.user" });
+  sessionId = null;
+  elapsedMs = 1_500.2;
+  mark({ type: "reply.started", reply_id: "r1" });
+  assert.deepEqual(readEvalEvents(path), [
+    { atMs: 1_235, type: "turn.user_final", sessionId: "sess_a", turnId: "turn-1", callMs: 1_235 },
+    { atMs: 1_500, type: "turn.reply_start", sessionId: null, turnId: "turn-1", replyId: "r1", callMs: 1_500 },
+  ]);
+});
+
+test("the call helper is a no-op when the stream is off", () => {
+  const mark = createCallTurnMarks(createEvalEventWriter(null), () => ({ sessionId: "sess_a", atMs: 1 }));
+  assert.equal(mark({ type: "transcript.user" }), null);
 });
