@@ -20,6 +20,12 @@ function run(args: string[], cwd: string) {
 type MatrixJson = {
   schemaVersion: number;
   featuredSubject: SubjectRecord;
+  ordering: {
+    rule: string;
+    featuredStatus: string | null;
+    detail: string;
+    blocked: string[];
+  };
   subjects: SubjectRecord[];
   results: {
     subject: SubjectRecord;
@@ -260,6 +266,83 @@ test("--from derives each subject's verdict from its own run, including a tenant
     new URL("../", import.meta.url).pathname,
   );
   assert.notEqual(strict.status, 0);
+});
+
+test("--from judges a non-English row only after the featured subject passes", () => {
+  const dir = mkdtempSync(join(tmpdir(), "matrix-"));
+  const from = join(dir, "runs");
+  mkdirSync(from, { recursive: true });
+  writeFileSync(
+    join(from, "anna.json"),
+    JSON.stringify(
+      scoreArtifact(
+        "anna",
+        { jump: 0, overload: 0, clip: 0, underrun: 0, inputDrop: 0 },
+        ["send it with Lime 42 in the subject"],
+        { gates: [{ name: "barge-in-cut", status: "FAIL", detail: "cut 1841ms exceeds 1500ms" }] },
+      ),
+    ),
+  );
+  writeFileSync(
+    join(from, "lola.json"),
+    JSON.stringify(
+      scoreArtifact("lola", { jump: 0, overload: 0, clip: 0, underrun: 0, inputDrop: 0 }, [
+        "send it with Lime 42 in the subject",
+      ]),
+    ),
+  );
+
+  const out = join(dir, "matrix.json");
+  const result = run(
+    ["--from", from, "--voices", "anna,lola", "--out", out],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  const matrix = readMatrix(out);
+  assert.equal(matrix.ordering.rule, "featured-first");
+  assert.equal(matrix.ordering.featuredStatus, "FAIL");
+  assert.match(matrix.ordering.detail, /blocked: featured subject demo anna \(en, browser\) has not passed/);
+  assert.equal(matrix.results.find((row) => row.voice === "anna")?.status, "FAIL");
+  const lola = matrix.results.find((row) => row.voice === "lola");
+  assert.equal(lola?.status, "BLOCKED", "a passing lola run is not judged on a failed instrument");
+  assert.equal(lola?.verdict, null);
+  assert.match(lola?.detail ?? "", /blocked: featured subject demo anna/);
+  assert.match(result.stdout, /ordering featured-first/);
+  assert.match(result.stdout, /BLOCK\s+demo lola \(es, browser\).*blocked: featured subject demo anna/);
+  assert.match(result.stdout, /0\/2 clean, 1 blocked/);
+  assert.equal(matrix.gates.find((g) => g.name === "matrix")?.status, "FAIL");
+
+  const strict = run(
+    ["--from", from, "--voices", "anna,lola", "--out", join(dir, "strict.json"), "--strict"],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.notEqual(strict.status, 0, "--strict refuses a matrix where a Locale was never judged");
+});
+
+test("--from leaves a non-featured row blocked when the featured subject has no run", () => {
+  const dir = mkdtempSync(join(tmpdir(), "matrix-"));
+  const from = join(dir, "runs");
+  mkdirSync(from, { recursive: true });
+  writeFileSync(
+    join(from, "lola.json"),
+    JSON.stringify(
+      scoreArtifact("lola", { jump: 0, overload: 0, clip: 0, underrun: 0, inputDrop: 0 }, [
+        "send it with Lime 42 in the subject",
+      ]),
+    ),
+  );
+
+  const out = join(dir, "matrix.json");
+  const result = run(
+    ["--from", from, "--voices", "lola", "--out", out],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  const matrix = readMatrix(out);
+  assert.equal(matrix.ordering.featuredStatus, null, "no featured run, no opened gate");
+  assert.equal(matrix.results[0]?.status, "BLOCKED");
+  assert.match(matrix.results[0]?.detail ?? "", /blocked: featured subject demo anna \(en, browser\) has not passed/);
+  assert.match(result.stdout, /BLOCK\s+demo lola \(es, browser\)/);
 });
 
 test("--from reports a missing subject run as MISSING instead of copying another row", () => {

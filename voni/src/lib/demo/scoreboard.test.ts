@@ -96,6 +96,7 @@ import {
   formatTraceTurn,
   resolveMatrixVoices,
   subjectGateVerdict,
+  subjectRowKey,
   classifyOverheard,
   evaluateOverheardRecall,
   formatGateTable,
@@ -5345,6 +5346,22 @@ function matrixRun(input: {
   };
 }
 
+/** One matrix row's run with a single gate that decides its verdict. */
+function judgedRun(
+  subject: SubjectRecord,
+  voice: string,
+  status: "PASS" | "FAIL" = "PASS",
+): ScoreboardArtifact {
+  return matrixRun({
+    voice,
+    subject,
+    gates:
+      status === "PASS"
+        ? [{ name: "plumbing", status: "PASS", detail: "eval runner finished" }]
+        : [{ name: "barge-in-cut", status: "FAIL", detail: "cut 1841ms exceeds 1500ms" }],
+  });
+}
+
 test("each matrix row derives its gate verdict from its own subject artifact", () => {
   const anna = resolveSubject({ voice: "anna" });
   const lola = resolveSubject({ voice: "lola" });
@@ -5410,7 +5427,8 @@ test("a failing subject cannot borrow the featured voice's passing verdict", () 
   assert.equal(featuredGreen.results.find((row) => sameSubject(row.subject, lola))?.status, "FAIL");
   assert.equal(featuredGreen.gates.find((gate) => gate.name === "matrix")?.status, "FAIL");
 
-  // And the reverse: a red featured voice never reds a clean subject's row.
+  // And the reverse: a red featured voice never hands its verdict to a clean
+  // subject's row — since ticket 78 that row is not judged at all.
   const featuredRed = buildRegressionMatrix({
     entries: [
       { subject: anna, artifact: failing(anna, "anna") },
@@ -5418,8 +5436,119 @@ test("a failing subject cannot borrow the featured voice's passing verdict", () 
     ],
   });
   assert.equal(featuredRed.results.find((row) => sameSubject(row.subject, anna))?.status, "FAIL");
-  assert.equal(featuredRed.results.find((row) => sameSubject(row.subject, lola))?.status, "PASS");
+  const blockedLola = featuredRed.results.find((row) => sameSubject(row.subject, lola));
+  assert.equal(blockedLola?.status, "BLOCKED");
+  assert.equal(blockedLola?.verdict, null, "a clean run is not judged before the featured subject passes");
   assert.equal(featuredRed.gates.find((gate) => gate.name === "matrix")?.status, "FAIL");
+});
+
+test("featured first: a failing featured subject blocks a non-English subject from being judged", () => {
+  const anna = resolveSubject({ voice: "anna" });
+  const lola = resolveSubject({ voice: "lola" });
+  const matrix = buildRegressionMatrix({
+    entries: [
+      { subject: lola, artifact: judgedRun(lola, "lola") },
+      { subject: anna, artifact: judgedRun(anna, "anna", "FAIL") },
+    ],
+  });
+
+  const lolaRow = matrix.results.find((row) => sameSubject(row.subject, lola));
+  assert.equal(lolaRow?.status, "BLOCKED", "a non-English subject is not judged on an unproved instrument");
+  assert.equal(lolaRow?.verdict, null, "blocked means no verdict was derived");
+  assert.match(
+    lolaRow?.detail ?? "",
+    /blocked: featured subject demo anna \(en, browser\) has not passed/,
+  );
+  const table = formatMatrixTable(matrix);
+  assert.match(table, /BLOCK\s+demo lola \(es, browser\).*blocked: featured subject demo anna/);
+});
+
+test("featured first: once the featured subject passes, non-English subjects are judged normally", () => {
+  const anna = resolveSubject({ voice: "anna" });
+  const lola = resolveSubject({ voice: "lola" });
+  const matrix = buildRegressionMatrix({
+    entries: [
+      { subject: anna, artifact: judgedRun(anna, "anna") },
+      { subject: lola, artifact: judgedRun(lola, "lola", "FAIL") },
+    ],
+  });
+
+  const lolaRow = matrix.results.find((row) => sameSubject(row.subject, lola));
+  assert.equal(lolaRow?.status, "FAIL", "after anna passes the Locale row is judged on its own run");
+  assert.ok(lolaRow?.verdict, "the judged row cites its own run");
+  assert.doesNotMatch(lolaRow?.detail ?? "", /blocked:/);
+});
+
+test("featured first: a missing featured run blocks every other subject by name", () => {
+  const lola = resolveSubject({ voice: "lola" });
+  const matrix = buildRegressionMatrix({
+    entries: [{ subject: lola, artifact: judgedRun(lola, "lola") }],
+  });
+
+  const lolaRow = matrix.results.find((row) => sameSubject(row.subject, lola));
+  assert.equal(lolaRow?.status, "BLOCKED");
+  assert.equal(lolaRow?.verdict, null);
+  assert.match(lolaRow?.detail ?? "", /blocked: featured subject demo anna \(en, browser\) has not passed/);
+  assert.equal(matrix.ordering.featuredStatus, null, "no featured row means the gate never opened");
+});
+
+test("featured first: an English non-featured subject is ordered by the same rule", () => {
+  const anna = resolveSubject({ voice: "anna" });
+  const tenant = resolveSubject({ agent: "agent_en_1", voice: "alba", locale: "en" });
+  const blocked = buildRegressionMatrix({
+    entries: [
+      { subject: anna, artifact: judgedRun(anna, "anna", "FAIL") },
+      { subject: tenant, artifact: judgedRun(tenant, "alba") },
+    ],
+  });
+  const blockedTenant = blocked.results.find((row) => sameSubject(row.subject, tenant));
+  assert.equal(blockedTenant?.status, "BLOCKED", "ordering is not a locale rule: English rows wait too");
+  assert.equal(blockedTenant?.verdict, null);
+
+  const judged = buildRegressionMatrix({
+    entries: [
+      { subject: anna, artifact: judgedRun(anna, "anna") },
+      { subject: tenant, artifact: judgedRun(tenant, "alba") },
+    ],
+  });
+  assert.equal(judged.results.find((row) => sameSubject(row.subject, tenant))?.status, "PASS");
+});
+
+test("featured first: the artifact records the ordering rule and the featured row leads", () => {
+  const anna = resolveSubject({ voice: "anna" });
+  const lola = resolveSubject({ voice: "lola" });
+  const matrix = buildRegressionMatrix({
+    entries: [
+      { subject: lola, artifact: judgedRun(lola, "lola") },
+      { subject: anna, artifact: judgedRun(anna, "anna", "FAIL") },
+    ],
+  });
+
+  assert.equal(matrix.ordering.rule, "featured-first");
+  assert.equal(matrix.ordering.featuredStatus, "FAIL");
+  assert.deepEqual(matrix.ordering.blocked, [subjectRowKey(lola)]);
+  assert.match(matrix.ordering.detail, /featured subject demo anna \(en, browser\) has not passed/);
+  assert.equal(matrix.results[0]?.isFeatured, true, "the featured row is ordered first");
+  assert.equal(matrix.subjects[0]?.agent.kind, "demo");
+  assert.match(formatMatrixTable(matrix), /ordering featured-first/);
+  const orderingGate = matrix.gates.find((gate) => gate.name === "ordering:featured-first");
+  assert.equal(orderingGate?.status, "FAIL");
+  assert.match(orderingGate?.detail ?? "", /blocked: featured subject demo anna/);
+});
+
+test("featured first: a passing featured run opens the gate and leaves no subject blocked", () => {
+  const anna = resolveSubject({ voice: "anna" });
+  const lola = resolveSubject({ voice: "lola" });
+  const matrix = buildRegressionMatrix({
+    entries: [
+      { subject: lola, artifact: judgedRun(lola, "lola") },
+      { subject: anna, artifact: judgedRun(anna, "anna") },
+    ],
+  });
+  assert.equal(matrix.ordering.featuredStatus, "PASS");
+  assert.deepEqual(matrix.ordering.blocked, []);
+  assert.ok(matrix.results.every((row) => row.status !== "BLOCKED"));
+  assert.equal(matrix.gates.find((gate) => gate.name === "ordering:featured-first")?.status, "PASS");
 });
 
 test("a tenant subject and its demo voice are distinct rows with their own verdicts", () => {
@@ -5438,13 +5567,17 @@ test("a tenant subject and its demo voice are distinct rows with their own verdi
     gates: [{ name: "barge-in-cut", status: "FAIL", detail: "cut 1841ms exceeds 1500ms" }],
   });
 
+  const anna = resolveSubject({ voice: "anna" });
   const matrix = buildRegressionMatrix({
     entries: [
+      // The featured subject opens the ordering gate (ticket 78), so the
+      // tenant/demo distinction below is what decides these rows.
+      { subject: anna, artifact: judgedRun(anna, "anna") },
       { subject: demo, artifact: demoRun },
       { subject: tenant, artifact: tenantRun },
     ],
   });
-  assert.equal(matrix.results.length, 2);
+  assert.equal(matrix.results.length, 3);
   const demoRow = matrix.results.find((row) => sameSubject(row.subject, demo));
   const tenantRow = matrix.results.find((row) => sameSubject(row.subject, tenant));
   assert.equal(demoRow?.status, "PASS");
