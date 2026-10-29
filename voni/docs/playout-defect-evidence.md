@@ -168,3 +168,32 @@ moved is an error (`no longer in public/playout-processor.js`), never a silent p
 controls cannot rot into tautologies.
 
 Keep the stall inside cushion + 1 s or it is a new turn by design.
+
+## After ticket 29: the barge-in cost
+
+A barge-in `flush` fades the sounding tail and drops the interrupted reply's queued audio
+(speech the caller has already talked over), but it no longer resets the reply start to a
+cold one. The cushion's deadline survives the flush: the next reply may start on the
+target cushion, or as soon as the barge-in itself has already cost that cushion, whichever
+comes first. Audio that arrives inside the window still starts on the remainder of it;
+audio that arrives later starts on its first chunk instead of paying a second pre-roll.
+Measured on the ticket-29 branch with the real worklet, the same vm seam, 10 ms chunks and
+a 40 ms flush fade at 0.8 s:
+
+| new reply's first audio | before 29 | after 29 |
+| --- | --- | --- |
+| 0.1 s after the barge-in (inside the window) | **0.491 s** of silence after the audio | **0.401 s** — the remaining cushion, preserved |
+| 1.6 s after the barge-in (server end-pointed, judged, generated) | **0.491 s** of silence after the audio | **0.000 s** — starts on arrival |
+
+The replay is `voni/src/lib/voice/playout-barge-in.test.ts`, which prints both rows and
+runs the cold-start worklet as its negative control:
+
+```
+cd voni && node --import tsx --test src/lib/voice/playout-barge-in.test.ts
+# barge-in: new reply's first audio at 1.600s, first sound at 1.600s, barge-in gap 0 ms
+# negative control: the old flush costs 491 ms
+```
+
+The preserved cushion is one-shot: it is spent by the next reply's start, so a later reply
+waits for the target like any other. A hang-up passes `keepCushion: false` and keeps no
+credit at all; the queue is cleared in both cases.

@@ -131,9 +131,12 @@ const LEGACY_GAIN = `    const room = Math.max(0, (this.queued + 1 - this.frac) 
 const GAIN_WITHOUT_BUFFER = "    this.gain = Math.min(1, this.gain + this.gainStep);";
 
 /** Ticket 07's resume: after a dry-out, wait for a whole new target cushion. */
-const LEGACY_RESUME_WAIT = "      if (this.queued >= TARGET_CUSHION_S * this.rate || lull) this.start();";
+const LEGACY_RESUME_WAIT = `      const buffered = this.queued >= TARGET_CUSHION_S * this.rate;
+      if (buffered || lull) this.start();`;
 const RESUME_ON_ARRIVAL = `      const resuming = currentTime - this.dryAt <= RESUME_WINDOW_S;
-      if (resuming || this.queued >= TARGET_CUSHION_S * this.rate || lull) this.start();`;
+      const cushioned = currentTime >= this.cushionBy;
+      const buffered = this.queued >= TARGET_CUSHION_S * this.rate;
+      if (resuming || cushioned || buffered || lull) this.start();`;
 
 function sineChunk(start: number, n: number) {
   const s = new Float32Array(n);
