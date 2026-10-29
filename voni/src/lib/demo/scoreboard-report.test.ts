@@ -394,3 +394,226 @@ test("something that is not a scoreboard artifact throws instead of printing a b
   assert.throws(() => buildInspectReport({} as never), /missing voice\/runId/);
   assert.throws(() => buildInspectReport(null as never), /not a scoreboard artifact/);
 });
+
+test("the adoption block lists every gate compactly and labels production end-of-turn neutrally", () => {
+  const base = artifact();
+  const report = buildInspectReport(base);
+  const statuses = base.gates.map((gate) => gate.status);
+  assert.deepEqual(report.adoption.gates, {
+    total: statuses.length,
+    pass: statuses.filter((status) => status === "PASS").length,
+    info: statuses.filter((status) => status === "INFO").length,
+    fail: statuses.filter((status) => status === "FAIL").length,
+    failing: base.gates.filter((gate) => gate.status === "FAIL").map((gate) => gate.name),
+  });
+  const text = formatInspectReport(report);
+  assert.match(text, /adoption inputs \(evidence only, never a verdict\)/);
+  // Every gate row is still present in the report, so the tally never hides one.
+  for (const gate of base.gates) {
+    assert.match(text, new RegExp(`^  ${gate.status}\\s+${gate.name}$`, "m"));
+  }
+  assert.match(
+    text,
+    new RegExp(
+      `gates\\s+${statuses.length}: ${report.adoption.gates.pass} PASS, ` +
+        `${report.adoption.gates.info} INFO, ${report.adoption.gates.fail} FAIL`,
+    ),
+  );
+  // The split is reused from the band summary, never printed twice.
+  assert.equal(text.match(/latency split \(perceived is report-only, never gated\)/g)?.length, 1);
+  assert.match(text, /split\s+latency split above \(per-band; perceived is report-only\)/);
+  // No artifact end-of-turn experiment means production, labelled neutrally: the
+  // gate row above carries whether production pacing actually held.
+  assert.equal(report.adoption.endOfTurn.mode, "production");
+  assert.deepEqual(report.adoption.endOfTurn.turnWindows, null);
+  assert.match(
+    text,
+    /end-of-turn\s+production \(no experiment evidence; see the end-of-turn gate row\)/,
+  );
+  assert.doesNotMatch(text, /experimental/);
+  // Never an automated verdict word.
+  assert.doesNotMatch(text, /\bsafe\b/i);
+  assert.doesNotMatch(JSON.stringify(report), /\bsafe\b/i);
+});
+
+test("a variant artifact labels end-of-turn experimental, never a production pass", () => {
+  const variant = artifact();
+  variant.endOfTurn = {
+    experimental: true,
+    variant: "turn-window",
+    variantKey: "anna:exp",
+    turnWindows: { min_silence: 400, max_silence: 640, interruption_delay: 0 },
+    productionTurnDetection: null,
+  };
+  const report = buildInspectReport(variant);
+  assert.deepEqual(report.adoption.endOfTurn, {
+    mode: "experimental",
+    variant: "turn-window",
+    variantKey: "anna:exp",
+    turnWindows: { min_silence: 400, max_silence: 640, interruption_delay: 0 },
+    productionTurnDetection: null,
+  });
+  const text = formatInspectReport(report);
+  assert.match(
+    text,
+    /end-of-turn\s+experimental turn-window \(anna:exp; min_silence 400, max_silence 640, interruption_delay 0\) — evidence, not a production pass/,
+  );
+  assert.doesNotMatch(text, /end-of-turn\s+production \(no experiment evidence/);
+  assert.doesNotMatch(text, /\bsafe\b/i);
+});
+
+function heard(atS: number, text: string): string {
+  return `${atS.toFixed(2)}s  HEARD   "${text}"  (${atS.toFixed(2)}s–${(atS + 1).toFixed(2)}s)`;
+}
+
+function artifactWithTraces(
+  sessions: { id: string; excerpt: string[] }[],
+  edit?: (artifact: ScoreboardArtifact) => void,
+): ScoreboardArtifact {
+  const art = artifact(null);
+  art.callTrace = {
+    sessionId: sessions[0].id,
+    excerptSha256: "abc",
+    excerpt: sessions[0].excerpt,
+    sessions: sessions.map((session) => ({
+      sessionId: session.id,
+      excerptSha256: "abc",
+      excerpt: session.excerpt,
+    })),
+  };
+  edit?.(art);
+  return art;
+}
+
+test("fragment risk names tag, email and number turn ends with their session and caller turn", () => {
+  const base = artifactWithTraces([
+    { id: "sess_tag", excerpt: [heard(1, "So the tag is Lime 4")] },
+    { id: "sess_mail", excerpt: [heard(1, "send it to hi at voni dot")] },
+    { id: "sess_num", excerpt: [heard(1, "my number is 7")] },
+  ]);
+  base.emailInvite = { tag: "Lime 42" } as unknown as ScoreboardArtifact["emailInvite"];
+  const report = buildInspectReport(base);
+  assert.equal(report.adoption.fragmentRisk.status, "risk");
+  assert.deepEqual(report.adoption.fragmentRisk.findings, [
+    { kind: "tag", sessionId: "sess_tag", turn: 1 },
+    { kind: "email", sessionId: "sess_mail", turn: 1 },
+    { kind: "number", sessionId: "sess_num", turn: 1 },
+  ]);
+  const text = formatInspectReport(report);
+  assert.match(text, /fragment\s+risk: tag at sess_tag caller turn 1; email at sess_mail caller turn 1; number at sess_num caller turn 1/);
+  assert.doesNotMatch(text, /\bsafe\b/i);
+});
+
+test("a whole tag, whole spoken email and whole number are clear", () => {
+  const base = artifactWithTraces([
+    {
+      id: "sess_whole",
+      excerpt: [
+        heard(1, "the tag is Lime 42"),
+        heard(6, "email me at andres at casaverde dot p t"),
+        heard(11, "my number is 42"),
+      ],
+    },
+  ]);
+  base.emailInvite = { tag: "Lime 42" } as unknown as ScoreboardArtifact["emailInvite"];
+  const report = buildInspectReport(base);
+  assert.equal(report.adoption.fragmentRisk.status, "clear");
+  assert.deepEqual(report.adoption.fragmentRisk.findings, []);
+  assert.match(formatInspectReport(report), /fragment\s+clear: no caller turn ended inside the tag, email or a number/);
+});
+
+test("fragment risk reads the artifact's own tag and says unmeasured without caller evidence", () => {
+  const custom = artifactWithTraces([{ id: "sess_tag", excerpt: [heard(1, "the tag is Lotus 8")] }]);
+  custom.emailInvite = { tag: "Lotus 82" } as unknown as ScoreboardArtifact["emailInvite"];
+  const tagged = buildInspectReport(custom);
+  assert.deepEqual(tagged.adoption.fragmentRisk.findings, [
+    { kind: "tag", sessionId: "sess_tag", turn: 1 },
+  ]);
+
+  const noEvidence = buildInspectReport(artifact(null));
+  assert.equal(noEvidence.adoption.fragmentRisk.status, "unmeasured");
+  assert.deepEqual(noEvidence.adoption.fragmentRisk.findings, []);
+  assert.match(formatInspectReport(noEvidence), /fragment\s+unmeasured: no caller transcript evidence/);
+});
+
+test("a redacted ledger line without a merged turn still names the risk, with no invented turn", () => {
+  const art = artifact(null);
+  art.transcripts = {
+    sha256: "abc",
+    redacted: ['heard: "the tag is Lime 4"'],
+  };
+  const report = buildInspectReport(art);
+  assert.deepEqual(report.adoption.fragmentRisk.findings, [
+    { kind: "tag", sessionId: null, turn: null },
+  ]);
+  assert.match(formatInspectReport(report), /fragment\s+risk: tag at an unnamed caller turn/);
+});
+
+test("an incomplete clause continued by the next caller turn is named; a finished one is clear", () => {
+  const continued = artifactWithTraces([
+    {
+      id: "sess_inc",
+      excerpt: [heard(1, "I was going to"), heard(4, "the price is on the site")],
+    },
+  ]);
+  const report = buildInspectReport(continued);
+  assert.equal(report.adoption.incompleteClause.status, "risk");
+  assert.deepEqual(report.adoption.incompleteClause.findings, [
+    { sessionId: "sess_inc", turn: 1, nextTurn: 2 },
+  ]);
+  assert.match(formatInspectReport(report), /incomplete\s+risk: sess_inc caller turn 1 → 2/);
+
+  const finished = artifactWithTraces([
+    {
+      id: "sess_done",
+      excerpt: [heard(1, "We run a dental clinic in Lisbon."), heard(4, "What is the price?")],
+    },
+  ]);
+  const clear = buildInspectReport(finished);
+  assert.equal(clear.adoption.incompleteClause.status, "clear");
+  assert.deepEqual(clear.adoption.incompleteClause.findings, []);
+  assert.match(
+    formatInspectReport(clear),
+    /incomplete\s+clear: no turn ended on a clause the next turn continues/,
+  );
+});
+
+test("incomplete-clause and interrupted inputs print unmeasured when the artifact has no evidence", () => {
+  const report = buildInspectReport(artifact(null));
+  assert.equal(report.adoption.incompleteClause.status, "unmeasured");
+  assert.equal(report.adoption.interruptedTurns, null);
+  const text = formatInspectReport(report);
+  assert.match(text, /incomplete\s+unmeasured: no caller transcript evidence/);
+  assert.match(text, /interrupted\s+unmeasured: no Call-trace turn evidence/);
+  assert.doesNotMatch(text, /\bsafe\b/i);
+});
+
+test("the interrupted-turn count comes from Call trace CUT rows and can be a measured zero", () => {
+  const evidence = buildInspectReport(artifact());
+  assert.equal(evidence.adoption.interruptedTurns, 1);
+  assert.match(formatInspectReport(evidence), /interrupted\s+1 turn cut/);
+
+  const uncut = artifactWithTraces([
+    {
+      id: "sess_uncut",
+      excerpt: [heard(1, "What is the price?"), '5.00s  VONI    "It starts at"  (user_speech ttfa 900ms gap 850ms)'],
+    },
+  ]);
+  const zero = buildInspectReport(uncut);
+  assert.equal(zero.adoption.interruptedTurns, 0);
+  assert.match(formatInspectReport(zero), /interrupted\s+0 turns cut/);
+});
+
+test("a complete answer that ends on a pronoun is not an incomplete clause", () => {
+  const art = artifactWithTraces([
+    {
+      id: "sess_refusal",
+      excerpt: [
+        heard(1, "What kind of business do I run? I don't want to tell you."),
+        heard(6, "No. I'm not telling you anything."),
+      ],
+    },
+  ]);
+  const report = buildInspectReport(art);
+  assert.equal(report.adoption.incompleteClause.status, "clear");
+});
