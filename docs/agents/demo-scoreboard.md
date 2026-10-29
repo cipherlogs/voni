@@ -82,6 +82,21 @@ declare why there (`run`, `operator`, `manual`) instead of staying silent.
 Thresholds live only in `scoreboard-budgets.ts` and its JSON record. Do not
 edit a budget to pass; fix the call or amend the spec first.
 
+## Subject matrix ordering (W5, ticket 78)
+
+`npm run scoreboard:matrix` judges one subject per row — `{agent, Locale,
+transport}` — and every row's verdict comes from that subject's own artifact.
+The featured subject (`anna`) is measured and judged first. Every other
+subject, English and non-English alike, stays `BLOCKED` with a named reason
+(`blocked: featured subject demo anna (en, browser) has not passed …`) until the
+featured subject's own current run in that matrix passes. A missing or
+non-passing featured run blocks too; only PASS opens the gate. The rule is
+recorded in `artifact.ordering` (rule, featured status, blocked row keys,
+detail) and in the `ordering:featured-first` gate row, and printed in the
+compact table, so a Locale is never silently judged on an unproved instrument.
+`--strict` fails while any row is blocked: a subject that was not judged is not
+clean.
+
 ## Reference capture (W0)
 
 `npm run voice:reference -- --voice lola` renders one line in one voice
