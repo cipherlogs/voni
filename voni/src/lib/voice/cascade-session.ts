@@ -51,6 +51,8 @@ export type CascadeHandlers = {
   onMetrics?: (metrics: unknown, turns: number) => void;
   onError?: (message: string) => void;
   onEnd?: (info: { turns: number }) => void;
+  /** The playout emitted its first audible sample for this connection (once). */
+  onFirstAudible?: () => void;
 };
 
 export type ServerEvent =
@@ -249,6 +251,8 @@ export class CascadeSession {
     });
     this.micStop = handle.stop;
     this.playout = this.deps.createPlayout?.(handle.audioCtx) ?? handle.playout ?? null;
+    // Chime trigger: the worklet's first audible sample, not the queued frame.
+    if (this.playout) this.playout.onFirstAudible = () => this.handlers.onFirstAudible?.();
     this.started = true;
     // Socket may already be open (fake sockets, fast localhost): flush config now.
     if (ws.readyState === ws.OPEN) this.sendConfig(config);
