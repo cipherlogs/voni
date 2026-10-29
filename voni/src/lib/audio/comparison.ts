@@ -603,6 +603,7 @@ function modulationRows<Role extends string>(
 
 /** The octave bands every capture can measure, and the one tilt pair. */
 function spectralContextFor(inputs: readonly { audio: DecodedAudio }[]): SpectralContext {
+  if (inputs.length === 0) return { bands: [], tilt: null };
   const commonBands = inputs
     .map((input) => availableBands(input.audio.facts.sampleRate))
     .reduce((shared, bands) => shared.filter((centre) => bands.includes(centre)));
@@ -669,18 +670,54 @@ export function compareCaptures(inputs: readonly CaptureInput[]): AudioCompariso
 export const TWO_CAPTURE_ROLES = ["reference", "delivered"] as const;
 export type TwoCaptureRole = (typeof TWO_CAPTURE_ROLES)[number];
 
+/**
+ * What the capture's producer says it holds. A description that disagrees with
+ * the decoded header, or with the line being compared, is a misdescribed
+ * capture: the file is not what the evidence claims, so it cannot be judged.
+ */
+export type TwoCaptureDescription = {
+  /** The sample rate the producer says the file was written at, in Hz. */
+  sampleRate?: number;
+  /** The channel count the producer says the file carries. */
+  channels?: number;
+  /** The line the producer says the file speaks. */
+  text?: string;
+};
+
 /** A decoded capture. Decoding happens before the table is built. */
-export type TwoCaptureDecoded = { path: string; audio: DecodedAudio };
+export type TwoCaptureDecoded = {
+  path: string;
+  audio: DecodedAudio;
+  /** Optional provenance the file must agree with, or it is misdescribed. */
+  description?: TwoCaptureDescription;
+};
 
 /** A capture that could not be compared, named by what went wrong. */
 export type TwoCaptureFailure = {
   path: string;
   reason: string;
-  /** Defaults to `unreadable`; a caller may name a missing or truncated file. */
-  kind?: "missing" | "truncated" | "unreadable";
+  /** Defaults to `unreadable`; a caller may name a missing, empty or truncated file. */
+  kind?: "missing" | "zero-byte" | "truncated" | "unreadable";
 };
 
 export type TwoCaptureSlot = TwoCaptureDecoded | TwoCaptureFailure;
+
+/** Why a capture cannot enter the comparison. Every code blocks a pass. */
+export type TwoCaptureProblemCode =
+  | "missing"
+  | "zero-byte"
+  | "unreadable"
+  | "truncated"
+  | "header-only"
+  | "stereo"
+  | "wrong-rate"
+  | "misdescribed";
+
+/** A refused capture: the code a caller can branch on and the printed reason. */
+export type TwoCaptureProblem = {
+  code: TwoCaptureProblemCode;
+  reason: string;
+};
 
 /**
  * The marker that says what part of the capture is the line. A whole call
@@ -707,14 +744,22 @@ export type TwoCaptureRequest = {
   line: TwoCaptureLine | null;
   /** The transcript's rendering of the same line; a mismatch is unresolved. */
   spokenLine?: string;
+  /**
+   * The format the call negotiated. A capture in another format is a
+   * wrong-rate capture, never a silent resampling.
+   */
+  expectedFormat?: { sampleRate: number; channels: number };
 };
 
 export type TwoCaptureCapture = {
   role: TwoCaptureRole;
   path: string;
+  /** True only when the capture is present, decodable and usable by this profile. */
   present: boolean;
-  /** Why the capture is not present; null when it is. */
+  /** Why the capture cannot be compared; null when it is usable. */
   reason: string | null;
+  /** The named problem, for a caller that branches on the code. */
+  problem: TwoCaptureProblem | null;
 };
 
 export type TwoCaptureComparison = {
@@ -748,11 +793,80 @@ function isDecoded(slot: TwoCaptureSlot | null): slot is TwoCaptureDecoded {
   return slot !== null && "audio" in slot;
 }
 
-function failureReason(role: TwoCaptureRole, slot: TwoCaptureSlot | null): string {
-  if (slot === null) return `${role} capture missing: no file supplied`;
-  if (isDecoded(slot)) return `${role} capture is present`;
-  const kind = slot.kind ?? "unreadable";
-  return `${role} capture ${kind}: ${slot.path}: ${slot.reason}`;
+/**
+ * The W0 profile requires one mono, 16-bit PCM WAV per leg. A capture that is
+ * missing, unreadable, zero-byte, header-only, stereo, at another rate than the
+ * call negotiated, or described as something it is not, is named here and
+ * never measured as if it were a normal file.
+ */
+function captureProblem(
+  role: TwoCaptureRole,
+  slot: TwoCaptureSlot | null,
+  line: TwoCaptureLine | null,
+  expectedFormat: TwoCaptureRequest["expectedFormat"],
+): TwoCaptureProblem | null {
+  if (slot === null) {
+    return { code: "missing", reason: `${role} capture missing: no file supplied` };
+  }
+  if (!isDecoded(slot)) {
+    const kind = slot.kind ?? "unreadable";
+    return { code: kind, reason: `${role} capture ${kind}: ${slot.path}: ${slot.reason}` };
+  }
+
+  const facts = slot.audio.facts;
+  if (facts.frameCount === 0 || slot.audio.samples.length === 0) {
+    return {
+      code: "header-only",
+      reason:
+        `${role} capture header-only: ${slot.path}: the file has a header and ` +
+        "0 sample frames, so there is nothing to measure",
+    };
+  }
+  if (facts.channels !== 1) {
+    return {
+      code: "stereo",
+      reason:
+        `${role} capture format mismatch: ${facts.channels} channels; the W0 profile compares ` +
+        "mono captures, so a multi-channel file is not the capture the profile names",
+    };
+  }
+  if (expectedFormat !== undefined && facts.sampleRate !== expectedFormat.sampleRate) {
+    return {
+      code: "wrong-rate",
+      reason:
+        `${role} capture is ${facts.sampleRate} Hz but the call negotiated ` +
+        `${expectedFormat.sampleRate} Hz; a wrong-rate capture is unresolved rather than resampled`,
+    };
+  }
+
+  const description = slot.description;
+  if (description !== undefined) {
+    if (description.sampleRate !== undefined && description.sampleRate !== facts.sampleRate) {
+      return {
+        code: "misdescribed",
+        reason:
+          `${role} capture misdescribed: ${slot.path}: the description says ` +
+          `${description.sampleRate} Hz, the file is ${facts.sampleRate} Hz`,
+      };
+    }
+    if (description.channels !== undefined && description.channels !== facts.channels) {
+      return {
+        code: "misdescribed",
+        reason:
+          `${role} capture misdescribed: ${slot.path}: the description says ` +
+          `${description.channels} channels, the file has ${facts.channels}`,
+      };
+    }
+    if (description.text !== undefined && line !== null && !sameLine(line.text, description.text)) {
+      return {
+        code: "misdescribed",
+        reason:
+          `${role} capture misdescribed: ${slot.path}: the description says ` +
+          `${JSON.stringify(description.text)} but the line is ${JSON.stringify(line.text)}`,
+      };
+    }
+  }
+  return null;
 }
 
 function normalizedWords(text: string): string[] {
@@ -957,16 +1071,39 @@ export function compareReferenceAndDelivered(
     );
   }
 
+  const captureProblems = {} as Record<TwoCaptureRole, TwoCaptureProblem | null>;
+  for (const role of TWO_CAPTURE_ROLES) {
+    captureProblems[role] = captureProblem(
+      role,
+      slots[role],
+      input.line,
+      input.expectedFormat,
+    );
+  }
+
   const captureHeaders: TwoCaptureCapture[] = TWO_CAPTURE_ROLES.map((role) => {
     const slot = slots[role];
-    const present = isDecoded(slot);
-    const reason = present ? null : failureReason(role, slot);
-    if (!present) reasons.push(reason!);
-    return { role, path: slot?.path ?? "(no path)", present, reason };
+    const problem = captureProblems[role];
+    if (problem !== null) reasons.push(problem.reason);
+    return {
+      role,
+      path: slot?.path ?? "(no path)",
+      present: problem === null,
+      reason: problem?.reason ?? null,
+      problem,
+    };
   });
 
-  const reference = isDecoded(slots.reference) ? slots.reference.audio : null;
-  const delivered = isDecoded(slots.delivered) ? slots.delivered.audio : null;
+  // A capture the profile refuses is not measured at all: a header-only or
+  // stereo file must not contribute a number that could be read as evidence.
+  const reference =
+    captureProblems.reference === null && isDecoded(slots.reference)
+      ? slots.reference.audio
+      : null;
+  const delivered =
+    captureProblems.delivered === null && isDecoded(slots.delivered)
+      ? slots.delivered.audio
+      : null;
 
   let alignedReference = reference;
   let alignedDelivered = delivered;
@@ -1002,17 +1139,18 @@ export function compareReferenceAndDelivered(
   if (reference === null) {
     // Distortion is relative: with no reference there is no baseline, so the
     // delivered column says why instead of reporting zero against itself.
+    const missing = captureProblems.reference?.reason ?? "reference capture is not comparable";
     for (const fact of facts) {
-      fact.distortion = {
-        kind: "unmeasured",
-        reason: failureReason("reference", slots.reference),
-      };
+      fact.distortion = { kind: "unmeasured", reason: missing };
     }
   }
   const rowCaptures: RowCapture<TwoCaptureRole>[] = TWO_CAPTURE_ROLES.map((role) => {
     const fact = facts.find((capture) => capture.role === role);
     if (fact) return fact;
-    return { role, missingReason: failureReason(role, slots[role]) };
+    return {
+      role,
+      missingReason: captureProblems[role]?.reason ?? `${role} capture is not comparable`,
+    };
   });
   const rows = buildRows(TWO_CAPTURE_ROLES, rowCaptures, spectral);
 
@@ -1139,7 +1277,7 @@ export function formatComparisonTable(comparison: AudioComparison): string {
 
 /** Render the W0 two-capture comparison, with no platform column. */
 export function formatTwoCaptureTable(comparison: TwoCaptureComparison): string {
-  return renderComparisonTable({
+  const table = renderComparisonTable({
     title: "W0 two-capture comparison",
     roles: TWO_CAPTURE_ROLES,
     captures: comparison.captures.map((capture) => ({
@@ -1149,4 +1287,13 @@ export function formatTwoCaptureTable(comparison: TwoCaptureComparison): string 
     })),
     rows: comparison.rows,
   });
+  // A reader must see the status beside the numbers: an unresolved comparison
+  // is never printed in a shape that could be read as a pass.
+  const lines = [
+    table,
+    "",
+    `  status    ${comparison.status}`,
+    ...comparison.unresolvedReasons.map((reason) => `    - ${reason}`),
+  ];
+  return lines.join("\n");
 }
