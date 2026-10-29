@@ -1,11 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  REFERENCE_BITS_PER_SAMPLE,
+  REFERENCE_CHANNELS,
+  REFERENCE_SAMPLE_RATE,
   referenceDurationMs,
   referencePath,
+  referenceTextFromFile,
   renderReference,
   type ReferenceSynth,
 } from "./reference-render";
@@ -28,6 +33,126 @@ function stub(pcm: Buffer = PCM): ReferenceSynth & { calls: { voiceId: string; t
 function tempDir(): string {
   return mkdtempSync(join(tmpdir(), "reference-render-"));
 }
+
+test("the text-file seam returns the exact line and names its two failures", () => {
+  const dir = tempDir();
+  const line = "El pedido número 427 no llegó.";
+  const file = join(dir, "line.txt");
+  writeFileSync(file, `${line}\n`);
+
+  assert.equal(referenceTextFromFile(file), line, "the editor's trailing newline is not part of the line");
+  assert.throws(() => referenceTextFromFile(join(dir, "missing.txt")), /reference text file not found/);
+
+  const empty = join(dir, "empty.txt");
+  writeFileSync(empty, " \n\t\n");
+  assert.throws(() => referenceTextFromFile(empty), /reference text file is empty/);
+});
+
+test("a text file renders that exact line instead of the voice's greeting", async () => {
+  const dir = tempDir();
+  const line = "El pedido número 427 no llegó.";
+  const file = join(dir, "line.txt");
+  writeFileSync(file, `${line}\n`);
+
+  const synth = stub();
+  const rendered = await renderReference({ voiceId: "lola", dir, textFile: file, synth });
+
+  assert.equal(synth.calls.length, 1);
+  assert.equal(synth.calls[0]?.text, line, "the file's text is the line, trailing newline removed");
+  assert.equal(rendered.text, line);
+  assert.equal(rendered.path, referencePath(dir, "lola", line));
+  assert.notEqual(
+    rendered.path,
+    referencePath(dir, "lola", VONI_GREETINGS.es),
+    "a mid-call sentence is its own reference, not the greeting's cache entry",
+  );
+  assert.equal(rendered.cached, false);
+  assert.ok(existsSync(rendered.path));
+});
+
+test("a missing or empty text file fails by name, before synthesizing", async () => {
+  const dir = tempDir();
+  const synth = stub();
+
+  await assert.rejects(
+    () => renderReference({ voiceId: "lola", dir, textFile: join(dir, "missing.txt"), synth }),
+    /reference text file not found/,
+  );
+
+  const empty = join(dir, "empty.txt");
+  writeFileSync(empty, " \n\t\n");
+  await assert.rejects(
+    () => renderReference({ voiceId: "lola", dir, textFile: empty, synth }),
+    /reference text file is empty/,
+  );
+
+  assert.equal(synth.calls.length, 0, "a bad line is rejected before it is spoken");
+});
+
+test("a line cannot come from both text and a text file", async () => {
+  const dir = tempDir();
+  const file = join(dir, "line.txt");
+  writeFileSync(file, "Una frase.");
+  const synth = stub();
+
+  await assert.rejects(
+    () => renderReference({ voiceId: "lola", dir, text: "Otra frase.", textFile: file, synth }),
+    /text and textFile cannot both be set/,
+  );
+  assert.equal(synth.calls.length, 0);
+});
+
+test("a text-file line and the greeting are comparable captures of the same voice", async () => {
+  const dir = tempDir();
+  const greeting = await renderReference({ voiceId: "lola", dir, synth: stub() });
+
+  const line = "El pedido número 427 no llegó.";
+  const file = join(dir, "line.txt");
+  writeFileSync(file, line);
+  const midCall = await renderReference({ voiceId: "lola", dir, textFile: file, synth: stub() });
+
+  assert.equal(midCall.voiceId, greeting.voiceId, "same voice on both captures");
+  assert.notEqual(midCall.path, greeting.path, "the two lines never share a cache file");
+
+  for (const [label, captured] of [
+    ["greeting", greeting],
+    ["text file", midCall],
+  ] as const) {
+    const wav = readFileSync(captured.path);
+    assert.equal(wav.toString("ascii", 0, 4), "RIFF", `${label}: WAV container`);
+    assert.equal(wav.toString("ascii", 8, 12), "WAVE", `${label}: WAV container`);
+    assert.equal(wav.readUInt16LE(20), 1, `${label}: integer PCM`);
+    assert.equal(wav.readUInt16LE(22), REFERENCE_CHANNELS, `${label}: mono`);
+    assert.equal(wav.readUInt32LE(24), REFERENCE_SAMPLE_RATE, `${label}: same sample rate`);
+    assert.equal(wav.readUInt16LE(34), REFERENCE_BITS_PER_SAMPLE, `${label}: same bit depth`);
+    assert.ok(referenceDurationMs(captured.path) > 0, `${label}: measurable duration`);
+  }
+  assert.equal(
+    referenceDurationMs(midCall.path),
+    referenceDurationMs(greeting.path),
+    "the same audio yields the same measurement on either capture",
+  );
+
+  const repeated = await renderReference({ voiceId: "lola", dir, textFile: file, synth: stub() });
+  assert.equal(repeated.cached, true);
+  assert.equal(repeated.path, midCall.path, "the text-file line has its own stable cache entry");
+});
+
+test("the CLI rejects a missing text file by name without asking for a token", () => {
+  const dir = tempDir();
+  const script = new URL("../../../scripts/render-reference.mts", import.meta.url).pathname;
+  const env = { ...process.env, ASSEMBLYAI_API_KEY: "" };
+
+  const result = spawnSync(
+    "node",
+    ["--import", "tsx", script, "--voice", "lola", "--text-file", join(dir, "missing.txt"), "--out-dir", dir],
+    { encoding: "utf8", env },
+  );
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /reference text file not found/);
+  assert.doesNotMatch(result.stderr, /ASSEMBLYAI_API_KEY/, "the bad line is rejected before a token is fetched");
+});
 
 test("the default run renders the selected voice's own greeting", async () => {
   const dir = tempDir();

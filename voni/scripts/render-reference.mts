@@ -9,13 +9,15 @@
  *
  *   npm run voice:reference -- --voice lola
  *   npm run voice:reference -- --voice lola --text "Probemos otra frase."
+ *   npm run voice:reference -- --voice lola --text-file bad-line.txt
  *   npm run voice:reference -- --voice anna --out-dir /tmp/refs
  *
- * The default line is the voice's own greeting in its own Locale. The file is
- * cached by voice AND text under `.voice-references/` (gitignored working
- * files, never committed), so a rerun is free and a changed line is a new
- * capture. It is a standard PCM WAV at the voice's native level: no client
- * gain, no limiter, no normalisation.
+ * The default line is the voice's own greeting in its own Locale. A text file
+ * renders a mid-call sentence as its own reference, so a bad line is not
+ * blamed on the greeting. The file is cached by voice AND text under
+ * `.voice-references/` (gitignored working files, never committed), so a rerun
+ * is free and a changed line is a new capture. It is a standard PCM WAV at the
+ * voice's native level: no client gain, no limiter, no normalisation.
  */
 import { fileURLToPath } from "node:url";
 import { DEMO_VOICE_IDS } from "../src/lib/demo/voni-agent";
@@ -54,11 +56,13 @@ let sessionToken: string | null = null;
 async function main(): Promise<void> {
   const voiceId = arg("--voice", DEMO_VOICE_IDS[0]);
   const text = optionalArg("--text");
+  const textFile = optionalArg("--text-file");
   const dir = arg("--out-dir", fileURLToPath(new URL("../.voice-references/", import.meta.url)));
 
   const rendered = await renderReference({
     voiceId,
     ...(text === undefined ? {} : { text }),
+    ...(textFile === undefined ? {} : { textFile }),
     dir,
     synth: async ({ voiceId: voice, text: line }) => {
       sessionToken ??= await token();
