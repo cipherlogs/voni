@@ -78,6 +78,14 @@ import {
 } from "../voice/session";
 import { SCOREBOARD_BUDGETS } from "./scoreboard-budgets";
 import {
+  formatSubject,
+  sameSubject,
+  subjectForRunVoice,
+  subjectOrLegacy,
+  SubjectError,
+  type SubjectRecord,
+} from "./subject";
+import {
   BEHAVIOR_RUN_EVIDENCE_KIND,
   BEHAVIOR_RUN_EVIDENCE_SCHEMA_VERSION,
   codeFingerprintFromGit,
@@ -85,6 +93,11 @@ import {
 import { DEMO_VOICE_IDS, SILENCE_CHECK_IN_INSTRUCTIONS } from "./voni-agent";
 import { DEMO_INBOX_ADDRESS } from "./email-test";
 import { TAG_WORDS, containsTag, countTags } from "./test-tag";
+import { englishLeakForArtifact, type EnglishLeakCount } from "./english-leak";
+import {
+  answeredQuestionForArtifact,
+  type AnsweredQuestionCount,
+} from "./answered-question";
 import type { RunnerEvidence } from "./runner-evidence";
 import type { LatencyBand } from "./latency-split";
 import type {
@@ -98,13 +111,12 @@ import {
   servedAgentOutputVolume,
 } from "./stored-agents";
 import { formatTurnWindows } from "./turn-windows";
-import type { DecodedAudio } from "../audio/format-facts";
 import {
-  LEVEL_TOLERANCE_DB,
-  analyseLevel,
-  compareLevels,
-  type LevelFacts,
-} from "../audio/level-facts";
+  checkMeasuredLevel,
+  measureTimbre,
+  type MeasuredLevelCheck,
+  type MeasuredLevelInput,
+} from "./timbre-measurement";
 
 /** The locked golden script: seven beats in fixed order (spec story 11). */
 export const GOLDEN_BEATS = [
@@ -331,43 +343,200 @@ export type ScoreboardLoudness = {
   measured: MeasuredLevelCheck;
 };
 
-/** One blind ballot: timbre and accent judged 1-5 on the shared golden recording. */
+/**
+ * The ballot's axes and their fixed weights (voice-parity ticket 74). Timbre
+ * carries half because this is the timbre gate; accent and language
+ * naturalness split the other half. Every ballot carries all three axes
+ * (ticket 75); the one exception is named below, never inferred.
+ */
+export const TIMBRE_BALLOT_AXES = ["timbre", "accent", "languageNaturalness"] as const;
+export type TimbreBallotAxis = (typeof TIMBRE_BALLOT_AXES)[number];
+
+/**
+ * The one Locale the language-naturalness axis does not apply to (ticket 75).
+ * English is the featured baseline: a native English rater has no second
+ * language to judge the voice against, so the axis is N/A there and its weight
+ * renormalises over timbre and accent. Any other Locale must carry the axis —
+ * a missing naturalness score is an incomplete ballot, never a renormalised
+ * pass.
+ */
+export const NATURALNESS_BASELINE_LOCALE = "en";
+
+/** The named reason the axis is N/A for the baseline Locale. */
+export const NATURALNESS_NA_REASON =
+  "English is the featured baseline Locale, so language naturalness is N/A and its weight " +
+  "renormalises over timbre and accent";
+
+/**
+ * Whether a ballot for this Locale must carry language naturalness. An unknown
+ * or unbound Locale is treated as applying: the axis is only ever dropped for
+ * the named baseline, never because nobody named the Locale.
+ */
+export function naturalnessApplies(locale: string | null | undefined): boolean {
+  return (locale ?? "").trim().toLowerCase() !== NATURALNESS_BASELINE_LOCALE;
+}
+
+export const TIMBRE_BALLOT_AXIS_WEIGHTS: Record<TimbreBallotAxis, number> = {
+  timbre: SCOREBOARD_BUDGETS.timbreBallotWeightTimbre.value,
+  accent: SCOREBOARD_BUDGETS.timbreBallotWeightAccent.value,
+  languageNaturalness: SCOREBOARD_BUDGETS.timbreBallotWeightLanguageNaturalness.value,
+};
+
+/** Spec W5: a subject passes timbre at five out of five, never at four. */
+export const TIMBRE_BALLOT_PASS_SCORE = SCOREBOARD_BUDGETS.timbreBallotPassScore.value;
+
+/** Two independent raters on one shared recording per subject (spec W5). */
+export const TIMBRE_BALLOT_RATERS_REQUIRED = SCOREBOARD_BUDGETS.timbreBallotRatersRequired.value;
+
+/** At least two independent listeners per shared recording (spec testing decisions). */
+export const HUMAN_RATERS_REQUIRED = SCOREBOARD_BUDGETS.humanRatersRequired.value;
+
+/**
+ * One blind ballot: the three axes judged 1-5 on the subject's shared
+ * recording. `recordingSha256` is the cut this ballot judged (defaults to the
+ * record's shared hash); `reasons` records the rater's words below five.
+ */
 export type HumanRating = {
   rater: string;
   timbre: number;
   accent: number;
+  /** Third axis (ticket 75): required wherever the axis applies. */
+  languageNaturalness?: number;
+  /** The recording this ballot judged; absent = the record's shared cut. */
+  recordingSha256?: string;
+  /** The rater's stated reason for an axis below five (doctrine). */
+  reasons?: Partial<Record<TimbreBallotAxis, string>>;
 };
 
 /**
- * Blind human slots for timbre and accent (spec story 16): every ballot
- * judges the same golden recording, independently, by at least two raters.
- * `timbre`/`accent` are the running means once ballots exist, null before.
- * Human likeness stays reviewable: the gate never FAILs on taste, it only
- * records whether enough independent ears have judged.
+ * Blind human slots for the subject's weighted ballot (spec W5): every ballot
+ * judges the same shared recording, independently, by two raters at five out
+ * of five. `subject` is the subject the ballots judged — a ballot is per
+ * subject, not per voice — and the artifact build binds it before gating.
+ * `notApplicable` names any axis the subject's Locale excuses, with its reason
+ * (ticket 75: English language naturalness), so a renormalisation is never
+ * silent.
  */
 export type HumanRatings = {
   timbre: number | null;
   accent: number | null;
+  /** Mean of the ballots' language-naturalness scores; null until scored. */
+  languageNaturalness: number | null;
+  /** The raters' weighted score, 1-5; null until a ballot exists. */
+  weighted: number | null;
   recordingSha256: string | null;
+  subject?: SubjectRecord;
+  /** Axis → the named reason it does not apply to this subject. */
+  notApplicable?: Partial<Record<TimbreBallotAxis, string>>;
   ratings: HumanRating[];
 };
 
-/** At least two independent listeners per golden recording (spec testing decisions). */
-export const HUMAN_RATERS_REQUIRED = SCOREBOARD_BUDGETS.humanRatersRequired.value;
-
 export function emptyHumanRatings(recordingSha256: string | null): HumanRatings {
-  return { timbre: null, accent: null, recordingSha256, ratings: [] };
+  return {
+    timbre: null,
+    accent: null,
+    languageNaturalness: null,
+    weighted: null,
+    recordingSha256,
+    ratings: [],
+  };
+}
+
+/**
+ * Bind the ballot record to the subject it judged. The artifact builder calls
+ * this for every run, so a stored ballot always names its subject even when
+ * the operator only supplied ballots and a recording. It also records the one
+ * axis a subject's Locale can excuse (ticket 75): English language naturalness
+ * is N/A, with the named reason, and nothing else is ever dropped silently.
+ */
+export function bindBallotsToSubject(
+  human: HumanRatings,
+  subject: SubjectRecord,
+): HumanRatings {
+  return {
+    ...human,
+    subject,
+    notApplicable: naturalnessApplies(subject.locale)
+      ? undefined
+      : { languageNaturalness: NATURALNESS_NA_REASON },
+  };
 }
 
 function mean1(values: number[]): number {
   return Number((values.reduce((sum, value) => sum + value, 0) / values.length).toFixed(1));
 }
 
+function round2(value: number): number {
+  return Number(value.toFixed(2));
+}
+
 /**
- * File one blind ballot. Every ballot must score the same golden recording
- * (raters never judge different cuts), rate both axes as ints 1-5, and vote
+ * One ballot's weighted score over the axes it carries. Weights are the fixed
+ * budget records; a missing axis renormalises over the axes present. Since
+ * ticket 75 the only axis a ballot may legitimately omit is language
+ * naturalness for the English baseline (named by `notApplicable`), and the
+ * gate refuses any other omission as incomplete before it reads this score.
+ */
+export function ballotWeightedScore(ballot: {
+  rater?: string;
+  timbre: number;
+  accent: number;
+  languageNaturalness?: number;
+}): number | null {
+  let weight = 0;
+  let sum = 0;
+  for (const axis of TIMBRE_BALLOT_AXES) {
+    const score = ballot[axis];
+    if (score === undefined) continue;
+    const axisWeight = TIMBRE_BALLOT_AXIS_WEIGHTS[axis];
+    weight += axisWeight;
+    sum += axisWeight * score;
+  }
+  if (weight === 0) return null;
+  return Number((sum / weight).toFixed(3));
+}
+
+function weightedAcross(ratings: readonly HumanRating[]): number | null {
+  const scores = ratings
+    .map((ballot) => ballotWeightedScore(ballot))
+    .filter((score): score is number => score !== null);
+  if (scores.length === 0) return null;
+  return round2(scores.reduce((sum, score) => sum + score, 0) / scores.length);
+}
+
+const BALLOT_AXIS_LABELS: Record<TimbreBallotAxis, string> = {
+  timbre: "timbre",
+  accent: "accent",
+  languageNaturalness: "language naturalness",
+};
+
+/**
+ * The weights as a sentence. An axis the subject's Locale excuses is printed
+ * as N/A with its named reason instead of its weight: the report never shows a
+ * weight the ballot did not carry.
+ */
+function ballotWeightNote(notApplicable?: Partial<Record<TimbreBallotAxis, string>>): string {
+  const parts = TIMBRE_BALLOT_AXES.map((axis) => {
+    const reason = notApplicable?.[axis];
+    return reason
+      ? `${BALLOT_AXIS_LABELS[axis]} N/A (${reason})`
+      : `${BALLOT_AXIS_LABELS[axis]} ×${TIMBRE_BALLOT_AXIS_WEIGHTS[axis]}`;
+  });
+  return `weights ${parts.join(", ")}`;
+}
+
+/**
+ * File one blind ballot. Every ballot must score the same shared recording
+ * (raters never judge different cuts), rate the axes as ints 1-5, and vote
  * once: a second ballot from the same rater is a protocol violation, not a
- * second opinion.
+ * second opinion. A score below five is accepted (it blocks, and its reason is
+ * recorded) — refusing it would hide the rater's judgement.
+ *
+ * Ticket 75: a ballot bound to a non-English subject must carry language
+ * naturalness. The missing axis is refused by name at filing time, so the
+ * operator learns before the run spends audio rather than reading a
+ * renormalised score later. An unbound record is permissive here because the
+ * gate re-checks every ballot against the subject it actually judged.
  */
 export function addHumanRating(
   current: HumanRatings,
@@ -389,6 +558,26 @@ export function addHumanRating(
       );
     }
   }
+  const locale = current.subject?.locale ?? null;
+  if (rating.languageNaturalness === undefined) {
+    if (current.subject !== undefined && naturalnessApplies(locale)) {
+      throw new Error(
+        `incomplete ballot: languageNaturalness is missing for ${rating.rater} on the ${locale} ` +
+          "subject — the third axis applies, so a missing score is rejected, never renormalised away",
+      );
+    }
+  } else {
+    const value = rating.languageNaturalness;
+    if (
+      !Number.isInteger(value) ||
+      value < SCOREBOARD_BUDGETS.humanRatingScaleMin.value ||
+      value > SCOREBOARD_BUDGETS.humanRatingScaleMax.value
+    ) {
+      throw new Error(
+        `languageNaturalness rating must be an int ${SCOREBOARD_BUDGETS.humanRatingScaleMin.value}-${SCOREBOARD_BUDGETS.humanRatingScaleMax.value}, got ${value}`,
+      );
+    }
+  }
   if (!recordingSha256) throw new Error("human rating needs the golden recording it judges");
   if (current.recordingSha256 !== null && current.recordingSha256 !== recordingSha256) {
     throw new Error("human ratings must all judge the same recording (blind, one shared cut)");
@@ -396,110 +585,375 @@ export function addHumanRating(
   if (current.ratings.some((existing) => existing.rater === rating.rater)) {
     throw new Error(`"${rating.rater}" already rated this recording (one ballot per rater)`);
   }
-  const ratings = [...current.ratings, rating];
+  const filed: HumanRating = { ...rating, recordingSha256 };
+  const ratings = [...current.ratings, filed];
+  // An axis no ballot scored has no mean: `null` says unmeasured, where a 1 or
+  // a 0 would invent a judgement nobody made.
+  const naturalnessScores = ratings
+    .map((ballot) => ballot.languageNaturalness)
+    .filter((score): score is number => score !== undefined);
   return {
     recordingSha256: current.recordingSha256 ?? recordingSha256,
+    subject: current.subject,
+    notApplicable: current.notApplicable,
     ratings,
     timbre: mean1(ratings.map((ballot) => ballot.timbre)),
     accent: mean1(ratings.map((ballot) => ballot.accent)),
+    languageNaturalness:
+      naturalnessScores.length === 0 ? null : mean1(naturalnessScores),
+    weighted: weightedAcross(ratings),
   };
 }
 
 /**
- * Blind-ballot protocol (spec implementation decision: human likeness stays
- * reviewable). Committed alongside the harness in voni/docs/blind-human-ballots.md;
- * the artifact restates it so a stored run explains its own human slot.
+ * Blind-ballot protocol (spec implementation decision: human likeness is
+ * reviewable, and a ballot below five blocks). Committed alongside the
+ * harness in voni/docs/blind-human-ballots.md; the artifact restates it so a
+ * stored run explains its own human slot.
  */
 export const HUMAN_BALLOT_PROTOCOL =
-  "blind: one shared golden recording, at least 2 independent raters, one ballot per rater (1-5 timbre and accent); auto timbre checks must pass first; taste is informational and never fails a run";
+  "blind: one shared recording per subject, two independent raters, one ballot per rater " +
+  "(weighted 1-5: timbre 0.5, accent 0.25, language naturalness 0.25); every ballot carries all three axes, " +
+  "and language naturalness is required wherever the subject's Locale is not the English baseline " +
+  "(missing = incomplete, never renormalised), while English is N/A with that named reason and its weight " +
+  "renormalises over timbre and accent; a measured timbre result must pass first; five out of five passes, " +
+  "and a ballot below five blocks with the rater's stated reason";
+
+/** The weighted ballot's verdict, which the timbre gate requires beside the measurement. */
+export type TimbreBallotCheck = {
+  status: GateStatus;
+  /** The raters' weighted score, 1-5; null before a ballot exists. */
+  weighted: number | null;
+  requiredScore: number;
+  requiredRaters: number;
+  raters: string[];
+  recordingSha256: string | null;
+  detail: string;
+};
 
 /**
- * The human slot as reviewable evidence: which recording every ballot judged,
- * how many independent raters filed one, and whether the auto timbre gate let
- * those ballots count. A ballot record without a recording is impossible by
- * construction (`addHumanRating` rejects it).
+ * Judge the subject's blind ballot: two independent raters, one shared
+ * recording, weighted to a single score at five out of five. Missing or single
+ * ballots are INFO (unmeasured, never a pass); a ballot below five, a mixed
+ * set of recordings, a ballot filed for another subject, or — ticket 75 — a
+ * ballot missing an axis the subject's Locale requires is a protocol failure
+ * the gate reports as FAIL. The one axis a Locale may excuse is language
+ * naturalness for English, whose weight then renormalises with the named
+ * reason already recorded on the ballot.
+ */
+export function evaluateTimbreBallot(
+  human: HumanRatings,
+  subject?: SubjectRecord,
+): TimbreBallotCheck {
+  const raters = human.ratings.map((ballot) => ballot.rater);
+  const judged = subject ?? human.subject;
+  const locale = judged?.locale ?? null;
+  const naturalnessRequired = naturalnessApplies(locale);
+  // An axis the Locale excuses is printed as N/A with its named reason; every
+  // other axis keeps its weight, so the note never advertises a weight that
+  // was not carried.
+  const naAxes: Partial<Record<TimbreBallotAxis, string>> | undefined = naturalnessRequired
+    ? undefined
+    : {
+        languageNaturalness:
+          human.notApplicable?.languageNaturalness ?? NATURALNESS_NA_REASON,
+      };
+  const weightNote = ballotWeightNote(naAxes);
+  const base = {
+    requiredScore: TIMBRE_BALLOT_PASS_SCORE,
+    requiredRaters: TIMBRE_BALLOT_RATERS_REQUIRED,
+    raters,
+    recordingSha256: human.recordingSha256,
+  };
+  const weighted = weightedAcross(human.ratings);
+
+  if (human.subject && subject && !sameSubject(human.subject, subject)) {
+    return {
+      ...base,
+      status: "FAIL",
+      weighted,
+      detail:
+        `ballot judged ${formatSubject(human.subject)}, not ${formatSubject(subject)}: ` +
+        "a ballot is per subject, and one subject's ears never pass another subject",
+    };
+  }
+  if (human.ratings.length === 0) {
+    return {
+      ...base,
+      status: "INFO",
+      weighted: null,
+      detail:
+        `awaiting the weighted ballot (0/${TIMBRE_BALLOT_RATERS_REQUIRED} independent raters at ` +
+        `${TIMBRE_BALLOT_PASS_SCORE}/5 on one shared recording per subject; ${weightNote})`,
+    };
+  }
+  // Ticket 75: the third axis is required wherever it applies. A missing one is
+  // an incomplete ballot, reported as such — never weighted over the axes that
+  // happen to be present, because that silently renormalises a judgement
+  // nobody made.
+  if (naturalnessRequired) {
+    const missing = human.ratings.filter(
+      (ballot) => ballot.languageNaturalness === undefined,
+    );
+    if (missing.length > 0) {
+      return {
+        ...base,
+        status: "FAIL",
+        weighted: null,
+        detail:
+          `incomplete ballot: language naturalness (the third axis) is missing from ` +
+          `${missing.map((ballot) => ballot.rater).join(", ")} on the ${locale ?? "unnamed"} subject — ` +
+          "the axis applies, so a missing score is rejected, never renormalised away; " +
+          "file the third score per rater",
+      };
+    }
+  }
+
+  const recording = human.recordingSha256;
+  if (recording === null) {
+    return {
+      ...base,
+      status: "INFO",
+      weighted,
+      detail:
+        "ballot is not bound to a shared recording: a ballot must name the bytes it judged " +
+        "(--recording or --recording-file), so two reviews are comparable",
+    };
+  }
+  const mismatched = human.ratings.filter(
+    (ballot) => ballot.recordingSha256 !== undefined && ballot.recordingSha256 !== recording,
+  );
+  if (mismatched.length > 0) {
+    return {
+      ...base,
+      status: "FAIL",
+      weighted,
+      detail:
+        `raters judged different recordings (${[...new Set(mismatched.map((ballot) => ballot.rater))].join(", ")}): ` +
+        "a blind ballot is two ears on one shared cut, never two cuts",
+    };
+  }
+  if (new Set(raters).size !== raters.length) {
+    return {
+      ...base,
+      status: "FAIL",
+      weighted,
+      detail: `one rater filed more than once (${raters.join(", ")}): one ballot per independent listener`,
+    };
+  }
+  if (human.ratings.length < TIMBRE_BALLOT_RATERS_REQUIRED) {
+    return {
+      ...base,
+      status: "INFO",
+      weighted,
+      detail:
+        `awaiting a second independent rater (${human.ratings.length}/${TIMBRE_BALLOT_RATERS_REQUIRED} on ` +
+        `shared recording ${recording.slice(0, 12)}): one ballot is reported, never counted`,
+    };
+  }
+
+  const below: string[] = [];
+  for (const ballot of human.ratings) {
+    for (const axis of TIMBRE_BALLOT_AXES) {
+      const score = ballot[axis];
+      if (score === undefined || score >= TIMBRE_BALLOT_PASS_SCORE) continue;
+      const reason = (ballot.reasons?.[axis] ?? "").trim();
+      below.push(
+        `${ballot.rater} ${axis} ${score}` +
+          (reason ? ` (reason: ${reason})` : " (no reason recorded)"),
+      );
+    }
+  }
+  if (below.length > 0) {
+    return {
+      ...base,
+      status: "FAIL",
+      weighted,
+      detail:
+        `ballot below five blocks: ${below.join("; ")} — weighted ${weighted?.toFixed(2) ?? "unmeasured"}/5 ` +
+        `(the bar is ${TIMBRE_BALLOT_PASS_SCORE}; ${weightNote})`,
+    };
+  }
+  if (weighted === null || weighted < TIMBRE_BALLOT_PASS_SCORE) {
+    return {
+      ...base,
+      status: "FAIL",
+      weighted,
+      detail:
+        `weighted ballot ${weighted?.toFixed(2) ?? "unmeasured"}/5 is below the ${TIMBRE_BALLOT_PASS_SCORE}/5 bar ` +
+        `(${weightNote})`,
+    };
+  }
+  const perRater = human.ratings
+    .map((ballot) => `${ballot.rater} ${ballotWeightedScore(ballot)?.toFixed(2)}`)
+    .join(", ");
+  return {
+    ...base,
+    status: "PASS",
+    weighted,
+    detail:
+      `weighted ${weighted.toFixed(2)}/5 from ${raters.length} independent raters ` +
+      `(${perRater}) on shared recording ${recording.slice(0, 12)} (${weightNote})`,
+  };
+}
+
+/**
+ * One axis as the review reports it: its weight, its mean ballot score, and
+ * whether it was required for this subject or excused with a named reason.
+ */
+export type HumanReviewAxis = {
+  axis: TimbreBallotAxis;
+  /** The weight this axis carries when it applies (spec W5 budget record). */
+  weight: number;
+  /** Mean of the ballots that scored it; null when no ballot scored it. */
+  mean: number | null;
+  /** `required` where the Locale requires it; `na` for the named exception. */
+  status: "required" | "na";
+  /** The named reason the axis is N/A; null where it is required. */
+  reason: string | null;
+};
+
+/**
+ * The human slot as reviewable evidence: which subject and recording every
+ * ballot judged, how many independent raters filed one, the weighted score,
+ * every axis with its weight (ticket 75 adds language naturalness), and
+ * whether the measured timbre result let those ballots count.
  */
 export type HumanReview = {
-  /** sha256 of the one golden recording every ballot judged; null until supplied. */
+  /** The subject the ballots judged (a ballot is per subject, not per voice). */
+  subject: string | null;
+  /** sha256 of the one shared recording every ballot judged; null until supplied. */
   recordingSha256: string | null;
   /** Independent raters who filed a ballot (one ballot per rater). */
   raterCount: number;
   requiredRaters: number;
   /** Rater names in ballot order, so the two ears are attributable. */
   raters: string[];
-  /** Auto timbre gate status was PASS before ballots count. */
+  /** The raters' weighted score, 1-5; null until a ballot exists. */
+  weighted: number | null;
+  /** Spec W5: the score a subject must reach, five out of five. */
+  requiredScore: number;
+  /** All three axes, each with its weight and whether this Locale requires it. */
+  axes: HumanReviewAxis[];
+  /** The measured timbre gate was PASS before ballots count. */
   autoTimbrePassed: boolean;
-  /** Auto timbre passed and enough independent raters filed: ballots count. */
+  /** Measured timbre passed and the weighted ballot is five out of five. */
   counted: boolean;
   protocol: string;
 };
 
-export function humanReview(human: HumanRatings, autoTimbrePassed: boolean): HumanReview {
-  const raterCount = human.ratings.length;
+export function humanReview(
+  human: HumanRatings,
+  autoTimbrePassed: boolean,
+  subject?: SubjectRecord,
+): HumanReview {
+  const ballot = evaluateTimbreBallot(human, subject);
+  const judged = subject ?? human.subject;
+  const naturalnessRequired = naturalnessApplies(judged?.locale ?? null);
+  const naturalnessMean =
+    human.ratings.length === 0 ? null : human.languageNaturalness;
+  const axes: HumanReviewAxis[] = TIMBRE_BALLOT_AXES.map((axis) => {
+    const reason = naturalnessRequired ? null : NATURALNESS_NA_REASON;
+    return {
+      axis,
+      weight: TIMBRE_BALLOT_AXIS_WEIGHTS[axis],
+      mean:
+        axis === "languageNaturalness"
+          ? naturalnessMean
+          : human.ratings.length === 0
+            ? null
+            : human[axis],
+      status: axis === "languageNaturalness" && !naturalnessRequired ? "na" : "required",
+      reason: axis === "languageNaturalness" ? reason : null,
+    };
+  });
   return {
+    subject: subject ? formatSubject(subject) : human.subject ? formatSubject(human.subject) : null,
     recordingSha256: human.recordingSha256,
-    raterCount,
-    requiredRaters: HUMAN_RATERS_REQUIRED,
-    raters: human.ratings.map((ballot) => ballot.rater),
+    raterCount: human.ratings.length,
+    requiredRaters: TIMBRE_BALLOT_RATERS_REQUIRED,
+    raters: human.ratings.map((entry) => entry.rater),
+    weighted: ballot.weighted,
+    requiredScore: TIMBRE_BALLOT_PASS_SCORE,
+    axes,
     autoTimbrePassed,
-    counted: autoTimbrePassed && raterCount >= HUMAN_RATERS_REQUIRED,
+    counted: autoTimbrePassed && ballot.status === "PASS",
     protocol: HUMAN_BALLOT_PROTOCOL,
   };
 }
 
-/** Console block: the shared recording, the raters, and whether taste counted. */
+/**
+ * One axis line: its weight, its mean, and — where the Locale excuses it — the
+ * named reason it renormalises instead of scoring.
+ */
+function formatAxisLine(axis: HumanReviewAxis): string {
+  const weight = `×${axis.weight}`;
+  if (axis.status === "na") {
+    return `  ${axis.axis}: N/A ${weight} — ${axis.reason}`;
+  }
+  const mean = axis.mean === null ? "unscored" : `${axis.mean.toFixed(1)} mean`;
+  return `  ${axis.axis}: ${mean} ${weight} (required)`;
+}
+
+/** Console block: the subject, the shared recording, the raters, every axis and the weighted ballot. */
 export function formatHumanReview(review: HumanReview): string {
   const recording = review.recordingSha256
     ? `sha256 ${review.recordingSha256}`
     : "unbound: pass --recording <sha256> or --recording-file <path> to bind ballots to the golden recording";
   const raters = review.raters.length > 0 ? `${review.raters.join(", ")}` : "none yet";
-  const gate = review.autoTimbrePassed
-    ? "PASS — ballots count"
+  const weighted =
+    review.weighted === null ? "unweighted" : `weighted ${review.weighted.toFixed(2)}/${review.requiredScore}`;
+  const gate = review.counted
+    ? "PASS — the weighted ballot counts"
     : "not PASS — ballots reported, not counted";
   return [
-    "blind human ballots (one shared recording, auto timbre first)",
+    "blind human ballots (one shared recording per subject, measured timbre first)",
+    `  subject: ${review.subject ?? "unbound"}`,
     `  recording: ${recording}`,
     `  raters: ${review.raterCount}/${review.requiredRaters} (${raters})`,
-    `  auto timbre: ${gate}`,
+    `  ballot: ${weighted}`,
+    ...review.axes.map(formatAxisLine),
+    `  measured timbre: ${gate}`,
     `  protocol: ${review.protocol}`,
   ].join("\n");
 }
 
 /**
- * The accent human gate: INFO until at least two independent ballots on the
- * shared recording exist, PASS after. Auto timbre checks must pass before
- * human ratings count — ears judge likeness, never cover for defects.
- * Reviewable by design: taste never FAILs a run, it only completes the record.
+ * The accent human gate: the weighted ballot on the subject's shared
+ * recording, and only after the measured timbre result passed. Missing or
+ * single ballots stay INFO; a ballot below five FAILs; five out of five from
+ * two raters PASSes. Defects first, likeness second — ears never cover for a
+ * measurement.
  */
-export function evaluateHumanGate(autoPassed: boolean, human: HumanRatings): ScoreboardGate {
-  const recording = human.recordingSha256 ? ` on recording ${human.recordingSha256.slice(0, 12)}` : "";
+export function evaluateHumanGate(
+  autoPassed: boolean,
+  human: HumanRatings,
+  subject?: SubjectRecord,
+): ScoreboardGate {
+  const ballot = evaluateTimbreBallot(human, subject);
   if (!autoPassed) {
-    const ballots =
+    const recording = human.recordingSha256
+      ? ` on recording ${human.recordingSha256.slice(0, 12)}`
+      : "";
+    const reported =
       human.ratings.length > 0
-        ? ` — ${human.ratings.length} ballot${human.ratings.length === 1 ? "" : "s"} (${human.ratings
-            .map((ballot) => ballot.rater)
-            .join(", ")})${recording} ${human.ratings.length === 1 ? "is" : "are"} reported, not counted`
+        ? ` — ${human.ratings.length} ballot${human.ratings.length === 1 ? "" : "s"} ` +
+          `(${human.ratings.map((entry) => entry.rater).join(", ")})${recording} reported, not counted`
         : "";
     return {
       name: "accent-human",
       status: "INFO",
-      detail: `auto timbre checks must pass before human rating counts (defects first, likeness second)${ballots}`,
-    };
-  }
-  if (human.ratings.length < HUMAN_RATERS_REQUIRED) {
-    return {
-      name: "accent-human",
-      status: "INFO",
-      detail: `awaiting human 1-5 ratings (${human.ratings.length}/${HUMAN_RATERS_REQUIRED} independent raters on the same golden recording${recording})`,
+      detail:
+        "the measured timbre result (auto timbre) must pass before the weighted ballot counts " +
+        `(defects first, likeness second)${reported}`,
     };
   }
   return {
     name: "accent-human",
-    status: "PASS",
-    detail: `timbre ${human.timbre} / accent ${human.accent} across ${human.ratings.length} independent raters on the same golden recording${recording}`,
+    status: ballot.status,
+    detail: `weighted ballot — ${ballot.detail}`,
   };
 }
-
 
 // ── Gate: reply-gap (ticket 03, owner: reply-gap section) ────────────────────
 
@@ -1057,6 +1511,51 @@ export function runBodyUnmeasuredReason(
   runBody: RunBody | null | undefined,
 ): string {
   return runBodyEvidence(runBody).reason ?? "unmeasured";
+}
+
+/**
+ * A demo subject's voice is the voice the artifact's voice-keyed rows describe
+ * (voice-parity ticket 72). A mismatch would let an artifact claim a subject it
+ * did not measure, so it is refused by name before any gate reads it.
+ */
+export function assertSubjectMatchesArtifactVoice(
+  subject: SubjectRecord,
+  voice: string,
+): void {
+  if (subject.agent.kind !== "demo") return;
+  if (subject.agent.voice === voice) return;
+  throw new SubjectError(
+    "agent",
+    subject.agent.voice,
+    `artifact voice "${voice}" is not the demo subject's voice "${subject.agent.voice}" ` +
+      `(a subject carries the voice it measured)`,
+  );
+}
+
+/**
+ * The run's body identity, narrowed to the subject it belongs to. A tenant
+ * subject is one specific stored agent: a body read from another agent cannot
+ * gate it, so the read is recorded as unmeasured with both ids named rather
+ * than silently judging a different agent's audio.
+ */
+export function runBodyEvidenceForSubject(
+  subject: SubjectRecord,
+  runBody: RunBody | null | undefined,
+): AgentBodyEvidence {
+  const evidence = runBodyEvidence(runBody);
+  if (subject.agent.kind !== "tenant" || !evidence.measured || evidence.agentId === null) {
+    return evidence;
+  }
+  if (evidence.agentId === subject.agent.agentId) return evidence;
+  return {
+    source: "stored-agent",
+    measured: false,
+    agentId: evidence.agentId,
+    fingerprint: evidence.fingerprint,
+    reason:
+      `served body ${evidence.agentId} is not the subject's agent ${subject.agent.agentId}: ` +
+      `a gate cannot judge another agent's audio`,
+  };
 }
 
 /**
@@ -2245,6 +2744,12 @@ export type ScoreboardArtifact = {
   recordedAt: string;
   /** Gate voice, resolved through the shared voice registry. */
   voice: string;
+  /**
+   * Which subject this artifact measured (voice-parity ticket 72): the agent,
+   * the Locale and the transport. New artifacts always carry it; an artifact
+   * written before the axis derives it from its voice (`subjectOfArtifact`).
+   */
+  subject?: SubjectRecord;
   runs: number;
   /** The locked golden script this run scores against (fixed order/wording/windows). */
   goldenScript: {
@@ -2293,6 +2798,22 @@ export type ScoreboardArtifact = {
   /** The measured level leg and the served body level; no client gain row. */
   loudness: ScoreboardLoudness;
   transcripts: { sha256: string; redacted: string[] };
+  /**
+   * The report-only English-leak counter (voice-parity ticket 76), read from
+   * `transcripts`. It never adds a gate, never moves a PASS/FAIL; the count,
+   * the rate and the promotion decision travel with it so the artifact records
+   * both. Absent on an artifact written before the counter existed.
+   */
+  englishLeak?: EnglishLeakCount;
+  /**
+   * The report-only already-answered counter (voice-parity ticket 77), read
+   * from the artifact's transcript: agent turns that asked for a value the
+   * caller had already supplied. It never adds a gate and never moves a
+   * PASS/FAIL; the count, the rate, the per-turn evidence and the promotion
+   * decision travel with it so the artifact records all four. Absent on an
+   * artifact written before the counter existed.
+   */
+  answeredQuestion?: AnsweredQuestionCount;
   humanRatings: HumanRatings;
   /** Blind-ballot binding as reviewable evidence: recording sha256, raters, protocol (ticket 28). */
   humanReview: HumanReview;
@@ -2808,117 +3329,20 @@ export type AgentChannelEvidence = {
 };
 
 /**
- * One saved capture the level leg measures itself. The gate runs the level
- * analyser over these samples, so a verdict cites a file rather than a number
- * that was derived from a constant the run never heard.
+ * The measured timbre result (voice-parity ticket 74) lives in its own module:
+ * one measured file pair, six measured axes. The level leg (ticket 16) is one
+ * of those axes and keeps its own name here for the loudness record.
  */
-export type MeasuredLevelFile = {
-  /** The saved file the reading was taken from; printed in the gate detail. */
-  path: string;
-  /** The decoded samples. */
-  audio: DecodedAudio;
-};
-
-/**
- * The two measured files the level leg compares: the reference rendering of
- * the same line in the same voice, and the audio the caller actually received.
- * Both come from the W0 comparison's own files (tickets 10 and 12).
- */
-export type MeasuredLevelInput = {
-  reference: MeasuredLevelFile;
-  delivered: MeasuredLevelFile;
-};
-
-/**
- * The level leg's verdict: measured agreement, a measured difference, or the
- * named absence of a measurement. There is no arithmetic path — a missing file
- * is `INFO`/unmeasured, never a PASS.
- */
-export type MeasuredLevelCheck = {
-  status: GateStatus;
-  /** The measured delivered integrated loudness, null unless both files measured. */
-  deliveredLufs: number | null;
-  /** The measured reference integrated loudness, null unless both files measured. */
-  referenceLufs: number | null;
-  /** Delivered minus reference, in LU; null unless both sides measured. */
-  deltaLu: number | null;
-  /** The tolerance the two readings were judged against, in LU. */
-  toleranceDb: number;
-  referenceFile: string | null;
-  deliveredFile: string | null;
-  detail: string;
-};
-
-function unmeasuredLevel(detail: string): MeasuredLevelCheck {
-  return {
-    status: "INFO",
-    deliveredLufs: null,
-    referenceLufs: null,
-    deltaLu: null,
-    toleranceDb: LEVEL_TOLERANCE_DB,
-    referenceFile: null,
-    deliveredFile: null,
-    detail: `unmeasured level: ${detail}`,
-  };
-}
-
-/** Measure one capture, naming its file when it cannot carry a level. */
-function measuredFileFacts(
-  file: MeasuredLevelFile | null | undefined,
-  role: "reference" | "delivered",
-): { ok: true; facts: Extract<LevelFacts, { measured: true }> } | { ok: false; detail: string } {
-  if (!file) return { ok: false, detail: `no ${role} capture file` };
-  let facts: LevelFacts;
-  try {
-    facts = analyseLevel(file.audio);
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    return { ok: false, detail: `${role} file ${file.path} could not be measured (${reason})` };
-  }
-  if (!facts.measured) {
-    return { ok: false, detail: `${role} file ${file.path} carries no level (${facts.absence})` };
-  }
-  return { ok: true, facts };
-}
-
-/**
- * The timbre gate's level leg (voice-parity ticket 16). Two measured files, one
- * comparison: the delivered integrated loudness against the reference within
- * the library's existing 0.2 LU tolerance. There is no derived formula left to
- * green a voice no file measured (ticket 36 deleted the gain term).
- */
-export function checkMeasuredLevel(
-  input?: MeasuredLevelInput | null,
-  toleranceDb: number = LEVEL_TOLERANCE_DB,
-): MeasuredLevelCheck {
-  if (!input) {
-    return unmeasuredLevel(
-      "no reference and delivered capture, so the level leg has no file to measure",
-    );
-  }
-  const reference = measuredFileFacts(input.reference, "reference");
-  if (!reference.ok) return unmeasuredLevel(reference.detail);
-  const delivered = measuredFileFacts(input.delivered, "delivered");
-  if (!delivered.ok) return unmeasuredLevel(delivered.detail);
-
-  const comparison = compareLevels(reference.facts, delivered.facts, toleranceDb);
-  if (comparison.status === "unmeasured" || comparison.deltaLu === null) {
-    return unmeasuredLevel(comparison.detail);
-  }
-  const detail =
-    `${comparison.detail} (reference ${input.reference.path}, ` +
-    `delivered ${input.delivered.path})`;
-  return {
-    status: comparison.status === "agrees" ? "PASS" : "FAIL",
-    deliveredLufs: delivered.facts.integratedLufs,
-    referenceLufs: reference.facts.integratedLufs,
-    deltaLu: comparison.deltaLu,
-    toleranceDb,
-    referenceFile: input.reference.path,
-    deliveredFile: input.delivered.path,
-    detail,
-  };
-}
+export {
+  checkMeasuredLevel,
+  measureTimbre,
+  type MeasuredLevelCheck,
+  type MeasuredLevelFile,
+  type MeasuredLevelInput,
+  type MeasuredTimbreAxis,
+  type MeasuredTimbreAxisResult,
+  type MeasuredTimbreResult,
+} from "./timbre-measurement";
 
 /** Every probe count must be zero across the golden run; the detail names the offender. */
 export function checkTimbreProbes(probes: TimbreProbes): { ok: boolean; detail: string } {
@@ -2965,15 +3389,21 @@ export function checkEvidenceTimbre(channel: AgentChannelEvidence | null): {
 }
 
 /**
- * The timbre auto gate: probe counts, session-evidence PCM, and the measured
- * level leg all have to agree. Any defect FAILs with the offender named.
+ * The timbre gate (spec W5): probe counts and session-evidence PCM first, then
+ * the measured result, then the weighted ballot. Any defect FAILs with the
+ * offender named, and the detail names the measured axes and the ballot.
  *
- * The level leg reads measured files (ticket 16), not the derived native +
- * gain + volume formula: a PASS needs a measured reference and a measured
- * delivery within `LEVEL_TOLERANCE_DB`, and an unmeasured level is INFO —
- * never a PASS by arithmetic. The files are attributed to the stored body the
- * run served (ticket 21), so a measured level with no body identity is
- * unmeasured too.
+ * A PASS needs both halves:
+ * - the measured result has all six axes — level against the measured
+ *   reference, true peak, distortion residual, crest factor, spectral balance
+ *   and breakups — passing, attributed to the stored body the run served
+ *   (ticket 21), so a result with no body identity is unmeasured too;
+ * - the weighted ballot is five out of five from two independent raters on one
+ *   shared recording for this subject.
+ *
+ * A missing measurement is INFO/unmeasured, and a missing or single ballot is
+ * INFO — never a machine-only PASS. A ballot below five, two raters on
+ * different recordings, or a ballot filed for another subject FAILs.
  */
 export function evaluateTimbreGate(input: {
   probes: TimbreProbes;
@@ -2981,44 +3411,75 @@ export function evaluateTimbreGate(input: {
   agentChannel: AgentChannelEvidence | null;
   /** The run's one served-body read (ticket 24); absent = unmeasured. */
   runBody?: RunBody | null;
-  /** The two measured files the level leg judges; absent = unmeasured. */
+  /** The two measured captures the six measured axes read; absent = unmeasured. */
   measuredLevel?: MeasuredLevelInput | null;
+  /** The subject's blind weighted ballot; absent or thin = INFO, never a pass. */
+  humanRatings?: HumanRatings | null;
+  /** The subject the ballots judge; defaults to the run voice's own subject. */
+  subject?: SubjectRecord;
 }): ScoreboardGate {
   const probes = checkTimbreProbes(input.probes);
   if (!probes.ok) return { name: "timbre-probes", status: "FAIL", detail: probes.detail };
   const evidence = checkEvidenceTimbre(input.agentChannel);
   if (!evidence.ok) return { name: "timbre-probes", status: "FAIL", detail: evidence.detail };
-  const level = checkMeasuredLevel(input.measuredLevel);
+
+  // Ticket 74: the timbre gate is a measured result (six axes) plus a weighted
+  // ballot from two raters on one shared recording, at five out of five.
+  const measured = measureTimbre(input.measuredLevel);
+  const subject = input.subject ?? subjectOrLegacy({ voice: input.voiceId });
+  const ballot = evaluateTimbreBallot(input.humanRatings ?? emptyHumanRatings(null), subject);
   const body = runBodyServedBody(input.runBody);
   const servedVolume = body ? servedAgentOutputVolume(body) : null;
   const bodyRef = body
     ? `served by stored agent ${body.agentId}` +
       (servedVolume === null ? "" : ` at volume ${servedVolume}`)
     : "";
-  if (level.status === "FAIL") {
+  const ballotDetail = `ballot ${ballot.status}: ${ballot.detail}`;
+
+  if (measured.status === "FAIL") {
     return {
       name: "timbre-probes",
       status: "FAIL",
-      detail: bodyRef ? `${level.detail} (${bodyRef})` : level.detail,
+      detail: `${measured.detail}; ${ballotDetail}${bodyRef ? ` (${bodyRef})` : ""}`,
+    };
+  }
+  // A ballot below five blocks even while the machine result is unmeasured:
+  // the delivered judgement is evidence the subject is not at parity.
+  if (ballot.status === "FAIL") {
+    return {
+      name: "timbre-probes",
+      status: "FAIL",
+      detail: `${measured.detail}; ${ballotDetail}${bodyRef ? ` (${bodyRef})` : ""}`,
     };
   }
   // A measured file with no served body identity cannot be attributed to the
   // agent a visitor received, so it is unmeasured rather than a pass.
-  if (level.status === "INFO" || !body) {
+  if (measured.status === "INFO" || !body) {
     const why =
-      level.status === "PASS"
-        ? `unmeasured level: ${runBodyUnmeasuredReason(input.runBody)}, so the gate cannot say whose audio the measured files are`
-        : level.detail;
+      measured.status === "PASS"
+        ? `unmeasured body: ${runBodyUnmeasuredReason(input.runBody)}, so the gate cannot say whose audio the measured files are`
+        : measured.detail;
     return {
       name: "timbre-probes",
       status: "INFO",
-      detail: `${probes.detail}; ${why}; ${evidence.detail}`,
+      detail: `${probes.detail}; ${why}; ${ballotDetail}; ${evidence.detail}`,
+    };
+  }
+  // Two raters at five out of five are still not a PASS when the measured
+  // result is complete only on some axes, or when the ballot is still thin.
+  if (ballot.status === "INFO") {
+    return {
+      name: "timbre-probes",
+      status: "INFO",
+      detail:
+        `${measured.detail}; ${ballotDetail}; ${evidence.detail}` +
+        (bodyRef ? ` (${bodyRef})` : ""),
     };
   }
   return {
     name: "timbre-probes",
     status: "PASS",
-    detail: `${probes.detail}; ${level.detail}; ${evidence.detail} (${bodyRef})`,
+    detail: `${measured.detail}; ${ballotDetail}; ${evidence.detail} (${bodyRef})`,
   };
 }
 
@@ -4930,6 +5391,8 @@ function skeletonGates(
     endOfTurnExperiment?: EndOfTurnExperiment | null;
     /** Ticket 16: the two measured files the timbre level leg compares. */
     measuredLevel?: MeasuredLevelInput | null;
+    /** Ticket 74: the subject the ballots judge (a ballot is per subject). */
+    subject?: SubjectRecord;
   },
 ): ScoreboardGate[] {
   // Ticket 06: a finished runner is plumbing health even when its scenarios
@@ -4993,8 +5456,14 @@ function skeletonGates(
     agentChannel: agentChannel ?? null,
     runBody,
     measuredLevel: options?.measuredLevel ?? null,
+    humanRatings: humanRatings ?? null,
+    ...(options?.subject ? { subject: options.subject } : {}),
   });
-  const humanGate = evaluateHumanGate(timbreGate.status === "PASS", humanRatings ?? emptyHumanRatings(null));
+  const humanGate = evaluateHumanGate(
+    timbreGate.status === "PASS",
+    humanRatings ?? emptyHumanRatings(null),
+    options?.subject,
+  );
   // Spec priority order (gap → cut → overheard → naturalness); failing
   // gates surface in this order for fail-fast triage.
   const gates: ScoreboardGate[] = [
@@ -5261,7 +5730,15 @@ export function buildSkeletonArtifact(input: {
    * synthesized here.
    */
   runnerEvidence?: RunnerEvidence | null;
+  /**
+   * The subject this run measured (voice-parity ticket 72): any demo voice, a
+   * tenant agent, any transport. Absent means the run's own voice is the
+   * subject (derived, never a second default), so every artifact carries one.
+   */
+  subject?: SubjectRecord;
 }): ScoreboardArtifact {
+  const subject = input.subject ?? subjectForRunVoice(input.voice);
+  assertSubjectMatchesArtifactVoice(subject, input.voice);
   const fillerGate = input.fillerResume ? evaluateFillerResumeGate(input.fillerResume) : null;
   const samples: ReplyGapSample[] = [];
   const finiteGaps = (beat: GoldenBeat): number[] => (input.gaps?.[beat] ?? []).filter((n) => Number.isFinite(n));
@@ -5454,13 +5931,18 @@ export function buildSkeletonArtifact(input: {
   };
   const timbreProbes: TimbreProbes = input.probes ?? { jump: 0, overload: 0, clip: 0, underrun: 0, inputDrop: 0 };
   const agentChannel = input.agentChannel ?? null;
-  const humanRatings = input.humanRatings ?? emptyHumanRatings(null);
+  // Ticket 74: a ballot is per subject, so the artifact binds it to the
+  // subject this run measured before any gate reads it.
+  const humanRatings = bindBallotsToSubject(
+    input.humanRatings ?? emptyHumanRatings(null),
+    subject,
+  );
   // One body source for every body gate and the artifact's one identity
   // record: the run's stored-body read (voice-parity ticket 24). A body that
   // was not read leaves the level and turn setting unmeasured rather than
   // rebuilding a body nobody heard.
   const runBody = input.runBody ?? null;
-  const bodyEvidence = runBodyEvidence(runBody);
+  const bodyEvidence = runBodyEvidenceForSubject(subject, runBody);
   const servedBody = runBodyServedBody(runBody);
   // Ticket 16: the level leg's verdict comes from the measured files. There is
   // no client-gain formula left to produce a level number (ticket 36).
@@ -5511,6 +5993,7 @@ export function buildSkeletonArtifact(input: {
       measuredSources,
       endOfTurnExperiment: input.endOfTurnExperiment ?? null,
       measuredLevel: input.measuredLevel ?? null,
+      subject,
     },
   );
   // Finding D: when trace gaps exist but attribution is unverified, the
@@ -5535,17 +6018,20 @@ export function buildSkeletonArtifact(input: {
       note: measured ? goodbyeDrainGate.detail : prior.note,
     };
   }
+  const transcriptLines = redactLines(input.runnerStdout);
   return {
     schemaVersion: SCOREBOARD_SCHEMA_VERSION,
     recordedAt: new Date().toISOString(),
     voice: input.voice,
+    subject,
     runs: input.runs,
     goldenScript: {
       vertical: GOLDEN_VERTICAL,
       budgetS: GOLDEN_SCRIPT_BUDGET_S,
       beats: GOLDEN_SCRIPT,
     },
-    regressionVoices: regressionVoices(input.voice),
+    regressionVoices:
+      subject.agent.kind === "demo" ? regressionVoices(subject.agent.voice) : [],
     beats,
     replyGap: { p50Ms: overall?.p50Ms ?? null, p95Ms: overall?.p95Ms ?? null, samples: overall?.count ?? 0 },
     overheard: evaluation
@@ -5574,12 +6060,34 @@ export function buildSkeletonArtifact(input: {
     },
     transcripts: {
       sha256: sha256Hex(input.runnerStdout),
-      redacted: redactLines(input.runnerStdout),
+      redacted: transcriptLines,
     },
+    // Report-only (voice-parity ticket 76): the count and the promotion
+    // decision are recorded, never folded into a gate.
+    englishLeak: englishLeakForArtifact({
+      subject,
+      transcripts: { redacted: transcriptLines },
+    }),
+    // Report-only (voice-parity ticket 77): the count and the promotion
+    // decision are recorded, never folded into a gate. The Call trace excerpt
+    // is preferred over the redacted transcript because an address survives
+    // there, so the evidence can name the value that was already given.
+    answeredQuestion: answeredQuestionForArtifact({
+      subject,
+      transcripts: { redacted: transcriptLines },
+      callTrace:
+        input.traceExcerpt && input.traceExcerpt.length > 0
+          ? {
+              sessionId: input.traceSessionId ?? null,
+              excerpt: input.traceExcerpt,
+            }
+          : null,
+    }),
     humanRatings,
     humanReview: humanReview(
       humanRatings,
       gatesPreview.find((gate) => gate.name === "timbre-probes")?.status === "PASS",
+      subject,
     ),
     gates: gatesPreview,
     subScores: buildSubScores(gatesPreview),
@@ -6186,132 +6694,384 @@ export function resolveMatrixVoices(csv: string): string[] {
   return voices.length > 0 ? voices : [...DEMO_VOICE_IDS];
 }
 
-export type RegressionVoiceInput = {
-  voice: string;
-  probes: TimbreProbes;
-  tagLines: string[];
+/**
+ * One matrix row's input (voice-parity ticket 73): the subject and that
+ * subject's own run. There is no gate-voice parameter and no carried verdict:
+ * the row derives its status from the one artifact it is given.
+ */
+export type RegressionSubjectInput = {
+  subject: SubjectRecord;
+  /**
+   * The subject's own run artifact. Absent means the run is missing; the row
+   * reports MISSING and inherits nothing from another subject.
+   */
+  artifact?: ScoreboardArtifact;
   expectedTag?: string;
-  /** Gate artifact rows carried verbatim (read only from the gate voice's artifact). */
-  gates?: ScoreboardGate[];
-  /** Gate artifact sub-scores carried verbatim (never recomputed by the matrix). */
-  subScores?: SubScore[];
 };
 
 /**
- * The gate verdict a matrix run reports, carried from the gate voice's own
- * score artifact. The matrix reads these rows and never re-evaluates them, so
- * a regression voice cannot turn required green into red (or red into green).
+ * A row's status: the artifact's own gate status, MISSING with no run, or
+ * BLOCKED when the ordering rule has not let the subject be judged (ticket 78).
  */
-export type MatrixGateVerdict = {
-  voice: string;
-  status: GateStatus;
+export type RegressionSubjectStatus = GateStatus | "MISSING" | "BLOCKED";
+
+export type RegressionSubjectResult = {
+  subject: SubjectRecord;
+  /** Stable row identity (`demo:lola@es/browser`), unique across subjects. */
+  key: string;
+  /** The subject in one line (`demo lola (es, browser)`); the table's name. */
+  label: string;
+  /** The voice key the artifact carries; null when the run is missing. */
+  voice: string | null;
+  /**
+   * The featured default subject carries report emphasis only. It never
+   * supplies another row's verdict.
+   */
+  isFeatured: boolean;
+  status: RegressionSubjectStatus;
   detail: string;
-  /** Names of carried gates that FAIL; empty means no required gate failed. */
-  failing: string[];
-  gates: ScoreboardGate[];
+  /**
+   * This subject's gate verdict, derived by `subjectGateVerdict` from the row's
+   * own artifact. Null only when the run is missing.
+   */
+  verdict: SubjectGateVerdict | null;
+  /** Five sub-scores from this row's own artifact (empty when missing). */
   subScores: SubScore[];
+  /** Probe counts from this row's own artifact; null when missing. */
+  probes: TimbreProbes | null;
+  /** Tag discipline from this row's own artifact; null when missing. */
+  tag: TagDiscipline | null;
 };
 
-/** Carry the gate artifact's verdict: FAIL if any carried gate failed, else PASS. */
-export function gateVerdictFromArtifact(
-  voice: string,
-  gates: ScoreboardGate[] | undefined,
-  subScores: SubScore[] | undefined,
-): MatrixGateVerdict {
-  if (!gates) {
+/**
+ * A stable, human-readable key for one subject row. Provenance is not part of
+ * identity, so a legacy artifact and a new run of the same subject share a key.
+ */
+export function subjectRowKey(subject: SubjectRecord): string {
+  const agent =
+    subject.agent.kind === "demo"
+      ? `demo:${subject.agent.voice}`
+      : `tenant:${subject.agent.agentId}`;
+  return `${agent}@${subject.locale}/${subject.transport}`;
+}
+
+/** Derive one row from its own artifact. Missing means missing, never copied. */
+function regressionSubjectRow(
+  input: RegressionSubjectInput,
+  featured: SubjectRecord,
+  expectedTag: string,
+): RegressionSubjectResult {
+  const label = formatSubject(input.subject);
+  const artifact = input.artifact;
+  if (!artifact) {
     return {
-      voice,
-      status: "INFO",
-      detail: `gate ${voice}: INFO (not judged; no gates carried from its score artifact)`,
-      failing: [],
-      gates: [],
-      subScores: subScores ?? [],
+      subject: input.subject,
+      key: subjectRowKey(input.subject),
+      label,
+      voice: null,
+      isFeatured: sameSubject(input.subject, featured),
+      status: "MISSING",
+      detail: "MISSING (no run artifact for this subject; no verdict copied)",
+      verdict: null,
+      subScores: [],
+      probes: null,
+      tag: null,
     };
   }
-  const failing = gates.filter((gate) => gate.status === "FAIL").map((gate) => gate.name);
-  const informational = gates.filter((gate) => gate.status === "INFO").map((gate) => gate.name);
+  // A row reads only its own subject's run. A mismatched pair is a harness
+  // error, never a way to give one subject another subject's verdict.
+  const artifactSubject = subjectOfArtifact(artifact);
+  if (!sameSubject(artifactSubject, input.subject)) {
+    throw new Error(
+      `matrix row ${label} was handed the artifact of ${formatSubject(artifactSubject)} ` +
+        `(a row only reads its own subject's run)`,
+    );
+  }
+  const verdict = subjectGateVerdict(artifact);
+  const probes = validateProbeCounts(
+    artifact.probes as unknown as Record<string, unknown>,
+    `matrix cannot read ${label}`,
+  );
+  const tag = analyzeTagMentions(artifact.transcripts.redacted, input.expectedTag ?? expectedTag);
+  const regression = checkRegressionVoice({
+    voice: artifact.voice,
+    isGate: sameSubject(input.subject, featured),
+    probes,
+    tag,
+  });
+  const status: RegressionSubjectStatus =
+    verdict.status === "FAIL" || regression.status === "FAIL"
+      ? "FAIL"
+      : verdict.status === "INFO"
+        ? "INFO"
+        : "PASS";
+  const gateDetail =
+    verdict.status === "FAIL"
+      ? `FAIL in ${verdict.runId} (${verdict.failing.join(", ")})`
+      : verdict.status === "INFO"
+        ? `INFO in ${verdict.runId} (this run reports no gates)`
+        : `PASS in ${verdict.runId} (no required gate failed)`;
   return {
-    voice,
-    status: failing.length > 0 ? "FAIL" : "PASS",
-    detail:
-      failing.length > 0
-        ? `gate ${voice}: FAIL (${failing.join(", ")})`
-        : `gate ${voice}: PASS (no required gate failed${informational.length > 0 ? `; ${informational.length} informational` : ""})`,
-    failing,
-    gates,
-    subScores: subScores ?? [],
+    subject: input.subject,
+    key: subjectRowKey(input.subject),
+    label,
+    voice: artifact.voice,
+    isFeatured: sameSubject(input.subject, featured),
+    status,
+    detail: `${gateDetail}; ${regression.status === "PASS" ? "regression clean" : regression.detail}`,
+    verdict,
+    subScores: artifact.subScores ?? [],
+    probes,
+    tag,
+  };
+}
+
+// ── Ordering: the featured subject is proved on the instrument first (78) ────
+
+/**
+ * The ordering rule the matrix enforces (voice-parity ticket 78, spec W5):
+ * the featured subject is judged first, and every other subject — English and
+ * non-English alike — is judged only when the featured subject's own current
+ * run in this matrix passes. Until then those rows are BLOCKED, so a refactor
+ * bug on the new instrument can never be attributed to a Locale.
+ */
+export const MATRIX_ORDERING_RULE = "featured-first" as const;
+
+export type MatrixOrdering = {
+  rule: typeof MATRIX_ORDERING_RULE;
+  featuredSubject: SubjectRecord;
+  /**
+   * The featured subject's own row status in this matrix; null when the matrix
+   * contains no featured row, which leaves the gate shut.
+   */
+  featuredStatus: RegressionSubjectStatus | null;
+  /** Named reason: what opened the gate, or what it is waiting for. */
+  detail: string;
+  /** Row keys of subjects that were not judged because the gate is shut. */
+  blocked: string[];
+};
+
+/**
+ * Why a featured subject does not open the gate, in the words the report uses.
+ * Only PASS opens it: INFO (a run that reports no gates) is not a proof, and a
+ * missing run is not a pass.
+ */
+function featuredGateReason(
+  row: RegressionSubjectResult | null,
+  featured: SubjectRecord,
+): string {
+  const label = row ? row.label : formatSubject(featured);
+  const why = row ? row.detail : "no run artifact for the featured subject in this matrix";
+  return `featured subject ${label} has not passed (${why})`;
+}
+
+/**
+ * Apply the featured-first rule to already-built rows: order the featured row
+ * first and replace every other judged row with a BLOCKED row carrying a named
+ * reason when the featured subject has not passed. A MISSING row stays MISSING
+ * (there was never a run to judge); it is not silently turned into a verdict.
+ *
+ * The blocked row keeps its own run's raw measurements but carries no verdict,
+ * so nothing about it can be read as a judgement — least of all another
+ * subject's.
+ */
+function applyFeaturedFirst(input: {
+  results: RegressionSubjectResult[];
+  featured: SubjectRecord;
+}): { results: RegressionSubjectResult[]; ordering: MatrixOrdering } {
+  const featuredRows = input.results.filter((row) => row.isFeatured);
+  const otherRows = input.results.filter((row) => !row.isFeatured);
+  const featuredRow = featuredRows[0] ?? null;
+  const featuredStatus = featuredRow?.status ?? null;
+  const open = featuredStatus === "PASS";
+  const reason = open ? "" : featuredGateReason(featuredRow, input.featured);
+  const blocked: string[] = [];
+  const ordered = [...featuredRows, ...otherRows].map((row) => {
+    if (row.isFeatured || open || row.status === "MISSING") return row;
+    blocked.push(row.key);
+    return {
+      ...row,
+      status: "BLOCKED" as const,
+      detail: `blocked: ${reason}; this subject is not judged until it does`,
+      verdict: null,
+    };
+  });
+  const detail = open
+    ? `${featuredRow ? `featured subject ${featuredRow.label}` : "featured subject"} passed; ` +
+      `${otherRows.length} other subject${otherRows.length === 1 ? "" : "s"} judged after it`
+    : input.results.length === 0
+      ? `no subjects to order`
+      : `blocked: ${reason}; ${blocked.length} subject${blocked.length === 1 ? "" : "s"} not judged`;
+  return {
+    results: ordered,
+    ordering: {
+      rule: MATRIX_ORDERING_RULE,
+      featuredSubject: input.featured,
+      featuredStatus,
+      detail,
+      blocked,
+    },
   };
 }
 
 export type RegressionMatrix = {
   schemaVersion: typeof SCOREBOARD_SCHEMA_VERSION;
   recordedAt: string;
-  gateVoice: string;
   expectedTag: string;
-  voices: string[];
-  results: RegressionVoiceResult[];
-  /** The gate voice's carried verdict; regression rows never modify it. */
-  gate: MatrixGateVerdict;
+  /** The featured default subject: named for report emphasis, never a verdict source. */
+  featuredSubject: SubjectRecord;
+  /**
+   * The ordering the harness enforced: featured first, everything else only
+   * after it passes. Recorded so the artifact says which rule produced its rows.
+   */
+  ordering: MatrixOrdering;
+  /** Every subject measured, in row order (featured first). */
+  subjects: SubjectRecord[];
+  results: RegressionSubjectResult[];
   gates: ScoreboardGate[];
 };
 
-/** Full matrix verdict: one regression row per voice plus the overall row. */
+/**
+ * Full matrix verdict: one row per subject, each derived from that subject's
+ * own artifact. There is deliberately no `gateVoice` or carried `gate` field —
+ * there is no value through which the featured voice's verdict could travel.
+ */
 export function buildRegressionMatrix(input: {
-  gateVoice: string;
-  entries: RegressionVoiceInput[];
+  featuredSubject?: SubjectRecord;
+  entries: RegressionSubjectInput[];
   expectedTag?: string;
 }): RegressionMatrix {
-  const gateVoice = resolveGateVoice(input.gateVoice);
+  const featured = input.featuredSubject ?? subjectForRunVoice(DEMO_VOICE_IDS[0]);
   const expectedTag = input.expectedTag ?? "Lime 42";
-  const results = input.entries.map((entry) => {
-    resolveGateVoice(entry.voice);
-    return checkRegressionVoice({
-      voice: entry.voice,
-      isGate: entry.voice === gateVoice,
-      probes: entry.probes,
-      tag: analyzeTagMentions(entry.tagLines, entry.expectedTag ?? expectedTag),
-    });
-  });
+  const judged = input.entries.map((entry) => regressionSubjectRow(entry, featured, expectedTag));
+  const seen = new Set<string>();
+  for (const row of judged) {
+    if (seen.has(row.key)) throw new Error(`matrix has two rows for subject ${row.label}`);
+    seen.add(row.key);
+  }
+  // The ordering rule decides what may be judged and in which order (78).
+  const { results, ordering } = applyFeaturedFirst({ results: judged, featured });
   const clean = results.filter((result) => result.status === "PASS").length;
-  const gateEntry = input.entries.find((entry) => entry.voice === gateVoice);
-  const gates: ScoreboardGate[] = results.map((result) => ({
-    name: `regression:${result.voice}`,
-    status: result.status,
-    detail: result.detail,
+  const missing = results.filter((result) => result.status === "MISSING").length;
+  const blocked = results.filter((result) => result.status === "BLOCKED").length;
+  const gates: ScoreboardGate[] = results.map((row) => ({
+    name: `subject:${row.key}`,
+    // A missing run is never clean: the matrix cannot claim a subject it did
+    // not measure. A blocked subject was not judged at all, so it is INFO with
+    // the reason in the detail; the matrix gate still refuses to call it clean.
+    status:
+      row.status === "MISSING" ? "FAIL" : row.status === "BLOCKED" ? "INFO" : row.status,
+    detail: `${row.label}: ${row.detail}`,
   }));
   gates.push({
+    name: `ordering:${MATRIX_ORDERING_RULE}`,
+    status: results.length === 0 ? "INFO" : ordering.featuredStatus === "PASS" ? "PASS" : "FAIL",
+    detail: ordering.detail,
+  });
+  gates.push({
     name: "matrix",
-    status: clean === results.length ? "PASS" : "FAIL",
-    detail: `${clean}/${results.length} voices regression-clean (gate ${gateVoice}; no clip, pop, jump, underrun, input-drop, or invented tag)`,
+    status: results.length === 0 ? "INFO" : clean === results.length ? "PASS" : "FAIL",
+    detail:
+      `${clean}/${results.length} subjects clean` +
+      `${missing > 0 ? `, ${missing} missing` : ""}` +
+      `${blocked > 0 ? `, ${blocked} blocked` : ""}` +
+      ` (each verdict derived from its own run)`,
   });
   return {
     schemaVersion: SCOREBOARD_SCHEMA_VERSION,
     recordedAt: new Date().toISOString(),
-    gateVoice,
     expectedTag,
-    voices: results.map((result) => result.voice),
+    featuredSubject: featured,
+    ordering,
+    subjects: results.map((result) => result.subject),
     results,
-    gate: gateVerdictFromArtifact(gateVoice, gateEntry?.gates, gateEntry?.subScores),
     gates,
   };
 }
 
-/** Console table: gate verdict plus one row per voice and the summary. */
+/**
+ * Console table: one named subject per row plus the summary. The ordering rule
+ * and its reason are printed beside the header and on every blocked row, so a
+ * subject that was not judged is never silent (ticket 78).
+ */
 export function formatMatrixTable(matrix: RegressionMatrix): string {
   const clean = matrix.results.filter((result) => result.status === "PASS").length;
-  const subScores =
-    matrix.gate.subScores.length > 0
-      ? `; sub-scores ${matrix.gate.subScores.map((sub) => `${sub.name} ${sub.status}`).join(", ")}`
-      : "";
-  const gateRow = `${"GATE".padEnd(6)} ${matrix.gate.voice.padEnd(12)} ${matrix.gate.detail}${subScores}`;
-  const rows = matrix.results.map(
-    (result) => `${result.status.padEnd(6)} ${result.voice.padEnd(12)} ${result.detail}`,
-  );
+  const missing = matrix.results.filter((result) => result.status === "MISSING").length;
+  const blocked = matrix.results.filter((result) => result.status === "BLOCKED").length;
+  const summary = [`${clean}/${matrix.results.length} clean`];
+  if (missing > 0) summary.push(`${missing} missing`);
+  if (blocked > 0) summary.push(`${blocked} blocked`);
+  const width = Math.max(12, ...matrix.results.map((row) => row.label.length));
+  const rows = matrix.results.map((row) => {
+    const status =
+      row.status === "MISSING" ? "MISS" : row.status === "BLOCKED" ? "BLOCK" : row.status;
+    const subScores =
+      row.isFeatured && row.subScores.length > 0
+        ? `; sub-scores ${row.subScores.map((sub) => `${sub.name} ${sub.status}`).join(", ")}`
+        : "";
+    return `${status.padEnd(6)} ${row.label.padEnd(width)} ${row.detail}${subScores}`;
+  });
   return [
-    `demo voice matrix (gate ${matrix.gateVoice}, ${matrix.results.length} voices, ${clean}/${matrix.results.length} clean)`,
-    gateRow,
+    `subject matrix (featured ${formatSubject(matrix.featuredSubject)}, ordering ${matrix.ordering.rule}, ${matrix.results.length} subjects, ${summary.join(", ")})`,
+    `ordering: ${matrix.ordering.detail}`,
     ...rows,
   ].join("\n");
+}
+
+// ── Subject: the verdict belongs to the run that measured it (ticket 72) ─────
+
+/**
+ * The subject an artifact measured. New artifacts carry the record the run
+ * resolved; a pre-axis artifact derives it from its voice, never from the
+ * featured default (ticket 72).
+ */
+export function subjectOfArtifact(
+  artifact: Pick<ScoreboardArtifact, "subject" | "voice">,
+): SubjectRecord {
+  return subjectOrLegacy({ subject: artifact.subject, voice: artifact.voice });
+}
+
+/**
+ * One subject's gate verdict, derived from that subject's own artifact.
+ *
+ * This is the seam ticket 73 reads per subject: the function takes exactly one
+ * artifact, so there is no parameter through which the featured voice's verdict
+ * could be carried in. A subject with a failing gate row is FAIL regardless of
+ * what any other subject's artifact says.
+ */
+export type SubjectGateVerdict = {
+  subject: SubjectRecord;
+  /** The run the verdict was derived from, so a reader can open that artifact. */
+  runId: string;
+  scenario: string;
+  status: GateStatus;
+  failing: string[];
+  detail: string;
+  gates: ScoreboardGate[];
+};
+
+export function subjectGateVerdict(
+  artifact: ScoreboardArtifact,
+): SubjectGateVerdict {
+  const subject = subjectOfArtifact(artifact);
+  const failing = artifact.gates.filter((gate) => gate.status === "FAIL").map((gate) => gate.name);
+  const status: GateStatus =
+    artifact.gates.length === 0 ? "INFO" : failing.length > 0 ? "FAIL" : "PASS";
+  return {
+    subject,
+    runId: artifact.runId,
+    scenario: artifact.evalRunner.scenario,
+    status,
+    failing,
+    detail:
+      `subject ${formatSubject(subject)} (${artifact.runId}, ${artifact.evalRunner.scenario}): ` +
+      (status === "PASS"
+        ? `PASS (no required gate failed in this run's own artifact)`
+        : status === "FAIL"
+          ? `FAIL (${failing.join(", ")})`
+          : "INFO (this artifact reports no gates)"),
+    gates: artifact.gates,
+  };
 }
 
 // ── Streak: three consecutive greens on one code + candidate behavior run ───

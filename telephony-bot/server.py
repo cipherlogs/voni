@@ -38,6 +38,9 @@ from loguru import logger
 from pipecat.runner.utils import parse_telephony_websocket
 
 from voni_db import recorder
+import barge_in_recovery as recovery
+from goodbye_drain import GoodbyeDrain, playout_settled
+from stored_agent_body import read_turn_detection
 from tool_coordinator import ToolCoordinator
 from voice_judge import classify_user_turn, judge_enabled, sample_judge
 from bridge_config import BridgeConfig, bridge_config
@@ -165,6 +168,150 @@ SPEECH_FRACTION = 0.02
 # A gap this long between agent audio chunks means Telnyx ran out of queued
 # audio, which the caller hears as the voice breaking up.
 STALL_SECS = 0.15
+
+# ── Barge-in recovery (voice-parity 70, docs/adr/0003-barge-in-recovery.md) ──
+# The browser's pends and timers, ported: a filler's resume waits this long for
+# the platform's own answer to the barge-in so it can supersede it
+# (`RESUME_WAIT_MS` in voni/src/lib/voice/session.ts); a cut with no caller
+# words at all resumes anyway after this long, because a click or a cough gets
+# no transcript (`NO_WORDS_RESUME_MS`).
+RESUME_WAIT_S = 0.5
+NO_WORDS_RESUME_S = 0.8
+
+
+def call_stats(call_control_id: str) -> dict:
+    """One call's frame counters and barge-in state.
+
+    A plain dict on purpose: this is the loop's own memory, and every number in
+    it is read once at teardown. The barge-in keys are the phone's record of a
+    cut (voice-parity 70): `barge_in` holds the line's heard prefix and exact
+    unheard tail, `pending_resume` the line waiting to supersede the platform's
+    answer, and `dropped_reply_id` the answer whose audio must never play.
+    """
+    return {
+        "call_control_id": call_control_id,
+        "to_agent": 0, "to_caller": 0, "skipped_track": 0,
+        "speech_started": 0, "cleared": 0,
+        "backchannels": 0, "user_yields": 0, "overheard": 0, "speaking": False,
+        "reply_started_at": None, "first_audio_at": None, "speech_at": None,
+        "last_audio_at": None, "reply_bytes": 0, "ttfa_seen": [],
+        "stalls": 0, "worst_stall": 0.0,
+        "pending": bytearray(),
+        "first_in": None, "last_in": None,
+        # The current reply's line, from `transcript.agent.delta`/`transcript.agent`.
+        "agent_text": "", "reply_id": None,
+        "barge_in": None, "pending_resume": None, "dropped_reply_id": None,
+        "unheard_tails": 0, "short_tails": 0, "resumes": 0,
+        "barge_in_yields": 0, "suppressed_audio": 0,
+        "resume_timer": None, "no_words_timer": None,
+    }
+
+
+def _cancel_timer(stats: dict, key: str) -> None:
+    timer = stats.get(key)
+    stats[key] = None
+    if timer is not None and not timer.done():
+        timer.cancel()
+
+
+def cancel_barge_in_timers(stats: dict) -> None:
+    """Drop the two recovery timers when a call's audio loop ends."""
+    _cancel_timer(stats, "resume_timer")
+    _cancel_timer(stats, "no_words_timer")
+
+
+def _mark_barge_in(stats: dict) -> None:
+    """Record what the cut left unheard, before the buffer is dropped.
+
+    The heard prefix comes from how much of the line actually played (the
+    bridge forwards at the agent's rate, so wall-clock since the first audible
+    chunk is that measure), and the tail from the last heard word — the same
+    `heardWords`/`unheardRest` rule the browser uses. A cut with no text at all
+    is logged rather than silently losing the tail.
+    """
+    line = stats.get("agent_text") or ""
+    played_ms = 0.0
+    if stats.get("speech_at") is not None:
+        played_ms = max(0.0, (time.monotonic() - stats["speech_at"]) * 1000.0)
+    cut = recovery.cut_tail(line, played_ms)
+    stats["barge_in"] = {**cut, "agent_speaking_ms": played_ms}
+    if not line:
+        logger.warning("barge-in: no agent text arrived; the tail cannot be marked")
+    elif recovery.nothing_left_unheard(line, cut["heard"]):
+        logger.info("barge-in: the line had already played out; nothing left unheard")
+    else:
+        stats["unheard_tails"] += 1
+        logger.info(
+            f"barge-in: heard {len(cut['heard'].split())} of "
+            f"{len(line.split())} words, unheard tail kept: {cut['rest']!r}"
+        )
+
+
+async def _supersede_with_resume(agent_ws, telnyx_ws, stats: dict, reply_id: str | None = None) -> None:
+    """Send the resume line now, and make sure the platform's own answer is dead.
+
+    A `reply.create` sent mid-reply supersedes the running one within ~60ms
+    (ADR 0003), but its already-pushed audio must not reach the caller: drop the
+    partial frame, clear Telnyx's queue and ignore the reply by id.
+    """
+    instructions = stats.get("pending_resume")
+    if not instructions:
+        return
+    stats["pending_resume"] = None
+    _cancel_timer(stats, "resume_timer")
+    if reply_id is not None:
+        stats["dropped_reply_id"] = reply_id
+    stats["pending"].clear()
+    await telnyx_ws.send_text(json.dumps({"event": "clear"}))
+    await agent_ws.send(json.dumps({"type": "reply.create", "instructions": instructions}))
+    stats["resumes"] += 1
+
+
+def _arm_resume_wait(agent_ws, telnyx_ws, stats: dict) -> None:
+    """Wait for the platform's answer to a filler, then supersede it.
+
+    Without the wait, a resume sent before the platform's answer starts races
+    it; without the timeout, a back-channel the platform never answers leaves
+    the cut line unfinished forever.
+    """
+    _cancel_timer(stats, "resume_timer")
+
+    async def send_after_wait() -> None:
+        await asyncio.sleep(RESUME_WAIT_S)
+        stats["resume_timer"] = None
+        await _supersede_with_resume(agent_ws, telnyx_ws, stats)
+
+    stats["resume_timer"] = asyncio.get_running_loop().create_task(send_after_wait())
+
+
+def _arm_no_words_resume(agent_ws, telnyx_ws, stats: dict) -> None:
+    """Resume a cut with no caller words at all (a click, a cough, a scroll).
+
+    A noise starts no turn in the platform, so no transcript ever arrives and
+    nothing would resume: the browser has the same 800ms backstop.
+    """
+    _cancel_timer(stats, "no_words_timer")
+
+    async def resume_after_quiet() -> None:
+        await asyncio.sleep(NO_WORDS_RESUME_S)
+        stats["no_words_timer"] = None
+        barge_in = stats.get("barge_in")
+        if barge_in is None:
+            return
+        stats["barge_in"] = None
+        instructions = recovery.resume_for_barge_in("", barge_in["rest"])
+        if instructions is None:
+            stats["short_tails"] += 1
+            return
+        stats["pending_resume"] = instructions
+        await _supersede_with_resume(agent_ws, telnyx_ws, stats)
+
+    stats["no_words_timer"] = asyncio.get_running_loop().create_task(resume_after_quiet())
+
+
+# The one drain handshake the bridge uses before it tears the legs down: the
+# browser's polled goodbye drain, ported (see goodbye_drain.py, ADR 0007).
+GOODBYE_DRAIN = GoodbyeDrain()
 
 async def send_frames(telnyx_ws: WebSocket, stats: dict, flush: bool = False) -> None:
     """Push whole 20 ms PCMU frames at Telnyx, keeping any partial tail back."""
@@ -569,6 +716,11 @@ async def agent_to_telnyx(
         tool_local_error = await tools.handle_event(event)
 
         if event_type == "reply.audio":
+            # A resume superseded this reply: its late audio is never played.
+            reply_id = event.get("reply_id")
+            if reply_id is not None and reply_id == stats.get("dropped_reply_id"):
+                stats["suppressed_audio"] += 1
+                continue
             now = time.monotonic()
             stats["speaking"] = True
             pcm = base64.b64decode(event["data"])
@@ -662,26 +814,34 @@ async def agent_to_telnyx(
                 # audio is correct here — it prevents stale speech playing on
                 # after the caller took the turn. Drop our own partial frame
                 # too, or it bleeds into the front of the next reply.
+                #
+                # Dropping the audio must not drop the *words*: mark the unsure
+                # tail first, or a noise would lose the rest of the sentence
+                # outright (voice-parity 70, ADR 0003 on the browser side).
+                _mark_barge_in(stats)
                 stats["pending"].clear()
                 await telnyx_ws.send_text(json.dumps({"event": "clear"}))
                 stats["cleared"] += 1
+                # The caller's words may never become a turn (a cough gets no
+                # transcript), so arm the browser's no-words backstop.
+                _arm_no_words_resume(agent_ws, telnyx_ws, stats)
             elif tools.take_hangup_request():
                 # Agent-initiated hangup: generation settled and the flush
                 # above pushed the last frames, but Telnyx still has to PLAY
-                # the goodbye at 1x. Estimate the unplayed tail from pushed
-                # audio vs elapsed wall-clock and wait it out (bounded), or
-                # the teardown below cuts the closing line off mid-word.
-                if stats["first_audio_at"] is not None:
-                    pushed_secs = stats["reply_bytes"] / 8000.0
-                    played_secs = time.monotonic() - stats["first_audio_at"]
-                    tail = min(8.0, max(0.0, pushed_secs - played_secs))
-                else:
-                    tail = 0.0
-                if tail > 0:
-                    logger.info(f"agent ended the call; draining {tail:.1f}s of goodbye audio")
-                    await asyncio.sleep(tail)
-                else:
-                    logger.info("agent ended the call; tearing down both legs")
+                # the goodbye at 1x. Poll the playout instead of sleeping a
+                # computed tail — the browser's drain handshake, ported
+                # (ADR 0007) — or the teardown below cuts the closing line off
+                # mid-word on a jittery link.
+                outcome = await GOODBYE_DRAIN.drain(
+                    playback_settled=lambda: playout_settled(stats, time.monotonic()),
+                    last_audio_at=lambda: stats["last_audio_at"],
+                )
+                logger.info(
+                    f"agent ended the call; goodbye drained after "
+                    f"{outcome.waited_ms}ms ({outcome.reason}, "
+                    f"{outcome.polls} polls)"
+                )
+                cancel_barge_in_timers(stats)
                 return
         elif event_type == "transcript.user":
             logger.info(f"caller: {event.get('text')!r}")
@@ -690,7 +850,41 @@ async def agent_to_telnyx(
             # forget Jev sampling when configured — never awaited here, so
             # the 2.5s reply latency this loop was tuned for is untouched.
             text = event.get("text") or ""
-            if stats.get("speaking") and stats.get("speech_at") is not None:
+            barge_in = stats.get("barge_in")
+            if barge_in is not None:
+                # The words behind a cut finally landed. Judge them against
+                # the line that was cut (ADR 0003): a filler, a back-channel
+                # or an aside resumes the exact unheard tail; a real point is
+                # answered as a normal turn and never resumed.
+                _cancel_timer(stats, "no_words_timer")
+                stats["barge_in"] = None
+                agent_ms = barge_in["agent_speaking_ms"]
+                decision, prob = classify_user_turn(text, agent_ms)
+                # Overheard either way: caller speech that landed while the
+                # agent held the floor registers even when the judge keeps
+                # the agent talking.
+                stats["overheard"] += 1
+                if decision == "yield":
+                    stats["user_yields"] += 1
+                    stats["barge_in_yields"] += 1
+                else:
+                    stats["backchannels"] += 1
+                    instructions = recovery.resume_for_barge_in(text, barge_in["rest"])
+                    if instructions is None:
+                        # The caller already heard the point.
+                        stats["short_tails"] += 1
+                    else:
+                        stats["pending_resume"] = instructions
+                        _arm_resume_wait(agent_ws, telnyx_ws, stats)
+                logger.debug(f"judge barge-in={decision} p={prob:.2f} text={text!r}")
+                if judge_enabled():
+                    asyncio.create_task(
+                        sample_judge(
+                            "barge-in",
+                            {"partialText": text, "agentSpeakingMs": agent_ms},
+                        )
+                    )
+            elif stats.get("speaking") and stats.get("speech_at") is not None:
                 agent_ms = (time.monotonic() - stats["speech_at"]) * 1000.0
                 decision, prob = classify_user_turn(text, agent_ms)
                 # Overheard either way: caller speech that landed while the
@@ -713,7 +907,23 @@ async def agent_to_telnyx(
             # reply latency was tuned from 3.5s to 2.5s over five real calls.
             # A round trip to Frankfurt here would give part of that back.
             recorder.record_turn(stats["call_control_id"], "user", event.get("text"))
+        elif event_type == "transcript.user.delta":
+            # A partial means the caller is still talking: a cut with no words
+            # must not resume over them (the browser restarts the same wait on
+            # every partial). Final text is the only judge input.
+            if stats.get("barge_in") is not None:
+                _arm_no_words_resume(agent_ws, telnyx_ws, stats)
+        elif event_type == "transcript.agent.delta":
+            # One word per event in production, aligned to playback; a
+            # cumulative `text` is honoured too. Same rule as the browser.
+            delta = event.get("delta")
+            cumulative = event.get("text")
+            if isinstance(cumulative, str):
+                stats["agent_text"] = cumulative
+            elif isinstance(delta, str):
+                stats["agent_text"] = f"{stats['agent_text']} {delta}".strip()
         elif event_type == "transcript.agent":
+            stats["agent_text"] = event.get("text") or stats["agent_text"]
             logger.info(
                 f"agent: {event.get('text')!r} interrupted={event.get('interrupted')}"
             )
@@ -727,6 +937,15 @@ async def agent_to_telnyx(
             stats["speech_at"] = None
             stats["last_audio_at"] = None
             stats["reply_bytes"] = 0
+            stats["agent_text"] = ""
+            stats["reply_id"] = event.get("reply_id")
+            if stats.get("pending_resume"):
+                # The platform's own answer to the filler: never heard.
+                await _supersede_with_resume(
+                    agent_ws, telnyx_ws, stats, event.get("reply_id")
+                )
+            else:
+                stats["dropped_reply_id"] = None
             logger.debug("agent event: reply.started")
         elif event_type == "session.error":
             if tool_local_error:
@@ -735,9 +954,11 @@ async def agent_to_telnyx(
             # at_capacity / concurrency_exceeded / internal_error are retryable;
             # every other code is fatal for this session.
             logger.error(f"agent session error: {event}")
+            cancel_barge_in_timers(stats)
             return
         elif event_type == "session.ended":
             logger.info("agent session ended")
+            cancel_barge_in_timers(stats)
             return
 
 
@@ -773,15 +994,7 @@ async def media_stream(websocket: WebSocket):
     # Frame counters. If the caller reports silence, these say which leg was
     # dry: no `to_agent` means Telnyx audio never arrived, no `to_caller` means
     # the agent never produced any.
-    stats = {"call_control_id": call_control_id,
-             "to_agent": 0, "to_caller": 0, "skipped_track": 0,
-              "speech_started": 0, "cleared": 0,
-              "backchannels": 0, "user_yields": 0, "overheard": 0, "speaking": False,
-             "reply_started_at": None, "first_audio_at": None, "speech_at": None,
-             "last_audio_at": None, "reply_bytes": 0, "ttfa_seen": [],
-             "stalls": 0, "worst_stall": 0.0,
-             "pending": bytearray(),
-             "first_in": None, "last_in": None}
+    stats = call_stats(call_control_id)
     logger.info(f"telnyx inbound={telnyx_encoding} -> agent in={in_encoding} "
         f"out={out_encoding} (bidirectional codec {BIDIRECTIONAL_CODEC})")
 
@@ -793,6 +1006,17 @@ async def media_stream(websocket: WebSocket):
     session_id = None
     try:
         runtime = await bridge_config.get(force=True)
+        # The body this call serves, read once while the greeting plays. Its
+        # turn setting decides what sensitive capture widens from and what the
+        # next final caller turn restores — the browser's mechanics, pinned to
+        # the same stored body (ADR 0007, voice-parity ticket 71).
+        inbound_agent = INBOUND_AGENTS.pop(call_control_id, None)
+        stored_agent = inbound_agent or runtime.assemblyai_agent_id
+        load_turn_detection = (
+            (lambda: read_turn_detection(runtime.assemblyai_api_key, stored_agent))
+            if stored_agent
+            else None
+        )
         # Voice Agent API uses Bearer authentication. Browser sessions use the
         # short-lived tokens minted by Voni instead of this server credential.
         agent_ws = await websockets.connect(
@@ -806,7 +1030,7 @@ async def media_stream(websocket: WebSocket):
             json.dumps(
                 build_session_update(
                     in_encoding, out_encoding, runtime,
-                    INBOUND_AGENTS.pop(call_control_id, None),
+                    inbound_agent,
                 )
             )
         )
@@ -823,7 +1047,11 @@ async def media_stream(websocket: WebSocket):
                 logger.error(f"agent session failed to start: {event}")
                 return
 
-        tools = ToolCoordinator(agent_ws, recorder.get_call_id(call_control_id))
+        tools = ToolCoordinator(
+            agent_ws,
+            recorder.get_call_id(call_control_id),
+            load_turn_detection=load_turn_detection,
+        )
 
         # Whichever leg ends first tears down the other.
         done, pending = await asyncio.wait(
@@ -842,6 +1070,7 @@ async def media_stream(websocket: WebSocket):
     except Exception as e:
         logger.error(f"bridge error: {e}")
     finally:
+        cancel_barge_in_timers(stats)
         if tools is not None:
             await tools.close()
         if agent_ws is not None:
@@ -873,6 +1102,12 @@ async def media_stream(websocket: WebSocket):
              f"confirmed_interruptions={stats['cleared']} {lead_summary} "
              f"judge_yields={stats['user_yields']} judge_backchannels={stats['backchannels']} "
              f"overheard={stats['overheard']} "
+             # Barge-in recovery (voice-parity 70): a cut whose tail was kept,
+             # a tail too short to resume, the resumes actually sent, the real
+             # barge-ins answered instead, and the superseded audio never played.
+             f"unheard_tails={stats['unheard_tails']} short_tails={stats['short_tails']} "
+             f"resumes={stats['resumes']} barge_in_yields={stats['barge_in_yields']} "
+             f"suppressed_audio={stats['suppressed_audio']} "
             f"{stall_summary} "
             f"inbound_span={(stats['last_in'] - stats['first_in']) if stats['first_in'] else 0:.1f}s"
         )
