@@ -14,7 +14,7 @@ import { decodeWav } from "@/lib/audio/format-facts";
 type Port = { onmessage: ((e: { data: unknown }) => void) | null; posted: unknown[] };
 type Processor = { port: Port; process: (inputs: Float32Array[][], outputs: Float32Array[][]) => boolean };
 
-function load(file: string, sampleRate: number, options?: unknown) {
+function load(file: string, sampleRate: number, options?: unknown, source?: string) {
   const scope = {
     sampleRate,
     currentTime: 0,
@@ -32,7 +32,7 @@ function load(file: string, sampleRate: number, options?: unknown) {
       scope.registered = ctor;
     },
   };
-  vm.runInNewContext(readFileSync(`public/${file}`, "utf8"), scope);
+  vm.runInNewContext(source ?? readFileSync(`public/${file}`, "utf8"), scope);
   const proc = new scope.registered!(options);
   return { proc, scope };
 }
@@ -57,39 +57,68 @@ function sineChunk(start: number, n: number) {
   return s;
 }
 
-/** Drive the playout: `arrivals` are [atSeconds, samples] chunks; returns output. */
-function runPlayout(
-  arrivals: [number, Float32Array][],
-  seconds: number,
-  flushAt?: number,
-  probe = false,
-  sourceRate = SRC,
-  tap = false,
-) {
-  const { proc, scope } = load("playout-processor.js", OUT);
+type PlayoutRun = {
+  /** [atSeconds, samples] chunks, in order. */
+  arrivals: [number, Float32Array][];
+  /** Wall-clock seconds to drive the context for. */
+  seconds: number;
+  flushAt?: number;
+  probe?: boolean;
+  sourceRate?: number;
+  /**
+   * Delivered capture: off, on for the whole run, or a list of times at which
+   * to toggle it (it starts on, so the first time turns it off). A mid-run off
+   * exercises the tap's flush-and-ack path while audio is still playing, not
+   * only at teardown.
+   */
+  tap?: boolean | number[];
+  /**
+   * Context suspended in this window: no `process` call and a frozen worklet
+   * clock, as the browser does when a call is muted or the page is hidden.
+   */
+  suspend?: [number, number];
+  /** Worklet source override, for the mutation proof. */
+  source?: string;
+};
+
+/** Drive the playout; returns everything the worklet emitted and posted. */
+function runPlayout(config: PlayoutRun) {
+  const { arrivals, seconds, flushAt, probe = false, sourceRate = SRC, tap = false, suspend } = config;
+  const { proc, scope } = load("playout-processor.js", OUT, undefined, config.source);
   if (probe) proc.port.onmessage!({ data: { type: "probe", on: true } });
-  if (tap) proc.port.onmessage!({ data: { type: "tap", on: true } });
+  let capturing = tap !== false;
+  const toggles = Array.isArray(tap) ? [...tap].sort((a, b) => a - b) : [];
+  if (capturing) proc.port.onmessage!({ data: { type: "tap", on: true } });
   const out: number[] = [];
   let seq = 0;
   let next = 0;
   let flushed = false;
+  let t = 0; // worklet time: frozen while the context is suspended
   for (let q = 0; q * 128 < seconds * OUT; q++) {
-    scope.currentTime = (q * 128) / OUT;
-    while (next < arrivals.length && arrivals[next][0] <= scope.currentTime) {
+    const wall = (q * 128) / OUT;
+    if (suspend && wall >= suspend[0] && wall < suspend[1]) continue;
+    scope.currentTime = t;
+    while (next < arrivals.length && arrivals[next][0] <= t) {
       proc.port.onmessage!({ data: { type: "play", seq: ++seq, rate: sourceRate, samples: arrivals[next][1] } });
       next++;
     }
-    if (flushAt !== undefined && !flushed && scope.currentTime >= flushAt) {
+    while (toggles.length && toggles[0]! <= t) {
+      toggles.shift();
+      capturing = !capturing;
+      proc.port.onmessage!({ data: { type: "tap", on: capturing } });
+    }
+    if (flushAt !== undefined && !flushed && t >= flushAt) {
       proc.port.onmessage!({ data: { type: "flush", fadeS: 0.04 } });
       flushed = true;
     }
     const buf = new Float32Array(128);
     proc.process([], [[buf]]);
     out.push(...buf);
+    t += 128 / OUT;
   }
   // Capture off, like session teardown: the tap flushes its last partial block
   // and acks, so a capture never loses its tail.
-  if (tap) proc.port.onmessage!({ data: { type: "tap", on: false } });
+  if (capturing) proc.port.onmessage!({ data: { type: "tap", on: false } });
   return { out, posted: proc.port.posted as PostedTap[] };
 }
 
@@ -126,7 +155,7 @@ test("playout: a wrong rate is a detectable speed change in the delivered captur
   // capture is 1.5x longer, so a capture comparison sees the speed change.
   const chunk = sineChunk(0, SRC * 0.2);
   const soundingMs = (rate: number) => {
-    const { out } = runPlayout([[0, chunk]], 1.2, undefined, false, rate);
+    const { out } = runPlayout({ arrivals: [[0, chunk]], seconds: 1.2, sourceRate: rate });
     return (out.filter((y) => y !== 0).length / OUT) * 1000;
   };
   const at24k = soundingMs(24_000);
@@ -136,7 +165,7 @@ test("playout: a wrong rate is a detectable speed change in the delivered captur
 });
 
 test("playout: jittery chunks play as one seamless stream", () => {
-  const { out, posted } = runPlayout(jitteryReply(), 2);
+  const { out, posted } = runPlayout({ arrivals: jitteryReply(), seconds: 2 });
   assert.ok(maxStep(out) <= CLEAN_STEP, `max step ${maxStep(out)} > clean ${CLEAN_STEP}`);
   // Exactly one drain: the natural end of the reply, no mid-reply underrun.
   assert.equal(posted.filter((m) => m.type === "level" && m.idle).length, 1);
@@ -154,7 +183,7 @@ test("playout: a stall longer than the buffer fades out and back in", () => {
     [0, sineChunk(0, SRC * 0.2)],
     [1.3, sineChunk(SRC * 0.2, SRC * 0.2)], // well after the first ran dry
   ];
-  const { out, posted } = runPlayout(arrivals, 2.2);
+  const { out, posted } = runPlayout({ arrivals, seconds: 2.2 });
   assert.ok(maxStep(out) <= CLEAN_STEP, `max step ${maxStep(out)}`);
   assert.equal(posted.filter((m) => m.type === "level" && m.idle).length, 2, "one underrun + the end");
 });
@@ -171,13 +200,13 @@ function realTimeReply(seconds: number, hiccupAt: number, hiccupS: number) {
 }
 
 test("playout: a 400ms network hiccup mid-line is absorbed, no gap", () => {
-  const { out, posted } = runPlayout(realTimeReply(2, 0.8, 0.4), 3);
+  const { out, posted } = runPlayout({ arrivals: realTimeReply(2, 0.8, 0.4), seconds: 3 });
   assert.ok(maxStep(out) <= CLEAN_STEP, `max step ${maxStep(out)}`);
   assert.equal(posted.filter((m) => m.type === "level" && m.idle).length, 1, "only the natural end");
 });
 
 test("playout: reports how much of the stream it has consumed", () => {
-  const { posted } = runPlayout(realTimeReply(1, 9, 0), 1.2);
+  const { posted } = runPlayout({ arrivals: realTimeReply(1, 9, 0), seconds: 1.2 });
   const levels = posted.filter((m) => m.type === "level") as unknown as { consumed: number }[];
   const consumed = levels.map((m) => m.consumed);
   assert.ok(consumed.every((c, i) => i === 0 || c >= consumed[i - 1]), "never goes back");
@@ -186,7 +215,7 @@ test("playout: reports how much of the stream it has consumed", () => {
 });
 
 test("playout: flush fades to silence within 40ms, no click", () => {
-  const { out } = runPlayout([[0, sineChunk(0, SRC)]], 1.2, 0.8);
+  const { out } = runPlayout({ arrivals: [[0, sineChunk(0, SRC)]], seconds: 1.2, flushAt: 0.8 });
   assert.ok(maxStep(out) <= CLEAN_STEP, `max step ${maxStep(out)}`);
   const after = out.slice(Math.ceil((0.8 + 128 / OUT + 0.04) * OUT));
   assert.ok(after.every((y) => y === 0), "silent after the fade");
@@ -196,20 +225,25 @@ test("playout: a reply right after a flush waits for the tail, never past full s
   // Barge-in resume: the superseded reply fades while the next one is ready.
   const loud = (n: number, hz: number) =>
     new Float32Array(n).map((_, i) => 0.95 * Math.sin((2 * Math.PI * hz * i) / SRC));
-  const { out, posted } = runPlayout([[0, loud(SRC, 180)], [0.8 + 128 / OUT, loud(SRC / 2, 230)]], 2, 0.8, true);
+  const { out, posted } = runPlayout({
+    arrivals: [[0, loud(SRC, 180)], [0.8 + 128 / OUT, loud(SRC / 2, 230)]],
+    seconds: 2,
+    flushAt: 0.8,
+    probe: true,
+  });
   const peak = Math.max(...out.map(Math.abs));
   assert.ok(peak <= 1, `peak ${peak}`);
   assert.deepEqual(posted.filter((m) => m.type === "pop"), []);
 });
 
 test("pop probe: a clean jittery reply reports nothing", () => {
-  const { posted } = runPlayout(jitteryReply(), 2, undefined, true);
+  const { posted } = runPlayout({ arrivals: jitteryReply(), seconds: 2, probe: true });
   assert.deepEqual(posted.filter((m) => m.type === "pop"), []);
 });
 
 test("pop probe: a hard discontinuity in the stream is flagged as a jump", () => {
   const square = new Float32Array(SRC * 0.2).map((_, i) => (Math.floor(i / 12) % 2 ? 0.9 : -0.9));
-  const { posted } = runPlayout([[0, sineChunk(0, SRC * 0.2)], [0.05, square]], 1.2, undefined, true);
+  const { posted } = runPlayout({ arrivals: [[0, sineChunk(0, SRC * 0.2)], [0.05, square]], seconds: 1.2, probe: true });
   const pops = posted.filter((m): m is Extract<PostedTap, { type: "pop" }> => m.type === "pop" && m.kind === "jump");
   assert.ok(pops.length > 0, "the square edge is flagged");
   assert.ok((pops[0]?.size ?? 0) > 0.3);
@@ -217,7 +251,7 @@ test("pop probe: a hard discontinuity in the stream is flagged as a jump", () =>
 
 test("pop probe: off by default, the worklet posts no pop messages", () => {
   const square = new Float32Array(SRC * 0.2).map((_, i) => (Math.floor(i / 12) % 2 ? 0.9 : -0.9));
-  const { posted } = runPlayout([[0, square]], 1);
+  const { posted } = runPlayout({ arrivals: [[0, square]], seconds: 1 });
   assert.deepEqual(posted.filter((m) => m.type === "pop"), []);
 });
 
@@ -232,31 +266,108 @@ function assertSameSamples(actual: number[], expected: number[], label: string) 
 }
 
 test("delivered capture: the tap posts exactly the samples the worklet emitted", () => {
-  const { out, posted } = runPlayout(jitteryReply(), 2, undefined, false, SRC, true);
+  const { out, posted } = runPlayout({ arrivals: jitteryReply(), seconds: 2, tap: true });
   const captured = tappedSamples(posted);
   assertSameSamples(captured, out, "capture vs emitted stream");
   // The ack follows the final block, so teardown can await a complete file.
   assert.equal(posted.at(-1)?.type, "tap-end");
 });
 
-test("delivered capture: enabling the tap does not change the emitted samples", () => {
-  const plain = runPlayout(jitteryReply(), 2);
-  const tapped = runPlayout(jitteryReply(), 2, undefined, false, SRC, true);
-  assertSameSamples(tapped.out, plain.out, "tapped vs plain output");
+/**
+ * Ticket 13, the non-intrusiveness proof. The tap may copy the rendered output
+ * and nothing else, so the same synthetic input renders twice — capture off,
+ * then on — and the *emitted stream* is compared sample for sample. This is the
+ * highest seam that exists without a live call: the real worklet, in the VM,
+ * with the AudioWorkletGlobalScope pieces it uses stubbed. The WAV is compared
+ * separately below; here the speaker's samples are the subject.
+ */
+function assertTapInert(name: string, run: (capture: boolean) => PlayoutRun, source?: string) {
+  const plain = runPlayout({ ...run(false), source }).out;
+  const tapped = runPlayout({ ...run(true), source }).out;
+  // A trace that never sounded would pass this comparison trivially.
+  assert.ok(plain.some((y) => y !== 0), `${name}: the trace actually sounded`);
+  assertSameSamples(tapped, plain, `${name}: tapped vs plain`);
+  return { plain, tapped };
+}
+
+/** Between them, every path a tap could disturb. */
+const TAP_INERT_SCENARIOS: { name: string; run: (capture: boolean) => PlayoutRun }[] = [
+  {
+    name: "a jittery reply",
+    run: (capture) => ({ arrivals: jitteryReply(), seconds: 2, tap: capture }),
+  },
+  {
+    // The flush tail is mixed over the following output; capture must not move it.
+    name: "a flush mid-reply",
+    run: (capture) => ({
+      arrivals: [[0, sineChunk(0, SRC)]],
+      seconds: 1.2,
+      flushAt: 0.8,
+      tap: capture,
+    }),
+  },
+  {
+    // The tap's off path posts its final partial block and acks mid-call, then
+    // the tap starts again: the flush/ack must not touch the stream either.
+    name: "the tap off and on again mid-call",
+    run: (capture) => ({ arrivals: jitteryReply(), seconds: 2, tap: capture ? [0.7, 1.1] : false }),
+  },
+  {
+    // A suspended context: no renders, a frozen clock, the tap's partial block
+    // carried across the gap.
+    name: "a suspended and resumed context",
+    run: (capture) => ({
+      arrivals: realTimeReply(2, 9, 0),
+      seconds: 2,
+      suspend: [0.5, 1.1],
+      tap: capture,
+    }),
+  },
+];
+
+for (const scenario of TAP_INERT_SCENARIOS) {
+  test(`delivered capture: the tap is inert — ${scenario.name}`, () => {
+    assertTapInert(scenario.name, scenario.run);
+  });
+}
+
+test("delivered capture: the inertness proof fails on a one-sample change in the tap", () => {
+  // The tap's only work is the copy `this.tapBuf[this.tapLen++] = out[i]`.
+  // This injects the smallest change a capture bug could make: one sample of
+  // the emitted stream slipped by a single 16-bit LSB, once. It is inaudible,
+  // so if the proof above cannot see it the proof proves nothing. The mutation
+  // is applied at the seam — the worklet source the VM loads — not to the
+  // shipped file.
+  const source = readFileSync("public/playout-processor.js", "utf8");
+  const mutated = source.replace(
+    "      this.tapBuf[this.tapLen++] = out[i];",
+    "      this.tapBuf[this.tapLen++] = out[i];\n" +
+      "      if (!this.slipped && out[i] !== 0) { this.slipped = true; out[i] += 1 / 32768; }",
+  );
+  assert.notEqual(mutated, source, "the mutation site was found");
+  assert.throws(
+    () =>
+      assertTapInert(
+        "mutated tap",
+        (capture) => ({ arrivals: jitteryReply(), seconds: 2, tap: capture }),
+        mutated,
+      ),
+    /mutated tap: tapped vs plain: sample \d+ is/,
+  );
 });
 
 test("delivered capture: a flush mid-reply is captured through its fade", () => {
-  const { out, posted } = runPlayout([[0, sineChunk(0, SRC)]], 1.2, 0.8, false, SRC, true);
+  const { out, posted } = runPlayout({ arrivals: [[0, sineChunk(0, SRC)]], seconds: 1.2, flushAt: 0.8, tap: true });
   assertSameSamples(tappedSamples(posted), out, "capture across a flush");
 });
 
 test("delivered capture: off by default, no tap buffers are posted", () => {
-  const { posted } = runPlayout(jitteryReply(), 1.5);
+  const { posted } = runPlayout({ arrivals: jitteryReply(), seconds: 1.5 });
   assert.deepEqual(posted.filter((m) => m.type === "tap" || m.type === "tap-end"), []);
 });
 
 test("delivered capture: a tapped run writes a readable WAV of what the speaker got", async () => {
-  const { out, posted } = runPlayout(jitteryReply(), 1.5, undefined, false, SRC, true);
+  const { out, posted } = runPlayout({ arrivals: jitteryReply(), seconds: 1.5, tap: true });
   const files: Uint8Array[] = [];
   const capture = new DeliveredCapture({
     sampleRate: OUT,
