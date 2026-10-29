@@ -52,6 +52,7 @@ import { CascadeSession } from "@/lib/voice/cascade-session";
 import {
   FILLER_POOL,
   isEndCallRequest,
+  isGoodbyeLine,
   requestVoiceJudge,
 } from "@/lib/voice/jev-judges";
 import { compileSystemPrompt } from "@/lib/agents/compile";
@@ -92,8 +93,8 @@ import {
   checkResultFromData,
   emailTestAfterCheck,
   emailTestAfterCode,
+  inviteFallbackAction,
   loadTagToken,
-  mentionsScreen,
   saveTagToken,
   talkLimitS,
   type EmailTestState,
@@ -402,6 +403,12 @@ export function VoiceCall({
   const [toolActive, setToolActive] = useState(false);
   /** For the inbox poll: Voni's own tool call is in flight, so its result speaks. */
   const toolActiveRef = useRef(false);
+  /**
+   * The caller asked to end. If the model answers with a spoken goodbye but
+   * never calls the end tool (measured live), the call still hangs up after
+   * that goodbye drains instead of leaving the line open.
+   */
+  const endRequestedRef = useRef(false);
   const [elapsed, setElapsed] = useState(0);
   /** Jev-gated filler line shown while the reply is being prepared. */
   const [filler, setFiller] = useState<string | null>(null);
@@ -1437,14 +1444,34 @@ export function VoiceCall({
       },
       onAgentTurn: (turn) => {
         lastAgentLineRef.current = turn.text;
+        // The caller asked to end: when Voni answers with a spoken goodbye
+        // but never calls the end tool, hang up once that goodbye drains.
+        // The tool call (or a spoken one) already went through onEndCall, so
+        // this only covers the line the model forgot to close.
+        if (endRequestedRef.current) {
+          endRequestedRef.current = false;
+          const session = sessionRef.current;
+          if (modeKind === "demo" && !closingRef.current && isGoodbyeLine(turn.text) && session instanceof VoiceSession) {
+            session.endAfterReply();
+          }
+        }
         // Voni announced her screen but never called the show tool: put the
-        // test up and send the invite, as the tool's result would have.
+        // test up, and send the invite only when her own line did not already
+        // say the tag. A line that carries the tag IS the invite; speaking the
+        // fallback after it said the same invite twice live.
         // Never once found (a callback's email already in: no invite, Q15).
         const test = emailTestRef.current;
-        // Only when no tool call ran for it (a running one puts the chip up itself).
-        if (modeKind === "demo" && !test.invited && !test.found && !toolActiveRef.current && mentionsScreen(turn.text)) {
+        const action = inviteFallbackAction({
+          text: turn.text,
+          tag: testTagRef.current ?? null,
+          invited: test.invited,
+          found: test.found,
+          // Only when no tool call ran for it (a running one puts the chip up itself).
+          toolActive: toolActiveRef.current,
+        });
+        if (modeKind === "demo" && action !== "none") {
           const tag = putTestUp();
-          if (tag) speak(inviteNowInstructions(tag), { key: "invite" });
+          if (action === "show-and-speak" && tag) speak(inviteNowInstructions(tag), { key: "invite" });
         }
       },
       // Demo stakes ladder: Jev scores every visitor turn against the beat's
@@ -1454,7 +1481,10 @@ export function VoiceCall({
         if (modeKind !== "demo" || closingRef.current || !turn.text.trim()) return;
         // Asking to end is never a strike: Voni says goodbye on its own, and
         // an end rung racing that goodbye repeated it.
-        if (isEndCallRequest(turn.text)) return;
+        if (isEndCallRequest(turn.text)) {
+          endRequestedRef.current = true;
+          return;
+        }
         const token = callTokenRef.current;
         void requestVoiceJudge(
           "off-track",

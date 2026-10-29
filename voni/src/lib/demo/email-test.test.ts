@@ -6,6 +6,7 @@ import {
   checkEmail,
   checkTag,
   mentionsScreen,
+  inviteFallbackAction,
   checkResultFromData,
   checkResultToData,
   emailTestAfterCheck,
@@ -339,6 +340,44 @@ test("Voni putting something on the screen is recognised (the call then puts the
   assert.equal(mentionsScreen("Use the tag I've put on screen."), true);
   assert.equal(mentionsScreen("I could screen your calls after hours."), false);
   assert.equal(mentionsScreen("Your customers see the price on the screen when they book."), false, "business talk");
+});
+
+test("the invite fallback never repeats an invite the agent already said", () => {
+  const base = { tag: "Lime 42", invited: false, found: false, toolActive: false };
+  // Live sess_cd108689aa6e4dcfad809d9aa04e8b25: the model's own line carried
+  // the tag, so the chip goes up but the fallback must not speak it again.
+  assert.equal(
+    inviteFallbackAction({
+      ...base,
+      text: "I've put a test address and the tag Lime 42 on your screen. Send me a quick email with that tag in the subject.",
+    }),
+    "show-only",
+  );
+  assert.equal(
+    inviteFallbackAction({ ...base, text: "I've put something on your screen. Send me a quick email." }),
+    "show-and-speak",
+    "no tag spoken: the fallback must say the invite",
+  );
+  assert.equal(
+    inviteFallbackAction({ ...base, invited: true, text: "I've put something on your screen." }),
+    "none",
+    "the chip already went up",
+  );
+  assert.equal(
+    inviteFallbackAction({ ...base, toolActive: true, text: "I've put something on your screen." }),
+    "none",
+    "a running show tool puts the chip up itself",
+  );
+  assert.equal(
+    inviteFallbackAction({ ...base, text: "Your customers see the price on the screen when they book." }),
+    "none",
+    "business talk about a screen is not an invite",
+  );
+  assert.equal(
+    inviteFallbackAction({ ...base, tag: null, text: "I've put something on your screen." }),
+    "none",
+    "no tag minted means no chip and no invite",
+  );
 });
 
 test("a saved tag token reads back from localStorage", () => {

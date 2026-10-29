@@ -19,7 +19,16 @@
  * The default (and `--scenario all`, alias `suite`) is the one-command suite:
  * it runs every gate-voice scenario that produces scoreboard evidence, one at
  * a time under one timing lock, and merges each producer's own stdout into
- * one artifact. `--scenario <name>` stays the focused mode for triage/tests.
+ * one artifact. Every gate reads only its scenario's slice: greeting-cut from
+ * greeting-cut, barge-in-cut from stop-over, filler-resume from filler-over
+ * (a non-zero scenario still feeds its measured evidence, never INFO),
+ * email-invite from invite-tag, double-talk from over-talk, dead-air from
+ * silence-check-in, goodbye coverage from bye-audio, and end-call-drain from
+ * the worst hang-up paired with that call's own session. Each scenario's Call
+ * trace is merged after all runs (retrying a just-closed timeline), its gaps
+ * carry their session and the beat the scenario owns, and every FAIL cites
+ * its own scenario's session/turn. `--scenario <name>` stays the focused mode
+ * for triage/tests.
  * Plumbing and judgment are separate: an eval runner that finished (its
  * summary printed, whatever the exit code) is plumbing PASS even when a
  * scenario or a measured gate FAILs. A spawn failure, a kill, a crash, no
@@ -228,6 +237,7 @@ import {
   parseSilenceTimeline,
   parseSilenceTimelineOutput,
   parseRunnerHangUp,
+  parseRunnerMissingGoodbye,
   parseTraceGaps,
   readCodeFingerprint,
   redactLines,
@@ -586,6 +596,30 @@ function runCallTrace(sessionId: string): string[] {
     throw new Error(`call:trace failed for ${sessionId}: ${(result.stderr ?? "").slice(0, 500)}`);
   }
   return redactLines(result.stdout ?? "");
+}
+
+/** Block the (single-threaded) suite while a just-closed timeline finishes. */
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * The suite's readiness gate: a session that closed seconds ago may not have
+ * its timeline artifact yet ("No timeline yet"). Retry a few times instead of
+ * deferring the whole merge; the caller still records a deferral when the
+ * timeline never arrives, never invented gaps.
+ */
+function runCallTraceWhenReady(sessionId: string, attempts = 6, waitMs = 2500): string[] {
+  let lastError: unknown = null;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return runCallTrace(sessionId);
+    } catch (error) {
+      lastError = error;
+      if (attempt < attempts) sleepSync(waitMs);
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
 
 /** Parse a previously written scoreboard artifact; null when the file is not one. */
@@ -959,55 +993,134 @@ function main(): void {
   const scenarioStdout = (...names: string[]): string =>
     suite ? names.map((name) => stdoutByScenario.get(name) ?? "").filter(Boolean).join("\n") : evalSection.stdout;
 
-  // The live runner prints `· trace session sess_…` when the call opens; an
-  // explicit --trace-session always wins, otherwise the last live call is
-  // chained so per-turn gaps come from the merger, never an estimate.
-  const runnerTraceSession = dryRun ? null : extractTraceSessionId(evalSection.stdout);
-  const traceSession = requestedTraceSession || runnerTraceSession || "";
-  const autoChainedTrace = !requestedTraceSession && runnerTraceSession !== null;
-
-  const gaps = parseGapFlags(process.argv);
-  const explicitAsides = overheardJsonPath ? loadOverheardJson(overheardJsonPath) : null;
+  // The live runner prints `· trace session sess_…` when each call opens. A
+  // suite merges every scenario's own finished call: turn numbers restart at
+  // 1 in each, so gaps carry their session, and a scenario's trace is
+  // attributed to the beat that scenario owns. Focused mode keeps the one
+  // stream (explicit --trace-session wins; otherwise the last live call).
+  type MergedTrace = { sessionId: string; excerpt: string[] };
+  const tracesBySession = new Map<string, MergedTrace>();
+  const traceByScenario = new Map<string, MergedTrace>();
+  const traceForScenario = (name: string): MergedTrace | null => traceByScenario.get(name) ?? null;
   let excerpt: string[] | null = null;
   let traceGaps: TraceGap[] = [];
-  if (traceSession) {
-    if (!autoChainedTrace) {
-      excerpt = runCallTrace(traceSession);
-    } else {
-      // A just-finished session may still be processing its timeline: record
-      // the session id and defer the merge instead of breaking the harness or
-      // inventing gaps.
-      try {
-        excerpt = runCallTrace(traceSession);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        console.log(`call trace merge deferred for ${traceSession}: ${message}`);
-        console.log(
-          `trace session ${traceSession}: rerun once the timeline finishes with npm run call:trace -- ${traceSession}, then score with --trace-session ${traceSession}`,
-        );
+  let traceSession = "";
+  if (suite) {
+    // A just-closed session may still be processing its timeline: the suite
+    // retries (the last call is seconds old), and each scenario's own trace
+    // is merged independently, so one late timeline never drops the rest.
+    for (const name of SUITE_SCENARIOS) {
+      const sectionStdout = stdoutByScenario.get(name) ?? "";
+      const sessionId = dryRun ? null : extractTraceSessionId(sectionStdout);
+      if (!sessionId) continue;
+      let trace = tracesBySession.get(sessionId);
+      if (!trace) {
+        try {
+          trace = { sessionId, excerpt: runCallTraceWhenReady(sessionId) };
+          tracesBySession.set(sessionId, trace);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          console.log(`call trace merge deferred for ${name} (${sessionId}): ${message}`);
+          continue;
+        }
+      }
+      traceByScenario.set(name, trace);
+    }
+    // The golden call opens with the greeting cut: its trace is the primary
+    // artifact excerpt (drain narration and turn pointers read one call).
+    // An explicit --trace-session still wins for that primary excerpt.
+    const primary = traceForScenario("greeting-cut") ?? tracesBySession.values().next().value ?? null;
+    excerpt = primary?.excerpt ?? null;
+    traceSession = primary?.sessionId ?? "";
+    if (requestedTraceSession) {
+      excerpt = runCallTrace(requestedTraceSession);
+      traceSession = requestedTraceSession;
+    }
+    const mergedSessions = new Set<string>();
+    const TRACE_BEAT_BY_SCENARIO: Partial<Record<(typeof SUITE_SCENARIOS)[number], GoldenBeat>> = {
+      "greeting-cut": "greeting-cut",
+      "filler-over": "filler-ignored",
+      "stop-over": "real-cut-answered",
+      "over-talk": "overheard-aside",
+      "silence-check-in": "silence-check-in",
+      "invite-tag": "email-invite",
+      "bye-audio": "goodbye-drain",
+    };
+    for (const name of SUITE_SCENARIOS) {
+      const trace = traceForScenario(name);
+      if (!trace || mergedSessions.has(trace.sessionId)) continue;
+      mergedSessions.add(trace.sessionId);
+      const beat = TRACE_BEAT_BY_SCENARIO[name];
+      for (const gap of parseTraceGaps(trace.excerpt)) {
+        traceGaps.push({
+          gapMs: gap.gapMs,
+          turnIndex: gap.turnIndex,
+          sessionId: trace.sessionId,
+          ...(beat ? { beat } : {}),
+        });
       }
     }
-    if (excerpt) traceGaps = parseTraceGaps(excerpt);
+  } else {
+    const runnerTraceSession = dryRun ? null : extractTraceSessionId(evalSection.stdout);
+    traceSession = requestedTraceSession || runnerTraceSession || "";
+    const autoChainedTrace = !requestedTraceSession && runnerTraceSession !== null;
+    if (traceSession) {
+      if (!autoChainedTrace) {
+        excerpt = runCallTrace(traceSession);
+      } else {
+        // A just-finished session may still be processing its timeline: record
+        // the session id and defer the merge instead of breaking the harness or
+        // inventing gaps.
+        try {
+          excerpt = runCallTrace(traceSession);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          console.log(`call trace merge deferred for ${traceSession}: ${message}`);
+          console.log(
+            `trace session ${traceSession}: rerun once the timeline finishes with npm run call:trace -- ${traceSession}, then score with --trace-session ${traceSession}`,
+          );
+        }
+      }
+      if (excerpt) traceGaps = parseTraceGaps(excerpt).map((gap) => ({ ...gap, sessionId: traceSession }));
+    }
   }
+  const gaps = parseGapFlags(process.argv);
+  const explicitAsides = overheardJsonPath ? loadOverheardJson(overheardJsonPath) : null;
   // Dead-air producer: the live runner's own session timeline (or a documented
   // --silence-json replay). The explicit --dead-air-* flags stay the override.
+  // Its check-in and silence pointers come from the silence-check-in call.
   const runnerSilence = dryRun ? null : parseSilenceTimelineOutput(scenarioStdout("silence-check-in"));
   const silenceTimeline = silenceJsonPath
     ? loadSilenceTimeline(silenceJsonPath)
     : (runnerSilence?.timeline ?? null);
+  const silenceTrace = traceForScenario("silence-check-in");
   const deadAir =
     explicitDeadAir ??
-    (silenceTimeline ? deadAirEvidenceFromTimeline(silenceTimeline, excerpt ?? [], traceSession || null) : undefined);
+    (silenceTimeline
+      ? deadAirEvidenceFromTimeline(
+          silenceTimeline,
+          silenceTrace?.excerpt ?? excerpt ?? [],
+          (silenceTrace?.sessionId ?? traceSession) || null,
+        )
+      : undefined);
+  // Overheard asides come from the over-talk call's own words and ledger.
+  const asideTrace = traceForScenario("over-talk");
   const traceAsides =
-    excerpt && traceSession
-      ? overheardFromTraceExcerpt(excerpt, traceSession, "overheard-aside", {
+    asideTrace
+      ? overheardFromTraceExcerpt(asideTrace.excerpt, asideTrace.sessionId, "overheard-aside", {
           // The runner's session ledger (`transcript.user` finals) proves the
           // same words were counted, independent of the merged trace.
           ...(dryRun
             ? {}
             : { ledger: parseHeardLedgerOutput(scenarioStdout("over-talk")) ?? undefined }),
         })
-      : [];
+      : excerpt && traceSession
+        ? overheardFromTraceExcerpt(excerpt, traceSession, "overheard-aside", {
+            ...(dryRun
+              ? {}
+              : { ledger: parseHeardLedgerOutput(scenarioStdout("over-talk")) ?? undefined }),
+          })
+        : [];
   const overheardAsides =
     explicitAsides !== null || traceAsides.length > 0 ? [...(explicitAsides ?? []), ...traceAsides] : undefined;
   // Invite/tag/chip evidence: an explicit --email-json (browser probe, replay)
@@ -1015,7 +1128,12 @@ function main(): void {
   // leaves the email gate INFO (unmeasured), never PASS.
   const runnerEmailEvidence = dryRun ? null : parseEmailInviteOutput(scenarioStdout("invite-tag"));
   const emailFile = emailJsonPath ? readEmailInviteJson(resolve(emailJsonPath)) : runnerEmailEvidence;
-  const emailEvidence = emailFile ? toEmailInviteEvidence(emailFile, excerpt ?? [], traceSession) : null;
+  // The invite's own call supplies its line turns, so a FAIL cites the invite
+  // turn of the call that repeated it.
+  const inviteTrace = traceForScenario("invite-tag");
+  const emailEvidence = emailFile
+    ? toEmailInviteEvidence(emailFile, inviteTrace?.excerpt ?? excerpt ?? [], inviteTrace?.sessionId ?? traceSession)
+    : null;
   // The live runner's own DOUBLE TALK line (over-talk) is the producer for
   // the double-talk gate: post-flush residual overlap per cut. An explicit
   // --overlap-ms wins (replay/triage); without either the gate stays INFO.
@@ -1023,13 +1141,20 @@ function main(): void {
   const runnerDoubleTalk = dryRun ? null : parseDoubleTalkOutput(scenarioStdout("over-talk"));
   const doubleTalkOverlapMs = explicitOverlapMs.length > 0 ? explicitOverlapMs : (runnerDoubleTalk?.overlapMs ?? []);
   // The turn pointer may only come from the same call the overlap was heard
-  // on. A trace merges the run's last session; when the evidence names another
-  // session, cite that session and say no turn was merged instead of pointing
-  // at a turn from a different call.
-  const doubleTalkTraceRef =
-    runnerDoubleTalk?.sessionId && traceSession && runnerDoubleTalk.sessionId !== traceSession
-      ? `${runnerDoubleTalk.sessionId} (no turn merged: trace session ${traceSession} is a different call)`
+  // on: the over-talk trace when merged, else the evidence's own session.
+  const overTalkTrace = traceForScenario("over-talk");
+  const doubleTalkTraceRef = (() => {
+    const session = runnerDoubleTalk?.sessionId ?? overTalkTrace?.sessionId ?? null;
+    if (!session) return undefined;
+    const trace = tracesBySession.get(session) ?? overTalkTrace;
+    if (trace) {
+      const turn = traceTurnPointers(trace.excerpt).cutTurn;
+      return turn !== null ? formatTraceTurn(turn, trace.sessionId) : `no turn merged (${trace.sessionId})`;
+    }
+    return traceSession && session !== traceSession
+      ? `${session} (no turn merged: trace session ${traceSession} is a different call)`
       : undefined;
+  })();
   const agentInput = buildDemoAgentBody(voice).input;
   // Explicit --filler-* flags are the operator override. Without them, the
   // live runner's own `filler …` line is the observed behavior and scores the
@@ -1044,20 +1169,25 @@ function main(): void {
   // the tail played (reworded tails live there), the interrupted turn when
   // nothing played (the tail was dropped). No merged row is stated explicitly
   // instead of replaced by a guessed turn.
+  const fillerTrace = traceForScenario("filler-over");
+  const fillerExcerpt = fillerTrace?.excerpt ?? excerpt;
+  const fillerSession = fillerTrace?.sessionId ?? traceSession;
   if (fillerResume && !arg("--filler-trace-turn", "")) {
     const cutObserved = fillerResume.cutMs !== null || fillerResume.cutObserved === true;
-    const pointers = excerpt ? traceTurnPointers(excerpt) : { cutTurn: null, answerTurn: null, goodbyeTurn: null };
+    const pointers = fillerExcerpt
+      ? traceTurnPointers(fillerExcerpt)
+      : { cutTurn: null, answerTurn: null, goodbyeTurn: null };
     const fillerTurn = cutObserved
       ? fillerResume.resumeMs !== null
         ? (pointers.answerTurn ?? pointers.cutTurn)
         : pointers.cutTurn
-      : excerpt
-        ? traceTurnForVisitorSpeech(excerpt, fillerResume.visitorText)
+      : fillerExcerpt
+        ? traceTurnForVisitorSpeech(fillerExcerpt, fillerResume.visitorText)
         : null;
     fillerResume.traceTurn =
       fillerTurn !== null
-        ? formatTraceTurn(fillerTurn, traceSession || null)
-        : `no turn merged${traceSession ? ` (${traceSession})` : ""}`;
+        ? formatTraceTurn(fillerTurn, fillerSession || null)
+        : `no turn merged${fillerSession ? ` (${fillerSession})` : ""}`;
   }
   // The caller clip the live runner actually streamed (ticket 10): a changed
   // clip makes the cut number incomparable with the prior run.
@@ -1068,10 +1198,18 @@ function main(): void {
   const priorPath = arg("--prior", "");
   const prior = priorPath ? loadPriorArtifact(priorPath) : latestPriorArtifact(dirname(out), voice, out);
   // Real-cut evidence counts as measured even though it lands post-skeleton.
-  const parsed = extractRealCutEvidence(scenarioStdout("stop-over"), excerpt ?? []);
+  // The stop-over call's own trace names the answer (or resume) turn.
+  const stopTrace = traceForScenario("stop-over");
+  const stopExcerpt = stopTrace?.excerpt ?? excerpt ?? [];
+  const parsed = extractRealCutEvidence(scenarioStdout("stop-over"), stopExcerpt);
   // Greeting-cut evidence comes from the fixed caller clip's own scenario;
   // score-demo gates the measured ms and cites the interrupted greeting turn.
-  const greetingCut = extractGreetingCutEvidence(scenarioStdout("greeting-cut"), excerpt ?? [], traceSession || null);
+  const greetingTrace = traceForScenario("greeting-cut");
+  const greetingCut = extractGreetingCutEvidence(
+    scenarioStdout("greeting-cut"),
+    greetingTrace?.excerpt ?? excerpt ?? [],
+    (greetingTrace?.sessionId ?? traceSession) || null,
+  );
   // Goodbye drain producer: the live runner's GOODBYE DRAIN line (coverage
   // plus whether the closing line named the team inbox) and its own measured
   // hang-up line. Explicit --goodbye-* flags stay the operator override.
@@ -1084,11 +1222,38 @@ function main(): void {
   const goodbyeCoverage =
     parseOptionalNumber(arg("--goodbye-coverage", ""), "--goodbye-coverage") ?? runnerGoodbye?.coverage ?? null;
   const flaggedHangUpMs = parseOptionalNumber(arg("--hang-up-delay-ms", ""), "--hang-up-delay-ms");
-  // Both hang-up paths are measured; parseRunnerHangUp keeps the worst one.
-  const runnerHangUp =
-    flaggedHangUpMs === null && !dryRun
-      ? parseRunnerHangUp(scenarioStdout("hang-up-fast", "hang-up-over"))
-      : null;
+  // Both hang-up paths are measured on their own call; the worst one (negative
+  // first, then the largest delay) is the row the gate judges, and its own
+  // session is the one a FAIL cites. A run whose caller heard no goodbye after
+  // the request is measured evidence of a missing closing line, never a
+  // silent INFO or a drain measured from the greeting.
+  let runnerHangUp: RunnerHangUpEvidence | null = null;
+  let hangUpScenarioName: string | null = null;
+  let missingGoodbye: { sessionId: string | null } | null = null;
+  let missingScenarioName: string | null = null;
+  if (flaggedHangUpMs === null && !dryRun) {
+    const hangUpNames = suite
+      ? (["hang-up-fast", "hang-up-over"] as const)
+      : [scenario];
+    for (const name of hangUpNames) {
+      const sectionStdout = scenarioStdout(name);
+      const missing = parseRunnerMissingGoodbye(sectionStdout);
+      if (missing) {
+        missingGoodbye = missing;
+        missingScenarioName = name;
+      }
+      const evidence = parseRunnerHangUp(sectionStdout);
+      if (
+        evidence &&
+        (runnerHangUp === null ||
+          (evidence.ms < 0 && (runnerHangUp.ms >= 0 || evidence.ms < runnerHangUp.ms)) ||
+          (evidence.ms >= 0 && runnerHangUp.ms >= 0 && evidence.ms > runnerHangUp.ms))
+      ) {
+        runnerHangUp = evidence;
+        if (!missingGoodbye) hangUpScenarioName = name;
+      }
+    }
+  }
   const hangUpDelayMs = flaggedHangUpMs ?? runnerHangUp?.ms ?? null;
   const inboxNamed = inboxMissingFlagged ? false : inboxNamedFlagged ? true : (runnerGoodbye?.inboxNamed ?? null);
   // Post-End call narration: measured by the runner (it hears every reply
@@ -1096,16 +1261,52 @@ function main(): void {
   // stays for a human replay; a real run FAILs on its own evidence.
   const narratedEnding =
     process.argv.includes("--narrated-ending") || runnerGoodbye?.narratedEnding === true;
-  const goodbyeTraceRef = runnerGoodbye ? goodbyeEvidenceTraceRef(runnerGoodbye, traceSession) : undefined;
+  const byeTrace = traceForScenario("bye-audio");
+  // The suite's primary excerpt is the greeting call, so the bye-audio trace's
+  // own post-End row is checked here (the focused run already merges it).
+  const byeNarrationTurn = byeTrace ? traceTurnPointers(byeTrace.excerpt).narrationTurn : null;
+  const narratedFromByeTrace = suite && byeNarrationTurn !== null;
+  const goodbyeTraceRef = runnerGoodbye
+    ? goodbyeEvidenceTraceRef(runnerGoodbye, byeTrace?.sessionId ?? traceSession)
+    : undefined;
+  // A narration FAIL from the bye-audio runner cites that call's post-End turn
+  // (or says no turn was merged in THAT call), never another call's turn.
+  const byeNarrationRef =
+    narratedEnding || narratedFromByeTrace
+      ? (() => {
+          const session = byeTrace?.sessionId ?? runnerGoodbye?.sessionId ?? null;
+          const byeExcerpt = byeTrace?.excerpt ?? excerpt;
+          const turn = byeNarrationTurn ?? (byeExcerpt ? traceTurnPointers(byeExcerpt).narrationTurn : null);
+          if (turn !== null && session) return formatTraceTurn(turn, session);
+          return session ? `no turn merged (${session})` : "no Call trace turn merged";
+        })()
+      : undefined;
   // A hang-up past (or before) the drain window is the measurement that ran
-  // long: cite that call's own closing turn, never the GOODBYE DRAIN
-  // scenario's turn (a different live call).
+  // long: cite that call's own closing turn, never another call's turn.
   const hangUpRanLong =
     hangUpDelayMs !== null && (hangUpDelayMs < 0 || hangUpDelayMs > HANG_UP_AFTER_GOODBYE_MAX_MS);
-  const drainTraceRef =
-    runnerHangUp && hangUpRanLong
-      ? hangUpEvidenceTraceRef(runnerHangUp, traceSession, excerpt)
-      : goodbyeTraceRef;
+  const hangUpTraceName = missingScenarioName ?? hangUpScenarioName;
+  const hangUpTrace = hangUpTraceName ? traceForScenario(hangUpTraceName) : null;
+  const hangUpTraceRef = (() => {
+    if (missingGoodbye) {
+      const session = missingGoodbye.sessionId ?? hangUpTrace?.sessionId ?? null;
+      const turn = hangUpTrace ? traceTurnPointers(hangUpTrace.excerpt).goodbyeTurn : null;
+      return turn !== null && session
+        ? formatTraceTurn(turn, session)
+        : session
+          ? `${session} (no closing turn merged)`
+          : "no Call trace turn merged";
+    }
+    if (runnerHangUp && hangUpRanLong) {
+      return hangUpEvidenceTraceRef(
+        runnerHangUp,
+        hangUpTrace?.sessionId ?? traceSession,
+        hangUpTrace?.excerpt ?? excerpt,
+      );
+    }
+    return goodbyeTraceRef;
+  })();
+  const drainTraceRef = missingGoodbye ? hangUpTraceRef : (byeNarrationRef ?? hangUpTraceRef);
   const hasCutFlags =
     cutMsArg !== "" ||
     process.argv.includes("--cut-never") ||
@@ -1136,8 +1337,9 @@ function main(): void {
     endCallDrain: {
       goodbyeCoverage,
       hangUpDelayMs,
-      narratedEnding,
+      narratedEnding: narratedEnding || narratedFromByeTrace,
       inboxNamed,
+      ...(missingGoodbye ? { missingGoodbye: true } : {}),
     },
     ...(drainTraceRef ? { endCallDrainTraceRef: drainTraceRef } : {}),
     traceRef: traceSession || undefined,
@@ -1164,16 +1366,22 @@ function main(): void {
       ended: false,
       traceTurn: null,
     };
-    // The merged excerpt is the only source of a turn number: for a measured
-    // cut cite the turn after it (the answer, or the resume that must FAIL),
-    // else the interrupted reply / closing reply after end_call.
-    const pointers = traceTurnPointers(excerpt ?? []);
+    // The stop-over call's own trace is the only source of a turn number: for
+    // a measured cut cite the turn after it (the answer, or the resume that
+    // must FAIL), else the interrupted reply / closing reply after end_call.
+    const realCutExcerpt = stopTrace?.excerpt ?? excerpt ?? [];
+    const realCutSession = stopTrace?.sessionId ?? traceSession;
+    const pointers = traceTurnPointers(realCutExcerpt);
     const derivedTurn =
       base.cutMs !== null
         ? (pointers.answerTurn ?? pointers.cutTurn)
         : (pointers.cutTurn ?? pointers.goodbyeTurn);
     const derivedTraceTurn =
-      derivedTurn !== null ? formatTraceTurn(derivedTurn, traceSession || null) : base.traceTurn;
+      derivedTurn !== null
+        ? formatTraceTurn(derivedTurn, realCutSession || null)
+        : base.traceTurn && realCutSession
+          ? `${base.traceTurn} (${realCutSession})`
+          : base.traceTurn;
     const evidence: RealCutEvidence = {
       cutMs: process.argv.includes("--cut-never")
         ? null
@@ -1195,10 +1403,20 @@ function main(): void {
     artifact = applyEmailInvite(artifact, emailEvidence);
   }
   if (excerpt) {
+    const merged = [...tracesBySession.values()];
     artifact.callTrace = {
       sessionId: traceSession,
       excerptSha256: sha256Hex(excerpt.join("\n")),
       excerpt: excerpt.slice(0, 120),
+      ...(merged.length > 1
+        ? {
+            sessions: merged.map((trace) => ({
+              sessionId: trace.sessionId,
+              excerptSha256: sha256Hex(trace.excerpt.join("\n")),
+              excerpt: trace.excerpt.slice(0, 120),
+            })),
+          }
+        : {}),
     };
   }
 
@@ -1217,8 +1435,21 @@ function main(): void {
   } else {
     console.log(`artifact diff: no prior artifact for ${voice} in ${dirname(out)} (first run)`);
   }
-  console.log(formatReplyGapReport(excerpt ?? [], traceSession || null));
-  if (!dryRun && !traceSession) {
+  if (suite) {
+    // One per-turn block per merged call; turn numbers restart in each, so
+    // the session names the call to replay.
+    for (const trace of tracesBySession.values()) {
+      const gapsForCall = parseTraceGaps(trace.excerpt);
+      if (gapsForCall.length === 0) continue;
+      console.log(formatReplyGapReport(trace.excerpt, trace.sessionId));
+    }
+    if (tracesBySession.size === 0) {
+      console.log("reply gap per turn (suite: no Call trace merged yet)");
+    }
+  } else {
+    console.log(formatReplyGapReport(excerpt ?? [], traceSession || null));
+  }
+  if (!dryRun && !traceSession && tracesBySession.size === 0) {
     console.log("trace session: none printed by the eval runner; pass --trace-session <sess_...> to merge per-turn gaps");
   }
   console.log(formatSubScoreTable(artifact));

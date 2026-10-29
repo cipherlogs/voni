@@ -6,6 +6,7 @@ import {
   chooseReplyAction,
   heuristicBargeInScore,
   isEndCallRequest,
+  isGoodbyeLine,
   requestVoiceJudge,
   shouldAllowToolCall,
   shouldFlagOffTrack,
@@ -182,5 +183,14 @@ test("a request to end the call is recognised, in any demo language", () => {
   }
   for (const text of ["We run a bakery", "Hold on", "Byron Bay is where we are", "", "What's your goal?"]) {
     assert.equal(isEndCallRequest(text), false, text);
+  }
+});
+
+test("a spoken goodbye line is narrower than a request to end", () => {
+  for (const text of ["Okay, bye!", "No problem. Goodbye!", "Alright, take care", "See you soon"]) {
+    assert.equal(isGoodbyeLine(text), true, text);
+  }
+  for (const text of ["I'll answer that after the test.", "Please hang up", "We run a bakery", ""]) {
+    assert.equal(isGoodbyeLine(text), false, text);
   }
 });

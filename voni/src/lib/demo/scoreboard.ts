@@ -72,6 +72,7 @@ import {
   END_CALL_SETTLE_POLLS,
   NO_WORDS_RESUME_MS,
   RESUME_WAIT_MS,
+  nothingLeftUnheard,
   unheardRest,
 } from "../voice/session";
 import { SCOREBOARD_BUDGETS } from "./scoreboard-budgets";
@@ -548,6 +549,18 @@ export type TraceGap = {
   gapMs: number;
   /** 1-based VONI reply turn in the merged Call trace excerpt. */
   turnIndex: number;
+  /**
+   * The call this gap came from. The suite merges one trace per scenario;
+   * turn numbers restart at 1 in each, so the session keeps them distinct and
+   * a FAIL can cite the exact call. Omitted means the artifact's primary trace.
+   */
+  sessionId?: string;
+  /**
+   * The beat this scenario's own trace identifies (suite routing). When set,
+   * the gap is attributed to that beat directly instead of the opening-turn
+   * guess; unset gaps stay call-level and are judged per turn.
+   */
+  beat?: GoldenBeat;
 };
 
 /**
@@ -850,13 +863,19 @@ export function replyGapGate(samples: ReplyGapSample[], traceSessionId?: string)
   // Ticket 09: each merged turn is its own scope, so the per-beat attribution
   // no longer limits the budget check to an attributed first beat. Later
   // turns are judged call-level (beat: null) with their own turn index.
-  const turns = new Map<number, ReplyGapSample>();
+  const turns = new Map<string, ReplyGapSample>();
   for (const sample of withSession) {
     if (sample.turnIndex === null || sample.turnIndex === undefined) continue;
-    if (!turns.has(sample.turnIndex)) turns.set(sample.turnIndex, sample);
+    const key = `${sample.sessionId ?? ""}#${sample.turnIndex}`;
+    if (!turns.has(key)) turns.set(key, sample);
   }
-  for (const [turnIndex, sample] of [...turns].sort((a, b) => a[0] - b[0])) {
-    scopes.push({ scope: `turn ${turnIndex}`, summary: summarizeReplyGaps([sample])!, sample });
+  for (const [, sample] of [...turns].sort((a, b) => {
+    const bySession = (a[1].sessionId ?? "").localeCompare(b[1].sessionId ?? "");
+    if (bySession !== 0) return bySession;
+    return (a[1].turnIndex ?? 0) - (b[1].turnIndex ?? 0);
+  })) {
+    const label = sample.sessionId ? `turn ${sample.turnIndex} (${sample.sessionId})` : `turn ${sample.turnIndex}`;
+    scopes.push({ scope: label, summary: summarizeReplyGaps([sample])!, sample });
   }
   type Breach = {
     scope: string;
@@ -867,6 +886,17 @@ export function replyGapGate(samples: ReplyGapSample[], traceSessionId?: string)
   };
   const breaches: Breach[] = [];
   for (const { scope, summary, sample } of scopes) {
+    // A scope with fewer than three samples has no meaningful median: one
+    // slow turn would be its own p50. Judge those against the p95 budget
+    // instead (the frozen 2500ms tail bar), so the p50 budget still governs
+    // the overall distribution while every turn is checked for a real tail
+    // breach.
+    if (summary.count < 3) {
+      if (summary.maxMs > REPLY_GAP_P95_BUDGET_MS) {
+        breaches.push({ scope, metric: "p95", value: summary.maxMs, budget: REPLY_GAP_P95_BUDGET_MS, sample });
+      }
+      continue;
+    }
     if (summary.p50Ms > REPLY_GAP_P50_BUDGET_MS) {
       breaches.push({ scope, metric: "p50", value: summary.p50Ms, budget: REPLY_GAP_P50_BUDGET_MS, sample });
     }
@@ -2005,6 +2035,8 @@ export type ScoreboardArtifact = {
     narratedEnding: boolean;
     /** The closing line named the team inbox; null when never measured. */
     inboxNamed: boolean | null;
+    /** The caller asked to end and no closing-line audio played afterwards. */
+    missingGoodbye?: boolean;
   };
   deadAir: {
     gapsMs: number[];
@@ -2053,6 +2085,11 @@ export type ScoreboardArtifact = {
     sessionId: string;
     excerptSha256: string;
     excerpt: string[];
+    /**
+     * Every scenario call the suite merged gaps from (one entry per session).
+     * Turn numbers restart in each, so the session id is part of the pointer.
+     */
+    sessions?: { sessionId: string; excerptSha256: string; excerpt: string[] }[];
   } | null;
   /** Unique id for this run (reproducibility: three consecutive greens on the reference desktop). */
   runId: string;
@@ -3066,9 +3103,9 @@ export type RunnerHangUpEvidence = {
 export function parseRunnerHangUp(stdout: string): RunnerHangUpEvidence | null {
   let worst: RunnerHangUpEvidence | null = null;
   for (const line of stdout.split("\n")) {
-    const match = line.match(/hung up (-?\d+)ms after the goodbye finished playing(?: \(session (\S+)\))?/);
+    const match = line.match(/hung up (-?\d+(?:\.\d+)?)ms after the goodbye finished playing(?: \(session (\S+)\))?/);
     if (!match) continue;
-    const ms = Number(match[1]);
+    const ms = Math.round(Number(match[1]));
     const worse =
       worst === null ||
       (ms < 0 && (worst.ms >= 0 || ms < worst.ms)) ||
@@ -3083,6 +3120,17 @@ export function runnerHangUpDelayMs(stdout: string): number | null {
   return parseRunnerHangUp(stdout)?.ms ?? null;
 }
 
+/**
+ * The runner's explicit "no closing line played" marker for a hang-up run:
+ * `no goodbye audio after the end request (session sess_…)`. That is measured
+ * evidence of a missing goodbye, so the drain gate FAILs instead of measuring
+ * from the greeting or staying INFO. Null when the marker never printed.
+ */
+export function parseRunnerMissingGoodbye(stdout: string): { sessionId: string | null } | null {
+  const match = stdout.match(/no goodbye audio after the end request(?: \(session (\S+)\))?/);
+  return match ? { sessionId: match[1] ?? null } : null;
+}
+
 export type EndCallDrainInput = {
   /** Played / expected goodbye speaking time; null when never measured. */
   goodbyeCoverage: number | null;
@@ -3092,6 +3140,12 @@ export type EndCallDrainInput = {
   narratedEnding: boolean;
   /** The closing line named the team inbox; null when never measured. */
   inboxNamed?: boolean | null;
+  /**
+   * The caller asked to end and no closing-line audio played afterwards. This
+   * is a measured FAIL ("no goodbye"), never a reason to measure the drain
+   * from an earlier reply such as the greeting.
+   */
+  missingGoodbye?: boolean;
   /** Trace pointer for failures, e.g. "call trace turn 4 (sess_xyz)". */
   traceRef?: string;
 };
@@ -3099,6 +3153,13 @@ export type EndCallDrainInput = {
 /** End-call drain gate: the full closing plays before the session closes. */
 export function evaluateEndCallDrain(input: EndCallDrainInput): ScoreboardGate {
   const trace = input.traceRef ? ` — trace: ${input.traceRef}` : "";
+  if (input.missingGoodbye) {
+    return {
+      name: "end-call-drain",
+      status: "FAIL",
+      detail: `no goodbye audio after End call: the caller never heard a closing line${trace}`,
+    };
+  }
   if (input.narratedEnding) {
     return {
       name: "end-call-drain",
@@ -3341,7 +3402,7 @@ export type FillerRunObservation = {
 export function parseFillerRunOutput(stdout: string): FillerRunObservation | null {
   let last: RegExpExecArray | null = null;
   const pattern =
-    /^\s*filler (never cut|cut(?: at (\d+)ms)?); events (\[.*?\])(?:; answer (continued|resumed|dropped|derailed))?(?:; handling (answered|resumed-from|heard-only|lost))?(?:; tail (\{.*\}))?\s*$/gm;
+    /^\s*filler (never cut|cut(?: at (\d+(?:\.\d+)?)ms)?); events (\[.*?\])(?:; answer (continued|resumed|dropped|derailed))?(?:; handling (answered|resumed-from|heard-only|lost))?(?:; tail (\{.*\}))?(?:; said ("(?:[^"\\]|\\.)*"))?\s*$/gm;
   for (const match of stdout.matchAll(pattern)) last = match as RegExpExecArray;
   if (!last) return null;
   let events: unknown;
@@ -3350,13 +3411,28 @@ export function parseFillerRunOutput(stdout: string): FillerRunObservation | nul
   } catch {
     return null;
   }
-  if (!Array.isArray(events) || events.length === 0) return null;
-  const event = events[events.length - 1];
-  if (!Array.isArray(event) || event.length < 2) return null;
-  const verdict = event[0];
-  const visitorText = event[1];
-  if (!["yield", "ignore", "judge", "keep"].includes(String(verdict))) return null;
-  if (typeof visitorText !== "string" || !visitorText.trim()) return null;
+  if (!Array.isArray(events)) return null;
+  const lastEvent = events.length > 0 ? events[events.length - 1] : null;
+  if (lastEvent !== null && (!Array.isArray(lastEvent) || lastEvent.length < 2)) return null;
+  let saidText: string | null = null;
+  if (last[7] !== undefined) {
+    try {
+      const parsed = JSON.parse(last[7]);
+      if (typeof parsed === "string" && parsed.trim()) saidText = parsed;
+    } catch {
+      return null;
+    }
+  }
+  const verdict = Array.isArray(lastEvent) ? lastEvent[0] : null;
+  const eventText = Array.isArray(lastEvent) ? lastEvent[1] : saidText;
+  // A run where no overlap reached the floor still has evidence when the
+  // runner said which filler it tried: the floor held (or the answer ended
+  // before the words landed). Without that text there is nothing to score.
+  if (events.length === 0 && !saidText) return null;
+  if (eventText === null || eventText === undefined) return null;
+  const visitorText = String(eventText);
+  if (!["yield", "ignore", "judge", "keep"].includes(String(verdict ?? "ignore"))) return null;
+  if (!visitorText.trim()) return null;
   const cutMs = last[2] === undefined ? null : Number(last[2]);
   if (cutMs !== null && !Number.isFinite(cutMs)) return null;
   const cut = last[1] !== "never cut";
@@ -3455,6 +3531,27 @@ export function evaluateFillerResumeGate(evidence: FillerResumeEvidence): Scoreb
     status: "FAIL",
     detail: `${detail} (cut: ${cut}; judge verdict: ${evidence.verdict}, expected: ${expected}; handling: ${handling}; trace: ${trace})`,
   });
+  const cutObserved = evidence.cutMs !== null || evidence.cutObserved === true;
+  const tail = unheardRest(evidence.agentText, evidence.heardText);
+  // The cut can land after the answer's last word (measured live: the filler
+  // hit 2213ms in, when nothing was left unheard). There is then nothing to
+  // resume: skipping the resume is correct, not a dropped tail.
+  if (
+    cutObserved &&
+    evidence.agentText.trim() !== "" &&
+    (tail.trim() === "" || nothingLeftUnheard(evidence.agentText, evidence.heardText)) &&
+    evidence.resumeMs === null &&
+    evidence.resumedText.trim() === "" &&
+    !evidence.answeredOver
+  ) {
+    return {
+      name,
+      status: "PASS",
+      detail:
+        `filler "${evidence.visitorText}" cut at ${cut} with no unheard tail ` +
+        `(the cut landed after the answer finished); nothing left unheard; handling: ${handling}; trace: ${trace}`,
+    };
+  }
   // Not filler at all: steering, end-call and real content yield per the
   // judge. Blessing a yield here would hide a threshold regression, and the
   // real-cut ticket owns the yield path.
@@ -3501,7 +3598,6 @@ export function evaluateFillerResumeGate(evidence: FillerResumeEvidence): Scoreb
   if (evidence.answeredOver) {
     return fail("answered over the resumption instead of resuming the exact tail");
   }
-  const tail = unheardRest(evidence.agentText, evidence.heardText);
   if (evidence.resumedText.trim() !== tail.trim()) {
     return fail(`resume tail inexact: said "${evidence.resumedText}" instead of "${tail}"`);
   }
@@ -3728,7 +3824,7 @@ export function extractRealCutEvidence(stdout: string, excerpt: string[] = []): 
   if (!summary) return null;
   const scenario = summary[1];
   const passed = Number(summary[2]) > 0;
-  const cut = stdout.match(/cut (\d+)ms after the caller started/);
+  const cut = stdout.match(/cut (\d+(?:\.\d+)?)ms after the caller started/);
   const verdict = stdout.match(/\["(yield|ignore|keep|judge)"(,|\])/)?.[1] ?? null;
   const resumed =
     /resumed (?:instead of|after)|Pick up where you left off|Finish your sentence/i.test(stdout);
@@ -3840,7 +3936,7 @@ export function extractGreetingCutEvidence(
   const summary = stdout.match(/^greeting-cut: (\d+)\/(\d+)/m);
   if (!summary) return null;
   const passed = Number(summary[1]) > 0;
-  const cut = stdout.match(/greeting cut (\d+)ms after the caller started/);
+  const cut = stdout.match(/greeting cut (\d+(?:\.\d+)?)ms after the caller started/);
   if (!cut && passed) return null;
   const turn = greetingCutTraceTurn(excerpt);
   return {
@@ -4480,6 +4576,7 @@ export function measuredEvidenceSources(input: {
     hangUpDelayMs: number | null;
     narratedEnding: boolean;
     inboxNamed?: boolean | null;
+    missingGoodbye?: boolean;
   };
   probes?: TimbreProbes;
   agentChannel?: AgentChannelEvidence | null;
@@ -4509,6 +4606,7 @@ export function measuredEvidenceSources(input: {
     (drain.goodbyeCoverage != null ||
       drain.hangUpDelayMs != null ||
       drain.narratedEnding ||
+      drain.missingGoodbye === true ||
       drain.inboxNamed != null)
   ) {
     sources.push("end-call-drain");
@@ -4541,6 +4639,7 @@ export function hasMeasuredEvidence(input: {
     hangUpDelayMs: number | null;
     narratedEnding: boolean;
     inboxNamed?: boolean | null;
+    missingGoodbye?: boolean;
   };
   probes?: TimbreProbes;
   agentChannel?: AgentChannelEvidence | null;
@@ -4617,6 +4716,7 @@ export function buildSkeletonArtifact(input: {
     hangUpDelayMs: number | null;
     narratedEnding: boolean;
     inboxNamed?: boolean | null;
+    missingGoodbye?: boolean;
   };
   /**
    * Trace pointer for a drain FAIL from evidence that measured its own closing
@@ -4639,46 +4739,70 @@ export function buildSkeletonArtifact(input: {
   const samples: ReplyGapSample[] = [];
   const finiteGaps = (beat: GoldenBeat): number[] => (input.gaps?.[beat] ?? []).filter((n) => Number.isFinite(n));
   const explicitGreetingCut = finiteGaps("greeting-cut").length > 0;
+  const allTraceGaps = input.traceGaps ?? [];
+  // Suite routing attributes a scenario's own trace to its beat explicitly;
+  // those gaps never take part in the opening-turn guess below.
+  const preAttributed = allTraceGaps.filter((gap): gap is TraceGap & { beat: GoldenBeat } => gap.beat !== undefined);
+  const unattributed = allTraceGaps.filter((gap) => gap.beat === undefined);
   // Review (finding D): the first merged trace turn is attributed to a beat
   // only when verified — an explicit --trace-beat map, or an excerpt that
   // opens with a greeting-cut marker. Unverified turns stay call-level.
   const attribution = attributeFirstTraceGap(input.traceExcerpt ?? [], { beatMap: input.traceBeat ?? undefined });
-  const attributedBeat = explicitGreetingCut ? null : attribution.beat;
-  const traceFirstTurnIndex = explicitGreetingCut ? null : ((input.traceGaps ?? [])[0]?.turnIndex ?? null);
+  const attributedBeat = explicitGreetingCut || preAttributed.length > 0 ? null : attribution.beat;
+  const traceFirstTurnIndex = explicitGreetingCut ? null : (unattributed[0]?.turnIndex ?? null);
   const traceFirstToBeat =
-    attributedBeat !== null && (input.traceGaps ?? []).length > 0
-      ? [{ beat: attributedBeat, gapMs: (input.traceGaps as TraceGap[])[0].gapMs, turnIndex: traceFirstTurnIndex }]
+    attributedBeat !== null && unattributed.length > 0
+      ? [{
+          beat: attributedBeat,
+          gapMs: unattributed[0].gapMs,
+          turnIndex: traceFirstTurnIndex,
+          sessionId: unattributed[0].sessionId ?? input.traceSessionId ?? undefined,
+        }]
       : [];
   const traceAttributed = traceFirstToBeat.length > 0;
+  const traceGapsForBeat = (beat: GoldenBeat) => [
+    ...preAttributed
+      .filter((gap) => gap.beat === beat)
+      .map((gap) => ({
+        gapMs: gap.gapMs,
+        turnIndex: gap.turnIndex,
+        sessionId: gap.sessionId ?? input.traceSessionId ?? undefined,
+      })),
+    ...(beat === (traceFirstToBeat[0]?.beat ?? null) && traceFirstToBeat[0]
+      ? [{
+          gapMs: traceFirstToBeat[0].gapMs,
+          turnIndex: traceFirstToBeat[0].turnIndex,
+          sessionId: traceFirstToBeat[0].sessionId,
+        }]
+      : []),
+  ];
   for (const beat of GOLDEN_BEATS) {
-    const fromTrace = beat === (traceFirstToBeat[0]?.beat ?? null) ? [traceFirstToBeat[0]] : [];
-    for (const traceSample of fromTrace) {
+    for (const traceSample of traceGapsForBeat(beat)) {
       samples.push({
         beat,
         gapMs: traceSample.gapMs,
         turnIndex: traceSample.turnIndex,
-        sessionId: input.traceSessionId ?? undefined,
+        sessionId: traceSample.sessionId,
       });
     }
     for (const gapMs of finiteGaps(beat)) {
       samples.push({ beat, gapMs, turnIndex: null, sessionId: input.traceSessionId ?? undefined });
     }
   }
-  for (const traceGap of (input.traceGaps ?? []).slice(traceAttributed ? 1 : 0)) {
+  for (const traceGap of unattributed.slice(traceAttributed ? 1 : 0)) {
     samples.push({
       beat: null,
       gapMs: traceGap.gapMs,
       turnIndex: traceGap.turnIndex,
-      sessionId: input.traceSessionId ?? undefined,
+      sessionId: traceGap.sessionId ?? input.traceSessionId ?? undefined,
     });
   }
-  const traceUnverified = (input.traceGaps ?? []).length > 0 && !traceAttributed && !explicitGreetingCut;
+  const traceUnverified =
+    allTraceGaps.length > 0 && !traceAttributed && !explicitGreetingCut && preAttributed.length === 0;
   const overall = summarizeReplyGaps(samples);
   const beats = Object.fromEntries(
     GOLDEN_BEATS.map((beat) => {
-      const beatSamples = finiteGaps(beat).concat(
-        beat === (traceFirstToBeat[0]?.beat ?? null) && traceFirstToBeat[0] ? [traceFirstToBeat[0].gapMs] : [],
-      );
+      const beatSamples = finiteGaps(beat).concat(traceGapsForBeat(beat).map((gap) => gap.gapMs));
       const measured = beatSamples.length > 0;
       const beatSummary = summarizeReplyGaps(
         beatSamples.map((gapMs) => ({ beat, gapMs, turnIndex: null as number | null })),
@@ -4780,10 +4904,12 @@ export function buildSkeletonArtifact(input: {
   const endCallDrainInput: EndCallDrainInput = {
     ...drain,
     narratedEnding,
-    ...(narratedEnding
-      ? { traceRef: narrationTraceRef }
-      : input.endCallDrainTraceRef
-        ? { traceRef: input.endCallDrainTraceRef }
+    // A narration FAIL from the suite's own run cites that run's session (the
+    // bye-audio call), never the primary excerpt's turn from another call.
+    ...(input.endCallDrainTraceRef
+      ? { traceRef: input.endCallDrainTraceRef }
+      : narratedEnding
+        ? { traceRef: narrationTraceRef }
         : goodbyeTraceRef
           ? { traceRef: goodbyeTraceRef }
           : {}),
