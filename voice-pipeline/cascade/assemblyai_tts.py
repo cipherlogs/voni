@@ -32,6 +32,7 @@ import json
 import os
 import re
 import time
+from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
@@ -322,6 +323,24 @@ class ResumePoint:
     reason: str
 
 
+@dataclass
+class Cancellation:
+    """One ``Cancel`` and what it actually stopped.
+
+    ``next_flush_id`` is read from the first frame after ``Cancelled`` because
+    the vendor may skip ids after a cancel; it stays ``None`` until such a
+    frame arrives.
+    """
+
+    audio_duration_seconds: float | None = None
+    dropped_audio_bytes: int = 0
+    dropped_flushes: int = 0
+    discarded_characters: int = 0
+    next_flush_id: int | None = None
+    acknowledged: bool = False
+
+
+
 
 
 
@@ -375,6 +394,13 @@ class AssemblyAIStreamingTTS(StreamingTTS):
         self.requests: dict[int, SynthesisRequest] = {}
         self.request_order: list[int] = []
         self.word_boundaries_status: str | None = None
+        # Cancel state (ticket 52).
+        self.cancellations: list[Cancellation] = []
+        self._cancel_generation = 0
+        self._pending_cancels: deque[Cancellation] = deque()
+        self._discarding = False
+        self._awaiting_cancel: Cancellation | None = None
+        self._pending_characters = 0
 
     @property
     def url(self) -> str:
@@ -462,10 +488,14 @@ class AssemblyAIStreamingTTS(StreamingTTS):
         chunks = schedule(text)
         if not chunks:
             return
+        generation = self._cancel_generation
         index = 0
+        self._pending_characters = sum(len(chunk) for chunk in chunks[1:])
         await self._send_request(chunks[index])
         while True:
-            frame = await self._read_frame()
+            frame = await self._next_frame(generation)
+            if frame is None:
+                return
             kind = frame.get("type")
             if kind == "Audio":
                 pcm = self._decode_audio(frame)
@@ -481,10 +511,13 @@ class AssemblyAIStreamingTTS(StreamingTTS):
                 self._record_flush_done(frame, text=chunks[index])
                 index += 1
                 if index >= len(chunks):
+                    self._pending_characters = 0
                     return
+                self._pending_characters = sum(
+                    len(chunk) for chunk in chunks[index + 1 :]
+                )
                 await self._send_request(chunks[index])
             elif kind == "Termination":
-                self._record_termination(frame)
                 return
 
     async def speak_greeting(self, text: str) -> AsyncIterator[SentenceAudio]:
@@ -534,6 +567,79 @@ class AssemblyAIStreamingTTS(StreamingTTS):
         )
         if recent >= limit:
             raise ControlFramePacingError(float(limit), recent, now)
+
+    async def cancel(self) -> Cancellation:
+        """Stop in-flight synthesis and discard everything not yet heard.
+
+        Returns before the vendor acknowledges: a barge-in cut is local and
+        immediate, and a ``Generate`` sent after this call is not caught by it.
+        The acknowledgement is consumed by the next frame read, which drops
+        the old request's audio until ``Cancelled`` and reads the new
+        ``flush_id`` from the first frame after it.
+        """
+        self._require_open()
+        await self._send_control({"type": "Cancel"})
+        cancellation = Cancellation(discarded_characters=self._pending_characters)
+        self.cancellations.append(cancellation)
+        self._pending_cancels.append(cancellation)
+        self._discarding = True
+        self._cancel_generation += 1
+        self._pending_characters = 0
+        return cancellation
+
+    async def _next_frame(self, generation: int) -> Mapping[str, Any] | None:
+        """The next frame this request may act on, or ``None`` if it was cancelled.
+
+        Frames that arrive while a ``Cancel`` is unacknowledged belong to the
+        request that was cancelled: audio is counted and dropped, flushes are
+        counted and dropped, and neither reaches the caller.
+        """
+        if generation != self._cancel_generation:
+            return None
+        while True:
+            frame = await self._read_frame()
+            kind = frame.get("type")
+            if self._discarding:
+                if kind == "Audio":
+                    if self._pending_cancels:
+                        self._pending_cancels[0].dropped_audio_bytes += len(
+                            self._decode_audio(frame)
+                        )
+                    continue
+                if kind == "FlushDone":
+                    if self._pending_cancels:
+                        self._pending_cancels[0].dropped_flushes += 1
+                    continue
+            if kind == "Cancelled":
+                self._acknowledge_cancel(frame)
+                if generation != self._cancel_generation:
+                    return None
+                continue
+            if kind == "Termination":
+                self._record_termination(frame)
+                return frame
+            if kind in ("Audio", "FlushDone"):
+                flush_id = frame.get("flush_id")
+                if isinstance(flush_id, int):
+                    if self._awaiting_cancel is not None:
+                        self._awaiting_cancel.next_flush_id = flush_id
+                        self._awaiting_cancel = None
+                    self.flush_id = flush_id
+            return frame
+
+    def _acknowledge_cancel(self, frame: Mapping[str, Any]) -> None:
+        if not self._pending_cancels:
+            return
+        cancellation = self._pending_cancels.popleft()
+        duration = frame.get("audio_duration_seconds")
+        cancellation.audio_duration_seconds = (
+            float(duration) if isinstance(duration, (int, float)) else 0.0
+        )
+        cancellation.acknowledged = True
+        if self._pending_cancels:
+            return
+        self._discarding = False
+        self._awaiting_cancel = cancellation
 
     def _record_flush_done(self, frame: Mapping[str, Any], *, text: str = "") -> None:
         flush_id = frame.get("flush_id")
