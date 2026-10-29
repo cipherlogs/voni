@@ -158,7 +158,7 @@ test("the console formatter is compact and carries identity, turns, drain and fa
   assert.match(text, /scenarios \(2\)/);
   assert.match(text, /FAIL over-talk\s+0\/1\s+31768ms/);
   assert.match(text, /call-trace sessions \(1\)/);
-  assert.match(text, /turn\s+1\s+gap\s+—ms\s+cut\s+3500ms\s+heard ✓\s+resume ·\s+aside ✓/);
+  assert.match(text, /turn\s+1\s+gap\s+—ms\s+cutAt\s+3500ms\s+heard ✓\s+resume ·\s+aside ✓/);
   assert.match(text, /end-call drain: coverage 0\.97, hang-up 956ms, inbox named/);
   assert.match(text, /over-talk aside: session sess_stop/);
   assert.match(text, /hang-ups:/);

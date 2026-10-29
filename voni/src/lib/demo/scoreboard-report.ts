@@ -208,7 +208,7 @@ function formatTurn(turn: InspectTurn): string {
   const cut = turn.cutMs === null ? "     —" : `${String(turn.cutMs).padStart(6)}`;
   const flag = (on: boolean) => (on ? "✓" : "·");
   return (
-    `    turn ${String(turn.turnIndex).padStart(2)}  gap ${gap}ms  cut ${cut}ms` +
+    `    turn ${String(turn.turnIndex).padStart(2)}  gap ${gap}ms  cutAt ${cut}ms` +
     `  heard ${flag(turn.heard)}  resume ${flag(turn.resume)}  aside ${flag(turn.aside)}`
   );
 }
