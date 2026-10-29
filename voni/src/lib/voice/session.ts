@@ -70,6 +70,7 @@ import {
 } from "./delivered-capture";
 import { decodeOutputAudio, resolveOutputFormat, type OutputEncoding } from "./output-format";
 import { voiceOutputVolume } from "@/lib/agents/voice-levels";
+import { sensitiveCaptureWindows } from "./capture-windows";
 
 export { TARGET_SAMPLE_RATE, VOICE_MIC_CONSTRAINTS } from "./mic-capture";
 
@@ -551,13 +552,6 @@ type QueuedUpdate = {
   reject: (error: Error) => void;
 };
 
-const SENSITIVE_TURN_DETECTION: TurnDetection = {
-  min_silence: 1400,
-  max_silence: 4000,
-  interrupt_response: true,
-  interruption_delay: 0,
-};
-
 /**
  * ADAPTIVE_TURNS: demo calls, test calls and the copilot never send
  * `turn_detection`. ANY turn_detection object, even one holding only
@@ -567,7 +561,8 @@ const SENSITIVE_TURN_DETECTION: TurnDetection = {
  * Server barge-in stays on by default, with semantic back-channel filtering.
  *
  * Only `prepareSensitiveCapture` departs from it, for one card-field turn,
- * then restores `null` (adaptive).
+ * using the floor in ./capture-windows (the same one the phone bridge pins to
+ * the stored body), then restores the body's own setting.
  */
 
 /**
@@ -1416,7 +1411,7 @@ export class VoiceSession {
         : null;
       await this.updateConfig({
         input: {
-          turn_detection: SENSITIVE_TURN_DETECTION,
+          turn_detection: sensitiveCaptureWindows(this.activeTurnDetection),
         },
       });
       this.pendingTurnDetectionRestore = previous;
