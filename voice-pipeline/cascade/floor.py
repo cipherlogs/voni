@@ -12,6 +12,13 @@ means. It is one of three:
   never cuts the agent off.
 * **wait** — anything else. The agent keeps the floor.
 
+The agent's own voice is never an interruption. Before the command and filler
+sets decide, a partial that is mostly the agent's current line coming back is
+:func:`is_echo` and waits: the agent keeps speaking, nothing is cancelled and
+nothing is answered. This is the same single classifier final suppression uses,
+not a second list; the check comes before the command set so a played-back
+"please stop" can never steer or cut.
+
 The command and filler sets are the existing ones in :mod:`turns`; this module
 adds no word list of its own and no second threshold. Unsure input waits: the
 decision fails closed.
@@ -96,11 +103,14 @@ class FloorArbiter:
         ledger: TimingLedger | None = None,
         threshold: float = BARGE_IN_THRESHOLD,
         is_backchannel_fn: Callable[[str], bool] = is_backchannel,
+        is_echo_fn: Callable[[str, str], bool] | None = None,
     ) -> None:
         self._clock = clock
         self._ledger = ledger
         self._threshold = threshold
         self._is_backchannel = is_backchannel_fn
+        # Resolved here because the one classifier is declared below.
+        self._is_echo = is_echo if is_echo_fn is None else is_echo_fn
         self._hold = FloorHold.SILENT
         self._hold_since: float | None = None
 
@@ -145,9 +155,16 @@ class FloorArbiter:
         return self.arbitrate("", barge_probability=0.0)
 
     def arbitrate(
-        self, text: str, *, barge_probability: float
+        self, text: str, *, barge_probability: float, agent_text: str = ""
     ) -> FloorDecision:
-        """Decide what one cumulative partial means. No I/O; clock plus counts."""
+        """Decide what one cumulative partial means. No I/O; clock plus counts.
+
+        ``agent_text`` is the line the agent is saying (or has just said). A
+        partial that is mostly those words is the agent's own audio returning:
+        it waits, so the agent keeps the floor and the cut path is never asked
+        to cancel. Finishing without the agent's line fails closed — suppression
+        needs evidence, not a guess.
+        """
         text = text or ""
         if not self.holds_floor or self._hold_since is None:
             return FloorDecision("wait", self._hold, text)
@@ -156,6 +173,9 @@ class FloorArbiter:
             # No agent audio is playing, so there is nothing to echo: the
             # existing establishment window is already satisfied.
             held_ms = max(held_ms, ESTABLISHED_MS)
+        if text and self._is_echo(text, agent_text):
+            # The agent's own voice is never an interruption or a command.
+            return FloorDecision("wait", self._hold, text, held_ms)
         action = floor_decision(
             text,
             held_ms,
