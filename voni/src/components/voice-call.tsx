@@ -58,6 +58,11 @@ import { compileSystemPrompt } from "@/lib/agents/compile";
 import type { AgentConfig } from "@/lib/agents/config";
 import { buildAgentKeyterms, buildAgentTranscriptionPrompt } from "@/lib/voice/transcription";
 import { CallSounds, tickAllowed } from "@/lib/voice/call-sounds";
+import {
+  overheardLabel,
+  settleOverheardTurn,
+  userCaption,
+} from "@/lib/voice/overheard-caption";
 import { compileVoiceTools } from "@/lib/tools/definitions";
 import {
   getDemoCallStatus,
@@ -299,7 +304,7 @@ function DemoTranscript({
               >
                 <span className="text-foreground/60 text-xs leading-[normal]">
                   {line.role === "user" ? "You" : agentName}
-                  {"overheard" in line && line.overheard ? " · overheard" : ""}
+                  {overheardLabel(line)}
                 </span>
                 <span
                   className={cn(
@@ -643,6 +648,7 @@ export function VoiceCall({
     const live = stateRef.current !== "idle" && stateRef.current !== "ended";
     if (!live && !holdingRef.current) return;
     const now = Date.now();
+    const tagToken = loadTagToken();
     saveCallMemory({
       savedAt: now,
       voiceId,
@@ -650,6 +656,8 @@ export function VoiceCall({
       talkSeconds: clockRef.current.talkSeconds(now),
       strikes: ladderRef.current?.strikes ?? 0,
       emailTest: emailTestRef.current,
+      ...(testTagRef.current ? { testTag: testTagRef.current } : {}),
+      ...(tagToken ? { tagToken } : {}),
       callToken: callTokenRef.current,
       sessionId: sessionIdRef.current,
     });
@@ -921,6 +929,10 @@ export function VoiceCall({
     setElapsed(snap.talkSeconds);
     setRestored(true);
     setEmailTest(snap.emailTest ?? EMAIL_TEST_START);
+    // The tag survives the reload via Call memory (ticket 27): the chip and the
+    // re-mint keep the same tag even if localStorage was unavailable.
+    setTestTag(snap.testTag ?? null);
+    if (snap.tagToken) saveTagToken(snap.tagToken);
     callTokenRef.current = snap.callToken ?? null;
     /* eslint-enable react-hooks/set-state-in-effect */
     turnsRef.current = snap.turns;
@@ -934,7 +946,7 @@ export function VoiceCall({
     greetOnListenRef.current = snap.sessionId !== null;
     carryoverRef.current = snap.sessionId ? null : buildHoldCarryover(snap.turns);
     preserveRef.current = true;
-  }, [isDemo, setEmailTest]);
+  }, [isDemo, setEmailTest, setTestTag]);
 
   // A finished call forgets its memory (a goodbye, the time-up or hold cap;
   // error endings keep it ≤ the hold cap, so a reload can still continue)
@@ -1169,11 +1181,10 @@ export function VoiceCall({
             const finalOverheard =
               caption.role === "user" && overheardRef.current;
             if (finalOverheard) overheardRef.current = false;
-            const settledTurn: Transcript = {
-              role: caption.role,
-              text: caption.text,
-              ...(finalOverheard ? { overheard: true } : {}),
-            };
+            const settledTurn: Transcript = settleOverheardTurn(
+              { role: caption.role, text: caption.text },
+              finalOverheard,
+            );
             turnsRef.current = [...turnsRef.current, settledTurn];
             setTurns((prev) => [...prev, settledTurn]);
             setLiveCaption(null);
@@ -1184,10 +1195,10 @@ export function VoiceCall({
             // LLM-authored so they stream instantly at zero STT cost.
             if (caption.role === "user") {
               timingsRef.current?.mark("firstPartial");
-              if (caption.text) {
-                const overheard = speakingRef.current;
-                overheardRef.current = overheard;
-                setLiveCaption({ role: "user", text: caption.text, ...(overheard ? { overheard: true } : {}) });
+              const line = userCaption(caption.text, speakingRef.current);
+              if (line) {
+                overheardRef.current = line.overheard === true;
+                setLiveCaption(line);
               }
             } else setLiveCaption({ role: caption.role, text: caption.text });
           }
@@ -1279,7 +1290,7 @@ export function VoiceCall({
         // Handler-driven mirror (ticket 08): history appends here, where the
         // final lands — no sync effect.
         if (turn.role === "user" && overheardRef.current) {
-          turn = { ...turn, overheard: true };
+          turn = settleOverheardTurn(turn, true);
           overheardRef.current = false;
         }
         setLiveCaption(null);
@@ -1293,9 +1304,11 @@ export function VoiceCall({
         // for the settled final, so early guesses never flicker as speech.
         if (partial.text) {
           timingsRef.current?.mark("firstPartial");
-          const overheard = speakingRef.current;
-          overheardRef.current = overheard;
-          setLiveCaption({ role: "user", text: partial.text, ...(overheard ? { overheard: true } : {}) });
+          const line = userCaption(partial.text, speakingRef.current);
+          if (line) {
+            overheardRef.current = line.overheard === true;
+            setLiveCaption(line);
+          }
         }
       },
       // Barge-in recovery lives in the session (lib/voice/barge-in.ts);
@@ -1667,7 +1680,7 @@ export function VoiceCall({
     <p className="text-xs italic" aria-live="polite">
       {deferredLiveCaption.role === "user" ? "You: " : `${displayName}: `}
       <MemoStreamingText text={deferredLiveCaption.text} />
-      {deferredLiveCaption.overheard ? " · overheard" : ""}
+      {overheardLabel(deferredLiveCaption)}
     </p>
   ) : null;
 
@@ -2078,7 +2091,7 @@ export function VoiceCall({
                       <p className="line-clamp-2 text-center text-sm text-foreground/60">
                         {deferredLiveCaption.role === "user" ? "You: " : `${displayName}: `}
                         <MemoStreamingText text={deferredLiveCaption.text} />
-                        {deferredLiveCaption.overheard ? " · overheard" : ""}
+                        {overheardLabel(deferredLiveCaption)}
                       </p>
                     ) : connected && turns.length > 0 ? (
                       // The settled final stays up, so the corrected words are

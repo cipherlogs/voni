@@ -327,43 +327,59 @@ function isTagToken(value: unknown): value is string {
 let lastTagRaw: string | null | undefined;
 let lastTagValue: string | undefined;
 let hasTagCache = false;
+/**
+ * False once a write was refused (private mode / blocked storage). Only then
+ * is the in-page cache the only copy of the mint; a plain `null` read means
+ * the tag was cleared or expired and must clear in-page too.
+ */
+let storageWritable = true;
 
 /** Versioned read with legacy fallback + in-scope repeat cache. */
 export function loadTagToken(): string | undefined {
+  let raw: string | null;
   try {
-    const raw = localStorage.getItem(TAG_TOKEN_KEY);
-    if (hasTagCache && raw === lastTagRaw) return lastTagValue;
+    raw = localStorage.getItem(TAG_TOKEN_KEY);
+  } catch {
+    // Storage blocked after the mint (private mode): the page's own token
+    // still scopes this call, so a hold rejoin carries it instead of minting
+    // a new tag and asking the visitor to start over.
+    return hasTagCache ? lastTagValue : undefined;
+  }
+  if (hasTagCache && raw === lastTagRaw) return lastTagValue;
+  if (!raw) {
+    // Storage answered "nothing". If a write was refused (quota/private mode)
+    // the cache is the only copy and a hold rejoin must keep it; otherwise the
+    // tag was cleared or expired, so it clears in-page instead of resurrecting.
+    if (!storageWritable && hasTagCache && lastTagValue !== undefined) return lastTagValue;
     lastTagRaw = raw;
     hasTagCache = true;
-    if (!raw) {
-      lastTagValue = undefined;
-      return undefined;
-    }
-    // Current envelope `{version, data: token}` first; legacy bare token second.
-    try {
-      const parsed: unknown = JSON.parse(raw);
-      if (
-        typeof parsed === "object" &&
-        parsed !== null &&
-        typeof (parsed as { version?: unknown }).version === "number" &&
-        isTagToken((parsed as { data?: unknown }).data)
-      ) {
-        lastTagValue = (parsed as { data: string }).data;
-        return lastTagValue;
-      }
-      // A JSON-quoted bare token (older writer) is still a token.
-      if (isTagToken(parsed)) {
-        lastTagValue = parsed;
-        return lastTagValue;
-      }
-    } catch {
-      // Not JSON: fall through to the legacy raw-token path below.
-    }
-    lastTagValue = isTagToken(raw) ? raw : undefined;
-    return lastTagValue;
-  } catch {
+    lastTagValue = undefined;
     return undefined;
   }
+  lastTagRaw = raw;
+  hasTagCache = true;
+  // Current envelope `{version, data: token}` first; legacy bare token second.
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      typeof (parsed as { version?: unknown }).version === "number" &&
+      isTagToken((parsed as { data?: unknown }).data)
+    ) {
+      lastTagValue = (parsed as { data: string }).data;
+      return lastTagValue;
+    }
+    // A JSON-quoted bare token (older writer) is still a token.
+    if (isTagToken(parsed)) {
+      lastTagValue = parsed;
+      return lastTagValue;
+    }
+  } catch {
+    // Not JSON: fall through to the legacy raw-token path below.
+  }
+  lastTagValue = isTagToken(raw) ? raw : undefined;
+  return lastTagValue;
 }
 
 export function saveTagToken(token: string): void {
@@ -372,8 +388,10 @@ export function saveTagToken(token: string): void {
   hasTagCache = true;
   try {
     localStorage.setItem(TAG_TOKEN_KEY, lastTagRaw);
+    storageWritable = true;
   } catch {
-    // Private mode or blocked storage: a callback just gets a fresh tag.
+    // Private mode or blocked storage: the in-page cache is the only copy.
+    storageWritable = false;
   }
 }
 

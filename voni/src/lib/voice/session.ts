@@ -53,6 +53,7 @@ import {
   type VoiceErrorCode,
 } from "./mic-capture";
 import type { WorkletPlayout } from "./playout";
+import { VOICE_OUTPUT_VOLUME } from "@/lib/agents/voices";
 
 export { TARGET_SAMPLE_RATE, VOICE_MIC_CONSTRAINTS } from "./mic-capture";
 
@@ -178,7 +179,7 @@ export function buildInlineSessionUpdate(
   return {
     system_prompt: config.systemPrompt,
     greeting: config.greeting,
-    output: { voice: config.voiceId, volume: 100 },
+    output: { voice: config.voiceId, volume: VOICE_OUTPUT_VOLUME },
     input: {
       transcription_mode: config.transcriptionMode ?? TRANSCRIPTION_MODE,
       // Close-talking browser mic: isolate the caller with the near-field
@@ -448,9 +449,13 @@ const FLOOR_TICK_MS = 150;
 /** A resume after a cut says the rest only when more than this many words were unheard. */
 const RESUME_MIN_WORDS = 3;
 /**
- * A held end_call result with no goodbye audio for this long: the platform is
- * waiting for it (measured 1 in 10), so send it. A real goodbye streams audio
- * steadily until its reply.done; 3s also covers a goodbye slow to start.
+ * A held end_call result with no goodbye audio at all for this long: the
+ * platform is waiting for it (measured 1 in 10), so send it. Once the goodbye
+ * has spoken, the result goes back on the hang-up's own drain handshake
+ * (END_CALL_SETTLE_POLLS settled polls plus END_CALL_AUDIO_GRACE_MS), so the
+ * fast path never pays a flat 3s. This stays the slow-start backstop: a
+ * result sent before the goodbye begins makes the platform cut it
+ * (ADR-0005); 3s also covers a goodbye slow to start.
  */
 export const HELD_RESULT_RELEASE_MS = 3000;
 /**
@@ -513,10 +518,17 @@ const FADE_OUT_S = 0.04;
  * traveling to the worklet plus output latency, Bluetooth included).
  * END_CALL_DRAIN_TIMEOUT_MS stays the fail-safe: never hold the line longer.
  */
-const END_CALL_POLL_MS = 250;
-const END_CALL_SETTLE_POLLS = 3;
-const END_CALL_AUDIO_GRACE_MS = 500;
-const END_CALL_DRAIN_TIMEOUT_MS = 10000;
+export const END_CALL_POLL_MS = 250;
+export const END_CALL_SETTLE_POLLS = 3;
+export const END_CALL_AUDIO_GRACE_MS = 500;
+export const END_CALL_DRAIN_TIMEOUT_MS = 10000;
+/**
+ * A demo tool's line is done after two settled polls in a row (a dry gap
+ * between chunks is not the end of the line). This is deliberately NOT the
+ * end-call drain's three polls: the goodbye gets the extra poll because a
+ * chopped closing line is the failure the drain handshake exists to prevent.
+ */
+const DEMO_LINE_SETTLE_POLLS = 2;
 
 export class VoiceSession {
   private ws: WebSocket | null = null;  private audioCtx: AudioContext | null = null;
@@ -552,6 +564,13 @@ export class VoiceSession {
   private endCallSignaled = false;
   /** The goodbye's reply: once end call is signaled, every other reply is dropped. */
   private endCallReplyId: string | null = null;
+  /**
+   * The goodbye has completed (its reply.done arrived) or its held end_call
+   * result was released on the drain handshake. Until then the goodbye owns
+   * the floor, so an id-less reply may still be the closing line itself and
+   * must play; after it, an id-less reply can only be narration (ticket 23).
+   */
+  private goodbyeFinished = false;
 
   // ── Barge-in recovery + adaptive delay (./barge-in.ts) ─────────────────
   private readonly judgeBargeIn: BargeInJudge;
@@ -574,7 +593,7 @@ export class VoiceSession {
   private droppedHeard = "";
   /** The server just stopped the agent for a barge-in: what it had said, and for how long. */
   /** `goodbye`: the cut reply was the goodbye (end_call already signaled). */
-  private bargeIn: { heard: string; rest: string; speakingMs: number; goodbye?: boolean } | null = null;
+  private bargeIn: { heard: string; rest: string; speakingMs: number; goodbye?: boolean; droppable?: boolean } | null = null;
   private noWordsTimer: ReturnType<typeof setTimeout> | null = null;
   /** The next reply is a goodbye resumed after a noise cut: it re-arms the hang-up. */
   private goodbyeResumePending = false;
@@ -594,6 +613,7 @@ export class VoiceSession {
     this.pendingEndCall = false;
     this.endCallSignaled = false;
     this.endCallReplyId = null;
+    this.goodbyeFinished = false;
     if (this.endCallTimer) {
       clearInterval(this.endCallTimer);
       this.endCallTimer = null;
@@ -706,6 +726,7 @@ export class VoiceSession {
     this.inputMuted = false;
     this.holdPaused = false;
     this.endCallSignaled = false;
+    this.goodbyeFinished = false;
     this.resetBargeIn();
     this.firstUpdateAcked = false;
     this.greetingAudioSent = false;
@@ -1048,6 +1069,10 @@ export class VoiceSession {
 
       case "reply.done": {
         this.replyActive = false;
+        // The goodbye's generation is over: from here an id-less reply can
+        // only be post-End call narration, so the drop guard may silence it
+        // (its already-queued audio still plays out through the drain).
+        if (this.endCallSignaled) this.goodbyeFinished = true;
         // A reply we superseded ends "completed" server-side; it was
         // interrupted all the same.
         const superseded = Boolean(msg.reply_id) && msg.reply_id === this.droppedReplyId;
@@ -1061,6 +1086,7 @@ export class VoiceSession {
             rest: unheardRest(this.currentAgentText, heard),
             speakingMs: Date.now() - this.replyStartedAt,
             goodbye: this.endCallSignaled,
+            droppable: this.floor.currentDroppable(),
           };
           this.stopCaption();
           this.armNoWordsResume();
@@ -1200,8 +1226,9 @@ export class VoiceSession {
         // The final line takes over from the paced caption.
         this.stopCaption();
         // The caption is what the caller heard: nothing of a reply after the
-        // goodbye, only the heard words of one we superseded.
-        if (this.endCallSignaled && replyId !== this.endCallReplyId) break;
+        // goodbye (a missing id included), only the heard words of one we
+        // superseded.
+        if (this.endCallSignaled && this.isDropped(replyId)) break;
         const full = replyId !== null && replyId === this.droppedReplyId ? this.droppedHeard : msg.text;
         const spoken = stripSpokenToolCall(typeof full === "string" ? full : "");
         if (spoken.endCall && !this.endCallSignaled) {
@@ -1437,10 +1464,15 @@ export class VoiceSession {
   /**
    * The platform may hold the reply open until the result arrives, so a held
    * result can't always wait for reply.done. Release it once nothing is left
-   * to cut: after 3s without audio (end_call, measured), or, for demo tools,
-   * once this reply's line has played out (two settled polls in a row, so a
-   * dry gap between chunks doesn't count) or it never spoke at all. Chunks
-   * arrive faster than they play, so "no new audio" alone isn't "done".
+   * to cut: for end_call, the goodbye has drained (the same settled-streak
+   * plus audio grace the hang-up uses, so the result never lands mid-line);
+   * for demo tools, this reply's line has played out (two settled polls in a
+   * row, so a dry gap between chunks doesn't count) or it never spoke at all.
+   * A goodbye that never started keeps the flat HELD_RESULT_RELEASE_MS:
+   * nothing has played, so the drain handshake can't say it is done, and a
+   * result sent before the goodbye begins makes the platform cut it
+   * (ADR-0005). Chunks arrive faster than they play, so "no new audio" alone
+   * isn't "done".
    */
   private watchHeldResult(): void {
     const heldAt = Date.now();
@@ -1453,17 +1485,41 @@ export class VoiceSession {
       }
       const now = Date.now();
       const spoke = this.lastAudioAt > 0 && this.lastAudioAt >= this.replyStartedAt;
-      settledPolls = spoke && this.playbackSettled() ? settledPolls + 1 : 0;
       const demoOnly = !coordinator.holds(END_CALL_TOOL);
-      const lineDone = (spoke ? settledPolls >= 2 : now - heldAt >= SILENT_TOOL_RELEASE_MS);
+      const quiet = now - this.lastAudioAt >= END_CALL_AUDIO_GRACE_MS;
+      // end_call's streak is the hang-up's own handshake: a poll only counts
+      // when the worklet is settled and the audio grace has passed, so fresh
+      // audio (or a dry gap) restarts the count instead of releasing early.
+      settledPolls = spoke && this.playbackSettled() && (demoOnly || quiet) ? settledPolls + 1 : 0;
+      const lineDone = spoke
+        ? settledPolls >= DEMO_LINE_SETTLE_POLLS
+        : now - heldAt >= SILENT_TOOL_RELEASE_MS;
       const release = demoOnly
         ? lineDone || now - heldAt >= HELD_DEMO_RESULT_MAX_MS
-        : now - Math.max(this.lastAudioAt, heldAt) >= HELD_RESULT_RELEASE_MS;
+        : (spoke && this.audioDrained(settledPolls)) ||
+          now - Math.max(this.lastAudioAt, heldAt) >= HELD_RESULT_RELEASE_MS;
       if (release) {
         clearInterval(timer);
+        // The held end_call result is released only once the goodbye has
+        // drained (or never started): the closing line no longer owns the
+        // floor, so an id-less reply from here is narration (ticket 23).
+        if (coordinator.holds(END_CALL_TOOL) && this.endCallSignaled) this.goodbyeFinished = true;
         coordinator.releaseHeld();
       }
     }, 250);
+  }
+
+  /**
+   * The goodbye has drained: END_CALL_SETTLE_POLLS settled polls in a row
+   * and END_CALL_AUDIO_GRACE_MS since the last audio arrived. The hang-up and
+   * the held end_call result both wait for this, so the result can never cut
+   * the closing line and the call never pays one drain per wait.
+   */
+  private audioDrained(settledPolls: number): boolean {
+    return (
+      settledPolls >= END_CALL_SETTLE_POLLS &&
+      Date.now() - this.lastAudioAt >= END_CALL_AUDIO_GRACE_MS
+    );
   }
 
   /**
@@ -1473,7 +1529,14 @@ export class VoiceSession {
    * with only a few words left says nothing: the caller got the point. A
    * cut goodbye always finishes, so the call still ends after it.
    */
-  private resumeAfterBargeIn(cut: { rest: string; goodbye?: boolean }, text: string, opts: { now?: boolean } = {}): void {
+  private resumeAfterBargeIn(
+    cut: { rest: string; goodbye?: boolean; droppable?: boolean },
+    text: string,
+    opts: { now?: boolean } = {},
+  ): void {
+    // An optional line (the silence check-in) is never worth resuming once
+    // the visitor has taken the floor, whatever the overlap judge decided.
+    if (cut.droppable) return;
     const rest = cut.rest.trim();
     const short = rest.split(/\s+/).filter(Boolean).length <= RESUME_MIN_WORDS;
     if (cut.goodbye && rest && short) {
@@ -1612,16 +1675,36 @@ export class VoiceSession {
   private signalEndCall(replyId: string | null): void {
     this.endCallSignaled = true;
     this.endCallReplyId = replyId;
+    this.goodbyeFinished = false;
+    // The goodbye is the last word: nothing queued (rung, check-in, resume)
+    // may even wait for the floor. `requestReply` refuses AFTER the signal too;
+    // this closes the gap for lines queued before it.
+    this.clearLines();
     this.handlers.onEndCall?.();
   }
 
   /**
    * A reply the caller must not hear: one we superseded, or any reply after
    * the goodbye (the model sometimes speaks again once end_call returns).
+   * After the goodbye only the goodbye reply itself is speakable, and it is
+   * identified by id: a message that omits its id cannot be proven to be that
+   * reply, so silence wins and it is dropped too.
    */
   private isDropped(replyId: unknown): boolean {
-    if (typeof replyId !== "string" || !replyId) return false;
-    return replyId === this.droppedReplyId || (this.endCallSignaled && replyId !== this.endCallReplyId);
+    const id = typeof replyId === "string" && replyId ? replyId : null;
+    if (this.endCallSignaled) {
+      // Once the goodbye has completed, only silence may follow it.
+      if (this.goodbyeFinished) return true;
+      // While the goodbye still owns the floor an id-less message cannot be
+      // proven to be a later reply: the platform may omit the id on the
+      // closing line's own audio/caption, so let it through (ticket 20).
+      if (id === null) return false;
+      // A spoken end_call may leave the goodbye's id unknown; until it
+      // finishes, an id-carrying reply is a candidate for that goodbye.
+      return this.endCallReplyId !== null && id !== this.endCallReplyId;
+    }
+    if (id === null) return false;
+    return id === this.droppedReplyId;
   }
 
   /**
@@ -1716,7 +1799,7 @@ export class VoiceSession {
       settledPolls =
         this.playbackSettled() && audioQuiet() ? settledPolls + 1 : 0;
       if (
-        settledPolls >= END_CALL_SETTLE_POLLS ||
+        this.audioDrained(settledPolls) ||
         Date.now() - started > END_CALL_DRAIN_TIMEOUT_MS
       ) {
         this.disarmEndCallTimer();

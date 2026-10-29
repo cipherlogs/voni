@@ -40,3 +40,6 @@ voni/GATES.md
 
 # Demo scoreboard run artifacts (regenerated per run, never committed)
 voni/scoreboard-runs/
+
+# Fixed caller clips for the demo scoreboard (PCM cache, regenerated on miss)
+voni/.eval-clips/

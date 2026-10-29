@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "note": "Frozen demo-scoreboard budgets. A threshold edit is a spec change: it must move this record, the SCOREBOARD_BUDGETS table, the matching GOLDEN_SCRIPT window, and the pinned expectation in scoreboard.test.ts together, or the freeze guard fails. No pipeline retunes here.",
+  "budgets": {
+    "goldenScriptBudgetS": 90,
+    "replyGapP50Ms": 1500,
+    "replyGapP95Ms": 2500,
+    "realCutMs": 1500,
+    "fillerResumeTailMs": 2500,
+    "overheardAsidesMin": 1,
+    "overheardAsidesMax": 1,
+    "deadAirMaxMs": 2000,
+    "silenceCheckInTargetMs": 15000,
+    "silenceCheckInMaxMs": 18000,
+    "emailTagMentionsMin": 1,
+    "emailTagMentionsMax": 1,
+    "doubleTalkMaxOverlapMs": 400,
+    "doubleTalkFadeOutS": 0.04,
+    "endCallPollMs": 250,
+    "endCallSettlePolls": 3,
+    "endCallAudioGraceMs": 500,
+    "endCallDrainTimeoutMs": 10000,
+    "goodbyeAudioCoverageMin": 0.8,
+    "hangUpAfterGoodbyeMaxMs": 1500,
+    "timbreReferenceLufs": -23.1,
+    "timbreLufsToleranceDb": 1.5,
+    "timbreProbeMaxCount": 0,
+    "popJumpInt16": 9830,
+    "humanRatersRequired": 2,
+    "humanRatingScaleMin": 1,
+    "humanRatingScaleMax": 5
+  }
+}

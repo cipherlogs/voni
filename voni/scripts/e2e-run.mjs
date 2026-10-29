@@ -21,20 +21,62 @@
 // the runner refuses to fall back to ordinary DATABASE_URL.
 
 import { spawn, spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { createHash } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import net from "node:net";
+import {
+  BEHAVIOR_RUN_EVIDENCE_KIND,
+  BEHAVIOR_RUN_EVIDENCE_SCHEMA_VERSION,
+  codeFingerprintFromGit,
+} from "../src/lib/demo/behavior-evidence.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const appDir = resolve(here, "..");
 const mode = process.argv[2] ?? "instant";
 const valid = new Set(["instant", "behavior", "cloudflare", "all"]);
 if (!valid.has(mode)) {
-  console.error(`usage: e2e-run.mjs <${[...valid].join("|")}>`);
+  console.error(`usage: e2e-run.mjs <${[...valid].join("|")}> [--evidence <path>]`);
   process.exit(2);
+}
+// Candidate behavior-run evidence for `scoreboard:streak` (ticket 29). The
+// file is written on green and red so the exit claim can never silently omit
+// the browser run; it carries the same code fingerprint shape as artifacts.
+const evidenceIndex = process.argv.indexOf("--evidence");
+const evidencePath = evidenceIndex >= 0 ? process.argv[evidenceIndex + 1] : null;
+if (evidenceIndex >= 0 && !evidencePath) {
+  console.error("[e2e] --evidence needs a file path");
+  process.exit(2);
+}
+if (evidencePath && mode !== "behavior") {
+  console.error("[e2e] --evidence is only written for behavior mode");
+  process.exit(2);
+}
+let behaviorEvidence = null;
+
+function writeBehaviorEvidence() {
+  if (!evidencePath || !behaviorEvidence) return;
+  const abs = resolve(evidencePath);
+  mkdirSync(dirname(abs), { recursive: true });
+  writeFileSync(
+    abs,
+    `${JSON.stringify({
+      kind: BEHAVIOR_RUN_EVIDENCE_KIND,
+      schemaVersion: BEHAVIOR_RUN_EVIDENCE_SCHEMA_VERSION,
+      mode: "behavior",
+      passed: behaviorEvidence.passed,
+      exitCode: behaviorEvidence.passed ? 0 : 1,
+      recordedAt: new Date().toISOString(),
+      command: "npm run test:e2e:behavior",
+      codeFingerprint: {
+        head: behaviorEvidence.fp.head,
+        dirty: behaviorEvidence.fp.dirty,
+        dirtyHash: behaviorEvidence.fp.dirtyHash,
+      },
+    }, null, 2)}\n`,
+  );
+  console.log(`[e2e] behavior evidence: ${abs} (${behaviorEvidence.passed ? "PASS" : "FAIL"})`);
 }
 
 const NEXT_PORT = 3100;
@@ -61,11 +103,20 @@ function portOccupied(port) {
 }
 
 function fingerprint() {
-  const head = capture("git", ["rev-parse", "HEAD"], { cwd: appDir });
-  const status = capture("git", ["status", "--porcelain=v1"], { cwd: appDir });
-  const diff = capture("git", ["diff", "HEAD", "--stat"], { cwd: appDir });
-  const h = createHash("sha256").update(head + "\n" + status + "\n" + diff).digest("hex").slice(0, 16);
-  return { head, statusLines: status.split("\n").filter(Boolean).length, hash: h };
+  // Repo-wide, the same shape score-demo writes: HEAD plus a sha256 of the
+  // porcelain status and the full unstaged/staged diff. A change anywhere in
+  // the repo (not only voni/) moves the fingerprint.
+  const top = capture("git", ["rev-parse", "--show-toplevel"], { cwd: appDir });
+  const head = capture("git", ["-C", top, "rev-parse", "HEAD"]);
+  const status = capture("git", ["-C", top, "status", "--porcelain=v1"]);
+  const diff = capture("git", ["-C", top, "diff", "HEAD"]);
+  const fingerprint = codeFingerprintFromGit({ head, status, diff });
+  if (!fingerprint) throw new Error("git has no HEAD: cannot fingerprint the candidate");
+  return {
+    ...fingerprint,
+    statusLines: status.split("\n").filter(Boolean).length,
+    hash: fingerprint.dirtyHash.slice(0, 16),
+  };
 }
 
 // Relevant untracked source files = app source under src/scripts/tests that
@@ -220,6 +271,7 @@ async function modeInstant() {
 async function modeBehavior() {
   // Unauthenticated behavior regressions only until Task 5 creds exist.
   const fp = fingerprint();
+  behaviorEvidence = { fp, passed: false };
   const cand = buildCandidate(fp);
   const server = await serveNext(cand, NEXT_PORT);
   try {
@@ -228,6 +280,8 @@ async function modeBehavior() {
   } finally {
     await teardown(server, dirname(cand));
   }
+  // Only a clean playwright run plus a clean teardown earns green evidence.
+  behaviorEvidence.passed = true;
 }
 
 async function modeCloudflare() {
@@ -277,6 +331,10 @@ try {
   else { await modeInstant(); await modeBehavior(); await modeCloudflare(); }
 } catch (err) {
   console.error(`[e2e] FAILED (${mode}): ${err.message}`);
-  process.exit(1);
+  process.exitCode = 1;
+} finally {
+  // Written on green and red: a red file is evidence of a red run, and a
+  // missing file is evidence of no run — neither can be read as green.
+  writeBehaviorEvidence();
 }
-console.log(`[e2e] done (${mode}).`);
+if (process.exitCode !== 1) console.log(`[e2e] done (${mode}).`);

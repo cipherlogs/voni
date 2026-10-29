@@ -12,6 +12,32 @@
  *
  *   npm run eval:demo-agent -- [--runs 5] [--voice <demo-voice-id>] [--scenario hang-up]
  *
+ * Every live call prints `  · trace session sess_…` when the session is
+ * ready: score-demo chains its Call trace merge from that id, so per-turn
+ * Reply gaps come from the merger instead of an estimate.
+ *
+ * The run ends with one machine-readable `EVAL SUMMARY {...}` line: it proves
+ * the runner finished, so scenario failures stay judgment (exit 1) while the
+ * scoreboard reports plumbing PASS. Live client runs also print
+ * `    playout <ms>ms wall clock`, carried in the summary as report-only
+ * timings — never folded into a gate. A crash, kill, or summary-less exit is
+ * a harness break; the summary also names trace sessions and agent audio so
+ * a silent or untraced run is classified as a harness break too.
+ *
+ * Each live client call prints one `SILENCE TIMELINE {...}` line: the agent
+ * and caller audio windows, every agent reply start / reply.create (coverage),
+ * and any check-ins, all call-relative ms. score-demo derives the free-floor
+ * silences from it, so dead air is measured from the call's own events rather
+ * than typed in by an operator.
+ *
+ * Each goodbye run prints one `GOODBYE DRAIN {...}` line: the closing reply's
+ * turn, its played/expected audio coverage, whether it named the team inbox
+ * (hi@voni.cc, said "hi at voni dot c c"), and whether the model spoke again
+ * after its own hang-up signal (post-End call narration). bye-audio and
+ * free-gate both assert the inbox and the 80% coverage bar; score-demo gates
+ * the measured numbers and cites the closing — or the post-End — turn on a
+ * FAIL.
+ *
  * Scenarios (raw socket):
  *   hang-up       "I want you to hang up." → a real end_call tool call, and
  *                 the tool name is never spoken.
@@ -22,11 +48,30 @@
  * recovery, docs/adr/0003-barge-in-recovery.md) over a live socket, with a
  * wall-clock fake playout and Jev called directly through the gateway:
  *   filler-over   "Okaay so" over a long reply → not cut, or cut and resumed.
+ *                 A cut prints the agent line, the words heard before it, and
+ *                 the resumed tail, so the scoreboard can prove the exact
+ *                 unheard rest played instead of a paraphrase or a skip.
  *   stop-over     "Wait, stop." over a long reply → cut within ~1.5s, answered.
- *   over-talk     a short answer over the reply → heard (never lost).
+ *   over-talk     a short answer over the reply → heard (never lost), and the
+ *                 fake playout records the post-flush residual overlap per
+ *                 server cut (caller speech + faded agent audio). Prints one
+ *                 `DOUBLE TALK {...}` line and asserts the 400ms bar; time to
+ *                 cut stays the barge-in-cut budget, never this one.
  *   hang-up-over  "I want you to hang up this call." over a long reply →
- *                 the call ends, never resumed ("as I was saying").
- *   greeting-cut  "Wait, stop." 1s into the greeting → the greeting is cut.
+ *                 the call ends, never resumed ("as I was saying"), and its
+ *                 drain is asserted on the same 1500ms bar as hang-up-fast.
+ *   greeting-cut  "Wait, stop." 1s into the greeting → cut inside the locked
+ *                 greeting window; the scenario asserts the ms it prints.
+ *   silence-check-in  the caller stays silent on a free floor → exactly one
+ *                 check-in after the real 15s; prints `check-ins N at <ms>ms`
+ *                 and its events feed the SILENCE TIMELINE / dead-air gate.
+ *
+ * Cut latency is measured from caller speech start (the pump's first
+ * transmitted frame carrying the clip's first voiced sample) to the server
+ * cut, never from the enqueue tick. Caller clips are cached as PCM in
+ * `.eval-clips/` and fingerprinted (words + bytes + duration + onset), so
+ * greeting-cut and real-cut runs speak the identical audio every time.
+ * Timing runs beat the scoreboard's one-at-a-time lock (score-demo).
  *
  * Email-test scenarios (raw socket, the demo's real tools; ticket 03 +
  * docs/adr/0004): tool results go back the way the browser sends them, the
@@ -48,27 +93,78 @@
  *   returning           a found + returning result → greets Andres as
  *                       returning and never re-invites.
  */
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { buildDemoAgentBody } from "../src/lib/demo/stored-agents";
 import {
   checkEmailInstructions,
   DEMO_VOICE_IDS,
   inviteNowInstructions,
   LATE_EMAIL_INSTRUCTIONS,
+  SILENCE_CHECK_IN_INSTRUCTIONS,
+  SILENCE_CHECK_IN_MS,
   testTagContext,
   OPEN_BEAT_GOAL,
   rungInstructions,
 } from "../src/lib/demo/voni-agent";
 import { CHECK_EMAIL_TOOL, DEMO_VOICE_TOOLS, executeDemoTool, SHOW_TEST_ADDRESS_TOOL } from "../src/lib/demo/demo-tools";
-import { checkResultToData, mentionsScreen, normalizeClaim, type CheckEmailResult } from "../src/lib/demo/email-test";
+import {
+  checkResultToData,
+  DEMO_INBOX_ADDRESS,
+  mentionsScreen,
+  normalizeClaim,
+  type CheckEmailResult,
+} from "../src/lib/demo/email-test";
 import { buildEndCallSuccess, END_CALL_VOICE_TOOL } from "../src/lib/tools/definitions";
 import {
   HELD_RESULT_RELEASE_MS,
+  heardWords,
   stripSpokenToolCall,
   TARGET_SAMPLE_RATE,
   VoiceSession,
   type BargeInEvent,
 } from "../src/lib/voice/session";
 import { tryJevGateway } from "../src/lib/voice/voice-judge";
+import {
+  callerClipDrift,
+  callerClipFingerprint,
+  callerSpeechStart,
+  deriveFreeFloorSilence,
+  DOUBLE_TALK_EVIDENCE_PREFIX,
+  DOUBLE_TALK_FADE_OUT_S,
+  DOUBLE_TALK_MAX_OVERLAP_MS,
+  EMAIL_INVITE_EVIDENCE_PREFIX,
+  fillerHandlingFor,
+  GOODBYE_DRAIN_EVIDENCE_PREFIX,
+  greetingCutFailure,
+  GREETING_CUT_MAX_MS,
+  hangUpDrainFailure,
+  heardPoint,
+  namesTeamInbox,
+  TEAM_INBOX_ADDRESS,
+  isResumeInstructions,
+  isSilenceCheckInInstructions,
+  judgePostCutAnswer,
+  measureCutLatency,
+  playoutCutWindow,
+  postCutAnswerText,
+  postFlushOverlapMs,
+  REAL_CUT_ANSWER_PREFIX,
+  REAL_CUT_MAX_MS,
+  REAL_CUT_SCENARIOS,
+  sha256Hex,
+  SILENCE_CHECK_IN_MAX_MS,
+  SILENCE_CHECK_IN_TARGET_MS,
+  SILENCE_TIMELINE_PREFIX,
+  type AudibleWindow,
+  type CallerClipFingerprint,
+  type CallerOnset,
+  type DoubleTalkCut,
+  type EmailInviteEvidenceFile,
+  type FillerAnswerMarker,
+  type SilenceTimeline,
+} from "../src/lib/demo/scoreboard";
 
 const FAKE = /fake|pretend|hypothetical|make one up|made[- ]up|pick anything|example business|imaginary|role[- ]?play/i;
 const WS = "wss://agents.assemblyai.com/v1/ws";
@@ -83,7 +179,7 @@ function arg(name: string, fallback: string): string {
 }
 
 type Step = { say?: string; instructions?: string };
-type Outcome = { agent: string[]; heard: string[]; endCalled: boolean };
+type Outcome = { agent: string[]; heard: string[]; endCalled: boolean; sessionId?: string };
 
 const apiKey = process.env.ASSEMBLYAI_API_KEY;
 if (!apiKey) throw new Error("ASSEMBLYAI_API_KEY missing: run with --env-file=.dev.vars");
@@ -97,17 +193,80 @@ async function token(): Promise<string> {
   return ((await res.json()) as { token: string }).token;
 }
 
-/** Caller speech: a session whose greeting is the line, captured as PCM16. */
+/**
+ * Caller speech: a session whose greeting is the line, captured as PCM16.
+ *
+ * The clip is fixed by words AND audio: a per-process memory cache plus an
+ * on-disk PCM cache keyed by caller voice + words means every run streams the
+ * identical bytes, so cut latency stays comparable. Every clip gets a
+ * fingerprint (words, bytes, duration, leading silence) printed once; a
+ * re-synthesized or edited take is therefore visible in the run output.
+ */
 const speechCache = new Map<string, Buffer>();
+const clipPrints = new Map<string, CallerClipFingerprint>();
+const printedClips = new Set<string>();
+const CLIP_CACHE_DIR = process.env.EVAL_CLIP_CACHE_DIR || fileURLToPath(new URL("../.eval-clips/", import.meta.url));
+
+function clipCachePath(line: string): string {
+  return join(CLIP_CACHE_DIR, `${sha256Hex(`${CALLER_VOICE}\n${line}`)}.pcm`);
+}
+
+function rememberClip(line: string, pcm: Buffer, source: "cached" | "synthesized"): CallerClipFingerprint {
+  const fingerprint = callerClipFingerprint(line, pcm, TARGET_SAMPLE_RATE);
+  const prior = clipPrints.get(line);
+  if (prior) {
+    const drift = callerClipDrift(prior, fingerprint);
+    if (drift) throw new Error(`caller clip "${line}" changed mid-run: ${drift}`);
+    return prior;
+  }
+  clipPrints.set(line, fingerprint);
+  if (!printedClips.has(line)) {
+    printedClips.add(line);
+    console.log(
+      `    clip "${line}" sha256=${fingerprint.sha256.slice(0, 12)} ${fingerprint.bytes}B ` +
+        `${fingerprint.durationMs}ms onset ${fingerprint.onsetMs.toFixed(1)}ms (${source})`,
+    );
+  }
+  return fingerprint;
+}
+
+function readClipCache(line: string): Buffer | null {
+  try {
+    const pcm = readFileSync(clipCachePath(line));
+    return pcm.byteLength > 0 && pcm.byteLength % 2 === 0 ? pcm : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeClipCache(line: string, pcm: Buffer): void {
+  try {
+    mkdirSync(CLIP_CACHE_DIR, { recursive: true });
+    writeFileSync(clipCachePath(line), pcm, { mode: 0o600 });
+  } catch (error) {
+    console.error(`  caller clip cache write failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
 async function speak(line: string): Promise<Buffer> {
+  const inMemory = speechCache.get(line);
+  if (inMemory) return inMemory;
+  const onDisk = readClipCache(line);
+  if (onDisk) {
+    rememberClip(line, onDisk, "cached");
+    speechCache.set(line, onDisk);
+    return onDisk;
+  }
   // The throwaway TTS session is infrastructure, not the thing under test:
   // one retry on a timeout keeps a network blip from failing a scenario.
-  return speakOnce(line).catch(() => speakOnce(line));
+  const pcm = await speakOnce(line).catch(() => speakOnce(line));
+  rememberClip(line, pcm, "synthesized");
+  speechCache.set(line, pcm);
+  writeClipCache(line, pcm);
+  return pcm;
 }
 
 async function speakOnce(line: string): Promise<Buffer> {
-  const cached = speechCache.get(line);
-  if (cached) return cached;
   const ws = new WebSocket(`${WS}?token=${await token()}`);
   const chunks: Buffer[] = [];
   const pcm = await new Promise<Buffer>((resolve, reject) => {
@@ -132,7 +291,6 @@ async function speakOnce(line: string): Promise<Buffer> {
   });
   ws.send(JSON.stringify({ type: "session.end" }));
   ws.close();
-  speechCache.set(line, pcm);
   return pcm;
 }
 
@@ -171,7 +329,14 @@ async function runSession(voiceId: string, steps: Step[]): Promise<Outcome> {
 
   ws.addEventListener("message", (event) => {
     const msg = JSON.parse(String(event.data));
-    if (msg.type === "session.ready") ready = true;
+    if (msg.type === "session.ready") {
+      ready = true;
+      // The id the operator (or score-demo's auto-chain) merges the Call trace with.
+      if (typeof msg.session_id === "string" && msg.session_id.length > 0) {
+        outcome.sessionId = msg.session_id;
+        console.log(`  · trace session ${msg.session_id}`);
+      }
+    }
     if (msg.type === "transcript.user" && msg.text) {
       outcome.heard.push(msg.text);
       heardUser = true;
@@ -232,6 +397,13 @@ async function runSession(voiceId: string, steps: Step[]): Promise<Outcome> {
   return outcome;
 }
 
+/** The most recent live client run: playout is reported, never gated. */
+let lastClientOutcome: ClientOutcome | null = null;
+/** Read the last live client run without control-flow narrowing it to null. */
+function latestClientOutcome(): ClientOutcome | null {
+  return lastClientOutcome;
+}
+
 /**
  * One call through the real VoiceSession. `script` gets `say(line)` (queues
  * caller speech) and resolves when the scenario has had its moment.
@@ -242,46 +414,196 @@ type ClientOutcome = {
   creates: string[];
   agent: string[];
   heard: string[];
+  /** Final agent turns with their reply id, for separating the cut reply from the answer. */
+  agentTurns: { replyId: string | null; text: string; at: number }[];
+  /** Final user turns with arrival times, so the answer is the one after the point. */
+  heardTurns: { text: string; at: number }[];
+  /** The reply the server interrupted, if any. */
+  cutReplyId: string | null;
+  /** First agent-audio arrival per reply id (cut → resume first audio). */
+  replyAudioAt: Record<string, number>;
+  /**
+   * Played ms of the cut reply at the server cut, from the wall-clock playout
+   * (the same source-latency maths the session uses for its heard words).
+   * Null when the cut reply never had audio measured.
+   */
+  cutPlayedMs: number | null;
   interruptedReplies: number;
+  /** The live session's id, for the Call trace merge. */
+  sessionId: string | null;
   /** When the session ended, and when the agent's last audio finished playing. */
   endedAt: number | null;
   lastAudioEnd: number;
+  /** Live-call wall clock from dial to stop, excluding caller clip rendering. */
+  wallClockMs: number;
+  /** Agent audio chunks received during the call. */
+  audioChunks: number;
+  /** Fingerprints of the fixed caller clips this call streamed. */
+  callerClips: CallerClipFingerprint[];
+  /**
+   * Post-flush residual overlap per server cut, ms: the time both the caller's
+   * speech and the agent's faded playout were still sounding after the flush.
+   * Never time-to-cut (that is the barge-in-cut budget, up to 1500ms).
+   */
+  overlapMs: number[];
+  /** The cut windows those overlaps came from (playout timings, for triage). */
+  cutWindows: DoubleTalkCut[];
+  /** The fade the last flush applied, ms (the worklet's FADE_OUT_S). */
+  lastFadeMs: number;
+  /** Agent audio playout windows, call-relative ms (the silence timeline). */
+  agentWindows: { startMs: number; endMs: number }[];
+  /** Agent reply starts / reply.create requests, call-relative ms: coverage. */
+  coverageAt: { atMs: number }[];
+  /** Silence check-ins that went out, call-relative ms. */
+  checkIns: { atMs: number; overCaller: boolean; yieldMs?: number }[];
+  /** The call's free-floor silence timeline, built once the call has ended. */
+  silenceTimeline: SilenceTimeline | null;
 };
+
+/** Options for one call; only the check-in scenario enables the check-in. */
+type ClientOptions = {
+  /**
+   * Wire the demo's own free-floor silence check-in (the same constants the
+   * landing UI passes). The live call then needs real silence: the 15s target
+   * is never shortened for the eval.
+   */
+  silenceCheckIn?: boolean;
+  /**
+   * Fault injection for the double-talk producer: after the flush, leave the
+   * queued agent audio sounding this long instead of dropping it. 0 is a
+   * healthy flush (fade only); the over-talk scenario can be run with
+   * --double-talk-fault-ms to prove the gate FAILs an ineffective flush.
+   */
+  doubleTalkFaultMs?: number;
+};
+
+/**
+ * One caller utterance handed back by `say`: the enqueue tick, the fixed
+ * clip's onset, and the pump's first transmitted frame for that onset. The
+ * measurement uses `onset()`, never `enqueuedAt`.
+ */
+type CallerSpeech = {
+  line: string;
+  enqueuedAt: number;
+  onsetMs: number;
+  /** Snapshot for measureCutLatency, filled once the pump transmits the onset. */
+  onset: () => CallerOnset;
+};
+
+/**
+ * The fresh agent line after the cut and the caller's point. Uses the shared
+ * selector so the runner and the scoreboard agree on what counts as the
+ * answer; the interrupted reply is excluded by id.
+ */
+function postCutAnswerOf(outcome: ClientOutcome, point: string): string | null {
+  return postCutAnswerText({
+    cutAt: outcome.cutAt,
+    cutReplyId: outcome.cutReplyId,
+    point,
+    heardTurns: outcome.heardTurns,
+    agentTurns: outcome.agentTurns,
+  });
+}
+
+/**
+ * The tail the filler cut interrupted and the resume that followed. The agent
+ * line is the cut reply's own transcript, the heard words come from the
+ * wall-clock playout at the cut (the same source the session reads), and the
+ * resumed words are the first agent line after the cut. Null means the runner
+ * could not measure it — never a guessed tail.
+ */
+function fillerTailOf(outcome: ClientOutcome): {
+  agentText: string;
+  heardText: string;
+  resumedText: string;
+  resumeMs: number | null;
+} | null {
+  const cutAt = outcome.cutAt;
+  if (cutAt === null) return null;
+  const cutTurn =
+    outcome.agentTurns.find((turn) => outcome.cutReplyId !== null && turn.replyId === outcome.cutReplyId) ??
+    [...outcome.agentTurns].reverse().find((turn) => turn.at <= cutAt);
+  const agentText = cutTurn?.text.trim() ? cutTurn.text : "";
+  if (!agentText || outcome.cutPlayedMs === null) return null;
+  const resumedTurn = outcome.agentTurns.find(
+    (turn) => turn !== cutTurn && turn.replyId !== outcome.cutReplyId && turn.at >= cutAt && turn.text.trim(),
+  );
+  const firstAudioAt = resumedTurn?.replyId ? (outcome.replyAudioAt[resumedTurn.replyId] ?? null) : null;
+  return {
+    agentText,
+    heardText: heardWords(agentText, outcome.cutPlayedMs),
+    resumedText: resumedTurn?.text ?? "",
+    resumeMs: firstAudioAt !== null ? Math.max(0, Math.round(firstAudioAt - cutAt)) : null,
+  };
+}
 
 async function runClient(
   voiceId: string,
   lines: string[],
   script: (ctx: {
-    say: (line: string) => number;
+    say: (line: string) => CallerSpeech;
     waitFor: (predicate: () => boolean, timeoutMs?: number) => Promise<void>;
     replies: () => number;
+    /** Silence check-ins sent so far (matching the demo's check-in instructions). */
+    checkIns: () => number;
     /** Agent audio chunks received so far (the greeting included). */
     audioChunks: () => number;
     /** The session has ended (hung up). */
     ended: () => boolean;
+    /** The first fresh agent line after the cut and the point, or null. */
+    postCutAnswer: (point: string) => string | null;
+    /** Whether a final user transcript carried the given point word. */
+    heardPoint: (point: string) => boolean;
   }) => Promise<void>,
+  options: ClientOptions = {},
 ): Promise<ClientOutcome> {
   // Render every caller line before dialing: TTS mid-call skews timing.
   const clips = new Map<string, Buffer>();
   for (const line of lines) clips.set(line, await speak(line));
+  // The live call starts here: clip rendering must never inflate playout.
+  const liveStartedAt = Date.now();
+  // Call-relative origin for the silence timeline and the playout maths.
+  const t0 = Date.now();
   const body = buildDemoAgentBody(voiceId);
   const outcome: ClientOutcome = {
-    events: [], cutAt: null, creates: [], agent: [], heard: [], interruptedReplies: 0, endedAt: null, lastAudioEnd: 0,
+    events: [], cutAt: null, creates: [], agent: [], heard: [], agentTurns: [], heardTurns: [], cutReplyId: null,
+    replyAudioAt: {}, cutPlayedMs: null,
+    interruptedReplies: 0, sessionId: null, endedAt: null, lastAudioEnd: 0,
+    wallClockMs: 0, audioChunks: 0, callerClips: lines.map((line) => clipPrints.get(line)!),
+    overlapMs: [], cutWindows: [], lastFadeMs: 0, agentWindows: [], coverageAt: [], checkIns: [], silenceTimeline: null,
   };
   let repliesDone = 0;
   let audioChunks = 0;
   const session = new VoiceSession(
     {
       onBargeIn: (event) => outcome.events.push({ ...event, at: Date.now() }),
+      // A reply started: the agent is covering the floor. Together with our
+      // own reply.create requests this is the dead-air coverage evidence.
+      onReplyStarted: () => outcome.coverageAt.push({ atMs: Math.max(0, Date.now() - t0) }),
+      // One machine-readable marker per live call: score-demo chains its Call
+      // trace merge from it, and the operator can replay the same id.
+      onSessionReady: (sessionId) => {
+        outcome.sessionId = sessionId;
+        console.log(`  · trace session ${sessionId}`);
+      },
       onStateChange: (state) => {
         if (state === "ended" && outcome.endedAt === null) outcome.endedAt = Date.now();
       },
       onTranscript: (turn) => {
         (turn.role === "agent" ? outcome.agent : outcome.heard).push(turn.text);
       },
+      onAgentTurn: (turn) => {
+        outcome.agentTurns.push({ replyId: turn.itemId, text: turn.text, at: Date.now() });
+      },
+      onUserTurn: (turn) => {
+        outcome.heardTurns.push({ text: turn.text, at: Date.now() });
+      },
       onReplyDone: (info) => {
         repliesDone += 1;
-        if (info.interrupted) outcome.interruptedReplies += 1;
+        if (info.interrupted) {
+          outcome.interruptedReplies += 1;
+          if (info.replyId) outcome.cutReplyId = info.replyId;
+        }
       },
     },
     {
@@ -306,20 +628,138 @@ async function runClient(
     generation: { begin: () => number };
     ws: WebSocket | null;
   };
+  // The landing UI wires the same check-in on demo calls (voice-call.tsx);
+  // the eval has no mute/hold/closing state, so it is always allowed here.
+  if (options.silenceCheckIn) {
+    session.setSilenceCheckIn({
+      afterMs: SILENCE_CHECK_IN_MS,
+      instructions: SILENCE_CHECK_IN_INSTRUCTIONS,
+      allowed: () => true,
+    });
+  }
   // Wall-clock playout: "sounding" until the received audio has had time to play.
   let playUntil = 0;
+  // Source-sample bookkeeping so the fake playout can report what actually
+  // played: the session's heard-word maths reads `consumedSamples`, and a
+  // playout that cannot report makes the caller "hear" the whole line — a
+  // resume would then re-say one word and look exact while skipping the rest.
+  let sentSamples = 0;
+  const replyAudioStartSamples: Record<string, number> = {};
+  let soundingReplyId: string | null = null;
+  /** The check-in reply after its reply.create, so a cut can measure its yield. */
+  let pendingCheckInReply = false;
+  let checkInReplyId: string | null = null;
+  /** The playout window the last chunk opened, truncated if the flush cuts it. */
+  let lastAgentWindow: { startMs: number; endMs: number } | null = null;
+  const consumedSamplesNow = () => {
+    const queuedMs = Math.max(0, playUntil - Date.now());
+    const queuedSamples = Math.ceil((queuedMs / 1000) * TARGET_SAMPLE_RATE);
+    return Math.max(0, sentSamples - Math.min(sentSamples, queuedSamples));
+  };
+  // Teardown flushes the playout too. Only a flush during the live scenario is
+  // a server cut; counting the teardown flush would report a never-cut call as
+  // a late cut and cite a turn that never lagged.
+  let live = true;
+  // Caller speech bookkeeping for the double-talk window: each clip's first
+  // transmitted frame (the same t0 the cut gate uses) and its speech length.
+  type ClipOnset = {
+    enqueuedAt: number;
+    onsetByte: number;
+    onsetMs: number;
+    /** Clip-relative end of the spoken audio (whole clip, trailing silence included). */
+    durationMs: number;
+    firstFrameAt: number | null;
+    frameOffsetMs: number | null;
+  };
+  const onsets: ClipOnset[] = [];
+  /** The caller utterance sounding at `at`, from its transmitted onset to its end. */
+  const callerWindowAt = (at: number): AudibleWindow | null => {
+    for (const onset of onsets) {
+      const start = callerSpeechStart({
+        enqueuedAt: onset.enqueuedAt,
+        firstFrameAt: onset.firstFrameAt,
+        onsetMs: onset.onsetMs,
+        ...(onset.frameOffsetMs === null ? {} : { frameOffsetMs: onset.frameOffsetMs }),
+      });
+      if (start === null) continue;
+      const end = start + Math.max(0, onset.durationMs - onset.onsetMs);
+      if (start <= at && at < end) return { start, end };
+    }
+    return null;
+  };
   internals["playout"] = {
     play: (pcm: Uint8Array, rate: number) => {
       audioChunks += 1;
-      playUntil = Math.max(Date.now(), playUntil) + (pcm.byteLength / 2 / rate) * 1000;
+      sentSamples += pcm.byteLength / 2;
+      const startedAt = Math.max(Date.now(), playUntil);
+      playUntil = startedAt + (pcm.byteLength / 2 / rate) * 1000;
       outcome.lastAudioEnd = playUntil;
+      lastAgentWindow = {
+        startMs: Math.max(0, startedAt - t0),
+        endMs: Math.max(0, playUntil - t0),
+      };
+      outcome.agentWindows.push(lastAgentWindow);
     },
-    flush: () => {
-      if (outcome.cutAt === null) outcome.cutAt = Date.now();
-      playUntil = Date.now();
+    flush: (fadeS = 0) => {
+      const at = Date.now();
+      const fadeMs = Math.max(0, fadeS * 1000);
+      // What was queued when the flush landed. A healthy flush drops it; the
+      // fault knob models a flush that fails to stop the agent, leaving the
+      // queue sounding (never an assumption that audio stops at flush+fade).
+      const queuedUntil = playUntil;
+      const keepSoundingMs = live ? Math.max(0, options.doubleTalkFaultMs ?? 0) : 0;
+      const audibleUntil = Math.min(queuedUntil, at + fadeMs + keepSoundingMs);
+      // End the sounding window where the caller actually stopped hearing it.
+      if (lastAgentWindow) {
+        const playedEnd = Math.max(lastAgentWindow.startMs, audibleUntil - t0);
+        lastAgentWindow.endMs = Math.max(lastAgentWindow.startMs, Math.min(lastAgentWindow.endMs, playedEnd));
+      }
+      // The session's playout now believes what the flush really did: a
+      // healthy flush is silent at the cut; a failed flush keeps sounding.
+      playUntil = keepSoundingMs > 0 ? audibleUntil : at;
+      if (live) {
+        // The session flushes with FADE_OUT_S: a healthy flush ramps what is
+        // sounding to silence over the fade and drops the rest. Record what
+        // the caller actually still heard under their own speech AFTER the
+        // flush — the 400ms double-talk bar governs this residual, never the
+        // cut latency (barge-in-cut budgets that separately, up to 1500ms).
+        outcome.lastFadeMs = fadeMs;
+        const caller = callerWindowAt(at);
+        // Ticket 19: if the cut stopped a check-in the visitor had started
+        // speaking over, the time from their speech start to this flush is
+        // the measured yield. Carried with the check-in's own evidence.
+        const checkIn = outcome.checkIns.at(-1);
+        if (checkIn && checkInReplyId !== null && soundingReplyId === checkInReplyId && caller) {
+          checkIn.overCaller = true;
+          checkIn.yieldMs = Math.max(0, Math.round(at - caller.start));
+        }
+        const window = playoutCutWindow({
+          cutAt: caller ? Math.min(caller.start, at) : at,
+          flushAt: at,
+          playUntil: queuedUntil,
+          fadeMs,
+          keepSoundingMs,
+          caller,
+        });
+        outcome.cutWindows.push(window);
+        outcome.overlapMs.push(postFlushOverlapMs(window));
+      }
+      if (live && outcome.cutAt === null) {
+        outcome.cutAt = at;
+        const cutReply = outcome.cutReplyId ?? soundingReplyId;
+        const start = cutReply !== null ? replyAudioStartSamples[cutReply] : undefined;
+        // Played source samples since this reply's first chunk at the same
+        // instant the session reads them for its unheard rest.
+        if (start !== undefined) {
+          outcome.cutPlayedMs = Math.max(0, ((consumedSamplesNow() - start) / TARGET_SAMPLE_RATE) * 1000);
+        }
+      }
+      playUntil = at;
     },
     settled: () => Date.now() >= playUntil,
     queuedMs: () => Math.max(0, playUntil - Date.now()),
+    sentSamples: () => sentSamples,
+    consumedSamples: () => consumedSamplesNow(),
     onDrained: undefined,
   };
   const gen = internals.generation.begin();
@@ -332,37 +772,82 @@ async function runClient(
     tools: [END_CALL_VOICE_TOOL],
   }, gen);
   const ws = internals.ws!;
-  if (process.env.EVAL_DEBUG) {
-    const t0 = Date.now();
-    ws.addEventListener("message", (event) => {
-      const msg = JSON.parse(String(event.data));
-      if (msg.type === "reply.audio") {
-        if (msg.reply_id !== (globalThis as Record<string, unknown>).lastAudioReply) {
-          (globalThis as Record<string, unknown>).lastAudioReply = msg.reply_id;
-          console.log(`    ${((Date.now() - t0) / 1000).toFixed(2)} first audio of ${msg.reply_id}`);
+  ws.addEventListener("message", (event) => {
+    const msg = JSON.parse(String(event.data));
+    if (msg.type === "reply.audio") {
+      if (typeof msg.reply_id === "string") {
+        if (outcome.replyAudioAt[msg.reply_id] === undefined) outcome.replyAudioAt[msg.reply_id] = Date.now();
+        // The session's own handler already queued this chunk before ours runs,
+        // so this reply's playout start is the running total minus the chunk.
+        if (replyAudioStartSamples[msg.reply_id] === undefined) {
+          const chunkSamples = Buffer.from(String(msg.data ?? ""), "base64").byteLength / 2;
+          replyAudioStartSamples[msg.reply_id] = Math.max(0, sentSamples - chunkSamples);
         }
-        return;
+        soundingReplyId = msg.reply_id;
       }
-      if (msg.type === "transcript.agent.delta") {
-        if (!(globalThis as Record<string, unknown>).sawDelta) console.log(`    ${((Date.now() - t0) / 1000).toFixed(2)} first agent delta: ${msg.text}`);
-        (globalThis as Record<string, unknown>).sawDelta = true;
-        return;
+      if (process.env.EVAL_DEBUG && msg.reply_id !== (globalThis as Record<string, unknown>).lastAudioReply) {
+        (globalThis as Record<string, unknown>).lastAudioReply = msg.reply_id;
+        console.log(`    ${((Date.now() - t0) / 1000).toFixed(2)} first audio of ${msg.reply_id}`);
       }
-      if (msg.type.endsWith(".delta")) return;
-      console.log(`    ${((Date.now() - t0) / 1000).toFixed(2)} ${msg.type} ${msg.text ?? msg.status ?? msg.message ?? ""}`);
-    });
-  }
+      return;
+    }
+    if (msg.type === "reply.started" && pendingCheckInReply) {
+      pendingCheckInReply = false;
+      checkInReplyId = typeof msg.reply_id === "string" ? msg.reply_id : null;
+      return;
+    }
+    if (!process.env.EVAL_DEBUG) return;
+    if (msg.type === "transcript.agent.delta") {
+      if (!(globalThis as Record<string, unknown>).sawDelta) console.log(`    ${((Date.now() - t0) / 1000).toFixed(2)} first agent delta: ${msg.text}`);
+      (globalThis as Record<string, unknown>).sawDelta = true;
+      return;
+    }
+    if (msg.type.endsWith(".delta")) return;
+    console.log(`    ${((Date.now() - t0) / 1000).toFixed(2)} ${msg.type} ${msg.text ?? msg.status ?? msg.message ?? ""}`);
+  });
   const send = ws.send.bind(ws);
   ws.send = (data: string) => {
     const msg = JSON.parse(String(data));
-    if (msg.type === "reply.create") outcome.creates.push(String(msg.instructions ?? ""));
+    if (msg.type === "reply.create") {
+      const instructions = String(msg.instructions ?? "");
+      outcome.creates.push(instructions);
+      const atMs = Math.max(0, Date.now() - t0);
+      outcome.coverageAt.push({ atMs });
+      // Only the floor's exact check-in instruction counts as a check-in:
+      // never a greeting, invite, or resume that mentions being quiet.
+      if (isSilenceCheckInInstructions(instructions)) {
+        outcome.checkIns.push({ atMs, overCaller: callerWindowAt(Date.now()) !== null });
+        pendingCheckInReply = true;
+      }
+    }
     if (process.env.EVAL_DEBUG && msg.type !== "input.audio") console.log(`    -> ${msg.type} ${JSON.stringify(msg.session?.input?.turn_detection ?? msg.instructions ?? "")}`);
     send(data);
   };
 
+  // Mic pump: stream 50ms PCM16 frames in real time. `sentQueueBytes` counts
+  // only bytes actually dequeued (not the silence padding), so each clip's
+  // first transmitted frame can be stamped for the cut-latency t0.
   let queue = Buffer.alloc(0);
+  let queuedBytes = 0;
+  let sentQueueBytes = 0;
   const pump = setInterval(() => {
-    const frame = queue.length > 0 ? queue.subarray(0, FRAME_BYTES) : Buffer.alloc(FRAME_BYTES);
+    const fromQueue = queue.length > 0;
+    const frame = fromQueue ? queue.subarray(0, FRAME_BYTES) : Buffer.alloc(FRAME_BYTES);
+    if (fromQueue) {
+      const frameStart = sentQueueBytes;
+      sentQueueBytes += frame.length;
+      const sentAt = Date.now();
+      for (const onset of onsets) {
+        if (onset.firstFrameAt !== null || sentQueueBytes <= onset.onsetByte) continue;
+        // Sub-frame precision: the onset sample sits at a known offset inside
+        // the frame that just left, and frames tally with real time.
+        onset.firstFrameAt = sentAt;
+        onset.frameOffsetMs = Math.max(
+          0,
+          ((onset.onsetByte - frameStart) / 2 / TARGET_SAMPLE_RATE) * 1000,
+        );
+      }
+    }
     queue = queue.subarray(frame.length);
     const padded = frame.length === FRAME_BYTES ? frame : Buffer.concat([frame, Buffer.alloc(FRAME_BYTES - frame.length)]);
     internals.ingestAudio(padded.buffer.slice(padded.byteOffset, padded.byteOffset + padded.byteLength));
@@ -383,24 +868,100 @@ async function runClient(
   try {
     await script({
       say: (line) => {
-        if (process.env.EVAL_DEBUG) console.log(`    >> say "${line}" (${clips.get(line)!.length / 48000}s)`);
-        queue = Buffer.concat([queue, clips.get(line)!]);
-        return Date.now();
+        const pcm = clips.get(line)!;
+        const fingerprint = clipPrints.get(line)!;
+        const enqueuedAt = Date.now();
+        const onset: ClipOnset = {
+          enqueuedAt,
+          onsetByte: queuedBytes + Math.round((fingerprint.onsetMs / 1000) * TARGET_SAMPLE_RATE) * 2,
+          onsetMs: fingerprint.onsetMs,
+          durationMs: (pcm.byteLength / 2 / TARGET_SAMPLE_RATE) * 1000,
+          firstFrameAt: null,
+          frameOffsetMs: null,
+        };
+        queuedBytes += pcm.byteLength;
+        onsets.push(onset);
+        if (process.env.EVAL_DEBUG) console.log(`    >> say "${line}" (${pcm.length / 48000}s)`);
+        queue = Buffer.concat([queue, pcm]);
+        return {
+          line,
+          enqueuedAt,
+          onsetMs: fingerprint.onsetMs,
+          onset: () => ({
+            enqueuedAt,
+            firstFrameAt: onset.firstFrameAt,
+            onsetMs: onset.onsetMs,
+            ...(onset.frameOffsetMs === null ? {} : { frameOffsetMs: onset.frameOffsetMs }),
+          }),
+        };
       },
       waitFor,
       replies: () => repliesDone,
+      checkIns: () => outcome.checkIns.length,
       audioChunks: () => audioChunks,
       ended: () => outcome.endedAt !== null,
+      postCutAnswer: (point) => postCutAnswerOf(outcome, point),
+      heardPoint: (point) => heardPoint(outcome.heard, point),
     });
   } finally {
+    live = false;
     clearInterval(pump);
+    // The scenario's own end: for the check-in run the deliberate silence is
+    // the measured window, so a zero-check-in stretch must not vanish as
+    // trailing idle. Every other scenario keeps the audible-only window.
+    const observedEndMs = Date.now() - t0;
     await session.stop();
+    // The call's own silence timeline: audible agent/caller windows plus the
+    // agent reply starts / reply.create requests that covered the floor. It
+    // runs from the first to the last audible event, so the scenario's own
+    // trailing observation wait is never reported as dead air.
+    const callerSpeech = onsets
+      .map((onset) => {
+        const start = callerSpeechStart({
+          enqueuedAt: onset.enqueuedAt,
+          firstFrameAt: onset.firstFrameAt,
+          onsetMs: onset.onsetMs,
+          ...(onset.frameOffsetMs === null ? {} : { frameOffsetMs: onset.frameOffsetMs }),
+        });
+        if (start === null) return null;
+        const end = start + Math.max(0, onset.durationMs - onset.onsetMs);
+        return { startMs: Math.max(0, start - t0), endMs: Math.max(0, end - t0) };
+      })
+      .filter((window): window is { startMs: number; endMs: number } => window !== null && window.endMs > window.startMs);
+    const agentAudio = outcome.agentWindows.filter((window) => window.endMs > window.startMs);
+    const audible = [...agentAudio, ...callerSpeech];
+    const audibleEndMs = audible.length === 0 ? 0 : Math.max(...audible.map((window) => window.endMs));
+    outcome.silenceTimeline =
+      audible.length === 0
+        ? null
+        : {
+            startedMs: Math.min(...audible.map((window) => window.startMs)),
+            endedMs: options.silenceCheckIn ? Math.max(audibleEndMs, observedEndMs) : audibleEndMs,
+            agentAudio,
+            callerSpeech,
+            coverage: outcome.coverageAt,
+            checkIns: outcome.checkIns,
+          };
+    outcome.wallClockMs = Date.now() - liveStartedAt;
+    outcome.audioChunks = audioChunks;
+    lastClientOutcome = outcome;
   }
-  void TARGET_SAMPLE_RATE;
   return outcome;
 }
 
 const LONG_ASK = "Tell me in detail, step by step, how you would help a dental clinic with its phone calls.";
+/** The real point the caller adds after "Wait, stop."; it must be answered, never resumed past. */
+const STOP_OVER_POINT = "price";
+const STOP_OVER_POINT_LINE = "What is the price?";
+
+/**
+ * The measured drain: session close minus the goodbye's audio end, with the
+ * call's own session so score-demo can cite that call's closing turn on a
+ * slow FAIL instead of guessing one.
+ */
+function hangUpLine(ms: number, sessionId: string | null): string {
+  return `    hung up ${ms}ms after the goodbye finished playing${sessionId ? ` (session ${sessionId})` : ""}`;
+}
 
 /** After the long ask, wait until the agent's answer is audibly under way. */
 async function askAndWaitForSpeech(ctx: Parameters<Parameters<typeof runClient>[2]>[0]) {
@@ -415,41 +976,165 @@ const CLIENT_SCENARIOS: { name: string; run: () => Promise<string | null> }[] = 
   {
     name: "filler-over",
     run: async () => {
+      let said: CallerSpeech | null = null;
+      let fillerAt = 0;
       const o = await runClient(voiceIdArg(), [LONG_ASK, "Okaay so"], async (ctx) => {
         await askAndWaitForSpeech(ctx);
-        ctx.say("Okaay so");
+        fillerAt = Date.now();
+        said = ctx.say("Okaay so");
         await new Promise((resolve) => setTimeout(resolve, 4000));
       });
-      console.log(`    filler ${o.interruptedReplies === 0 ? "never cut" : "cut"}; events ${JSON.stringify(o.events.map((e) => [e.verdict, e.text]))}`);
-      if (o.interruptedReplies === 0) return null; // never cut
-      const resumed = o.creates.some((c) => /Pick up where you left off/.test(c));
-      return resumed ? null : `cut and not resumed (events: ${JSON.stringify(o.events.map((e) => [e.verdict, e.text]))})`;
+      // A filler is never supposed to steal the turn. Measure the cut from the
+      // caller's transmitted onset (same t0 stop-over uses), and require the
+      // answer to keep sounding through the back-channel: the reply was never
+      // interrupted, no new answer was created, and audio was still scheduled
+      // when the filler landed.
+      const measured = measureCutLatency(said!.onset(), o.cutAt);
+      const cutObserved = o.cutAt !== null;
+      // The session's current resume instruction is "Finish your sentence …
+      // word for word"; the shared matcher also accepts the older phrasing, so
+      // a live resume is never misread as a derail.
+      const resumed = cutObserved && o.creates.some((c) => isResumeInstructions(c));
+      const answerStillSounding = o.lastAudioEnd > fillerAt;
+      const continued =
+        !cutObserved && o.interruptedReplies === 0 && o.creates.length === 0 && answerStillSounding;
+      const answer: FillerAnswerMarker = cutObserved
+        ? resumed
+          ? "resumed"
+          : "derailed"
+        : continued
+          ? "continued"
+          : "dropped";
+      // The filler verdict resolves to resume-from (or heard-only when the
+      // answer never cut), never "answered"; the handling is derived from the
+      // observed answer marker, not set by hand.
+      const handling = fillerHandlingFor(answer) ?? "unmeasured";
+      const tail = cutObserved ? fillerTailOf(o) : null;
+      const tailSuffix = tail
+        ? `; tail ${JSON.stringify({
+            agent: tail.agentText,
+            heard: tail.heardText,
+            resumed: tail.resumedText,
+            resumeMs: tail.resumeMs,
+          })}`
+        : "";
+      const cutLabel = measured.cutMs !== null ? `cut at ${measured.cutMs}ms` : cutObserved ? "cut" : "never cut";
+      console.log(
+        `    filler ${cutLabel}; events ${JSON.stringify(
+          o.events.map((e) => [e.verdict, e.text]),
+        )}; handling ${handling}${tailSuffix}`,
+      );
+      if (cutObserved) {
+        return resumed
+          ? null
+          : `cut and not resumed (events: ${JSON.stringify(o.events.map((e) => [e.verdict, e.text]))})`;
+      }
+      if (o.interruptedReplies !== 0) {
+        return `reply was interrupted without a measured cut (interrupted replies: ${o.interruptedReplies})`;
+      }
+      if (o.creates.length > 0) {
+        return `answered the back-channel as a new turn (creates: ${JSON.stringify(o.creates)})`;
+      }
+      if (!answerStillSounding) {
+        return "the filler landed after the answer ended (no answer to continue)";
+      }
+      return null; // never cut; the answer continued through the back-channel
     },
   },
   {
     name: "stop-over",
     run: async () => {
-      let spokeAt = 0;
-      const o = await runClient(voiceIdArg(), [LONG_ASK, "Wait, stop."], async (ctx) => {
+      let said: CallerSpeech | null = null;
+      const tailMs = Number(process.env.EVAL_TAIL_MS ?? 20_000);
+      const o = await runClient(voiceIdArg(), [LONG_ASK, "Wait, stop.", STOP_OVER_POINT_LINE], async (ctx) => {
         await askAndWaitForSpeech(ctx);
-        spokeAt = ctx.say("Wait, stop.");
-        await new Promise((resolve) => setTimeout(resolve, Number(process.env.EVAL_TAIL_MS ?? 4000)));
+        said = ctx.say("Wait, stop.");
+        // The same caller turn carries the real point. After the cut the agent
+        // must answer it — a resume of the abandoned dental-clinic tail FAILs.
+        ctx.say(STOP_OVER_POINT_LINE);
+        await ctx.waitFor(() => ctx.heardPoint(STOP_OVER_POINT), tailMs).catch(() => undefined);
+        await ctx.waitFor(() => ctx.postCutAnswer(STOP_OVER_POINT) !== null, tailMs).catch(() => undefined);
       });
-      if (o.cutAt === null || o.cutAt < spokeAt) return `never cut (events: ${JSON.stringify(o.events.map((e) => e.verdict))})`;
-      const ms = o.cutAt - spokeAt;
-      console.log(`    cut ${ms}ms after the caller started`);
-      return ms <= 1500 ? null : `cut too late: ${ms}ms`;
+      // t0 is the transmitted caller onset, never the enqueue tick. The
+      // scenario asserts the same quoted budget the scoreboard gates, so a
+      // late cut fails here before any plumbing judgment looks healthy.
+      const measured = measureCutLatency(said!.onset(), o.cutAt);
+      if (measured.cutMs === null) {
+        return `never cut (${measured.reason ?? "no cut"}; events: ${JSON.stringify(o.events.map((e) => e.verdict))})`;
+      }
+      console.log(`    cut ${measured.cutMs}ms after the caller started (budget ${REAL_CUT_MAX_MS}ms)`);
+      const answer = judgePostCutAnswer({
+        point: STOP_OVER_POINT,
+        heard: o.heard,
+        answer: postCutAnswerOf(o, STOP_OVER_POINT),
+        creates: o.creates,
+      });
+      if (answer.resumed) {
+        console.log(`    resumed instead of answering: "${answer.resumed}"`);
+        return `resumed instead of answering: "${answer.resumed}"`;
+      }
+      if (measured.cutMs > REAL_CUT_MAX_MS) {
+        return `cut too late: ${measured.cutMs}ms > ${REAL_CUT_MAX_MS}ms (caller onset → server cut)`;
+      }
+      if (!answer.answered) {
+        const agent = JSON.stringify(o.agent);
+        const creates = JSON.stringify(o.creates);
+        return `${answer.reason} (agent: ${agent}; creates: ${creates})`;
+      }
+      console.log(`    ${REAL_CUT_ANSWER_PREFIX} "${answer.answer}"`);
+      return null;
     },
   },
   {
     name: "over-talk",
     run: async () => {
-      const o = await runClient(voiceIdArg(), [LONG_ASK, "We're a bakery, actually."], async (ctx) => {
-        await askAndWaitForSpeech(ctx);
-        ctx.say("We're a bakery, actually.");
-        await new Promise((resolve) => setTimeout(resolve, 15000));
-      });
-      return o.heard.some((t) => /bakery/i.test(t)) ? null : `never heard (heard: ${JSON.stringify(o.heard)})`;
+      const o = await runClient(
+        voiceIdArg(),
+        [LONG_ASK, "We're a bakery, actually."],
+        async (ctx) => {
+          await askAndWaitForSpeech(ctx);
+          ctx.say("We're a bakery, actually.");
+          await new Promise((resolve) => setTimeout(resolve, 15000));
+        },
+        { doubleTalkFaultMs: DOUBLE_TALK_FAULT_MS },
+      );
+      // The session's own transcript ledger: the words the call counted.
+      console.log(`    heard ledger ${JSON.stringify(o.heard)}`);
+      // Real producer for the double-talk gate: the fake playout recorded, for
+      // every server cut, how long the caller's speech and the agent's audio
+      // were both still sounding AFTER the flush. That residual — never
+      // time-to-cut, which the barge-in-cut gate budgets separately — is what
+      // the 400ms bar governs. The line is machine-readable so score-demo
+      // scores the same numbers; the scenario asserts them too. Fault injection
+      // (--double-talk-fault-ms) leaves the queue sounding to prove a FAIL.
+      const overlaps = o.overlapMs;
+      const maxOverlap = overlaps.length > 0 ? Math.max(...overlaps) : null;
+      console.log(
+        `${DOUBLE_TALK_EVIDENCE_PREFIX}${JSON.stringify({
+          scenario: "over-talk",
+          session: o.sessionId,
+          overlapMs: overlaps,
+          fadeMs: Math.round(o.lastFadeMs),
+        })}`,
+      );
+      const cuts = overlaps.join(", ");
+      console.log(
+        `    double talk ${
+          maxOverlap === null ? "unmeasured (no cut)" : `${maxOverlap}ms max after ${overlaps.length} cut${overlaps.length === 1 ? "" : "s"}`
+        } (cuts: ${cuts || "none"}ms; budget ${DOUBLE_TALK_MAX_OVERLAP_MS}ms; fade ${DOUBLE_TALK_FADE_OUT_S}s${
+          DOUBLE_TALK_FAULT_MS > 0 ? `; injected flush fault ${DOUBLE_TALK_FAULT_MS}ms` : ""
+        })`,
+      );
+      if (!o.heard.some((t) => /bakery/i.test(t))) {
+        return `never heard (heard: ${JSON.stringify(o.heard)})`;
+      }
+      if (maxOverlap === null) {
+        return "never cut under the caller's point (double talk unmeasured)";
+      }
+      if (maxOverlap > DOUBLE_TALK_MAX_OVERLAP_MS) {
+        return `double talk too long: ${maxOverlap}ms > ${DOUBLE_TALK_MAX_OVERLAP_MS}ms after the flush (cuts: ${cuts}ms)`;
+      }
+      return null;
     },
   },
   {
@@ -462,8 +1147,8 @@ const CLIENT_SCENARIOS: { name: string; run: () => Promise<string | null> }[] = 
       });
       if (o.endedAt === null) return "never hung up";
       const ms = o.endedAt - o.lastAudioEnd;
-      console.log(`    hung up ${ms}ms after the goodbye finished playing`);
-      return ms <= 1500 ? null : `hang-up too slow: ${ms}ms`;
+      console.log(hangUpLine(ms, o.sessionId));
+      return hangUpDrainFailure(ms);
     },
   },
   {
@@ -474,24 +1159,71 @@ const CLIENT_SCENARIOS: { name: string; run: () => Promise<string | null> }[] = 
         ctx.say("I want you to hang up this call.");
         await ctx.waitFor(ctx.ended, 20000).catch(() => undefined);
       });
-      if (o.creates.some((c) => /Pick up where you left off/.test(c))) return "resumed instead of ending";
+      if (o.creates.some((c) => isResumeInstructions(c))) return "resumed instead of ending";
       if (o.endedAt === null) return "never hung up";
-      console.log(`    hung up ${o.endedAt - o.lastAudioEnd}ms after the goodbye finished playing`);
-      return null;
+      // The same drain verdict as hang-up-fast: the measured ms is asserted,
+      // never just printed, and an early close fails as chopped.
+      const ms = o.endedAt - o.lastAudioEnd;
+      console.log(hangUpLine(ms, o.sessionId));
+      return hangUpDrainFailure(ms);
     },
   },
   {
     name: "greeting-cut",
     run: async () => {
-      let spokeAt = 0;
+      let said: CallerSpeech | null = null;
       const o = await runClient(voiceIdArg(), ["Wait, stop."], async (ctx) => {
         await ctx.waitFor(() => ctx.audioChunks() > 0);
         await new Promise((resolve) => setTimeout(resolve, 1000));
-        spokeAt = ctx.say("Wait, stop.");
+        said = ctx.say("Wait, stop.");
         await new Promise((resolve) => setTimeout(resolve, 4000));
       });
-      if (o.cutAt === null || o.cutAt < spokeAt) return "greeting never cut";
-      console.log(`    greeting cut ${o.cutAt - spokeAt}ms after the caller started`);
+      const measured = measureCutLatency(said!.onset(), o.cutAt);
+      // The scenario asserts its own latency on the gate voice: a measured
+      // cut inside the locked greeting window passes, beyond it fails with
+      // the ms the scoreboard will gate. Never an unasserted print.
+      const failure = greetingCutFailure(measured.cutMs, measured.reason);
+      if (failure) return failure;
+      console.log(
+        `    greeting cut ${measured.cutMs}ms after the caller started (budget ${GREETING_CUT_MAX_MS}ms)`,
+      );
+      return null;
+    },
+  },
+  {
+    name: "silence-check-in",
+    run: async () => {
+      // Real silence on a free floor: the greeting ends, the caller says
+      // nothing, and the floor's own 15s timer must draw exactly one check-in.
+      // The target is never shortened; the golden window's 18s cap is the
+      // observation deadline for a missing check-in.
+      const o = await runClient(
+        voiceIdArg(),
+        [],
+        async (ctx) => {
+          await ctx.waitFor(() => ctx.replies() >= 1); // greeting done, floor free
+          await ctx.waitFor(() => ctx.checkIns() >= 1, SILENCE_CHECK_IN_MAX_MS).catch(() => undefined);
+        },
+        { silenceCheckIn: true },
+      );
+      const derived = o.silenceTimeline ? deriveFreeFloorSilence(o.silenceTimeline) : null;
+      const checkIns = derived?.checkIns ?? [];
+      const first = checkIns[0];
+      console.log(
+        `    check-ins ${checkIns.length} at ${first?.atSilenceMs ?? 0}ms ` +
+          `(target ${SILENCE_CHECK_IN_TARGET_MS}ms, latest ${SILENCE_CHECK_IN_MAX_MS}ms)`,
+      );
+      if (!derived) return "no silence timeline: the call produced no audible window";
+      if (checkIns.length !== 1) {
+        const seen = checkIns.map((checkIn) => `${checkIn.atSilenceMs}ms`).join(", ") || "none";
+        return `silence drew ${checkIns.length} check-ins, want exactly one (${seen})`;
+      }
+      if (first.atSilenceMs < SILENCE_CHECK_IN_TARGET_MS) {
+        return `check-in too early: ${first.atSilenceMs}ms < ${SILENCE_CHECK_IN_TARGET_MS}ms of silence`;
+      }
+      if (first.atSilenceMs > SILENCE_CHECK_IN_MAX_MS) {
+        return `check-in too late: ${first.atSilenceMs}ms > ${SILENCE_CHECK_IN_MAX_MS}ms of silence`;
+      }
       return null;
     },
   },
@@ -502,6 +1234,8 @@ type ReplyRecord = {
   id: string;
   text: string;
   audioBytes: number;
+  /** Wall clock at reply.started: what came after the hang-up signal. */
+  startedAt: number;
   afterToolResult: boolean;
   /** Replaced by the call's own reply: never played in the browser. */
   replaced?: boolean;
@@ -514,10 +1248,25 @@ type ToolOutcome = {
   tools: ToolCallRecord[];
   endCalled: boolean;
   slowTurns: number;
+  /**
+   * When end_call's result was sent (the browser's hold-until-goodbye-done),
+   * and whether it was held at all. Only then can "spoke after End call" be
+   * measured: the goodbye reply itself started before the result went out.
+   */
+  endCallResultAt: number | null;
+  endCallResultHeld: boolean;
+  /** The live session's id, for the Call trace merge. */
+  sessionId?: string;
   /** The platform ignored the call's replacement once, so it was resent. */
   resent?: boolean;
   /** Voni announced her screen without the tool; the call put the test up. */
   screenByPhrase?: boolean;
+  /**
+   * Contact-chip shows the browser would render: one per invite transition
+   * (the real component renders one chip while `emailTest.invited`). The
+   * eval mirrors that gate so a duplicate show is still detectable.
+   */
+  chipShows: { address: string; tag: string }[];
 };
 type ToolApi = {
   say: (line: string) => Promise<void>;
@@ -542,7 +1291,16 @@ async function runToolSession(
 ): Promise<ToolOutcome> {
   const body = buildDemoAgentBody(voiceId);
   const ws = new WebSocket(`${WS}?token=${await token()}`);
-  const outcome: ToolOutcome = { replies: [], heard: [], tools: [], endCalled: false, slowTurns: 0 };
+  const outcome: ToolOutcome = {
+    replies: [],
+    heard: [],
+    tools: [],
+    endCalled: false,
+    slowTurns: 0,
+    endCallResultAt: null,
+    endCallResultHeld: false,
+    chipShows: [],
+  };
   const send = (message: Record<string, unknown>) => {
     if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(message));
   };
@@ -571,9 +1329,22 @@ async function runToolSession(
     if (process.env.EVAL_DEBUG) console.log(`    → ${((Date.now() - t0) / 1000).toFixed(2)}s reply.create (invite)`);
     send({ type: "reply.create", instructions: inviteNowInstructions(TAG) });
   };
+  // The browser shows the chip once the invite is up (putTestUp); repeated
+  // callbacks keep the same single chip, so a transition is one show.
+  const showChip = (address: string, tag: string) => {
+    if (outcome.chipShows.length > 0) return;
+    outcome.chipShows.push({ address, tag });
+  };
   const sendResult = (callId: string, result: Record<string, unknown>, record: ToolCallRecord) => {
     record.resultAt = Date.now();
+    if (record.name === END_CALL_VOICE_TOOL.name) outcome.endCallResultAt = record.resultAt;
     if (record.name === SHOW_TEST_ADDRESS_TOOL && result.ok === true) {
+      // The chip shows what the tool result carried, exactly like the browser.
+      const data = (result.data ?? {}) as Record<string, unknown>;
+      showChip(
+        typeof data.address === "string" ? data.address : DEMO_INBOX_ADDRESS,
+        typeof data.testTag === "string" ? data.testTag : TAG,
+      );
       replaceNext = setTimeout(() => {
         replaceNext = null;
         sendInvite();
@@ -615,6 +1386,11 @@ async function runToolSession(
     }
     if (msg.type === "session.ready") {
       ready = true;
+      // One machine-readable marker per live call (same as runClient).
+      if (typeof msg.session_id === "string" && msg.session_id.length > 0) {
+        outcome.sessionId = msg.session_id;
+        console.log(`  · trace session ${msg.session_id}`);
+      }
       // Like the browser: the call's tag, before any invite.
       send({ type: "conversation.message", role: "system", content: testTagContext(TAG) });
     }
@@ -624,7 +1400,13 @@ async function runToolSession(
     }
     if (msg.type === "reply.started") {
       replyActive = true;
-      current = { id: String(msg.reply_id), text: "", audioBytes: 0, afterToolResult: lastWasToolResult };
+      current = {
+        id: String(msg.reply_id),
+        text: "",
+        audioBytes: 0,
+        startedAt: Date.now(),
+        afterToolResult: lastWasToolResult,
+      };
       if (replaceNext) {
         clearTimeout(replaceNext);
         replaceNext = null;
@@ -659,6 +1441,7 @@ async function runToolSession(
       // Like the browser: Voni announced her screen without the show tool.
       if (!outcome.tools.some((t) => t.name === SHOW_TEST_ADDRESS_TOOL) && !outcome.screenByPhrase && mentionsScreen(String(msg.text))) {
         outcome.screenByPhrase = true;
+        showChip(DEMO_INBOX_ADDRESS, TAG);
         const sendWhenIdle = () => (replyActive ? setTimeout(sendWhenIdle, 300) : sendInvite());
         setTimeout(sendWhenIdle, 1200);
       }
@@ -675,6 +1458,7 @@ async function runToolSession(
         // finish (EVAL_END_CALL=now replays the old cut-the-goodbye behaviour).
         const deferEnd = record.name === END_CALL_VOICE_TOOL.name && replyActive && process.env.EVAL_END_CALL !== "now";
         if ((modes.get(record.name) === "interactive" && process.env.EVAL_HOLD_INTERACTIVE) || deferEnd) {
+          if (deferEnd) outcome.endCallResultHeld = true;
           held.push({ callId: String(msg.call_id), result, record });
           flushHeld();
           if (deferEnd) {
@@ -819,14 +1603,84 @@ const strayAddress = (o: ToolOutcome) =>
 const timedOutTool = (o: ToolOutcome) =>
   o.tools.find((t) => t.name !== END_CALL_VOICE_TOOL.name && (t.resultAt ?? Date.now()) - t.at > 30_000);
 
-/** The goodbye's audio must arrive in full: ≥80% of its words' speaking time. */
-function goodbyeCut(o: ToolOutcome, bye: ReplyRecord | undefined): string | null {
-  if (!bye) return "no goodbye";
+/**
+ * The closing line the visitor heard: the reply that names the team inbox,
+ * else the last audible reply (so a goodbye that forgot the inbox is still
+ * measured, never excused as "no goodbye").
+ */
+function goodbyeReply(o: ToolOutcome): ReplyRecord | undefined {
+  const audible = o.replies.filter((reply) => !reply.replaced && reply.text.trim().length > 0);
+  return (
+    audible.find((reply) => namesTeamInbox(reply.text)) ??
+    audible.filter((reply) => /voni dot c|hi@voni|voni\.cc|try again/i.test(reply.text)).at(-1) ??
+    audible.at(-1)
+  );
+}
+
+/** What the runner measured about the closing line, for the pass check and evidence. */
+function goodbyeReading(o: ToolOutcome): {
+  bye: ReplyRecord | undefined;
+  turn: number | null;
+  coverage: number | null;
+  inboxNamed: boolean;
+} {
+  const bye = goodbyeReply(o);
+  if (!bye) return { bye: undefined, turn: null, coverage: null, inboxNamed: false };
   const words = bye.text.split(/\s+/).filter(Boolean).length;
   const expected = words / 3.6; // measured: the greeting speaks ~3.6 words/s
   const played = bye.audioBytes / 48_000;
-  return played < expected * 0.8 ? `goodbye audio ${played.toFixed(1)}s for ~${expected.toFixed(1)}s of words: "${bye.text.trim()}"` : null;
+  return {
+    bye,
+    turn: o.replies.indexOf(bye) + 1,
+    coverage: expected > 0 ? played / expected : null,
+    inboxNamed: namesTeamInbox(bye.text),
+  };
 }
+
+/** The closing line must name the team inbox and its audio must arrive in full. */
+function goodbyeCheck(o: ToolOutcome): string | null {
+  const reading = goodbyeReading(o);
+  if (!reading.bye) return "no goodbye";
+  if (!reading.inboxNamed) {
+    return `the goodbye never named ${TEAM_INBOX_ADDRESS} as spoken: "${reading.bye.text.trim()}"`;
+  }
+  if (reading.coverage === null) return null;
+  if (reading.coverage >= 0.8) return null;
+  const words = reading.bye.text.split(/\s+/).filter(Boolean).length;
+  const expected = words / 3.6;
+  const played = reading.bye.audioBytes / 48_000;
+  return `goodbye audio ${played.toFixed(1)}s for ~${expected.toFixed(1)}s of words: "${reading.bye.text.trim()}"`;
+}
+
+/**
+ * Whether the model spoke again after its own hang-up signal. The result is
+ * held until the goodbye reply finishes (the browser's ADR-0005 contract), so
+ * any audible reply that starts after it was sent is post-End call narration.
+ * Null when the result went out immediately (`EVAL_END_CALL=now`, the replay
+ * mode): there is no held goodbye to measure against, so no verdict is made.
+ */
+function narratedAfterEnd(o: ToolOutcome): boolean | null {
+  if (!o.endCallResultHeld || o.endCallResultAt === null) return null;
+  return o.replies.some(
+    (reply) => !reply.replaced && reply.text.trim().length > 0 && reply.startedAt > o.endCallResultAt!,
+  );
+}
+
+/** One machine-readable goodbye measurement per goodbye run, for score-demo. */
+function goodbyeDrainLine(scenario: string, o: ToolOutcome): string {
+  const reading = goodbyeReading(o);
+  return `${GOODBYE_DRAIN_EVIDENCE_PREFIX}${JSON.stringify({
+    scenario,
+    session: o.sessionId ?? null,
+    turn: reading.turn,
+    coverage: reading.coverage,
+    inboxNamed: reading.inboxNamed,
+    narratedEnding: narratedAfterEnd(o),
+  })}`;
+}
+
+/** Runs whose closing line is scored for the team inbox and full playback. */
+const GOODBYE_SCENARIOS = ["bye-audio", "free-gate"] as const;
 
 const EMAIL_SCENARIOS: { name: string; run: (voiceId: string) => Promise<[string | null, ToolOutcome | null]> }[] = [
   {
@@ -838,8 +1692,7 @@ const EMAIL_SCENARIOS: { name: string; run: (voiceId: string) => Promise<[string
         await api.until((o) => o.endCalled, 20000);
       });
       if (!o.endCalled) return ["never hung up", o];
-      const bye = o.replies.find((r) => /voni dot c|hi@voni|voni\.cc|try again/i.test(r.text));
-      return [goodbyeCut(o, bye), o];
+      return [goodbyeCheck(o), o];
     },
   },
   {
@@ -923,13 +1776,7 @@ const EMAIL_SCENARIOS: { name: string; run: (voiceId: string) => Promise<[string
       if (failed) return [failed, o];
       if (!agentText(o).some((t) => /work email/i.test(t))) return ["never asked for a work email", o];
       if (!o.endCalled) return ["never hung up after the gate", o];
-      const bye = o.replies.find((r) => /voni dot c|hi@voni|voni\.cc/i.test(r.text));
-      if (!bye) return ["the goodbye never named hi@voni.cc", o];
-      const words = bye.text.split(/\s+/).filter(Boolean).length;
-      const expected = words / 3.6; // measured: the greeting speaks ~3.6 words/s
-      const played = bye.audioBytes / 48_000;
-      if (played < expected * 0.8) return [`goodbye audio ${played.toFixed(1)}s for ~${expected.toFixed(1)}s of words: "${bye.text}"`, o];
-      return [null, o];
+      return [goodbyeCheck(o), o];
     },
   },
   {
@@ -969,6 +1816,30 @@ const EMAIL_SCENARIOS: { name: string; run: (voiceId: string) => Promise<[string
   },
 ];
 
+/**
+ * Machine-readable invite evidence for score-demo's email gate: what Voni
+ * audibly said (non-replaced replies only), how many times the show tool ran,
+ * the chip shows the browser would render, and each spoken line's session
+ * turn (1-based reply, the same numbering as the merged Call trace's VONI
+ * rows). No memory fields: the live eval never performs a Hold return, so
+ * memory stays honestly unmeasured (the gate then reports INFO, never PASS).
+ */
+function emailInviteEvidence(outcome: ToolOutcome): EmailInviteEvidenceFile {
+  const entries = outcome.replies
+    .map((reply, index) => ({ ...reply, turn: index + 1 }))
+    .filter((reply) => !reply.replaced && reply.text.trim().length > 0);
+  const tagTurn = entries.find((reply) => TAG_WORD.test(reply.text))?.turn ?? null;
+  return {
+    tag: TAG,
+    agentLines: entries.map((reply) => reply.text),
+    lineTurns: entries.map((reply) => reply.turn),
+    chipShows: outcome.chipShows,
+    showToolCalls: outcome.tools.filter((tool) => tool.name === SHOW_TEST_ADDRESS_TOOL).length,
+    chipTurn: tagTurn,
+    traceSession: outcome.sessionId ?? null,
+  };
+}
+
 function voiceIdArg(): string {
   return arg("--voice", DEMO_VOICE_IDS[0]);
 }
@@ -1004,10 +1875,37 @@ const SCENARIOS: { name: string; steps: Step[]; pass: (o: Outcome) => string | n
   },
 ];
 
+/**
+ * Test knob: simulate a flush that fails to stop the agent for this many ms.
+ * 0 (default) is the healthy flush. It exists so the double-talk gate can be
+ * shown to FAIL an ineffective flush; real runs leave it at 0.
+ */
+const DOUBLE_TALK_FAULT_MS = Number(arg("--double-talk-fault-ms", "0"));
+if (!Number.isFinite(DOUBLE_TALK_FAULT_MS) || DOUBLE_TALK_FAULT_MS < 0) {
+  throw new Error(`--double-talk-fault-ms needs milliseconds >= 0, got "${arg("--double-talk-fault-ms", "")}"`);
+}
+
 const runs = Number(arg("--runs", "5"));
 const voiceId = arg("--voice", DEMO_VOICE_IDS[0]);
-const only = arg("--scenario", "");
+const requestedScenario = arg("--scenario", "");
+// `--scenario all` (and `suite`) means every scenario: score-demo's one-command
+// suite may pass either name, and a filter that matched "all" literally would
+// run nothing at all.
+const only = requestedScenario === "all" || requestedScenario === "suite" ? "" : requestedScenario;
 let failures = 0;
+/** Per-scenario rows for the final machine-readable summary. */
+const scenarioResults: { name: string; passed: number; runs: number }[] = [];
+/** Call trace sessions this run opened, deduplicated. */
+const traceSessions: string[] = [];
+/** Wall-clock playout of live client runs: reported, never a gate. */
+const playoutRows: { scenario: string; run: number; wallClockMs: number }[] = [];
+/** Fixed caller clips from the real-cut scenarios: the cut's comparability pins. */
+const cutClips: CallerClipFingerprint[] = [];
+let clientRuns = 0;
+let agentAudioChunks = 0;
+const noteSession = (sessionId: string | null | undefined) => {
+  if (sessionId && !traceSessions.includes(sessionId)) traceSessions.push(sessionId);
+};
 for (const scenario of SCENARIOS.filter((s) => !only || s.name === only)) {
   let passed = 0;
   for (let i = 1; i <= runs; i++) {
@@ -1019,6 +1917,7 @@ for (const scenario of SCENARIOS.filter((s) => !only || s.name === only)) {
     } catch (error) {
       reason = error instanceof Error ? error.message : String(error);
     }
+    noteSession(outcome?.sessionId);
     if (reason === null) passed += 1;
     else {
       failures += 1;
@@ -1029,16 +1928,40 @@ for (const scenario of SCENARIOS.filter((s) => !only || s.name === only)) {
       }
     }
   }
+  scenarioResults.push({ name: scenario.name, passed, runs });
   console.log(`${scenario.name}: ${passed}/${runs}`);
 }
 for (const scenario of CLIENT_SCENARIOS.filter((s) => !only || s.name === only)) {
   let passed = 0;
   for (let i = 1; i <= runs; i++) {
     let reason: string | null;
+    lastClientOutcome = null;
     try {
       reason = await scenario.run();
     } catch (error) {
       reason = error instanceof Error ? error.message : String(error);
+    }
+    const liveRun = latestClientOutcome();
+    if (liveRun) {
+      noteSession(liveRun.sessionId);
+      clientRuns += 1;
+      agentAudioChunks += liveRun.audioChunks;
+      playoutRows.push({ scenario: scenario.name, run: i, wallClockMs: liveRun.wallClockMs });
+      console.log(`    playout ${liveRun.wallClockMs}ms wall clock`);
+      if (liveRun.silenceTimeline) {
+        console.log(
+          `${SILENCE_TIMELINE_PREFIX}${JSON.stringify({
+            scenario: scenario.name,
+            session: liveRun.sessionId,
+            ...liveRun.silenceTimeline,
+          })}`,
+        );
+      }
+      if ((REAL_CUT_SCENARIOS as readonly string[]).includes(scenario.name)) {
+        for (const clip of liveRun.callerClips) {
+          if (!cutClips.some((seen) => seen.text === clip.text)) cutClips.push(clip);
+        }
+      }
     }
     if (reason === null) passed += 1;
     else {
@@ -1046,6 +1969,7 @@ for (const scenario of CLIENT_SCENARIOS.filter((s) => !only || s.name === only))
       console.log(`  ✗ ${scenario.name} #${i}: ${reason}`);
     }
   }
+  scenarioResults.push({ name: scenario.name, passed, runs });
   console.log(`${scenario.name}: ${passed}/${runs}`);
 }
 for (const scenario of EMAIL_SCENARIOS.filter((s) => !only || s.name === only)) {
@@ -1059,6 +1983,13 @@ for (const scenario of EMAIL_SCENARIOS.filter((s) => !only || s.name === only)) 
     } catch (error) {
       reason = error instanceof Error ? error.message : String(error);
     }
+    noteSession(outcome?.sessionId);
+    if (scenario.name === "invite-tag" && outcome) {
+      console.log(`${EMAIL_INVITE_EVIDENCE_PREFIX}${JSON.stringify(emailInviteEvidence(outcome))}`);
+    }
+    if ((GOODBYE_SCENARIOS as readonly string[]).includes(scenario.name) && outcome) {
+      console.log(goodbyeDrainLine(scenario.name, outcome));
+    }
     if (reason === null) passed += 1;
     else {
       failures += 1;
@@ -1070,6 +2001,26 @@ for (const scenario of EMAIL_SCENARIOS.filter((s) => !only || s.name === only)) 
       }
     }
   }
+  scenarioResults.push({ name: scenario.name, passed, runs });
   console.log(`${scenario.name}: ${passed}/${runs}`);
 }
+
+// One machine-readable line proves the runner finished: scoreboard plumbing is
+// PASS whatever the scenario verdicts and exit code, while a crash, kill, or
+// missing summary/trace/audio is a harness break. Playout stays report-only.
+console.log(
+  `EVAL SUMMARY ${JSON.stringify({
+    scenario: only || "all",
+    runs,
+    failures,
+    scenarios: scenarioResults,
+    traceSessions,
+    playout: playoutRows,
+    audioChunks: clientRuns > 0 ? agentAudioChunks : null,
+    live: scenarioResults.length > 0,
+    // Fixed caller clips the real-cut scenarios streamed: the scoreboard
+    // compares these fingerprints with the prior run before trusting a cut.
+    clips: cutClips.sort((a, b) => a.text.localeCompare(b.text)),
+  })}`,
+);
 process.exit(failures > 0 ? 1 : 0);

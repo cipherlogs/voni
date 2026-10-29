@@ -1,4 +1,4 @@
-import test from "node:test";
+import test, { mock } from "node:test";
 import assert from "node:assert/strict";
 import type { AudioGraph } from "./mic-capture";
 import {
@@ -21,6 +21,8 @@ import {
   MICROPHONE_MUTED_CONTEXT,
   MICROPHONE_UNMUTED_CONTEXT,
 } from "./context";
+import { DEMO_VOICE_IDS, SILENCE_CHECK_IN_INSTRUCTIONS } from "@/lib/demo/voni-agent";
+import { VOICE_OUTPUT_VOLUME, voicePlaybackGain } from "@/lib/agents/voices";
 
 // Minimal WebSocket shape: updateConfig only touches readyState + send.
 (globalThis as unknown as { WebSocket: unknown }).WebSocket = { OPEN: 1 };
@@ -157,6 +159,15 @@ function withDemoTools(
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
+/** Poll until a live-session observation lands (the floor ticks on a timer). */
+async function waitUntil(predicate: () => boolean, timeoutMs = 3000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() > deadline) throw new Error("timed out waiting for the session");
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}
+
 function endCall(handle: (message: Record<string, unknown>) => void, callId: string, args: Record<string, unknown> = { closing_line: "Goodbye!" }) {
   handle({ type: "tool.call", call_id: callId, name: "end_call", arguments: args });
 }
@@ -267,8 +278,10 @@ function pacedReply(handlers: ConstructorParameters<typeof VoiceSession>[0] = {}
   let sent = 0;
   let consumed = 0;
   const flushes: number[] = [];
+  const played: string[] = [];
   made.internals["playout"] = {
     play: () => {
+      played.push("chunk");
       sent += 24_000; // one second per chunk
     },
     flush: (fadeS?: number) => flushes.push(fadeS ?? -1),
@@ -281,7 +294,7 @@ function pacedReply(handlers: ConstructorParameters<typeof VoiceSession>[0] = {}
   const playMs = (ms: number) => {
     consumed += (ms / 1000) * 24_000;
   };
-  return { ...made, flushes, playMs };
+  return { ...made, flushes, playMs, played };
 }
 
 test("heardWords: a word shows once its start has played", () => {
@@ -488,12 +501,127 @@ test("a noise cut with only a few words left says nothing more", async () => {
 
 test("steering after a cut is answered as a normal turn", async () => {
   const events: string[] = [];
-  const { serverCut, handle, replyCreates } = midReply({}, { onBargeIn: (e) => events.push(e.verdict) });
+  const { serverCut, handle, replyCreates, played } = midReply({}, { onBargeIn: (e) => events.push(e.verdict) });
+  const before = played.length;
   serverCut("Wait, stop.");
+  // The judge yields, so the server answers the steering as a fresh turn: its
+  // own reply plays. Nothing resumes the line the steering cut.
   handle({ type: "reply.started", reply_id: "r2" });
+  handle({ type: "reply.audio", reply_id: "r2", data: "" });
   await new Promise((resolve) => setTimeout(resolve, 600));
-  assert.deepEqual(replyCreates(), []);
+  assert.deepEqual(replyCreates(), [], "no tail resume is created");
   assert.deepEqual(events, ["yield"]);
+  assert.equal(played.length, before + 1, "the fresh answer turn plays");
+});
+
+test("filler after a cut is resumed from, never answered, with the exact unheard tail", async () => {
+  const events: string[] = [];
+  const { session, handle, sent, playMs, played } = pacedReply({
+    onBargeIn: (e) => events.push(`${e.verdict}:${e.source}`),
+  });
+  const replyCreates = () =>
+    sent.map((raw) => JSON.parse(raw)).filter((m) => m.type === "reply.create");
+  handle({ type: "reply.started", reply_id: "r1" });
+  handle({ type: "transcript.agent.delta", reply_id: "r1", text: "I'd handle booking and reminders for you" });
+  handle({ type: "reply.audio", reply_id: "r1", data: "" });
+  playMs(14 * CAPTION_MS_PER_CHAR); // the caller heard through "booking"
+  const before = played.length;
+  handle({ type: "input.speech.started" });
+  handle({ type: "reply.done", reply_id: "r1", status: "interrupted" });
+  playMs(60_000);
+  handle({ type: "transcript.user", item_id: "u1", text: "Okaay so" });
+  // The platform answers the back-channel as a turn; that answer is superseded
+  // before it plays — a filler is never answered.
+  handle({ type: "reply.started", reply_id: "r2" });
+  handle({ type: "reply.audio", reply_id: "r2", data: "" });
+  assert.equal(played.length, before, "the answer to filler never plays");
+  const [create] = replyCreates();
+  assert.match(create.instructions, /only said "Okaay so"/);
+  // Ticket 13's exact-tail rule: re-say the unheard rest, word for word.
+  assert.match(create.instructions, /word for word: "booking and reminders for you"/);
+  assert.doesNotMatch(create.instructions, /I'd handle/, "the heard part is not repeated");
+  assert.deepEqual(events, ["ignore:rule"]);
+  handle({ type: "reply.done", reply_id: "r2", status: "completed" });
+  handle({ type: "reply.started", reply_id: "r3" });
+  handle({ type: "reply.audio", reply_id: "r3", data: "" });
+  assert.equal(played.length, before + 1, "the resumed tail plays");
+  await session.stop();
+});
+
+test("a silence check-in the visitor speaks over is dropped, never resumed, and their point is answered", async () => {
+  const events: string[] = [];
+  const { session, handle, replyCreates, played, drain } = midReply(
+    { judgeBargeIn: async () => "yield" },
+    { onBargeIn: (e) => events.push(e.verdict) },
+  );
+  handle({ type: "reply.done", reply_id: "r1", status: "completed" });
+  drain();
+  // The floor's own 15s timer, shortened for the test only: the yield path
+  // itself uses no new budget, the server's interrupted reply.done does it.
+  session.setSilenceCheckIn({
+    afterMs: 250,
+    instructions: SILENCE_CHECK_IN_INSTRUCTIONS,
+    allowed: () => true,
+  });
+  await waitUntil(() => replyCreates().length === 1);
+  assert.equal(replyCreates()[0].instructions, SILENCE_CHECK_IN_INSTRUCTIONS);
+
+  handle({ type: "reply.started", reply_id: "ci" });
+  handle({ type: "transcript.agent.delta", reply_id: "ci", text: "Still with me? Take your time." });
+  handle({ type: "reply.audio", reply_id: "ci", data: "" });
+  const before = played.length;
+  handle({ type: "input.speech.started" });
+  handle({ type: "reply.done", reply_id: "ci", status: "interrupted" });
+  handle({ type: "input.speech.stopped" });
+  handle({ type: "transcript.user", item_id: "u1", text: "Wait, stop. What does it cost?" });
+  await settle();
+  handle({ type: "reply.started", reply_id: "answer" });
+  handle({ type: "reply.audio", reply_id: "answer", data: "" });
+  await new Promise((resolve) => setTimeout(resolve, 700));
+
+  assert.deepEqual(
+    replyCreates().map((create) => create.instructions),
+    [SILENCE_CHECK_IN_INSTRUCTIONS],
+    "the check-in is never re-said or resumed over the visitor",
+  );
+  assert.deepEqual(events, ["yield"], "a real point keeps the floor");
+  assert.equal(played.length, before + 1, "their point is answered by the server's own turn");
+  await session.stop();
+});
+
+test("a filler over the check-in drops it instead of finishing it", async () => {
+  const events: string[] = [];
+  const { session, handle, replyCreates, drain } = midReply(
+    {},
+    { onBargeIn: (e) => events.push(e.verdict) },
+  );
+  handle({ type: "reply.done", reply_id: "r1", status: "completed" });
+  drain();
+  session.setSilenceCheckIn({
+    afterMs: 250,
+    instructions: SILENCE_CHECK_IN_INSTRUCTIONS,
+    allowed: () => true,
+  });
+  await waitUntil(() => replyCreates().length === 1);
+
+  handle({ type: "reply.started", reply_id: "ci" });
+  handle({ type: "transcript.agent.delta", reply_id: "ci", text: "Still with me? Take your time." });
+  handle({ type: "reply.audio", reply_id: "ci", data: "" });
+  handle({ type: "input.speech.started" });
+  handle({ type: "reply.done", reply_id: "ci", status: "interrupted" });
+  handle({ type: "input.speech.stopped" });
+  // The overlap judge calls this filler: normally the line would resume, but
+  // an optional check-in is never worth finishing over a visitor who spoke.
+  handle({ type: "transcript.user", item_id: "u1", text: "Okaay so" });
+  await new Promise((resolve) => setTimeout(resolve, 700));
+
+  assert.deepEqual(
+    replyCreates().map((create) => create.instructions),
+    [SILENCE_CHECK_IN_INSTRUCTIONS],
+    "the check-in is dropped, not resumed",
+  );
+  assert.deepEqual(events, ["ignore"]);
+  await session.stop();
 });
 
 test("Jev decides ambiguous cut-ins: an aside resumes, a real point is answered", async () => {
@@ -635,10 +763,13 @@ test("a caller cutting into the goodbye: the held result is still sent, and the 
   assert.equal(internals["explicitStop"], false, "the caller took the floor back: no hang-up");
 });
 
-test("a held end_call result is released when the platform waits for it (no goodbye audio for 2s)", async () => {
+test("a held end_call result is released when the platform waits for it (no goodbye audio at all)", async () => {
   // Measured 1 in 10 live: the platform sometimes holds the goodbye reply
   // open until the result arrives; holding the result then stalled until the
-  // tool's timeout (a 12.6s hang-up).
+  // tool's timeout (a 12.6s hang-up). A goodbye that has not started is the
+  // one case the flat 3s backstop still covers: releasing the result before
+  // it begins makes the platform cut it (ADR-0005). Once audio has played,
+  // the drain handshake releases it instead (next two tests).
   const { session, sent, handle, internals } = makeSession();
   withDemoTools(internals, session);
   internals["playout"] = { play: () => undefined, flush: () => undefined, settled: () => true, queuedMs: () => 0 };
@@ -651,6 +782,87 @@ test("a held end_call result is released when the platform waits for it (no good
   assert.equal(results().length, 0, "still held: the goodbye may be slow to start");
   await new Promise((resolve) => setTimeout(resolve, 1000));
   assert.equal(results().length, 1, "released: the platform is waiting on us");
+});
+
+test("a held end_call result is released once the goodbye has drained, not on a flat 3s", async () => {
+  // Fast hang-up baseline ~4.2s = ~3s held-result release + ~1s drain. The
+  // result now goes back on the same handshake the hang-up uses — three
+  // settled polls (3 x 250ms) inside the 500ms audio grace — so the goodbye
+  // still plays whole and the end lands inside the 1500ms budget. The flat
+  // HELD_RESULT_RELEASE_MS stays only for a goodbye that never starts.
+  mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+  try {
+    // The mocked clock starts at epoch 0, where lastAudioAt's 0 means "never".
+    mock.timers.setTime(1_700_000_000_000);
+    const { session, sent, handle, internals } = makeSession();
+    withDemoTools(internals, session);
+    let settled = false;
+    internals["playout"] = { play: () => undefined, flush: () => undefined, settled: () => settled, queuedMs: () => 0 };
+    handle({ type: "session.ready", session_id: "s1" });
+    handle({ type: "reply.started", reply_id: "bye" });
+    handle({ type: "reply.audio", reply_id: "bye", data: "" });
+    endCall(handle, "e21");
+    await new Promise((resolve) => setImmediate(resolve));
+    const results = () =>
+      sent.map((raw) => JSON.parse(raw)).filter((m) => m.type === "tool.result" && m.call_id === "e21");
+
+    // Still sounding: a result now would cut the goodbye (ADR-0005).
+    mock.timers.tick(2000);
+    assert.equal(results().length, 0, "never send the result while the goodbye is sounding");
+
+    const drainedAt = Date.now();
+    settled = true; // the last chunk has played out
+    mock.timers.tick(500); // two settled polls: not enough
+    assert.equal(results().length, 0, "a momentary dry gap between chunks is not the end of the line");
+    mock.timers.tick(250); // third settled poll: the line has drained
+    assert.equal(results().length, 1, "released on the drain handshake, not after a flat 3s");
+    assert.ok(
+      Date.now() - drainedAt <= 1000,
+      `release stayed inside the 1500ms budget (${Date.now() - drainedAt}ms of the allowance)`,
+    );
+
+    // The platform can finish the held reply now; the hang-up lands at once.
+    handle({ type: "reply.done", reply_id: "bye", status: "completed" });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(internals["explicitStop"], true, "the call ends on the drained goodbye");
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test("fresh goodbye audio resets the drain streak and never releases the held result early", async () => {
+  // The streak plus audio grace is what keeps the goodbye whole: two settled
+  // polls followed by more audio must start the count again, exactly like
+  // the hang-up's own drain.
+  mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+  try {
+    mock.timers.setTime(1_700_000_000_000);
+    const { session, sent, handle, internals } = makeSession();
+    withDemoTools(internals, session);
+    let settled = false;
+    internals["playout"] = { play: () => undefined, flush: () => undefined, settled: () => settled, queuedMs: () => 0 };
+    handle({ type: "session.ready", session_id: "s1" });
+    handle({ type: "reply.started", reply_id: "bye" });
+    handle({ type: "reply.audio", reply_id: "bye", data: "" });
+    endCall(handle, "e22");
+    await new Promise((resolve) => setImmediate(resolve));
+    const results = () =>
+      sent.map((raw) => JSON.parse(raw)).filter((m) => m.type === "tool.result" && m.call_id === "e22");
+
+    settled = true;
+    mock.timers.tick(500); // two settled polls
+    assert.equal(results().length, 0);
+    settled = false; // the next chunk arrives and is still queued
+    handle({ type: "reply.audio", reply_id: "bye", data: "" });
+    mock.timers.tick(250);
+    settled = true;
+    mock.timers.tick(500); // audio grace elapsed: two settled polls, not three
+    assert.equal(results().length, 0, "the streak restarts after fresh audio");
+    mock.timers.tick(250); // third settled poll after the last audio
+    assert.equal(results().length, 1, "three settled polls after the last audio release it");
+  } finally {
+    mock.timers.reset();
+  }
 });
 
 test("a demo tool's result waits until Voni's line has played, then goes out", async () => {
@@ -714,6 +926,70 @@ test("hangup waits through flapping playback instead of one settled poll", async
   settled = true; // genuinely drained now
   await new Promise((resolve) => setTimeout(resolve, 1200));
   assert.equal(internals["explicitStop"], true);
+});
+
+test("a jittery goodbye: late audio restarts the drain streak, and the call still closes inside the budget", async () => {
+  // Jittery links report settled between chunks while the last word is still
+  // in the worklet, and a late chunk can land after reply.done. One settled
+  // poll (or the streak without its grace) chops the goodbye. The streak plus
+  // audio grace must restart on every chunk, and the hang-up must still land
+  // promptly once the line genuinely drains.
+  mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+  try {
+    mock.timers.setTime(1_700_000_000_000);
+    const { session, handle, internals } = makeSession();
+    withDemoTools(internals, session);
+    let settled = false;
+    internals["playout"] = {
+      play: () => undefined,
+      flush: () => undefined,
+      settled: () => settled,
+      queuedMs: () => 0,
+    };
+    handle({ type: "session.ready", session_id: "s1" });
+    handle({ type: "reply.started", reply_id: "bye" });
+    // The goodbye's last chunk has arrived; the playout is still draining.
+    handle({ type: "reply.audio", reply_id: "bye", data: "" });
+    const firstAudioAt = Date.now();
+    endCall(handle, "e23");
+    await new Promise((resolve) => setImmediate(resolve));
+    handle({ type: "reply.done", reply_id: "bye", status: "completed" });
+    assert.equal(internals["explicitStop"], false, "never hang up while the goodbye is sounding");
+
+    settled = true;
+    mock.timers.tick(250); // dry buffer, but the 500ms audio grace has not passed
+    assert.equal(internals["explicitStop"], false);
+    mock.timers.tick(500); // polls at 500 and 750: two settled, one short of the streak
+    assert.equal(internals["explicitStop"], false, "two settled polls never chop the goodbye");
+
+    // A late chunk lands after reply.done: the audio grace and the streak both
+    // restart, so a drain that looked imminent at 1000ms must not close.
+    const lastAudioAt = Date.now();
+    handle({ type: "reply.audio", reply_id: "bye", data: "" });
+    settled = false;
+    mock.timers.tick(250); // still sounding
+    settled = true;
+    mock.timers.tick(500); // two settled polls since the late chunk
+    assert.equal(internals["explicitStop"], false, "the late chunk restarted the streak");
+    mock.timers.tick(250); // third settled poll after the last audio, grace passed
+    assert.equal(internals["explicitStop"], true, "the call closes once the goodbye drains");
+
+    const closedAfterMs = Date.now() - lastAudioAt;
+    assert.ok(
+      closedAfterMs >= 750,
+      `waited for the settled streak (${closedAfterMs}ms from the last audio)`,
+    );
+    assert.ok(
+      closedAfterMs <= 1500,
+      `the hang-up stayed inside the 1500ms drain budget (${closedAfterMs}ms)`,
+    );
+    assert.ok(
+      Date.now() - firstAudioAt < 10_000,
+      "the jittered drain closed well inside the 10s timeout",
+    );
+  } finally {
+    mock.timers.reset();
+  }
 });
 
 test("hangup waits out fresh audio even when playback reports settled", async () => {
@@ -1198,6 +1474,91 @@ test("after the goodbye, no other reply is heard, captioned, or requested", () =
   assert.deepEqual(replyCreates(), [], "nothing supersedes the goodbye");
 });
 
+test("the goodbye's own audio still plays when the platform omits its reply id", () => {
+  // ADR-0005/ ticket 20: the closing line must play in full. A platform that
+  // omits reply_id on the goodbye's own audio cannot be proven to be a later
+  // reply while the goodbye still owns the floor, so silence must not win yet.
+  const { session, handle, internals, played } = midReply();
+  withDemoTools(internals, session);
+  handle({ type: "reply.done", reply_id: "r1", status: "completed" });
+  handle({ type: "reply.started", reply_id: "bye" });
+  endCall(handle, "e20", { closing_line: "Okay, bye!" });
+  const before = played.length;
+  handle({ type: "reply.audio", data: "" }); // no reply_id
+  handle({ type: "transcript.agent", text: "Okay, bye!" }); // no reply_id
+  assert.ok(played.length > before, "the id-less goodbye audio is heard, not silenced");
+  assert.equal(internals["endCallSignaled"], true);
+  assert.equal(internals["goodbyeFinished"], false, "the goodbye still owns the floor");
+});
+
+test("the goodbye still plays when end_call was spoken without a reply id", () => {
+  // A spoken end_call inside a reply that carries no id leaves endCallReplyId
+  // null. The goodbye that follows is then unidentifiable; dropping every
+  // id-carrying reply would silence it too.
+  const captions: string[] = [];
+  const { session, handle, internals, played } = midReply({}, {
+    onTranscript: (turn) => captions.push(turn.text),
+  });
+  withDemoTools(internals, session);
+  handle({ type: "reply.done", reply_id: "r1", status: "completed" });
+  handle({ type: "reply.started", reply_id: "bye" });
+  handle({ type: "transcript.agent", text: "Thanks for calling. end_call" }); // no reply_id
+  const before = played.length;
+  handle({ type: "reply.audio", reply_id: "bye", data: "" });
+  handle({ type: "transcript.agent", reply_id: "bye", text: "Okay, bye!" });
+  assert.ok(played.length > before, "the goodbye audio plays");
+  assert.deepEqual(captions, ["Thanks for calling.", "Okay, bye!"], "the goodbye is captioned");
+});
+
+test("an id-less reply after the goodbye completes is dropped whole", () => {
+  const captions: string[] = [];
+  const { session, handle, internals, played } = midReply({}, {
+    onTranscript: (turn) => captions.push(turn.text),
+  });
+  withDemoTools(internals, session);
+  handle({ type: "reply.done", reply_id: "r1", status: "completed" });
+  handle({ type: "reply.started", reply_id: "bye" });
+  endCall(handle, "e23", { closing_line: "Okay, bye!" });
+  handle({ type: "reply.audio", data: "" }); // the goodbye's id-less audio
+  handle({ type: "reply.done", reply_id: "bye", status: "completed" });
+  const before = played.length;
+  handle({ type: "reply.audio", data: "" });
+  handle({ type: "transcript.agent", text: "The call has ended." });
+  assert.equal(played.length, before, "nothing after the goodbye plays");
+  assert.deepEqual(captions, [], "nothing after the goodbye is captioned");
+});
+
+test("a post-goodbye reply that omits its reply id is dropped whole", () => {
+  // The drop guards identify the goodbye by reply id. A message that carries
+  // no id matched "no id = not dropped", so the model's post-End call line
+  // played and captioned. After the goodbye, only the goodbye reply is
+  // speakable: silence is the ordering, whatever the message omits.
+  const captions: string[] = [];
+  const partials: string[] = [];
+  const { session, handle, internals, played, replyCreates } = midReply({}, {
+    onTranscript: (turn) => captions.push(turn.text),
+    onAgentPartial: (partial) => partials.push(partial.text),
+  });
+  withDemoTools(internals, session);
+  handle({ type: "reply.done", reply_id: "r1", status: "completed" });
+  handle({ type: "reply.started", reply_id: "bye" });
+  endCall(handle, "e9", { closing_line: "Okay, bye!" });
+  handle({ type: "reply.audio", reply_id: "bye", data: "" });
+  handle({ type: "transcript.agent", reply_id: "bye", text: "Okay, bye!" });
+  handle({ type: "reply.done", reply_id: "bye", status: "completed" });
+  const before = played.length;
+  // The platform auto-fires the post-result reply without a reply id.
+  handle({ type: "reply.started" });
+  handle({ type: "reply.audio", data: "" });
+  handle({ type: "transcript.agent.delta", delta: "The call has" });
+  handle({ type: "transcript.agent", text: "The call has ended." });
+  assert.equal(played.length, before, "the id-less post-goodbye reply never plays");
+  assert.deepEqual(partials, [], "no partial of it is captioned");
+  assert.deepEqual(captions, ["Okay, bye!"], "no final line of it is captioned");
+  session.requestReply("Say something else.");
+  assert.deepEqual(replyCreates(), [], "nothing supersedes the goodbye");
+});
+
 test("a superseded reply's caption is only what the caller heard", () => {
   const captions: string[] = [];
   const { serverCut, handle } = midReply({}, {
@@ -1284,7 +1645,17 @@ test("pre-ready mic frames probe an input-drop instead of vanishing silently", (
   assert.equal(probes[0]?.dropped, 1);
 });
 
-test("inline session update pins loudest output volume", () => {
+test("inline session update pins the registry output level for every demo voice", () => {
+  for (const voiceId of DEMO_VOICE_IDS) {
+    const update = buildInlineSessionUpdate({
+      mode: "inline",
+      systemPrompt: "prompt",
+      greeting: "Hi.",
+      voiceId,
+      tools: [],
+    });
+    assert.deepEqual(update["output"], { voice: voiceId, volume: VOICE_OUTPUT_VOLUME });
+  }
   const update = buildInlineSessionUpdate({
     mode: "inline",
     systemPrompt: "prompt",
@@ -1294,6 +1665,40 @@ test("inline session update pins loudest output volume", () => {
   });
   assert.deepEqual(update["output"], { voice: "lola", volume: 100 });
 });
+
+test("managed session loudness has one stage: registry gain applied once, never compounded", () => {
+  const { handle, internals } = makeSession();
+  const peaks: number[] = [];
+  internals["playout"] = {
+    play: (pcm: Uint8Array) => {
+      const view = new DataView(pcm.buffer, pcm.byteOffset, pcm.length);
+      let peak = 0;
+      for (let i = 0; i + 1 < pcm.length; i += 2) {
+        peak = Math.max(peak, Math.abs(view.getInt16(i, true)));
+      }
+      peaks.push(peak);
+    },
+    flush: () => undefined,
+    settled: () => true,
+    queuedMs: () => 0,
+  };
+  handle({ type: "session.ready", session_id: "s-one-gain" });
+  const session = internals as unknown as { setOutputGain: (gain: number) => void };
+  // 1000 PCM16 steps, far below the soft knee: gain stays exactly linear.
+  const pcm = new Uint8Array([0xe8, 0x03]);
+  const base64 = Buffer.from(pcm).toString("base64");
+  // No gain was set: the session must not apply a hidden loudness stage.
+  handle({ type: "reply.audio", reply_id: "r0", data: base64 });
+  assert.equal(peaks[0], 1000, "unset gain plays the server level untouched");
+  session.setOutputGain(voicePlaybackGain("juergen"));
+  handle({ type: "reply.audio", reply_id: "r1", data: base64 });
+  assert.equal(peaks[1], Math.round(1000 * voicePlaybackGain("juergen")));
+  // Setting the same registry gain again replaces it; it never stacks.
+  session.setOutputGain(voicePlaybackGain("juergen"));
+  handle({ type: "reply.audio", reply_id: "r2", data: base64 });
+  assert.equal(peaks[2], peaks[1], "gain is one stage, not a new stage per call");
+});
+
 
 test("playback gain scales agent audio under a soft knee, never a hard clamp", () => {
   const { handle, internals } = makeSession();

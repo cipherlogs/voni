@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { tickAllowed } from "../lib/voice/call-sounds";
+import { overheardLabel, settleOverheardTurn, userCaption } from "../lib/voice/overheard-caption";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -44,6 +45,23 @@ test("the public demo transcript has no scripted tool rows or chip model", () =>
   );
 });
 
+test("the demo call has one loudness path: registry output level plus per-voice gain", () => {
+  const call = readRepo("components/voice-call.tsx");
+  const gainCalls = call.match(/setOutputGain\(/g) ?? [];
+  assert.equal(gainCalls.length, 1, "one client gain call, never a second gain stage");
+  assert.match(
+    call,
+    /setOutputGain\(debug\.gain \?\? voicePlaybackGain\(/,
+    "client gain comes from the shared voice registry",
+  );
+  assert.doesNotMatch(call, /output\.volume\s*=/, "no per-call server volume retune");
+  assert.match(
+    readRepo("lib/voice/session.ts"),
+    /volume: VOICE_OUTPUT_VOLUME/,
+    "the server output level is the registry constant, not a literal",
+  );
+});
+
 test("the below-lg demo call is a controlled full-viewport modal", () => {
   const call = readRepo("components/voice-call.tsx");
 
@@ -75,7 +93,45 @@ test("the below-lg demo call is a controlled full-viewport modal", () => {
   assert.match(call, /size=\{transcriptShown \|\| addressChip \? "sm" : "lg"\}/, "the hero orb takes less room for real, never squeezed out");
   assert.match(call, /function StreamingText/, "streaming captions reveal word by word");
   assert.match(call, /stream-delay-\$\{Math\.min/, "word delays are classes, never inline styles");
-  assert.match(call, /overheard/, "overlap renders marked while the agent holds the floor");
+  assert.match(call, /userCaption\(/, "partial captions derive in the tested caption seam");
+  assert.match(call, /settleOverheardTurn\(/, "the settled turn keeps the mark the partial earned");
+  assert.match(call, /overheardLabel\(/, "the Overheard suffix derives in the tested caption seam");
+});
+
+test("a visitor aside while the agent speaks is marked Overheard and kept in the ledger", () => {
+  // Live caption: marked only while the agent holds the floor.
+  const aside = userCaption("We're a bakery, actually.", true);
+  assert.deepEqual(aside, { role: "user", text: "We're a bakery, actually.", overheard: true });
+  assert.equal(overheardLabel(aside), " · overheard", "the caption row says Overheard");
+
+  const freeFloor = userCaption("What does it cost?", false);
+  assert.deepEqual(freeFloor, { role: "user", text: "What does it cost?" });
+  assert.equal(overheardLabel(freeFloor), "", "ordinary caller speech is never marked");
+
+  assert.equal(userCaption("", true), null, "no empty caption is rendered");
+
+  // Settled final: the transcript ledger keeps the mark the partial earned.
+  const settled = settleOverheardTurn({ role: "user", text: "We're a bakery, actually." }, true);
+  assert.equal(settled.overheard, true);
+  assert.equal(overheardLabel(settled), " · overheard");
+
+  const quiet = settleOverheardTurn({ role: "user", text: "What does it cost?" }, false);
+  assert.equal(quiet.overheard, undefined);
+
+  const agent = settleOverheardTurn({ role: "agent", text: "Noted." }, true);
+  assert.equal(agent.overheard, undefined, "an agent final never inherits the visitor's mark");
+});
+
+test("the contact chip has one render site, gated on the invite, the inbox and the call tag", () => {
+  const call = readRepo("components/voice-call.tsx");
+  assert.equal((call.match(/<DemoAddressChip\b/g) ?? []).length, 1, "one chip, never a second");
+  assert.match(
+    call,
+    /emailTest\.invited && active && testTag \? <DemoAddressChip address=\{DEMO_INBOX_ADDRESS\} tag=\{testTag\} \/> : null/,
+    "the chip shows once the invite is up, with the call's inbox and tag",
+  );
+  const put = call.slice(call.indexOf("const putTestUp"), call.indexOf("/** Ask Voni to close the call"));
+  assert.match(put, /setEmailTest\(\{ \.\.\.emailTestRef\.current, invited: true \}\)/, "the invite flag is idempotent");
 });
 
 test("every VoiceCall path exposes mute state and hidden context without reply creation", () => {

@@ -149,6 +149,13 @@ export type CallMemorySnapshot = {
   strikes: number;
   /** The email test's progress (optional: snapshots saved before ticket 03 lack it). */
   emailTest?: EmailTestState;
+  /**
+   * The call's Test tag and its signed browser token (ticket 27). Kept in Call
+   * memory too, so a hold rejoin or reload continues the same tag even when
+   * localStorage is blocked (private mode): the visitor never starts over.
+   */
+  testTag?: string;
+  tagToken?: string;
   /** The call's scope token, so a reload continues the same call (inbox window, budgets). */
   callToken?: string | null;
   /** Server session to resume inside the grace; null once it is gone. */

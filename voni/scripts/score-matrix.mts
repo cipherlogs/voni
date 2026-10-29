@@ -5,7 +5,10 @@
  * Single seam at the npm-script level. This file drives the existing
  * score-demo orchestrator per voice, then derives each voice's regression
  * verdict from its own artifact (probe counts plus redacted transcripts via
- * analyzeTagMentions). No new transport, no parallel pipeline, no new demo app.
+ * analyzeTagMentions). The gate verdict and sub-scores are carried verbatim
+ * from the gate voice's artifact, never re-evaluated here: regression rows
+ * cannot turn required green red (or red green). No new transport, no
+ * parallel pipeline, no new demo app.
  *
  * Non-gate voices run regression-only (no clip, no pop, no invented test
  * tag): adding voices never breaks existing ones. Deploying a new voice is a
@@ -44,11 +47,15 @@ import {
   buildRegressionMatrix,
   DEFAULT_GATE_VOICE,
   formatMatrixTable,
+  parseGateRows,
+  parseSubScoreRows,
   resolveGateVoice,
   resolveMatrixVoices,
   validateProbeCounts,
   type RegressionMatrix,
   type RegressionVoiceInput,
+  type ScoreboardGate,
+  type SubScore,
   type TimbreProbes,
 } from "../src/lib/demo/scoreboard";
 
@@ -64,8 +71,14 @@ function stamp(date = new Date()): string {
   return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
 }
 
-/** The three keys the matrix derives from one per-voice score artifact. */
-function readScoreArtifact(path: string): { voice: string; probes: TimbreProbes; tagLines: string[] } {
+/** The score-artifact keys the matrix reads: regression evidence plus the carried gate verdict. */
+function readScoreArtifact(path: string): {
+  voice: string;
+  probes: TimbreProbes;
+  tagLines: string[];
+  gates: ScoreboardGate[] | undefined;
+  subScores: SubScore[] | undefined;
+} {
   let parsed: unknown;
   try {
     parsed = JSON.parse(readFileSync(path, "utf8"));
@@ -88,7 +101,25 @@ function readScoreArtifact(path: string): { voice: string; probes: TimbreProbes;
   if (!Array.isArray(redacted) || !redacted.every((line) => typeof line === "string")) {
     throw new Error(`matrix cannot read ${path}: no redacted transcripts`);
   }
-  return { voice, probes, tagLines: redacted as string[] };
+  return {
+    voice,
+    probes,
+    tagLines: redacted as string[],
+    gates: readGates(record.gates, path),
+    subScores: readSubScores(record.subScores, path),
+  };
+}
+
+/** Carry the gate rows verbatim; absent rows stay absent (reported INFO, never invented). */
+function readGates(raw: unknown, path: string): ScoreboardGate[] | undefined {
+  if (raw === undefined) return undefined;
+  return parseGateRows(raw, `matrix cannot read ${path}`);
+}
+
+/** Carry the five sub-scores verbatim; the matrix never re-derives them. */
+function readSubScores(raw: unknown, path: string): SubScore[] | undefined {
+  if (raw === undefined) return undefined;
+  return parseSubScoreRows(raw, `matrix cannot read ${path}`);
 }
 
 function runScoreDemo(voice: string, scenario: string, runs: string, dryRun: boolean, out: string): void {
@@ -143,7 +174,14 @@ function main(): void {
     for (const voice of voices) {
       const found = byVoice.get(voice);
       if (!found) throw new Error(`matrix --from ${dir} has no score artifact for voice "${voice}"`);
-      entries.push({ voice, probes: found.probes, tagLines: found.tagLines, expectedTag });
+      entries.push({
+        voice,
+        probes: found.probes,
+        tagLines: found.tagLines,
+        gates: found.gates,
+        subScores: found.subScores,
+        expectedTag,
+      });
     }
   } else {
     const scratch = mkdtempSync(join(tmpdir(), "score-matrix-"));
@@ -157,6 +195,8 @@ function main(): void {
         tagLines: dryRun
           ? [`send it with ${expectedTag} in the subject (dry run: tag discipline assumed clean)`]
           : artifact.tagLines,
+        gates: artifact.gates,
+        subScores: artifact.subScores,
         expectedTag,
       });
     }

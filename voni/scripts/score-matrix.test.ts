@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { DEMO_VOICE_IDS } from "../src/lib/demo/voni-agent";
+import { VOICE_OUTPUT_VOLUME, voicePlaybackGain } from "../src/lib/agents/voices";
 
 const SCRIPT = new URL("./score-matrix.mts", import.meta.url).pathname;
 
@@ -30,6 +31,7 @@ test("dry-run matrix across two voices writes per-voice PASS rows and a table", 
     gateVoice: string;
     voices: string[];
     results: { voice: string; isGate: boolean; status: string }[];
+    gains: { voice: string; isGate: boolean; gain: number; outputVolume: number; status: string }[];
     gates: { name: string; status: string }[];
   };
   assert.equal(matrix.schemaVersion, 4);
@@ -39,9 +41,44 @@ test("dry-run matrix across two voices writes per-voice PASS rows and a table", 
   assert.ok(matrix.results.find((r) => r.voice === "anna")?.isGate);
   assert.ok(!matrix.results.find((r) => r.voice === "lola")?.isGate);
   assert.equal(matrix.gates.find((g) => g.name === "matrix")?.status, "PASS");
+  // Gain applied is reported per matrix voice, not only the gate voice.
+  assert.deepEqual(matrix.gains.map((row) => row.voice), ["anna", "lola"]);
+  assert.equal(matrix.gains[0]?.isGate, true);
+  for (const row of matrix.gains) {
+    assert.equal(row.outputVolume, VOICE_OUTPUT_VOLUME, `${row.voice} server level is the registry constant`);
+    assert.equal(row.gain, voicePlaybackGain(row.voice), `${row.voice} client gain comes from the registry`);
+    assert.equal(row.status, "PASS");
+  }
   assert.match(result.stdout, /anna/);
   assert.match(result.stdout, /lola/);
+  assert.match(result.stdout, /gain=0\.93/, "lola's applied gain is printed");
   assert.match(result.stdout, /2\/2 clean/);
+});
+
+test("dry-run matrix shows the gate verdict and sub-scores beside regression rows", () => {
+  const dir = mkdtempSync(join(tmpdir(), "matrix-"));
+  const out = join(dir, "matrix.json");
+  const result = run(
+    ["--dry-run", "--gate-voice", DEMO_VOICE_IDS[0], "--voices", `${DEMO_VOICE_IDS[0]},${DEMO_VOICE_IDS[1]}`, "--out", out],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  const matrix = JSON.parse(readFileSync(out, "utf8")) as {
+    gate: {
+      voice: string;
+      status: string;
+      gates: { name: string; status: string }[];
+      subScores: { name: string; status: string }[];
+    };
+    gates: { name: string; status: string }[];
+  };
+  assert.equal(matrix.gate.voice, DEMO_VOICE_IDS[0], "the gate verdict belongs to the locked gate voice");
+  assert.equal(matrix.gate.status, "PASS", "dry-run gate artifact has no failing gate");
+  assert.ok(matrix.gate.gates.some((g) => g.name === "plumbing"));
+  assert.equal(matrix.gate.subScores.length, 5);
+  assert.equal(matrix.gates.find((g) => g.name === "matrix")?.status, "PASS");
+  assert.match(result.stdout, /GATE\s+\S+\s+gate \S+: PASS/);
+  assert.match(result.stdout, /sub-scores responsiveness/);
 });
 
 test("dry-run matrix defaults to every registry voice", () => {
@@ -91,9 +128,14 @@ test("--from re-analyzes saved runs: FAIL rows recorded, --strict fails the comm
   assert.equal(lax.status, 0, lax.stderr + lax.stdout);
   const laxMatrix = JSON.parse(readFileSync(laxOut, "utf8")) as {
     results: { voice: string; status: string; detail: string }[];
+    gains: { voice: string; gain: number; status: string }[];
     gates: { name: string; status: string }[];
   };
   assert.equal(laxMatrix.results.find((r) => r.voice === "anna")?.status, "PASS");
+  // Fixtures predate the artifact gain table: gain still comes from the registry.
+  assert.deepEqual(laxMatrix.gains.map((row) => row.voice), ["anna", "lola", "estelle"]);
+  assert.equal(laxMatrix.gains.find((row) => row.voice === "estelle")?.gain, voicePlaybackGain("estelle"));
+  assert.ok(laxMatrix.gains.every((row) => row.status === "PASS"));
   const lola = laxMatrix.results.find((r) => r.voice === "lola");
   assert.equal(lola?.status, "FAIL");
   assert.ok(lola?.detail.includes("clip"));
@@ -110,6 +152,88 @@ test("--from re-analyzes saved runs: FAIL rows recorded, --strict fails the comm
   );
   assert.notEqual(strict.status, 0);
   assert.ok(existsSync(strictOut), "strict still writes the artifact before failing");
+});
+
+test("--from carries the gate verdict beside regression rows and never rewrites the gate artifact", () => {
+  const dir = mkdtempSync(join(tmpdir(), "matrix-"));
+  const from = join(dir, "runs");
+  mkdirSync(from, { recursive: true });
+  const gateArtifact = {
+    ...scoreArtifact(
+      "anna",
+      { jump: 0, overload: 0, clip: 0, underrun: 0, inputDrop: 0 },
+      ["send it with Lime 42 in the subject"],
+    ),
+    gates: [
+      { name: "plumbing", status: "PASS", detail: "eval runner finished" },
+      { name: "reply-gap", status: "PASS", detail: "p50 900ms (budget 1500ms)" },
+      { name: "barge-in-cut", status: "FAIL", detail: "cut 1841ms exceeds 1500ms" },
+    ],
+    subScores: [
+      {
+        name: "responsiveness",
+        label: "Responsiveness p50/p95",
+        status: "PASS",
+        detail: "reply-gap: p50 900ms",
+        gates: ["reply-gap", "end-of-turn"],
+      },
+      {
+        name: "barge-in",
+        label: "Barge-in cut",
+        status: "FAIL",
+        detail: "barge-in-cut: cut 1841ms exceeds 1500ms",
+        gates: ["barge-in-cut", "filler-resume"],
+      },
+    ],
+  };
+  const gatePath = join(from, "anna.json");
+  writeFileSync(gatePath, JSON.stringify(gateArtifact));
+  const gateBytes = readFileSync(gatePath, "utf8");
+  writeFileSync(
+    join(from, "lola.json"),
+    JSON.stringify(scoreArtifact("lola", { jump: 0, overload: 0, clip: 0, underrun: 0, inputDrop: 0 }, ["Lime 42 in the subject"])),
+  );
+  writeFileSync(
+    join(from, "estelle.json"),
+    JSON.stringify(scoreArtifact("estelle", { jump: 0, overload: 0, clip: 1, underrun: 0, inputDrop: 0 }, ["Lime 42 in the subject"])),
+  );
+
+  const cleanOut = join(dir, "clean.json");
+  const clean = run(
+    ["--from", from, "--gate-voice", "anna", "--voices", "anna,lola", "--out", cleanOut],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.equal(clean.status, 0, clean.stderr + clean.stdout);
+  const dirtyOut = join(dir, "dirty.json");
+  const dirty = run(
+    ["--from", from, "--gate-voice", "anna", "--voices", "anna,lola,estelle", "--out", dirtyOut, "--strict"],
+    new URL("../", import.meta.url).pathname,
+  );
+  assert.notEqual(dirty.status, 0, "--strict still reports the dirty regression voice");
+
+  type Matrix = {
+    gate: { voice: string; status: string; failing: string[]; detail: string; gates: unknown[]; subScores: unknown[] };
+    gates: { name: string; status: string }[];
+  };
+  const cleanMatrix = JSON.parse(readFileSync(cleanOut, "utf8")) as Matrix;
+  const dirtyMatrix = JSON.parse(readFileSync(dirtyOut, "utf8")) as Matrix;
+
+  // The gate verdict is the gate artifact's own, carried verbatim.
+  assert.equal(cleanMatrix.gate.voice, "anna");
+  assert.equal(cleanMatrix.gate.status, "FAIL");
+  assert.deepEqual(cleanMatrix.gate.failing, ["barge-in-cut"]);
+  assert.deepEqual(cleanMatrix.gate.gates, gateArtifact.gates);
+  assert.deepEqual(cleanMatrix.gate.subScores, gateArtifact.subScores);
+  assert.match(clean.stdout, /GATE\s+anna\s+gate anna: FAIL/);
+  assert.match(clean.stdout, /sub-scores responsiveness PASS, barge-in FAIL/);
+
+  // A clean regression set never greens the required gate, and a dirty one
+  // never changes it: only the namespaced regression rows move.
+  assert.equal(cleanMatrix.gates.find((g) => g.name === "matrix")?.status, "PASS");
+  assert.equal(dirtyMatrix.gates.find((g) => g.name === "matrix")?.status, "FAIL");
+  assert.deepEqual(dirtyMatrix.gate, cleanMatrix.gate);
+  assert.ok(!dirtyMatrix.gates.some((g) => g.name === "barge-in-cut"), "gate rows stay out of the matrix gates");
+  assert.equal(readFileSync(gatePath, "utf8"), gateBytes, "the matrix never rewrites the gate artifact");
 });
 
 test("--from with a missing voice file fails fast", () => {
