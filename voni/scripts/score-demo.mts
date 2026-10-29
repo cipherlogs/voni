@@ -16,6 +16,10 @@
  * (non-dry) run with zero measured evidence fails too ("no measurements -
  * run real audio or pass evidence flags"): --dry-run stays exit 0 INFO
  * (explicit dry), but a real run may never green on zero measurements.
+ * `--scenario all` (alias `suite`) is the one-command suite: it runs every
+ * gate-voice scenario that produces scoreboard evidence, one at a time under
+ * one timing lock, and merges each producer's own stdout into one artifact.
+ * `--scenario <name>` stays the focused mode for triage and tests.
  * Plumbing and judgment are separate: an eval runner that finished (its
  * summary printed, whatever the exit code) is plumbing PASS even when a
  * scenario or a measured gate FAILs. A spawn failure, a kill, a crash, no
@@ -27,7 +31,7 @@
  * --runs/--gap/--filler/--cut/--overheard-json/--email-json/--dead-air-gaps/--overlap-ms/--goodbye-coverage/--hang-up-delay-ms/--trace-beat flag, spawn failure,
  * or an unwritable artifact.
  *
- *   npm run scoreboard:demo -- [--gate-voice <demo-voice-id>] [--scenario greeting-cut] [--runs 1]
+ *   npm run scoreboard:demo -- [--gate-voice <demo-voice-id>] [--scenario all | <name>] [--runs 1]
  *                           [--out scoreboard-runs/score-<ts>-<voice>.json] [--dry-run]
  *                           [--prior <path>]
  *                           [--timing-lock /tmp/voni-demo-timing.lock]
@@ -38,7 +42,7 @@
  *                           [--cut-resumed] [--cut-ended] [--trace-turn <text>]
  *                           [--overheard-json asides.json] [--email-json email.json]
  *                           [--dead-air-gaps 400,1200] [--longest-silence-ms 16000]
- *                           [--check-in-at-ms 15200] [--check-in-over-caller]
+ *                           [--check-in-at-ms 15200] [--check-in-over-caller] [--check-in-yield-ms 900]
  *                           [--silence-json silence.json]
  *                           [--overlap-ms 120,350] [--goodbye-coverage 0.95]
  *                           [--goodbye-inbox-named | --goodbye-inbox-missing]
@@ -475,6 +479,104 @@ function runEvalRunner(voice: string, scenario: string, runs: string): { stdout:
   return { stdout, exitCode: evalError ? null : result.status, durationMs: Date.now() - started, evalError };
 }
 
+/**
+ * The one-command suite (ticket 01): every gate voice scenario that carries
+ * scoreboard evidence, run one at a time. Timing runs are never parallel:
+ * the whole suite holds the machine-wide timing lock and each scenario gets
+ * its own sequential invocation, so cut latencies stay comparable. The
+ * free-gate goodbye path is covered by bye-audio; it is not repeated.
+ */
+const SUITE_SCENARIOS = [
+  "greeting-cut",
+  "filler-over",
+  "stop-over",
+  "over-talk",
+  "silence-check-in",
+  "invite-tag",
+  "bye-audio",
+  "hang-up-fast",
+  "hang-up-over",
+] as const;
+
+type EvalSection = {
+  stdout: string;
+  exitCode: number | null;
+  durationMs: number;
+  evalError: string | null;
+};
+
+type SectionSummary = {
+  scenario: string;
+  runs: number;
+  failures: number;
+  scenarios: { name: string; passed: number; runs: number }[];
+  traceSessions: string[];
+  playout: { scenario: string; run: number; wallClockMs: number }[];
+  audioChunks: number | null;
+  live: boolean;
+  clips?: { text: string; bytes: number; durationMs: number; sha256: string }[];
+};
+
+function sectionSummary(stdout: string): SectionSummary | null {
+  const lines = stdout.split("\n");
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index]?.trim() ?? "";
+    if (!line.startsWith("EVAL SUMMARY ")) continue;
+    try {
+      return JSON.parse(line.slice("EVAL SUMMARY ".length)) as SectionSummary;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+/**
+ * Merge per-scenario runner sections into one runner stream. Each producer's
+ * stdout stays intact under a scenario header so the parsers see only their
+ * own scenario; one synthesized EVAL SUMMARY proves the suite finished, and
+ * classification/plumbing reads that summary exactly like a focused run.
+ */
+function mergeSuiteSections(sections: { name: string; section: EvalSection }[], runs: number): EvalSection {
+  const summaries = sections.flatMap(({ section }) => {
+    const summary = sectionSummary(section.stdout);
+    return summary ? [summary] : [];
+  });
+  const scenarios = summaries.flatMap((summary) => summary.scenarios);
+  const traceSessions = [...new Set(summaries.flatMap((summary) => summary.traceSessions))];
+  const playout = summaries.flatMap((summary) => summary.playout);
+  const clips = summaries.flatMap((summary) => summary.clips ?? []);
+  const uniqueClips = clips.filter((clip, index) => clips.findIndex((other) => other.text === clip.text) === index);
+  const audioChunks = summaries.some((summary) => summary.audioChunks !== null)
+    ? summaries.reduce((sum, summary) => sum + (summary.audioChunks ?? 0), 0)
+    : null;
+  const failures = summaries.reduce(
+    (sum, summary) => sum + (Number.isFinite(summary.failures) ? summary.failures : 0),
+    0,
+  );
+  const merged = {
+    scenario: "suite",
+    runs,
+    failures,
+    scenarios,
+    traceSessions,
+    playout,
+    audioChunks,
+    live: summaries.some((summary) => summary.live),
+    ...(uniqueClips.length > 0 ? { clips: uniqueClips } : {}),
+  };
+  const stdout = [
+    ...sections.map(({ name, section }) => `## scenario ${name}\n${section.stdout.trimEnd()}`),
+    `EVAL SUMMARY ${JSON.stringify(merged)}`,
+  ].join("\n");
+  return {
+    stdout,
+    exitCode: sections.some(({ section }) => section.exitCode !== 0) ? 1 : 0,
+    durationMs: sections.reduce((sum, { section }) => sum + section.durationMs, 0),
+    evalError: sections.find(({ section }) => section.evalError)?.section.evalError ?? null,
+  };
+}
+
 function runCallTrace(sessionId: string): string[] {
   const result = spawnSync("npm", ["run", "call:trace", "--", sessionId], {
     encoding: "utf8",
@@ -782,7 +884,9 @@ function deadAirEvidenceFromTimeline(
 
 function main(): void {
   const voice = resolveGateVoice(arg("--gate-voice", "") || arg("--voice", DEFAULT_GATE_VOICE));
-  const scenario = arg("--scenario", "greeting-cut");
+  const requestedScenario = arg("--scenario", "greeting-cut");
+  const suite = requestedScenario === "all" || requestedScenario === "suite";
+  const scenario = suite ? "suite" : requestedScenario;
   const runs = arg("--runs", "1");
   if (!/^[1-9]\d*$/.test(runs)) {
     throw new Error(`--runs needs a positive int, got "${runs}"`);
@@ -829,9 +933,29 @@ function main(): void {
     readRecordingBinding(arg("--recording", ""), arg("--recording-file", "")),
   );
 
-  const evalSection = dryRun
-    ? { stdout: "(dry run: eval runner skipped)", exitCode: null as number | null, durationMs: 0, evalError: null as string | null }
-    : runEvalRunner(voice, scenario, runs);
+  /** Per-scenario stdout: every evidence parser reads only its own producer. */
+  const stdoutByScenario = new Map<string, string>();
+  let evalSection: EvalSection;
+  if (dryRun) {
+    evalSection = { stdout: "(dry run: eval runner skipped)", exitCode: null, durationMs: 0, evalError: null };
+  } else if (suite) {
+    const sections: { name: string; section: EvalSection }[] = [];
+    for (const name of SUITE_SCENARIOS) {
+      // One at a time: a timing run in parallel inflates the cut number.
+      const section = runEvalRunner(voice, name, runs);
+      sections.push({ name, section });
+      stdoutByScenario.set(name, section.stdout);
+    }
+    evalSection = mergeSuiteSections(sections, Number(runs));
+  } else {
+    evalSection = runEvalRunner(voice, scenario, runs);
+    stdoutByScenario.set(scenario, evalSection.stdout);
+  }
+  // Focused mode has one runner stream: every parser reads it verbatim, so a
+  // documented replay that names a different scenario still parses. Suite
+  // mode hands each parser only its own producer's stdout.
+  const scenarioStdout = (...names: string[]): string =>
+    suite ? names.map((name) => stdoutByScenario.get(name) ?? "").filter(Boolean).join("\n") : evalSection.stdout;
 
   // The live runner prints `· trace session sess_…` when the call opens; an
   // explicit --trace-session always wins, otherwise the last live call is
@@ -865,7 +989,7 @@ function main(): void {
   }
   // Dead-air producer: the live runner's own session timeline (or a documented
   // --silence-json replay). The explicit --dead-air-* flags stay the override.
-  const runnerSilence = dryRun ? null : parseSilenceTimelineOutput(evalSection.stdout);
+  const runnerSilence = dryRun ? null : parseSilenceTimelineOutput(scenarioStdout("silence-check-in"));
   const silenceTimeline = silenceJsonPath
     ? loadSilenceTimeline(silenceJsonPath)
     : (runnerSilence?.timeline ?? null);
@@ -877,7 +1001,9 @@ function main(): void {
       ? overheardFromTraceExcerpt(excerpt, traceSession, "overheard-aside", {
           // The runner's session ledger (`transcript.user` finals) proves the
           // same words were counted, independent of the merged trace.
-          ...(dryRun ? {} : { ledger: parseHeardLedgerOutput(evalSection.stdout) ?? undefined }),
+          ...(dryRun
+            ? {}
+            : { ledger: parseHeardLedgerOutput(scenarioStdout("over-talk")) ?? undefined }),
         })
       : [];
   const overheardAsides =
@@ -885,14 +1011,14 @@ function main(): void {
   // Invite/tag/chip evidence: an explicit --email-json (browser probe, replay)
   // wins; otherwise the live runner's own EMAIL INVITE line. Omitted evidence
   // leaves the email gate INFO (unmeasured), never PASS.
-  const runnerEmailEvidence = dryRun ? null : parseEmailInviteOutput(evalSection.stdout);
+  const runnerEmailEvidence = dryRun ? null : parseEmailInviteOutput(scenarioStdout("invite-tag"));
   const emailFile = emailJsonPath ? readEmailInviteJson(resolve(emailJsonPath)) : runnerEmailEvidence;
   const emailEvidence = emailFile ? toEmailInviteEvidence(emailFile, excerpt ?? [], traceSession) : null;
   // The live runner's own DOUBLE TALK line (over-talk) is the producer for
   // the double-talk gate: post-flush residual overlap per cut. An explicit
   // --overlap-ms wins (replay/triage); without either the gate stays INFO.
   const explicitOverlapMs = parseOverlapMs(arg("--overlap-ms", ""));
-  const runnerDoubleTalk = dryRun ? null : parseDoubleTalkOutput(evalSection.stdout);
+  const runnerDoubleTalk = dryRun ? null : parseDoubleTalkOutput(scenarioStdout("over-talk"));
   const doubleTalkOverlapMs = explicitOverlapMs.length > 0 ? explicitOverlapMs : (runnerDoubleTalk?.overlapMs ?? []);
   // The turn pointer may only come from the same call the overlap was heard
   // on. A trace merges the run's last session; when the evidence names another
@@ -907,7 +1033,7 @@ function main(): void {
   // live runner's own `filler …` line is the observed behavior and scores the
   // gate, so a filler-over run no longer stays INFO until a human retypes it.
   const explicitFiller = readFillerEvidence(traceSession);
-  const runnerFiller = explicitFiller || dryRun ? null : parseFillerRunOutput(evalSection.stdout);
+  const runnerFiller = explicitFiller || dryRun ? null : parseFillerRunOutput(scenarioStdout("filler-over"));
   const fillerResume =
     explicitFiller ?? (runnerFiller ? fillerEvidenceFromRun(runnerFiller) ?? undefined : undefined);
   // A filler FAIL must point at the turn whose reply it overlapped: match the
@@ -940,14 +1066,14 @@ function main(): void {
   const priorPath = arg("--prior", "");
   const prior = priorPath ? loadPriorArtifact(priorPath) : latestPriorArtifact(dirname(out), voice, out);
   // Real-cut evidence counts as measured even though it lands post-skeleton.
-  const parsed = extractRealCutEvidence(evalSection.stdout, excerpt ?? []);
+  const parsed = extractRealCutEvidence(scenarioStdout("stop-over"), excerpt ?? []);
   // Greeting-cut evidence comes from the fixed caller clip's own scenario;
   // score-demo gates the measured ms and cites the interrupted greeting turn.
-  const greetingCut = extractGreetingCutEvidence(evalSection.stdout, excerpt ?? [], traceSession || null);
+  const greetingCut = extractGreetingCutEvidence(scenarioStdout("greeting-cut"), excerpt ?? [], traceSession || null);
   // Goodbye drain producer: the live runner's GOODBYE DRAIN line (coverage
   // plus whether the closing line named the team inbox) and its own measured
   // hang-up line. Explicit --goodbye-* flags stay the operator override.
-  const runnerGoodbye = dryRun ? null : parseGoodbyeDrainOutput(evalSection.stdout);
+  const runnerGoodbye = dryRun ? null : parseGoodbyeDrainOutput(scenarioStdout("bye-audio"));
   const inboxNamedFlagged = process.argv.includes("--goodbye-inbox-named");
   const inboxMissingFlagged = process.argv.includes("--goodbye-inbox-missing");
   if (inboxNamedFlagged && inboxMissingFlagged) {
@@ -956,7 +1082,11 @@ function main(): void {
   const goodbyeCoverage =
     parseOptionalNumber(arg("--goodbye-coverage", ""), "--goodbye-coverage") ?? runnerGoodbye?.coverage ?? null;
   const flaggedHangUpMs = parseOptionalNumber(arg("--hang-up-delay-ms", ""), "--hang-up-delay-ms");
-  const runnerHangUp = flaggedHangUpMs === null && !dryRun ? parseRunnerHangUp(evalSection.stdout) : null;
+  // Both hang-up paths are measured; parseRunnerHangUp keeps the worst one.
+  const runnerHangUp =
+    flaggedHangUpMs === null && !dryRun
+      ? parseRunnerHangUp(scenarioStdout("hang-up-fast", "hang-up-over"))
+      : null;
   const hangUpDelayMs = flaggedHangUpMs ?? runnerHangUp?.ms ?? null;
   const inboxNamed = inboxMissingFlagged ? false : inboxNamedFlagged ? true : (runnerGoodbye?.inboxNamed ?? null);
   // Post-End call narration: measured by the runner (it hears every reply

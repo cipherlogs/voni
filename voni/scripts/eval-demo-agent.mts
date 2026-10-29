@@ -1854,7 +1854,11 @@ const SCENARIOS: { name: string; steps: Step[]; pass: (o: Outcome) => string | n
 
 const runs = Number(arg("--runs", "5"));
 const voiceId = arg("--voice", DEMO_VOICE_IDS[0]);
-const only = arg("--scenario", "");
+const requestedScenario = arg("--scenario", "");
+// `--scenario all` (and `suite`) means every scenario: score-demo's one-command
+// suite may pass either name, and a filter that matched "all" literally would
+// run nothing at all.
+const only = requestedScenario === "all" || requestedScenario === "suite" ? "" : requestedScenario;
 let failures = 0;
 /** Per-scenario rows for the final machine-readable summary. */
 const scenarioResults: { name: string; passed: number; runs: number }[] = [];
