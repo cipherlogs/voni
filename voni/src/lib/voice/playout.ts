@@ -17,6 +17,13 @@ export type Playout = {
    * false` and keeps nothing.
    */
   flush: (fadeS?: number, keepCushion?: boolean) => void;
+  /**
+   * Fires once, when the worklet first emits audio for this playout — the
+   * first sample the caller can hear, not when a chunk was queued. The
+   * connected chime hangs off this so it marks the agent actually sounding
+   * (see call-sounds). Observation only: it never touches the signal path.
+   */
+  onFirstAudible?: () => void;
 };
 
 export type WorkletPlayout = Playout & {
@@ -87,6 +94,7 @@ export function pcm16ToFloat(pcm: Uint8Array): Float32Array {
 export function createWorkletPlayout(node: AudioWorkletNode): WorkletPlayout {
   let sent = 0;
   let busy = false;
+  let audible = false;
   let queuedMs = 0;
   let cushionMs = 0;
   let targetCushionMs = 0;
@@ -159,6 +167,13 @@ export function createWorkletPlayout(node: AudioWorkletNode): WorkletPlayout {
     targetCushionMs = e.data.targetCushionMs;
     correctionPct = e.data.correctionPct;
     consumed = e.data.consumed;
+    // The first report that says the worklet is sounding: the caller's first
+    // audible sample. One-shot per playout (one per connection): a later
+    // reply, a resume after a dry-out, or a flush must not re-fire the chime.
+    if (e.data.playing && !audible) {
+      audible = true;
+      playout.onFirstAudible?.();
+    }
     // Ignore an idle report that predates the latest chunk still in flight.
     if (e.data.idle && e.data.seq === sent && busy) {
       busy = false;

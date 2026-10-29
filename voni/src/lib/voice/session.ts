@@ -402,6 +402,12 @@ export type VoiceHandlers = {
   onAgentTurn?: (turn: AgentTurn) => void;
   onReplyStarted?: () => void;
   /**
+   * The playout emitted its first audible sample for this connection. Fires
+   * once, from the worklet's own `playing` report — never when a greeting is
+   * merely scheduled. The connected chime hangs off this.
+   */
+  onFirstAudible?: () => void;
+  /**
    * The agent is ending the call: an end_call tool call arrived, or it spoke
    * the tool name instead. Fires before the session closes, so pacing can stop.
    */
@@ -943,6 +949,9 @@ export class VoiceSession {
       this.audioCtx = graph.audioCtx;
       this.worklet = graph.worklet;
       this.playout = graph.playout;
+      // The chime's trigger: the worklet's first audible sample, never the
+      // moment a greeting is queued (there is a whole pre-roll between them).
+      this.playout.onFirstAudible = () => this.handlers.onFirstAudible?.();
       // Ran dry before reply.done: the network stalled mid-reply.
       this.playout.onDrained = () => {
         if (this.state === "speaking") this.probe("underrun");
