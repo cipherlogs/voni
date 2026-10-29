@@ -380,7 +380,8 @@ test("delivered capture: a tapped run writes a readable WAV of what the speaker 
     if (message.type === "tap" && message.samples) capture.push(message.samples);
   }
   const result = await capture.finish();
-  assert.equal(result?.name, "delivered-20261029-140506.wav");
+  assert.equal(result.complete, true);
+  assert.equal(result.name, "delivered-20261029-140506.wav");
   const wav = decodeWav(files[0]!);
   assert.equal(wav.facts.sampleRate, OUT);
   // 16-bit PCM is the comparison's format: compare the file to the emitted

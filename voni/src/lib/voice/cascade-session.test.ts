@@ -18,6 +18,8 @@ import {
   MICROPHONE_UNMUTED_CONTEXT,
 } from "./context";
 import { DEFAULT_OUTPUT_SAMPLE_RATE } from "./output-format";
+import { decodeWav } from "@/lib/audio/format-facts";
+import type { Playout } from "./playout";
 
 const CONFIG: CascadeCallConfig = {
   serviceUrl: "ws://127.0.0.1:8766/v1/browser-call",
@@ -277,4 +279,197 @@ test("muting cascade drops mic frames and sends context without stopping playbac
   );
   assert.ok(!socket.sent.some((message) => message.includes("reply.create")));
   await session.stop();
+});
+
+// ── Delivered capture on the cascade path (ticket 121) ────────────────────
+// The managed session already writes a delivered WAV; the cascade client had
+// no tap at all, so a cascade call could not be judged by the W0 two-capture
+// comparison. The capture is the worklet's output, never the wire's 24 kHz
+// source: the file must carry the device rate the caller actually heard.
+
+/** A playout whose worklet tap can be driven from the test. */
+export function tapPlayout(fields: {
+  taps: boolean[];
+  onTap: { fn: ((samples: Float32Array) => void) | null };
+}) {
+  return {
+    play() {},
+    flush() {},
+    tap(on: boolean) {
+      fields.taps.push(on);
+      return Promise.resolve({ ended: true });
+    },
+    get onTap() {
+      return fields.onTap.fn ?? undefined;
+    },
+    set onTap(fn: ((samples: Float32Array) => void) | undefined) {
+      fields.onTap.fn = fn ?? null;
+    },
+  };
+}
+
+test("delivered capture: the cascade path taps the worklet and writes its WAV", async () => {
+  const socket = makeSocket();
+  const taps: boolean[] = [];
+  const onTap: { fn: ((samples: Float32Array) => void) | null } = { fn: null };
+  const written: { name: string; bytes: Uint8Array }[] = [];
+  const session = new CascadeSession(
+    {},
+    {
+      socketFactory: () => socket as unknown as WebSocket,
+      startMic: async () => ({
+        stop: () => {},
+        audioCtx: { sampleRate: 44100 } as unknown as AudioContext,
+        playout: tapPlayout({ taps, onTap }) as unknown as Playout,
+      }),
+      writeCapture: (name, bytes) => {
+        written.push({ name, bytes });
+      },
+    },
+  );
+  session.setDeliveredCapture(true);
+  await session.start(CONFIG, "test-owner");
+  assert.deepEqual(taps, [true], "the worklet tap starts with the call");
+
+  onTap.fn?.(new Float32Array([0.25, -0.25, 0.5]));
+  await session.stop();
+
+  assert.deepEqual(taps, [true, false], "and flushes before teardown");
+  assert.equal(written.length, 1, "one file per cascade call");
+  assert.match(written[0]!.name, /^delivered-.*\.wav$/);
+  const wav = decodeWav(written[0]!.bytes);
+  assert.equal(wav.facts.sampleRate, 44100, "at the worklet's output rate");
+  assert.equal(wav.facts.channels, 1);
+  assert.equal(wav.facts.bitsPerSample, 16);
+  assert.deepEqual(Array.from(wav.samples), [8192, -8192, 16384]);
+});
+
+test("delivered capture: enabling the cascade tap changes nothing the worklet plays", async () => {
+  // The same server frames, rendered by the same fake worklet twice: capture
+  // off, then on. The stream handed to the worklet and the samples the
+  // worklet rendered must be identical; only the extra WAV may appear.
+  async function run(capture: boolean) {
+    const socket = makeSocket();
+    const played: { pcm: number[]; rate: number }[] = [];
+    const rendered: number[] = [];
+    const written: { name: string; bytes: Uint8Array }[] = [];
+    const tap = { on: false, fn: null as ((samples: Float32Array) => void) | null };
+    const playout = {
+      play(pcm: Uint8Array, rate: number) {
+        played.push({ pcm: Array.from(pcm), rate });
+        // Stand in for the worklet: every played sample is rendered, and the
+        // tap copies exactly those rendered samples when it is on.
+        const floats = new Float32Array(pcm.length >> 1);
+        for (let i = 0; i < floats.length; i++) {
+          const at = i * 2;
+          const v = (pcm[at]! | (pcm[at + 1]! << 8)) << 16 >> 16;
+          floats[i] = v / 32768;
+          rendered.push(floats[i]!);
+        }
+        if (tap.on) tap.fn?.(floats);
+      },
+      flush() {},
+      tap(on: boolean) {
+        tap.on = on;
+        return Promise.resolve({ ended: true });
+      },
+      get onTap() {
+        return tap.fn ?? undefined;
+      },
+      set onTap(fn: ((samples: Float32Array) => void) | undefined) {
+        tap.fn = fn ?? null;
+      },
+    };
+    const session = new CascadeSession(
+      {},
+      {
+        socketFactory: () => socket as unknown as WebSocket,
+        startMic: async () => ({
+          stop: () => {},
+          audioCtx: { sampleRate: 48000 } as unknown as AudioContext,
+          playout: playout as unknown as Playout,
+        }),
+        writeCapture: (name, bytes) => {
+          written.push({ name, bytes });
+        },
+      },
+    );
+    if (capture) session.setDeliveredCapture(true);
+    await session.start(CONFIG, "test-owner");
+    socket.readyState = socket.OPEN;
+    socket.onopen?.();
+    for (const samples of [Int16Array.from([1, -2, 3, -4]), Int16Array.from([500, -500, 0])]) {
+      socket.emit(
+        JSON.stringify({
+          type: "audio",
+          data: Buffer.from(new Uint8Array(samples.buffer)).toString("base64"),
+          sample_rate: 24000,
+        }),
+      );
+    }
+    await session.stop();
+    return { played, rendered, written };
+  }
+
+  const off = await run(false);
+  const on = await run(true);
+
+  assert.equal(off.written.length, 0, "capture off writes nothing");
+  assert.deepEqual(on.played, off.played, "capture on schedules the same chunks at the same rates");
+  assert.deepEqual(on.rendered, off.rendered, "capture on renders the same samples");
+  assert.equal(on.written.length, 1, "capture on writes exactly one WAV");
+
+  const wav = decodeWav(on.written[0]!.bytes);
+  assert.equal(wav.facts.sampleRate, 48000, "the worklet's device rate, not the wire's 24 kHz");
+  // What was heard, at the comparison's 16-bit quantisation, sample for sample.
+  const quantise = (v: number) => Math.round(Math.max(-1, Math.min(1, v)) * 32767);
+  assert.deepEqual(Array.from(wav.samples), on.rendered.map(quantise));
+});
+
+test("delivered capture: a cascade tap that never acks is a named failure on the session", async () => {
+  // A suspended context does not post its final block. The WAV is still kept
+  // for triage, but the session must say the capture is short so the artifact
+  // can mark the run ineligible instead of measuring a quietly clipped file.
+  const socket = makeSocket();
+  const onTap: { fn: ((samples: Float32Array) => void) | null } = { fn: null };
+  let tapOff = 0;
+  const session = new CascadeSession(
+    {},
+    {
+      socketFactory: () => socket as unknown as WebSocket,
+      startMic: async () => ({
+        stop: () => {},
+        audioCtx: { sampleRate: 48000 } as unknown as AudioContext,
+        playout: {
+          play() {},
+          flush() {},
+          tap(on: boolean) {
+            if (!on) tapOff += 1;
+            return Promise.resolve({ ended: on });
+          },
+          get onTap() {
+            return onTap.fn ?? undefined;
+          },
+          set onTap(fn: ((samples: Float32Array) => void) | undefined) {
+            onTap.fn = fn ?? null;
+          },
+        } as unknown as Playout,
+      }),
+      writeCapture: () => undefined,
+      captureNow: () => new Date(Date.UTC(2026, 9, 29, 14, 5, 6)),
+    },
+  );
+  session.setDeliveredCapture(true);
+  await session.start(CONFIG, "test-owner");
+  onTap.fn?.(new Float32Array([0.5]));
+  await session.stop();
+
+  assert.equal(tapOff, 1, "teardown asked the worklet to flush");
+  assert.deepEqual(session.deliveredCaptureResult(), {
+    complete: false,
+    reason: "tap-timeout",
+    name: "delivered-20261029-140506.wav",
+    samples: 1,
+    bytes: 46,
+  });
 });

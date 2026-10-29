@@ -54,9 +54,10 @@ export type WorkletPlayout = Playout & {
   /**
    * Dev delivered capture on/off. While on, every rendered block arrives at
    * `onTap`. Turning it off resolves only after the worklet has posted its
-   * final partial block, so the caller can close a complete WAV.
+   * final partial block (`ended: true`); a stopped context that never acks
+   * resolves `ended: false`, so the writer can name a truncated capture.
    */
-  tap: (on: boolean) => Promise<void>;
+  tap: (on: boolean) => Promise<{ ended: boolean }>;
   /** One block of the output exactly as it was emitted, at the device rate. */
   onTap?: (samples: Float32Array) => void;
 };
@@ -132,16 +133,17 @@ export function createWorkletPlayout(node: AudioWorkletNode): WorkletPlayout {
     },
     tap(on) {
       node.port.postMessage({ type: "tap", on });
-      if (on) return Promise.resolve();
-      // A suspended context never acks: a hang-up must not wait on it forever.
-      return new Promise<void>((resolve) => {
+      if (on) return Promise.resolve({ ended: true });
+      // A suspended context never acks: a hang-up must not wait on it forever,
+      // and the writer must know the capture it closes is short.
+      return new Promise<{ ended: boolean }>((resolve) => {
         const timer = setTimeout(() => {
           tapEnded = null;
-          resolve();
+          resolve({ ended: false });
         }, TAP_END_TIMEOUT_MS);
         tapEnded = () => {
           clearTimeout(timer);
-          resolve();
+          resolve({ ended: true });
         };
       });
     },
