@@ -29,10 +29,17 @@ fractional report can never round past a word, and the session's own
 ``resume_point`` maps that sample to the first unheard word when its
 ``WordBoundaries`` are complete, or to the start of the first sentence not
 fully played otherwise. The located point is stored for ticket 90; nothing is
-re-synthesized here. The filler rule is ticket 91's, and the next request is
-untouched by a cut — it starts on a later generation and takes whatever
-``flush_id`` the vendor assigns, which may skip numbers and is read from the
-wire, never computed here.
+re-synthesized here.
+
+A **filler** interruption is the caller's backchannel, not a turn: it sends no
+``Cancel``, starts no generation and asks for no reply (ticket 91). The agent
+keeps speaking. If audio was cut for another reason, the cut's located tail is
+still carried forward as a :class:`FillerResume` plan within the frozen
+``fillerResumeTailMs`` budget; the plan is not a reply, never calls a model,
+and a real reply (or a later cut) cancels it. Ticket 90 speaks the plan. The
+next request is untouched by a cut — it starts on a later generation and takes
+whatever ``flush_id`` the vendor assigns, which may skip numbers and is read
+from the wire, never computed here.
 
 This module owns no thresholds, no word lists and no wire shapes: the cut
 budget comes from :mod:`cascade.thresholds`, the transport owns what a playout
@@ -53,10 +60,20 @@ from cascade.thresholds import require_bound
 from cascade.turn_state import Clock
 from metrics import TimingLedger
 from providers import SentenceAudio
+from turns import FloorAction
 
 #: The record-backed cut budget (``realCutMs``); restating it would be the
 #: second source the threshold registry exists to prevent.
 CUT_BUDGET_MS = float(require_bound("barge_in.real_cut_ms"))
+
+#: The record-backed filler-resume budget (``fillerResumeTailMs``). The tail a
+#: filler recovers must start playing inside it; the number is the frozen
+#: scoreboard record's, never this module's.
+FILLER_RESUME_BUDGET_MS = float(require_bound("barge_in.filler_resume_tail_ms"))
+
+#: The three floor actions an interruption can carry. ``backchannel`` is the
+#: filler case; it is not a cut and not a reply.
+INTERRUPTION_ACTIONS: tuple[str, ...] = ("take_floor", "wait", "backchannel")
 
 #: Why the floor was taken. ``speech_start`` and ``partial`` are the
 #: interruption cases of :mod:`cascade.floor`; the others are the same cut
@@ -77,6 +94,17 @@ class UnknownCutCauseError(ValueError):
         self.cause = cause
         super().__init__(
             f"unknown barge-in cause {cause!r}; a cut names one of {CUT_CAUSES}"
+        )
+
+
+class UnknownFloorActionError(ValueError):
+    """An interruption that does not name one of the three floor actions."""
+
+    def __init__(self, action: Any) -> None:
+        self.action = action
+        super().__init__(
+            f"unknown floor action {action!r}; an interruption is one of "
+            f"{INTERRUPTION_ACTIONS}"
         )
 
 
@@ -226,6 +254,49 @@ class BargeInCut:
 
 
 @dataclass
+class FillerResume:
+    """What a filler interruption leaves: a tail to recover, never a reply.
+
+    A filler is not a reply: it takes no reply generation, asks no model and
+    plays no new answer. When an earlier cut left a located tail, the plan
+    carries exactly that tail and the record-backed budget its resume must
+    meet. :attr:`cancelled` becomes true when a real reply (or a later cut)
+    takes over; a cancelled plan is discarded, never spoken.
+    """
+
+    text: str
+    budget_ms: float
+    cut: BargeInCut | None = None
+    resume: ResumePoint | None = None
+    cancelled: bool = False
+
+    def __post_init__(self) -> None:
+        if self.budget_ms <= 0:
+            raise ValueError(
+                f"a filler-resume budget must be positive: {self.budget_ms!r}"
+            )
+
+    @property
+    def is_reply(self) -> bool:
+        """Always false: a filler never takes the reply slot."""
+        return False
+
+    @property
+    def model_calls(self) -> int:
+        """Always zero: recovering a tail is synthesis, never a model request."""
+        return 0
+
+    @property
+    def resumable(self) -> bool:
+        """Whether there is an unheard tail worth resuming."""
+        return bool(self.text.strip())
+
+    def cancel(self) -> None:
+        """A real reply or a later cut supersedes this plan (idempotent)."""
+        self.cancelled = True
+
+
+@dataclass
 class _ReplyRun:
     """The producer's state for one reply."""
 
@@ -269,6 +340,9 @@ class BargeInCutPath:
         # The rate of the audio actually played, so a cut point is expressed
         # in the samples the caller heard, not in an assumed 24 kHz.
         self._sample_rate: int | None = None
+        # The cut whose tail a filler may recover, and the plan it produced.
+        self._resume_cut: BargeInCut | None = None
+        self._pending_filler: FillerResume | None = None
 
     # -- state ------------------------------------------------------------
 
@@ -310,6 +384,10 @@ class BargeInCutPath:
         """
         if self.reply_in_flight:
             raise ReplyInFlightError()
+        # A real reply supersedes a pending filler resume and the cut it came
+        # from: a stale tail is never spoken over a new answer (ticket 90).
+        self._cancel_pending_filler()
+        self._resume_cut = None
         self._generation += 1
         run = _ReplyRun(
             generation=self._generation,
@@ -342,8 +420,65 @@ class BargeInCutPath:
 
     async def stop(self) -> None:
         """Stop the producer without a cut: the call is draining or ending."""
+        self._cancel_pending_filler()
+        self._resume_cut = None
         self._generation += 1
         await self._stop_producer()
+
+    # -- interruption: cut, wait, or filler -------------------------------
+
+    async def interrupt(
+        self,
+        action: FloorAction,
+        *,
+        cause: str = "partial",
+        speech_started_at: float | None = None,
+        played_ms: float | None = None,
+    ) -> BargeInCut | FillerResume | None:
+        """Act on one floor decision while the agent holds the floor.
+
+        ``take_floor`` is a real cut. ``backchannel`` is a filler: the agent
+        keeps speaking and no reply is started; if an earlier cut left a tail,
+        the filler plan carries it forward. ``wait`` neither cuts nor replies.
+        Counting belongs to :class:`cascade.floor.FloorArbiter`, so this method
+        never counts a backchannel twice.
+        """
+        if action not in INTERRUPTION_ACTIONS:
+            raise UnknownFloorActionError(action)
+        if action == "backchannel":
+            return self.filler()
+        if action == "wait":
+            return None
+        return await self.cut(
+            cause,
+            speech_started_at=speech_started_at,
+            played_ms=played_ms,
+        )
+
+    def filler(self) -> FillerResume:
+        """The plan a filler interruption leaves: the cut's tail, never a reply.
+
+        It sends nothing to the synthesis session and starts no generation.
+        The tail is the cut's located point (ticket 89); when the whole reply
+        played, ``text`` is empty and there is nothing to resume.
+        """
+        self._cancel_pending_filler()
+        cut = self._resume_cut
+        resume = None if cut is None else cut.seam.resume
+        plan = FillerResume(
+            text="" if resume is None else resume.text,
+            budget_ms=FILLER_RESUME_BUDGET_MS,
+            cut=cut,
+            resume=resume,
+        )
+        self._pending_filler = plan
+        return plan
+
+    def _cancel_pending_filler(self) -> None:
+        """A real reply or a later cut discards the pending filler plan."""
+        plan, self._pending_filler = self._pending_filler, None
+        if plan is not None:
+            plan.cancel()
 
     # -- the played position ----------------------------------------------
 
@@ -418,6 +553,8 @@ class BargeInCutPath:
             )
 
         async with self._cut_lock:
+            # A later cut supersedes any pending filler resume.
+            self._cancel_pending_filler()
             run = self._run
             # The frame boundary: no chunk of the old reply may be emitted
             # after this synchronous line, even before Cancel is on the wire.
@@ -483,6 +620,8 @@ class BargeInCutPath:
                 client_flushed=True,
             )
             self._cuts.append(cut)
+            # Remember the cut so a filler can recover its tail (ticket 91).
+            self._resume_cut = cut
             return cut
 
     async def _stop_producer(self) -> int:
