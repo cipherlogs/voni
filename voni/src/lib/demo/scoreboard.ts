@@ -93,6 +93,7 @@ import {
 import { DEMO_VOICE_IDS, SILENCE_CHECK_IN_INSTRUCTIONS } from "./voni-agent";
 import { DEMO_INBOX_ADDRESS } from "./email-test";
 import { TAG_WORDS, containsTag, countTags } from "./test-tag";
+import { englishLeakForArtifact, type EnglishLeakCount } from "./english-leak";
 import type { RunnerEvidence } from "./runner-evidence";
 import type { LatencyBand } from "./latency-split";
 import type {
@@ -2352,6 +2353,13 @@ export type ScoreboardArtifact = {
   /** The measured level leg and the served body level; no client gain row. */
   loudness: ScoreboardLoudness;
   transcripts: { sha256: string; redacted: string[] };
+  /**
+   * The report-only English-leak counter (voice-parity ticket 76), read from
+   * `transcripts`. It never adds a gate, never moves a PASS/FAIL; the count,
+   * the rate and the promotion decision travel with it so the artifact records
+   * both. Absent on an artifact written before the counter existed.
+   */
+  englishLeak?: EnglishLeakCount;
   humanRatings: HumanRatings;
   /** Blind-ballot binding as reviewable evidence: recording sha256, raters, protocol (ticket 28). */
   humanReview: HumanReview;
@@ -5602,6 +5610,7 @@ export function buildSkeletonArtifact(input: {
       note: measured ? goodbyeDrainGate.detail : prior.note,
     };
   }
+  const transcriptLines = redactLines(input.runnerStdout);
   return {
     schemaVersion: SCOREBOARD_SCHEMA_VERSION,
     recordedAt: new Date().toISOString(),
@@ -5643,8 +5652,14 @@ export function buildSkeletonArtifact(input: {
     },
     transcripts: {
       sha256: sha256Hex(input.runnerStdout),
-      redacted: redactLines(input.runnerStdout),
+      redacted: transcriptLines,
     },
+    // Report-only (voice-parity ticket 76): the count and the promotion
+    // decision are recorded, never folded into a gate.
+    englishLeak: englishLeakForArtifact({
+      subject,
+      transcripts: { redacted: transcriptLines },
+    }),
     humanRatings,
     humanReview: humanReview(
       humanRatings,

@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "voice": "estelle",
+  "locale": "fr",
+  "recording": {
+    "voice": "estelle",
+    "locale": "fr",
+    "asset": "public/voices/estelle.mp3",
+    "url": "/voices/estelle.mp3",
+    "sha256": "f9609eb7475640d2e20564a36828b7241ad95aafe9c2f7e76a31ae7d089400bc",
+    "line": "Bonjour, ici Voni ! On essaie un truc sympa : je vous montre ce que je sais faire pendant qu'on parle. On y va ?",
+    "lineSha256": "7a589e68f350b7536dd77415c4c1f795b185c563e9f88e4b796da267a3811f5e",
+    "durationMs": 13440,
+    "sampleRate": 24000,
+    "channels": 1,
+    "bitrateKbps": 160,
+    "source": "audition-clip"
+  },
+  "ballot": {
+    "axes": [
+      "timbre",
+      "accent",
+      "languageNaturalness"
+    ],
+    "scale": {
+      "min": 1,
+      "max": 5,
+      "pass": 5
+    },
+    "reasonRequiredBelow": 5
+  },
+  "verdict": null,
+  "generatedOn": "2026-10-29",
+  "source": "evidence/audition-clips/clips.json"
+}

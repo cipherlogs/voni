@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "voice": "jane",
+  "locale": "en",
+  "recording": {
+    "voice": "jane",
+    "locale": "en",
+    "asset": "public/voices/jane.mp3",
+    "url": "/voices/jane.mp3",
+    "sha256": "b74258e243b1005f4b4fcf213f366e73400afef4e67a7f3204c2c234373a0d77",
+    "line": "Hi, I'm Voni! Let's try something cool: I'll show you what I can do while we talk. Ready?",
+    "lineSha256": "1fc5f4bc46cd75037b68c4af616afb58740fb27478ec90652c45a7ff48f18ac6",
+    "durationMs": 5376,
+    "sampleRate": 24000,
+    "channels": 1,
+    "bitrateKbps": 160,
+    "source": "audition-clip"
+  },
+  "ballot": {
+    "axes": [
+      "timbre",
+      "accent",
+      "languageNaturalness"
+    ],
+    "scale": {
+      "min": 1,
+      "max": 5,
+      "pass": 5
+    },
+    "reasonRequiredBelow": 5
+  },
+  "verdict": null,
+  "generatedOn": "2026-10-29",
+  "source": "evidence/audition-clips/clips.json"
+}

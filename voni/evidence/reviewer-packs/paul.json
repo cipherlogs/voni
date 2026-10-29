@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "voice": "paul",
+  "locale": "en",
+  "recording": {
+    "voice": "paul",
+    "locale": "en",
+    "asset": "public/voices/paul.mp3",
+    "url": "/voices/paul.mp3",
+    "sha256": "a3d7dd1615a0e9f0fbde17b9739bc5bf622c4735d64888f982d8bc44165e8e3f",
+    "line": "Hi, I'm Voni! Let's try something cool: I'll show you what I can do while we talk. Ready?",
+    "lineSha256": "1fc5f4bc46cd75037b68c4af616afb58740fb27478ec90652c45a7ff48f18ac6",
+    "durationMs": 6408,
+    "sampleRate": 24000,
+    "channels": 1,
+    "bitrateKbps": 160,
+    "source": "audition-clip"
+  },
+  "ballot": {
+    "axes": [
+      "timbre",
+      "accent",
+      "languageNaturalness"
+    ],
+    "scale": {
+      "min": 1,
+      "max": 5,
+      "pass": 5
+    },
+    "reasonRequiredBelow": 5
+  },
+  "verdict": null,
+  "generatedOn": "2026-10-29",
+  "source": "evidence/audition-clips/clips.json"
+}
