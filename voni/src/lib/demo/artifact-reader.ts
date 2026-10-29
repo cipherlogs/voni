@@ -4,6 +4,10 @@ import {
   ARTIFACT_LATENCY_GAPS,
   ARTIFACT_PROVIDER_LEGS,
   ARTIFACT_SECTIONS,
+  CASCADE_NO_COMMIT_MARK_ABSENCE,
+  MANAGED_NO_COMMIT_MARK_ABSENCE,
+  MANAGED_NO_PARTIALS_ABSENCE,
+  MANAGED_NO_TOKEN_STREAM_ABSENCE,
   SCOREBOARD_SCHEMA_VERSION,
   isArtifactAbsence,
   parseGateRows,
@@ -401,11 +405,55 @@ function parseProviders(raw: unknown, source: string): ArtifactProviders | undef
   return record as ArtifactProviders;
 }
 
-/** Gaps each engine cannot produce: recorded as a named N/A, never zero (M13). */
-const UNAVAILABLE_GAPS: Record<ArtifactPipeline, readonly ArtifactLatencyGap[]> = {
-  cascade: ["commitToFirstPlayoutMs"],
-  managed: ["screenToFirstPartialMs", "speechCompleteToFirstTokenMs"],
+/**
+ * Gaps each engine cannot produce, with the reason the spec gives them (M13).
+ *
+ * These are the rows a subject's gates derive from its pipeline: the managed
+ * path has no partials and no token stream, and neither engine has a cascade
+ * commit mark on the artifact. Each row must be present with exactly this
+ * reason — omitted is a silent absence, a number (zero included) is a fake win,
+ * and another engine's reason is a fake value.
+ */
+export const PIPELINE_UNAVAILABLE_GAPS: Readonly<
+  Record<ArtifactPipeline, readonly { row: ArtifactLatencyGap; reason: string }[]>
+> = {
+  cascade: [{ row: "commitToFirstPlayoutMs", reason: CASCADE_NO_COMMIT_MARK_ABSENCE }],
+  managed: [
+    { row: "screenToFirstPartialMs", reason: MANAGED_NO_PARTIALS_ABSENCE },
+    { row: "speechCompleteToFirstTokenMs", reason: MANAGED_NO_TOKEN_STREAM_ABSENCE },
+    { row: "commitToFirstPlayoutMs", reason: MANAGED_NO_COMMIT_MARK_ABSENCE },
+  ],
 };
+
+/**
+ * The absence reasons only one engine may use. A cascade artifact that claims
+ * "no partials" is describing the managed path, not its own run; a managed
+ * artifact that claims "the cascade has no commit mark" is doing the reverse.
+ * Both are a fake value, refused by field.
+ */
+const MANAGED_ONLY_ABSENCES: ReadonlySet<string> = new Set([
+  MANAGED_NO_PARTIALS_ABSENCE,
+  MANAGED_NO_TOKEN_STREAM_ABSENCE,
+  MANAGED_NO_COMMIT_MARK_ABSENCE,
+]);
+const CASCADE_ONLY_ABSENCES: ReadonlySet<string> = new Set([CASCADE_NO_COMMIT_MARK_ABSENCE]);
+
+/** The reason a row cannot borrow: the other engine's named absence. */
+function foreignAbsenceReason(
+  pipeline: ArtifactPipeline,
+  gap: ArtifactLatencyGap,
+  value: unknown,
+  source: string,
+): void {
+  if (!isArtifactAbsence(value)) return;
+  const foreign = pipeline === "cascade" ? MANAGED_ONLY_ABSENCES : CASCADE_ONLY_ABSENCES;
+  if (!foreign.has(value.absent)) return;
+  throw new ArtifactReadError(
+    source,
+    `latency.${gap}`,
+    `records ${showValue(value.absent)}; that is the other engine's N/A and a ${pipeline} run cannot borrow it`,
+  );
+}
 
 /**
  * The three cascade gaps and the ledger marks each one is anchored on (M13).
@@ -557,6 +605,7 @@ function parseLatency(
     }
     if (isArtifactAbsence(value)) {
       assertNamedAbsence(value, `latency.${gap}`, source);
+      foreignAbsenceReason(pipeline, gap as ArtifactLatencyGap, value, source);
       continue;
     }
     throw new ArtifactReadError(
@@ -565,20 +614,27 @@ function parseLatency(
       `latency gap "${gap}" needs a number or a named N/A`,
     );
   }
-  for (const gap of UNAVAILABLE_GAPS[pipeline]) {
-    const value = record[gap];
+  for (const { row, reason } of PIPELINE_UNAVAILABLE_GAPS[pipeline]) {
+    const value = record[row];
     if (value === undefined) {
       throw new ArtifactReadError(
         source,
-        `latency.${gap}`,
-        `${pipeline} run leaves "${gap}" silently absent; it must record the named N/A (the gap does not exist on this engine)`,
+        `latency.${row}`,
+        `${pipeline} run leaves "${row}" silently absent; it must record the named N/A "${reason}" (the gap does not exist on this engine)`,
       );
     }
     if (typeof value === "number") {
       throw new ArtifactReadError(
         source,
-        `latency.${gap}`,
-        `${pipeline} run records "${gap}" as ${showValue(value)}; the gap does not exist on this engine and must be N/A`,
+        `latency.${row}`,
+        `${pipeline} run records "${row}" as ${showValue(value)}; the gap does not exist on this engine and must be the named N/A "${reason}"`,
+      );
+    }
+    if (isArtifactAbsence(value) && value.absent !== reason) {
+      throw new ArtifactReadError(
+        source,
+        `latency.${row}`,
+        `${pipeline} run names "${row}" ${showValue(value.absent)}; the named N/A on this engine is ${showValue(reason)}`,
       );
     }
   }
