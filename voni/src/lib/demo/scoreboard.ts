@@ -93,6 +93,10 @@ import { DEMO_VOICE_IDS, SILENCE_CHECK_IN_INSTRUCTIONS } from "./voni-agent";
 import { DEMO_INBOX_ADDRESS } from "./email-test";
 import { TAG_WORDS, containsTag, countTags } from "./test-tag";
 import { englishLeakForArtifact, type EnglishLeakCount } from "./english-leak";
+import {
+  answeredQuestionForArtifact,
+  type AnsweredQuestionCount,
+} from "./answered-question";
 import type { RunnerEvidence } from "./runner-evidence";
 import type { LatencyBand } from "./latency-split";
 import type {
@@ -2359,6 +2363,15 @@ export type ScoreboardArtifact = {
    * both. Absent on an artifact written before the counter existed.
    */
   englishLeak?: EnglishLeakCount;
+  /**
+   * The report-only already-answered counter (voice-parity ticket 77), read
+   * from the artifact's transcript: agent turns that asked for a value the
+   * caller had already supplied. It never adds a gate and never moves a
+   * PASS/FAIL; the count, the rate, the per-turn evidence and the promotion
+   * decision travel with it so the artifact records all four. Absent on an
+   * artifact written before the counter existed.
+   */
+  answeredQuestion?: AnsweredQuestionCount;
   humanRatings: HumanRatings;
   /** Blind-ballot binding as reviewable evidence: recording sha256, raters, protocol (ticket 28). */
   humanReview: HumanReview;
@@ -5658,6 +5671,21 @@ export function buildSkeletonArtifact(input: {
     englishLeak: englishLeakForArtifact({
       subject,
       transcripts: { redacted: transcriptLines },
+    }),
+    // Report-only (voice-parity ticket 77): the count and the promotion
+    // decision are recorded, never folded into a gate. The Call trace excerpt
+    // is preferred over the redacted transcript because an address survives
+    // there, so the evidence can name the value that was already given.
+    answeredQuestion: answeredQuestionForArtifact({
+      subject,
+      transcripts: { redacted: transcriptLines },
+      callTrace:
+        input.traceExcerpt && input.traceExcerpt.length > 0
+          ? {
+              sessionId: input.traceSessionId ?? null,
+              excerpt: input.traceExcerpt,
+            }
+          : null,
     }),
     humanRatings,
     humanReview: humanReview(
