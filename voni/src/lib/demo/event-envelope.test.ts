@@ -17,6 +17,7 @@ const FIXTURES = JSON.parse(
   managedCallScoped: Record<string, unknown>;
   cascadeCallScoped: Record<string, unknown>;
   cascadeOperational: Record<string, unknown>;
+  cascadeFallback: Record<string, unknown>;
 };
 
 function envelopeWith(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -104,7 +105,7 @@ test("an unknown pipeline or phase is refused by name", () => {
   assert.match(phase.message, /connect, turn, tool, drain, end/);
 });
 
-test("an operational event cannot carry subject or turn, and a call event cannot carry a leg", () => {
+test("an operational event cannot carry subject or turn", () => {
   for (const field of ["subject", "turn"] as const) {
     const error = refused(() =>
       parseEventEnvelope({ ...FIXTURES.cascadeOperational, [field]: "x" }, "operational.jsonl"),
@@ -113,12 +114,6 @@ test("an operational event cannot carry subject or turn, and a call event cannot
     assert.match(error.message, /leg in place of subject and turn/);
   }
 
-  const leg = refused(() =>
-    parseEventEnvelope({ ...FIXTURES.cascadeCallScoped, leg: "llm" }, "call.jsonl"),
-  );
-  assert.equal(leg.field, "leg");
-  assert.match(leg.message, /not a leg/);
-
   const missingLeg = refused(() => {
     const raw = { ...FIXTURES.cascadeOperational };
     delete raw.leg;
@@ -126,6 +121,28 @@ test("an operational event cannot carry subject or turn, and a call event cannot
   });
   assert.equal(missingLeg.field, "leg");
   assert.match(missingLeg.message, /missing required field/);
+});
+
+test("a call event keeps subject and turn and may name the provider leg it moved", () => {
+  const fallback = parseEventEnvelope(FIXTURES.cascadeFallback, "fallback.jsonl");
+
+  assert.equal(fallback.type, "provider_fallback");
+  assert.equal(fallback.pipeline, "cascade");
+  assert.equal(fallback.subject, "demo anna (en, browser)");
+  assert.equal(fallback.turn, "turn-3");
+  assert.equal(fallback.phase, "turn");
+  assert.equal(fallback.leg, "stt");
+  assert.equal(fallback.from, "meta");
+  assert.equal(fallback.to, "assemblyai");
+  assert.equal(fallback.trigger, "mid_turn_failure");
+  assert.equal(fallback.reason, "stt closed with 1013");
+
+  const missingSubject = refused(() => {
+    const raw = { ...FIXTURES.cascadeFallback };
+    delete raw.subject;
+    return parseEventEnvelope(raw, "no-subject.jsonl");
+  });
+  assert.equal(missingSubject.field, "subject");
 });
 
 test("a managed envelope carrying a cascade-only event is refused by name", () => {
@@ -223,6 +240,29 @@ test("the writer refuses a payload that would overwrite the envelope, and pipeli
     }),
   );
   assert.equal(managedOnly.field, "platformCapture");
+});
+
+test("the writer builds a provider fallback with its leg, rungs and trigger", () => {
+  const { event, rejectedKeys } = buildEventEnvelope({
+    pipeline: "cascade",
+    callId: "call-109",
+    type: "provider_fallback",
+    subject: "demo anna (en, browser)",
+    turn: "turn-3",
+    atMs: 900,
+    phase: "turn",
+    fields: {
+      leg: "stt",
+      from: "meta",
+      to: "assemblyai",
+      trigger: "mid_turn_failure",
+      reason: "stt closed with 1013",
+    },
+  });
+
+  assert.deepEqual(rejectedKeys, []);
+  assert.deepEqual(event, FIXTURES.cascadeFallback);
+  assert.doesNotMatch(JSON.stringify(event), /transcript|audio/);
 });
 
 test("the reader refuses a stream line that still carries a forbidden key, by name", () => {

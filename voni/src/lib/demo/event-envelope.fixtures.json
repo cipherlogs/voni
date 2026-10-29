@@ -28,5 +28,20 @@
     "leg": "llm",
     "atMs": 4200,
     "phase": "turn"
+  },
+  "cascadeFallback": {
+    "schemaVersion": 1,
+    "pipeline": "cascade",
+    "callId": "call-109",
+    "type": "provider_fallback",
+    "subject": "demo anna (en, browser)",
+    "turn": "turn-3",
+    "atMs": 900,
+    "phase": "turn",
+    "leg": "stt",
+    "from": "meta",
+    "to": "assemblyai",
+    "trigger": "mid_turn_failure",
+    "reason": "stt closed with 1013"
   }
 }

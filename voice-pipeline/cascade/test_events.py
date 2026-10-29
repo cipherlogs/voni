@@ -20,12 +20,21 @@ from pathlib import Path
 from cascade.events import (
     CALL_SCOPED_FIELDS,
     EVENT_SCHEMA_VERSION,
+    FALLBACK_EVENT_TYPE,
+    FALLBACK_TRIGGERS,
     OPERATIONAL_FIELDS,
     PHASES,
     PIPELINES,
     EventEnvelopeError,
     EventWriter,
+    Fallback,
+    connect_fallback,
+    emit_fallback,
+    turn_fallback,
 )
+from cascade.routing import CallSubject, decide
+
+SUBJECT = "demo anna (en, browser)"
 
 FIXTURES = json.loads(
     (
@@ -170,6 +179,262 @@ class RefusalTests(unittest.TestCase):
 
         self.assertNotIn("FORBIDDEN", source)
         self.assertNotIn("def redact", source)
+
+
+def cascade_writer(call_id: str = "call-109") -> EventWriter:
+    return EventWriter(pipeline="cascade", call_id=call_id)
+
+
+def emitted(
+    stream: list, writer: EventWriter, fallback, *, at_ms: float | int = 900
+) -> dict:
+    return emit_fallback(
+        writer, fallback, subject=SUBJECT, at_ms=at_ms, sink=stream.append
+    )
+
+
+def clean(stream: list) -> bool:
+    """Ticket 116 owns the gate; this is the one fact the gate reads.
+
+    A run is clean when no ``provider_fallback`` line was emitted. A refusal is
+    an eligibility fact and never produces this event.
+    """
+    return not any(event["type"] == FALLBACK_EVENT_TYPE for event in stream)
+
+
+class FallbackEmissionTests(unittest.TestCase):
+    def test_a_mid_turn_fallback_names_leg_rungs_trigger_turn_and_phase(self):
+        stream: list = []
+        event = emitted(
+            stream,
+            cascade_writer(),
+            turn_fallback(
+                "stt",
+                from_provider="meta",
+                to_provider="assemblyai",
+                trigger="mid_turn_failure",
+                turn="turn-3",
+                reason="stt closed with 1013",
+            ),
+        )
+
+        self.assertEqual(event, FIXTURES["cascadeFallback"])
+        self.assertEqual(stream, [event])
+        self.assertEqual(event["leg"], "stt")
+        self.assertEqual(event["from"], "meta")
+        self.assertEqual(event["to"], "assemblyai")
+        self.assertEqual(event["trigger"], "mid_turn_failure")
+        self.assertEqual(event["turn"], "turn-3")
+        self.assertEqual(event["phase"], "turn")
+
+    def test_a_connect_time_fallback_is_emitted_and_names_the_connect_phase(self):
+        stream: list = []
+        event = emitted(
+            stream,
+            cascade_writer(),
+            connect_fallback(
+                "llm", primary="spark", selected="gateway", trigger="breaker_open"
+            ),
+            at_ms=0,
+        )
+
+        self.assertEqual(event["type"], FALLBACK_EVENT_TYPE)
+        self.assertEqual(event["phase"], "connect")
+        self.assertIsNone(event["turn"])
+        self.assertEqual(event["leg"], "llm")
+        self.assertEqual(event["from"], "spark")
+        self.assertEqual(event["to"], "gateway")
+        self.assertEqual(stream, [event], "a connect-time fallback still reaches the stream")
+
+    def test_a_connect_and_a_mid_turn_fallback_are_two_events_with_the_right_phase(self):
+        stream: list = []
+        writer = cascade_writer()
+        emitted(
+            stream,
+            writer,
+            connect_fallback(
+                "stt", primary="meta", selected="assemblyai", trigger="breaker_open"
+            ),
+            at_ms=0,
+        )
+        emitted(
+            stream,
+            writer,
+            turn_fallback(
+                "llm",
+                from_provider="spark",
+                to_provider="gateway",
+                trigger="mid_turn_failure",
+                turn="turn-4",
+            ),
+            at_ms=1500,
+        )
+
+        self.assertEqual([event["type"] for event in stream], [FALLBACK_EVENT_TYPE] * 2)
+        self.assertEqual([event["phase"] for event in stream], ["connect", "turn"])
+        self.assertEqual([event["turn"] for event in stream], [None, "turn-4"])
+        self.assertEqual([event["leg"] for event in stream], ["stt", "llm"])
+
+    def test_every_fallback_is_built_by_the_one_envelope_writer(self):
+        stream: list = []
+        event = emitted(
+            stream,
+            EventWriter(pipeline="cascade", call_id="call-109"),
+            connect_fallback(
+                "tts", primary="assemblyai", selected="meta", trigger="manual_pin"
+            ),
+        )
+
+        self.assertEqual(
+            tuple(event), (*CALL_SCOPED_FIELDS, "leg", "from", "to", "trigger")
+        )
+        self.assertEqual(event["schemaVersion"], EVENT_SCHEMA_VERSION)
+        self.assertEqual(event["pipeline"], "cascade")
+        self.assertEqual(event["callId"], "call-109")
+        self.assertEqual(event["subject"], SUBJECT)
+
+        source = (Path(__file__).with_name("events.py")).read_text(encoding="utf8")
+        self.assertEqual(
+            source.count("FALLBACK_EVENT_TYPE"),
+            2,
+            "one definition and one emission site; a second emitter is a review failure",
+        )
+
+    def test_a_managed_writer_cannot_emit_a_provider_fallback(self):
+        stream: list = []
+        with self.assertRaises(EventEnvelopeError) as caught:
+            emitted(
+                stream,
+                EventWriter(pipeline="managed", call_id="call-109"),
+                connect_fallback(
+                    "stt", primary="meta", selected="assemblyai", trigger="breaker_open"
+                ),
+            )
+
+        self.assertEqual(caught.exception.field, "pipeline")
+        self.assertIn("cascade", str(caught.exception))
+        self.assertEqual(stream, [], "a refused managed fallback writes nothing")
+
+    def test_a_routing_refusal_is_a_routing_decision_not_a_fallback(self):
+        decision = decide("off", CallSubject("demo-anna", kind="demo"))
+        self.assertEqual(decision.disposition, "managed")
+        self.assertFalse(decision.permitted)
+
+        stream: list = []
+        with self.assertRaises(EventEnvelopeError) as caught:
+            connect_fallback(
+                "stt",
+                primary="meta",
+                selected="assemblyai",
+                trigger="routing_refusal",
+            )
+
+        self.assertEqual(caught.exception.field, "trigger")
+        self.assertIn("routing", str(caught.exception))
+        self.assertIn("not a provider fault", str(caught.exception))
+        self.assertEqual(stream, [])
+        self.assertNotIn("provider_fallback", json.dumps(decision.to_document()))
+
+    def test_a_run_with_a_fallback_event_is_not_clean(self):
+        stream: list = []
+        writer = cascade_writer()
+        # A connect on the primary rung emits nothing, so the run reads clean.
+        self.assertTrue(clean(stream))
+
+        emitted(
+            stream,
+            writer,
+            connect_fallback(
+                "llm", primary="spark", selected="gateway", trigger="breaker_open"
+            ),
+            at_ms=10,
+        )
+
+        self.assertFalse(clean(stream), "a connect-time fallback contaminates the run")
+        self.assertEqual(
+            [event["trigger"] for event in stream], ["breaker_open"]
+        )
+
+
+class FallbackRefusalTests(unittest.TestCase):
+    def refused(self, fn) -> EventEnvelopeError:
+        with self.assertRaises(EventEnvelopeError) as caught:
+            fn()
+        return caught.exception
+
+    def test_an_unknown_leg_is_refused_by_name(self):
+        error = self.refused(
+            lambda: connect_fallback(
+                "voice", primary="meta", selected="assemblyai", trigger="breaker_open"
+            )
+        )
+
+        self.assertEqual(error.field, "leg")
+        self.assertIn("voice", str(error))
+
+    def test_from_and_to_must_be_different_providers(self):
+        error = self.refused(
+            lambda: turn_fallback(
+                "stt",
+                from_provider="meta",
+                to_provider="meta",
+                trigger="mid_turn_failure",
+                turn="turn-1",
+            )
+        )
+
+        self.assertEqual(error.field, "to")
+        self.assertIn("different", str(error))
+
+    def test_a_connect_fallback_cannot_name_a_turn(self):
+        error = self.refused(
+            lambda: Fallback(
+                leg="stt",
+                from_provider="meta",
+                to_provider="assemblyai",
+                trigger="mid_turn_failure",
+                phase="connect",
+                turn="turn-1",
+            )
+        )
+
+        self.assertEqual(error.field, "turn")
+        self.assertIn("connect", str(error))
+
+    def test_a_mid_turn_fallback_must_name_its_turn(self):
+        error = self.refused(
+            lambda: turn_fallback(
+                "stt",
+                from_provider="meta",
+                to_provider="assemblyai",
+                trigger="mid_turn_failure",
+                turn=None,
+            )
+        )
+
+        self.assertEqual(error.field, "turn")
+        self.assertIn("turn", str(error))
+
+    def test_an_unknown_trigger_is_refused_by_name(self):
+        error = self.refused(
+            lambda: connect_fallback(
+                "stt", primary="meta", selected="assemblyai", trigger="vibes"
+            )
+        )
+
+        self.assertEqual(error.field, "trigger")
+        self.assertIn("vibes", str(error))
+        self.assertIn(", ".join(FALLBACK_TRIGGERS), str(error))
+
+    def test_a_budget_stop_is_not_a_fallback(self):
+        for trigger in ("budget_stop", "eligibility_refusal"):
+            error = self.refused(
+                lambda trigger=trigger: connect_fallback(
+                    "stt", primary="meta", selected="assemblyai", trigger=trigger
+                )
+            )
+            self.assertEqual(error.field, "trigger")
+            self.assertIn("not a provider fault", str(error))
 
 
 if __name__ == "__main__":
