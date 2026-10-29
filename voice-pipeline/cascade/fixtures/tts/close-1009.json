@@ -1,0 +1,47 @@
+{
+  "name": "close-1009",
+  "description": "A message above the websocket size limit is a bug in our Generate sizing: it fails the call, alerts, and never retries or opens the breaker.",
+  "kind": "close",
+  "transport": "browser",
+  "voice_id": "anna",
+  "begin": {
+    "type": "Begin",
+    "id": "10885144-0d4b-4928-9eff-ef292a352937",
+    "configuration": {
+      "language": "English",
+      "sample_rate": 24000,
+      "encoding": "pcm_s16le",
+      "voice_id": "anna",
+      "model": "assemblyai-tts-1",
+      "word_boundaries": true,
+      "limits": {
+        "max_generate_text_length": 2000,
+        "max_control_frames_per_sec": 20.0,
+        "max_egress_audio_buffer_ms": 300000,
+        "text_throttle_max_chars_per_sec": 100.0,
+        "text_max_buffer_chars": 8000,
+        "session_ttl_grace_sec": 60
+      },
+      "unknown_params": []
+    },
+    "expires_at": 1789556741
+  },
+  "frames": [],
+  "close_code": 1009,
+  "expect": {
+    "sent": [],
+    "action": null,
+    "failure_class": "bug",
+    "retried": false,
+    "needs_reconnect": false,
+    "reconnects": 0,
+    "breaker_opens": 0,
+    "alerts": 1,
+    "failures": [
+      "bug"
+    ],
+    "visible": true,
+    "call_ended": true,
+    "error": "SynthesisCallFailure"
+  }
+}

@@ -1,0 +1,66 @@
+{
+  "name": "begin-echo-mismatch",
+  "description": "A session that echoes 8 kHz instead of the browser transport's 24 kHz is not the session the request asked for: the call is refused before any frame is sent or played, and the mismatched field is recorded by name.",
+  "kind": "open",
+  "transport": "browser",
+  "voice_id": "anna",
+  "begin": {
+    "type": "Begin",
+    "id": "10885144-0d4b-4928-9eff-ef292a352937",
+    "configuration": {
+      "language": "English",
+      "sample_rate": 8000,
+      "encoding": "pcm_s16le",
+      "voice_id": "anna",
+      "model": "assemblyai-tts-1",
+      "word_boundaries": true,
+      "limits": {
+        "max_generate_text_length": 2000,
+        "max_control_frames_per_sec": 20.0,
+        "max_egress_audio_buffer_ms": 300000,
+        "text_throttle_max_chars_per_sec": 100.0,
+        "text_max_buffer_chars": 8000,
+        "session_ttl_grace_sec": 60
+      },
+      "unknown_params": []
+    },
+    "expires_at": 1789556741
+  },
+  "frames": [],
+  "expect": {
+    "url_params": {
+      "voice_id": "anna",
+      "language": "English",
+      "sample_rate": "24000",
+      "encoding": "pcm_s16le",
+      "model_id": "assemblyai-tts-1",
+      "word_boundaries": "true"
+    },
+    "echo": {
+      "voice_id": "anna",
+      "language": "English",
+      "sample_rate": 8000,
+      "encoding": "pcm_s16le",
+      "model": "assemblyai-tts-1"
+    },
+    "expires_at": 1789556741,
+    "limits": {
+      "max_generate_text_length": 2000,
+      "max_control_frames_per_sec": 20.0,
+      "max_egress_audio_buffer_ms": 300000,
+      "text_throttle_max_chars_per_sec": 100.0,
+      "text_max_buffer_chars": 8000,
+      "session_ttl_grace_sec": 60
+    },
+    "unknown_params": [],
+    "mismatches": [
+      {
+        "field": "sample_rate",
+        "requested": 24000,
+        "echoed": 8000
+      }
+    ],
+    "sent": [],
+    "error": "SynthesisEchoError"
+  }
+}
