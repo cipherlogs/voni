@@ -13,9 +13,12 @@ seam ticket 65 implements: ``receive()`` yields an already-decoded
 ``close()`` releases the socket. Wire parsing, base64 and protocol versions stay
 in the transport, so this module cannot become a second protocol.
 
-:class:`CallStream` is the turn layer's seam: the greeting/stream start, each
-STT event, a context update, the drain and the turn count. The orchestrator
-tickets implement it; this module only orders the call around it.
+:class:`CallStream` is the turn layer's seam: the stream start, each STT
+event, a context update, the drain and the turn count. The orchestrator tickets
+implement it; this module only orders the call around it. The greeting is not
+part of the turn layer: the lifecycle speaks the body's greeting through the
+opened voice (ticket 77) before the stream starts, so no user audio can be
+processed ahead of it.
 
 Nothing unbounded sits on the end path. Every drain, close and event-pump wait
 reads ``deploy.drain_max_wait_ms`` from :mod:`cascade.thresholds` (ticket 76
@@ -44,6 +47,7 @@ from typing import Any, Protocol
 from cascade.body_map import BodyFieldError, CascadeBody, adapt_body
 from cascade.eligibility import EligibilityDecision
 from cascade.envelope import EnvelopeError, verify_envelope
+from cascade.greeting import AudioSink, CallGreeting, GreetingOutcome
 from cascade.thresholds import ThresholdError, require_bound
 from cascade.voice_binding import VoiceBindingError
 from metrics import TimingLedger
@@ -82,7 +86,7 @@ class CallStream(Protocol):
     """The turn layer's surface for one call."""
 
     async def start(self) -> None:
-        """Begin the call: greet if the body has a greeting, then stream."""
+        """Begin the turn layer once the opening (the greeting) has been said."""
 
     async def event(self, event: Any) -> None:
         """One provider event, in arrival order."""
@@ -423,6 +427,7 @@ class CallEnd:
     turns: int
     ended_by: str
     drain: DrainOutcome
+    greeting: GreetingOutcome | None = None
     error: CallFailure | None = None
 
     def __post_init__(self) -> None:
@@ -443,6 +448,8 @@ class CallEnd:
             "endedBy": self.ended_by,
             "drain": self.drain.to_document(),
         }
+        if self.greeting is not None:
+            document["greeting"] = self.greeting.to_document()
         if self.error is not None:
             document["error"] = self.error.to_document()
         return document
@@ -476,6 +483,7 @@ class CallLifecycle:
         open_voice: LegFactory,
         open_model: LegFactory | None = None,
         stream: CallStream | None = None,
+        send_audio: AudioSink | None = None,
         ledger: TimingLedger | None = None,
         clock: Callable[[], float] | None = None,
         envelope_clock: Callable[[], float] = time.time,
@@ -491,6 +499,7 @@ class CallLifecycle:
         self._open_voice = open_voice
         self._open_model = open_model
         self._stream: CallStream = stream if stream is not None else NullStream()
+        self._send_audio = send_audio
         self._clock = clock if clock is not None else time.monotonic
         self._ledger = (
             ledger if ledger is not None else TimingLedger(now=self._clock)
@@ -501,6 +510,7 @@ class CallLifecycle:
         self._eligibility = eligibility
         self._event_failure: CallFailure | None = None
         self._verified: CascadeBody | None = None
+        self._greeting: GreetingOutcome | None = None
 
     # -- verification -----------------------------------------------------
 
@@ -576,6 +586,22 @@ class CallLifecycle:
             )
 
         try:
+            self._greeting = await self._speak_greeting(body, opened)
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            failure = _failure("greeting", error)
+            drain = await self._close_all(opened, event_task=None)
+            return await self._finish(
+                ended_by="error",
+                opened=opened,
+                error=failure,
+                drain=drain,
+                eligibility=self._eligibility_document(),
+                missing_reason="the call ended before this leg opened",
+            )
+
+        try:
             await self._stream.start()
         except asyncio.CancelledError:
             raise
@@ -631,6 +657,36 @@ class CallLifecycle:
         )
 
     # -- streaming and drain ----------------------------------------------
+
+    async def _speak_greeting(
+        self, body: CascadeBody, opened: list[OpenedLeg]
+    ) -> GreetingOutcome | None:
+        """Say the body's greeting before the turn layer may process any audio.
+
+        A body without a greeting is an intentional silent open and is recorded
+        as such. A body with a greeting but no audio sink would open silently,
+        so it fails by name instead of dropping the line.
+        """
+        if not body.has_greeting:
+            return GreetingOutcome.silent(
+                "the body has no greeting; the call opens silently by design"
+            )
+        if self._send_audio is None:
+            raise CallFailure(
+                name="NoAudioSink",
+                stage="greeting",
+                message=(
+                    "the body has a greeting but no audio sink is wired, so the "
+                    "call would open silently"
+                ),
+            )
+        voice = next(
+            (leg.session for leg in opened if leg.leg == "tts"), None
+        )
+        greeting = CallGreeting(
+            voice=voice, ledger=self._ledger, sink=self._send_audio
+        )
+        return await greeting.speak(body)
 
     async def _pump(self, session: Any) -> None:
         """Forward provider events to the turn layer until the stream ends."""
@@ -827,6 +883,7 @@ class CallLifecycle:
             turns=self._turns(),
             ended_by=ended_by,
             drain=drain,
+            greeting=self._greeting,
             error=error,
         )
         try:
@@ -846,6 +903,13 @@ async def _invoke(factory: Callable[[], Any]) -> None:
     result = factory()
     if inspect.isawaitable(result):
         await result
+
+
+def _failure(stage: str, error: BaseException) -> CallFailure:
+    """Keep a named call failure as-is; wrap any other exception with its name."""
+    if isinstance(error, CallFailure):
+        return error
+    return CallFailure.from_exception(stage, error)
 
 
 def _closer(session: Any) -> Callable[[], Any] | None:
