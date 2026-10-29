@@ -184,6 +184,22 @@ test("the check-in never lands on a caller who just started talking", () => {
   assert.deepEqual(sent, []);
 });
 
+test("a check-in whose reply never starts is not sent again in the same stretch", () => {
+  const { floor, sent, advance } = rig();
+  floor.setSilenceCheckIn({ afterMs: 15_000, instructions: "Still with me?", allowed: () => true });
+  advance(15_100);
+  assert.deepEqual(sent, ["Still with me?"]);
+  // The platform never answers the reply.create: the floor frees itself after
+  // 4s, but the stretch stays re-armed only by caller speech, so no second
+  // check-in can nag while the caller is still silent.
+  advance(60_000);
+  assert.deepEqual(sent, ["Still with me?"], "one check-in per silent stretch");
+  floor.callerSpeechStarted();
+  floor.callerTurnDone();
+  advance(18_000);
+  assert.deepEqual(sent, ["Still with me?", "Still with me?"], "caller speech re-arms it");
+});
+
 test("a long sentence with sparse partials holds the floor until speech stops", () => {
   const { floor, sent, advance } = rig();
   floor.callerSpeechStarted();

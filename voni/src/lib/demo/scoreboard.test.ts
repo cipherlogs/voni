@@ -80,6 +80,7 @@ import {
   gateVoicePlayback,
   isRealCutExpected,
   isResumeInstructions,
+  isSilenceCheckInInstructions,
   judgePostCutAnswer,
   meaningBasedEndOfTurnGate,
   measureCutLatency,
@@ -89,6 +90,7 @@ import {
   percentile,
   postCutAnswerText,
   REAL_CUT_MAX_MS,
+  SILENCE_CHECK_IN_MAX_MS,
   SILENCE_CHECK_IN_TARGET_MS,
   redactTranscript,
   regressionVoices,
@@ -129,7 +131,7 @@ import {
   goldenWindowExpectations,
 } from "./scoreboard-budgets";
 import { judgeOverlap } from "../voice/barge-in";
-import { DEMO_VOICE_IDS, SILENCE_CHECK_IN_MS } from "./voni-agent";
+import { DEMO_VOICE_IDS, SILENCE_CHECK_IN_INSTRUCTIONS, SILENCE_CHECK_IN_MS } from "./voni-agent";
 import { buildDemoAgentBody } from "./stored-agents";
 import { VOICE_OUTPUT_VOLUME, voicePlaybackGain } from "../agents/voices";
 
@@ -2159,6 +2161,139 @@ test("dead air: 15s of silence with exactly one clean check-in passes", () => {
   assert.ok(gate.detail.includes("15,200") || gate.detail.includes("15200"), `want the timing, got: ${gate.detail}`);
 });
 
+test("dead air: a zero-check-in FAIL cites the silence's call trace turn", () => {
+  const gate = evaluateDeadAir({
+    gapsMs: [],
+    longestSilenceMs: 16_000,
+    checkIns: [],
+    silences: [
+      {
+        startMs: 1_000,
+        endMs: 17_000,
+        durationMs: 16_000,
+        trace: "at call trace turn 1 (sess_sil); window 1.00s–17.00s",
+      },
+    ],
+  });
+  assert.equal(gate.status, "FAIL");
+  assert.match(gate.detail, /0 check-ins/);
+  assert.match(gate.detail, /call trace turn 1/);
+  assert.match(gate.detail, /window 1\.00s–17\.00s/);
+});
+
+test("dead air: a zero-check-in FAIL says no turn was merged when the evidence has none", () => {
+  const gate = evaluateDeadAir({ gapsMs: [], longestSilenceMs: 16_000, checkIns: [] });
+  assert.equal(gate.status, "FAIL");
+  assert.match(gate.detail, /no call trace turn merged/);
+});
+
+test("dead air: a two-check-in FAIL cites the turn of the extra check-in", () => {
+  const gate = evaluateDeadAir({
+    gapsMs: [],
+    longestSilenceMs: 17_000,
+    checkIns: [
+      { atSilenceMs: 15_200, overCaller: false, trace: "at call trace turn 2 (sess_sil)" },
+      { atSilenceMs: 16_400, overCaller: false, trace: "at call trace turn 4 (sess_sil)" },
+    ],
+  });
+  assert.equal(gate.status, "FAIL");
+  assert.match(gate.detail, /2 check-ins/);
+  assert.match(gate.detail, /16,?400ms/);
+  assert.match(gate.detail, /call trace turn 4/, "the FAIL cites where the count went wrong");
+});
+
+test("dead air: an early check-in FAIL cites its turn, or says none was merged", () => {
+  const cited = evaluateDeadAir({
+    gapsMs: [],
+    longestSilenceMs: 16_000,
+    checkIns: [{ atSilenceMs: 5_000, overCaller: false, trace: "at call trace turn 1 (sess_sil)" }],
+  });
+  assert.equal(cited.status, "FAIL");
+  assert.match(cited.detail, /5,?000ms/);
+  assert.match(cited.detail, /call trace turn 1/);
+
+  const bare = evaluateDeadAir({
+    gapsMs: [],
+    longestSilenceMs: 16_000,
+    checkIns: [{ atSilenceMs: 5_000, overCaller: false }],
+  });
+  assert.match(bare.detail, /no call trace turn merged/);
+});
+
+test("the runner counts only the demo's exact check-in instructions", () => {
+  assert.equal(isSilenceCheckInInstructions(SILENCE_CHECK_IN_INSTRUCTIONS), true);
+  assert.equal(isSilenceCheckInInstructions(`  ${SILENCE_CHECK_IN_INSTRUCTIONS}\n`), true);
+  assert.equal(isSilenceCheckInInstructions("Still with me?"), false, "a short line is not the floor's check-in");
+  assert.equal(isSilenceCheckInInstructions("Say exactly this: Still with me? Take your time."), false);
+});
+
+test("free-floor silence: a timeline with no check-ins still exposes the 15s stretch", () => {
+  const evidence = deriveFreeFloorSilence({
+    startedMs: 0,
+    endedMs: 18_000,
+    agentAudio: [{ startMs: 0, endMs: 1_000 }],
+    callerSpeech: [],
+    checkIns: [],
+  });
+  assert.deepEqual(evidence.checkIns, []);
+  assert.equal(evidence.longestSilenceMs, 17_000);
+  const gate = evaluateDeadAir({
+    gapsMs: evidence.gapsMs,
+    gapWindows: evidence.gapWindows,
+    silences: evidence.silences,
+    longestSilenceMs: evidence.longestSilenceMs,
+    checkIns: evidence.checkIns,
+  });
+  assert.equal(gate.status, "FAIL");
+  assert.match(gate.detail, /0 check-ins/);
+});
+
+test("free-floor silence: two check-ins in the stretch both land at their offsets and FAIL", () => {
+  const evidence = deriveFreeFloorSilence({
+    startedMs: 0,
+    endedMs: 34_000,
+    agentAudio: [{ startMs: 0, endMs: 1_000 }],
+    callerSpeech: [],
+    checkIns: [
+      { atMs: 16_200, overCaller: false },
+      { atMs: 32_400, overCaller: false },
+    ],
+  });
+  assert.deepEqual(evidence.checkIns, [
+    { atMs: 16_200, atSilenceMs: 15_200, overCaller: false },
+    { atMs: 32_400, atSilenceMs: 31_400, overCaller: false },
+  ]);
+  const gate = evaluateDeadAir({
+    gapsMs: evidence.gapsMs,
+    longestSilenceMs: evidence.longestSilenceMs,
+    checkIns: evidence.checkIns,
+  });
+  assert.equal(gate.status, "FAIL");
+  assert.match(gate.detail, /2 check-ins/);
+});
+
+test("free-floor silence: a check-in before 15s of silence FAILs as early", () => {
+  const evidence = deriveFreeFloorSilence({
+    startedMs: 0,
+    endedMs: 18_000,
+    agentAudio: [
+      { startMs: 0, endMs: 1_000 },
+      { startMs: 17_000, endMs: 18_000 },
+    ],
+    callerSpeech: [],
+    checkIns: [{ atMs: 6_000, overCaller: false }],
+  });
+  assert.deepEqual(evidence.checkIns, [{ atMs: 6_000, atSilenceMs: 5_000, overCaller: false }]);
+  const gate = evaluateDeadAir({
+    gapsMs: evidence.gapsMs,
+    longestSilenceMs: evidence.longestSilenceMs,
+    checkIns: evidence.checkIns,
+  });
+  assert.equal(gate.status, "FAIL");
+  assert.match(gate.detail, /5,?000ms/);
+  assert.match(gate.detail, /before 15,?000ms/);
+});
+
 test("free-floor silence: gaps between audible turns are measured from the session timeline", () => {
   const evidence = deriveFreeFloorSilence({
     startedMs: 0,
@@ -2240,7 +2375,7 @@ test("free-floor silence: a timely check-in covers a 15s silence and reports its
   assert.deepEqual(evidence.gapsMs, []);
   assert.equal(evidence.longestSilenceMs, 15_800);
   assert.equal(evidence.silences[0].coveredBy, "check-in");
-  assert.deepEqual(evidence.checkIns, [{ atSilenceMs: 15_000, overCaller: false }]);
+  assert.deepEqual(evidence.checkIns, [{ atMs: 16_200, atSilenceMs: 15_000, overCaller: false }]);
   const gate = evaluateDeadAir({
     gapsMs: evidence.gapsMs,
     gapWindows: evidence.gapWindows,
@@ -4058,6 +4193,7 @@ test("every gate constant derives from the frozen budget table", () => {
   assert.equal(FILLER_RESUME_TAIL_BUDGET_MS, SCOREBOARD_BUDGETS.fillerResumeTailMs.value);
   assert.equal(DEAD_AIR_MAX_MS, SCOREBOARD_BUDGETS.deadAirMaxMs.value);
   assert.equal(SILENCE_CHECK_IN_TARGET_MS, SCOREBOARD_BUDGETS.silenceCheckInTargetMs.value);
+  assert.equal(SILENCE_CHECK_IN_MAX_MS, SCOREBOARD_BUDGETS.silenceCheckInMaxMs.value);
   assert.equal(SILENCE_CHECK_IN_TARGET_MS, SILENCE_CHECK_IN_MS, "the budget quotes the pipeline's check-in");
   assert.equal(DOUBLE_TALK_MAX_OVERLAP_MS, SCOREBOARD_BUDGETS.doubleTalkMaxOverlapMs.value);
   assert.equal(DOUBLE_TALK_FADE_OUT_S, SCOREBOARD_BUDGETS.doubleTalkFadeOutS.value);
