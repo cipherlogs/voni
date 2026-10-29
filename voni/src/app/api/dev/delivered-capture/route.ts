@@ -9,9 +9,10 @@ import { writeDeliveredCapture } from "@/lib/voice/delivered-capture-store";
  * the gitignored `voni/.captures/` working directory and returns the path so
  * a human can pair it with the platform and reference captures. A production
  * build has no business writing audio to disk: the route does not exist there.
+ *
+ * No `runtime` segment config: `cacheComponents` requires the Node.js runtime,
+ * and Next 16 rejects an explicit `runtime` export on a route.
  */
-export const runtime = "nodejs";
-
 export async function POST(req: Request): Promise<NextResponse> {
   if (process.env.NODE_ENV === "production") {
     return new NextResponse(null, { status: 404 });
