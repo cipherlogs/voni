@@ -11,12 +11,16 @@
  *     cushion of audio (or the defined lull in arrivals) before it starts, and
  *     its gain never follows how much is left. The cushion itself is held by
  *     slow drift correction: a stream that arrives a hair slower than the
- *     device plays is played a hair slower, never pumped.
+ *     device plays is played a hair slower, never pumped. A reply that runs
+ *     dry mid-stream resumes on the next audio — a short cushion, refilled by
+ *     the same corrector — instead of waiting for a fresh target.
  *   - Per-chunk resampling. Each 24 kHz buffer resampled on its own to the
  *     device rate leaves a seam at every join. Here a single linear resampler
  *     carries its phase across chunks, so the joins don't exist.
  *   - Hard edges. Starts ramp in over EDGE_S, the source running dry fades out
- *     over EDGE_S, and `flush` fades out over the time given by the main thread.
+ *     over EDGE_S (and resumes at once if the audio returns), and `flush`
+ *     fades out over the time given by the main thread. Never a fade derived
+ *     from how much audio is left.
  *
  * Messages in:  {type:"play", seq, rate, samples: Float32Array}
  *               {type:"flush", fadeS}
@@ -89,6 +93,19 @@ const DRIFT_QUIET_S = 0.1;
  */
 const LULL_S = 0.5;
 /**
+ * Resume after a dry-out. A buffer running dry mid-reply is a stall, not the
+ * end of the reply: the caller is owed the rest of the sentence, so the next
+ * audio to arrive continues it at once, on the short cushion that audio
+ * provides, and the drift corrector refills the cushion afterwards. Waiting
+ * for a whole new target cushion here is the fixed half-second hole this
+ * replaces.
+ *
+ * A gap longer than this is a new reply, not a resume: it waits for the target
+ * like any reply start, so a conversation's jitter budget is not spent on a
+ * stall that is really a new turn.
+ */
+const RESUME_WINDOW_S = 1;
+/**
  * Fade at a reply boundary: the start of a reply, and the point the source
  * runs dry (a reply ending, or a stall). Never from how much is left.
  */
@@ -120,6 +137,8 @@ class PlayoutProcessor extends AudioWorkletProcessor {
     this.drift = 0;
     this.hold = 0; // last sample before the source ran dry, faded out over EDGE_S
     this.holdLeft = 0; // samples left in that fade-out; 0 when not fading
+    /** When the source last ran dry: the window in which later audio resumes it. */
+    this.dryAt = -Infinity;
     /** EDGE_S in output samples, and the matching per-sample gain step. */
     this.edgeSamples = Math.round(EDGE_S * sampleRate);
     this.gainStep = 1 / (EDGE_S * sampleRate);
@@ -196,8 +215,10 @@ class PlayoutProcessor extends AudioWorkletProcessor {
     while (this.frac >= 1) {
       const s = this.take();
       if (s === null) {
-        // Dry. Start the fade-out from the sample just emitted.
+        // Dry. Start the fade-out from the sample just emitted, and remember
+        // when: audio arriving soon after this resumes the reply, not a new one.
         this.playing = false;
+        this.dryAt = currentTime;
         this.hold = y;
         this.holdLeft = this.edgeSamples;
         this.a = this.b = this.frac = 0;
@@ -218,6 +239,7 @@ class PlayoutProcessor extends AudioWorkletProcessor {
     this.gain = 0;
     this.hold = 0;
     this.holdLeft = 0;
+    this.dryAt = -Infinity;
     // A reply starts on the target cushion, so there is nothing to correct yet.
     this.adjust = 0;
     this.drift = 0;
@@ -267,6 +289,7 @@ class PlayoutProcessor extends AudioWorkletProcessor {
     this.a = this.b = this.frac = 0;
     this.adjust = 0;
     this.drift = 0;
+    this.dryAt = -Infinity;
   }
 
   /** Dev pop recorder: flag what the speaker is about to click on. */
@@ -325,12 +348,16 @@ class PlayoutProcessor extends AudioWorkletProcessor {
     const out = outputs[0][0];
     // Start only on the target cushion, or once arrivals have paused for the
     // defined lull. A reply shorter than the cushion therefore still plays, and
-    // a jitter trace never starts on less than the target. Never start under a
-    // flush tail: tail + a loud new reply summed past full scale (measured
-    // 1.49), which the device clips into a crackle — the tail is ≤40ms.
+    // a jitter trace never starts on less than the target. The one exception is
+    // a reply that just ran dry: audio arriving inside the resume window is the
+    // rest of that reply and starts at once, on whatever short cushion arrived;
+    // the corrector refills it. Never start under a flush tail: tail + a loud
+    // new reply summed past full scale (measured 1.49), which the device clips
+    // into a crackle — the tail is ≤40ms.
     if (!this.playing && this.queued > 0 && !this.tail && this.holdLeft === 0) {
       const lull = currentTime - this.lastPush >= LULL_S;
-      if (this.queued >= TARGET_CUSHION_S * this.rate || lull) this.start();
+      const resuming = currentTime - this.dryAt <= RESUME_WINDOW_S;
+      if (resuming || this.queued >= TARGET_CUSHION_S * this.rate || lull) this.start();
     }
     const dt = out.length / sampleRate;
     if (this.playing) this.correct(dt, DRIFT_SLEW_PER_S * dt);

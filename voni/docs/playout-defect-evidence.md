@@ -94,3 +94,41 @@ worklet, so it only asserts a held cushion is flat and the reply never breaks up
 Everything above is synthetic and rendered in memory; there are no binary artifacts to
 check in. A rendered buffer would go in a gitignored working directory (`voni/scoreboard-runs/`
 or `.eval-clips/`) if one were kept.
+
+## After ticket 27: the fixed hole is gone
+
+Ticket 27 removes the last half of the defect: a dry-out no longer waits for a fresh
+target cushion. The per-sample envelope was already gone (ticket 25); the hole is what
+remained. Measured on `ticket/27-boundary-fades` with the same trace, the same 10 ms
+chunks and the same 48 kHz render:
+
+| trace | inserted silence | hole | resume wait after the first post-stall chunk |
+| --- | --- | --- | --- |
+| dry-out, before 27 | 1 | **0.511 s** at 0.991 s | **0.491 s** (a whole new cushion) |
+| dry-out, after 27 | 1 | **0.015 s** at 0.996 s | **0.001 s** (the next audio resumes it) |
+
+The residual 15 ms is the network's, not the worklet's: the stall is 510 ms against a
+~500 ms cushion, so the buffer is empty for about one chunk before the next one arrives,
+bounded by the 5 ms edge fade at each end. The replay is
+`voni/src/lib/voice/playout-boundary.test.ts`, which prints the row:
+
+```
+cd voni && node --import tsx --test src/lib/voice/playout-boundary.test.ts
+# dry-out: hole 0.015 s at 0.996 s, refill wait 0.001 s
+```
+
+**The resume policy.** A reply that has started and runs dry stays open: audio arriving
+within `RESUME_WINDOW_S = 1` second of the dry-out continues it at once, on whatever
+short cushion that audio provides, and the drift corrector (ticket 26) plays it slower to
+refill. A gap longer than the window is a new turn, not a resume, so the next audio waits
+for the target cushion like any reply start; the jitter budget is not spent on a gap that
+is really a new reply. The boundary fades remain: a 5 ms ramp in at a reply start, a 5 ms
+fade at the dry-out, and the main thread's fade on a deliberate `flush`.
+
+**For ticket 28.** The 07 characterisation (`playout-defect.test.ts`) is still skipped.
+The gate it replaces can assert, on the 510 ms dry-out trace: at most one interior
+silence, shorter than 0.1 s, and a resume less than 50 ms after the first post-stall
+chunk arrives (the fixed hole would fail both at ~0.5 s). `detectBreakups` at its default
+-60 dBFS floor still does not see a deliberately faded cut (see above), so gate the zero
+run or the resume latency rather than the default breakup edge rule. Keep the stall
+inside cushion + 1 s or it is a new turn by design.
