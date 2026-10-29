@@ -32,8 +32,13 @@ and never yielded, and the first content delta marks ``first_token``. The turn
 record also holds usage, the accumulated tool calls and the finish disposition.
 Tool arguments are parsed and validated against the tool's declared schema
 before a request is emitted; a correctable failure becomes a ``tool`` result the
-model fixes next request, while an unenforceable schema fails the turn. The
-failure/retry policy is ticket 42; the seam it fills is documented where it is.
+model fixes next request, while an unenforceable schema fails the turn.
+
+Failures follow the spec's phase policy: a 400 is a conversation bug (fail the
+turn and alert, never open the leg), while 429/5xx/timeouts retry once before
+anything reached the caller and otherwise open the leg for future calls. A
+reply already delivered is never restarted, because a second completion would
+repeat speech; a second failure on the leg ends the call.
 
 The per-turn record is how a caller reads what the stream produced without
 re-parsing it: pass a :class:`MetaLLMTurn` to ``complete()`` (or read
@@ -47,11 +52,13 @@ import hashlib
 import json
 import os
 import re
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+from cascade.failures import FailureClass, FailureVerdict, classify
+from cascade.ladders import CallRungs
 from cascade.model_guard import resolve_model
 from providers import LLMStream, PrefetchHandle, TokenDelta, ToolCallRequest
 
@@ -77,6 +84,18 @@ TOOL_FINISH_REASONS = frozenset({"tool_calls", "function_call"})
 
 #: The ledger counter a denied (never-executed) tool call increments.
 TOOL_DENIED_COUNTER = "tool_denied"
+
+#: Failure phases recorded with a retry decision. ``connect`` is a failure
+#: before the request was accepted, ``turn`` after the stream started but before
+#: any content token, and ``reply`` after audio text was already yielded.
+PHASE_CONNECT = "connect"
+PHASE_TURN = "turn"
+PHASE_REPLY = "reply"
+FAILURE_PHASES = (PHASE_CONNECT, PHASE_TURN, PHASE_REPLY)
+
+#: The spec's failure policy: one retry per leg, so two failures end the call.
+#: This is settled policy, not an operational bound, so it is not a threshold.
+MAX_LEG_FAILURES = 2
 
 #: Stable codes a withheld call carries back to the model. A correctable failure
 #: has a call id, so the tool loop can answer it with a ``role: "tool"`` result
@@ -198,13 +217,86 @@ class ReasoningEffortError(ValueError):
 class MetaLLMRequestError(RuntimeError):
     """The vendor answered the request with a non-success status.
 
-    Failure classification and retry belong to ticket 42; this type only makes
-    the status visible instead of parsing an error body as a token stream.
+    Raised inside one attempt; :meth:`MetaLLM.complete` classifies it and
+    applies the ticket-42 policy, so callers see a :class:`MetaLLMFailure`
+    carrying the recorded decision instead of a bare status.
     """
 
     def __init__(self, status: int) -> None:
         super().__init__(f"Meta chat completions returned HTTP {status}")
         self.status = status
+
+
+@dataclass(frozen=True, slots=True)
+class FailureDecision:
+    """One model-leg failure, and what the retry policy did about it.
+
+    ``phase`` is the evidence the policy branches on: a ``reply`` failure has
+    already handed text to synthesis, so restarting would repeat speech.
+    ``opened_leg`` is true only when this decision wrote the durable breaker
+    record; a bug verdict never does.
+    """
+
+    attempt: int
+    phase: str
+    verdict: FailureVerdict
+    retry: bool
+    opened_leg: bool
+    reason: str
+
+    def __post_init__(self) -> None:
+        if self.phase not in FAILURE_PHASES:
+            raise ValueError(
+                f"unknown failure phase {self.phase!r}; expected one of "
+                f"{FAILURE_PHASES}"
+            )
+
+    def to_document(self) -> dict[str, Any]:
+        return {
+            "attempt": self.attempt,
+            "phase": self.phase,
+            "code": self.verdict.code,
+            "failureClass": self.verdict.failure_class.value,
+            "retry": self.retry,
+            "openedLeg": self.opened_leg,
+            "reason": self.reason,
+        }
+
+
+class MetaLLMFailure(RuntimeError):
+    """A model-leg failure the ticket-42 policy classified and recorded."""
+
+    def __init__(self, decision: FailureDecision) -> None:
+        self.decision = decision
+        super().__init__(
+            f"model leg failed in {decision.phase} on attempt "
+            f"{decision.attempt} (code {decision.verdict.code!r}): "
+            f"{decision.reason}"
+        )
+
+
+class MetaLLMTurnFailed(MetaLLMFailure):
+    """Fail the turn and alert; the leg is not opened.
+
+    A deterministic request bug (HTTP 400). The caller may answer with a failure
+    line, but it must not retry the request or move to another rung mid-call.
+    """
+
+
+class MetaLLMReplyInterrupted(MetaLLMFailure):
+    """A reply already in the caller's ear was cut.
+
+    Never retried: a second completion would repeat speech. The caller drains
+    what was queued, closes at the last complete sentence, and keeps the call.
+    """
+
+
+class MetaLLMLegExhausted(MetaLLMFailure):
+    """The leg's one-retry policy is spent; this call ends.
+
+    The breaker was opened (or was already unreadable) for future calls; there
+    is no mid-call handover to the fallback rung.
+    """
 
 
 def resolve_reasoning_effort(reasoning_effort: str | None) -> str:
@@ -346,6 +438,12 @@ class MetaLLMTurn:
     interrupted: bool = False
     closed: bool = False
     disposition: ReplyDisposition | None = None
+    failure_decisions: list[FailureDecision] = field(default_factory=list)
+
+    @property
+    def last_failure(self) -> FailureDecision | None:
+        """The most recent failure decision, if the turn saw one."""
+        return self.failure_decisions[-1] if self.failure_decisions else None
 
     @property
     def truncated(self) -> bool:
@@ -1250,6 +1348,29 @@ class _AiohttpSession:
 
 
 
+@dataclass
+class _Progress:
+    """How far one attempt got, which is exactly what selects the phase.
+
+    A response status is not enough: a 200 whose stream dies before a token is
+    a ``turn`` failure, and one that dies after content - or after a tool
+    handoff - is a ``reply`` failure that must never be retried. ``delivered``
+    means an event the caller could act on already left this module, so a retry
+    could repeat speech or execute a tool twice.
+    """
+
+    frames: int = 0
+    delivered: bool = False
+
+    @property
+    def phase(self) -> str:
+        if self.delivered:
+            return PHASE_REPLY
+        if self.frames:
+            return PHASE_TURN
+        return PHASE_CONNECT
+
+
 class MetaLLM(LLMStream):
     """``LLMStream`` over Meta's OpenAI-compatible Chat Completions endpoint."""
 
@@ -1266,6 +1387,8 @@ class MetaLLM(LLMStream):
         ledger: Any = None,
         internal_id: str | None = None,
         identifier_salt: str | None = None,
+        rungs: CallRungs | None = None,
+        on_alert: Callable[[FailureDecision], None] | None = None,
     ) -> None:
         # Construction guard first: a Contributor id must fail before any
         # request field exists to leak into (ticket 35).
@@ -1285,6 +1408,14 @@ class MetaLLM(LLMStream):
         self._safety_identifier = _resolve_safety_identifier(
             internal_id, identifier_salt
         )
+        # Ticket 42: the call's frozen rungs record failures for *future* calls,
+        # and the alert sink hears every terminal decision. Neither moves this
+        # call's rung, and neither retries anything.
+        self._rungs = rungs
+        self._on_alert = on_alert
+        #: Failures on this leg in this call. One retry is allowed, so the
+        #: second failure ends the call (spec "Failures").
+        self._leg_failures = 0
         self._last_turn: MetaLLMTurn | None = None
 
     @property
@@ -1339,34 +1470,176 @@ class MetaLLM(LLMStream):
         url = f"{self._base_url}{CHAT_COMPLETIONS_PATH}"
         record = turn if turn is not None else MetaLLMTurn()
         self._last_turn = record
+        attempt = 0
+        try:
+            while True:
+                attempt += 1
+                progress = _Progress()
+                try:
+                    async for event in self._run_attempt(
+                        url=url,
+                        headers=headers,
+                        payload=payload,
+                        tools=tools,
+                        record=record,
+                        progress=progress,
+                    ):
+                        yield event
+                    return
+                except MetaLLMStreamError:
+                    # A provider contract violation or an unenforceable schema
+                    # is not an outage: never retried, never classified away.
+                    raise
+                except (MetaLLMRequestError, TimeoutError, OSError) as error:
+                    decision, retry = await self._apply_policy(
+                        error, progress, attempt, record
+                    )
+                    if retry:
+                        continue
+                    failure = self._failure_error(decision)
+                    if failure is None:
+                        # An unclassified failure keeps its provider type: the
+                        # policy recorded it and alerted, but it has no action.
+                        raise
+                    raise failure from error
+        finally:
+            record.close()
+
+    async def _run_attempt(
+        self,
+        *,
+        url: str,
+        headers: dict[str, str],
+        payload: dict[str, Any],
+        tools: list[dict[str, Any]] | None,
+        record: MetaLLMTurn,
+        progress: _Progress,
+    ) -> AsyncIterator[TokenDelta | ToolCallRequest]:
+        """One request and its stream; every attempt gets fresh accumulators.
+
+        Tool deltas from a failed attempt must not join the retry's slots, and a
+        retry is only possible before any content token, so nothing is un-said.
+        """
         stream = _TurnStream(record, self._ledger, tools)
         parser = _SSEParser()
         session = self._session_factory(timeout_s=self._timeout_s)
-        try:
-            async with session as active:
-                async with active.post(url, headers=headers, json=payload) as response:
-                    if response.status != 200:
-                        raise MetaLLMRequestError(response.status)
-                    async for chunk in response.iter_bytes():
-                        for frame in parser.feed(chunk):
-                            for event in stream.consume(frame):
-                                yield event
-                    for frame in parser.close():
+        async with session as active:
+            async with active.post(url, headers=headers, json=payload) as response:
+                if response.status != 200:
+                    raise MetaLLMRequestError(response.status)
+                async for chunk in response.iter_bytes():
+                    for frame in parser.feed(chunk):
+                        progress.frames += 1
                         for event in stream.consume(frame):
+                            progress.delivered = True
                             yield event
-                    for event in stream.finish():
+                for frame in parser.close():
+                    progress.frames += 1
+                    for event in stream.consume(frame):
+                        progress.delivered = True
                         yield event
-                    record.finished = True
-        finally:
-            record.close()
+                for event in stream.finish():
+                    progress.delivered = True
+                    yield event
+                record.finished = True
+
+    def _verdict_for(self, error: BaseException) -> FailureVerdict:
+        if isinstance(error, MetaLLMRequestError):
+            return classify("llm", error.status)
+        if isinstance(error, TimeoutError):
+            return classify("llm", None, timed_out=True)
+        return classify("llm", None)
+
+    async def _apply_policy(
+        self,
+        error: BaseException,
+        progress: _Progress,
+        attempt: int,
+        record: MetaLLMTurn,
+    ) -> tuple[FailureDecision, bool]:
+        """Classify one attempt's failure and decide retry/open/fail.
+
+        The phase comes from what the caller already heard, not from the status:
+        only ``connect``/``turn`` may retry, and only the first failure on the
+        leg. A reply failure has no retry available, so it opens the leg at
+        once and the caller drains instead of restarting.
+        """
+        verdict = self._verdict_for(error)
+        phase = progress.phase
+        if verdict.opens_breaker:
+            # A bug is not an outage and never spends the leg's retry budget.
+            self._leg_failures += 1
+        retry = (
+            verdict.opens_breaker
+            and phase != PHASE_REPLY
+            and self._leg_failures == 1
+            and attempt < MAX_LEG_FAILURES
+        )
+        opened = False
+        if verdict.opens_breaker and not retry:
+            opened = await self._open_leg(verdict, phase)
+
+        if retry:
+            reason = (
+                f"{verdict.reason}; retrying once before the first content token"
+            )
+        elif verdict.opens_breaker:
+            reason = (
+                f"{verdict.reason}; the retry policy is spent, so the leg opens"
+            )
+        else:
+            reason = verdict.reason
+        decision = FailureDecision(
+            attempt=attempt,
+            phase=phase,
+            verdict=verdict,
+            retry=retry,
+            opened_leg=opened,
+            reason=reason,
+        )
+        record.failure_decisions.append(decision)
+        if not retry and self._on_alert is not None:
+            self._on_alert(decision)
+        return decision, retry
+
+    async def _open_leg(self, verdict: FailureVerdict, phase: str) -> bool:
+        """Record the failure for future calls; this call's rung never moves."""
+        if self._rungs is None:
+            return False
+        outcome = await self._rungs.failed("llm", verdict=verdict, phase=phase)
+        record = outcome.transition.record
+        return record is not None and record.state == "open"
+
+    def _failure_error(
+        self, decision: FailureDecision
+    ) -> MetaLLMFailure | None:
+        verdict = decision.verdict
+        if verdict.failure_class is FailureClass.TRIGGER:
+            if self._leg_failures >= MAX_LEG_FAILURES:
+                # The one retry was already spent on this leg; a second failure
+                # ends the call even when it lands mid-reply.
+                return MetaLLMLegExhausted(decision)
+            if decision.phase == PHASE_REPLY:
+                return MetaLLMReplyInterrupted(decision)
+            return MetaLLMLegExhausted(decision)
+        if verdict.failure_class is FailureClass.BUG:
+            return MetaLLMTurnFailed(decision)
+        # do_not_open / planned_reconnect: the original provider error stands,
+        # already recorded on the turn and sent to the alert sink.
+        return None
 
 
 __all__ = [
     "CALL_ID_MAX_LENGTH",
     "CHAT_COMPLETIONS_PATH",
+    "FAILURE_PHASES",
     "FIRST_TOKEN_MARK",
     "IDENTIFIER_SALT_ENV",
+    "MAX_LEG_FAILURES",
     "META_BASE_URL",
+    "PHASE_CONNECT",
+    "PHASE_REPLY",
+    "PHASE_TURN",
     "SSE_DONE",
     "TOOL_ARGUMENTS_INVALID_JSON",
     "TOOL_ARGUMENTS_MISSING",
@@ -1377,11 +1650,16 @@ __all__ = [
     "TOOL_FAILURE_CODES",
     "TOOL_FINISH_REASONS",
     "UNAVAILABLE_REASONING_EFFORT",
+    "FailureDecision",
     "MetaLLM",
     "MetaLLMConfigError",
+    "MetaLLMFailure",
+    "MetaLLMLegExhausted",
+    "MetaLLMReplyInterrupted",
     "MetaLLMRequestError",
     "MetaLLMStreamError",
     "MetaLLMTurn",
+    "MetaLLMTurnFailed",
     "MetaToolCall",
     "ReasoningEffortError",
     "ReplyDisposition",
