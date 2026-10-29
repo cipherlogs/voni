@@ -91,13 +91,13 @@ import {
   formatMatrixTable,
   formatTraceTurn,
   resolveMatrixVoices,
+  subjectGateVerdict,
   classifyOverheard,
   evaluateOverheardRecall,
   formatGateTable,
   formatGoldenScript,
   formatOverheardReport,
   formatReplyGapReport,
-  gateVerdictFromArtifact,
   gateVoicePlayback,
   isRealCutExpected,
   isResumeInstructions,
@@ -160,6 +160,7 @@ import {
   goldenWindowExpectations,
 } from "./scoreboard-budgets";
 import { judgeOverlap } from "../voice/barge-in";
+import { resolveSubject, sameSubject, type SubjectRecord } from "./subject";
 import { EN_RECOGNITION } from "../voice/recognition";
 import { DEMO_VOICE_IDS, SILENCE_CHECK_IN_INSTRUCTIONS, SILENCE_CHECK_IN_MS } from "./voni-agent";
 import type { RunnerEvidence } from "./runner-evidence";
@@ -4464,23 +4465,7 @@ test("the scoreboard reports no client gain: level is the served body and measur
     "a served level alone can never PASS the timbre gate",
   );
 
-  const matrix = buildRegressionMatrix({
-    gateVoice: "anna",
-    entries: [
-      {
-        voice: "anna",
-        probes: { jump: 0, overload: 0, clip: 0, underrun: 0, inputDrop: 0 },
-        tagLines: ["Lime 42 in the subject"],
-        expectedTag: "Lime 42",
-      },
-      {
-        voice: "lola",
-        probes: { jump: 0, overload: 0, clip: 0, underrun: 0, inputDrop: 0 },
-        tagLines: ["Lime 42 in the subject"],
-        expectedTag: "Lime 42",
-      },
-    ],
-  });
+  const matrix = buildRegressionMatrix({ entries: [] });
   assert.equal("gains" in matrix, false, "the matrix carries no gain rows");
   assert.doesNotMatch(formatMatrixTable(matrix), /gain=/, "a gain table is never printed");
 
@@ -4887,7 +4872,7 @@ test("auto timbre failure reports ballots but never counts them", () => {
   assert.equal(human?.status, "INFO");
   assert.match(human?.detail ?? "", /reported, not counted/);
   // Ballots on a FAILed auto gate never make the run green.
-  assert.equal(gateVerdictFromArtifact(DEFAULT_GATE_VOICE, artifact.gates, artifact.subScores).status, "FAIL");
+  assert.equal(subjectGateVerdict(artifact).status, "FAIL");
 });
 
 test("artifact makes the shared-recording ballot protocol reviewable", () => {
@@ -4975,7 +4960,7 @@ test("a low ballot never fails a run: taste stays informational", () => {
   assert.equal(human?.status, "PASS", "counting raters, not taste, decides the human slot");
   assert.match(human?.detail ?? "", /timbre 1 \/ accent 1/);
   assert.ok(!artifact.gates.some((gate) => gate.name === "accent-human" && gate.status === "FAIL"));
-  assert.equal(gateVerdictFromArtifact(DEFAULT_GATE_VOICE, artifact.gates, artifact.subScores).status, "PASS");
+  assert.equal(subjectGateVerdict(artifact).status, "PASS");
 
   const missing = evaluateHumanGate(true, emptyHumanRatings(RECORDING));
   assert.equal(missing.status, "INFO", "missing ballots stay INFO");
@@ -5105,165 +5090,182 @@ test("matrix voices resolve through the registry, never as literals", () => {
   assert.throws(() => resolveMatrixVoices("lola,nope"), /unknown gate voice/);
 });
 
-test("matrix passes all-clean and fails named per voice with an overall row", () => {
-  const entries = [
-    {
-      voice: "anna",
-      probes: { jump: 0, overload: 0, clip: 0, underrun: 0, inputDrop: 0 },
-      tagLines: ["send it with Lime 42 in the subject"],
-      expectedTag: "Lime 42",
-    },
-    {
-      voice: "lola",
-      probes: { jump: 0, overload: 0, clip: 0, underrun: 0, inputDrop: 0 },
-      tagLines: ["send it with Lime 42 in the subject"],
-      expectedTag: "Lime 42",
-    },
-  ];
-  const matrix = buildRegressionMatrix({ gateVoice: "anna", entries });
-  assert.equal(matrix.schemaVersion, 4);
-  assert.equal(matrix.gateVoice, "anna");
-  assert.equal(matrix.results.length, 2);
-  assert.ok(matrix.results.every((r) => r.status === "PASS"));
-  assert.ok(matrix.results.find((r) => r.voice === "anna")?.isGate);
-  assert.ok(!matrix.results.find((r) => r.voice === "lola")?.isGate);
-  assert.equal(matrix.gates.find((g) => g.name === "matrix")?.status, "PASS");
-  const dirty = buildRegressionMatrix({
-    gateVoice: "anna",
-    entries: [
-      entries[0],
-      { ...entries[1], probes: { jump: 1, overload: 0, clip: 0, underrun: 0, inputDrop: 0 } },
-    ],
+/** One matrix row's run: a real artifact carrying the row's subject and gates. */
+function matrixRun(input: {
+  voice: string;
+  subject: SubjectRecord;
+  gates: ScoreboardGate[];
+  clip?: number;
+  runId?: string;
+}): ScoreboardArtifact {
+  const artifact = buildSkeletonArtifact({
+    voice: input.voice,
+    scenario: "greeting-cut",
+    runnerStdout: "",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+    dryRun: true,
+    subject: input.subject,
+    ...(input.runId ? { runId: input.runId } : {}),
+    probes: { jump: 0, overload: 0, clip: input.clip ?? 0, underrun: 0, inputDrop: 0 },
   });
-  const lola = dirty.results.find((r) => r.voice === "lola");
-  assert.equal(lola?.status, "FAIL");
-  assert.ok(lola?.detail.includes("jump"));
-  assert.equal(dirty.gates.find((g) => g.name === "matrix")?.status, "FAIL");
-  assert.equal(dirty.gates.filter((g) => g.name.startsWith("regression:")).length, 2);
-});
+  return {
+    ...artifact,
+    gates: input.gates,
+    transcripts: { ...artifact.transcripts, redacted: ["send it with Lime 42 in the subject"] },
+  };
+}
 
-test("matrix table names every voice with its verdict plus a summary", () => {
-  const matrix = buildRegressionMatrix({
-    gateVoice: "anna",
-    entries: [
-      {
-        voice: "anna",
-        probes: { jump: 0, overload: 0, clip: 0, underrun: 0, inputDrop: 0 },
-        tagLines: ["Lime 42 in the subject"],
-        expectedTag: "Lime 42",
-      },
-      {
-        voice: "lola",
-        probes: { jump: 0, overload: 0, clip: 1, underrun: 0, inputDrop: 0 },
-        tagLines: ["Lime 42 in the subject"],
-        expectedTag: "Lime 42",
-      },
-    ],
-  });
-  const table = formatMatrixTable(matrix);
-  assert.ok(table.includes("anna"));
-  assert.ok(table.includes("lola"));
-  assert.ok(table.includes("PASS"));
-  assert.ok(table.includes("FAIL"));
-  assert.ok(table.includes("1/2"), `summary counts clean voices: ${table}`);
-});
-
-test("matrix carries the gate voice verdict and sub-scores, never re-judges them", () => {
-  const gateGates = [
-    { name: "plumbing", status: "PASS" as const, detail: "eval runner finished" },
-    { name: "reply-gap", status: "PASS" as const, detail: "p50 900ms (budget 1500ms)" },
-    { name: "end-of-turn", status: "PASS" as const, detail: "meaning-based end of turn (no turn_detection object)" },
-    { name: "barge-in-cut", status: "PASS" as const, detail: "cut 912ms (budget 1500ms)" },
-    { name: "measurements", status: "INFO" as const, detail: "measured evidence present (real-cut)" },
-  ];
-  const gateSubScores = buildSubScores(gateGates);
-  const gateEntry = {
+test("each matrix row derives its gate verdict from its own subject artifact", () => {
+  const anna = resolveSubject({ voice: "anna" });
+  const lola = resolveSubject({ voice: "lola" });
+  const annaRun = matrixRun({
     voice: "anna",
-    probes: { jump: 0, overload: 0, clip: 0, underrun: 0, inputDrop: 0 },
-    tagLines: ["send it with Lime 42 in the subject"],
-    gates: gateGates,
-    subScores: gateSubScores,
-  };
-  const cleanVoice = {
+    subject: anna,
+    gates: [{ name: "plumbing", status: "PASS", detail: "eval runner finished" }],
+  });
+  const lolaRun = matrixRun({
     voice: "lola",
-    probes: { jump: 0, overload: 0, clip: 0, underrun: 0, inputDrop: 0 },
-    tagLines: ["send it with Lime 42 in the subject"],
-  };
+    subject: lola,
+    gates: [{ name: "barge-in-cut", status: "FAIL", detail: "cut 1841ms exceeds 1500ms" }],
+  });
 
-  const clean = buildRegressionMatrix({ gateVoice: "anna", entries: [gateEntry, cleanVoice] });
-  assert.equal(clean.gate.voice, "anna");
-  assert.equal(clean.gate.status, "PASS", clean.gate.detail);
-  assert.deepEqual(clean.gate.gates, gateGates);
-  assert.deepEqual(clean.gate.subScores, gateSubScores);
-
-  const table = formatMatrixTable(clean);
-  assert.match(table, /GATE\s+anna\s+gate anna: PASS/, table);
-  assert.match(table, /sub-scores responsiveness PASS/, table);
-  assert.match(table, /regression lola/, table);
-
-  // A dirty regression voice flips only its own row and the regression
-  // roll-up; the carried gate verdict, gates, and sub-scores stay identical.
-  const dirty = buildRegressionMatrix({
-    gateVoice: "anna",
+  const matrix = buildRegressionMatrix({
     entries: [
-      gateEntry,
-      { ...cleanVoice, probes: { jump: 0, overload: 0, clip: 1, underrun: 0, inputDrop: 0 } },
+      { subject: anna, artifact: annaRun },
+      { subject: lola, artifact: lolaRun },
     ],
   });
-  assert.equal(dirty.gate.status, clean.gate.status);
-  assert.deepEqual(dirty.gate.gates, gateGates);
-  assert.deepEqual(dirty.gate.subScores, gateSubScores);
-  assert.equal(dirty.results.find((r) => r.voice === "lola")?.status, "FAIL");
-  assert.equal(dirty.gates.find((g) => g.name === "regression:lola")?.status, "FAIL");
-  assert.equal(dirty.gates.find((g) => g.name === "matrix")?.status, "FAIL");
-  assert.ok(
-    !dirty.gates.some((gate) => gateGates.some((carried) => carried.name === gate.name)),
-    "gate rows are carried, not copied into the matrix's own gates",
-  );
 
-  // A red gate voice stays red no matter how clean the regression rows are.
-  const red = buildRegressionMatrix({
-    gateVoice: "anna",
-    entries: [
-      { ...gateEntry, gates: [{ name: "barge-in-cut", status: "FAIL" as const, detail: "cut 1841ms exceeds 1500ms" }] },
-      cleanVoice,
-    ],
-  });
-  assert.equal(red.gate.status, "FAIL");
-  assert.deepEqual(red.gate.failing, ["barge-in-cut"]);
-  assert.match(formatMatrixTable(red), /GATE\s+anna\s+gate anna: FAIL/);
-  assert.equal(red.gates.find((g) => g.name === "matrix")?.status, "PASS");
+  const annaRow = matrix.results.find((row) => sameSubject(row.subject, anna));
+  const lolaRow = matrix.results.find((row) => sameSubject(row.subject, lola));
+  assert.equal(annaRow?.status, "PASS", annaRow?.detail);
+  assert.equal(lolaRow?.status, "FAIL", lolaRow?.detail);
+  assert.equal(annaRow?.verdict?.runId, annaRun.runId);
+  assert.equal(lolaRow?.verdict?.runId, lolaRun.runId);
+  assert.deepEqual(lolaRow?.verdict?.failing, ["barge-in-cut"]);
+  assert.equal("gate" in matrix, false, "no carried featured-voice verdict survives");
+  assert.equal("gateVoice" in matrix, false, "the matrix is not voice-keyed");
 
-  // Without a carried gate artifact there is no verdict to invent.
-  const unmeasured = buildRegressionMatrix({ gateVoice: "anna", entries: [cleanVoice] });
-  assert.equal(unmeasured.gate.status, "INFO");
-  assert.ok(unmeasured.gate.detail.includes("not judged"));
+  const table = formatMatrixTable(matrix);
+  assert.match(table, /demo anna \(en, browser\)/, table);
+  assert.match(table, /demo lola \(es, browser\)/, table);
+  assert.match(table, /1\/2 clean/, table);
 });
 
-test("matrix reads gate rows only from the gate voice, never from a regression voice", () => {
-  const gateGates = [{ name: "plumbing", status: "PASS" as const, detail: "eval runner finished" }];
+test("a failing subject cannot borrow the featured voice's passing verdict", () => {
+  const anna = resolveSubject({ voice: "anna" });
+  const lola = resolveSubject({ voice: "lola" });
+  const passing = (subject: SubjectRecord, voice: string) =>
+    matrixRun({
+      voice,
+      subject,
+      gates: [{ name: "plumbing", status: "PASS", detail: "eval runner finished" }],
+    });
+  const failing = (subject: SubjectRecord, voice: string) =>
+    matrixRun({
+      voice,
+      subject,
+      gates: [{ name: "barge-in-cut", status: "FAIL", detail: "cut 1841ms exceeds 1500ms" }],
+    });
+
+  // The featured voice passes and a non-featured subject fails: the failure
+  // stays red.
+  const featuredGreen = buildRegressionMatrix({
+    entries: [
+      { subject: anna, artifact: passing(anna, "anna") },
+      { subject: lola, artifact: failing(lola, "lola") },
+    ],
+  });
+  assert.equal(featuredGreen.results.find((row) => sameSubject(row.subject, anna))?.status, "PASS");
+  assert.equal(featuredGreen.results.find((row) => sameSubject(row.subject, lola))?.status, "FAIL");
+  assert.equal(featuredGreen.gates.find((gate) => gate.name === "matrix")?.status, "FAIL");
+
+  // And the reverse: a red featured voice never reds a clean subject's row.
+  const featuredRed = buildRegressionMatrix({
+    entries: [
+      { subject: anna, artifact: failing(anna, "anna") },
+      { subject: lola, artifact: passing(lola, "lola") },
+    ],
+  });
+  assert.equal(featuredRed.results.find((row) => sameSubject(row.subject, anna))?.status, "FAIL");
+  assert.equal(featuredRed.results.find((row) => sameSubject(row.subject, lola))?.status, "PASS");
+  assert.equal(featuredRed.gates.find((gate) => gate.name === "matrix")?.status, "FAIL");
+});
+
+test("a tenant subject and its demo voice are distinct rows with their own verdicts", () => {
+  const demo = resolveSubject({ voice: "lola" });
+  const tenant = resolveSubject({ agent: "agent_tenant_1", voice: "lola", locale: "es" });
+  const demoRun = matrixRun({
+    voice: "lola",
+    subject: demo,
+    runId: "run-demo-lola",
+    gates: [{ name: "plumbing", status: "PASS", detail: "eval runner finished" }],
+  });
+  const tenantRun = matrixRun({
+    voice: "lola",
+    subject: tenant,
+    runId: "run-tenant-1",
+    gates: [{ name: "barge-in-cut", status: "FAIL", detail: "cut 1841ms exceeds 1500ms" }],
+  });
+
+  const matrix = buildRegressionMatrix({
+    entries: [
+      { subject: demo, artifact: demoRun },
+      { subject: tenant, artifact: tenantRun },
+    ],
+  });
+  assert.equal(matrix.results.length, 2);
+  const demoRow = matrix.results.find((row) => sameSubject(row.subject, demo));
+  const tenantRow = matrix.results.find((row) => sameSubject(row.subject, tenant));
+  assert.equal(demoRow?.status, "PASS");
+  assert.equal(tenantRow?.status, "FAIL");
+  assert.notEqual(demoRow?.label, tenantRow?.label);
+  assert.match(formatMatrixTable(matrix), /tenant agent_tenant_1 \(es, browser\)/);
+  // The demo row's verdict is not reachable through the tenant row.
+  assert.equal(tenantRow?.verdict?.runId, tenantRun.runId);
+  assert.notEqual(tenantRow?.verdict?.runId, demoRow?.verdict?.runId);
+});
+
+test("a missing subject run is reported missing, never copied from another row", () => {
+  const anna = resolveSubject({ voice: "anna" });
+  const lola = resolveSubject({ voice: "lola" });
+  const annaRun = matrixRun({
+    voice: "anna",
+    subject: anna,
+    gates: [{ name: "plumbing", status: "PASS", detail: "eval runner finished" }],
+  });
+
+  const matrix = buildRegressionMatrix({
+    entries: [{ subject: anna, artifact: annaRun }, { subject: lola }],
+  });
+  const lolaRow = matrix.results.find((row) => sameSubject(row.subject, lola));
+  assert.equal(lolaRow?.status, "MISSING");
+  assert.equal(lolaRow?.verdict, null, "no artifact, no verdict to inherit");
+  assert.equal(lolaRow?.probes, null);
+  assert.match(lolaRow?.detail ?? "", /MISSING/);
+  assert.equal(matrix.gates.find((gate) => gate.name === "matrix")?.status, "FAIL");
+  assert.match(formatMatrixTable(matrix), /MISS\s+demo lola \(es, browser\).*MISSING/);
+});
+
+test("matrix rows read gates only from their own subject artifact", () => {
+  const anna = resolveSubject({ voice: "anna" });
+  const lola = resolveSubject({ voice: "lola" });
+  const annaGates = [{ name: "plumbing", status: "PASS" as const, detail: "eval runner finished" }];
   const lolaGates = [{ name: "timbre-probes", status: "FAIL" as const, detail: "clip 1 > 0" }];
   const matrix = buildRegressionMatrix({
-    gateVoice: "anna",
     entries: [
-      {
-        voice: "anna",
-        probes: { jump: 0, overload: 0, clip: 0, underrun: 0, inputDrop: 0 },
-        tagLines: ["Lime 42 in the subject"],
-        gates: gateGates,
-      },
-      {
-        voice: "lola",
-        probes: { jump: 0, overload: 0, clip: 0, underrun: 0, inputDrop: 0 },
-        tagLines: ["Lime 42 in the subject"],
-        gates: lolaGates,
-      },
+      { subject: anna, artifact: matrixRun({ voice: "anna", subject: anna, gates: annaGates }) },
+      { subject: lola, artifact: matrixRun({ voice: "lola", subject: lola, gates: lolaGates }) },
     ],
   });
-  assert.equal(matrix.gate.voice, "anna");
-  assert.equal(matrix.gate.status, "PASS");
-  assert.deepEqual(matrix.gate.gates, gateGates);
-  assert.ok(!matrix.gate.gates.some((gate) => gate.name === "timbre-probes"));
+  const annaRow = matrix.results.find((row) => sameSubject(row.subject, anna));
+  const lolaRow = matrix.results.find((row) => sameSubject(row.subject, lola));
+  assert.deepEqual(annaRow?.verdict?.gates, annaGates);
+  assert.deepEqual(lolaRow?.verdict?.gates, lolaGates);
+  assert.ok(!annaRow?.verdict?.gates.some((gate) => gate.name === "timbre-probes"));
+  assert.ok(lolaRow?.verdict?.failing.includes("timbre-probes"));
 });
 
 // ── Review fixes: harness break, measurements, memory INFO, attribution, sub-scores ──
