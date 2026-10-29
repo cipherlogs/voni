@@ -44,6 +44,7 @@ OPEN_BOUNDS = {
     "turn.reply_task_ms": "76",
     "tool.timeout_ms": "76",
     "reconnect.handshake_ms": "76",
+    "probe.model_max_completion_tokens": "20",
 }
 
 

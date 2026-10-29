@@ -90,6 +90,12 @@
       "date": "2026-10-29",
       "note": "Flushing per token is forbidden; this is the sentence ceiling."
     },
+    "probe.model_max_completion_tokens": {
+      "unit": "tokens",
+      "gate": "breaker.probe",
+      "ticket": "20",
+      "note": "OPEN — the spec bounds the model probe ('one minimal completion with max_completion_tokens small enough to bound cost') but states no number. A probe without a cap is not a probe, so the probe refuses to run until this is recorded. Synthesis costs nothing here: the voice probe sends an empty Generate (0 characters, inside tts.generate_char_cap)."
+    },
     "budget.daily_cap": {
       "unit": "usd",
       "gate": "budget.daily-cap",
