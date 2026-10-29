@@ -1,16 +1,15 @@
-import { createHash } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { secret } from "@/lib/env";
 import { demoAgents } from "@/lib/db/schema";
 import {
   buildStoredAgent,
-  stableJson,
   type AgentProfile,
   type LlmOverride,
   type StoredAgentBody,
   type TurnTaking,
 } from "@/lib/agents/body";
+import { agentBodyFingerprint } from "@/lib/agents/fingerprint";
 import { DEMO_VOICE_IDS, VONI_AGENT_ID, voniConfig } from "./voni-agent";
 import { toRestTool } from "@/lib/tools/definitions";
 import { DEMO_VOICE_TOOLS } from "./demo-tools";
@@ -256,11 +255,11 @@ export function buildDemoAgentBody(
   const resume = opts?.resume === true;
   const variant = opts?.variant ?? "production";
   // The experiment's windows are demo-only session mechanics: they reach the
-  // builder as a turn-taking input, never as a profile field (ticket 64
-  // removes the experiment; a profile can never request it).
+  // builder as a turn-taking input, never as a profile field (ticket 65 deleted
+  // the explicit preset variant and the tenant's old object).
   const turnTaking: TurnTaking | undefined =
     variant === "turn-window"
-      ? { kind: "windows", windows: opts?.turnWindows ?? DEMO_TURN_WINDOW_DEFAULTS }
+      ? opts?.turnWindows ?? DEMO_TURN_WINDOW_DEFAULTS
       : undefined;
   return buildStoredAgent({
     name: demoAgentName(voiceId, resume, variant),
@@ -313,9 +312,13 @@ export function planDemoAgent(
  * The body, plus which API key (account) the agent lives under: a new key
  * moves the fingerprint, so its cached agents are re-checked (and recreated
  * when that account has never heard of them). Only a hash of the key.
+ *
+ * Hashed by the one whole-body function the tenant deployment also uses
+ * (voice-parity ticket 62): the override, the level, the greeting's presence
+ * and every other field are covered, so neither path can drift on its own.
  */
 export function demoAgentFingerprint(body: ReturnType<typeof buildDemoAgentBody>, apiKey = ""): string {
-  return createHash("sha256").update(stableJson(body)).update(`\0${apiKey}`).digest("hex");
+  return agentBodyFingerprint(body, apiKey);
 }
 
 /**

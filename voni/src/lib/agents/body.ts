@@ -34,12 +34,15 @@ import {
  *
  * ── The seams the following tickets extend ────────────────────────────────
  * - 61: the whitelist above — `FORBIDDEN_PROFILE_FIELDS` + the rejection.
- * - 62: one fingerprint over the whole body. Bodies leave here as one
- *   `StoredAgentBody` shape, and `stableJson` is the canonical form to hash;
- *   the tenant's field-subset hash (`comparableAgent`) is what 62 replaces.
+ * - 62: one fingerprint over the whole body — `agentBodyFingerprint` in
+ *   `./fingerprint` hashes the `StoredAgentBody` this builder returns, for the
+ *   demo refresh and the tenant deployment alike. It replaced the tenant's
+ *   field-subset hash (`comparableAgent`), which had omitted the model override.
+ *   `stableJson` is its canonical form.
  * - 64/65: `turnDetectionFor` below is the single turn-taking switch. It
- *   returns the Turn preset (`turn_detection: null`) for the demo; the tenant
- *   branch is the pre-64 object that 64/65 removes.
+ *   returns the Turn preset (`turn_detection: null`) for every persona and
+ *   platform; ticket 64 moved tenants onto it and ticket 65 deleted the old
+ *   explicit object and the redundant preset variant.
  * - 66/67: `compileSystemPrompt` is the rules owner; the persona-neutral floor
  *   moves into it without this file learning about personas.
  */
@@ -221,37 +224,20 @@ export function assertAllowedAgentProfile(
 /** The stored `turn_detection` value: null is adaptive (the Turn preset). */
 export type StoredTurnDetection = null | Record<string, number | boolean>;
 
-/** The only end-of-turn windows the demo latency experiment may set. */
-export type TurnWindowSettings = {
+/**
+ * The only end-of-turn windows the demo latency experiment may set. Turn-taking
+ * is session mechanics, so it is a builder input — never a profile field.
+ * Production callers omit it and get the Turn preset; there is no explicit
+ * preset variant, because omitting it already means the preset.
+ */
+export type TurnTaking = {
   readonly min_silence?: number;
   readonly max_silence?: number;
   readonly interruption_delay?: number;
 };
 
-/**
- * Turn-taking is session mechanics, so it is a builder input — never a
- * profile field. Production callers omit it and get the persona default.
- */
-export type TurnTaking =
-  /** The Turn preset: adaptive end-of-turn, no object on the body. */
-  | { readonly kind: "preset" }
-  /** The demo latency experiment's explicit windows (`:exp` bodies only). */
-  | { readonly kind: "windows"; readonly windows: TurnWindowSettings };
-
-/**
- * The tenant body's explicit turn-detection object, unchanged until ticket 64
- * replaces it with the Turn preset (ticket 65 removes it). It is exported so a
- * test can prove its removal rather than read it from a comment.
- */
-export const TENANT_LEGACY_TURN_DETECTION = Object.freeze({
-  min_silence: 100,
-  max_silence: 1000,
-  interrupt_response: true,
-  interruption_delay: 500,
-});
-
 function windowsToTurnDetection(
-  windows: TurnWindowSettings,
+  windows: TurnTaking,
 ): Record<string, number> {
   const turnDetection = {
     ...(windows.min_silence !== undefined
@@ -270,19 +256,25 @@ function windowsToTurnDetection(
   return turnDetection;
 }
 
-/** The single turn-taking switch (ticket 64/65 owns the tenant branch). */
+/**
+ * The single turn-taking switch. Every persona and platform sends the Turn
+ * preset (`turn_detection: null`, adaptive meaning-based end-of-turn); the one
+ * exception is the demo latency experiment's explicit windows, which are
+ * demo-only and never reach a production body.
+ *
+ * Ticket 64 moved tenants onto the preset; ticket 65 deleted the tenant's
+ * pre-64 object and the redundant preset variant. There is nothing left for a
+ * profile to choose here.
+ */
 function turnDetectionFor(
   persona: AgentPersona,
   requested: TurnTaking | undefined,
 ): StoredTurnDetection {
-  if (requested?.kind === "windows") {
-    if (persona !== "demo") {
-      throw new Error("the turn-window experiment is demo-only");
-    }
-    return windowsToTurnDetection(requested.windows);
+  if (!requested) return null;
+  if (persona !== "demo") {
+    throw new Error("the turn-window experiment is demo-only");
   }
-  if (requested?.kind === "preset") return null;
-  return persona === "tenant" ? { ...TENANT_LEGACY_TURN_DETECTION } : null;
+  return windowsToTurnDetection(requested);
 }
 
 /**
@@ -386,8 +378,8 @@ export type StoredAgentInput = {
   config: AgentConfig;
   profile: AgentProfile;
   /**
-   * Session mechanics override. Production callers omit it; only the demo
-   * latency experiment (`:exp`) passes windows. Ticket 64 removes both.
+   * Session mechanics override. Production callers omit it and get the Turn
+   * preset; only the demo latency experiment (`:exp`) passes windows.
    */
   turnTaking?: TurnTaking;
 };
@@ -442,8 +434,8 @@ export function buildStoredAgent(input: StoredAgentInput): StoredAgentBody {
 
 /**
  * Canonical JSON for a body fingerprint. Sorted keys and trimmed `undefined`,
- * so a fingerprint moves only when the body does. Exported here (rather than
- * from one of the two paths) because ticket 62 hashes this one shape for both.
+ * so a fingerprint moves only when the body does. The one fingerprint
+ * (`agentBodyFingerprint` in `./fingerprint`) hashes both paths with it.
  */
 export function stableJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;

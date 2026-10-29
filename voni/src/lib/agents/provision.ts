@@ -1,13 +1,12 @@
-import { createHash } from "node:crypto";
 import type { AgentConfig } from "./config";
 import { compileVoiceTools, toRestTool } from "@/lib/tools/definitions";
 import {
   buildStoredAgent,
-  stableJson,
   type AgentProfile,
   type StoredAgentBody,
   type StoredAudioFormat,
 } from "./body";
+import { agentBodyFingerprint, readBackAgentBody } from "./fingerprint";
 import { resolveCredential } from "@/lib/platform/credentials";
 
 export { stableJson } from "./body";
@@ -49,54 +48,15 @@ export function storedAgentBody(name: string, config: AgentConfig): StoredAgentB
 }
 
 /**
- * The exact tenant-body fields the deployment fingerprint covers. Exported so
- * a test can prove a field (the per-voice level, voice-parity ticket 37) is
- * inside the fingerprint input without rebuilding the whole body.
+ * The tenant deployment fingerprint: the whole stored body, hashed by the one
+ * function the demo refresh also uses (voice-parity ticket 62).
  *
- * This subset is the pre-62 tenant fingerprint. Ticket 62 replaces it with the
- * whole `StoredAgentBody` (both paths hashing one shape); until then the demo
- * and tenant fingerprints deliberately stay as they ship.
+ * Everything the body carries is covered, including the per-voice level and
+ * the model override the old field subset omitted. A mismatch — or a
+ * pre-fingerprint null — means the remote copy is stale and is owed a redeploy.
  */
-export function comparableAgent(value: Record<string, unknown>) {
-  const voice = (value.voice ?? {}) as Record<string, unknown>;
-  const input = (value.input ?? {}) as Record<string, unknown>;
-  const output = (value.output ?? {}) as Record<string, unknown>;
-  const tools = Array.isArray(value.tools)
-    ? value.tools.map((tool) => {
-      if (!tool || typeof tool !== "object") return tool;
-        const rest = { ...(tool as Record<string, unknown>) };
-        delete rest.id;
-        return rest;
-      })
-    : [];
-  return {
-    name: value.name,
-    system_prompt: value.system_prompt,
-    greeting: value.greeting ?? null,
-    voice: { voice_id: voice.voice_id },
-    input: {
-      format: input.format,
-      transcription_mode: input.transcription_mode,
-      transcription_prompt: input.transcription_prompt ?? null,
-      keyterms: input.keyterms ?? [],
-      voice_focus: input.voice_focus ?? null,
-      voice_focus_threshold: input.voice_focus_threshold ?? null,
-      turn_detection: input.turn_detection ?? null,
-      language_codes: input.language_codes ?? [],
-    },
-    output: {
-      voice: output.voice,
-      format: output.format,
-      volume: output.volume ?? null,
-    },
-    tools,
-  };
-}
-
 export function deploymentFingerprint(name: string, config: AgentConfig): string {
-  return createHash("sha256")
-    .update(stableJson(comparableAgent(storedAgentBody(name, config))))
-    .digest("hex");
+  return agentBodyFingerprint(storedAgentBody(name, config));
 }
 
 async function reconcileRecentAgent(
@@ -116,16 +76,16 @@ async function reconcileRecentAgent(
   const candidates = items
     .filter((item) => item.name === name && !item.deleted_at && (!item.created_at || new Date(item.created_at).getTime() >= cutoff))
     .slice(0, 10);
-  const expected = deploymentFingerprint(name, config);
+  const expected = agentBodyFingerprint(
+    readBackAgentBody(storedAgentBody(name, config)),
+  );
   for (const candidate of candidates) {
     const response = await fetch(`${AGENTS_URL}/${encodeURIComponent(candidate.id)}`, {
       headers: { Authorization: authorization },
     });
     if (!response.ok) continue;
     const remote = (await response.json()) as Record<string, unknown>;
-    const actual = createHash("sha256")
-      .update(stableJson(comparableAgent(remote)))
-      .digest("hex");
+    const actual = agentBodyFingerprint(readBackAgentBody(remote));
     if (actual === expected) return candidate.id;
   }
   return null;

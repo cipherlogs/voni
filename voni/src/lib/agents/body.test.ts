@@ -3,9 +3,11 @@ import { createHash } from "node:crypto";
 import test from "node:test";
 import {
   buildStoredAgent,
-  TENANT_LEGACY_TURN_DETECTION,
   type AgentProfile,
+  type StoredAgentBody,
+  type TurnTaking,
 } from "./body";
+import { agentBodyFingerprint } from "./fingerprint";
 import { REAL_ESTATE_TEMPLATE } from "./config";
 import {
   deploymentFingerprint,
@@ -72,10 +74,7 @@ test("every demo body variant is the same builder call with its own profile", ()
     name: demoAgentName("anna", false, "turn-window"),
     config: voniConfig("anna"),
     profile: demoAgentProfile(),
-    turnTaking: {
-      kind: "windows",
-      windows: { min_silence: 200, max_silence: 400, interruption_delay: 0 },
-    },
+    turnTaking: { min_silence: 200, max_silence: 400, interruption_delay: 0 },
   });
   assert.deepEqual(
     buildDemoAgentBody("anna", {
@@ -90,15 +89,18 @@ test("every demo body variant is the same builder call with its own profile", ()
 
 // Pinned from the two builders before they were unified. A change here means
 // the unification altered a wire body (and would refresh every stored agent).
+// Ticket 64 moves only the two tenant pins: their `turn_detection` object
+// became the Turn preset (`null`). Every demo pin is unchanged, which is the
+// proof the demo body is byte-identical.
 const PUBLISHED_BYTES = {
   demoAnna: "9554dbda4854f8df0eaf25e9bbfe3357df60427c90bc6ed48466f6a50b91b597",
   demoResume: "3583837d631550d7c37e6be83587c55909544c93e7a281e8614c4b67e608db20",
   demoModel: "3451afdccde5603b77744bb39c989762806121ac459ecf49585a327ca43dd22c",
   demoExperiment: "50391e87369a16dd2e4db59f2c62bf62edd21655b2bcf4eceaaf536068725937",
   demoLola: "fddbc7bf159546cc44cec7ff9b3c0a21af3e7f6244ac4b5338540e61773a25f0",
-  tenant: "c454b3bb26cb789e3f049bbe2693d69200a695c4afb91dd58c61eca1c2f8cb64",
+  tenant: "57650aa5dd12bb77dc1f3efc91919b067b584e194072e27fda84f135a574896f",
   tenantLanguages:
-    "29e34674e289c2ab3814bfe7366c4dc89eefe16e9232e6dc6bbc818425160032",
+    "6248ce46d206ff1ba3f6cc3a4f59dbf2991e9836492c86f991cedb5ec77a48f7",
 };
 
 test("the unified builder leaves every published body byte-identical", () => {
@@ -136,14 +138,178 @@ test("the unified builder leaves every published body byte-identical", () => {
   );
 });
 
-test("the unified builder leaves both refresh fingerprints unchanged", () => {
+test("the demo refresh fingerprint is unchanged by the unification", () => {
   assert.equal(
     demoAgentFingerprint(buildDemoAgentBody("anna"), "key"),
     "6545bd6c7037614d673f1d0964dd70ffbcb1ec95fbc5d04f50b33ff2f3607a7d",
   );
+});
+
+// ── One fingerprint over the whole body (ticket 62) ────────────────────────
+
+const copy = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
+
+/** Every path at which two JSON-ish values differ. */
+function changedPaths(before: unknown, after: unknown, at = ""): string[] {
+  const isRecord = (value: unknown): value is Record<string, unknown> =>
+    value !== null && typeof value === "object" && !Array.isArray(value);
+  if (isRecord(before) && isRecord(after)) {
+    const keys = new Set([...Object.keys(before), ...Object.keys(after)]);
+    return [...keys].flatMap((key) =>
+      changedPaths(before[key], after[key], at ? `${at}.${key}` : key),
+    );
+  }
+  if (Array.isArray(before) && Array.isArray(after) && before.length === after.length) {
+    return before.flatMap((item, index) =>
+      changedPaths(item, after[index], `${at}[${index}]`),
+    );
+  }
+  return JSON.stringify(before) === JSON.stringify(after) ? [] : [at];
+}
+
+test("demo and tenant refresh paths hash with the one whole-body function", () => {
+  const demo = buildDemoAgentBody("anna");
+  const tenant = storedAgentBody("Layla", REAL_ESTATE_TEMPLATE);
+
+  assert.equal(
+    demoAgentFingerprint(demo, "account"),
+    agentBodyFingerprint(demo, "account"),
+    "the demo path is the one function, not a second implementation",
+  );
   assert.equal(
     deploymentFingerprint("Layla", REAL_ESTATE_TEMPLATE),
-    "8a2416220fe2f13eaee875f4f89592bf2a4e3ade52e75be1ec14511a4415c38b",
+    agentBodyFingerprint(tenant),
+    "the tenant path is the one function, not a second implementation",
+  );
+
+  // Both personas, both platforms, one shape: an overridden demo body is
+  // hashed by exactly the same function as the tenant body above.
+  const overridden = buildDemoAgentBody("anna", { llm: DEMO_LLM });
+  assert.equal(demoAgentFingerprint(overridden, "account"), agentBodyFingerprint(overridden, "account"));
+});
+
+test("the fingerprint covers every field of the stored body", () => {
+  const base = storedAgentBody("Layla", REAL_ESTATE_TEMPLATE);
+  assert.ok("greeting" in base, "the base body opens with a greeting");
+  assert.ok(base.input.format, "the base body declares an audio format");
+  assert.ok(base.input.voice_focus_threshold !== undefined, "the base body declares a focus threshold");
+  assert.ok(!("llm" in base), "the base body has no model override");
+
+  const mutate = (change: (body: StoredAgentBody) => void): StoredAgentBody => {
+    const body = copy(base);
+    change(body);
+    return body;
+  };
+
+  // Every authored field; the path is the only difference the fingerprint sees.
+  const mutations: Array<[path: string, body: StoredAgentBody]> = [
+    ["name", mutate((body) => { body.name = `${body.name} 2`; })],
+    ["system_prompt", mutate((body) => { body.system_prompt += "\nOne more rule."; })],
+    ["greeting", mutate((body) => { body.greeting = `${body.greeting} Welcome.`; })],
+    ["greeting", mutate((body) => { delete body.greeting; })],
+    ["voice.voice_id", mutate((body) => { body.voice.voice_id = "lola"; })],
+    ["output.volume", mutate((body) => { body.output.volume -= 1; })],
+    ["output.voice", mutate((body) => { body.output.voice = "lola"; })],
+    ["output.format.sample_rate", mutate((body) => { body.output.format!.sample_rate = 16000; })],
+    ["tools[0].description", mutate((body) => { body.tools[0].description += " Updated."; })],
+    ["tools", mutate((body) => { body.tools = []; })],
+    ["llm", mutate((body) => { body.llm = copy(DEMO_LLM); })],
+    ["llm", mutate((body) => { body.llm = []; })],
+    ["input.format.encoding", mutate((body) => { body.input.format!.encoding = "audio/pcm"; })],
+    ["input.language_codes", mutate((body) => { body.input.language_codes = ["en", "ar"]; })],
+    ["input.transcription_mode", mutate((body) => { body.input.transcription_mode = "manual"; })],
+    ["input.transcription_prompt", mutate((body) => { body.input.transcription_prompt += " Expect digits."; })],
+    ["input.keyterms", mutate((body) => { body.input.keyterms.push("Layla"); })],
+    ["input.voice_focus", mutate((body) => { body.input.voice_focus = "near-field"; })],
+    ["input.voice_focus_threshold", mutate((body) => { body.input.voice_focus_threshold = 0.5; })],
+    ["input.turn_detection", mutate((body) => { body.input.turn_detection = { min_silence: 200 }; })],
+  ];
+
+  const seen = new Map<string, string>([[agentBodyFingerprint(base), "the base body"]]);
+  for (const [path, mutated] of mutations) {
+    assert.deepEqual(changedPaths(base, mutated), [path], `${path}: the field is the only difference`);
+    const fingerprint = agentBodyFingerprint(mutated);
+    const collision = seen.get(fingerprint);
+    assert.equal(collision, undefined, `${path} must not fingerprint like ${collision}`);
+    seen.set(fingerprint, path);
+  }
+  assert.equal(seen.size, mutations.length + 1, "every field moves the fingerprint on its own");
+});
+
+test("a body that differs only by the model override is a different fingerprint", () => {
+  const managed = storedAgentBody("Layla", REAL_ESTATE_TEMPLATE);
+  const withLlm = (body: StoredAgentBody, llm: StoredAgentBody["llm"]): StoredAgentBody => ({
+    ...copy(body),
+    llm,
+  });
+  const overridden = withLlm(managed, copy(DEMO_LLM));
+  const reverted = withLlm(managed, []);
+
+  assert.deepEqual(
+    changedPaths(managed, overridden),
+    ["llm"],
+    "the override is the only difference between the two bodies",
+  );
+  assert.notEqual(
+    agentBodyFingerprint(overridden),
+    agentBodyFingerprint(managed),
+    "an override the tenant subset used to omit is now inside the fingerprint",
+  );
+  assert.notEqual(
+    agentBodyFingerprint(reverted),
+    agentBodyFingerprint(managed),
+    "the documented revert is distinguishable from an absent override",
+  );
+  assert.notEqual(agentBodyFingerprint(reverted), agentBodyFingerprint(overridden));
+});
+
+test("an unchanged body keeps its fingerprint, whatever the key order", () => {
+  const body = storedAgentBody("Layla", REAL_ESTATE_TEMPLATE);
+
+  assert.equal(agentBodyFingerprint(copy(body)), agentBodyFingerprint(body));
+  assert.equal(
+    agentBodyFingerprint(storedAgentBody("Layla", REAL_ESTATE_TEMPLATE)),
+    agentBodyFingerprint(body),
+  );
+
+  const reversed = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(reversed);
+    if (value !== null && typeof value === "object") {
+      const record = value as Record<string, unknown>;
+      return Object.fromEntries(
+        Object.keys(record).reverse().map((key) => [key, reversed(record[key])]),
+      );
+    }
+    return value;
+  };
+  const reordered = reversed(body) as StoredAgentBody;
+  assert.notDeepEqual(Object.keys(reordered), Object.keys(body), "the key order really changed");
+  assert.equal(agentBodyFingerprint(reordered), agentBodyFingerprint(body));
+});
+
+// The tenant fingerprint moved in ticket 62: it used to hash the read-back
+// subset (which omitted the model override). Pinned so a later change to the
+// whole-body contract is a reviewable diff, not a silent refresh of every
+// deployed tenant agent.
+//
+// It moved again in ticket 64: the body swapped the explicit turn-detection
+// object for the Turn preset (`turn_detection: null`), so every tenant agent is
+// owed exactly one redeploy. The pre-64 value is kept so the change is proved,
+// not merely repinned.
+const PRE_64_TENANT_FINGERPRINT =
+  "0006f91074018cfb8cc554d8d82e6691f3f3299040d0b3ea08dfb8c5403d06ce";
+
+test("the tenant fingerprint moves when the Turn preset replaces the legacy object", () => {
+  const fingerprint = deploymentFingerprint("Layla", REAL_ESTATE_TEMPLATE);
+  assert.notEqual(
+    fingerprint,
+    PRE_64_TENANT_FINGERPRINT,
+    "the body changed, so the stored fingerprint must change with it",
+  );
+  assert.equal(
+    fingerprint,
+    "dbbed9a5d246f2efee8fd83fd626e9035c25621969427e97d55511dee60b95cc",
+    "the post-64 tenant fingerprint is pinned",
   );
 });
 
@@ -303,18 +469,136 @@ test("the profile type admits only the whitelisted fields", () => {
   assert.equal([withRules, withTurns, withTerms, withLanguage].length, 4);
 });
 
-// ── Turn-taking stays the builder's, unchanged by this ticket ──────────────
+// ── The Turn preset reaches every agent (ticket 64) ────────────────────────
 
-test("turn-taking is the builder's, and this ticket changes neither path", () => {
-  assert.equal(
-    buildDemoAgentBody("anna").input.turn_detection,
-    null,
-    "the demo stays on the Turn preset (adaptive end-of-turn)",
-  );
-  assert.deepEqual(
-    storedAgentBody("Layla", REAL_ESTATE_TEMPLATE).input.turn_detection,
-    TENANT_LEGACY_TURN_DETECTION,
-    "the tenant body still carries its pre-64 object until ticket 64/65 removes it",
+// `CONTEXT.md` **Turn preset**: "The single turn-taking setting shared by every
+// demo call, test call, and copilot session: meaning-based end-of-turn, and a
+// barge-in delay that holds out while the agent explains and drops while it
+// asks something." A stored body sends `turn_detection: null`; any object
+// disables adaptive end-of-turn and measured 3.6–4.7s replies (ADR-0003).
+test("the Turn preset reaches every persona and platform, browser and phone", () => {
+  const demoConfig = voniConfig("anna");
+  const tenantConfig = REAL_ESTATE_TEMPLATE;
+
+  const bodies: Array<[label: string, body: StoredAgentBody]> = [
+    ["demo/browser", buildDemoAgentBody("anna")],
+    [
+      "demo/phone",
+      buildStoredAgent({
+        name: "demo:voni:anna",
+        config: demoConfig,
+        profile: { ...demoAgentProfile(), platform: "phone" },
+      }),
+    ],
+    ["tenant/phone", storedAgentBody("Layla", tenantConfig)],
+    [
+      "tenant/browser",
+      buildStoredAgent({
+        name: "Layla",
+        config: tenantConfig,
+        profile: { ...tenantAgentProfile(tenantConfig), platform: "browser" },
+      }),
+    ],
+  ];
+
+  for (const [label, body] of bodies) {
+    assert.ok(
+      "turn_detection" in body.input,
+      `${label}: the body shape is unchanged; null is how the Turn preset is sent`,
+    );
+    assert.equal(
+      body.input.turn_detection,
+      null,
+      `${label}: the Turn preset (meaning-based end-of-turn), never an object`,
+    );
+  }
+});
+
+// The contract: every managed path — both personas, both platforms, every
+// profile and builder input — sends `turn_detection: null`. An object switches
+// off adaptive end-of-turn and measured 3.6–4.7 second replies (ADR-0003).
+// Ticket 65 deleted the tenant's pre-64 object and the redundant "preset"
+// variant; this test fails if either is reintroduced.
+test("no managed path can send a turn_detection object", () => {
+  const tenantConfig = REAL_ESTATE_TEMPLATE;
+  const tenantProfile = tenantAgentProfile(tenantConfig);
+
+  const bodies: Array<[label: string, body: StoredAgentBody]> = [
+    ["demo/browser", buildDemoAgentBody("anna")],
+    ["demo/browser/resume", buildDemoAgentBody("anna", { resume: true })],
+    ["demo/browser/model", buildDemoAgentBody("anna", { llm: DEMO_LLM })],
+    [
+      "demo/phone",
+      buildStoredAgent({
+        name: "demo:voni:anna",
+        config: voniConfig("anna"),
+        profile: { ...demoAgentProfile(), platform: "phone" },
+      }),
+    ],
+    ["tenant/phone", storedAgentBody("Layla", tenantConfig)],
+    [
+      "tenant/browser",
+      buildStoredAgent({
+        name: "Layla",
+        config: tenantConfig,
+        profile: { ...tenantProfile, platform: "browser" },
+      }),
+    ],
+    [
+      "tenant/phone/no-greeting/no-format",
+      buildStoredAgent({
+        name: "Layla",
+        config: tenantConfig,
+        profile: { ...tenantProfile, format: null, greeting: false },
+      }),
+    ],
+    [
+      "tenant/phone/languages",
+      storedAgentBody("Layla", { ...tenantConfig, languageCodes: ["en", "ar"] }),
+    ],
+  ];
+
+  for (const [label, body] of bodies) {
+    assert.ok(
+      "turn_detection" in body.input,
+      `${label}: the body shape is unchanged; null is how the Turn preset is sent`,
+    );
+    assert.equal(
+      body.input.turn_detection,
+      null,
+      `${label}: the Turn preset, never an explicit object`,
+    );
+    assert.equal(
+      JSON.stringify(body).match(/"turn_detection":/g)?.length,
+      1,
+      `${label}: turn_detection appears exactly once in the body`,
+    );
+    assert.match(
+      JSON.stringify(body),
+      /"turn_detection":null/,
+      `${label}: the wire value is null, not an object`,
+    );
+  }
+});
+
+test("the builder admits no explicit preset variant and no legacy object", () => {
+  // The pre-64 object and the redundant `{ kind: "preset" }` input are gone;
+  // a caller can only omit turn-taking (the preset) or pass the demo-only
+  // experiment's windows, which a tenant still refuses.
+  // @ts-expect-error — ticket 65 deleted the redundant explicit preset variant
+  const preset: TurnTaking = { kind: "preset" };
+  assert.deepEqual(preset, { kind: "preset" }, "the value only exists to prove the type rejects it");
+
+  assert.throws(
+    () =>
+      buildStoredAgent({
+        name: "Layla",
+        config: REAL_ESTATE_TEMPLATE,
+        profile: tenantAgentProfile(REAL_ESTATE_TEMPLATE),
+        turnTaking: { kind: "preset" } as unknown as TurnTaking,
+      }),
+    /demo-only/,
+    "an untyped caller cannot revive the preset variant on a tenant body",
   );
 });
 
@@ -325,7 +609,7 @@ test("the turn-window experiment is demo-only and cannot be a profile field", ()
         name: "Layla",
         config: REAL_ESTATE_TEMPLATE,
         profile: tenantAgentProfile(REAL_ESTATE_TEMPLATE),
-        turnTaking: { kind: "windows", windows: { min_silence: 100 } },
+        turnTaking: { min_silence: 100 },
       }),
     /demo-only/,
   );
@@ -335,7 +619,7 @@ test("the turn-window experiment is demo-only and cannot be a profile field", ()
         name: "demo:voni:anna:exp",
         config: voniConfig("anna"),
         profile: demoAgentProfile(),
-        turnTaking: { kind: "windows", windows: {} },
+        turnTaking: {},
       }),
     /at least one configured window/,
   );

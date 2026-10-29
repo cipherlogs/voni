@@ -149,6 +149,7 @@ import {
   parseEvalTransport,
   resolveEvalVariantSelection,
   storedAgentBinding,
+  parseEvalAgentId,
   type EvalAgentIdentity,
   type EvalTransport,
   type EvalVariantSelection,
@@ -265,6 +266,13 @@ if (!apiKey) throw new Error("ASSEMBLYAI_API_KEY missing: run with --env-file=.d
 const TRANSPORT: EvalTransport = parseEvalTransport(process.argv);
 
 /**
+ * A tenant agent to bind (voice-parity ticket 72): the same runner measures a
+ * customer's stored agent, addressed by id, instead of provisioning the demo's
+ * per-voice agent. Absent means the run measures the demo subject.
+ */
+const TENANT_AGENT_ID: string | null = parseEvalAgentId(process.argv);
+
+/**
  * Opt-in JSONL event stream (retro #9): `--events <path>` writes one object
  * per key decision for `npm run scoreboard:inspect --events <path>`. Absent
  * flag = no file, no overhead. Lines carry timings/ids only; the writer
@@ -308,6 +316,21 @@ let storedAgentRequest: Promise<EvalAgentIdentity> | null = null;
  */
 async function storedAgentFor(voiceId: string): Promise<EvalAgentIdentity> {
   if (storedAgent) return storedAgent;
+  // A tenant subject is bound as served: the customer's body is not provisioned
+  // or refreshed here, and its Locale/voice come with the agent (ticket 72).
+  if (TENANT_AGENT_ID !== null) {
+    const identity: EvalAgentIdentity = {
+      agentId: TENANT_AGENT_ID,
+      fingerprint: null,
+      llmModel: null,
+      variant: "production",
+      variantKey: null,
+      turnWindows: null,
+    };
+    storedAgent = identity;
+    console.log(`  · tenant agent ${identity.agentId} (bound as served; not provisioned by the demo)`);
+    return identity;
+  }
   if (!storedAgentRequest) {
     storedAgentRequest = (async () => {
       // The variant selection is resolved once at startup (flag beats env);
@@ -337,7 +360,7 @@ async function storedAgentFor(voiceId: string): Promise<EvalAgentIdentity> {
       };
       storedAgent = identity;
       console.log(
-        `  · stored agent ${identity.agentId} (${VARIANT_SELECTION.variant === "turn-window" ? `${VARIANT_SELECTION.variantKey} ` : ""}fingerprint ${identity.fingerprint.slice(0, 12)}, llm ${identity.llmModel ?? "managed"})`,
+        `  · stored agent ${identity.agentId} (${VARIANT_SELECTION.variant === "turn-window" ? `${VARIANT_SELECTION.variantKey} ` : ""}fingerprint ${identity.fingerprint ? identity.fingerprint.slice(0, 12) : "none"}, llm ${identity.llmModel ?? "managed"})`,
       );
       return identity;
     })();
@@ -447,6 +470,12 @@ async function speakOnce(line: string): Promise<Buffer> {
 }
 
 async function runSession(voiceId: string, steps: Step[]): Promise<Outcome> {
+  if (TENANT_AGENT_ID !== null) {
+    throw new HarnessBreak(
+      `scenario rebuilds a demo agent body, but the subject is tenant agent ${TENANT_AGENT_ID}: ` +
+        "measure a tenant through the live client path (greeting-cut, stop-over, over-talk, filler-over, silence-check-in)",
+    );
+  }
   const body = buildDemoAgentBody(voiceId);
   const ws = new WebSocket(`${WS}?token=${await token()}`);
   const outcome: Outcome = { agent: [], heard: [], endCalled: false };
@@ -1684,6 +1713,12 @@ async function runToolSession(
   answer: (name: string, args: Record<string, unknown>) => Promise<Record<string, unknown>>,
   script: (api: ToolApi) => Promise<void>,
 ): Promise<ToolOutcome> {
+  if (TENANT_AGENT_ID !== null) {
+    throw new HarnessBreak(
+      `scenario rebuilds a demo agent body, but the subject is tenant agent ${TENANT_AGENT_ID}: ` +
+        "measure a tenant through the live client path (greeting-cut, stop-over, over-talk, filler-over, silence-check-in)",
+    );
+  }
   const body = buildDemoAgentBody(voiceId);
   const ws = new WebSocket(`${WS}?token=${await token()}`);
   const outcome: ToolOutcome = {
@@ -2398,6 +2433,9 @@ const VARIANT_SELECTION: EvalVariantSelection = resolveEvalVariantSelection({
 console.log(
   `transport: ${TRANSPORT}${TRANSPORT === "stored" ? " (the landing demo's stored agent)" : " (inline body: debugging only)"}`,
 );
+if (TENANT_AGENT_ID !== null) {
+  console.log(`tenant agent: ${TENANT_AGENT_ID} (voice ${voiceId}; bound as served, not provisioned by the demo)`);
+}
 console.log(
   `variant: ${VARIANT_SELECTION.variant}` +
     (VARIANT_SELECTION.variantKey
