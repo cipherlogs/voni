@@ -16,10 +16,10 @@
  *     follow the buffer, so a stall changes no sample;
  *   - the worklet reports the cushion it holds and the target it starts at.
  *
- * The trace builders are copied from `playout-defect.test.ts` — ticket 07's
- * characterisation of the old behaviour, which is skipped until ticket 28
- * turns the absence assertions into gates — so this file stands alone. Run
- * from `voni/`, because the worklet is read from `public/`.
+ * The trace builders are copied from `playout-gating.test.ts` — ticket 07's
+ * characterisation of the old behaviour, now the gate for its absence — so
+ * this file stands alone. Run from `voni/`, because the worklet is read from
+ * `public/`.
  */
 import test from "node:test";
 import assert from "node:assert/strict";

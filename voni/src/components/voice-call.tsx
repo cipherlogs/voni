@@ -448,6 +448,19 @@ export function VoiceCall({
   const sounds = () => (soundsRef.current ??= new CallSounds());
   /** Connected chime fires once per call; reset every time we dial. */
   const connectedChimeRef = useRef(false);
+  /**
+   * The connected chime marks the agent actually sounding, so it hangs off the
+   * playout's first audible sample — not the moment a greeting is queued (the
+   * worklet holds that for its whole pre-roll) and not `session.ready`. A
+   * longer chime therefore starts with the first word instead of running into
+   * it from half a second early. Silent when the greeting never sounds.
+   */
+  const playConnectedChime = useCallback(() => {
+    if (connectedChimeRef.current) return;
+    connectedChimeRef.current = true;
+    sounds().stopRingback();
+    sounds().play("connected");
+  }, []);
   /** Last live caption's speaker + word count: new words strike the tick. */
   const captionWordsRef = useRef<{ role: string; words: number } | null>(null);
   /**
@@ -980,18 +993,16 @@ export function VoiceCall({
 
   // Call earcons, driven by call state (see public/sounds/README.md — a
   // missing file is silence, never an error). Ringback loops from
-  // connecting; the connected chime fires once per call on the first live
-  // state; ended plays hangup unless an error already played its tone.
+  // connecting and stops once the call is live; the connected chime is not
+  // state-driven at all: it fires from the playout's first audible sample
+  // (playConnectedChime above), so scheduling can never make it early. Ended
+  // plays hangup unless an error already played its tone.
   useEffect(() => {
     if (state === "connecting") {
       connectedChimeRef.current = false;
       sounds().startRingback();
     } else if (state === "listening" || state === "speaking") {
-      if (!connectedChimeRef.current) {
-        connectedChimeRef.current = true;
-        sounds().stopRingback();
-        sounds().play("connected");
-      }
+      sounds().stopRingback();
     } else if (state === "ended") {
       sounds().stopRingback();
       if (!error) sounds().play("hangup");
@@ -1220,6 +1231,9 @@ export function VoiceCall({
           speakingRef.current = true;
           setCallState("speaking");
         },
+        // The connected chime waits for the first audible sample, not this
+        // frame's arrival (the playout holds it for the pre-roll).
+        onFirstAudible: playConnectedChime,
         onInterrupted: () => {
           speakingRef.current = false;
           overheardRef.current = false;
@@ -1330,6 +1344,9 @@ export function VoiceCall({
           }
         }
       },
+      // The connected chime marks the first audible sample of the agent's
+      // voice, not the greeting's arrival on the wire.
+      onFirstAudible: playConnectedChime,
       // Barge-in recovery lives in the session (lib/voice/barge-in.ts);
       // the card only leaves a trace line for `npm run call:trace`.
       onBargeIn: (event) => {
@@ -1598,7 +1615,7 @@ export function VoiceCall({
       setStarting(false);
       notifyPending({ ...pendingRef.current, starting: false });
     }
-  }, [modeKind, inlineAgentId, notifyPending, voiceId, config, engine, cascadeUrl, setCallState, closeCall, markClosing, setReturnPending, enterHold, setEmailTest, setTestTag, putTestUp, speak]);
+  }, [modeKind, inlineAgentId, notifyPending, voiceId, config, engine, cascadeUrl, setCallState, closeCall, markClosing, setReturnPending, enterHold, setEmailTest, setTestTag, putTestUp, speak, playConnectedChime]);
 
   const hangUp = useCallback(async () => {
     if (hangingUp) return;
