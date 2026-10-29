@@ -255,11 +255,11 @@ export function buildDemoAgentBody(
   const resume = opts?.resume === true;
   const variant = opts?.variant ?? "production";
   // The experiment's windows are demo-only session mechanics: they reach the
-  // builder as a turn-taking input, never as a profile field (ticket 64
-  // removes the experiment; a profile can never request it).
+  // builder as a turn-taking input, never as a profile field (ticket 65 deleted
+  // the explicit preset variant and the tenant's old object).
   const turnTaking: TurnTaking | undefined =
     variant === "turn-window"
-      ? { kind: "windows", windows: opts?.turnWindows ?? DEMO_TURN_WINDOW_DEFAULTS }
+      ? opts?.turnWindows ?? DEMO_TURN_WINDOW_DEFAULTS
       : undefined;
   return buildStoredAgent({
     name: demoAgentName(voiceId, resume, variant),
