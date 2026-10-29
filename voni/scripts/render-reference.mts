@@ -18,6 +18,11 @@
  * `.voice-references/` (gitignored working files, never committed), so a rerun
  * is free and a changed line is a new capture. It is a standard PCM WAV at the
  * voice's native level: no client gain, no limiter, no normalisation.
+ *
+ * This script is the *managed* path's reference. The cascade's W0 reference is
+ * `voice-pipeline/scripts/render_reference.py`, which renders through the
+ * service's own TTS client and binding table; the two are not
+ * interchangeable.
  */
 import { fileURLToPath } from "node:url";
 import { DEMO_VOICE_IDS } from "../src/lib/demo/voni-agent";
