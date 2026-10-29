@@ -1,4 +1,5 @@
-import { cleanTokens, FILLER_TOKENS, isCommandBargeIn, isEndCallRequest } from "./jev-judges";
+import { cleanTokens, isCommandBargeIn, isEndCallRequest } from "./jev-judges";
+import { EN_RECOGNITION } from "./recognition";
 
 /**
  * Barge-in: the server stops the agent, the session recovers
@@ -21,8 +22,14 @@ export type OverlapVerdict = "yield" | "ignore" | "judge";
 /** "okaay" → "okay", "sooo" → "so", "mmhmm" → "mhm": elongation is still filler. */
 const squeezeRepeats = (token: string) => token.replace(/(.)\1+/g, "$1");
 
+/**
+ * The words that never take the floor, owned by the recognition bundle
+ * (`./recognition/en.ts`) and read here in the English rendering the call
+ * paths still use. Squeezed, because elongation is the caller's habit, not
+ * another word.
+ */
 const OVERLAP_FILLER = new Set(
-  [...FILLER_TOKENS, "so", "well", "like", "yeah", "yes", "yep", "cool", "nice", "wow", "ok"].map(squeezeRepeats),
+  [...EN_RECOGNITION.filler, ...EN_RECOGNITION.bargeIn].map(squeezeRepeats),
 );
 
 /** Share of the caller's words found in the agent's current sentence that marks echo. */

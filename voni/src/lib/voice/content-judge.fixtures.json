@@ -1,0 +1,70 @@
+{
+  "recordedAt": "2026-10-29",
+  "recordedWith": "repo generateJSON client via Meta Model API (muse-spark-1.3-contributor); replayed offline in unit tests, no network",
+  "judgeVersion": "content-judge/1",
+  "cases": {
+    "spanishLeak": {
+      "input": {
+        "locale": "es",
+        "baseline": {
+          "locale": "en",
+          "text": "Hi, I'm Voni! Let's try something cool: I'll show you what I can do while we talk. Ready?"
+        },
+        "transcript": [
+          {
+            "speaker": "agent",
+            "text": "¡Hola, soy Voni! Probemos algo genial: te muestro lo que puedo hacer mientras hablamos. ¿Listo?"
+          },
+          { "speaker": "caller", "text": "Sí, adelante." },
+          {
+            "speaker": "agent",
+            "text": "Perfecto. So, and then we can look at your business."
+          }
+        ]
+      },
+      "evidence": {
+        "naturalness": 1,
+        "codeSwitching": 1,
+        "leaks": [
+          {
+            "text": "So, and then we can look at your business.",
+            "turn": 2,
+            "reason": "Full English sentence used in Spanish conversation, not an established loanword or proper name"
+          }
+        ],
+        "reasons": [
+          "Turn 2 is entirely in English, which is unusable as Spanish and breaks language consistency; Turn 0 is natural Spanish."
+        ],
+        "provider": "Meta Model API",
+        "model": "muse-spark-1.3-contributor"
+      }
+    },
+    "spanishClean": {
+      "input": {
+        "locale": "es",
+        "baseline": {
+          "locale": "en",
+          "text": "Hi, I'm Voni! Let's try something cool: I'll show you what I can do while we talk. Ready?"
+        },
+        "transcript": [
+          {
+            "speaker": "agent",
+            "text": "¡Hola, soy Voni! Probemos algo genial: te muestro lo que puedo hacer mientras hablamos. ¿Listo?"
+          },
+          { "speaker": "caller", "text": "Sí, claro." },
+          { "speaker": "agent", "text": "Perfecto. ¿De qué se trata tu negocio?" }
+        ]
+      },
+      "evidence": {
+        "naturalness": 4,
+        "codeSwitching": 4,
+        "leaks": [],
+        "reasons": [
+          "No defect detected in agent turns 0 and 2; both are natural Spanish conveying the baseline meaning with no translationese or foreign items."
+        ],
+        "provider": "Meta Model API",
+        "model": "muse-spark-1.3-contributor"
+      }
+    }
+  }
+}

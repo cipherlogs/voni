@@ -7,15 +7,18 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { decodeAudioFile } from "../audio/format-facts";
 import {
   RecordingCaptureError,
   agentChannelPcm,
+  callerChannelPcm,
+  captureChannels,
   captureFilePath,
   channelPcm,
+  describeCaptures,
   encodeMonoWav,
   parseCaptureFlags,
   resolveRecordingFormat,
@@ -125,10 +128,147 @@ test("the kept agent file keeps the recording's true rate and duration", () => {
   }
 });
 
-test("the kept file's path names the session, so a capture pairs with its call", () => {
-  const path = captureFilePath("/tmp/voice-evidence", "sess_abc123", 16_000);
+test("the caller channel is the first channel of the same decode", () => {
+  const format = resolveRecordingFormat({ sample_rate: 16_000, channels: 2 });
+  const interleaved = stereoPcm(8, (_frame, channel) => (channel === 0 ? 7000 : -7000));
 
-  assert.equal(path, "/tmp/voice-evidence/sess_abc123-agent-16000hz.wav");
+  const caller = callerChannelPcm(interleaved, format);
+
+  assert.equal(caller.byteLength, 16);
+  const view = new DataView(caller.buffer, caller.byteOffset, caller.byteLength);
+  assert.deepEqual(
+    Array.from({ length: 8 }, (_value, frame) => view.getInt16(frame * 2, true)),
+    [7000, 7000, 7000, 7000, 7000, 7000, 7000, 7000],
+  );
+});
+
+test("each kept file's path names the session, its channel and the recording's rate", () => {
+  assert.equal(
+    captureFilePath("/tmp/voice-evidence", "sess_abc123", 16_000, "agent"),
+    "/tmp/voice-evidence/sess_abc123-agent-16000hz.wav",
+  );
+  assert.equal(
+    captureFilePath("/tmp/voice-evidence", "sess_abc123", 16_000, "caller"),
+    "/tmp/voice-evidence/sess_abc123-caller-16000hz.wav",
+  );
+});
+
+test("both channels are kept as files at the recording's own rate", () => {
+  const dir = tempDir();
+  try {
+    const format = resolveRecordingFormat({ sample_rate: 48_000, channels: 2 });
+    const interleaved = stereoPcm(24_000, (frame, channel) =>
+      channel === 0 ? (frame % 100) + 1000 : -2000 - (frame % 100),
+    );
+
+    const report = captureChannels(interleaved, format, {
+      directory: dir,
+      sessionId: "sess_pair01",
+    });
+
+    assert.deepEqual(report.kept.map((kept) => kept.channel), ["caller", "agent"]);
+    assert.deepEqual(report.absent, []);
+    for (const kept of report.kept) {
+      writeFileSync(kept.path, kept.wav);
+      const { facts } = decodeAudioFile(kept.path);
+      assert.equal(facts.sampleRate, 48_000);
+      assert.equal(facts.channels, 1);
+      assert.equal(facts.frameCount, 24_000);
+      assert.equal(facts.durationSeconds, 0.5);
+      assert.equal(kept.frameCount, 24_000);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the kept channels are told apart by content, not only by their names", () => {
+  const dir = tempDir();
+  try {
+    const format = resolveRecordingFormat({ sample_rate: 16_000, channels: 2 });
+    const interleaved = stereoPcm(400, (frame, channel) =>
+      channel === 0 ? 9000 : -100 - (frame % 100),
+    );
+
+    const report = captureChannels(interleaved, format, {
+      directory: dir,
+      sessionId: "sess_content",
+    });
+    const kept = new Map(
+      report.kept.map((channel) => {
+        writeFileSync(channel.path, channel.wav);
+        return [channel.channel, decodeAudioFile(channel.path)] as const;
+      }),
+    );
+
+    const caller = kept.get("caller")!;
+    const agent = kept.get("agent")!;
+    // A swapped or duplicated pair would fail these: the caller is a steady
+    // loud positive tone and the agent a quiet negative ramp.
+    assert.equal(Math.min(...caller.samples), 9000);
+    assert.equal(Math.max(...caller.samples), 9000);
+    assert.equal(Math.max(...agent.samples), -100);
+    assert.equal(Math.min(...agent.samples), -199);
+    assert.notDeepEqual(Array.from(caller.samples), Array.from(agent.samples));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the report names both paths and the session, so the pair is found again", () => {
+  const dir = tempDir();
+  try {
+    const format = resolveRecordingFormat({ sample_rate: 16_000, channels: 2 });
+    const interleaved = stereoPcm(8, (_frame, channel) => (channel === 0 ? 500 : -500));
+
+    const report = captureChannels(interleaved, format, {
+      directory: dir,
+      sessionId: "sess_print01",
+    });
+
+    assert.deepEqual(describeCaptures(report), [
+      `Session sess_print01: caller channel kept at ${join(dir, "sess_print01-caller-16000hz.wav")} (16000 Hz, 0.00 s).`,
+      `Session sess_print01: agent channel kept at ${join(dir, "sess_print01-agent-16000hz.wav")} (16000 Hz, 0.00 s).`,
+    ]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("an absent channel is reported by name, never filled from the other one", () => {
+  const dir = tempDir();
+  try {
+    const format = resolveRecordingFormat({ sample_rate: 24_000, channels: 2 });
+
+    const undecoded = captureChannels(null, format, {
+      directory: dir,
+      sessionId: "sess_absent",
+    });
+    assert.deepEqual(undecoded.kept, []);
+    assert.deepEqual(
+      undecoded.absent.map((entry) => entry.channel),
+      ["caller", "agent"],
+    );
+    assert.deepEqual(readdirSync(dir), []);
+
+    const lines = describeCaptures(undecoded);
+    assert.equal(lines.length, 2);
+    for (const line of lines) {
+      assert.match(line, /^Session sess_absent: /);
+      assert.match(line, / channel absent — /);
+    }
+    assert.ok(!lines.some((line) => line.includes("-caller-24000hz.wav")));
+
+    const truncated = captureChannels(new Uint8Array(6), format, {
+      directory: dir,
+      sessionId: "sess_absent",
+    });
+    assert.deepEqual(truncated.kept, []);
+    assert.equal(truncated.absent.length, 2);
+    assert.match(truncated.absent[0].reason, /6 bytes/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("keeping a capture does not request remote deletion", () => {
