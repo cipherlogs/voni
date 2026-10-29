@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "voice": "mary",
+  "locale": "en",
+  "recording": {
+    "voice": "mary",
+    "locale": "en",
+    "asset": "public/voices/mary.mp3",
+    "url": "/voices/mary.mp3",
+    "sha256": "c8b2a589eb62bcdcc0c171ed10b08df53ded6ff679d417c9b70e9d70390cbd9e",
+    "line": "Hi, I'm Voni! Let's try something cool: I'll show you what I can do while we talk. Ready?",
+    "lineSha256": "1fc5f4bc46cd75037b68c4af616afb58740fb27478ec90652c45a7ff48f18ac6",
+    "durationMs": 4704,
+    "sampleRate": 24000,
+    "channels": 1,
+    "bitrateKbps": 160,
+    "source": "audition-clip"
+  },
+  "ballot": {
+    "axes": [
+      "timbre",
+      "accent",
+      "languageNaturalness"
+    ],
+    "scale": {
+      "min": 1,
+      "max": 5,
+      "pass": 5
+    },
+    "reasonRequiredBelow": 5
+  },
+  "verdict": null,
+  "generatedOn": "2026-10-29",
+  "source": "evidence/audition-clips/clips.json"
+}
