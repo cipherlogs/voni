@@ -7,11 +7,19 @@ test("the agent's own language choice passes through untouched", () => {
   assert.deepEqual(effectiveInlineLanguages(["en", "de"]), ["en", "de"]);
 });
 
-test("automatic detection falls back to English for test calls", () => {
-  // Empty = the picker's Automatic mode (18-language detection every turn).
-  // The test call locks to English instead; PSTN keeps raw config.
-  assert.deepEqual(effectiveInlineLanguages([]), ["en"]);
-  assert.deepEqual(effectiveInlineLanguages(undefined), ["en"]);
+test("the conversation Locale decides when the picker lists no code", () => {
+  assert.deepEqual(effectiveInlineLanguages([], "es"), ["es"]);
+  assert.deepEqual(effectiveInlineLanguages(undefined, "de"), ["de"]);
+  // An unsupported Locale is not a code; automatic detection stays on.
+  assert.equal(effectiveInlineLanguages(undefined, "xx"), undefined);
+});
+
+test("automatic detection stays automatic: no English code is pinned", () => {
+  // Empty picker and no conversation Locale = the recogniser's own
+  // 18-language detection every turn. ["en"] would switch it off.
+  assert.equal(effectiveInlineLanguages([]), undefined);
+  assert.equal(effectiveInlineLanguages(undefined), undefined);
+  assert.equal(effectiveInlineLanguages(undefined, null), undefined);
 });
 
 test("the fallback returns a copy, never the caller's array", () => {

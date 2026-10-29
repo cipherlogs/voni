@@ -63,12 +63,11 @@ export type ServerEvent =
   | { kind: "error"; message: string };
 
 export function buildConfigMessage(config: CascadeCallConfig): string {
+  // No language_codes key when the caller pinned none: the pipeline detects
+  // automatically. A default ["en"] here would silently disable detection.
   return JSON.stringify({
     type: "config",
-    pipeline: {
-      ...config.pipeline,
-      language_codes: config.pipeline.language_codes ?? ["en"],
-    },
+    pipeline: { ...config.pipeline },
     system_prompt: config.systemPrompt,
     tools: config.tools ?? [],
     agent_name: config.agentName ?? "",

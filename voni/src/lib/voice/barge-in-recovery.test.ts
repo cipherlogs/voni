@@ -62,8 +62,11 @@ test("the resume says the exact tail, never the heard part", () => {
   assert.doesNotMatch(instructions, /I'd handle/, "the heard part is repeated");
 });
 
-test("a tail of three words or fewer is not worth resuming", () => {
-  assert.equal(worthResuming("check that now."), false);
+test("the resume boundary is a minimum tail of four words", () => {
+  // RESUME_TAIL_MIN_WORDS = 4 and the condition is `>=`, so the name, the
+  // constant and the behaviour agree on the boundary.
+  assert.equal(worthResuming("check that now."), false, "three words is below the minimum");
+  assert.equal(worthResuming("check that right now."), true, "four words meets the minimum");
   assert.equal(worthResuming("me check that for you"), true);
   assert.equal(resumeForBargeIn("okay", "check that now."), null);
 });
