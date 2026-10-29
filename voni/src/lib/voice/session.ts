@@ -46,6 +46,12 @@ import {
 import { releaseMic } from "./mic-owner";
 import { BARGE_IN_JUDGE_MS, judgeOverlap } from "./barge-in";
 import { requestVoiceJudge } from "./jev-judges";
+import {
+  callRecognition,
+  callRecognitionLocale,
+  type CompleteRecognition,
+  type RecognitionLocale,
+} from "./recognition";
 import { TRANSCRIPTION_MODE, DEMO_TRANSCRIPTION_MODE } from "./transcription";
 import {
   acquireMicStream,
@@ -113,7 +119,18 @@ export type SessionConfig =
       /** Required by the server to scope signed-in browser tool tests. */
       testAgentId?: string;
     }
-  | { mode: "agent"; agentId: string };
+  | {
+      mode: "agent";
+      agentId: string;
+      /**
+       * The Locale the browser knows this agent speaks — the demo's voice
+       * pins it. Client-side only: the stored agent body stays server-owned
+       * and this never reaches the wire. It decides which words the caller's
+       * own guardrails (barge-in, filler, goodbye) run on; absent is
+       * automatic detection, the documented English-scaffolding exception.
+       */
+      languageCodes?: string[];
+    };
 
 /**
  * Where the token comes from. The two endpoints differ in more than their URL:
@@ -174,13 +191,20 @@ export function buildResumeMessage(sessionId: string): Record<string, unknown> {
  * tuned: fast endpointing, the screen's vocabulary, the screen's scene.
  */
 /**
- * Test-call language lock. The agent's own picker stays authoritative and
- * passes through untouched; when it is left on Automatic (empty), the test
- * call locks to English instead of paying 18-language auto-detection on
- * every turn. PSTN/provision paths keep passing the raw config untouched.
+ * Test-call language resolution. The agent's own picker stays authoritative
+ * and passes through untouched. When the picker is left on Automatic (empty),
+ * the call follows the agent's Locale — the conversation language its owner
+ * chose — so testing a Spanish agent tests Spanish. Only an agent with no
+ * Locale at all (automatic language detection) locks to English, the one
+ * documented English-scaffolding exception. PSTN/provision paths keep passing
+ * the raw config untouched.
  */
-export function effectiveInlineLanguages(codes: string[] | undefined): string[] {
-  return codes && codes.length > 0 ? [...codes] : ["en"];
+export function effectiveInlineLanguages(
+  codes: string[] | undefined,
+  conversationLanguage?: string | null,
+): string[] {
+  if (codes && codes.length > 0) return [...codes];
+  return [callRecognitionLocale({ conversationLanguage, languageCodes: codes }) ?? "en"];
 }
 
 export function buildInlineSessionUpdate(
@@ -406,6 +430,8 @@ export type BargeInJudge = (state: {
   text: string;
   agentText: string;
   agentSpeakingMs: number;
+  /** The call's Locale, so the offline fallback reads the caller's own words. */
+  locale: RecognitionLocale;
 }) => Promise<"yield" | "keep">;
 
 /**
@@ -418,7 +444,12 @@ export const jevBargeInJudge =
   async (state) => {
     const verdict = await requestVoiceJudge(
       "barge-in",
-      { partialText: state.text, agentSpeakingMs: state.agentSpeakingMs, agentText: state.agentText },
+      {
+        partialText: state.text,
+        agentSpeakingMs: state.agentSpeakingMs,
+        agentText: state.agentText,
+        locale: state.locale,
+      },
       { timeoutMs: BARGE_IN_JUDGE_MS, headers: headers?.() },
     );
     return verdict.source === "jev" && verdict.decision === "keep-speaking" ? "keep" : "yield";
@@ -590,6 +621,14 @@ export class VoiceSession {
   private endCallTimer: ReturnType<typeof setInterval> | null = null;
   /** Last `reply.audio` arrival: the drain handshake waits out fresh audio. */
   private lastAudioAt = 0;
+
+  /**
+   * The words this call's own guardrails judge by (barge-in, filler, goodbye),
+   * from the Locale the caller pinned. Until `start()` says otherwise this is
+   * the documented automatic-detection scaffolding — a call has no Locale
+   * before it starts.
+   */
+  private recognition: CompleteRecognition = callRecognition({});
 
   /** end_call was signaled for the current goodbye (tool call or spoken). */
   private endCallSignaled = false;
@@ -789,6 +828,9 @@ export class VoiceSession {
     this.lastInputDropProbe = 0;
     this.preReadyDropped = 0;
     this.lastPreReadyDropProbe = 0;
+    // The call's own words, from the Locale it pinned. Automatic detection
+    // (nothing pinned) is the documented English scaffolding (`callRecognition`).
+    this.recognition = callRecognition({ languageCodes: config.languageCodes });
     if (!this.configSynced) {
       this.configSynced = true;
       this.handlers.onConfigUncertainty?.(false);
@@ -1688,7 +1730,7 @@ export class VoiceSession {
     if (this.noWordsTimer) clearTimeout(this.noWordsTimer);
     this.noWordsTimer = null;
     if (!bargeIn) return;
-    const verdict = judgeOverlap(text, bargeIn.heard);
+    const verdict = judgeOverlap(text, bargeIn.heard, this.recognition);
     if (verdict === "yield") {
       this.handlers.onBargeIn?.({ verdict: "yield", text, source: "rule" });
       // Real: the server answers it as a normal turn; a line of ours it cut
@@ -1701,7 +1743,12 @@ export class VoiceSession {
       this.resumeAfterBargeIn(bargeIn, text);
       return;
     }
-    void this.judgeBargeIn({ text, agentText: bargeIn.heard, agentSpeakingMs: bargeIn.speakingMs })
+    void this.judgeBargeIn({
+      text,
+      agentText: bargeIn.heard,
+      agentSpeakingMs: bargeIn.speakingMs,
+      locale: this.recognition.locale,
+    })
       .catch(() => "yield" as const)
       .then((decision) => {
         if (this.state === "ended") return;

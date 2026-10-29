@@ -65,6 +65,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { getVoice, voicePlaybackGain } from "../agents/voices";
 import { BARGE_IN_JUDGE_MS, judgeOverlap, type OverlapVerdict } from "../voice/barge-in";
+import { EN_RECOGNITION } from "../voice/recognition";
 import {
   END_CALL_AUDIO_GRACE_MS,
   END_CALL_DRAIN_TIMEOUT_MS,
@@ -2396,9 +2397,14 @@ export type OverheardEvaluation = {
  * Kind reuses the overlap intelligence: `yield` (steering, command,
  * end-call) must be answered; `ignore` (filler, back-channel, echo) must
  * never derail the turn; `judge` (real content) must at least be heard.
+ *
+ * The scoreboard's scenarios are English fixtures, so its shared judge reads
+ * the English rendering; a live call passes its own (`callRecognition`). This
+ * is a pinned Locale, not a default: nothing here falls back to English on
+ * another Locale's behalf.
  */
 export function classifyOverheard(text: string, agentText = ""): OverheardKind {
-  const verdict = judgeOverlap(text, agentText);
+  const verdict = judgeOverlap(text, agentText, EN_RECOGNITION);
   if (verdict === "yield") return "steering";
   if (verdict === "ignore") return "filler";
   return "content";
@@ -4122,7 +4128,7 @@ export function fillerEvidenceFromRun(observation: FillerRunObservation): Filler
 export function evaluateFillerResumeGate(evidence: FillerResumeEvidence): ScoreboardGate {
   const name = "filler-resume";
   const trace = evidence.traceTurn ?? "(no turn merged)";
-  const expected = judgeOverlap(evidence.visitorText, evidence.agentText);
+  const expected = judgeOverlap(evidence.visitorText, evidence.agentText, EN_RECOGNITION);
   const cut =
     evidence.cutMs !== null ? `${evidence.cutMs}ms` : evidence.cutObserved ? "cut (unmeasured)" : "never cut";
   const handling = evidence.handling ?? "unmeasured";
@@ -4336,7 +4342,7 @@ export type RealCutEvidence = {
  * ("mm-hmm", "Okaay so") and echo never do.
  */
 export function isRealCutExpected(visitorText: string, agentText = ""): boolean {
-  return judgeOverlap(visitorText, agentText) !== "ignore";
+  return judgeOverlap(visitorText, agentText, EN_RECOGNITION) !== "ignore";
 }
 
 /** Failure detail always reports cut ms plus judge verdict with the trace turn. */

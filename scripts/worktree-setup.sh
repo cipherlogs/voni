@@ -9,7 +9,7 @@ set -euo pipefail
 
 worktree_root="$(git rev-parse --show-toplevel)"
 common_git_dir="$(git rev-parse --path-format=absolute --git-common-dir)"
-main_root="$(git worktree list --porcelain | awk '/^worktree /{print $2; exit}')"
+main_root="$(git worktree list --porcelain | awk '/^worktree /{if (!found) { print $2; found = 1 }}')"
 
 if [ "$worktree_root" = "$main_root" ]; then
   echo "worktree-setup: already in the primary checkout ($worktree_root)"
