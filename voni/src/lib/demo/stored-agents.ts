@@ -56,11 +56,15 @@ export type LlmOverride = {
   base_url: string;
   model: string;
   api_key: string;
+  /** Disable thinking on models that support it (Gemini 2.5 Flash). */
+  reasoning_effort?: string;
 };
 
 /** Vercel AI Gateway: the fastest measured tool-calling model (see research 08). */
 export const DEMO_LLM_BASE_URL = "https://ai-gateway.vercel.sh/v1";
-export const DEMO_LLM_MODEL = "google/gemini-2.5-flash-lite";
+/** Gemini 2.5 Flash thinks by default; the demo needs the first token fast. */
+export const DEMO_LLM_REASONING_EFFORT = "none";
+export const DEMO_LLM_MODEL = "google/gemini-2.5-flash";
 
 export type ProvisionResult =
   | {
@@ -88,15 +92,19 @@ export type ProvisionResult =
 export async function demoLlmOverride(): Promise<LlmOverride[] | null> {
   const apiKey = await secret("AI_GATEWAY_API_KEY");
   if (!apiKey) return null;
-  const [baseUrl, model] = await Promise.all([
+  const [baseUrl, model, reasoning] = await Promise.all([
     secret("DEMO_LLM_BASE_URL"),
     secret("DEMO_LLM_MODEL"),
+    secret("DEMO_LLM_REASONING_EFFORT"),
   ]);
   return [
     {
       base_url: baseUrl || DEMO_LLM_BASE_URL,
       model: model || DEMO_LLM_MODEL,
       api_key: apiKey,
+      ...(reasoning || DEMO_LLM_REASONING_EFFORT
+        ? { reasoning_effort: reasoning || DEMO_LLM_REASONING_EFFORT }
+        : {}),
     },
   ];
 }

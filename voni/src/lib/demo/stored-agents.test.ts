@@ -69,7 +69,7 @@ test("demo body carries call control, tuning, and per-agent vocabulary", () => {
     body.tools.map((tool) => tool.name),
     [END_CALL_TOOL, "show_test_address", "check_email", "send_code_reply", "check_code"],
   );
-  assert.equal(body.input.transcription_mode, "max_accuracy");
+  assert.equal(body.input.transcription_mode, "balanced");
   assert.equal(body.input.turn_detection, null, "adaptive defaults; clears any stored object");
   assert.equal(body.input.voice_focus, "near-field");
   assert.deepEqual(body.output, { volume: 100 }, "loudest level; client gain matches voices");
@@ -110,7 +110,7 @@ test("fingerprints are stable and move with platform content", () => {
   // invalidate the cache: any body difference flips the fingerprint.
   const changed = {
     ...buildDemoAgentBody("anna"),
-    input: { ...buildDemoAgentBody("anna").input, transcription_mode: "min_latency" },
+    system_prompt: `${buildDemoAgentBody("anna").system_prompt} One more rule.`,
   };
   assert.notEqual(demoAgentFingerprint(changed), a);
 });
@@ -145,7 +145,7 @@ test("the fast LLM override rides the body only when supplied", () => {
   );
   assert.notEqual(
     demoAgentFingerprint(overridden, "account"),
-    demoAgentFingerprint(buildDemoAgentBody("anna", { llm: [{ ...llm[0], model: "openai/gpt-4.1-mini" }] }), "account"),
+    demoAgentFingerprint(buildDemoAgentBody("anna", { llm: [{ ...llm[0], model: "openai/gpt-4.1-nano" }] }), "account"),
     "a different model is a different fingerprint too",
   );
   assert.doesNotMatch(
@@ -160,7 +160,7 @@ test("the fast LLM override rides the body only when supplied", () => {
 });
 
 test("the LLM override comes from the gateway key, with the fast model by default", async () => {
-  const keys = ["AI_GATEWAY_API_KEY", "DEMO_LLM_BASE_URL", "DEMO_LLM_MODEL"] as const;
+  const keys = ["AI_GATEWAY_API_KEY", "DEMO_LLM_BASE_URL", "DEMO_LLM_MODEL", "DEMO_LLM_REASONING_EFFORT"] as const;
   const saved = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
   try {
     for (const key of keys) delete process.env[key];
@@ -168,14 +168,24 @@ test("the LLM override comes from the gateway key, with the fast model by defaul
 
     process.env.AI_GATEWAY_API_KEY = "gw-key";
     assert.deepEqual(await demoLlmOverride(), [
-      { base_url: DEMO_LLM_BASE_URL, model: DEMO_LLM_MODEL, api_key: "gw-key" },
+      {
+        base_url: DEMO_LLM_BASE_URL,
+        model: DEMO_LLM_MODEL,
+        api_key: "gw-key",
+        reasoning_effort: "none",
+      },
     ]);
-    assert.equal(DEMO_LLM_MODEL, "google/gemini-2.5-flash-lite");
+    assert.equal(DEMO_LLM_MODEL, "google/gemini-2.5-flash");
 
-    process.env.DEMO_LLM_MODEL = "openai/gpt-4.1-mini";
+    process.env.DEMO_LLM_MODEL = "google/gemini-2.5-flash";
     process.env.DEMO_LLM_BASE_URL = "https://llm.example.test/v1";
     assert.deepEqual(await demoLlmOverride(), [
-      { base_url: "https://llm.example.test/v1", model: "openai/gpt-4.1-mini", api_key: "gw-key" },
+      {
+        base_url: "https://llm.example.test/v1",
+        model: "google/gemini-2.5-flash",
+        api_key: "gw-key",
+        reasoning_effort: "none",
+      },
     ]);
   } finally {
     for (const key of keys) {

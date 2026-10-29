@@ -22,7 +22,7 @@
  *     [--transport stored|inline]
  *
  * A stored run's LLM comes from the demo agent's own body: with
- * `AI_GATEWAY_API_KEY` configured it is `google/gemini-2.5-flash-lite` via the
+ * `AI_GATEWAY_API_KEY` configured it is `google/gemini-2.5-flash` via the
  * Vercel AI Gateway (`DEMO_LLM_MODEL` / `DEMO_LLM_BASE_URL` override), otherwise
  * the managed model. The summary always says which one ran.
  *
@@ -1135,7 +1135,7 @@ const OVER_TALK_ASIDE = "We're a bakery, actually.";
  * room for the 400ms barge-in judge and the caller's own onset. Not a
  * product/gate threshold.
  */
-const OVER_TALK_ASIDE_LEAD_MS = 1500;
+const OVER_TALK_ASIDE_LEAD_MS = 0;
 /** The real point the caller adds after "Wait, stop."; it must be answered, never resumed past. */
 const STOP_OVER_POINT = "price";
 const STOP_OVER_POINT_LINE = "What is the price?";
@@ -1330,6 +1330,9 @@ const CLIENT_SCENARIOS: { name: string; run: () => Promise<string | null> }[] = 
           // received chunk count can already be past playout; playUntil is
           // the playout truth. If the reply is ever shorter than the lead,
           // this times out loudly instead of producing a free-floor turn.
+          // Real-time audio arrives in ~10ms chunks, so the playout queue is
+          // nearly empty; "sounding" is the honest predicate, not a queued
+          // lead. The aside starts while Voni still holds the floor.
           await ctx.waitFor(
             () => ctx.soundingReply() !== null && ctx.agentAudioMs() >= OVER_TALK_ASIDE_LEAD_MS,
           );

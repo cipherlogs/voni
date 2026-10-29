@@ -36,8 +36,12 @@ import type { AgentConfig } from "@/lib/agents/config";
  */
 export const TRANSCRIPTION_MODE = "balanced";
 
-/** Demo + test-call only: best hearing even if reply gap grows. PSTN stays balanced. */
-export const DEMO_TRANSCRIPTION_MODE = "max_accuracy";
+/**
+ * Demo + test-call: balanced is the voice-agent default and keeps the reply
+ * gap in the fast band (max_accuracy's endpointing wait added ~0.5-0.7s).
+ * Entity-aware endpointing still holds tags, addresses and numbers together.
+ */
+export const DEMO_TRANSCRIPTION_MODE = "balanced";
 
 /** Words every Voni call hears correctly without asking: the product name and the channels it answers on. */
 export const NEUTRAL_KEYTERMS = ["Voni", "WhatsApp"];

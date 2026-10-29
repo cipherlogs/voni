@@ -72,13 +72,13 @@ test("the summary names the transport, agent, fingerprint and model", () => {
     evalSummaryIdentity("stored", {
       agentId: "agent_123",
       fingerprint: "f".repeat(64),
-      llmModel: "google/gemini-2.5-flash-lite",
+      llmModel: "google/gemini-2.5-flash",
     }),
     {
       transport: "stored",
       agentId: "agent_123",
       agentFingerprint: "f".repeat(64),
-      llmModel: "google/gemini-2.5-flash-lite",
+      llmModel: "google/gemini-2.5-flash",
     },
   );
   assert.deepEqual(evalSummaryIdentity("stored", { agentId: "agent_123", fingerprint: "abc", llmModel: null }), {

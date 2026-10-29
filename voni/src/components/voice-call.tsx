@@ -57,7 +57,7 @@ import {
 } from "@/lib/voice/jev-judges";
 import { compileSystemPrompt } from "@/lib/agents/compile";
 import type { AgentConfig } from "@/lib/agents/config";
-import { buildAgentKeyterms, buildAgentTranscriptionPrompt } from "@/lib/voice/transcription";
+import { DEMO_TRANSCRIPTION_MODE, buildAgentKeyterms, buildAgentTranscriptionPrompt } from "@/lib/voice/transcription";
 import { CallSounds, tickAllowed } from "@/lib/voice/call-sounds";
 import {
   overheardLabel,
@@ -1559,8 +1559,8 @@ export function VoiceCall({
             // (empty) locks to English so the test call skips 18-language
             // auto-detection every turn.
             languageCodes: effectiveInlineLanguages(config.languageCodes),
-            // Demo parity: best hearing even if gap grows. PSTN stays balanced.
-            transcriptionMode: "max_accuracy",
+            // Demo parity with the stored agent: balanced end-of-turn.
+            transcriptionMode: DEMO_TRANSCRIPTION_MODE,
             // First-utterance STT tuning: scene + vocabulary for the opening
             // turn, which would otherwise run on generic recognition.
             transcriptionPrompt: buildAgentTranscriptionPrompt(config),
