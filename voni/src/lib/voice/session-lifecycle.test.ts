@@ -1,5 +1,8 @@
 import test, { mock } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { AudioGraph } from "./mic-capture";
 import {
   buildInlineSessionUpdate,
@@ -1241,6 +1244,118 @@ test("audio is never played before the confirmation resolves a rate", () => {
   audio(480);
   assert.deepEqual(played, []);
 });
+
+test("reply audio before the confirmation probes the drop instead of vanishing silently", () => {
+  mock.timers.enable({ apis: ["Date"] });
+  try {
+    mock.timers.setTime(1_700_000_000_000);
+    const probes: { kind: string; dropped?: number }[] = [];
+    const { played, audio } = recordPlayedRates({
+      onAudioProbe: (event) => probes.push(event),
+    });
+    audio(480);
+    audio(480);
+    // Never a guessed rate — and never silent either: one throttled probe,
+    // so a missing first word can be told apart from a lost socket (the
+    // mirror of the mic's input-drop probe).
+    assert.deepEqual(played, []);
+    const drops = () => probes.filter((probe) => probe.kind === "pre-ready-drop");
+    assert.equal(drops().length, 1, "one event per throttle window, not per chunk");
+    assert.equal(drops()[0]?.dropped, 1);
+    // The chunk swallowed by the window is reported with the next event's count.
+    mock.timers.tick(2_001);
+    audio(480);
+    assert.equal(drops().length, 2);
+    assert.equal(drops()[1]?.dropped, 2);
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+// ── Guard: the managed playback rate has one source ───────────────────────
+// A rate literal is exactly the defect the format contract exists to prevent,
+// and a behavioural test cannot tell a resolved 24 kHz from a hardcoded one —
+// both play at 24 kHz until a format change makes one of them a speed change.
+// So the guard reads the managed path's source: a literal or module constant
+// that reaches `play` fails, and the only value it may pass is the resolved
+// format's own `sampleRate`.
+
+const SESSION_SOURCE = readFileSync(
+  join(dirname(fileURLToPath(import.meta.url)), "session.ts"),
+  "utf8",
+);
+
+/** The rate argument of every `play(...)` call in a source file. */
+function playbackRateArguments(source: string): string[] {
+  return [...source.matchAll(/\.play\(([^)]*)\)/g)].map((match) => {
+    const args = match[1] ?? "";
+    return args.slice(args.lastIndexOf(",") + 1).trim();
+  });
+}
+
+test("no managed playback call passes a literal or a constant rate", () => {
+  const rates = playbackRateArguments(SESSION_SOURCE);
+  assert.ok(rates.length > 0, "the guard found no managed playback call");
+  for (const rate of rates) {
+    assert.doesNotMatch(rate, /\d/, `a literal rate reached the playout: ${rate}`);
+    // TARGET_SAMPLE_RATE is the mic's input rate; using it here would play the
+    // agent's stream at the caller's capture rate.
+    assert.doesNotMatch(
+      rate,
+      /\b[A-Z][A-Z0-9_]{2,}\b/,
+      `a module constant supplied the playout rate: ${rate}`,
+    );
+  }
+  // The concrete default belongs to output-format.ts, behind the resolver.
+  assert.doesNotMatch(SESSION_SOURCE, /24_000|24000/);
+});
+
+test("the resolved session format is the only source of the managed playback rate", () => {
+  const rates = playbackRateArguments(SESSION_SOURCE);
+  assert.ok(rates.length > 0, "the guard found no managed playback call");
+  for (const rate of rates) {
+    const field = playbackRateField(rate);
+    const assigned = [
+      ...SESSION_SOURCE.matchAll(
+        // `=` or `??=`, never the `==`/`===` of a refusal check.
+        new RegExp(
+          `this\\.${field}\\s*(?:\\?\\?=|(?<![=!<>+\\-*/%&|^])=(?!=))\\s*([^;]+);`,
+          "g",
+        ),
+      ),
+    ].map((match) => (match[1] ?? "").trim());
+    assert.ok(assigned.length > 0, `${field} reaches play but is never assigned`);
+    for (const value of assigned) {
+      // `null` is the refusal state (no playback at all); anything else must be
+      // a rate the resolver read, never a number written in this file.
+      assert.match(
+        value,
+        /^(?:null|\w+(?:\.\w+)*\.sampleRate)$/,
+        `${field} was assigned ${value}, not a resolved sampleRate`,
+      );
+    }
+  }
+});
+
+/** The field behind a play call's rate argument, following a local read. */
+function playbackRateField(rate: string): string {
+  if (rate.startsWith("this.")) {
+    const field = rate.slice("this.".length);
+    assert.match(field, /^[A-Za-z_$][\w$]*$/, `the playout rate is not a field: ${rate}`);
+    return field;
+  }
+  const fields = [
+    ...SESSION_SOURCE.matchAll(
+      new RegExp(`(?:const|let)\\s+${rate}\\s*=\\s*this\\.([A-Za-z_$][\\w$]*)\\s*;`, "g"),
+    ),
+  ].map((match) => match[1] ?? "");
+  assert.equal(
+    fields.length,
+    1,
+    `the playout rate ${rate} is neither a field nor one read of a field`,
+  );
+  return fields[0]!;
+}
 
 test("first session.update ships recognition tuning, not defaults", () => {
   const update = buildInlineSessionUpdate({
