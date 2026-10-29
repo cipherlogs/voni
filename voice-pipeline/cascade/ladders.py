@@ -521,22 +521,60 @@ def _build(
         ) from error
 
 
-async def open_speech(
-    breaker: Breaker, *, factories: Mapping[str, SpeechFactory]
-) -> SpeechSession:
-    """Read the speech record, select its rung and build that rung's session.
+async def _open_leg(
+    breaker: Breaker, ladder: Ladder, factories: Mapping[str, Callable[[], Any]]
+) -> tuple[Any, ProviderAttribution, RungChoice]:
+    """One durable read, one factory call for the rung the record selected.
 
-    One read, one factory call. The rung that loses is never built, so an open
-    Meta leg costs zero Meta requests, and a chosen rung that cannot be built
-    fails the call instead of silently trying the other provider.
+    The rung that loses is never built, so an open primary leg costs zero
+    primary requests, and a chosen rung that cannot be built fails the call
+    instead of silently trying the other provider.
     """
-    choices = await read_choices(breaker, ladders=(STT_LADDER,))
-    choice = choices["stt"]
-    stt, provider = _build("stt", choice, factories)
+    choices = await read_choices(breaker, ladders=(ladder,))
+    choice = choices[ladder.leg]
+    instance, provider = _build(ladder.leg, choice, factories)
     attribution = ProviderAttribution(
-        leg="stt",
+        leg=ladder.leg,
         provider=provider,
         rung="primary" if choice.rung == "primary" else "fallback",
         reason=choice.reason,
     )
+    return instance, attribution, choice
+
+
+async def open_speech(
+    breaker: Breaker, *, factories: Mapping[str, SpeechFactory]
+) -> SpeechSession:
+    """Read the speech record, select its rung and build that rung's session."""
+    stt, attribution, choice = await _open_leg(breaker, STT_LADDER, factories)
     return SpeechSession(stt=stt, attribution=attribution, choice=choice)
+
+
+# ---------------------------------------------------------------------------
+# The model ladder (ticket 23)
+# ---------------------------------------------------------------------------
+
+#: Model rungs in order: Standard Spark, then the AI gateway, then the call
+#: fails visibly. The gateway rung is never a mid-reply handover.
+LLM_LADDER = Ladder(leg="llm", primary="spark", fallback="gateway")
+
+
+@dataclass(frozen=True)
+class ModelSession:
+    """The model rung this call will use, plus its attribution."""
+
+    llm: Any
+    attribution: ProviderAttribution
+    choice: RungChoice
+
+
+#: A model factory builds an ``LLMStream``; ``complete()`` is the caller's.
+ModelFactory = Callable[[], Any]
+
+
+async def open_model(
+    breaker: Breaker, *, factories: Mapping[str, ModelFactory]
+) -> ModelSession:
+    """Read the model record, select its rung and build that rung's stream."""
+    llm, attribution, choice = await _open_leg(breaker, LLM_LADDER, factories)
+    return ModelSession(llm=llm, attribution=attribution, choice=choice)
