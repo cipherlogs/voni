@@ -40,10 +40,10 @@ import {
   DEFAULT_GATE_VOICE,
   REPLY_GAP_P95_BUDGET_MS,
   buildSkeletonArtifact,
-  subjectGateVerdict,
   subjectOfArtifact,
   type ScoreboardArtifact,
 } from "./scoreboard";
+import { subjectGateVerdict } from "./subject-verdict";
 import { buildInspectReport, formatInspectReport } from "./scoreboard-report";
 import { parseServedDemoAgentBody } from "./stored-agents";
 import { evalRunnerArgv, parseEvalAgentId } from "./eval-transport";
@@ -69,6 +69,7 @@ function artifactFor(
     exitCode: 0,
     durationMs: 10,
     runs: 1,
+    codeFingerprint: { head: "a".repeat(40), dirty: false, dirtyHash: "0".repeat(64) },
     gaps: { "greeting-cut": [gapMs] },
   });
 }

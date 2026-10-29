@@ -4,10 +4,6 @@ import {
   ARTIFACT_LATENCY_GAPS,
   ARTIFACT_PROVIDER_LEGS,
   ARTIFACT_SECTIONS,
-  CASCADE_NO_COMMIT_MARK_ABSENCE,
-  MANAGED_NO_COMMIT_MARK_ABSENCE,
-  MANAGED_NO_PARTIALS_ABSENCE,
-  MANAGED_NO_TOKEN_STREAM_ABSENCE,
   SCOREBOARD_SCHEMA_VERSION,
   isArtifactAbsence,
   parseGateRows,
@@ -27,6 +23,17 @@ import {
   type ScoreboardArtifact,
 } from "./scoreboard";
 import { CASCADE_ONLY_EVENT_TYPES, isCascadeOnlyEvent } from "./event-envelope";
+import {
+  CASCADE_NO_COMMIT_MARK_ABSENCE,
+  MANAGED_NO_COMMIT_MARK_ABSENCE,
+  MANAGED_NO_PARTIALS_ABSENCE,
+  MANAGED_NO_TOKEN_STREAM_ABSENCE,
+} from "./artifact-absence";
+
+// This module and `scoreboard.ts` re-export each other's matrix surface
+// (ticket 117). The reader therefore reads no scoreboard value at module
+// evaluation time: every binding is used inside a function, and the absence
+// strings live in `artifact-absence.ts`, so the cycle stays safe.
 
 export { ARTIFACT_SECTIONS, CASCADE_ONLY_EVENT_TYPES, isCascadeOnlyEvent };
 export type { ArtifactSection };
@@ -802,6 +809,15 @@ export type RunEventFact = {
   readonly turn?: string | null;
 };
 
+/**
+ * How a fingerprint is judged. `clean` is a single run's own verdict: the tree
+ * must be pristine and, when a code is supplied, match it. `current` is the
+ * matrix's question — is this run the current tree under judgement, dirty or
+ * not — so a matching dirty fingerprint is current and a different one is
+ * historical evidence that cannot answer for the current matrix.
+ */
+export type RunFingerprintPolicy = "clean" | "current";
+
 /** The artifact fields eligibility reads; a parsed artifact satisfies it. */
 export type RunEligibilityInput = {
   readonly artifact: Pick<
@@ -812,8 +828,14 @@ export type RunEligibilityInput = {
   readonly events?: readonly RunEventFact[];
   /** The harness outcome, when the caller holds it beside the artifact. */
   readonly harness?: { readonly status: "finished" | "harness-break"; readonly reason?: string } | null;
-  /** The code under judgement; omitted: only the recorded fingerprint is checked. */
+  /**
+   * The code under judgement; omitted: only the recorded fingerprint is
+   * checked. `null` means the caller cannot read the current code, which under
+   * the `current` policy blocks every run by name.
+   */
   readonly expectedCode?: { readonly head: string; readonly dirtyHash?: string } | null;
+  /** Default `clean`: one run's own verdict. See `RunFingerprintPolicy`. */
+  readonly fingerprintPolicy?: RunFingerprintPolicy;
 };
 
 /**
@@ -891,8 +913,32 @@ export function deriveRunEligibility(input: RunEligibilityInput): RunEligibility
   }
 
   const fingerprint = artifact.codeFingerprint;
+  const fingerprintPolicy = input.fingerprintPolicy ?? "clean";
   if (fingerprint === null || fingerprint === undefined) {
     reasons.push("the run records no code fingerprint; a clean run answers to the code it ran");
+  } else if (fingerprintPolicy === "current") {
+    if (input.expectedCode === null) {
+      reasons.push(
+        "the current matrix cannot read the code under judgement; no run can answer for an unreadable code",
+      );
+    } else if (input.expectedCode !== undefined) {
+      if (fingerprint.head !== input.expectedCode.head) {
+        reasons.push(
+          `the code fingerprint ${shortHead(fingerprint.head)} is historical: the current matrix judges ` +
+            `${shortHead(input.expectedCode.head)}; an older artifact is evidence only and cannot answer ` +
+            "for the current code",
+        );
+      } else if (
+        input.expectedCode.dirtyHash !== undefined &&
+        fingerprint.dirtyHash !== input.expectedCode.dirtyHash
+      ) {
+        reasons.push(
+          `the working-tree fingerprint ${fingerprint.dirtyHash.slice(0, 8)} is historical: the run ran on ` +
+            `a different tree from the current matrix's ${input.expectedCode.dirtyHash.slice(0, 8)}; ` +
+            "an older artifact is evidence only and cannot answer for the current code",
+        );
+      }
+    }
   } else {
     if (fingerprint.dirty) {
       reasons.push(
