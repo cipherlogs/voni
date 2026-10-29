@@ -93,6 +93,13 @@ import type {
 } from "./stored-agents";
 import { servedAgentOutputVolume } from "./stored-agents";
 import { formatTurnWindows } from "./turn-windows";
+import type { DecodedAudio } from "../audio/format-facts";
+import {
+  LEVEL_TOLERANCE_DB,
+  analyseLevel,
+  compareLevels,
+  type LevelFacts,
+} from "../audio/level-facts";
 
 /** The locked golden script: seven beats in fixed order (spec story 11). */
 export const GOLDEN_BEATS = [
@@ -339,6 +346,11 @@ export type ScoreboardLoudness = {
   outputVolume: number | null;
   ok: boolean;
   detail: string;
+  /**
+   * The measured level leg's verdict (ticket 16): a measured PASS needs both
+   * files inside the tolerance, and an absent measurement is INFO here too.
+   */
+  measured: MeasuredLevelCheck;
   /**
    * The stored body the level came from. Null when no body was read, so a
    * reader never mistakes an unmeasured level for a served one.
@@ -2879,6 +2891,9 @@ export function checkLoudness(input: {
  * Loudness sanity for one voice from the body the run served, never a
  * reconstruction. `unmeasured` is explicit when no body was read or the body
  * serves no level: the voice is reported, not passed by arithmetic.
+ *
+ * This is the per-voice gain table's review number (ticket 25). It is not the
+ * timbre gate's level leg any more: that reads a measured file (ticket 16).
  */
 export function checkServedLoudness(
   voiceId: string,
@@ -2916,6 +2931,120 @@ export function checkServedLoudness(
     volume,
     agentId: servedAgentBody.agentId,
   });
+}
+
+/**
+ * One saved capture the level leg measures itself. The gate runs the level
+ * analyser over these samples, so a verdict cites a file rather than a number
+ * that was derived from a constant the run never heard.
+ */
+export type MeasuredLevelFile = {
+  /** The saved file the reading was taken from; printed in the gate detail. */
+  path: string;
+  /** The decoded samples. */
+  audio: DecodedAudio;
+};
+
+/**
+ * The two measured files the level leg compares: the reference rendering of
+ * the same line in the same voice, and the audio the caller actually received.
+ * Both come from the W0 comparison's own files (tickets 10 and 12).
+ */
+export type MeasuredLevelInput = {
+  reference: MeasuredLevelFile;
+  delivered: MeasuredLevelFile;
+};
+
+/**
+ * The level leg's verdict: measured agreement, a measured difference, or the
+ * named absence of a measurement. There is no arithmetic path — a missing file
+ * is `INFO`/unmeasured, never a PASS.
+ */
+export type MeasuredLevelCheck = {
+  status: GateStatus;
+  /** The measured delivered integrated loudness, null unless both files measured. */
+  deliveredLufs: number | null;
+  /** The measured reference integrated loudness, null unless both files measured. */
+  referenceLufs: number | null;
+  /** Delivered minus reference, in LU; null unless both sides measured. */
+  deltaLu: number | null;
+  /** The tolerance the two readings were judged against, in LU. */
+  toleranceDb: number;
+  referenceFile: string | null;
+  deliveredFile: string | null;
+  detail: string;
+};
+
+function unmeasuredLevel(detail: string): MeasuredLevelCheck {
+  return {
+    status: "INFO",
+    deliveredLufs: null,
+    referenceLufs: null,
+    deltaLu: null,
+    toleranceDb: LEVEL_TOLERANCE_DB,
+    referenceFile: null,
+    deliveredFile: null,
+    detail: `unmeasured level: ${detail}`,
+  };
+}
+
+/** Measure one capture, naming its file when it cannot carry a level. */
+function measuredFileFacts(
+  file: MeasuredLevelFile | null | undefined,
+  role: "reference" | "delivered",
+): { ok: true; facts: Extract<LevelFacts, { measured: true }> } | { ok: false; detail: string } {
+  if (!file) return { ok: false, detail: `no ${role} capture file` };
+  let facts: LevelFacts;
+  try {
+    facts = analyseLevel(file.audio);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    return { ok: false, detail: `${role} file ${file.path} could not be measured (${reason})` };
+  }
+  if (!facts.measured) {
+    return { ok: false, detail: `${role} file ${file.path} carries no level (${facts.absence})` };
+  }
+  return { ok: true, facts };
+}
+
+/**
+ * The timbre gate's level leg (voice-parity ticket 16). Two measured files, one
+ * comparison: the delivered integrated loudness against the reference within
+ * the library's existing 0.2 LU tolerance. The old derived constant
+ * (`NATIVE_VOICE_LUFS` plus a registry gain) is not an input, so a voice no
+ * file measured is reported unmeasured instead of greening on arithmetic.
+ */
+export function checkMeasuredLevel(
+  input?: MeasuredLevelInput | null,
+  toleranceDb: number = LEVEL_TOLERANCE_DB,
+): MeasuredLevelCheck {
+  if (!input) {
+    return unmeasuredLevel(
+      "no reference and delivered capture, so the level leg has no file to measure",
+    );
+  }
+  const reference = measuredFileFacts(input.reference, "reference");
+  if (!reference.ok) return unmeasuredLevel(reference.detail);
+  const delivered = measuredFileFacts(input.delivered, "delivered");
+  if (!delivered.ok) return unmeasuredLevel(delivered.detail);
+
+  const comparison = compareLevels(reference.facts, delivered.facts, toleranceDb);
+  if (comparison.status === "unmeasured" || comparison.deltaLu === null) {
+    return unmeasuredLevel(comparison.detail);
+  }
+  const detail =
+    `${comparison.detail} (reference ${input.reference.path}, ` +
+    `delivered ${input.delivered.path})`;
+  return {
+    status: comparison.status === "agrees" ? "PASS" : "FAIL",
+    deliveredLufs: delivered.facts.integratedLufs,
+    referenceLufs: reference.facts.integratedLufs,
+    deltaLu: comparison.deltaLu,
+    toleranceDb,
+    referenceFile: input.reference.path,
+    deliveredFile: input.delivered.path,
+    detail,
+  };
 }
 
 /** Every probe count must be zero across the golden run; the detail names the offender. */
@@ -2963,30 +3092,60 @@ export function checkEvidenceTimbre(channel: AgentChannelEvidence | null): {
 }
 
 /**
- * The timbre auto gate: probe counts, session-evidence PCM, and the served
- * body's level all have to agree. Any defect FAILs with the offender named;
- * unmeasured loudness (no body read, no served level) is reported in the
- * detail, never passed by a registry default. The level comes from the same
- * served body as the end-of-turn gate (voice-parity ticket 21).
+ * The timbre auto gate: probe counts, session-evidence PCM, and the measured
+ * level leg all have to agree. Any defect FAILs with the offender named.
+ *
+ * The level leg reads measured files (ticket 16), not the derived native +
+ * gain + volume formula: a PASS needs a measured reference and a measured
+ * delivery within `LEVEL_TOLERANCE_DB`, and an unmeasured level is INFO —
+ * never a PASS by arithmetic. The files are attributed to the stored body the
+ * run served (ticket 21), so a measured level with no body identity is
+ * unmeasured too.
  */
 export function evaluateTimbreGate(input: {
   probes: TimbreProbes;
   voiceId: string;
   agentChannel: AgentChannelEvidence | null;
   servedAgentBody?: ServedAgentBody | null;
+  /** The two measured files the level leg judges; absent = unmeasured. */
+  measuredLevel?: MeasuredLevelInput | null;
 }): ScoreboardGate {
   const probes = checkTimbreProbes(input.probes);
   if (!probes.ok) return { name: "timbre-probes", status: "FAIL", detail: probes.detail };
   const evidence = checkEvidenceTimbre(input.agentChannel);
   if (!evidence.ok) return { name: "timbre-probes", status: "FAIL", detail: evidence.detail };
-  const loudness = checkServedLoudness(input.voiceId, input.servedAgentBody);
-  if (!loudness.ok && !loudness.unmeasured) {
-    return { name: "timbre-probes", status: "FAIL", detail: loudness.detail };
+  const level = checkMeasuredLevel(input.measuredLevel);
+  const servedVolume = input.servedAgentBody
+    ? servedAgentOutputVolume(input.servedAgentBody)
+    : null;
+  const bodyRef = input.servedAgentBody
+    ? `served by stored agent ${input.servedAgentBody.agentId}` +
+      (servedVolume === null ? "" : ` at volume ${servedVolume}`)
+    : "";
+  if (level.status === "FAIL") {
+    return {
+      name: "timbre-probes",
+      status: "FAIL",
+      detail: bodyRef ? `${level.detail} (${bodyRef})` : level.detail,
+    };
+  }
+  // A measured file with no served body identity cannot be attributed to the
+  // agent a visitor received, so it is unmeasured rather than a pass.
+  if (level.status === "INFO" || !input.servedAgentBody) {
+    const why =
+      level.status === "PASS"
+        ? "unmeasured level: measured files carry no served body identity, so the gate cannot say whose audio they are"
+        : level.detail;
+    return {
+      name: "timbre-probes",
+      status: "INFO",
+      detail: `${probes.detail}; ${why}; ${evidence.detail}`,
+    };
   }
   return {
     name: "timbre-probes",
     status: "PASS",
-    detail: `${probes.detail}; ${loudness.detail}; ${evidence.detail}`,
+    detail: `${probes.detail}; ${level.detail}; ${evidence.detail} (${bodyRef})`,
   };
 }
 
@@ -4914,6 +5073,8 @@ function skeletonGates(
     measuredSources?: MeasuredEvidenceKind[];
     /** Ticket 10: labels a non-production variant run as experimental evidence. */
     endOfTurnExperiment?: EndOfTurnExperiment | null;
+    /** Ticket 16: the two measured files the timbre level leg compares. */
+    measuredLevel?: MeasuredLevelInput | null;
   },
 ): ScoreboardGate[] {
   // Ticket 06: a finished runner is plumbing health even when its scenarios
@@ -4971,6 +5132,7 @@ function skeletonGates(
     voiceId: voiceId ?? "",
     agentChannel: agentChannel ?? null,
     servedAgentBody,
+    measuredLevel: options?.measuredLevel ?? null,
   });
   const humanGate = evaluateHumanGate(timbreGate.status === "PASS", humanRatings ?? emptyHumanRatings(null));
   // Spec priority order (gap → cut → overheard → naturalness); failing
@@ -5182,6 +5344,12 @@ export function buildSkeletonArtifact(input: {
    * no body was read and the end-of-turn gate stays unmeasured.
    */
   servedAgentBody?: ServedAgentBody | null;
+  /**
+   * The two measured captures the timbre level leg compares — the reference
+   * rendering and the delivered audio, both measured off disk (voice-parity
+   * ticket 16). Omitted means the leg is unmeasured (INFO), never a PASS.
+   */
+  measuredLevel?: MeasuredLevelInput | null;
   /**
    * Ticket 10: the stored-agent experiment this run bound. Labels the
    * end-of-turn gate as experimental and records its windows; production runs
@@ -5433,6 +5601,9 @@ export function buildSkeletonArtifact(input: {
   // heard (voice-parity ticket 21).
   const servedAgentBody = input.servedAgentBody ?? null;
   const loudnessCheck = checkServedLoudness(input.voice, servedAgentBody);
+  // Ticket 16: the level leg's verdict comes from the measured files, not
+  // from `loudnessCheck` (which stays the gain table's review number).
+  const measuredLevelCheck = checkMeasuredLevel(input.measuredLevel);
   const loudnessBody: LoudnessBodyIdentity | null = servedAgentBody
     ? {
         source: "stored-agent",
@@ -5481,7 +5652,12 @@ export function buildSkeletonArtifact(input: {
     agentChannel,
     humanRatings,
     input.voice,
-    { measured, measuredSources, endOfTurnExperiment: input.endOfTurnExperiment ?? null },
+    {
+      measured,
+      measuredSources,
+      endOfTurnExperiment: input.endOfTurnExperiment ?? null,
+      measuredLevel: input.measuredLevel ?? null,
+    },
   );
   // Finding D: when trace gaps exist but attribution is unverified, the
   // reply-gap gate says so instead of silently implying beat attribution.
@@ -5540,8 +5716,9 @@ export function buildSkeletonArtifact(input: {
       matchedLufs: loudnessCheck.matchedLufs,
       gain: gateVoicePlayback(input.voice, servedAgentBody).playbackGain,
       outputVolume: servedAgentBody ? servedAgentOutputVolume(servedAgentBody) : null,
-      ok: loudnessCheck.ok,
-      detail: loudnessCheck.detail,
+      ok: measuredLevelCheck.status === "PASS" && servedAgentBody !== null,
+      detail: measuredLevelCheck.detail,
+      measured: measuredLevelCheck,
       body: loudnessBody,
       voices: voiceGainTable(input.voice, servedAgentBody),
     },
