@@ -2,13 +2,18 @@
  * Browser client for the cascade pipeline service (`voice-pipeline/`).
  *
  * Same mic path as the managed session (shared `./mic-capture`: ownership,
- * constraints, 24 kHz worklet) but a different wire protocol: JSON config +
- * base64 PCM up, captions / base64 audio / metrics down. Server owns
- * turn-taking; this client renders and plays.
+ * constraints, 24 kHz worklet) but a different wire protocol: a token-only
+ * config plus base64 PCM up, captions / base64 audio / metrics down. Server
+ * owns turn-taking; this client renders and plays.
  *
- * Service auth: none in dev (localhost). Production deployments must put
- * the service behind the same session gate as the app — the browser never
- * holds vendor keys either way.
+ * The config carries **identity only** (ticket 65): a call token, the agent id
+ * and the protocol version. The prompt and the tool list are assembled and
+ * signed by the app (voice-pipeline/cascade/envelope.py) and reach the service
+ * over the app channel; this client never holds them.
+ *
+ * Service auth: the call token in dev. Production deployments must put the
+ * service behind the same session gate as the app — the browser never holds
+ * vendor keys either way.
  */
 
 import { acquireMicStream, startAudioGraph } from "./mic-capture";
@@ -27,21 +32,23 @@ export type CascadeCaption = {
   final: boolean;
 };
 
+/**
+ * The protocol this client speaks. The service refuses a missing or unknown
+ * version by name (voice-pipeline/cascade/token.py), so a half-deployed pair
+ * fails loudly instead of running a different body.
+ */
+export const CASCADE_PROTOCOL_VERSION = 1;
+
+/**
+ * What the browser is allowed to tell the service: identity only. The prompt
+ * and the tool list are assembled and signed by the app (ticket 64) and reach
+ * the service over the app channel; the browser never holds them.
+ */
 export type CascadeCallConfig = {
   serviceUrl: string;
-  pipeline: {
-    llm_model: string;
-    tts_voice: string;
-    tts_model: string;
-    fallback_mode: "cascade";
-    language_codes?: string[];
-    transcription_prompt?: string;
-    keyterms_prompt?: string[];
-    agent_context?: string;
-  };
-  systemPrompt: string;
-  tools?: unknown[];
-  agentName?: string;
+  callToken: string;
+  agentId: string;
+  protocolVersion: number;
 };
 
 export type CascadeHandlers = {
@@ -63,14 +70,14 @@ export type ServerEvent =
   | { kind: "error"; message: string };
 
 export function buildConfigMessage(config: CascadeCallConfig): string {
-  // No language_codes key when the caller pinned none: the pipeline detects
-  // automatically. A default ["en"] here would silently disable detection.
+  // Identity only, and built explicitly: spreading the caller's object would
+  // let a stray `systemPrompt`/`tools`/`pipeline` reach the wire, and the
+  // service refuses a client-assembled body by name (ticket 65).
   return JSON.stringify({
     type: "config",
-    pipeline: { ...config.pipeline },
-    system_prompt: config.systemPrompt,
-    tools: config.tools ?? [],
-    agent_name: config.agentName ?? "",
+    protocolVersion: config.protocolVersion,
+    agentId: config.agentId,
+    callToken: config.callToken,
   });
 }
 

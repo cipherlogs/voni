@@ -119,15 +119,23 @@ test("a visitor aside while the agent speaks is marked Overheard and kept in the
 });
 
 test("the test call resolves recognition language from the agent's Locale", () => {
-  // Both Test-call paths (managed inline and cascade) hand the agent's
-  // conversation language to the one shared rule. A dropped argument would
-  // silently lock a Spanish agent's call to English again.
+  // The managed inline path hands the agent's conversation language to the one
+  // shared rule. A dropped argument would silently lock a Spanish agent's call
+  // to English again.
   const call = readRepo("components/voice-call.tsx");
   const sites = call.match(/effectiveInlineLanguages\([\s\S]{0,160}?\)/g) ?? [];
-  assert.equal(sites.length, 2, "managed inline and cascade both resolve it");
+  assert.equal(sites.length, 1, "the managed inline path resolves it");
   for (const site of sites) {
     assert.match(site, /conversationLanguage/, "the agent's Locale reaches the rule");
   }
+  // The cascade path takes its languages (and prompt, tools, voice) from the
+  // signed stored body, never from browser-assembled config (ticket 65).
+  assert.doesNotMatch(
+    call,
+    /language_codes\s*:\s*effectiveInlineLanguages/,
+    "the cascade config no longer assembles a language list",
+  );
+  assert.doesNotMatch(call, /pipeline:\s*\{[\s\S]{0,200}?fallback_mode/);
 });
 
 test("the contact chip has one render site, gated on the invite, the inbox and the call tag", () => {
