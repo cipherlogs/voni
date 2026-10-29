@@ -23,7 +23,12 @@ import {
   type ScoreboardArtifact,
 } from "./scoreboard";
 import { CASCADE_ONLY_EVENT_TYPES, isCascadeOnlyEvent } from "./event-envelope";
-import { GATE_CAPTURE_LEGS, malformedCaptureReason } from "./capture-evidence";
+import {
+  GATE_CAPTURE_LEGS,
+  malformedCaptureReason,
+  verifyCaptureRecord,
+  type CaptureIO,
+} from "./capture-evidence";
 import {
   CASCADE_NO_COMMIT_MARK_ABSENCE,
   MANAGED_NO_COMMIT_MARK_ABSENCE,
@@ -151,6 +156,7 @@ export function parseScoreboardArtifact(raw: unknown, source: string): Scoreboar
     );
   }
   assertCaptureLegs(captures, pipeline, source);
+  assertCaptureFilesAreDistinct(captures, source);
 
   // Present sections are validated whether or not the artifact claims the full
   // shape; completeness is checked once every substantive rule has had its say.
@@ -351,6 +357,32 @@ function assertCaptureLegs(
         `managed artifact carries no ${leg} capture; the managed path records all three legs`,
       );
     }
+  }
+}
+
+/**
+ * A delivered capture is the audio the caller heard, never the reference
+ * render (ADR 0009, ticket 144). Two legs naming one file is either a copy
+ * mistake or a claim dressed as a capture; both make the timbre gate's PASS
+ * meaningless, so the artifact is refused by the delivered leg's name.
+ */
+function assertCaptureFilesAreDistinct(
+  captures: ArtifactCaptures | undefined,
+  source: string,
+): void {
+  if (captures === undefined) return;
+  const reference = captures.reference;
+  const delivered = captures.delivered;
+  if (!isPresentCapture(reference) || !isPresentCapture(delivered)) return;
+  const referencePath = (reference as { path: string }).path;
+  const deliveredPath = (delivered as { path: string }).path;
+  if (referencePath === deliveredPath) {
+    throw new ArtifactReadError(
+      source,
+      "captures.delivered",
+      `names the reference file ${deliveredPath}; a delivered capture is the audio the caller ` +
+        "heard, never the reference render (a timbre claim without delivered audio is invalid, ADR 0009)",
+    );
   }
 }
 
@@ -917,6 +949,13 @@ export type RunEligibilityInput = {
   readonly expectedCode?: { readonly head: string; readonly dirtyHash?: string } | null;
   /** Default `clean`: one run's own verdict. See `RunFingerprintPolicy`. */
   readonly fingerprintPolicy?: RunFingerprintPolicy;
+  /**
+   * When supplied, a gate's capture is re-proved against its working file: a
+   * capture that is gone or whose bytes changed cannot back a PASS (ticket 144).
+   * Omitted, the reader checks the recorded path/hash shape only, so a pure
+   * caller with no filesystem still gets the missing-leg rule.
+   */
+  readonly captureIO?: CaptureIO;
 };
 
 /**
@@ -979,6 +1018,15 @@ export function deriveRunEligibility(input: RunEligibilityInput): RunEligibility
         reasons.push(
           `gate "${gate.name}" PASSes but the ${leg} capture is missing; a gate cannot outrun the capture it feeds`,
         );
+        continue;
+      }
+      if (input.captureIO !== undefined) {
+        const verification = verifyCaptureRecord(capture, input.captureIO);
+        if (verification.status !== "verified") {
+          reasons.push(
+            `gate "${gate.name}" PASSes but its ${leg} capture is ${verification.status}: ${verification.reason}`,
+          );
+        }
       }
     }
   }
