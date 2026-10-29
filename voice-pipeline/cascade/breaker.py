@@ -2,9 +2,11 @@
 
 Shape and field names are the spec record (``spec.md`` M1 "Provider breaker and
 routing switch"). The record is the only thing that selects a rung; this module
-adds no threshold, no retry and no state machine. Transition rules (probe due,
-hysteresis, canary) live in ticket 17 and read the same record through
-:class:`Breaker`.
+adds no threshold and no retry. :class:`BreakerTransitions` is the state
+machine: closed opens on a trigger, open half-opens when a probe is due or the
+record is stale, half-open closes only after three spaced probe successes and
+reopens on any probe or real-call failure. It reads the same record through
+:class:`Breaker`; it does not change the record shape or the store API.
 
 Read/write contract:
 
@@ -27,7 +29,8 @@ import time
 from dataclasses import dataclass, replace
 from typing import Any, Callable, Literal, Mapping
 
-from cascade.store import DurableStore, StoredDocument
+from cascade.failures import FailureVerdict
+from cascade.store import DurableStore, StoreUnavailable, StoredDocument
 
 BreakerLeg = Literal["stt", "llm", "tts"]
 BreakerState = Literal["closed", "open", "half_open"]
@@ -358,3 +361,479 @@ class Breaker:
 
     def effective_state(self, record: ProviderBreakerRecord) -> BreakerState:
         return record.effective_state(self._now(), probe_interval_s=self.probe_interval_s)
+
+    def now(self) -> float:
+        """The injected clock's current time; transitions never read another."""
+        return self._now()
+
+
+# ---------------------------------------------------------------------------
+# Transitions (ticket 17)
+# ---------------------------------------------------------------------------
+
+#: The only automation a record may carry. A primary pin is an operator test,
+#: not a write this API accepts.
+PIN_TARGETS: tuple[str, ...] = ("fallback",)
+
+
+class ManualOverrideRefused(ValueError):
+    """A manual override write is not one an operator is allowed to make."""
+
+
+@dataclass(frozen=True)
+class BreakerTransition:
+    """One emitted transition: what moved, why, and in which phase.
+
+    ``trigger.phase`` is the phase the ticket asks every transition to emit
+    (``stream``, ``turn``, ``probe``, ``read``, ``manual``). ``actor`` is set
+    only for a human write so the caller can persist the audit trail; the
+    durable record has no audit field and this type does not add one.
+    """
+
+    leg: BreakerLeg
+    from_state: BreakerState
+    to_state: BreakerState
+    trigger: BreakerTrigger
+    reason: str
+    at: float
+    record_version: int
+    actor: str = ""
+
+    def __post_init__(self) -> None:
+        _check_leg(self.leg)
+        for field, state in (("from_state", self.from_state), ("to_state", self.to_state)):
+            if state not in STATES:
+                raise BreakerRecordError(
+                    f"transition {field} {state!r} is not one of {STATES}"
+                )
+        if not isinstance(self.trigger, BreakerTrigger):
+            raise BreakerRecordError(
+                f"transition trigger must be BreakerTrigger, got {self.trigger!r}"
+            )
+        if not isinstance(self.reason, str) or not self.reason.strip():
+            raise BreakerRecordError(
+                f"transition reason must be a non-empty string, got {self.reason!r}"
+            )
+        object.__setattr__(self, "at", _check_timestamp(self.at, "transition.at"))
+        _check_int(self.record_version, "transition.recordVersion", minimum=1)
+        if not isinstance(self.actor, str):
+            raise BreakerRecordError(f"transition actor must be a string, got {self.actor!r}")
+
+    @property
+    def phase(self) -> str:
+        """The phase this transition happened in (from its trigger)."""
+        return self.trigger.phase
+
+    @property
+    def changed_state(self) -> bool:
+        return self.from_state != self.to_state
+
+
+@dataclass(frozen=True)
+class TransitionOutcome:
+    """What a transition attempt produced, including a failed durable write.
+
+    ``record`` is ``None`` only when the durable read failed; otherwise it is
+    the record this attempt wanted to store, even when ``written`` is false, so
+    the live call can keep serving from the rung it already chose.
+    """
+
+    record: ProviderBreakerRecord | None
+    event: BreakerTransition | None
+    written: bool
+    error: str = ""
+
+
+def _check_verdict_leg(verdict: FailureVerdict, leg: BreakerLeg) -> FailureVerdict:
+    if not isinstance(verdict, FailureVerdict):
+        raise TypeError(f"verdict must be a FailureVerdict, got {verdict!r}")
+    if verdict.leg != leg:
+        raise ValueError(
+            f"failure verdict is for leg {verdict.leg!r}, not {leg!r}; "
+            "the breaker never demotes across legs"
+        )
+    return verdict
+
+
+def _require_audit(actor: object, why: object) -> tuple[str, str]:
+    if not isinstance(actor, str) or not actor.strip():
+        raise ManualOverrideRefused("a manual override needs a named actor (who)")
+    if not isinstance(why, str) or not why.strip():
+        raise ManualOverrideRefused("a manual override needs a stated reason (why)")
+    return actor.strip(), why.strip()
+
+
+def _spaced(successes: tuple[ProbeSuccess, ...], interval_s: float) -> bool:
+    """True when every consecutive probe success is at least one interval apart."""
+    if len(successes) < MAX_PROBE_SUCCESSES:
+        return False
+    return all(
+        later.at - earlier.at >= interval_s
+        for earlier, later in zip(successes, successes[1:])
+    )
+
+
+class BreakerTransitions:
+    """The breaker state machine over one record, driven by an injected clock.
+
+    Reads (:meth:`read_state`, :meth:`probe_due`) never write. Every write goes
+    through :meth:`_apply`, which re-reads on a lost compare-and-set and never
+    raises on a store outage: a failed breaker write alerts through
+    :attr:`TransitionOutcome.error` and leaves the live call on the rung it
+    already selected. A missing record (:class:`BreakerRecordMissing`) still
+    propagates: that is a seeding bug, not an outage.
+
+    ``trigger``/``reason`` always describe the last durable write, so a probe
+    success says so; :class:`BreakerTransition` is the per-transition event the
+    caller emits, and ``actor`` is the human-write audit row ticket 19 stores.
+    """
+
+    def __init__(self, breaker: Breaker) -> None:
+        if not isinstance(breaker, Breaker):
+            raise TypeError(f"BreakerTransitions needs a Breaker, got {breaker!r}")
+        self.breaker = breaker
+        self.probe_interval_s = breaker.probe_interval_s
+
+    # -- read-time view ----------------------------------------------------
+
+    def read_state(self, record: ProviderBreakerRecord) -> BreakerState:
+        """The state a new call must see, before any write.
+
+        A stale ``closed`` record reads ``half_open`` (a crashed prober must
+        not leave a leg silently green), and an ``open`` record whose probe is
+        due reads ``half_open``.
+        """
+        now = self.breaker.now()
+        state = record.effective_state(now, probe_interval_s=self.probe_interval_s)
+        if state == "open" and self._probe_due_at(record, now):
+            return "half_open"
+        return state
+
+    def probe_due(self, record: ProviderBreakerRecord) -> bool:
+        """True when the next probe for this leg may run now."""
+        return self._probe_due_at(record, self.breaker.now())
+
+    def _probe_due_at(self, record: ProviderBreakerRecord, now: float) -> bool:
+        if record.state == "closed":
+            return (
+                record.effective_state(now, probe_interval_s=self.probe_interval_s)
+                == "half_open"
+            )
+        # "At least one probe interval after the last probe". A leg opened and
+        # never probed counts from openedAt, so a fresh open is not probed in a
+        # storm on the same second it tripped.
+        reference = record.last_probe_at if record.last_probe_at is not None else record.opened_at
+        if reference is None:
+            return True
+        return now - reference >= self.probe_interval_s
+
+    # -- pure transitions --------------------------------------------------
+
+    def _to_open(
+        self,
+        record: ProviderBreakerRecord,
+        *,
+        trigger: BreakerTrigger,
+        reason: str,
+        now: float,
+    ) -> tuple[ProviderBreakerRecord, BreakerTransition]:
+        opened = record.bumped(
+            state="open",
+            opened_at=record.opened_at if record.state == "open" else now,
+            last_failure_at=now,
+            probe_successes=(),
+            trigger=trigger,
+            reason=reason,
+        )
+        return opened, BreakerTransition(
+            leg=record.leg,
+            from_state=record.state,
+            to_state="open",
+            trigger=trigger,
+            reason=reason,
+            at=now,
+            record_version=opened.record_version,
+        )
+
+    def _to_half_open(
+        self, record: ProviderBreakerRecord, *, now: float
+    ) -> tuple[ProviderBreakerRecord, BreakerTransition] | None:
+        view = self.read_state(record)
+        if view != "half_open" or record.state == "half_open":
+            return None
+        stale = record.state == "closed"
+        trigger = BreakerTrigger(
+            kind="stale" if stale else "probe_due", phase="read" if stale else "probe"
+        )
+        reason = (
+            "stale: last probe is older than twice the probe interval"
+            if stale
+            else "probe due: at least one probe interval since the last probe"
+        )
+        settled = record.bumped(
+            state="half_open",
+            # A leg that was never opened has no episode start; the unproven
+            # window starts now, so the record keeps a truthful non-closed state.
+            opened_at=record.opened_at if record.opened_at is not None else now,
+            probe_successes=(),
+            trigger=trigger,
+            reason=reason,
+        )
+        return settled, BreakerTransition(
+            leg=record.leg,
+            from_state=record.state,
+            to_state="half_open",
+            trigger=trigger,
+            reason=reason,
+            at=now,
+            record_version=settled.record_version,
+        )
+
+    # -- durable transitions ----------------------------------------------
+
+    async def settle(self, leg: BreakerLeg) -> TransitionOutcome:
+        """Write ``half_open`` when an open or stale leg is due for a probe."""
+
+        def transition(record: ProviderBreakerRecord):
+            return self._to_half_open(record, now=self.breaker.now()) or (record, None)
+
+        return await self._apply(leg, transition)
+
+    async def record_failure(
+        self,
+        leg: BreakerLeg,
+        *,
+        verdict: FailureVerdict,
+        phase: str,
+        turn: int | None = None,
+    ) -> TransitionOutcome:
+        """A real-call failure: open on a trigger, or from any non-closed state.
+
+        The closed trigger set stays closed (a deterministic request error is
+        our bug and must not hide behind a fallback); a half-open leg reopens on
+        any failure because it was never proven healthy.
+        """
+        _check_leg(leg)
+        _check_verdict_leg(verdict, leg)
+
+        def transition(record: ProviderBreakerRecord):
+            view = self.read_state(record)
+            if view == "closed" and not verdict.opens_breaker:
+                return record, None
+            trigger = BreakerTrigger(
+                kind="failure", code=verdict.code, phase=phase, turn=turn
+            )
+            reason = f"{view} -> open: {verdict.reason}"
+            return self._to_open(record, trigger=trigger, reason=reason, now=self.breaker.now())
+
+        return await self._apply(leg, transition)
+
+    async def record_probe_success(
+        self, leg: BreakerLeg, *, latency_ms: float
+    ) -> TransitionOutcome:
+        """A successful probe: the third spaced success closes the leg."""
+        _check_leg(leg)
+
+        def transition(record: ProviderBreakerRecord):
+            now = self.breaker.now()
+            if record.state == "open" and not self._probe_due_at(record, now):
+                return record, None
+            probe = ProbeSuccess(at=now, latency_ms=latency_ms)
+            view = self.read_state(record)
+            if record.state == "closed" and view == "closed":
+                successes = (record.probe_successes + (probe,))[-MAX_PROBE_SUCCESSES:]
+                trigger = BreakerTrigger(kind="probe_success", phase="probe")
+                reason = "routine probe success on a closed leg"
+                routine = record.bumped(
+                    last_probe_at=now,
+                    probe_successes=successes,
+                    trigger=trigger,
+                    reason=reason,
+                )
+                return routine, BreakerTransition(
+                    leg=record.leg,
+                    from_state=record.state,
+                    to_state=record.state,
+                    trigger=trigger,
+                    reason=reason,
+                    at=now,
+                    record_version=routine.record_version,
+                )
+
+            # A probe only counts from the moment the leg became half-open: an
+            # old closed leg's routine successes are not the current run.
+            run = () if record.state != "half_open" else record.probe_successes
+            successes = (run + (probe,))[-MAX_PROBE_SUCCESSES:]
+            closes = _spaced(successes, self.probe_interval_s)
+            to_state: BreakerState = "closed" if closes else "half_open"
+            reason = f"probe success {len(successes)}/{MAX_PROBE_SUCCESSES}"
+            if closes:
+                reason += ": three spaced successes, closing"
+            elif len(successes) > 1 and successes[-1].at - successes[-2].at < self.probe_interval_s:
+                reason += f": under one probe interval apart at {now:.3f}, not counted as spaced"
+            trigger = BreakerTrigger(kind="probe_success", phase="probe")
+            changes: dict[str, Any] = {
+                "state": to_state,
+                "last_probe_at": now,
+                "probe_successes": successes,
+                "trigger": trigger,
+                "reason": reason,
+            }
+            if to_state == "closed":
+                changes["last_success_at"] = now
+            if record.opened_at is None:
+                changes["opened_at"] = now
+            updated = record.bumped(**changes)
+            return updated, BreakerTransition(
+                leg=record.leg,
+                from_state=record.state,
+                to_state=to_state,
+                trigger=trigger,
+                reason=reason,
+                at=now,
+                record_version=updated.record_version,
+            )
+
+        return await self._apply(leg, transition)
+
+    async def record_probe_failure(
+        self, leg: BreakerLeg, *, verdict: FailureVerdict
+    ) -> TransitionOutcome:
+        """A failed probe reopens a half-open leg; a closed leg needs a trigger."""
+        _check_leg(leg)
+        _check_verdict_leg(verdict, leg)
+
+        def transition(record: ProviderBreakerRecord):
+            now = self.breaker.now()
+            if record.state == "open" and not self._probe_due_at(record, now):
+                return record, None
+            view = self.read_state(record)
+            if view == "closed" and not verdict.opens_breaker:
+                return record, None
+            trigger = BreakerTrigger(kind="probe_failure", code=verdict.code, phase="probe")
+            reason = f"probe failed ({view} -> open): {verdict.reason}"
+            return self._to_open(record, trigger=trigger, reason=reason, now=now)
+
+        return await self._apply(leg, transition)
+
+    async def record_real_call_success(
+        self, leg: BreakerLeg, *, phase: str = "call"
+    ) -> TransitionOutcome:
+        """Record a watched real call that succeeded; only probes close a leg."""
+        _check_leg(leg)
+
+        def transition(record: ProviderBreakerRecord):
+            now = self.breaker.now()
+            trigger = BreakerTrigger(kind="real_call_success", phase=phase)
+            reason = f"real call succeeded in phase {phase!r}; lastSuccessAt recorded"
+            updated = record.bumped(
+                last_success_at=now, trigger=trigger, reason=reason
+            )
+            return updated, BreakerTransition(
+                leg=record.leg,
+                from_state=record.state,
+                to_state=record.state,
+                trigger=trigger,
+                reason=reason,
+                at=now,
+                record_version=updated.record_version,
+            )
+
+        return await self._apply(leg, transition)
+
+    async def pin(
+        self,
+        leg: BreakerLeg,
+        *,
+        target: str = "fallback",
+        actor: str,
+        why: str,
+    ) -> TransitionOutcome:
+        """Operator write: force the fallback rung until a human clears it.
+
+        No probe, canary or staleness rule calls this, and none of them clears
+        it. ``actor``/``why`` travel on the emitted transition so the caller
+        can persist the audit trail the record has no field for.
+        """
+        _check_leg(leg)
+        if target not in PIN_TARGETS:
+            raise ManualOverrideRefused(
+                f"manualOverride {target!r} is refused by name: the only pin "
+                f"is {PIN_TARGETS[0]!r}; there is no automated primary pin"
+            )
+        actor, why = _require_audit(actor, why)
+
+        def transition(record: ProviderBreakerRecord):
+            now = self.breaker.now()
+            trigger = BreakerTrigger(kind="manual_pin", phase="manual")
+            reason = f"pinned to {target} by {actor}: {why}"
+            updated = record.bumped(
+                manual_override=target, trigger=trigger, reason=reason
+            )
+            return updated, BreakerTransition(
+                leg=record.leg,
+                from_state=record.state,
+                to_state=record.state,
+                trigger=trigger,
+                reason=reason,
+                at=now,
+                record_version=updated.record_version,
+                actor=actor,
+            )
+
+        return await self._apply(leg, transition)
+
+    async def clear_pin(
+        self, leg: BreakerLeg, *, actor: str, why: str
+    ) -> TransitionOutcome:
+        """Operator write: return a pinned leg to ``none``. Never automated."""
+        _check_leg(leg)
+        actor, why = _require_audit(actor, why)
+
+        def transition(record: ProviderBreakerRecord):
+            if record.manual_override == "none":
+                return record, None
+            now = self.breaker.now()
+            trigger = BreakerTrigger(kind="manual_unpin", phase="manual")
+            reason = f"pin cleared by {actor}: {why}"
+            updated = record.bumped(
+                manual_override="none", trigger=trigger, reason=reason
+            )
+            return updated, BreakerTransition(
+                leg=record.leg,
+                from_state=record.state,
+                to_state=record.state,
+                trigger=trigger,
+                reason=reason,
+                at=now,
+                record_version=updated.record_version,
+                actor=actor,
+            )
+
+        return await self._apply(leg, transition)
+
+    async def _apply(self, leg: BreakerLeg, transition) -> TransitionOutcome:
+        _check_leg(leg)
+        error = ""
+        updated: ProviderBreakerRecord | None = None
+        event: BreakerTransition | None = None
+        for _attempt in range(2):
+            try:
+                record = await self.breaker.read(leg)
+            except StoreUnavailable as exc:
+                return TransitionOutcome(
+                    record=None, event=None, written=False, error=f"read failed: {exc}"
+                )
+            updated, event = transition(record)
+            if event is None:
+                return TransitionOutcome(record=updated, event=None, written=False)
+            try:
+                written = await self.breaker.write(updated)
+            except StoreUnavailable as exc:
+                return TransitionOutcome(
+                    record=updated, event=event, written=False, error=f"write failed: {exc}"
+                )
+            if written:
+                return TransitionOutcome(record=updated, event=event, written=True)
+            error = "compare-and-set lost: another writer holds the record"
+        return TransitionOutcome(record=updated, event=event, written=False, error=error)
