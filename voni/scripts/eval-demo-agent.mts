@@ -19,7 +19,14 @@
  * the same `reply.create` instructions the landing UI sends. A few cents a run.
  *
  *   npm run eval:demo-agent -- [--runs 5] [--voice <demo-voice-id>] [--scenario hang-up]
- *     [--transport stored|inline]
+ *     [--transport stored|inline] [--events <path.jsonl>]
+ *
+ * `--events <path>` is an opt-in JSONL stream of key decisions (scenario
+ * start/end, session ready, reply create/first audio, cut, tool call/result,
+ * end_call, goodbye drain, hangup, aside). It carries timings and ids only —
+ * never API keys, tokens, caller words or PCM — and
+ * `npm run scoreboard:inspect --events <path>` summarizes it. Without the flag
+ * no file is written.
  *
  * A stored run's LLM comes from the demo agent's own body: with
  * `AI_GATEWAY_API_KEY` configured it is `google/gemini-2.5-flash` via the
@@ -111,6 +118,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildDemoAgentBody, getOrCreateDemoAgent } from "../src/lib/demo/stored-agents";
+import { createEvalEventWriter } from "../src/lib/demo/eval-events";
 import {
   evalSummaryIdentity,
   evalToolExecutor,
@@ -217,6 +225,14 @@ if (!apiKey) throw new Error("ASSEMBLYAI_API_KEY missing: run with --env-file=.d
  * unknown value is a usage error, never a silent fallback.
  */
 const TRANSPORT: EvalTransport = parseEvalTransport(process.argv);
+
+/**
+ * Opt-in JSONL event stream (retro #9): `--events <path>` writes one object
+ * per key decision for `npm run scoreboard:inspect --events <path>`. Absent
+ * flag = no file, no overhead. Lines carry timings/ids only; the writer
+ * strips secret keys and key-shaped values, and no audio/PCM ever reaches it.
+ */
+const EVENTS = createEvalEventWriter(arg("--events", ""));
 
 /**
  * Server cap per token. The landing demo's wall cap is 720s; a bound run has
@@ -440,6 +456,7 @@ async function runSession(voiceId: string, steps: Step[]): Promise<Outcome> {
       // The id the operator (or score-demo's auto-chain) merges the Call trace with.
       if (typeof msg.session_id === "string" && msg.session_id.length > 0) {
         outcome.sessionId = msg.session_id;
+        EVENTS.emit("session.ready", { sessionId: msg.session_id, transport: "inline" });
         console.log(`  · trace session ${msg.session_id}`);
       }
     }
@@ -450,6 +467,8 @@ async function runSession(voiceId: string, steps: Step[]): Promise<Outcome> {
     if (msg.type === "transcript.agent" && msg.text) outcome.agent.push(msg.text);
     if (msg.type === "tool.call" && msg.name === END_CALL_VOICE_TOOL.name) {
       outcome.endCalled = true;
+      EVENTS.emit("tool.call", { sessionId: outcome.sessionId, name: END_CALL_VOICE_TOOL.name });
+      EVENTS.emit("end_call", { sessionId: outcome.sessionId, held: false });
       send({
         type: "tool.result",
         call_id: msg.call_id,
@@ -717,6 +736,11 @@ async function runClient(
       // trace merge from it, and the operator can replay the same id.
       onSessionReady: (sessionId) => {
         outcome.sessionId = sessionId;
+        EVENTS.emit("session.ready", {
+          sessionId,
+          voice: voiceId,
+          transport: TRANSPORT,
+        });
         console.log(`  · trace session ${sessionId}`);
       },
       onStateChange: (state) => {
@@ -751,8 +775,18 @@ async function runClient(
       // the tool surface, and an unanswered call stalls the turn. `end_call`
       // still rides the session's hold-until-goodbye-done path.
       toolExecutor: async (call) => {
+        EVENTS.emit("tool.call", { sessionId: outcome.sessionId, name: call.name });
         try {
-          return await answerTool(call);
+          const result = await answerTool(call);
+          EVENTS.emit("tool.result", {
+            sessionId: outcome.sessionId,
+            name: call.name,
+            ok: result.ok !== false,
+          });
+          if (call.name === END_CALL_VOICE_TOOL.name) {
+            EVENTS.emit("end_call", { sessionId: outcome.sessionId, held: true });
+          }
+          return result;
         } catch (error) {
           // The coordinator sends an error result so the turn does not stall;
           // the run aborts before the summary because the evidence is fiction.
@@ -905,6 +939,14 @@ async function runClient(
         if (start !== undefined) {
           outcome.cutPlayedMs = Math.max(0, ((consumedSamplesNow() - start) / TARGET_SAMPLE_RATE) * 1000);
         }
+        EVENTS.emit("cut", {
+          sessionId: outcome.sessionId,
+          callMs: Math.max(0, Math.round(at - t0)),
+          cutMs: Math.max(0, Math.round(at - t0)),
+          replyId: cutReply,
+          fadeMs: Math.round(fadeMs),
+          overlapMs: Math.round(outcome.overlapMs.at(-1) ?? 0),
+        });
       }
       playUntil = at;
     },
@@ -938,7 +980,14 @@ async function runClient(
     const msg = JSON.parse(String(event.data));
     if (msg.type === "reply.audio") {
       if (typeof msg.reply_id === "string") {
-        if (outcome.replyAudioAt[msg.reply_id] === undefined) outcome.replyAudioAt[msg.reply_id] = Date.now();
+        if (outcome.replyAudioAt[msg.reply_id] === undefined) {
+          outcome.replyAudioAt[msg.reply_id] = Date.now();
+          EVENTS.emit("reply.first_audio", {
+            sessionId: outcome.sessionId,
+            replyId: msg.reply_id,
+            callMs: Math.max(0, Math.round(Date.now() - t0)),
+          });
+        }
         // The session's own handler already queued this chunk before ours runs,
         // so this reply's playout start is the running total minus the chunk.
         if (replyAudioStartSamples[msg.reply_id] === undefined) {
@@ -975,6 +1024,12 @@ async function runClient(
       outcome.creates.push(instructions);
       const atMs = Math.max(0, Date.now() - t0);
       outcome.coverageAt.push({ atMs });
+      EVENTS.emit("reply.create", {
+        sessionId: outcome.sessionId,
+        callMs: atMs,
+        checkIn: isSilenceCheckInInstructions(instructions),
+        instructions: instructions.slice(0, 160),
+      });
       // Only the floor's exact check-in instruction counts as a check-in:
       // never a greeting, invite, or resume that mentions being quiet.
       if (isSilenceCheckInInstructions(instructions)) {
@@ -1172,12 +1227,14 @@ function hangUpAfterGoodbye(
 ): string | null {
   const goodbyeEnd = closingAudioAfter(o, requestAt);
   if (goodbyeEnd === null) {
+    EVENTS.emit("hangup", { sessionId, delayMs: null, missingGoodbye: true });
     console.log(
       `    no goodbye audio after the end request${sessionId ? ` (session ${sessionId})` : ""}`,
     );
     return "no goodbye audio after End call: the caller never heard a closing line";
   }
   const ms = Math.round(o.endedAt! - goodbyeEnd);
+  EVENTS.emit("hangup", { sessionId, delayMs: ms });
   console.log(hangUpLine(ms, sessionId));
   return hangUpDrainFailure(ms);
 }
@@ -1370,6 +1427,15 @@ const CLIENT_SCENARIOS: { name: string; run: () => Promise<string | null> }[] = 
       // Machine-readable proof for score-demo when the API omits the speech
       // end: printed only after the assertion, so it can never mark a
       // non-overlap as an Overheard aside.
+      const asideEndMs = asideEnd === null ? null : Math.round(asideEnd - o.startedAt);
+      EVENTS.emit("aside", {
+        scenario: "over-talk",
+        sessionId: o.sessionId,
+        startMs: Math.round(asideStart - o.startedAt),
+        endMs: asideEndMs,
+        cutMs: Math.round(cutAt - o.startedAt),
+        replyId: asideReplyId,
+      });
       console.log(
         `${OVERHEARD_ASIDE_EVIDENCE_PREFIX}${JSON.stringify({
           scenario: "over-talk",
@@ -1610,6 +1676,11 @@ async function runToolSession(
   // of a removed browser path used to cut the invite and resend a second one).
   const sendInvite = () => {
     if (process.env.EVAL_DEBUG) console.log(`    → ${((Date.now() - t0) / 1000).toFixed(2)}s reply.create (invite)`);
+    EVENTS.emit("reply.create", {
+      sessionId: outcome.sessionId,
+      callMs: Math.max(0, Date.now() - t0),
+      kind: "invite",
+    });
     send({ type: "reply.create", instructions: inviteNowInstructions(TAG) });
   };
   // The browser shows the chip once the invite is up (putTestUp); repeated
@@ -1632,6 +1703,17 @@ async function runToolSession(
       );
     }
     if (process.env.EVAL_DEBUG) console.log(`    → ${((Date.now() - t0) / 1000).toFixed(2)}s tool.result ${record.name}`);
+    EVENTS.emit("tool.result", {
+      sessionId: outcome.sessionId,
+      name: record.name,
+      ok: result.ok !== false,
+    });
+    if (record.name === END_CALL_VOICE_TOOL.name) {
+      EVENTS.emit("end_call", {
+        sessionId: outcome.sessionId,
+        held: outcome.endCallResultHeld,
+      });
+    }
     lastWasToolResult = true;
     send({ type: "tool.result", call_id: callId, result: JSON.stringify(result), is_error: result.ok !== true });
     if (record.name === END_CALL_VOICE_TOOL.name) {
@@ -1687,6 +1769,11 @@ async function runToolSession(
       // One machine-readable marker per live call (same as runClient).
       if (typeof msg.session_id === "string" && msg.session_id.length > 0) {
         outcome.sessionId = msg.session_id;
+        EVENTS.emit("session.ready", {
+          sessionId: msg.session_id,
+          voice: voiceId,
+          transport: TRANSPORT,
+        });
         console.log(`  · trace session ${msg.session_id}`);
       }
       // Like the browser: the call's tag, before any invite.
@@ -1713,6 +1800,13 @@ async function runToolSession(
     const owner = (id: unknown) => outcome.replies.find((r) => r.id === String(id)) ?? null;
     if (msg.type === "reply.audio") {
       const r = owner(msg.reply_id);
+      if (r && r.audioBytes === 0) {
+        EVENTS.emit("reply.first_audio", {
+          sessionId: outcome.sessionId,
+          replyId: r.id,
+          callMs: Math.max(0, Math.round(Date.now() - t0)),
+        });
+      }
       if (r) r.audioBytes += Buffer.from(String(msg.data), "base64").length;
     }
     if (msg.type === "transcript.agent.delta" && msg.delta) {
@@ -1759,6 +1853,7 @@ async function runToolSession(
       const args = (typeof msg.arguments === "string" ? JSON.parse(msg.arguments || "{}") : msg.arguments ?? {}) as Record<string, unknown>;
       const record: ToolCallRecord = { name: String(msg.name), args, at: Date.now(), resultAt: null };
       outcome.tools.push(record);
+      EVENTS.emit("tool.call", { sessionId: outcome.sessionId, name: record.name });
       if (record.name === END_CALL_VOICE_TOOL.name) outcome.endCalled = true;
       void answer(record.name, args).then((result) => {
         // EVAL_HOLD_INTERACTIVE=1 replays the old browser behaviour (held for
@@ -1837,6 +1932,11 @@ async function runToolSession(
     instruct: async (instructions) => {
       if (outcome.endCalled) return;
       const done = waitReply(false);
+      EVENTS.emit("reply.create", {
+        sessionId: outcome.sessionId,
+        callMs: Math.max(0, Date.now() - t0),
+        instructions: instructions.slice(0, 160),
+      });
       send({ type: "reply.create", instructions });
       await done;
     },
@@ -1994,13 +2094,22 @@ function narratedAfterEnd(o: ToolOutcome): boolean | null {
 /** One machine-readable goodbye measurement per goodbye run, for score-demo. */
 function goodbyeDrainLine(scenario: string, o: ToolOutcome): string {
   const reading = goodbyeReading(o);
+  const narratedEnding = narratedAfterEnd(o);
+  EVENTS.emit("goodbye.drain", {
+    scenario,
+    sessionId: o.sessionId ?? null,
+    goodbyeTurn: reading.turn,
+    coverage: reading.coverage,
+    inboxNamed: reading.inboxNamed,
+    narratedEnding,
+  });
   return `${GOODBYE_DRAIN_EVIDENCE_PREFIX}${JSON.stringify({
     scenario,
     session: o.sessionId ?? null,
     turn: reading.turn,
     coverage: reading.coverage,
     inboxNamed: reading.inboxNamed,
-    narratedEnding: narratedAfterEnd(o),
+    narratedEnding,
   })}`;
 }
 
@@ -2241,12 +2350,14 @@ for (const scenario of SCENARIOS.filter((s) => !only || s.name === only)) {
   for (let i = 1; i <= runs; i++) {
     let reason: string | null;
     let outcome: Outcome | null = null;
+    EVENTS.emit("scenario.start", { scenario: scenario.name, run: i, kind: "tool" });
     try {
       outcome = await runSession(voiceId, scenario.steps);
       reason = scenario.pass(outcome);
     } catch (error) {
       reason = error instanceof Error ? error.message : String(error);
     }
+    EVENTS.emit("scenario.end", { scenario: scenario.name, run: i, passed: reason === null });
     noteSession(outcome?.sessionId);
     if (reason === null) passed += 1;
     else {
@@ -2266,6 +2377,7 @@ for (const scenario of CLIENT_SCENARIOS.filter((s) => !only || s.name === only))
   for (let i = 1; i <= runs; i++) {
     let reason: string | null;
     lastClientOutcome = null;
+    EVENTS.emit("scenario.start", { scenario: scenario.name, run: i, kind: "client" });
     try {
       reason = await scenario.run();
     } catch (error) {
@@ -2275,6 +2387,7 @@ for (const scenario of CLIENT_SCENARIOS.filter((s) => !only || s.name === only))
       }
       reason = error instanceof Error ? error.message : String(error);
     }
+    EVENTS.emit("scenario.end", { scenario: scenario.name, run: i, passed: reason === null });
     // A tool this eval cannot answer means the scenario's evidence is fiction:
     // abort before any summary, never report it as a model failure.
     assertToolsAnswered();
@@ -2314,12 +2427,14 @@ for (const scenario of EMAIL_SCENARIOS.filter((s) => !only || s.name === only)) 
   for (let i = 1; i <= runs; i++) {
     let reason: string | null;
     let outcome: ToolOutcome | null = null;
+    EVENTS.emit("scenario.start", { scenario: scenario.name, run: i, kind: "email" });
     try {
       [reason, outcome] = await scenario.run(voiceId);
       if (outcome?.resent) console.log(`  · ${scenario.name} #${i}: the invite had to be resent`);
     } catch (error) {
       reason = error instanceof Error ? error.message : String(error);
     }
+    EVENTS.emit("scenario.end", { scenario: scenario.name, run: i, passed: reason === null });
     noteSession(outcome?.sessionId);
     if (scenario.name === "invite-tag" && outcome) {
       console.log(`${EMAIL_INVITE_EVIDENCE_PREFIX}${JSON.stringify(emailInviteEvidence(outcome))}`);
