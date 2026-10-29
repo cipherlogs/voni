@@ -21,6 +21,8 @@ This file is exempt from its own scan because it names the banned word to ban
 it; the guard test below proves the scan is not vacuous.
 """
 
+import io
+import tokenize
 import unittest
 from pathlib import Path
 
@@ -40,6 +42,31 @@ EXEMPT = {
 BANNED = "commit"
 
 
+def banned_tokens(path: Path) -> list[tuple[int, str]]:
+    """Identifiers and event names that use the banned word.
+
+    Prose is not a name: "committed sidecar" and SQL ``COMMIT`` are allowed.
+    The ban is on a code path, ledger mark, event or test helper — a NAME token
+    built from the word, or a lowercase string literal used as a mark/event.
+    """
+    hits = []
+    source = path.read_text()
+    try:
+        tokens = tokenize.generate_tokens(io.StringIO(source).readline)
+        for token in tokens:
+            if token.type == tokenize.NAME:
+                name = token.string.lower()
+                if name == BANNED or name.startswith(BANNED + "_") or name.endswith("_" + BANNED):
+                    hits.append((token.start[0], token.string))
+            elif token.type == tokenize.STRING:
+                literal = token.string.lstrip("fFrRbBuU")
+                if literal in {'"commit"', "'commit'"}:
+                    hits.append((token.start[0], token.string))
+    except (tokenize.TokenError, IndentationError):
+        return []
+    return hits
+
+
 def surface_files() -> list[Path]:
     """Every cascade-surface Python file the naming rule guards."""
     files = []
@@ -57,16 +84,30 @@ class CascadeVocabularyTests(unittest.TestCase):
     def test_no_cascade_source_says_commit(self):
         offenders = []
         for path in surface_files():
-            for number, line in enumerate(path.read_text().splitlines(), 1):
-                if BANNED in line.lower():
-                    relative = path.relative_to(PIPELINE_ROOT)
-                    offenders.append(f"{relative}:{number}: {line.strip()}")
+            for number, token in banned_tokens(path):
+                relative = path.relative_to(PIPELINE_ROOT)
+                offenders.append(f"{relative}:{number}: {token}")
         self.assertEqual(
             offenders,
             [],
             "commit is not cascade vocabulary — take the floor, yield or wait:\n"
             + "\n".join(offenders),
         )
+
+    def test_guard_recognises_a_reintroduced_name(self):
+        # Anti-vacuity: the token scan must still catch a real code path/event.
+        import tempfile
+
+        source = 'def commit_decision():\n    mark = "commit"\n# committed is prose\n'
+        with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as handle:
+            handle.write(source)
+            path = Path(handle.name)
+        try:
+            hits = [token for _, token in banned_tokens(path)]
+        finally:
+            path.unlink()
+        self.assertIn("commit_decision", hits)
+        self.assertIn('"commit"', hits)
 
     def test_scan_covers_the_floor_decision_modules(self):
         # Anti-vacuity: a broken glob must not turn the ban into a no-op.
