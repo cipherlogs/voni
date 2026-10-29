@@ -33,6 +33,12 @@ instead of inventing a number. It is also off the audio path: :meth:`start`
 returns a :class:`ToolHop` immediately and the continuation awaits it, so the
 reply stream never blocks on a side effect.
 
+Ticket 83's idempotency lives in :class:`ToolCallMemo`: inside one logical turn
+a ``(name, canonical arguments)`` pair executes once, and a repeat — including
+one after the model reconnects mid-turn — replays the memoised result
+re-addressed to the repeated call id. A new logical turn clears the memo, so a
+deliberate repeat in a later turn is a real call again.
+
 ``end_call`` is not a tool. It is a pure signal (:class:`EndCallSignal`): no
 request is made and nothing speakable follows it. The closing line and the
 hangup are ticket 87's.
@@ -283,18 +289,108 @@ class ToolRequest:
         }
 
 
+def _canonical_value(value: Any) -> Any:
+    """One argument value in its canonical form; JSON scalars only."""
+    if isinstance(value, Mapping):
+        canonical: dict[str, Any] = {}
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise ToolRequestError(
+                    f"argument keys must be strings, got {type(key).__name__}"
+                )
+            canonical[key] = _canonical_value(item)
+        return canonical
+    if isinstance(value, (list, tuple)):
+        return [_canonical_value(item) for item in value]
+    if isinstance(value, bool) or value is None or isinstance(value, str):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        # ``1`` and ``1.0`` are one call, not two: the memo keys on meaning.
+        return int(value) if value.is_integer() else value
+    raise ToolRequestError(
+        f"argument values must be JSON scalars, got {type(value).__name__}"
+    )
+
+
+def canonical_arguments(arguments: Mapping[str, Any]) -> str:
+    """The memo key's argument half: sorted keys, normalised scalars.
+
+    Two spellings of one call (a different key order, ``1`` versus ``1.0``)
+    must produce one key, or a model retry becomes a second side effect. The
+    result is JSON, so an artifact or a log can carry it.
+    """
+    if not isinstance(arguments, Mapping):
+        raise ToolRequestError(
+            f"arguments must be an object, got {type(arguments).__name__}"
+        )
+    return json.dumps(
+        _canonical_value(arguments),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+
+
+class ToolCallMemo:
+    """The per-logical-turn memo of tool results (ticket 83).
+
+    One memo belongs to the call; :meth:`begin_turn` labels the logical turn
+    the memo is answering. A reconnect in the same turn re-labels with the same
+    key, so a replayed call still hits the memo; a new turn clears it. The key
+    itself carries the turn as well, so a stale entry can never answer a new
+    turn even if a caller forgets to re-label.
+    """
+
+    def __init__(self, turn_key: str = "") -> None:
+        self._turn = turn_key
+        self._entries: dict[tuple[str, str, str], ToolResult] = {}
+
+    @property
+    def turn_key(self) -> str:
+        return self._turn
+
+    def __len__(self) -> int:
+        return len(self._entries)
+
+    def begin_turn(self, turn_key: str) -> None:
+        """Label the logical turn; a different turn discards the old memo."""
+        if turn_key == self._turn:
+            return
+        self._entries.clear()
+        self._turn = turn_key
+
+    def key(self, name: str, arguments: Mapping[str, Any]) -> tuple[str, str, str]:
+        """The memo key: the turn, the tool and its canonical arguments."""
+        return (self._turn, name, canonical_arguments(arguments))
+
+    def get(self, name: str, arguments: Mapping[str, Any]) -> ToolResult | None:
+        """The result this turn already produced for this call, if any."""
+        return self._entries.get(self.key(name, arguments))
+
+    def put(
+        self, name: str, arguments: Mapping[str, Any], result: ToolResult
+    ) -> None:
+        """Remember one executed result for the rest of this logical turn."""
+        self._entries[self.key(name, arguments)] = result
+
+
 @dataclass(frozen=True)
 class ToolResult:
     """The route's answer, ready to become the model's ``role: "tool"`` message.
 
     The payload is carried verbatim: a ``{"ok": false, "error": …}`` answer is
     a tool result the model can speak, not an outage. Transport failures never
-    reach this type (ticket 84 owns their mapping).
+    reach this type (ticket 84 owns their mapping). ``replayed`` is true only
+    when this outcome came from the turn's memo instead of the route (ticket
+    83); the payload is then the first call's, re-addressed to this call id.
     """
 
     name: str
     tool_call_id: str
     payload: Mapping[str, Any]
+    replayed: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.payload, Mapping):
@@ -409,6 +505,7 @@ class ToolExecutor:
         secret: str | None = None,
         session_factory: Any = None,
         timeout_ms: float | None = None,
+        memo: ToolCallMemo | None = None,
     ) -> None:
         if not isinstance(base_url, str) or not base_url.strip():
             raise ToolEndpointError()
@@ -421,6 +518,14 @@ class ToolExecutor:
         self._secret = secret
         self._session_factory = session_factory
         self._timeout_ms = timeout_ms
+        # The turn's memo, when the call hands one in: it lives for the logical
+        # turn, so a retried call replays instead of paying twice (ticket 83).
+        self._memo = memo
+
+    @property
+    def memo(self) -> ToolCallMemo | None:
+        """The turn-keyed memo this executor consults, if any."""
+        return self._memo
 
     @property
     def call_id(self) -> str:
@@ -502,6 +607,9 @@ class ToolExecutor:
                     ),
                 ),
             )
+        memoized = self._memo.get(call.name, call.arguments) if self._memo else None
+        if memoized is not None:
+            return ToolHop(task=None, outcome=_replayed(memoized, call))
         return ToolHop(task=asyncio.ensure_future(self._hop(call)), outcome=None)
 
     async def execute(self, call: ToolCallRequest) -> ToolOutcome:
@@ -527,9 +635,12 @@ class ToolExecutor:
             )
         except asyncio.TimeoutError as error:
             raise ToolTimeout(call.name, self._call_id, timeout_ms) from error
-        return ToolResult(
+        result = ToolResult(
             name=call.name, tool_call_id=call.call_id, payload=payload
         )
+        if self._memo is not None:
+            self._memo.put(call.name, call.arguments, result)
+        return result
 
     async def _exchange(
         self,
@@ -562,6 +673,16 @@ class ToolExecutor:
         if not isinstance(secret, str) or not secret.strip():
             raise ToolSecretError()
         return secret
+
+
+def _replayed(result: ToolResult, call: ToolCallRequest) -> ToolResult:
+    """The memo's result re-addressed to the call that repeated it (ticket 83)."""
+    return ToolResult(
+        name=result.name,
+        tool_call_id=call.call_id,
+        payload=result.payload,
+        replayed=True,
+    )
 
 
 def _payload(name: str, call_id: str, body: bytes) -> Mapping[str, Any]:
