@@ -7,6 +7,9 @@ import {
   type ArtifactPipeline,
   type ScoreboardArtifact,
 } from "./scoreboard";
+import { CASCADE_ONLY_EVENT_TYPES, isCascadeOnlyEvent } from "./event-envelope";
+
+export { CASCADE_ONLY_EVENT_TYPES, isCascadeOnlyEvent };
 
 /**
  * The shared artifact reader (meta-cascade M12): the managed artifact and the
@@ -28,20 +31,11 @@ export function isArtifactCaptureLeg(value: unknown): value is ArtifactCaptureLe
 }
 
 /**
- * Event types only a cascade run can emit (M12). A managed artifact claiming
+ * Event types only a cascade run can emit live in `event-envelope.ts` — the
+ * same vocabulary the event stream reader refuses. A managed artifact claiming
  * one is an invalid artifact: the managed path has no provider choice, breaker
  * or cascade budget to report.
  */
-export const CASCADE_ONLY_EVENT_TYPES: readonly string[] = [
-  "provider_fallback",
-  "breaker.transition",
-  "budget.crossing",
-  "budget.stopped",
-];
-
-export function isCascadeOnlyEvent(type: string): boolean {
-  return CASCADE_ONLY_EVENT_TYPES.includes(type);
-}
 
 /** One refused artifact, named by the field and the value that failed. */
 export class ArtifactReadError extends Error {
