@@ -72,6 +72,15 @@
       "date": "2026-10-29",
       "note": "No acknowledgement inside this fails the call visibly and records the reason."
     },
+    "stt.session_max_ms": {
+      "unit": "ms",
+      "gate": "stt.session-lifetime",
+      "ticket": "32",
+      "value": 3600000,
+      "source": "spec: Meta STT session limits — a realtime session runs up to 60 minutes and has no resume token",
+      "date": "2026-10-29",
+      "note": "Vendor limit, not a tunable. The adapter reconnects before it at a turn boundary; the bounded handshake is the margin, so no second number is invented."
+    },
     "tts.idle_timeout_ms": {
       "unit": "ms",
       "gate": "tts.idle-keepalive",
