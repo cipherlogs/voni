@@ -28,6 +28,7 @@
     "call:trace": "node --env-file=.dev.vars --import tsx scripts/call-trace.mts",
     "eval:demo-agent": "node --env-file=.dev.vars --env-file=.env.local --import tsx scripts/eval-demo-agent.mts",
     "voice:reference": "node --env-file-if-exists=.env.local --env-file-if-exists=.dev.vars --import tsx scripts/render-reference.mts",
+    "voice:compare": "node --import tsx scripts/compare-audio.mts",
     "qa:voice-session": "node --env-file-if-exists=.env.local --env-file-if-exists=.dev.vars --import tsx scripts/qa-voice-session.mts",
     "operator:credential": "node --env-file-if-exists=.env.local --env-file-if-exists=.dev.vars --import tsx scripts/rotate-platform-credential.mts",
     "test:e2e:instant": "node scripts/e2e-run.mjs instant",
