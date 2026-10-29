@@ -14,8 +14,10 @@
  *
  * Every file is decoded before anything is measured, so a missing or
  * unreadable capture fails by path before a table is printed. The table itself
- * is measurements only; naming the first divergence is the verdict's job
- * (`lib/audio/comparison.ts` exposes the rows for it).
+ * is measurements only; the verdict after it names the first divergence as
+ * reference, platform, model text or client. `--line` and `--transcript` are
+ * what let it attribute a divergence to the model's words; without them the
+ * verdict says model text was not checked rather than guessing.
  */
 import { resolve } from "node:path";
 import {
@@ -25,6 +27,7 @@ import {
   type CaptureInput,
   type CaptureRole,
 } from "../src/lib/audio/comparison";
+import { decideVerdict } from "../src/lib/audio/verdict";
 import { decodeAudioFile } from "../src/lib/audio/format-facts";
 
 const USAGE = `Usage: npm run voice:compare -- <captures>
@@ -33,8 +36,14 @@ const USAGE = `Usage: npm run voice:compare -- <captures>
   --platform  <file.wav>   the agent channel of the platform's recording
   --delivered <file.wav>   what the browser's playout emitted
 
-Compares three saved 16-bit PCM WAVs of one line. No call is placed. The
-reference is the baseline for the distortion residual.`;
+Optional, for attributing model text:
+
+  --line        <text>     the line the agent was meant to say
+  --transcript  <text>     the platform transcript of what it said
+
+Compares three saved 16-bit PCM WAVs of one line and prints the table followed
+by the first-divergence verdict. No call is placed. The reference is the
+baseline for the distortion residual.`;
 
 function arg(name: string): string | undefined {
   const index = process.argv.indexOf(name);
@@ -71,7 +80,21 @@ function main(): void {
 
   // Decode all three first: a refused capture must never leave a half table.
   const captures = CAPTURE_ROLES.map((role) => load(role, requiredPath(role)));
-  console.log(formatComparisonTable(compareCaptures(captures)));
+  const comparison = compareCaptures(captures);
+  console.log(formatComparisonTable(comparison));
+
+  const verdict = decideVerdict({
+    comparison,
+    intendedLine: arg("--line"),
+    transcript: arg("--transcript"),
+  });
+  console.log("");
+  console.log(`Verdict: ${verdict.sentence}`);
+  console.log(
+    `  thresholds: ${verdict.thresholds
+      .map((entry) => `${entry.key} ${entry.value} ${entry.unit}`)
+      .join(", ")} (src/lib/demo/scoreboard-budgets.ts)`,
+  );
 }
 
 try {

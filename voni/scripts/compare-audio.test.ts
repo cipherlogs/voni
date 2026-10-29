@@ -125,6 +125,7 @@ test("three saved files print one table with every metric and no live call", () 
   for (const metric of [
     "sample rate (Hz)",
     "byte rate (B/s)",
+    "onset (s)",
     "integrated (LUFS)",
     "RMS (dBFS)",
     "true peak (dBTP)",
@@ -145,4 +146,47 @@ test("three saved files print one table with every metric and no live call", () 
   assert.ok(result.stdout.includes(files.platform));
   assert.ok(result.stdout.includes(files.delivered));
   assert.doesNotMatch(result.stderr, /ASSEMBLYAI|fetch|session/i, "no call is placed");
+});
+
+test("the verdict prints after the table, naming the first divergence", () => {
+  const files = captureDir();
+  const result = run([
+    "--reference",
+    files.reference,
+    "--platform",
+    files.platform,
+    "--delivered",
+    files.delivered,
+  ]);
+
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  const tableAt = result.stdout.indexOf("breakup longest silence (s)");
+  const verdictAt = result.stdout.indexOf("Verdict:");
+  assert.ok(tableAt >= 0, "the table printed");
+  assert.ok(verdictAt > tableAt, "the verdict prints after the table");
+  assert.match(result.stdout, /Verdict: No divergence: /);
+  assert.match(result.stdout, /comparisonOnsetToleranceS 0\.05 s/);
+});
+
+test("--line and --transcript attribute a divergence to model text", () => {
+  const files = captureDir();
+  const result = run([
+    "--reference",
+    files.reference,
+    "--platform",
+    files.platform,
+    "--delivered",
+    files.delivered,
+    "--line",
+    "Your appointment is at four o'clock.",
+    "--transcript",
+    "Your appointment is at nine o'clock.",
+  ]);
+
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  assert.match(
+    result.stdout,
+    /Verdict: The first divergence is model text: the platform transcript says "Your appointment is at nine o'clock\."/,
+  );
+  assert.match(result.stdout, /comparisonModelTextWordChanges 0 count/);
 });
