@@ -31,11 +31,15 @@ import {
   BEHAVIOR_RUN_EVIDENCE_SCHEMA_VERSION,
   codeFingerprintFromGit,
 } from "../src/lib/demo/behavior-evidence.mjs";
+import {
+  budgetVerdict,
+  readBrowserE2eBudget,
+} from "./browser-e2e-budget.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const appDir = resolve(here, "..");
 const mode = process.argv[2] ?? "instant";
-const valid = new Set(["instant", "behavior", "cloudflare", "all"]);
+const valid = new Set(["instant", "behavior", "cloudflare", "cascade", "all"]);
 if (!valid.has(mode)) {
   console.error(`usage: e2e-run.mjs <${[...valid].join("|")}> [--evidence <path>]`);
   process.exit(2);
@@ -182,7 +186,7 @@ function buildCandidate(fp) {
   return cand;
 }
 
-function bootEnv(baseUrl) {
+function bootEnv(baseUrl, options = {}) {
   // Boot-only env for the isolated candidate. Ephemeral test-only
   // BETTER_AUTH_SECRET so Better Auth doesn't abort renders with
   // "using the default secret" (the candidate excludes real local env
@@ -192,12 +196,18 @@ function bootEnv(baseUrl) {
   // placeholder and session lookups fail soft to signed-out; if a page
   // hard-errors without a DB, that spec stays red until Task 5 creds exist.
   const secret = `e2e-boot-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 14)}-0123456789abcdef`;
-  return {
+  const env = {
     ...process.env,
     VONI_INSTANT_TEST_BUILD: "1",
     BETTER_AUTH_SECRET: secret,
     BETTER_AUTH_URL: baseUrl,
   };
+  // Ticket 149's seam: the cascade browser E2E writes a real delivered
+  // capture from a production-mode build. Build-time opt-in only, and only
+  // on this throwaway candidate — an ordinary `next build` never sets it.
+  if (options.capture) env.NEXT_PUBLIC_VONI_E2E_CAPTURE = "1";
+  else delete env.NEXT_PUBLIC_VONI_E2E_CAPTURE;
+  return env;
 }
 
 function waitForPort(port, timeoutMs = 60000) {
@@ -214,15 +224,15 @@ function waitForPort(port, timeoutMs = 60000) {
   });
 }
 
-async function runPlaywright(cand, baseUrl, specs) {
+async function runPlaywright(cand, baseUrl, specs, extraEnv = {}) {
   const args = ["playwright", "test", "-c", "playwright.config.ts", ...(Array.isArray(specs) ? specs : [specs])];
-  const env = { ...process.env, PLAYWRIGHT_BASE_URL: baseUrl };
+  const env = { ...process.env, PLAYWRIGHT_BASE_URL: baseUrl, ...extraEnv };
   console.log(`[e2e] playwright: npx ${args.join(" ")} (baseURL=${baseUrl})`);
   const r = spawnSync("npx", args, { cwd: cand, stdio: "inherit", env });
   if (r.status !== 0) throw new Error(`playwright failed (exit ${r.status ?? 1})`);
 }
 
-async function serveNext(cand, port) {
+async function serveNext(cand, port, options = {}) {
   if (await portOccupied(port)) {
     console.error(`[e2e] REFUSE: port ${port} occupied — not attaching to unknown server.`);
     process.exit(1);
@@ -230,10 +240,10 @@ async function serveNext(cand, port) {
   console.log(`[e2e] npm ci (candidate)…`);
   sh("npm", ["ci", "--no-audit", "--no-fund"], { cwd: cand });
   console.log(`[e2e] next build (VONI_INSTANT_TEST_BUILD=1, ephemeral boot secret)…`);
-  sh("npm", ["run", "build"], { cwd: cand, env: bootEnv(`http://localhost:${port}`) });
+  sh("npm", ["run", "build"], { cwd: cand, env: bootEnv(`http://localhost:${port}`, options) });
   const server = spawn("npm", ["run", "start", "--", "-p", String(port)], {
     cwd: cand, stdio: "inherit", detached: true,
-    env: { ...bootEnv(`http://localhost:${port}`), PORT: String(port) },
+    env: { ...bootEnv(`http://localhost:${port}`, options), PORT: String(port) },
   });
   process.on("exit", () => { try { process.kill(-server.pid, "SIGTERM"); } catch {} });
   process.on("SIGINT", () => { try { process.kill(-server.pid, "SIGTERM"); } catch {} process.exit(130); });
@@ -284,6 +294,36 @@ async function modeBehavior() {
   behaviorEvidence.passed = true;
 }
 
+async function modeCascade() {
+  // Seam 4 (ticket 149): real Chromium + real client + real worklet against
+  // the deterministic fake worker, writing a real delivered capture. No
+  // vendor key, no vendor network. The runtime is compared with the registry
+  // bound `ci.browser_e2e_budget_s`; an open bound is a named blocker, never
+  // an invented timeout.
+  const startedAt = Date.now();
+  const fp = fingerprint();
+  const cand = buildCandidate(fp);
+  const artifactDir = resolve(appDir, "test-results", "cascade-e2e");
+  rmSync(artifactDir, { recursive: true, force: true });
+  mkdirSync(artifactDir, { recursive: true });
+  console.log(`[e2e] delivered-capture artifacts: ${artifactDir}`);
+  const server = await serveNext(cand, NEXT_PORT, { capture: true });
+  try {
+    // One real Chromium (the desktop project): the seam is the client and the
+    // worklet, not two viewports of the same call.
+    await runPlaywright(cand, `http://localhost:${NEXT_PORT}`, ["--project=desktop", "tests/e2e/cascade-delivery.spec.ts"], {
+      VONI_E2E_ARTIFACT_DIR: artifactDir,
+    });
+  } finally {
+    await teardown(server, dirname(cand));
+  }
+  const elapsedMs = Date.now() - startedAt;
+  const budget = readBrowserE2eBudget({ repoRoot: resolve(appDir, "..") });
+  const verdict = budgetVerdict({ elapsedMs, budget });
+  console.log(`[e2e] ${verdict.line}`);
+  if (!verdict.ok) throw new Error(verdict.line);
+}
+
 async function modeCloudflare() {
   const fp = fingerprint();
   const cand = buildCandidate(fp);
@@ -324,10 +364,33 @@ if (process.env.E2E_DATABASE_URL) {
   process.exit(1);
 }
 
+// Live guard (ticket 151): the PR browser E2E is not a live vendor run. Every
+// socket is faked, so a vendor key in the environment means something is
+// wrong with the invocation — refuse by name instead of quietly spending a
+// vendor call from a PR job. Live provider work belongs to nightly.yml.
+const VENDOR_KEYS = [
+  "ASSEMBLYAI_API_KEY",
+  "META_API_KEY",
+  "CARTESIA_API_KEY",
+  "OPENAI_API_KEY",
+];
+const vendorKeysPresent = VENDOR_KEYS.filter(
+  (name) => String(process.env[name] ?? "").trim() !== "",
+);
+if (vendorKeysPresent.length > 0) {
+  console.error(
+    `[e2e] REFUSE: vendor key(s) present (${vendorKeysPresent.join(", ")}) — ` +
+      "the PR browser E2E uses a deterministic fake service and must not reach a " +
+      "vendor. Live smoke is key-gated in .github/workflows/nightly.yml.",
+  );
+  process.exit(1);
+}
+
 try {
   if (mode === "instant") await modeInstant();
   else if (mode === "behavior") await modeBehavior();
   else if (mode === "cloudflare") await modeCloudflare();
+  else if (mode === "cascade") await modeCascade();
   else { await modeInstant(); await modeBehavior(); await modeCloudflare(); }
 } catch (err) {
   console.error(`[e2e] FAILED (${mode}): ${err.message}`);

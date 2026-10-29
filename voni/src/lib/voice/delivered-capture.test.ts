@@ -181,6 +181,19 @@ test("delivered capture flag: on only with ?delivercapture=1, never in productio
   assert.equal(deliveredCaptureRequested("?delivercapture=1", true), false);
 });
 
+test("delivered capture flag: a production-mode test build may opt in, an ordinary build may not", () => {
+  // Ticket 149's browser E2E serves a production-mode candidate and must still
+  // write a real delivered capture. The opt-in is the build-time test flag
+  // `scripts/e2e-run.mjs` sets on its throwaway candidate; the default is the
+  // ticket-121 rule, so an ordinary `next build` stays inert.
+  assert.equal(deliveredCaptureRequested("?delivercapture=1", true, true), true);
+  assert.equal(deliveredCaptureRequested("", true, true), false);
+  assert.equal(deliveredCaptureRequested("?delivercapture=1", true, false), false);
+  assert.equal(deliveredCaptureRequested("?delivercapture=1", false, false), true);
+  // The development loop cannot be broken by the test seam either.
+  assert.equal(deliveredCaptureRequested("?delivercapture=1", false, true), true);
+});
+
 // ── A capture that is not whole is a named failure (ticket 121) ───────────
 // "Missing" and "truncated" must not look like a short but valid recording:
 // the W0 comparison would measure a file that is quietly missing its tail and

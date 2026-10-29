@@ -40,6 +40,59 @@ jobs:
       - name: Anti-lie reply gap
         run: node --import tsx --test src/lib/demo/anti-lie-reply-gap.test.ts
 
+  # Seam 4 (ticket 149): a real Chromium runs the real browser client, the real
+  # mic path and the real playout worklet against a deterministic fake
+  # WebSocket service, and writes a real delivered capture on every PR. No
+  # vendor key and no vendor host is reachable from the spec (the fake is
+  # Playwright's WebSocket routing; a vendor request fails the run by name).
+  #
+  # The runtime claim comes from `ci.browser_e2e_budget_s` in
+  # voice-pipeline/cascade/thresholds.json, read by scripts/e2e-run.mjs. The
+  # `timeout-minutes` below is only a hang guard, matching the python job: it is
+  # not the E2E budget, and it never substitutes for the registry entry.
+  browser-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: voni
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: voni/package-lock.json
+      - run: npm ci
+      - name: Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Browser cascade E2E (delivered capture, fake socket)
+        run: node scripts/e2e-run.mjs cascade
+      # The capture is the point of the seam, so it outlives the throwaway
+      # candidate. Uploading it on red too keeps a failing run's evidence; a
+      # green run without the file fails rather than looking complete.
+      - name: Delivered capture artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-delivery-capture
+          path: voni/test-results/cascade-e2e/
+          if-no-files-found: error
+          retention-days: 7
+
+  # A skipped or cancelled browser job must not report success. Require this
+  # gate (`required-browser-e2e`), not the job, in branch protection.
+  required-browser-e2e:
+    runs-on: ubuntu-latest
+    needs: [browser-e2e]
+    if: always()
+    timeout-minutes: 2
+    steps:
+      - name: browser-e2e job must have succeeded
+        run: |
+          echo "browser-e2e result: ${{ needs.browser-e2e.result }}"
+          test "${{ needs.browser-e2e.result }}" = "success"
+
   # The Python suites: telephony-bot/ plus voice-pipeline/, which includes the
   # three recorded provider fixture suites and their manifest. No vendor key
   # and no network beyond the package install. Deliberately no `paths:` filter

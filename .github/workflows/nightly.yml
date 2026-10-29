@@ -1,0 +1,125 @@
+name: Nightly live smoke
+
+# Spec (`.scratch/meta-cascade/spec.md`, "Fixtures, chaos and live smoke"):
+# live smoke is key-gated and never in PR CI; nightly, one call per leg, which
+# re-records the fixtures and alerts on wire drift without committing them. It
+# does not write the production breaker or counter.
+#
+# This workflow is deliberately NOT referenced by ci.yml and has no
+# pull_request trigger: a vendor outage is a nightly alert, never a red PR.
+# Without keys the live job is skipped and labelled; it can never be read as a
+# live pass.
+on:
+  schedule:
+    # 03:17 UTC: after the vendors' nightly maintenance windows, before the
+    # European morning. Any minute works; the run is not time-sensitive.
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # The key gate. `secrets` are not available to a job-level `if:`, so the
+  # first job turns key presence into an output the live job can condition on.
+  keys:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # The same environment the live job uses: secrets scoped to `nightly` are
+    # not visible to a job that names no environment, which would make the
+    # gate always false and the night silently skipped.
+    environment: nightly
+    outputs:
+      present: ${{ steps.keys.outputs.present }}
+    steps:
+      - name: Live keys present?
+        id: keys
+        env:
+          META_API_KEY: ${{ secrets.META_API_KEY }}
+          ASSEMBLYAI_API_KEY: ${{ secrets.ASSEMBLYAI_API_KEY }}
+        run: |
+          if [ -n "$META_API_KEY" ] && [ -n "$ASSEMBLYAI_API_KEY" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+            echo "live vendor keys present"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "### Live smoke: SKIPPED — no vendor keys"
+              echo ""
+              echo "No live call was made and this run is not a live pass."
+              echo "Add META_API_KEY and ASSEMBLYAI_API_KEY to the \`nightly\`"
+              echo "environment to turn it on."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning title=live smoke skipped::No vendor keys; no live claim was made."
+          fi
+
+  # One call per vendor leg (speech, model stream, voice), then a wire-drift
+  # comparison against the committed fixtures. The recording goes to
+  # $RUNNER_TEMP: it is evidence for a human, never a commit.
+  live-smoke:
+    needs: [keys]
+    if: needs.keys.outputs.present == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: nightly
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Bridge venv
+        run: |
+          uv venv --python 3.13 .venv
+          uv pip install --python .venv/bin/python -r requirements-ci.txt
+      # The speech leg replays a tracked synthesized caller line; decoding it
+      # to 24 kHz PCM is the only external tool the night needs.
+      - name: ffmpeg
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+      # The existing timing lock serializes live runs: same file as the demo
+      # scoreboard (voni/src/lib/demo/timing-lock.ts), so a live score-demo run
+      # and this night cannot overlap. A held lock fails the night by name.
+      - name: Live smoke (one call per leg, drift alert)
+        env:
+          META_API_KEY: ${{ secrets.META_API_KEY }}
+          ASSEMBLYAI_API_KEY: ${{ secrets.ASSEMBLYAI_API_KEY }}
+          # M03 owns reasoning_effort. Unset, the model leg is BLOCKED by name
+          # and the night is not reported green — never an invented effort.
+          META_REASONING_EFFORT: ${{ vars.META_REASONING_EFFORT }}
+        run: |
+          # No lock-path override: the night takes the existing shared lock
+          # (/tmp/voni-demo-timing.lock), the same file the demo scoreboard
+          # takes, so live runs serialize across tools.
+          .venv/bin/python voice-pipeline/nightly_smoke.py \
+            --out "$RUNNER_TEMP/nightly-recordings"
+      - name: Recording (evidence, never committed)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-live-recording
+          path: ${{ runner.temp }}/nightly-recordings/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # The visible result of the night. Keys present but the live job failed is a
+  # red alert; keys absent is an explicit skip, never a green live claim.
+  live-smoke-status:
+    needs: [keys, live-smoke]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Report the night's state
+        run: |
+          echo "keys=${{ needs.keys.outputs.present }} live-smoke=${{ needs.live-smoke.result }}"
+          if [ "${{ needs.keys.outputs.present }}" = "true" ]; then
+            test "${{ needs.live-smoke.result }}" = "success"
+            echo "### Live smoke: PASSED (live vendor run)" >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo "### Live smoke: SKIPPED — no keys"
+              echo ""
+              echo "No live call was made. Branch protection does not require"
+              echo "this workflow, so a skip never blocks a PR."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning title=live smoke skipped::No vendor keys; no live claim was made."
+          fi

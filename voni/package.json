@@ -39,6 +39,7 @@
     "test:e2e:instant": "node scripts/e2e-run.mjs instant",
     "test:e2e:behavior": "node scripts/e2e-run.mjs behavior",
     "test:e2e:cloudflare": "node scripts/e2e-run.mjs cloudflare",
+    "test:e2e:cascade": "node scripts/e2e-run.mjs cascade",
     "test:e2e": "node scripts/e2e-run.mjs all",
     "postinstall": "patch-package",
     "scoreboard:demo": "node --env-file-if-exists=.env.local --env-file-if-exists=.dev.vars --import tsx scripts/score-demo.mts",
