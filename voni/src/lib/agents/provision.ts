@@ -59,12 +59,46 @@ export function deploymentFingerprint(name: string, config: AgentConfig): string
   return agentBodyFingerprint(storedAgentBody(name, config));
 }
 
+/**
+ * The one removal path for an absent model override (voice-parity ticket 63).
+ *
+ * A PUT never clears an omitted field: per the platform contract a stored
+ * `llm` override survives a PUT whose body omits it, so sending the builder's
+ * body as-is is not a removal. An absent override is therefore sent as the
+ * documented revert (`llm: []` → managed model), which is idempotent and
+ * changes nothing else.
+ *
+ * Both refresh paths — the demo's and the tenant deployment's — call this,
+ * because two removal paths is how one of them ends up without a removal at
+ * all. The fingerprint still hashes the desired body, so removing an override
+ * moves it and the redeploy is owed exactly once; after the refresh the stored
+ * fingerprint matches and the next routine refresh sends nothing.
+ */
+export function agentUpdatePayload(body: StoredAgentBody): StoredAgentBody {
+  return body.llm === undefined ? { ...body, llm: [] } : body;
+}
+
+/** Injectable platform access; production resolves the credential and `fetch`. */
+export type AgentDeploymentDeps = {
+  /** Explicit key (including null for the missing-key path); absent = resolve. */
+  apiKey?: string | null;
+  fetchFn?: typeof fetch;
+};
+
+async function deploymentApiKey(deps?: AgentDeploymentDeps): Promise<string | null> {
+  // `"apiKey" in deps` distinguishes an injected key (tests, the missing-key
+  // path) from production, which resolves the stored credential.
+  if (deps && "apiKey" in deps) return deps.apiKey ?? null;
+  return (await resolveCredential("assemblyai_api_key")).value ?? null;
+}
+
 async function reconcileRecentAgent(
   authorization: string,
   name: string,
   config: AgentConfig,
+  fetchFn: typeof fetch = fetch,
 ): Promise<string | null> {
-  const listResponse = await fetch(AGENTS_URL, {
+  const listResponse = await fetchFn(AGENTS_URL, {
     headers: { Authorization: authorization },
   });
   if (!listResponse.ok) return null;
@@ -80,7 +114,7 @@ async function reconcileRecentAgent(
     readBackAgentBody(storedAgentBody(name, config)),
   );
   for (const candidate of candidates) {
-    const response = await fetch(`${AGENTS_URL}/${encodeURIComponent(candidate.id)}`, {
+    const response = await fetchFn(`${AGENTS_URL}/${encodeURIComponent(candidate.id)}`, {
       headers: { Authorization: authorization },
     });
     if (!response.ok) continue;
@@ -96,12 +130,19 @@ async function requestAgent(
   name: string,
   config: AgentConfig,
   remoteId?: string | null,
+  deps?: AgentDeploymentDeps,
 ) {
-  const apiKey = (await resolveCredential("assemblyai_api_key")).value;
+  const apiKey = await deploymentApiKey(deps);
   if (!apiKey) {
     return { ok: false as const, error: "AssemblyAI is not configured." };
   }
-  const response = await fetch(
+  const fetchFn = deps?.fetchFn ?? fetch;
+  // A PUT never clears an omitted field, so a refresh sends the one removal
+  // path's payload (see `agentUpdatePayload`). A create has no stale copy to
+  // clear and is sent as the builder made it.
+  const body = storedAgentBody(name, config);
+  const payload = method === "PUT" ? agentUpdatePayload(body) : body;
+  const response = await fetchFn(
     remoteId ? `${AGENTS_URL}/${encodeURIComponent(remoteId)}` : AGENTS_URL,
     {
       method,
@@ -109,7 +150,7 @@ async function requestAgent(
         Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify(storedAgentBody(name, config)),
+      body: JSON.stringify(payload),
     },
   );
   if (!response.ok) {
@@ -132,27 +173,33 @@ export async function provisionAgent(
   name: string,
   config: AgentConfig,
   remoteId?: string | null,
+  deps?: AgentDeploymentDeps,
 ): Promise<AgentDeploymentResult> {
   try {
     if (!remoteId) {
-      const apiKey = (await resolveCredential("assemblyai_api_key")).value;
+      const apiKey = await deploymentApiKey(deps);
       if (!apiKey) return { ok: false, error: "AssemblyAI is not configured." };
       try {
-        const created = await requestAgent("POST", name, config);
+        const created = await requestAgent("POST", name, config, undefined, deps);
         if (created.ok || !("uncertain" in created) || !created.uncertain) return created;
       } catch {
         // The provider may have accepted the POST before the connection failed.
       }
-      const reconciled = await reconcileRecentAgent(`Bearer ${apiKey}`, name, config).catch(() => null);
+      const reconciled = await reconcileRecentAgent(
+        `Bearer ${apiKey}`,
+        name,
+        config,
+        deps?.fetchFn ?? fetch,
+      ).catch(() => null);
       return reconciled
         ? { ok: true, agentId: reconciled }
         : { ok: false, error: "Voice deployment is unavailable. The saved configuration is safe to retry." };
     }
-    const updated = await requestAgent("PUT", name, config, remoteId);
+    const updated = await requestAgent("PUT", name, config, remoteId, deps);
     // A remote agent may have been deleted from the AssemblyAI dashboard. A
     // retry should repair that state instead of failing forever on the stale id.
     if (!updated.ok && "status" in updated && updated.status === 404) {
-      return requestAgent("POST", name, config);
+      return requestAgent("POST", name, config, undefined, deps);
     }
     return updated;
   } catch (error) {
