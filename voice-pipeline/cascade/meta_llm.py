@@ -23,16 +23,24 @@ several knobs and a caller's conversation must not leak into them:
 constructed, before any request exists. M03 fixes the value from the spike's
 measurement; this module only carries it.
 
-Stream parsing, tool-call accumulation, argument validation, usage recording,
-finish reasons and the failure policy are tickets 37-45. ``complete()`` posts
-the request and hands the response to a seam those tickets fill; nothing here
-interprets an event.
+Stream parsing lives in :class:`MetaLLMTurn` and the SSE reader: content deltas
+are the only speech, ``reasoning_content`` is recorded for usage and telemetry
+and never yielded, and the first content delta marks ``first_token``. Tool-call
+accumulation, argument validation, usage recording, finish reasons and the
+failure policy are tickets 38-45; ``_stream_events`` leaves their seams open.
+
+The per-turn record is how a caller reads what the stream produced without
+re-parsing it: pass a :class:`MetaLLMTurn` to ``complete()`` (or read
+``last_turn`` afterwards). A record is never shared between turns.
 """
 
 from __future__ import annotations
 
+import codecs
+import json
 import os
 from collections.abc import AsyncIterator, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 from cascade.model_guard import resolve_model
@@ -45,9 +53,23 @@ CHAT_COMPLETIONS_PATH = "/chat/completions"
 #: Spark always reasons; asking it not to is a vendor 400, not a speed knob.
 UNAVAILABLE_REASONING_EFFORT = "none"
 
+#: The SSE terminator; everything after it is not part of this completion.
+SSE_DONE = "[DONE]"
+
+#: The ledger mark the first *content* delta records (never reasoning).
+FIRST_TOKEN_MARK = "first_token"
+
 
 class MetaLLMConfigError(RuntimeError):
     """A required piece of backend configuration is missing."""
+
+
+class MetaLLMStreamError(RuntimeError):
+    """The vendor sent a stream frame this backend cannot read.
+
+    A malformed frame is a provider contract violation, not a token: parsing it
+    as text would put vendor noise in the caller's ear.
+    """
 
 
 class ReasoningEffortError(ValueError):
@@ -145,6 +167,158 @@ class _NoPrefetch(PrefetchHandle):
         return None
 
 
+@dataclass(slots=True)
+class MetaLLMTurn:
+    """Everything one completion produced, held apart from the wire.
+
+    Created per ``complete()`` call. Nothing here is shared between turns, and
+    ``close()`` is idempotent so an early exit (a barge-in cancelling the
+    stream) records the same facts as a normal finish.
+
+    ``reasoning_text`` is the model's private reasoning. It is recorded for
+    usage and telemetry; it is never yielded to synthesis.
+    """
+
+    reasoning_text: str = ""
+    reasoning_deltas: int = 0
+    content_text: str = ""
+    finish_reason: str | None = None
+    closed: bool = False
+
+    def close(self) -> None:
+        """Finalise the record; safe to call more than once."""
+        if self.closed:
+            return
+        self.closed = True
+
+
+class _SSEParser:
+    """Incremental Server-Sent Events reader over a stream of byte chunks.
+
+    A chunk boundary is a *byte* boundary, so UTF-8 decoding is incremental: a
+    multi-byte character may be split across two chunks and must still arrive
+    whole. A line boundary is a newline; a blank line dispatches one event.
+    Comments (``:`` heartbeat) and non-``data`` fields carry no payload.
+    """
+
+    def __init__(self) -> None:
+        self._decoder = codecs.getincrementaldecoder("utf-8")()
+        self._buffer = ""
+        self._data: list[str] = []
+        self.done = False
+
+    def feed(self, chunk: bytes) -> list[str]:
+        return self._lines(self._decoder.decode(chunk))
+
+    def close(self) -> list[str]:
+        """Flush a final line and any trailing event the vendor did not end."""
+        payloads = self._lines(self._decoder.decode(b"", final=True))
+        if self.done:
+            return payloads
+        if self._buffer:
+            payload = self._line(self._buffer)
+            self._buffer = ""
+            if payload is not None:
+                payloads.append(payload)
+        payload = self._line("")
+        if payload is not None:
+            payloads.append(payload)
+        return payloads
+
+    def _lines(self, text: str) -> list[str]:
+        self._buffer += text
+        payloads: list[str] = []
+        while not self.done and "\n" in self._buffer:
+            line, self._buffer = self._buffer.split("\n", 1)
+            payload = self._line(line)
+            if payload is not None:
+                payloads.append(payload)
+        if self.done:
+            self._buffer = ""
+        return payloads
+
+    def _line(self, raw: str) -> str | None:
+        line = raw.rstrip("\r")
+        if not line:
+            if not self._data:
+                return None
+            payload = "\n".join(self._data)
+            self._data = []
+            if payload.strip() == SSE_DONE:
+                self.done = True
+                return None
+            return payload
+        if line.startswith(":"):
+            return None
+        field, _, value = line.partition(":")
+        if field != "data":
+            return None
+        self._data.append(value[1:] if value.startswith(" ") else value)
+        return None
+
+
+def _reasoning_delta(delta: dict[str, Any]) -> str:
+    """The reasoning text in one delta, under either vendor spelling."""
+    for key in ("reasoning_content", "reasoning"):
+        value = delta.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return ""
+
+
+class _TurnStream:
+    """Turns decoded SSE payloads into provider events and one turn record.
+
+    Content deltas are yielded as ``TokenDelta`` the moment they arrive, so
+    synthesis starts on the first spoken word. Reasoning is folded into the
+    record only. Anything that must wait for the whole turn (tool-call
+    accumulation, usage, finish disposition) is kept here, not re-parsed later.
+    """
+
+    def __init__(self, turn: MetaLLMTurn, ledger: Any = None) -> None:
+        self.turn = turn
+        self._ledger = ledger
+
+    def consume(self, payload: str) -> list[TokenDelta]:
+        try:
+            data = json.loads(payload)
+        except json.JSONDecodeError as error:
+            raise MetaLLMStreamError(
+                f"Meta stream frame is not JSON: {payload[:120]!r}"
+            ) from error
+        if not isinstance(data, dict):
+            raise MetaLLMStreamError(
+                f"Meta stream frame is not an object: {payload[:120]!r}"
+            )
+        emitted: list[TokenDelta] = []
+        for choice in data.get("choices") or ():
+            delta = choice.get("delta") or {}
+            self._record_reasoning(_reasoning_delta(delta))
+            emitted.extend(self._content(delta.get("content")))
+            finish = choice.get("finish_reason")
+            if finish:
+                self.turn.finish_reason = finish
+        return emitted
+
+    def _record_reasoning(self, text: str) -> None:
+        if not text:
+            return
+        if self.turn.reasoning_deltas == 0:
+            self.turn.reasoning_text = text
+        else:
+            self.turn.reasoning_text += text
+        self.turn.reasoning_deltas += 1
+
+    def _content(self, content: Any) -> list[TokenDelta]:
+        if not isinstance(content, str) or not content:
+            return []
+        first_content = not self.turn.content_text
+        self.turn.content_text += content
+        if first_content and self._ledger is not None:
+            self._ledger.mark(FIRST_TOKEN_MARK)
+        return [TokenDelta(text=content)]
+
+
 class _AiohttpResponse:
     def __init__(self, resp: Any) -> None:
         self._resp = resp
@@ -215,6 +389,7 @@ class MetaLLM(LLMStream):
         system_prompt: str = "",
         session_factory: Any = None,
         timeout_s: float = 60.0,
+        ledger: Any = None,
     ) -> None:
         # Construction guard first: a Contributor id must fail before any
         # request field exists to leak into (ticket 35).
@@ -225,6 +400,11 @@ class MetaLLM(LLMStream):
         self._system_prompt = system_prompt
         self._session_factory = session_factory or _AiohttpSession
         self._timeout_s = timeout_s
+        # Optional ``TimingLedger``-shaped sink: the first content delta marks
+        # ``first_token``. Marking is first-write-wins, so an orchestrator that
+        # also marks it is harmless.
+        self._ledger = ledger
+        self._last_turn: MetaLLMTurn | None = None
 
     @property
     def model(self) -> str:
@@ -233,6 +413,15 @@ class MetaLLM(LLMStream):
     @property
     def reasoning_effort(self) -> str:
         return self._reasoning_effort
+
+    @property
+    def last_turn(self) -> MetaLLMTurn | None:
+        """The record of the most recent ``complete()`` call, if any.
+
+        Convenience for a caller driving one completion at a time. A caller
+        that may overlap completions passes its own ``turn=`` record instead.
+        """
+        return self._last_turn
 
     def prefetch(self, *, messages: list[dict[str, Any]]) -> PrefetchHandle:
         return _NoPrefetch()
@@ -243,6 +432,7 @@ class MetaLLM(LLMStream):
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
         hidden_context: Sequence[str] = (),
+        turn: MetaLLMTurn | None = None,
     ) -> AsyncIterator[TokenDelta | ToolCallRequest]:
         if not self._api_key:
             raise MetaLLMConfigError(
@@ -265,35 +455,56 @@ class MetaLLM(LLMStream):
             "content-type": "application/json",
         }
         url = f"{self._base_url}{CHAT_COMPLETIONS_PATH}"
+        record = turn if turn is not None else MetaLLMTurn()
+        self._last_turn = record
+        stream = _TurnStream(record, self._ledger)
+        parser = _SSEParser()
         session = self._session_factory(timeout_s=self._timeout_s)
-        async with session as active:
-            async with active.post(url, headers=headers, json=payload) as response:
-                if response.status != 200:
-                    raise MetaLLMRequestError(response.status)
-                async for event in self._stream_events(response):
-                    yield event
+        try:
+            async with session as active:
+                async with active.post(url, headers=headers, json=payload) as response:
+                    if response.status != 200:
+                        raise MetaLLMRequestError(response.status)
+                    async for chunk in response.iter_bytes():
+                        for frame in parser.feed(chunk):
+                            for event in stream.consume(frame):
+                                yield event
+                    for frame in parser.close():
+                        for event in stream.consume(frame):
+                            yield event
+        finally:
+            record.close()
 
     async def _stream_events(
         self, response: Any
     ) -> AsyncIterator[TokenDelta | ToolCallRequest]:
-        """Event parsing seam for tickets 37-39.
+        """Chunk-level seam kept for tests of the reader itself.
 
-        The request contract ends at the wire; this generator yields nothing
-        until the delta, reasoning, usage and tool-accumulation tickets fill
-        it. Keeping the seam explicit is cheaper than guessing an event shape
-        three tickets early.
+        ``complete()`` drives the parser directly so it can finalise the turn
+        when the caller stops consuming early.
         """
-        return
-        yield  # pragma: no cover - makes this an async generator
+        parser = _SSEParser()
+        stream = _TurnStream(MetaLLMTurn(), self._ledger)
+        async for chunk in response.iter_bytes():
+            for frame in parser.feed(chunk):
+                for event in stream.consume(frame):
+                    yield event
+        for frame in parser.close():
+            for event in stream.consume(frame):
+                yield event
 
 
 __all__ = [
     "CHAT_COMPLETIONS_PATH",
+    "FIRST_TOKEN_MARK",
     "META_BASE_URL",
+    "SSE_DONE",
     "UNAVAILABLE_REASONING_EFFORT",
     "MetaLLM",
     "MetaLLMConfigError",
     "MetaLLMRequestError",
+    "MetaLLMStreamError",
+    "MetaLLMTurn",
     "ReasoningEffortError",
     "build_chat_request",
     "build_messages",
