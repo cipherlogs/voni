@@ -133,7 +133,7 @@ function managedFullArtifact(overrides: Record<string, unknown> = {}): Record<st
       screenToFirstPartialMs: { absent: "N/A — no partials" },
       speechCompleteToFirstTokenMs: { absent: "N/A — no token stream" },
       replyGapP50Ms: 900,
-      commitToFirstPlayoutMs: { absent: "N/A — the managed path has no commit mark" },
+      commitToFirstPlayoutMs: { absent: MANAGED_NO_COMMIT_MARK_ABSENCE },
     },
     cost: { absent: VENDOR_BILLED_COST_ABSENCE },
     captures: {
@@ -665,7 +665,7 @@ test("a gap the engine cannot produce is recorded, never silently absent", () =>
   );
 
   const silentPartials = managedFullArtifact({
-    latency: { replyGapP50Ms: 900, commitToFirstPlayoutMs: { absent: "N/A — the managed path has no commit mark" } },
+    latency: { replyGapP50Ms: 900, commitToFirstPlayoutMs: { absent: MANAGED_NO_COMMIT_MARK_ABSENCE } },
   });
   assert.throws(
     () => parseScoreboardArtifact(silentPartials, "silent.json"),
@@ -673,6 +673,89 @@ test("a gap the engine cannot produce is recorded, never silently absent", () =>
       error instanceof ArtifactReadError &&
       error.field === "latency.screenToFirstPartialMs" &&
       /silently absent/.test(error.message),
+  );
+});
+
+test("a managed artifact names both cascade-only rows N/A and never as a number, zero included", () => {
+  // A zero is the most tempting win: it is not a measurement of a gap the
+  // managed path cannot produce, so it is refused exactly like any other value.
+  for (const row of ["screenToFirstPartialMs", "speechCompleteToFirstTokenMs"] as const) {
+    const zero = managedFullArtifact({
+      latency: {
+        ...ENGINE_LATENCY.managed,
+        [row]: 0,
+      },
+    });
+    assert.throws(
+      () => parseScoreboardArtifact(zero, "managed.json"),
+      (error: unknown) =>
+        error instanceof ArtifactReadError &&
+        error.field === `latency.${row}` &&
+        /0/.test(error.message) &&
+        /N\/A/.test(error.message),
+      `${row} on managed is N/A, never 0ms: a zero would read as a win`,
+    );
+  }
+});
+
+test("a managed artifact records the commit row too, never by omission", () => {
+  const raw = managedFullArtifact({
+    latency: {
+      screenToFirstPartialMs: { absent: MANAGED_NO_PARTIALS_ABSENCE },
+      speechCompleteToFirstTokenMs: { absent: MANAGED_NO_TOKEN_STREAM_ABSENCE },
+      replyGapP50Ms: 900,
+    },
+  });
+  assert.throws(
+    () => parseScoreboardArtifact(raw, "managed.json"),
+    (error: unknown) =>
+      error instanceof ArtifactReadError &&
+      error.field === "latency.commitToFirstPlayoutMs" &&
+      /silently absent/.test(error.message) &&
+      /N\/A/.test(error.message),
+    "every row the engine cannot measure is present as a named N/A",
+  );
+});
+
+test("an N/A borrowing the other engine's reason is a fake value, refused by name", () => {
+  const managed = managedFullArtifact({
+    latency: {
+      ...ENGINE_LATENCY.managed,
+      commitToFirstPlayoutMs: { absent: CASCADE_NO_COMMIT_MARK_ABSENCE },
+    },
+  });
+  assert.throws(
+    () => parseScoreboardArtifact(managed, "managed.json"),
+    (error: unknown) =>
+      error instanceof ArtifactReadError &&
+      error.field === "latency.commitToFirstPlayoutMs" &&
+      /cascade/.test(error.message) &&
+      /N\/A/.test(error.message),
+    "the managed commit row carries the managed reason, not the cascade's",
+  );
+
+  const cascade = cascadeArtifact({
+    latency: { ...ENGINE_LATENCY.cascade, commitToFirstPlayoutMs: { absent: MANAGED_NO_COMMIT_MARK_ABSENCE } },
+  });
+  assert.throws(
+    () => parseScoreboardArtifact(cascade, "cascade.json"),
+    (error: unknown) =>
+      error instanceof ArtifactReadError &&
+      error.field === "latency.commitToFirstPlayoutMs" &&
+      /managed/.test(error.message),
+    "the cascade commit row carries the cascade reason, not the managed one",
+  );
+
+  const cascadePartials = cascadeArtifact({
+    latency: { ...ENGINE_LATENCY.cascade, screenToFirstPartialMs: { absent: MANAGED_NO_PARTIALS_ABSENCE } },
+  });
+  assert.throws(
+    () => parseScoreboardArtifact(cascadePartials, "cascade.json"),
+    (error: unknown) =>
+      error instanceof ArtifactReadError &&
+      error.field === "latency.screenToFirstPartialMs" &&
+      /no partials/.test(error.message),
+    "the cascade has partials; claiming none is a fake N/A",
   );
 });
 

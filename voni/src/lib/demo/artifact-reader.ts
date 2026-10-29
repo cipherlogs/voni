@@ -4,6 +4,10 @@ import {
   ARTIFACT_LATENCY_GAPS,
   ARTIFACT_PROVIDER_LEGS,
   ARTIFACT_SECTIONS,
+  CASCADE_NO_COMMIT_MARK_ABSENCE,
+  MANAGED_NO_COMMIT_MARK_ABSENCE,
+  MANAGED_NO_PARTIALS_ABSENCE,
+  MANAGED_NO_TOKEN_STREAM_ABSENCE,
   SCOREBOARD_SCHEMA_VERSION,
   isArtifactAbsence,
   parseGateRows,
@@ -401,11 +405,55 @@ function parseProviders(raw: unknown, source: string): ArtifactProviders | undef
   return record as ArtifactProviders;
 }
 
-/** Gaps each engine cannot produce: recorded as a named N/A, never zero (M13). */
-const UNAVAILABLE_GAPS: Record<ArtifactPipeline, readonly ArtifactLatencyGap[]> = {
-  cascade: ["commitToFirstPlayoutMs"],
-  managed: ["screenToFirstPartialMs", "speechCompleteToFirstTokenMs"],
+/**
+ * Gaps each engine cannot produce, with the reason the spec gives them (M13).
+ *
+ * These are the rows a subject's gates derive from its pipeline: the managed
+ * path has no partials and no token stream, and neither engine has a cascade
+ * commit mark on the artifact. Each row must be present with exactly this
+ * reason — omitted is a silent absence, a number (zero included) is a fake win,
+ * and another engine's reason is a fake value.
+ */
+export const PIPELINE_UNAVAILABLE_GAPS: Readonly<
+  Record<ArtifactPipeline, readonly { row: ArtifactLatencyGap; reason: string }[]>
+> = {
+  cascade: [{ row: "commitToFirstPlayoutMs", reason: CASCADE_NO_COMMIT_MARK_ABSENCE }],
+  managed: [
+    { row: "screenToFirstPartialMs", reason: MANAGED_NO_PARTIALS_ABSENCE },
+    { row: "speechCompleteToFirstTokenMs", reason: MANAGED_NO_TOKEN_STREAM_ABSENCE },
+    { row: "commitToFirstPlayoutMs", reason: MANAGED_NO_COMMIT_MARK_ABSENCE },
+  ],
 };
+
+/**
+ * The absence reasons only one engine may use. A cascade artifact that claims
+ * "no partials" is describing the managed path, not its own run; a managed
+ * artifact that claims "the cascade has no commit mark" is doing the reverse.
+ * Both are a fake value, refused by field.
+ */
+const MANAGED_ONLY_ABSENCES: ReadonlySet<string> = new Set([
+  MANAGED_NO_PARTIALS_ABSENCE,
+  MANAGED_NO_TOKEN_STREAM_ABSENCE,
+  MANAGED_NO_COMMIT_MARK_ABSENCE,
+]);
+const CASCADE_ONLY_ABSENCES: ReadonlySet<string> = new Set([CASCADE_NO_COMMIT_MARK_ABSENCE]);
+
+/** The reason a row cannot borrow: the other engine's named absence. */
+function foreignAbsenceReason(
+  pipeline: ArtifactPipeline,
+  gap: ArtifactLatencyGap,
+  value: unknown,
+  source: string,
+): void {
+  if (!isArtifactAbsence(value)) return;
+  const foreign = pipeline === "cascade" ? MANAGED_ONLY_ABSENCES : CASCADE_ONLY_ABSENCES;
+  if (!foreign.has(value.absent)) return;
+  throw new ArtifactReadError(
+    source,
+    `latency.${gap}`,
+    `records ${showValue(value.absent)}; that is the other engine's N/A and a ${pipeline} run cannot borrow it`,
+  );
+}
 
 /**
  * The three cascade gaps and the ledger marks each one is anchored on (M13).
@@ -557,6 +605,7 @@ function parseLatency(
     }
     if (isArtifactAbsence(value)) {
       assertNamedAbsence(value, `latency.${gap}`, source);
+      foreignAbsenceReason(pipeline, gap as ArtifactLatencyGap, value, source);
       continue;
     }
     throw new ArtifactReadError(
@@ -565,20 +614,27 @@ function parseLatency(
       `latency gap "${gap}" needs a number or a named N/A`,
     );
   }
-  for (const gap of UNAVAILABLE_GAPS[pipeline]) {
-    const value = record[gap];
+  for (const { row, reason } of PIPELINE_UNAVAILABLE_GAPS[pipeline]) {
+    const value = record[row];
     if (value === undefined) {
       throw new ArtifactReadError(
         source,
-        `latency.${gap}`,
-        `${pipeline} run leaves "${gap}" silently absent; it must record the named N/A (the gap does not exist on this engine)`,
+        `latency.${row}`,
+        `${pipeline} run leaves "${row}" silently absent; it must record the named N/A "${reason}" (the gap does not exist on this engine)`,
       );
     }
     if (typeof value === "number") {
       throw new ArtifactReadError(
         source,
-        `latency.${gap}`,
-        `${pipeline} run records "${gap}" as ${showValue(value)}; the gap does not exist on this engine and must be N/A`,
+        `latency.${row}`,
+        `${pipeline} run records "${row}" as ${showValue(value)}; the gap does not exist on this engine and must be the named N/A "${reason}"`,
+      );
+    }
+    if (isArtifactAbsence(value) && value.absent !== reason) {
+      throw new ArtifactReadError(
+        source,
+        `latency.${row}`,
+        `${pipeline} run names "${row}" ${showValue(value.absent)}; the named N/A on this engine is ${showValue(reason)}`,
       );
     }
   }
@@ -716,6 +772,165 @@ function parseEligibility(raw: unknown, source: string): ArtifactEligibility | u
     );
   }
   return record as ArtifactEligibility;
+}
+
+// ── Clean-run eligibility (M13, ticket 116) ─────────────────────────────────
+
+/**
+ * The one cascade-only event that contaminates a run, at any phase (M12/M13).
+ * A connect-time fallback is still a fallback; it pre-selected the fallback
+ * rung before the first frame, so the run did not measure the stack it claims.
+ */
+export const FALLBACK_EVENT_TYPE = "provider_fallback";
+
+/** The budget event that ends a call; an 80% crossing is not a stop. */
+export const BUDGET_STOP_EVENT_TYPE = "budget.stopped";
+
+/**
+ * Gates fed by a capture, and the legs each needs (W0/M3). A gate that claims
+ * PASS while its capture is missing outran its evidence; the run is not clean.
+ */
+export const GATE_CAPTURE_LEGS: Readonly<Record<string, readonly ArtifactCaptureLeg[]>> = {
+  "timbre-probes": ["reference", "delivered"],
+};
+
+/** The event fields eligibility reads; the full envelope satisfies it. */
+export type RunEventFact = {
+  readonly type: string;
+  readonly leg?: string;
+  readonly phase?: string;
+  readonly turn?: string | null;
+};
+
+/** The artifact fields eligibility reads; a parsed artifact satisfies it. */
+export type RunEligibilityInput = {
+  readonly artifact: Pick<
+    ScoreboardArtifact,
+    "pipeline" | "gates" | "captures" | "evalRunner" | "codeFingerprint" | "events" | "eligibility"
+  >;
+  /** The run's event stream. Omitted: the artifact's own event list is read. */
+  readonly events?: readonly RunEventFact[];
+  /** The harness outcome, when the caller holds it beside the artifact. */
+  readonly harness?: { readonly status: "finished" | "harness-break"; readonly reason?: string } | null;
+  /** The code under judgement; omitted: only the recorded fingerprint is checked. */
+  readonly expectedCode?: { readonly head: string; readonly dirtyHash?: string } | null;
+};
+
+/**
+ * What a clean run means (M13). `reasons` names every fact that refused it, so
+ * a refusal is never a bare `false`; `disposition` is the consequence: a
+ * contaminated run is re-run and does not count toward the kill criterion.
+ */
+export type RunEligibilityVerdict = {
+  readonly eligible: boolean;
+  readonly reasons: readonly string[];
+  readonly disposition: "counts" | "rerun";
+};
+
+/** Where a fallback happened, in the spec's own words: leg, phase, turn. */
+function fallbackPlace(event: RunEventFact): string {
+  const place: string[] = [];
+  if (event.leg !== undefined && event.leg !== "") place.push(`leg ${event.leg}`);
+  if (event.phase !== undefined && event.phase !== "") place.push(`at ${event.phase}`);
+  if (typeof event.turn === "string" && event.turn !== "") place.push(`turn ${event.turn}`);
+  return place.join(", ");
+}
+
+function shortHead(head: string): string {
+  return head.slice(0, 12);
+}
+
+/**
+ * Derive a run's eligibility from its own facts (M13, ticket 116).
+ *
+ * A run is clean only when: no `provider_fallback` on any leg at any phase
+ * (connect included), no `budget.stopped`, every capture-fed gate has the
+ * capture it feeds on, the harness finished, and the code fingerprint matches
+ * the code under judgement. The artifact's own `eligibility` flag is one more
+ * fact: it can refuse a run but never green one the facts refuse.
+ */
+export function deriveRunEligibility(input: RunEligibilityInput): RunEligibilityVerdict {
+  const { artifact } = input;
+  const reasons: string[] = [];
+  const events = input.events ?? artifact.events ?? [];
+
+  for (const event of events) {
+    if (event.type === FALLBACK_EVENT_TYPE) {
+      const place = fallbackPlace(event);
+      reasons.push(
+        `provider fallback${place === "" ? "" : ` (${place})`}; a fallback-contaminated run is not a clean run`,
+      );
+      continue;
+    }
+    if (event.type === BUDGET_STOP_EVENT_TYPE) {
+      reasons.push("budget stop; a run with a budget stop is not a clean run");
+    }
+  }
+
+  for (const gate of artifact.gates) {
+    const legs = GATE_CAPTURE_LEGS[gate.name];
+    if (legs === undefined || gate.status !== "PASS") continue;
+    for (const leg of legs) {
+      const capture = artifact.captures?.[leg];
+      if (capture === undefined || capture === null || isArtifactAbsence(capture)) {
+        reasons.push(
+          `gate "${gate.name}" PASSes but the ${leg} capture is missing; a gate cannot outrun the capture it feeds`,
+        );
+      }
+    }
+  }
+
+  const harness =
+    input.harness?.status === "harness-break"
+      ? { reason: input.harness.reason ?? "unnamed" }
+      : artifact.evalRunner?.status === "failed"
+        ? { reason: artifact.evalRunner.breakReason ?? "unnamed" }
+        : null;
+  if (harness !== null) {
+    reasons.push(`harness failure (${harness.reason}); a run the harness did not finish is not a clean run`);
+  }
+
+  const fingerprint = artifact.codeFingerprint;
+  if (fingerprint === null || fingerprint === undefined) {
+    reasons.push("the run records no code fingerprint; a clean run answers to the code it ran");
+  } else {
+    if (fingerprint.dirty) {
+      reasons.push(
+        `the code fingerprint ${shortHead(fingerprint.head)} is dirty; the run does not match the code under judgement`,
+      );
+    }
+    if (input.expectedCode !== undefined && input.expectedCode !== null) {
+      if (fingerprint.head !== input.expectedCode.head) {
+        reasons.push(
+          `the code fingerprint ${shortHead(fingerprint.head)} differs from the judged code ${shortHead(input.expectedCode.head)}`,
+        );
+      }
+      if (
+        input.expectedCode.dirtyHash !== undefined &&
+        fingerprint.dirtyHash !== input.expectedCode.dirtyHash
+      ) {
+        reasons.push("the working-tree fingerprint differs from the judged tree");
+      }
+    }
+  }
+
+  const recorded = artifact.eligibility;
+  if (recorded !== undefined && recorded.eligible === false) {
+    const named = (recorded.reasons ?? []).filter((reason) => reason.trim() !== "");
+    if (named.length === 0) {
+      reasons.push("the run's own eligibility verdict refuses it without naming a reason");
+    }
+    for (const reason of named) {
+      reasons.push(`the run's own eligibility verdict refuses it: ${reason}`);
+    }
+  }
+
+  const unique = [...new Set(reasons)];
+  return {
+    eligible: unique.length === 0,
+    reasons: unique,
+    disposition: unique.length === 0 ? "counts" : "rerun",
+  };
 }
 
 /** Read and parse an artifact file; a bad file is named by its path. */export function readScoreboardArtifactFile(path: string): ScoreboardArtifact {
