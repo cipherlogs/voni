@@ -6,6 +6,11 @@ logical turn, a ``transcript`` only updates its cumulative text, a
 ``speechEnd`` records the boundary and makes no model request, and only a
 ``speechComplete`` may be answered.
 
+Ticket 68 pins the other half of the same rule: a stray, repeated or
+unattributable event is counted and logged, never answered, and never changes
+an open turn. The reply seam is the observation point: for every ignored kind
+the scripted model must see zero requests.
+
 Every test drives the public ``EventRules.apply`` seam over the ticket-01 kit
 (``FakeClock`` for time, ``ScriptedLLM`` for the model), so no test reads the
 wall clock or opens a network connection.
@@ -14,7 +19,7 @@ wall clock or opens a network connection.
 import asyncio
 import unittest
 
-from cascade.event_rules import EventKind, EventRules
+from cascade.event_rules import EventKind, EventRules, IgnoreReason
 from cascade.meta_stt import SpeechComplete, SpeechEnd, SpeechStart
 from cascade.testing.clock import FakeClock
 from cascade.testing.scripted import ScriptedLLM, Step
@@ -236,6 +241,183 @@ class SpeechEndAndCompleteTest(unittest.TestCase):
         self.assertEqual("", turn.final_text)
         self.assertEqual(TurnPhase.SPEAKING, turn.phase)
         self.assertEqual([], self.llm.requests)
+
+
+class IgnoredEventTest(unittest.TestCase):
+    """Ticket 68: stray, repeated and unattributable events never corrupt a turn.
+
+    Every case asserts the same three things: the outcome names the reason, the
+    rule counts it once, and the reply seam is never invoked. The counts are
+    the instrument an orchestrator reports; the reply seam is the contract.
+    """
+
+    def setUp(self):
+        self.clock = FakeClock()
+        self.turns = TurnStateStore(clock=self.clock, source="meta")
+        self.llm = ScriptedLLM([[Step(TokenDelta(text="Sure."))]])
+        self.sink = RecordingReplySink(self.llm)
+        self.rules = EventRules(turns=self.turns, on_reply=self.sink)
+
+    def assert_never_answered(self):
+        self.assertEqual([], self.sink.turns)
+        self.assertEqual([], self.llm.requests)
+
+    def test_an_unknown_event_type_is_counted_logged_and_never_answered(self):
+        with self.assertLogs("cascade.event_rules", level="DEBUG") as logs:
+            outcome = asyncio.run(self.rules.apply(object()))
+
+        self.assertEqual(EventKind.IGNORED, outcome.kind)
+        self.assertEqual(IgnoreReason.UNKNOWN_EVENT, outcome.ignored_reason)
+        self.assertEqual(1, self.rules.ignored_count(IgnoreReason.UNKNOWN_EVENT))
+        self.assertIn("unknown_event", logs.output[0])
+        self.assert_never_answered()
+
+    def test_a_legacy_final_transcript_is_ignored_and_never_logs_its_text(self):
+        with self.assertLogs("cascade.event_rules", level="DEBUG") as logs:
+            outcome = asyncio.run(
+                self.rules.apply(FinalTranscript(text="my card number is 4242"))
+            )
+
+        self.assertEqual(IgnoreReason.UNKNOWN_EVENT, outcome.ignored_reason)
+        self.assertNotIn("4242", "\n".join(logs.output))
+        self.assert_never_answered()
+
+    def test_a_partial_with_no_preceding_start_is_counted_and_never_answered(self):
+        with self.assertLogs("cascade.event_rules", level="DEBUG") as logs:
+            outcome = asyncio.run(self.rules.apply(PartialTranscript("book a")))
+
+        self.assertEqual(EventKind.IGNORED, outcome.kind)
+        self.assertEqual(IgnoreReason.UNATTRIBUTED_PARTIAL, outcome.ignored_reason)
+        self.assertIsNone(outcome.turn)
+        self.assertNotIn("book a", "\n".join(logs.output))
+        self.assertEqual((), self.turns.turns())
+        self.assert_never_answered()
+
+    def test_a_final_before_any_start_is_counted_logged_and_never_answered(self):
+        with self.assertLogs("cascade.event_rules", level="DEBUG") as logs:
+            outcome = asyncio.run(
+                self.rules.apply(SpeechComplete(turn_id="ghost", text="hello"))
+            )
+
+        self.assertEqual(EventKind.IGNORED, outcome.kind)
+        self.assertEqual(IgnoreReason.UNKNOWN_TURN, outcome.ignored_reason)
+        self.assertIsNone(outcome.turn)
+        self.assertIn("unknown_turn", logs.output[0])
+        self.assertEqual((), self.turns.turns())
+        self.assert_never_answered()
+
+    def test_a_start_for_a_closed_turn_is_counted_and_leaves_the_store_alone(self):
+        asyncio.run(self.rules.apply(SpeechStart("t1")))
+        self.turns.close(turn="t1", reason="answered")
+
+        with self.assertLogs("cascade.event_rules", level="DEBUG"):
+            outcome = asyncio.run(self.rules.apply(SpeechStart("t1")))
+
+        self.assertEqual(IgnoreReason.UNKNOWN_TURN, outcome.ignored_reason)
+        self.assertEqual(1, self.rules.ignored_count(IgnoreReason.UNKNOWN_TURN))
+        self.assertEqual(1, len(self.turns.turns()))
+        self.assert_never_answered()
+
+    def test_a_start_without_a_turn_id_is_counted_instead_of_raising(self):
+        with self.assertLogs("cascade.event_rules", level="DEBUG"):
+            outcome = asyncio.run(self.rules.apply(SpeechStart("")))
+
+        self.assertEqual(EventKind.IGNORED, outcome.kind)
+        self.assertEqual(IgnoreReason.UNKNOWN_TURN, outcome.ignored_reason)
+        self.assertEqual((), self.turns.turns())
+        self.assert_never_answered()
+
+    def test_an_event_from_a_replaced_session_is_counted_as_late(self):
+        asyncio.run(self.rules.apply(SpeechStart("t1")))
+        old_epoch = self.turns.epoch
+        self.turns.new_epoch()
+
+        with self.assertLogs("cascade.event_rules", level="DEBUG"):
+            start = asyncio.run(
+                self.rules.apply(SpeechStart("t1", session_epoch=old_epoch))
+            )
+            complete = asyncio.run(
+                self.rules.apply(
+                    SpeechComplete(turn_id="t1", text="late", session_epoch=old_epoch)
+                )
+            )
+
+        self.assertEqual(IgnoreReason.LATE_EVENT, start.ignored_reason)
+        self.assertEqual(IgnoreReason.LATE_EVENT, complete.ignored_reason)
+        self.assertEqual(2, self.rules.ignored_count(IgnoreReason.LATE_EVENT))
+        self.assertIsNone(self.turns.resolve("t1"))
+        old_turn = self.turns.get(LogicalTurnId(old_epoch, "t1"))
+        self.assertEqual(TurnPhase.SPEAKING, old_turn.phase)
+        self.assertEqual("", old_turn.final_text)
+        self.assert_never_answered()
+
+    def test_a_duplicate_completion_is_idempotent_and_produces_one_reply_at_most(self):
+        asyncio.run(self.rules.apply(SpeechStart("t1")))
+        asyncio.run(self.rules.apply(SpeechEnd("t1")))
+        first = asyncio.run(
+            self.rules.apply(SpeechComplete(turn_id="t1", text="book a demo"))
+        )
+
+        with self.assertLogs("cascade.event_rules", level="DEBUG") as logs:
+            duplicate = asyncio.run(
+                self.rules.apply(SpeechComplete(turn_id="t1", text="book a demo"))
+            )
+
+        self.assertTrue(first.reply_requested)
+        self.assertEqual(EventKind.IGNORED, duplicate.kind)
+        self.assertEqual(IgnoreReason.DUPLICATE_COMPLETE, duplicate.ignored_reason)
+        self.assertIn("duplicate_complete", logs.output[0])
+        self.assertEqual(1, duplicate.turn.duplicate_finals)
+        self.assertEqual(1, len(self.sink.turns))
+        self.assertEqual(1, len(self.llm.requests))
+
+    def test_a_partial_after_the_final_cannot_overwrite_it_or_reply(self):
+        asyncio.run(self.rules.apply(SpeechStart("t1")))
+        asyncio.run(
+            self.rules.apply(SpeechComplete(turn_id="t1", text="book a demo"))
+        )
+
+        with self.assertLogs("cascade.event_rules", level="DEBUG"):
+            outcome = asyncio.run(
+                self.rules.apply(PartialTranscript("book a demo please"))
+            )
+
+        self.assertEqual(IgnoreReason.UNATTRIBUTED_PARTIAL, outcome.ignored_reason)
+        turn = self.turns.get(LogicalTurnId(0, "t1"))
+        self.assertEqual("book a demo", turn.final_text)
+        self.assertEqual(1, len(self.llm.requests))
+
+    def test_an_ignored_event_leaves_the_open_turn_speaking_and_untouched(self):
+        asyncio.run(self.rules.apply(SpeechStart("t1")))
+        asyncio.run(self.rules.apply(PartialTranscript("book a")))
+
+        with self.assertLogs("cascade.event_rules", level="DEBUG"):
+            asyncio.run(self.rules.apply(object()))
+            asyncio.run(
+                self.rules.apply(SpeechComplete(turn_id="ghost", text="hello"))
+            )
+
+        turn = self.turns.get(LogicalTurnId(0, "t1"))
+        self.assertEqual(TurnPhase.SPEAKING, turn.phase)
+        self.assertEqual("book a", turn.partial_text)
+        self.assertEqual("", turn.final_text)
+        self.assert_never_answered()
+
+    def test_counts_are_per_reason_cumulative_and_read_as_a_copy(self):
+        with self.assertLogs("cascade.event_rules", level="DEBUG"):
+            asyncio.run(self.rules.apply(object()))
+            asyncio.run(self.rules.apply(object()))
+            asyncio.run(self.rules.apply(SpeechComplete(turn_id="ghost", text="hi")))
+
+        counts = self.rules.ignored_counts()
+
+        self.assertEqual(2, counts[IgnoreReason.UNKNOWN_EVENT])
+        self.assertEqual(1, counts[IgnoreReason.UNKNOWN_TURN])
+        self.assertEqual(0, counts[IgnoreReason.DUPLICATE_COMPLETE])
+        counts[IgnoreReason.UNKNOWN_EVENT] = 99
+        self.assertEqual(
+            2, self.rules.ignored_counts()[IgnoreReason.UNKNOWN_EVENT]
+        )
 
 
 if __name__ == "__main__":
