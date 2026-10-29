@@ -1552,6 +1552,62 @@ if (args[0] === "run" && args[1] === "eval:demo-agent") {
   assert.match(result.stdout, /overheard recall 1\/1/);
 });
 
+test("the runner's OVERHEARD ASIDE marker is the fallback when the trace has no overlap proof", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  writeFileSync(
+    join(bin, "npm"),
+    `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === "run" && args[1] === "eval:demo-agent") {
+  console.log("  · trace session sess_fail01");
+  if (process.env.SHIM_LEDGER === "1") {
+    console.log('    heard ledger ["We\\'re a bakery, actually."]');
+  }
+  console.log('OVERHEARD ASIDE {"scenario":"over-talk","session":"sess_fail01","text":"We\\'re a bakery, actually.","agentText":"I\\'ll show you by doing it","replyId":"reply_1","startMs":16230,"endMs":null,"cutMs":17040}');
+  console.log("over-talk: 1/1");
+} else if (args[0] === "run" && args[1] === "call:trace") {
+  // No VONI reply precedes the HEARD row, so the trace alone yields no aside.
+  console.log('8.43s  HEARD   "Tell me in detail, step by step."  (8.43s-13.13s)');
+}
+`,
+    { mode: 0o755 },
+  );
+  const score = (name: string, ledger: boolean) => {
+    const out = join(dir, name, "score.json");
+    mkdirSync(join(dir, name), { recursive: true });
+    const result = run(
+      ["--scenario", "over-talk", "--out", out, "--timing-lock", join(dir, name, "timing.lock")],
+      new URL("../", import.meta.url).pathname,
+      { PATH: `${bin}:${process.env.PATH}`, ...(ledger ? { SHIM_LEDGER: "1" } : {}) },
+    );
+    const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+      overheard: { recalled: number; total: number; asides: { text: string; inLedger: boolean; tracePointer: string }[] };
+      gates: { name: string; status: string; detail: string }[];
+    };
+    return { result, artifact };
+  };
+
+  const counted = score("counted", true);
+  assert.equal(counted.result.status, 0, counted.result.stderr + counted.result.stdout);
+  assert.equal(counted.artifact.overheard.recalled, 1);
+  assert.equal(counted.artifact.overheard.total, 1);
+  assert.equal(counted.artifact.overheard.asides[0].inLedger, true);
+  assert.match(counted.artifact.overheard.asides[0].tracePointer, /runner cut 17\.04s/);
+  const pass = counted.artifact.gates.find((g) => g.name === "overheard-recall")!;
+  assert.equal(pass.status, "PASS", pass.detail);
+  assert.match(counted.result.stdout, /overheard recall 1\/1/);
+
+  // The marker alone is not ledger evidence: without the heard ledger line the
+  // aside was never proven counted, so the gate FAILs honestly.
+  const unledgered = score("unledgered", false);
+  const fail = unledgered.artifact.gates.find((g) => g.name === "overheard-recall")!;
+  assert.equal(fail.status, "FAIL");
+  assert.match(fail.detail, /ledger/);
+  assert.equal(unledgered.result.status, 1);
+});
+
 test("an aside the caption marked but the session ledger never counted FAILs and cites the turn", () => {
   const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
   const bin = join(dir, "bin");
