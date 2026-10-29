@@ -9,6 +9,7 @@ is injected, so no test opens a real socket.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 from collections.abc import Iterable, Mapping
@@ -157,7 +158,7 @@ def make_session(
     api_key: str | None = API_KEY,
 ) -> tuple[AssemblyAIStreamingTTS, ScriptedSocketFactory]:
     """Build a session over one scripted plan without opening it."""
-    factory = socket_factory or ScriptedSocketFactory(list(plan))
+    factory = socket_factory or ScriptedSocketFactory(list(plan), clock=clock)
     extra = {} if clock is None else {"clock": clock}
     tts = AssemblyAIStreamingTTS(
         voice_id=voice_id,
@@ -166,6 +167,16 @@ def make_session(
         socket_factory=factory,
         **extra,
     )
+    return tts, factory
+
+
+def open_session(
+    plan: Iterable[Frame | str | bytes],
+    **kwargs: Any,
+) -> tuple[AssemblyAIStreamingTTS, ScriptedSocketFactory]:
+    """Build a session over one scripted plan and open it."""
+    tts, factory = make_session(plan, **kwargs)
+    asyncio.run(tts.open())
     return tts, factory
 
 
