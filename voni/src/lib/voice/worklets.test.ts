@@ -55,7 +55,13 @@ function sineChunk(start: number, n: number) {
 }
 
 /** Drive the playout: `arrivals` are [atSeconds, samples] chunks; returns output. */
-function runPlayout(arrivals: [number, Float32Array][], seconds: number, flushAt?: number, probe = false) {
+function runPlayout(
+  arrivals: [number, Float32Array][],
+  seconds: number,
+  flushAt?: number,
+  probe = false,
+  sourceRate = SRC,
+) {
   const { proc, scope } = load("playout-processor.js", OUT);
   if (probe) proc.port.onmessage!({ data: { type: "probe", on: true } });
   const out: number[] = [];
@@ -65,7 +71,7 @@ function runPlayout(arrivals: [number, Float32Array][], seconds: number, flushAt
   for (let q = 0; q * 128 < seconds * OUT; q++) {
     scope.currentTime = (q * 128) / OUT;
     while (next < arrivals.length && arrivals[next][0] <= scope.currentTime) {
-      proc.port.onmessage!({ data: { type: "play", seq: ++seq, rate: SRC, samples: arrivals[next][1] } });
+      proc.port.onmessage!({ data: { type: "play", seq: ++seq, rate: sourceRate, samples: arrivals[next][1] } });
       next++;
     }
     if (flushAt !== undefined && !flushed && scope.currentTime >= flushAt) {
@@ -94,6 +100,21 @@ function jitteryReply(seed = 7) {
   }
   return arrivals;
 }
+
+test("playout: a wrong rate is a detectable speed change in the delivered capture", () => {
+  // The same 200 ms of source audio, declared at 24 kHz and then at 16 kHz.
+  // A client that assumes the wrong rate cannot hide it: the delivered
+  // capture is 1.5x longer, so a capture comparison sees the speed change.
+  const chunk = sineChunk(0, SRC * 0.2);
+  const soundingMs = (rate: number) => {
+    const { out } = runPlayout([[0, chunk]], 1.2, undefined, false, rate);
+    return (out.filter((y) => y !== 0).length / OUT) * 1000;
+  };
+  const at24k = soundingMs(24_000);
+  const at16k = soundingMs(16_000);
+  assert.ok(Math.abs(at24k - 200) < 10, `24 kHz delivered ${at24k}ms`);
+  assert.ok(Math.abs(at16k / at24k - 1.5) < 0.05, `24 kHz ${at24k}ms, 16 kHz ${at16k}ms`);
+});
 
 test("playout: jittery chunks play as one seamless stream", () => {
   const { out, posted } = runPlayout(jitteryReply(), 2);

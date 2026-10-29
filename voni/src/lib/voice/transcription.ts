@@ -27,6 +27,7 @@
  */
 
 import type { AgentConfig } from "@/lib/agents/config";
+import { EN_RECOGNITION } from "@/lib/voice/recognition";
 
 /**
  * The transcription mode for every call surface. `balanced` is the API's
@@ -44,7 +45,7 @@ export const TRANSCRIPTION_MODE = "balanced";
 export const DEMO_TRANSCRIPTION_MODE = "balanced";
 
 /** Words every Voni call hears correctly without asking: the product name and the channels it answers on. */
-export const NEUTRAL_KEYTERMS = ["Voni", "WhatsApp"];
+export const NEUTRAL_KEYTERMS: string[] = [...EN_RECOGNITION.vocabulary];
 
 /**
  * Recognition nouns contributed by each built-in tool, keyed by tool name.
@@ -115,9 +116,12 @@ export function buildAgentTranscriptionPrompt(config: AgentConfig): string {
     .map((field) => field.label.trim())
     .filter(Boolean)
     .slice(0, 8);
-  const scene =
-    `A ${identity.role} phone call. ${mission} Agent ${identity.name}.` +
-    (topics.length > 0 ? ` Callers mention ${topics.join(", ")}.` : "");
+  const scene = EN_RECOGNITION.scene({
+    agentName: identity.name,
+    role: identity.role,
+    mission,
+    topics,
+  });
   // The prompt rides inside session payloads with a ~1500-char context
   // budget shared with agent_context — stay far under it.
   return scene.slice(0, 500);
