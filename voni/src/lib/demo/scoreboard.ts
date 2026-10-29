@@ -50,7 +50,7 @@ import { getVoice, VOICE_OUTPUT_VOLUME, voicePlaybackGain } from "../agents/voic
 import { BARGE_IN_JUDGE_MS, judgeOverlap, type OverlapVerdict } from "../voice/barge-in";
 import { NO_WORDS_RESUME_MS, RESUME_WAIT_MS, unheardRest } from "../voice/session";
 import { SCOREBOARD_BUDGETS } from "./scoreboard-budgets";
-import { DEMO_VOICE_IDS } from "./voni-agent";
+import { DEMO_VOICE_IDS, SILENCE_CHECK_IN_INSTRUCTIONS } from "./voni-agent";
 import { DEMO_INBOX_ADDRESS } from "./email-test";
 import { TAG_WORDS, containsTag, countTags } from "./test-tag";
 
@@ -837,7 +837,21 @@ export const DEAD_AIR_MAX_MS = SCOREBOARD_BUDGETS.deadAirMaxMs.value;
 /** Silence that must draw exactly one check-in, never over caller speech. */
 export const SILENCE_CHECK_IN_TARGET_MS = SCOREBOARD_BUDGETS.silenceCheckInTargetMs.value;
 
+/** The latest the one check-in may land inside the locked 15–18s window. */
+export const SILENCE_CHECK_IN_MAX_MS = SCOREBOARD_BUDGETS.silenceCheckInMaxMs.value;
+
+/**
+ * The floor makes the check-in from this exact instruction string, so the
+ * runner counts a reply.create as a check-in only when it matches — never a
+ * greeting, invite, or resume that happens to mention silence.
+ */
+export function isSilenceCheckInInstructions(instructions: string): boolean {
+  return instructions.trim() === SILENCE_CHECK_IN_INSTRUCTIONS;
+}
+
 export type DeadAirCheckIn = {
+  /** Call-relative time the check-in went out (exact, for the trace citation). */
+  atMs?: number;
   /** Silence elapsed when the check-in went out (audible timing). */
   atSilenceMs: number;
   /** The check-in overlapped caller speech (a cut the floor should have yielded). */
@@ -953,8 +967,10 @@ export function deriveFreeFloorSilence(timeline: SilenceTimeline): FreeFloorSile
     const coveredBy = insideCheckIns.length > 0 ? "check-in" : insideCoverage ? "agent" : null;
     measured.push({ ...silence, coveredBy });
     for (const checkIn of insideCheckIns) {
-      const atSilenceMs = Math.max(0, Math.round(checkIn.atMs - silence.startMs));
+      const atMs = Math.max(0, Math.round(checkIn.atMs));
+      const atSilenceMs = Math.max(0, atMs - silence.startMs);
       checkIns.push({
+        atMs,
         atSilenceMs,
         overCaller: checkIn.overCaller === true,
         ...(checkIn.trace ? { trace: checkIn.trace } : {}),
@@ -1178,16 +1194,32 @@ export function evaluateDeadAir(evidence: DeadAirEvidence): ScoreboardGate {
     (longest ?? 0) >= SILENCE_CHECK_IN_TARGET_MS ||
     gaps.some((g) => g >= SILENCE_CHECK_IN_TARGET_MS) ||
     checkIns.some((c) => c.atSilenceMs >= SILENCE_CHECK_IN_TARGET_MS);
+  // Ticket 18: the count FAIL cites the Call trace turn where it went wrong.
+  // Zero check-ins cite the long silence itself (a silent stretch has no row);
+  // extra check-ins cite their own turn. Unmerged evidence says so explicitly
+  // instead of inventing a turn.
+  const noTurn = "no call trace turn merged";
+  const longestSilence = [...(evidence.silences ?? [])]
+    .filter((silence) => silence.durationMs >= SILENCE_CHECK_IN_TARGET_MS)
+    .sort((a, b) => b.durationMs - a.durationMs)[0];
+  const zeroCite = longestSilence?.trace ? `; ${longestSilence.trace}` : ` (${noTurn} for this silence)`;
+  const extraCite = checkIns
+    .slice(1)
+    .map((c) => `${c.atSilenceMs}ms (${c.trace ?? `${noTurn} for this check-in`})`)
+    .join(", ");
   if (silenceReachedCheckIn && checkIns.length !== 1) {
+    const where = checkIns.length === 0 ? zeroCite : `; extra check-in ${extraCite}`;
     reasons.push(
-      `15s silence drew ${checkIns.length} check-ins, want exactly one (silence-check-in beat${traceSuffix})`,
+      `15s silence drew ${checkIns.length} check-ins, want exactly one${where} (silence-check-in beat${traceSuffix})`,
     );
   }
 
   const early = checkIns.filter((c) => c.atSilenceMs < SILENCE_CHECK_IN_TARGET_MS);
   if (early.length > 0) {
     reasons.push(
-      `check-in at ${early.map((c) => `${c.atSilenceMs}ms`).join(", ")}, before ${SILENCE_CHECK_IN_TARGET_MS}ms of silence — the floor fires once after 15s on a free floor (silence-check-in beat${traceSuffix})`,
+      `check-in at ${early
+        .map((c) => `${c.atSilenceMs}ms (${c.trace ?? `${noTurn} for this check-in`})`)
+        .join(", ")}, before ${SILENCE_CHECK_IN_TARGET_MS}ms of silence — the floor fires once after 15s on a free floor (silence-check-in beat${traceSuffix})`,
     );
   }
 

@@ -1718,6 +1718,72 @@ if (args[0] === "run" && args[1] === "eval:demo-agent") {
   assert.match(gate.detail, /call trace turn 1/, "the FAIL cites the surrounding turn");
 });
 
+test("a live silence-check-in timeline gates zero, one and two check-ins with a call trace turn", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  writeFileSync(
+    join(bin, "npm"),
+    `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === "run" && args[1] === "eval:demo-agent") {
+  console.log("  · trace session sess_check");
+  const mode = process.env.EVAL_SILENCE_MODE;
+  const timeline =
+    mode === "zero"
+      ? { scenario: "silence-check-in", session: "sess_check", startedMs: 0, endedMs: 18000, agentAudio: [{ startMs: 0, endMs: 1000 }], callerSpeech: [], coverage: [], checkIns: [] }
+      : mode === "two"
+        ? { scenario: "silence-check-in", session: "sess_check", startedMs: 0, endedMs: 34000, agentAudio: [{ startMs: 0, endMs: 1000 }], callerSpeech: [], coverage: [], checkIns: [{ atMs: 16200 }, { atMs: 32400 }] }
+        : { scenario: "silence-check-in", session: "sess_check", startedMs: 0, endedMs: 18000, agentAudio: [{ startMs: 0, endMs: 1000 }, { startMs: 16200, endMs: 17500 }], callerSpeech: [], coverage: [], checkIns: [{ atMs: 16200 }] };
+  console.log("    SILENCE TIMELINE " + JSON.stringify(timeline));
+  console.log("    check-ins " + timeline.checkIns.length + " at " + (timeline.checkIns[0]?.atMs ?? 0) + "ms");
+  console.log("silence-check-in: 1/1");
+} else if (args[0] === "run" && args[1] === "call:trace") {
+  console.log('1.00s  VONI    "Hi, this is Anna"  (greeting)');
+  console.log('17.00s  VONI    "Still with me? Take your time."  (reply_create gap 900ms)');
+}
+`,
+    { mode: 0o755 },
+  );
+  type Artifact = {
+    deadAir: { checkIns: { atSilenceMs: number }[]; longestSilenceMs: number | null };
+    gates: { name: string; status: string; detail: string }[];
+  };
+  const score = (mode: string) => {
+    const out = join(dir, `${mode}.json`);
+    const result = run(
+      ["--scenario", "silence-check-in", "--out", out, "--timing-lock", join(dir, `timing-${mode}.lock`)],
+      new URL("../", import.meta.url).pathname,
+      { PATH: `${bin}:${process.env.PATH}`, EVAL_SILENCE_MODE: mode },
+    );
+    return { result, artifact: JSON.parse(readFileSync(out, "utf8")) as Artifact };
+  };
+
+  const one = score("one");
+  assert.equal(one.result.status, 0, one.result.stderr + one.result.stdout);
+  assert.deepEqual(one.artifact.deadAir.checkIns.map((c) => c.atSilenceMs), [15_200]);
+  const oneGate = one.artifact.gates.find((g) => g.name === "dead-air")!;
+  assert.equal(oneGate.status, "PASS", oneGate.detail);
+  assert.match(oneGate.detail, /exactly one check-in/i);
+
+  const zero = score("zero");
+  assert.notEqual(zero.result.status, 0, zero.result.stderr + zero.result.stdout);
+  assert.deepEqual(zero.artifact.deadAir.checkIns, []);
+  const zeroGate = zero.artifact.gates.find((g) => g.name === "dead-air")!;
+  assert.equal(zeroGate.status, "FAIL");
+  assert.match(zeroGate.detail, /0 check-ins/);
+  assert.match(zeroGate.detail, /call trace turn 1/, zeroGate.detail);
+
+  const two = score("two");
+  assert.notEqual(two.result.status, 0, two.result.stderr + two.result.stdout);
+  assert.deepEqual(two.artifact.deadAir.checkIns.map((c) => c.atSilenceMs), [15_200, 31_400]);
+  const twoGate = two.artifact.gates.find((g) => g.name === "dead-air")!;
+  assert.equal(twoGate.status, "FAIL");
+  assert.match(twoGate.detail, /2 check-ins/);
+  assert.match(twoGate.detail, /call trace turn/, twoGate.detail);
+  assert.match(twoGate.detail, /31400ms/, "cites the extra check-in");
+});
+
 test("--silence-json feeds dead-air automatically, and explicit CLI flags still override it", () => {
   const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
   const evidencePath = join(dir, "silence.json");

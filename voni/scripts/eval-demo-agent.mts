@@ -53,6 +53,9 @@
  *                 the call ends, never resumed ("as I was saying").
  *   greeting-cut  "Wait, stop." 1s into the greeting → cut inside the locked
  *                 greeting window; the scenario asserts the ms it prints.
+ *   silence-check-in  the caller stays silent on a free floor → exactly one
+ *                 check-in after the real 15s; prints `check-ins N at <ms>ms`
+ *                 and its events feed the SILENCE TIMELINE / dead-air gate.
  *
  * Cut latency is measured from caller speech start (the pump's first
  * transmitted frame carrying the clip's first voiced sample) to the server
@@ -90,6 +93,8 @@ import {
   DEMO_VOICE_IDS,
   inviteNowInstructions,
   LATE_EMAIL_INSTRUCTIONS,
+  SILENCE_CHECK_IN_INSTRUCTIONS,
+  SILENCE_CHECK_IN_MS,
   testTagContext,
   OPEN_BEAT_GOAL,
   rungInstructions,
@@ -116,6 +121,7 @@ import {
   callerClipDrift,
   callerClipFingerprint,
   callerSpeechStart,
+  deriveFreeFloorSilence,
   DOUBLE_TALK_EVIDENCE_PREFIX,
   DOUBLE_TALK_FADE_OUT_S,
   DOUBLE_TALK_MAX_OVERLAP_MS,
@@ -125,6 +131,7 @@ import {
   GREETING_CUT_MAX_MS,
   heardPoint,
   isResumeInstructions,
+  isSilenceCheckInInstructions,
   judgePostCutAnswer,
   measureCutLatency,
   playoutCutWindow,
@@ -134,6 +141,8 @@ import {
   REAL_CUT_MAX_MS,
   REAL_CUT_SCENARIOS,
   sha256Hex,
+  SILENCE_CHECK_IN_MAX_MS,
+  SILENCE_CHECK_IN_TARGET_MS,
   SILENCE_TIMELINE_PREFIX,
   type AudibleWindow,
   type CallerClipFingerprint,
@@ -432,8 +441,20 @@ type ClientOutcome = {
   agentWindows: { startMs: number; endMs: number }[];
   /** Agent reply starts / reply.create requests, call-relative ms: coverage. */
   coverageAt: { atMs: number }[];
+  /** Silence check-ins that went out, call-relative ms. */
+  checkIns: { atMs: number; overCaller: boolean }[];
   /** The call's free-floor silence timeline, built once the call has ended. */
   silenceTimeline: SilenceTimeline | null;
+};
+
+/** Options for one call; only the check-in scenario enables the check-in. */
+type ClientOptions = {
+  /**
+   * Wire the demo's own free-floor silence check-in (the same constants the
+   * landing UI passes). The live call then needs real silence: the 15s target
+   * is never shortened for the eval.
+   */
+  silenceCheckIn?: boolean;
 };
 
 /**
@@ -503,6 +524,8 @@ async function runClient(
     say: (line: string) => CallerSpeech;
     waitFor: (predicate: () => boolean, timeoutMs?: number) => Promise<void>;
     replies: () => number;
+    /** Silence check-ins sent so far (matching the demo's check-in instructions). */
+    checkIns: () => number;
     /** Agent audio chunks received so far (the greeting included). */
     audioChunks: () => number;
     /** The session has ended (hung up). */
@@ -512,6 +535,7 @@ async function runClient(
     /** Whether a final user transcript carried the given point word. */
     heardPoint: (point: string) => boolean;
   }) => Promise<void>,
+  options: ClientOptions = {},
 ): Promise<ClientOutcome> {
   // Render every caller line before dialing: TTS mid-call skews timing.
   const clips = new Map<string, Buffer>();
@@ -526,7 +550,7 @@ async function runClient(
     replyAudioAt: {}, cutPlayedMs: null,
     interruptedReplies: 0, sessionId: null, endedAt: null, lastAudioEnd: 0,
     wallClockMs: 0, audioChunks: 0, callerClips: lines.map((line) => clipPrints.get(line)!),
-    overlapMs: [], cutWindows: [], lastFadeMs: 0, agentWindows: [], coverageAt: [], silenceTimeline: null,
+    overlapMs: [], cutWindows: [], lastFadeMs: 0, agentWindows: [], coverageAt: [], checkIns: [], silenceTimeline: null,
   };
   let repliesDone = 0;
   let audioChunks = 0;
@@ -584,6 +608,15 @@ async function runClient(
     generation: { begin: () => number };
     ws: WebSocket | null;
   };
+  // The landing UI wires the same check-in on demo calls (voice-call.tsx);
+  // the eval has no mute/hold/closing state, so it is always allowed here.
+  if (options.silenceCheckIn) {
+    session.setSilenceCheckIn({
+      afterMs: SILENCE_CHECK_IN_MS,
+      instructions: SILENCE_CHECK_IN_INSTRUCTIONS,
+      allowed: () => true,
+    });
+  }
   // Wall-clock playout: "sounding" until the received audio has had time to play.
   let playUntil = 0;
   // Source-sample bookkeeping so the fake playout can report what actually
@@ -727,8 +760,15 @@ async function runClient(
   ws.send = (data: string) => {
     const msg = JSON.parse(String(data));
     if (msg.type === "reply.create") {
-      outcome.creates.push(String(msg.instructions ?? ""));
-      outcome.coverageAt.push({ atMs: Math.max(0, Date.now() - t0) });
+      const instructions = String(msg.instructions ?? "");
+      outcome.creates.push(instructions);
+      const atMs = Math.max(0, Date.now() - t0);
+      outcome.coverageAt.push({ atMs });
+      // Only the floor's exact check-in instruction counts as a check-in:
+      // never a greeting, invite, or resume that mentions being quiet.
+      if (isSilenceCheckInInstructions(instructions)) {
+        outcome.checkIns.push({ atMs, overCaller: callerWindowAt(Date.now()) !== null });
+      }
     }
     if (process.env.EVAL_DEBUG && msg.type !== "input.audio") console.log(`    -> ${msg.type} ${JSON.stringify(msg.session?.input?.turn_detection ?? msg.instructions ?? "")}`);
     send(data);
@@ -807,6 +847,7 @@ async function runClient(
       },
       waitFor,
       replies: () => repliesDone,
+      checkIns: () => outcome.checkIns.length,
       audioChunks: () => audioChunks,
       ended: () => outcome.endedAt !== null,
       postCutAnswer: (point) => postCutAnswerOf(outcome, point),
@@ -815,6 +856,10 @@ async function runClient(
   } finally {
     live = false;
     clearInterval(pump);
+    // The scenario's own end: for the check-in run the deliberate silence is
+    // the measured window, so a zero-check-in stretch must not vanish as
+    // trailing idle. Every other scenario keeps the audible-only window.
+    const observedEndMs = Date.now() - t0;
     await session.stop();
     // The call's own silence timeline: audible agent/caller windows plus the
     // agent reply starts / reply.create requests that covered the floor. It
@@ -835,15 +880,17 @@ async function runClient(
       .filter((window): window is { startMs: number; endMs: number } => window !== null && window.endMs > window.startMs);
     const agentAudio = outcome.agentWindows.filter((window) => window.endMs > window.startMs);
     const audible = [...agentAudio, ...callerSpeech];
+    const audibleEndMs = audible.length === 0 ? 0 : Math.max(...audible.map((window) => window.endMs));
     outcome.silenceTimeline =
       audible.length === 0
         ? null
         : {
             startedMs: Math.min(...audible.map((window) => window.startMs)),
-            endedMs: Math.max(...audible.map((window) => window.endMs)),
+            endedMs: options.silenceCheckIn ? Math.max(audibleEndMs, observedEndMs) : audibleEndMs,
             agentAudio,
             callerSpeech,
             coverage: outcome.coverageAt,
+            checkIns: outcome.checkIns,
           };
     outcome.wallClockMs = Date.now() - liveStartedAt;
     outcome.audioChunks = audioChunks;
@@ -1070,6 +1117,43 @@ const CLIENT_SCENARIOS: { name: string; run: () => Promise<string | null> }[] = 
       console.log(
         `    greeting cut ${measured.cutMs}ms after the caller started (budget ${GREETING_CUT_MAX_MS}ms)`,
       );
+      return null;
+    },
+  },
+  {
+    name: "silence-check-in",
+    run: async () => {
+      // Real silence on a free floor: the greeting ends, the caller says
+      // nothing, and the floor's own 15s timer must draw exactly one check-in.
+      // The target is never shortened; the golden window's 18s cap is the
+      // observation deadline for a missing check-in.
+      const o = await runClient(
+        voiceIdArg(),
+        [],
+        async (ctx) => {
+          await ctx.waitFor(() => ctx.replies() >= 1); // greeting done, floor free
+          await ctx.waitFor(() => ctx.checkIns() >= 1, SILENCE_CHECK_IN_MAX_MS).catch(() => undefined);
+        },
+        { silenceCheckIn: true },
+      );
+      const derived = o.silenceTimeline ? deriveFreeFloorSilence(o.silenceTimeline) : null;
+      const checkIns = derived?.checkIns ?? [];
+      const first = checkIns[0];
+      console.log(
+        `    check-ins ${checkIns.length} at ${first?.atSilenceMs ?? 0}ms ` +
+          `(target ${SILENCE_CHECK_IN_TARGET_MS}ms, latest ${SILENCE_CHECK_IN_MAX_MS}ms)`,
+      );
+      if (!derived) return "no silence timeline: the call produced no audible window";
+      if (checkIns.length !== 1) {
+        const seen = checkIns.map((checkIn) => `${checkIn.atSilenceMs}ms`).join(", ") || "none";
+        return `silence drew ${checkIns.length} check-ins, want exactly one (${seen})`;
+      }
+      if (first.atSilenceMs < SILENCE_CHECK_IN_TARGET_MS) {
+        return `check-in too early: ${first.atSilenceMs}ms < ${SILENCE_CHECK_IN_TARGET_MS}ms of silence`;
+      }
+      if (first.atSilenceMs > SILENCE_CHECK_IN_MAX_MS) {
+        return `check-in too late: ${first.atSilenceMs}ms > ${SILENCE_CHECK_IN_MAX_MS}ms of silence`;
+      }
       return null;
     },
   },
