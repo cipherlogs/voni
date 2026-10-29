@@ -1,0 +1,82 @@
+{
+  "schema": 1,
+  "name": "cascade-vendor-rates",
+  "version": 1,
+  "currency": "USD",
+  "date": "2026-10-29",
+  "note": "Vendor list prices for every unit the cascade meter records. A rate is USD per unit, stated as a decimal string so it loads exactly. A price change adds a new version file; it never edits this one, and a recorded cost keeps the version it was priced with. Every priced rate names its unit, a human-readable source and the vendor price page it came from, plus the date the page was read.",
+  "rates": {
+    "stt.audio_seconds": {
+      "leg": "stt",
+      "unit": "audio_seconds",
+      "usd_per_unit": "0.00005",
+      "source": "Meta pricing: realtime speech-to-text $0.18 per audio-hour, billed in whole seconds",
+      "url": "https://dev.meta.ai/docs/pricing-rate-limits",
+      "date": "2026-10-29",
+      "note": "$0.18 / 3600 s. The meter already records whole seconds, which is the vendor's billing granularity."
+    },
+    "llm.prompt_tokens": {
+      "leg": "llm",
+      "unit": "prompt_tokens",
+      "usd_per_unit": "0.00000125",
+      "source": "Meta pricing: muse-spark-1.3 Standard $1.25 per 1M input tokens",
+      "url": "https://dev.meta.ai/docs/pricing-rate-limits",
+      "date": "2026-10-29",
+      "note": "Charged on prompt tokens not reported as cached; cached_tokens is a detail of prompt_tokens and is priced by its own line instead."
+    },
+    "llm.cached_tokens": {
+      "leg": "llm",
+      "unit": "cached_tokens",
+      "usd_per_unit": "0.00000015",
+      "source": "Meta pricing: muse-spark-1.3 Standard $0.15 per 1M cached input tokens",
+      "url": "https://dev.meta.ai/docs/pricing-rate-limits",
+      "date": "2026-10-29",
+      "note": "A cached token is a prompt token billed at the cached rate; it replaces that part of the input charge and is never added on top of it."
+    },
+    "llm.completion_tokens": {
+      "leg": "llm",
+      "unit": "completion_tokens",
+      "usd_per_unit": "0.00000425",
+      "source": "Meta pricing: muse-spark-1.3 Standard $4.25 per 1M output tokens",
+      "url": "https://dev.meta.ai/docs/pricing-rate-limits",
+      "date": "2026-10-29",
+      "note": "Charged on completion tokens not reported as reasoning; reasoning_tokens is a detail of completion_tokens and is priced by its own line instead."
+    },
+    "llm.reasoning_tokens": {
+      "leg": "llm",
+      "unit": "reasoning_tokens",
+      "usd_per_unit": "0.00000425",
+      "source": "Meta pricing: muse-spark-1.3 Standard $4.25 per 1M output tokens; the page lists no separate reasoning rate",
+      "url": "https://dev.meta.ai/docs/pricing-rate-limits",
+      "date": "2026-10-29",
+      "note": "The vendor bills reasoning inside completion_tokens, so this line carries the output rate and is not additive to the completion line."
+    },
+    "tts.characters": {
+      "leg": "tts",
+      "unit": "characters",
+      "usd_per_unit": "0.000015",
+      "source": "AssemblyAI pricing: assemblyai-tts-1 $15 per 1M input characters",
+      "url": "https://assemblyai.com/docs/getting-started/models#text-to-speech-2",
+      "date": "2026-10-29",
+      "note": "Billed characters are the vendor's own Termination count (billed_characters over total_input_char_length)."
+    },
+    "tts.audio_seconds": {
+      "leg": "tts",
+      "unit": "audio_seconds",
+      "usd_per_unit": "0",
+      "source": "AssemblyAI billing: text-to-speech is billed per character of input text, not per second of audio",
+      "url": "https://assemblyai.com/docs/tts/api-reference/http-api/overview#billing",
+      "date": "2026-10-29",
+      "note": "A sourced zero, not an absent rate: the vendor reports audio seconds as a fact but does not charge for them."
+    },
+    "tts.session_seconds": {
+      "leg": "tts",
+      "unit": "session_seconds",
+      "usd_per_unit": "0",
+      "source": "AssemblyAI billing: text-to-speech is billed per character of input text, not per second of session",
+      "url": "https://assemblyai.com/docs/tts/api-reference/http-api/overview#billing",
+      "date": "2026-10-29",
+      "note": "A sourced zero, not an absent rate: the vendor reports session seconds as a fact but does not charge for them."
+    }
+  }
+}
