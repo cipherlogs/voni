@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { spawnSync } from "node:child_process";
 import { DEMO_VOICE_IDS } from "../src/lib/demo/voni-agent";
+import { SUITE_SCENARIOS } from "../src/lib/demo/scenario-names";
 
 const SCRIPT = new URL("./score-demo.mts", import.meta.url).pathname;
 const GATE_BEATS = [
@@ -2121,17 +2122,7 @@ if (args[0] === "run" && args[1] === "eval:demo-agent") {
   assert.equal(result.status, 0, result.stderr + result.stdout);
 
   const calls = readFileSync(log, "utf8").trim().split("\n");
-  const suite = [
-    "greeting-cut",
-    "filler-over",
-    "stop-over",
-    "over-talk",
-    "silence-check-in",
-    "invite-tag",
-    "bye-audio",
-    "hang-up-fast",
-    "hang-up-over",
-  ];
+  const suite = [...SUITE_SCENARIOS];
   assert.deepEqual(
     calls,
     suite.flatMap((name) => [`start ${name}`, `end ${name}`]),
@@ -2171,7 +2162,7 @@ if (args[0] === "run" && args[1] === "eval:demo-agent") {
   assert.equal(artifact.endCallDrain.goodbyeCoverage, 0.95, "bye-audio's own line is merged");
   assert.equal(artifact.endCallDrain.hangUpDelayMs, 1100, "the worst hang-up path is carried");
   assert.equal(artifact.beats["greeting-cut"].cutMs, 900);
-  assert.ok(artifact.evalRunner.timings.scenarioRuns.length >= 9);
+  assert.ok(artifact.evalRunner.timings.scenarioRuns.length >= SUITE_SCENARIOS.length);
 });
 
 test("--events forwards one stream per suite scenario to the runner", () => {
@@ -2219,7 +2210,7 @@ if (args[0] === "run" && args[1] === "eval:demo-agent") {
     .split("\n")
     .map((line) => JSON.parse(line) as string[])
     .filter((args) => args[1] === "eval:demo-agent");
-  assert.equal(calls.length, 9, "every suite scenario is invoked once");
+  assert.equal(calls.length, SUITE_SCENARIOS.length, "every suite scenario is invoked once");
   // One writer per process truncates its own file, so the suite keeps one
   // stream per scenario instead of losing eight behind the ninth.
   assert.deepEqual(
@@ -2279,7 +2270,7 @@ if (args[0] === "run" && args[1] === "eval:demo-agent") {
     .split("\n")
     .map((line) => JSON.parse(line) as string[])
     .filter((args) => args[1] === "eval:demo-agent");
-  assert.equal(calls.length, 9);
+  assert.equal(calls.length, SUITE_SCENARIOS.length);
 
   // The default run writes next to the artifact, not into one shared file:
   // each runner process truncates its own stream.
@@ -2343,7 +2334,7 @@ if (args[0] === "run" && args[1] === "eval:demo-agent") {
     .split("\n")
     .map((line) => JSON.parse(line) as string[])
     .filter((args) => args[1] === "eval:demo-agent");
-  assert.equal(calls.length, 9);
+  assert.equal(calls.length, SUITE_SCENARIOS.length);
   for (const args of calls) assert.equal(args.includes("--events"), false);
   assert.equal(existsSync(join(dir, "scoreboard-runs", ".events")), false);
 });

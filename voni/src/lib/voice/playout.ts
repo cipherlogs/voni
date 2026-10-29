@@ -2,8 +2,9 @@
  * Agent-voice playback for every voice path (managed session and cascade).
  *
  * The DSP lives in `public/playout-processor.js` (jitter pre-roll, continuous
- * resampling, edge fades); this is the thin main-thread handle. The worklet
- * runs on the mic's AudioContext so the echo canceller hears what we play.
+ * resampling, slow drift correction, edge fades); this is the thin main-thread
+ * handle. The worklet runs on the mic's AudioContext so the echo canceller
+ * hears what we play.
  */
 
 export type Playout = {
@@ -18,6 +19,16 @@ export type WorkletPlayout = Playout & {
   settled: () => boolean;
   /** Buffered audio at the worklet's last report (instrumentation). */
   queuedMs: () => number;
+  /** Audio held ahead of the playhead at the worklet's last report. */
+  cushionMs: () => number;
+  /** The target cushion a reply starts at, in milliseconds (the named constant). */
+  targetCushionMs: () => number;
+  /**
+   * Playback-rate correction in percent at the worklet's last report: negative
+   * while it plays slower to refill a short cushion, zero when the stream needs
+   * no correction. Never more than ±1%.
+   */
+  correctionPct: () => number;
   /** Source samples queued so far, all replies. */
   sentSamples?: () => number;
   /** Source samples played (or flushed) at the worklet's last report. */
@@ -43,7 +54,17 @@ export const PLAYOUT_MODULE = "/playout-processor.js";
 /** Longest a teardown waits for the final tap block before writing anyway. */
 const TAP_END_TIMEOUT_MS = 250;
 
-type Level = { type: "level"; seq: number; queuedMs: number; idle: boolean; consumed: number };
+type Level = {
+  type: "level";
+  seq: number;
+  queuedMs: number;
+  cushionMs: number;
+  targetCushionMs: number;
+  correctionPct: number;
+  playing: boolean;
+  idle: boolean;
+  consumed: number;
+};
 type Pop = { type: "pop"; kind: "jump" | "overload"; size: number; at: number };
 type Tap = { type: "tap"; samples: Float32Array };
 type TapEnd = { type: "tap-end" };
@@ -62,6 +83,9 @@ export function createWorkletPlayout(node: AudioWorkletNode): WorkletPlayout {
   let sent = 0;
   let busy = false;
   let queuedMs = 0;
+  let cushionMs = 0;
+  let targetCushionMs = 0;
+  let correctionPct = 0;
   let sentSamples = 0;
   let consumed = 0;
   let tapEnded: (() => void) | null = null;
@@ -80,9 +104,14 @@ export function createWorkletPlayout(node: AudioWorkletNode): WorkletPlayout {
       node.port.postMessage({ type: "flush", fadeS });
       busy = false;
       queuedMs = 0;
+      cushionMs = 0;
+      correctionPct = 0;
     },
     settled: () => !busy,
     queuedMs: () => queuedMs,
+    cushionMs: () => cushionMs,
+    targetCushionMs: () => targetCushionMs,
+    correctionPct: () => correctionPct,
     sentSamples: () => sentSamples,
     consumedSamples: () => consumed,
     probe(on) {
@@ -121,6 +150,9 @@ export function createWorkletPlayout(node: AudioWorkletNode): WorkletPlayout {
     }
     if (e.data?.type !== "level") return;
     queuedMs = e.data.queuedMs;
+    cushionMs = e.data.cushionMs;
+    targetCushionMs = e.data.targetCushionMs;
+    correctionPct = e.data.correctionPct;
     consumed = e.data.consumed;
     // Ignore an idle report that predates the latest chunk still in flight.
     if (e.data.idle && e.data.seq === sent && busy) {

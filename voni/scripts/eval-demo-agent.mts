@@ -174,6 +174,7 @@ import {
   type CheckEmailResult,
 } from "../src/lib/demo/email-test";
 import { END_CALL_VOICE_TOOL } from "../src/lib/tools/definitions";
+import { getVoice } from "../src/lib/agents/voices";
 import {
   HELD_RESULT_RELEASE_MS,
   END_CALL_AUDIO_GRACE_MS,
@@ -186,6 +187,7 @@ import {
 } from "../src/lib/voice/session";
 import { tryJevGateway } from "../src/lib/voice/voice-judge";
 import { isEndCallRequest, isGoodbyeLine } from "../src/lib/voice/jev-judges";
+import { callRecognition } from "../src/lib/voice/recognition";
 import { collectSilentGreeting } from "../src/lib/voice/silent-greeting";
 import {
   callerClipDrift,
@@ -739,6 +741,12 @@ async function runClient(
   // agent the platform serves (score-demo reads that body back after the run).
   // The builder is only for the inline debug transport (voice-parity ticket 24).
   const body = TRANSPORT === "inline" ? buildDemoAgentBody(voiceId) : null;
+  // The call's Locale is the voice's own, from the shared registry — the same
+  // value the stored body pins, without rebuilding a body to read it.
+  const languageCode = getVoice(voiceId)?.languageCode;
+  const recognition = callRecognition({
+    languageCodes: languageCode ? [languageCode] : [],
+  });
   const outcome: ClientOutcome = {
     events: [], cutAt: null, creates: [], agent: [], heard: [], agentTurns: [], heardTurns: [], cutReplyId: null,
     replyAudioAt: {}, cutPlayedMs: null,
@@ -793,12 +801,12 @@ async function runClient(
         // spoken goodbye without calling the tool — still hang up after it.
         if (endRequested) {
           endRequested = false;
-          if (isGoodbyeLine(turn.text)) session.endAfterReply();
+          if (isGoodbyeLine(turn.text, recognition)) session.endAfterReply();
         }
       },
       onUserTurn: (turn) => {
         outcome.heardTurns.push({ text: turn.text, at: Date.now() });
-        if (isEndCallRequest(turn.text)) endRequested = true;
+        if (isEndCallRequest(turn.text, recognition)) endRequested = true;
       },
       onReplyDone: (info) => {
         repliesDone += 1;

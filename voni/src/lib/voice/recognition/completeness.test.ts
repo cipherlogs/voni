@@ -132,8 +132,8 @@ test("the report is plain data a per-subject gate can store and print", () => {
 
   // A gate reads the Locale, the holes and a line to print — and makes its own verdict.
   assert.equal(subject.locale, "de");
-  assert.equal(subject.complete, false);
-  assert.ok(subject.missing.length > 0);
+  assert.equal(subject.complete, true);
+  assert.deepEqual(subject.missing, []);
   assert.equal(typeof subject.detail, "string");
   assert.ok(subject.detail.length > 0);
   assert.match(subject.detail, /^de: /);

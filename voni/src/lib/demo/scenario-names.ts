@@ -42,8 +42,14 @@ export type EvalScenario = (typeof EVAL_SCENARIOS)[number];
 
 /**
  * The one-command suite's scenarios, one at a time under one timing lock. Each
- * carries scoreboard evidence; the free-gate goodbye path is covered by
- * bye-audio and is not repeated.
+ * carries scoreboard evidence, and `assertGateProducersInSuite`
+ * (src/lib/demo/gate-producers.ts) fails by name if a gate's producer leaves
+ * this list.
+ *
+ * Both goodbye-drain paths run: bye-audio (no work-email invite) and free-gate
+ * (the free-address gate), so the end-call-drain gate keeps a measured closing
+ * line even when one path's invite flow changes. hang-up-fast and hang-up-over
+ * supply the measured hang-up delay on that same gate.
  */
 export const SUITE_SCENARIOS = [
   "greeting-cut",
@@ -53,6 +59,7 @@ export const SUITE_SCENARIOS = [
   "silence-check-in",
   "invite-tag",
   "bye-audio",
+  "free-gate",
   "hang-up-fast",
   "hang-up-over",
 ] as const satisfies readonly EvalScenario[];

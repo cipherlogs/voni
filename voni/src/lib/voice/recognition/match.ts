@@ -1,6 +1,7 @@
 import {
   ADDRESS_SEPARATORS,
   COMMAND_INTENTS,
+  DIGITS,
   type AddressSeparator,
   type CommandIntent,
   type CompleteRecognition,
@@ -55,18 +56,57 @@ const SEPARATOR_WRITTEN: Record<AddressSeparator, string> = {
 const escapePattern = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /**
+ * A caller's words with the Locale's spoken digits written as numerals:
+ * "Lima cuatro dos" → "lima 42". A run of the Locale's own digit words joins
+ * into one number, exactly as the tag was written ("Lima 42"); a word another
+ * Locale owns stays a word, so a digit string in the wrong Locale never
+ * silently resolves. Punctuation is dropped and words are single-spaced, the
+ * same shape the tag matcher reads.
+ */
+export function spokenDigitsToNumerals(text: string, recognition: CompleteRecognition): string {
+  const spoken = new Map<string, string>();
+  for (const digit of DIGITS) {
+    for (const form of recognition.digits[digit]) {
+      const word = cleanTokens(form).join(" ");
+      if (word && !spoken.has(word)) spoken.set(word, String(digit));
+    }
+  }
+  // A hyphen between spoken digits is a pause, not a word of its own.
+  const out: string[] = [];
+  let run = "";
+  for (const token of cleanTokens(text.replace(/[-–—]/g, " "))) {
+    const digit = spoken.get(token);
+    if (digit !== undefined) {
+      run += digit;
+      continue;
+    }
+    if (run) {
+      out.push(run);
+      run = "";
+    }
+    out.push(token);
+  }
+  if (run) out.push(run);
+  return out.join(" ");
+}
+
+/**
  * A spoken address written as the visitor would type it ("andres at acme dot
  * com" → "andres@acme.com"), using this Locale's separator words and no
  * other. Accents and case are the caller's; the shape is the same.
+ *
+ * The longest spoken form wins, so a two-word separator ("guion bajo") is an
+ * underscore and never a hyphen followed by "bajo".
  */
 export function normalizeSpokenAddress(raw: string, recognition: CompleteRecognition): string {
   let text = ` ${raw.toLowerCase()} `;
-  for (const role of ADDRESS_SEPARATORS) {
-    for (const form of recognition.address[role]) {
-      const spoken = cleanTokens(form).join(" ");
-      if (!spoken) continue;
-      text = text.replace(new RegExp(`\\s+${escapePattern(spoken)}\\s+`, "g"), SEPARATOR_WRITTEN[role]);
-    }
+  const forms = ADDRESS_SEPARATORS.flatMap((role) =>
+    recognition.address[role].map((form) => ({ role, spoken: cleanTokens(form).join(" ") })),
+  )
+    .filter(({ spoken }) => spoken.length > 0)
+    .sort((a, b) => b.spoken.length - a.spoken.length);
+  for (const { role, spoken } of forms) {
+    text = text.replace(new RegExp(`\\s+${escapePattern(spoken)}\\s+`, "g"), SEPARATOR_WRITTEN[role]);
   }
   return text.replace(/\s+/g, "").replace(/\.+$/, "");
 }
