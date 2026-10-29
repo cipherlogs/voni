@@ -141,6 +141,31 @@ test("delivered capture: blocks become one WAV named for the call", async () => 
   assert.deepEqual(result, { name: writes[0]!.name, samples: 5, bytes: writes[0]!.bytes.length });
 });
 
+test("delivered capture (direct path): writes the stream it is handed, never rewrites it", async () => {
+  // The worklet is not the only way in: a script or the dev sink can drive
+  // `DeliveredCapture` directly, so the same promise has to hold without a
+  // live call — the capture reads the blocks, the blocks stay as emitted.
+  const stream = [new Float32Array([0.1, -0.2, 0.3]), new Float32Array([0.4, -0.5])];
+  const before = stream.map((block) => Array.from(block));
+  const writes: Uint8Array[] = [];
+  const capture = new DeliveredCapture({
+    sampleRate: 48000,
+    write: (_name, bytes) => {
+      writes.push(bytes);
+    },
+  });
+  for (const block of stream) capture.push(block);
+  await capture.finish();
+
+  assert.deepEqual(
+    stream.map((block) => Array.from(block)),
+    before,
+    "the delivered blocks are untouched",
+  );
+  const quantise = (v: number) => Math.round(Math.max(-1, Math.min(1, v)) * 32767);
+  assert.deepEqual(Array.from(decodeWav(writes[0]!).samples), before.flat().map(quantise));
+});
+
 test("delivered capture: a call that never played anything writes no file", async () => {
   let wrote = false;
   const capture = new DeliveredCapture({
