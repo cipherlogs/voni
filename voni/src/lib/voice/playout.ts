@@ -2,8 +2,9 @@
  * Agent-voice playback for every voice path (managed session and cascade).
  *
  * The DSP lives in `public/playout-processor.js` (jitter pre-roll, continuous
- * resampling, edge fades); this is the thin main-thread handle. The worklet
- * runs on the mic's AudioContext so the echo canceller hears what we play.
+ * resampling, slow drift correction, edge fades); this is the thin main-thread
+ * handle. The worklet runs on the mic's AudioContext so the echo canceller
+ * hears what we play.
  */
 
 export type Playout = {
@@ -22,6 +23,12 @@ export type WorkletPlayout = Playout & {
   cushionMs: () => number;
   /** The target cushion a reply starts at, in milliseconds (the named constant). */
   targetCushionMs: () => number;
+  /**
+   * Playback-rate correction in percent at the worklet's last report: negative
+   * while it plays slower to refill a short cushion, zero when the stream needs
+   * no correction. Never more than ±1%.
+   */
+  correctionPct: () => number;
   /** Source samples queued so far, all replies. */
   sentSamples?: () => number;
   /** Source samples played (or flushed) at the worklet's last report. */
@@ -53,6 +60,7 @@ type Level = {
   queuedMs: number;
   cushionMs: number;
   targetCushionMs: number;
+  correctionPct: number;
   playing: boolean;
   idle: boolean;
   consumed: number;
@@ -77,6 +85,7 @@ export function createWorkletPlayout(node: AudioWorkletNode): WorkletPlayout {
   let queuedMs = 0;
   let cushionMs = 0;
   let targetCushionMs = 0;
+  let correctionPct = 0;
   let sentSamples = 0;
   let consumed = 0;
   let tapEnded: (() => void) | null = null;
@@ -96,11 +105,13 @@ export function createWorkletPlayout(node: AudioWorkletNode): WorkletPlayout {
       busy = false;
       queuedMs = 0;
       cushionMs = 0;
+      correctionPct = 0;
     },
     settled: () => !busy,
     queuedMs: () => queuedMs,
     cushionMs: () => cushionMs,
     targetCushionMs: () => targetCushionMs,
+    correctionPct: () => correctionPct,
     sentSamples: () => sentSamples,
     consumedSamples: () => consumed,
     probe(on) {
@@ -141,6 +152,7 @@ export function createWorkletPlayout(node: AudioWorkletNode): WorkletPlayout {
     queuedMs = e.data.queuedMs;
     cushionMs = e.data.cushionMs;
     targetCushionMs = e.data.targetCushionMs;
+    correctionPct = e.data.correctionPct;
     consumed = e.data.consumed;
     // Ignore an idle report that predates the latest chunk still in flight.
     if (e.data.idle && e.data.seq === sent && busy) {

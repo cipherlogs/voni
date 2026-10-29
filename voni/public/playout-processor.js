@@ -9,7 +9,9 @@
  *   - No jitter buffer. The first chunk plays at once, so a chunk that arrives
  *     a few ms late leaves a hard gap. Here a reply waits for the target
  *     cushion of audio (or the defined lull in arrivals) before it starts, and
- *     its gain never follows how much is left.
+ *     its gain never follows how much is left. The cushion itself is held by
+ *     slow drift correction: a stream that arrives a hair slower than the
+ *     device plays is played a hair slower, never pumped.
  *   - Per-chunk resampling. Each 24 kHz buffer resampled on its own to the
  *     device rate leaves a seam at every join. Here a single linear resampler
  *     carries its phase across chunks, so the joins don't exist.
@@ -21,12 +23,14 @@
  *               {type:"probe", on}  dev pop recorder (see POP_*), off by default
  *               {type:"tap", on}  dev delivered capture, off by default
  * Messages out: {type:"level", seq, queuedMs, cushionMs, targetCushionMs,
- *               playing, idle, consumed}, posted every few quanta while
- *               sounding and once on going idle. `seq` is the last play message
- *               seen, so the main thread knows the idle report is current.
- *               `cushionMs` is the audio held ahead of the playhead — what the
- *               jitter buffer holds — and `targetCushionMs` the cushion a
- *               reply starts at.
+ *               correctionPct, playing, idle, consumed}, posted every few
+ *               quanta while sounding and once on going idle. `seq` is the last
+ *               play message seen, so the main thread knows the idle report is
+ *               current. `cushionMs` is the audio held ahead of the playhead —
+ *               what the jitter buffer holds — and `targetCushionMs` the cushion
+ *               a reply starts at. `correctionPct` is the playback-rate
+ *               correction in percent: negative while it plays slower to
+ *               refill the cushion, zero when the stream needs no correction.
  *               `consumed` counts source samples played or flushed since load:
  *               the main thread paces captions against it.
  *               {type:"pop", kind, size, at}  only while the probe is on:
@@ -47,6 +51,37 @@
  * Owner call: a fixed 500ms.
  */
 const TARGET_CUSHION_S = 0.5;
+/**
+ * Slow drift correction. The producer and the device do not share a clock: a
+ * stream that arrives a little slower than it plays drains the cushion 10ms a
+ * second at 1%, and nothing ever puts it back. While a reply sounds, the
+ * worklet therefore plays a fraction of a percent slower (or faster) than real
+ * time until the cushion is back at target.
+ *
+ * The corrector only ever changes the resampling step — never the gain, and
+ * never the signal path — and it is slow in both senses that matter:
+ *
+ *   - SMOOTH: the cushion error is averaged over this window, so ordinary
+ *     jitter, a burst, and the cushion draining at the end of a reply are not
+ *     drift. Only a cushion that stays away from target moves the rate.
+ *   - SLEW: the correction moves at most this much per second, so the pitch
+ *     glides; over one level-report interval (21ms) that is a hundredth of a
+ *     percent.
+ *   - MAX_RATE_ADJUST: 1% of playback rate, 17 cents, under the pitch step a
+ *     listener can name.
+ *   - DEADBAND: cushion error the corrector ignores entirely, so a stream
+ *     arriving on time is played bit for bit.
+ *   - RANGE: the error beyond the deadband at which the correction reaches its
+ *     ceiling — the corrector's proportional band.
+ *   - QUIET: nothing arriving means the reply is ending or stalled; the
+ *     cushion draining then is the boundary fade's business, not drift's.
+ */
+const DRIFT_SMOOTH_S = 2;
+const DRIFT_SLEW_PER_S = 0.005;
+const MAX_RATE_ADJUST = 0.01;
+const DRIFT_DEADBAND_S = 0.04;
+const DRIFT_RANGE_S = 0.36;
+const DRIFT_QUIET_S = 0.1;
 /**
  * The defined lull: no arrivals for this long means the stream has ended even
  * though the target was never reached, so a reply shorter than the cushion
@@ -79,6 +114,10 @@ class PlayoutProcessor extends AudioWorkletProcessor {
     this.frac = 0;
     this.playing = false;
     this.gain = 0; // 0..1 envelope: a start ramp, then constant 1 for the reply
+    /** Playback-rate correction as a ratio: -0.01 plays 1% slower, 0 is exact. */
+    this.adjust = 0;
+    /** Smoothed cushion error in seconds: what the corrector treats as drift. */
+    this.drift = 0;
     this.hold = 0; // last sample before the source ran dry, faded out over EDGE_S
     this.holdLeft = 0; // samples left in that fade-out; 0 when not fading
     /** EDGE_S in output samples, and the matching per-sample gain step. */
@@ -105,6 +144,9 @@ class PlayoutProcessor extends AudioWorkletProcessor {
       if (msg.rate !== this.rate) {
         this.rate = msg.rate;
         this.step = this.rate / sampleRate;
+        // A new source clock says nothing about the old drift.
+        this.adjust = 0;
+        this.drift = 0;
       }
       this.seq = msg.seq;
       if (msg.samples.length === 0) return;
@@ -148,7 +190,9 @@ class PlayoutProcessor extends AudioWorkletProcessor {
     // chunk rate must not amplitude-modulate the voice.
     this.gain = Math.min(1, this.gain + this.gainStep);
     const y = (this.a + (this.b - this.a) * this.frac) * this.gain;
-    this.frac += this.step;
+    // The drift correction lives only in the resampling step: the signal stays
+    // continuous and the gain is untouched.
+    this.frac += this.step * (1 + this.adjust);
     while (this.frac >= 1) {
       const s = this.take();
       if (s === null) {
@@ -174,7 +218,31 @@ class PlayoutProcessor extends AudioWorkletProcessor {
     this.gain = 0;
     this.hold = 0;
     this.holdLeft = 0;
+    // A reply starts on the target cushion, so there is nothing to correct yet.
+    this.adjust = 0;
+    this.drift = 0;
     this.playing = true;
+  }
+
+  /**
+   * One quantum of slow drift correction, while a reply sounds. The cushion is
+   * averaged first, then compared with the target; the error beyond the
+   * deadband is the correction the reply wants, and it is slewed toward from
+   * where it is. A short cushion plays slower to refill, a long one faster to
+   * drain.
+   */
+  correct(dt, maxDelta) {
+    const error = this.queued / this.rate - TARGET_CUSHION_S;
+    this.drift += (error - this.drift) * (1 - Math.exp(-dt / DRIFT_SMOOTH_S));
+    // Nothing arriving: the reply is ending or stalled, and the cushion
+    // draining is the boundary fade's business, not drift's.
+    if (currentTime - this.lastPush > DRIFT_QUIET_S) return;
+    const slack =
+      Math.abs(this.drift) <= DRIFT_DEADBAND_S
+        ? 0
+        : this.drift - Math.sign(this.drift) * DRIFT_DEADBAND_S;
+    const want = Math.max(-MAX_RATE_ADJUST, Math.min(MAX_RATE_ADJUST, slack / DRIFT_RANGE_S));
+    this.adjust += Math.max(-maxDelta, Math.min(maxDelta, want - this.adjust));
   }
 
   flush(fadeS) {
@@ -197,6 +265,8 @@ class PlayoutProcessor extends AudioWorkletProcessor {
     this.hold = 0;
     this.holdLeft = 0;
     this.a = this.b = this.frac = 0;
+    this.adjust = 0;
+    this.drift = 0;
   }
 
   /** Dev pop recorder: flag what the speaker is about to click on. */
@@ -262,6 +332,8 @@ class PlayoutProcessor extends AudioWorkletProcessor {
       const lull = currentTime - this.lastPush >= LULL_S;
       if (this.queued >= TARGET_CUSHION_S * this.rate || lull) this.start();
     }
+    const dt = out.length / sampleRate;
+    if (this.playing) this.correct(dt, DRIFT_SLEW_PER_S * dt);
     for (let i = 0; i < out.length; i++) {
       let y = this.next();
       if (this.tail) {
@@ -283,6 +355,7 @@ class PlayoutProcessor extends AudioWorkletProcessor {
         queuedMs: (this.queued / this.rate) * 1000,
         cushionMs: (this.queued / this.rate) * 1000,
         targetCushionMs: TARGET_CUSHION_S * 1000,
+        correctionPct: this.playing ? this.adjust * 100 : 0,
         playing: this.playing,
         idle: nowIdle,
         consumed: this.consumed,
