@@ -14,8 +14,10 @@ The hop carries four facts and never a fifth:
 * **the signed call's id** as ``context.callId``. Ticket 64's envelope (or
   ticket 65's token channel) minted the call before anything vendor-facing
   existed, so the model and the browser never supply a call identity;
-* **the model's call id** as ``toolCallId``, so the route can dedupe (ticket 82
-  validates it; this module only carries it);
+* **the model's call id** as ``toolCallId``, so the route can dedupe. Ticket 82
+  owns the rule: only an id of 1 to 64 characters is executable; a missing or
+  blank id is denied without a request (the turn holds), and an overlength id
+  fails the turn as a provider contract violation;
 * **the model's arguments** unchanged. Argument validation is ticket 40's and
   happens before a call reaches here.
 
@@ -47,8 +49,17 @@ from typing import Any
 from urllib.parse import quote
 
 from cascade.envelope import VerifiedBody
-from cascade.meta_llm import MetaLLMTurn, tool_result_message
+from cascade.meta_llm import (
+    CALL_ID_MAX_LENGTH,
+    TOOL_CALL_ID_MISSING,
+    TOOL_DENIED_COUNTER,
+    MetaLLMTurn,
+    ToolCallIdentityError,
+    ToolDenial,
+    tool_result_message,
+)
 from cascade.thresholds import require_bound
+from metrics import TimingLedger
 from providers import TokenDelta, ToolCallRequest
 
 #: The app's existing tool route. The name is one path segment, never a body
@@ -103,6 +114,64 @@ class ToolRequestError(ToolHopError):
 
     def __init__(self, reason: str) -> None:
         super().__init__(f"the tool request cannot be built: {reason}")
+
+
+class ToolCallIdError(ToolHopError):
+    """The model's call id cannot identify an executed call (ticket 82)."""
+
+    def __init__(self, name: str, call_id: Any, reason: str) -> None:
+        self.name = name
+        self.call_id = call_id
+        super().__init__(f'tool "{name}": {reason}')
+
+
+class ToolCallIdMissing(ToolCallIdError):
+    """The call has no id, so there is nothing the route could dedupe on.
+
+    Not executed and not answered: the vendor cannot be sent a ``tool`` result
+    for a call it never identified, so the turn closes with a hold line and the
+    denial is recorded instead.
+    """
+
+    def __init__(self, name: str, call_id: Any = "") -> None:
+        super().__init__(
+            name,
+            call_id,
+            "call_id is missing or empty; the call is not executed and the turn "
+            "closes with a hold line",
+        )
+
+
+class ToolCallIdOverlong(ToolCallIdentityError, ToolHopError):
+    """The call id is outside the vendor's 1-64 character contract (ticket 82).
+
+    A provider contract violation, not a tool result: executing (or denying) a
+    call whose identity cannot be quoted back to the vendor would leave the
+    turn unanswerable, so the turn fails instead.
+    """
+
+    def __init__(self, name: str, call_id: str) -> None:
+        self.name = name
+        self.call_id = call_id
+        super().__init__(
+            f'tool "{name}": call_id is {len(call_id)} characters; the vendor '
+            f"contract is 1-{CALL_ID_MAX_LENGTH}"
+        )
+
+
+def require_call_id(name: str, call_id: Any) -> str:
+    """The one call-id rule both the executor and the request enforce.
+
+    A missing or blank id is denied (the turn holds); an overlength id is a
+    provider contract violation. Splitting the two matters: one is a model
+    mistake the caller hears a hold line for, the other means this turn cannot
+    be answered at all.
+    """
+    if not isinstance(call_id, str) or not call_id.strip():
+        raise ToolCallIdMissing(name, call_id)
+    if len(call_id) > CALL_ID_MAX_LENGTH:
+        raise ToolCallIdOverlong(name, call_id)
+    return call_id
 
 
 class ToolBoundError(ToolHopError):
@@ -185,8 +254,7 @@ class ToolRequest:
             raise ToolRequestError("the tool name is empty")
         if not isinstance(self.call_id, str) or not self.call_id.strip():
             raise ToolContextError("it is empty")
-        if not isinstance(self.tool_call_id, str):
-            raise ToolRequestError("the model's call id is not a string")
+        require_call_id(self.name, self.tool_call_id)
         if not isinstance(self.arguments, Mapping):
             raise ToolRequestError(
                 f"arguments must be an object, got {type(self.arguments).__name__}"
@@ -271,6 +339,32 @@ class EndCallSignal:
 
 
 ToolOutcome = ToolResult | EndCallSignal
+
+
+@dataclass(frozen=True)
+class DeniedCall:
+    """A call that was not executed because it has no executable identity.
+
+    ``hold`` is always true: a denied call closes the turn with a hold line
+    (ticket 85 speaks it) instead of a tool result the vendor cannot match. The
+    denial is carried here so the turn can record it without re-deriving why.
+    """
+
+    name: str
+    denial: ToolDenial
+    hold: bool = True
+
+    @property
+    def tool_call_id(self) -> str:
+        """The id the call carried; empty when none was supplied."""
+        return self.denial.call_id
+
+    def __post_init__(self) -> None:
+        if self.denial.code != TOOL_CALL_ID_MISSING:
+            raise ValueError(
+                f"a denied call carries the missing-call-id denial, got "
+                f"{self.denial.code!r}"
+            )
 
 
 class ToolHop:
@@ -379,12 +473,33 @@ class ToolExecutor:
         return float(require_bound(TOOL_TIMEOUT_BOUND))
 
     def start(self, call: ToolCallRequest) -> ToolHop:
-        """Begin the hop and return at once; nothing here awaits the network."""
+        """Begin the hop and return at once; nothing here awaits the network.
+
+        Call control first: ``end_call`` is a signal, not a tool, so it has no
+        identity requirement. Every other call must carry a vendor-valid id
+        (ticket 82): a missing or blank id returns a denied outcome without a
+        request, and an overlength id fails the turn here, before any request.
+        """
         if call.name == END_CALL_TOOL:
             return ToolHop(
                 task=None,
                 outcome=EndCallSignal(
                     call_id=self._call_id, tool_call_id=call.call_id
+                ),
+            )
+        try:
+            require_call_id(call.name, call.call_id)
+        except ToolCallIdMissing as error:
+            return ToolHop(
+                task=None,
+                outcome=DeniedCall(
+                    name=call.name,
+                    denial=ToolDenial(
+                        name=call.name,
+                        reason=str(error),
+                        call_id=call.call_id if isinstance(call.call_id, str) else "",
+                        code=TOOL_CALL_ID_MISSING,
+                    ),
                 ),
             )
         return ToolHop(task=asyncio.ensure_future(self._hop(call)), outcome=None)
@@ -479,15 +594,24 @@ async def continue_after_tool(
     outcome: ToolOutcome,
     tools: list[dict[str, Any]] | None = None,
     record: MetaLLMTurn | None = None,
+    ledger: TimingLedger | None = None,
 ) -> AsyncIterator[TokenDelta | ToolCallRequest]:
     """Continue the same logical turn with a new model request, or nothing.
 
     A :class:`ToolResult` is recorded with the assistant message that asked for
     it and the next request sees both, which is the only shape the vendor
-    accepts. An :class:`EndCallSignal` yields no event at all: end call is call
-    control, so nothing speakable follows it.
+    accepts. A :class:`DeniedCall` closes the turn instead: its denial is
+    recorded on the turn (once — the LLM layer may already have recorded it when
+    it emitted the identity-less request) and a hold line is owed (ticket 85),
+    but no request is made, because a ``tool`` message cannot answer a call the
+    vendor never identified. An :class:`EndCallSignal` yields no event at all:
+    end call is call control, so nothing speakable follows it.
     """
     if isinstance(outcome, EndCallSignal):
+        return
+    if isinstance(outcome, DeniedCall):
+        _record_denial(turn, outcome.denial, ledger=ledger)
+        turn.hold_line_required = True
         return
     if len(turn.tool_calls) != 1:
         raise ToolTurnError(len(turn.tool_calls))
@@ -499,3 +623,23 @@ async def continue_after_tool(
         messages=history.request_messages(), tools=tools, **kwargs
     ):
         yield event
+
+
+def _record_denial(
+    turn: MetaLLMTurn, denial: ToolDenial, *, ledger: TimingLedger | None = None
+) -> None:
+    """Record a denial once, counting it when this call is the first to see it.
+
+    Identity is ``(name, call_id, code)``, never the prose: the LLM layer and
+    the tool layer describe the same denial in their own words, and counting the
+    same refusal twice would overstate how often the model was denied.
+    """
+    identity = (denial.name, denial.call_id, denial.code)
+    if any(
+        (recorded.name, recorded.call_id, recorded.code) == identity
+        for recorded in turn.denied_tool_calls
+    ):
+        return
+    turn.denied_tool_calls.append(denial)
+    if ledger is not None:
+        ledger.count(TOOL_DENIED_COUNTER)
