@@ -674,6 +674,113 @@ test("meaning-based end-of-turn fails when the merged trace shows a turn-detecti
   assert.ok(gate.detail.includes("turn_detection"), `detail points at the CONFIG line: ${gate.detail}`);
 });
 
+test("a production turn-detection object fails with the existing contract detail", () => {
+  const gate = meaningBasedEndOfTurnGate({ turn_detection: { min_silence: 100 } });
+  assert.equal(gate.status, "FAIL");
+  assert.equal(
+    gate.detail,
+    'turn_detection object sent ({"min_silence":100}): disables adaptive end-of-turn (ADR-0003); stored demo agents must send turn_detection: null',
+  );
+});
+
+test("a production Call trace CONFIG line fails with the existing contract detail", () => {
+  const line = '13.00s  CONFIG  turn_detection {"min_silence":100}';
+  const gate = meaningBasedEndOfTurnGate({ turn_detection: null }, [line]);
+  assert.equal(gate.status, "FAIL");
+  assert.equal(
+    gate.detail,
+    `call trace shows a turn_detection CONFIG line (${line}): no turn-detection object may be sent on the managed session path (ADR-0003)`,
+  );
+});
+
+test("a variant run passes only as labelled experimental evidence, never as a production pass", () => {
+  const gate = meaningBasedEndOfTurnGate({ turn_detection: null }, [], {
+    variant: "turn-window",
+    variantKey: "anna:exp",
+    turnWindows: { min_silence: 400, max_silence: 640, interruption_delay: 0 },
+  });
+  assert.equal(gate.status, "PASS");
+  assert.match(gate.detail, /experimental/i);
+  assert.match(gate.detail, /turn-window/);
+  assert.match(gate.detail, /anna:exp/);
+  assert.match(gate.detail, /min_silence 400/);
+  assert.match(gate.detail, /max_silence 640/);
+  assert.match(gate.detail, /interruption_delay 0/);
+  assert.doesNotMatch(gate.detail, /meaning-based end-of-turn preserved/);
+});
+
+test("a variant run never loosens the production object contract", () => {
+  const gate = meaningBasedEndOfTurnGate({ turn_detection: { min_silence: 200 } }, [], {
+    variant: "turn-window",
+    variantKey: "anna:exp",
+    turnWindows: { min_silence: 400, max_silence: 640, interruption_delay: 0 },
+  });
+  assert.equal(gate.status, "FAIL");
+  assert.equal(
+    gate.detail,
+    'turn_detection object sent ({"min_silence":200}): disables adaptive end-of-turn (ADR-0003); stored demo agents must send turn_detection: null',
+  );
+});
+
+test("a variant artifact records its windows in a dedicated experimental evidence field", () => {
+  const turnWindows = { min_silence: 200, max_silence: 400, interruption_delay: 0 };
+  const artifact = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "stop-over",
+    runnerStdout: "ok",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+    agentInput: { turn_detection: null },
+    endOfTurnExperiment: { variant: "turn-window", variantKey: "anna:exp", turnWindows },
+  });
+  const gate = artifact.gates.find((row) => row.name === "end-of-turn");
+  assert.equal(gate?.status, "PASS");
+  assert.match(gate?.detail ?? "", /experimental/i);
+  assert.deepEqual(artifact.endOfTurn, {
+    experimental: true,
+    variant: "turn-window",
+    variantKey: "anna:exp",
+    turnWindows,
+    productionTurnDetection: null,
+  });
+});
+
+test("a production artifact with a turn-detection object still fails with the existing contract detail", () => {
+  const artifact = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "stop-over",
+    runnerStdout: "ok",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+    agentInput: { turn_detection: { min_silence: 100 } },
+  });
+  const gate = artifact.gates.find((row) => row.name === "end-of-turn");
+  assert.equal(gate?.status, "FAIL");
+  assert.equal(
+    gate?.detail,
+    'turn_detection object sent ({"min_silence":100}): disables adaptive end-of-turn (ADR-0003); stored demo agents must send turn_detection: null',
+  );
+  assert.equal(artifact.endOfTurn, undefined);
+});
+
+test("a production artifact carries no experimental end-of-turn evidence", () => {
+  const artifact = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "stop-over",
+    runnerStdout: "ok",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+    agentInput: { turn_detection: null },
+  });
+  const gate = artifact.gates.find((row) => row.name === "end-of-turn");
+  assert.equal(gate?.status, "PASS");
+  assert.match(gate?.detail ?? "", /^meaning-based end-of-turn preserved/);
+  assert.equal(artifact.endOfTurn, undefined);
+});
+
 test("artifact with measured gaps fills per-beat gaps and enforces the reply-gap gate", () => {
   const passing = buildSkeletonArtifact({
     voice: DEFAULT_GATE_VOICE,
