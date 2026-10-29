@@ -1,7 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { buildSkeletonArtifact, DEFAULT_GATE_VOICE, type ScoreboardArtifact } from "./scoreboard";
-import type { RunnerEvidence } from "./runner-evidence";
+import type {
+  RunnerEvidence,
+  RunnerEvidenceLatency,
+  RunnerEvidenceTurn,
+} from "./runner-evidence";
 import { buildInspectReport, formatInspectReport } from "./scoreboard-report";
 import { summarizeEvalEvents, type EvalEvent } from "./eval-events";
 
@@ -237,7 +241,153 @@ test("an artifact written before the split field still validates and inspects", 
   const report = buildInspectReport(prior);
   assert.equal(report.sessions.length, 1);
   assert.equal(report.sessions[0].turns.some((turn) => "latency" in turn), false);
-  assert.match(formatInspectReport(report), /turn\s+2\s+gap\s+2210ms/);
+  const text = formatInspectReport(report);
+  assert.match(text, /turn\s+2\s+gap\s+2210ms/);
+  assert.match(text, /ordinary\s+unmeasured/);
+  assert.match(text, /post-cut\s+unmeasured/);
+  assert.deepEqual(
+    report.latency.bands.map((band) => [
+      band.band,
+      band.measured.endpointing.medianMs,
+      band.perceived.medianMs,
+    ]),
+    [
+      ["ordinary", null, null],
+      ["post-cut", null, null],
+    ],
+  );
+});
+
+const ORDINARY_SPLITS: RunnerEvidenceLatency[] = [
+  { turnId: "turn-1", band: "ordinary", endpointingMs: 100, generationMs: 100, deliveryMs: 20, perceivedMs: 720 },
+  { turnId: "turn-2", band: "ordinary", endpointingMs: 200, generationMs: 200, deliveryMs: 40, perceivedMs: 940 },
+  { turnId: "turn-3", band: "ordinary", endpointingMs: 300, generationMs: 700, deliveryMs: 60, perceivedMs: 1560 },
+];
+const POST_CUT_SPLITS: RunnerEvidenceLatency[] = [
+  { turnId: "turn-4", band: "post-cut", endpointingMs: 150, generationMs: 100, deliveryMs: 30, perceivedMs: 780 },
+  { turnId: "turn-5", band: "post-cut", endpointingMs: 250, generationMs: 300, deliveryMs: 45, perceivedMs: 1095 },
+  { turnId: "turn-6", band: "post-cut", endpointingMs: 500, generationMs: 900, deliveryMs: 70, perceivedMs: 1970 },
+];
+
+function splitTurn(turnIndex: number, latency?: RunnerEvidenceLatency): RunnerEvidenceTurn {
+  return {
+    turnIndex,
+    gapMs: 2000,
+    cutMs: null,
+    heard: true,
+    resume: false,
+    aside: false,
+    ...(latency ? { latency } : {}),
+  };
+}
+
+function reportWithTurns(turns: RunnerEvidenceTurn[]) {
+  const evidence: RunnerEvidence = {
+    ...EVIDENCE,
+    sessions: [{ ...EVIDENCE.sessions[0], turns }],
+  };
+  return buildInspectReport(artifact(evidence));
+}
+
+test("each turn row carries its split and band, and unmeasured turns say so", () => {
+  const report = reportWithTurns([
+    splitTurn(1, ORDINARY_SPLITS[0]),
+    splitTurn(2),
+    splitTurn(3, POST_CUT_SPLITS[0]),
+  ]);
+  const text = formatInspectReport(report);
+  assert.match(
+    text,
+    /split\s+ordinary\s+endpointing 100ms\s+generation 100ms\s+delivery 20ms\s+perceived 720ms\s+\(report-only\)/,
+  );
+  assert.match(
+    text,
+    /split\s+post-cut\s+endpointing 150ms\s+generation 100ms\s+delivery 30ms\s+perceived 780ms\s+\(report-only\)/,
+  );
+  assert.match(text, /split\s+unmeasured/);
+  // The machine output carries the same per-turn fields, unchanged.
+  assert.deepEqual(report.sessions[0].turns[0].latency, ORDINARY_SPLITS[0]);
+  assert.deepEqual(report.sessions[0].turns[2].latency, POST_CUT_SPLITS[0]);
+  assert.equal(report.sessions[0].turns[1].latency, undefined);
+});
+
+test("the band summary gives count, median and p95 for each duration and perceived", () => {
+  const report = reportWithTurns([
+    ...ORDINARY_SPLITS.map((split, index) => splitTurn(index + 1, split)),
+    ...POST_CUT_SPLITS.map((split, index) => splitTurn(index + 4, split)),
+  ]);
+  assert.deepEqual(report.latency.bands, [
+    {
+      band: "ordinary",
+      count: 3,
+      measured: {
+        endpointing: { count: 3, medianMs: 200, p95Ms: 300 },
+        generation: { count: 3, medianMs: 200, p95Ms: 700 },
+        delivery: { count: 3, medianMs: 40, p95Ms: 60 },
+      },
+      perceived: { count: 3, medianMs: 940, p95Ms: 1560, reportOnly: true },
+    },
+    {
+      band: "post-cut",
+      count: 3,
+      measured: {
+        endpointing: { count: 3, medianMs: 250, p95Ms: 500 },
+        generation: { count: 3, medianMs: 300, p95Ms: 900 },
+        delivery: { count: 3, medianMs: 45, p95Ms: 70 },
+      },
+      perceived: { count: 3, medianMs: 1095, p95Ms: 1970, reportOnly: true },
+    },
+  ]);
+
+  const text = formatInspectReport(report);
+  assert.match(text, /latency split \(perceived is report-only, never gated\)/);
+  assert.match(text, /ordinary \(n=3\)/);
+  assert.match(text, /endpointing\s+count 3\s+median 200ms\s+p95 300ms/);
+  assert.match(text, /generation\s+count 3\s+median 200ms\s+p95 700ms/);
+  assert.match(text, /delivery\s+count 3\s+median 40ms\s+p95 60ms/);
+  assert.match(text, /perceived\s+count 3\s+median 940ms\s+p95 1560ms\s+\(report-only\)/);
+  assert.match(text, /post-cut \(n=3\)/);
+  assert.match(text, /endpointing\s+count 3\s+median 250ms\s+p95 500ms/);
+});
+
+test("perceived sits beside the measured numbers, not inside them", () => {
+  const report = reportWithTurns(ORDINARY_SPLITS.map((split, index) => splitTurn(index + 1, split)));
+  const band = report.latency.bands[0];
+  assert.deepEqual(Object.keys(band.measured).sort(), ["delivery", "endpointing", "generation"]);
+  assert.equal(band.perceived.reportOnly, true);
+  assert.equal("reportOnly" in band.measured.endpointing, false);
+  // Serialized machine output uses the same split, so ticket 11 can extend it.
+  const json = JSON.parse(JSON.stringify(report)) as typeof report;
+  assert.equal(json.latency.bands[0].perceived.reportOnly, true);
+});
+
+test("empty and partial marks are unmeasured, never zero-filled samples", () => {
+  const partial = {
+    turnId: "turn-1",
+    band: "ordinary",
+    endpointingMs: 100,
+    generationMs: 100,
+  } as unknown as RunnerEvidenceLatency;
+  const empty = reportWithTurns([]);
+  const report = reportWithTurns([splitTurn(1, partial), splitTurn(2)]);
+
+  for (const candidate of [empty, report]) {
+    for (const band of candidate.latency.bands) {
+      assert.equal(band.count, 0);
+      assert.deepEqual(band.measured.endpointing, { count: 0, medianMs: null, p95Ms: null });
+      assert.deepEqual(band.perceived, {
+        count: 0,
+        medianMs: null,
+        p95Ms: null,
+        reportOnly: true,
+      });
+    }
+    const text = formatInspectReport(candidate);
+    assert.match(text, /ordinary\s+unmeasured/);
+    assert.match(text, /post-cut\s+unmeasured/);
+  }
+  // A turn that carries a partial split still prints unmeasured beside its row.
+  assert.match(formatInspectReport(report), /split\s+unmeasured/);
 });
 
 test("something that is not a scoreboard artifact throws instead of printing a blank report", () => {

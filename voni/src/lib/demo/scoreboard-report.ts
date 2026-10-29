@@ -4,9 +4,10 @@
  * `npm run scoreboard:inspect -- --artifact <path> [--session <id>]
  * [--events <path>] [--json]` answers the triage questions without dumping a
  * 30k-line transcript: run identity, scenario verdicts, gates and sub-scores,
- * per-session turn gaps/cuts (heard/resume/aside flags), drain/aside/hang-up
- * numbers, playout, and only the last failures. `--json` prints the same
- * structure for a machine.
+ * per-session turn gaps/cuts (heard/resume/aside flags) with each turn's
+ * latency split and band, an ordinary vs post-cut summary (median/p95 per wait,
+ * `perceived` report-only), drain/aside/hang-up numbers, playout, and only the
+ * last failures. `--json` prints the same structure for a machine.
  *
  * Everything here is pure: the CLI reads files, this module turns an artifact
  * (plus an optional event stream) into a report and formats it. Evidence the
@@ -15,14 +16,17 @@
  * rows via the same turn parser.
  */
 import {
+  percentile,
   type RunnerPlayout,
   type ScoreboardArtifact,
 } from "./scoreboard";
 import type { EvalEventSummary } from "./eval-events";
+import type { LatencyBand } from "./latency-split";
 import {
   turnRowsFromTraceExcerpt,
   type RunnerEvidenceAside,
   type RunnerEvidenceHangUp,
+  type RunnerEvidenceLatency,
   type RunnerEvidenceScenario,
   type RunnerEvidenceTurn,
 } from "./runner-evidence";
@@ -51,6 +55,36 @@ export type InspectScenario = RunnerEvidenceScenario;
 export type InspectTurn = RunnerEvidenceTurn;
 export type InspectSession = { id: string; turns: InspectTurn[] };
 
+/** One duration's sample count plus nearest-rank median and p95 (null = no samples). */
+export type InspectDurationStats = {
+  count: number;
+  medianMs: number | null;
+  p95Ms: number | null;
+};
+
+/**
+ * One interaction band's split summary. The three measured waits live
+ * together; the caller-felt `perceivedMs` is a sibling (report-only) so no
+ * reader can mistake it for a measured pipeline duration.
+ */
+export type InspectLatencyBand = {
+  band: LatencyBand;
+  /** Turns in this band whose split was measured. */
+  count: number;
+  measured: {
+    endpointing: InspectDurationStats;
+    generation: InspectDurationStats;
+    delivery: InspectDurationStats;
+  };
+  /** Report-only: the three waits plus the playout pre-roll; never a gate input. */
+  perceived: InspectDurationStats & { reportOnly: true };
+};
+
+/** Per-band split summary; both bands are always present, empty means unmeasured. */
+export type InspectLatency = {
+  bands: InspectLatencyBand[];
+};
+
 export type InspectDrain = {
   goodbyeCoverage: number | null;
   hangUpDelayMs: number | null;
@@ -65,6 +99,7 @@ export type InspectReport = {
   gates: { name: string; status: string }[];
   subScores: { name: string; status: string }[];
   sessions: InspectSession[];
+  latency: InspectLatency;
   drain: InspectDrain;
   overTalkAside: RunnerEvidenceAside | null;
   hangUps: RunnerEvidenceHangUp[];
@@ -137,6 +172,65 @@ function failureLines(artifact: ScoreboardArtifact): string[] {
   return lines.slice(-5);
 }
 
+const MEASURED_LATENCY_FIELDS = [
+  "endpointingMs",
+  "generationMs",
+  "deliveryMs",
+  "perceivedMs",
+] as const;
+
+/**
+ * A split counts only when every duration arrived and the band is known.
+ * Artifacts written before the split have no field; a truncated or malformed
+ * one is treated the same way, never as a zero-filled sample.
+ */
+function isMeasuredLatency(value: RunnerEvidenceLatency | undefined): value is RunnerEvidenceLatency {
+  if (!value || typeof value !== "object") return false;
+  if (value.band !== "ordinary" && value.band !== "post-cut") return false;
+  return MEASURED_LATENCY_FIELDS.every(
+    (field) => typeof value[field] === "number" && Number.isFinite(value[field]),
+  );
+}
+
+function durationStats(values: number[]): InspectDurationStats {
+  // Nearest-rank, the same math as the reply-gap gate's p50/p95.
+  return {
+    count: values.length,
+    medianMs: percentile(values, 50),
+    p95Ms: percentile(values, 95),
+  };
+}
+
+/**
+ * Summarize measured splits per interaction band. Both bands are always
+ * emitted so an artifact without the split reads as unmeasured, never absent
+ * and never zero. `--session` narrows the scope before this runs.
+ */
+function latencyBands(sessions: InspectSession[]): InspectLatency {
+  const splits = sessions.flatMap((session) =>
+    session.turns.map((turn) => turn.latency).filter(isMeasuredLatency),
+  );
+  const bands: LatencyBand[] = ["ordinary", "post-cut"];
+  return {
+    bands: bands.map((band) => {
+      const rows = splits.filter((split) => split.band === band);
+      return {
+        band,
+        count: rows.length,
+        measured: {
+          endpointing: durationStats(rows.map((row) => row.endpointingMs)),
+          generation: durationStats(rows.map((row) => row.generationMs)),
+          delivery: durationStats(rows.map((row) => row.deliveryMs)),
+        },
+        perceived: {
+          ...durationStats(rows.map((row) => row.perceivedMs)),
+          reportOnly: true as const,
+        },
+      };
+    }),
+  };
+}
+
 /**
  * Turn one artifact into the compact report. Throws on something that is not a
  * scoreboard artifact; an unreadable file is the CLI's error, not a report.
@@ -198,6 +292,7 @@ export function buildInspectReport(
     gates: artifact.gates.map((gate) => ({ name: gate.name, status: gate.status })),
     subScores: artifact.subScores.map((sub) => ({ name: sub.name, status: sub.status })),
     sessions: filtered,
+    latency: latencyBands(filtered),
     drain: {
       goodbyeCoverage: artifact.endCallDrain.goodbyeCoverage,
       hangUpDelayMs: artifact.endCallDrain.hangUpDelayMs,
@@ -221,6 +316,46 @@ function formatTurn(turn: InspectTurn): string {
     `    turn ${String(turn.turnIndex).padStart(2)}  gap ${gap}ms  cutAt ${cut}ms` +
     `  heard ${flag(turn.heard)}  resume ${flag(turn.resume)}  aside ${flag(turn.aside)}`
   );
+}
+
+const ms = (value: number) => `${Math.round(value)}ms`;
+
+/** One turn's split, always printed: an absent or partial split says unmeasured. */
+function formatTurnSplit(latency: RunnerEvidenceLatency | undefined): string {
+  if (!isMeasuredLatency(latency)) return "      split  unmeasured";
+  return (
+    `      split  ${latency.band}  endpointing ${ms(latency.endpointingMs)}` +
+    `  generation ${ms(latency.generationMs)}  delivery ${ms(latency.deliveryMs)}` +
+    `  perceived ${ms(latency.perceivedMs)} (report-only)`
+  );
+}
+
+function formatStats(label: string, stats: InspectDurationStats): string {
+  const value =
+    stats.medianMs === null || stats.p95Ms === null
+      ? "unmeasured"
+      : `count ${stats.count}  median ${ms(stats.medianMs)}  p95 ${ms(stats.p95Ms)}`;
+  return `    ${label.padEnd(12)} ${value}`;
+}
+
+/**
+ * The ordinary vs post-cut summary. `perceived` is labelled report-only and
+ * printed as its own row, beside the measured waits rather than among them.
+ */
+function formatLatency(latency: InspectLatency): string[] {
+  const lines = ["latency split (perceived is report-only, never gated)"];
+  for (const band of latency.bands) {
+    if (band.count === 0) {
+      lines.push(`  ${band.band.padEnd(9)} unmeasured (no turn carried a split)`);
+      continue;
+    }
+    lines.push(`  ${band.band} (n=${band.count})`);
+    lines.push(formatStats("endpointing", band.measured.endpointing));
+    lines.push(formatStats("generation", band.measured.generation));
+    lines.push(formatStats("delivery", band.measured.delivery));
+    lines.push(`${formatStats("perceived", band.perceived)}  (report-only)`);
+  }
+  return lines;
 }
 
 function formatWindows(windows: DemoTurnWindows): string {
@@ -296,9 +431,13 @@ export function formatInspectReport(report: InspectReport): string {
   if (report.sessions.length === 0) lines.push("  no Call trace sessions recorded");
   for (const session of report.sessions) {
     lines.push(`  ${session.id} (${session.turns.length} turn${session.turns.length === 1 ? "" : "s"})`);
-    for (const turn of session.turns) lines.push(formatTurn(turn));
+    for (const turn of session.turns) {
+      lines.push(formatTurn(turn));
+      lines.push(formatTurnSplit(turn.latency));
+    }
   }
 
+  lines.push("", ...formatLatency(report.latency));
   lines.push("", formatDrain(report.drain));
   const aside = formatAside(report.overTalkAside);
   if (aside) lines.push(aside);
