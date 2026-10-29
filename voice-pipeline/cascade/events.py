@@ -13,6 +13,18 @@ mid-turn alike, through :func:`emit_fallback` and the one
 :class:`EventWriter`; a routing or eligibility refusal is a different fact and
 never emits it.
 
+A turn names the providers that served it in a ``turn.attribution`` event
+(ticket 108): ``{stt, llm, tts}``, each with its ``provider``, ``rung`` and
+``reason``, and ``from`` when a fallback rung served, so a fallback turn names
+both rungs. A leg that did not run is an explicit ``null`` (a backchannel has no
+model); a managed turn records the table as ``N/A — vendor-owned`` rather than a
+fabricated vendor; a turn whose attribution was never recorded is
+``unmeasured`` with a named reason. The value object is
+:class:`TurnAttribution` and the one emission site is
+:func:`emit_attribution`. :class:`~cascade.turn_state.TurnStateStore` keys the
+record by the logical turn, so a reconnect cannot move it, and derives the end
+message's call-level provider table from the turns.
+
 The persisted cascade stream is written by :class:`EventStream`, which is the
 one Python write boundary: every line is built by :class:`EventWriter` and
 passes through the one sanitizer's rules before it is written (ticket 111). The
@@ -410,6 +422,303 @@ def emit_fallback(
         at_ms=at_ms,
         phase=fallback.phase,
         fields=fields,
+    )
+    sink(event)
+    return event
+
+
+# ---------------------------------------------------------------------------
+# Turn attribution: which providers served this turn (ticket 108)
+# ---------------------------------------------------------------------------
+
+#: The one event a turn's provider attribution is written as. Both engines emit
+#: it; a managed turn names its table as vendor-owned instead of a vendor.
+ATTRIBUTION_EVENT_TYPE = "turn.attribution"
+
+#: The three states a turn attribution can be in. ``measured`` names the
+#: providers, ``vendor-owned`` is the managed pipeline's table and
+#: ``unmeasured`` is a turn whose attribution was never recorded.
+ATTRIBUTION_STATES = ("measured", "vendor-owned", "unmeasured")
+
+#: What a managed turn records in place of a vendor name.
+VENDOR_OWNED = "N/A — vendor-owned"
+
+
+class AttributionError(EventEnvelopeError):
+    """A turn attribution that would name something it cannot know."""
+
+
+def turn_key(turn: str | object) -> str:
+    """The one string a logical turn is written as: ``<epoch>:<providerTurnId>``.
+
+    Accepts a :class:`~cascade.turn_state.LogicalTurnId` without importing it:
+    the schema keeps the turn-key convention, and the state module that owns the
+    identity reuses this function, so a reconnect cannot rename a turn.
+    """
+    if isinstance(turn, str):
+        if not turn.strip():
+            raise AttributionError(
+                "turn",
+                f'an attribution needs the logical turn it belongs to, got {turn!r}',
+            )
+        return turn
+    epoch = getattr(turn, "session_epoch", None)
+    provider_turn_id = getattr(turn, "provider_turn_id", None)
+    if (
+        isinstance(epoch, int)
+        and not isinstance(epoch, bool)
+        and isinstance(provider_turn_id, str)
+        and provider_turn_id.strip()
+    ):
+        return f"{epoch}:{provider_turn_id}"
+    raise AttributionError(
+        "turn",
+        f"not a logical turn: {turn!r}; expected a LogicalTurnId or its "
+        '"<sessionEpoch>:<providerTurnId>" string',
+    )
+
+
+@dataclass(frozen=True)
+class LegAttribution:
+    """One leg of one turn: the provider that served it and its rung.
+
+    ``from_provider`` is the rung that lost when ``rung == "fallback"``. A
+    fallback turn names both rungs: the provider that served and the one it
+    replaced, so "which model answered this turn" is answerable without reading
+    an unrelated fallback event.
+    """
+
+    leg: str
+    provider: str
+    rung: str
+    reason: str
+    from_provider: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.leg not in LEGS:
+            raise AttributionError(
+                "leg",
+                f"unknown cascade leg {self.leg!r}; expected one of {', '.join(LEGS)}",
+            )
+        if not isinstance(self.provider, str) or not self.provider.strip():
+            raise AttributionError(
+                "provider",
+                f'leg "{self.leg}" needs the provider that served it, '
+                f"got {self.provider!r}",
+            )
+        if self.provider == VENDOR_OWNED:
+            raise AttributionError(
+                "provider",
+                f'"{VENDOR_OWNED}" is a vendor-owned marker, not a provider name; '
+                "a managed turn never fabricates a vendor",
+            )
+        if self.rung not in ("primary", "fallback"):
+            raise AttributionError(
+                "rung",
+                f'leg "{self.leg}" names rung {self.rung!r}; only a rung that served '
+                'is an attribution ("primary" or "fallback")',
+            )
+        if not isinstance(self.reason, str) or not self.reason.strip():
+            raise AttributionError(
+                "reason", f'leg "{self.leg}" needs the reason its rung was chosen'
+            )
+        if self.rung == "fallback":
+            if not isinstance(self.from_provider, str) or not self.from_provider.strip():
+                raise AttributionError(
+                    "from",
+                    f'leg "{self.leg}" served on the fallback rung, so it must name '
+                    "both rungs: the provider that lost as well",
+                )
+            if self.from_provider == self.provider:
+                raise AttributionError(
+                    "from",
+                    f'leg "{self.leg}" names "{self.provider}" as both rungs; the '
+                    "losing rung is a different provider",
+                )
+        elif self.from_provider is not None:
+            raise AttributionError(
+                "from",
+                f'leg "{self.leg}" served on the primary rung, so it has no losing '
+                f"rung to name (got {self.from_provider!r})",
+            )
+
+    def to_document(self) -> dict[str, Any]:
+        document: dict[str, Any] = {
+            "leg": self.leg,
+            "provider": self.provider,
+            "rung": self.rung,
+            "reason": self.reason,
+        }
+        if self.from_provider is not None:
+            document["from"] = self.from_provider
+        return document
+
+
+@dataclass(frozen=True)
+class TurnAttribution:
+    """The providers one logical turn actually used, keyed by its logical id.
+
+    A leg that did not run is ``None`` — a backchannel has no model — and is
+    written as an explicit ``null`` rather than being left out. ``turn`` is the
+    logical id string (``<sessionEpoch>:<providerTurnId>``), so a reconnect that
+    rebinds the provider id cannot move the attribution to another turn.
+    """
+
+    turn: str
+    stt: LegAttribution | None = None
+    llm: LegAttribution | None = None
+    tts: LegAttribution | None = None
+    vendor_owned: bool = False
+    unmeasured_reason: str = ""
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "turn", turn_key(self.turn))
+        if not isinstance(self.unmeasured_reason, str):
+            raise AttributionError(
+                "unmeasuredReason",
+                f'"unmeasuredReason" must be a string, got {self.unmeasured_reason!r}',
+            )
+        if self.vendor_owned and self.unmeasured_reason:
+            raise AttributionError(
+                "state",
+                "a vendor-owned table is not unmeasured; a managed turn is "
+                "vendor-owned and a recorded cascade turn is measured",
+            )
+        if self.unmeasured_reason and any(
+            getattr(self, name) is not None for name in LEGS
+        ):
+            raise AttributionError(
+                "providers",
+                "an unmeasured turn names no leg; the providers it used were "
+                "never recorded, so naming one would be a guess",
+            )
+        if self.vendor_owned and any(getattr(self, name) is not None for name in LEGS):
+            raise AttributionError(
+                "providers",
+                "a vendor-owned table names no leg; the managed pipeline is "
+                "vendor-owned, so naming a provider would be a fabricated attribution",
+            )
+        for name in LEGS:
+            value = getattr(self, name)
+            if value is None:
+                continue
+            if not isinstance(value, LegAttribution):
+                raise AttributionError(
+                    "providers",
+                    f'"{name}" must be a LegAttribution or None, got {value!r}',
+                )
+            if value.leg != name:
+                raise AttributionError(
+                    "leg",
+                    f'attribution slot "{name}" cannot carry the "{value.leg}" leg',
+                )
+        if not self.vendor_owned and not self.unmeasured_reason and all(
+            getattr(self, name) is None for name in LEGS
+        ):
+            raise AttributionError(
+                "providers",
+                "a measured attribution must name at least one leg; a turn whose "
+                "providers were never recorded is unmeasured",
+            )
+
+    @classmethod
+    def managed(cls, turn: str | object) -> "TurnAttribution":
+        """The managed pipeline's table: ``N/A — vendor-owned``, never a vendor."""
+        return cls(turn=turn_key(turn), vendor_owned=True)
+
+    @classmethod
+    def unmeasured(cls, turn: str | object, reason: str) -> "TurnAttribution":
+        """A turn whose attribution was never recorded, named rather than guessed."""
+        if not isinstance(reason, str) or not reason.strip():
+            raise AttributionError(
+                "unmeasuredReason",
+                "an unmeasured turn needs a named reason; the missing attribution "
+                "is reported, not invented",
+            )
+        return cls(turn=turn_key(turn), unmeasured_reason=reason)
+
+    @property
+    def state(self) -> str:
+        if self.vendor_owned:
+            return "vendor-owned"
+        return "unmeasured" if self.unmeasured_reason else "measured"
+
+    def leg(self, name: str) -> LegAttribution | None:
+        """One leg's attribution, or ``None`` when the leg did not run."""
+        if name not in LEGS:
+            raise AttributionError(
+                "leg",
+                f"unknown cascade leg {name!r}; expected one of {', '.join(LEGS)}",
+            )
+        return getattr(self, name)
+
+    def to_payload(self) -> dict[str, Any]:
+        """The event payload; the envelope owns ``turn``, so it is not repeated."""
+        if self.vendor_owned:
+            payload: dict[str, Any] = {
+                "state": self.state,
+                "providers": {
+                    name: {
+                        "leg": name,
+                        "provider": VENDOR_OWNED,
+                        "rung": None,
+                        "reason": "the managed pipeline is vendor-owned",
+                    }
+                    for name in LEGS
+                },
+            }
+            payload["vendorOwned"] = True
+            return payload
+        if self.unmeasured_reason:
+            return {
+                "state": self.state,
+                "providers": {name: None for name in LEGS},
+                "unmeasuredReason": self.unmeasured_reason,
+            }
+        return {
+            "state": self.state,
+            "providers": {
+                name: self.leg(name).to_document() if self.leg(name) else None
+                for name in LEGS
+            },
+        }
+
+
+def emit_attribution(
+    writer: EventWriter,
+    attribution: TurnAttribution,
+    *,
+    subject: str,
+    at_ms: float | int,
+    sink: EventSink,
+    phase: str = "turn",
+) -> dict[str, Any]:
+    """Emit one turn's attribution through the one envelope writer, then the sink.
+
+    A cascade writer cannot claim a vendor-owned table (the managed-only
+    ``vendorOwned`` field) and a managed writer cannot name a provider: the
+    managed pipeline has no vendor choice, so a name would be fabricated. Both
+    refusals write nothing.
+    """
+    if writer.pipeline == "cascade" and attribution.vendor_owned:
+        raise EventEnvelopeError(
+            "vendorOwned",
+            'a vendor-owned provider table belongs to the managed pipeline; '
+            'this writer is "cascade"',
+        )
+    if writer.pipeline == "managed" and not attribution.vendor_owned:
+        raise EventEnvelopeError(
+            "providers",
+            "a managed turn records its provider table as vendor-owned; naming a "
+            f'provider ("{attribution.state}") would be a fabricated attribution',
+        )
+    event = writer.call_scoped(
+        ATTRIBUTION_EVENT_TYPE,
+        subject=subject,
+        turn=attribution.turn,
+        at_ms=at_ms,
+        phase=phase,
+        fields=attribution.to_payload(),
     )
     sink(event)
     return event
