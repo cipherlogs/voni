@@ -5737,6 +5737,15 @@ const PINNED_BUDGETS: Record<string, number> = {
   humanRatersRequired: 2,
   humanRatingScaleMin: 1,
   humanRatingScaleMax: 5,
+  comparisonLevelLu: 1.5,
+  comparisonModulationDepth: 0.05,
+  comparisonBandDeltaDb: 3,
+  comparisonDistortionDb: -45,
+  comparisonDistortionDeltaDb: 3,
+  comparisonBreakupCount: 1,
+  comparisonOnsetToleranceS: 0.05,
+  comparisonModelTextWordChanges: 0,
+  comparisonReferenceClipDbtp: -0.1,
 };
 
 const BUDGET_RECORD_URL = new URL("./scoreboard-budgets.json", import.meta.url);

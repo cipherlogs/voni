@@ -3,10 +3,16 @@
  * tests drive it as a user would: a missing or unreadable file must fail before
  * any table is printed, and three readable files must produce the table.
  *
+ * After the table comes the first-divergence verdict, so these tests also pin
+ * that the verdict never replaces the table and that `--line`/`--transcript`
+ * can attribute a divergence to model text.
+ *
  * Floor mode (`--floor`) is also driven through the CLI, because that is where
  * the committed floor is loaded: a subject that matches the floor clears it, a
  * subject that is worse fails and names the axis, and a missing required flag
- * is a usage error rather than a verdict.
+ * is a usage error rather than a verdict. Floor mode composes with the table
+ * and the verdict: when a platform capture is supplied, both print first and
+ * the floor verdict still decides the exit code.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -130,6 +136,7 @@ test("three saved files print one table with every metric and no live call", () 
   for (const metric of [
     "sample rate (Hz)",
     "byte rate (B/s)",
+    "onset (s)",
     "integrated (LUFS)",
     "RMS (dBFS)",
     "true peak (dBTP)",
@@ -226,5 +233,55 @@ test("--floor with a platform file prints the table and then the verdict", () =>
   assert.match(result.stdout, /Floor mode/);
   assert.ok(
     result.stdout.indexOf("Floor mode") > result.stdout.indexOf("Voice-parity audio comparison"),
+    "the table prints before the floor verdict",
   );
+  const verdictAt = result.stdout.indexOf("Verdict:");
+  assert.ok(
+    verdictAt > result.stdout.indexOf("Voice-parity audio comparison"),
+    "the verdict prints after the table",
+  );
+  assert.ok(verdictAt < result.stdout.indexOf("Floor mode"), "the floor verdict still prints last");
+});
+
+test("the verdict prints after the table, naming the first divergence", () => {
+  const files = captureDir();
+  const result = run([
+    "--reference",
+    files.reference,
+    "--platform",
+    files.platform,
+    "--delivered",
+    files.delivered,
+  ]);
+
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  const tableAt = result.stdout.indexOf("breakup longest silence (s)");
+  const verdictAt = result.stdout.indexOf("Verdict:");
+  assert.ok(tableAt >= 0, "the table printed");
+  assert.ok(verdictAt > tableAt, "the verdict prints after the table");
+  assert.match(result.stdout, /Verdict: No divergence: /);
+  assert.match(result.stdout, /comparisonOnsetToleranceS 0\.05 s/);
+});
+
+test("--line and --transcript attribute a divergence to model text", () => {
+  const files = captureDir();
+  const result = run([
+    "--reference",
+    files.reference,
+    "--platform",
+    files.platform,
+    "--delivered",
+    files.delivered,
+    "--line",
+    "Your appointment is at four o'clock.",
+    "--transcript",
+    "Your appointment is at nine o'clock.",
+  ]);
+
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  assert.match(
+    result.stdout,
+    /Verdict: The first divergence is model text: the platform transcript says "Your appointment is at nine o'clock\."/,
+  );
+  assert.match(result.stdout, /comparisonModelTextWordChanges 0 count/);
 });

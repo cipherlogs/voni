@@ -13,7 +13,10 @@
  * fixed id, a group and three cells, so the first divergence can be named
  * without re-measuring anything. The raw readings stay on `captures` for a
  * verdict that needs a position (a breakup's start) rather than only a count.
- * This module never decides which layer is at fault.
+ * The onset row is the alignment fact: a capture that starts late carries a
+ * lead-in, which is not a defect by itself but stops a verdict from blaming a
+ * layer while the files are not comparable sample-for-sample. This module
+ * never decides which layer is at fault.
  */
 import { detectBreakups, type BreakupReport } from "./breakups";
 import {
@@ -62,6 +65,7 @@ export type ComparisonRowId =
   | "channels"
   | "duration"
   | "byte-rate"
+  | "onset"
   | "integrated"
   | "rms"
   | "true-peak"
@@ -106,6 +110,8 @@ export type CaptureFacts = {
   role: CaptureRole;
   path: string;
   format: DecodedAudio["facts"];
+  /** Where the first audible frame starts; the verdict needs it to see misalignment. */
+  onset: Reading<{ seconds: number }>;
   level: Reading<Extract<LevelFacts, { measured: true }>>;
   distortion: DistortionReading;
   crest: Reading<CrestFactor>;
@@ -187,8 +193,41 @@ function formatRows(captures: readonly CaptureFacts[]): ComparisonRow[] {
     row("byte-rate", "byte rate (B/s)", 0, (capture) => capture.format.byteRate),
   ];
 }
-
 type MeasuredLevel = Extract<LevelFacts, { measured: true }>;
+
+/** First frame length the onset reads; also the resolution of the number. */
+const ONSET_FRAME_SECONDS = 0.01;
+/** A frame quieter than this is lead-in, not speech. */
+const ONSET_FLOOR_DBFS = -40;
+const ONSET_FLOOR_AMPLITUDE = 10 ** (ONSET_FLOOR_DBFS / 20);
+
+/**
+ * Where audible signal starts, so the verdict can see that two captures do not
+ * share a start. A lead-in is a fact about the capture, never a defect by
+ * itself: the comparison reports it and the verdict refuses to blame a layer
+ * from unaligned files.
+ */
+function measureOnset(audio: DecodedAudio): Reading<{ seconds: number }> {
+  const { sampleRate, channels, frameCount } = audio.facts;
+  const frameSamples = Math.max(1, Math.round(ONSET_FRAME_SECONDS * sampleRate));
+  const fullScale = 32_768;
+
+  for (let start = 0; start < frameCount; start += frameSamples) {
+    const end = Math.min(start + frameSamples, frameCount);
+    let sumSquares = 0;
+    for (let frame = start; frame < end; frame++) {
+      for (let channel = 0; channel < channels; channel++) {
+        const sample = audio.samples[frame * channels + channel] / fullScale;
+        sumSquares += sample * sample;
+      }
+    }
+    const rms = Math.sqrt(sumSquares / ((end - start) * channels));
+    if (rms > ONSET_FLOOR_AMPLITUDE) {
+      return { measured: true, value: { seconds: start / sampleRate } };
+    }
+  }
+  return { measured: false, reason: `no audible onset above ${ONSET_FLOOR_DBFS} dBFS` };
+}
 
 /** A level the module refuses is named; an unexpected failure still throws. */
 function measureLevel(audio: DecodedAudio): Reading<MeasuredLevel> {
@@ -227,8 +266,13 @@ function readingRow<T>(
   return { id, group, label, decimals, cells };
 }
 
-function levelRows(captures: readonly CaptureFacts[]): ComparisonRow[] {
-  const level = (capture: CaptureFacts) => capture.level;
+function onsetRows(captures: readonly CaptureFacts[]): ComparisonRow[] {
+  return [
+    readingRow(captures, "format", "onset", "onset (s)", 3, (capture) => capture.onset, (onset) => onset.seconds),
+  ];
+}
+
+function levelRows(captures: readonly CaptureFacts[]): ComparisonRow[] {  const level = (capture: CaptureFacts) => capture.level;
   return [
     readingRow(captures, "level", "integrated", "integrated (LUFS)", 2, level, (facts) => facts.integratedLufs),
     readingRow(captures, "level", "rms", "RMS (dBFS)", 2, level, (facts) => facts.rmsDbfs),
@@ -460,6 +504,7 @@ export function compareCaptures(inputs: readonly CaptureInput[]): AudioCompariso
     role: input.role,
     path: input.path,
     format: input.audio.facts,
+    onset: measureOnset(input.audio),
     level: measureLevel(input.audio),
     distortion: measureDistortion(ordered[0], input),
     crest: measureCrest(input.audio),
@@ -470,6 +515,7 @@ export function compareCaptures(inputs: readonly CaptureInput[]): AudioCompariso
 
   const rows = [
     ...formatRows(captures),
+    ...onsetRows(captures),
     ...levelRows(captures),
     ...shapeRows(captures),
     ...spectrumRows(captures, spectral),
