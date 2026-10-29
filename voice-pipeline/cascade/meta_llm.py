@@ -30,8 +30,15 @@ Stream parsing lives in :class:`MetaLLMTurn` and the SSE reader: content deltas
 are the only speech, ``reasoning_content`` is recorded for usage and telemetry
 and never yielded, and the first content delta marks ``first_token``. The turn
 record also holds usage, the accumulated tool calls and the finish disposition.
-Argument schema validation and the failure/retry policy are tickets 40 and 42;
-the seams they fill are documented where they are.
+Tool arguments are parsed and validated against the tool's declared schema
+before a request is emitted; a correctable failure becomes a ``tool`` result the
+model fixes next request, while an unenforceable schema fails the turn.
+
+Failures follow the spec's phase policy: a 400 is a conversation bug (fail the
+turn and alert, never open the leg), while 429/5xx/timeouts retry once before
+anything reached the caller and otherwise open the leg for future calls. A
+reply already delivered is never restarted, because a second completion would
+repeat speech; a second failure on the leg ends the call.
 
 The per-turn record is how a caller reads what the stream produced without
 re-parsing it: pass a :class:`MetaLLMTurn` to ``complete()`` (or read
@@ -44,11 +51,14 @@ import codecs
 import hashlib
 import json
 import os
-from collections.abc import AsyncIterator, Sequence
+import re
+from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+from cascade.failures import FailureClass, FailureVerdict, classify
+from cascade.ladders import CallRungs
 from cascade.model_guard import resolve_model
 from providers import LLMStream, PrefetchHandle, TokenDelta, ToolCallRequest
 
@@ -74,6 +84,84 @@ TOOL_FINISH_REASONS = frozenset({"tool_calls", "function_call"})
 
 #: The ledger counter a denied (never-executed) tool call increments.
 TOOL_DENIED_COUNTER = "tool_denied"
+
+#: Failure phases recorded with a retry decision. ``connect`` is a failure
+#: before the request was accepted, ``turn`` after the stream started but before
+#: any content token, and ``reply`` after audio text was already yielded.
+PHASE_CONNECT = "connect"
+PHASE_TURN = "turn"
+PHASE_REPLY = "reply"
+FAILURE_PHASES = (PHASE_CONNECT, PHASE_TURN, PHASE_REPLY)
+
+#: The spec's failure policy: one retry per leg, so two failures end the call.
+#: This is settled policy, not an operational bound, so it is not a threshold.
+MAX_LEG_FAILURES = 2
+
+#: Stable codes a withheld call carries back to the model. A correctable failure
+#: has a call id, so the tool loop can answer it with a ``role: "tool"`` result
+#: and the model can fix the call on its next request.
+TOOL_ARGUMENTS_MISSING = "missing_arguments"
+TOOL_ARGUMENTS_INVALID_JSON = "invalid_json"
+TOOL_ARGUMENTS_NOT_AN_OBJECT = "not_an_object"
+TOOL_ARGUMENTS_SCHEMA = "schema_violation"
+TOOL_CALL_ID_MISSING = "missing_call_id"
+
+#: The codes that describe something the model can correct.
+TOOL_FAILURE_CODES = frozenset(
+    {
+        TOOL_ARGUMENTS_MISSING,
+        TOOL_ARGUMENTS_INVALID_JSON,
+        TOOL_ARGUMENTS_NOT_AN_OBJECT,
+        TOOL_ARGUMENTS_SCHEMA,
+    }
+)
+
+#: Schema keywords the cascade enforces. An enforced subset is deliberate: a
+#: keyword outside it raises :class:`ToolSchemaError` by name rather than
+#: letting a call through unvalidated ("A tool that cannot be represented
+#: refuses the cascade by name", ticket 57).
+_ANNOTATION_KEYWORDS = frozenset(
+    {
+        "$comment",
+        "$id",
+        "$schema",
+        "default",
+        "deprecated",
+        "description",
+        "examples",
+        "format",
+        "readOnly",
+        "title",
+        "writeOnly",
+    }
+)
+_VALIDATION_KEYWORDS = frozenset(
+    {
+        "additionalProperties",
+        "allOf",
+        "anyOf",
+        "const",
+        "enum",
+        "exclusiveMaximum",
+        "exclusiveMinimum",
+        "items",
+        "maxItems",
+        "maxLength",
+        "maxProperties",
+        "maximum",
+        "minItems",
+        "minLength",
+        "minProperties",
+        "minimum",
+        "not",
+        "oneOf",
+        "pattern",
+        "properties",
+        "required",
+        "type",
+    }
+)
+_SUPPORTED_KEYWORDS = _ANNOTATION_KEYWORDS | _VALIDATION_KEYWORDS
 
 #: Deployment secret that salts the model identifier. The salt never leaves the
 #: process: the request carries the digest, not the salt (ticket 44).
@@ -101,10 +189,24 @@ class ToolCallIdentityError(MetaLLMStreamError):
 
 
 class ToolArgumentsError(ValueError):
-    """The accumulated argument text is not a JSON object.
+    """The accumulated argument text cannot be handed to a tool.
 
-    Ticket 40 turns this into a tool failure the model can correct; until then
-    the call is withheld so it can never run with invented empty arguments.
+    The model can correct every failure this type describes (malformed JSON, a
+    non-object value, arguments outside the declared schema), so it is returned
+    as a tool result rather than failing the turn. ``code`` is the stable
+    machine-readable reason the result carries.
+    """
+
+    def __init__(self, reason: str, *, code: str = TOOL_ARGUMENTS_SCHEMA) -> None:
+        super().__init__(reason)
+        self.code = code
+
+
+class ToolSchemaError(MetaLLMStreamError):
+    """A tool schema uses a keyword the cascade cannot enforce.
+
+    This is our bug (an unrepresentable body tool, ticket 57), never the
+    model's: the turn fails by name instead of executing an unvalidated call.
     """
 
 
@@ -115,13 +217,86 @@ class ReasoningEffortError(ValueError):
 class MetaLLMRequestError(RuntimeError):
     """The vendor answered the request with a non-success status.
 
-    Failure classification and retry belong to ticket 42; this type only makes
-    the status visible instead of parsing an error body as a token stream.
+    Raised inside one attempt; :meth:`MetaLLM.complete` classifies it and
+    applies the ticket-42 policy, so callers see a :class:`MetaLLMFailure`
+    carrying the recorded decision instead of a bare status.
     """
 
     def __init__(self, status: int) -> None:
         super().__init__(f"Meta chat completions returned HTTP {status}")
         self.status = status
+
+
+@dataclass(frozen=True, slots=True)
+class FailureDecision:
+    """One model-leg failure, and what the retry policy did about it.
+
+    ``phase`` is the evidence the policy branches on: a ``reply`` failure has
+    already handed text to synthesis, so restarting would repeat speech.
+    ``opened_leg`` is true only when this decision wrote the durable breaker
+    record; a bug verdict never does.
+    """
+
+    attempt: int
+    phase: str
+    verdict: FailureVerdict
+    retry: bool
+    opened_leg: bool
+    reason: str
+
+    def __post_init__(self) -> None:
+        if self.phase not in FAILURE_PHASES:
+            raise ValueError(
+                f"unknown failure phase {self.phase!r}; expected one of "
+                f"{FAILURE_PHASES}"
+            )
+
+    def to_document(self) -> dict[str, Any]:
+        return {
+            "attempt": self.attempt,
+            "phase": self.phase,
+            "code": self.verdict.code,
+            "failureClass": self.verdict.failure_class.value,
+            "retry": self.retry,
+            "openedLeg": self.opened_leg,
+            "reason": self.reason,
+        }
+
+
+class MetaLLMFailure(RuntimeError):
+    """A model-leg failure the ticket-42 policy classified and recorded."""
+
+    def __init__(self, decision: FailureDecision) -> None:
+        self.decision = decision
+        super().__init__(
+            f"model leg failed in {decision.phase} on attempt "
+            f"{decision.attempt} (code {decision.verdict.code!r}): "
+            f"{decision.reason}"
+        )
+
+
+class MetaLLMTurnFailed(MetaLLMFailure):
+    """Fail the turn and alert; the leg is not opened.
+
+    A deterministic request bug (HTTP 400). The caller may answer with a failure
+    line, but it must not retry the request or move to another rung mid-call.
+    """
+
+
+class MetaLLMReplyInterrupted(MetaLLMFailure):
+    """A reply already in the caller's ear was cut.
+
+    Never retried: a second completion would repeat speech. The caller drains
+    what was queued, closes at the last complete sentence, and keeps the call.
+    """
+
+
+class MetaLLMLegExhausted(MetaLLMFailure):
+    """The leg's one-retry policy is spent; this call ends.
+
+    The breaker was opened (or was already unreadable) for future calls; there
+    is no mid-call handover to the fallback rung.
+    """
 
 
 def resolve_reasoning_effort(reasoning_effort: str | None) -> str:
@@ -263,6 +438,12 @@ class MetaLLMTurn:
     interrupted: bool = False
     closed: bool = False
     disposition: ReplyDisposition | None = None
+    failure_decisions: list[FailureDecision] = field(default_factory=list)
+
+    @property
+    def last_failure(self) -> FailureDecision | None:
+        """The most recent failure decision, if the turn saw one."""
+        return self.failure_decisions[-1] if self.failure_decisions else None
 
     @property
     def truncated(self) -> bool:
@@ -271,6 +452,15 @@ class MetaLLMTurn:
     @property
     def filtered(self) -> bool:
         return self.disposition is not None and self.disposition.filtered
+
+    @property
+    def tool_failures(self) -> list[ToolDenial]:
+        """Withheld calls the model can correct from a tool result.
+
+        A denial without a call id is not here: the vendor cannot be answered
+        without an identity, so that turn closes with a hold line instead.
+        """
+        return [denial for denial in self.rejected_tool_calls if denial.correctable]
 
     def close(self) -> None:
         """Finalise the record; safe to call more than once."""
@@ -388,10 +578,39 @@ class MetaToolCall:
 
 @dataclass(frozen=True, slots=True)
 class ToolDenial:
-    """A recorded reason a call was not executed, kept with the turn."""
+    """A recorded reason a call was not executed, kept with the turn.
+
+    ``code`` is the stable failure code; ``call_id`` is the identity the vendor
+    expects back. A correctable denial (argument failure on a call that has an
+    id) can be turned into the ``role: "tool"`` result the model corrects from;
+    a denial without an id cannot, because there is nothing to quote back.
+    """
 
     name: str
     reason: str
+    call_id: str = ""
+    code: str = ""
+
+    @property
+    def correctable(self) -> bool:
+        return bool(self.call_id) and self.code in TOOL_FAILURE_CODES
+
+    def as_tool_message(self) -> dict[str, Any]:
+        """The tool result for this failure; refuses an unanswerable denial."""
+        if not self.correctable:
+            raise ValueError(
+                f"tool denial for {self.name!r} has no usable call id or is not "
+                "a correctable argument failure; it cannot be returned as a "
+                "tool result"
+            )
+        return {
+            "role": "tool",
+            "tool_call_id": self.call_id,
+            "content": json.dumps(
+                {"error": self.code, "message": self.reason},
+                ensure_ascii=False,
+            ),
+        }
 
 
 class ReplyOutcome(str, Enum):
@@ -485,29 +704,317 @@ def reply_disposition(turn: MetaLLMTurn) -> ReplyDisposition:
 def parse_tool_arguments(raw: str) -> dict[str, Any]:
     """Read the accumulated argument text as a JSON object.
 
-    Only object-ness is decided here. Schema validation and the tool-failure
-    result the model can correct belong to ticket 40; what this must never do
-    is invent ``{}`` for a payload that was malformed or absent, because that
-    would execute a side effect the model never asked for.
+    The parse owns malformed JSON and object-ness; :func:`validate_tool_arguments`
+    owns the declared schema. What this must never do is invent ``{}`` for a
+    payload that was malformed or absent, because that would execute a side
+    effect the model never asked for.
     """
     if not raw.strip():
         raise ToolArgumentsError(
             "no arguments were streamed: a call with no argument text is not "
-            "executed with an invented empty object"
+            "executed with an invented empty object",
+            code=TOOL_ARGUMENTS_MISSING,
         )
     try:
         value = json.loads(raw)
     except json.JSONDecodeError as error:
         raise ToolArgumentsError(
             f"arguments are not valid JSON ({error.msg} at character "
-            f"{error.pos}); the call is not executed"
+            f"{error.pos}); the call is not executed",
+            code=TOOL_ARGUMENTS_INVALID_JSON,
         ) from error
     if not isinstance(value, dict):
         raise ToolArgumentsError(
             f"arguments are a JSON {type(value).__name__}, not an object; the "
-            "call is not executed"
+            "call is not executed",
+            code=TOOL_ARGUMENTS_NOT_AN_OBJECT,
         )
     return value
+
+
+def _json_type(value: Any) -> str:
+    """The JSON type name, with bool kept apart from integer."""
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, int):
+        return "integer"
+    if isinstance(value, float):
+        return "number"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, list):
+        return "array"
+    if isinstance(value, dict):
+        return "object"
+    return type(value).__name__
+
+
+def _matches_type(value: Any, name: str, path: str) -> bool:
+    if name == "object":
+        return isinstance(value, dict)
+    if name == "array":
+        return isinstance(value, list)
+    if name == "string":
+        return isinstance(value, str)
+    if name == "boolean":
+        return isinstance(value, bool)
+    if name == "null":
+        return value is None
+    if name == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if name == "number":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    raise ToolSchemaError(
+        f"tool schema at {path} declares unsupported type {name!r}; the "
+        "cascade validates only JSON Schema type names"
+    )
+
+
+def _violation(path: str, reason: str) -> ToolArgumentsError:
+    return ToolArgumentsError(
+        f"{path}: {reason}; the call is not executed and the failure is "
+        "returned to the model",
+        code=TOOL_ARGUMENTS_SCHEMA,
+    )
+
+
+def _check_combinations(value: Any, schema: dict[str, Any], path: str) -> None:
+    for keyword in ("allOf",):
+        branches = schema.get(keyword)
+        if branches is None:
+            continue
+        if not isinstance(branches, list):
+            raise ToolSchemaError(f"tool schema {keyword} at {path} is not a list")
+        for index, branch in enumerate(branches):
+            _validate(value, branch, f"{path} ({keyword}[{index}])")
+
+    if "anyOf" in schema:
+        branches = schema["anyOf"]
+        if not isinstance(branches, list) or not branches:
+            raise ToolSchemaError(f"tool schema anyOf at {path} is not a list")
+        errors = []
+        matched_any = False
+        for index, branch in enumerate(branches):
+            try:
+                _validate(value, branch, path)
+                matched_any = True
+                break
+            except ToolArgumentsError as error:
+                errors.append(f"[{index}] {error}")
+        if not matched_any:
+            raise _violation(path, "matches none of anyOf: " + " | ".join(errors))
+
+    if "oneOf" in schema:
+        branches = schema["oneOf"]
+        if not isinstance(branches, list) or not branches:
+            raise ToolSchemaError(f"tool schema oneOf at {path} is not a list")
+        matched = 0
+        for branch in branches:
+            try:
+                _validate(value, branch, path)
+                matched += 1
+            except ToolArgumentsError:
+                continue
+        if matched != 1:
+            raise _violation(
+                path, f"matches {matched} oneOf branches; exactly one is required"
+            )
+
+    if "not" in schema:
+        try:
+            _validate(value, schema["not"], path)
+        except ToolArgumentsError:
+            pass
+        else:
+            raise _violation(path, "matches a 'not' schema")
+
+
+def _validate_enum(value: Any, schema: dict[str, Any], path: str) -> None:
+    if "const" in schema and value != schema["const"]:
+        raise _violation(
+            path, f"const: must equal {schema['const']!r}, got {value!r}"
+        )
+    if "enum" in schema:
+        allowed = schema["enum"]
+        if not isinstance(allowed, list):
+            raise ToolSchemaError(f"tool schema enum at {path} is not a list")
+        if not any(
+            value == candidate and _json_type(value) == _json_type(candidate)
+            for candidate in allowed
+        ):
+            raise _violation(
+                path, f"enum: must be one of {allowed!r}, got {value!r}"
+            )
+
+
+def _validate_object(value: Any, schema: dict[str, Any], path: str) -> None:
+    if not isinstance(value, dict):
+        raise _violation(path, f"must be an object, got {_json_type(value)}")
+    required = schema.get("required", [])
+    if not isinstance(required, list):
+        raise ToolSchemaError(f"tool schema required at {path} is not a list")
+    missing = [name for name in required if name not in value]
+    if missing:
+        raise _violation(path, f"missing required property {missing[0]!r}")
+    properties = schema.get("properties", {})
+    if not isinstance(properties, dict):
+        raise ToolSchemaError(f"tool schema properties at {path} is not an object")
+    for name, subschema in properties.items():
+        if name in value:
+            _validate(value[name], subschema, f"{path}.{name}")
+    extra = [name for name in value if name not in properties]
+    additional = schema.get("additionalProperties", True)
+    if additional is False and extra:
+        raise _violation(
+            path,
+            f"property {extra[0]!r} is not declared and additional properties "
+            "are refused",
+        )
+    if isinstance(additional, dict):
+        for name in extra:
+            _validate(value[name], additional, f"{path}.{name}")
+    if "minProperties" in schema and len(value) < schema["minProperties"]:
+        raise _violation(path, f"needs at least {schema['minProperties']} properties")
+    if "maxProperties" in schema and len(value) > schema["maxProperties"]:
+        raise _violation(path, f"allows at most {schema['maxProperties']} properties")
+
+
+def _validate_array(value: Any, schema: dict[str, Any], path: str) -> None:
+    if not isinstance(value, list):
+        raise _violation(path, f"must be an array, got {_json_type(value)}")
+    items = schema.get("items")
+    if items is not None:
+        if not isinstance(items, dict):
+            raise ToolSchemaError(
+                f"tool schema uses array-form 'items' at {path}; the cascade "
+                "validates a single item schema"
+            )
+        for index, item in enumerate(value):
+            _validate(item, items, f"{path}[{index}]")
+    if "minItems" in schema and len(value) < schema["minItems"]:
+        raise _violation(path, f"needs at least {schema['minItems']} items")
+    if "maxItems" in schema and len(value) > schema["maxItems"]:
+        raise _violation(path, f"allows at most {schema['maxItems']} items")
+
+
+def _validate_string(value: Any, schema: dict[str, Any], path: str) -> None:
+    if not isinstance(value, str):
+        raise _violation(path, f"must be a string, got {_json_type(value)}")
+    if "minLength" in schema and len(value) < schema["minLength"]:
+        raise _violation(path, f"needs at least {schema['minLength']} characters")
+    if "maxLength" in schema and len(value) > schema["maxLength"]:
+        raise _violation(path, f"allows at most {schema['maxLength']} characters")
+    if "pattern" in schema:
+        try:
+            matched = re.search(schema["pattern"], value)
+        except re.error as error:
+            raise ToolSchemaError(
+                f"tool schema pattern at {path} is not a valid regex: {error}"
+            ) from error
+        if matched is None:
+            raise _violation(path, f"must match pattern {schema['pattern']!r}")
+
+
+def _validate_number(value: Any, schema: dict[str, Any], path: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise _violation(path, f"must be a number, got {_json_type(value)}")
+    for keyword, comparison, wording in (
+        ("minimum", lambda bound: value >= bound, "at least"),
+        ("maximum", lambda bound: value <= bound, "at most"),
+        ("exclusiveMinimum", lambda bound: value > bound, "greater than"),
+        ("exclusiveMaximum", lambda bound: value < bound, "less than"),
+    ):
+        if keyword not in schema:
+            continue
+        bound = schema[keyword]
+        if isinstance(bound, bool) or not isinstance(bound, (int, float)):
+            raise ToolSchemaError(
+                f"tool schema {keyword} at {path} is not a number"
+            )
+        if not comparison(bound):
+            raise _violation(
+                path, f"{keyword}: must be {wording} {bound!r}"
+            )
+
+
+def _validate(value: Any, schema: Any, path: str) -> None:
+    if not isinstance(schema, dict):
+        raise ToolSchemaError(f"tool schema at {path} is not an object")
+    unsupported = sorted(set(schema) - _SUPPORTED_KEYWORDS)
+    if unsupported:
+        raise ToolSchemaError(
+            f"tool schema at {path} uses unsupported keyword(s) "
+            f"{', '.join(unsupported)}; the cascade refuses a schema it cannot "
+            "enforce instead of executing an unvalidated call"
+        )
+    _validate_enum(value, schema, path)
+    _check_combinations(value, schema, path)
+
+    if "type" in schema:
+        declared = schema["type"]
+        names = [declared] if isinstance(declared, str) else list(declared)
+        if not names:
+            raise ToolSchemaError(f"tool schema type at {path} is empty")
+        if not any(_matches_type(value, name, path) for name in names):
+            expected = " or ".join(names)
+            raise _violation(
+                path, f"must be {expected}, got {_json_type(value)}"
+            )
+
+    object_keywords = {
+        "additionalProperties",
+        "maxProperties",
+        "minProperties",
+        "properties",
+        "required",
+    }
+    if object_keywords & set(schema) or isinstance(value, dict):
+        _validate_object(value, schema, path)
+    if {"items", "maxItems", "minItems"} & set(schema) or isinstance(value, list):
+        _validate_array(value, schema, path)
+    if isinstance(value, str):
+        _validate_string(value, schema, path)
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        _validate_number(value, schema, path)
+
+
+def validate_tool_arguments(
+    arguments: dict[str, Any], schema: dict[str, Any] | None
+) -> None:
+    """Refuse arguments outside the tool's declared schema, before execution.
+
+    A ``None`` schema means the tool declared no parameters, so there is
+    nothing to check; the JSON object-ness was already decided by
+    :func:`parse_tool_arguments`. An enforced keyword outside the documented
+    subset raises :class:`ToolSchemaError` (a turn failure) so a schema can
+    never be silently under-enforced.
+    """
+    if not isinstance(arguments, dict):
+        raise ToolArgumentsError(
+            f"arguments are a JSON {type(arguments).__name__}, not an object",
+            code=TOOL_ARGUMENTS_NOT_AN_OBJECT,
+        )
+    if schema is None:
+        return
+    _validate(arguments, schema, "arguments")
+
+
+def _tool_schemas(tools: Sequence[dict[str, Any]] | None) -> dict[str, Any]:
+    """The declared parameter schema per tool name, for calls we may receive."""
+    schemas: dict[str, Any] = {}
+    for tool in tools or ():
+        if not isinstance(tool, dict):
+            continue
+        function = tool.get("function")
+        if not isinstance(function, dict):
+            continue
+        name = function.get("name")
+        parameters = function.get("parameters")
+        if isinstance(name, str) and isinstance(parameters, dict):
+            schemas[name] = parameters
+    return schemas
 
 
 class _SSEParser:
@@ -625,9 +1132,17 @@ class _TurnStream:
     accumulation, usage, finish disposition) is kept here, not re-parsed later.
     """
 
-    def __init__(self, turn: MetaLLMTurn, ledger: Any = None) -> None:
+    def __init__(
+        self,
+        turn: MetaLLMTurn,
+        ledger: Any = None,
+        tools: Sequence[dict[str, Any]] | None = None,
+    ) -> None:
         self.turn = turn
         self._ledger = ledger
+        #: name -> declared parameter schema. A call whose name has no schema
+        #: cannot be validated; the tool loop's invented-name rule owns it.
+        self._schemas = _tool_schemas(tools)
         #: index -> {"id", "name", "arguments"} as streamed. One slot per index
         #: so a split id, name or argument string joins into one call.
         self._calls: dict[int, dict[str, str]] = {}
@@ -702,22 +1217,31 @@ class _TurnStream:
                 call,
                 "call_id is missing or empty; the call is not executed and the "
                 "turn closes with a hold line",
+                code=TOOL_CALL_ID_MISSING,
             )
             return ToolCallRequest(name=call.name, arguments={}, call_id="")
         try:
             arguments = parse_tool_arguments(call.arguments)
+            validate_tool_arguments(arguments, self._schemas.get(call.name))
         except ToolArgumentsError as error:
+            # Withheld, never executed, and answerable: the tool loop appends
+            # ``denial.as_tool_message()`` so the model corrects next request.
             self.turn.rejected_tool_calls.append(
-                ToolDenial(name=call.name, reason=str(error))
+                ToolDenial(
+                    name=call.name,
+                    reason=str(error),
+                    call_id=call.call_id,
+                    code=error.code,
+                )
             )
             return None
         return ToolCallRequest(
             name=call.name, arguments=arguments, call_id=call.call_id
         )
 
-    def _deny(self, call: MetaToolCall, reason: str) -> None:
+    def _deny(self, call: MetaToolCall, reason: str, *, code: str = "") -> None:
         self.turn.denied_tool_calls.append(
-            ToolDenial(name=call.name, reason=reason)
+            ToolDenial(name=call.name, reason=reason, call_id=call.call_id, code=code)
         )
         self.turn.hold_line_required = True
         if self._ledger is not None:
@@ -824,6 +1348,29 @@ class _AiohttpSession:
 
 
 
+@dataclass
+class _Progress:
+    """How far one attempt got, which is exactly what selects the phase.
+
+    A response status is not enough: a 200 whose stream dies before a token is
+    a ``turn`` failure, and one that dies after content - or after a tool
+    handoff - is a ``reply`` failure that must never be retried. ``delivered``
+    means an event the caller could act on already left this module, so a retry
+    could repeat speech or execute a tool twice.
+    """
+
+    frames: int = 0
+    delivered: bool = False
+
+    @property
+    def phase(self) -> str:
+        if self.delivered:
+            return PHASE_REPLY
+        if self.frames:
+            return PHASE_TURN
+        return PHASE_CONNECT
+
+
 class MetaLLM(LLMStream):
     """``LLMStream`` over Meta's OpenAI-compatible Chat Completions endpoint."""
 
@@ -840,6 +1387,8 @@ class MetaLLM(LLMStream):
         ledger: Any = None,
         internal_id: str | None = None,
         identifier_salt: str | None = None,
+        rungs: CallRungs | None = None,
+        on_alert: Callable[[FailureDecision], None] | None = None,
     ) -> None:
         # Construction guard first: a Contributor id must fail before any
         # request field exists to leak into (ticket 35).
@@ -859,6 +1408,14 @@ class MetaLLM(LLMStream):
         self._safety_identifier = _resolve_safety_identifier(
             internal_id, identifier_salt
         )
+        # Ticket 42: the call's frozen rungs record failures for *future* calls,
+        # and the alert sink hears every terminal decision. Neither moves this
+        # call's rung, and neither retries anything.
+        self._rungs = rungs
+        self._on_alert = on_alert
+        #: Failures on this leg in this call. One retry is allowed, so the
+        #: second failure ends the call (spec "Failures").
+        self._leg_failures = 0
         self._last_turn: MetaLLMTurn | None = None
 
     @property
@@ -913,56 +1470,211 @@ class MetaLLM(LLMStream):
         url = f"{self._base_url}{CHAT_COMPLETIONS_PATH}"
         record = turn if turn is not None else MetaLLMTurn()
         self._last_turn = record
-        stream = _TurnStream(record, self._ledger)
-        parser = _SSEParser()
-        session = self._session_factory(timeout_s=self._timeout_s)
+        attempt = 0
         try:
-            async with session as active:
-                async with active.post(url, headers=headers, json=payload) as response:
-                    if response.status != 200:
-                        raise MetaLLMRequestError(response.status)
-                    async for chunk in response.iter_bytes():
-                        for frame in parser.feed(chunk):
-                            for event in stream.consume(frame):
-                                yield event
-                    for frame in parser.close():
-                        for event in stream.consume(frame):
-                            yield event
-                    for event in stream.finish():
+            while True:
+                attempt += 1
+                progress = _Progress()
+                try:
+                    async for event in self._run_attempt(
+                        url=url,
+                        headers=headers,
+                        payload=payload,
+                        tools=tools,
+                        record=record,
+                        progress=progress,
+                    ):
                         yield event
-                    record.finished = True
+                    return
+                except MetaLLMStreamError:
+                    # A provider contract violation or an unenforceable schema
+                    # is not an outage: never retried, never classified away.
+                    raise
+                except (MetaLLMRequestError, TimeoutError, OSError) as error:
+                    decision, retry = await self._apply_policy(
+                        error, progress, attempt, record
+                    )
+                    if retry:
+                        continue
+                    failure = self._failure_error(decision)
+                    if failure is None:
+                        # An unclassified failure keeps its provider type: the
+                        # policy recorded it and alerted, but it has no action.
+                        raise
+                    raise failure from error
         finally:
             record.close()
+
+    async def _run_attempt(
+        self,
+        *,
+        url: str,
+        headers: dict[str, str],
+        payload: dict[str, Any],
+        tools: list[dict[str, Any]] | None,
+        record: MetaLLMTurn,
+        progress: _Progress,
+    ) -> AsyncIterator[TokenDelta | ToolCallRequest]:
+        """One request and its stream; every attempt gets fresh accumulators.
+
+        Tool deltas from a failed attempt must not join the retry's slots, and a
+        retry is only possible before any content token, so nothing is un-said.
+        """
+        stream = _TurnStream(record, self._ledger, tools)
+        parser = _SSEParser()
+        session = self._session_factory(timeout_s=self._timeout_s)
+        async with session as active:
+            async with active.post(url, headers=headers, json=payload) as response:
+                if response.status != 200:
+                    raise MetaLLMRequestError(response.status)
+                async for chunk in response.iter_bytes():
+                    for frame in parser.feed(chunk):
+                        progress.frames += 1
+                        for event in stream.consume(frame):
+                            progress.delivered = True
+                            yield event
+                for frame in parser.close():
+                    progress.frames += 1
+                    for event in stream.consume(frame):
+                        progress.delivered = True
+                        yield event
+                for event in stream.finish():
+                    progress.delivered = True
+                    yield event
+                record.finished = True
+
+    def _verdict_for(self, error: BaseException) -> FailureVerdict:
+        if isinstance(error, MetaLLMRequestError):
+            return classify("llm", error.status)
+        if isinstance(error, TimeoutError):
+            return classify("llm", None, timed_out=True)
+        return classify("llm", None)
+
+    async def _apply_policy(
+        self,
+        error: BaseException,
+        progress: _Progress,
+        attempt: int,
+        record: MetaLLMTurn,
+    ) -> tuple[FailureDecision, bool]:
+        """Classify one attempt's failure and decide retry/open/fail.
+
+        The phase comes from what the caller already heard, not from the status:
+        only ``connect``/``turn`` may retry, and only the first failure on the
+        leg. A reply failure has no retry available, so it opens the leg at
+        once and the caller drains instead of restarting.
+        """
+        verdict = self._verdict_for(error)
+        phase = progress.phase
+        if verdict.opens_breaker:
+            # A bug is not an outage and never spends the leg's retry budget.
+            self._leg_failures += 1
+        retry = (
+            verdict.opens_breaker
+            and phase != PHASE_REPLY
+            and self._leg_failures == 1
+            and attempt < MAX_LEG_FAILURES
+        )
+        opened = False
+        if verdict.opens_breaker and not retry:
+            opened = await self._open_leg(verdict, phase)
+
+        if retry:
+            reason = (
+                f"{verdict.reason}; retrying once before the first content token"
+            )
+        elif verdict.opens_breaker:
+            reason = (
+                f"{verdict.reason}; the retry policy is spent, so the leg opens"
+            )
+        else:
+            reason = verdict.reason
+        decision = FailureDecision(
+            attempt=attempt,
+            phase=phase,
+            verdict=verdict,
+            retry=retry,
+            opened_leg=opened,
+            reason=reason,
+        )
+        record.failure_decisions.append(decision)
+        if not retry and self._on_alert is not None:
+            self._on_alert(decision)
+        return decision, retry
+
+    async def _open_leg(self, verdict: FailureVerdict, phase: str) -> bool:
+        """Record the failure for future calls; this call's rung never moves."""
+        if self._rungs is None:
+            return False
+        outcome = await self._rungs.failed("llm", verdict=verdict, phase=phase)
+        record = outcome.transition.record
+        return record is not None and record.state == "open"
+
+    def _failure_error(
+        self, decision: FailureDecision
+    ) -> MetaLLMFailure | None:
+        verdict = decision.verdict
+        if verdict.failure_class is FailureClass.TRIGGER:
+            if self._leg_failures >= MAX_LEG_FAILURES:
+                # The one retry was already spent on this leg; a second failure
+                # ends the call even when it lands mid-reply.
+                return MetaLLMLegExhausted(decision)
+            if decision.phase == PHASE_REPLY:
+                return MetaLLMReplyInterrupted(decision)
+            return MetaLLMLegExhausted(decision)
+        if verdict.failure_class is FailureClass.BUG:
+            return MetaLLMTurnFailed(decision)
+        # do_not_open / planned_reconnect: the original provider error stands,
+        # already recorded on the turn and sent to the alert sink.
+        return None
 
 
 __all__ = [
     "CALL_ID_MAX_LENGTH",
     "CHAT_COMPLETIONS_PATH",
+    "FAILURE_PHASES",
     "FIRST_TOKEN_MARK",
     "IDENTIFIER_SALT_ENV",
+    "MAX_LEG_FAILURES",
     "META_BASE_URL",
+    "PHASE_CONNECT",
+    "PHASE_REPLY",
+    "PHASE_TURN",
     "SSE_DONE",
+    "TOOL_ARGUMENTS_INVALID_JSON",
+    "TOOL_ARGUMENTS_MISSING",
+    "TOOL_ARGUMENTS_NOT_AN_OBJECT",
+    "TOOL_ARGUMENTS_SCHEMA",
+    "TOOL_CALL_ID_MISSING",
+    "TOOL_DENIED_COUNTER",
+    "TOOL_FAILURE_CODES",
+    "TOOL_FINISH_REASONS",
     "UNAVAILABLE_REASONING_EFFORT",
+    "FailureDecision",
     "MetaLLM",
     "MetaLLMConfigError",
+    "MetaLLMFailure",
+    "MetaLLMLegExhausted",
+    "MetaLLMReplyInterrupted",
     "MetaLLMRequestError",
     "MetaLLMStreamError",
     "MetaLLMTurn",
+    "MetaLLMTurnFailed",
     "MetaToolCall",
     "ReasoningEffortError",
     "ReplyDisposition",
     "ReplyOutcome",
-    "TOOL_DENIED_COUNTER",
-    "TOOL_FINISH_REASONS",
     "ToolArgumentsError",
     "ToolCallIdentityError",
     "ToolDenial",
+    "ToolSchemaError",
     "TurnUsage",
     "build_chat_request",
     "build_messages",
     "parse_tool_arguments",
-    "privacy_identifier",
     "parse_usage",
+    "privacy_identifier",
     "reply_disposition",
     "resolve_reasoning_effort",
+    "validate_tool_arguments",
 ]

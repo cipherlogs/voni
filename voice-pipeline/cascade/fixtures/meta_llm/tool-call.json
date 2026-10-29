@@ -1,0 +1,64 @@
+{
+  "name": "tool-call",
+  "description": "One complete tool call in one delta, a tool_calls finish reason and usage.",
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "lookup_rate",
+        "description": "Current refinance rate for an amount and term",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "amount": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "term": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "amount"
+          ],
+          "additionalProperties": false
+        }
+      }
+    }
+  ],
+  "chunks": [
+    "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_rate_1\",\"type\":\"function\",\"function\":{\"name\":\"lookup_rate\",\"arguments\":\"{\\\"amount\\\": 40000, \\\"term\\\": 30}\"}}]},\"finish_reason\":null}]}\n\n",
+    "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+    "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":55,\"completion_tokens\":14,\"total_tokens\":69}}\n\n",
+    "data: [DONE]\n\n"
+  ],
+  "expect": {
+    "spoken": [],
+    "content": "",
+    "reasoning": "",
+    "reasoning_deltas": 0,
+    "finish_reason": "tool_calls",
+    "outcome": "tool_handoff",
+    "speak": false,
+    "retry_allowed": false,
+    "hold_line": true,
+    "truncated": false,
+    "filtered": false,
+    "tool_calls": [
+      {
+        "index": 0,
+        "call_id": "call_rate_1",
+        "name": "lookup_rate",
+        "arguments": "{\"amount\": 40000, \"term\": 30}"
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 55,
+      "completion_tokens": 14,
+      "total_tokens": 69,
+      "cached_tokens": null,
+      "reasoning_tokens": null,
+      "measured": true
+    }
+  }
+}

@@ -1,0 +1,39 @@
+{
+  "name": "normal-reply",
+  "description": "Three content deltas, a stop, usage, then [DONE]. Unknown additive vendor fields are present and must be ignored.",
+  "tools": [],
+  "chunks": [
+    "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Your rate is \"},\"finish_reason\":null}],\"service_tier\":\"default\",\"system_fingerprint\":\"fp_recorded\"}\n\n",
+    "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"6.2\",\"vendor_note\":\"not part of the contract\"},\"finish_reason\":null}]}\n\n",
+    "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\" percent.\"},\"finish_reason\":null}]}\n\n",
+    "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+    "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":42,\"completion_tokens\":9,\"total_tokens\":51}}\n\n",
+    "data: [DONE]\n\n"
+  ],
+  "expect": {
+    "spoken": [
+      "Your rate is ",
+      "6.2",
+      " percent."
+    ],
+    "content": "Your rate is 6.2 percent.",
+    "reasoning": "",
+    "reasoning_deltas": 0,
+    "finish_reason": "stop",
+    "outcome": "normal",
+    "speak": true,
+    "retry_allowed": false,
+    "hold_line": false,
+    "truncated": false,
+    "filtered": false,
+    "tool_calls": [],
+    "usage": {
+      "prompt_tokens": 42,
+      "completion_tokens": 9,
+      "total_tokens": 51,
+      "cached_tokens": null,
+      "reasoning_tokens": null,
+      "measured": true
+    }
+  }
+}

@@ -1,0 +1,67 @@
+{
+  "name": "split-tool-delta",
+  "description": "One tool call whose id, name and argument text are split across four deltas; exactly one request per index.",
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "lookup_rate",
+        "description": "Current refinance rate for an amount and term",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "amount": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "term": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "amount"
+          ],
+          "additionalProperties": false
+        }
+      }
+    }
+  ],
+  "chunks": [
+    "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"type\":\"function\",\"id\":\"call_\",\"function\":{\"name\":\"lookup_\",\"arguments\":\"\"}}]},\"finish_reason\":null}]}\n\n",
+    "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"rate_2\",\"function\":{\"name\":\"rate\",\"arguments\":\"{\\\"amo\"}}]},\"finish_reason\":null}]}\n\n",
+    "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"unt\\\": 25\"}}]},\"finish_reason\":null}]}\n\n",
+    "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"0000, \\\"term\\\": 15}\"}}]},\"finish_reason\":null}]}\n\n",
+    "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+    "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":48,\"completion_tokens\":18,\"total_tokens\":66}}\n\n",
+    "data: [DONE]\n\n"
+  ],
+  "expect": {
+    "spoken": [],
+    "content": "",
+    "reasoning": "",
+    "reasoning_deltas": 0,
+    "finish_reason": "tool_calls",
+    "outcome": "tool_handoff",
+    "speak": false,
+    "retry_allowed": false,
+    "hold_line": true,
+    "truncated": false,
+    "filtered": false,
+    "tool_calls": [
+      {
+        "index": 0,
+        "call_id": "call_rate_2",
+        "name": "lookup_rate",
+        "arguments": "{\"amount\": 250000, \"term\": 15}"
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 48,
+      "completion_tokens": 18,
+      "total_tokens": 66,
+      "cached_tokens": null,
+      "reasoning_tokens": null,
+      "measured": true
+    }
+  }
+}

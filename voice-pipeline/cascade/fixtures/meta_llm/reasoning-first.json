@@ -1,0 +1,37 @@
+{
+  "name": "reasoning-first",
+  "description": "Reasoning deltas precede the first content token; reasoning is recorded but never spoken.",
+  "tools": [],
+  "chunks": [
+    "data: {\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"The caller wants \"},\"finish_reason\":null}]}\n\n",
+    "data: {\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"the refinance rate.\"},\"finish_reason\":null}]}\n\n",
+    "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Let me check that.\"},\"finish_reason\":null}]}\n\n",
+    "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+    "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":30,\"completion_tokens\":20,\"total_tokens\":50,\"completion_tokens_details\":{\"reasoning_tokens\":12}}}\n\n",
+    "data: [DONE]\n\n"
+  ],
+  "expect": {
+    "spoken": [
+      "Let me check that."
+    ],
+    "content": "Let me check that.",
+    "reasoning": "The caller wants the refinance rate.",
+    "reasoning_deltas": 2,
+    "finish_reason": "stop",
+    "outcome": "normal",
+    "speak": true,
+    "retry_allowed": false,
+    "hold_line": false,
+    "truncated": false,
+    "filtered": false,
+    "tool_calls": [],
+    "usage": {
+      "prompt_tokens": 30,
+      "completion_tokens": 20,
+      "total_tokens": 50,
+      "cached_tokens": null,
+      "reasoning_tokens": 12,
+      "measured": true
+    }
+  }
+}
