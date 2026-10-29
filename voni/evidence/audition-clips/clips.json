@@ -1,0 +1,445 @@
+{
+  "schemaVersion": 1,
+  "generatedOn": "2026-10-29",
+  "command": "cd voni && npm run voice:clips",
+  "source": "silent-greeting Voice Agent session (output.voice only: no output.volume, no gain, no limiter), the same payload the agent speaks through",
+  "bitrateKbps": 160,
+  "minSurvivingBitrateKbps": 128,
+  "secondEncodeKbps": 128,
+  "levelToleranceLu": 0.75,
+  "clips": [
+    {
+      "voice": "alba",
+      "locale": "en",
+      "line": "Hi, I'm Voni! Let's try something cool: I'll show you what I can do while we talk. Ready?",
+      "lineSha256": "1fc5f4bc46cd75037b68c4af616afb58740fb27478ec90652c45a7ff48f18ac6",
+      "asset": "public/voices/alba.mp3",
+      "url": "/voices/alba.mp3",
+      "volume": 100,
+      "facts": {
+        "sampleRate": 24000,
+        "channels": 1,
+        "bitrateKbps": 160,
+        "frames": 228,
+        "durationMs": 5472
+      },
+      "level": {
+        "sourceIntegratedLufs": -18.36,
+        "assetIntegratedLufs": -18.8,
+        "assetTruePeakDbtp": -5.25,
+        "assetCrestDb": 13.43,
+        "secondEncodeLufs": -19.31,
+        "secondEncodeTruePeakDbtp": -5.69,
+        "secondEncodeCrestDb": 13.48,
+        "referenceIntegratedLufs": -21.78
+      },
+      "generatedOn": "2026-10-29"
+    },
+    {
+      "voice": "eve",
+      "locale": "en",
+      "line": "Hi, I'm Voni! Let's try something cool: I'll show you what I can do while we talk. Ready?",
+      "lineSha256": "1fc5f4bc46cd75037b68c4af616afb58740fb27478ec90652c45a7ff48f18ac6",
+      "asset": "public/voices/eve.mp3",
+      "url": "/voices/eve.mp3",
+      "volume": 100,
+      "facts": {
+        "sampleRate": 24000,
+        "channels": 1,
+        "bitrateKbps": 160,
+        "frames": 224,
+        "durationMs": 5376
+      },
+      "level": {
+        "sourceIntegratedLufs": -18.02,
+        "assetIntegratedLufs": -18.56,
+        "assetTruePeakDbtp": -0.79,
+        "assetCrestDb": 18.6,
+        "secondEncodeLufs": -18.91,
+        "secondEncodeTruePeakDbtp": -1.24,
+        "secondEncodeCrestDb": 18.63,
+        "referenceIntegratedLufs": -22.24
+      },
+      "generatedOn": "2026-10-29"
+    },
+    {
+      "voice": "jane",
+      "locale": "en",
+      "line": "Hi, I'm Voni! Let's try something cool: I'll show you what I can do while we talk. Ready?",
+      "lineSha256": "1fc5f4bc46cd75037b68c4af616afb58740fb27478ec90652c45a7ff48f18ac6",
+      "asset": "public/voices/jane.mp3",
+      "url": "/voices/jane.mp3",
+      "volume": 100,
+      "facts": {
+        "sampleRate": 24000,
+        "channels": 1,
+        "bitrateKbps": 160,
+        "frames": 224,
+        "durationMs": 5376
+      },
+      "level": {
+        "sourceIntegratedLufs": -18.6,
+        "assetIntegratedLufs": -18.96,
+        "assetTruePeakDbtp": -2.36,
+        "assetCrestDb": 16.99,
+        "secondEncodeLufs": -19.49,
+        "secondEncodeTruePeakDbtp": -2.8,
+        "secondEncodeCrestDb": 17.03,
+        "referenceIntegratedLufs": -20.57
+      },
+      "generatedOn": "2026-10-29"
+    },
+    {
+      "voice": "mary",
+      "locale": "en",
+      "line": "Hi, I'm Voni! Let's try something cool: I'll show you what I can do while we talk. Ready?",
+      "lineSha256": "1fc5f4bc46cd75037b68c4af616afb58740fb27478ec90652c45a7ff48f18ac6",
+      "asset": "public/voices/mary.mp3",
+      "url": "/voices/mary.mp3",
+      "volume": 100,
+      "facts": {
+        "sampleRate": 24000,
+        "channels": 1,
+        "bitrateKbps": 160,
+        "frames": 196,
+        "durationMs": 4704
+      },
+      "level": {
+        "sourceIntegratedLufs": -16.95,
+        "assetIntegratedLufs": -17.5,
+        "assetTruePeakDbtp": -1.78,
+        "assetCrestDb": 16.07,
+        "secondEncodeLufs": -17.85,
+        "secondEncodeTruePeakDbtp": -2.22,
+        "secondEncodeCrestDb": 16.12,
+        "referenceIntegratedLufs": -21.03
+      },
+      "generatedOn": "2026-10-29"
+    },
+    {
+      "voice": "george",
+      "locale": "en",
+      "line": "Hi, I'm Voni! Let's try something cool: I'll show you what I can do while we talk. Ready?",
+      "lineSha256": "1fc5f4bc46cd75037b68c4af616afb58740fb27478ec90652c45a7ff48f18ac6",
+      "asset": "public/voices/george.mp3",
+      "url": "/voices/george.mp3",
+      "volume": 100,
+      "facts": {
+        "sampleRate": 24000,
+        "channels": 1,
+        "bitrateKbps": 160,
+        "frames": 250,
+        "durationMs": 6000
+      },
+      "level": {
+        "sourceIntegratedLufs": -19.36,
+        "assetIntegratedLufs": -19.99,
+        "assetTruePeakDbtp": -0.36,
+        "assetCrestDb": 20.4,
+        "secondEncodeLufs": -20.35,
+        "secondEncodeTruePeakDbtp": -0.8,
+        "secondEncodeCrestDb": 20.44,
+        "referenceIntegratedLufs": -22.39
+      },
+      "generatedOn": "2026-10-29"
+    },
+    {
+      "voice": "michael",
+      "locale": "en",
+      "line": "Hi, I'm Voni! Let's try something cool: I'll show you what I can do while we talk. Ready?",
+      "lineSha256": "1fc5f4bc46cd75037b68c4af616afb58740fb27478ec90652c45a7ff48f18ac6",
+      "asset": "public/voices/michael.mp3",
+      "url": "/voices/michael.mp3",
+      "volume": 100,
+      "facts": {
+        "sampleRate": 24000,
+        "channels": 1,
+        "bitrateKbps": 160,
+        "frames": 231,
+        "durationMs": 5544
+      },
+      "level": {
+        "sourceIntegratedLufs": -18.2,
+        "assetIntegratedLufs": -18.83,
+        "assetTruePeakDbtp": -0.93,
+        "assetCrestDb": 17.74,
+        "secondEncodeLufs": -19.09,
+        "secondEncodeTruePeakDbtp": -1.36,
+        "secondEncodeCrestDb": 17.78,
+        "referenceIntegratedLufs": -22.63
+      },
+      "generatedOn": "2026-10-29"
+    },
+    {
+      "voice": "jean",
+      "locale": "en",
+      "line": "Hi, I'm Voni! Let's try something cool: I'll show you what I can do while we talk. Ready?",
+      "lineSha256": "1fc5f4bc46cd75037b68c4af616afb58740fb27478ec90652c45a7ff48f18ac6",
+      "asset": "public/voices/jean.mp3",
+      "url": "/voices/jean.mp3",
+      "volume": 100,
+      "facts": {
+        "sampleRate": 24000,
+        "channels": 1,
+        "bitrateKbps": 160,
+        "frames": 200,
+        "durationMs": 4800
+      },
+      "level": {
+        "sourceIntegratedLufs": -16.73,
+        "assetIntegratedLufs": -17.28,
+        "assetTruePeakDbtp": -0.35,
+        "assetCrestDb": 17.16,
+        "secondEncodeLufs": -17.62,
+        "secondEncodeTruePeakDbtp": -0.81,
+        "secondEncodeCrestDb": 17.23,
+        "referenceIntegratedLufs": -21.89
+      },
+      "generatedOn": "2026-10-29"
+    },
+    {
+      "voice": "anna",
+      "locale": "en",
+      "line": "Hi, I'm Voni! Let's try something cool: I'll show you what I can do while we talk. Ready?",
+      "lineSha256": "1fc5f4bc46cd75037b68c4af616afb58740fb27478ec90652c45a7ff48f18ac6",
+      "asset": "public/voices/anna.mp3",
+      "url": "/voices/anna.mp3",
+      "volume": 100,
+      "facts": {
+        "sampleRate": 24000,
+        "channels": 1,
+        "bitrateKbps": 160,
+        "frames": 251,
+        "durationMs": 6024
+      },
+      "level": {
+        "sourceIntegratedLufs": -17.37,
+        "assetIntegratedLufs": -17.74,
+        "assetTruePeakDbtp": -1.57,
+        "assetCrestDb": 16.4,
+        "secondEncodeLufs": -18.34,
+        "secondEncodeTruePeakDbtp": -2.02,
+        "secondEncodeCrestDb": 16.43,
+        "referenceIntegratedLufs": -20.11
+      },
+      "generatedOn": "2026-10-29"
+    },
+    {
+      "voice": "vera",
+      "locale": "en",
+      "line": "Hi, I'm Voni! Let's try something cool: I'll show you what I can do while we talk. Ready?",
+      "lineSha256": "1fc5f4bc46cd75037b68c4af616afb58740fb27478ec90652c45a7ff48f18ac6",
+      "asset": "public/voices/vera.mp3",
+      "url": "/voices/vera.mp3",
+      "volume": 100,
+      "facts": {
+        "sampleRate": 24000,
+        "channels": 1,
+        "bitrateKbps": 160,
+        "frames": 257,
+        "durationMs": 6168
+      },
+      "level": {
+        "sourceIntegratedLufs": -19.06,
+        "assetIntegratedLufs": -19.75,
+        "assetTruePeakDbtp": -2.36,
+        "assetCrestDb": 17.41,
+        "secondEncodeLufs": -19.95,
+        "secondEncodeTruePeakDbtp": -2.81,
+        "secondEncodeCrestDb": 17.44,
+        "referenceIntegratedLufs": -21.21
+      },
+      "generatedOn": "2026-10-29"
+    },
+    {
+      "voice": "charles",
+      "locale": "en",
+      "line": "Hi, I'm Voni! Let's try something cool: I'll show you what I can do while we talk. Ready?",
+      "lineSha256": "1fc5f4bc46cd75037b68c4af616afb58740fb27478ec90652c45a7ff48f18ac6",
+      "asset": "public/voices/charles.mp3",
+      "url": "/voices/charles.mp3",
+      "volume": 100,
+      "facts": {
+        "sampleRate": 24000,
+        "channels": 1,
+        "bitrateKbps": 160,
+        "frames": 243,
+        "durationMs": 5832
+      },
+      "level": {
+        "sourceIntegratedLufs": -20.93,
+        "assetIntegratedLufs": -21.55,
+        "assetTruePeakDbtp": -1.18,
+        "assetCrestDb": 20.6,
+        "secondEncodeLufs": -21.82,
+        "secondEncodeTruePeakDbtp": -1.63,
+        "secondEncodeCrestDb": 20.63,
+        "referenceIntegratedLufs": -20.64
+      },
+      "generatedOn": "2026-10-29"
+    },
+    {
+      "voice": "paul",
+      "locale": "en",
+      "line": "Hi, I'm Voni! Let's try something cool: I'll show you what I can do while we talk. Ready?",
+      "lineSha256": "1fc5f4bc46cd75037b68c4af616afb58740fb27478ec90652c45a7ff48f18ac6",
+      "asset": "public/voices/paul.mp3",
+      "url": "/voices/paul.mp3",
+      "volume": 100,
+      "facts": {
+        "sampleRate": 24000,
+        "channels": 1,
+        "bitrateKbps": 160,
+        "frames": 267,
+        "durationMs": 6408
+      },
+      "level": {
+        "sourceIntegratedLufs": -19.89,
+        "assetIntegratedLufs": -20.34,
+        "assetTruePeakDbtp": -2.5,
+        "assetCrestDb": 18.19,
+        "secondEncodeLufs": -20.78,
+        "secondEncodeTruePeakDbtp": -2.94,
+        "secondEncodeCrestDb": 18.22,
+        "referenceIntegratedLufs": -22.04
+      },
+      "generatedOn": "2026-10-29"
+    },
+    {
+      "voice": "giovanni",
+      "locale": "it",
+      "line": "Ciao, sono Voni! Proviamo una cosa forte: ti mostro cosa so fare mentre parliamo. Pronti?",
+      "lineSha256": "b7851e240bccefa1ebf60b9cbeabfccec6926cc3b1b3b3b2131431bf01d5b096",
+      "asset": "public/voices/giovanni.mp3",
+      "url": "/voices/giovanni.mp3",
+      "volume": 100,
+      "facts": {
+        "sampleRate": 24000,
+        "channels": 1,
+        "bitrateKbps": 160,
+        "frames": 297,
+        "durationMs": 7128
+      },
+      "level": {
+        "sourceIntegratedLufs": -26.42,
+        "assetIntegratedLufs": -26.73,
+        "assetTruePeakDbtp": -8.69,
+        "assetCrestDb": 18.16,
+        "secondEncodeLufs": -27.19,
+        "secondEncodeTruePeakDbtp": -9.14,
+        "secondEncodeCrestDb": 18.2,
+        "referenceIntegratedLufs": -25.56
+      },
+      "generatedOn": "2026-10-29"
+    },
+    {
+      "voice": "lola",
+      "locale": "es",
+      "line": "¡Hola, soy Voni! Probemos algo genial: te muestro lo que puedo hacer mientras hablamos. ¿Listo?",
+      "lineSha256": "6201fc2c3e7d4105ff48c2a3a54b1aaab57778cb077accf505979876d19b1af3",
+      "asset": "public/voices/lola.mp3",
+      "url": "/voices/lola.mp3",
+      "volume": 100,
+      "facts": {
+        "sampleRate": 24000,
+        "channels": 1,
+        "bitrateKbps": 160,
+        "frames": 401,
+        "durationMs": 9624
+      },
+      "level": {
+        "sourceIntegratedLufs": -26.2,
+        "assetIntegratedLufs": -26.88,
+        "assetTruePeakDbtp": -9.62,
+        "assetCrestDb": 19.03,
+        "secondEncodeLufs": -27.17,
+        "secondEncodeTruePeakDbtp": -10.07,
+        "secondEncodeCrestDb": 19.04,
+        "referenceIntegratedLufs": -23.75
+      },
+      "generatedOn": "2026-10-29"
+    },
+    {
+      "voice": "juergen",
+      "locale": "de",
+      "line": "Hallo, hier ist Voni! Probieren wir etwas Cooles: Ich zeige Ihnen, was ich kann, während wir reden. Bereit?",
+      "lineSha256": "13c495456ca28f42280a6106a89b48bdfae29906b4c332bc12d5ba66184162a4",
+      "asset": "public/voices/juergen.mp3",
+      "url": "/voices/juergen.mp3",
+      "volume": 100,
+      "facts": {
+        "sampleRate": 24000,
+        "channels": 1,
+        "bitrateKbps": 160,
+        "frames": 277,
+        "durationMs": 6648
+      },
+      "level": {
+        "sourceIntegratedLufs": -29.44,
+        "assetIntegratedLufs": -29.93,
+        "assetTruePeakDbtp": -12.64,
+        "assetCrestDb": 17,
+        "secondEncodeLufs": -30.36,
+        "secondEncodeTruePeakDbtp": -13.08,
+        "secondEncodeCrestDb": 17.04,
+        "referenceIntegratedLufs": null
+      },
+      "generatedOn": "2026-10-29"
+    },
+    {
+      "voice": "rafael",
+      "locale": "pt",
+      "line": "Olá, aqui é Voni! Vamos testar algo legal: mostro o que sei fazer enquanto conversamos. Pronto?",
+      "lineSha256": "986ac5a8c6b90333f8b460c53942d93d5ea73d821ca543c8541cd6d0f953f9ce",
+      "asset": "public/voices/rafael.mp3",
+      "url": "/voices/rafael.mp3",
+      "volume": 100,
+      "facts": {
+        "sampleRate": 24000,
+        "channels": 1,
+        "bitrateKbps": 160,
+        "frames": 324,
+        "durationMs": 7776
+      },
+      "level": {
+        "sourceIntegratedLufs": -29.64,
+        "assetIntegratedLufs": -30.18,
+        "assetTruePeakDbtp": -9.63,
+        "assetCrestDb": 22.23,
+        "secondEncodeLufs": -30.42,
+        "secondEncodeTruePeakDbtp": -10.08,
+        "secondEncodeCrestDb": 22.26,
+        "referenceIntegratedLufs": -26.41
+      },
+      "generatedOn": "2026-10-29"
+    },
+    {
+      "voice": "estelle",
+      "locale": "fr",
+      "line": "Bonjour, ici Voni ! On essaie un truc sympa : je vous montre ce que je sais faire pendant qu'on parle. On y va ?",
+      "lineSha256": "7a589e68f350b7536dd77415c4c1f795b185c563e9f88e4b796da267a3811f5e",
+      "asset": "public/voices/estelle.mp3",
+      "url": "/voices/estelle.mp3",
+      "volume": 100,
+      "facts": {
+        "sampleRate": 24000,
+        "channels": 1,
+        "bitrateKbps": 160,
+        "frames": 560,
+        "durationMs": 13440
+      },
+      "level": {
+        "sourceIntegratedLufs": -26.09,
+        "assetIntegratedLufs": -26.54,
+        "assetTruePeakDbtp": -8.32,
+        "assetCrestDb": 20.53,
+        "secondEncodeLufs": -26.98,
+        "secondEncodeTruePeakDbtp": -8.77,
+        "secondEncodeCrestDb": 20.55,
+        "referenceIntegratedLufs": -25.34
+      },
+      "generatedOn": "2026-10-29"
+    }
+  ],
+  "pending": []
+}
