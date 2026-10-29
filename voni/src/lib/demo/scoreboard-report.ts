@@ -6,8 +6,11 @@
  * 30k-line transcript: run identity, scenario verdicts, gates and sub-scores,
  * per-session turn gaps/cuts (heard/resume/aside flags) with each turn's
  * latency split and band, an ordinary vs post-cut summary (median/p95 per wait,
- * `perceived` report-only), drain/aside/hang-up numbers, playout, and only the
- * last failures. `--json` prints the same structure for a machine.
+ * `perceived` report-only), the adoption inputs for the turn-window experiment
+ * (compact gate tally, fragment risk at caller turn ends, incomplete-clause
+ * continuations, interrupted-turn count, end-of-turn labelling) as evidence
+ * only, drain/aside/hang-up numbers, playout, and only the last failures.
+ * `--json` prints the same structure for a machine.
  *
  * Everything here is pure: the CLI reads files, this module turns an artifact
  * (plus an optional event stream) into a report and formats it. Evidence the
@@ -16,6 +19,7 @@
  * rows via the same turn parser.
  */
 import {
+  EMAIL_INVITE_TAG,
   percentile,
   type RunnerPlayout,
   type ScoreboardArtifact,
@@ -93,6 +97,70 @@ export type InspectDrain = {
   missingGoodbye: boolean;
 };
 
+/**
+ * The run's end-of-turn pacing. Absent experiment evidence reads as production
+ * (whichever way its gate row went), never as an experiment and never as a
+ * verdict.
+ */
+export type InspectEndOfTurn = {
+  mode: "production" | "experimental";
+  variant: string | null;
+  variantKey: string | null;
+  turnWindows: DemoTurnWindows | null;
+  /** The production body the gate checked stays adaptive (`turn_detection: null`). */
+  productionTurnDetection: null;
+};
+
+/** Compact gate tally; the full rows stay in `gates`, so nothing is hidden. */
+export type InspectGateTally = {
+  total: number;
+  pass: number;
+  info: number;
+  fail: number;
+  failing: string[];
+};
+
+export type InspectFragmentKind = "tag" | "email" | "number";
+
+/** One caller turn whose transcript ends inside the tag, the address or a number. */
+export type InspectFragmentFinding = {
+  kind: InspectFragmentKind;
+  sessionId: string | null;
+  /** 1-based caller turn in that session's Call trace; null when only the ledger had the words. */
+  turn: number | null;
+};
+
+export type InspectFragmentRisk = {
+  status: "clear" | "risk" | "unmeasured";
+  findings: InspectFragmentFinding[];
+};
+
+/** One caller turn that stopped mid-clause and the next turn that continued it. */
+export type InspectIncompleteFinding = {
+  sessionId: string | null;
+  turn: number | null;
+  nextTurn: number | null;
+};
+
+export type InspectIncompleteClause = {
+  status: "clear" | "risk" | "unmeasured";
+  findings: InspectIncompleteFinding[];
+};
+
+/**
+ * Adoption inputs, read from the same artifact as the gates. They are evidence
+ * for a human to judge: this module never derives a pass/fail/safe verdict from
+ * them and never feeds a gate.
+ */
+export type InspectAdoption = {
+  gates: InspectGateTally;
+  fragmentRisk: InspectFragmentRisk;
+  incompleteClause: InspectIncompleteClause;
+  /** Distinct Call-trace turns cut mid-reply; null when the artifact has no turn evidence. */
+  interruptedTurns: number | null;
+  endOfTurn: InspectEndOfTurn;
+};
+
 export type InspectReport = {
   run: InspectRunIdentity;
   scenarios: InspectScenario[];
@@ -100,6 +168,7 @@ export type InspectReport = {
   subScores: { name: string; status: string }[];
   sessions: InspectSession[];
   latency: InspectLatency;
+  adoption: InspectAdoption;
   drain: InspectDrain;
   overTalkAside: RunnerEvidenceAside | null;
   hangUps: RunnerEvidenceHangUp[];
@@ -231,6 +300,257 @@ function latencyBands(sessions: InspectSession[]): InspectLatency {
   };
 }
 
+const DIGIT_WORDS = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine"];
+
+const escapeRegex = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** One caller transcript from the artifact's Call trace (or its redacted ledger). */
+type CallerTranscript = {
+  sessionId: string | null;
+  /** 1-based caller turn in that Call trace; null for a ledger line with no merged turn. */
+  turn: number | null;
+  text: string;
+};
+
+const TRACE_HEARD = /^\s*\d+(?:\.\d+)?s\s+HEARD\s+"(.*)"\s+\(/;
+
+/**
+ * Caller turns as the merged Call trace printed them. A clip truncated by the
+ * trace's own character cap (`…`) is skipped: its end is the cap, not a turn.
+ */
+function callerTurnsFromExcerpt(excerpt: string[], sessionId: string): CallerTranscript[] {
+  const turns: CallerTranscript[] = [];
+  for (const line of excerpt) {
+    const match = TRACE_HEARD.exec(line);
+    if (!match) continue;
+    const text = match[1] ?? "";
+    if (text.endsWith("…")) continue;
+    turns.push({ sessionId, turn: turns.length + 1, text });
+  }
+  return turns;
+}
+
+/**
+ * Caller transcript evidence from the artifact itself: the Call trace's HEARD
+ * rows when merged (so a turn and session can be named), else the redacted
+ * runner ledger (`heard: "…"`), which carries no turn. Never the raw runner
+ * stdout, never an invented turn.
+ */
+function traceExcerpts(
+  artifact: ScoreboardArtifact,
+  sessionId: string | null | undefined,
+): { sessionId: string; excerpt: string[] }[] {
+  const trace = artifact.callTrace;
+  if (!trace) return [];
+  const excerpts =
+    trace.sessions && trace.sessions.length > 0
+      ? trace.sessions.map((session) => ({
+          sessionId: session.sessionId,
+          excerpt: session.excerpt,
+        }))
+      : [{ sessionId: trace.sessionId, excerpt: trace.excerpt }];
+  return excerpts.filter((session) => !sessionId || session.sessionId === sessionId);
+}
+
+function callerTranscripts(
+  artifact: ScoreboardArtifact,
+  sessionId: string | null | undefined,
+): CallerTranscript[] {
+  const traceRows = traceExcerpts(artifact, sessionId).flatMap((session) =>
+    callerTurnsFromExcerpt(session.excerpt, session.sessionId),
+  );
+  if (traceRows.length > 0) return traceRows;
+  // With `--session` the ledger cannot be attributed to a call, so it is skipped.
+  if (sessionId) return [];
+  const rows: CallerTranscript[] = [];
+  for (const line of artifact.transcripts?.redacted ?? []) {
+    const heard = /^\s*heard:\s*(.*)$/i.exec(line);
+    if (!heard) continue;
+    for (const quoted of (heard[1] ?? "").matchAll(/"([^"]*)"/g)) {
+      rows.push({ sessionId: null, turn: null, text: quoted[1] ?? "" });
+    }
+  }
+  return rows;
+}
+
+/**
+ * Whether the caller's words end inside the Test tag ("Lime 4" for "Lime 42",
+ * including spoken digits). A whole tag, however spoken, is not a fragment.
+ */
+function tagFragment(text: string, tag: string): boolean {
+  const [word = "", digits = ""] = tag.toLowerCase().split(" ");
+  if (!word) return false;
+  const w = escapeRegex(word);
+  const sep = "\\s*(?:-\\s*|\\s)?";
+  const digitChars = digits.split("");
+  const trailing = "(?:\\s|[^a-z0-9])*$";
+  const digitPattern = digitChars.map(escapeRegex).join(sep);
+  const spokenPattern = digitChars
+    .map((digit) => escapeRegex(DIGIT_WORDS[Number(digit)] ?? digit))
+    .join("\\s+");
+  if (new RegExp(`(?:^|[^a-z0-9])${w}${sep}${digitPattern}${trailing}`, "i").test(text)) return false;
+  if (new RegExp(`(?:^|[^a-z0-9])${w}\\s+${spokenPattern}${trailing}`, "i").test(text)) return false;
+  if (new RegExp(`(?:^|[^a-z0-9])${w}${trailing}`, "i").test(text)) return true;
+  if (digitChars.length === 0) return false;
+  const firstDigit = escapeRegex(digitChars[0] ?? "");
+  const firstSpoken = escapeRegex(DIGIT_WORDS[Number(digitChars[0])] ?? digitChars[0] ?? "");
+  return (
+    new RegExp(`(?:^|[^a-z0-9])${w}${sep}${firstDigit}${trailing}`, "i").test(text) ||
+    new RegExp(`(?:^|[^a-z0-9])${w}\\s+${firstSpoken}${trailing}`, "i").test(text)
+  );
+}
+
+/**
+ * Whether the caller's words end inside a spoken or written address: after
+ * "at"/"@", after "dot", or on a single trailing domain letter. A redacted
+ * whole address (`[email]`) and a fully spelled one ("dot p t") are whole.
+ */
+function emailFragment(text: string): boolean {
+  const trimmed = text.trim().replace(/[.!?,;:"]+$/g, "");
+  if (/\[email\]$/i.test(trimmed)) return false;
+  return /(?:\b(?:at|@)\s*[a-z0-9-]*|\b(?:dot|\.)\s*[a-z]{0,1})\s*$/i.test(trimmed);
+}
+
+/**
+ * Whether the caller's words end on a bare single digit (or a spoken digit).
+ * A two-or-more-digit number reads as a whole number, never a fragment; for
+ * longer numbers the artifact redacts them to `[phone]`.
+ */
+function numberFragment(text: string): boolean {
+  const match = /(?:^|[^a-z0-9])([a-z0-9]+)\s*$/i.exec(text.trim());
+  if (!match) return false;
+  const token = (match[1] ?? "").toLowerCase();
+  if (/^\d+$/.test(token)) return token.length === 1;
+  return DIGIT_WORDS.includes(token) || token === "oh";
+}
+
+function fragmentKind(text: string, tag: string): InspectFragmentKind | null {
+  if (tagFragment(text, tag)) return "tag";
+  if (emailFragment(text)) return "email";
+  if (numberFragment(text)) return "number";
+  return null;
+}
+
+function fragmentRisk(transcripts: CallerTranscript[], tag: string): InspectFragmentRisk {
+  if (transcripts.length === 0) return { status: "unmeasured", findings: [] };
+  const findings: InspectFragmentFinding[] = [];
+  for (const transcript of transcripts) {
+    const kind = fragmentKind(transcript.text, tag);
+    if (kind) findings.push({ kind, sessionId: transcript.sessionId, turn: transcript.turn });
+  }
+  return { status: findings.length > 0 ? "risk" : "clear", findings };
+}
+
+/**
+ * Words that leave a clause hanging, and words a next caller turn starts with
+ * when it picks that clause up. Heuristic evidence for a human reader, never a
+ * gate: a turn must both stop on a dangling word (or punctuation) and be
+ * followed, in the same call, by a turn that starts as a continuation.
+ */
+const INCOMPLETE_ENDINGS = new Set([
+  "and", "but", "or", "so", "because", "like", "um", "uh", "the", "a", "an",
+  "to", "of", "for", "with", "at", "in", "on", "about", "if", "when", "then",
+  "just", "really", "very", "gonna", "wanna",
+]);
+
+const CONTINUATION_STARTS = new Set([
+  "and", "but", "or", "so", "because", "also", "plus", "then", "well", "yeah",
+  "yes", "no", "okay", "right", "the", "a", "an", "my", "our", "your", "their",
+  "it", "that", "this", "i", "we", "you", "is", "are", "was", "were", "just", "like",
+]);
+
+function wordsOf(text: string): string[] {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+function endsIncomplete(text: string): boolean {
+  if (/[,;:—–-]\s*$/.test(text.trim())) return true;
+  const tokens = wordsOf(text);
+  const last = tokens[tokens.length - 1];
+  return last !== undefined && INCOMPLETE_ENDINGS.has(last);
+}
+
+function startsContinuation(text: string): boolean {
+  const [first] = wordsOf(text);
+  return first !== undefined && CONTINUATION_STARTS.has(first);
+}
+
+function incompleteClause(transcripts: CallerTranscript[]): InspectIncompleteClause {
+  if (transcripts.length === 0) return { status: "unmeasured", findings: [] };
+  const findings: InspectIncompleteFinding[] = [];
+  for (let index = 0; index + 1 < transcripts.length; index += 1) {
+    const turn = transcripts[index]!;
+    const next = transcripts[index + 1]!;
+    // A continuation is only evidence inside the same call (or the ledger's own order).
+    if (turn.sessionId !== next.sessionId) continue;
+    if (!endsIncomplete(turn.text) || !startsContinuation(next.text)) continue;
+    findings.push({ sessionId: turn.sessionId, turn: turn.turn, nextTurn: next.turn });
+  }
+  return { status: findings.length > 0 ? "risk" : "clear", findings };
+}
+
+/**
+ * Distinct Call-trace turns cut mid-reply. Turn evidence comes from the
+ * artifact's merged turn rows; when a session has no turn rows, its trace's
+ * own `CUT at` rows are counted. No turn and no trace means unmeasured, never
+ * a zero.
+ */
+function interruptedTurnCount(
+  sessions: InspectSession[],
+  artifact: ScoreboardArtifact,
+  sessionId: string | null | undefined,
+): number | null {
+  const turns = sessions.flatMap((session) => session.turns);
+  if (turns.length > 0) return turns.filter((turn) => turn.cutMs !== null).length;
+  const excerpts = traceExcerpts(artifact, sessionId);
+  if (excerpts.length === 0) return null;
+  return excerpts.reduce(
+    (count, session) => count + session.excerpt.filter((line) => /\bCUT at\b/.test(line)).length,
+    0,
+  );
+}
+
+function gateTally(gates: { name: string; status: string }[]): InspectGateTally {
+  const count = (status: string) => gates.filter((gate) => gate.status === status).length;
+  return {
+    total: gates.length,
+    pass: count("PASS"),
+    info: count("INFO"),
+    fail: count("FAIL"),
+    failing: gates.filter((gate) => gate.status === "FAIL").map((gate) => gate.name),
+  };
+}
+
+/**
+ * End-of-turn labelling: the artifact's own experiment evidence when the run
+ * bound the variant, else production adaptive pacing. Never a production pass
+ * for an experiment run (that lives on the end-of-turn gate row).
+ */
+function endOfTurnInput(artifact: ScoreboardArtifact): InspectEndOfTurn {
+  const experiment = artifact.endOfTurn;
+  if (!experiment || experiment.experimental !== true) {
+    return {
+      mode: "production",
+      variant: null,
+      variantKey: null,
+      turnWindows: null,
+      productionTurnDetection: null,
+    };
+  }
+  return {
+    mode: "experimental",
+    variant: experiment.variant,
+    variantKey: experiment.variantKey,
+    turnWindows: experiment.turnWindows,
+    productionTurnDetection: null,
+  };
+}
+
 /**
  * Turn one artifact into the compact report. Throws on something that is not a
  * scoreboard artifact; an unreadable file is the CLI's error, not a report.
@@ -271,6 +591,9 @@ export function buildInspectReport(
       }));
   const filtered = opts.sessionId ? sessions.filter((session) => session.id === opts.sessionId) : sessions;
   const hangUps = evidence?.hangUps ?? hangUpsFromTranscript(artifact);
+  const gates = artifact.gates.map((gate) => ({ name: gate.name, status: gate.status }));
+  const transcripts = callerTranscripts(artifact, opts.sessionId);
+  const fragmentTag = artifact.emailInvite?.tag ?? EMAIL_INVITE_TAG;
   return {
     run: {
       voice: artifact.voice,
@@ -289,10 +612,17 @@ export function buildInspectReport(
       turnWindows: evidence?.turnWindows ?? null,
     },
     scenarios: evidence?.scenarios ?? [],
-    gates: artifact.gates.map((gate) => ({ name: gate.name, status: gate.status })),
+    gates,
     subScores: artifact.subScores.map((sub) => ({ name: sub.name, status: sub.status })),
     sessions: filtered,
     latency: latencyBands(filtered),
+    adoption: {
+      gates: gateTally(gates),
+      fragmentRisk: fragmentRisk(transcripts, fragmentTag),
+      incompleteClause: incompleteClause(transcripts),
+      interruptedTurns: interruptedTurnCount(filtered, artifact, opts.sessionId),
+      endOfTurn: endOfTurnInput(artifact),
+    },
     drain: {
       goodbyeCoverage: artifact.endCallDrain.goodbyeCoverage,
       hangUpDelayMs: artifact.endCallDrain.hangUpDelayMs,
@@ -368,6 +698,79 @@ function formatWindows(windows: DemoTurnWindows): string {
   return parts.join(" / ");
 }
 
+/** Windows as the end-of-turn gate names them (`min_silence 400, …`). */
+function formatEndOfTurnWindows(windows: DemoTurnWindows | null): string {
+  if (!windows) return "no windows recorded";
+  const parts: string[] = [];
+  if (windows.min_silence !== undefined) parts.push(`min_silence ${windows.min_silence}`);
+  if (windows.max_silence !== undefined) parts.push(`max_silence ${windows.max_silence}`);
+  if (windows.interruption_delay !== undefined) {
+    parts.push(`interruption_delay ${windows.interruption_delay}`);
+  }
+  return parts.length > 0 ? parts.join(", ") : "no windows recorded";
+}
+
+function formatFragmentFinding(finding: InspectFragmentFinding): string {
+  const where =
+    finding.turn !== null
+      ? `${finding.sessionId ?? "unknown session"} caller turn ${finding.turn}`
+      : "an unnamed caller turn";
+  return `${finding.kind} at ${where}`;
+}
+
+/**
+ * The adoption inputs, compact and evidence-only. Gate rows stay above; the
+ * split stays in the band summary (reused, never reprinted). Nothing here
+ * claims a verdict.
+ */
+function formatAdoption(adoption: InspectAdoption): string[] {
+  const gates = adoption.gates;
+  const lines = [
+    "adoption inputs (evidence only, never a verdict)",
+    `  gates        ${gates.total}: ${gates.pass} PASS, ${gates.info} INFO, ${gates.fail} FAIL — every gate row is listed above`,
+    "  split        latency split above (per-band; perceived is report-only)",
+  ];
+  const risk = adoption.fragmentRisk;
+  if (risk.status === "risk") {
+    lines.push(`  fragment     risk: ${risk.findings.map(formatFragmentFinding).join("; ")}`);
+  } else if (risk.status === "clear") {
+    lines.push("  fragment     clear: no caller turn ended inside the tag, email or a number");
+  } else {
+    lines.push("  fragment     unmeasured: no caller transcript evidence");
+  }
+  const incomplete = adoption.incompleteClause;
+  if (incomplete.status === "risk") {
+    const findings = incomplete.findings.map((finding) =>
+      finding.turn !== null
+        ? `${finding.sessionId ?? "unknown session"} caller turn ${finding.turn} → ${finding.nextTurn}`
+        : "an unnamed caller turn continues",
+    );
+    lines.push(`  incomplete   risk: ${findings.join("; ")}`);
+  } else if (incomplete.status === "clear") {
+    lines.push("  incomplete   clear: no turn ended on a clause the next turn continues");
+  } else {
+    lines.push("  incomplete   unmeasured: no caller transcript evidence");
+  }
+  const interrupted = adoption.interruptedTurns;
+  if (interrupted === null) {
+    lines.push("  interrupted  unmeasured: no Call-trace turn evidence");
+  } else {
+    lines.push(`  interrupted  ${interrupted} turn${interrupted === 1 ? "" : "s"} cut`);
+  }
+  const endOfTurn = adoption.endOfTurn;
+  if (endOfTurn.mode === "experimental") {
+    const bits = [endOfTurn.variant];
+    if (endOfTurn.variantKey) bits.push(endOfTurn.variantKey);
+    bits.push(formatEndOfTurnWindows(endOfTurn.turnWindows));
+    lines.push(
+      `  end-of-turn  experimental ${bits[0]} (${bits.slice(1).join("; ")}) — evidence, not a production pass`,
+    );
+  } else {
+    lines.push("  end-of-turn  production (no experiment evidence; see the end-of-turn gate row)");
+  }
+  return lines;
+}
+
 function formatDrain(drain: InspectDrain): string {
   const coverage =
     drain.goodbyeCoverage === null ? "unmeasured" : drain.goodbyeCoverage.toFixed(2);
@@ -438,6 +841,7 @@ export function formatInspectReport(report: InspectReport): string {
   }
 
   lines.push("", ...formatLatency(report.latency));
+  lines.push("", ...formatAdoption(report.adoption));
   lines.push("", formatDrain(report.drain));
   const aside = formatAside(report.overTalkAside);
   if (aside) lines.push(aside);
