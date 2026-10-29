@@ -3,8 +3,10 @@
  *
  * `npm run eval:demo-agent -- --events /tmp/eval-events.jsonl` writes one JSON
  * object per line for the decisions a scoreboard reader triages: scenario
- * start/end, session ready, reply create/first audio, cuts, tool calls and
- * results, end_call, the goodbye drain, the hang-up and the overheard aside.
+ * start/end, session ready, the client's per-turn receipt marks (final caller
+ * transcript, reply start, first audio; one of which is the call's clock
+ * anchor), reply create/first audio, cuts, tool calls and results, end_call,
+ * the goodbye drain, the hang-up and the overheard aside.
  * `npm run scoreboard:inspect --events <path>` summarizes the same file.
  *
  * The stream is a debugging/telemetry seam, never a scoreboard input: the
@@ -20,6 +22,8 @@ import { dirname } from "node:path";
 export const EVAL_EVENT_TYPES = [
   "scenario.start",
   "session.ready",
+  "turn.user_final",
+  "turn.reply_start",
   "reply.create",
   "reply.first_audio",
   "cut",
@@ -51,6 +55,8 @@ const FORBIDDEN_EVENT_KEYS = new Set([
   "audio",
   "data",
   "base64",
+  "text",
+  "transcript",
 ]);
 
 const KEY_SHAPED_VALUE = /\b(?:sk|pk|api|tok)_[A-Za-z0-9_-]{8,}\b|Bearer\s+\S+/i;

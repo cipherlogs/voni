@@ -63,6 +63,41 @@ test("the writer strips secret keys, key-shaped values and PCM payloads", () => 
   assert.deepEqual(event.nested, { note: "key [redacted] leaked" });
 });
 
+test("turn marks carry timings and identifiers only, never transcript text or audio", () => {
+  const path = join(dir(), "events.jsonl");
+  const writer = createEvalEventWriter(path, { startedAtMs: 0, now: () => 0 });
+  writer.emit("turn.user_final", {
+    sessionId: "sess_abc",
+    turnId: "turn-1",
+    callMs: 1_200,
+    atMs: 1_200,
+    text: "my email is caller at example dot com",
+    transcript: "my email is caller at example dot com",
+    pcm: "AAAA",
+    data: "base64audio",
+    token: "tok_secret",
+    apiKey: "sk_live_should_never_appear",
+    nested: { text: "nested caller words", note: "key sk_live_abcdefgh1234 leaked" },
+  });
+  writer.close();
+
+  const text = readFileSync(path, "utf8");
+  assert.doesNotMatch(text, /caller at example/);
+  assert.doesNotMatch(text, /nested caller words/);
+  assert.doesNotMatch(text, /base64audio/);
+  assert.doesNotMatch(text, /tok_secret/);
+  assert.doesNotMatch(text, /should_never_appear/);
+  assert.doesNotMatch(text, /sk_live_/);
+  assert.deepEqual(JSON.parse(text), {
+    atMs: 1_200,
+    type: "turn.user_final",
+    sessionId: "sess_abc",
+    turnId: "turn-1",
+    callMs: 1_200,
+    nested: { note: "key [redacted] leaked" },
+  });
+});
+
 test("the writer rejects an unknown event type instead of writing it", () => {
   const writer = createEvalEventWriter(join(dir(), "events.jsonl"));
   assert.throws(
@@ -91,6 +126,8 @@ test("summarizeEvalEvents counts every type and keeps the triage timeline", () =
   const events = [
     writer.emit("scenario.start", { scenario: "over-talk", run: 1 }),
     writer.emit("session.ready", { sessionId: "sess_a" }),
+    writer.emit("turn.user_final", { sessionId: "sess_a", turnId: "turn-1", callMs: 900 }),
+    writer.emit("turn.reply_start", { sessionId: "sess_a", turnId: "turn-1", replyId: "r1", callMs: 1_000 }),
     writer.emit("reply.create", { sessionId: "sess_a", checkIn: false }),
     writer.emit("reply.first_audio", { sessionId: "sess_a", replyId: "r1" }),
     writer.emit("cut", { sessionId: "sess_a", cutMs: 15_870, overlapMs: 0 }),

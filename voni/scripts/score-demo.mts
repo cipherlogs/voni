@@ -56,6 +56,7 @@
  *                           [--overlap-ms 120,350] [--goodbye-coverage 0.95]
  *                           [--goodbye-inbox-named | --goodbye-inbox-missing]
  *                           [--hang-up-delay-ms 900] [--narrated-ending]
+ *                           [--events <path>]
  *
  * --gate-voice picks the gate voice through the shared voice registry
  * (--voice stays an alias); omitting both gates on DEFAULT_GATE_VOICE, never
@@ -66,6 +67,12 @@
  * dir, override with --timing-lock) so timing runs go one at a time; a second
  * run fails fast naming the holder instead of inflating cut latency under
  * parallel load. The lock is released on exit and a dead holder is reclaimed.
+ *
+ * --events <path> forwards the runner's opt-in JSONL event stream (client turn
+ * marks, cuts, tool calls) to `eval:demo-agent`. A focused run writes that
+ * file; the suite spawns one runner per scenario and each writer truncates its
+ * own file, so it writes `<path stem>.<scenario>.jsonl` instead and no
+ * scenario's stream is lost. The stream is telemetry, never a gate input.
  *
  * Every artifact records a codeFingerprint (git HEAD plus a hash of the
  * uncommitted status and diff). `npm run scoreboard:streak` reads the last
@@ -478,18 +485,27 @@ function stamp(date = new Date()): string {
   return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
 }
 
-function runEvalRunner(voice: string, scenario: string, runs: string): { stdout: string; exitCode: number | null; durationMs: number; evalError: string | null } {
+function runEvalRunner(voice: string, scenario: string, runs: string, eventsPath = ""): { stdout: string; exitCode: number | null; durationMs: number; evalError: string | null } {
   const started = Date.now();
-  const result = spawnSync(
-    "npm",
-    ["run", "eval:demo-agent", "--", "--voice", voice, "--scenario", scenario, "--runs", runs],
-    { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
-  );
+  const args = ["run", "eval:demo-agent", "--", "--voice", voice, "--scenario", scenario, "--runs", runs];
+  if (eventsPath) args.push("--events", eventsPath);
+  const result = spawnSync("npm", args, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
   const stdout = `${result.stdout ?? ""}${result.stderr ?? ""}`;
   // A spawn failure (missing binary, killed) surfaces as result.error, not
   // an exit code: record it so the artifact marks a harness break.
   const evalError = result.error instanceof Error ? result.error.message : null;
   return { stdout, exitCode: evalError ? null : result.status, durationMs: Date.now() - started, evalError };
+}
+
+/**
+ * One event-stream file per suite scenario: the runner's writer truncates on
+ * create, so nine processes sharing a path would leave only the last one's
+ * lines. `<dir>/run.jsonl` becomes `<dir>/run.greeting-cut.jsonl`, …
+ */
+function suiteEventsPath(path: string, scenario: string): string {
+  const suffix = path.endsWith(".jsonl") ? ".jsonl" : "";
+  const stem = suffix ? path.slice(0, -suffix.length) : path;
+  return `${stem}.${scenario}${suffix || ".jsonl"}`;
 }
 
 /**
@@ -947,6 +963,9 @@ function main(): void {
   if (!/^[1-9]\d*$/.test(runs)) {
     throw new Error(`--runs needs a positive int, got "${runs}"`);
   }
+  // Opt-in runner event stream (telemetry, never a gate input). Absent keeps
+  // the runner's live path exactly as it was.
+  const eventsPath = arg("--events", "");
   const dryRun = process.argv.includes("--dry-run");
   // Timing runs go one at a time: a live run takes the machine-wide lock
   // before dialing so a parallel run cannot inflate the cut number. A held
@@ -998,13 +1017,13 @@ function main(): void {
     const sections: { name: string; section: EvalSection }[] = [];
     for (const name of SUITE_SCENARIOS) {
       // One at a time: a timing run in parallel inflates the cut number.
-      const section = runEvalRunner(voice, name, runs);
+      const section = runEvalRunner(voice, name, runs, eventsPath ? suiteEventsPath(eventsPath, name) : "");
       sections.push({ name, section });
       stdoutByScenario.set(name, section.stdout);
     }
     evalSection = mergeSuiteSections(sections, Number(runs));
   } else {
-    evalSection = runEvalRunner(voice, scenario, runs);
+    evalSection = runEvalRunner(voice, scenario, runs, eventsPath);
     stdoutByScenario.set(scenario, evalSection.stdout);
   }
   // Focused mode has one runner stream: every parser reads it verbatim, so a
