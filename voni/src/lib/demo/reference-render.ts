@@ -12,6 +12,12 @@
  * a stale hit. The default line is the voice's own greeting, because that is
  * the sentence that separates "broken from the first word" from "breaks once
  * the model speaks".
+ *
+ * This is the *managed* path's reference (the scoreboard and the audition
+ * clips). The cascade's W0 reference is rendered by the service's own
+ * synthesis client — `voice-pipeline/cascade/reference_render.py` — because
+ * the cascade call's binding table and TTS client live in the service. A
+ * managed-path session cannot stand in for the cascade reference.
  */
 
 import { createHash } from "node:crypto";
