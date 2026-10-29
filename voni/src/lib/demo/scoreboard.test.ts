@@ -162,6 +162,7 @@ import {
 import { judgeOverlap } from "../voice/barge-in";
 import { DEMO_VOICE_IDS, SILENCE_CHECK_IN_INSTRUCTIONS, SILENCE_CHECK_IN_MS } from "./voni-agent";
 import { buildDemoAgentBody } from "./stored-agents";
+import type { RunnerEvidence } from "./runner-evidence";
 import { VOICE_OUTPUT_VOLUME, voicePlaybackGain } from "../agents/voices";
 
 test("golden script is locked to seven beats in fixed order", () => {
@@ -520,6 +521,110 @@ test("reply-gap gate fails when p95 exceeds 2500ms", () => {
   assert.equal(gate.status, "FAIL");
   assert.ok(gate.detail.includes("p95"), `detail names the breached budget: ${gate.detail}`);
   assert.ok(gate.detail.includes("turn 5"), `detail points at the failing trace turn: ${gate.detail}`);
+});
+
+test("a FAIL from an ordinary-band turn cites band, turn, call and value", () => {
+  const gate = replyGapGate([
+    { beat: "email-invite", gapMs: 900, turnIndex: 1, sessionId: "sess_ord", band: "ordinary" },
+    { beat: "email-invite", gapMs: 1000, turnIndex: 2, sessionId: "sess_ord", band: "ordinary" },
+    { beat: "email-invite", gapMs: 1100, turnIndex: 3, sessionId: "sess_ord", band: "ordinary" },
+    { beat: "email-invite", gapMs: 2600, turnIndex: 4, sessionId: "sess_ord", band: "ordinary" },
+  ]);
+  assert.equal(gate.status, "FAIL");
+  assert.match(gate.detail, /p95 2600ms > 2500ms budget/, gate.detail);
+  assert.match(gate.detail, /band ordinary/, gate.detail);
+  assert.match(gate.detail, /call trace turn 4 \(sess_ord\)/, gate.detail);
+});
+
+test("a FAIL from a post-cut turn cites band, turn, call and value", () => {
+  const gate = replyGapGate([
+    { beat: "real-cut-answered", gapMs: 900, turnIndex: 1, sessionId: "sess_cut", band: "ordinary" },
+    { beat: "real-cut-answered", gapMs: 1000, turnIndex: 2, sessionId: "sess_cut", band: "post-cut" },
+    { beat: "real-cut-answered", gapMs: 2600, turnIndex: 3, sessionId: "sess_cut", band: "post-cut" },
+  ]);
+  assert.equal(gate.status, "FAIL");
+  assert.match(gate.detail, /p95 2600ms > 2500ms budget/, gate.detail);
+  assert.match(gate.detail, /band post-cut/, gate.detail);
+  assert.match(gate.detail, /call trace turn 3 \(sess_cut\)/, gate.detail);
+});
+
+test("PASS detail stays the one pooled line even when bands are known", () => {
+  const gate = replyGapGate([
+    { beat: "email-invite", gapMs: 900, turnIndex: 1, sessionId: "sess_pass", band: "ordinary" },
+    { beat: "email-invite", gapMs: 1000, turnIndex: 2, sessionId: "sess_pass", band: "post-cut" },
+    { beat: "email-invite", gapMs: 1100, turnIndex: 3, sessionId: "sess_pass", band: "ordinary" },
+  ]);
+  assert.equal(gate.status, "PASS");
+  assert.equal(gate.detail, "p50 1000ms / p95 1100ms within 1500/2500ms budgets (n=3)");
+});
+
+test("naming a post-cut band never removes it from the pooled samples", () => {
+  const samples = [
+    { beat: null, gapMs: 900, turnIndex: 1, sessionId: "sess_pool" },
+    { beat: null, gapMs: 1000, turnIndex: 2, sessionId: "sess_pool" },
+    { beat: null, gapMs: 1100, turnIndex: 3, sessionId: "sess_pool" },
+    { beat: null, gapMs: 2600, turnIndex: 4, sessionId: "sess_pool" },
+  ];
+  const plain = replyGapGate(samples);
+  const banded = replyGapGate([
+    { ...samples[0], band: "ordinary" },
+    { ...samples[1], band: "ordinary" },
+    { ...samples[2], band: "ordinary" },
+    { ...samples[3], band: "post-cut" },
+  ]);
+  const pooled = (detail: string) => /overall p50 \d+ms \/ p95 \d+ms, n=\d+/.exec(detail)?.[0];
+  assert.equal(banded.status, plain.status);
+  assert.equal(pooled(banded.detail), pooled(plain.detail));
+  assert.equal(pooled(banded.detail), "overall p50 1000ms / p95 2600ms, n=4");
+  assert.match(banded.detail, /band post-cut/, banded.detail);
+});
+
+test("a FAIL with no band evidence says band unmeasured rather than guessing", () => {
+  const gate = replyGapGate([
+    { beat: null, gapMs: 900, turnIndex: 1, sessionId: "sess_dark" },
+    { beat: null, gapMs: 1000, turnIndex: 2, sessionId: "sess_dark" },
+    { beat: null, gapMs: 1100, turnIndex: 3, sessionId: "sess_dark" },
+    { beat: null, gapMs: 2600, turnIndex: 4, sessionId: "sess_dark" },
+  ]);
+  assert.equal(gate.status, "FAIL");
+  assert.match(gate.detail, /band unmeasured/, gate.detail);
+  assert.doesNotMatch(gate.detail, /band ordinary|band post-cut/, gate.detail);
+});
+
+test("the artifact's reply-gap FAIL names the band measured by the runner's split", () => {
+  const excerpt = [
+    '10.00s  HEARD   "Yes please"  (9.20s–9.90s)',
+    '10.90s  VONI    "Happy to help"  (reply_create gap 900ms)',
+    '12.00s  VONI    "Of course"  (reply_create gap 1000ms)',
+    '13.10s  VONI    "The team is small"  (reply_create gap 1100ms)',
+    '15.70s  VONI    "Wait, stop - here is that answer"  (reply_create gap 2600ms)',
+  ];
+  const artifact = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "stop-over",
+    runnerStdout: "trace",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+    traceGaps: parseTraceGaps(excerpt),
+    traceExcerpt: excerpt,
+    traceSessionId: "sess_join",
+    runnerEvidence: {
+      sessions: [
+        {
+          id: "sess_join",
+          turns: [
+            { turnIndex: 4, latency: { turnId: "turn-4", band: "post-cut", endpointingMs: 400, generationMs: 900, deliveryMs: 300, perceivedMs: 2100 } },
+          ],
+        },
+      ],
+    } as unknown as RunnerEvidence,
+  });
+  const gate = artifact.gates.find((g) => g.name === "reply-gap")!;
+  assert.equal(gate.status, "FAIL");
+  assert.match(gate.detail, /band post-cut/, gate.detail);
+  assert.match(gate.detail, /call trace turn 4 \(sess_join\)/, gate.detail);
+  assert.match(gate.detail, /gap 2600ms/, gate.detail);
 });
 
 test("every merged turn is judged against the tail budget and cites its Call trace turn", () => {

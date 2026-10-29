@@ -85,6 +85,7 @@ import { DEMO_VOICE_IDS, SILENCE_CHECK_IN_INSTRUCTIONS } from "./voni-agent";
 import { DEMO_INBOX_ADDRESS } from "./email-test";
 import { TAG_WORDS, containsTag, countTags } from "./test-tag";
 import type { RunnerEvidence } from "./runner-evidence";
+import type { LatencyBand } from "./latency-split";
 import type { DemoAgentVariant, DemoTurnWindows } from "./stored-agents";
 
 /** The locked golden script: seven beats in fixed order (spec story 11). */
@@ -516,6 +517,12 @@ export type ReplyGapSample = {
   /** 1-based VONI reply turn in the merged Call trace (null when unattributed). */
   turnIndex: number | null;
   sessionId?: string;
+  /**
+   * Interaction band, joined from the runner's per-turn latency split by
+   * (session, turn) in buildSkeletonArtifact. Naming only: the gate still
+   * pools every sample. Absent means the band was not measured.
+   */
+  band?: LatencyBand;
 };
 
 export type ReplyGapSummary = {
@@ -820,6 +827,25 @@ export function summarizeReplyGaps(samples: ReplyGapSample[]): ReplyGapSummary |
   return { count: samples.length, p50Ms, p95Ms, maxMs: worst.gapMs, worst };
 }
 
+/**
+ * Ticket 06: the interaction band each measured turn belongs to, keyed by
+ * (session, 1-based VONI turn). Joined from the runner's per-turn latency
+ * split; a turn with no split simply has no band (never guessed).
+ */
+function latencyBandsByTurn(evidence: RunnerEvidence | null | undefined): Map<string, LatencyBand> {
+  const bands = new Map<string, LatencyBand>();
+  for (const session of evidence?.sessions ?? []) {
+    for (const turn of session.turns) {
+      if (turn.latency) bands.set(`${session.id}#${turn.turnIndex}`, turn.latency.band);
+    }
+  }
+  return bands;
+}
+
+function bandRef(band: LatencyBand | undefined): string {
+  return `band ${band ?? "unmeasured"}`;
+}
+
 function traceRef(sample: ReplyGapSample): string {
   const where =
     sample.turnIndex !== null && sample.turnIndex !== undefined
@@ -827,7 +853,7 @@ function traceRef(sample: ReplyGapSample): string {
       : sample.sessionId
         ? `call trace ${sample.sessionId}`
         : "call trace";
-  return `${sample.beat ?? "overall"} gap ${sample.gapMs}ms at ${where}`;
+  return `${bandRef(sample.band)}, ${sample.beat ?? "overall"} gap ${sample.gapMs}ms at ${where}`;
 }
 
 /**
@@ -837,8 +863,11 @@ function traceRef(sample: ReplyGapSample): string {
  * (ticket 09): a one-sample turn scope's p50 and p95 are the gap itself, so
  * the same budgets apply unchanged and one slow turn can never hide behind a
  * fast call-level distribution. The FAIL always points at the breaching Call
- * trace turn (index + session). No samples means INFO, never FAIL: an
- * unevidenced run records plumbing, it does not cry laggy.
+ * trace turn (index + session) and names its interaction band (ticket 06):
+ * the band is a label joined from the runner's per-turn split, never a filter,
+ * so post-cut turns stay in the pooled median and tail. A turn whose band was
+ * not measured says `band unmeasured` rather than guessing. No samples means
+ * INFO, never FAIL: an unevidenced run records plumbing, it does not cry laggy.
  */
 export function replyGapGate(samples: ReplyGapSample[], traceSessionId?: string): ScoreboardGate {
   if (samples.length === 0) {
@@ -910,7 +939,9 @@ export function replyGapGate(samples: ReplyGapSample[], traceSessionId?: string)
     breaches.sort((a, b) => b.value - b.budget - (a.value - a.budget));
     const first = breaches[0];
     const where = first.sample
-      ? `${first.sample.beat ? `beat ${first.sample.beat}, ` : "call-level, "}${
+      ? `${bandRef(first.sample.band)}, ${
+          first.sample.beat ? `beat ${first.sample.beat}` : "call-level"
+        }, ${
           first.sample.turnIndex !== null && first.sample.turnIndex !== undefined
             ? formatTraceTurn(first.sample.turnIndex, first.sample.sessionId ?? null)
             : "call trace"
@@ -5051,6 +5082,17 @@ export function buildSkeletonArtifact(input: {
       turnIndex: traceGap.turnIndex,
       sessionId: traceGap.sessionId ?? input.traceSessionId ?? undefined,
     });
+  }
+  // Ticket 06: label each measured turn with its interaction band, joined from
+  // the runner's per-turn split by (session, turn). Labels only — the pooled
+  // sample set above is passed to the gate untouched.
+  const bandsByTurn = latencyBandsByTurn(input.runnerEvidence);
+  if (bandsByTurn.size > 0) {
+    for (const sample of samples) {
+      if (sample.turnIndex === null || sample.turnIndex === undefined || !sample.sessionId) continue;
+      const band = bandsByTurn.get(`${sample.sessionId}#${sample.turnIndex}`);
+      if (band) sample.band = band;
+    }
   }
   const traceUnverified =
     allTraceGaps.length > 0 && !traceAttributed && !explicitGreetingCut && preAttributed.length === 0;
