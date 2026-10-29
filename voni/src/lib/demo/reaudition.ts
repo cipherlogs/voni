@@ -26,6 +26,11 @@ import { join, relative, resolve } from "node:path";
 import { CAPTURE_ROLES, type CaptureRole } from "../audio/comparison";
 import { decodeAudioFile } from "../audio/format-facts";
 import {
+  countEnglishLeak,
+  type AgentTurn,
+  type EnglishLeakCount,
+} from "./english-leak";
+import {
   contentTurns,
   type ContentBaseline,
   type ContentJudgement,
@@ -99,6 +104,11 @@ export type ReauditionCounters = {
   englishLeakWords: number | null;
   /** The leaked text exactly as the judge quoted it. */
   leakTexts: string[];
+  /**
+   * Ticket 76's deterministic counter, beside the judge's reading. It is
+   * report-only and never moves the verdict.
+   */
+  englishLeakCounter: EnglishLeakCount;
   /**
    * Ticket 77 has not landed. The gap is named, never recorded as a zero that
    * could be mistaken for a clean count.
@@ -356,10 +366,17 @@ function normalizeBaseline(baseline: ContentBaseline | undefined): ContentBaseli
   };
 }
 
-function countersFor(turns: ContentTurn[], judgement: ContentJudgement | null): ReauditionCounters {
+function countersFor(
+  turns: ContentTurn[],
+  judgement: ContentJudgement | null,
+  locale: string,
+): ReauditionCounters {
   const agent = turns.filter((turn) => turn.speaker === "agent");
   const caller = turns.filter((turn) => turn.speaker === "caller");
   const leakTexts = judgement?.leaks.map((leak) => leak.text) ?? [];
+  const agentTurns: AgentTurn[] = turns.flatMap((turn, index) =>
+    turn.speaker === "agent" ? [{ sessionId: null, turn: index, text: turn.text }] : [],
+  );
   return {
     agentTurns: agent.length,
     callerTurns: caller.length,
@@ -372,6 +389,7 @@ function countersFor(turns: ContentTurn[], judgement: ContentJudgement | null): 
       ? leakTexts.reduce((sum, text) => sum + words(text), 0)
       : null,
     leakTexts,
+    englishLeakCounter: countEnglishLeak(agentTurns, locale),
     answeredQuestions: {
       status: "not-implemented",
       count: null,
@@ -565,7 +583,8 @@ function summaryReadme(pack: ReauditionPack): string {
     "",
     "## Counters (report-only)",
     "",
-    `- English leaks: ${pack.counters.englishLeaks ?? "not scored"}`,
+    `- English leaks (judge): ${pack.counters.englishLeaks ?? "not scored"}`,
+    `- English-leak counter (deterministic, report-only): ${pack.counters.englishLeakCounter.status} (${pack.counters.englishLeakCounter.count}/${pack.counters.englishLeakCounter.turns} agent turns)`,
     `- Naturalness: ${pack.counters.naturalness ?? "not scored"} / 4`,
     `- Code-switching: ${pack.counters.codeSwitching ?? "not scored"} / 4`,
     `- Already-answered: ${pack.counters.answeredQuestions.reason}`,
@@ -637,7 +656,7 @@ export function assembleReauditionPack(input: ReauditionRequest): ReauditionAsse
     input.judgement.baseline.text.trim() === baseline.text
       ? input.judgement
       : null;
-  const counters = countersFor(turns, content);
+  const counters = countersFor(turns, content, locale);
   const packPath = join(packDir, "pack.json");
   const readmePath = join(packDir, "README.md");
   const transcriptText = turns.map((turn) => `${turn.speaker}: ${turn.text}`).join("\n");
@@ -747,7 +766,7 @@ export function formatDecisionRecordSection(pack: ReauditionPack): string {
     `- Pack: \`${pack.verdict.evidencePaths[0] ?? "unrecorded"}\`.`,
     `- Captures: ${captureLines.join("; ")}.`,
     `- Transcript: ${pack.transcript.turns.length} turns (${pack.transcript.agentTurns} agent, ${pack.transcript.callerTurns} caller).`,
-    `- Counters (report-only): English leaks ${pack.counters.englishLeaks ?? "not scored"}; already-answered counter ${pack.counters.answeredQuestions.status} (ticket ${pack.counters.answeredQuestions.ticket}).`,
+    `- Counters (report-only): judge English leaks ${pack.counters.englishLeaks ?? "not scored"}; deterministic English-leak counter ${pack.counters.englishLeakCounter.status} (${pack.counters.englishLeakCounter.count}/${pack.counters.englishLeakCounter.turns} agent turns); already-answered counter ${pack.counters.answeredQuestions.status} (ticket ${pack.counters.answeredQuestions.ticket}).`,
     `- Content judge: ${content}.`,
     `- Basis: ${pack.verdict.basis.join("; ")}.`,
     `- Native review: ${pack.content?.nativeVerdict ?? "not-reviewed"}; the machine judge caps at ${pack.content?.machineScoreCeiling ?? 4}/4, so a named native reviewer still owns the five-out-of-five sign-off.`,

@@ -168,6 +168,7 @@ test("a missing capture is never accepted even when the content judge flags a de
   const result = assembleReauditionPack(
     request({
       judgement: flaggedJudgement(),
+      transcript: LEAK_TURNS,
       captures: { reference: writeCapture(source, "reference.wav") },
       outDir: join(fixtureDir(), "pack"),
     }),
@@ -232,6 +233,8 @@ test("the pack records the transcript, the counters and the content judgement", 
   assert.equal(pack.counters.englishLeaks, 0);
   assert.equal(pack.counters.codeSwitching, 4);
   assert.equal(pack.counters.naturalness, 4);
+  assert.equal(pack.counters.englishLeakCounter.status, "clear");
+  assert.equal(pack.counters.englishLeakCounter.reportOnly, true);
   assert.equal(pack.counters.answeredQuestions.status, "not-implemented");
   assert.equal(pack.counters.gating, "report-only");
   assert.equal(pack.content?.verdict, "clear");
@@ -239,11 +242,16 @@ test("the pack records the transcript, the counters and the content judgement", 
 });
 
 test("an English leak is counted and quoted in the counters", () => {
-  const pack = assembleReauditionPack(request({ judgement: flaggedJudgement() })).pack;
+  const pack = assembleReauditionPack(
+    request({ judgement: flaggedJudgement(), transcript: LEAK_TURNS }),
+  ).pack;
 
   assert.equal(pack.counters.englishLeaks, 1);
   assert.deepEqual(pack.counters.leakTexts, ["So, and then we can look at your business."]);
   assert.ok((pack.counters.englishLeakWords ?? 0) > 0);
+  assert.equal(pack.counters.englishLeakCounter.status, "leak");
+  assert.ok(pack.counters.englishLeakCounter.count >= 1);
+  assert.ok(pack.counters.englishLeakCounter.findings[0]?.words.includes("we"));
 });
 
 test("clean content withdraws the locale-rendering decision", () => {
@@ -257,7 +265,9 @@ test("clean content withdraws the locale-rendering decision", () => {
 });
 
 test("flagged content accepts the locale-rendering decision", () => {
-  const pack = assembleReauditionPack(request({ judgement: flaggedJudgement() })).pack;
+  const pack = assembleReauditionPack(
+    request({ judgement: flaggedJudgement(), transcript: LEAK_TURNS }),
+  ).pack;
 
   assert.equal(pack.verdict.decision, "accept");
   assert.equal(pack.verdict.justifiesRenderingLayer, true);

@@ -27,7 +27,7 @@ We therefore make the rule set structured data — each rule has an identity, a 
 - Pack: `voni/reaudition-runs/lola-es-pending/pack.json`.
 - Captures: reference missing (no path); platform missing (no path); delivered missing (no path).
 - Transcript: 0 turns (0 agent, 0 caller).
-- Counters (report-only): English leaks not scored; already-answered counter not-implemented (ticket 77).
+- Counters (report-only): judge English leaks not scored; deterministic English-leak counter unmeasured (0/0 agent turns); already-answered counter not-implemented (ticket 77).
 - Content judge: not run.
 - Basis: reference capture missing: no path supplied; platform capture missing: no path supplied; delivered capture missing: no path supplied; transcript missing: no turns supplied; content judgement missing: the transcript has not been scored.
 - Native review: not-reviewed; the machine judge caps at 4/4, so a named native reviewer still owns the five-out-of-five sign-off.
