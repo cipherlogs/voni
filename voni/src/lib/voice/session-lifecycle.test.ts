@@ -1510,6 +1510,31 @@ test("the goodbye still plays when end_call was spoken without a reply id", () =
   assert.deepEqual(captions, ["Thanks for calling.", "Okay, bye!"], "the goodbye is captioned");
 });
 
+test("a caller's end request hangs up after a spoken goodbye even without a tool call", async () => {
+  // Live hang-up-fast: the model said "Alright, bye!" but never called the
+  // end tool, so the session stayed open. The caller asked to end; the spoken
+  // goodbye must still close the line after it drains.
+  const events: string[] = [];
+  const { session, handle, internals } = midReply({}, {
+    onEndCall: () => events.push("armed"),
+    onStateChange: (state) => {
+      if (state === "ended") events.push("ended");
+    },
+  });
+  withDemoTools(internals, session);
+  handle({ type: "reply.done", reply_id: "r1", status: "completed" });
+  handle({ type: "reply.started", reply_id: "bye" });
+  handle({ type: "transcript.agent", reply_id: "bye", text: "Alright, bye!" });
+  session.endAfterReply();
+  assert.deepEqual(events, ["armed"], "the hang-up arms on the spoken goodbye");
+  handle({ type: "reply.audio", reply_id: "bye", data: "" });
+  handle({ type: "reply.done", reply_id: "bye", status: "completed" });
+  // The worklet reports the line drained; the hang-up needs the audio grace.
+  (internals["playout"] as { flush: () => void }).flush();
+  await waitUntil(() => events.includes("ended"), 3000);
+  assert.deepEqual(events, ["armed", "ended"]);
+});
+
 test("an id-less reply after the goodbye completes is dropped whole", () => {
   const captions: string[] = [];
   const { session, handle, internals, played } = midReply({}, {

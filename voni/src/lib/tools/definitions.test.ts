@@ -188,6 +188,9 @@ test("toRestTool strips the inline `type` but keeps the stored-agent fields", ()
   assert.ok(!("type" in rest), "Agents REST API has no `type` field");
   assert.equal(rest.name, END_CALL_TOOL);
   assert.equal(rest.execution_mode, "hold");
+  // The result is held until the goodbye drains; the window must outlast a
+  // long closing line or the platform narrates its own timeout after End call.
+  assert.ok((rest.timeout_seconds ?? 0) >= 30, `hold window ${rest.timeout_seconds}s`);
   assert.ok(rest.description.length > 0);
   assert.deepEqual(Object.keys(rest).sort(), [
     "description",

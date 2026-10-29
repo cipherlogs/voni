@@ -573,6 +573,35 @@ test("all-fast merged turn passes every per-turn budget and keeps meaning-based 
   assert.equal(artifact.gates.find((g) => g.name === "end-of-turn")?.status, "PASS");
 });
 
+test("the suite's per-scenario traces keep their own session and beat attribution", () => {
+  // The suite merges one trace per scenario; turn numbers restart at 1 in
+  // each call, so the session id is part of the pointer and two turn-1 gaps
+  // must both be judged, not deduped into one.
+  const artifact = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "suite",
+    runnerStdout: "suite",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+    traceGaps: [
+      { gapMs: 1900, turnIndex: 2, sessionId: "sess_greeting", beat: "greeting-cut" },
+      { gapMs: 2000, turnIndex: 1, sessionId: "sess_stop", beat: "real-cut-answered" },
+      { gapMs: 800, turnIndex: 3, sessionId: "sess_stop" },
+    ],
+    traceExcerpt: ['1.00s  VONI    "Hello"  (greeting)'],
+    traceSessionId: "sess_greeting",
+  });
+  const reply = artifact.replyGap;
+  assert.equal(reply.samples, 3);
+  assert.equal(artifact.beats["greeting-cut"].gapMs, 1900, "the greeting call's own gap");
+  assert.equal(artifact.beats["real-cut-answered"].gapMs, 2000, "the stop-over call's own gap");
+  const gate = artifact.gates.find((g) => g.name === "reply-gap")!;
+  assert.equal(gate.status, "FAIL");
+  assert.match(gate.detail, /turn 1 \(sess_stop\)/, `cites the stop-over call: ${gate.detail}`);
+  assert.match(gate.detail, /2000ms/);
+});
+
 test("only the verified first turn is attributed to a beat; later turns stay call-level", () => {
   const excerpt = [
     '0.50s  VONI    "Hi, you have reached Voni"  (reply_create gap 900ms)  greeting-cut',
@@ -837,6 +866,108 @@ test("a cut that dropped the tail fails instead of passing on a resume create", 
   assert.equal(gate.status, "FAIL");
   assert.match(gate.detail, /never resumed/);
   assert.match(gate.detail, /call trace turn 1 \(sess_abc\)/);
+});
+
+test("a cut after the last word has nothing left unheard and passes", () => {
+  // Live filler-over (sess_a1ef25b2f84d426d8567f253c9a13dc7): the cut landed
+  // at the end of the reply, so every word had played and no resume followed.
+  // That is correct behavior, not a dropped tail. The runner reported the
+  // answer as a fresh turn because no resume create was needed.
+  const observation = parseFillerRunOutput(
+    '    filler cut at 2213ms; events [["ignore","Okay, so"]]; handling answered; ' +
+      'tail {"agent":"I can answer that after we do the test. Ready to see how",' +
+      '"heard":"I can answer that after we do the test. Ready to see how","resumed":"","resumeMs":null}',
+  );
+  assert.ok(observation, "the live line parses");
+  assert.equal(observation.cut, true);
+  const evidence = fillerEvidenceFromRun(observation);
+  assert.ok(evidence);
+  const gate = evaluateFillerResumeGate({ ...evidence, traceTurn: "call trace turn 2 (sess_live)" });
+  assert.equal(gate.status, "PASS", gate.detail);
+  assert.match(gate.detail, /nothing left unheard/);
+  assert.match(gate.detail, /call trace turn 2 \(sess_live\)/);
+
+  // An explicitly empty unheard rest (agent line just finished) is the same.
+  const empty = evaluateFillerResumeGate({
+    visitorText: "Okaay so",
+    agentText: "Ready to see how.",
+    verdict: "ignore",
+    cutMs: 900,
+    resumeMs: null,
+    resumedText: "",
+    heardText: "Ready to see how. extra",
+    answeredOver: false,
+    traceTurn: "call trace turn 2 (sess_live2)",
+  });
+  assert.equal(empty.status, "PASS", empty.detail);
+});
+
+test("a cut with a non-empty tail that was dropped or paraphrased still fails", () => {
+  const dropped = evaluateFillerResumeGate({
+    visitorText: "Okaay so",
+    agentText: "We help dental clinics answer every call",
+    verdict: "ignore",
+    cutMs: 300,
+    resumeMs: null,
+    resumedText: "",
+    heardText: "We help dental",
+    answeredOver: false,
+    handling: "lost",
+    traceTurn: "call trace turn 2 (sess_tail)",
+  });
+  assert.equal(dropped.status, "FAIL", dropped.detail);
+  assert.match(dropped.detail, /never resumed/);
+
+  const paraphrased = evaluateFillerResumeGate({
+    visitorText: "Okaay so",
+    agentText: "We help dental clinics answer every call",
+    verdict: "ignore",
+    cutMs: 300,
+    resumeMs: 800,
+    resumedText: "clinics answer calls",
+    heardText: "We help dental",
+    answeredOver: false,
+    traceTurn: "call trace turn 2 (sess_tail)",
+  });
+  assert.equal(paraphrased.status, "FAIL", paraphrased.detail);
+  assert.match(paraphrased.detail, /resume tail inexact/);
+});
+
+test("a filler run with no overlap still scores the floor held from the said text", () => {
+  const observation = parseFillerRunOutput(
+    '    filler never cut; events []; handling heard-only; said "Okaay so"',
+  );
+  assert.ok(observation, "the no-overlap observation parses");
+  assert.equal(observation.visitorText, "Okaay so");
+  assert.equal(observation.cut, false);
+  const gate = evaluateFillerResumeGate(fillerEvidenceFromRun(observation)!);
+  assert.equal(gate.status, "PASS", gate.detail);
+  assert.match(gate.detail, /floor held, never cut/);
+
+  const ended = parseFillerRunOutput(
+    '    filler never cut; events []; handling lost; said "Okaay so"',
+  );
+  assert.ok(ended);
+  const lostGate = evaluateFillerResumeGate(fillerEvidenceFromRun(ended)!);
+  assert.equal(lostGate.status, "FAIL", "the answer ended before the filler landed");
+  assert.match(lostGate.detail, /answer dropped/);
+});
+
+test("live cut lines with fractional milliseconds still parse", () => {
+  // The runner measured a float (Date.now minus a fractional clip onset), so
+  // the suite's number arrived as `1176.0988ms` before the print was rounded.
+  const greeting = extractGreetingCutEvidence(
+    "greeting cut 1176.0988000001ms after the caller started (budget 1500ms)\ngreeting-cut: 1/1",
+  );
+  assert.equal(greeting?.cutMs, 1176.0988000001);
+  const realCut = extractRealCutEvidence(
+    "cut 1171.42ms after the caller started (budget 1500ms)\nanswered the point after the cut: \"price\"\nstop-over: 1/1",
+  );
+  assert.equal(realCut?.cutMs, 1171.42);
+  const filler = parseFillerRunOutput(
+    '    filler cut at 2213.77ms; events [["ignore","Okay, so"]]; handling answered',
+  );
+  assert.equal(filler?.cutMs, 2213.77);
 });
 
 test("a filler answered instead of resumed-from fails even when the words match", () => {
@@ -3270,6 +3401,22 @@ test("end-call drain failure points at the trace that heard it", () => {
 test("end-call drain with no measured goodbye is INFO, never a false FAIL", () => {
   const gate = evaluateEndCallDrain({ goodbyeCoverage: null, hangUpDelayMs: null, narratedEnding: false });
   assert.equal(gate.status, "INFO");
+});
+
+test("a missing closing line fails explicitly instead of measuring from the greeting", () => {
+  // Live hang-up-fast: the caller asked to hang up and the model called
+  // end_call silently. Measuring lastAudioEnd - endedAt used the greeting and
+  // reported a fake 4242ms drain; the honest evidence is "no goodbye audio".
+  const gate = evaluateEndCallDrain({
+    goodbyeCoverage: null,
+    hangUpDelayMs: null,
+    narratedEnding: false,
+    missingGoodbye: true,
+    traceRef: "sess_8d9245c69c8b4aefa29882b3410f1330 (no closing turn merged)",
+  });
+  assert.equal(gate.status, "FAIL");
+  assert.match(gate.detail, /no goodbye audio after End call/);
+  assert.match(gate.detail, /sess_8d9245c69c8b4aefa29882b3410f1330/);
 });
 
 test("the closing line only names the team inbox when the address is actually said", () => {

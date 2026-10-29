@@ -260,7 +260,7 @@ const BUSINESS_TOOLS: Record<ToolName, VoiceTool> = {
 export const END_CALL_VOICE_TOOL: VoiceTool = {  type: "function",
   name: END_CALL_TOOL,
   description:
-    "End the call when the task is complete, the caller asked to end, consent was denied, or the conversation loops with no progress — only after every other tool has returned and you have spoken a brief natural goodbye such as 'Okay, bye!'. Never announce the hang-up itself.",
+    "End the call when the task is complete, the caller asked to end, consent was denied, or the conversation loops with no progress — only after every other tool has returned and you have spoken a brief natural goodbye such as 'Okay, bye!' out loud in your own reply text. The spoken words are what the caller hears; the tool call itself makes no sound. Never say or write the tool's name or arguments in your reply. Never announce the hang-up itself.",
   parameters: {
     type: "object",
     properties: {
@@ -275,7 +275,11 @@ export const END_CALL_VOICE_TOOL: VoiceTool = {  type: "function",
     additionalProperties: false,
   },
   execution_mode: "hold",
-  timeout_seconds: 5,
+  // The result is held until the goodbye's audio drains (ADR-0005): a 5s
+  // timeout made the platform give up mid-goodbye and speak its own "Sorry,
+  // something went wrong" line after End call (measured live). Long goodbyes
+  // take 6–10s, so the hold window must outlast them.
+  timeout_seconds: 30,
   // The result auto-fires the next reply, and without guidance the model
   // fills that turn by narrating the hang-up ("the call has ended").
   // Humans just go silent — the sound and the screen say the rest — so the

@@ -112,6 +112,7 @@ import { CHECK_EMAIL_TOOL, DEMO_VOICE_TOOLS, executeDemoTool, SHOW_TEST_ADDRESS_
 import {
   checkResultToData,
   DEMO_INBOX_ADDRESS,
+  inviteFallbackAction,
   mentionsScreen,
   normalizeClaim,
   type CheckEmailResult,
@@ -119,13 +120,16 @@ import {
 import { buildEndCallSuccess, END_CALL_VOICE_TOOL } from "../src/lib/tools/definitions";
 import {
   HELD_RESULT_RELEASE_MS,
+  END_CALL_AUDIO_GRACE_MS,
   heardWords,
+  nothingLeftUnheard,
   stripSpokenToolCall,
   TARGET_SAMPLE_RATE,
   VoiceSession,
   type BargeInEvent,
 } from "../src/lib/voice/session";
 import { tryJevGateway } from "../src/lib/voice/voice-judge";
+import { isEndCallRequest, isGoodbyeLine } from "../src/lib/voice/jev-judges";
 import {
   callerClipDrift,
   callerClipFingerprint,
@@ -434,6 +438,8 @@ type ClientOutcome = {
   /** When the session ended, and when the agent's last audio finished playing. */
   endedAt: number | null;
   lastAudioEnd: number;
+  /** Wall clock the call opened; agent windows are kept call-relative. */
+  startedAt: number;
   /** Live-call wall clock from dial to stop, excluding caller clip rendering. */
   wallClockMs: number;
   /** Agent audio chunks received during the call. */
@@ -486,8 +492,12 @@ type CallerSpeech = {
   line: string;
   enqueuedAt: number;
   onsetMs: number;
+  /** Whole clip length; the spoken part ends at `speechEnd()`. */
+  durationMs: number;
   /** Snapshot for measureCutLatency, filled once the pump transmits the onset. */
   onset: () => CallerOnset;
+  /** Wall clock when the caller's spoken audio ends (null until transmitted). */
+  speechEnd: () => number | null;
 };
 
 /**
@@ -568,12 +578,14 @@ async function runClient(
   const outcome: ClientOutcome = {
     events: [], cutAt: null, creates: [], agent: [], heard: [], agentTurns: [], heardTurns: [], cutReplyId: null,
     replyAudioAt: {}, cutPlayedMs: null,
-    interruptedReplies: 0, sessionId: null, endedAt: null, lastAudioEnd: 0,
+    interruptedReplies: 0, sessionId: null, endedAt: null, lastAudioEnd: 0, startedAt: t0,
     wallClockMs: 0, audioChunks: 0, callerClips: lines.map((line) => clipPrints.get(line)!),
     overlapMs: [], cutWindows: [], lastFadeMs: 0, agentWindows: [], coverageAt: [], checkIns: [], silenceTimeline: null,
   };
   let repliesDone = 0;
   let audioChunks = 0;
+  /** The caller asked to end; a spoken goodbye with no tool call still ends. */
+  let endRequested = false;
   const session = new VoiceSession(
     {
       onBargeIn: (event) => outcome.events.push({ ...event, at: Date.now() }),
@@ -594,9 +606,16 @@ async function runClient(
       },
       onAgentTurn: (turn) => {
         outcome.agentTurns.push({ replyId: turn.itemId, text: turn.text, at: Date.now() });
+        // Like the browser: the caller asked to end and the model said a
+        // spoken goodbye without calling the tool — still hang up after it.
+        if (endRequested) {
+          endRequested = false;
+          if (isGoodbyeLine(turn.text)) session.endAfterReply();
+        }
       },
       onUserTurn: (turn) => {
         outcome.heardTurns.push({ text: turn.text, at: Date.now() });
+        if (isEndCallRequest(turn.text)) endRequested = true;
       },
       onReplyDone: (info) => {
         repliesDone += 1;
@@ -887,12 +906,22 @@ async function runClient(
           line,
           enqueuedAt,
           onsetMs: fingerprint.onsetMs,
+          durationMs: onset.durationMs,
           onset: () => ({
             enqueuedAt,
             firstFrameAt: onset.firstFrameAt,
             onsetMs: onset.onsetMs,
             ...(onset.frameOffsetMs === null ? {} : { frameOffsetMs: onset.frameOffsetMs }),
           }),
+          speechEnd: () => {
+            const start = callerSpeechStart({
+              enqueuedAt,
+              firstFrameAt: onset.firstFrameAt,
+              onsetMs: onset.onsetMs,
+              ...(onset.frameOffsetMs === null ? {} : { frameOffsetMs: onset.frameOffsetMs }),
+            });
+            return start === null ? null : start + Math.max(0, onset.durationMs - onset.onsetMs);
+          },
         };
       },
       waitFor,
@@ -963,13 +992,49 @@ function hangUpLine(ms: number, sessionId: string | null): string {
   return `    hung up ${ms}ms after the goodbye finished playing${sessionId ? ` (session ${sessionId})` : ""}`;
 }
 
+/**
+ * The last agent audio that STARTED after the caller's end request. A goodbye
+ * is only the closing line when it begins after the request: the greeting
+ * (or the answer being interrupted) must never be measured as the goodbye.
+ * Null means the caller heard no closing line at all.
+ */
+function closingAudioAfter(o: ClientOutcome, requestAt: number | null): number | null {
+  if (requestAt === null) return null;
+  const windows = o.agentWindows
+    .map((window) => ({ startAt: o.startedAt + window.startMs, endAt: o.startedAt + window.endMs }))
+    .filter((window) => window.startAt >= requestAt && window.endAt > window.startAt);
+  if (windows.length === 0) return null;
+  return Math.max(...windows.map((window) => window.endAt));
+}
+
+/** The measured hang-up verdict, or an explicit FAIL when no goodbye played. */
+function hangUpAfterGoodbye(
+  o: ClientOutcome,
+  requestAt: number | null,
+  sessionId: string | null,
+): string | null {
+  const goodbyeEnd = closingAudioAfter(o, requestAt);
+  if (goodbyeEnd === null) {
+    console.log(
+      `    no goodbye audio after the end request${sessionId ? ` (session ${sessionId})` : ""}`,
+    );
+    return "no goodbye audio after End call: the caller never heard a closing line";
+  }
+  const ms = Math.round(o.endedAt! - goodbyeEnd);
+  console.log(hangUpLine(ms, sessionId));
+  return hangUpDrainFailure(ms);
+}
+
 /** After the long ask, wait until the agent's answer is audibly under way. */
 async function askAndWaitForSpeech(ctx: Parameters<Parameters<typeof runClient>[2]>[0]) {
   await ctx.waitFor(() => ctx.replies() >= 1); // greeting done
   const greetingChunks = ctx.audioChunks();
   ctx.say(LONG_ASK);
   await ctx.waitFor(() => ctx.audioChunks() > greetingChunks + 5);
-  await new Promise((resolve) => setTimeout(resolve, 1500)); // mid-sentence
+  // Cut while the answer is still being generated, not after a long fixed
+  // wait that can land past a short reply's end (measured: a stop-over run
+  // waited 1.5s and the reply had already stopped, so the caller never cut).
+  await new Promise((resolve) => setTimeout(resolve, 400)); // mid-sentence
 }
 
 const CLIENT_SCENARIOS: { name: string; run: () => Promise<string | null> }[] = [
@@ -1018,16 +1083,19 @@ const CLIENT_SCENARIOS: { name: string; run: () => Promise<string | null> }[] = 
             resumeMs: tail.resumeMs,
           })}`
         : "";
-      const cutLabel = measured.cutMs !== null ? `cut at ${measured.cutMs}ms` : cutObserved ? "cut" : "never cut";
+      const cutLabel = measured.cutMs !== null ? `cut at ${Math.round(measured.cutMs)}ms` : cutObserved ? "cut" : "never cut";
       console.log(
         `    filler ${cutLabel}; events ${JSON.stringify(
           o.events.map((e) => [e.verdict, e.text]),
-        )}; handling ${handling}${tailSuffix}`,
+        )}; handling ${handling}${tailSuffix}; said ${JSON.stringify("Okaay so")}`,
       );
       if (cutObserved) {
-        return resumed
-          ? null
-          : `cut and not resumed (events: ${JSON.stringify(o.events.map((e) => [e.verdict, e.text]))})`;
+        if (resumed) return null;
+        // The cut can land after the reply's last word (measured live: 2213ms
+        // in, when the answer had finished): nothing was left unheard, so
+        // skipping the resume is correct rather than a dropped tail.
+        if (tail && (tail.agentText.trim() === "" || nothingLeftUnheard(tail.agentText, tail.heardText))) return null;
+        return `cut and not resumed (events: ${JSON.stringify(o.events.map((e) => [e.verdict, e.text]))})`;
       }
       if (o.interruptedReplies !== 0) {
         return `reply was interrupted without a measured cut (interrupted replies: ${o.interruptedReplies})`;
@@ -1062,7 +1130,7 @@ const CLIENT_SCENARIOS: { name: string; run: () => Promise<string | null> }[] = 
       if (measured.cutMs === null) {
         return `never cut (${measured.reason ?? "no cut"}; events: ${JSON.stringify(o.events.map((e) => e.verdict))})`;
       }
-      console.log(`    cut ${measured.cutMs}ms after the caller started (budget ${REAL_CUT_MAX_MS}ms)`);
+      console.log(`    cut ${Math.round(measured.cutMs)}ms after the caller started (budget ${REAL_CUT_MAX_MS}ms)`);
       const answer = judgePostCutAnswer({
         point: STOP_OVER_POINT,
         heard: o.heard,
@@ -1140,32 +1208,32 @@ const CLIENT_SCENARIOS: { name: string; run: () => Promise<string | null> }[] = 
   {
     name: "hang-up-fast",
     run: async () => {
+      const request = { speech: null as CallerSpeech | null };
       const o = await runClient(voiceIdArg(), ["I want you to hang up."], async (ctx) => {
         await ctx.waitFor(() => ctx.replies() >= 1);
-        ctx.say("I want you to hang up.");
+        request.speech = ctx.say("I want you to hang up.");
         await ctx.waitFor(ctx.ended, 20000).catch(() => undefined);
       });
       if (o.endedAt === null) return "never hung up";
-      const ms = o.endedAt - o.lastAudioEnd;
-      console.log(hangUpLine(ms, o.sessionId));
-      return hangUpDrainFailure(ms);
+      // The caller's spoken clip ends after the pump transmits its onset, so
+      // the end request time is read once the call is over, never at enqueue.
+      return hangUpAfterGoodbye(o, request.speech?.speechEnd() ?? null, o.sessionId);
     },
   },
   {
     name: "hang-up-over",
     run: async () => {
+      const request = { speech: null as CallerSpeech | null };
       const o = await runClient(voiceIdArg(), [LONG_ASK, "I want you to hang up this call."], async (ctx) => {
         await askAndWaitForSpeech(ctx);
-        ctx.say("I want you to hang up this call.");
+        request.speech = ctx.say("I want you to hang up this call.");
         await ctx.waitFor(ctx.ended, 20000).catch(() => undefined);
       });
       if (o.creates.some((c) => isResumeInstructions(c))) return "resumed instead of ending";
       if (o.endedAt === null) return "never hung up";
       // The same drain verdict as hang-up-fast: the measured ms is asserted,
       // never just printed, and an early close fails as chopped.
-      const ms = o.endedAt - o.lastAudioEnd;
-      console.log(hangUpLine(ms, o.sessionId));
-      return hangUpDrainFailure(ms);
+      return hangUpAfterGoodbye(o, request.speech?.speechEnd() ?? null, o.sessionId);
     },
   },
   {
@@ -1185,7 +1253,7 @@ const CLIENT_SCENARIOS: { name: string; run: () => Promise<string | null> }[] = 
       const failure = greetingCutFailure(measured.cutMs, measured.reason);
       if (failure) return failure;
       console.log(
-        `    greeting cut ${measured.cutMs}ms after the caller started (budget ${GREETING_CUT_MAX_MS}ms)`,
+        `    greeting cut ${Math.round(measured.cutMs as number)}ms after the caller started (budget ${GREETING_CUT_MAX_MS}ms)`,
       );
       return null;
     },
@@ -1319,12 +1387,13 @@ async function runToolSession(
   let replyActive = false;
   let current: ReplyRecord | null = null;
   let lastWasToolResult = false;
+  /** The eval closed the socket itself after the goodbye drained. */
+  let closedAfterGoodbye = false;
   const held: { callId: string; result: Record<string, unknown>; record: ToolCallRecord }[] = [];
-  // Like the browser (voice-call.tsx → VoiceSession.replaceNextReply): once
-  // the chip is up, the platform's next reply is replaced by the call's
-  // invite (it never plays), or the invite is sent if none starts in 1.5s.
-  let replaceNext: ReturnType<typeof setTimeout> | null = null;
-  let replacing: string | null = null;
+  // The invite comes from the platform's own reply to the show tool result
+  // (its instructions carry the exact tag), exactly like the browser. The
+  // call only puts the chip up; it never replaces that reply (a stale mirror
+  // of a removed browser path used to cut the invite and resend a second one).
   const sendInvite = () => {
     if (process.env.EVAL_DEBUG) console.log(`    → ${((Date.now() - t0) / 1000).toFixed(2)}s reply.create (invite)`);
     send({ type: "reply.create", instructions: inviteNowInstructions(TAG) });
@@ -1337,7 +1406,9 @@ async function runToolSession(
   };
   const sendResult = (callId: string, result: Record<string, unknown>, record: ToolCallRecord) => {
     record.resultAt = Date.now();
-    if (record.name === END_CALL_VOICE_TOOL.name) outcome.endCallResultAt = record.resultAt;
+    if (record.name === END_CALL_VOICE_TOOL.name) {
+      outcome.endCallResultAt = record.resultAt;
+    }
     if (record.name === SHOW_TEST_ADDRESS_TOOL && result.ok === true) {
       // The chip shows what the tool result carried, exactly like the browser.
       const data = (result.data ?? {}) as Record<string, unknown>;
@@ -1345,20 +1416,33 @@ async function runToolSession(
         typeof data.address === "string" ? data.address : DEMO_INBOX_ADDRESS,
         typeof data.testTag === "string" ? data.testTag : TAG,
       );
-      replaceNext = setTimeout(() => {
-        replaceNext = null;
-        sendInvite();
-      }, 1500);
     }
     if (process.env.EVAL_DEBUG) console.log(`    → ${((Date.now() - t0) / 1000).toFixed(2)}s tool.result ${record.name}`);
     lastWasToolResult = true;
     send({ type: "tool.result", call_id: callId, result: JSON.stringify(result), is_error: result.ok !== true });
+    if (record.name === END_CALL_VOICE_TOOL.name) {
+      // Like the browser: the result landed only after the goodbye drained;
+      // close now, so the platform's post-result auto-reply (which the model
+      // sometimes fills with the goodbye again) is never heard past the line.
+      closedAfterGoodbye = true;
+      send({ type: "session.end" });
+      ws.close();
+    }
   };
-  const flushHeld = () => {
-    while (!replyActive && held.length > 0) {
-      const next = held.shift()!;
+  const flushHeld = (includeEndCall = true) => {
+    if (replyActive) return;
+    const keep: typeof held = [];
+    for (const next of held) {
+      // The goodbye result rides the drain watcher: sending it on reply.done
+      // (generation) ends the hold while the audio is still playing, and the
+      // platform then narrates "The call has ended." over the goodbye.
+      if (!includeEndCall && next.record.name === END_CALL_VOICE_TOOL.name) {
+        keep.push(next);
+        continue;
+      }
       sendResult(next.callId, next.result, next.record);
     }
+    held.splice(0, held.length, ...keep);
   };
   let heardUser = false;
   let onReplyDone: (() => void) | null = null;
@@ -1407,13 +1491,6 @@ async function runToolSession(
         startedAt: Date.now(),
         afterToolResult: lastWasToolResult,
       };
-      if (replaceNext) {
-        clearTimeout(replaceNext);
-        replaceNext = null;
-        current.replaced = true;
-        replacing = current.id;
-        sendInvite();
-      } else if (replacing) replacing = null; // ours started
       lastWasToolResult = false;
       outcome.replies.push(current);
     }
@@ -1439,11 +1516,29 @@ async function runToolSession(
         r.final = true;
       }
       // Like the browser: Voni announced her screen without the show tool.
+      // The chip goes up, but the invite is only sent when her own line did
+      // not already say the tag (a line with the tag IS the invite).
       if (!outcome.tools.some((t) => t.name === SHOW_TEST_ADDRESS_TOOL) && !outcome.screenByPhrase && mentionsScreen(String(msg.text))) {
         outcome.screenByPhrase = true;
-        showChip(DEMO_INBOX_ADDRESS, TAG);
-        const sendWhenIdle = () => (replyActive ? setTimeout(sendWhenIdle, 300) : sendInvite());
-        setTimeout(sendWhenIdle, 1200);
+        const action = inviteFallbackAction({
+          text: String(msg.text),
+          tag: TAG,
+          invited: outcome.chipShows.length > 0,
+          found: false,
+          toolActive: false,
+        });
+        if (action !== "none") showChip(DEMO_INBOX_ADDRESS, TAG);
+        if (action === "show-and-speak") {
+          const sendWhenIdle = () => {
+            // The call may close while this waits for the floor (a long reply,
+            // then the off-track goodbye): never queue an invite after End
+            // call. The browser's floor drops lines on close; this mirrors it.
+            if (outcome.endCalled || closedAfterGoodbye) return;
+            if (replyActive) setTimeout(sendWhenIdle, 300);
+            else sendInvite();
+          };
+          setTimeout(sendWhenIdle, 1200);
+        }
       }
     }
     if (msg.type === "tool.call") {
@@ -1462,7 +1557,9 @@ async function runToolSession(
           held.push({ callId: String(msg.call_id), result, record });
           flushHeld();
           if (deferEnd) {
-            // Like VoiceSession: no goodbye audio for a while → the platform waits on us.
+            // Like VoiceSession: hold the result through the goodbye's audio
+            // drain (settled + grace), not just its generation. Releasing on
+            // reply.done made the platform narrate over the still-playing line.
             let lastBytes = -1;
             let quietSince = Date.now();
             const watch = setInterval(() => {
@@ -1471,8 +1568,13 @@ async function runToolSession(
                 lastBytes = bytes;
                 quietSince = Date.now();
               }
-              if (!held.length) clearInterval(watch);
-              else if (Date.now() - quietSince >= HELD_RESULT_RELEASE_MS) {
+              if (!held.some((h) => h.record.name === END_CALL_VOICE_TOOL.name)) {
+                clearInterval(watch);
+                return;
+              }
+              const quietMs = Date.now() - quietSince;
+              const drained = bytes > 0 ? quietMs >= END_CALL_AUDIO_GRACE_MS : quietMs >= HELD_RESULT_RELEASE_MS;
+              if (!replyActive && drained) {
                 clearInterval(watch);
                 const release = held.splice(0);
                 for (const h of release) sendResult(h.callId, h.result, h.record);
@@ -1484,17 +1586,7 @@ async function runToolSession(
     }
     if (msg.type === "reply.done") {
       replyActive = false;
-      if (replacing && replacing === String(msg.reply_id)) {
-        // Like VoiceSession: ours should start right after; if not, resend.
-        const replaced = replacing;
-        setTimeout(() => {
-          if (replacing !== replaced) return;
-          replacing = null;
-          outcome.resent = true;
-          sendInvite();
-        }, 1000);
-      }
-      flushHeld();
+      flushHeld(false);
       onReplyDone?.();
     }
     if (msg.type === "error" || msg.type === "session.error") console.error("  session error:", msg.message);
@@ -1547,12 +1639,17 @@ async function runToolSession(
     await waitReply(false); // greeting
     await script(api);
     // Let held results, a pending end_call, and the replies after them settle.
-    await api.until((o) => !replyActive && held.length === 0 && o.replies.length > 0, 8000);
-    await new Promise((resolve) => setTimeout(resolve, 3000));
+    // A session closed after the goodbye drain has nothing left to wait for.
+    if (!closedAfterGoodbye) {
+      await api.until((o) => !replyActive && held.length === 0 && o.replies.length > 0, 8000);
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+    }
   } finally {
     clearInterval(pump);
-    send({ type: "session.end" });
-    ws.close();
+    if (!closedAfterGoodbye) {
+      send({ type: "session.end" });
+      ws.close();
+    }
   }
   return outcome;
 }
@@ -1652,6 +1749,11 @@ function goodbyeCheck(o: ToolOutcome): string | null {
   return `goodbye audio ${played.toFixed(1)}s for ~${expected.toFixed(1)}s of words: "${reading.bye.text.trim()}"`;
 }
 
+/** Whether a reply carries real words (a zero-width/blank tool-result turn is silence). */
+function hasWords(text: string): boolean {
+  return /[\p{L}\p{N}]/u.test(text);
+}
+
 /**
  * Whether the model spoke again after its own hang-up signal. The result is
  * held until the goodbye reply finishes (the browser's ADR-0005 contract), so
@@ -1662,7 +1764,7 @@ function goodbyeCheck(o: ToolOutcome): string | null {
 function narratedAfterEnd(o: ToolOutcome): boolean | null {
   if (!o.endCallResultHeld || o.endCallResultAt === null) return null;
   return o.replies.some(
-    (reply) => !reply.replaced && reply.text.trim().length > 0 && reply.startedAt > o.endCallResultAt!,
+    (reply) => !reply.replaced && hasWords(reply.text) && reply.startedAt > o.endCallResultAt!,
   );
 }
 

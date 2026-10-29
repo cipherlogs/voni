@@ -404,3 +404,23 @@ export function mentionsScreen(text: string): boolean {
   // Voni putting something up, not business talk about someone's screen.
   return /\bput(?:ting)?\b[^.!?]{0,40}\bon (?:your |the )?screen\b/i.test(text);
 }
+
+/**
+ * What the call should do with a spoken line that mentions the screen when
+ * the show tool never ran: put the chip up, and send the invite only when the
+ * line itself did not say the tag. Live (sess_cd108689aa6e4dcfad809d9aa04e8b25)
+ * the model said the invite with the tag, then the fallback spoke it again:
+ * the caller heard the same invite twice. A line that carries the call's tag
+ * already IS the invite, so its chip goes up and nothing is spoken again.
+ */
+export function inviteFallbackAction(input: {
+  text: string;
+  tag: string | null;
+  invited: boolean;
+  found: boolean;
+  toolActive: boolean;
+}): "none" | "show-only" | "show-and-speak" {
+  if (input.invited || input.found || input.toolActive) return "none";
+  if (!input.tag || !mentionsScreen(input.text)) return "none";
+  return containsTag(input.text, input.tag) ? "show-only" : "show-and-speak";
+}

@@ -145,6 +145,18 @@ export function isEndCallRequest(text: string): boolean {
 }
 
 /**
+ * Whether an agent line is a goodbye ("Okay, bye!", "Goodbye", "Take care").
+ * Narrower than isEndCallRequest: a request phrase like "hang up" is the
+ * caller's intent, not the agent's closing line.
+ */
+export function isGoodbyeLine(text: string): boolean {
+  const tokens = cleanTokens(text);
+  if (tokens.some((token) => END_CALL_TOKENS.has(token))) return true;
+  const padded = ` ${tokens.join(" ")} `;
+  return ["see you", "talk soon", "take care"].some((phrase) => padded.includes(` ${phrase} `));
+}
+
+/**
  * Offline probability that `partialText` is a real interruption.
  * Filler-only speech scores near 0; multi-word content while the agent is
  * established scores high. Speech in the first 800ms of a reply is treated

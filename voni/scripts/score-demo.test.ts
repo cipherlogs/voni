@@ -1948,6 +1948,158 @@ if (args[0] === "run" && args[1] === "eval:demo-agent") {
   assert.ok(artifact.evalRunner.timings.scenarioRuns.length >= 9);
 });
 
+test("suite mode scores every gate from its own scenario and merges each call's trace", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  const fillerTail = JSON.stringify({
+    agent: "I can answer that after we do the test. Ready to see how",
+    heard: "I can answer that after we do the test.",
+    resumed: "",
+    resumeMs: null,
+  });
+  const invite = {
+    tag: "Lime 42",
+    agentLines: [EMAIL_INVITE_LINE],
+    lineTurns: [2],
+    chipShows: [{ address: "test@voni.cc", tag: "Lime 42" }],
+    showToolCalls: 1,
+    chipTurn: 2,
+    traceSession: "sess_inv",
+  };
+  const silence = {
+    scenario: "silence-check-in",
+    session: "sess_sil",
+    startedMs: 0,
+    endedMs: 18_000,
+    agentAudio: [{ startMs: 0, endMs: 1_000 }, { startMs: 17_000, endMs: 18_000 }],
+    callerSpeech: [],
+    coverage: [],
+    checkIns: [{ atMs: 16_200 }],
+  };
+  const fixture: Record<string, string[]> = {
+    "greeting-cut": [
+      "  · trace session sess_gc",
+      "    greeting cut 1176ms after the caller started (budget 1500ms)",
+      "greeting-cut: 1/1",
+    ],
+    "filler-over": [
+      "  · trace session sess_fill",
+      `    filler cut at 2213ms; events [["ignore","Okay, so"]]; handling answered; tail ${fillerTail}`,
+      "  ✗ filler-over #1: cut and not resumed",
+      "filler-over: 0/1",
+    ],
+    "stop-over": [
+      "  · trace session sess_stop",
+      "    cut 1171ms after the caller started (budget 1500ms)",
+      '    answered the point after the cut: "Pricing depends on call volume."',
+      "stop-over: 1/1",
+    ],
+    "over-talk": [
+      "  · trace session sess_over",
+      "    heard ledger [\"We're a bakery, actually.\"]",
+      `    DOUBLE TALK ${JSON.stringify({ scenario: "over-talk", session: "sess_over", overlapMs: [40], fadeMs: 40 })}`,
+      "over-talk: 1/1",
+    ],
+    "silence-check-in": [
+      "  · trace session sess_sil",
+      `    SILENCE TIMELINE ${JSON.stringify(silence)}`,
+      "silence-check-in: 1/1",
+    ],
+    "invite-tag": ["  · trace session sess_inv", `EMAIL INVITE ${JSON.stringify(invite)}`, "invite-tag: 1/1"],
+    "bye-audio": [
+      "  · trace session sess_bye",
+      `    GOODBYE DRAIN ${JSON.stringify({ scenario: "bye-audio", session: "sess_bye", turn: 3, coverage: 0.95, inboxNamed: true, narratedEnding: false })}`,
+      "bye-audio: 1/1",
+    ],
+    "hang-up-fast": [
+      "  · trace session sess_fast",
+      "    hung up 900ms after the goodbye finished playing (session sess_fast)",
+      "hang-up-fast: 1/1",
+    ],
+    "hang-up-over": [
+      "  · trace session sess_hover",
+      "    hung up 500ms after the goodbye finished playing (session sess_hover)",
+      "hang-up-over: 1/1",
+    ],
+  };
+  const traces: Record<string, string[]> = {
+    sess_gc: [
+      '1.00s  VONI    "Hi, I\'m Voni!"  (greeting ttfa 600ms)  CUT at 1.10s',
+      '3.00s  VONI    "Sorry,"  (user_speech ttfa 900ms gap 1100ms)',
+    ],
+    sess_stop: [
+      '1.00s  VONI    "Hi, I\'m Voni!"  (greeting ttfa 600ms)',
+      '5.00s  VONI    "I\'ll show you by doing first."  (user_speech gap 900ms)  CUT at 5.50s',
+      '7.00s  VONI    "About 200 a month."  (user_speech gap 1200ms)',
+    ],
+    sess_fill: ['1.00s  VONI    "Hi, I\'m Voni!"  (greeting ttfa 600ms)'],
+    sess_over: ['1.00s  VONI    "Hi, I\'m Voni!"  (greeting ttfa 600ms)  CUT at 4.00s'],
+    sess_sil: ['1.00s  VONI    "Hi, I\'m Voni!"  (greeting ttfa 600ms)'],
+    sess_inv: ['1.00s  VONI    "Hi, I\'m Voni!"  (greeting ttfa 600ms)', '9.00s  VONI    "Send me an email with Lime 42."  (user_speech gap 800ms)'],
+    sess_bye: ['1.00s  VONI    "Hi, I\'m Voni!"  (greeting ttfa 600ms)', '20.00s  TOOL    end_call {"closing_line":"Bye!"}', '20.00s  VONI    "Goodbye!"  (user_speech gap 700ms)'],
+    sess_fast: ['1.00s  VONI    "Hi, I\'m Voni!"  (greeting ttfa 600ms)', '9.00s  TOOL    end_call {"closing_line":"Okay, bye!"}', '9.00s  VONI    "Okay, bye!"  (user_speech)'],
+    sess_hover: ['1.00s  VONI    "Hi, I\'m Voni!"  (greeting ttfa 600ms)', '18.00s  TOOL    end_call {"closing_line":"Goodbye!"}', '18.00s  VONI    "No problem. Goodbye!"  (user_speech gap 600ms)'],
+  };
+  const failing = { "filler-over": 1 };
+  const shim = `#!/usr/bin/env node
+const args = process.argv.slice(2);
+const fixture = ${JSON.stringify(fixture)};
+const traces = ${JSON.stringify(traces)};
+const failing = ${JSON.stringify(failing)};
+if (args[0] === "run" && args[1] === "eval:demo-agent") {
+  const i = args.indexOf("--scenario");
+  const scenario = i >= 0 ? args[i + 1] : "(none)";
+  for (const line of fixture[scenario] ?? []) console.log(line);
+  const failures = failing[scenario] ?? 0;
+  console.log("EVAL SUMMARY " + JSON.stringify({
+    scenario, runs: 1, failures,
+    scenarios: [{ name: scenario, passed: failures ? 0 : 1, runs: 1 }],
+    traceSessions: [], playout: [], audioChunks: 40, live: true, clips: [],
+  }));
+  process.exit(failures ? 1 : 0);
+} else if (args[0] === "run" && args[1] === "call:trace") {
+  const lines = traces[args[3]];
+  if (!lines) { console.error("No timeline yet"); process.exit(2); }
+  for (const line of lines) console.log(line);
+}
+`;
+  writeFileSync(join(bin, "npm"), shim, { mode: 0o755 });
+  const out = join(dir, "suite.json");
+  const result = run(["--out", out, "--timing-lock", join(dir, "suite.lock")], new URL("../", import.meta.url).pathname, {
+    PATH: `${bin}:${process.env.PATH}`,
+  });
+  // filler-over failed its own scenario AND dropped an unheard tail: the
+  // suite must score that FAIL from the failed scenario's evidence, never
+  // leave it INFO or green the command.
+  assert.equal(result.status, 1, result.stderr + result.stdout);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    gates: { name: string; status: string; detail: string }[];
+    beats: Record<string, { gapMs: number | null }>;
+    replyGap: { p50Ms: number | null; samples: number };
+    endCallDrain: { hangUpDelayMs: number | null };
+    callTrace: { sessionId: string; sessions?: { sessionId: string }[] };
+  };
+  const byName = Object.fromEntries(artifact.gates.map((g) => [g.name, `${g.status} ${g.detail}`]));
+  assert.match(byName["greeting-cut"], /^PASS .*1176ms/);
+  assert.match(byName["barge-in-cut"], /^PASS .*1171ms/);
+  assert.match(byName["filler-resume"], /^FAIL .*sess_fill/);
+  assert.match(byName["filler-resume"], /answered instead of resumed-from/);
+  assert.match(byName["email-invite"], /INFO|PASS/);
+  assert.match(byName["double-talk"], /^PASS/);
+  assert.match(byName["dead-air"], /^PASS/);
+  assert.match(byName["end-call-drain"], /^PASS/);
+  assert.equal(artifact.endCallDrain.hangUpDelayMs, 900, "the worst hang-up is carried");
+  // Each scenario's own trace feeds reply gaps; the greeting call's 1100ms
+  // and the stop-over call's 900/1200ms are all inside budget.
+  assert.equal(artifact.beats["greeting-cut"].gapMs, 1100);
+  assert.equal(artifact.replyGap.samples, 5, "every scenario's measured turn is a sample (cut turns measure cut latency)");
+  const reply = artifact.gates.find((g) => g.name === "reply-gap")!;
+  assert.equal(reply.status, "PASS", reply.detail);
+  assert.equal(artifact.callTrace.sessionId, "sess_gc");
+  assert.equal(artifact.callTrace.sessions?.length, 9, "every scenario's call is recorded");
+});
+
 test("default, all and suite dry runs spawn nothing and select the suite", () => {
   const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
   const bin = join(dir, "bin");
@@ -2475,6 +2627,52 @@ test("an early close cites the closing turn of the call that ended before its go
   assert.match(gate.detail, /200ms before goodbye audio ended/, `detail states the early close: ${gate.detail}`);
   assert.match(gate.detail, /call trace turn 4 \(sess_drain22\)/, `detail cites the closed call's turn: ${gate.detail}`);
   assert.doesNotMatch(gate.detail, /no turn merged/, "the closed call was merged, so its turn is known");
+});
+
+test("a hang-up with no closing line fails instead of measuring the greeting", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  writeFileSync(
+    join(bin, "npm"),
+    `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === "run" && args[1] === "eval:demo-agent") {
+  console.log("  · trace session sess_nogood");
+  console.log("    no goodbye audio after the end request (session sess_nogood)");
+  console.log("  ✗ hang-up-fast #1: no goodbye audio after End call");
+  console.log("hang-up-fast: 0/1");
+  console.log("EVAL SUMMARY " + JSON.stringify({ scenario: "hang-up-fast", runs: 1, failures: 1,
+    scenarios: [{ name: "hang-up-fast", passed: 0, runs: 1 }], traceSessions: ["sess_nogood"],
+    playout: [], audioChunks: 40, live: true, clips: [] }));
+  process.exit(1);
+} else if (args[0] === "run" && args[1] === "call:trace") {
+  console.log('1.00s  VONI    "Hi, I\\'m Voni!"  (greeting ttfa 600ms)');
+  console.log('9.00s  TOOL    end_call {"closing_line":"Okay, bye!"}');
+}
+`,
+    { mode: 0o755 },
+  );
+  const out = join(dir, "score.json");
+  const result = run(
+    ["--scenario", "hang-up-fast", "--out", out, "--timing-lock", join(dir, "timing.lock")],
+    new URL("../", import.meta.url).pathname,
+    { PATH: `${bin}:${process.env.PATH}` },
+  );
+  assert.equal(result.status, 1, result.stderr + result.stdout);
+  const artifact = JSON.parse(readFileSync(out, "utf8")) as {
+    endCallDrain: { hangUpDelayMs: number | null; missingGoodbye?: boolean };
+    gates: { name: string; status: string; detail: string }[];
+  };
+  assert.equal(artifact.endCallDrain.hangUpDelayMs, null, "never measures from the greeting");
+  assert.equal(artifact.endCallDrain.missingGoodbye, true);
+  const gate = artifact.gates.find((g) => g.name === "end-call-drain")!;
+  assert.equal(gate.status, "FAIL");
+  assert.match(gate.detail, /no goodbye audio after End call/);
+  assert.match(gate.detail, /sess_nogood/);
+  // The measurements gate stays satisfied: a missing goodbye is measured.
+  const measurements = artifact.gates.find((g) => g.name === "measurements")!;
+  assert.match(measurements.detail, /end-call-drain/);
 });
 
 test("a run without goodbye evidence keeps end-call-drain INFO, never PASS", () => {

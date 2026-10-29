@@ -432,6 +432,18 @@ export function unheardRest(line: string, heard: string): string {
   return words.slice(Math.max(0, heardCount - 1)).join(" ");
 }
 
+/**
+ * Whether the caller already heard every word of the line. A cut that lands
+ * after the last word has no unheard tail: `unheardRest` keeps the final word
+ * as the resume's one-word overlap, but there is nothing left to resume.
+ */
+export function nothingLeftUnheard(line: string, heard: string): boolean {
+  const total = line.split(/\s+/).filter(Boolean).length;
+  if (total === 0) return true;
+  const heardCount = heard.split(/\s+/).filter(Boolean).length;
+  return heardCount >= total;
+}
+
 /** The words of `line` whose start has played after `playedMs` of its audio. */
 export function heardWords(line: string, playedMs: number, msPerChar = CAPTION_MS_PER_CHAR): string {
   const words = line.split(/\s+/).filter(Boolean);
@@ -1449,6 +1461,23 @@ export class VoiceSession {
    */
   speak(instructions: string, opts: Omit<FloorLine, "instructions"> = {}): void {
     this.floor.speak({ instructions, ...opts });
+  }
+
+  /**
+   * End after the reply now speaking drains: the caller asked to hang up and
+   * the agent said its goodbye without a tool call. Reuses the end_call
+   * signal + drain path, so the goodbye is still the last word and nothing
+   * narrates after it.
+   */
+  endAfterReply(): void {
+    if (this.state === "ended" || this.endCallSignaled) return;
+    if (this.replyActive) {
+      this.pendingEndCall = true;
+      this.signalEndCall(this.currentReplyId);
+      return;
+    }
+    this.signalEndCall(null);
+    this.settleThenStop();
   }
 
   /** Drop every line still waiting (the call is closing: nothing may follow the goodbye). */
