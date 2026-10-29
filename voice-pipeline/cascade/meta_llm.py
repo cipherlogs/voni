@@ -1,10 +1,11 @@
-"""Meta LLM backend: the Chat Completions request contract.
+"""Meta LLM backend: the Chat Completions request and stream contract.
 
 Meta's Spark model speaks OpenAI-compatible Chat Completions on Standard
-``muse-spark-1.3``. This module owns exactly one boundary: *what we put on the
-wire*. It builds the request from the stored body's system prompt plus the
-turn's history and posts it through an injected HTTP session factory, so a test
-replays the whole backend offline.
+``muse-spark-1.3``. This module owns the boundary between the cascade and the
+vendor: *what we put on the wire* and *what the stream means*. It builds the
+request from the stored body's system prompt plus the turn's history and posts
+it through an injected HTTP session factory, so a test replays the whole
+backend offline.
 
 The request is deliberately narrow, because the vendor rejects or ignores
 several knobs and a caller's conversation must not leak into them:
@@ -16,7 +17,9 @@ several knobs and a caller's conversation must not leak into them:
   ``parallel_tool_calls`` left at the vendor default;
 - never ``store``, ``stop``, penalties, ``n > 1``, ``logprobs``, temperature or
   unsupported modalities, and never a caller identifier as ``user`` or
-  ``safety_identifier``.
+  ``safety_identifier``. ``safety_identifier`` is opt-in and, when present, the
+  salted digest of an internal id — never a name, phone, email or raw id.
+- prompt caching is not a latency default; enabling it is a reviewed decision.
 
 ``reasoning_effort`` has no default. ``"none"`` is unavailable on Spark (HTTP
 400), so an absent or unavailable effort is refused when the backend is
@@ -25,9 +28,10 @@ measurement; this module only carries it.
 
 Stream parsing lives in :class:`MetaLLMTurn` and the SSE reader: content deltas
 are the only speech, ``reasoning_content`` is recorded for usage and telemetry
-and never yielded, and the first content delta marks ``first_token``. Tool-call
-accumulation, argument validation, usage recording, finish reasons and the
-failure policy are tickets 38-45; ``_stream_events`` leaves their seams open.
+and never yielded, and the first content delta marks ``first_token``. The turn
+record also holds usage, the accumulated tool calls and the finish disposition.
+Argument schema validation and the failure/retry policy are tickets 40 and 42;
+the seams they fill are documented where they are.
 
 The per-turn record is how a caller reads what the stream produced without
 re-parsing it: pass a :class:`MetaLLMTurn` to ``complete()`` (or read
@@ -37,6 +41,7 @@ re-parsing it: pass a :class:`MetaLLMTurn` to ``complete()`` (or read
 from __future__ import annotations
 
 import codecs
+import hashlib
 import json
 import os
 from collections.abc import AsyncIterator, Sequence
@@ -69,6 +74,10 @@ TOOL_FINISH_REASONS = frozenset({"tool_calls", "function_call"})
 
 #: The ledger counter a denied (never-executed) tool call increments.
 TOOL_DENIED_COUNTER = "tool_denied"
+
+#: Deployment secret that salts the model identifier. The salt never leaves the
+#: process: the request carries the digest, not the salt (ticket 44).
+IDENTIFIER_SALT_ENV = "META_IDENTIFIER_SALT"
 
 
 class MetaLLMConfigError(RuntimeError):
@@ -167,12 +176,18 @@ def build_chat_request(
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]] | None = None,
     reasoning_effort: str,
+    safety_identifier: str | None = None,
 ) -> dict[str, Any]:
     """The exact JSON body for ``POST /chat/completions``.
 
     One function owns the shape so a test can compare the whole payload. Any
     key not listed here is intentionally unsupported by Spark; adding one is a
     review decision, not a default.
+
+    ``safety_identifier`` is opt-in and must already be the salted digest from
+    :func:`privacy_identifier`; there is deliberately no ``user`` field and no
+    prompt-caching key, because both are a reviewed privacy decision (ticket
+    44), not a latency default.
     """
     payload: dict[str, Any] = {
         "model": model,
@@ -184,7 +199,27 @@ def build_chat_request(
     if tools:
         payload["tools"] = tools
         payload["tool_choice"] = "auto"
+    if safety_identifier:
+        payload["safety_identifier"] = safety_identifier
     return payload
+
+
+def privacy_identifier(internal_id: str, salt: str) -> str:
+    """The only form in which an internal id may reach the model vendor.
+
+    A salted SHA-256 digest: the same call always hashes the same way (vendor
+    abuse detection stays coherent across retries), a different salt makes the
+    same call unrecognisable, and the digest is not the unsalted hash a
+    dictionary attack could reproduce. The salt is a deployment secret and is
+    never part of the request.
+    """
+    if not internal_id.strip():
+        raise ValueError("an internal id is required to build an identifier")
+    if not salt:
+        raise ValueError("a salt is required; an unsalted hash is not private")
+    return hashlib.sha256(
+        salt.encode("utf-8") + b"\x00" + internal_id.encode("utf-8")
+    ).hexdigest()
 
 
 class _NoPrefetch(PrefetchHandle):
@@ -491,6 +526,8 @@ class _SSEParser:
         self.done = False
 
     def feed(self, chunk: bytes) -> list[str]:
+        if self.done:
+            return []
         return self._lines(self._decoder.decode(chunk))
 
     def close(self) -> list[str]:
@@ -538,6 +575,31 @@ class _SSEParser:
             return None
         self._data.append(value[1:] if value.startswith(" ") else value)
         return None
+
+
+def _resolve_safety_identifier(
+    internal_id: str | None, salt: str | None
+) -> str | None:
+    """The salted digest for this call, or ``None`` when identity is unset.
+
+    An internal id without a salt is refused by name: the unsalted digest is a
+    dictionary attack away from the raw id, so "configured" and "private" must
+    not be the same thing.
+    """
+    if internal_id is None:
+        return None
+    if not internal_id.strip():
+        raise MetaLLMConfigError(
+            "internal_id is empty: the model identifier must derive from a real "
+            "internal call id, never from a blank value"
+        )
+    resolved_salt = (salt or os.environ.get(IDENTIFIER_SALT_ENV) or "").strip()
+    if not resolved_salt:
+        raise MetaLLMConfigError(
+            f"internal_id is configured without a salt: set {IDENTIFIER_SALT_ENV} "
+            "or pass identifier_salt; an unsalted hash is not private"
+        )
+    return privacy_identifier(internal_id.strip(), resolved_salt)
 
 
 def _text(value: Any) -> str:
@@ -776,6 +838,8 @@ class MetaLLM(LLMStream):
         session_factory: Any = None,
         timeout_s: float = 60.0,
         ledger: Any = None,
+        internal_id: str | None = None,
+        identifier_salt: str | None = None,
     ) -> None:
         # Construction guard first: a Contributor id must fail before any
         # request field exists to leak into (ticket 35).
@@ -790,6 +854,11 @@ class MetaLLM(LLMStream):
         # ``first_token``. Marking is first-write-wins, so an orchestrator that
         # also marks it is harmless.
         self._ledger = ledger
+        # The optional model identifier is derived once, at construction: the
+        # raw internal id never becomes a request field (ticket 44).
+        self._safety_identifier = _resolve_safety_identifier(
+            internal_id, identifier_salt
+        )
         self._last_turn: MetaLLMTurn | None = None
 
     @property
@@ -835,6 +904,7 @@ class MetaLLM(LLMStream):
             ),
             tools=tools,
             reasoning_effort=self._reasoning_effort,
+            safety_identifier=self._safety_identifier,
         )
         headers = {
             "authorization": f"Bearer {self._api_key}",
@@ -869,6 +939,7 @@ __all__ = [
     "CALL_ID_MAX_LENGTH",
     "CHAT_COMPLETIONS_PATH",
     "FIRST_TOKEN_MARK",
+    "IDENTIFIER_SALT_ENV",
     "META_BASE_URL",
     "SSE_DONE",
     "UNAVAILABLE_REASONING_EFFORT",
@@ -890,6 +961,7 @@ __all__ = [
     "build_chat_request",
     "build_messages",
     "parse_tool_arguments",
+    "privacy_identifier",
     "parse_usage",
     "reply_disposition",
     "resolve_reasoning_effort",
