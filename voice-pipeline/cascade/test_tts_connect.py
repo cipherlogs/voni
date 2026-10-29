@@ -97,7 +97,16 @@ class BrowserTransportTests(unittest.TestCase):
 
 class PhoneTransportTests(unittest.TestCase):
     def test_phone_connects_with_8k_mulaw(self):
-        factory = ScriptedSocketFactory([begin(sample_rate=8000, encoding="pcm_mulaw")])
+        factory = ScriptedSocketFactory(
+            [
+                begin(
+                    voice_id="lola",
+                    language="Spanish",
+                    sample_rate=8000,
+                    encoding="pcm_mulaw",
+                )
+            ]
+        )
         tts = AssemblyAIStreamingTTS(
             voice_id="lola",
             transport="telnyx",
