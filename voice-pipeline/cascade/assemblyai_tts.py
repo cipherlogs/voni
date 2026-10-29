@@ -28,18 +28,21 @@ the delta is recorded. The rate is the one ``Begin`` echoed and the width is
 the encoding's, so the phone leg is measured as 8 kHz mu-law rather than as the
 browser's 24 kHz 16-bit; an ``Audio`` frame that ends mid-sample is refused.
 
-One socket carries the whole call. ``speak`` sends one request per sentence and
-flushes the first sentence immediately; ``Cancel`` stops in-flight synthesis,
-drops the old request's frames until the vendor acknowledges, and reads the
-next ``flush_id`` from the wire; ``terminate`` takes the implicit flush and the
-billing record; and ``handle_close`` turns a close code into a retry, a planned
-reconnect, or a visible call failure. There is no second voice vendor.
+One socket carries one synthesis session; a dropped one is replaced at most
+once per call. ``speak`` sends one request per sentence and flushes the first
+sentence immediately; ``Cancel`` stops in-flight synthesis, drops the old
+request's frames until the vendor acknowledges, and reads the next ``flush_id``
+from the wire; ``terminate`` takes the implicit flush and the billing record;
+and ``handle_close`` turns a close code into a failure reconnect that resumes
+from the first unheard point, a planned reconnect between turns, or a visible
+call failure. There is no second voice vendor.
 """
 
 from __future__ import annotations
 
 import base64
 import json
+import math
 import os
 import re
 import time
@@ -54,6 +57,7 @@ from urllib.parse import urlencode
 from providers import SentenceAudio, StreamingTTS
 
 from cascade.failures import FailureClass, FailureVerdict, classify_tts
+from cascade.reconnect import ReconnectAction, ReconnectBudget
 from cascade.thresholds import require_bound
 from cascade.voice_binding import VoiceBinding, bind_voice
 
@@ -151,6 +155,23 @@ class SynthesisHandshakeError(RuntimeError):
 
 class SynthesisProtocolError(RuntimeError):
     """A frame that cannot be read, or a socket that closed mid-request."""
+
+
+class SynthesisSocketClosed(SynthesisProtocolError):
+    """The socket ended while a request was in flight: a dropped session.
+
+    A dropped session is retryable (the reply resumes from the first unheard
+    point); a frame the adapter cannot read is not. The two are separate types
+    so a malformed frame can never be retried as an outage.
+    """
+
+    def __init__(self, code: Any = None, reason: str = "") -> None:
+        self.code = code
+        self.reason = reason
+        detail = "" if code is None else f" (code {code!r}: {reason})"
+        super().__init__(
+            f"synthesis socket closed while a request was in flight{detail}"
+        )
 
 
 class PartialSampleError(SynthesisProtocolError):
@@ -270,11 +291,18 @@ class CloseAction(str, Enum):
 
 @dataclass(frozen=True)
 class CloseDecision:
-    """A close that does not end the call, and why."""
+    """A close that does not end the call, and why.
+
+    ``resume`` is the session's located point when the close happened during a
+    reply, and ``resume_text`` is exactly what remains to be synthesized: the
+    unheard tail of the request at the cut plus every sentence not yet sent.
+    """
 
     verdict: FailureVerdict
     action: CloseAction
     retried: bool = False
+    resume: ResumePoint | None = None
+    resume_text: str = ""
 
     @property
     def fallback(self) -> None:
@@ -524,9 +552,27 @@ class TerminationRecord:
     billing: Billing
 
 
+@dataclass
+class _ReplyProgress:
+    """How far one reply's audio reached the client before the session died.
 
+    ``delivered_ms`` is the audio handed to the consumer, which is the furthest
+    point the caller can have heard: it is the position a reconnect resumes
+    from, never the audio the vendor merely sent. ``index`` is the sentence
+    being spoken (every earlier sentence was fully delivered, because a
+    ``FlushDone`` only arrives after all of its audio).
+    """
 
+    chunks: tuple[str, ...]
+    index: int = 0
+    sent: bool = False
+    current_has_request: bool = False
+    delivered_ms: float = 0.0
 
+    @property
+    def chunk(self) -> str:
+        """The sentence currently being synthesized."""
+        return self.chunks[self.index]
 
 
 def transport_format(transport: str) -> TransportFormat:
@@ -554,6 +600,8 @@ class AssemblyAIStreamingTTS(StreamingTTS):
         socket_factory: SocketFactory | None = None,
         clock: Callable[[], float] | None = None,
         alert: Callable[[FailureVerdict, str], None] | None = None,
+        ledger: Any = None,
+        budget: ReconnectBudget | None = None,
     ) -> None:
         self.binding: VoiceBinding = bind_voice(voice_id)
         self.format: TransportFormat = transport_format(transport)
@@ -599,13 +647,20 @@ class AssemblyAIStreamingTTS(StreamingTTS):
             source="unterminated: the session has not ended",
             audio_bytes=0,
         )
-        # Close policy (ticket 55).
+        # Close policy (ticket 55) and recovery (ticket 97): the ticket-94
+        # budget owns the one failure reconnect and the planned bucket, so the
+        # adapter keeps no retry counter of its own.
+        self._budget = budget or ReconnectBudget(ledger=ledger, now=self._clock)
         self.failures: list[FailureVerdict] = []
         self.alerts: list[tuple[FailureVerdict, str]] = []
         self.breaker_opens: list[FailureVerdict] = []
         self.reconnects = 0
         self.needs_reconnect = False
-        self._retry_used = False
+        self._reply: _ReplyProgress | None = None
+        #: Requests from sessions that have ended, kept as the played record.
+        #: A new session restarts ``flush_id``, so the current map cannot hold
+        #: both sessions without two requests sharing one id.
+        self.closed_sessions: list[dict[int, SynthesisRequest]] = []
 
     @property
     def url(self) -> str:
@@ -688,42 +743,81 @@ class AssemblyAIStreamingTTS(StreamingTTS):
         after the previous ``FlushDone``, which is what keeps the control-frame
         rate inside the session's budget and makes a per-token flush
         unexpressible.
+
+        A socket that dies mid-reply is the one failure reconnect (ticket 94):
+        the audio already delivered is kept and the remaining reply is spoken
+        on a new session from the first unheard point, so a sentence the caller
+        heard is never spoken twice. ``3008`` is not a failure: the reply
+        drains and the new session opens at the next reply, never mid-sentence.
         """
-        self._require_open()
         chunks = schedule(text)
         if not chunks:
             return
+        if self.needs_reconnect:
+            # A planned expiry drains the current reply and opens the new
+            # session between turns, never mid-sentence.
+            await self._reopen()
+        self._require_open()
+        progress = _ReplyProgress(chunks=chunks)
+        self._reply = progress
         generation = self._cancel_generation
-        index = 0
         self._pending_characters = sum(len(chunk) for chunk in chunks[1:])
-        await self._send_request(chunks[index])
-        while True:
-            frame = await self._next_frame(generation)
-            if frame is None:
-                return
-            kind = frame.get("type")
-            if kind == "Audio":
-                pcm = self._decode_audio(frame)
-                self.audio_bytes += len(pcm)
-                request = self._request_for(frame.get("flush_id"), text=chunks[index])
-                request.audio_bytes += len(pcm)
-                yield SentenceAudio(
-                    pcm=pcm,
-                    sample_rate=self.audio_sample_rate,
-                    text=chunks[index],
-                )
-            elif kind == "FlushDone":
-                self._record_flush_done(frame, text=chunks[index])
-                index += 1
-                if index >= len(chunks):
-                    self._pending_characters = 0
+        try:
+            while progress.index < len(progress.chunks):
+                try:
+                    if not progress.sent:
+                        await self._send_request(progress.chunk)
+                        progress.sent = True
+                    frame = await self._next_frame(generation)
+                except Exception as error:
+                    if not _is_socket_close(error):
+                        raise
+                    resumed = await self._recover(
+                        getattr(error, "code", None),
+                        str(getattr(error, "reason", "") or ""),
+                    )
+                    if resumed is None:
+                        return
+                    progress = resumed
+                    self._reply = progress
+                    generation = self._cancel_generation
+                    self._pending_characters = sum(
+                        len(chunk) for chunk in progress.chunks[1:]
+                    )
+                    continue
+                if frame is None:
                     return
-                self._pending_characters = sum(
-                    len(chunk) for chunk in chunks[index + 1 :]
-                )
-                await self._send_request(chunks[index])
-            elif kind == "Termination":
-                return
+                kind = frame.get("type")
+                if kind == "Audio":
+                    pcm = self._decode_audio(frame)
+                    self.audio_bytes += len(pcm)
+                    request = self._request_for(
+                        frame.get("flush_id"), text=progress.chunk
+                    )
+                    request.audio_bytes += len(pcm)
+                    progress.current_has_request = True
+                    progress.delivered_ms += self.audio_duration_ms_for(len(pcm))
+                    yield SentenceAudio(
+                        pcm=pcm,
+                        sample_rate=self.audio_sample_rate,
+                        text=progress.chunk,
+                    )
+                elif kind == "FlushDone":
+                    self._record_flush_done(frame, text=progress.chunk)
+                    progress.index += 1
+                    progress.sent = False
+                    progress.current_has_request = False
+                    if progress.index >= len(progress.chunks):
+                        self._pending_characters = 0
+                        return
+                    self._pending_characters = sum(
+                        len(chunk) for chunk in progress.chunks[progress.index + 1 :]
+                    )
+                elif kind == "Termination":
+                    return
+        finally:
+            if self._reply is progress:
+                self._reply = None
 
     async def speak_greeting(self, text: str) -> AsyncIterator[SentenceAudio]:
         """Speak the body's greeting line, first sentence flushed immediately.
@@ -731,8 +825,9 @@ class AssemblyAIStreamingTTS(StreamingTTS):
         A greeting goes through the same scheduler as a reply: one
         ``Generate`` + ``Flush``, split at sentence boundaries. A greeting that
         is never flushed is a bug, so there is no separate unflushed path. A
-        failure here ends the call visibly with ``stage="greeting"``; there is
-        no silent opening.
+        dropped session gets the one failure reconnect like a reply; a second
+        failure ends the call visibly with ``stage="greeting"``, because there
+        is no silent opening.
         """
         previous = self._stage
         self._stage = "greeting"
@@ -803,56 +898,139 @@ class AssemblyAIStreamingTTS(StreamingTTS):
             self._alert(failure.verdict, str(failure))
             raise failure
 
-    async def handle_close(self, code: Any = None) -> CloseDecision:
+    async def handle_close(
+        self, code: Any = None, *, reason: str = ""
+    ) -> CloseDecision:
         """Classify one close and act on it.
 
-        A retryable close is retried once, and only before any audio was
-        delivered — restarting mid-reply would repeat speech. A configuration
-        or pacing close is our bug: the call fails, an alert fires, and the
-        voice leg's breaker is left closed. ``3008`` and the expiry sentinel are
-        planned reconnects: drain this reply, open a new session next turn.
+        ``3008`` and the expiry sentinel are planned reconnects: the current
+        reply drains (its unheard tail is abandoned rather than reconnected
+        mid-sentence) and the next reply opens a new session. A trigger is the
+        one failure reconnect (ticket 94): the reply continues on a new session
+        from the first unheard point, so audio already played is never spoken
+        again, and a second trigger ends the call visibly. A configuration or
+        pacing close is our bug: the call fails, an alert fires, and the voice
+        leg's breaker is left closed.
         """
         verdict = classify_tts(code)
+        where = f"synthesis close {code!r}" + (f" ({reason})" if reason else "")
         if verdict.failure_class is FailureClass.PLANNED_RECONNECT:
             await self._close_socket()
+            # The planned bucket is separate: expiry never spends the failure
+            # reconnect, so a later outage still gets its one recovery.
+            self._budget.planned("tts", code=verdict.code)
             self.needs_reconnect = True
             return CloseDecision(verdict=verdict, action=CloseAction.PLANNED_RECONNECT)
         if verdict.failure_class is FailureClass.DO_NOT_OPEN:
             await self._close_socket()
             if code == 1000:
                 return CloseDecision(verdict=verdict, action=CloseAction.CLEAN)
-            raise self._fail(
-                verdict, f"synthesis close {code!r}: {verdict.reason}"
-            )
-        if verdict.failure_class is FailureClass.TRIGGER and self.retry_allowed:
-            self._retry_used = True
+            raise self._fail(verdict, f"{where}: {verdict.reason}")
+        # Capture where the reply got to before the old session is replaced.
+        resume, resume_text = self._unheard_point()
+        decision = self._budget.failed(verdict)
+        if decision.action is ReconnectAction.RECONNECT:
             self.failures.append(verdict)
             await self._reopen()
             return CloseDecision(
-                verdict=verdict, action=CloseAction.RETRY, retried=True
+                verdict=verdict,
+                action=CloseAction.RETRY,
+                retried=True,
+                resume=resume,
+                resume_text=resume_text,
             )
         failure = self._fail(
-            verdict, f"synthesis close {code!r}: {verdict.reason}"
+            verdict, f"{where}: {verdict.reason}; {decision.reason}"
         )
         await self._close_socket()
         raise failure
 
+    async def _recover(self, code: Any, reason: str = "") -> _ReplyProgress | None:
+        """Act on a socket that died while synthesis was being spoken.
+
+        The reply or greeting takes the one failure reconnect and continues
+        from its first unheard point; a planned expiry returns ``None`` (the
+        current synthesis drains and the next turn opens the session), and a
+        second failure raises through :meth:`handle_close`.
+        """
+        decision = await self.handle_close(code, reason=reason)
+        if decision.action is CloseAction.PLANNED_RECONNECT:
+            return None
+        if decision.action is CloseAction.CLEAN:
+            # The vendor ended the session normally mid-call: the current
+            # synthesis is over and the next turn needs a session of its own.
+            self.needs_reconnect = True
+            return None
+        resumed = schedule(decision.resume_text)
+        if not resumed:
+            return None
+        return _ReplyProgress(chunks=resumed)
+
+    def _unheard_point(self) -> tuple[ResumePoint | None, str]:
+        """The first point of the reply the caller has not heard, and its text.
+
+        The position is the audio handed to the consumer, not what the vendor
+        sent, so it cannot claim a word was heard because it was transmitted.
+        The located point uses this session's own timings and word boundaries;
+        the sentences not yet sent follow it. Empty text means the whole reply
+        was delivered before the socket died.
+        """
+        progress = self._reply
+        if progress is None:
+            return None, ""
+        if progress.index >= len(progress.chunks):
+            return None, ""
+        unsent = "".join(progress.chunks[progress.index + 1 :])
+        if not progress.current_has_request:
+            # No frame of this sentence arrived: the whole sentence is unheard.
+            return None, "".join(progress.chunks[progress.index :])
+        timeline = self._timeline()
+        spoken = progress.index + 1
+        start = timeline[-spoken][1] if len(timeline) >= spoken else 0.0
+        try:
+            point = self.resume_point(start + progress.delivered_ms)
+        except ValueError:
+            point = None
+        tail = "" if point is None else point.text
+        # The located tail is token-joined (no trailing whitespace), so each
+        # piece is trimmed and the unsent sentences are separated by one space.
+        text = " ".join(
+            part.strip() for part in (tail, unsent) if part.strip()
+        )
+        return point, text
+
     @property
     def retry_allowed(self) -> bool:
-        """Whether a trigger close may be retried with a new session.
+        """Whether a trigger close may open a new session.
 
-        Once, and only before any audio was delivered: a retry after speech
-        would repeat it. The failed attempt is still recorded.
+        One per call, from the ticket-94 budget. Audio already delivered no
+        longer refuses the retry: the reply resumes from the first unheard
+        point instead of replaying what was heard.
         """
         return (
-            not self._retry_used
-            and self.audio_bytes == 0
+            self._budget.counters("tts").budget_left > 0
             and self._socket is not None
         )
 
+    @property
+    def reconnect_budget(self) -> ReconnectBudget:
+        """The call's one reconnect ledger (ticket 94); the adapter never counts."""
+        return self._budget
+
     async def _reopen(self) -> None:
-        """Replace the failed session with a new one, asserting its Begin too."""
+        """Replace the failed session with a new one, asserting its Begin too.
+
+        A new session restarts its ``flush_id`` numbering, so the old session's
+        requests are archived instead of being overwritten: the played record
+        is kept, and the current session's timeline can never mix two sessions.
+        """
         await self._close_socket()
+        if self.requests:
+            self.closed_sessions.append(dict(self.requests))
+        self.requests = {}
+        self.request_order = []
+        self.flush_id = None
+        self.word_boundaries_status = None
         self._discarding = False
         self._pending_cancels.clear()
         self._awaiting_cancel = None
@@ -1230,15 +1408,26 @@ class AssemblyAIStreamingTTS(StreamingTTS):
         )
 
     def _timeline(self) -> list[tuple[SynthesisRequest, float, float]]:
-        """Each request with its start and end on the session's audio timeline."""
+        """Each request with its start and end on the session's audio timeline.
+
+        A request with no ``FlushDone`` yet is the session's open tip: its end
+        is unknown, so it extends past every position rather than counting as
+        zero-length audio. An unfinished *older* request keeps a zero length,
+        because the position it would otherwise swallow belongs to a later
+        reply.
+        """
         timeline: list[tuple[SynthesisRequest, float, float]] = []
         cursor = 0.0
-        for key in self.request_order:
+        last = len(self.request_order) - 1
+        for index, key in enumerate(self.request_order):
             request = self.requests[key]
             start = request.audio_start_ms
             if start is None:
                 start = cursor
-            end = start + (request.audio_duration_ms or 0)
+            if request.audio_duration_ms is None:
+                end = math.inf if index == last else start
+            else:
+                end = start + request.audio_duration_ms
             timeline.append((request, start, end))
             cursor = end
         return timeline
@@ -1316,9 +1505,7 @@ class AssemblyAIStreamingTTS(StreamingTTS):
             try:
                 raw = await self._frames.__anext__()
             except StopAsyncIteration:
-                raise SynthesisProtocolError(
-                    "synthesis socket closed while a request was in flight"
-                ) from None
+                raise SynthesisSocketClosed() from None
             try:
                 frame = json.loads(raw)
             except (json.JSONDecodeError, TypeError):
@@ -1362,6 +1549,18 @@ class AssemblyAIStreamingTTS(StreamingTTS):
                 f"{frame.get('type')!r}"
             )
         return frame
+
+
+def _is_socket_close(error: BaseException) -> bool:
+    """Whether one error is a dropped session, not an unreadable frame.
+
+    A vendor close (``websockets`` and the ticket-01 scripted socket both carry
+    ``.code``) and a socket that simply ended are retryable; a frame the
+    adapter cannot read is our bug and must never be retried as an outage.
+    """
+    if isinstance(error, SynthesisProtocolError):
+        return isinstance(error, SynthesisSocketClosed)
+    return isinstance(getattr(error, "code", None), int)
 
 
 async def _close_quietly(socket: Any) -> None:
