@@ -54,6 +54,15 @@
       "date": "2026-10-29",
       "note": "Refusing cascade is a routing decision, not a fallback event."
     },
+    "breaker.probe_interval_ms": {
+      "unit": "ms",
+      "gate": "breaker.probe",
+      "ticket": "18",
+      "value": 30000,
+      "source": "spec: M1 state transitions — a probe is due at least 30 s after the last probe, and three probe successes each at least 30 s apart close the leg",
+      "date": "2026-10-29",
+      "note": "One number for both rules: the due interval and the minimum spacing between counted successes. Staleness is 2x this. Breaker.from_registry() reads it; the breaker never defaults one."
+    },
     "stt.handshake_ms": {
       "unit": "ms",
       "gate": "stt.handshake",
@@ -80,6 +89,12 @@
       "source": "spec: a long sentence is split under the 2,000-character Generate cap; an over-cap Generate closes with 3006",
       "date": "2026-10-29",
       "note": "Flushing per token is forbidden; this is the sentence ceiling."
+    },
+    "probe.model_max_completion_tokens": {
+      "unit": "tokens",
+      "gate": "breaker.probe",
+      "ticket": "20",
+      "note": "OPEN — the spec bounds the model probe ('one minimal completion with max_completion_tokens small enough to bound cost') but states no number. A probe without a cap is not a probe, so the probe refuses to run until this is recorded. Synthesis costs nothing here: the voice probe sends an empty Generate (0 characters, inside tts.generate_char_cap)."
     },
     "budget.daily_cap": {
       "unit": "usd",

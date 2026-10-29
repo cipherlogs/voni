@@ -44,6 +44,15 @@ RECORD_VERSION = 1
 MAX_PROBE_SUCCESSES = 3
 KEY_PREFIX = "breaker"
 
+#: The registry bound that holds the probe interval (ticket 18). One number
+#: for both rules the spec states with it: a probe is due one interval after
+#: the last probe, and counted successes must be one interval apart.
+PROBE_INTERVAL_BOUND = "breaker.probe_interval_ms"
+
+#: Trigger kind for a real call that failed inside the canary window: the
+#: first real call after a probe closed the leg is watched (ticket 18).
+CANARY_FAILURE_KIND = "canary_failure"
+
 _RECORD_FIELDS = (
     "leg",
     "provider",
@@ -81,6 +90,37 @@ class BreakerRecordCorrupt(RuntimeError):
 def breaker_key(leg: BreakerLeg) -> str:
     """Store key for one leg; the only way the record is addressed."""
     return f"{KEY_PREFIX}:{_check_leg(leg)}"
+
+
+def probe_interval_s() -> float:
+    """The probe interval in seconds, read from the threshold registry.
+
+    The spec states one interval for two rules (probe due, minimum spacing
+    between counted successes), so the registry holds one bound in ms. A
+    missing or unset bound raises :class:`UnsetBoundError` naming it; nothing
+    defaults the value.
+    """
+    from cascade.thresholds import require_bound
+
+    return float(require_bound(PROBE_INTERVAL_BOUND)) / 1000.0
+
+
+def canary_pending(record: ProviderBreakerRecord) -> bool:
+    """True while the first real call after a probe close has not succeeded yet.
+
+    Derived from the record alone, so it survives a process restart and needs no
+    second state machine: a probe close is the only write that leaves a full
+    window of counted probe successes with ``lastSuccessAt == lastProbeAt``. A
+    routine probe moves ``lastProbeAt`` past ``lastSuccessAt``, a real-call
+    success moves ``lastSuccessAt`` past ``lastProbeAt``, and reopening the leg
+    leaves ``closed``, so each of them ends the window.
+    """
+    return (
+        record.state == "closed"
+        and record.last_probe_at is not None
+        and record.last_success_at == record.last_probe_at
+        and len(record.probe_successes) == MAX_PROBE_SUCCESSES
+    )
 
 
 def _check_leg(leg: object) -> BreakerLeg:
@@ -329,6 +369,13 @@ class Breaker:
         self.store = store
         self.probe_interval_s = float(probe_interval_s)
         self._now = now
+
+    @classmethod
+    def from_registry(
+        cls, store: DurableStore, *, now: Callable[[], float] = time.time
+    ) -> "Breaker":
+        """Build a breaker whose interval is the registry bound, never a literal."""
+        return cls(store, probe_interval_s=probe_interval_s(), now=now)
 
     async def read(self, leg: BreakerLeg) -> ProviderBreakerRecord:
         """Read the durable record for ``leg``; never a synthetic closed one."""
@@ -612,6 +659,11 @@ class BreakerTransitions:
         The closed trigger set stays closed (a deterministic request error is
         our bug and must not hide behind a fallback); a half-open leg reopens on
         any failure because it was never proven healthy.
+
+        A closed leg that a probe just closed is in its canary window: the first
+        real call is watched, so a trigger failure there reopens immediately and
+        is attributed as :data:`CANARY_FAILURE_KIND` rather than as an ordinary
+        failure.
         """
         _check_leg(leg)
         _check_verdict_leg(verdict, leg)
@@ -620,10 +672,20 @@ class BreakerTransitions:
             view = self.read_state(record)
             if view == "closed" and not verdict.opens_breaker:
                 return record, None
+            canary = canary_pending(record)
             trigger = BreakerTrigger(
-                kind="failure", code=verdict.code, phase=phase, turn=turn
+                kind=CANARY_FAILURE_KIND if canary else "failure",
+                code=verdict.code,
+                phase=phase,
+                turn=turn,
             )
-            reason = f"{view} -> open: {verdict.reason}"
+            if canary:
+                reason = (
+                    f"canary failed ({verdict.code!r}, {view} -> open): {verdict.reason}; "
+                    "the first real call after a probe close reopens immediately"
+                )
+            else:
+                reason = f"{view} -> open: {verdict.reason}"
             return self._to_open(record, trigger=trigger, reason=reason, now=self.breaker.now())
 
         return await self._apply(leg, transition)
