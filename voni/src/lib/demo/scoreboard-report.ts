@@ -24,13 +24,15 @@ import {
   EMAIL_INVITE_TAG,
   isArtifactAbsence,
   percentile,
+  judgeSubjectRun,
   subjectOfArtifact,
   type ArtifactLatencyGap,
   type ArtifactPipeline,
+  type RunVerdict,
   type RunnerPlayout,
   type ScoreboardArtifact,
 } from "./scoreboard";
-import { pipelineOfArtifact } from "./artifact-reader";
+import { deriveRunEligibility, pipelineOfArtifact } from "./artifact-reader";
 import type { SubjectRecord } from "./subject";
 import { formatSubject } from "./subject";
 import type { EvalEventSummary } from "./eval-events";
@@ -204,8 +206,20 @@ export type InspectAdoption = {
   endOfTurn: InspectEndOfTurn;
 };
 
+/**
+ * The run's verdict (M13, ticket 116): green only for a clean run whose every
+ * required gate PASSes. A contaminated run is `ineligible`, marked for re-run,
+ * and never counted toward the kill criterion, whatever its numbers say.
+ */
+export type InspectVerdict = RunVerdict & {
+  readonly eligible: boolean;
+  readonly disposition: "counts" | "rerun";
+};
+
 export type InspectReport = {
   run: InspectRunIdentity;
+  /** The clean-run verdict over this artifact's own facts (never a number). */
+  verdict: InspectVerdict;
   scenarios: InspectScenario[];
   gates: { name: string; status: string }[];
   subScores: { name: string; status: string }[];
@@ -678,6 +692,18 @@ export function buildInspectReport(
   const transcripts = callerTranscripts(artifact, opts.sessionId);
   const fragmentTag = artifact.emailInvite?.tag ?? EMAIL_INVITE_TAG;
   const subject = subjectOfArtifact(artifact);
+  // Eligibility is derived from the run's own facts, not read off its flag: a
+  // recorded `eligible: true` cannot green a contaminated run (M13).
+  const eligibility = deriveRunEligibility({ artifact });
+  const judged = judgeSubjectRun({
+    gates: artifact.gates,
+    eligibility: { eligible: eligibility.eligible, reasons: eligibility.reasons },
+  });
+  const verdict: InspectVerdict = {
+    ...judged,
+    eligible: eligibility.eligible,
+    disposition: eligibility.disposition,
+  };
   return {
     run: {
       voice: artifact.voice,
@@ -697,6 +723,7 @@ export function buildInspectReport(
       variantKey: evidence?.variantKey ?? null,
       turnWindows: evidence?.turnWindows ?? null,
     },
+    verdict,
     scenarios: evidence?.scenarios ?? [],
     gates,
     subScores: artifact.subScores.map((sub) => ({ name: sub.name, status: sub.status })),
@@ -988,6 +1015,17 @@ function formatAside(aside: RunnerEvidenceAside | null): string | null {
   return `over-talk aside: ${bits.join(", ")}`;
 }
 
+/** The one verdict line: green only for a clean run, never for a contaminated one. */
+function formatVerdict(verdict: InspectVerdict): string {
+  if (verdict.kind === "ineligible") {
+    return "INELIGIBLE — marked for re-run (does not count toward the kill criterion)";
+  }
+  if (verdict.kind === "red") {
+    return `red — required gate(s) not PASS: ${verdict.failedGates.join(", ")}`;
+  }
+  return "green — clean run, every required gate PASS";
+}
+
 /** Console formatter: compact by default, never a transcript dump. */
 export function formatInspectReport(report: InspectReport): string {
   const { run } = report;
@@ -1000,6 +1038,7 @@ export function formatInspectReport(report: InspectReport): string {
     `  transport    ${run.transport}`,
     `  subject      ${formatSubject(run.subject)}`,
     `  pipeline     ${run.pipeline}`,
+    `  verdict      ${formatVerdict(report.verdict)}`,
     `  agent        ${run.agentId ?? "unknown"}  (llm ${run.llmModel ?? "unknown"})`,
   ];
   if (run.agentFingerprint) lines.push(`  fingerprint  ${run.agentFingerprint.slice(0, 12)}`);
@@ -1010,6 +1049,9 @@ export function formatInspectReport(report: InspectReport): string {
     lines.push(
       `  variant      ${run.variant}${run.variantKey ? `  ${run.variantKey}` : ""}${windows}`,
     );
+  }
+  if (report.verdict.kind === "ineligible") {
+    for (const reason of report.verdict.reasons) lines.push(`  refusal      ${reason}`);
   }
 
   if (report.scenarios.length > 0) {

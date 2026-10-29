@@ -2790,8 +2790,17 @@ export type ArtifactCapture = { path: string; sha256: string } | ArtifactAbsence
  */
 export type ArtifactCaptures = Partial<Record<ArtifactCaptureLeg, ArtifactCapture>>;
 
-/** One call-scoped event's discriminator as carried by an artifact (M12). */
-export type ArtifactEventRecord = { type: string };
+/**
+ * One call-scoped event as carried by an artifact (M12). The type is the
+ * discriminator; an operational/fallback event may also name the leg and phase
+ * it happened in, so an eligibility refusal can say where instead of only what.
+ */
+export type ArtifactEventRecord = {
+  type: string;
+  leg?: string;
+  phase?: string;
+  turn?: string | null;
+};
 
 /** The provider legs every turn attributes (M12). */
 export const ARTIFACT_PROVIDER_LEGS = ["stt", "llm", "tts"] as const;
@@ -7544,6 +7553,57 @@ export const STREAK_INFORMATIONAL_GATES = [
 ] as const;
 
 export const STREAK_SIZE = 3;
+
+/**
+ * A subject's run verdict (meta-cascade M13, ticket 116). Only a clean run —
+ * no fallback, no budget stop, no missing capture for the gate it feeds, no
+ * harness failure, a matching code fingerprint — can be green, and only a green
+ * run is a pass. A contaminated run is `ineligible`, marked for re-run, and
+ * never counted toward the kill criterion.
+ */
+export type RunVerdictKind = "green" | "red" | "ineligible";
+
+export type RunVerdict = {
+  readonly kind: RunVerdictKind;
+  /** True only for a clean run whose every required gate PASSes. */
+  readonly green: boolean;
+  /** A contaminated run is re-run, so it is not a measured round. */
+  readonly countsTowardKillCriterion: boolean;
+  /** Required gates that are not PASS (missing counts as not PASS). */
+  readonly failedGates: readonly string[];
+  /** Every fact that made the run ineligible; empty for a clean run. */
+  readonly reasons: readonly string[];
+};
+
+/**
+ * Judge one subject's run from its own gates and its own eligibility verdict
+ * (M13). Eligibility outranks the numbers: a contaminated run whose every gate
+ * PASSes is still ineligible, never green.
+ */
+export function judgeSubjectRun(input: {
+  gates: readonly ScoreboardGate[];
+  eligibility: ArtifactEligibility;
+}): RunVerdict {
+  const status = new Map(input.gates.map((gate) => [gate.name, gate.status] as const));
+  const failedGates = STREAK_REQUIRED_GATES.filter((gate) => status.get(gate) !== "PASS");
+  if (!input.eligibility.eligible) {
+    const reasons = input.eligibility.reasons ?? [];
+    return {
+      kind: "ineligible",
+      green: false,
+      countsTowardKillCriterion: false,
+      failedGates,
+      reasons: reasons.length > 0 ? reasons : ["ineligible without a named reason"],
+    };
+  }
+  return {
+    kind: failedGates.length === 0 ? "green" : "red",
+    green: failedGates.length === 0,
+    countsTowardKillCriterion: true,
+    failedGates,
+    reasons: [],
+  };
+}
 
 export type StreakFailureCode =
   | "too-few-runs"
