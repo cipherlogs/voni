@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "voice": "rafael",
+  "locale": "pt",
+  "recording": {
+    "voice": "rafael",
+    "locale": "pt",
+    "asset": "public/voices/rafael.mp3",
+    "url": "/voices/rafael.mp3",
+    "sha256": "c81b8eb909c11d72e37d6acaa422eda595728cd88cdf8aafc4ae61329b034af9",
+    "line": "Olá, aqui é Voni! Vamos testar algo legal: mostro o que sei fazer enquanto conversamos. Pronto?",
+    "lineSha256": "986ac5a8c6b90333f8b460c53942d93d5ea73d821ca543c8541cd6d0f953f9ce",
+    "durationMs": 7776,
+    "sampleRate": 24000,
+    "channels": 1,
+    "bitrateKbps": 160,
+    "source": "audition-clip"
+  },
+  "ballot": {
+    "axes": [
+      "timbre",
+      "accent",
+      "languageNaturalness"
+    ],
+    "scale": {
+      "min": 1,
+      "max": 5,
+      "pass": 5
+    },
+    "reasonRequiredBelow": 5
+  },
+  "verdict": null,
+  "generatedOn": "2026-10-29",
+  "source": "evidence/audition-clips/clips.json"
+}
