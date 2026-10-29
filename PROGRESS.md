@@ -22,6 +22,7 @@ Current frontier for this repo. Read this at the start of a session; keep `Now` 
 
 ## Done
 
+- `retro-2026-10-29` — demo scoreboard map, `CODING_STANDARDS.md`, Voice Agents API notes, `scoreboard:inspect` + structured `runnerEvidence` + `--events` JSONL, `npm run typecheck`, glob test runner (found 1 unregistered test file), CI dedupe, `scripts/worktree-setup.sh`; 1342/1342 tests, typecheck + lint clean.
 - `settings-bento` tickets 01–09 committed (registry + gallery, scene rework, landing + shell, section pages, badges, animated backgrounds, hover prefetch, voice contract, cleanup + gates, image-art replate per user picks).
 
 ## Rules
