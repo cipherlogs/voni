@@ -14,7 +14,7 @@ import { readFileSync } from "node:fs";
 import vm from "node:vm";
 
 import type { AudioGraph } from "./mic-capture";
-import { CascadeSession } from "./cascade-session";
+import { CascadeSession, CASCADE_PROTOCOL_VERSION } from "./cascade-session";
 import { createWorkletPlayout, type Playout } from "./playout";
 import { VoiceSession } from "./session";
 
@@ -279,8 +279,9 @@ test("both sessions forward first audible audio to the call", async () => {
   );
   await cascade.start({
     serviceUrl: "ws://localhost/cascade",
-    pipeline: { llm_model: "m", tts_voice: "v", tts_model: "t", fallback_mode: "cascade" },
-    systemPrompt: "p",
+    callToken: "token",
+    agentId: "agent",
+    protocolVersion: CASCADE_PROTOCOL_VERSION,
   });
   cascadePlayout!.onFirstAudible!();
   assert.equal(cascadeAudible, 1);

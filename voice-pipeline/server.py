@@ -6,36 +6,128 @@ Run from this directory with the bridge venv:
 
 Env (host-provided, never committed):
     ASSEMBLYAI_API_KEY, AI_GATEWAY_API_KEY, CARTESIA_API_KEY,
-    VOICE_PIPELINE_PORT (default 8766).
+    VOICE_PIPELINE_PORT (default 8766),
+    VOICE_PIPELINE_ENVELOPE_SECRET (the signed-body envelope secret; absent
+    means the stored-body channel is closed and no call is served).
 
 Routes:
-    GET /healthz            liveness probe, no vendors touched.
-    WS  /v1/browser-call    one cascade call per socket (see transport.py
-                            for the JSON protocol).
+    GET /healthz            liveness probe, no vendors touched; reports the
+                            protocol version this service speaks.
+    POST /v1/call-body      the app -> service channel (ticket 65): the app
+                            delivers the signed stored body for a call token.
+                            Ticket 64's envelope and body hash are verified
+                            here, before any browser socket exists.
+    WS  /v1/browser-call    one cascade call per socket; the browser's config
+                            names only its call token, agent id and protocol
+                            version (see transport.py).
+
+The stored body is held in-process, which is the M1 foundation seam: the
+deployment's token-verifying / durable store (M17) replaces it behind the same
+``deliver``/``claim`` pair.
 """
 
 from __future__ import annotations
 
 import os
+import time
+from collections.abc import Callable
+from typing import Any
 
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI, HTTPException, Request, WebSocket
 
+from cascade.envelope import EnvelopeError
+from cascade.token import (
+    PROTOCOL_VERSION,
+    ClientConfigError,
+    StoredBodyChannel,
+)
 from transport import handle_browser_call
 
 SERVICE_NAME = "voice-pipeline"
 
+#: The signed-body message's own field names; the app may say nothing else.
+CALL_BODY_FIELDS = ("call_token", "call_id", "signed_body")
 
-def create_app() -> FastAPI:
+
+def create_app(
+    *,
+    envelope_secret: str | bytes | None = None,
+    clock: Callable[[], float] = time.time,
+) -> FastAPI:
     app = FastAPI(title="Voni cascade voice pipeline")
 
+    secret = (
+        envelope_secret
+        if envelope_secret is not None
+        else os.environ.get("VOICE_PIPELINE_ENVELOPE_SECRET", "")
+    )
+    # No secret means no channel: the browser path refuses by name rather
+    # than ever trusting a body that reached it unverified.
+    body_channel = StoredBodyChannel(secret=secret, clock=clock) if secret else None
+    app.state.stored_bodies = body_channel
+
     @app.get("/healthz")
-    async def healthz() -> dict[str, str]:
-        return {"status": "ok", "service": SERVICE_NAME}
+    async def healthz() -> dict[str, Any]:
+        return {
+            "status": "ok",
+            "service": SERVICE_NAME,
+            "protocolVersion": PROTOCOL_VERSION,
+        }
+
+    @app.post("/v1/call-body", status_code=202)
+    async def call_body(request: Request) -> dict[str, Any]:
+        if body_channel is None:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "the signed-body channel is closed: set "
+                    "VOICE_PIPELINE_ENVELOPE_SECRET in the service host's "
+                    "environment so a delivered body can be verified"
+                ),
+            )
+        try:
+            payload = await request.json()
+        except Exception:
+            raise HTTPException(status_code=400, detail="call body must be JSON")
+        if not isinstance(payload, dict):
+            raise HTTPException(
+                status_code=400,
+                detail=f"call body must be an object, got {type(payload).__name__}",
+            )
+
+        unknown = sorted(set(payload) - set(CALL_BODY_FIELDS))
+        if unknown:
+            raise HTTPException(
+                status_code=400,
+                detail=f'unknown call body field "{unknown[0]}"',
+            )
+        missing = [field for field in CALL_BODY_FIELDS if field not in payload]
+        if missing:
+            raise HTTPException(
+                status_code=400,
+                detail=f'call body field "{missing[0]}" is missing',
+            )
+
+        try:
+            verified = body_channel.deliver(
+                call_token=payload["call_token"],
+                call_id=payload["call_id"],
+                message=payload["signed_body"],
+            )
+        except (EnvelopeError, ClientConfigError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+        return {
+            "status": "accepted",
+            "call_id": verified.call_id,
+            "agent_id": verified.agent_id,
+            "body_hash": verified.body_hash,
+        }
 
     @app.websocket("/v1/browser-call")
     async def browser_call(websocket: WebSocket) -> None:
         await websocket.accept()
-        await handle_browser_call(websocket)
+        await handle_browser_call(websocket, body_channel=body_channel)
 
     return app
 

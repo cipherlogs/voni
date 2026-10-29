@@ -49,7 +49,7 @@ import {
 } from "@/lib/voice/session";
 import { CallTimings } from "@/lib/voice/call-timings";
 import { deliveredCaptureRequested } from "@/lib/voice/delivered-capture";
-import { CascadeSession } from "@/lib/voice/cascade-session";
+import { CascadeSession, CASCADE_PROTOCOL_VERSION } from "@/lib/voice/cascade-session";
 import {
   FILLER_POOL,
   isEndCallRequest,
@@ -1184,7 +1184,6 @@ export function VoiceCall({
       // indicator, timer, caption, and the countdown below works unchanged.
       // Tools are not executed on the cascade path yet — the agent answers
       // from knowledge, so tool-heavy agents should stay on managed.
-      const agentConfig = config;
       const cascade = new CascadeSession({
         onCaption: (caption) => {
           if (caption.final) {
@@ -1261,24 +1260,15 @@ export function VoiceCall({
               cascadeUrl ??
               process.env.NEXT_PUBLIC_VOICE_PIPELINE_URL ??
               "ws://127.0.0.1:8766/v1/browser-call",
-            pipeline: {
-              llm_model:
-                process.env.NEXT_PUBLIC_CASCADE_LLM_MODEL ?? "alibaba/qwen3.5-flash",
-              tts_voice: process.env.NEXT_PUBLIC_CASCADE_TTS_VOICE ?? "",
-              tts_model: process.env.NEXT_PUBLIC_CASCADE_TTS_MODEL ?? "sonic-2",
-              fallback_mode: "cascade",
-              language_codes: effectiveInlineLanguages(
-                agentConfig.languageCodes,
-                agentConfig.conversationLanguage,
-              ),
-              transcription_prompt: buildAgentTranscriptionPrompt(agentConfig),
-              keyterms_prompt: buildAgentKeyterms(agentConfig),
-              // Seed the STT with the opening line so the first caller
-              // reply transcribes against the right question.
-              agent_context: agentConfig.greeting,
-            },
-            systemPrompt: compileSystemPrompt(agentConfig),
-            tools: [],
+            // Identity only (ticket 65): the app assembles the stored body,
+            // fingerprints it and signs the envelope; the browser never sends
+            // a prompt, a tool list or a pipeline. The cascade call token is
+            // minted alongside that body (M17) — until this build has one, the
+            // service refuses the call by name instead of running a
+            // client-assembled body.
+            callToken: callTokenRef.current ?? "",
+            agentId: inlineAgentId ?? "",
+            protocolVersion: CASCADE_PROTOCOL_VERSION,
           },
           "voice-call",
         );
