@@ -42,6 +42,8 @@
  * or an unwritable artifact.
  *
  *   npm run scoreboard:demo -- [--gate-voice <demo-voice-id>] [--scenario all | <name>] [--runs 1]
+ *                           [--agent <tenant-agent-id> --voice <voice-id> --subject-locale <code>]
+ *                           [--subject-transport browser|phone]
  *                           [--transport stored|inline] [--variant turn-window]
  *                           [--turn-windows 400,640,0 | -,-,0]
  *                           [--out scoreboard-runs/score-<ts>-<voice>.json] [--dry-run]
@@ -65,6 +67,16 @@
  * (--voice stays an alias); omitting both gates on DEFAULT_GATE_VOICE, never
  * on a literal in this file. New voices deploy as a registry entry plus a
  * regression run: the dry run lists the gate plus the regression set.
+ *
+ * A **subject** is `{agent, Locale, transport}` (voice-parity ticket 72). By
+ * default the subject is the featured demo voice, its own Locale and the
+ * browser. `--gate-voice`/`--voice` name another demo subject; `--agent <id>`
+ * with `--voice`, `--subject-locale` and optional `--subject-transport phone`
+ * measure a tenant agent through the same runner (the agent is bound as served,
+ * never provisioned or refreshed here). The artifact records the subject and
+ * derives its gates from that run's own evidence; an unknown voice, agent or
+ * Locale fails by name before the timing lock. A tenant run is measured through
+ * the live client scenarios, not the raw-socket ones that rebuild a demo body.
  *
  * A live (non-dry) run takes an exclusive timing lock (default in the OS temp
  * dir, override with --timing-lock) so timing runs go one at a time; a second
@@ -232,7 +244,6 @@ import {
   buildSkeletonArtifact,
   callerClipChanges,
   callerClipsFromRunnerStdout,
-  DEFAULT_GATE_VOICE,
   deriveFreeFloorSilence,
   diffScoreboardArtifact,
   emptyHumanRatings,
@@ -267,8 +278,8 @@ import {
   parseTraceGaps,
   readCodeFingerprint,
   redactLines,
-  resolveGateVoice,
   sha256Hex,
+  subjectOfArtifact,
   traceSilenceRef,
   traceCheckInRef,
   traceTurnForVisitorSpeech,
@@ -317,6 +328,13 @@ import {
 import { judgeOverlap } from "../src/lib/voice/barge-in";
 import { EN_RECOGNITION } from "../src/lib/voice/recognition";
 import { acquireTimingLock, DEFAULT_TIMING_LOCK_PATH } from "../src/lib/demo/timing-lock";
+import {
+  formatSubject,
+  resolveSubject,
+  sameSubject,
+  type SubjectRecord,
+  type SubjectRequest,
+} from "../src/lib/demo/subject";
 
 function arg(name: string, fallback = ""): string {
   const i = process.argv.indexOf(name);
@@ -530,6 +548,8 @@ function runEvalRunner(
     transport?: EvalTransport | null;
     variant?: DemoAgentVariant | null;
     turnWindows?: DemoTurnWindows | null;
+    /** A tenant agent the run binds instead of a provisioned demo agent. */
+    agentId?: string | null;
     eventsPath?: string | null;
   } = {},
 ): { stdout: string; exitCode: number | null; durationMs: number; evalError: string | null } {
@@ -815,14 +835,16 @@ function readScoreboardArtifact(path: string): ScoreboardArtifact | null {
 }
 
 /**
- * Latest artifact for the same voice in the artifact directory (the new run's
- * own output path is skipped so a rerun to the same file never diffs against
- * itself). Ties on recordedAt fall back to file mtime, so two runs inside one
- * second still order by when they landed.
+ * Latest artifact for the same subject in the artifact directory (the new
+ * run's own output path is skipped so a rerun to the same file never diffs
+ * against itself). A subject is `{agent, Locale, transport}` (ticket 72): a
+ * tenant agent's artifact never diffs against a demo voice's, even when they
+ * share a voice id. Ties on recordedAt fall back to file mtime, so two runs
+ * inside one second still order by when they landed.
  */
 function latestPriorArtifact(
   dir: string,
-  voice: string,
+  subject: SubjectRecord,
   skipPath: string,
 ): { path: string; artifact: ScoreboardArtifact } | null {
   let entries: string[];
@@ -837,7 +859,7 @@ function latestPriorArtifact(
     const path = resolve(dir, entry);
     if (path === skipPath) continue;
     const artifact = readScoreboardArtifact(path);
-    if (!artifact || artifact.voice !== voice) continue;
+    if (!artifact || !sameSubject(subjectOfArtifact(artifact), subject)) continue;
     const recorded = Date.parse(artifact.recordedAt);
     let mtime = 0;
     try {
@@ -1086,7 +1108,38 @@ function deadAirEvidenceFromTimeline(
 }
 
 async function main(): Promise<void> {
-  const voice = resolveGateVoice(arg("--gate-voice", "") || arg("--voice", DEFAULT_GATE_VOICE));
+  // A subject is `{agent, Locale, transport}` (voice-parity ticket 72). The
+  // featured voice is one subject, not the owner of the axis: a run can name
+  // another demo voice, a tenant agent (--agent) or the phone transport, and
+  // an unknown or missing field fails by name here — before the timing lock,
+  // before any runner spawn and before the artifact path is opened.
+  const voiceFlag = arg("--gate-voice", "") || arg("--voice", "");
+  const subjectRequest: SubjectRequest = {
+    ...(voiceFlag ? { voice: voiceFlag } : {}),
+    ...(process.argv.includes("--agent") ? { agent: arg("--agent", "") } : {}),
+    ...(process.argv.includes("--subject-locale")
+      ? { locale: arg("--subject-locale", "") }
+      : {}),
+    ...(process.argv.includes("--subject-transport")
+      ? { transport: arg("--subject-transport", "") }
+      : {}),
+    explicit:
+      process.argv.includes("--gate-voice") ||
+      process.argv.includes("--voice") ||
+      process.argv.includes("--agent") ||
+      process.argv.includes("--subject-locale") ||
+      process.argv.includes("--subject-transport"),
+  };
+  const subject = resolveSubject(subjectRequest);
+  // A tenant agent has no demo voice to derive its Locale from, so the
+  // resolver requires `--voice` beside `--agent`; that voice is the artifact's
+  // voice-keyed row and the caller's recognition locale.
+  const voice =
+    subject.agent.kind === "demo"
+      ? subject.agent.voice
+      : (subjectRequest.voice ?? "").trim();
+  const tenantAgent = subject.agent.kind === "tenant" ? subject.agent.agentId : null;
+  console.log(`subject: ${formatSubject(subject)}${subject.source === "default" ? " (default)" : ""}`);
   // Default is the full gate suite: a plain `npm run scoreboard:demo` must
   // exercise every gate, not leave most of them INFO on one focused scenario.
   // A misspelt focused name is a named failure here — before the timing lock,
@@ -1137,6 +1190,7 @@ async function main(): Promise<void> {
     ...(transportExplicit ? { transport } : {}),
     ...(variantFlag ? { variant: variantFlag } : {}),
     ...(turnWindowsFlag ? { turnWindows: turnWindowsFlag } : {}),
+    ...(tenantAgent ? { agentId: tenantAgent } : {}),
   };
   if (selection.variant !== "production") {
     console.log(
@@ -1423,7 +1477,15 @@ async function main(): Promise<void> {
   // The prior run is a working artifact, never committed: load it before the
   // cut gate so a changed caller clip fails comparability instead of greening.
   const priorPath = arg("--prior", "");
-  const prior = priorPath ? loadPriorArtifact(priorPath) : latestPriorArtifact(dirname(out), voice, out);
+  const prior = priorPath ? loadPriorArtifact(priorPath) : latestPriorArtifact(dirname(out), subject, out);
+  // A diff compares two runs of one subject. An explicit --prior from another
+  // subject would turn the featured voice's transition into this subject's.
+  if (prior && !sameSubject(subjectOfArtifact(prior.artifact), subject)) {
+    throw new Error(
+      `--prior artifact ${prior.path} measured ${formatSubject(subjectOfArtifact(prior.artifact))}; ` +
+        `this run measures ${formatSubject(subject)} (a diff only compares the same subject)`,
+    );
+  }
   // Real-cut evidence counts as measured even though it lands post-skeleton.
   // The stop-over call's own trace names the answer (or resume) turn.
   const stopTrace = traceForScenario("stop-over");
@@ -1620,6 +1682,7 @@ async function main(): Promise<void> {
     ...(traceBeatRaw ? { traceBeat: traceBeatRaw as GoldenBeat } : {}),
     traceSessionId: traceSession || null,
     runBody,
+    subject,
     ...(endOfTurnExperiment ? { endOfTurnExperiment } : {}),
     traceExcerpt: excerpt ?? [],
     fillerResume,
@@ -1717,7 +1780,11 @@ async function main(): Promise<void> {
   mkdirSync(dirname(out), { recursive: true });
   writeFileSync(out, `${JSON.stringify(artifact, null, 2)}\n`, { mode: 0o600 });
 
-  console.log(formatGoldenScript(voice, runBody));
+  console.log(
+    subject.agent.kind === "demo"
+      ? formatGoldenScript(voice, runBody)
+      : `subject: ${formatSubject(subject)} (tenant agent; the demo golden voice rows do not apply)`,
+  );
   console.log(formatBudgetReport());
   console.log(formatGateTable(artifact));
   // Plumbing health first (ticket 06), then what moved since the prior run

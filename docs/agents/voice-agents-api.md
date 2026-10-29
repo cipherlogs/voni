@@ -36,7 +36,9 @@ this file records the shapes that are easy to get wrong. Code: `voni/src/lib/dem
 
 - `input.turn_detection: null` means adaptive/meaning-based end-of-turn. **Any
   object switches it off** and makes replies slower (ADR-0003); the managed path
-  must keep null.
+  must keep null. Demo and tenant agents are both built by `buildStoredAgent`,
+  so no managed body can carry an object — the tenant's pre-64 object is gone
+  (voice-parity 65).
 - `input.transcription_mode`: `min_latency` | `balanced` | `max_accuracy`. Balanced
   is the voice-agent default; entity-aware endpointing still holds tags/addresses.
 - `input.voice_focus: "near-field"` for browser mics; `language_codes` locks the

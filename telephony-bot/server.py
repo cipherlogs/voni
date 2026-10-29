@@ -39,6 +39,7 @@ from pipecat.runner.utils import parse_telephony_websocket
 
 from voni_db import recorder
 import barge_in_recovery as recovery
+from goodbye_drain import GoodbyeDrain, playout_settled
 from tool_coordinator import ToolCoordinator
 from voice_judge import classify_user_turn, judge_enabled, sample_judge
 from bridge_config import BridgeConfig, bridge_config
@@ -306,6 +307,10 @@ def _arm_no_words_resume(agent_ws, telnyx_ws, stats: dict) -> None:
 
     stats["no_words_timer"] = asyncio.get_running_loop().create_task(resume_after_quiet())
 
+
+# The one drain handshake the bridge uses before it tears the legs down: the
+# browser's polled goodbye drain, ported (see goodbye_drain.py, ADR 0007).
+GOODBYE_DRAIN = GoodbyeDrain()
 
 async def send_frames(telnyx_ws: WebSocket, stats: dict, flush: bool = False) -> None:
     """Push whole 20 ms PCMU frames at Telnyx, keeping any partial tail back."""
@@ -822,20 +827,19 @@ async def agent_to_telnyx(
             elif tools.take_hangup_request():
                 # Agent-initiated hangup: generation settled and the flush
                 # above pushed the last frames, but Telnyx still has to PLAY
-                # the goodbye at 1x. Estimate the unplayed tail from pushed
-                # audio vs elapsed wall-clock and wait it out (bounded), or
-                # the teardown below cuts the closing line off mid-word.
-                if stats["first_audio_at"] is not None:
-                    pushed_secs = stats["reply_bytes"] / 8000.0
-                    played_secs = time.monotonic() - stats["first_audio_at"]
-                    tail = min(8.0, max(0.0, pushed_secs - played_secs))
-                else:
-                    tail = 0.0
-                if tail > 0:
-                    logger.info(f"agent ended the call; draining {tail:.1f}s of goodbye audio")
-                    await asyncio.sleep(tail)
-                else:
-                    logger.info("agent ended the call; tearing down both legs")
+                # the goodbye at 1x. Poll the playout instead of sleeping a
+                # computed tail — the browser's drain handshake, ported
+                # (ADR 0007) — or the teardown below cuts the closing line off
+                # mid-word on a jittery link.
+                outcome = await GOODBYE_DRAIN.drain(
+                    playback_settled=lambda: playout_settled(stats, time.monotonic()),
+                    last_audio_at=lambda: stats["last_audio_at"],
+                )
+                logger.info(
+                    f"agent ended the call; goodbye drained after "
+                    f"{outcome.waited_ms}ms ({outcome.reason}, "
+                    f"{outcome.polls} polls)"
+                )
                 cancel_barge_in_timers(stats)
                 return
         elif event_type == "transcript.user":

@@ -87,7 +87,7 @@ Owner-supplied vocabulary on the agent (jargon, product and place names) merged 
 _Avoid_: keywords (SEO connotation), keyterms (STT parameter name)
 
 **Turn preset**:
-The single turn-taking setting shared by every demo call, test call, and copilot session: meaning-based end-of-turn, and a barge-in delay that holds out while the agent explains and drops while it asks something.
+The single turn-taking setting shared by every demo call, test call, tenant agent call, and copilot session: meaning-based end-of-turn, and a barge-in delay that holds out while the agent explains and drops while it asks something.
 _Avoid_: VAD config, turn detection (as a noun for the setting)
 
 **Call trace**:

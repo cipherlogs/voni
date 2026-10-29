@@ -10,6 +10,12 @@
  * cannot turn required green red (or red green). No new transport, no
  * parallel pipeline, no new demo app.
  *
+ * Ticket 72 makes every artifact carry its subject and exports
+ * `subjectGateVerdict(artifact)` / `subjectOfArtifact(artifact)` from
+ * `scoreboard.ts`. Ticket 73 replaces the carried verdict with one derived per
+ * subject from that subject's own artifact (each subject's runs are its own).
+ * This file deliberately still carries the gate voice's verdict until then.
+ *
  * Non-gate voices run regression-only (no clip, no pop, no invented test
  * tag): adding voices never breaks existing ones. Deploying a new voice is a
  * registry entry plus a full matrix run: --voices is a registry parameter,
