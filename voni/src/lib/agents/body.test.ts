@@ -3,9 +3,9 @@ import { createHash } from "node:crypto";
 import test from "node:test";
 import {
   buildStoredAgent,
-  TENANT_LEGACY_TURN_DETECTION,
   type AgentProfile,
   type StoredAgentBody,
+  type TurnTaking,
 } from "./body";
 import { agentBodyFingerprint } from "./fingerprint";
 import { REAL_ESTATE_TEMPLATE } from "./config";
@@ -74,10 +74,7 @@ test("every demo body variant is the same builder call with its own profile", ()
     name: demoAgentName("anna", false, "turn-window"),
     config: voniConfig("anna"),
     profile: demoAgentProfile(),
-    turnTaking: {
-      kind: "windows",
-      windows: { min_silence: 200, max_silence: 400, interruption_delay: 0 },
-    },
+    turnTaking: { min_silence: 200, max_silence: 400, interruption_delay: 0 },
   });
   assert.deepEqual(
     buildDemoAgentBody("anna", {
@@ -225,7 +222,7 @@ test("the fingerprint covers every field of the stored body", () => {
     ["input.keyterms", mutate((body) => { body.input.keyterms.push("Layla"); })],
     ["input.voice_focus", mutate((body) => { body.input.voice_focus = "near-field"; })],
     ["input.voice_focus_threshold", mutate((body) => { body.input.voice_focus_threshold = 0.5; })],
-    ["input.turn_detection", mutate((body) => { body.input.turn_detection = { ...TENANT_LEGACY_TURN_DETECTION }; })],
+    ["input.turn_detection", mutate((body) => { body.input.turn_detection = { min_silence: 200 }; })],
   ];
 
   const seen = new Map<string, string>([[agentBodyFingerprint(base), "the base body"]]);
@@ -517,44 +514,91 @@ test("the Turn preset reaches every persona and platform, browser and phone", ()
   }
 });
 
-test("no profile can produce the tenant legacy turn-detection object", () => {
-  const profiles: AgentProfile[] = [
-    demoAgentProfile(),
-    demoAgentProfile({ resume: true }),
-    { ...demoAgentProfile(), platform: "phone" },
-    tenantAgentProfile(REAL_ESTATE_TEMPLATE),
-    { ...tenantAgentProfile(REAL_ESTATE_TEMPLATE), platform: "browser" },
-    { ...tenantAgentProfile(REAL_ESTATE_TEMPLATE), format: null, greeting: false },
+// The contract: every managed path — both personas, both platforms, every
+// profile and builder input — sends `turn_detection: null`. An object switches
+// off adaptive end-of-turn and measured 3.6–4.7 second replies (ADR-0003).
+// Ticket 65 deleted the tenant's pre-64 object and the redundant "preset"
+// variant; this test fails if either is reintroduced.
+test("no managed path can send a turn_detection object", () => {
+  const tenantConfig = REAL_ESTATE_TEMPLATE;
+  const tenantProfile = tenantAgentProfile(tenantConfig);
+
+  const bodies: Array<[label: string, body: StoredAgentBody]> = [
+    ["demo/browser", buildDemoAgentBody("anna")],
+    ["demo/browser/resume", buildDemoAgentBody("anna", { resume: true })],
+    ["demo/browser/model", buildDemoAgentBody("anna", { llm: DEMO_LLM })],
+    [
+      "demo/phone",
+      buildStoredAgent({
+        name: "demo:voni:anna",
+        config: voniConfig("anna"),
+        profile: { ...demoAgentProfile(), platform: "phone" },
+      }),
+    ],
+    ["tenant/phone", storedAgentBody("Layla", tenantConfig)],
+    [
+      "tenant/browser",
+      buildStoredAgent({
+        name: "Layla",
+        config: tenantConfig,
+        profile: { ...tenantProfile, platform: "browser" },
+      }),
+    ],
+    [
+      "tenant/phone/no-greeting/no-format",
+      buildStoredAgent({
+        name: "Layla",
+        config: tenantConfig,
+        profile: { ...tenantProfile, format: null, greeting: false },
+      }),
+    ],
+    [
+      "tenant/phone/languages",
+      storedAgentBody("Layla", { ...tenantConfig, languageCodes: ["en", "ar"] }),
+    ],
   ];
 
-  for (const profile of profiles) {
-    const body = buildStoredAgent({
-      name: "Layla",
-      config: REAL_ESTATE_TEMPLATE,
-      profile,
-    });
+  for (const [label, body] of bodies) {
+    assert.ok(
+      "turn_detection" in body.input,
+      `${label}: the body shape is unchanged; null is how the Turn preset is sent`,
+    );
     assert.equal(
       body.input.turn_detection,
       null,
-      `${profile.persona}/${profile.platform}: profile cannot reintroduce the legacy object`,
+      `${label}: the Turn preset, never an explicit object`,
     );
-    assert.notDeepEqual(
-      body.input.turn_detection,
-      TENANT_LEGACY_TURN_DETECTION,
-      `${profile.persona}/${profile.platform}: the pre-64 object is unreachable`,
+    assert.equal(
+      JSON.stringify(body).match(/"turn_detection":/g)?.length,
+      1,
+      `${label}: turn_detection appears exactly once in the body`,
+    );
+    assert.match(
+      JSON.stringify(body),
+      /"turn_detection":null/,
+      `${label}: the wire value is null, not an object`,
     );
   }
+});
 
-  // The explicit preset input is the same value as the default; the legacy
-  // constant survives only for ticket 65's removal proof.
-  assert.equal(
-    buildStoredAgent({
-      name: "Layla",
-      config: REAL_ESTATE_TEMPLATE,
-      profile: tenantAgentProfile(REAL_ESTATE_TEMPLATE),
-      turnTaking: { kind: "preset" },
-    }).input.turn_detection,
-    null,
+test("the builder admits no explicit preset variant and no legacy object", () => {
+  // The pre-64 object and the redundant `{ kind: "preset" }` input are gone;
+  // a caller can only omit turn-taking (the preset) or pass the demo-only
+  // experiment's windows, which a tenant still refuses.
+  // @ts-expect-error — ticket 65 deleted the redundant explicit preset variant
+  const preset: TurnTaking = { kind: "preset" };
+  assert.deepEqual(preset, { kind: "preset" }, "the value only exists to prove the type rejects it");
+
+  assert.throws(
+    () =>
+      buildStoredAgent({
+        name: "Layla",
+        config: REAL_ESTATE_TEMPLATE,
+        profile: tenantAgentProfile(REAL_ESTATE_TEMPLATE),
+        turnTaking: { kind: "preset" } as unknown as TurnTaking,
+      }),
+    /demo-only/,
+    "an untyped caller cannot revive the preset variant on a tenant body",
   );
 });
 
@@ -565,7 +609,7 @@ test("the turn-window experiment is demo-only and cannot be a profile field", ()
         name: "Layla",
         config: REAL_ESTATE_TEMPLATE,
         profile: tenantAgentProfile(REAL_ESTATE_TEMPLATE),
-        turnTaking: { kind: "windows", windows: { min_silence: 100 } },
+        turnTaking: { min_silence: 100 },
       }),
     /demo-only/,
   );
@@ -575,7 +619,7 @@ test("the turn-window experiment is demo-only and cannot be a profile field", ()
         name: "demo:voni:anna:exp",
         config: voniConfig("anna"),
         profile: demoAgentProfile(),
-        turnTaking: { kind: "windows", windows: {} },
+        turnTaking: {},
       }),
     /at least one configured window/,
   );

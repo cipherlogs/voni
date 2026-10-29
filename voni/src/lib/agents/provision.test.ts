@@ -88,15 +88,19 @@ test("storedAgentBody ships REST-shaped tools without `type`", async () => {
 
 test("the tenant phone body runs the Turn preset, not an explicit object", async () => {
   const { storedAgentBody } = await import("./provision");
-  const { TENANT_LEGACY_TURN_DETECTION } = await import("./body");
   const { REAL_ESTATE_TEMPLATE } = await import("./config");
 
   // CONTEXT.md **Turn preset**: one turn-taking setting on every call. The
   // phone path is a profile of the one builder, so it sends `turn_detection:
   // null` (adaptive, meaning-based end-of-turn) like the browser demo.
   const body = storedAgentBody("test-agent", REAL_ESTATE_TEMPLATE);
+  assert.ok("turn_detection" in body.input, "the body shape is unchanged");
   assert.equal(body.input.turn_detection, null);
-  assert.notDeepEqual(body.input.turn_detection, TENANT_LEGACY_TURN_DETECTION);
+  assert.equal(
+    JSON.stringify(body).match(/"turn_detection":/g)?.length,
+    1,
+    "the tenant body never carries a second, explicit object",
+  );
 });
 
 test("the tenant stored body carries the voice's measured level", async () => {
