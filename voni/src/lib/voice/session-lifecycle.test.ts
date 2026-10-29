@@ -1474,6 +1474,37 @@ test("after the goodbye, no other reply is heard, captioned, or requested", () =
   assert.deepEqual(replyCreates(), [], "nothing supersedes the goodbye");
 });
 
+test("a post-goodbye reply that omits its reply id is dropped whole", () => {
+  // The drop guards identify the goodbye by reply id. A message that carries
+  // no id matched "no id = not dropped", so the model's post-End call line
+  // played and captioned. After the goodbye, only the goodbye reply is
+  // speakable: silence is the ordering, whatever the message omits.
+  const captions: string[] = [];
+  const partials: string[] = [];
+  const { session, handle, internals, played, replyCreates } = midReply({}, {
+    onTranscript: (turn) => captions.push(turn.text),
+    onAgentPartial: (partial) => partials.push(partial.text),
+  });
+  withDemoTools(internals, session);
+  handle({ type: "reply.done", reply_id: "r1", status: "completed" });
+  handle({ type: "reply.started", reply_id: "bye" });
+  endCall(handle, "e9", { closing_line: "Okay, bye!" });
+  handle({ type: "reply.audio", reply_id: "bye", data: "" });
+  handle({ type: "transcript.agent", reply_id: "bye", text: "Okay, bye!" });
+  handle({ type: "reply.done", reply_id: "bye", status: "completed" });
+  const before = played.length;
+  // The platform auto-fires the post-result reply without a reply id.
+  handle({ type: "reply.started" });
+  handle({ type: "reply.audio", data: "" });
+  handle({ type: "transcript.agent.delta", delta: "The call has" });
+  handle({ type: "transcript.agent", text: "The call has ended." });
+  assert.equal(played.length, before, "the id-less post-goodbye reply never plays");
+  assert.deepEqual(partials, [], "no partial of it is captioned");
+  assert.deepEqual(captions, ["Okay, bye!"], "no final line of it is captioned");
+  session.requestReply("Say something else.");
+  assert.deepEqual(replyCreates(), [], "nothing supersedes the goodbye");
+});
+
 test("a superseded reply's caption is only what the caller heard", () => {
   const captions: string[] = [];
   const { serverCut, handle } = midReply({}, {

@@ -124,8 +124,11 @@
  * `hung up Nms` line feeds the end-of-audio-to-session-close delay. A FAIL
  * cites that turn (or states no turn was merged when the evidence came from
  * a different call). --goodbye-coverage, --goodbye-inbox-named/-missing and
- * --hang-up-delay-ms override the runner's numbers; --narrated-ending flags
- * a model reply after end_call. Omitted evidence is INFO, never a false PASS.
+ * --hang-up-delay-ms override the runner's numbers; the line's own
+ * narratedEnding field (or a post-End turn in the merged trace) fails the
+ * drain gate, and --narrated-ending flags it for a human replay. A narration
+ * FAIL cites the post-End turn, else says no turn was merged. Omitted
+ * evidence is INFO, never a false PASS.
  *
  * --probe-json carries the session onAudioProbe counts plus the optional
  * qa-voice-session agent-channel PCM analysis; it drives the timbre-probes
@@ -939,6 +942,11 @@ function main(): void {
   const runnerHangUp = flaggedHangUpMs === null && !dryRun ? parseRunnerHangUp(evalSection.stdout) : null;
   const hangUpDelayMs = flaggedHangUpMs ?? runnerHangUp?.ms ?? null;
   const inboxNamed = inboxMissingFlagged ? false : inboxNamedFlagged ? true : (runnerGoodbye?.inboxNamed ?? null);
+  // Post-End call narration: measured by the runner (it hears every reply
+  // after its own hang-up signal) or by the merged trace. The explicit flag
+  // stays for a human replay; a real run FAILs on its own evidence.
+  const narratedEnding =
+    process.argv.includes("--narrated-ending") || runnerGoodbye?.narratedEnding === true;
   const goodbyeTraceRef = runnerGoodbye ? goodbyeEvidenceTraceRef(runnerGoodbye, traceSession) : undefined;
   // A hang-up past (or before) the drain window is the measurement that ran
   // long: cite that call's own closing turn, never the GOODBYE DRAIN
@@ -979,7 +987,7 @@ function main(): void {
     endCallDrain: {
       goodbyeCoverage,
       hangUpDelayMs,
-      narratedEnding: process.argv.includes("--narrated-ending"),
+      narratedEnding,
       inboxNamed,
     },
     ...(drainTraceRef ? { endCallDrainTraceRef: drainTraceRef } : {}),

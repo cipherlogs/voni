@@ -1206,8 +1206,9 @@ export class VoiceSession {
         // The final line takes over from the paced caption.
         this.stopCaption();
         // The caption is what the caller heard: nothing of a reply after the
-        // goodbye, only the heard words of one we superseded.
-        if (this.endCallSignaled && replyId !== this.endCallReplyId) break;
+        // goodbye (a missing id included), only the heard words of one we
+        // superseded.
+        if (this.endCallSignaled && this.isDropped(replyId)) break;
         const full = replyId !== null && replyId === this.droppedReplyId ? this.droppedHeard : msg.text;
         const spoken = stripSpokenToolCall(typeof full === "string" ? full : "");
         if (spoken.endCall && !this.endCallSignaled) {
@@ -1648,16 +1649,25 @@ export class VoiceSession {
   private signalEndCall(replyId: string | null): void {
     this.endCallSignaled = true;
     this.endCallReplyId = replyId;
+    // The goodbye is the last word: nothing queued (rung, check-in, resume)
+    // may even wait for the floor. `requestReply` refuses AFTER the signal too;
+    // this closes the gap for lines queued before it.
+    this.floor.clear();
     this.handlers.onEndCall?.();
   }
 
   /**
    * A reply the caller must not hear: one we superseded, or any reply after
    * the goodbye (the model sometimes speaks again once end_call returns).
+   * After the goodbye only the goodbye reply itself is speakable, and it is
+   * identified by id: a message that omits its id cannot be proven to be that
+   * reply, so silence wins and it is dropped too.
    */
   private isDropped(replyId: unknown): boolean {
-    if (typeof replyId !== "string" || !replyId) return false;
-    return replyId === this.droppedReplyId || (this.endCallSignaled && replyId !== this.endCallReplyId);
+    const id = typeof replyId === "string" && replyId ? replyId : null;
+    if (this.endCallSignaled) return id === null || id !== this.endCallReplyId;
+    if (id === null) return false;
+    return id === this.droppedReplyId;
   }
 
   /**

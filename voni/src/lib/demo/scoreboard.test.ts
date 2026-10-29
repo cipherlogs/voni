@@ -1288,7 +1288,7 @@ test("real-cut evidence derives the Call trace turn from the merged excerpt", ()
     '15.00s  VONI    "The price is"  (reply_create gap 800ms)',
   ];
   const pointers = traceTurnPointers(excerpt);
-  assert.deepEqual(pointers, { cutTurn: 1, answerTurn: 2, goodbyeTurn: null });
+  assert.deepEqual(pointers, { cutTurn: 1, answerTurn: 2, goodbyeTurn: null, narrationTurn: null });
   assert.equal(formatTraceTurn(1, "sess_abc"), "call trace turn 1 (sess_abc)");
 
   const late = extractRealCutEvidence(
@@ -1316,7 +1316,7 @@ test("double-talk and end-call drain failures point at their Call trace turn", (
     '15.10s  TOOL    end_call {"reason":"caller asked"} 300ms',
     '16.00s  VONI    "Thanks for calling"  (reply_create gap 700ms)',
   ];
-  assert.deepEqual(traceTurnPointers(excerpt), { cutTurn: 1, answerTurn: 2, goodbyeTurn: 2 });
+  assert.deepEqual(traceTurnPointers(excerpt), { cutTurn: 1, answerTurn: 2, goodbyeTurn: 2, narrationTurn: null });
   const artifact = buildSkeletonArtifact({
     voice: DEFAULT_GATE_VOICE,
     scenario: "hang-up-over",
@@ -1334,6 +1334,53 @@ test("double-talk and end-call drain failures point at their Call trace turn", (
   assert.match(byName["double-talk"].detail, /call trace turn 1 \(sess_abc\)/);
   assert.equal(byName["end-call-drain"].status, "FAIL");
   assert.match(byName["end-call-drain"].detail, /call trace turn 2 \(sess_abc\)/);
+});
+
+test("a narrated ending in the merged trace fails at the post-End call turn", () => {
+  // The goodbye is the reply after end_call; anything VONI says after that
+  // reply is the ending being narrated. The FAIL must cite that post-End
+  // turn, never the goodbye's.
+  const excerpt = [
+    '12.20s  VONI    "Sure, first the tour"  (reply_create gap 900ms)',
+    '15.10s  TOOL    end_call {"reason":"caller asked"} 300ms',
+    '16.00s  VONI    "Thanks for calling, the team is at hi at voni dot c c"  (reply_create gap 700ms)',
+    '17.20s  VONI    "The call has ended. Have a nice day."  (reply_create gap 600ms)',
+  ];
+  assert.equal(traceTurnPointers(excerpt).goodbyeTurn, 2);
+  assert.equal(traceTurnPointers(excerpt).narrationTurn, 3);
+  const artifact = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "bye-audio",
+    runnerStdout: "trace",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+    traceExcerpt: excerpt,
+    traceSessionId: "sess_abc",
+    endCallDrain: { goodbyeCoverage: 0.97, hangUpDelayMs: 700, narratedEnding: false, inboxNamed: true },
+  });
+  assert.equal(artifact.endCallDrain.narratedEnding, true, "the trace proves the narration");
+  const gate = artifact.gates.find((candidate) => candidate.name === "end-call-drain")!;
+  assert.equal(gate.status, "FAIL");
+  assert.match(gate.detail, /narrat/i);
+  assert.match(gate.detail, /call trace turn 3 \(sess_abc\)/, `cites the post-End turn: ${gate.detail}`);
+  assert.doesNotMatch(gate.detail, /call trace turn 2 \(sess_abc\)/, "never cites the goodbye turn");
+});
+
+test("a narrated ending with no merged turn states that explicitly", () => {
+  const artifact = buildSkeletonArtifact({
+    voice: DEFAULT_GATE_VOICE,
+    scenario: "bye-audio",
+    runnerStdout: "trace",
+    exitCode: 0,
+    durationMs: 10,
+    runs: 1,
+    traceSessionId: "sess_solo",
+    endCallDrain: { goodbyeCoverage: 0.97, hangUpDelayMs: 700, narratedEnding: true, inboxNamed: true },
+  });
+  const gate = artifact.gates.find((candidate) => candidate.name === "end-call-drain")!;
+  assert.equal(gate.status, "FAIL");
+  assert.match(gate.detail, /no turn merged \(sess_solo\)/, `explicit no-turn: ${gate.detail}`);
 });
 
 test("filler trace turn derives from the HEARD row the visitor's words matched", () => {
@@ -3147,9 +3194,30 @@ test("the runner's GOODBYE DRAIN evidence carries the inbox verdict, coverage, a
     turn: 4,
     coverage: 0.97,
     inboxNamed: true,
+    narratedEnding: null,
     hangUpDelayMs: null,
   });
   assert.equal(parseGoodbyeDrainOutput("bye-audio: 1/1\n"), null);
+});
+
+test("the runner's GOODBYE DRAIN evidence carries whether the ending was narrated", () => {
+  // Post-End call silence is measured by the runner too: the trace proves the
+  // turn, the runner line proves the model spoke after its own hang-up.
+  const narrated = parseGoodbyeDrainOutput(
+    'GOODBYE DRAIN {"scenario":"bye-audio","session":"sess_gd20","turn":4,"coverage":0.97,"inboxNamed":true,"narratedEnding":true}',
+  )!;
+  assert.equal(narrated.narratedEnding, true);
+  const silent = parseGoodbyeDrainOutput(
+    'GOODBYE DRAIN {"scenario":"bye-audio","session":"sess_gd20","turn":4,"coverage":0.97,"inboxNamed":true,"narratedEnding":false}',
+  )!;
+  assert.equal(silent.narratedEnding, false);
+  assert.throws(
+    () =>
+      parseGoodbyeDrainOutput(
+        'GOODBYE DRAIN {"scenario":"bye-audio","inboxNamed":true,"turn":4,"narratedEnding":"yes"}',
+      ),
+    /narratedEnding/,
+  );
 });
 
 test("several goodbye runs keep the worst closing line, never a later green one", () => {
@@ -3170,6 +3238,17 @@ test("several goodbye runs keep the worst closing line, never a later green one"
   )!;
   assert.equal(inboxMissed.inboxNamed, false);
   assert.equal(inboxMissed.sessionId, "sess_b");
+
+  // A narrated run is the one the gate must see, even when a later run is
+  // quieter: narration is never averaged away.
+  const narrated = parseGoodbyeDrainOutput(
+    [
+      'GOODBYE DRAIN {"scenario":"free-gate","session":"sess_q","turn":5,"coverage":0.97,"inboxNamed":true,"narratedEnding":false}',
+      'GOODBYE DRAIN {"scenario":"bye-audio","session":"sess_n","turn":4,"coverage":0.99,"inboxNamed":true,"narratedEnding":true}',
+    ].join("\n"),
+  )!;
+  assert.equal(narrated.narratedEnding, true);
+  assert.equal(narrated.sessionId, "sess_n");
 });
 
 test("a malformed GOODBYE DRAIN line is a harness error, never a guessed measurement", () => {

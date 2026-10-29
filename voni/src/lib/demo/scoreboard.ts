@@ -483,6 +483,11 @@ export type TraceTurnPointers = {
   answerTurn: number | null;
   /** 1-based VONI turn of the reply after the end_call tool row, or null. */
   goodbyeTurn: number | null;
+  /**
+   * 1-based VONI turn after the goodbye: the ending being narrated, or null.
+   * Only a merged Call trace can prove it; never a guessed turn.
+   */
+  narrationTurn: number | null;
 };
 
 export function traceTurnPointers(excerpt: string[]): TraceTurnPointers {
@@ -490,6 +495,7 @@ export function traceTurnPointers(excerpt: string[]): TraceTurnPointers {
   let cutTurn: number | null = null;
   let answerTurn: number | null = null;
   let goodbyeTurn: number | null = null;
+  let narrationTurn: number | null = null;
   let endCallSeen = false;
   for (const line of excerpt) {
     if (line.includes("  TOOL    ") && /\bend_call\b/.test(line)) {
@@ -501,8 +507,9 @@ export function traceTurnPointers(excerpt: string[]): TraceTurnPointers {
     if (cutTurn === null && line.includes("CUT at")) cutTurn = turn;
     else if (cutTurn !== null && answerTurn === null) answerTurn = turn;
     if (endCallSeen && goodbyeTurn === null) goodbyeTurn = turn;
+    else if (goodbyeTurn !== null && narrationTurn === null) narrationTurn = turn;
   }
-  return { cutTurn, answerTurn, goodbyeTurn };
+  return { cutTurn, answerTurn, goodbyeTurn, narrationTurn };
 }
 
 /**
@@ -2759,6 +2766,11 @@ export type GoodbyeDrainEvidence = {
   coverage: number | null;
   /** The closing line named the team inbox as spoken. */
   inboxNamed: boolean;
+  /**
+   * The model spoke again after its own hang-up signal (post-End call
+   * narration); null when the line did not measure it.
+   */
+  narratedEnding: boolean | null;
   /** Session close minus goodbye audio end, when the run measured it. */
   hangUpDelayMs: number | null;
 };
@@ -2776,6 +2788,10 @@ export function parseGoodbyeDrainOutput(stdout: string): GoodbyeDrainEvidence | 
     if (found === null) return true;
     if (found.inboxNamed && !candidate.inboxNamed) return true;
     if (!found.inboxNamed && candidate.inboxNamed) return false;
+    // Narration is never averaged away: a run that narrated the ending is
+    // the one the gate must see, whatever a later run's coverage.
+    if (candidate.narratedEnding === true && found.narratedEnding !== true) return true;
+    if (found.narratedEnding === true && candidate.narratedEnding !== true) return false;
     return (
       candidate.coverage !== null &&
       (found.coverage === null || candidate.coverage < found.coverage)
@@ -2801,6 +2817,7 @@ export function parseGoodbyeDrainOutput(stdout: string): GoodbyeDrainEvidence | 
       turn?: unknown;
       coverage?: unknown;
       inboxNamed?: unknown;
+      narratedEnding?: unknown;
       hangUpDelayMs?: unknown;
     };
     if (typeof candidate.scenario !== "string" || !candidate.scenario.trim()) {
@@ -2821,6 +2838,10 @@ export function parseGoodbyeDrainOutput(stdout: string): GoodbyeDrainEvidence | 
     if (typeof candidate.inboxNamed !== "boolean") {
       throw new Error("eval runner GOODBYE DRAIN line needs inboxNamed");
     }
+    const narratedEnding = candidate.narratedEnding ?? null;
+    if (narratedEnding !== null && typeof narratedEnding !== "boolean") {
+      throw new Error("eval runner GOODBYE DRAIN line has an invalid narratedEnding");
+    }
     const hangUpDelayMs = candidate.hangUpDelayMs === undefined ? null : nonNegativeMs(candidate.hangUpDelayMs);
     if (candidate.hangUpDelayMs !== undefined && hangUpDelayMs === null) {
       throw new Error("eval runner GOODBYE DRAIN line has an invalid hangUpDelayMs");
@@ -2831,6 +2852,7 @@ export function parseGoodbyeDrainOutput(stdout: string): GoodbyeDrainEvidence | 
       turn,
       coverage,
       inboxNamed: candidate.inboxNamed,
+      narratedEnding,
       hangUpDelayMs,
     };
     if (worse(evidence)) found = evidence;
@@ -4557,13 +4579,25 @@ export function buildSkeletonArtifact(input: {
         ? { traceRef: cutTraceRef }
         : {}),
   };
+  // A narrated ending is proven by evidence (the runner) or by the merged
+  // trace itself: a VONI reply after the goodbye is exactly that narration.
+  const narratedEnding = drain.narratedEnding || turnPointers.narrationTurn !== null;
+  // Its FAIL cites the post-End turn. When the merged trace carries no such
+  // row, say so explicitly rather than pointing at the goodbye.
+  const narrationTraceRef =
+    turnPointers.narrationTurn !== null
+      ? formatTraceTurn(turnPointers.narrationTurn, traceSession)
+      : `no turn merged${traceSession ? ` (${traceSession})` : ""}`;
   const endCallDrainInput: EndCallDrainInput = {
     ...drain,
-    ...(input.endCallDrainTraceRef
-      ? { traceRef: input.endCallDrainTraceRef }
-      : goodbyeTraceRef
-        ? { traceRef: goodbyeTraceRef }
-        : {}),
+    narratedEnding,
+    ...(narratedEnding
+      ? { traceRef: narrationTraceRef }
+      : input.endCallDrainTraceRef
+        ? { traceRef: input.endCallDrainTraceRef }
+        : goodbyeTraceRef
+          ? { traceRef: goodbyeTraceRef }
+          : {}),
   };
   const timbreProbes: TimbreProbes = input.probes ?? { jump: 0, overload: 0, clip: 0, underrun: 0, inputDrop: 0 };
   const agentChannel = input.agentChannel ?? null;
@@ -4577,7 +4611,7 @@ export function buildSkeletonArtifact(input: {
     overheardAsides: input.overheardAsides,
     deadAir: deadAirInput,
     doubleTalkOverlapMs,
-    endCallDrain: drain,
+    endCallDrain: { ...drain, narratedEnding },
     ...(input.probes !== undefined ? { probes: input.probes } : {}),
     ...(agentChannel !== null ? { agentChannel } : {}),
     ...(humanRatings.ratings.length > 0 ? { humanRatings } : {}),
@@ -4654,7 +4688,7 @@ export function buildSkeletonArtifact(input: {
       overlapMs: doubleTalkOverlapMs,
       maxMs: doubleTalkOverlapMs.length > 0 ? Math.max(...doubleTalkOverlapMs) : null,
     },
-    endCallDrain: { ...drain, inboxNamed: drain.inboxNamed ?? null },
+    endCallDrain: { ...drain, narratedEnding, inboxNamed: drain.inboxNamed ?? null },
     deadAir: {
       gapsMs: deadAirGaps,
       maxMs: deadAirGaps.length > 0 ? Math.max(...deadAirGaps) : null,
