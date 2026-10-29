@@ -34,3 +34,59 @@ jobs:
       # npm test runs the manifest check and every auto-discovered unit test.
       - name: Tests
         run: npm test
+
+  # The two Python suites (telephony-bot/: 74 tests, voice-pipeline/: 92).
+  # No vendor key and no network beyond the package install. Deliberately no
+  # `paths:` filter and no job-level `if:`: this job must run on every PR.
+  python:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10 # a hang must fail, not sit for the 6 h default
+    env:
+      # telephony-bot/server.py reads os.environ["PUBLIC_HOST"] at import time.
+      # Any value works; nothing dials it from a test.
+      PUBLIC_HOST: ci.invalid
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Bridge venv
+        run: |
+          uv venv --python 3.13 .venv
+          uv pip install --python .venv/bin/python -r requirements-ci.txt
+      # orchestrator.py's `_default_scorer` wraps the voice_judge import in
+      # `except Exception: return 0.0`: a missing aiohttp degrades every
+      # barge-in score to 0.0 instead of naming the dependency. Assert the
+      # judge parity import explicitly, here, where it fails by name.
+      - name: Judge import
+        run: |
+          .venv/bin/python - <<'PY'
+          import sys
+
+          sys.path.insert(0, "telephony-bot")
+          import aiohttp  # voice_judge imports it at module level
+          import voice_judge
+
+          assert voice_judge.heuristic_barge_in_score("stop", 3000) == 0.9
+          PY
+      # `discover -s <dir>` from the repo root puts the start dir on sys.path,
+      # which is what the bare imports in these modules expect.
+      - name: Bridge suite
+        run: .venv/bin/python -m unittest discover -s telephony-bot -p "test_*.py"
+      - name: Pipeline suite
+        run: .venv/bin/python -m unittest discover -s voice-pipeline -p "test_*.py"
+
+  # AC4: a skipped or cancelled Python job must not report success. A job that
+  # never runs produces no failing check, so branch protection must require
+  # `required-python` (this job), not `python`. `if: always()` makes an
+  # explicit failure out of skipped, cancelled and failed alike.
+  required-python:
+    runs-on: ubuntu-latest
+    needs: [python]
+    if: always()
+    timeout-minutes: 2
+    steps:
+      - name: python job must have succeeded
+        run: |
+          echo "python result: ${{ needs.python.result }}"
+          test "${{ needs.python.result }}" = "success"
