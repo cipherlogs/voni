@@ -34,6 +34,7 @@ Timestamps are epoch seconds (UTC).
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+from typing import Any
 from dataclasses import dataclass
 from typing import Literal
 
@@ -423,3 +424,119 @@ class CallRungs:
             alerted=alerted,
             transition=outcome,
         )
+
+
+# ---------------------------------------------------------------------------
+# The speech ladder (ticket 22)
+# ---------------------------------------------------------------------------
+
+#: Speech rungs in order: Meta, then AssemblyAI, then the call fails visibly.
+STT_LADDER = Ladder(leg="stt", primary="meta", fallback="assemblyai")
+
+
+class LegFailed(RuntimeError):
+    """No rung of a leg can serve this call; it fails visibly, by name."""
+
+    def __init__(self, leg: BreakerLeg, reason: str) -> None:
+        self.leg = leg
+        self.reason = reason
+        super().__init__(f"the {leg} leg has no serving rung: {reason}")
+
+
+@dataclass(frozen=True)
+class ProviderAttribution:
+    """Which provider actually served one leg of one call, and why.
+
+    This is the value turn attribution reads: it names the leg, the rung and
+    the provider that was used, never the provider we hoped for.
+    """
+
+    leg: BreakerLeg
+    provider: str
+    rung: Rung
+    reason: str
+
+    def __post_init__(self) -> None:
+        _check_leg(self.leg)
+        if not isinstance(self.provider, str) or not self.provider.strip():
+            raise LadderError(f"attribution needs a provider, got {self.provider!r}")
+        if self.rung not in ("primary", "fallback"):
+            raise LadderError(
+                f"attribution names a rung that served, not {self.rung!r}"
+            )
+        if not isinstance(self.reason, str) or not self.reason.strip():
+            raise LadderError("attribution needs the reason the rung was chosen")
+
+    def to_document(self) -> dict[str, object]:
+        return {
+            "leg": self.leg,
+            "provider": self.provider,
+            "rung": self.rung,
+            "reason": self.reason,
+        }
+
+
+@dataclass(frozen=True)
+class SpeechSession:
+    """The speech rung this call will use, plus its attribution."""
+
+    stt: Any
+    attribution: ProviderAttribution
+    choice: RungChoice
+
+
+#: A speech factory builds an unopened ``StreamingSTT``; ``open()`` is the
+#: caller's, because the language bundle and sample rate belong to the call.
+SpeechFactory = Callable[[], Any]
+
+
+def _factory_for(
+    leg: BreakerLeg, provider: str, factories: Mapping[str, Callable[[], Any]]
+) -> Callable[[], Any]:
+    factory = factories.get(provider)
+    if factory is None:
+        raise LegFailed(
+            leg,
+            f"no factory is registered for provider {provider!r} "
+            f"(registered: {sorted(factories)})",
+        )
+    return factory
+
+
+def _build(
+    leg: BreakerLeg, choice: RungChoice, factories: Mapping[str, Callable[[], Any]]
+) -> tuple[Any, str]:
+    """Build the one rung ``choice`` names; ``None``/a raise fails the call."""
+    if choice.fails_visibly or choice.provider is None:
+        raise LegFailed(leg, choice.reason)
+    provider = choice.provider
+    factory = _factory_for(leg, provider, factories)
+    try:
+        return factory(), provider
+    except Exception as error:  # noqa: BLE001 - a failed rung is a visible refusal
+        raise LegFailed(
+            leg,
+            f"provider {provider!r} could not be built: "
+            f"{type(error).__name__}: {error}",
+        ) from error
+
+
+async def open_speech(
+    breaker: Breaker, *, factories: Mapping[str, SpeechFactory]
+) -> SpeechSession:
+    """Read the speech record, select its rung and build that rung's session.
+
+    One read, one factory call. The rung that loses is never built, so an open
+    Meta leg costs zero Meta requests, and a chosen rung that cannot be built
+    fails the call instead of silently trying the other provider.
+    """
+    choices = await read_choices(breaker, ladders=(STT_LADDER,))
+    choice = choices["stt"]
+    stt, provider = _build("stt", choice, factories)
+    attribution = ProviderAttribution(
+        leg="stt",
+        provider=provider,
+        rung="primary" if choice.rung == "primary" else "fallback",
+        reason=choice.reason,
+    )
+    return SpeechSession(stt=stt, attribution=attribution, choice=choice)
