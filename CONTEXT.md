@@ -141,3 +141,29 @@ _Avoid_: carryover, context (overloaded with context message)
 **Talk clock**:
 Demo-call time that counts only while the visitor is present and unmuted.
 _Avoid_: timer, duration
+
+### Voice and language
+
+**Voice binding**:
+A voice speaks exactly one language natively, and a call's language follows from its voice. We do not offer one voice speaking several languages.
+_Avoid_: language switching (for changing voice), multilingual voice
+
+**Locale**:
+The single language a call is conducted in: what the agent speaks, what speech recognition listens for, and the language every word it reads or matches is written in. Not just the greeting. A call's locale follows from its voice, except for an agent on automatic language detection, which has no locale and is the one documented exception (English scaffolding, answering in the caller's language).
+_Avoid_: language setting, language code (the wire value), translation
+
+**Session mechanics**:
+How a call behaves regardless of persona or locale: turn-taking, barge-in and pickup, captions, goodbye drain, playback level. Shared by every call of every agent.
+_Avoid_: pipeline, latency work, "the Anna fixes"
+
+**Delivered audio**:
+What actually reaches the caller's speaker, after every stage we own. The only signal a quality claim may be based on; the platform's own recording is not it.
+_Avoid_: output, stream, recording (when meaning what the caller heard)
+
+**Agent rules**:
+The persona-neutral rules every agent follows about how to talk — brevity, steering instead of obeying a passing remark, no corporate filler, never narrating a tool call. Distinct from a tenant's own mission and house rules, and from the demo scenario.
+_Avoid_: system prompt (the whole artifact), compiler rules
+
+**Demo scenario**:
+The demo-only business flow: test tag, invite-once, work-email gate, code check, stakes ladder, talk clock. Composes on top of agent rules and session mechanics; never applies to a tenant agent.
+_Avoid_: demo rules, demo prompt
