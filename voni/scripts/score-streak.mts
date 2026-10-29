@@ -174,29 +174,41 @@ function readExplicit(paths: string[]): Candidate[] {
 }
 
 /**
- * Scan the run directory. Only `score-*.json` files are candidates (a matrix
- * artifact is never mistaken for a run). A score artifact that cannot be read
- * stays in the candidate set as broken: a crashed newer run must break the
- * streak, not disappear from it.
+ * The evaluated window, oldest first: the newest STREAK_SIZE runs for the gate
+ * voice. Candidates are ordered by the name the writer gave them
+ * (`score-<YYYYMMDD-HHMMSS>-<voice>.json`), because that is the only run time
+ * the whole set shares: a readable artifact carries `recordedAt`, but a crashed
+ * one carries only its name, and its mtime says when the file was last written
+ * (a checkout or a copy stamps "now" on an artifact from last week). The window
+ * is chosen from the names before anything is parsed, so an unreadable artifact
+ * older than the window is never read and cannot break the streak.
+ *
+ * Only `score-*.json` files are candidates (a matrix artifact is never mistaken
+ * for a run). A score artifact inside the window that cannot be read stays in
+ * it as broken: a crashed newer run must break the streak, not disappear.
  */
 function scanDirectory(dir: string, voice: string): Candidate[] {
   if (!existsSync(dir)) return [];
-  const candidates: Candidate[] = [];
-  for (const entry of readdirSync(dir)) {
-    if (!/^score-.*\.json$/.test(entry)) continue;
-    const path = resolve(dir, entry);
+  const names = readdirSync(dir)
+    .filter((entry) => /^score-.*\.json$/.test(entry))
+    .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  const window: Candidate[] = [];
+  for (let index = names.length - 1; index >= 0 && window.length < STREAK_SIZE; index -= 1) {
+    const path = resolve(dir, names[index]);
     const read = readArtifact(path);
     if ("broken" in read) {
-      candidates.push({ path, artifact: null, broken: read.broken, mtimeMs: statSync(path).mtimeMs });
+      // No voice travels with a crash, so it could be this gate voice's newest
+      // run: it holds a window slot and names itself in the verdict.
+      window.push({ path, artifact: null, broken: read.broken, mtimeMs: statSync(path).mtimeMs });
       continue;
     }
     if (read.artifact.voice !== voice) continue;
-    candidates.push({ path, artifact: read.artifact, broken: null, mtimeMs: statSync(path).mtimeMs });
+    window.push({ path, artifact: read.artifact, broken: null, mtimeMs: statSync(path).mtimeMs });
   }
-  return candidates;
+  return window.toReversed();
 }
 
-/** Oldest→newest by recordedAt (mtime for an unreadable run), path as the tiebreaker. */
+/** Oldest→newest by recordedAt, path as the tiebreaker. For explicit lists only. */
 function chronological(candidates: Candidate[]): Candidate[] {
   const at = (candidate: Candidate) =>
     candidate.artifact ? Date.parse(candidate.artifact.recordedAt) : candidate.mtimeMs;
@@ -233,7 +245,9 @@ function main(): void {
   const voice = resolveGateVoice(arg("--gate-voice", arg("--voice", DEFAULT_GATE_VOICE)));
   const explicit = argAll("--artifacts");
   const dir = resolve(arg("--dir", "scoreboard-runs"));
-  const candidates = chronological(explicit.length > 0 ? readExplicit(explicit) : scanDirectory(dir, voice));
+  // A scanned window is already the newest STREAK_SIZE runs for the voice and
+  // needs no re-ordering; an explicit list is ordered by its own recordedAt.
+  const candidates = explicit.length > 0 ? chronological(readExplicit(explicit)) : scanDirectory(dir, voice);
   const window = candidates.slice(-STREAK_SIZE);
   const artifacts = window.flatMap((candidate) => (candidate.artifact ? [candidate.artifact] : []));
   const unreadable = window.flatMap((candidate) => (candidate.broken ? [candidate.broken] : []));

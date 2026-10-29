@@ -91,9 +91,9 @@ export function spokenDigitsToNumerals(text: string, recognition: CompleteRecogn
 }
 
 /**
- * A spoken address written as the visitor would type it ("andres at acme dot
- * com" → "andres@acme.com"), using this Locale's separator words and no
- * other. Accents and case are the caller's; the shape is the same.
+ * A spoken address written as the visitor would type it ("hi at voni dot c c"
+ * → "hi@voni.cc", the inbox the agent asks for), using this Locale's separator
+ * words and no other. Accents and case are the caller's; the shape is the same.
  *
  * The longest spoken form wins, so a two-word separator ("guion bajo") is an
  * underscore and never a hyphen followed by "bajo".
