@@ -34,9 +34,16 @@ Two rules keep the map honest about languages and tools:
   three model-visible keys are copied, so REST-only metadata can never leak
   into a request.
 
-The ignore set (ticket 58), the unknown-key refusal (ticket 59), the LLM
-override refusal (60) and the eligibility refusals (61) are not this module's
-job yet: this map is what they check against.
+The ignore set (ticket 58) is the other half of the rule: every body field the
+cascade must *not* read is listed there with the reason it is ignored, and
+:func:`ignored_fields` records each one that is present, so a
+recognition-carrying field such as ``input.transcription_prompt`` cannot
+disappear silently. Ignored is not dropped: the record travels on the config
+the call carries.
+
+The unknown-key refusal (ticket 59), the LLM override refusal (60) and the
+eligibility refusals (61) are not this module's job yet: this map is what they
+check against.
 """
 
 from __future__ import annotations
@@ -168,6 +175,66 @@ FIELD_MAP: Mapping[str, MappedField] = MappingProxyType(
 )
 
 
+# The spec's ignore set, verbatim: every body field the cascade must not read,
+# each with the reason it is ignored (spec "Ignore set, each with a reason").
+# This is data on purpose — extending it is one edit here, never a conditional
+# somewhere in the adapter.
+IGNORE_SET: Mapping[str, str] = MappingProxyType(
+    {
+        # A label the stored body carries; it never influences a call.
+        "name": "a call label the platform stores, not behaviour",
+        # Managed-only gain stage; the cascade has no equivalent.
+        "output.volume": (
+            "managed-only; direct synthesis has no volume parameter and the "
+            "cascade carries no gain stage"
+        ),
+        # Redundant with the mapped voice id.
+        "output.voice": "redundant with voice.voice_id, which the map already reads",
+        # The transport owns both directions' formats.
+        "output.format": "the transport chooses the output format, not the body",
+        "input.format": "the transport chooses the input format, not the body",
+        # Meta's recognition mode is fixed; there is no knob to set.
+        "input.transcription_mode": (
+            "Meta's recognition mode is fixed at ENDPOINTING; there is no "
+            "equivalent knob"
+        ),
+        # Recognition words that must be represented in keyterms before cutover.
+        "input.transcription_prompt": (
+            "Meta exposes no free-form recognition prompt; the words it carries "
+            "must be represented in keyterms before cutover, so the field is "
+            "recorded as ignored for the pre-cutover recognition check"
+        ),
+        # The browser mic path already owns capture.
+        "input.voice_focus": (
+            "no Meta equivalent; the browser microphone path already owns capture"
+        ),
+        "input.voice_focus_threshold": (
+            "no Meta equivalent; the browser microphone path already owns capture"
+        ),
+        # The provider owns the turn boundary.
+        "input.turn_detection": (
+            "the provider owns the turn boundary; there is no turn-detection "
+            "object to set"
+        ),
+    }
+)
+
+
+@dataclass(frozen=True)
+class IgnoredField:
+    """One body field the cascade deliberately does not read, and why.
+
+    ``value`` is the field's value as served. It exists so a recorded ignore is
+    inspectable — the pre-cutover recognition check has to read the words a
+    ``transcription_prompt`` carried, not just note that it was there.
+    """
+
+    path: str
+    reason: str
+    value: Any
+
+
+
 def _read(body: Mapping[str, Any], path: str) -> object:
     """The value at a dotted body path, or ``_MISSING``."""
     node: object = body
@@ -176,6 +243,18 @@ def _read(body: Mapping[str, Any], path: str) -> object:
             return _MISSING
         node = node[key]
     return node
+
+
+def ignored_fields(body: Mapping[str, Any]) -> tuple[IgnoredField, ...]:
+    """Every ignored field the body actually carries, with its reason."""
+    if not isinstance(body, Mapping):
+        raise TypeError(f"a stored agent body must be a mapping, got {type(body).__name__}")
+    recorded: list[IgnoredField] = []
+    for path in sorted(IGNORE_SET):
+        value = _read(body, path)
+        if value is not _MISSING:
+            recorded.append(IgnoredField(path, IGNORE_SET[path], value))
+    return tuple(recorded)
 
 
 @dataclass(frozen=True)
@@ -191,6 +270,9 @@ class CascadeBody:
     keyterms: tuple[str, ...]
     # Chat Completions shape, ready for LLMStream.complete(tools=...).
     tools: tuple[dict[str, Any], ...]
+    # Every ignored field the served body carried, with its reason. Not a
+    # setting: the record exists so an ignored field is visible on the call.
+    ignored: tuple[IgnoredField, ...]
 
     @property
     def voice_id(self) -> str:
@@ -219,4 +301,4 @@ def adapt_body(body: Mapping[str, Any]) -> CascadeBody:
         field.attribute: field.parse(path, _read(body, path))
         for path, field in FIELD_MAP.items()
     }
-    return CascadeBody(**produced)
+    return CascadeBody(**produced, ignored=ignored_fields(body))
