@@ -27,7 +27,7 @@ class BargeInTests(unittest.TestCase):
     def test_backchannel_never_yields(self):
         for text in ["uh-huh", "um", "uhm", "mhm", "okay", "right", "got it"]:
             decision, _ = classify_user_turn(text, agent_speaking_ms=3000)
-            self.assertEqual(decision, "keep-speaking", text)
+            self.assertEqual(decision, "yield", text)  # DELIBERATELY RED
 
     def test_elongated_filler_never_yields(self):
         # "Okaay so" and "Sooo" are the caller's habit, not content. The
