@@ -28,6 +28,11 @@
  * `DEMO_AGENT_VARIANT` / `DEMO_TURN_*`; the flag wins. A variant on the inline
  * debug transport is refused: inline is never measured.
  *
+ * `--scenario <name>` selects one registered scenario (`all`/`suite` runs
+ * every one). A misspelt name is a named failure raised before the event
+ * stream, a token or any audio exists — never a run whose filters match
+ * nothing and whose summary still looks finished.
+ *
  * `--events <path>` is an opt-in JSONL stream of key decisions (scenario
  * start/end, session ready, reply create/first audio, cut, tool call/result,
  * end_call, goodbye drain, hangup, aside). It carries timings and ids only —
@@ -131,6 +136,12 @@ import {
   getOrCreateDemoAgent,
 } from "../src/lib/demo/stored-agents";
 import { createEvalEventWriter } from "../src/lib/demo/eval-events";
+import {
+  assertScenariosRegistered,
+  isAllScenarioSelector,
+  resolveScenarioName,
+  type EvalScenario,
+} from "../src/lib/demo/scenario-names";
 import { createCallTurnMarks } from "../src/lib/demo/turn-marks";
 import {
   evalSummaryIdentity,
@@ -231,6 +242,15 @@ function arg(name: string, fallback: string): string {
 
 type Step = { say?: string; instructions?: string };
 type Outcome = { agent: string[]; heard: string[]; endCalled: boolean; sessionId?: string };
+
+/**
+ * `--scenario <name>`, or `all`/`suite`/absent for every scenario. Resolved
+ * here — before the event stream is created, before an API key is required and
+ * before any token or audio is spent — so a typo is a named failure instead of
+ * a run that filters every list to nothing and still reports success.
+ */
+const requestedScenario = arg("--scenario", "");
+const only = isAllScenarioSelector(requestedScenario) ? "" : resolveScenarioName(requestedScenario);
 
 const apiKey = process.env.ASSEMBLYAI_API_KEY;
 if (!apiKey) throw new Error("ASSEMBLYAI_API_KEY missing: run with --env-file=.dev.vars");
@@ -1266,7 +1286,7 @@ async function askAndWaitForSpeech(ctx: Parameters<Parameters<typeof runClient>[
   await new Promise((resolve) => setTimeout(resolve, 400)); // mid-sentence
 }
 
-const CLIENT_SCENARIOS: { name: string; run: () => Promise<string | null> }[] = [
+const CLIENT_SCENARIOS: { name: EvalScenario; run: () => Promise<string | null> }[] = [
   {
     name: "filler-over",
     run: async () => {
@@ -2132,9 +2152,9 @@ function goodbyeDrainLine(scenario: string, o: ToolOutcome): string {
 }
 
 /** Runs whose closing line is scored for the team inbox and full playback. */
-const GOODBYE_SCENARIOS = ["bye-audio", "free-gate"] as const;
+const GOODBYE_SCENARIOS = ["bye-audio", "free-gate"] as const satisfies readonly EvalScenario[];
 
-const EMAIL_SCENARIOS: { name: string; run: (voiceId: string) => Promise<[string | null, ToolOutcome | null]> }[] = [
+const EMAIL_SCENARIOS: { name: EvalScenario; run: (voiceId: string) => Promise<[string | null, ToolOutcome | null]> }[] = [
   {
     name: "bye-audio",
     run: async (voice) => {
@@ -2296,7 +2316,7 @@ function voiceIdArg(): string {
   return arg("--voice", DEMO_VOICE_IDS[0]);
 }
 
-const SCENARIOS: { name: string; steps: Step[]; pass: (o: Outcome) => string | null }[] = [
+const SCENARIOS: { name: EvalScenario; steps: Step[]; pass: (o: Outcome) => string | null }[] = [
   {
     name: "hang-up",
     steps: [{ say: "I want you to hang up." }],
@@ -2327,6 +2347,11 @@ const SCENARIOS: { name: string; steps: Step[]; pass: (o: Outcome) => string | n
   },
 ];
 
+// Every definition this file carries must be registered by name, and every
+// registered name must have one: a stale registry entry would let a typo
+// equal to it run nothing and still pass. A drift is a harness break.
+assertScenariosRegistered([...SCENARIOS, ...CLIENT_SCENARIOS, ...EMAIL_SCENARIOS].map((scenario) => scenario.name));
+
 /**
  * Test knob: simulate a flush that fails to stop the agent for this many ms.
  * 0 (default) is the healthy flush. It exists so the double-talk gate can be
@@ -2353,11 +2378,9 @@ const VARIANT_SELECTION: EvalVariantSelection = resolveEvalVariantSelection({
   envVariant: await demoAgentVariantFromEnv(),
   envWindows: await demoTurnWindowsFromEnv(),
 });
-const requestedScenario = arg("--scenario", "");
 // `--scenario all` (and `suite`) means every scenario: score-demo's one-command
 // suite may pass either name, and a filter that matched "all" literally would
-// run nothing at all.
-const only = requestedScenario === "all" || requestedScenario === "suite" ? "" : requestedScenario;
+// run nothing at all. `only` was resolved at startup (see above).
 // Say it once up front: an inline run is a debugging aid, never proof of what
 // the landing demo's stored agent runs.
 console.log(

@@ -14,6 +14,8 @@ import {
   isRecognitionLocale,
   normalizeSpokenAddress,
   missingSlots,
+  callRecognitionLocale,
+  recognitionVocabulary,
   resolveBundle,
   resolveRecognition,
 } from "./index";
@@ -169,4 +171,60 @@ test("a spoken address is written from the Locale's own separator words", () => 
 test("another Locale's separator words do not resolve in English", () => {
   const raw = normalizeSpokenAddress("andres arroba acme punto com", EN_RECOGNITION);
   assert.doesNotMatch(raw, /[@.]/);
+});
+
+const SPOKEN_NON_ENGLISH = ["es", "fr", "de", "it", "pt"] as const;
+
+/** Every Locale's vocabulary is its own words; the shared part is only the product's proper nouns. */
+test("each spoken Locale has its own vocabulary", () => {
+  for (const locale of SPOKEN_NON_ENGLISH) {
+    const terms = recognitionVocabulary(locale);
+    assert.ok(terms && terms.length > 0, locale);
+    assert.equal(terms?.some((term) => !EN_RECOGNITION.vocabulary.includes(term)), true, locale);
+    assert.notDeepEqual(terms, EN_RECOGNITION.vocabulary, locale);
+  }
+  const spanish = recognitionVocabulary("es") ?? [];
+  assert.equal(spanish.includes("Voni"), true);
+  assert.equal(spanish.includes("WhatsApp"), true);
+});
+
+test("an English keyterm is absent from a non-English vocabulary unless it is a proper noun", () => {
+  // The product name and channel are the only English spellings a Locale may keep.
+  const properNouns = new Set(["voni", "whatsapp"]);
+  const englishCommonWords = [
+    "phone", "call", "email", "address", "appointment", "budget",
+    "calendar", "price", "property", "message", "number", "voice",
+  ];
+  for (const locale of SPOKEN_NON_ENGLISH) {
+    for (const term of recognitionVocabulary(locale) ?? []) {
+      const word = term.toLowerCase();
+      if (properNouns.has(word)) continue;
+      assert.equal(englishCommonWords.includes(word), false, `${locale}: "${term}"`);
+    }
+  }
+});
+
+test("each spoken Locale is registered with its vocabulary and scene filled and the rest a named hole", () => {
+  for (const locale of SPOKEN_NON_ENGLISH) {
+    const resolution = resolveRecognition(locale);
+    assert.equal(resolution.status, "incomplete", locale);
+    if (resolution.status !== "incomplete") continue;
+    assert.equal(resolution.missing.includes("vocabulary"), false, locale);
+    assert.equal(resolution.missing.includes("scene"), false, locale);
+    assert.deepEqual(
+      resolution.missing,
+      ["digits", "address", "filler", "bargeIn", "commands", "endCall", "goodbye"],
+      locale,
+    );
+  }
+});
+
+test("a call's Locale comes from its conversation language, then its pinned language list", () => {
+  assert.equal(callRecognitionLocale({ conversationLanguage: "es" }), "es");
+  assert.equal(callRecognitionLocale({ conversationLanguage: "es", languageCodes: ["fr"] }), "es");
+  assert.equal(callRecognitionLocale({ languageCodes: ["en", "de"] }), "en");
+  assert.equal(callRecognitionLocale({ languageCodes: ["ar", "pt"] }), "pt");
+  // Nothing spoken pinned: automatic detection, which is the documented exception.
+  assert.equal(callRecognitionLocale({}), null);
+  assert.equal(callRecognitionLocale({ languageCodes: [] }), null);
 });
