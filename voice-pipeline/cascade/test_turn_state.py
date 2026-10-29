@@ -219,5 +219,127 @@ class KeyedTurnStateTest(unittest.TestCase):
         self.assertEqual(1, len(self.turns.turns()))
 
 
+class InterleavedTurnStateTest(unittest.TestCase):
+    """Ticket 74: two open turns are two objects, with no shared slot."""
+
+    def setUp(self):
+        self.clock = FakeClock()
+        self.turns = TurnStateStore(clock=self.clock, source="meta")
+
+    def test_a_late_end_and_completion_for_turn_one_land_only_in_turn_one(self):
+        one = self.turns.open("t1")
+        self.clock.advance(0.2)
+        two = self.turns.open("t2")
+        self.turns.partial("second caller words", turn="t2")
+        self.clock.advance(0.3)
+
+        self.turns.end(turn="t1")
+        self.clock.advance(0.1)
+        self.turns.finalise("first caller words", turn="t1")
+
+        self.assertEqual(0.5, one.speech_end)
+        self.assertIsNone(two.speech_end)
+        self.assertEqual("first caller words", one.final_text)
+        self.assertEqual("", two.final_text)
+        self.assertEqual("second caller words", two.partial_text)
+        self.assertEqual(TurnPhase.FINALISED, one.phase)
+        self.assertEqual(TurnPhase.SPEAKING, two.phase)
+
+    def test_every_state_slot_stays_keyed_to_its_own_logical_turn(self):
+        one = self.turns.open("t1")
+        self.clock.advance(0.1)
+        one_speech_start = one.speech_start
+        self.turns.partial("first words", turn="t1")
+        self.clock.advance(0.2)
+
+        two = self.turns.open("t2")
+        two_speech_start = two.speech_start
+        self.turns.partial("second words", turn="t2")
+        self.clock.advance(0.3)
+
+        self.turns.finalise("first final", turn="t1")
+        self.turns.finalise("second final", turn="t2")
+        self.turns.reply("Sure, booking it.", turn="t1")
+        self.turns.reply("No, wait.", turn="t2")
+        one.tool_loop.calls.append("lookup(id=1)")
+        one.tool_loop.memo[("lookup", '{"id": 1}')] = "found"
+        self.turns.cut(turn="t1")
+
+        self.assertEqual(one_speech_start, one.speech_start)
+        self.assertEqual(two_speech_start, two.speech_start)
+        self.assertAlmostEqual(0.1, one.first_partial_at)
+        self.assertAlmostEqual(0.6, one.finalised_at)
+        self.assertIsNone(two.cut_point)
+        self.assertAlmostEqual(0.6, one.cut_point)
+        self.assertEqual("first words", one.partial_text)
+        self.assertEqual("second words", two.partial_text)
+        self.assertEqual("first final", one.final_text)
+        self.assertEqual("second final", two.final_text)
+        self.assertEqual("Sure, booking it.", one.reply.text)
+        self.assertEqual("No, wait.", two.reply.text)
+        self.assertEqual(one.id, one.reply.turn_id)
+        self.assertEqual(two.id, two.reply.turn_id)
+        self.assertEqual(["lookup(id=1)"], one.tool_loop.calls)
+        self.assertEqual({}, two.tool_loop.memo)
+        self.assertEqual("t1", one.attribution.provider_turn_id)
+        self.assertEqual("t2", two.attribution.provider_turn_id)
+
+    def test_a_reply_to_turn_one_is_never_captioned_as_turn_two_user_text(self):
+        one = self.turns.open("t1")
+        self.turns.finalise("book a demo", turn="t1")
+        self.turns.reply("Sure, booking it.", turn="t1")
+        self.turns.open("t2")
+        self.turns.partial("no wait, I meant tomorrow", turn="t2")
+
+        self.assertEqual("book a demo", self.turns.user_text("t1"))
+        self.assertIsNone(self.turns.user_text("t2"))
+        self.assertEqual("", self.turns.get("t2").reply.text)
+        self.assertEqual("book a demo", self.turns.get("t1").reply.user_text)
+
+        self.turns.finalise("no wait, I meant tomorrow", turn="t2")
+        self.assertEqual("no wait, I meant tomorrow", self.turns.user_text("t2"))
+        self.assertEqual("book a demo", self.turns.user_text("t1"))
+
+    def test_a_stale_epoch_completion_named_by_logical_id_is_ignored(self):
+        one = self.turns.open("t1")
+        self.turns.new_epoch()
+
+        self.assertIsNone(
+            self.turns.finalise("late words", turn=one.id, epoch=0)
+        )
+        self.assertIsNone(self.turns.finalise("late words", turn=one, epoch=0))
+        self.assertEqual("", one.final_text)
+        self.assertEqual(TurnPhase.SPEAKING, one.phase)
+
+    def test_a_stale_epoch_partial_and_cut_cannot_touch_a_live_turn(self):
+        one = self.turns.open("t1")
+        self.turns.partial("book a", turn=one)
+        self.turns.new_epoch()
+
+        self.assertIsNone(self.turns.partial("late words", turn=one, epoch=0))
+        self.assertIsNone(self.turns.cut(turn=one.id, epoch=0))
+        self.assertEqual("book a", one.partial_text)
+        self.assertIsNone(one.cut_point)
+
+    def test_a_stale_epoch_close_cannot_close_a_live_turn(self):
+        one = self.turns.open("t1")
+        self.turns.new_epoch()
+        self.turns.bind("t9", one, epoch=1)
+
+        self.assertIsNone(self.turns.close(one, epoch=0))
+        self.assertIsNone(self.turns.close(one.id, epoch=0))
+        self.assertTrue(one.is_open)
+
+    def test_a_live_turn_bound_after_reconnect_accepts_current_epoch_events(self):
+        one = self.turns.open("t1")
+        self.turns.new_epoch()
+        self.turns.bind("t9", one, epoch=1)
+
+        self.turns.finalise("book a demo", turn=one.id, epoch=1)
+
+        self.assertEqual("book a demo", one.final_text)
+        self.assertEqual(1, one.attribution.session_epoch)
+
+
 if __name__ == "__main__":
     unittest.main()
