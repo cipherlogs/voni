@@ -3,14 +3,19 @@ import { and, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { secret } from "@/lib/env";
 import { demoAgents } from "@/lib/db/schema";
-import { compileSystemPrompt } from "@/lib/agents/compile";
-import { getVoice } from "@/lib/agents/voices";
-import { voiceOutputVolume } from "@/lib/agents/voice-levels";
+import {
+  buildStoredAgent,
+  stableJson,
+  type AgentProfile,
+  type LlmOverride,
+  type StoredAgentBody,
+  type TurnTaking,
+} from "@/lib/agents/body";
 import { DEMO_VOICE_IDS, VONI_AGENT_ID, voniConfig } from "./voni-agent";
 import { toRestTool } from "@/lib/tools/definitions";
 import { DEMO_VOICE_TOOLS } from "./demo-tools";
-import { DEMO_TRANSCRIPTION_MODE, buildAgentKeyterms, buildAgentTranscriptionPrompt } from "@/lib/voice/transcription";
-import { stableJson } from "@/lib/agents/provision";
+
+export type { LlmOverride } from "@/lib/agents/body";
 
 /**
  * Provision (and refresh) the AssemblyAI stored agent behind a public demo.
@@ -46,20 +51,6 @@ import { stableJson } from "@/lib/agents/provision";
  */
 
 const AGENTS_URL = "https://agents.assemblyai.com/v1/agents";
-
-/**
- * A bring-your-own OpenAI-compatible LLM for the stored demo agent. Write-only
- * on the agent body (`api_key` is never returned by the platform, and this
- * module never returns it to a caller either). `llm` is an array with at most
- * one entry; `[]` reverts to the managed model.
- */
-export type LlmOverride = {
-  base_url: string;
-  model: string;
-  api_key: string;
-  /** Disable thinking on models that support it (Gemini 2.5 Flash). */
-  reasoning_effort?: string;
-};
 
 /** Vercel AI Gateway: the fastest measured tool-calling model (see research 08). */
 export const DEMO_LLM_BASE_URL = "https://ai-gateway.vercel.sh/v1";
@@ -226,6 +217,32 @@ export function demoAgentStorageKey(
   return variant === "production" ? key : `${key}${DEMO_AGENT_VARIANT_SUFFIX}`;
 }
 
+/**
+ * The demo's persona/platform profile: every demo-specific choice in one
+ * visible line. The builder owns everything else (rules, turn-taking,
+ * recognition vocabulary, language policy), so a demo-only decision cannot
+ * become a demo-only mechanic by accident.
+ */
+export function demoAgentProfile(opts?: {
+  resume?: boolean;
+  llm?: LlmOverride[] | null;
+}): AgentProfile {
+  const llm = opts?.llm;
+  return {
+    persona: "demo",
+    platform: "browser",
+    // Desktop browser callers hold a laptop mic close: near-field isolation.
+    microphoneFocus: { mode: "near-field" },
+    // Each one is answered by /api/demo/tools (see module note). REST shape
+    // (no `type`) — see `toRestTool`.
+    tools: DEMO_VOICE_TOOLS.map((tool) => toRestTool({ ...tool })),
+    // A hold rejoin binds the resume variant, whose omitted greeting waits
+    // silently for the carried-context welcome-back reply.
+    greeting: opts?.resume !== true,
+    ...(llm ? { modelOverride: llm } : {}),
+  };
+}
+
 /** The exact remote body a demo agent runs. Pure: fingerprint + tests pin it. */
 export function buildDemoAgentBody(
   voiceId: string,
@@ -235,62 +252,25 @@ export function buildDemoAgentBody(
     variant?: DemoAgentVariant;
     turnWindows?: DemoTurnWindows;
   },
-) {
-  const voice = getVoice(voiceId);
-  const config = voniConfig(voiceId);
+): StoredAgentBody {
   const resume = opts?.resume === true;
   const variant = opts?.variant ?? "production";
-  const windows = opts?.turnWindows ?? DEMO_TURN_WINDOW_DEFAULTS;
-  const turnDetection = {
-    ...(windows.min_silence !== undefined ? { min_silence: windows.min_silence } : {}),
-    ...(windows.max_silence !== undefined ? { max_silence: windows.max_silence } : {}),
-    ...(windows.interruption_delay !== undefined
-      ? { interruption_delay: windows.interruption_delay }
-      : {}),
-  };
-  if (variant === "turn-window" && Object.keys(turnDetection).length === 0) {
-    throw new Error("turn-window variant needs at least one configured window");
-  }
-  return {
+  // The experiment's windows are demo-only session mechanics: they reach the
+  // builder as a turn-taking input, never as a profile field (ticket 64
+  // removes the experiment; a profile can never request it).
+  const turnTaking: TurnTaking | undefined =
+    variant === "turn-window"
+      ? { kind: "windows", windows: opts?.turnWindows ?? DEMO_TURN_WINDOW_DEFAULTS }
+      : undefined;
+  return buildStoredAgent({
     name: demoAgentName(voiceId, resume, variant),
-    system_prompt: compileSystemPrompt(config),
-    // A hold rejoin opens a fresh transport on the resume variant, which has
-    // no greeting: per the platform, an omitted greeting waits silently, and
-    // the client's carried context + welcome-back reply becomes the single
-    // first utterance instead of a re-introduction stacked on one.
-    ...(resume ? {} : { greeting: config.greeting }),
-    voice: { voice_id: voiceId },
-    // The voice's level, decided from its measured reference (voice-parity
-    // ticket 37): 100 = the native render with no processing, and a measured
-    // delivered deviation is expressed here so the level is deployable,
-    // fingerprinted and auditable. The browser applies no level at all.
-    output: { volume: voiceOutputVolume(voiceId) },
-    // Each one is answered by /api/demo/tools (see module note). REST
-    // shape (no `type`) — see `toRestTool`.
-    tools: DEMO_VOICE_TOOLS.map((tool) => toRestTool({ ...tool })),
-    // Absent unless an override is supplied: the managed default body must
-    // stay byte-identical, so no cached demo agent refreshes for nothing.
-    ...(opts?.llm ? { llm: opts.llm } : {}),
-    input: {
-      // Locked to the voice's language: detecting across all 18 languages
-      // every turn is slow. Language codes apply at speech-to-text connect,
-      // so they live on the stored agent, not in the post-ready preset.
-      language_codes: voice ? [voice.languageCode] : [],
-      transcription_mode: DEMO_TRANSCRIPTION_MODE,
-      transcription_prompt: buildAgentTranscriptionPrompt(config),
-      keyterms: buildAgentKeyterms(config),
-      voice_focus: "near-field",
-      // Null = adaptive defaults. Any turn_detection object switches off
-      // adaptive end-of-turn (ADAPTIVE_TURNS, voice/session.ts); explicit
-      // null clears the object older bodies stored. Production always sends
-      // null; only the `:exp` experiment body carries windows, and it is
-      // built from exactly these three fields.
-      turn_detection:
-        variant === "turn-window"
-          ? turnDetection
-          : null,
-    },
-  };
+    config: voniConfig(voiceId),
+    profile: demoAgentProfile({
+      resume,
+      ...(opts?.llm ? { llm: opts.llm } : {}),
+    }),
+    ...(turnTaking ? { turnTaking } : {}),
+  });
 }
 
 export type DemoAgentProvisionPlan = {
