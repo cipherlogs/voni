@@ -21,6 +21,7 @@ from cascade.meta_stt import (
     MetaStreamingSTT,
     SpeechComplete,
     SpeechEnd,
+    SpeechPartial,
     SpeechStart,
 )
 from cascade.testing.socket_factory import Frame, ScriptedSocketFactory
@@ -73,10 +74,10 @@ class TurnBoundaryMappingTest(unittest.TestCase):
             events,
             [
                 SpeechStart(turn_id="turn-1"),
-                PartialTranscript(text="hel"),
-                PartialTranscript(text="hello"),
+                SpeechPartial(text="hel"),
+                SpeechPartial(text="hello"),
                 SpeechStart(turn_id="turn-2"),
-                PartialTranscript(text="next"),
+                SpeechPartial(text="next"),
             ],
         )
         for mapped in events:
@@ -195,7 +196,7 @@ class IgnoredFrameTest(unittest.TestCase):
 
         self.assertEqual(
             events,
-            [SpeechStart(turn_id="turn-1"), PartialTranscript(text="hi")],
+            [SpeechStart(turn_id="turn-1"), SpeechPartial(text="hi")],
         )
 
 
@@ -266,13 +267,20 @@ class NoInventedMetadataTest(unittest.TestCase):
                 )
 
     def test_the_mapped_event_fields_are_exactly_the_contract(self):
-        self.assertEqual(SpeechStart.__dataclass_fields__.keys(), {"turn_id"})
-        self.assertEqual(SpeechEnd.__dataclass_fields__.keys(), {"turn_id"})
+        self.assertEqual(
+            SpeechStart.__dataclass_fields__.keys(), {"turn_id", "session_epoch"}
+        )
+        self.assertEqual(
+            SpeechEnd.__dataclass_fields__.keys(), {"turn_id", "session_epoch"}
+        )
         self.assertEqual(
             SpeechComplete.__dataclass_fields__.keys(),
-            {"text", "turn_duration_ms", "turn_id"},
+            {"text", "turn_duration_ms", "turn_id", "session_epoch"},
         )
         self.assertEqual(PartialTranscript.__dataclass_fields__.keys(), {"text"})
+        self.assertEqual(
+            SpeechPartial.__dataclass_fields__.keys(), {"text", "session_epoch"}
+        )
 
 
 class EventsBeforeSessionTest(unittest.TestCase):
