@@ -52,3 +52,6 @@ voni/.eval-clips/
 
 # W0 reference captures: one WAV per voice + line (regenerated, never committed)
 voni/.voice-references/
+
+# M00 latency-spike working audio (regenerated; only the sidecar is committed)
+voice-pipeline/.spike/
