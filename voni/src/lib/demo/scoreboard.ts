@@ -2150,9 +2150,10 @@ export type ScoreboardArtifact = {
   /**
    * Structured runner evidence (retro #2): what the eval printed, reduced to
    * typed, PII-safe facts (identity, scenario verdicts, per-session turn gaps
-   * and cuts, aside/hang-up flags, playout). Additive and optional: an
-   * artifact from before this field is still valid, and the redacted
-   * transcripts stay the only place caller words appear.
+   * and cuts, aside/hang-up flags, playout). A turn with client receipt marks
+   * also carries its latency split (`turns[].latency`, demo-latency ticket 03);
+   * additive and optional, so an artifact from before either field is still
+   * valid, and the redacted transcripts stay the only place caller words appear.
    */
   runnerEvidence?: RunnerEvidence | null;
   /**

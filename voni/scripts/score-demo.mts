@@ -297,6 +297,7 @@ import {
   type EvalTransport,
 } from "../src/lib/demo/eval-transport";
 import { buildRunnerEvidence } from "../src/lib/demo/runner-evidence";
+import { readEvalEvents, type EvalEvent } from "../src/lib/demo/eval-events";
 import { judgeOverlap } from "../src/lib/voice/barge-in";
 import { acquireTimingLock, DEFAULT_TIMING_LOCK_PATH } from "../src/lib/demo/timing-lock";
 
@@ -556,6 +557,26 @@ const SUITE_SCENARIOS = [
   "hang-up-fast",
   "hang-up-over",
 ] as const;
+
+/**
+ * Read the run's opt-in client receipt marks for the latency split. The stream
+ * is telemetry: a missing or malformed per-scenario file yields no marks (no
+ * split) rather than failing the artifact write. A dry run never ran the
+ * runner, so it never reads a stale file into a fresh artifact.
+ */
+function readRunMarks(eventsPath: string, suite: boolean, dryRun: boolean): EvalEvent[] {
+  if (!eventsPath || dryRun) return [];
+  const paths = suite ? SUITE_SCENARIOS.map((name) => suiteEventsPath(eventsPath, name)) : [eventsPath];
+  const marks: EvalEvent[] = [];
+  for (const path of paths) {
+    try {
+      marks.push(...readEvalEvents(path));
+    } catch {
+      // No stream for this scenario: its turns simply carry no split.
+    }
+  }
+  return marks;
+}
 
 type EvalSection = {
   stdout: string;
@@ -1472,6 +1493,9 @@ async function main(): Promise<void> {
   const runnerEvidence = buildRunnerEvidence({
     runnerStdout: evalSection.stdout,
     excerpts: evidenceExcerpts,
+    // The marks ride the existing opt-in stream; without --events no split is
+    // claimed, and every gate reads exactly what it read before.
+    marks: readRunMarks(eventsPath, suite, dryRun),
   });
   let artifact: ScoreboardArtifact = buildSkeletonArtifact({
     voice,

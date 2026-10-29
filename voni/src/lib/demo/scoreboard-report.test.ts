@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildSkeletonArtifact, DEFAULT_GATE_VOICE } from "./scoreboard";
+import { buildSkeletonArtifact, DEFAULT_GATE_VOICE, type ScoreboardArtifact } from "./scoreboard";
 import type { RunnerEvidence } from "./runner-evidence";
 import { buildInspectReport, formatInspectReport } from "./scoreboard-report";
 import { summarizeEvalEvents, type EvalEvent } from "./eval-events";
@@ -224,6 +224,20 @@ test("an event summary is included in the report only when supplied", () => {
   assert.match(text, /events \(4 lines\)/);
   assert.match(text, /counts: scenario\.start 1, cut 1, tool\.call 1, hangup 1/);
   assert.match(text, /cut\s+sess_stop cut 1448ms/);
+});
+
+test("an artifact written before the split field still validates and inspects", () => {
+  // The split is additive: a schema-4 artifact from before ticket 03 carries
+  // runnerEvidence but no per-turn latency, and reads exactly as it did.
+  const prior = JSON.parse(JSON.stringify(artifact())) as ScoreboardArtifact;
+  for (const session of prior.runnerEvidence?.sessions ?? []) {
+    for (const turn of session.turns) delete turn.latency;
+  }
+  assert.equal(prior.schemaVersion, 4);
+  const report = buildInspectReport(prior);
+  assert.equal(report.sessions.length, 1);
+  assert.equal(report.sessions[0].turns.some((turn) => "latency" in turn), false);
+  assert.match(formatInspectReport(report), /turn\s+2\s+gap\s+2210ms/);
 });
 
 test("something that is not a scoreboard artifact throws instead of printing a blank report", () => {
