@@ -1557,7 +1557,7 @@ async function main(): Promise<void> {
     dryRun || !servedAgentId ? null : await readServedDemoAgentBody(servedAgentId);
   if (servedRead && !servedRead.ok) {
     console.warn(
-      `[scoreboard] stored body unmeasured: ${servedRead.error} (end-of-turn stays INFO, never a reconstruction)`,
+      `[scoreboard] stored body unmeasured: ${servedRead.error} (end-of-turn and the level leg stay unmeasured, never a reconstruction)`,
     );
   }
   const servedAgentBody =

@@ -44,6 +44,8 @@ npm run scoreboard:demo
 | `voni/src/lib/voice/silent-greeting.ts` | one silent-greeting session: the line as the greeting, native level (caller clips + reference capture) |
 | `voni/src/lib/demo/reference-render.ts` | reference cache (voice + text), PCM WAV writer, default line = the voice's greeting |
 | `voni/scripts/render-reference.mts` | `npm run voice:reference`: render one line in one voice outside a conversation (W0) |
+| `voni/src/lib/audio/vendor-floor.ts` | committed vendor floor loader: provenance sidecar + PCM16 WAV, named refusals, no empty floor (W0) |
+| `voni/scripts/capture-vendor-floor.mts` | `npm run voice:vendor-floor`: capture or register the vendor floor, committed as evidence (W0) |
 | `docs/demo-latency-ladder.md` | turn-window experiment rulebook, stop rule, and ledger (not a gate or budget owner) |
 
 Evidence flow: runner stdout -> parsers in `score-demo` -> gate inputs in
@@ -84,6 +86,19 @@ voice's native level — no client gain, no limiter, no normalisation. The
 default line is that voice's own greeting, in its own Locale; `--text` renders
 another sentence so a mid-call defect is attributed to the text rather than the
 greeting.
+
+## Vendor floor (W0)
+
+`voni/evidence/vendor-floor/anna-en.wav` (+ `anna-en.json`) is the committed
+recording every subject must clear: `anna` speaking `VONI_GREETINGS.en`,
+captured 2026-10-29 from the vendor's text-to-speech engine
+(`assemblyai-tts-1`, `aai-anna`) with no client, platform or model in the path.
+`npm run voice:vendor-floor` reproduces it (or registers an owner-supplied
+playground recording with `--from-recording`), and
+`loadVendorFloor()` in `src/lib/audio/vendor-floor.ts` is the only reader. It
+refuses a missing, unreadable, tampered or misdescribed floor by name — there
+is no empty floor a comparison could silently pass against. See the README in
+that directory for the provenance fields and the measured baseline.
 
 ## Live-run rules
 
