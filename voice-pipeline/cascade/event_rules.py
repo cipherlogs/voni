@@ -21,6 +21,12 @@ A reply is requested through the injected ``on_reply`` sink with the finalised
 reply ordering, floor arbitration — belongs to the tickets that build on this
 one; this module keeps the trigger in one place.
 
+When a :class:`~cascade.floor.FinalGate` is wired, the completion is classified
+before the sink: a backchannel or echo final is counted and asked for nothing
+(and the turn is closed so ordering cannot wait on it), a command final is
+answered with the steering recorded on the outcome, and only those two reach
+the reply seam. The gate never gains a second reply call site.
+
 A stray event never corrupts a turn. Every event that changes nothing is
 counted under one :class:`IgnoreReason` and logged (never with the caller's
 words), and its :class:`EventOutcome` carries the reason:
@@ -43,6 +49,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
+from cascade.floor import FinalAction, FinalDecision, FinalGate
 from cascade.meta_stt import SpeechComplete, SpeechEnd, SpeechStart
 from cascade.turn_state import LogicalTurnId, TurnKey, TurnState, TurnStateStore
 from metrics import TimingLedger
@@ -108,6 +115,10 @@ class EventOutcome:
     endpointing_ms: float | None = None
     reply_requested: bool = False
     ignored_reason: IgnoreReason | None = None
+    #: Set on a completion when a final gate is wired. A suppressed or
+    #: steering final still carries its authoritative text; only ``REPLY`` and
+    #: ``STEER`` reach the reply seam.
+    final: FinalDecision | None = None
 
 
 class EventRules:
@@ -119,10 +130,14 @@ class EventRules:
         turns: TurnStateStore,
         on_reply: ReplySink,
         ledger: TimingLedger | None = None,
+        final_gate: FinalGate | None = None,
+        agent_text: Callable[[], str] | None = None,
     ) -> None:
         self._turns = turns
         self._on_reply = on_reply
         self._ledger = ledger
+        self._final_gate = final_gate
+        self._agent_text = agent_text or (lambda: "")
         self._endpointing: dict[LogicalTurnId, float] = {}
         self._no_speech_turns = 0
         self._ignored: dict[IgnoreReason, int] = {r: 0 for r in IgnoreReason}
@@ -216,12 +231,32 @@ class EventRules:
         if state.is_empty_final:
             self._no_speech_turns += 1
             return EventOutcome(EventKind.NO_SPEECH, turn=state)
+        decision = self._decide(state)
+        if decision is not None and not decision.answered:
+            # Suppressed: counted by the gate, never answered, never a Cancel.
+            # The turn is closed so reply ordering cannot wait on it forever.
+            self._turns.close(turn=state, reason=decision.reason.value)
+            return EventOutcome(
+                EventKind.SPEECH_COMPLETE,
+                turn=state,
+                user_text=state.final_text,
+                final=decision,
+            )
         await self._on_reply(state)
         return EventOutcome(
             EventKind.SPEECH_COMPLETE,
             turn=state,
             user_text=state.final_text,
             reply_requested=True,
+            final=decision,
+        )
+
+    def _decide(self, state: TurnState) -> FinalDecision | None:
+        """Classify the final through the gate, if one is wired."""
+        if self._final_gate is None:
+            return None
+        return self._final_gate.classify(
+            state.final_text, agent_text=self._agent_text()
         )
 
     def _record_endpointing(self, state: TurnState) -> float:
