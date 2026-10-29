@@ -19,6 +19,7 @@
  * Messages in:  {type:"play", seq, rate, samples: Float32Array}
  *               {type:"flush", fadeS}
  *               {type:"probe", on}  dev pop recorder (see POP_*), off by default
+ *               {type:"tap", on}  dev delivered capture, off by default
  * Messages out: {type:"level", seq, queuedMs, idle, consumed}, posted every few quanta
  *               while sounding and once on going idle. `seq` is the last play
  *               message seen, so the main thread knows the idle report is current.
@@ -28,6 +29,11 @@
  *               "jump" = adjacent output samples differ by more than POP_JUMP
  *               (a click the ear hears), "overload" = output beyond ±1 (the
  *               device clips it). Throttled per kind to one per POP_EVERY_S.
+ *               {type:"tap", samples: Float32Array}  only while the capture is
+ *               on: the output exactly as emitted, in ~100ms transferable
+ *               blocks. The tap copies after rendering, so it never changes a
+ *               sample. Turning it off posts the final partial block, then
+ *               {type:"tap-end"} so the main thread can close a complete WAV.
  */
 /**
  * Audio arrives in real time (measured: 10ms chunks every 10ms), so this
@@ -40,6 +46,8 @@ const LEVEL_EVERY_QUANTA = 8;
 /** Speech at 48 kHz moves well under this between samples; a click does not. */
 const POP_JUMP = 0.3;
 const POP_EVERY_S = 0.02;
+/** Delivered capture block: 100ms is enough to keep port traffic trivial. */
+const TAP_BLOCK_S = 0.1;
 
 class PlayoutProcessor extends AudioWorkletProcessor {
   constructor() {
@@ -65,6 +73,9 @@ class PlayoutProcessor extends AudioWorkletProcessor {
     this.lastOut = 0;
     this.popAt = {};
     this.consumed = 0;
+    this.tapOn = false;
+    this.tapBuf = null;
+    this.tapLen = 0;
     this.port.onmessage = (e) => this.receive(e.data);
   }
 
@@ -84,6 +95,9 @@ class PlayoutProcessor extends AudioWorkletProcessor {
       this.flush(msg.fadeS);
     } else if (msg.type === "probe") {
       this.popProbe = Boolean(msg.on);
+    } else if (msg.type === "tap") {
+      if (msg.on) this.startTap();
+      else this.stopTap();
     }
   }
 
@@ -169,6 +183,43 @@ class PlayoutProcessor extends AudioWorkletProcessor {
     this.port.postMessage({ type: "pop", kind, size, at: currentTime });
   }
 
+  /** Dev delivered capture on: start a block buffer at the output rate. */
+  startTap() {
+    this.tapBlock = Math.max(128, Math.round(sampleRate * TAP_BLOCK_S));
+    this.tapBuf = new Float32Array(this.tapBlock);
+    this.tapLen = 0;
+    this.tapOn = true;
+  }
+
+  /** Dev delivered capture off: flush the tail, then ack so a WAV can close. */
+  stopTap() {
+    this.postTap();
+    this.tapOn = false;
+    this.tapBuf = null;
+    this.port.postMessage({ type: "tap-end" });
+  }
+
+  /**
+   * Copy one quantum of already-rendered output into the current block. Reads
+   * the output array only, after every sample is final: the tap cannot alter
+   * what the speaker receives.
+   */
+  tapWrite(out) {
+    for (let i = 0; i < out.length; i++) {
+      if (this.tapLen === this.tapBlock) this.postTap();
+      this.tapBuf[this.tapLen++] = out[i];
+    }
+  }
+
+  /** Post the current block (partial or full) as a transferable buffer. */
+  postTap() {
+    if (!this.tapOn || this.tapLen === 0) return;
+    const samples = new Float32Array(this.tapLen);
+    samples.set(this.tapBuf.subarray(0, this.tapLen));
+    this.tapLen = 0;
+    this.port.postMessage({ type: "tap", samples }, [samples.buffer]);
+  }
+
   process(_inputs, outputs) {
     const out = outputs[0][0];
     // Never start under a flush tail: tail + a loud new reply summed past
@@ -188,6 +239,7 @@ class PlayoutProcessor extends AudioWorkletProcessor {
       if (this.popProbe) this.checkPop(y);
     }
     for (let c = 1; c < outputs[0].length; c++) outputs[0][c].set(out);
+    if (this.tapOn) this.tapWrite(out);
 
     const nowIdle = !this.playing && this.queued === 0 && !this.tail;
     this.quanta += 1;

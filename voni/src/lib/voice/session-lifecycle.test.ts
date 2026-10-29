@@ -24,6 +24,7 @@ import {
 import { DEMO_VOICE_IDS, SILENCE_CHECK_IN_INSTRUCTIONS } from "@/lib/demo/voni-agent";
 import { evalToolExecutor } from "@/lib/demo/eval-transport";
 import { VOICE_OUTPUT_VOLUME, voicePlaybackGain } from "@/lib/agents/voices";
+import { decodeWav } from "./delivered-capture";
 
 // Minimal WebSocket shape: updateConfig only touches readyState + send.
 (globalThis as unknown as { WebSocket: unknown }).WebSocket = { OPEN: 1 };
@@ -1695,6 +1696,103 @@ test("start connects as soon as the graph is ready (no setup awaits in between)"
   } finally {
     if (navigatorDescriptor) Object.defineProperty(globalThis, "navigator", navigatorDescriptor);
     g.WebSocket = savedWebSocket;
+  }
+});
+
+/**
+ * A started session over a fake graph whose playout records the delivered
+ * capture tap. The WAV sink is injected so the test never touches the network.
+ */
+async function captureSession(fields: { capture: boolean; taps: boolean[]; written: { name: string; bytes: Uint8Array }[] }) {
+  const g = globalThis as unknown as Record<string, unknown>;
+  const navigatorDescriptor = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+  const savedWebSocket = g.WebSocket;
+  Object.defineProperty(globalThis, "navigator", {
+    value: { mediaDevices: { getUserMedia: async () => ({ getTracks: () => [] }) } },
+    configurable: true,
+  });
+  g.WebSocket = class {
+    static OPEN = 1;
+    readyState = 1;
+    addEventListener() {}
+    send() {}
+    close() {
+      this.readyState = 3;
+    }
+  };
+  let onTap: ((samples: Float32Array) => void) | undefined;
+  const playout = {
+    play() {},
+    flush() {},
+    settled: () => true,
+    queuedMs: () => 0,
+    tap(on: boolean) {
+      fields.taps.push(on);
+      return Promise.resolve();
+    },
+    get onTap() {
+      return onTap;
+    },
+    set onTap(fn: ((samples: Float32Array) => void) | undefined) {
+      onTap = fn;
+    },
+  };
+  const session = new VoiceSession(
+    {},
+    {
+      micOwner: `delivered-capture-${Math.random()}`,
+      startGraph: async () =>
+        ({
+          audioCtx: { sampleRate: 48000, state: "running", resume: async () => undefined, close: async () => undefined },
+          worklet: { port: { close() {} }, disconnect() {} },
+          playout,
+          stop() {},
+        }) as unknown as AudioGraph,
+      writeCapture: (name, bytes) => {
+        fields.written.push({ name, bytes });
+      },
+    },
+  );
+  if (fields.capture) session.setDeliveredCapture(true);
+  await session.start({ mode: "agent", agentId: "" }, async () => ({ token: "tok", agentId: "a1" }));
+  const restore = async () => {
+    await session.stop().catch(() => undefined);
+    if (navigatorDescriptor) Object.defineProperty(globalThis, "navigator", navigatorDescriptor);
+    g.WebSocket = savedWebSocket;
+  };
+  return { session, pushTap: (samples: Float32Array) => onTap?.(samples), restore };
+}
+
+test("delivered capture: flag on taps the worklet and writes its output as a WAV on hang-up", async () => {
+  const fields = { capture: true, taps: [] as boolean[], written: [] as { name: string; bytes: Uint8Array }[] };
+  const { pushTap, restore } = await captureSession(fields);
+  try {
+    assert.deepEqual(fields.taps, [true], "the worklet tap starts with the call");
+    pushTap(new Float32Array([0.25, -0.25, 0.5]));
+    await restore();
+    assert.deepEqual(fields.taps, [true, false], "and flushes before teardown");
+    assert.equal(fields.written.length, 1);
+    assert.match(fields.written[0]!.name, /^delivered-.*\.wav$/);
+    const wav = decodeWav(fields.written[0]!.bytes);
+    assert.equal(wav.sampleRate, 48000, "at the worklet's output rate");
+    assert.deepEqual(Array.from(wav.samples), [0.25, -0.25, 0.5]);
+  } finally {
+    await restore();
+  }
+});
+
+test("delivered capture: flag off touches no tap and writes no file", async () => {
+  const fields = { capture: false, taps: [] as boolean[], written: [] as { name: string; bytes: Uint8Array }[] };
+  const { session, pushTap, restore } = await captureSession(fields);
+  try {
+    const playout = (session as unknown as { playout: { onTap?: unknown } }).playout;
+    assert.equal(playout.onTap, undefined);
+    pushTap(new Float32Array([0.25]));
+    await restore();
+    assert.deepEqual(fields.taps, []);
+    assert.deepEqual(fields.written, []);
+  } finally {
+    await restore();
   }
 });
 

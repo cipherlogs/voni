@@ -38,6 +38,9 @@ voni/GATES.md
 # Local video-making workspace
 /demo/
 
+# Dev delivered capture (WAV of what the playout worklet emitted; working file)
+voni/.captures/
+
 # Demo scoreboard run artifacts (regenerated per run, never committed)
 voni/scoreboard-runs/
 
