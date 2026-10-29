@@ -1,4 +1,5 @@
 import type { RecognitionSlots } from "../../types";
+import { PT_SCENE } from "./scene";
 import { PT_VOCABULARY } from "./vocabulary";
 
 /**
@@ -7,4 +8,5 @@ import { PT_VOCABULARY } from "./vocabulary";
  */
 export const PT_RECOGNITION: RecognitionSlots = {
   vocabulary: PT_VOCABULARY,
+  scene: PT_SCENE,
 };

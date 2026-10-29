@@ -1,4 +1,5 @@
 import type { RecognitionSlots } from "../../types";
+import { IT_SCENE } from "./scene";
 import { IT_VOCABULARY } from "./vocabulary";
 
 /**
@@ -7,4 +8,5 @@ import { IT_VOCABULARY } from "./vocabulary";
  */
 export const IT_RECOGNITION: RecognitionSlots = {
   vocabulary: IT_VOCABULARY,
+  scene: IT_SCENE,
 };
