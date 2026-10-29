@@ -34,6 +34,11 @@ jobs:
       # npm test runs the manifest check and every auto-discovered unit test.
       - name: Tests
         run: npm test
+      # Tickets 145/147/148: the anti-lie and rollback proofs are committed
+      # tests, not intentions. Naming the reply-gap proof here means a deleted
+      # or renamed module fails by name; `npm test` already discovers it.
+      - name: Anti-lie reply gap
+        run: node --import tsx --test src/lib/demo/anti-lie-reply-gap.test.ts
 
   # The Python suites: telephony-bot/ plus voice-pipeline/, which includes the
   # three recorded provider fixture suites and their manifest. No vendor key
@@ -91,6 +96,16 @@ jobs:
             cascade.test_meta_llm_fixtures \
             cascade.test_tts_fixtures \
             test_fixture_manifest
+      # Ticket 148: the rollback test runs in CI. It flips the durable routing
+      # switch while a call is live and proves new calls open zero cascade
+      # sockets; naming it here means a deleted module fails by name rather
+      # than silently vanishing from discovery.
+      - name: Anti-lie and rollback
+        working-directory: voice-pipeline
+        run: |
+          ../.venv/bin/python -m unittest \
+            cascade.test_admission \
+            cascade.test_rollback
 
   # AC4: a skipped or cancelled Python job must not report success. A job that
   # never runs produces no failing check, so branch protection must require
