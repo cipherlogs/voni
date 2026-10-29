@@ -9,10 +9,10 @@ import assert from "node:assert/strict";
 import { createWorkletPlayout } from "./playout";
 import {
   DeliveredCapture,
-  decodeWav,
   deliveredCaptureRequested,
-  encodeWavFloat32,
+  encodeWavPcm16,
 } from "./delivered-capture";
+import { decodeWav } from "@/lib/audio/format-facts";
 
 type Port = {
   onmessage: ((e: { data: unknown }) => void) | null;
@@ -94,28 +94,30 @@ function u16(bytes: Uint8Array, at: number): number {
   return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint16(at, true);
 }
 
-test("delivered WAV: a standard float WAV at the worklet's rate, samples intact", () => {
-  const samples = new Float32Array([0, 0.5, -0.5, 0.1234567, -1, 0.999]);
-  const bytes = encodeWavFloat32(samples, 48000);
+test("delivered WAV: a standard PCM16 WAV at the worklet's rate, samples intact", () => {
+  const samples = new Float32Array([0, 0.25, -0.25, 0.5, -1, 0.999]);
+  const bytes = encodeWavPcm16(samples, 48000);
 
   assert.equal(ascii(bytes, 0, 4), "RIFF");
   assert.equal(u32(bytes, 4), bytes.length - 8);
   assert.equal(ascii(bytes, 8, 4), "WAVE");
   assert.equal(ascii(bytes, 12, 4), "fmt ");
   assert.equal(u32(bytes, 16), 16, "PCM fmt chunk");
-  assert.equal(u16(bytes, 20), 3, "IEEE float");
+  assert.equal(u16(bytes, 20), 1, "PCM");
   assert.equal(u16(bytes, 22), 1, "mono");
   assert.equal(u32(bytes, 24), 48000, "the worklet's output rate");
-  assert.equal(u32(bytes, 28), 48000 * 4, "byte rate");
-  assert.equal(u16(bytes, 32), 4, "block align");
-  assert.equal(u16(bytes, 34), 32, "bits per sample");
+  assert.equal(u32(bytes, 28), 48000 * 2, "byte rate");
+  assert.equal(u16(bytes, 32), 2, "block align");
+  assert.equal(u16(bytes, 34), 16, "bits per sample");
   assert.equal(ascii(bytes, 36, 4), "data");
-  assert.equal(u32(bytes, 40), samples.length * 4);
+  assert.equal(u32(bytes, 40), samples.length * 2);
 
+  // Decoded by the W0 comparison's own reader, not a copy of the encoder.
   const read = decodeWav(bytes);
-  assert.equal(read.sampleRate, 48000);
-  assert.equal(read.channels, 1);
-  assert.deepEqual(Array.from(read.samples), Array.from(samples));
+  assert.equal(read.facts.sampleRate, 48000);
+  assert.equal(read.facts.channels, 1);
+  assert.equal(read.facts.durationSeconds, samples.length / 48000);
+  assert.deepEqual(Array.from(read.samples), [0, 8192, -8192, 16384, -32767, 32734]);
 });
 
 test("delivered capture: blocks become one WAV named for the call", async () => {
@@ -134,11 +136,8 @@ test("delivered capture: blocks become one WAV named for the call", async () => 
   assert.equal(writes.length, 1, "one file per call");
   assert.match(writes[0]!.name, /^delivered-20261029-140506\.wav$/);
   const read = decodeWav(writes[0]!.bytes);
-  assert.equal(read.sampleRate, 44100);
-  assert.deepEqual(
-    Array.from(read.samples),
-    Array.from(new Float32Array([0.1, 0.2, 0.3, -0.4, -0.5])),
-  );
+  assert.equal(read.facts.sampleRate, 44100);
+  assert.deepEqual(Array.from(read.samples), [3277, 6553, 9830, -13107, -16383]);
   assert.deepEqual(result, { name: writes[0]!.name, samples: 5, bytes: writes[0]!.bytes.length });
 });
 

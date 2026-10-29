@@ -8,7 +8,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
 
-import { DeliveredCapture, decodeWav } from "./delivered-capture";
+import { DeliveredCapture } from "./delivered-capture";
+import { decodeWav } from "@/lib/audio/format-facts";
 
 type Port = { onmessage: ((e: { data: unknown }) => void) | null; posted: unknown[] };
 type Processor = { port: Port; process: (inputs: Float32Array[][], outputs: Float32Array[][]) => boolean };
@@ -254,9 +255,11 @@ test("delivered capture: a tapped run writes a readable WAV of what the speaker 
   const result = await capture.finish();
   assert.equal(result?.name, "delivered-20261029-140506.wav");
   const wav = decodeWav(files[0]!);
-  assert.equal(wav.sampleRate, OUT);
-  // The file holds exactly the emitted stream, sample for sample.
-  assertSameSamples(Array.from(wav.samples), out, "WAV vs emitted stream");
+  assert.equal(wav.facts.sampleRate, OUT);
+  // 16-bit PCM is the comparison's format: compare the file to the emitted
+  // stream at that quantisation, sample for sample.
+  const quantise = (v: number) => Math.round(Math.max(-1, Math.min(1, v)) * 32767);
+  assertSameSamples(Array.from(wav.samples), out.map(quantise), "WAV vs emitted stream");
 });
 
 function runMic(inputRate: number, seconds: number) {

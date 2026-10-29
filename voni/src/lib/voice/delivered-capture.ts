@@ -5,12 +5,11 @@
  * The tap itself lives in `public/playout-processor.js` (it copies the output
  * after rendering, so it cannot change a sample). This module is the main
  * thread half: it accumulates the posted blocks and writes one standard
- * 32-bit float WAV at the worklet's output rate.
+ * 16-bit PCM WAV at the worklet's output rate — the form the W0 comparison
+ * (`lib/audio/format-facts`) reads.
  *
- * Float, not PCM16, on purpose: the capture is evidence about the signal, and
- * quantising it would add distortion of its own to the comparison. The file is
- * a working artifact only — `voni/.captures/` is gitignored, never evidence
- * committed to the repo.
+ * The file is a working artifact only — `voni/.captures/` is gitignored, never
+ * evidence committed to the repo.
  */
 import type { WorkletPlayout } from "./playout";
 
@@ -29,9 +28,9 @@ export function deliveredCaptureRequested(search: string, production: boolean): 
   return new URLSearchParams(search).get(DELIVERED_CAPTURE_QUERY) === "1";
 }
 
-/** One standard WAV: RIFF/WAVE, IEEE float32, mono, at `sampleRate`. */
-export function encodeWavFloat32(samples: Float32Array, sampleRate: number): Uint8Array {
-  const dataBytes = samples.length * 4;
+/** One standard WAV: RIFF/WAVE, 16-bit PCM, mono, at `sampleRate`. */
+export function encodeWavPcm16(samples: Float32Array, sampleRate: number): Uint8Array {
+  const dataBytes = samples.length * 2;
   const bytes = new Uint8Array(44 + dataBytes);
   const view = new DataView(bytes.buffer);
   const writeAscii = (at: number, text: string) => {
@@ -42,57 +41,21 @@ export function encodeWavFloat32(samples: Float32Array, sampleRate: number): Uin
   writeAscii(8, "WAVE");
   writeAscii(12, "fmt ");
   view.setUint32(16, 16, true); // fmt chunk size
-  view.setUint16(20, 3, true); // WAVE_FORMAT_IEEE_FLOAT
+  view.setUint16(20, 1, true); // WAVE_FORMAT_PCM
   view.setUint16(22, 1, true); // mono
   view.setUint32(24, sampleRate, true);
-  view.setUint32(28, sampleRate * 4, true); // byte rate
-  view.setUint16(32, 4, true); // block align
-  view.setUint16(34, 32, true); // bits per sample
+  view.setUint32(28, sampleRate * 2, true); // byte rate
+  view.setUint16(32, 2, true); // block align
+  view.setUint16(34, 16, true); // bits per sample
   writeAscii(36, "data");
   view.setUint32(40, dataBytes, true);
-  for (let i = 0; i < samples.length; i++) view.setFloat32(44 + i * 4, samples[i]!, true);
+  // The device clips at full scale; a sample beyond it is delivered clipped,
+  // so the capture records that rather than rescaling the level.
+  for (let i = 0; i < samples.length; i++) {
+    const y = Math.max(-1, Math.min(1, samples[i]!));
+    view.setInt16(44 + i * 2, Math.round(y * 32767), true);
+  }
   return bytes;
-}
-
-/**
- * Read back a mono float WAV (the capture's own format, and what the
- * comparison consumes). Rejects anything else rather than guessing.
- */
-export function decodeWav(bytes: Uint8Array): {
-  sampleRate: number;
-  channels: number;
-  samples: Float32Array;
-} {
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const ascii = (at: number) => String.fromCharCode(...bytes.subarray(at, at + 4));
-  if (bytes.length < 44 || ascii(0) !== "RIFF" || ascii(8) !== "WAVE") {
-    throw new Error("not a WAV file");
-  }
-  let at = 12;
-  let sampleRate = 0;
-  let channels = 0;
-  let bits = 0;
-  let format = 0;
-  while (at + 8 <= bytes.length) {
-    const id = ascii(at);
-    const size = view.getUint32(at + 4, true);
-    if (id === "fmt ") {
-      format = view.getUint16(at + 8, true);
-      channels = view.getUint16(at + 10, true);
-      sampleRate = view.getUint32(at + 12, true);
-      bits = view.getUint16(at + 22, true);
-    } else if (id === "data") {
-      if (format !== 3 || channels !== 1 || bits !== 32) {
-        throw new Error(`unsupported WAV: format ${format}, ${channels}ch, ${bits}-bit`);
-      }
-      const frames = Math.floor(size / 4);
-      const samples = new Float32Array(frames);
-      for (let i = 0; i < frames; i++) samples[i] = view.getFloat32(at + 8 + i * 4, true);
-      return { sampleRate, channels, samples };
-    }
-    at += 8 + size + (size % 2);
-  }
-  throw new Error("WAV has no data chunk");
 }
 
 export type CaptureWrite = (name: string, bytes: Uint8Array) => void | Promise<void>;
@@ -132,7 +95,7 @@ export class DeliveredCapture {
       all.set(block, at);
       at += block.length;
     }
-    const bytes = encodeWavFloat32(all, this.sampleRate);
+    const bytes = encodeWavPcm16(all, this.sampleRate);
     const name = captureName(this.now());
     await this.write(name, bytes);
     return { name, samples: all.length, bytes: bytes.length };
@@ -170,4 +133,6 @@ export async function postDeliveredCapture(name: string, bytes: Uint8Array): Pro
     signal: AbortSignal.timeout(CAPTURE_UPLOAD_TIMEOUT_MS),
   });
   if (!response.ok) throw new Error(`capture upload failed: ${response.status}`);
+  const saved = (await response.json().catch(() => null)) as { path?: string } | null;
+  if (saved?.path) console.info(`[voice-call] delivered capture ${saved.path}`);
 }

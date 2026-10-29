@@ -24,7 +24,7 @@ import {
 import { DEMO_VOICE_IDS, SILENCE_CHECK_IN_INSTRUCTIONS } from "@/lib/demo/voni-agent";
 import { evalToolExecutor } from "@/lib/demo/eval-transport";
 import { VOICE_OUTPUT_VOLUME, voicePlaybackGain } from "@/lib/agents/voices";
-import { decodeWav } from "./delivered-capture";
+import { decodeWav } from "@/lib/audio/format-facts";
 
 // Minimal WebSocket shape: updateConfig only touches readyState + send.
 (globalThis as unknown as { WebSocket: unknown }).WebSocket = { OPEN: 1 };
@@ -1774,8 +1774,8 @@ test("delivered capture: flag on taps the worklet and writes its output as a WAV
     assert.equal(fields.written.length, 1);
     assert.match(fields.written[0]!.name, /^delivered-.*\.wav$/);
     const wav = decodeWav(fields.written[0]!.bytes);
-    assert.equal(wav.sampleRate, 48000, "at the worklet's output rate");
-    assert.deepEqual(Array.from(wav.samples), [0.25, -0.25, 0.5]);
+    assert.equal(wav.facts.sampleRate, 48000, "at the worklet's output rate");
+    assert.deepEqual(Array.from(wav.samples), [8192, -8192, 16384]);
   } finally {
     await restore();
   }
