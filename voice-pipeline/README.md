@@ -86,6 +86,30 @@ python -m pip install -r requirements.txt
 sh scripts/local_server.sh
 ```
 
+## Real legs (key-gated)
+
+The old manual smoke script is gone: its wire shape predated the call token
+and the signed body, so it could not start a call this service accepts. The
+real check is the app's own command, which builds the body with the app's body
+builder and signs it with the app's envelope and call-token signers:
+
+```
+cd voni
+# deployed
+npm run check:real-legs -- --base-url https://pipeline.example.com
+# local (dev:cascade's plain internal port)
+npm run check:real-legs -- --base-url http://127.0.0.1:8767
+```
+
+It plays the committed caller clip twice, through the real vendors, and asserts
+the captions, the received audio frames, the trace artifact at
+`VOICE_PIPELINE_EVENTS_DIR`/`voice-pipeline/.events` and the `cost.priced` row.
+It needs `META_API_KEY`, `ASSEMBLYAI_API_KEY` and the shared
+`VOICE_PIPELINE_ENVELOPE_SECRET`; without the two vendor keys it prints
+`skipped: META_API_KEY and ASSEMBLYAI_API_KEY are required for the real legs`
+and exits 0. It is never run by the pull-request workflow: CI runs its unit
+tests and no vendor key exists there.
+
 Tests are stdlib `unittest` and are run from this directory. The telephony-bot
 venv is the bridge judge the parity tests import:
 
