@@ -74,8 +74,18 @@ Names only, set on the app with `fly secrets set`; `deploy/voice-pipeline.env.ex
 is the list and carries no values. The service reads `META_API_KEY`,
 `META_IDENTIFIER_SALT`, `ASSEMBLYAI_API_KEY`, `AI_GATEWAY_API_KEY`,
 `VONI_TOOL_SECRET`, `VOICE_PIPELINE_ENVELOPE_SECRET` and `DATABASE_URL`. The app
-has its own set on its own app; the two are never shared. Log redaction and the
-repository secret scan are ticket 137 and ticket 141.
+has its own set on its own app; the two are never shared. The repository secret
+scan is ticket 141.
+
+Log redaction is ticket 137. `voice-pipeline/cascade/log_redaction.py` is the
+one gate: it is installed by `create_app` and scrubs every record through a log
+record factory (so handlers configured later, such as uvicorn's, are covered)
+plus a filter on the root and uvicorn loggers. The browser's call token (socket
+query string or config frame), the vendor keys, the tool secret, the signing
+secret and `DATABASE_URL` are replaced before any handler writes; the vendor
+handshake body is replaced whole, because the Meta key travels inside it.
+`cascade/test_log_redaction.py` opens the real Meta backend over a scripted
+socket, sends the handshake and scans every emitted record.
 
 ## Checking the topology
 

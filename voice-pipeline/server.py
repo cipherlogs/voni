@@ -24,6 +24,11 @@ Routes:
 The stored body is held in-process, which is the M1 foundation seam: the
 deployment's token-verifying / durable store (M17) replaces it behind the same
 ``deliver``/``claim`` pair.
+
+Every log record is scrubbed before it is written (ticket 137): the call token,
+the vendor keys, the tool secret, the signing secret and the database URL never
+reach an access log, an error log or a crash dump, and a vendor handshake body
+is replaced whole rather than kept.
 """
 
 from __future__ import annotations
@@ -36,6 +41,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Request, WebSocket
 
 from cascade.envelope import EnvelopeError
+from cascade.log_redaction import install_log_redaction
 from cascade.token import (
     PROTOCOL_VERSION,
     CallTokenRegistry,
@@ -56,6 +62,11 @@ def create_app(
     clock: Callable[[], float] = time.time,
     call_tokens: CallTokenRegistry | None = None,
 ) -> FastAPI:
+    # Ticket 137: every record — uvicorn access, error, crash dump — is
+    # scrubbed before a handler can write it. The call token in the socket
+    # query string and the vendor key inside the handshake body never land.
+    install_log_redaction()
+
     app = FastAPI(title="Voni cascade voice pipeline")
 
     secret = (
