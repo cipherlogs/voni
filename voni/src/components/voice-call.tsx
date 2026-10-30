@@ -49,7 +49,7 @@ import {
 } from "@/lib/voice/session";
 import { CallTimings } from "@/lib/voice/call-timings";
 import { deliveredCaptureRequested } from "@/lib/voice/delivered-capture";
-import { CascadeSession, CASCADE_PROTOCOL_VERSION } from "@/lib/voice/cascade-session";
+import { CascadeSession, CASCADE_PROTOCOL_VERSION, decideCascadeFallback } from "@/lib/voice/cascade-session";
 import {
   FILLER_POOL,
   isEndCallRequest,
@@ -410,6 +410,12 @@ export function VoiceCall({
   const [turns, setTurns] = useState<Transcript[]>([]);
   const [error, setError] = useState<VoiceError | null>(null);
   const [retryIn, setRetryIn] = useState<number | null>(null);
+  /**
+   * The visible reason a cascade connect was routed to managed (ticket 140
+   * AC5). It survives the fallback's own start, unlike `error`, which a fresh
+   * transport clears.
+   */
+  const [fallbackReason, setFallbackReason] = useState<string | null>(null);
   const [toolActive, setToolActive] = useState(false);
   /** For the inbox poll: Voni's own tool call is in flight, so its result speaks. */
   const toolActiveRef = useRef(false);
@@ -447,6 +453,17 @@ export function VoiceCall({
 
   const sessionRef = useRef<VoiceSession | CascadeSession | null>(null);
   const startingRef = useRef(false);
+  /**
+   * Ticket 140 AC5: a cascade connect refused as draining (or unavailable)
+   * continues on the managed path once. `engineOverride` is the transport this
+   * call actually uses; `cascadeFellBack` is the single-retry guard, and
+   * `pendingFallback` carries a failure that arrived while the cascade start
+   * was still awaiting the mic.
+   */
+  const engineOverrideRef = useRef<"managed" | "cascade" | null>(null);
+  const cascadeFellBackRef = useRef(false);
+  const fallbackStartRef = useRef(false);
+  const pendingFallbackRef = useRef<string | null>(null);
   /** Per-call sound player (lazy: Audio only exists in the browser). */
   const soundsRef = useRef<CallSounds | null>(null);
   const sounds = () => (soundsRef.current ??= new CallSounds());
@@ -569,6 +586,22 @@ export function VoiceCall({
    * (never during render, never in a dedicated sync effect).
    */
   const startRef = useRef<() => void>(() => {});
+
+  /**
+   * Route this call from a refused cascade connect to managed, once. A failure
+   * that lands while the cascade start is still awaiting the mic is queued and
+   * spent at the end of that start, so it is never dropped.
+   */
+  const requestManagedFallback = useCallback((reason: string) => {
+    if (startingRef.current) {
+      pendingFallbackRef.current = reason;
+      return;
+    }
+    fallbackStartRef.current = true;
+    engineOverrideRef.current = "managed";
+    setFallbackReason(reason);
+    void startRef.current();
+  }, []);
 
   // Synchronous pending mirror for the host footer: the onPendingChange
   // effect below only runs after paint, so the click handler also notifies
@@ -1090,6 +1123,18 @@ export function VoiceCall({
   const start = useCallback(async () => {
     if (startingRef.current) return;
     startingRef.current = true;
+    // A cascade connect that was routed to managed is one call, not a new one:
+    // keep its transport override and visible reason. Every other start is a
+    // fresh attempt and may try cascade again.
+    const fallbackStart = fallbackStartRef.current;
+    fallbackStartRef.current = false;
+    if (!fallbackStart) {
+      engineOverrideRef.current = null;
+      cascadeFellBackRef.current = false;
+      pendingFallbackRef.current = null;
+      setFallbackReason(null);
+    }
+    const activeEngine = engineOverrideRef.current ?? engine;
     // A restart never inherits the old transport: detach and stop it first,
     // so its late socket callbacks (stale error banner, ghost audio) die
     // with explicitStop instead of painting over the fresh session.
@@ -1182,7 +1227,7 @@ export function VoiceCall({
       new CustomEvent("voni:voice-preempt", { detail: { owner: "voice-call" } }),
     );
 
-    if (engine === "cascade" && modeKind === "inline") {
+    if (activeEngine === "cascade" && modeKind === "inline") {
       // Cascade slice: Python pipeline service over WebSocket. Same UI
       // states as managed (connecting/listening/speaking/ended) so every
       // indicator, timer, caption, and the countdown below works unchanged.
@@ -1249,6 +1294,24 @@ export function VoiceCall({
         onError: (message) => {
           setError({ message });
         },
+        onConnectFailure: (failure) => {
+          // Ticket 140 AC5: a draining (or unavailable) cascade connect is not
+          // a dead end. Spend the single managed retry with the reason visible;
+          // a second failure is surfaced as a typed DrainingError that no
+          // longer offers a retry.
+          const decision = decideCascadeFallback({
+            failure: failure.code,
+            message: failure.message,
+            alreadyFellBack: cascadeFellBackRef.current,
+          });
+          if (decision.action === "retry-managed") {
+            cascadeFellBackRef.current = true;
+            requestManagedFallback(decision.reason);
+            return;
+          }
+          setError({ message: decision.error.message });
+          setCallState("ended");
+        },
         onEnd: () => {
           speakingRef.current = false;
           overheardRef.current = false;
@@ -1289,6 +1352,13 @@ export function VoiceCall({
         startingRef.current = false;
         setStarting(false);
         notifyPending({ ...pendingRef.current, starting: false });
+      }
+      // A refusal that arrived before the mic resolved was queued rather than
+      // dropped: spend the one managed retry now that this start is finished.
+      const pendingFallback = pendingFallbackRef.current;
+      if (pendingFallback) {
+        pendingFallbackRef.current = null;
+        requestManagedFallback(pendingFallback);
       }
       return;
     }
@@ -1623,12 +1693,13 @@ export function VoiceCall({
       setStarting(false);
       notifyPending({ ...pendingRef.current, starting: false });
     }
-  }, [modeKind, inlineAgentId, notifyPending, voiceId, config, engine, cascadeUrl, setCallState, closeCall, markClosing, setReturnPending, enterHold, setEmailTest, setTestTag, putTestUp, speak, playConnectedChime]);
+  }, [modeKind, inlineAgentId, notifyPending, voiceId, config, engine, cascadeUrl, setCallState, closeCall, markClosing, setReturnPending, enterHold, setEmailTest, setTestTag, putTestUp, speak, playConnectedChime, requestManagedFallback]);
 
   const hangUp = useCallback(async () => {
     if (hangingUp) return;
     setHangingUp(true);
     notifyPending({ ...pendingRef.current, hangingUp: true });
+    setFallbackReason(null);
     // Leaving hold behind: the call is over, never to be resumed.
     clearCallMemory();
     resumeIdRef.current = null;
@@ -2270,6 +2341,14 @@ export function VoiceCall({
             />
           ) : null}
           {statusText}
+        </p>
+      ) : null}
+      {fallbackReason ? (
+        <p
+          role="status"
+          className="text-muted-foreground mt-1 max-w-xs text-center text-xs leading-snug"
+        >
+          {fallbackReason}
         </p>
       ) : null}
 

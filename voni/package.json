@@ -45,6 +45,7 @@
     "postinstall": "patch-package",
     "scoreboard:demo": "node --env-file-if-exists=.env.local --env-file-if-exists=.dev.vars --import tsx scripts/score-demo.mts",
     "scoreboard:matrix": "node --env-file-if-exists=.env.local --env-file-if-exists=.dev.vars --import tsx scripts/score-matrix.mts",
+    "scoreboard:kill": "node --env-file-if-exists=.env.local --env-file-if-exists=.dev.vars --import tsx scripts/score-kill.mts",
     "scoreboard:streak": "node --env-file-if-exists=.env.local --env-file-if-exists=.dev.vars --import tsx scripts/score-streak.mts",
     "typecheck": "next typegen && tsc --noEmit",
     "scoreboard:inspect": "node --import tsx scripts/scoreboard-inspect.mts"

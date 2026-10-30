@@ -20,6 +20,10 @@ npm run scoreboard:demo
   re-evaluates the gate artifact.
 - `scoreboard:streak` reads the last artifacts and checks a code fingerprint;
   it never runs audio itself.
+- `scoreboard:kill -- --from <rounds-root>` judges the ticket-119 kill
+  criterion over measured rounds (one subdirectory per round, or a flat
+  directory as one round); only `OK` exits zero, and a dated risk acceptance is
+  `RISK-ACCEPTED`, never a pass.
 - `scoreboard:inspect` prints a compact artifact/report (use it instead of
   dumping raw JSON). For machine-readable output, pipe
   `npm run --silent scoreboard:inspect -- --artifact <path> --json`.
@@ -29,6 +33,8 @@ npm run scoreboard:demo
 | File | Owns |
 | --- | --- |
 | `voni/scripts/score-demo.mts` | scenario suite, per-scenario evidence routing, artifact write, console table, prior-artifact diff, timing lock |
+| `voni/scripts/score-kill.mts` | ticket-119 kill gate: reads round artifacts, prints OK/BLOCKED/KILLED/RISK-ACCEPTED/INCOMPLETE |
+| `voni/src/lib/demo/kill-criterion.ts` | small-sample verdicts, measured rounds, the kill criterion and the dated risk acceptance |
 | `voni/scripts/eval-demo-agent.mts` | live client scenarios, fake playout/timeline, `EVAL SUMMARY`, optional `--events` JSONL |
 | `voni/scripts/call-trace.mts` | Call trace rows, `gap Nms`, `CUT at`, `HEARD`, barge-in verdict |
 | `voni/src/lib/demo/scoreboard.ts` | gate functions, artifact shape, format/diff/streak/matrix, budget wiring |

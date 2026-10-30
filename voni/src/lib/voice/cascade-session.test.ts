@@ -7,7 +7,9 @@ import {
   buildConfigMessage,
   CASCADE_PROTOCOL_VERSION,
   CascadeSession,
+  decideCascadeFallback,
   decodeAudioMessage,
+  DrainingError,
   encodeAudioFrame,
   encodeContextMessage,
   parseServerMessage,
@@ -246,6 +248,7 @@ type FakeSocket = {
   sent: string[];
   onopen: (() => void) | null;
   onmessage: ((event: { data: string }) => void) | null;
+  onerror: (() => void) | null;
   onclose: (() => void) | null;
   closed: boolean;
   readyState: number;
@@ -260,6 +263,7 @@ function makeSocket(): FakeSocket {
     sent: [],
     onopen: null,
     onmessage: null,
+    onerror: null,
     onclose: null,
     closed: false,
     readyState: 0,
@@ -664,4 +668,120 @@ test("a matching end message is not reported as a mismatch", async () => {
 
   assert.deepEqual(errors, []);
   assert.deepEqual(ended, { turns: 1 });
+});
+
+// ── Draining connect fallback (ticket 140 AC5) ─────────────────────────────
+// A draining instance receives no new call. The app routes the call to managed
+// once; this session hands over a typed cause and stops, never a dead-end
+// error and never a "completed call".
+
+test("a draining or unavailable connect plans exactly one managed retry", () => {
+  for (const failure of ["draining", "unavailable"] as const) {
+    const first = decideCascadeFallback({ failure, alreadyFellBack: false });
+    assert.equal(first.action, "retry-managed");
+    if (first.action !== "retry-managed") return;
+    assert.ok(first.error instanceof DrainingError, "the cause is typed, not a string");
+    assert.equal(first.error.code, failure);
+    assert.equal(first.error.retryManaged, true, "the one retry is still available");
+    assert.match(first.reason, new RegExp(failure === "draining" ? "draining" : "unavailable"));
+    assert.match(first.reason, /managed path/, "the visible reason names where the call went");
+
+    const second = decideCascadeFallback({ failure, alreadyFellBack: true });
+    assert.equal(second.action, "surface", "a second failure is not retried");
+    if (second.action !== "surface") return;
+    assert.equal(second.error.code, failure);
+    assert.equal(second.error.retryManaged, false, "the retry was already spent");
+    assert.equal(second.error.message, first.error.message);
+  }
+});
+
+test("a draining refusal on connect is handed over typed, not shown as a dead end", async () => {
+  const socket = makeSocket();
+  const failures: DrainingError[] = [];
+  let errors = 0;
+  let ended = 0;
+  const session = new CascadeSession(
+    {
+      onConnectFailure: (error) => failures.push(error),
+      onError: () => (errors += 1),
+      onEnd: () => (ended += 1),
+    },
+    {
+      socketFactory: () => socket as unknown as WebSocket,
+      startMic: async () => ({ stop: () => {} }),
+      createPlayout: () => ({ play: () => {}, flush: () => {} }),
+    },
+  );
+  await session.start(CONFIG, "test-owner");
+  socket.readyState = socket.OPEN;
+
+  socket.emit(
+    JSON.stringify({
+      type: "error",
+      code: "draining",
+      message: "the service is draining (SIGTERM) and accepts no new call",
+    }),
+  );
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(failures.length, 1);
+  assert.equal(failures[0].code, "draining");
+  assert.equal(failures[0].retryManaged, true);
+  assert.match(failures[0].message, /draining/);
+  assert.equal(errors, 0, "the generic error path is not painted over the fallback");
+  assert.equal(ended, 0, "a refused connect is not a completed call");
+  assert.equal(socket.closed, true, "the cascade attempt is closed before the retry");
+});
+
+test("a socket that fails or closes before acceptance is unavailable, reported once", async () => {
+  const socket = makeSocket();
+  const failures: DrainingError[] = [];
+  let ended = 0;
+  const session = new CascadeSession(
+    { onConnectFailure: (error) => failures.push(error), onEnd: () => (ended += 1) },
+    {
+      socketFactory: () => socket as unknown as WebSocket,
+      startMic: async () => ({ stop: () => {} }),
+      createPlayout: () => ({ play: () => {}, flush: () => {} }),
+    },
+  );
+  await session.start(CONFIG, "test-owner");
+  socket.readyState = socket.OPEN;
+
+  // A browser fires error and then close for one failed connection.
+  socket.onerror?.();
+  socket.onclose?.();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(failures.length, 1, "one failed connection reports one cause");
+  assert.equal(failures[0].code, "unavailable");
+  assert.equal(failures[0].retryManaged, true);
+  assert.equal(ended, 0);
+  assert.equal(socket.closed, true);
+});
+
+test("a socket that closes after the service accepted the call stays an ordinary end", async () => {
+  const socket = makeSocket();
+  const failures: DrainingError[] = [];
+  let ended: { turns: number } | null = null;
+  const session = new CascadeSession(
+    {
+      onConnectFailure: (error) => failures.push(error),
+      onEnd: (info) => (ended = info),
+    },
+    {
+      socketFactory: () => socket as unknown as WebSocket,
+      startMic: async () => ({ stop: () => {} }),
+      createPlayout: () => ({ play: () => {}, flush: () => {} }),
+    },
+  );
+  await session.start(CONFIG, "test-owner");
+  socket.readyState = socket.OPEN;
+  socket.emit(JSON.stringify({ type: "caption", role: "user", text: "hi", final: false }));
+
+  socket.onclose?.();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.deepEqual(failures, [], "an accepted call ending is not a connect fallback");
+  assert.deepEqual(ended, { turns: 0 });
 });
