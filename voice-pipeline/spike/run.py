@@ -1,11 +1,16 @@
-"""Offline entry point for the M00 spike report.
+"""Entry point for the M00 spike report.
 
 ``python -m spike.run --offline`` composes the five terms from the ticket 10-12
 producers *without* a network or a key, prints the report, and exits. It is the
 honest no-key run: with no live transport every vendor term is unmeasured and
 the verdict is ``AT RISK`` with those terms named — never ``PASS`` and never a
-blank. A live run is owner-gated (spec M0 and ticket 151) and is refused here by
-name rather than half-implemented.
+blank.
+
+``python -m spike.run --live`` is the owner-gated measurement (spec M0 and
+ticket 151). It refuses by name before a socket when a key is missing, takes the
+shared timing lock for the whole run, and measures terms 1-4 through the live
+transports in :mod:`spike.live`. A failed leg stays unmeasured with its real
+reason; the run never records a gate verdict for the owner.
 
 There is no measurement arithmetic in this module: it wires the producers to
 :func:`spike.report.from_measurements`, so a report produced here is the same
@@ -16,11 +21,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+from collections.abc import Callable, Mapping
 from pathlib import Path
+from typing import Any
 
 from cascade import thresholds
-from spike import endpointing, first_audio, first_token, report
+from live_lock import TimingLockHeldError, acquire_timing_lock
+from spike import endpointing, first_audio, first_token, live, report
 
 
 def offline_report(
@@ -67,7 +76,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--live",
         action="store_true",
-        help="refused: the live run requires owner-gated keys and a timing lock",
+        help=(
+            "measure the five terms live: owner-gated, needs META_API_KEY and "
+            "ASSEMBLYAI_API_KEY and the shared timing lock"
+        ),
     )
     parser.add_argument(
         "--json", action="store_true", help="print the report as JSON"
@@ -78,20 +90,81 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
+def _write_payload(path: str, payload: Mapping[str, Any]) -> None:
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+
+
+def _render_live(measurement: live.LiveMeasurement) -> str:
+    """The report, then the run's own record; no key value is ever printed."""
+    lines = [measurement.report.render(), "", "  live run"]
+    lines.append(f"  {'run at':<28} {measurement.at}")
+    lines.append(
+        f"  {'keys present':<28} {', '.join(measurement.keys_present)}"
+    )
+    lines.append(f"  {'reasoning effort row':<28} {measurement.report.effort_label}")
+    for blocker in measurement.blockers:
+        lines.append(f"  {'blocked':<28} {blocker}")
+    for term in measurement.degraded:
+        lines.append(f"  {'unmeasured (failed leg)':<28} {term}")
+    return "\n".join(lines)
+
+
+def _live_main(
+    args: argparse.Namespace,
+    *,
+    env: Mapping[str, str] | None = None,
+    live_runner: Callable[..., live.LiveMeasurement] | None = None,
+    acquire_lock: Callable[..., Any] | None = None,
+) -> int:
+    environment = os.environ if env is None else env
+    missing = live.missing_keys(environment)
+    if missing:
+        print(live.MissingKeysError(missing))
+        return 2
+
+    acquire = acquire_lock or acquire_timing_lock
+    try:
+        lock = acquire(scenario="m00-spike")
+    except TimingLockHeldError as error:
+        print(f"spike.run --live refused: {error}")
+        return 2
+    try:
+        runner = live_runner or live.run_live
+        measurement = runner(env=environment)
+    finally:
+        lock.release()
+
+    payload = measurement.as_dict()
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        print(_render_live(measurement))
+    if args.out:
+        _write_payload(args.out, payload)
+    return measurement.exit_code()
+
+
+def main(
+    argv: list[str] | None = None,
+    *,
+    env: Mapping[str, str] | None = None,
+    live_runner: Callable[..., live.LiveMeasurement] | None = None,
+    acquire_lock: Callable[..., Any] | None = None,
+) -> int:
     args = _parser().parse_args(argv)
 
     if args.live:
-        print(
-            "spike.run --live is owner-gated: it needs META_API_KEY, "
-            "ASSEMBLYAI_API_KEY and the spike timing lock (spec M0; ticket 151). "
-            "Use --offline for the key-free report."
+        return _live_main(
+            args, env=env, live_runner=live_runner, acquire_lock=acquire_lock
         )
-        return 2
     if not args.offline:
         print(
-            "choose --offline (key-free report) or --live (owner-gated, not "
-            "available from this entry point)",
+            "choose --offline (key-free report) or --live (owner-gated live "
+            "measurement)",
             file=sys.stderr,
         )
         return 2
@@ -103,11 +176,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print(result.render())
     if args.out:
-        target = Path(args.out)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(
-            json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-        )
+        _write_payload(args.out, payload)
     return 0 if result.verdict != report.FAIL else 1
 
 
