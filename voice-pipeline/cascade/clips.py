@@ -42,6 +42,7 @@ from typing import Any
 
 from cascade.assemblyai_tts import MODEL_ID, TTS_BASE_URL, SocketFactory
 from cascade.body_map import CascadeBody, adapt_body
+from cascade.native_level import NATIVE_GAIN_STAGE
 from cascade.reference_render import (
     WAV_HEADER_BYTES,
     ReferenceFormat,
@@ -92,6 +93,17 @@ CLIP_TRANSPORT = "browser"
 #: native render, never a silent swap of the managed asset.
 CLIP_ASSET_DIR = "voni/public/voices/cascade"
 
+#: Where the picker plays a cascade preview from. The preview *is* the clip:
+#: the same asset, from the same synthesis endpoint and binding table, checked
+#: by the same manifest gate (ticket 132). It is a URL, not a second render.
+PREVIEW_URL_PREFIX = "/voices/cascade"
+
+
+def preview_url(voice_id: str) -> str:
+    """The URL the picker plays this voice's native preview from."""
+    return f"{PREVIEW_URL_PREFIX}/{voice_id}.wav"
+
+
 #: The committed record of what the script rendered and measured.
 CLIP_MANIFEST_PATH = "voni/evidence/cascade-clips/clips.json"
 
@@ -126,6 +138,11 @@ class ClipPlan:
     @property
     def bound(self) -> bool:
         return self.state == "bound"
+
+    @property
+    def preview(self) -> str | None:
+        """The picker URL for this voice's preview; ``None`` for an open Locale."""
+        return preview_url(self.voice_id) if self.bound else None
 
 
 def line_sha256(text: str) -> str:
@@ -264,6 +281,11 @@ class ClipRecord:
     gain_stage: str
     generated_on: str
 
+    @property
+    def preview(self) -> str:
+        """The picker URL this clip plays from: the clip is the preview."""
+        return preview_url(self.voice)
+
     def to_document(self) -> dict[str, Any]:
         return {
             "voice": self.voice,
@@ -272,6 +294,7 @@ class ClipRecord:
             "line": self.line,
             "lineSha256": self.line_sha256,
             "asset": self.asset,
+            "preview": self.preview,
             "sha256": self.sha256,
             "bytes": self.audio_bytes,
             "durationMs": self.duration_ms,
@@ -398,7 +421,7 @@ async def render_clip(
         format=fmt.to_document(),
         endpoint={"url": TTS_BASE_URL, "model": MODEL_ID},
         level=level,
-        gain_stage="none",
+        gain_stage=NATIVE_GAIN_STAGE,
         generated_on=generated_on or date.today().isoformat(),
     )
 
@@ -544,6 +567,10 @@ def clip_record_problems(plan: ClipPlan, record: ClipRecord) -> list[str]:
         problems.append(f"clip line hash is not the {plan.locale} greeting's hash")
     if record.asset != plan.asset:
         problems.append(f"clip asset {record.asset} is not {plan.asset}")
+    if record.preview != plan.preview:
+        problems.append(
+            f'clip preview {record.preview} is not the voice\'s own preview {plan.preview}'
+        )
 
     expected_format = clip_format().to_document()
     if dict(record.format) != expected_format:
@@ -554,7 +581,7 @@ def clip_record_problems(plan: ClipPlan, record: ClipRecord) -> list[str]:
         problems.append(
             f'clip endpoint {dict(record.endpoint)} is not the call\'s {_clip_endpoint()}'
         )
-    if record.gain_stage != "none":
+    if record.gain_stage != NATIVE_GAIN_STAGE:
         problems.append(
             f'clip declares a gain stage "{record.gain_stage}": the cascade carries no '
             "output.volume, gain, limiter or normalisation"
@@ -625,7 +652,8 @@ def manifest_document(
         ),
         "endpoint": _clip_endpoint(),
         "format": clip_format().to_document(),
-        "gainStage": "none",
+        "previewBase": PREVIEW_URL_PREFIX,
+        "gainStage": NATIVE_GAIN_STAGE,
         "clips": clips,
         "open": open_rows,
         "blockers": [blocker.to_document() for blocker in blockers],
@@ -744,10 +772,15 @@ def audit_manifest(
         problems.append(
             f"manifest format {document_format} is not the call's native {expected_format}"
         )
-    if manifest.get("gainStage") != "none":
+    if manifest.get("gainStage") != NATIVE_GAIN_STAGE:
         problems.append(
             f'manifest declares gainStage "{manifest.get("gainStage")}": the cascade '
             "carries no gain stage"
+        )
+    if manifest.get("previewBase") != PREVIEW_URL_PREFIX:
+        problems.append(
+            f'manifest previewBase {manifest.get("previewBase")} is not the cascade '
+            f"preview base {PREVIEW_URL_PREFIX}: every preview is a native cascade clip"
         )
 
     clips = manifest.get("clips") or []
@@ -783,6 +816,13 @@ def audit_manifest(
                 "a clip is never sourced from another voice and never invented"
             )
             continue
+        document_preview = document.get("preview") if isinstance(document, Mapping) else None
+        if document_preview != preview_url(record.voice):
+            problems.append(
+                f'voice "{record.voice}": preview {document_preview} is not the voice\'s own '
+                f"preview {preview_url(record.voice)}: a preview is served from the voice's "
+                "Locale, never another voice's"
+            )
         for problem in clip_record_problems(entry, record):
             problems.append(f"{record.voice}: {problem}")
         for problem in _asset_problems(entry, record, asset_root):
@@ -849,6 +889,23 @@ def audit_manifest(
                 f'blocker row for "{voice}" has a committed asset: a blocked voice '
                 "keeps no clip"
             )
+
+    # The producer is authoritative: a preview on disk with no manifest row is
+    # a hand capture or a silent swap, never a preview the clip test checked.
+    recorded_assets = {
+        str(document.get("asset"))
+        for document in clips
+        if isinstance(document, Mapping) and document.get("asset")
+    }
+    preview_dir = Path(asset_root) / CLIP_ASSET_DIR
+    if preview_dir.is_dir():
+        for path in sorted(preview_dir.glob("*.wav")):
+            relative = path.relative_to(Path(asset_root)).as_posix()
+            if relative not in recorded_assets:
+                problems.append(
+                    f"preview {relative} is not in the manifest: every preview comes from the "
+                    f"cascade synthesis endpoint and is recorded; run {CLIP_GENERATOR_COMMAND}"
+                )
 
     for entry in plan.values():
         if covered.get(entry.voice_id, 0) > 1:

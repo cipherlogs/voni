@@ -1,5 +1,27 @@
 import { z } from "zod";
 import { VOICE_IDS, getVoice } from "@/lib/agents/voices";
+import { isCascadeSubjectVoice } from "@/lib/demo/subject";
+
+/**
+ * Committed native previews, one per bound cascade voice (ticket 132).
+ *
+ * The preview *is* the clip: the same asset the synthesis endpoint rendered at
+ * native level, recorded in `voni/evidence/cascade-clips/clips.json` and checked
+ * by the clip test. The managed picker's `/voices/<id>.mp3` is a separate path;
+ * a cascade preview is a new native render, never a silent swap.
+ */
+export const CASCADE_PREVIEW_PREFIX = "/voices/cascade";
+
+/**
+ * The URL the picker plays a bound cascade voice's native preview from, or
+ * `null` when the voice has no binding (German stays open) or is not a demo
+ * subject. A voice with no committed preview is a named clip-test failure, not
+ * a URL that falls back to another voice.
+ */
+export function cascadePreviewUrl(voiceId: string): string | null {
+  if (!isCascadeSubjectVoice(voiceId)) return null;
+  return `${CASCADE_PREVIEW_PREFIX}/${voiceId}.wav`;
+}
 
 /** Sample text cap: a greeting-length utterance, never a paragraph. */
 export const MAX_PREVIEW_CHARS = 280;
