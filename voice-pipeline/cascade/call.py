@@ -92,6 +92,7 @@ from cascade.body_map import BodyFieldError, CascadeBody, adapt_body
 from cascade.cost import CallCost, RateTable, cost_call
 from cascade.eligibility import EligibilityDecision
 from cascade.envelope import EnvelopeError, verify_envelope
+from cascade.events import OperationalEvents
 from cascade.greeting import CallGreeting, GreetingOutcome, GreetingPlayback
 from cascade.meta_stt import SpeechPartial, SpeechStart
 from cascade.reconnect import ReconnectBudget
@@ -1066,6 +1067,7 @@ class CallLifecycle:
         cost_table: RateTable | None = None,
         ceiling_usd: Any = None,
         on_budget_stopped: Callable[[BudgetStop], None] | None = None,
+        operational_events: OperationalEvents | None = None,
         eligibility: EligibilityDecision | None = None,
         chime: Callable[[], None] | None = None,
         reconnect_budget: ReconnectBudget | None = None,
@@ -1118,6 +1120,20 @@ class CallLifecycle:
         self._ceiling_loaded = False
         self._budget_stop: BudgetStop | None = None
         self._on_budget_stopped = on_budget_stopped
+        if operational_events is not None and not isinstance(
+            operational_events, OperationalEvents
+        ):
+            raise TypeError(
+                "operational_events must be cascade.events.OperationalEvents, "
+                f"got {operational_events!r}"
+            )
+        #: The call's first-class operational events (ticket 110): the one
+        #: envelope and the one sanitized stream. ``None`` means the caller
+        #: wired no stream, and no event is emitted.
+        self._operational_events = operational_events
+        self._reconnect_events_emitted = 0
+        self._deploy_drain_event: dict[str, Any] | None = None
+        self._greeting_voice_id = ""
         self._usage_error: str | None = None
         self._eligibility = eligibility
         #: The call's one reconnect ledger (ticket 94). The adapters are given
@@ -1534,12 +1550,22 @@ class CallLifecycle:
             sink=greeting_audio,
             chime=self._connected_chime,
         )
+        self._greeting_voice_id = body.voice_id
+        self._emit_operational(
+            "greeting", "greeting.start", voice_id=body.voice_id
+        )
         return greeting.start(body)
 
     def _connected_chime(self) -> None:
         """The greeting's first audible sample: fire the connected chime once."""
         self.chime_calls += 1
         self.chime_at = self._clock()
+        self._emit_operational(
+            "greeting",
+            "greeting.first_audio",
+            voice_id=self._greeting_voice_id,
+            frames=1,
+        )
         if self._chime is not None:
             self._chime()
 
@@ -1931,6 +1957,67 @@ class CallLifecycle:
         """The per-call ceiling breach, once one has happened."""
         return self._budget_stop
 
+    def _emit_operational(
+        self, name: str, *args: Any, **kwargs: Any
+    ) -> dict[str, Any] | None:
+        """Write one first-class operational event; a sink failure never ends a call.
+
+        Every line goes through :class:`cascade.events.OperationalEvents`, which
+        builds it with the one envelope writer and writes it through the one
+        sanitized stream (ticket 110). The event is a record of a decision that
+        already happened, so a broken sink is logged and the call continues.
+        """
+        events = self._operational_events
+        if events is None:
+            return None
+        try:
+            return getattr(events, name)(*args, **kwargs)
+        except Exception:
+            _log.exception(
+                "the %s operational event could not be written; the call continues",
+                name,
+            )
+            return None
+
+    def deploy_draining(self, reason: str) -> dict[str, Any] | None:
+        """Announce a deploy drain for this live call, once.
+
+        Ticket 140's supervisor calls this when SIGTERM starts a drain. The
+        drain is planned, not a failure: it is emitted as ``deploy.drain`` on
+        the call's one event stream and never stops or truncates the call.
+        """
+        if self._deploy_drain_event is not None:
+            return self._deploy_drain_event
+        self._deploy_drain_event = self._emit_operational(
+            "deploy_drain", reason=reason, planned=True
+        )
+        return self._deploy_drain_event
+
+    def _flush_operational_events(self) -> None:
+        """Emit the greeting's done mark and any reconnect not yet emitted.
+
+        Both facts are already recorded on the call (the greeting outcome and
+        ticket 94's budget); this is the one place they become first-class
+        events, so a reconnect can never be a console line only.
+        """
+        greeting = self._greeting
+        if greeting is not None and (
+            greeting.spoken or greeting.cancelled or greeting.frames
+        ):
+            self._emit_operational(
+                "greeting",
+                "greeting.done",
+                voice_id=self._greeting_voice_id,
+                frames=greeting.frames,
+                sample_rate=greeting.sample_rate,
+                cancelled=greeting.cancelled,
+                cause=greeting.cause,
+            )
+        reconnects = self.reconnect_budget.events
+        for event in reconnects[self._reconnect_events_emitted :]:
+            self._emit_operational("reconnect", event)
+        self._reconnect_events_emitted = len(reconnects)
+
     def may_request(self, leg: str) -> bool:
         """Whether a vendor request may still be made on ``leg``.
 
@@ -1969,6 +2056,7 @@ class CallLifecycle:
             return None
         self._budget_stop = stop
         self._ledger.mark(BUDGET_STOP_MARK)
+        self._emit_operational("budget_stopped", stop)
         if self._on_budget_stopped is not None:
             try:
                 self._on_budget_stopped(stop)
@@ -2059,6 +2147,7 @@ class CallLifecycle:
         missing_reason: str,
     ) -> CallEnd:
         """Build the end message, send it, then release the socket."""
+        self._flush_operational_events()
         self._record_usage(opened)
         end = CallEnd(
             call_id=self._call_id,

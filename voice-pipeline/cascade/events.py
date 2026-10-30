@@ -33,6 +33,16 @@ rules live once, in ``voni/src/lib/demo/event-sanitizer.ts`` (ticket 07);
 ``test_sanitizer.py`` parses the TS source and fails by name when the copy
 drifts. There is no second denylist and no unsanitized write path.
 
+Operational decisions are first-class events, not console lines (ticket 110):
+:class:`OperationalEvents` emits ``budget.crossing`` (line, day, spend, cap),
+``budget.stopped`` (call, spend, ceiling), ``deploy.drain``, ``reconnect`` (leg,
+reason, planned/failure), the three greeting marks, ``protocol.error``,
+``turn.failed`` and ``breaker.transition``. The breaker is operational (the leg
+in place of subject/turn); a budget crossing or stop is cascade-only and names
+the subject with a null turn. The methods take typed values rather than free
+form fields, so caller text or audio cannot be smuggled onto a line, and the
+one sanitizer still runs on every event.
+
 The TS module (``voni/src/lib/demo/event-envelope.ts``) is the one reader. It
 refuses an unknown schema version, a missing required field, a managed event
 carrying a cascade-only type and a cascade event carrying a managed-only field,
@@ -47,11 +57,13 @@ from __future__ import annotations
 
 import json
 import math
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from cascade.breaker import LEGS
+from cascade.breaker import LEGS, STATES
+from cascade.counter import LINES as MONEY_LINES
 from cascade.sanitizer import sanitize_fields
 
 #: The one schema version. A reader must refuse anything else.
@@ -87,7 +99,25 @@ OPERATIONAL_FIELDS = (
 )
 
 #: Event types that are operational, not turn events.
-OPERATIONAL_EVENT_TYPES = ("breaker.transition",)
+BREAKER_EVENT_TYPE = "breaker.transition"
+
+#: The money/operations events ticket 110 makes first-class. They are built by
+#: :class:`OperationalEvents` below, through this writer and the one stream.
+BUDGET_CROSSING_EVENT_TYPE = "budget.crossing"
+BUDGET_STOPPED_EVENT_TYPE = "budget.stopped"
+DEPLOY_DRAIN_EVENT_TYPE = "deploy.drain"
+RECONNECT_EVENT_TYPE = "reconnect"
+PROTOCOL_ERROR_EVENT_TYPE = "protocol.error"
+TURN_FAILED_EVENT_TYPE = "turn.failed"
+
+#: The three greeting marks, in the order a spoken greeting writes them.
+GREETING_EVENT_TYPES = (
+    "greeting.start",
+    "greeting.first_audio",
+    "greeting.done",
+)
+
+OPERATIONAL_EVENT_TYPES = (BREAKER_EVENT_TYPE,)
 
 #: Names owned by the envelope. A call-scoped event owns subject/turn, an
 #: operational event owns leg; ``leg`` is a legitimate payload field on a
@@ -722,6 +752,439 @@ def emit_attribution(
     )
     sink(event)
     return event
+
+
+# ---------------------------------------------------------------------------
+# Operational events: money, breaker, reconnect, greeting, deploy (ticket 110)
+# ---------------------------------------------------------------------------
+
+#: Event types only a cascade run can claim, among the operational events this
+#: class emits. The set mirrors the relevant subset of the TS reader's
+#: ``CASCADE_ONLY_EVENT_TYPES``: a managed run has no breaker or cascade budget.
+CASCADE_ONLY_EVENT_TYPES = (
+    BREAKER_EVENT_TYPE,
+    BUDGET_CROSSING_EVENT_TYPE,
+    BUDGET_STOPPED_EVENT_TYPE,
+)
+
+#: The transition phases a breaker trigger may name, mapped onto the envelope's
+#: call phases. A probe or a manual write is pre-call, so it is ``connect``; a
+#: stream failure happens in the turn.
+_BREAKER_PHASES = {
+    "stream": "turn",
+    "turn": "turn",
+    "probe": "connect",
+    "read": "connect",
+    "manual": "connect",
+}
+
+
+def _text_field(field: str, value: Any) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise EventEnvelopeError(
+            field, f'"{field}" must be a non-empty string, got {value!r}'
+        )
+    return value
+
+
+def _bool_field(field: str, value: Any) -> bool:
+    if not isinstance(value, bool):
+        raise EventEnvelopeError(
+            field, f'"{field}" must be true or false, got {value!r}'
+        )
+    return value
+
+
+def _count_field(field: str, value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise EventEnvelopeError(
+            field, f'"{field}" must be a non-negative integer, got {value!r}'
+        )
+    return value
+
+
+def _number_field(field: str, value: Any) -> float | int:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or value < 0
+    ):
+        raise EventEnvelopeError(
+            field, f'"{field}" must be a finite non-negative number, got {value!r}'
+        )
+    return value
+
+
+def _document_of(value: Any, label: str) -> Mapping[str, Any]:
+    """The value's own document, never a shape this module invents."""
+    to_document = getattr(value, "to_document", None)
+    if not callable(to_document):
+        raise EventEnvelopeError(
+            label, f"{label} must carry a to_document() view, got {value!r}"
+        )
+    document = to_document()
+    if not isinstance(document, Mapping):
+        raise EventEnvelopeError(label, f"{label}.to_document() is not a mapping")
+    return document
+
+
+def _leg_field(value: Any, field: str = "leg") -> str:
+    if value not in LEGS:
+        raise EventEnvelopeError(
+            field, f"unknown cascade leg {value!r}; expected one of {', '.join(LEGS)}"
+        )
+    return value
+
+
+class OperationalEvents:
+    """One call's operational decisions, through the one envelope and stream.
+
+    Every method builds a line with :class:`EventWriter` and writes it through
+    the call's one :class:`EventStream`, so the shared sanitizer runs on every
+    event and a forbidden key refuses the whole line before it is written. The
+    methods take typed values (a ``Crossing``, a ``BudgetStop``, a
+    ``ReconnectEvent``, a ``BreakerTransition``) rather than free-form fields,
+    so a caller cannot smuggle caller text or audio onto a line.
+
+    A managed writer may emit a deploy drain, a reconnect, a greeting or a
+    protocol/turn failure; the breaker and the cascade budget are cascade-only,
+    exactly as the TS reader's ``CASCADE_ONLY_EVENT_TYPES`` says.
+    """
+
+    def __init__(
+        self,
+        stream: EventStream,
+        *,
+        subject: str,
+        now: Callable[[], float] = time.time,
+    ) -> None:
+        if not isinstance(stream, EventStream):
+            raise TypeError(
+                f"OperationalEvents needs the one EventStream, got {stream!r}"
+            )
+        if not callable(now):
+            raise ValueError(f"now must be callable, got {now!r}")
+        self.stream = stream
+        self.subject = _require_text("subject", subject)
+        self._now = now
+
+    # -- envelope helpers -------------------------------------------------
+
+    def _moment(self, at_ms: float | int | None) -> float | int:
+        moment = self._now() * 1000.0 if at_ms is None else at_ms
+        return _require_at_ms(moment)
+
+    def _cascade_only(self, type: str) -> None:
+        if self.stream.writer.pipeline == "managed":
+            raise EventEnvelopeError(
+                "type",
+                f'"{type}" is a cascade-only event; this writer is "managed"',
+            )
+
+    def _call(
+        self,
+        type: str,
+        fields: Mapping[str, Any],
+        *,
+        turn: str | None,
+        phase: str,
+        at_ms: float | int | None,
+    ) -> dict[str, Any]:
+        return self.stream.call_scoped(
+            type,
+            subject=self.subject,
+            turn=turn,
+            at_ms=self._moment(at_ms),
+            phase=phase,
+            fields=fields,
+        )
+
+    def _operational(
+        self,
+        type: str,
+        *,
+        leg: str,
+        fields: Mapping[str, Any],
+        phase: str,
+        at_ms: float | int | None,
+    ) -> dict[str, Any]:
+        return self.stream.operational(
+            type,
+            leg=leg,
+            at_ms=self._moment(at_ms),
+            phase=phase,
+            fields=fields,
+        )
+
+    # -- money ------------------------------------------------------------
+
+    def budget_crossing(
+        self, crossing: Any, *, at_ms: float | int | None = None
+    ) -> dict[str, Any]:
+        """The 80% or 100% line crossed by a charge: line, day, spend and cap."""
+        self._cascade_only(BUDGET_CROSSING_EVENT_TYPE)
+        document = _document_of(crossing, "crossing")
+        line = _text_field("line", document.get("line"))
+        if line not in MONEY_LINES:
+            raise EventEnvelopeError(
+                "line",
+                f"unknown money line {line!r}; expected one of {', '.join(MONEY_LINES)}",
+            )
+        fields = {
+            "line": line,
+            "day": _text_field("day", document.get("day")),
+            "spend": _text_field("spend", document.get("spend")),
+            "cap": _text_field("cap", document.get("cap")),
+        }
+        return self._call(
+            BUDGET_CROSSING_EVENT_TYPE,
+            fields,
+            turn=None,
+            phase="end",
+            at_ms=at_ms,
+        )
+
+    def budget_stopped(
+        self, stop: Any, *, at_ms: float | int | None = None
+    ) -> dict[str, Any]:
+        """The per-call ceiling breach: call, spend and ceiling, emitted once."""
+        self._cascade_only(BUDGET_STOPPED_EVENT_TYPE)
+        document = _document_of(stop, "stop")
+        measured = _bool_field("measured", document.get("measured"))
+        fields: dict[str, Any] = {
+            "spendUsd": _number_field("spendUsd", document.get("spendUsd")),
+            "ceilingUsd": _number_field("ceilingUsd", document.get("ceilingUsd")),
+            "measured": measured,
+            "reason": _text_field("reason", document.get("reason")),
+        }
+        if not measured:
+            fields["unmeasuredReason"] = _text_field(
+                "unmeasuredReason", document.get("unmeasuredReason")
+            )
+        return self._call(
+            BUDGET_STOPPED_EVENT_TYPE,
+            fields,
+            turn=_require_turn(document.get("turn")),
+            phase="drain",
+            at_ms=at_ms,
+        )
+
+    # -- deploy, reconnect ------------------------------------------------
+
+    def deploy_drain(
+        self,
+        *,
+        reason: str,
+        planned: bool = True,
+        turn: str | None = None,
+        at_ms: float | int | None = None,
+    ) -> dict[str, Any]:
+        """An instance draining a live call for a deploy; never a failure."""
+        if planned is not True:
+            raise EventEnvelopeError(
+                "planned",
+                "a deploy drain is planned, never a failure; a failed leg uses "
+                "the reconnect event",
+            )
+        fields = {"reason": _text_field("reason", reason), "planned": True}
+        return self._call(
+            DEPLOY_DRAIN_EVENT_TYPE,
+            fields,
+            turn=_require_turn(turn),
+            phase="drain",
+            at_ms=at_ms,
+        )
+
+    def reconnect(
+        self,
+        event: Any,
+        *,
+        turn: str | None = None,
+        phase: str = "turn",
+        at_ms: float | int | None = None,
+    ) -> dict[str, Any]:
+        """One reconnect: leg, reason, and whether it was planned or a failure."""
+        document = _document_of(event, "reconnect")
+        leg = _leg_field(document.get("leg"))
+        planned = _bool_field("planned", document.get("planned"))
+        action = document.get("action")
+        if planned and action != "planned_reconnect":
+            raise EventEnvelopeError(
+                "action",
+                f'a planned reconnect must say so, got action {action!r}',
+            )
+        if not planned and action == "planned_reconnect":
+            raise EventEnvelopeError(
+                "action",
+                "a planned reconnect cannot be reported as a failure",
+            )
+        fields: dict[str, Any] = {
+            "leg": leg,
+            "reason": _text_field("reason", document.get("reason")),
+            "planned": planned,
+        }
+        for key in ("action", "code", "failureClass"):
+            value = document.get(key)
+            if value is not None:
+                fields[key] = value
+        if not planned:
+            _text_field("failureClass", document.get("failureClass"))
+        return self._call(
+            RECONNECT_EVENT_TYPE,
+            fields,
+            turn=_require_turn(turn),
+            phase=phase,
+            at_ms=at_ms,
+        )
+
+    # -- greeting ---------------------------------------------------------
+
+    def greeting(
+        self,
+        mark: str,
+        *,
+        voice_id: str,
+        frames: int = 0,
+        sample_rate: int = 0,
+        cancelled: bool = False,
+        cause: str = "",
+        at_ms: float | int | None = None,
+    ) -> dict[str, Any]:
+        """One greeting mark: spoken before caller audio, never a turn."""
+        if mark not in GREETING_EVENT_TYPES:
+            raise EventEnvelopeError(
+                "type",
+                f'unknown greeting mark {mark!r}; expected one of '
+                f"{', '.join(GREETING_EVENT_TYPES)}",
+            )
+        fields: dict[str, Any] = {
+            "voiceId": _text_field("voiceId", voice_id),
+            "frames": _count_field("frames", frames),
+            "sampleRate": _count_field("sampleRate", sample_rate),
+            "cancelled": _bool_field("cancelled", cancelled),
+        }
+        if cause:
+            fields["cause"] = _text_field("cause", cause)
+        return self._call(
+            mark,
+            fields,
+            turn=None,
+            phase="connect",
+            at_ms=at_ms,
+        )
+
+    # -- breaker, protocol, failed turns ---------------------------------
+
+    def breaker_transition(
+        self,
+        transition: Any,
+        *,
+        manual_pin: bool | None = None,
+        at_ms: float | int | None = None,
+    ) -> dict[str, Any]:
+        """One breaker move, operational: the leg in place of subject and turn."""
+        self._cascade_only(BREAKER_EVENT_TYPE)
+        leg = _leg_field(getattr(transition, "leg", None))
+        from_state = getattr(transition, "from_state", None)
+        to_state = getattr(transition, "to_state", None)
+        for field, state in (("from", from_state), ("to", to_state)):
+            if state not in STATES:
+                raise EventEnvelopeError(
+                    field, f"unknown breaker state {state!r}; expected one of {STATES}"
+                )
+        trigger = getattr(transition, "trigger", None)
+        kind = getattr(trigger, "kind", None)
+        if not isinstance(kind, str) or not kind.strip():
+            raise EventEnvelopeError(
+                "trigger", f"a breaker transition needs its trigger, got {trigger!r}"
+            )
+        if manual_pin is None:
+            manual_pin = kind == "manual_pin"
+        fields: dict[str, Any] = {
+            "from": from_state,
+            "to": to_state,
+            "trigger": kind,
+            "reason": _text_field("reason", getattr(transition, "reason", None)),
+            "manualPin": _bool_field("manualPin", manual_pin),
+        }
+        code = getattr(trigger, "code", None)
+        if code is not None:
+            fields["triggerCode"] = code
+        turn = getattr(trigger, "turn", None)
+        if turn is not None:
+            fields["triggerTurn"] = turn
+        phase = _BREAKER_PHASES.get(getattr(trigger, "phase", ""), "connect")
+        moment = (
+            at_ms
+            if at_ms is not None
+            else _number_field("at", getattr(transition, "at", None)) * 1000.0
+        )
+        return self._operational(
+            BREAKER_EVENT_TYPE,
+            leg=leg,
+            fields=fields,
+            phase=phase,
+            at_ms=moment,
+        )
+
+    def protocol_error(
+        self,
+        *,
+        leg: str,
+        code: int | str | None = None,
+        reason: str,
+        turn: str | None = None,
+        phase: str = "connect",
+        at_ms: float | int | None = None,
+    ) -> dict[str, Any]:
+        """A wire/protocol failure, named by leg, code and reason."""
+        fields: dict[str, Any] = {
+            "leg": _leg_field(leg),
+            "reason": _text_field("reason", reason),
+        }
+        if code is not None:
+            if isinstance(code, bool) or not isinstance(code, (int, str)):
+                raise EventEnvelopeError(
+                    "code", f'"code" must be an int, a string or null, got {code!r}'
+                )
+            fields["code"] = code
+        return self._call(
+            PROTOCOL_ERROR_EVENT_TYPE,
+            fields,
+            turn=_require_turn(turn),
+            phase=phase,
+            at_ms=at_ms,
+        )
+
+    def turn_failed(
+        self,
+        *,
+        turn: str,
+        leg: str,
+        reason: str,
+        name: str = "",
+        phase: str = "turn",
+        at_ms: float | int | None = None,
+    ) -> dict[str, Any]:
+        """One failed turn, naming the logical turn and the leg that failed."""
+        if turn is None:
+            raise EventEnvelopeError(
+                "turn", "a failed turn must name its logical turn, not null"
+            )
+        fields: dict[str, Any] = {
+            "leg": _leg_field(leg),
+            "reason": _text_field("reason", reason),
+        }
+        if name:
+            fields["name"] = _text_field("name", name)
+        return self._call(
+            TURN_FAILED_EVENT_TYPE,
+            fields,
+            turn=_require_turn(turn),
+            phase=phase,
+            at_ms=at_ms,
+        )
 
 
 # ---------------------------------------------------------------------------
