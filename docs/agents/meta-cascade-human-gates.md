@@ -17,6 +17,8 @@ failure, and `0` means it completed.
 ## 14 — M0 feasibility decision
 
 **Needs:** `META_API_KEY`, `ASSEMBLYAI_API_KEY`, `AI_GATEWAY_API_KEY`.
+Use the app's funded AssemblyAI key in `voni/.dev.vars`; a stale key in `.env`
+returns HTTP 402 `insufficient_funds` and is not a voice or latency result.
 
 ```
 cd voice-pipeline
@@ -50,13 +52,16 @@ Probe candidates against `POST https://tts.us.assemblyai.com/v1/speech` with
 `voice-pipeline/scripts/probe_voices.py` (or `voni/scripts/measure-voice-levels.mts`).
 It probes `juergen`, `aai-juergen`, any `--voice-id` you add, and the catalogue
 `de` ids via `--catalogue-de`. `juergen` currently returns `422
-voice_not_found`.
+voice_not_found`; the AssemblyAI catalogue also lists `aai-gunther`,
+`aai-jorg` and `aai-magdalena` as German, which the app catalogue does not yet
+carry. Probe them explicitly:
 
 ```
 cd voni && npm run voice:catalogue > /tmp/de-voices.json
 cd ../voice-pipeline
 ../telephony-bot/.venv/bin/python scripts/probe_voices.py \
   --catalogue-de /tmp/de-voices.json \
+  --voice-id aai-gunther --voice-id aai-jorg --voice-id aai-magdalena \
   --out /tmp/german-probe
 ```
 
