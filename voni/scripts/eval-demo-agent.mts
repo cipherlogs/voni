@@ -256,7 +256,7 @@ const requestedScenario = arg("--scenario", "");
 const only = isAllScenarioSelector(requestedScenario) ? "" : resolveScenarioName(requestedScenario);
 
 const apiKey = process.env.ASSEMBLYAI_API_KEY;
-if (!apiKey) throw new Error("ASSEMBLYAI_API_KEY missing: run with --env-file=.dev.vars");
+if (!apiKey) throw new Error("ASSEMBLYAI_API_KEY missing: run with --env-file=.env.local");
 
 /**
  * Where `runClient` dials: the real stored demo agent (`stored`, the default)

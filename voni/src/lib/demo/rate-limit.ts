@@ -37,10 +37,10 @@ function parseLimit(raw: string | undefined, fallback: number): number {
 }
 
 /**
- * Limit override, from wherever this runtime keeps env: plain deploys and
- * CI populate `process.env`, while `next dev` loads `.dev.vars` into the
- * Cloudflare context instead (see `src/lib/env.ts`). Reading only
- * `process.env` silently ignores local overrides.
+ * Limit override, from wherever this runtime keeps env: local values arrive
+ * via `.env.local` -> `process.env`, while a Worker binding may only be in the
+ * Cloudflare context (see `src/lib/env.ts`). Reading only `process.env`
+ * silently ignores the binding.
  */
 async function envInt(name: string, fallback: number): Promise<number> {
   if (process.env[name] !== undefined) return parseLimit(process.env[name], fallback);

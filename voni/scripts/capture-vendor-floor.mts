@@ -116,7 +116,7 @@ async function captureFromVendor(input: {
 }): Promise<Capture> {
   const apiKey = process.env.ASSEMBLYAI_API_KEY;
   if (!apiKey) {
-    fail("ASSEMBLYAI_API_KEY missing: run with --env-file-if-exists=.dev.vars, or pass --from-recording");
+    fail("ASSEMBLYAI_API_KEY missing: run with --env-file-if-exists=.env.local, or pass --from-recording");
   }
   const language = LANGUAGE_NAMES[input.locale];
   if (!language) fail(`no vendor language name for locale ${input.locale}`);

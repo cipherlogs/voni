@@ -39,7 +39,7 @@ type Timeline = {
 
 const API = "https://agents.assemblyai.com/v1/sessions";
 const apiKey = process.env.ASSEMBLYAI_API_KEY;
-if (!apiKey) throw new Error("ASSEMBLYAI_API_KEY missing: run with --env-file=.dev.vars");
+if (!apiKey) throw new Error("ASSEMBLYAI_API_KEY missing: run with --env-file=.env.local");
 const auth = { Authorization: `Bearer ${apiKey}` };
 
 async function json<T>(url: string, headers: Record<string, string> = auth): Promise<T> {

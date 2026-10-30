@@ -46,7 +46,7 @@ def main() -> int:
 
     key = os.environ.get("ASSEMBLYAI_API_KEY")
     if not key:
-        print("ASSEMBLYAI_API_KEY is not set (it lives in voni/.dev.vars)")
+        print("ASSEMBLYAI_API_KEY is not set (it lives in voni/.env.local)")
         return 2
 
     session = json.loads(get(f"{API}/{session_id}", key))

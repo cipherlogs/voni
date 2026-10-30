@@ -14,7 +14,7 @@
  * NOT NULL with no cascade — deleting a campaign is out of scope).
  *
  * Run from voni/:
- *   node --env-file=.env.local --env-file-if-exists=.dev.vars \
+ *   node --env-file-if-exists=.env.local \
  *     --import tsx scripts/cleanup-loop-test-agent.mts
  */
 import { eq, ilike, or } from "drizzle-orm";

@@ -101,7 +101,7 @@ async function main(): Promise<void> {
     );
   }
   const apiKey = process.env.ASSEMBLYAI_API_KEY;
-  if (!apiKey) fail("ASSEMBLYAI_API_KEY missing: run with --env-file-if-exists=.dev.vars");
+  if (!apiKey) fail("ASSEMBLYAI_API_KEY missing: run with --env-file-if-exists=.env.local");
 
   const referenceFloor = analyseLevel(decodeWav(readReferenceFloor()));
   if (!referenceFloor.measured) fail("the committed vendor floor has no measurable level");

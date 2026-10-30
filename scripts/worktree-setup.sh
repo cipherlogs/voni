@@ -27,10 +27,10 @@ link() {
 
 link "$main_root/node_modules" "$worktree_root/node_modules"
 link "$main_root/voni/node_modules" "$worktree_root/voni/node_modules"
-for file in .env .env.local .dev.vars; do
-  link "$main_root/$file" "$worktree_root/$file"
-  link "$main_root/voni/$file" "$worktree_root/voni/$file"
-done
+# voni/.env.local holds the values; voni/.dev.vars holds Worker overrides
+# (see voni/ENVIRONMENT.md). A worktree needs both.
+link "$main_root/voni/.env.local" "$worktree_root/voni/.env.local"
+link "$main_root/voni/.dev.vars" "$worktree_root/voni/.dev.vars"
 
 exclude="$common_git_dir/info/exclude"
 mkdir -p "$(dirname "$exclude")"

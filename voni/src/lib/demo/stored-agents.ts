@@ -78,7 +78,7 @@ export type ProvisionResult =
  * time (measured ~1.26s), so a demo agent runs on a faster one when the key
  * exists. Absent key = no override at all, and the body stays byte-identical
  * to the managed default (so no stored agent is refreshed just by shipping
- * this). Both settings are read through `secret()` so `.dev.vars`, plain
+ * this). Both settings are read through `secret()` so `.env.local`, plain
  * Node/CI, and the deployed Worker all agree.
  */
 export async function demoLlmOverride(): Promise<LlmOverride[] | null> {
@@ -159,7 +159,7 @@ export function resolveDemoAgentVariant(raw: string | null | undefined): DemoAge
 
 /**
  * The deployment's selection, read through `secret()` like the LLM override so
- * `.dev.vars`, plain Node/CI and the Worker agree. Never defaults to the
+ * `.env.local`, plain Node/CI and the Worker agree. Never defaults to the
  * experiment: only an explicit `DEMO_AGENT_VARIANT=turn-window` selects it.
  */
 export async function demoAgentVariantFromEnv(): Promise<DemoAgentVariant> {
@@ -636,8 +636,8 @@ export async function getOrCreateDemoAgent(
     };
   }
 
-  // Via secret(), not process.env: the key lives in .dev.vars, which Next
-  // does not load into process.env. See src/lib/env.ts.
+  // Via secret(), not process.env: it also covers Worker bindings that never
+  // reach process.env. See src/lib/env.ts.
   const apiKey = await secret("ASSEMBLYAI_API_KEY");
   if (!apiKey) return { ok: false, error: "Voice is not configured." };
 

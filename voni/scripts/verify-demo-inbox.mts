@@ -4,7 +4,7 @@
  * while you send emails with it, and runs the same Gmail + Jev path the call
  * uses. Reads the inbox only; the tag row it writes expires in a day.
  *
- *   node --env-file=.dev.vars --env-file=.env.local --import tsx scripts/verify-demo-inbox.mts [--language en]
+ *   node --env-file=.env.local --import tsx scripts/verify-demo-inbox.mts [--language en]
  *
  * 1. Send an email with the printed tag from a WORK address → expect "found".
  * 2. Then send one with the same tag from a gmail address → expect "free".
