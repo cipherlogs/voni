@@ -50,8 +50,9 @@ POST_PROCESSING_PRODUCER = (
 )
 
 #: The two measurements cannot agree more finely than the chunk that carried the
-#: last speech sample: the wall clock stamps chunk delivery, so one pacer chunk
-#: (``CHUNK_MS``) is the timing quantum of the comparison, not a latency budget.
+#: last speech sample: the wall clock stamps chunk delivery, so the run's pacer
+#: chunk is the timing quantum of the comparison, not a latency budget. The
+#: default is the offline pacer's chunk; the live runner passes its own.
 AGREEMENT_TOLERANCE_MS = float(CHUNK_MS)
 
 META_KEY_ENV = "META_API_KEY"
@@ -200,6 +201,7 @@ def _endpointing_term(
     last_speech_sent_at_s: float | None,
     speech_end_ms: float,
     caller_turn: bool,
+    tolerance_ms: float,
 ) -> Term:
     if turn.end_at_s is None:
         return _unmeasured(
@@ -235,7 +237,7 @@ def _endpointing_term(
 
     vendor_ms = round(turn.audio_processed_ms - speech_end_ms, 3)
     delta_ms = round(vendor_ms - wall_ms, 3)
-    agrees = abs(delta_ms) <= AGREEMENT_TOLERANCE_MS
+    agrees = abs(delta_ms) <= tolerance_ms
     if agrees:
         comparison = "wall-clock and audioProcessedMs agree"
     else:
@@ -250,14 +252,14 @@ def _endpointing_term(
         detail=(
             f"turn {turn.turn_id}: {comparison} "
             f"(wall={wall_ms:.3f}ms vendor={vendor_ms:.3f}ms delta={delta_ms:+.3f}ms "
-            f"tolerance={AGREEMENT_TOLERANCE_MS:.3f}ms)"
+            f"tolerance={tolerance_ms:.3f}ms)"
         ),
         cross_check=CrossCheck(
             wall_ms=wall_ms,
             vendor_ms=vendor_ms,
             delta_ms=delta_ms,
             agrees=agrees,
-            tolerance_ms=AGREEMENT_TOLERANCE_MS,
+            tolerance_ms=tolerance_ms,
         ),
     )
 
@@ -283,6 +285,7 @@ def _terms(
     *,
     last_speech_sent_at_s: float | None,
     speech_end_ms: float,
+    tolerance_ms: float = AGREEMENT_TOLERANCE_MS,
 ) -> tuple[TurnTerms, ...]:
     turns = _collect(events)
     caller_turn = next(
@@ -295,6 +298,7 @@ def _terms(
             last_speech_sent_at_s=last_speech_sent_at_s,
             speech_end_ms=speech_end_ms,
             caller_turn=turn is caller_turn,
+            tolerance_ms=tolerance_ms,
         )
         built.append(
             TurnTerms(
@@ -312,6 +316,7 @@ def measure(
     pcm: bytes | None = None,
     speech_end_sample: int | None = None,
     sample_rate: int = fixture.SAMPLE_RATE,
+    chunk_ms: int = CHUNK_MS,
     clock: Callable[[], float] | None = None,
     wait: Callable[[float], None] | None = None,
 ) -> tuple[TurnTerms, ...]:
@@ -320,7 +325,10 @@ def measure(
     The pacer drives the vendor at approximately real time, using the vendor's
     ``audioProcessedMs`` as its lead reference. The transport stamps each event
     with the clock reading at arrival; the fixture's speech-end sample reaches
-    the vendor at the pacer's ``sent_at`` for that sample.
+    the vendor at the pacer's ``sent_at`` for that sample. ``chunk_ms`` is the
+    wire frame size; the offline default is the pacer's own, and the live runner
+    passes the production 200 ms. The cross-check tolerance follows the frame,
+    because one frame is the timing quantum of the comparison.
     """
     audio = fixture.render_pcm() if pcm is None else pcm
     if speech_end_sample is None:
@@ -336,6 +344,7 @@ def measure(
             audio,
             vendor_processed_s=transport.audio_processed_s,
             sample_rate=sample_rate,
+            chunk_ms=chunk_ms,
             clock=clock,
             wait=wait,
         )
@@ -365,6 +374,7 @@ def measure(
         events,
         last_speech_sent_at_s=last_speech_sent_at_s,
         speech_end_ms=round(speech_end_sample / sample_rate * 1000.0, 3),
+        tolerance_ms=float(chunk_ms),
     )
 
 
@@ -387,9 +397,9 @@ def measure_live(
 ) -> tuple[TurnTerms, ...]:
     """A live measurement when a transport and key exist; otherwise unmeasured.
 
-    This ticket ships no socket transport (M02 owns the Meta backend), so a run
-    without one — the state of this repo today — cannot produce a number and
-    must not pretend to.
+    :mod:`spike.live` supplies the owner-gated socket transport; this function
+    still refuses to invent one, so a caller without that transport gets the
+    named reason rather than a number.
     """
     if transport is None:
         environment = os.environ if env is None else env
