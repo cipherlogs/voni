@@ -225,6 +225,15 @@
       "source": "owner decision 2026-10-30 (ticket 04): short-lived signed body envelope, refused after expiry",
       "date": "2026-10-30"
     },
+    "call_token.ttl_ms": {
+      "unit": "ms",
+      "gate": "call-token.expiry",
+      "ticket": "04",
+      "note": "SUPPLIED by ticket 04. The call token is its own signed material with its own short window; it does not borrow envelope.ttl_ms, so retuning one never moves the other.",
+      "value": 60000,
+      "source": "owner decision 2026-10-30 (ticket 04): short-lived call token, refused after expiry at connect",
+      "date": "2026-10-30"
+    },
     "playout.cushion_ms": {
       "unit": "ms",
       "gate": "spike.report",

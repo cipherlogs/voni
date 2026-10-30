@@ -116,6 +116,30 @@ class BuildVersionTests(unittest.TestCase):
         self.assertEqual(document["buildSource"], BUILD_VERSION_ENV)
         self.assertEqual(document["protocolVersion"], PROTOCOL_VERSION)
 
+    def test_the_version_and_its_source_resolve_the_same_entry(self):
+        both = {BUILD_VERSION_ENV: "local-build", IMAGE_REF_ENV: "registry/img:abc"}
+        self.assertEqual("local-build", build_version(both))
+        self.assertEqual(BUILD_VERSION_ENV, build_source(both))
+
+        blank_primary = {BUILD_VERSION_ENV: "   ", IMAGE_REF_ENV: "registry/img:abc"}
+        self.assertEqual("registry/img:abc", build_version(blank_primary))
+        self.assertEqual(IMAGE_REF_ENV, build_source(blank_primary))
+
+        self.assertEqual("v1", build_version({BUILD_VERSION_ENV: " v1 "}))
+
+    def test_one_loop_decides_which_source_supplies_the_build(self):
+        from pathlib import Path
+
+        import cascade.version as version
+
+        source = Path(version.__file__).read_text(encoding="utf-8")
+        self.assertEqual(
+            1,
+            source.count("for name in BUILD_SOURCES"),
+            "build_version and build_source must share one source-resolution "
+            "loop, not each walk BUILD_SOURCES",
+        )
+
 
 class HealthReportTests(unittest.TestCase):
     def client(self):

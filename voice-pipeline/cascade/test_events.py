@@ -14,11 +14,13 @@ persisted stream is written by the one TS writer, which calls the one sanitizer
 from __future__ import annotations
 
 import json
+import re
 import unittest
 from pathlib import Path
 
 from cascade.events import (
     CALL_SCOPED_FIELDS,
+    CASCADE_ONLY_EVENT_TYPES,
     EVENT_SCHEMA_VERSION,
     FALLBACK_EVENT_TYPE,
     FALLBACK_TRIGGERS,
@@ -49,6 +51,63 @@ FIXTURES = json.loads(
         / "event-envelope.fixtures.json"
     ).read_text(encoding="utf8")
 )
+
+#: The one TS reader. Its cascade-only list is the list this writer must mirror.
+EVENT_ENVELOPE_TS = (
+    Path(__file__).resolve().parents[2]
+    / "voni"
+    / "src"
+    / "lib"
+    / "demo"
+    / "event-envelope.ts"
+)
+
+
+class CascadeOnlyEventTypeDriftTests(unittest.TestCase):
+    """``CASCADE_ONLY_EVENT_TYPES`` is a mirror, so a drift fails by name.
+
+    The Python tuple is a second copy of the TS reader's list by necessity (the
+    service does not import TypeScript), so this test is what keeps it honest:
+    a type added on either side is named here before it can be believed.
+    """
+
+    def ts_types(self) -> tuple[str, ...]:
+        source = EVENT_ENVELOPE_TS.read_text(encoding="utf8")
+        match = re.search(
+            r"export const CASCADE_ONLY_EVENT_TYPES\s*=\s*\[(.*?)\]\s*as const;",
+            source,
+            re.S,
+        )
+        if match is None:
+            self.fail(
+                f"cannot read CASCADE_ONLY_EVENT_TYPES from {EVENT_ENVELOPE_TS}; "
+                "the reader's declaration changed shape"
+            )
+        return tuple(re.findall(r'"([^"]+)"', match.group(1)))
+
+    def test_the_python_tuple_is_the_ts_readers_list(self):
+        python_types = CASCADE_ONLY_EVENT_TYPES
+        ts_types = self.ts_types()
+
+        missing = [name for name in ts_types if name not in python_types]
+        extra = [name for name in python_types if name not in ts_types]
+        self.assertEqual(
+            [],
+            missing,
+            "cascade-only event types the TS reader has and cascade.events does "
+            f"not: {missing}",
+        )
+        self.assertEqual(
+            [],
+            extra,
+            "cascade-only event types cascade.events has and the TS reader does "
+            f"not: {extra}",
+        )
+        self.assertEqual(
+            ts_types,
+            python_types,
+            "the two cascade-only lists carry the same names in a different order",
+        )
 
 
 def call_scoped(writer: EventWriter, **overrides: object) -> dict:
@@ -297,8 +356,13 @@ class FallbackEmissionTests(unittest.TestCase):
         self.assertEqual(event["subject"], SUBJECT)
 
         source = (Path(__file__).with_name("events.py")).read_text(encoding="utf8")
+        # The cascade-only mirror names this type too; it is not an emitter, so
+        # count the identifier outside that tuple.
+        mirror_start = source.index("CASCADE_ONLY_EVENT_TYPES = (")
+        mirror_end = source.index(")", mirror_start) + 1
+        without_mirror = source[:mirror_start] + source[mirror_end:]
         self.assertEqual(
-            source.count("FALLBACK_EVENT_TYPE"),
+            without_mirror.count("FALLBACK_EVENT_TYPE"),
             2,
             "one definition and one emission site; a second emitter is a review failure",
         )

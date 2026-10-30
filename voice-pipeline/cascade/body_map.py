@@ -51,7 +51,9 @@ entry is the one the call constructs its model client from. ``llm: []`` is the
 documented revert to the default Meta rung. More than one entry, a missing
 ``base_url``/``model``/``api_key`` or a field the entry cannot carry fails by
 name, before any vendor socket opens — a body whose override cannot be built is
-a visible call error, never a managed route.
+a visible call error, never a managed route. The entry's field rules live once,
+in :mod:`cascade.llm_override`, so this adapter and the client cannot disagree
+about what is constructible.
 
 This adapter refuses what it cannot *represent*: an unbound voice, an unknown
 language code, a missing prompt, a tool name the vendor would reject, an LLM
@@ -74,11 +76,12 @@ import hashlib
 import json
 import re
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any
-from urllib.parse import urlsplit
 
+from cascade import llm_override
+from cascade.llm_override import LlmOverride
 from cascade.voice_binding import LOCALES, VoiceBinding, bind_voice
 
 # A body path that is absent, or a field name that maps to nothing.
@@ -168,30 +171,6 @@ class UnknownLlmOverrideKeyError(LlmOverrideError):
             f'unknown key "{key}"; an LLM override carries only '
             "base_url, model, api_key and reasoning_effort",
         )
-
-
-@dataclass(frozen=True)
-class LlmOverride:
-    """One stored provider entry, server-side only.
-
-    ``api_key`` is a deployment credential: it is excluded from the
-    representation and from :meth:`to_document`, so it can reach the vendor's
-    authorization header and nothing else. The body is signed, so the key is
-    read from the signed body rather than from a browser frame.
-    """
-
-    base_url: str
-    model: str
-    api_key: str = field(repr=False)
-    reasoning_effort: str | None = None
-
-    def to_document(self) -> dict[str, str | None]:
-        """The artifact-safe shape: the key is never part of a document."""
-        return {
-            "base_url": self.base_url,
-            "model": self.model,
-            "reasoning_effort": self.reasoning_effort,
-        }
 
 
 class MissingSystemPromptError(BodyFieldError):
@@ -405,8 +384,9 @@ def _tools(path: str, value: object) -> tuple[dict[str, Any], ...]:
     return tuple(_function_tool(path, index, tool) for index, tool in enumerate(value))
 
 
-#: The keys a stored provider entry may carry (`LlmOverride` in body.ts).
-LLM_OVERRIDE_FIELDS = ("base_url", "model", "api_key", "reasoning_effort")
+#: The keys a stored provider entry may carry (`LlmOverride` in body.ts). The
+#: list itself lives with the one validator.
+LLM_OVERRIDE_FIELDS = llm_override.OVERRIDE_FIELDS
 
 
 def _llm(path: str, value: object) -> LlmOverride | None:
@@ -415,6 +395,8 @@ def _llm(path: str, value: object) -> LlmOverride | None:
     ``llm: []`` is the documented revert to the default Meta rung, so it is not
     an override. A second entry, an unknown key or a missing required field is
     refused by name; no value is echoed, because one of them is a credential.
+    The field rules themselves are :mod:`cascade.llm_override`'s, so the
+    adapter and the client cannot disagree about what is constructible.
     """
     if value is _MISSING or value is None:
         return None
@@ -435,36 +417,21 @@ def _llm(path: str, value: object) -> LlmOverride | None:
     if not isinstance(entry, Mapping):
         raise BodyFieldError(where, f"expected a model override object, got {type(entry).__name__}")
     unknown = sorted(set(entry) - set(LLM_OVERRIDE_FIELDS))
-    for key in unknown:
-        raise UnknownLlmOverrideKeyError(f"{where}.{key}", key)
-    required: dict[str, str] = {}
-    for name in ("base_url", "model", "api_key"):
-        raw = entry.get(name, _MISSING)
-        if raw is _MISSING or raw is None or not isinstance(raw, str) or not raw.strip():
-            raise MissingLlmOverrideFieldError(f"{where}.{name}", name)
-        required[name] = raw.strip()
-    if urlsplit(required["base_url"]).scheme not in ("http", "https"):
-        raise LlmOverrideError(
-            f"{where}.base_url",
-            f'the base URL "{required["base_url"]}" is not an absolute http(s) '
-            "URL, so no request can be built from it",
+    if unknown:
+        raise UnknownLlmOverrideKeyError(f"{where}.{unknown[0]}", unknown[0])
+    try:
+        return llm_override.validate_override(
+            base_url=entry.get("base_url", _MISSING),
+            model=entry.get("model", _MISSING),
+            api_key=entry.get("api_key", _MISSING),
+            reasoning_effort=entry.get("reasoning_effort"),
         )
-    reasoning = entry.get("reasoning_effort", _MISSING)
-    if reasoning is _MISSING or reasoning is None:
-        effort = None
-    elif not isinstance(reasoning, str):
-        raise LlmOverrideError(
-            f"{where}.reasoning_effort",
-            f"expected a string, got {type(reasoning).__name__}",
-        )
-    else:
-        effort = reasoning.strip() or None
-    return LlmOverride(
-        base_url=required["base_url"],
-        model=required["model"],
-        api_key=required["api_key"],
-        reasoning_effort=effort,
-    )
+    except llm_override.LlmOverrideInvalid as error:
+        if error.missing:
+            raise MissingLlmOverrideFieldError(
+                f"{where}.{error.field}", error.field
+            ) from None
+        raise LlmOverrideError(f"{where}.{error.field}", error.reason) from None
 
 
 def read_llm_override(body: Mapping[str, Any]) -> LlmOverride | None:
@@ -656,10 +623,6 @@ class CascadeBody:
         a missing setting: synthesis still speaks the bound voice's Locale.
         """
         return not self.speech_language_bias
-
-    @property
-    def has_llm_override(self) -> bool:
-        return self.llm is not None
 
     @property
     def has_greeting(self) -> bool:

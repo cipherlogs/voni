@@ -245,10 +245,10 @@ CALL_TOKEN_VERSION = 1
 #: signature construction). A token can never verify as an envelope.
 CALL_TOKEN_KIND = "call-token"
 
-#: The registry bound that supplies the token's lifetime. It is the same
-#: short-lived signed-material window the body envelope uses (ticket 04); the
-#: number is never restated here.
-CALL_TOKEN_TTL_BOUND = "envelope.ttl_ms"
+#: The registry bound that supplies the token's lifetime. The token has its own
+#: short-lived window (ticket 04); the body envelope's TTL is a different
+#: signed material and is never borrowed for it.
+CALL_TOKEN_TTL_BOUND = "call_token.ttl_ms"
 
 _HEX_DIGEST = 64
 
@@ -358,10 +358,6 @@ class CallAlreadyConnected(CallTokenError):
         )
 
 
-#: The published name for the same refusal; callers may catch either spelling.
-CallTokenInUse = CallAlreadyConnected
-
-
 @dataclass(frozen=True)
 class CallTokenClaims:
     """The verified claims of one call token. Never carries the token itself."""
@@ -419,12 +415,12 @@ def _token_identity(field: str, value: Any) -> str:
 def _token_ttl(ttl_ms: Any) -> int:
     if isinstance(ttl_ms, bool) or not isinstance(ttl_ms, (int, float)):
         raise MalformedCallToken(
-            "expires_at_ms", f"ttl_ms must be a positive whole number, got {ttl_ms!r}"
+            "ttl_ms", f"ttl_ms must be a positive whole number, got {ttl_ms!r}"
         )
     ttl = int(ttl_ms)
     if ttl != ttl_ms or ttl <= 0:
         raise MalformedCallToken(
-            "expires_at_ms", f"ttl_ms must be a positive whole number, got {ttl_ms!r}"
+            "ttl_ms", f"ttl_ms must be a positive whole number, got {ttl_ms!r}"
         )
     return ttl
 
