@@ -1,10 +1,11 @@
 """Ticket 130: probe which German voice ids the synthesis endpoint actually serves.
 
-German is open because ``juergen`` comes back ``422 voice_not_found`` from
-``/v1/speech``. The probe is the recorded evidence the owner needs before the
-re-cast: one request per candidate, and the response's own account of what it
-spoke (status, ``X-Request-Id``, ``X-TTS-Voice-Id``, ``X-TTS-Language``,
-``X-TTS-Model``) or the endpoint's parsed refusal.
+German was re-cast to ``jorg`` (the vendor's ``aai-jorg``) after ``juergen``
+came back ``422 voice_not_found`` from ``/v1/speech``; this probe is the
+recorded evidence that produced that choice. It issues one request per
+candidate and records the response's own account of what it spoke (status,
+``X-Request-Id``, ``X-TTS-Voice-Id``, ``X-TTS-Language``, ``X-TTS-Model``) or
+the endpoint's parsed refusal.
 
 The probe never binds a voice and never edits :mod:`cascade.voice_binding`. A
 successful candidate yields a *suggested* ``VoiceBinding`` line for the owner to

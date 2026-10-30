@@ -74,8 +74,8 @@ Manifest contract (exactly these fields; see the module headers for detail):
           "reason": "Clear, natural Spanish." }
       ]
     }],
-    "deferrals": [{ "subject": "juergen", "date": "2026-10-29",
-                    "reason": "German stays open: 422 voice_not_found." }]
+    "deferrals": [{ "subject": "jorg", "date": "2026-10-30",
+                    "reason": "German re-cast to jorg; W2 pack not recorded yet." }]
   }
 
 The six demo voices are always required. A missing subject is a block, not an

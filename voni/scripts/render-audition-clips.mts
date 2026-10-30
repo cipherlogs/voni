@@ -63,7 +63,7 @@ import {
 } from "../src/lib/demo/audition-clips";
 import { mp3Facts } from "../src/lib/demo/mp3-facts";
 import { referencePath, renderReference } from "../src/lib/demo/reference-render";
-import { collectSilentGreeting } from "../src/lib/voice/silent-greeting";
+import { collectSilentGreeting, GreetingSessionError } from "../src/lib/voice/silent-greeting";
 import { committedClipFor, regenerationProblems } from "../src/lib/demo/clip-regeneration";
 import { produceAuditionClip } from "./lib/audition-produce";
 import { hasFfmpeg } from "./lib/mp3-encode";
@@ -72,6 +72,7 @@ const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const ASSET_DIR = join(ROOT, AUDITION_ASSET_DIR);
 const SOURCE_DIR = join(ROOT, AUDITION_SOURCE_DIR);
 const MANIFEST = join(ROOT, AUDITION_MANIFEST_PATH);
+const CASCADE_CLIP_DIR = "public/voices/cascade";
 
 const USAGE = `Usage: npm run voice:clips -- [options]
 
@@ -122,6 +123,53 @@ async function token(): Promise<string> {
   return ((await response.json()) as { token: string }).token;
 }
 
+/**
+ * The vendor's Voice Agent API serves the older voice set; the newly generated
+ * TTS voices (ticket 130's `jorg`) are refused with `session.error
+ * invalid_value` on `output.voice`. That voice's native render already exists
+ * as its committed cascade clip, so the preview is encoded from that same
+ * voice and line rather than fabricated or borrowed.
+ */
+function agentDoesNotServe(error: unknown): boolean {
+  return (
+    error instanceof GreetingSessionError &&
+    error.code === "invalid_value" &&
+    error.param === "output.voice"
+  );
+}
+
+async function nativeSource(
+  clip: ReturnType<typeof auditionClipFor>,
+  sessionToken: string | null,
+): Promise<{ path: string; source: "agent-session" | "cascade-clip" }> {
+  try {
+    const rendered = await renderReference({
+      voiceId: clip.voiceId,
+      dir: SOURCE_DIR,
+      synth: async ({ voiceId: voice, text }) =>
+        collectSilentGreeting({
+          voiceId: voice,
+          text,
+          // `renderReference` only calls the synth on a cache miss, so the token
+          // above exists exactly when this branch is reached.
+          token: sessionToken ?? (await token()),
+        }),
+    });
+    return { path: rendered.path, source: "agent-session" };
+  } catch (error) {
+    if (!agentDoesNotServe(error)) throw error;
+    const cascade = join(ROOT, CASCADE_CLIP_DIR, `${clip.voiceId}.wav`);
+    if (!existsSync(cascade)) {
+      throw new Error(
+        `the Voice Agent API does not serve "${clip.voiceId}" and its cascade clip ` +
+          `${CASCADE_CLIP_DIR}/${clip.voiceId}.wav is missing: render it with ` +
+          `voice-pipeline/scripts/render_clips.py --voice ${clip.voiceId}`,
+      );
+    }
+    return { path: cascade, source: "cascade-clip" };
+  }
+}
+
 async function renderVoice(voiceId: string, opts: { force: boolean }): Promise<AuditionClipRecord> {
   const clip = auditionClipFor(voiceId);
   const assetPath = join(ROOT, clip.asset);
@@ -138,20 +186,9 @@ async function renderVoice(voiceId: string, opts: { force: boolean }): Promise<A
     ? null
     : await token();
 
-  const rendered = await renderReference({
-    voiceId: clip.voiceId,
-    dir: SOURCE_DIR,
-    synth: async ({ voiceId: voice, text }) =>
-      collectSilentGreeting({
-        voiceId: voice,
-        text,
-        // `renderReference` only calls the synth on a cache miss, so the token
-        // above exists exactly when this branch is reached.
-        token: sessionToken ?? (await token()),
-      }),
-  });
+  const native = await nativeSource(clip, sessionToken);
 
-  const produced = produceAuditionClip({ sourceWav: rendered.path, output: assetPath });
+  const produced = produceAuditionClip({ sourceWav: native.path, output: assetPath });
   const record: AuditionClipRecord = {
     voice: clip.voiceId,
     locale: clip.locale,
@@ -169,6 +206,7 @@ async function renderVoice(voiceId: string, opts: { force: boolean }): Promise<A
       referenceIntegratedLufs: voiceLevelMeasurement(clip.voiceId)?.integratedLufs ?? null,
     },
     generatedOn: today(),
+    source: native.source,
   };
 
   const problems = auditionClipProblems(clip, record);
@@ -186,7 +224,8 @@ function emptyManifest(): AuditionManifest {
     command: "cd voni && npm run voice:clips",
     source:
       "silent-greeting Voice Agent session (output.voice only: no output.volume, no gain, no limiter), " +
-      "the same payload the agent speaks through",
+      "the same payload the agent speaks through; for a voice the Voice Agent API does not serve, " +
+      "that voice's committed cascade clip supplies the native audio",
     bitrateKbps: AUDITION_BITRATE_KBPS,
     minSurvivingBitrateKbps: MIN_SURVIVING_BITRATE_KBPS,
     secondEncodeKbps: AUDITION_SECOND_ENCODE_KBPS,

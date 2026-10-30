@@ -137,7 +137,7 @@ test("voiceForLanguage keeps compatible voices, falls back otherwise", () => {
   assert.deepEqual(voiceForLanguage("it", "giovanni"), { voiceId: "giovanni", changed: false });
   assert.deepEqual(voiceForLanguage("en", "giovanni"), { voiceId: "anna", changed: true });
   const de = voiceForLanguage("de", "anna");
-  assert.equal(de.voiceId, "juergen");
+  assert.equal(de.voiceId, "jorg");
   assert.equal(de.changed, true);
 });
 

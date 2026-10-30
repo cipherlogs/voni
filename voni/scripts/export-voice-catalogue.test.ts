@@ -35,7 +35,7 @@ test("the catalogue export is the app's own VOICES, not a second table", () => {
     VOICES.filter((voice) => voice.languageCode === "de").map((voice) => voice.id),
   );
   assert.ok(
-    document.voices.some((voice) => voice.id === "juergen" && voice.languageCode === "de"),
-    "the unbound German row is present in the export the probe reads",
+    document.voices.some((voice) => voice.id === "jorg" && voice.languageCode === "de"),
+    "the chosen German voice is present in the export the probe reads",
   );
 });

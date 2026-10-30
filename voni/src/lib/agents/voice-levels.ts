@@ -41,11 +41,13 @@
  * decision is `volume = 100` for every measured voice: unity is the measured
  * decision, not a default that skipped the measurement.
  *
- * `juergen` is the exception the vendor's TTS endpoint does not serve
- * (`422 voice_not_found`), so it has no measured reference. Its registry entry
- * is explicit and `measured: false`, not a silent 100: `voiceOutputVolume`
- * reads the named `UNMEASURED_VOICE_OUTPUT_VOLUME`, and the gate reports it
- * unmeasured — an unmeasured voice never passes on a default (ticket 21).
+ * `juergen` was the exception the vendor's TTS endpoint does not serve
+ * (`422 voice_not_found`); it has no measured reference, so it was a named
+ * `measured: false` row rather than a silent 100. German was re-cast to `jorg`
+ * (ticket 130), whose native reference is measured, so the registry now covers
+ * every offered voice and the retired id no longer has a level row. The
+ * unmeasured mechanism remains: a future voice the endpoint cannot serve is a
+ * visible row, never a default that skipped the measurement (ticket 21).
  */
 
 /**
@@ -77,10 +79,10 @@ export type VoiceLevelMeasurement = {
 };
 
 /**
- * Measured 2026-10-29, produced by `npm run voice:levels`. Values are the
- * evidence file's, rounded to 2 decimals so the registry and the committed
- * record can be compared exactly; the test in `voices.test.ts` fails if either
- * side moves alone.
+ * Measured 2026-10-29 (German's `jorg` on 2026-10-30), produced by
+ * `npm run voice:levels`. Values are the evidence file's, rounded to 2 decimals
+ * so the registry and the committed record can be compared exactly; the test in
+ * `voices.test.ts` fails if either side moves alone.
  */
 export const MEASURED_VOICE_LEVELS: readonly VoiceLevelMeasurement[] = Object.freeze([
   { voice: "alba", locale: "en", integratedLufs: -21.78, truePeakDbtp: -5.93, volume: 100 },
@@ -92,6 +94,7 @@ export const MEASURED_VOICE_LEVELS: readonly VoiceLevelMeasurement[] = Object.fr
   { voice: "giovanni", locale: "it", integratedLufs: -25.56, truePeakDbtp: -2.24, volume: 100 },
   { voice: "jane", locale: "en", integratedLufs: -20.57, truePeakDbtp: -3.39, volume: 100 },
   { voice: "jean", locale: "en", integratedLufs: -21.89, truePeakDbtp: -5.2, volume: 100 },
+  { voice: "jorg", locale: "de", integratedLufs: -24.93, truePeakDbtp: -5.96, volume: 100 },
   { voice: "lola", locale: "es", integratedLufs: -23.75, truePeakDbtp: -6.58, volume: 100 },
   { voice: "mary", locale: "en", integratedLufs: -21.03, truePeakDbtp: -3.19, volume: 100 },
   { voice: "michael", locale: "en", integratedLufs: -22.63, truePeakDbtp: -2.77, volume: 100 },
@@ -103,19 +106,11 @@ export const MEASURED_VOICE_LEVELS: readonly VoiceLevelMeasurement[] = Object.fr
 /**
  * The voices with no measured reference, recorded as first-class rows so the
  * registry and every report say "unmeasured" instead of showing a bare 100.
+ * Empty today: every offered voice, German's `jorg` included, is measured.
  */
-export const UNMEASURED_VOICE_LEVELS: readonly VoiceLevelMeasurement[] = Object.freeze([
-  {
-    voice: "juergen",
-    locale: "de",
-    integratedLufs: null,
-    truePeakDbtp: null,
-    volume: UNMEASURED_VOICE_OUTPUT_VOLUME,
-    measured: false,
-    unmeasuredReason:
-      "vendor /v1/speech did not serve a measurable reference: 422 voice_not_found",
-  },
-].map((row) => Object.freeze(row)));
+export const UNMEASURED_VOICE_LEVELS: readonly VoiceLevelMeasurement[] = Object.freeze<
+  VoiceLevelMeasurement[]
+>([]);
 
 /** Every offered voice's level decision: measured rows first, then the named gaps. */
 export const VOICE_LEVEL_REGISTRY: readonly VoiceLevelMeasurement[] = Object.freeze([

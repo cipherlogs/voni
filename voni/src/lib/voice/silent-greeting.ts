@@ -46,6 +46,19 @@ export type GreetingSocket = {
 
 export const GREETING_TIMEOUT_MS = 25_000;
 
+/** The vendor refused the session itself (e.g. a voice it does not serve). */
+export class GreetingSessionError extends Error {
+  readonly code: string | null;
+  readonly param: string | null;
+
+  constructor(message: string, code: string | null, param: string | null) {
+    super(message);
+    this.name = "GreetingSessionError";
+    this.code = code;
+    this.param = param;
+  }
+}
+
 /**
  * Speak `text` in `voiceId` and return the raw reply audio (PCM16 mono at the
  * session's default 24 kHz). The sockets are injected so a unit test can prove
@@ -73,8 +86,24 @@ export async function collectSilentGreeting(opts: {
         socket.send(JSON.stringify(silentGreetingSession({ voiceId: opts.voiceId, text: opts.text })));
       });
       socket.addEventListener("message", (event) => {
-        const message = JSON.parse(String(event.data)) as { type?: string; data?: string };
+        const message = JSON.parse(String(event.data)) as {
+          type?: string;
+          data?: string;
+          code?: string;
+          message?: string;
+          param?: string;
+        };
         if (message.type === "reply.audio" && message.data) chunks.push(Buffer.from(message.data, "base64"));
+        if (message.type === "session.error") {
+          clearTimeout(timer);
+          reject(
+            new GreetingSessionError(
+              message.message ?? "the session was refused",
+              message.code ?? null,
+              message.param ?? null,
+            ),
+          );
+        }
         if (message.type === "reply.done") {
           clearTimeout(timer);
           resolve(Buffer.concat(chunks));

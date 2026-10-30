@@ -26,13 +26,17 @@ the same drift, so a greeting change cannot quietly leave a stale preview.
   is never a different sentence and never a fallback to English.
 - **The voice's own Locale.** A voice speaks exactly one Locale
   ([CONTEXT.md](../../../CONTEXT.md), *Voice binding*). The ten English voices
-  are English clips; `lola` is Spanish, `estelle` French, `juergen` German,
+  are English clips; `lola` is Spanish, `estelle` French, `jorg` German,
   `giovanni` Italian, `rafael` Portuguese.
 - **The same source the agent speaks through.** A silent-greeting Voice Agent
   session (`src/lib/voice/silent-greeting.ts`) with the voice and the greeting
   as its only output configuration. The session's own confirmation shows
   `output.volume: null`; there is no gain, limiter or normalisation anywhere in
   the path. The native PCM render is written under `.voice-clips/` (gitignored).
+  A voice the Voice Agent API does not serve (the new TTS generation, e.g.
+  `jorg`) is refused with `session.error invalid_value`; that voice's committed
+  cascade clip supplies the same native audio, and its evidence row records
+  `source: "cascade-clip"`.
 - **Native level.** The encoder only changes format. The committed MP3's
   measured level is checked against the native render it came from; the deleted
   client gain table moved voices by up to 12 dB, so a baked-in copy cannot pass.
@@ -88,20 +92,20 @@ The frame facts and the evidence record need no decoder and no credential. The
 stronger leg decodes the committed bytes and re-measures their level (catching
 a swapped file); it needs ffmpeg, which is a named skip locally and a named
 failure in CI. A preview whose Locale or level does not match its voice fails by
-name — `voice "juergen" (de): speaks English, not its own Locale de`.
+name — `voice "estelle" (fr): speaks English, not its own Locale fr`.
 
 ## Pending voices
 
 A voice the generator cannot render gets **no audio** — no placeholder, no
 stale file, no silence. `clips.json` lists it under `pending` with the reason
-and the exact command to finish it:
+and the exact command to finish it. No voice is pending today; the shape is:
 
 ```json
 {
-  "voice": "juergen",
-  "locale": "de",
+  "voice": "<voice>",
+  "locale": "<locale>",
   "reason": "…",
-  "command": "cd voni && npm run voice:clips -- --voice juergen"
+  "command": "cd voni && npm run voice:clips -- --voice <voice>"
 }
 ```
 

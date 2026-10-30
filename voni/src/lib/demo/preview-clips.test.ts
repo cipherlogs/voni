@@ -123,7 +123,7 @@ test("a wrong-Locale preview and a wrong-level preview fail by name", () => {
   const patched: AuditionManifest = {
     ...base,
     clips: base.clips.map((record) => {
-      if (record.voice === "juergen") {
+      if (record.voice === "jorg") {
         // The old hand capture: a German voice greeting in English.
         return {
           ...record,
@@ -150,17 +150,17 @@ test("a wrong-Locale preview and a wrong-level preview fail by name", () => {
   const gate = previewGate({ manifest: patched, readAsset, measurement: PURE_MP3 });
   assert.deepEqual(
     gate.failures.map((failure) => failure.voiceId).sort(),
-    ["juergen", "lola"],
+    ["jorg", "lola"],
     `only the two defective previews fail: ${gate.failures
       .map((failure) => failure.problems.join(" | "))
       .join(" ;; ")}`,
   );
 
-  const german = gate.failures.find((failure) => failure.voiceId === "juergen");
-  assert.ok(german, "juergen is named as a failure");
+  const german = gate.failures.find((failure) => failure.voiceId === "jorg");
+  assert.ok(german, "jorg is named as a failure");
   assert.ok(
     german.problems.some((problem) =>
-      /voice "juergen" \(de\): speaks English, not its own Locale de/.test(problem),
+      /voice "jorg" \(de\): speaks English, not its own Locale de/.test(problem),
     ),
     `the wrong Locale fails by name: ${german.problems.join(" | ")}`,
   );

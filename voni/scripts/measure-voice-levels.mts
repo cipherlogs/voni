@@ -47,11 +47,24 @@ const LANGUAGE_NAMES: Record<string, string> = {
 const USAGE = `Usage: npm run voice:levels -- [options]
 
   --takes <n>       renders per voice, default 3 (median is recorded)
-  --voice <id>      only this catalog voice
+  --voice <id>      only this catalog voice (its row is replaced; the rest stay)
   --out <path>      evidence file, default evidence/voice-levels/levels.json
   --force           replace an existing record (a new evidence record)
 
 Needs ASSEMBLYAI_API_KEY. Writes evidence, never the level registry.`;
+
+type EvidenceRow = { voice: string } & Record<string, unknown>;
+
+type EvidenceDocument = {
+  schemaVersion: number;
+  measuredOn: string;
+  method: string;
+  measuredWith: string;
+  reference: Record<string, unknown>;
+  decision: string;
+  voices: EvidenceRow[];
+  unmeasured: EvidenceRow[];
+};
 
 function arg(name: string): string | undefined {
   const index = process.argv.indexOf(name);
@@ -106,8 +119,8 @@ async function main(): Promise<void> {
   const referenceFloor = analyseLevel(decodeWav(readReferenceFloor()));
   if (!referenceFloor.measured) fail("the committed vendor floor has no measurable level");
 
-  const measured: Array<Record<string, unknown>> = [];
-  const unmeasured: Array<Record<string, unknown>> = [];
+  const measured: EvidenceRow[] = [];
+  const unmeasured: EvidenceRow[] = [];
 
   for (const voice of VOICES) {
     if (only && voice.id !== only) continue;
@@ -178,7 +191,7 @@ async function main(): Promise<void> {
     );
   }
 
-  const record = {
+  const record: EvidenceDocument = {
     schemaVersion: 1,
     measuredOn: today(),
     method:
@@ -201,9 +214,44 @@ async function main(): Promise<void> {
     unmeasured,
   };
 
+  const document = only === undefined ? record : mergeOneVoice(out, only, record);
   mkdirSync(dirname(out), { recursive: true });
-  writeFileSync(out, `${JSON.stringify(record, null, 2)}\n`);
-  console.log(`\nwrote ${out} (${measured.length} measured, ${unmeasured.length} unmeasured)`);
+  writeFileSync(out, `${JSON.stringify(document, null, 2)}\n`);
+  console.log(
+    `\nwrote ${out} (${document.voices.length} measured, ${document.unmeasured.length} unmeasured)`,
+  );
+}
+
+/**
+ * A `--voice` run re-measures one catalogue voice; it is not a fresh evidence
+ * set. Keep every other catalogue voice's committed row and prune rows for ids
+ * the catalogue no longer offers (a retired voice), so a single-voice run
+ * cannot silently delete fifteen measured references.
+ */
+function mergeOneVoice(out: string, only: string, record: EvidenceDocument): EvidenceDocument {
+  if (!existsSync(out)) return record;
+  let previous: EvidenceDocument;
+  try {
+    previous = JSON.parse(readFileSync(out, "utf8")) as EvidenceDocument;
+  } catch {
+    fail(`${out} is not readable evidence; a one-voice run cannot preserve its rows`);
+  }
+  const catalogue = VOICES.map((voice) => voice.id);
+  const order = new Map(catalogue.map((voice, index) => [voice, index]));
+  const keep = (rows: EvidenceRow[] | undefined) =>
+    (Array.isArray(rows) ? rows : []).filter(
+      (row) => row.voice !== only && order.has(row.voice),
+    );
+  const byCatalogueOrder = (row: EvidenceRow) => order.get(row.voice) ?? catalogue.length;
+  return {
+    ...record,
+    voices: [...keep(previous.voices), ...record.voices].sort(
+      (left, right) => byCatalogueOrder(left) - byCatalogueOrder(right),
+    ),
+    unmeasured: [...keep(previous.unmeasured), ...record.unmeasured].sort(
+      (left, right) => byCatalogueOrder(left) - byCatalogueOrder(right),
+    ),
+  };
 }
 
 function readReferenceFloor(): Uint8Array {

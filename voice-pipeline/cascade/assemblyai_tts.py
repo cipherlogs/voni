@@ -721,7 +721,7 @@ class AssemblyAIStreamingTTS(StreamingTTS):
     def url(self) -> str:
         """The connect URL: binding voice and language, transport rate and codec."""
         params = [
-            ("voice_id", self.binding.voice_id),
+            ("voice_id", self.binding.vendor_voice_id),
             ("language", self.binding.language),
             ("sample_rate", str(self.format.sample_rate)),
             ("encoding", self.format.encoding),
@@ -776,7 +776,7 @@ class AssemblyAIStreamingTTS(StreamingTTS):
         )
         self.begin_mismatches = echo_mismatches(
             frame,
-            voice_id=self.binding.voice_id,
+            voice_id=self.binding.vendor_voice_id,
             language=self.binding.language,
             sample_rate=self.format.sample_rate,
             encoding=self.format.encoding,

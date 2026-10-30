@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generatedOn": "2026-10-29",
+  "generatedOn": "2026-10-30",
   "command": "cd voni && npm run voice:packs",
   "source": "evidence/audition-clips/clips.json",
   "counts": {
@@ -154,15 +154,15 @@
       "pack": "evidence/reviewer-packs/lola.json"
     },
     {
-      "voice": "juergen",
+      "voice": "jorg",
       "locale": "de",
-      "asset": "public/voices/juergen.mp3",
-      "url": "/voices/juergen.mp3",
-      "recordingSha256": "763d97ffe04cfeb5003eb4c68bf987f79312871e21f1ffdd4463584efab22993",
+      "asset": "public/voices/jorg.mp3",
+      "url": "/voices/jorg.mp3",
+      "recordingSha256": "b1b3df35426bf7540cc472d9d61b894a2e621481259bb2110d6439ebc763406f",
       "status": "pending",
       "reviewer": null,
       "reviewedOn": null,
-      "pack": "evidence/reviewer-packs/juergen.json"
+      "pack": "evidence/reviewer-packs/jorg.json"
     },
     {
       "voice": "rafael",

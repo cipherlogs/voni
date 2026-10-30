@@ -17,9 +17,10 @@ The pieces are the call's own, not copies:
 - the audio is :func:`cascade.reference_render.render_reference`'s verbatim
   synthesis bytes, so no gain, limiter or normalisation can enter the file.
 
-An open Locale is a named row, never a clip: ``juergen``/de is in the catalogue
-but unbound at the vendor, so the plan records the binding's own refusal and no
-asset is planned, written or kept.
+An open Locale is a named row, never a clip: the pre-re-cast German id
+(``juergen``) is refused by the binding table, so if it were ever named the plan
+would record that refusal and no asset would be planned, written or kept. German
+itself is bound to ``jorg`` (ticket 130), so the six demo voices now render.
 
 The manifest pins what a clip is, so ``--check`` can prove it later without a
 key: endpoint, model, voice, vendor language, Locale, the exact line and its
@@ -56,7 +57,7 @@ from cascade.voice_binding import (
     bind_voice,
 )
 
-#: The Locales this demo speaks. One clip Locale each; German is open today.
+#: The Locales this demo speaks. One clip Locale each; every one is bound.
 CLIP_LOCALES: tuple[str, ...] = ("en", "es", "fr", "de", "it", "pt")
 
 #: The app's demo subjects, in its own order. Restated from
@@ -66,7 +67,7 @@ DEMO_VOICE_IDS: tuple[str, ...] = (
     "anna",
     "lola",
     "estelle",
-    "juergen",
+    "jorg",
     "giovanni",
     "rafael",
 )

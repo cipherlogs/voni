@@ -11,7 +11,7 @@
       "language": "English",
       "sample_rate": 24000,
       "encoding": "pcm_s16le",
-      "voice_id": "anna",
+      "voice_id": "aai-anna",
       "model": "assemblyai-tts-1",
       "word_boundaries": true,
       "limits": {

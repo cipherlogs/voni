@@ -50,9 +50,9 @@
  *     }
  *   ],
  *   "deferrals": [                         // explicit, dated, for a subject that
- *     { "subject": "juergen",              //   has NO recorded evidence; never a
- *       "date": "2026-10-29",              //   waiver for a failed subject
- *       "reason": "German stays open: 422 voice_not_found (ticket 130)." }
+ *     { "subject": "jorg",                 //   has NO recorded evidence; never a
+ *       "date": "2026-10-30",              //   waiver for a failed subject
+ *       "reason": "German re-cast to jorg; W2 pack not recorded yet (ticket 130)." }
  *   ]
  * }
  * ```

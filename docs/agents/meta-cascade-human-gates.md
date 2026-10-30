@@ -52,13 +52,25 @@ with a structurally large term needs an explicit decision, not silence.
 
 **Needs:** `ASSEMBLYAI_API_KEY` and your ear.
 
+The German slot is **`jorg`** in the app catalogue, the vendor's **`aai-jorg`**.
+The catalogue id stays bare: the TTS path prefixes it (`voice_binding.vendor_voice_id`),
+exactly as `voni/scripts/measure-voice-levels.mts` does. The pre-re-cast
+`juergen` (`aai-juergen` = `422 voice_not_found`) remains a named **historical
+unbound** row, so naming it is refused by name and it can never become a silent
+fallback or be re-cast to another Locale.
+
+Evidence so far (machine-recorded, not an audition): probe results in
+`.scratch/meta-cascade/evidence/2026-10-30-m00-and-german.md` (`aai-gunther`,
+`aai-jorg`, `aai-magdalena` render German; `juergen`/`aai-juergen` 422); native
+level for `jorg` is −24.93 LUFS (`-5.96 dBTP`, volume 100) in
+`voni/evidence/voice-levels/levels.json`; the product clip is
+`voni/public/voices/cascade/jorg.wav` with its row in
+`voni/evidence/cascade-clips/clips.json`.
+
 Probe candidates against `POST https://tts.us.assemblyai.com/v1/speech` with
 `voice-pipeline/scripts/probe_voices.py` (or `voni/scripts/measure-voice-levels.mts`).
-It probes `juergen`, `aai-juergen`, any `--voice-id` you add, and the catalogue
-`de` ids via `--catalogue-de`. `juergen` currently returns `422
-voice_not_found`; the AssemblyAI catalogue also lists `aai-gunther`,
-`aai-jorg` and `aai-magdalena` as German, which the app catalogue does not yet
-carry. Probe them explicitly:
+It defaults to `juergen`/`aai-juergen` (the historical 422 pair), any
+`--voice-id` you add, and the catalogue `de` ids via `--catalogue-de`:
 
 ```
 cd voni && npm run voice:catalogue > /tmp/de-voices.json
@@ -72,14 +84,13 @@ cd ../voice-pipeline
 The script records the HTTP result per candidate and saves any rendered WAV for
 audition; it prints a suggested binding but never edits `voice_binding.py`.
 
-If one renders: bind it in `voice-pipeline/cascade/voice_binding.py`, render its
-clip (`voice-pipeline/scripts/render_clips.py`), and audition it.
-If none: re-cast to a catalogue voice declared German, audition, record the
-reviewer and date. If no German voice can be bound, German stays **open** —
-not beta, not dropped, not re-cast to another Locale.
-
-Record in ticket 130: candidate ids, HTTP results, the bound id, reviewer,
-date, and the retired old clip.
+The remaining human work on 130 is **the owner's audition** of
+`/voices/cascade/jorg.wav` and the managed preview `/voices/jorg.mp3` (rendered
+from jorg's committed cascade clip, because the Voice Agent API does not serve
+`jorg`; its evidence row records `source: "cascade-clip"`), plus reviewer and
+date. Do not record an audition, verdict or signature on the owner's behalf. If
+the owner rejects `jorg`, German returns to an open Locale — not beta, not
+dropped, not re-cast to another Locale.
 
 ## 134 — Cascade audition verdict
 

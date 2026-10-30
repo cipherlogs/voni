@@ -17,7 +17,7 @@ import type { WebsiteState } from "./website";
 export const VONI_AGENT_ID = "voni";
 
 /** The picker: one voice per spoken language, English first. */
-export const DEMO_VOICE_IDS = ["anna", "lola", "estelle", "juergen", "giovanni", "rafael"] as const;
+export const DEMO_VOICE_IDS = ["anna", "lola", "estelle", "jorg", "giovanni", "rafael"] as const;
 
 /**
  * The opening beat, per output language. ⚠️ Written, not machine-translated,

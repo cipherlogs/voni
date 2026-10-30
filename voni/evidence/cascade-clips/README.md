@@ -36,11 +36,11 @@ python scripts/render_clips.py --check --strict  # fail while a Locale is open
 
 ## Open and blocked voices
 
-`juergen`/de is an **open Locale**: the catalogue offers the voice, the vendor
-does not serve it (`422 voice_not_found`), so the plan keeps a named open row
-with no clip. It is never re-cast to a voice bound to another Locale and never
-dropped; ticket 130 owns the re-cast. `/de` therefore blocks cutover and
-`--check --strict` exits non-zero.
+German is bound to `jorg` (the vendor's `aai-jorg`) since the ticket-130
+re-cast; the pre-re-cast `juergen` is a named historical unbound row
+(`422 voice_not_found`), so naming it is refused by name rather than falling
+through to another voice. It is not a demo subject and keeps no clip: the old
+German asset is retired, never a silent fallback.
 
 A bound voice whose render fails today gets a **blocker row** with the reason
 and the exact command, and its old asset is removed. Without
@@ -78,7 +78,8 @@ every preview:
   a silent swap, never a preview the clip test checked);
 - a preview whose bytes no longer match its recorded sha256 fails by name;
 - a preview whose Locale or level disagrees with its voice fails by name;
-- an open Locale (`juergen`/de) has no preview URL and keeps no asset.
+- an open Locale has no preview URL and keeps no asset; the retired German id
+  is not a subject, so it can never borrow `jorg`'s preview.
 
 The managed picker's `public/voices/<voice>.mp3` is untouched. The
 `voice-preview` route's old claim that the vendor offers no standalone synthesis

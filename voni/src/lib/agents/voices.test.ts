@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { VOICES, getVoice } from "./voices";
 import {
   MEASURED_VOICE_LEVELS,
+  UNMEASURED_VOICE_LEVELS,
   UNMEASURED_VOICE_OUTPUT_VOLUME,
   voiceLevelMeasurement,
   voiceOutputVolume,
@@ -105,7 +106,7 @@ test("the registry and the committed evidence are the same measurement", () => {
   );
 });
 
-test("an unmeasured voice is a visible registry row, never a silent 100", () => {
+test("an unmeasured voice would be a visible registry row, never a silent 100", () => {
   const committed = evidence();
   const measuredIds = new Set(committed.voices.map((row) => row.voice));
   for (const row of committed.unmeasured) {
@@ -115,7 +116,6 @@ test("an unmeasured voice is a visible registry row, never a silent 100", () => 
     assert.equal(registered.measured, false, `${row.voice} is visibly unmeasured`);
     assert.equal(registered.integratedLufs, null);
     assert.equal(registered.truePeakDbtp, null);
-    assert.match(registered.unmeasuredReason ?? "", /422 voice_not_found/);
     assert.equal(
       voiceOutputVolume(row.voice),
       row.volume,
@@ -123,17 +123,29 @@ test("an unmeasured voice is a visible registry row, never a silent 100", () => 
     );
   }
   assert.equal(
+    UNMEASURED_VOICE_LEVELS.length,
+    committed.unmeasured.length,
+    "the registry's named gaps are the evidence's named gaps",
+  );
+  assert.deepEqual(
+    UNMEASURED_VOICE_LEVELS,
+    [],
+    "every offered voice, German's jorg included, has a measured reference",
+  );
+  assert.equal(
     UNMEASURED_VOICE_OUTPUT_VOLUME,
     100,
     "the named default is the native reference, not a guess at a quieter level",
   );
-  // The one demo voice the vendor's TTS endpoint does not serve: it keeps the
-  // named default, and the row itself says the number is not a measurement.
-  const juergen = voiceLevelMeasurement("juergen");
-  assert.ok(juergen, "juergen is in the registry so a report can flag it");
-  assert.equal(juergen.measured, false);
-  assert.match(juergen.unmeasuredReason ?? "", /voice_not_found/);
-  assert.equal(voiceOutputVolume("juergen"), UNMEASURED_VOICE_OUTPUT_VOLUME);
+  const jorg = voiceLevelMeasurement("jorg");
+  assert.ok(jorg, "the chosen German voice has a registry row");
+  assert.equal(jorg.measured, true);
+  assert.equal(jorg.locale, "de");
+  assert.equal(
+    voiceLevelMeasurement("juergen"),
+    null,
+    "the retired German id has no level row; its unbound row lives in the binding table",
+  );
   assert.equal(voiceLevelMeasurement("not-a-voice"), null, "an unknown voice has no row");
 });
 

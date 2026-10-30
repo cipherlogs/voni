@@ -16,8 +16,8 @@
  * `run history not supplied; last-two consecutive unverified`, never passed.
  *
  * The six demo voices are always required (the ticket's minimum). A demo voice
- * the vendor does not serve (German `juergen`) is not a cascade subject: it is
- * listed, and only a dated deferral keeps it from blocking. `--tenants <path>`
+ * with no supplied evidence is listed as missing and blocks unless a dated
+ * deferral covers it. `--tenants <path>`
  * lists every subject eligible under `routing=all`; each entry is
  * `{subject, locale, transport?}`. A subject missing from the manifest and not
  * deferred is a block, one failed subject blocks all, and a tenant's Locale and
