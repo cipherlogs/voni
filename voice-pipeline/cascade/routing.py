@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, replace
-from typing import Any, Callable, Literal, Mapping
+from typing import Any, Callable, Literal, Mapping, Protocol
 
 from cascade.store import DurableStore, StoredDocument, StoreUnavailable
 
@@ -73,6 +73,32 @@ class RoutingSwitchCorrupt(RuntimeError):
 
 class RoutingSwitchUnchanged(ValueError):
     """The requested mode is already the stored mode, so there is nothing to record."""
+
+
+class BudgetSnapshot(Protocol):
+    """The daily counter's read view, as this module needs it (ticket 102).
+
+    Structural on purpose: routing must not import the counter and create a
+    second money authority. ``routing_refusal`` is the counter's own sentence
+    for a new call, and it is empty only while the day is known and below the
+    routing line.
+    """
+
+    @property
+    def would_route_managed(self) -> bool:
+        """Whether a new call must route managed."""
+
+    @property
+    def routing_refusal(self) -> str:
+        """Why a new call may not cascade, or ``""`` when it may."""
+
+
+class BudgetLine(Protocol):
+    """One durable day bucket, read before a new call's first frame."""
+
+    async def snapshot(self, *, at: float | None = None) -> BudgetSnapshot:
+        """Read today's durable state; an outage raises, it never reads zero."""
+
 
 
 def _check_mode(mode: object) -> RoutingMode:
@@ -478,15 +504,26 @@ class RoutingSwitch:
         return record
 
     async def decide(
-        self, subject: CallSubject, *, refusal: str = ""
+        self,
+        subject: CallSubject,
+        *,
+        refusal: str = "",
+        budget: BudgetLine | None = None,
     ) -> RoutingDecision:
         """Read the switch exactly once and freeze one new call's decision.
 
         The returned object is the snapshot the call carries: no later flip can
         change it. An unreadable switch routes managed, because a call must
         never open sockets on a switch whose value is unknown.
+
+        ``budget`` is ticket 102's daily counter. When one is passed, the day is
+        consulted in the same pre-first-frame decision, so the 80% line moves
+        this call and never a call already running. A counter read that fails
+        routes managed: an unknown day's spend is never read as zero and never
+        as permission to cascade.
         """
         decided_at = self._now()
+        budget_refusal = await self._budget_refusal(subject, budget)
         try:
             record = await self.read()
         except RoutingSwitchMissing:
@@ -516,10 +553,32 @@ class RoutingSwitch:
         return decide(
             record.mode,
             subject,
-            refusal=refusal,
+            refusal=refusal or budget_refusal,
             record_version=record.record_version,
             decided_at=decided_at,
         )
+
+    async def _budget_refusal(
+        self, subject: CallSubject, budget: BudgetLine | None
+    ) -> str:
+        """The day's own reason, or the named reason the day is unknown."""
+        if budget is None:
+            return ""
+        try:
+            snapshot = await budget.snapshot()
+        except Exception as exc:  # a store outage is not a zero-spend day
+            return (
+                f"the daily counter is unreadable ({type(exc).__name__}: {exc}); "
+                "a new call routes managed because an unknown day's spend is "
+                "never read as zero"
+            )
+        reason = snapshot.routing_refusal
+        if not isinstance(reason, str):
+            return (
+                "the daily counter returned no reason string; a new call routes "
+                "managed rather than cascading on an unknown answer"
+            )
+        return reason
 
 
 def _record_from_stored(stored: StoredDocument) -> RoutingRecord:

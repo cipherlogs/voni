@@ -11,8 +11,8 @@ Same scoreboard as the managed path so the P1 A/B is apples-to-apples:
 
 The cascade also records the marks its provider-owned turn boundary produces
 (speech_end, speech_complete, floor_take, greeting start/first audio/done,
-reconnect, cancelled). They are ordinary marks: first write wins and a
-duplicate is ignored.
+reconnect, cancelled) and the per-call ceiling's budget_stopped. They are
+ordinary marks: first write wins and a duplicate is ignored.
 
 The three cascade gaps are derived from the marks mapping alone through
 ``cascade_gaps()``; there is no second scoreboard and no gap is invented from
@@ -44,6 +44,7 @@ MARKS = (
     "greeting_done",
     "reconnect",
     "cancelled",
+    "budget_stopped",
 )
 
 # (row name, start mark, end mark). The cascade reports these three gaps; the
