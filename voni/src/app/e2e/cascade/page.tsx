@@ -42,6 +42,13 @@ const E2E_AGENT: AgentConfig = {
   conversationLanguage: "en",
 };
 
+/**
+ * The page reads the pipeline URL per request, so it cannot be prerendered.
+ * Next 16's Cache Components build wants that stated: without this, the
+ * throwaway candidate build fails on this route before the rig can run.
+ */
+export const instant = false;
+
 export default async function CascadeE2ePage() {
   if (process.env.VONI_INSTANT_TEST_BUILD !== "1") notFound();
   // Read the pipeline URL per request, not once at build: the candidate image

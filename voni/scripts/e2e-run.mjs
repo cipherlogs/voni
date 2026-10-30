@@ -301,11 +301,13 @@ async function modeBehavior() {
 }
 
 async function modeCascade() {
-  // Seam 4 (ticket 149): real Chromium + real client + real worklet against
-  // the deterministic fake worker, writing a real delivered capture. No
-  // vendor key, no vendor network. The runtime is compared with the registry
-  // bound `ci.browser_e2e_budget_s`; an open bound is a named blocker, never
-  // an invented timeout.
+  // Seam 2 (ticket 149, pointed at the public landing demo by ticket 16):
+  // real Chromium + the real demo client + the real mic path and worklet
+  // against the deterministic fake pipeline, writing a real delivered capture
+  // and the call's trace. The demo's one mint is faked in the browser, so no
+  // vendor key and no vendor network are involved. The runtime is compared
+  // with the registry bound `ci.browser_e2e_budget_s`; an open bound is a
+  // named blocker, never an invented timeout.
   const startedAt = Date.now();
   const fp = fingerprint();
   const cand = buildCandidate(fp);
