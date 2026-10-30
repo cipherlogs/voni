@@ -42,6 +42,25 @@ class KeyGateTests(unittest.TestCase):
         self.assertIn("owner-gated", text)
         self.assertNotIn("meta-test-key", text)
 
+    def test_the_cli_names_missing_keys_before_it_locks_or_dials(self):
+        def forbid(*_args, **_kwargs):
+            raise AssertionError("a key-gated refusal must not lock or dial")
+
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = run.main(
+                ["--live"],
+                env={},
+                acquire_lock=forbid,
+                live_runner=forbid,
+            )
+
+        self.assertEqual(code, 2)
+        self.assertEqual(out.getvalue(), "")
+        self.assertIn("META_API_KEY", err.getvalue())
+        self.assertIn("ASSEMBLYAI_API_KEY", err.getvalue())
+        self.assertIn("no live call was made", err.getvalue())
+
     def test_the_cli_catches_the_key_refusal_on_stderr_and_exits_two(self):
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
@@ -179,6 +198,25 @@ class KnownSumTests(unittest.TestCase):
         self.assertEqual(measurement.report.verdict, report.AT_RISK)
         self.assertEqual(measurement.report.unmeasured_names, ())
         self.assertEqual(measurement.exit_code(), 0)
+
+    def test_a_fully_measured_fail_run_exits_one(self):
+        clock = FakeClock(start=1_000.0)
+        measurement = live.run_live(
+            env={**KEYS, "META_REASONING_EFFORT": "low"},
+            stt_factory=lambda _key: ScriptedStt(
+                clock, speech_end_at_s=15.0, complete_at_s=15.1
+            ),
+            spark_factory=lambda _key: ScriptedSpark(clock),
+            tts_factory=lambda _key, _voice: ScriptedTts(clock),
+            clock=clock,
+            wait=clock.advance,
+            wall_clock=lambda: 1_700_000_000.0,
+        )
+
+        self.assertEqual(measurement.report.verdict, report.FAIL)
+        self.assertEqual(measurement.report.unmeasured_names, ())
+        self.assertEqual(measurement.degraded, ())
+        self.assertEqual(measurement.exit_code(), 1)
 
     def test_an_unmeasured_term_outranks_a_fail_verdict(self):
         clock = FakeClock(start=1_000.0)

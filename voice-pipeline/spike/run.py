@@ -7,8 +7,9 @@ the verdict is ``AT RISK`` with those terms named — never ``PASS`` and never a
 blank.
 
 ``python -m spike.run --live`` is the owner-gated measurement (spec M0 and
-ticket 151). The live runner refuses by name before a socket when a key is
-missing; the CLI catches that refusal. It takes the shared timing lock for the
+ticket 151). The CLI names every missing key before it takes the lock or dials,
+and the live runner refuses by name too; the CLI catches that refusal. It takes
+the shared timing lock for the
 whole run and measures terms 1-4 through the live transports in
 :mod:`spike.live`. A failed leg stays unmeasured with its real reason; the run
 never records a gate verdict for the owner.
@@ -134,6 +135,13 @@ def _live_main(
     acquire_lock: Callable[..., Any] | None = None,
 ) -> int:
     environment = os.environ if env is None else env
+
+    # Name every missing key before touching the lock: a key-less run is a key
+    # refusal, never "the lock is held by someone else".
+    missing = live.missing_keys(environment)
+    if missing:
+        print(live.MissingKeysError(missing), file=sys.stderr)
+        return 2
 
     acquire = acquire_lock or acquire_timing_lock
     try:
