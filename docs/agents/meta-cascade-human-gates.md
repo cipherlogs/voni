@@ -21,7 +21,7 @@ below remain for reproducibility; do not record a PASS. See ticket 14 and
 `.scratch/meta-cascade/evidence/2026-10-30-m00-and-german.md`.
 
 **Needs:** `META_API_KEY`, `ASSEMBLYAI_API_KEY`, `AI_GATEWAY_API_KEY`.
-Use the app's funded AssemblyAI key in `voni/.dev.vars`; a stale key in `.env`
+Use the app's funded AssemblyAI key in `voni/.env.local`; a stale key in `.env`
 returns HTTP 402 `insufficient_funds` and is not a voice or latency result.
 
 ```

@@ -15,7 +15,7 @@
 ## Comments
 
 **2026-10-30 — machine probe, no binding or audition.** With the funded
-AssemblyAI key from `voni/.dev.vars` (the `.env` key is a different, unfunded
+AssemblyAI key from the app env (then `voni/.dev.vars`, now `voni/.env.local`; the `.env` key is a different, unfunded
 key): `juergen` and `aai-juergen` return `422 voice_not_found`; the German
 catalogue voices `aai-gunther`, `aai-jorg` and `aai-magdalena` return `200`
 with `X-TTS-Language: german`, and their clips were saved for audition. German
