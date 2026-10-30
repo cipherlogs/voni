@@ -1,4 +1,4 @@
-"""Browser transport: WebSocket <-> cascade orchestrator (P1).
+"""Browser transport: WebSocket <-> the cascade call lifecycle.
 
 Wire protocol (JSON text frames), ticket 65's token-only contract:
   browser -> server: {"type": "config", "protocolVersion": int,
@@ -8,11 +8,11 @@ Wire protocol (JSON text frames), ticket 65's token-only contract:
                       {"type": "stop"}
   server -> browser: {"type": "caption", "role": "user"|"agent",
                       "text": str, "final": bool}
-                      {"type": "audio", "data": base64, "sample_rate": int}
+                      {"type": "audio", "seq": int, "sample_rate": int,
+                       "data": base64}
                       {"type": "interrupted"}
-                      {"type": "end", "metrics": {...}, "turns": int,
-                       "protocolVersion": int}
-                      {"type": "error", "message": str}
+                      {"type": "end", ...}
+                      {"type": "error", "code"?: str, "message": str}
 
 The config frame carries **identity only**. The prompt and the tool list come
 from the stored body the app assembles and signs (ticket 64); this module
@@ -20,12 +20,19 @@ claims that verified body from :class:`cascade.token.StoredBodyChannel` by the
 browser's call token and reads it through :func:`cascade.body_map.adapt_body`.
 There is no code path left that reads a prompt, a tool list or a pipeline off
 the socket: :func:`cascade.token.parse_browser_config` refuses those keys by
-name before a backend can open. The pipeline's model ids are host settings
-(:func:`pipeline_config_for_body`), never browser input.
+name before a backend can open.
+
+The call is served by :class:`cascade.call.CallLifecycle` and
+:class:`cascade.turn_stream.CascadeTurnStream` — Meta speech, the body's model
+(or BYO client) and AssemblyAI synthesis — never by the managed
+``TurnOrchestrator``. The routing switch is read exactly once, before the first
+vendor socket: a managed decision answers ``code: "managed"`` with its named
+reason and opens no leg. The app routes managed calls itself, so this service
+refusing them is the whole contract.
 
 The socket only needs send_json/receive_json, so FastAPI WebSockets and fakes
 interchange. Audio decoding never raises into the loop; a stop or a dropped
-socket ends the call with metrics.
+socket ends the call with the lifecycle's one end message.
 """
 
 from __future__ import annotations
@@ -33,10 +40,28 @@ from __future__ import annotations
 import asyncio
 import base64
 import os
-from collections.abc import AsyncIterator, Callable, Mapping
-from typing import Any, Optional
+import time
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
+from typing import Any
 
+from cascade.admission import admit_new_call
+from cascade.assemblyai_tts import AssemblyAIStreamingTTS
 from cascade.body_map import BodyFieldError, CascadeBody, adapt_body
+from cascade.call import (
+    AudioFrame,
+    BrowserStop,
+    CallLifecycle,
+    ContextUpdate,
+    OpenedLeg,
+    OutboundAudio,
+)
+from cascade.cost import RateTable
+from cascade.events import OperationalEvents
+from cascade.meta_llm import MetaLLM, construct_byo_model
+from cascade.meta_stt import MetaStreamingSTT
+from cascade.reconnect import ReconnectBudget
+from cascade.routing import CallSubject, RoutingSwitch
 from cascade.token import (
     PROTOCOL_VERSION,
     CallTokenCallMismatch,
@@ -47,113 +72,312 @@ from cascade.token import (
     StoredBodyChannel,
     parse_browser_config,
 )
+from cascade.tools import ToolExecutor
+from cascade.turn_stream import CascadeTurnStream
+from cascade.usage import UsageMeter
 from cascade.version import build_version
-from config import PipelineConfig
-from orchestrator import TurnOrchestrator
+from cascade.voice_binding import VoiceBindingError
+from metrics import TimingLedger
+
+#: The browser leg's PCM format; 24 kHz s16le mono both ways.
+SAMPLE_RATE = 24000
+
+#: Service settings the Standard model rung reads. Model ids are host settings,
+#: never browser input; reasoning effort is M03's measurement and is never
+#: defaulted here.
+LLM_MODEL_ENV = "VOICE_PIPELINE_LLM_MODEL"
+REASONING_EFFORT_ENV = "META_REASONING_EFFORT"
+TOOL_BASE_URL_ENV = "VOICE_PIPELINE_TOOL_BASE_URL"
 
 
-def default_backends(config: PipelineConfig) -> tuple[Any, Any, Any]:
-    """Real backends for a validated cascade config. Deepgram lands in P3."""
-    if config.stt_provider == "assemblyai":
-        from backends.assemblyai_stt import AssemblyAIStreamingSTT
+class CascadeLegs:
+    """One call's legs, constructed but not yet opened.
 
-        # voice_focus follows the mic, not the model: browser callers are
-        # close-talking, PSTN callers are on handsets/speakerphone.
-        voice_focus = config.voice_focus or (
-            "far-field" if config.transport == "telnyx" else "near-field"
+    Construction of a vendor client opens no socket, so this object exists
+    before the lifecycle starts and the stream can hold the very sessions the
+    lifecycle will open. ``open_*`` is the lifecycle's ``LegFactory``: it opens
+    the leg and returns the ``OpenedLeg`` the end message attributes.
+    """
+
+    def __init__(
+        self,
+        *,
+        speech: Any,
+        voice: Any,
+        model: Any | None,
+        stt_languages: Sequence[str] = (),
+        sample_rate: int = SAMPLE_RATE,
+        model_provider: str = "spark",
+        model_rung: str = "primary",
+        model_reason: str = "",
+    ) -> None:
+        self.speech = speech
+        self.voice = voice
+        self.model = model
+        self.stt_languages = tuple(stt_languages)
+        self.sample_rate = sample_rate
+        self.model_provider = model_provider
+        self.model_rung = model_rung
+        self.model_reason = model_reason
+
+    async def open_speech(self, body: CascadeBody) -> OpenedLeg:
+        await self.speech.open(
+            language_codes=list(self.stt_languages), sample_rate=self.sample_rate
         )
-        stt: Any = AssemblyAIStreamingSTT(
-            speech_model=config.stt_model or "universal-3-6-pro",
-            mode=config.stt_mode,
-            min_turn_silence=config.min_silence_ms,
-            max_turn_silence=config.max_silence_ms,
-            interruption_delay=config.interruption_delay_ms,
-            vad_threshold=config.vad_threshold,
-            voice_focus=voice_focus,
-            voice_focus_threshold=(
-                config.voice_focus_threshold
-                or (0.8 if config.transport == "telnyx" else 0.0)
-            ),
-            prompt=config.transcription_prompt,
-            keyterms_prompt=config.keyterms_prompt,
-            agent_context=config.agent_context,
+        return OpenedLeg(
+            "stt", "meta", "primary", "Meta realtime speech is the cascade's speech rung",
+            self.speech,
         )
-    elif config.stt_provider == "deepgram":
-        raise RuntimeError("deepgram STT is not implemented yet (P3)")
-    else:  # validated upstream; defensive only
-        raise RuntimeError(f"unknown stt_provider: {config.stt_provider}")
-    from backends.cartesia_tts import CartesiaTTS
-    from backends.gateway_llm import GatewayLLM
 
-    llm: Any = GatewayLLM(model=config.llm_model)
-    tts: Any = CartesiaTTS(
-        voice_id=config.tts_voice,
-        model_id=config.tts_model,
-        language=config.language_codes[0] if config.language_codes else "en",
-        sample_rate=24000,
-    )
-    return stt, llm, tts
+    async def open_voice(self, body: CascadeBody) -> OpenedLeg:
+        await self.voice.open()
+        return OpenedLeg(
+            "tts", "assemblyai", "primary", "one synthesis rung serves the call",
+            self.voice,
+        )
+
+    async def open_model(self, body: CascadeBody) -> OpenedLeg:
+        if self.model is None:
+            raise RuntimeError("this call has no model client to open")
+        return OpenedLeg(
+            "llm",
+            self.model_provider,
+            self.model_rung,
+            self.model_reason or "the call's one model client",
+            self.model,
+        )
 
 
-def pipeline_config_for_body(
-    body: CascadeBody,
+#: Builds one call's legs from the adapted body and the raw signed body.
+LegBuilder = Callable[[CascadeBody, Mapping[str, Any]], CascadeLegs]
+
+
+def _stt_languages(raw_body: Mapping[str, Any]) -> tuple[str, ...]:
+    """The body's fixed language codes, or ``()`` for Meta auto-detect.
+
+    An absent or empty list is auto-detect and must send no ``languageBias``;
+    it is never turned into a guessed language. The STT adapter maps our codes
+    to the vendor's language names.
+    """
+    section = raw_body.get("input")
+    if not isinstance(section, Mapping):
+        return ()
+    codes = section.get("language_codes")
+    if not isinstance(codes, (list, tuple)):
+        return ()
+    return tuple(code for code in codes if isinstance(code, str) and code.strip())
+
+
+def build_cascade_legs(
     *,
+    call_id: str,
+    ledger: TimingLedger,
+    budget: ReconnectBudget,
     environ: Mapping[str, str] | None = None,
-) -> PipelineConfig:
-    """The cascade pipeline for one call: host settings plus the signed body.
+    stt_socket_factory: Any = None,
+    llm_session_factory: Any = None,
+    tts_socket_factory: Any = None,
+) -> LegBuilder:
+    """The production leg builder: Meta speech, the body's model, AssemblyAI.
 
-    Model ids are service settings, not per-call browser input — the stored
-    body carries no ``llm`` override (ticket 60 refuses one). Everything the
-    body *does* decide (voice, Locale, keyterms, greeting seed) comes from the
-    adapter, never from the config frame.
+    A body with an ``llm`` entry constructs the tenant's own client through
+    :func:`cascade.meta_llm.construct_byo_model`; the Meta key is never
+    substituted for it. A body with no entry uses the Standard Spark rung, with
+    the model id and the measured reasoning effort read from the host env.
     """
     env = os.environ if environ is None else environ
 
-    def setting(name: str) -> str:
-        return str(env.get(name, "")).strip()
-
-    missing = [
-        name
-        for name in ("VOICE_PIPELINE_LLM_MODEL", "VOICE_PIPELINE_TTS_MODEL")
-        if not setting(name)
-    ]
-    if missing:
-        raise ValueError(
-            "the cascade service settings are incomplete: set "
-            f"{', '.join(missing)} in the service host's environment; the "
-            "browser cannot supply a model"
+    def build(body: CascadeBody, raw_body: Mapping[str, Any]) -> CascadeLegs:
+        speech = MetaStreamingSTT(
+            call_id=call_id,
+            api_key=str(env.get("META_API_KEY", "")).strip() or None,
+            keyterms=body.keyterms,
+            ledger=ledger,
+            budget=budget,
+            socket_factory=stt_socket_factory,
+        )
+        voice = AssemblyAIStreamingTTS(
+            voice_id=body.voice_id,
+            transport="browser",
+            api_key=str(env.get("ASSEMBLYAI_API_KEY", "")).strip() or None,
+            ledger=ledger,
+            budget=budget,
+            socket_factory=tts_socket_factory,
+        )
+        factory_kwargs: dict[str, Any] = {}
+        if llm_session_factory is not None:
+            factory_kwargs["session_factory"] = llm_session_factory
+        if body.llm is not None:
+            built = construct_byo_model(
+                body.llm,
+                system_prompt=body.system_prompt,
+                ledger=ledger,
+                budget=budget,
+                **factory_kwargs,
+            )
+            model = built.client
+            model_provider = built.provider
+            model_reason = (
+                "the stored body's LLM override names this provider and model"
+            )
+        else:
+            model = MetaLLM(
+                model=str(env.get(LLM_MODEL_ENV, "")).strip() or None,
+                reasoning_effort=env.get(REASONING_EFFORT_ENV),
+                api_key=str(env.get("META_API_KEY", "")).strip() or None,
+                system_prompt=body.system_prompt,
+                internal_id=call_id,
+                identifier_salt=str(env.get("META_IDENTIFIER_SALT", "")).strip()
+                or None,
+                ledger=ledger,
+                budget=budget,
+                **factory_kwargs,
+            )
+            model_provider = "spark"
+            model_reason = (
+                "no body override; the Standard Spark rung serves this call"
+            )
+        return CascadeLegs(
+            speech=speech,
+            voice=voice,
+            model=model,
+            stt_languages=_stt_languages(raw_body),
+            model_provider=model_provider,
+            model_reason=model_reason,
         )
 
-    return PipelineConfig(
-        stt_provider=setting("VOICE_PIPELINE_STT_PROVIDER") or "assemblyai",
-        stt_mode=setting("VOICE_PIPELINE_STT_MODE") or "balanced",
-        llm_model=setting("VOICE_PIPELINE_LLM_MODEL"),
-        tts_voice=body.voice_id,
-        tts_model=setting("VOICE_PIPELINE_TTS_MODEL"),
-        transport="browser",
-        language_codes=(body.language_code,),
-        keyterms_prompt=body.keyterms,
-        agent_context=body.greeting,
-        fallback_mode="cascade",
-    )
+    return build
+
+
+# ---------------------------------------------------------------------------
+# The browser side of the call
+# ---------------------------------------------------------------------------
+
+
+class BrowserCallTransport:
+    """The ``CallTransport`` seam over one browser WebSocket.
+
+    ``receive`` decodes the browser's frames into the lifecycle's inputs and
+    returns ``None`` when the socket dropped. ``send`` carries the one end
+    message and adds the pair's versions, so a half-deployed app and service
+    are visible in the call record.
+    """
+
+    def __init__(self, ws: Any) -> None:
+        self._ws = ws
+
+    async def receive(self) -> object | None:
+        while True:
+            try:
+                message = await self._ws.receive_json()
+            except Exception:
+                return None
+            if not isinstance(message, dict):
+                continue
+            kind = message.get("type")
+            if kind == "audio" and isinstance(message.get("data"), str):
+                try:
+                    return AudioFrame(base64.b64decode(message["data"]))
+                except Exception:
+                    continue
+            if (
+                kind == "context"
+                and message.get("role") == "system"
+                and isinstance(message.get("content"), str)
+            ):
+                return ContextUpdate(message["content"])
+            if kind == "stop":
+                return BrowserStop()
+
+    async def send(self, message: Mapping[str, Any]) -> None:
+        document = dict(message)
+        document.setdefault("protocolVersion", PROTOCOL_VERSION)
+        document.setdefault("buildVersion", build_version())
+        await _send(self._ws, document)
+
+    async def close(self) -> None:
+        """The lifecycle owns no socket close; the server owns the WebSocket."""
+        return None
+
+    async def send_audio(self, audio: OutboundAudio) -> None:
+        """One call-sequenced playout frame."""
+        await _send(
+            self._ws,
+            {
+                "type": "audio",
+                "seq": audio.seq,
+                "sample_rate": audio.sample_rate,
+                "data": base64.b64encode(audio.pcm).decode(),
+            },
+        )
+
+    async def caption(self, role: str, text: str, final: bool) -> None:
+        await _send(
+            self._ws, {"type": "caption", "role": role, "text": text, "final": final}
+        )
+
+    async def interrupted(self) -> None:
+        await _send(self._ws, {"type": "interrupted"})
+
+
+@dataclass
+class _PreparedCall:
+    """One admitted call's lifecycle, its turn stream and its live-socket claim."""
+
+    lifecycle: CallLifecycle
+    stream: CascadeTurnStream
+    claim: Any = None
+
+
+def _call_error(stage: str, error: BaseException) -> str:
+    """A setup failure's name and message; never a credential value."""
+    return f"{stage} failed: {type(error).__name__}: {error}"
+
+
+def _usage_meter_for(factory: Any) -> UsageMeter:
+    if factory is None:
+        return UsageMeter()
+    if isinstance(factory, UsageMeter):
+        return factory
+    return factory()
+
+
+def _events_for(
+    factory: Any, *, call_id: str, subject: str
+) -> OperationalEvents | None:
+    if factory is None:
+        return None
+    if isinstance(factory, OperationalEvents):
+        return factory
+    return factory(call_id, subject)
 
 
 async def handle_browser_call(
     ws: Any,
     *,
-    config_message: Optional[dict] = None,
-    backend_factory: Any = None,
+    config_message: Mapping[str, Any] | None = None,
     body_channel: StoredBodyChannel | None = None,
-    pipeline_factory: Callable[[CascadeBody], PipelineConfig] | None = None,
     call_tokens: CallTokenRegistry | None = None,
+    switch: RoutingSwitch | None = None,
+    counter: Any = None,
+    secret: str | bytes | None = None,
+    cost_table: RateTable | None = None,
+    usage_meter: Any = None,
+    operational_events: Any = None,
+    leg_builder: LegBuilder | None = None,
+    environ: Mapping[str, str] | None = None,
+    clock: Callable[[], float] = time.monotonic,
+    envelope_clock: Callable[[], float] = time.time,
+    drain_bound_ms: float | None = None,
+    bounds: Mapping[str, float] | None = None,
 ) -> None:
-    """Serve one browser test call on an open socket. Returns on stop/drop.
+    """Serve one browser call on an open socket. Returns on stop/drop.
 
     The call token is verified at connect (ticket 136) — signature and expiry
     first, then the call and subject bindings against the signed body — and
-    only then claimed. No backend factory, and therefore no vendor socket, is
-    reached until the token and the body agree. The claim is released when the
-    socket ends, so a reconnect mints a new token and is accepted.
+    only then claimed. No leg factory, and therefore no vendor socket, is
+    reached until the token and the body agree **and** the routing switch
+    admits the new call. A managed refusal is one named error and zero legs.
     """
     if config_message is None:
         try:
@@ -268,170 +492,155 @@ async def handle_browser_call(
 
     try:
         body = adapt_body(verified.body)
-    except BodyFieldError as exc:
+    except (BodyFieldError, VoiceBindingError) as exc:
         await _send(ws, {"type": "error", "message": f"stored body refused: {exc}"})
         return
 
-    settings = pipeline_factory or pipeline_config_for_body
-    try:
-        pipeline = settings(body)
-    except (TypeError, ValueError) as exc:
-        await _send(
-            ws, {"type": "error", "message": f"service pipeline settings refused: {exc}"}
-        )
-        return
-    if not pipeline.routes_to_cascade:
-        await _send(
-            ws,
-            {
-                "type": "error",
-                "message": (
-                    "the service is configured for the managed path, so it "
-                    "refuses to open a cascade vendor socket"
-                ),
-            },
-        )
-        return
+    browser = BrowserCallTransport(ws)
+    env = os.environ if environ is None else environ
+    executor: ToolExecutor | None = None
+    tool_base_url = str(env.get(TOOL_BASE_URL_ENV, "")).strip()
+    if tool_base_url:
+        executor = ToolExecutor.from_verified(verified, base_url=tool_base_url)
 
-    # One claim, one live socket per call: the token is spent here, and a
-    # second concurrent socket is refused until this one closes.
-    try:
+    claim_holder: list[Any] = []
+
+    async def prepare() -> _PreparedCall:
+        # One claim, one live socket per call. The claim is inside the opener so
+        # a managed decision never spends the token, and a replay is refused
+        # before any leg is constructed.
         claim = call_tokens.claim(
             client.call_token,
             call_id=verified.call_id,
             subject=verified.agent_id,
         )
-    except CallTokenError as exc:
-        await _send(ws, {"type": "error", "message": str(exc)})
-        return
+        claim_holder.append(claim)
+        ledger = TimingLedger(now=clock)
+        budget = ReconnectBudget(ledger=ledger, now=clock)
+        if leg_builder is None:
+            legs = build_cascade_legs(
+                call_id=verified.call_id,
+                ledger=ledger,
+                budget=budget,
+                environ=env,
+            )(body, verified.body)
+        else:
+            legs = leg_builder(body, verified.body)
 
-    factory = backend_factory or default_backends
-    try:
-        stt, llm, tts = factory(pipeline)
-    except Exception as exc:
-        call_tokens.release(claim)
-        await _send(ws, {"type": "error", "message": f"backend setup failed: {exc}"})
-        return
+        holder: dict[str, CallLifecycle] = {}
 
-    audio_queue: asyncio.Queue = asyncio.Queue()
+        async def emit_audio(
+            audio: Any, *, kind: str = "reply", flush_id: int | None = None
+        ) -> OutboundAudio:
+            return await holder["lifecycle"].emit_audio(
+                audio, kind=kind, flush_id=flush_id
+            )
 
-    async def audio_source() -> AsyncIterator[bytes]:
-        while True:
-            frame = await audio_queue.get()
-            if frame is None:
-                return
-            yield frame
+        def may_request(leg: str) -> bool:
+            return holder["lifecycle"].may_request(leg)
 
-    async def on_audio(chunk: Any) -> None:
+        stream = CascadeTurnStream(
+            llm=legs.model,
+            tts=legs.voice,
+            tools=body.tools,
+            emit_audio=emit_audio,
+            may_request=may_request,
+            tool_executor=executor,
+            locale_code=body.language_code,
+            ledger=ledger,
+            clock=clock,
+            on_caption=browser.caption,
+            on_interrupted=browser.interrupted,
+        )
+        lifecycle = CallLifecycle(
+            message={"envelope": verified.envelope.to_dict(), "body": verified.body},
+            secret=secret if secret is not None else "",
+            call_id=verified.call_id,
+            transport=browser,
+            open_speech=legs.open_speech,
+            open_voice=legs.open_voice,
+            open_model=legs.open_model,
+            stream=stream,
+            send_audio=browser.send_audio,
+            ledger=ledger,
+            clock=clock,
+            envelope_clock=envelope_clock,
+            drain_bound_ms=drain_bound_ms,
+            bounds=bounds,
+            usage_meter=_usage_meter_for(usage_meter),
+            cost_table=cost_table,
+            operational_events=_events_for(
+                operational_events, call_id=verified.call_id, subject=verified.agent_id
+            ),
+            reconnect_budget=budget,
+        )
+        holder["lifecycle"] = lifecycle
+        return _PreparedCall(lifecycle=lifecycle, stream=stream, claim=claim)
+
+    if switch is None:
         await _send(
             ws,
             {
-                "type": "audio",
-                "data": base64.b64encode(chunk.pcm).decode(),
-                "sample_rate": chunk.sample_rate,
+                "type": "error",
+                "code": "managed",
+                "message": (
+                    "the service has no durable routing switch configured; a new "
+                    "call routes managed and this service opens no cascade socket"
+                ),
             },
         )
+        return
 
-    async def on_event(kind: str, payload: dict) -> None:
-        if kind == "user_partial":
-            await _send(
-                ws, {"type": "caption", "role": "user", "text": payload.get("text", ""), "final": False}
-            )
-        elif kind == "user_final":
-            await _send(
-                ws, {"type": "caption", "role": "user", "text": payload.get("text", ""), "final": True}
-            )
-        elif kind == "agent_final":
-            await _send(
-                ws, {"type": "caption", "role": "agent", "text": payload.get("text", ""), "final": True}
-            )
-        elif kind == "agent_partial":
-            await _send(
-                ws, {"type": "caption", "role": "agent", "text": payload.get("text", ""), "final": False}
-            )
-        elif kind == "interrupted":
-            await _send(ws, {"type": "interrupted"})
-        elif kind == "call_end":
-            await _send(ws, {"type": "end_call"})
-        elif kind == "turn_failed":
-            await _send(
-                ws, {"type": "error", "message": f"turn failed: {payload.get('error', '')}"}
-            )
-
-    orchestrator = TurnOrchestrator(
-        stt=stt,
-        llm=llm,
-        tts=tts,
-        on_audio=on_audio,
-        on_event=on_event,
-        system_prompt=body.system_prompt,
-        tools=list(body.tools),
-        language_codes=list(pipeline.language_codes),
-        sample_rate=24000,
-    )
-    run_task = asyncio.get_running_loop().create_task(orchestrator.run(audio_source()))
     try:
-        while True:
-            try:
-                message = await ws.receive_json()
-            except Exception:
-                break
-            if not isinstance(message, dict):
-                continue
-            kind = message.get("type")
-            if kind == "audio" and isinstance(message.get("data"), str):
-                try:
-                    audio_queue.put_nowait(base64.b64decode(message["data"]))
-                except Exception:
-                    continue
-            elif (
-                kind == "context"
-                and message.get("role") == "system"
-                and isinstance(message.get("content"), str)
-            ):
-                orchestrator.add_context(message["content"])
-            elif kind == "stop":
-                break
+        admission = await admit_new_call(
+            switch,
+            CallSubject(subject_id=verified.agent_id),
+            open_cascade=prepare,
+            budget=counter,
+        )
+    except CallTokenError as exc:
+        for held in claim_holder:
+            call_tokens.release(held)
+        await _send(ws, {"type": "error", "message": str(exc)})
+        return
+    except Exception as exc:  # a real opener failure is visible, never silent
+        for held in claim_holder:
+            call_tokens.release(held)
+        await _send(ws, {"type": "error", "message": _call_error("call setup", exc)})
+        return
+
+    if admission.connections != 1:
+        await _send(
+            ws,
+            {
+                "type": "error",
+                "code": "managed",
+                "message": admission.decision.reason
+                or "the routing decision routes this call managed",
+            },
+        )
+        return
+
+    prepared = admission.connection
+    assert isinstance(prepared, _PreparedCall)
+    try:
+        await prepared.lifecycle.run()
     finally:
         # The socket is over: the call no longer holds the one live-socket
         # slot. The token itself stays spent.
-        call_tokens.release(claim)
-        cancelled_by_us = False
-        if not run_task.done():
-            run_task.cancel()
-            cancelled_by_us = True
-        run_error: Optional[str] = None
-        try:
-            await run_task
-        except asyncio.CancelledError:
-            # Ours (hangup path above) is swallowed; server shutdown must
-            # propagate or connections never drain.
-            if not cancelled_by_us:
-                raise
-        except Exception as exc:
-            # Backend failures (bad key, provider outage) must be visible in
-            # the transcript, not silent turns=0.
-            run_error = f"{type(exc).__name__}: {exc}"
-        end_message: dict[str, Any] = {
-            "type": "end",
-            "metrics": orchestrator.ledger.summary(),
-            # Collected incrementally by the orchestrator so a hangup
-            # mid-call still reports finished turns.
-            "turns": len(orchestrator.turn_results),
-            # The service reports the protocol it speaks (M17): a half-deployed
-            # pair is visible in the call record, not only in the logs.
-            "protocolVersion": PROTOCOL_VERSION,
-            # And the build that served it (ticket 141): the app's call record
-            # can name both halves of the pair.
-            "buildVersion": build_version(),
-        }
-        if run_error is not None:
-            end_message["error"] = run_error
-        await _send(ws, end_message)
+        call_tokens.release(prepared.claim)
 
 
-async def _send(ws: Any, message: dict) -> None:
+async def _send(ws: Any, message: Mapping[str, Any]) -> None:
     try:
-        await ws.send_json(message)
+        await ws.send_json(dict(message))
     except Exception:
         pass
+
+
+__all__ = [
+    "BrowserCallTransport",
+    "CascadeLegs",
+    "build_cascade_legs",
+    "handle_browser_call",
+]

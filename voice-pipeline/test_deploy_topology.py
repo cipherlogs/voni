@@ -242,6 +242,51 @@ class SecretsTest(unittest.TestCase):
         self.assertTrue(any("META_API_KEY" in error for error in errors), errors)
 
 
+class DrainAwareEntrypointTest(unittest.TestCase):
+    """The image must run main(), not uvicorn's server:app (ticket 140).
+
+    ``uvicorn server:app`` never installs the drain supervisor, so SIGTERM
+    exits and every live call dies with the machine. The entrypoint is therefore
+    part of the topology claim, and deleting it must fail the validator.
+    """
+
+    def _port(self) -> int:
+        return topology.load_config(REPO_ROOT, topology.SERVICE_CONFIG)[
+            "http_service"
+        ]["internal_port"]
+
+    def test_the_committed_command_runs_the_drain_aware_entrypoint(self) -> None:
+        text = (REPO_ROOT / topology.DOCKERFILE).read_text()
+        cmd = [
+            line for line in text.splitlines() if line.strip().upper().startswith("CMD")
+        ]
+        self.assertTrue(cmd, "the image declares no CMD")
+        self.assertIn("server.py", " ".join(cmd))
+        self.assertNotIn("server:app", " ".join(cmd))
+        self.assertEqual(topology.validate_dockerfile(text, internal_port=self._port()), [])
+
+    def test_a_uvicorn_server_app_command_is_refused(self) -> None:
+        text = (REPO_ROOT / topology.DOCKERFILE).read_text()
+        start = text.index('CMD ["python", "server.py"]')
+        end = text.index("\n", start)
+        broken = text[:start] + (
+            'CMD ["python", "-m", "uvicorn", "server:app", "--host", '
+            '"0.0.0.0", "--port", "8766"]'
+        ) + text[end:]
+        errors = topology.validate_dockerfile(broken, internal_port=self._port())
+        self.assertTrue(any("server.py" in error for error in errors), errors)
+
+    def test_deleting_the_drain_aware_entrypoint_is_refused(self) -> None:
+        text = (REPO_ROOT / topology.DOCKERFILE).read_text()
+        broken = "\n".join(
+            line
+            for line in text.splitlines()
+            if not line.strip().upper().startswith("CMD")
+        )
+        errors = topology.validate_dockerfile(broken, internal_port=self._port())
+        self.assertTrue(any("server.py" in error for error in errors), errors)
+
+
 class ImageAndPinsTest(unittest.TestCase):
     def test_the_image_pins_match_ci(self) -> None:
         runtime = (REPO_ROOT / topology.RUNTIME_REQUIREMENTS).read_text()

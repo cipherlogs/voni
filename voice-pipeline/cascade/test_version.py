@@ -203,22 +203,54 @@ class FakeSTT:
 
 
 class FakeLLM:
-    async def complete(self, *, messages, tools=None):
+    async def complete(self, *, messages, tools=None, turn=None):
         return
         yield
-
-    def prefetch(self, *, messages, tools=None):
-        class Handle:
-            def cancel(self) -> None:
-                pass
-
-        return Handle()
 
 
 class FakeTTS:
+    def __init__(self) -> None:
+        from cascade.voice_binding import bind_voice
+
+        self.binding = bind_voice("lola")
+
+    async def open(self) -> None:
+        pass
+
     async def speak(self, text: str):
         return
         yield
+
+    async def speak_greeting(self, text: str):
+        from providers import SentenceAudio
+
+        yield SentenceAudio(pcm=b"\x01\x00", sample_rate=24000, text=text)
+
+    async def close(self) -> None:
+        pass
+
+
+class FakeLegs:
+    """Constructed legs for the end-message test; no vendor socket opens."""
+
+    def __init__(self) -> None:
+        from cascade.call import OpenedLeg
+
+        self._opened = OpenedLeg
+        self.speech = FakeSTT()
+        self.voice = FakeTTS()
+        self.model = FakeLLM()
+
+    async def open_speech(self, body):
+        await self.speech.open(language_codes=[], sample_rate=24000)
+        return self._opened("stt", "meta", "primary", "speech rung", self.speech)
+
+    async def open_voice(self, body):
+        await self.voice.open()
+        return self._opened("tts", "assemblyai", "primary", "voice rung", self.voice)
+
+    async def open_model(self, body):
+        return self._opened("llm", "spark", "primary", "model rung", self.model)
 
 
 def signed_message() -> dict:
@@ -239,7 +271,9 @@ def signed_message() -> dict:
 
 
 def end_message() -> dict:
-    from config import PipelineConfig
+    from cascade.routing import KEY as ROUTING_KEY
+    from cascade.routing import RoutingRecord, RoutingSwitch
+    from cascade.store import MemoryStore, StoredDocument
     from transport import handle_browser_call
 
     channel = StoredBodyChannel(secret=SECRET, clock=CLOCK)
@@ -251,25 +285,22 @@ def end_message() -> dict:
         "callToken": TOKEN,
     }
 
-    def pipeline(body):
-        return PipelineConfig(
-            llm_model="service-model",
-            tts_model="service-tts",
-            tts_voice=body.voice_id,
-            transport="browser",
-            language_codes=(body.language_code,),
-            fallback_mode="cascade",
-        )
-
     async def run():
+        store = MemoryStore()
+        record = RoutingRecord.seeded("all", actor="version-test", at=CLOCK())
+        await store.compare_and_set(
+            ROUTING_KEY, None, StoredDocument(version=1, document=record.to_document())
+        )
         ws = FakeWebSocket([config, {"type": "stop"}])
         await handle_browser_call(
             ws,
             config_message=config,
-            backend_factory=lambda config: (FakeSTT(), FakeLLM(), FakeTTS()),
             body_channel=channel,
-            pipeline_factory=pipeline,
             call_tokens=CallTokenRegistry(secret=SECRET, clock=FakeClock(1_000_001.0)),
+            switch=RoutingSwitch(store, now=CLOCK),
+            secret=SECRET,
+            envelope_clock=CLOCK,
+            leg_builder=lambda body, raw: FakeLegs(),
         )
         return ws
 
