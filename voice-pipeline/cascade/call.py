@@ -80,12 +80,14 @@ from types import MappingProxyType
 from typing import Any, Protocol
 
 from cascade.body_map import BodyFieldError, CascadeBody, adapt_body
+from cascade.cost import CallCost, RateTable, cost_call
 from cascade.eligibility import EligibilityDecision
 from cascade.envelope import EnvelopeError, verify_envelope
 from cascade.greeting import CallGreeting, GreetingOutcome, GreetingPlayback
 from cascade.meta_stt import SpeechPartial, SpeechStart
 from cascade.reconnect import ReconnectBudget
 from cascade.thresholds import ThresholdError, require_bound
+from cascade.usage import UsageMeter
 from cascade.voice_binding import VoiceBindingError, bind_voice
 from metrics import TimingLedger
 from providers import SentenceAudio
@@ -193,6 +195,15 @@ class CallStream(Protocol):
 
     def turn_count(self) -> int:
         """How many logical turns the call produced."""
+
+    def turn_usage(self) -> Mapping[str, Any]:
+        """Each logical turn's vendor usage chunk, keyed by logical turn id.
+
+        Ticket 100's meter reads only vendor reports. The turn layer owns the
+        model stream, so it is the one that sees the usage chunk; the call
+        records it here and prices it. A stream with no model leg returns an
+        empty mapping, which leaves the LLM leg unmeasured (never zero).
+        """
 
 
 @dataclass(frozen=True)
@@ -385,6 +396,9 @@ class NullStream:
     def turn_count(self) -> int:
         return 0
 
+    def turn_usage(self) -> Mapping[str, Any]:
+        return {}
+
 
 # ---------------------------------------------------------------------------
 # A refusal, and the end message's four fact groups
@@ -572,13 +586,24 @@ class ProviderTable:
 
 @dataclass(frozen=True)
 class LegCost:
-    """One leg's metered units. ``quantity=None`` means unmeasured, not zero."""
+    """One leg's metered units. ``quantity=None`` means unmeasured, not zero.
+
+    A leg can bill more than one unit (the model's prompt, completion, cached
+    and reasoning tokens), so ``units`` carries every reported quantity and
+    ``amount_usd`` is what the rate table charged for them. ``unit``/``quantity``
+    stay the one-unit shorthand the end message has always carried; a leg with
+    several units sets ``unit="multiple"`` and ``quantity=None``.
+    """
 
     leg: str
     unit: str
     quantity: float | None
     measured: bool
     source: str = ""
+    #: The priced total for this leg, in USD, when it is measured.
+    amount_usd: float | None = None
+    #: Every unit the vendor reported for this leg, in artifact order.
+    units: tuple[tuple[str, float], ...] = ()
 
     def __post_init__(self) -> None:
         if self.leg not in LEGS:
@@ -586,18 +611,19 @@ class LegCost:
         if not isinstance(self.unit, str) or not self.unit.strip():
             raise ValueError(f"cost leg {self.leg!r} needs the unit it meters")
         if self.measured:
-            if self.quantity is None:
+            if self.quantity is None and not self.units:
                 raise ValueError(
                     f"cost leg {self.leg!r} is measured but carries no quantity"
                 )
-            if isinstance(self.quantity, bool) or not isinstance(
-                self.quantity, (int, float)
+            if self.quantity is not None and (
+                isinstance(self.quantity, bool)
+                or not isinstance(self.quantity, (int, float))
             ):
                 raise ValueError(
                     f"cost leg {self.leg!r} quantity must be a number, "
                     f"got {self.quantity!r}"
                 )
-            if self.quantity < 0:
+            if self.quantity is not None and self.quantity < 0:
                 raise ValueError(
                     f"cost leg {self.leg!r} quantity cannot be negative"
                 )
@@ -613,6 +639,8 @@ class LegCost:
             "quantity": self.quantity,
             "measured": self.measured,
             "source": self.source,
+            "amountUsd": self.amount_usd,
+            "units": {name: quantity for name, quantity in self.units},
         }
 
 
@@ -650,6 +678,51 @@ class CostSummary:
             reason=reason,
         )
 
+    @classmethod
+    def from_call_cost(cls, priced: CallCost) -> "CostSummary":
+        """Carry a priced call's legs and total, and never a partial total.
+
+        The meter recorded what the vendors reported and the rate table priced
+        it (tickets 100/101). A leg with one unmeasured unit makes that leg and
+        the total unmeasured, with the reason preserved; the rate-table version
+        is still cited because it is what the measured legs were priced with.
+        """
+        legs: list[LegCost] = []
+        for priced_leg in priced.legs:
+            if priced_leg.measured:
+                units = tuple(
+                    (_unit_of(line.rate), line.reported) for line in priced_leg.lines
+                )
+                single = len(units) == 1
+                legs.append(
+                    LegCost(
+                        leg=priced_leg.leg,
+                        unit=units[0][0] if single else "multiple",
+                        quantity=units[0][1] if single else None,
+                        measured=True,
+                        source="priced from the vendor's reported units",
+                        amount_usd=float(priced_leg.amount),
+                        units=units,
+                    )
+                )
+                continue
+            legs.append(
+                LegCost(
+                    leg=priced_leg.leg,
+                    unit="unknown",
+                    quantity=None,
+                    measured=False,
+                    source="; ".join(priced_leg.reasons),
+                )
+            )
+        total = priced.amount
+        return cls(
+            rate_table_version=f"{priced.table.name} v{priced.table.version}",
+            legs=tuple(legs),
+            total_usd=None if total is None else float(total),
+            reason="; ".join(priced.reasons),
+        )
+
     @property
     def measured(self) -> bool:
         """Whether the cost claim is complete: units, version and a total."""
@@ -672,6 +745,20 @@ class CostSummary:
                 else self.reason or "the cost claim is incomplete"
             ),
         }
+
+
+@dataclass(frozen=True)
+class _UnreportedBilling:
+    """A synthesis session that closed with no ``Termination`` summary.
+
+    The meter records this as an absence: no characters, no audio or session
+    seconds, and a source naming why. It is never a zero.
+    """
+
+    characters: int | None = None
+    source: str = "no Termination summary was recorded"
+    audio_duration_seconds: float | None = None
+    session_duration_seconds: int | None = None
 
 
 @dataclass(frozen=True)
@@ -822,6 +909,8 @@ class CallLifecycle:
         drain_bound_ms: float | None = None,
         bounds: Mapping[str, float] | None = None,
         cost_meter: CostMeter | None = None,
+        usage_meter: UsageMeter | None = None,
+        cost_table: RateTable | None = None,
         eligibility: EligibilityDecision | None = None,
         chime: Callable[[], None] | None = None,
         reconnect_budget: ReconnectBudget | None = None,
@@ -857,6 +946,14 @@ class CallLifecycle:
         #: Every bounded wait this call ran, in order, with its named outcome.
         self.bound_outcomes: list[BoundOutcome] = []
         self._cost_meter = cost_meter
+        # Ticket 100's meter belongs to the call: every vendor frame the call
+        # receives is recorded here as it arrives, and the end message prices
+        # that record (ticket 101). An injected meter lets a caller observe the
+        # units; without one the call still meters, so a real call cannot end
+        # with a fabricated zero.
+        self.usage_meter = usage_meter if usage_meter is not None else UsageMeter()
+        self._cost_table = cost_table
+        self._usage_error: str | None = None
         self._eligibility = eligibility
         #: The call's one reconnect ledger (ticket 94). The adapters are given
         #: this same object, so the call never counts a failure a second time;
@@ -937,17 +1034,8 @@ class CallLifecycle:
         except asyncio.CancelledError:
             raise
         except Exception as error:
-            failure = CallFailure.from_exception("open", error)
-            drain = await self._close_all(
-                opened, event_task=None, drain_stream=False
-            )
-            return await self._finish(
-                ended_by="error",
-                opened=opened,
-                error=failure,
-                drain=drain,
-                eligibility=self._eligibility_document(),
-                missing_reason="the call ended before this leg opened",
+            return await self._abort_before_stream(
+                opened, CallFailure.from_exception("open", error)
             )
 
         try:
@@ -955,18 +1043,7 @@ class CallLifecycle:
         except asyncio.CancelledError:
             raise
         except Exception as error:
-            failure = _failure("greeting", error)
-            drain = await self._close_all(
-                opened, event_task=None, drain_stream=False
-            )
-            return await self._finish(
-                ended_by="error",
-                opened=opened,
-                error=failure,
-                drain=drain,
-                eligibility=self._eligibility_document(),
-                missing_reason="the call ended before this leg opened",
-            )
+            return await self._abort_before_stream(opened, _failure("greeting", error))
 
         # The opening is a window, not a pause: the caller's frames reach STT
         # and the provider's events are read while the greeting sounds, so an
@@ -1590,21 +1667,84 @@ class CallLifecycle:
 
     # -- the end message --------------------------------------------------
 
+    async def _abort_before_stream(
+        self, opened: list[OpenedLeg], failure: CallFailure
+    ) -> CallEnd:
+        """Unwind a call that never reached the turn layer and end it by name.
+
+        Opening a leg or starting the greeting can fail before the turn layer
+        exists: there is nothing to drain, only sockets to close, so the same
+        path serves both failures instead of a second copy.
+        """
+        drain = await self._close_all(
+            opened, event_task=None, drain_stream=False
+        )
+        return await self._finish(
+            ended_by="error",
+            opened=opened,
+            error=failure,
+            drain=drain,
+            eligibility=self._eligibility_document(),
+            missing_reason="the call ended before this leg opened",
+        )
+
     def _eligibility_document(self) -> CallEligibility:
         if self._eligibility is None:
             return CallEligibility("cascade")
         return CallEligibility.from_decision(self._eligibility)
 
-    def _cost(self) -> CostSummary:
-        """Snapshot the meter; a missing or failed meter is unmeasured."""
-        if self._cost_meter is None:
-            return CostSummary.unmeasured("no cost meter is wired")
+    def _record_usage(self, opened: list[OpenedLeg]) -> None:
+        """Record the vendor-reported units this call actually received.
+
+        Nothing here estimates. Speech contributes its usage frame when the
+        adapter recorded one; synthesis contributes the ``Termination`` billing
+        the session closed with; the model's token units come from the turn
+        layer, which is the only reader of the usage chunk. A leg that reported
+        nothing records an absence, so the cost stays unmeasured by name.
+        """
         try:
-            return self._cost_meter()
+            by_leg = {leg.leg: leg for leg in opened}
+            speech = by_leg.get("stt")
+            if speech is not None:
+                usage = getattr(speech.session, "usage", None)
+                self.usage_meter.record_stt(
+                    usage if isinstance(usage, Mapping) else None
+                )
+            voice = by_leg.get("tts")
+            if voice is not None:
+                billing = getattr(voice.session, "billing", None)
+                self.usage_meter.record_tts(
+                    billing if billing is not None else _UnreportedBilling()
+                )
+            reader = getattr(self._stream, "turn_usage", None)
+            if callable(reader):
+                for turn, usage in (reader() or {}).items():
+                    self.usage_meter.record_llm(turn, usage)
+        except Exception as error:  # the end message must still go out
+            self._usage_error = (
+                f"usage meter failed: {type(error).__name__}: {error}"
+            )
+
+    def _cost(self) -> CostSummary:
+        """Price the meter's recorded units; a gap is unmeasured, never zero."""
+        if self._usage_error is not None:
+            return CostSummary.unmeasured(self._usage_error)
+        if self._cost_meter is not None:
+            try:
+                return self._cost_meter()
+            except Exception as error:
+                return CostSummary.unmeasured(
+                    f"cost meter failed: {type(error).__name__}: {error}"
+                )
+        try:
+            priced = cost_call(
+                self.usage_meter.usage(), table=self._cost_table
+            )
         except Exception as error:
             return CostSummary.unmeasured(
-                f"cost meter failed: {type(error).__name__}: {error}"
+                f"the cost cannot be priced: {type(error).__name__}: {error}"
             )
+        return CostSummary.from_call_cost(priced)
 
     def _turns(self) -> int:
         try:
@@ -1623,6 +1763,7 @@ class CallLifecycle:
         missing_reason: str,
     ) -> CallEnd:
         """Build the end message, send it, then release the socket."""
+        self._record_usage(opened)
         end = CallEnd(
             call_id=self._call_id,
             metrics=self._ledger.summary(),
@@ -1650,6 +1791,12 @@ class CallLifecycle:
         except Exception:
             pass
         return end
+
+
+def _unit_of(rate_key: str) -> str:
+    """The unit part of a ``<leg>.<unit>`` rate key."""
+    leg, _, unit = rate_key.partition(".")
+    return unit or leg
 
 
 def _greeting_barge_cause(event: Any) -> str | None:
