@@ -20,7 +20,8 @@ The pieces are the call's own, not copies:
 An open Locale is a named row, never a clip: the pre-re-cast German id
 (``juergen``) is refused by the binding table, so if it were ever named the plan
 would record that refusal and no asset would be planned, written or kept. German
-itself is bound to ``jorg`` (ticket 130), so the six demo voices now render.
+itself is bound to ``jorg`` (ticket 130), so every demo Locale now renders; the
+Italian renderings stay in the code, unused (demo-cascade ticket 04).
 
 The manifest pins what a clip is, so ``--check`` can prove it later without a
 key: endpoint, model, voice, vendor language, Locale, the exact line and its
@@ -58,18 +59,19 @@ from cascade.voice_binding import (
 )
 
 #: The Locales this demo speaks. One clip Locale each; every one is bound.
-CLIP_LOCALES: tuple[str, ...] = ("en", "es", "fr", "de", "it", "pt")
+#: Italian is not offered by the demo (ticket 04): its greeting stays in
+#: ``GREETINGS``, unused, and it is deliberately absent here.
+CLIP_LOCALES: tuple[str, ...] = ("en", "es", "fr", "de", "pt")
 
 #: The app's demo subjects, in its own order. Restated from
 #: ``voni/src/lib/demo/voni-agent.ts`` (``DEMO_VOICE_IDS``); the test compares
 #: the two so drift is visible.
 DEMO_VOICE_IDS: tuple[str, ...] = (
-    "anna",
-    "lola",
-    "estelle",
+    "audrey",
+    "malvina",
+    "donatien",
     "jorg",
-    "giovanni",
-    "rafael",
+    "benicio",
 )
 
 #: The app's greeting per Locale. Restated from ``VONI_GREETINGS`` in the same
@@ -160,7 +162,7 @@ def clip_plan_for(voice_id: str) -> ClipPlan:
     """One demo voice's plan, or a usage error for a voice outside the demo."""
     if voice_id not in DEMO_VOICE_IDS:
         raise ClipError(
-            f'"{voice_id}" is not a demo subject: clips are the six demo voices '
+            f'"{voice_id}" is not a demo subject: clips are the five demo voices '
             f"({', '.join(DEMO_VOICE_IDS)})"
         )
     # The Locale is the catalogue's, not the caller's: the binding table owns it.
@@ -808,7 +810,7 @@ def audit_manifest(
         entry = plan.get(record.voice)
         if entry is None:
             problems.append(
-                f'clip for voice "{record.voice}", which is not one of the six demo voices'
+                f'clip for voice "{record.voice}", which is not one of the five demo voices'
             )
             continue
         if not entry.bound:

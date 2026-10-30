@@ -137,9 +137,9 @@ class PreviewCoverageTests(unittest.TestCase):
         self.assertIn('"juergen" is not a demo subject', str(raised.exception))
 
     def test_the_cascade_preview_is_not_the_managed_picker_asset(self):
-        preview = preview_url("anna")
+        preview = preview_url("audrey")
 
-        self.assertEqual("/voices/cascade/anna.wav", preview)
+        self.assertEqual("/voices/cascade/audrey.wav", preview)
         self.assertNotEqual("/voices/anna.mp3", preview)
         self.assertEqual("voni/public/voices/cascade", CLIP_ASSET_DIR)
         self.assertNotEqual("voni/public/voices", CLIP_ASSET_DIR)
@@ -175,11 +175,11 @@ class ManifestPreviewAuditTests(unittest.TestCase):
             self.assertEqual(f"/voices/cascade/{row['voice']}.wav", row["preview"])
 
     def test_a_preview_not_in_the_manifest_fails_by_name(self):
-        orphan = self.root / CLIP_ASSET_DIR / "estelle.wav"
-        # Drop estelle's row while keeping her committed preview on disk.
+        orphan = self.root / CLIP_ASSET_DIR / "benicio.wav"
+        # Drop benicio's row while keeping his committed preview on disk.
         manifest = {
             **self.manifest,
-            "clips": [row for row in self.manifest["clips"] if row["voice"] != "estelle"],
+            "clips": [row for row in self.manifest["clips"] if row["voice"] != "benicio"],
         }
 
         problems = self.audit(manifest).problems
@@ -189,16 +189,16 @@ class ManifestPreviewAuditTests(unittest.TestCase):
                 for problem in problems),
             problems,
         )
-        self.assertTrue(any("estelle" in problem for problem in problems), problems)
+        self.assertTrue(any("benicio" in problem for problem in problems), problems)
 
     def test_a_stale_preview_fails_against_its_hash(self):
-        path = self.root / CLIP_ASSET_DIR / "anna.wav"
+        path = self.root / CLIP_ASSET_DIR / "audrey.wav"
         path.write_bytes(path.read_bytes() + b"\0\0")
 
         problems = self.audit().problems
 
         self.assertTrue(
-            any("anna.wav sha256" in problem and "edited or swapped" in problem for problem in problems),
+            any("audrey.wav sha256" in problem and "edited or swapped" in problem for problem in problems),
             problems,
         )
 
@@ -206,7 +206,7 @@ class ManifestPreviewAuditTests(unittest.TestCase):
         manifest = {
             **self.manifest,
             "clips": [
-                {**row, "locale": "en"} if row["voice"] == "lola" else row
+                {**row, "locale": "en"} if row["voice"] == "malvina" else row
                 for row in self.manifest["clips"]
             ],
         }
@@ -214,18 +214,18 @@ class ManifestPreviewAuditTests(unittest.TestCase):
         problems = self.audit(manifest).problems
 
         self.assertTrue(
-            any("lola" in problem and "not the voice's own Locale es" in problem for problem in problems),
+            any("malvina" in problem and "not the voice's own Locale es" in problem for problem in problems),
             problems,
         )
 
     def test_the_preview_level_is_native(self):
         # A gained file with a refreshed hash: the level leg must catch it even
         # though the bytes now agree with the record's sha256.
-        path = self.root / CLIP_ASSET_DIR / "lola.wav"
+        path = self.root / CLIP_ASSET_DIR / "malvina.wav"
         recorded = next(
             row["level"]["samplePeakDbfs"]
             for row in self.manifest["clips"]
-            if row["voice"] == "lola"
+            if row["voice"] == "malvina"
         )
         gained = wav_bytes(pcm_bytes(2))
         path.write_bytes(gained)
@@ -237,7 +237,7 @@ class ManifestPreviewAuditTests(unittest.TestCase):
                     **row,
                     "sha256": hashlib.sha256(gained).hexdigest(),
                 }
-                if row["voice"] == "lola"
+                if row["voice"] == "malvina"
                 else row
                 for row in self.manifest["clips"]
             ],
@@ -248,7 +248,7 @@ class ManifestPreviewAuditTests(unittest.TestCase):
         problems = self.audit(manifest).problems
 
         self.assertTrue(
-            any("lola.wav measures" in problem and "a level stage moved it" in problem for problem in problems),
+            any("malvina.wav measures" in problem and "a level stage moved it" in problem for problem in problems),
             problems,
         )
 
@@ -256,7 +256,7 @@ class ManifestPreviewAuditTests(unittest.TestCase):
         manifest = {
             **self.manifest,
             "clips": [
-                {**row, "preview": "/voices/cascade/lola.wav"} if row["voice"] == "anna" else row
+                {**row, "preview": "/voices/cascade/malvina.wav"} if row["voice"] == "audrey" else row
                 for row in self.manifest["clips"]
             ],
         }
@@ -264,7 +264,7 @@ class ManifestPreviewAuditTests(unittest.TestCase):
         problems = self.audit(manifest).problems
 
         self.assertTrue(
-            any("anna" in problem and "preview" in problem and "lola.wav" in problem for problem in problems),
+            any("audrey" in problem and "preview" in problem and "malvina.wav" in problem for problem in problems),
             problems,
         )
 

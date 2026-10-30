@@ -51,7 +51,10 @@ from cascade.clip_regeneration import (
     regeneration_problems,
 )
 from cascade.clips import (
+    CLIP_ASSET_DIR,
+    ClipError,
     ClipLevel,
+    ClipPlan,
     clip_format,
     clip_plan_for,
     line_sha256,
@@ -80,10 +83,29 @@ def swapped_pcm(wav: bytes) -> bytes:
     return bytes(pcm)
 
 
+def plan_for_fixture(fixture) -> ClipPlan:
+    """The recorded fixture's own plan.
+
+    The regeneration seam pins a recorded render, not the demo roster: the
+    fixture is the English greeting spoken by ``anna``, a catalogue voice the
+    demo no longer offers. Building the plan from the fixture keeps the seam
+    about regeneration identity, while ``clip_plan_for`` stays the demo
+    roster's gate.
+    """
+    return ClipPlan(
+        voice_id=fixture.voice,
+        locale=fixture.locale,
+        language=fixture.language,
+        greeting=fixture.text,
+        state="bound",
+        asset=f"{CLIP_ASSET_DIR}/{fixture.voice}.wav",
+    )
+
+
 def replay(name: str, *, plan=None) -> RegeneratedClip:
     """Replay one fixture into a fresh directory, as the PR test does."""
     fixture = load_fixture(name)
-    voice_plan = plan or clip_plan_for(fixture.voice)
+    voice_plan = plan or plan_for_fixture(fixture)
     with tempfile.TemporaryDirectory(prefix="clip-regeneration-") as directory:
         return asyncio.run(
             regenerate(
@@ -122,19 +144,21 @@ class FixtureReplayTests(unittest.TestCase):
         self.assertEqual(regenerated.level.to_document(), fixture.level.to_document())
         self.assertEqual(regenerated.record.gain_stage, "none")
 
-    def test_the_regeneration_matches_the_plan_and_builds_a_clean_manifest(self):
+    def test_the_regeneration_matches_the_plan_and_a_non_demo_voice_is_refused(self):
         fixture = load_fixture("anna-en")
-        plan = clip_plan_for(fixture.voice)
+        plan = plan_for_fixture(fixture)
         regenerated = replay("anna-en")
 
         self.assertEqual(
             regeneration_problems(plan, fixture, regenerated, byte_identity_required=True),
             [],
         )
-        document = manifest_document([regenerated.record], generated_on="2026-10-30")
-        row = next(clip for clip in document["clips"] if clip["voice"] == fixture.voice)
-        self.assertEqual(row["sha256"], fixture.wav_sha256)
-        self.assertEqual(row["gainStage"], "none")
+        # The recorded fixture is a catalogue voice the demo no longer offers:
+        # its render is valid evidence, but it cannot become a demo manifest row.
+        with self.assertRaises(ClipError) as caught:
+            manifest_document([regenerated.record], generated_on="2026-10-30")
+        self.assertIn("anna", str(caught.exception))
+        self.assertIn("not a demo subject", str(caught.exception))
 
     def test_a_fixture_without_its_recording_fails_by_name(self):
         with self.assertRaises(ClipFixtureError) as caught:
@@ -161,14 +185,14 @@ class VendorDeterminismTests(unittest.TestCase):
         self.assertTrue(determinism_for((first, second)))
         self.assertEqual(
             regeneration_problems(
-                clip_plan_for(fixture.voice), fixture, second, byte_identity_required=True
+                plan_for_fixture(fixture), fixture, second, byte_identity_required=True
             ),
             [],
         )
 
     def test_a_byte_difference_with_matching_binding_and_level_is_not_a_failure(self):
         fixture = load_fixture("anna-en")
-        plan = clip_plan_for(fixture.voice)
+        plan = plan_for_fixture(fixture)
         regenerated = replay("anna-en")
 
         # Same samples, another order: a different file with the same voice,
@@ -205,7 +229,7 @@ class IdentityDriftTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self.fixture = load_fixture("anna-en")
-        self.plan = clip_plan_for(self.fixture.voice)
+        self.plan = plan_for_fixture(self.fixture)
         self.regenerated = replay("anna-en")
 
     def problems(self, *, plan=None, fixture=None, regenerated=None, pinned=False):
@@ -217,8 +241,8 @@ class IdentityDriftTests(unittest.TestCase):
         )
 
     def test_a_changed_voice_fails_by_name(self):
-        problems = self.problems(plan=clip_plan_for("lola"))
-        self.assertTrue(any("binding" in problem and "lola" in problem for problem in problems), problems)
+        problems = self.problems(plan=clip_plan_for("malvina"))
+        self.assertTrue(any("binding" in problem and "malvina" in problem for problem in problems), problems)
 
     def test_a_changed_locale_fails_by_name(self):
         problems = self.problems(fixture=replace(self.fixture, locale="es"))
@@ -273,7 +297,7 @@ class KeyGateTests(unittest.TestCase):
                 with self.assertRaises(ClipRegenerationError) as caught:
                     asyncio.run(
                         regenerate_live(
-                            clip_plan_for("anna"),
+                            plan_for_fixture(load_fixture("anna-en")),
                             out_dir=directory,
                             generated_on="2026-10-30",
                         )
@@ -296,7 +320,7 @@ class KeyGateTests(unittest.TestCase):
         self.assertNotIn("pcm", document, "evidence carries facts, never audio bytes")
 
     def fixture_plan(self):
-        return clip_plan_for("anna")
+        return plan_for_fixture(load_fixture("anna-en"))
 
 
 class FixtureDriftTests(unittest.TestCase):
