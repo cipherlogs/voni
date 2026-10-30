@@ -1,0 +1,58 @@
+{
+  "recordVersion": 1,
+  "host": "northflank",
+  "project": "voni",
+  "service": {
+    "name": "voice-pipeline",
+    "type": "combined",
+    "build": {
+      "type": "dockerfile",
+      "dockerfile": "/voice-pipeline/Dockerfile",
+      "context": "/",
+      "branch": "main"
+    },
+    "deploy": {
+      "plan": "nf-compute-50",
+      "instances": 1,
+      "region": "us-east-1"
+    }
+  },
+  "ports": [
+    {
+      "name": "http",
+      "internalPort": 8766,
+      "protocol": "HTTP2",
+      "public": true
+    }
+  ],
+  "healthCheck": {
+    "type": "liveness",
+    "protocol": "HTTP",
+    "method": "GET",
+    "path": "/healthz",
+    "port": 8766,
+    "initialDelaySeconds": 20,
+    "periodSeconds": 15,
+    "timeoutSeconds": 3,
+    "failureThreshold": 3
+  },
+  "terminationGracePeriodSeconds": 30,
+  "database": {
+    "name": "voni-store",
+    "type": "postgres",
+    "env": "DATABASE_URL"
+  },
+  "volumes": [
+    {
+      "name": "voice-events",
+      "mountPath": "/var/lib/voni",
+      "sizeGb": 1,
+      "accessMode": "ReadWriteOnce"
+    }
+  ],
+  "env": {
+    "VOICE_PIPELINE_PORT": "8766",
+    "VOICE_PIPELINE_EVENTS_DIR": "/var/lib/voni/events",
+    "VOICE_PIPELINE_TOOL_BASE_URL": "https://app.voni.cc"
+  }
+}
