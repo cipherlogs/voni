@@ -82,6 +82,7 @@ from typing import Any
 
 from cascade import llm_override
 from cascade.llm_override import LlmOverride
+from cascade.thresholds import require_bound
 from cascade.voice_binding import LOCALES, VoiceBinding, bind_voice
 
 # A body path that is absent, or a field name that maps to nothing.
@@ -445,6 +446,58 @@ def read_llm_override(body: Mapping[str, Any]) -> LlmOverride | None:
     return _llm("llm", body.get("llm", _MISSING))
 
 
+#: The hold-return history bound: the most recent turns a resumed signed body
+#: may carry. Read from the pipeline registry, never a literal here.
+RESUME_HISTORY_BOUND = "resume.history_turns"
+
+#: The only roles a carried turn may name. A note is hidden context, not a
+#: settled turn, so it can never be replayed as history.
+HISTORY_ROLES = ("user", "assistant")
+
+
+def _history(path: str, value: object) -> tuple[dict[str, str], ...]:
+    """The resumed call's bounded recent turns, in conversation order.
+
+    The app signs this list, so a fresh call must not send it and a resumed one
+    must stay inside the registry's bound. Only ``role``/``content`` are
+    accepted: a field that could smuggle a system note or a tool call into the
+    model's history is refused by name.
+    """
+    if value is _MISSING or value is None:
+        return ()
+    if not isinstance(value, (list, tuple)):
+        raise BodyFieldError(path, f"expected a list of turns, got {type(value).__name__}")
+    limit = require_bound(RESUME_HISTORY_BOUND)
+    if len(value) > limit:
+        raise BodyFieldError(
+            path,
+            f"carries {len(value)} turns; the recorded bound is {limit}",
+        )
+    messages: list[dict[str, str]] = []
+    for index, message in enumerate(value):
+        where = f"{path}[{index}]"
+        if not isinstance(message, Mapping):
+            raise BodyFieldError(
+                where, f"expected a turn object, got {type(message).__name__}"
+            )
+        unknown = sorted(set(message) - {"role", "content"})
+        if unknown:
+            raise BodyFieldError(
+                where, f'unknown key "{unknown[0]}"; a turn carries role and content only'
+            )
+        role = message.get("role")
+        if role not in HISTORY_ROLES:
+            raise BodyFieldError(
+                where,
+                f'role must be one of {", ".join(HISTORY_ROLES)}, got {role!r}',
+            )
+        content = message.get("content")
+        if not isinstance(content, str) or not content.strip():
+            raise BodyFieldError(where, "content must be a non-empty string")
+        messages.append({"role": role, "content": content})
+    return tuple(messages)
+
+
 FIELD_MAP: Mapping[str, MappedField] = MappingProxyType(
     {
         # The prompt's own map: sent unchanged as the system message.
@@ -461,6 +514,8 @@ FIELD_MAP: Mapping[str, MappedField] = MappingProxyType(
         "tools": MappedField("tools", _tools),
         # At most one provider entry; [] is the revert to the default rung.
         "llm": MappedField("llm", _llm),
+        # A hold return's recent settled turns, seeded into the model history.
+        "history": MappedField("history", _history),
     }
 )
 
@@ -597,6 +652,8 @@ class CascadeBody:
     tools: tuple[dict[str, Any], ...]
     # The body's one provider entry, or None for the default Meta rung.
     llm: LlmOverride | None
+    # A hold return's bounded recent turns, already validated (role/content).
+    history: tuple[dict[str, str], ...]
     # Every ignored field the served body carried, with its reason. Not a
     # setting: the record exists so an ignored field is visible on the call.
     ignored: tuple[IgnoredField, ...]

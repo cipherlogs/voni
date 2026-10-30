@@ -521,6 +521,16 @@ class MessageHistory:
         self._messages: list[dict[str, Any]] = []
         self._hidden: list[str] = []
 
+    def seed(self, history: Sequence[Mapping[str, Any]]) -> None:
+        """Start the conversation from a resumed call's carried turns.
+
+        The signed body adapter has already validated role/content; this copy
+        keeps the caller's list immutable and in order. Seeded turns are real
+        conversation, so they precede every new user turn and hidden note.
+        """
+        for message in history:
+            self._messages.append(dict(message))
+
     @property
     def messages(self) -> tuple[dict[str, Any], ...]:
         """The recorded conversation, without system prompt or hidden context."""

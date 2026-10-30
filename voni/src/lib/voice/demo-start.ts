@@ -3,6 +3,7 @@ import {
   type CascadeCallConfig,
 } from "./cascade-session";
 import { demoMint, type DemoMint, type DemoMintFetcher } from "./demo-mint";
+import type { ResumeMessage } from "./resume-history";
 
 /**
  * The demo's cascade start (demo-cascade ticket 10).
@@ -34,6 +35,8 @@ export type DemoStartInput = {
   callToken?: string;
   /** The visitor's Test tag, kept a day by the browser. */
   tagToken?: string;
+  /** The hold return's bounded recent turns, already in conversation order. */
+  history?: readonly ResumeMessage[];
 };
 
 export type DemoStartDeps = {
@@ -69,6 +72,9 @@ export async function startDemoCall(
     ...(input.resume === true ? { resume: true } : {}),
     ...(input.callToken ? { callToken: input.callToken } : {}),
     ...(input.tagToken ? { tagToken: input.tagToken } : {}),
+    ...(input.resume === true && input.history && input.history.length > 0
+      ? { history: input.history }
+      : {}),
   });
   await call.start(demoCascadeConfig(minted), "voice-call");
   return minted;

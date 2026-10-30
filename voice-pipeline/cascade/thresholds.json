@@ -234,6 +234,15 @@
       "source": "owner decision 2026-10-30 (ticket 04): short-lived call token, refused after expiry at connect",
       "date": "2026-10-30"
     },
+    "resume.history_turns": {
+      "unit": "count",
+      "gate": "hold.resume-history",
+      "ticket": "13",
+      "note": "A hold return re-mints the signed body for the same call id; this is the most recent turns it may carry. The app bounds the body it signs, and the body adapter refuses more than this. It stays well inside the model window and covers a two-minute demo exchange.",
+      "value": 12,
+      "source": "demo-cascade ticket 13 (2026-10-31): a resumed call continues from its Call memory instead of starting blank",
+      "date": "2026-10-31"
+    },
     "playout.cushion_ms": {
       "unit": "ms",
       "gate": "spike.report",

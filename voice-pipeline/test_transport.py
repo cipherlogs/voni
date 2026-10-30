@@ -25,6 +25,7 @@ from unittest import mock
 from cascade.body_map import adapt_body, body_fingerprint
 from cascade.call import CallLifecycle
 from cascade.envelope import sign_body
+from cascade.events import CallEventLog, EventStream, EventWriter, OperationalEvents
 from cascade.meta_llm import MetaLLMTurn, TurnUsage
 from cascade.meta_stt import SpeechComplete, SpeechStart
 from cascade.routing import KEY as ROUTING_KEY
@@ -1181,6 +1182,124 @@ class LegBuilderTests(unittest.TestCase):
 
         handshake = json.loads(socket.sent[0])
         self.assertEqual(["Spanish"], handshake["languageBias"])
+
+
+class HoldReturnTests(unittest.TestCase):
+    """A hold return re-mints a token and body for the same call id.
+
+    The service accepts the fresh token after the first socket released its
+    claim, runs the greeting-less resumed body, carries the history into the
+    first model request, and appends to the same call-scoped trace file. No
+    vendor socket and no database: the transport's own fakes.
+    """
+
+    def test_a_re_minted_token_reclaims_the_same_call_and_continues_its_trace(self):
+        first_token = mint_call_token(
+            secret=SECRET,
+            call_id=DEMO_CALL_ID,
+            subject=DEMO_SUBJECT,
+            clock=CLOCK,
+            nonce="demo-hold-first",
+        )
+        second_token = mint_call_token(
+            secret=SECRET,
+            call_id=DEMO_CALL_ID,
+            subject=DEMO_SUBJECT,
+            clock=CLOCK,
+            nonce="demo-hold-second",
+        )
+        registry = token_registry()
+
+        fresh_body = json.loads(json.dumps(BODY))
+        resumed_body = json.loads(json.dumps(BODY))
+        resumed_body.pop("greeting")
+        history = [
+            {"role": "user", "content": "We run a bakery in Lisbon."},
+            {"role": "assistant", "content": "What is your busiest hour?"},
+        ]
+        resumed_body["history"] = history
+
+        with tempfile.TemporaryDirectory() as directory:
+            def events_for(call_id, subject, *, kind=None):
+                writer = EventWriter(pipeline="cascade", call_id=call_id)
+                sink = CallEventLog(directory, call_id=call_id)
+                return OperationalEvents(
+                    EventStream(writer, sink=sink, subject_kind=kind),
+                    subject=subject,
+                    now=CLOCK,
+                )
+
+            inbound = lambda token: [  # noqa: E731 - one shape for both calls
+                browser_config(agentId=DEMO_SUBJECT, callToken=token),
+                audio_message(),
+                {"type": "stop"},
+            ]
+            events = [SpeechStart("t1"), SpeechComplete("hola", turn_id="t1")]
+
+            first_ws, first_legs, _ = run_call(
+                inbound(first_token),
+                events,
+                channel=delivered_channel(
+                    fresh_body,
+                    token=first_token,
+                    call_id=DEMO_CALL_ID,
+                    agent_id=DEMO_SUBJECT,
+                    kind="demo",
+                ),
+                call_tokens=registry,
+                operational_events=events_for,
+            )
+            second_ws, second_legs, _ = run_call(
+                inbound(second_token),
+                events,
+                channel=delivered_channel(
+                    resumed_body,
+                    token=second_token,
+                    call_id=DEMO_CALL_ID,
+                    agent_id=DEMO_SUBJECT,
+                    kind="demo",
+                ),
+                call_tokens=registry,
+                operational_events=events_for,
+            )
+
+            # The fresh token is accepted for the same call after the first
+            # socket released its claim; the old token is never reused.
+            self.assertNotEqual(first_token, second_token)
+            self.assertEqual(registry.live_call_ids(), (), "both sockets are done")
+            self.assertEqual(
+                [m["type"] for m in first_ws.sent if m["type"] == "end"], ["end"]
+            )
+            self.assertEqual(
+                [m["type"] for m in second_ws.sent if m["type"] == "end"], ["end"]
+            )
+
+            # The resumed body's history is the first model request, so the
+            # next reply continues instead of starting blank. The fresh body
+            # opened with its greeting; the resumed one did not.
+            self.assertEqual(second_legs[0].model.requests[0][: len(history)], history)
+            self.assertEqual(
+                second_legs[0].model.requests[0][-1],
+                {"role": "user", "content": "hola"},
+                "the new turn follows the carried conversation",
+            )
+            self.assertEqual(first_legs[0].voice.greeted, ["Hola."])
+            self.assertEqual(second_legs[0].voice.greeted, [])
+
+            # One call id, one trace file: both runs appended to it.
+            traces = sorted(Path(directory).glob("*.jsonl"))
+            self.assertEqual(len(traces), 1, "no second call record")
+            lines = [
+                json.loads(line)
+                for line in traces[0].read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            self.assertTrue(lines, "the resumed call left trace lines")
+            self.assertEqual({line["callId"] for line in lines}, {DEMO_CALL_ID})
+            self.assertTrue(
+                any(line["type"] == "greeting.start" for line in lines),
+                "the first call's opening is in the same trace",
+            )
 
 
 if __name__ == "__main__":

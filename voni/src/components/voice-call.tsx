@@ -52,6 +52,7 @@ import { deliveredCaptureRequested } from "@/lib/voice/delivered-capture";
 import { CascadeSession, CASCADE_PROTOCOL_VERSION, decideCascadeFallback } from "@/lib/voice/cascade-session";
 import { demoUnavailableMessage } from "@/lib/voice/cascade-failure-view";
 import { startDemoCall } from "@/lib/voice/demo-start";
+import { boundedResumeHistory } from "@/lib/voice/resume-history";
 import { FILLER_POOL, isEndCallRequest, requestVoiceJudge } from "@/lib/voice/jev-judges";
 import { callRecognition } from "@/lib/voice/recognition";
 import { compileSystemPrompt } from "@/lib/agents/compile";
@@ -105,6 +106,7 @@ import {
   saveCallMemory,
   shouldParkOnDrop,
   shouldRejoinAfterHold,
+  type HoldReturn,
   type HoldSessionStatus,
 } from "@/lib/demo/hold";
 import { StakesLadder } from "@/lib/demo/stakes-ladder";
@@ -725,13 +727,13 @@ export function VoiceCall({
       if (modeKind !== "demo") return;
       if (closingRef.current || holdEndedRef.current) return;
       const session = sessionRef.current;
-      if (!(session instanceof VoiceSession)) return;
+      if (!(session instanceof VoiceSession) && !(session instanceof CascadeSession)) return;
       const st = stateRef.current;
       if (st !== "listening" && st !== "speaking" && st !== "reconnecting") return;
       const hold = (holdRef.current ??= new HoldState());
       if (!hold.enter(at)) return;
       clockRef.current?.setHeld(true, at);
-      session.setOnHold(true);
+      if (session instanceof VoiceSession) session.setOnHold(true);
       holdingRef.current = true;
       setHolding(true);
       saveMemory();
@@ -752,9 +754,10 @@ export function VoiceCall({
     const now = Date.now();
     const session = sessionRef.current;
     const voice = session instanceof VoiceSession ? session : null;
+    const cascade = session instanceof CascadeSession ? session : null;
     const parkedMs = voice?.parkedForMs(now) ?? null;
     const st = stateRef.current;
-    const status: HoldSessionStatus = !voice
+    const status: HoldSessionStatus = !voice && !cascade
       ? "gone"
       : st === "listening" || st === "speaking"
         ? "live"
@@ -763,11 +766,19 @@ export function VoiceCall({
             ? "parked"
             : "reconnecting"
           : "gone";
-    const next = decideHoldReturn({
-      heldMs: hold.holdSeconds(now) * 1000,
-      status,
-      droppedMs: parkedMs ?? undefined,
-    });
+    // A cascade hold return always re-mints: the old socket may be frozen, and
+    // the new signed body carries the recent turns for the same call id. An
+    // expired hold still ends politely. The managed session keeps its own
+    // resume/park behaviour.
+    const next: HoldReturn = cascade
+      ? hold.isExpired(now)
+        ? "endCapped"
+        : "rejoin"
+      : decideHoldReturn({
+          heldMs: hold.holdSeconds(now) * 1000,
+          status,
+          droppedMs: parkedMs ?? undefined,
+        });
     hold.exit(now);
     holdingRef.current = false;
     setHolding(false);
@@ -1399,6 +1410,10 @@ export function VoiceCall({
             resume: preserving,
             callToken: callTokenRef.current ?? undefined,
             tagToken: loadTagToken(),
+            // A hold return carries the recent settled turns in the signed
+            // body; a fresh call starts blank. The bound lives in the pipeline
+            // registry, not in this component (ticket 13).
+            history: preserving ? boundedResumeHistory(turnsRef.current) : undefined,
           });
           callTokenRef.current = minted.demoCallToken;
           if (minted.tagToken) saveTagToken(minted.tagToken);

@@ -331,6 +331,10 @@ test("a hold rejoin keeps the call id and drops the greeting", async () => {
   const first = await readJson(await app.handler(mintRequest({ voiceId: "jorg" })));
   const callId = verifyDemoCall(KEY, String(first.demoCallToken), NOW)?.callId;
   assert.ok(callId);
+  const history = [
+    { role: "user", content: "Wir backen Brot." },
+    { role: "assistant", content: "Sehr schön — wo?" },
+  ];
 
   const second = await readJson(
     await app.handler(
@@ -339,6 +343,7 @@ test("a hold rejoin keeps the call id and drops the greeting", async () => {
         resume: true,
         callToken: first.demoCallToken,
         tagToken: first.tagToken,
+        history,
       }),
     ),
   );
@@ -353,8 +358,10 @@ test("a hold rejoin keeps the call id and drops the greeting", async () => {
   assert.equal(secondDelivery.callId, callId, "the delivery names the resumed call");
   const resumedBody = (secondDelivery.signedBody as { body: Record<string, unknown> }).body;
   assert.equal("greeting" in resumedBody, false, "the welcome-back is the first utterance");
+  assert.deepEqual(resumedBody.history, history, "the recent turns ride in the signed body");
   const freshBody = (firstDelivery.signedBody as { body: Record<string, unknown> }).body;
   assert.equal(freshBody.greeting, VONI_GREETINGS.de);
+  assert.equal("history" in freshBody, false, "a fresh call starts blank");
 });
 
 test("a rejoin without a valid previous call token is refused, not guessed", async () => {

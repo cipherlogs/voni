@@ -446,6 +446,44 @@ test("the inline test call keeps its one managed retry", () => {
   assert.match(handler, /setCallState\("ended"\)/);
 });
 
+test("a cascade hold return re-mints the same call with resume and carried history", () => {
+  const call = readRepo("components/voice-call.tsx");
+
+  // Hold entry works for the cascade transport too (the demo is cascade-only).
+  const enter = call.slice(
+    call.indexOf("const enterHold = useCallback"),
+    call.indexOf("const exitHold = useCallback"),
+  );
+  assert.match(
+    enter,
+    /if \(!\(session instanceof VoiceSession\) && !\(session instanceof CascadeSession\)\) return;/,
+    "both transports hold",
+  );
+  assert.match(enter, /if \(session instanceof VoiceSession\) session\.setOnHold\(true\);/);
+  assert.match(enter, /clockRef\.current\?\.setHeld\(true, at\)/);
+
+  // A cascade return never reuses the old socket or token: it re-mints the
+  // same call id with a greeting-less body and the carried history.
+  const exit = call.slice(
+    call.indexOf("const exitHold = useCallback"),
+    call.indexOf("// Hold cap while away"),
+  );
+  assert.match(exit, /const cascade = session instanceof CascadeSession/);
+  assert.match(exit, /const next: HoldReturn = cascade[\s\S]{0,160}?"rejoin"/);
+  assert.match(exit, /carryoverRef\.current = buildHoldCarryover\(turnsRef\.current\)/);
+  assert.match(exit, /preserveRef\.current = true/);
+  assert.match(exit, /void startRef\.current\(\)/);
+
+  const demoStart = call.slice(
+    call.indexOf('if (modeKind === "demo") {'),
+    call.indexOf("const session = new VoiceSession({"),
+  );
+  assert.match(demoStart, /resume: preserving/);
+  assert.match(demoStart, /callToken: callTokenRef\.current \?\? undefined/);
+  assert.match(demoStart, /history: preserving \? boundedResumeHistory\(turnsRef\.current\) : undefined/);
+  assert.match(call, /import \{ boundedResumeHistory \} from "@\/lib\/voice\/resume-history"/);
+});
+
 test("the demo start is the cascade client: one mint, no managed session", () => {
   const call = readRepo("components/voice-call.tsx");
 

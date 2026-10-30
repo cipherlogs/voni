@@ -581,6 +581,7 @@ async def handle_browser_call(
                 on_interrupted=browser.interrupted,
                 on_turn_billed=on_turn_billed,
                 on_end_call=on_end_call,
+                history=body.history,
             )
             lifecycle = CallLifecycle(
                 message={

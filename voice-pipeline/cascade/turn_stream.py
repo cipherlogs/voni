@@ -103,6 +103,7 @@ class CascadeTurnStream:
         on_interrupted: InterruptSink | None = None,
         on_turn_billed: BilledSink | None = None,
         on_end_call: EndCallSink | None = None,
+        history: Sequence[Mapping[str, Any]] = (),
     ) -> None:
         self._llm = llm
         self._tts = tts
@@ -128,8 +129,10 @@ class CascadeTurnStream:
             stall_guard_ms=stall_guard_ms,
         )
         # The system prompt belongs to the model client; this history holds the
-        # conversation and the browser's hidden context only.
+        # conversation and the browser's hidden context only. A hold return
+        # seeds it with the signed body's carried turns.
         self._history = MessageHistory()
+        self._history.seed(history)
         self._tool_loop: ToolLoop | None = None
 
         self._reply_task: asyncio.Task | None = None

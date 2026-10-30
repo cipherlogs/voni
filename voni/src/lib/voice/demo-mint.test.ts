@@ -43,9 +43,18 @@ function fetchStub(reply: Response): { calls: Array<{ url: string; init: Request
 
 test("the demo mint returns exactly the nine fields the route promises", async () => {
   const http = fetchStub(response(MINTED));
+  const history = [
+    { role: "user" as const, content: "We make bread." },
+    { role: "assistant" as const, content: "Lovely — where?" },
+  ];
   const minted = await demoMint(
     "audrey",
-    { resume: true, callToken: MINTED.demoCallToken, tagToken: "tag-token" },
+    {
+      resume: true,
+      callToken: MINTED.demoCallToken,
+      tagToken: "tag-token",
+      history,
+    },
     { fetch: http.fetch },
   );
 
@@ -67,6 +76,7 @@ test("the demo mint returns exactly the nine fields the route promises", async (
     resume: true,
     callToken: MINTED.demoCallToken,
     tagToken: "tag-token",
+    history,
   });
 });
 
