@@ -47,6 +47,14 @@ budget is the ticket-94 :class:`~cascade.reconnect.ReconnectBudget` the adapters
 use; the call reports it and never counts a failure a second time, and a
 planned reconnect is never a failure.
 
+The per-call ceiling (ticket 105) is checked after every billable unit the turn
+layer reports. It prices ticket 100's recorded units with ticket 101's rate
+table, never an estimate. A breach drains the call, speaks the same localized
+goodbye, records ``budget_stopped`` and allows no new model or voice request
+except that goodbye; the goodbye's own recorded cost cannot re-trigger the
+ceiling. A day with unmeasured units is not read as zero and takes no false
+stop, while a measured floor already at the ceiling is a proved breach.
+
 Every frame the call emits has one monotonic ``seq`` that belongs to the call,
 not to the TTS ``flush_id`` and not to the provider session (ticket 98).
 :class:`CallSequence` never resets, a reconnect advances only the epoch, and
@@ -76,6 +84,7 @@ import logging
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from types import MappingProxyType
 from typing import Any, Protocol
 
@@ -116,12 +125,19 @@ BOUNDED_WAITS: dict[str, tuple[str, str]] = {
 #: ``thresholds.json``; this module never restates it).
 DRAIN_BOUND = BOUNDED_WAITS["drain"][0]
 
+#: The per-call ceiling (ticket 105). The value is ticket 04's supplied open
+#: threshold; this module reads it by name and never invents a number.
+CEILING_BOUND = "budget.per_call_ceiling"
+
+#: The ledger mark a ceiling breach records, once per call.
+BUDGET_STOP_MARK = "budget_stopped"
+
 #: The three call-level legs, in table order.
 LEGS: tuple[str, ...] = ("stt", "llm", "tts")
 
 #: How a call ended: the browser said stop, the socket dropped, the body was
-#: refused, or a vendor/stream failure ended it.
-ENDED_BY = ("stop", "dropped", "refused", "error")
+#: refused, a vendor/stream failure ended it, or its own ceiling stopped it.
+ENDED_BY = ("stop", "dropped", "refused", "error", "budget")
 
 #: The line the caller hears when a second failure ends a call, one per Locale
 #: the catalogue can bind (ticket 99). It is the goodbye analogue of the
@@ -846,12 +862,20 @@ class CallEnd:
     error: CallFailure | None = None
     goodbye: GoodbyeOutcome | None = None
     reconnects: Mapping[str, Any] | None = None
+    budget: BudgetStop | None = None
 
     def __post_init__(self) -> None:
         if self.ended_by not in ENDED_BY:
             raise ValueError(
                 f"unknown call ending {self.ended_by!r}; expected one of {ENDED_BY}"
             )
+        if self.budget is not None and self.ended_by != "budget":
+            raise ValueError(
+                "a call that carries a budget stop must end on it, got "
+                f"{self.ended_by!r}"
+            )
+        if self.ended_by == "budget" and self.budget is None:
+            raise ValueError("a call ended by its ceiling must carry the stop facts")
 
     def to_document(self) -> dict[str, Any]:
         document: dict[str, Any] = {
@@ -866,6 +890,8 @@ class CallEnd:
             "drain": self.drain.to_document(),
             "bounds": [outcome.to_document() for outcome in self.bounds],
         }
+        if self.budget is not None:
+            document["budget"] = self.budget.to_document()
         if self.reconnects is not None:
             document["reconnect"] = dict(self.reconnects)
         if self.greeting is not None:
@@ -875,6 +901,129 @@ class CallEnd:
         if self.error is not None:
             document["error"] = self.error.to_document()
         return document
+
+
+@dataclass(frozen=True)
+class BudgetStop:
+    """One per-call ceiling breach, as the end message and alert reader see it.
+
+    ``spend_usd`` is ticket 101's priced amount so far, never an estimate and
+    never a partial sum presented as a complete cost. ``measured`` says whether
+    every leg had reported; when it is false, ``spend_usd`` is a proved lower
+    bound (the measured legs alone are over the ceiling) and the unmeasured
+    remainder is named, not counted as zero.
+    """
+
+    spend_usd: float
+    ceiling_usd: float
+    measured: bool
+    reasons: tuple[str, ...] = ()
+    turn: str | None = None
+
+    def __post_init__(self) -> None:
+        for name, value in (
+            ("spend_usd", self.spend_usd),
+            ("ceiling_usd", self.ceiling_usd),
+        ):
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError(f"{name} must be a number, got {value!r}")
+            if value < 0 or value != value:
+                raise ValueError(
+                    f"{name} must be a finite non-negative amount, got {value!r}"
+                )
+        if self.ceiling_usd <= 0:
+            raise ValueError(
+                f"a per-call ceiling must be positive, got {self.ceiling_usd!r}"
+            )
+
+    @property
+    def reason(self) -> str:
+        base = (
+            f"the call's priced spend reached {self.spend_usd:.8f} USD, at or "
+            f"over the {self.ceiling_usd:.8f} USD per-call ceiling; the call "
+            "drains instead of truncating speech"
+        )
+        if self.measured:
+            return base
+        detail = "; ".join(self.reasons) or "some legs are unmeasured"
+        return f"{base} (the measured legs alone prove the breach; {detail})"
+
+    def to_document(self) -> dict[str, Any]:
+        return {
+            "mark": BUDGET_STOP_MARK,
+            "spendUsd": self.spend_usd,
+            "ceilingUsd": self.ceiling_usd,
+            "measured": self.measured,
+            "turn": self.turn,
+            "unmeasuredReason": "" if self.measured else "; ".join(self.reasons),
+            "reason": self.reason,
+        }
+
+
+def _ceiling_limit(value: Any) -> Decimal:
+    """A positive USD ceiling, from the registry or an explicit test value."""
+    if isinstance(value, bool):
+        raise ValueError(f"a per-call ceiling cannot be a boolean: {value!r}")
+    try:
+        limit = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        raise ValueError(
+            f"a per-call ceiling must be a decimal amount, got {value!r}"
+        ) from None
+    if not limit.is_finite() or limit <= 0:
+        raise ValueError(
+            f"a per-call ceiling must be a finite positive amount, got {value!r}"
+        )
+    return limit
+
+
+class CallCeiling:
+    """One call's ceiling, evaluated against ticket 101's priced units.
+
+    The check is deliberately conservative about missing units: a measured
+    lower bound that is already at the ceiling ends the call, because the
+    unknown remainder can only add; a day with nothing measured yet does not
+    stop (an unknown is never a zero, and never a false stop). Once breached the
+    guard latches, so the goodbye's own recorded cost cannot re-trigger it.
+    """
+
+    def __init__(
+        self,
+        limit: Any,
+        *,
+        table: RateTable | None = None,
+        bound: str = CEILING_BOUND,
+    ) -> None:
+        self.ceiling = _ceiling_limit(limit)
+        self.table = table
+        self.bound = bound
+        self._stopped = False
+
+    @property
+    def stopped(self) -> bool:
+        return self._stopped
+
+    def evaluate(self, meter: UsageMeter, *, turn: str | None = None) -> BudgetStop | None:
+        """``None`` while the call is inside the ceiling; a stop once it is not."""
+        if self._stopped:
+            return None
+        priced = cost_call(meter.usage(), table=self.table)
+        measured = [
+            leg.amount for leg in priced.legs if leg.amount is not None
+        ]
+        if not measured:
+            return None
+        spend = sum(measured, Decimal(0))
+        if spend < self.ceiling:
+            return None
+        self._stopped = True
+        return BudgetStop(
+            spend_usd=float(spend),
+            ceiling_usd=float(self.ceiling),
+            measured=priced.measured,
+            reasons=priced.reasons,
+            turn=turn,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -915,6 +1064,8 @@ class CallLifecycle:
         cost_meter: CostMeter | None = None,
         usage_meter: UsageMeter | None = None,
         cost_table: RateTable | None = None,
+        ceiling_usd: Any = None,
+        on_budget_stopped: Callable[[BudgetStop], None] | None = None,
         eligibility: EligibilityDecision | None = None,
         chime: Callable[[], None] | None = None,
         reconnect_budget: ReconnectBudget | None = None,
@@ -957,6 +1108,16 @@ class CallLifecycle:
         # with a fabricated zero.
         self.usage_meter = usage_meter if usage_meter is not None else UsageMeter()
         self._cost_table = cost_table
+        #: Turns whose vendor usage this call has already recorded, so a live
+        #: ceiling check and the end-of-call meter cannot count one turn twice.
+        self._recorded_turns: set[str] = set()
+        #: Ticket 105's per-call ceiling: explicit in tests, otherwise read by
+        #: name from `cascade.thresholds` at the first billable unit.
+        self._ceiling_usd = ceiling_usd
+        self._ceiling: CallCeiling | None = None
+        self._ceiling_loaded = False
+        self._budget_stop: BudgetStop | None = None
+        self._on_budget_stopped = on_budget_stopped
         self._usage_error: str | None = None
         self._eligibility = eligibility
         #: The call's one reconnect ledger (ticket 94). The adapters are given
@@ -1068,11 +1229,21 @@ class CallLifecycle:
         # for browser input instead of leaving a dead line open. It is the only
         # way a call ends without the browser asking (ticket 99).
         failure_event = asyncio.Event()
+        # A ceiling breach is not a leg failure: it ends the call on its own
+        # named outcome, after a drain and the localized goodbye (ticket 105).
+        budget_event = asyncio.Event()
 
         async def deliver(event: Any) -> None:
             async with delivery_lock:
                 if streaming:
+                    if self._budget_stop is not None:
+                        # No new turn work after the breach; the goodbye is the
+                        # one request still allowed, and it is made below.
+                        return
                     await self._stream.event(event)
+                    self._record_turn_usage()
+                    if self._check_ceiling() is not None:
+                        budget_event.set()
                 else:
                     buffered_events.append(event)
 
@@ -1135,6 +1306,7 @@ class CallLifecycle:
         receive_task = asyncio.ensure_future(receive())
         barge_task = asyncio.ensure_future(barge.wait())
         failure_task = asyncio.ensure_future(failure_event.wait())
+        budget_task = asyncio.ensure_future(budget_event.wait())
 
         ended_by = "dropped"
         failure: CallFailure | None = None
@@ -1148,12 +1320,14 @@ class CallLifecycle:
                     receive_task,
                     barge_task,
                     failure_task,
+                    budget_task,
                 )
                 if task is not None
             ]
             while not (
                 barge.is_set()
                 or failure_event.is_set()
+                or budget_event.is_set()
                 or receive_task.done()
                 or (greeting_gate is not None and greeting_gate.done())
                 or (greeting_task is not None and greeting_task.done())
@@ -1210,19 +1384,31 @@ class CallLifecycle:
                     stream_started = True
                     async with delivery_lock:
                         for event in buffered_events:
+                            if self._budget_stop is not None:
+                                break
                             await self._stream.event(event)
+                            self._record_turn_usage()
+                            if self._check_ceiling() is not None:
+                                budget_event.set()
+                                break
                         buffered_events.clear()
                         for text in buffered_contexts:
+                            if self._budget_stop is not None:
+                                break
                             await self._stream.context(text)
                         buffered_contexts.clear()
                         streaming = True
                     stage = "call"
-                    if not failure_event.is_set():
+                    if not failure_event.is_set() and not budget_event.is_set():
                         await asyncio.wait(
-                            (receive_task, failure_task),
+                            (receive_task, failure_task, budget_task),
                             return_when=asyncio.FIRST_COMPLETED,
                         )
-                    if failure_event.is_set():
+                    if budget_event.is_set():
+                        # The call's own ceiling ended it; there is no leg
+                        # failure and no fallback event to record.
+                        ended_by = "budget"
+                    elif failure_event.is_set():
                         # A leg failure ended the call: do not wait for the
                         # caller to hang up a line that is already dead.
                         ended_by = "error"
@@ -1239,13 +1425,13 @@ class CallLifecycle:
             failure = _failure(stage, error)
             ended_by = "error"
 
-        for task in (barge_task, greeting_gate, failure_task):
+        for task in (barge_task, greeting_gate, failure_task, budget_task):
             if task is not None:
                 task.cancel()
         await asyncio.gather(
             *[
                 task
-                for task in (barge_task, greeting_gate, failure_task)
+                for task in (barge_task, greeting_gate, failure_task, budget_task)
                 if task is not None
             ],
             return_exceptions=True,
@@ -1256,8 +1442,9 @@ class CallLifecycle:
             receive_task=receive_task,
             drain_stream=stream_started,
             failure=failure,
+            budget_stop=self._budget_stop,
         )
-        if self._event_failure is not None:
+        if self._event_failure is not None and ended_by != "budget":
             if failure is None:
                 failure = self._event_failure
                 ended_by = "error"
@@ -1364,14 +1551,17 @@ class CallLifecycle:
         receive_task: asyncio.Future | None = None,
         drain_stream: bool = True,
         failure: CallFailure | None = None,
+        budget_stop: BudgetStop | None = None,
     ) -> DrainOutcome:
-        """Drain the turn layer, say the failure goodbye, then close every leg.
+        """Drain the turn layer, say the ending line, then close every leg.
 
         ``drain_stream`` is false when the call never reached the turn layer:
         there is nothing to drain, only sockets to unwind. The goodbye is
         spoken only for a call-ending leg failure and only through a voice that
         is still open (ticket 99); a voice second failure ends with no goodbye
-        because there is no voice left to speak it.
+        because there is no voice left to speak it. A per-call ceiling breach
+        ends the same way, with the drain finishing the current speech rather
+        than cutting it mid-word (ticket 105).
         """
         failure_outcome = (
             await self._bounded("drain", self._stream.drain)
@@ -1396,9 +1586,17 @@ class CallLifecycle:
         # after the reply has drained and before the synthesis socket is closed.
         # A call that never got past the opening has no second failure to say
         # goodbye to, and its greeting failure is already named on the message.
-        if failure is not None and failure.stage != "greeting":
+        # A ceiling breach is the other reason to say one; it is not a leg
+        # failure, so it is passed separately (ticket 105).
+        ends_with_goodbye = (
+            budget_stop is not None
+            or (failure is not None and failure.stage != "greeting")
+        )
+        if ends_with_goodbye:
             try:
-                await self._speak_goodbye(by_leg.get("tts"), failure)
+                await self._speak_goodbye(
+                    by_leg.get("tts"), failure, budget_stop=budget_stop
+                )
             except Exception as error:  # the end message must still go out
                 self._goodbye = GoodbyeOutcome(
                     spoken=False,
@@ -1417,18 +1615,23 @@ class CallLifecycle:
         return DrainOutcome(failure_outcome is None, failure_outcome)
 
     async def _speak_goodbye(
-        self, voice_leg: OpenedLeg | None, failure: CallFailure
+        self,
+        voice_leg: OpenedLeg | None,
+        failure: CallFailure | None,
+        *,
+        budget_stop: BudgetStop | None = None,
     ) -> GoodbyeOutcome | None:
-        """Speak the localized goodbye for a second failure, or record why not.
+        """Speak the localized goodbye, or record why it cannot be spoken.
 
         Four facts decide, in this order, and each refusal is named on the end
-        message rather than dropped: the failure must be a leg failure; the
-        failing leg must not be the voice; a voice session must have opened;
-        and that session must not already be closed. The attempt is bounded by
-        ``tts.idle_timeout_ms`` and a synthesis error is recorded, never raised:
-        the call is already ending and the end message must still go out.
+        message rather than dropped: the ending must be a leg failure or a
+        ceiling breach; the failing leg must not be the voice; a voice session
+        must have opened; and that session must not already be closed. The
+        attempt is bounded by ``tts.idle_timeout_ms`` and a synthesis error is
+        recorded, never raised: the call is already ending and the end message
+        must still go out.
         """
-        outcome = self._goodbye_decision(voice_leg, failure)
+        outcome = self._goodbye_decision(voice_leg, failure, budget_stop)
         if outcome is not None:
             self._goodbye = outcome
             return outcome
@@ -1467,7 +1670,9 @@ class CallLifecycle:
             return GoodbyeOutcome(
                 spoken=frames > 0,
                 reason=(
-                    "spoken after the second failure"
+                    "spoken after the per-call ceiling stopped the call"
+                    if budget_stop is not None and frames > 0
+                    else "spoken after the second failure"
                     if frames > 0
                     else "the synthesis path produced no audio"
                 ),
@@ -1493,9 +1698,28 @@ class CallLifecycle:
         return result
 
     def _goodbye_decision(
-        self, voice_leg: OpenedLeg | None, failure: CallFailure
+        self,
+        voice_leg: OpenedLeg | None,
+        failure: CallFailure | None,
+        budget_stop: BudgetStop | None = None,
     ) -> GoodbyeOutcome | None:
         """``None`` means speak it; an outcome means it is refused, by name."""
+        if budget_stop is not None:
+            if voice_leg is None or voice_leg.session is None:
+                return GoodbyeOutcome(
+                    spoken=False,
+                    reason="the voice leg never opened, so there is no voice to speak it",
+                )
+            if _voice_closed(voice_leg.session):
+                return GoodbyeOutcome(
+                    spoken=False,
+                    reason=(
+                        "the voice session is already closed, so the goodbye is "
+                        "not written into a dead socket"
+                    ),
+                )
+            return None
+        assert failure is not None
         trigger = failure.trigger or {}
         leg = trigger.get("leg")
         if leg is None:
@@ -1702,6 +1926,72 @@ class CallLifecycle:
             )
         return CallEligibility.from_decision(self._eligibility)
 
+    @property
+    def budget_stop(self) -> BudgetStop | None:
+        """The per-call ceiling breach, once one has happened."""
+        return self._budget_stop
+
+    def may_request(self, leg: str) -> bool:
+        """Whether a vendor request may still be made on ``leg``.
+
+        After a breach only the goodbye may ask for work: no new model or voice
+        turn is allowed, while the closing line and the audio already produced
+        still are (ticket 105).
+        """
+        if self._budget_stop is None:
+            return True
+        return leg == "goodbye"
+
+    def _ceiling_guard(self) -> CallCeiling:
+        """The one per-call guard; its ceiling is read by name on first use."""
+        if not self._ceiling_loaded:
+            limit = (
+                self._ceiling_usd
+                if self._ceiling_usd is not None
+                else require_bound(CEILING_BOUND)
+            )
+            self._ceiling = CallCeiling(limit, table=self._cost_table)
+            self._ceiling_loaded = True
+        assert self._ceiling is not None
+        return self._ceiling
+
+    def _check_ceiling(self, *, turn: str | None = None) -> BudgetStop | None:
+        """Price the recorded units and stop once they are at the ceiling.
+
+        Ticket 101's table is the only price source. A breach is recorded once:
+        the guard latches, so the goodbye's own recorded cost cannot re-trigger
+        it, and a call without enough measured units never takes a false stop.
+        """
+        if self._budget_stop is not None:
+            return None
+        stop = self._ceiling_guard().evaluate(self.usage_meter, turn=turn)
+        if stop is None:
+            return None
+        self._budget_stop = stop
+        self._ledger.mark(BUDGET_STOP_MARK)
+        if self._on_budget_stopped is not None:
+            try:
+                self._on_budget_stopped(stop)
+            except Exception:  # the call is already ending; the mark stands
+                _log.exception("the budget-stop sink failed; the stop is recorded")
+        return stop
+
+    def _record_turn_usage(self) -> None:
+        """Record each logical turn's vendor usage exactly once.
+
+        The live ceiling check and the end-of-call meter read the same turn
+        layer, so a turn already recorded here is not counted twice. A stream
+        with no model leg has no reader and contributes nothing.
+        """
+        reader = getattr(self._stream, "turn_usage", None)
+        if not callable(reader):
+            return
+        for turn, usage in (reader() or {}).items():
+            if turn in self._recorded_turns:
+                continue
+            self.usage_meter.record_llm(turn, usage)
+            self._recorded_turns.add(turn)
+
     def _record_usage(self, opened: list[OpenedLeg]) -> None:
         """Record the vendor-reported units this call actually received.
 
@@ -1725,10 +2015,7 @@ class CallLifecycle:
                 self.usage_meter.record_tts(
                     billing if billing is not None else _UnreportedBilling()
                 )
-            reader = getattr(self._stream, "turn_usage", None)
-            if callable(reader):
-                for turn, usage in (reader() or {}).items():
-                    self.usage_meter.record_llm(turn, usage)
+            self._record_turn_usage()
         except Exception as error:  # the end message must still go out
             self._usage_error = (
                 f"usage meter failed: {type(error).__name__}: {error}"
@@ -1789,6 +2076,7 @@ class CallLifecycle:
             error=error,
             goodbye=self._goodbye,
             reconnects=self.reconnect_budget.to_document(),
+            budget=self._budget_stop,
         )
         try:
             await self._transport.send(end.to_document())
