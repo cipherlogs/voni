@@ -352,7 +352,8 @@ class DayBudget:
         if self.would_refuse_cascade:
             return (
                 f"the day's spend is {self.percent}% of the "
-                f"{_money_text(self.cap)} USD cap; cascade is refused for new calls"
+                f"{_money_text(self.cap)} USD cap; cascade is refused for new "
+                "calls, which route managed; the call itself is never refused"
             )
         if self.would_route_managed:
             return (

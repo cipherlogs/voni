@@ -27,7 +27,12 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
-from cascade.routing import CallSubject, RoutingDecision, RoutingSwitch
+from cascade.routing import (
+    BudgetLine,
+    CallSubject,
+    RoutingDecision,
+    RoutingSwitch,
+)
 
 #: Opens one cascade connection for a call the decision permitted.
 ConnectionOpener = Callable[[], Awaitable[Any]]
@@ -71,6 +76,7 @@ async def admit_new_call(
     subject: CallSubject,
     *,
     open_cascade: ConnectionOpener,
+    budget: BudgetLine | None = None,
     refusal: str = "",
 ) -> Admission:
     """Freeze the routing decision, then open a socket only if it permits one.
@@ -80,10 +86,16 @@ async def admit_new_call(
     :func:`cascade.routing.decide`. A managed decision returns before
     ``open_cascade`` is reached, so routing off means zero connections even
     when the opener would happily connect.
+
+    ``budget`` is ticket 102's daily counter. Passing it makes the 80%/100%
+    money lines part of the same pre-first-frame decision, so reaching the cap
+    refuses cascade for this new call while the call itself is admitted and runs
+    managed (ticket 104). A counter read that fails also routes managed: an
+    unknown day is never read as permission to cascade.
     """
     if not isinstance(switch, RoutingSwitch):
         raise ValueError(f"switch must be a RoutingSwitch, got {switch!r}")
-    decision = await switch.decide(subject, refusal=refusal)
+    decision = await switch.decide(subject, refusal=refusal, budget=budget)
     if not decision.opens_cascade_connection:
         return Admission(decision=decision, connection=None, connections=0)
     connection = await open_cascade()
