@@ -32,12 +32,10 @@ from cascade.meta_stt import SpeechComplete, SpeechStart
 from cascade.routing import CallSubject, RoutingSwitch
 from cascade.store import MemoryStore
 from cascade.test_call import (
-    BODY,
     CALL_ID,
     ISSUED_S,
     SECRET,
     BrowserStop,
-    FakeTransport,
     RecordingAudioSink,
     signed_message,
 )
@@ -266,22 +264,67 @@ class CrossingAndAdmissionTests(unittest.TestCase):
         self.assertEqual("refuse_cascade", refused[0]["line"])
 
     def test_an_unmeasured_record_is_not_charged_as_zero(self):
-        # A call whose only recorded turn has no usage chunk records its
-        # absence on the end message's cost, but the daily bucket never adds a
-        # fabricated zero: the measured spend stays zero and no crossing fires.
-        class UnmeasuredStream(DeliverThenReport):
-            pass
+        # One call, two turns: t1 reports usage and is charged; t2 ends without
+        # a usage chunk and adds nothing — not a fabricated zero. Deleting the
+        # charge path leaves the day at zero and fails this test.
+        # 80,000 prompt tokens is USD 0.10 at the committed v1 rate.
+        class RecordingCounter:
+            def __init__(self, inner) -> None:
+                self.inner = inner
+                self.amounts: list[Decimal | None] = []
 
+            async def charge(self, call_cost):
+                self.amounts.append(call_cost.amount)
+                return await self.inner.charge(call_cost)
+
+            async def snapshot(self, *, at):
+                return await self.inner.snapshot(at=at)
+
+        released = asyncio.Event()
+
+        class StopAfterLastTurn:
+            """The browser stops only once both turns have been reported."""
+
+            def __init__(self) -> None:
+                self.sent: list[dict] = []
+                self.closed = False
+
+            async def receive(self):
+                await released.wait()
+                return BrowserStop()
+
+            async def send(self, message) -> None:
+                self.sent.append(dict(message))
+
+            async def close(self) -> None:
+                self.closed = True
+
+        class MeasuredThenUnmeasured(PerTurnStream):
+            async def event(self, event) -> None:
+                await super().event(event)
+                if isinstance(event, SpeechComplete) and event.turn_id == "t2":
+                    released.set()
+
+        counter = RecordingCounter(self.counter)
         call = LifecycleForCharge(
-            stream=UnmeasuredStream({"t1": TurnUsage.unmeasured()}),
-            counter=self.counter,
-            body={key: value for key, value in BODY.items() if key != "greeting"},
-            transport=FakeTransport([BrowserStop()]),
+            stream=MeasuredThenUnmeasured(
+                {"t1": usage(80_000), "t2": TurnUsage.unmeasured()}
+            ),
+            counter=counter,
+            events=[
+                SpeechStart("t1"),
+                SpeechComplete("first", turn_id="t1"),
+                SpeechStart("t2"),
+                SpeechComplete("second", turn_id="t2"),
+            ],
+            transport=StopAfterLastTurn(),
         )
-        call.run()
+        end = call.run()
 
-        day = asyncio.run(self.counter.snapshot(at=NOON))
-        self.assertEqual(Decimal("0"), day.spent)
+        self.assertEqual("stop", end.ended_by)
+        self.assertEqual([Decimal("0.10")], counter.amounts)
+        day = asyncio.run(counter.snapshot(at=NOON))
+        self.assertEqual(Decimal("0.10"), day.spent)
         self.assertFalse(day.would_route_managed)
         self.assertEqual([], [c.line for c in self.crossings])
 

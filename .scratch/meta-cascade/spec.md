@@ -96,7 +96,7 @@ The bar is the frozen budget: 1500 / 2500, untouched. Three measured rounds with
 54. As an engineer, I want decoupled ladders, so a speech-socket failure never demotes a healthy model.
 55. As an engineer, I want an explicit body field map and ignore set, so a new body field cannot arrive as an accidental cascade setting.
 56. As an engineer, I want an unknown body key to fail by name, so a typo or a smuggled setting is a visible error.
-57. As an engineer, I want a body with an LLM override to refuse the cascade, so a tenant's BYO model is not silently replaced.
+57. As an engineer, I want a body with an LLM override to be constructed from the stored body and run on the cascade, so a tenant's BYO model is used rather than refused or silently replaced.
 58. As an engineer, I want the served body's fingerprint to equal the minted one, so the call cannot run a body nobody fingerprinted.
 59. As an engineer, I want turn state keyed on a logical turn id that survives reconnect, so a late `speechComplete` cannot land in the wrong turn.
 60. As an engineer, I want `speechComplete` to be the only LLM input, so no code path acts on a partial as a final.

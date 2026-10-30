@@ -141,6 +141,9 @@ class CascadeTurnStream:
         self._completed: list[str] = []
         #: ``end_call`` won: no model request or spoken content follows it.
         self._ending = False
+        #: The hangup the turn layer asked for, once the closing line played.
+        #: A barge-in before it withdraws the decision and keeps the call live.
+        self._hangup_requested = False
         #: The one ticker: the stall guard's deadline and the idle keepalive.
         self._tick_task: asyncio.Task | None = None
         self._wake = asyncio.Event()
@@ -343,6 +346,9 @@ class CascadeTurnStream:
         if line:
             await self._speak(line, force=True)
         self._turns.close(turn=state.id, reason="end_call")
+        # Armed only after the line played: a barge-in before this point
+        # cancels the closing speech and withdraws the end-call decision.
+        self._hangup_requested = True
         if self._on_end_call is not None:
             await self._on_end_call()
 
@@ -482,6 +488,11 @@ class CascadeTurnStream:
         await self._cancel_voice()
         self._speaking = False
         self._buffer = ""
+        if self._ending and not self._hangup_requested:
+            # The caller talked over the closing line: cancelling the goodbye
+            # withdraws the end-call decision. The call keeps listening, so the
+            # next final is answered instead of dead-ending the line.
+            self._ending = False
         if state is not None:
             await self._rules.settle(state, reason="barge_in")
         self._active = None

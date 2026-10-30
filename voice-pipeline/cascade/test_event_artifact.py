@@ -17,6 +17,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from cascade.call import CallLifecycle, OpenedLeg
 from cascade.events import (
@@ -87,16 +88,23 @@ class EventLogTest(unittest.TestCase):
         self.assertEqual("text", raised.exception.keys[0])
         self.assertEqual(before, len(self.lines()), "a refused line was written")
 
+    def test_a_write_failure_disables_the_artifact_and_never_raises(self):
+        line = json.dumps({"type": "greeting.start"})
+
+        with mock.patch.object(
+            Path, "open", side_effect=PermissionError(13, "Permission denied")
+        ):
+            self.log(line)
+
+        self.assertIn("cannot write the events artifact", self.log.unavailable or "")
+        self.assertIsNone(self.log.path)
+        # Once disabled, the sink makes no further attempt and still returns.
+        self.log(line)
+        self.assertIn("cannot write the events artifact", self.log.unavailable or "")
+
 
 class EndMessagePathTests(unittest.TestCase):
-    def test_the_end_message_names_the_calls_event_file(self):
-        directory = tempfile.mkdtemp(prefix="cascade-events-")
-        log = CallEventLog(directory, call_id=CALL_ID)
-        ops = OperationalEvents(
-            EventStream(EventWriter(pipeline="cascade", call_id=CALL_ID), sink=log),
-            subject="demo anna (en, browser)",
-            now=lambda: 0.0,
-        )
+    def _run(self, events) -> tuple[dict, FakeTransport]:
         clock = FakeClock()
 
         async def open_speech(_body):
@@ -111,11 +119,12 @@ class EndMessagePathTests(unittest.TestCase):
         async def open_voice(_body):
             return OpenedLeg("tts", "assemblyai", "primary", "voice leg", FakeVoice())
 
+        transport = FakeTransport([BrowserStop()])
         lifecycle = CallLifecycle(
             message=signed_message(),
             secret=SECRET,
             call_id=CALL_ID,
-            transport=FakeTransport([BrowserStop()]),
+            transport=transport,
             open_speech=open_speech,
             open_voice=open_voice,
             stream=FakeStream(),
@@ -123,18 +132,51 @@ class EndMessagePathTests(unittest.TestCase):
             clock=clock,
             envelope_clock=FakeClock(ISSUED_S),
             drain_bound_ms=1000,
-            operational_events=ops,
-            events_path=log.path,
+            operational_events=events,
+        )
+        end = asyncio.run(asyncio.wait_for(lifecycle.run(), timeout=5.0))
+        return end.to_document(), transport
+
+    def test_the_end_message_names_the_calls_event_file(self):
+        directory = tempfile.mkdtemp(prefix="cascade-events-")
+        log = CallEventLog(directory, call_id=CALL_ID)
+        ops = OperationalEvents(
+            EventStream(EventWriter(pipeline="cascade", call_id=CALL_ID), sink=log),
+            subject="demo anna (en, browser)",
+            now=lambda: 0.0,
         )
 
-        end = asyncio.run(asyncio.wait_for(lifecycle.run(), timeout=5.0))
-        document = end.to_document()
+        document, _ = self._run(ops)
 
         self.assertEqual(str(log.path), document["eventsPath"])
         self.assertTrue(Path(document["eventsPath"]).exists())
+        self.assertNotIn("eventsError", document)
         self.assertTrue(
             any(row["type"] == "greeting.start" for row in map(json.loads, Path(log.path).read_text().splitlines()))
         )
+
+    def test_an_unwritable_events_directory_never_fails_the_call(self):
+        parent = Path(tempfile.mkdtemp(prefix="cascade-events-"))
+        blocked = parent / "not-a-directory"
+        blocked.write_text("a file, not a directory", encoding="utf-8")
+        log = CallEventLog(blocked, call_id=CALL_ID)
+        self.assertIsNone(log.path, "a failed artifact still claimed a path")
+
+        ops = OperationalEvents(
+            EventStream(EventWriter(pipeline="cascade", call_id=CALL_ID), sink=log),
+            subject="demo anna (en, browser)",
+            now=lambda: 0.0,
+        )
+
+        document, transport = self._run(ops)
+
+        # The call ran to its own end and the caller got the end message.
+        self.assertEqual("stop", document["endedBy"])
+        self.assertEqual("end", transport.sent[-1]["type"])
+        # The unavailable artifact is named by reason, not claimed as a file.
+        self.assertNotIn("eventsPath", document)
+        self.assertIn("cannot create the events directory", document["eventsError"])
+        self.assertIn("not-a-directory", document["eventsError"])
 
 
 if __name__ == "__main__":

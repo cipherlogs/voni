@@ -307,6 +307,35 @@ class EndCallExecutor:
         )
 
 
+class ClosingThenAnswerLLM(EndCallLLM):
+    """Calls ``end_call`` once, then answers the caller's next turn."""
+
+    async def complete(self, *, messages, tools=None, turn=None):
+        if not self.requests:
+            async for item in super().complete(
+                messages=messages, tools=tools, turn=turn
+            ):
+                yield item
+            return
+        self.requests.append(messages)
+        record = turn if turn is not None else MetaLLMTurn()
+        answer = "Sure, I am still here."
+        record.content_text += answer
+        yield TokenDelta(text=answer)
+        record.finish_reason = "stop"
+        record.usage = TurnUsage(prompt_tokens=4, completion_tokens=5)
+        record.finished = True
+
+
+async def until(predicate, *, tries: int = 200) -> None:
+    """Yield to the loop until a condition holds; no wall-clock sleep."""
+    for _ in range(tries):
+        if predicate():
+            return
+        await asyncio.sleep(0)
+    raise AssertionError("the expected state was never reached")
+
+
 class StallGuardTickerTest(unittest.TestCase):
     """The held final is answered by the guard's ticker, not a model timeout."""
 
@@ -502,6 +531,52 @@ class EndCallSignalTest(unittest.TestCase):
         self.assertEqual([closing], stream._tts.spoken)
         self.assertEqual(["end"], ended)
         self.assertEqual(1, len(stream._llm.requests))
+
+    def test_a_barge_in_during_the_goodbye_keeps_listening_and_never_hangs_up(self):
+        closing = "Thanks for calling. Goodbye!"
+        gate = asyncio.Event()
+        ended: list[str] = []
+        audio = RecordingAudio()
+        tts = FakeTTS(gate=gate)
+        llm = ClosingThenAnswerLLM(closing)
+
+        async def on_end_call() -> None:
+            ended.append("end")
+
+        stream = CascadeTurnStream(
+            llm=llm,
+            tts=tts,
+            emit_audio=audio,
+            tool_executor=EndCallExecutor(),
+            ledger=RecordingLedger(),
+            clock=FakeClock(),
+            on_end_call=on_end_call,
+        )
+
+        async def run():
+            await stream.start()
+            await stream.event(SpeechStart("t1"))
+            await stream.event(SpeechComplete("that's all", turn_id="t1"))
+            # The closing line is sounding, suspended mid-frame: the caller
+            # talks over the goodbye.
+            await asyncio.wait_for(tts.speaking.wait(), timeout=1)
+            await until(lambda: stream._speaking)
+            await stream.event(SpeechStart("t2"))
+            gate.set()
+            # The caller's next turn still gets its reply.
+            await stream.event(
+                SpeechComplete("wait, one more question", turn_id="t2")
+            )
+            await until(
+                lambda: len(llm.requests) == 2 and len(audio.frames) >= 2
+            )
+            await stream.drain()
+
+        asyncio.run(run())
+
+        self.assertEqual([], ended, "a barge-in during the goodbye still hung up")
+        self.assertEqual([closing, "Sure, I am still here."], tts.spoken)
+        self.assertEqual(2, len(audio.frames))
 
 
 if __name__ == "__main__":

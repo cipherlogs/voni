@@ -880,6 +880,10 @@ class CallEnd:
     #: The per-call operational-event artifact this call wrote, when one is
     #: wired. The end message names it so a reader can find the decisions.
     events_path: str | None = None
+    #: Why the artifact is unavailable, when the host refused to create or
+    #: write it. The call itself still ran: the artifact is a record, not a
+    #: precondition.
+    events_error: str | None = None
 
     def __post_init__(self) -> None:
         if self.ended_by not in ENDED_BY:
@@ -919,6 +923,8 @@ class CallEnd:
             document["goodbye"] = self.goodbye.to_document()
         if self.events_path is not None:
             document["eventsPath"] = self.events_path
+        if self.events_error is not None:
+            document["eventsError"] = self.events_error
         if self.error is not None:
             document["error"] = self.error.to_document()
         return document
@@ -1616,7 +1622,8 @@ class CallLifecycle:
         )
         self._greeting_voice_id = body.voice_id
         self._emit_operational(
-            lambda events: events.greeting("greeting.start", voice_id=body.voice_id)
+            "greeting.start",
+            lambda events: events.greeting("greeting.start", voice_id=body.voice_id),
         )
         return greeting.start(body)
 
@@ -1625,9 +1632,10 @@ class CallLifecycle:
         self.chime_calls += 1
         self.chime_at = self._clock()
         self._emit_operational(
+            "greeting.first_audio",
             lambda events: events.greeting(
                 "greeting.first_audio", voice_id=self._greeting_voice_id, frames=1
-            )
+            ),
         )
         if self._chime is not None:
             self._chime()
@@ -2021,16 +2029,18 @@ class CallLifecycle:
         return self._budget_stop
 
     def _emit_operational(
-        self, emit: Callable[[OperationalEvents], dict[str, Any]]
+        self,
+        name: str,
+        emit: Callable[[OperationalEvents], dict[str, Any]],
     ) -> dict[str, Any] | None:
         """Write one first-class operational event; a sink failure never ends a call.
 
         Every line goes through :class:`cascade.events.OperationalEvents`, which
         builds it with the one envelope writer and writes it through the one
-        sanitized stream (ticket 110). The emitter owns its event name (the
-        emitter method builds ``type``), so the call site never restates it.
-        The event is a record of a decision that already happened, so a broken
-        sink is logged and the call continues.
+        sanitized stream (ticket 110). The emitter owns the payload; the call
+        site names the event so a failed write is logged with that name rather
+        than as an anonymous line. The event is a record of a decision that
+        already happened, so a broken sink is logged and the call continues.
         """
         events = self._operational_events
         if events is None:
@@ -2039,7 +2049,7 @@ class CallLifecycle:
             return emit(events)
         except Exception:
             _log.exception(
-                "an operational event could not be written; the call continues"
+                f"the {name} event could not be written; the call continues"
             )
             return None
 
@@ -2053,7 +2063,8 @@ class CallLifecycle:
         if self._deploy_drain_event is not None:
             return self._deploy_drain_event
         self._deploy_drain_event = self._emit_operational(
-            lambda events: events.deploy_drain(reason=reason, planned=True)
+            "deploy.drain",
+            lambda events: events.deploy_drain(reason=reason, planned=True),
         )
         return self._deploy_drain_event
 
@@ -2069,6 +2080,7 @@ class CallLifecycle:
             greeting.spoken or greeting.cancelled or greeting.frames
         ):
             self._emit_operational(
+                "greeting.done",
                 lambda events: events.greeting(
                     "greeting.done",
                     voice_id=self._greeting_voice_id,
@@ -2076,12 +2088,13 @@ class CallLifecycle:
                     sample_rate=greeting.sample_rate,
                     cancelled=greeting.cancelled,
                     cause=greeting.cause,
-                )
+                ),
             )
         reconnects = self.reconnect_budget.events
         for event in reconnects[self._reconnect_events_emitted :]:
             self._emit_operational(
-                lambda events, event=event: events.reconnect(event)
+                "reconnect",
+                lambda events, event=event: events.reconnect(event),
             )
         self._reconnect_events_emitted = len(reconnects)
 
@@ -2104,13 +2117,18 @@ class CallLifecycle:
 
         The turn layer calls this after it spoke ``end_call``'s closing line;
         the run loop stops waiting for browser input and drains the same way a
-        browser ``stop`` does.
+        browser ``stop`` does. ``reason`` is the ledger mark, so the request is
+        recorded under the name its caller gave it instead of being collapsed
+        into one label.
         """
         if self._end_requested:
             return
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError("an end request must name its reason")
+        reason = reason.strip()
         self._end_requested = True
         if self._ledger is not None:
-            self._ledger.count("end_call")
+            self._ledger.count(reason)
         if self._end_event is not None:
             self._end_event.set()
 
@@ -2170,7 +2188,8 @@ class CallLifecycle:
             return False
         for crossing in getattr(charged, "crossings", ()) or ():
             self._emit_operational(
-                lambda events, crossing=crossing: events.budget_crossing(crossing)
+                "budget.crossing",
+                lambda events, crossing=crossing: events.budget_crossing(crossing),
             )
             if self._on_crossing is not None:
                 try:
@@ -2209,7 +2228,8 @@ class CallLifecycle:
         if self._budget_event is not None:
             self._budget_event.set()
         self._emit_operational(
-            lambda events: events.budget_stopped(stop)
+            "budget.stopped",
+            lambda events: events.budget_stopped(stop),
         )
         if self._on_budget_stopped is not None:
             try:
@@ -2306,6 +2326,18 @@ class CallLifecycle:
         # The end-of-call session facts are still charged to the day they were
         # consumed, even though the ceiling can no longer stop the call.
         await self._charge_recorded_units()
+        # The artifact is live state: a sink disabled during the call has no
+        # path, and its reason is named instead of claiming a file that is not
+        # there.
+        events_path = self._events_path
+        events_error: str | None = None
+        events = self._operational_events
+        if events is not None:
+            if events.path is not None:
+                events_path = str(events.path)
+            elif events.error is not None:
+                events_path = None
+            events_error = events.error
         end = CallEnd(
             call_id=self._call_id,
             metrics=self._ledger.summary(),
@@ -2323,7 +2355,8 @@ class CallLifecycle:
             goodbye=self._goodbye,
             reconnects=self.reconnect_budget.to_document(),
             budget=self._budget_stop,
-            events_path=self._events_path,
+            events_path=events_path,
+            events_error=events_error,
         )
         try:
             await self._transport.send(end.to_document())

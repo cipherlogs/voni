@@ -80,7 +80,10 @@ REQUIRED_SECRET_NAMES: tuple[str, ...] = (
 #: META_REASONING_EFFORT is M03's measured value: Spark has no default, so a
 #: default-rung call refuses construction without it. VOICE_PIPELINE_TOOL_BASE_URL
 #: is the app origin the tool route calls; empty silently drops every tool call.
-#: Both are host-supplied: the config names them, the host fills the value.
+#: Both are host-supplied. A deploy file may omit a name (the host's secret or
+#: env file supplies it) but may never set it to an empty value: Compose gives
+#: ``environment`` precedence over ``env_file``, and a blank ``[env]`` or
+#: ``environment`` entry is a blank runtime value on either host.
 REQUIRED_SETTINGS: tuple[str, ...] = (
     "META_REASONING_EFFORT",
     "VOICE_PIPELINE_TOOL_BASE_URL",
@@ -265,11 +268,11 @@ def validate_service(
         errors.append(f"{label}: http_service.internal_port is {port!r}; expected a port")
     env = _check_env(doc, label=label, errors=errors)
     for name in REQUIRED_SETTINGS:
-        if name not in env:
+        if name in env and not env[name].strip():
             errors.append(
-                f"{label}: [env] must name {name}; the service needs it at runtime, "
-                "so a missing name is a deploy-time configuration error, not a "
-                "silent default"
+                f"{label}: [env] sets {name} to an empty value; the host-supplied "
+                "setting is then blank at runtime. Remove the key and let the "
+                "host (fly secrets set) supply the value"
             )
     if port is not None and env.get(PORT_ENV) != str(port):
         errors.append(
@@ -395,7 +398,12 @@ def validate_dockerfile(text: str, *, internal_port: int, config: str = DOCKERFI
             "without the budget record, so the container would not start"
         )
     for line in text.splitlines():
-        if "voni/" in line and "scoreboard-budgets.json" not in line:
+        instruction = line.strip().upper()
+        if (
+            instruction.startswith(("COPY", "ADD"))
+            and "voni/" in line
+            and "scoreboard-budgets.json" not in line
+        ):
             errors.append(
                 f"{label}: copies {line.strip()!r} from the app; the app is its own "
                 "image (deploy/fly.voni.toml) and only the budget record belongs here"
@@ -520,6 +528,47 @@ def validate_record(text: str, *, service_app: str, app_name: str) -> list[str]:
     return errors
 
 
+def _compose_environment(text: str) -> dict[str, str]:
+    """The service's ``environment`` mapping, names to raw (unquoted) values.
+
+    A deliberately tiny reader, because the validator runs from a checkout with
+    no YAML dependency. It reads the first ``environment:`` block (the
+    voice-pipeline service) in either the mapping form this repository uses or
+    the list form (``- NAME=value``). No value is interpreted, only compared to
+    the empty string, so a placeholder is never mistaken for a setting.
+    """
+    lines = text.splitlines()
+    start = None
+    for index, raw in enumerate(lines):
+        stripped = raw.strip()
+        if stripped == "environment:":
+            start = index
+            break
+    if start is None:
+        return {}
+    base = len(lines[start]) - len(lines[start].lstrip())
+    values: dict[str, str] = {}
+    for raw in lines[start + 1 :]:
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        indent = len(raw) - len(raw.lstrip())
+        if indent <= base:
+            break
+        if stripped.startswith("- "):
+            name, sep, value = stripped[2:].strip().partition("=")
+        else:
+            name, sep, value = stripped.partition(":")
+        if sep:
+            # A duplicate key is invalid Compose anyway; keep the first so a
+            # shadowing empty entry is the one the check names.
+            values.setdefault(
+                name.strip().strip('"').strip("'"),
+                value.strip().strip('"').strip("'"),
+            )
+    return values
+
+
 def validate_compose(text: str, *, internal_port: int) -> list[str]:
     """The local rehearsal keeps the same shape: two replicas, a health check."""
     errors: list[str] = []
@@ -535,12 +584,26 @@ def validate_compose(text: str, *, internal_port: int) -> list[str]:
     ):
         if needle not in text:
             errors.append(f"{label}: {needle!r} missing; {reason}")
-    for name in REQUIRED_SETTINGS:
-        if f"{name}:" not in text:
+    env = _compose_environment(text)
+    for name in REQUIRED_ENV_NAMES:
+        if name in env and not env[name]:
+            # Compose merges `environment` over `env_file`: an empty committed
+            # value wins and the host-supplied one never reaches the process.
             errors.append(
-                f"{label}: {name} is not named in the service environment; the "
-                "rehearsal must carry the same required host settings as Fly"
+                f"{label}: {name} is set to an empty value in the service "
+                "environment; Compose gives environment precedence over env_file, "
+                "so the host-supplied value can never arrive. Remove the key and "
+                "let env_file supply it"
             )
+    if (
+        any(name not in env for name in REQUIRED_SETTINGS)
+        and "path: ./voice-pipeline.env" not in text
+    ):
+        errors.append(
+            f"{label}: a required host setting is delegated away from the "
+            "environment but no env_file is declared; the rehearsal would start "
+            "without the measured value"
+        )
     for name in secret_values(text):
         errors.append(f"{label}: assigns {name} a value; secrets stay in the host env")
     return errors
