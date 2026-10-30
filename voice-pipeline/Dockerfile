@@ -19,6 +19,7 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     VOICE_PIPELINE_PORT=8766 \
+    VOICE_PIPELINE_EVENTS_DIR=/var/lib/voni/events \
     VONI_SCOREBOARD_BUDGETS_JSON=/srv/scoreboard-budgets.json
 
 WORKDIR /srv
@@ -38,8 +39,13 @@ COPY voni/src/lib/demo/scoreboard-budgets.json /srv/scoreboard-budgets.json
 COPY voice-pipeline/ /srv/voice-pipeline/
 COPY telephony-bot/voice_judge.py /srv/telephony-bot/voice_judge.py
 
-# Not root: the service reads sockets and writes nothing.
-RUN useradd --create-home --uid 10001 voni
+# Not root: the service reads sockets, and a call's operational-event artifact
+# (VOICE_PIPELINE_EVENTS_DIR) is a best-effort record under a directory this
+# user owns. The directory is created here, before the uid switch, so the
+# container never tries to mkdir it at call time inside /srv.
+RUN useradd --create-home --user-group --uid 10001 voni \
+    && mkdir -p /var/lib/voni/events \
+    && chown -R voni:voni /var/lib/voni
 USER 10001
 
 WORKDIR /srv/voice-pipeline

@@ -336,3 +336,100 @@ class CeilingTests(unittest.TestCase):
         tts = end.to_document()["cost"]["legs"]["tts"]
         self.assertEqual(60, tts["units"]["characters"])
         self.assertAlmostEqual(0.0009, tts["amountUsd"], places=12)
+
+
+class ServedStreamCeilingTest(unittest.TestCase):
+    """The served turn stream reports a model turn as it finishes.
+
+    The check that matters is at the *unit*, not at the next speech event: one
+    expensive turn must trip the ceiling and drain with the closing line, never
+    leave the call waiting for another provider event.
+    """
+
+    def test_one_expensive_model_turn_ends_the_call_with_the_closing_line(self):
+        from cascade.turn_stream import CascadeTurnStream
+
+        clock = FakeClock()
+        envelope_clock = FakeClock(ISSUED_S)
+        voice = GoodbyeVoice()
+
+        class ExpensiveLLM:
+            def __init__(self) -> None:
+                self.requests: list[list[dict]] = []
+
+            async def complete(self, *, messages, tools=None, turn=None):
+                from cascade.meta_llm import MetaLLMTurn, TurnUsage
+                from providers import TokenDelta
+
+                self.requests.append(messages)
+                record = turn if turn is not None else MetaLLMTurn()
+                first, second = "Here is the first part. ", "And the second part."
+                record.content_text = first + second
+                yield TokenDelta(text=first)
+                yield TokenDelta(text=second)
+                record.finish_reason = "stop"
+                record.usage = TurnUsage(
+                    prompt_tokens=200_001,
+                    completion_tokens=0,
+                    cached_tokens=0,
+                    reasoning_tokens=0,
+                    measured=True,
+                )
+                record.finished = True
+
+        llm = ExpensiveLLM()
+        holder: dict[str, CallLifecycle] = {}
+
+        async def on_turn_billed() -> None:
+            await holder["lifecycle"].note_billed()
+
+        stream = CascadeTurnStream(
+            llm=llm,
+            tts=voice,
+            emit_audio=lambda audio, kind="reply", flush_id=None: _emit(audio),
+            clock=clock,
+            on_turn_billed=on_turn_billed,
+        )
+
+        async def _emit(audio):
+            return await holder["lifecycle"].emit_audio(audio)
+
+        self.speech = ScriptedSTT(
+            [SpeechStart("t1"), SpeechComplete("tell me everything", turn_id="t1")],
+            clock=clock,
+        )
+
+        async def open_speech(_body):
+            return OpenedLeg("stt", "meta", "primary", "speech leg is closed", self.speech)
+
+        async def open_voice(_body):
+            return OpenedLeg("tts", "assemblyai", "primary", "one synthesis rung", voice)
+
+        lifecycle = CallLifecycle(
+            message=signed_message(),
+            secret=SECRET,
+            call_id=CALL_ID,
+            transport=LiveTransport(),
+            open_speech=open_speech,
+            open_voice=open_voice,
+            stream=stream,
+            send_audio=RecordingAudioSink(),
+            ledger=TimingLedger(now=clock),
+            clock=clock,
+            envelope_clock=envelope_clock,
+            drain_bound_ms=1000,
+            ceiling_usd=0.25,
+        )
+        holder["lifecycle"] = lifecycle
+
+        end = asyncio.run(asyncio.wait_for(lifecycle.run(), timeout=5.0))
+
+        self.assertEqual("budget", end.ended_by)
+        # Everything the turn produced was spoken through, in whole sentences.
+        self.assertEqual(
+            ["Here is the first part.", "And the second part.", goodbye_line("es")],
+            voice.spoken,
+        )
+        self.assertTrue(end.goodbye.spoken)
+        self.assertTrue(end.drain.ok)
+        self.assertEqual(1, len(llm.requests), "a turn after the breach was answered")

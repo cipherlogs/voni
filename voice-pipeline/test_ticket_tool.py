@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
 import tempfile
 import unittest
 from pathlib import Path
@@ -113,7 +115,8 @@ class CloseTests(unittest.TestCase):
             directory = make_effort(tmp, {1: {}})
             answer = Path(tmp) / "answer.md"
             answer.write_text("The answer.\n", encoding="utf-8")
-            tickets_tool.close_ticket(directory, 1, answer)
+            with contextlib.redirect_stdout(io.StringIO()):
+                tickets_tool.close_ticket(directory, 1, answer)
             text = (directory / "issues" / "01-t1.md").read_text(encoding="utf-8")
             self.assertIn("**Status:** resolved", text)
             self.assertIn("## Answer", text)

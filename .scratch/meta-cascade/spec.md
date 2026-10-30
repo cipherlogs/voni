@@ -96,7 +96,7 @@ The bar is the frozen budget: 1500 / 2500, untouched. Three measured rounds with
 54. As an engineer, I want decoupled ladders, so a speech-socket failure never demotes a healthy model.
 55. As an engineer, I want an explicit body field map and ignore set, so a new body field cannot arrive as an accidental cascade setting.
 56. As an engineer, I want an unknown body key to fail by name, so a typo or a smuggled setting is a visible error.
-57. As an engineer, I want a body with an LLM override to refuse the cascade, so a tenant's BYO model is not silently replaced.
+57. As an engineer, I want a body with an LLM override to be constructed from the stored body and run on the cascade, so a tenant's BYO model is used rather than refused or silently replaced.
 58. As an engineer, I want the served body's fingerprint to equal the minted one, so the call cannot run a body nobody fingerprinted.
 59. As an engineer, I want turn state keyed on a logical turn id that survives reconnect, so a late `speechComplete` cannot land in the wrong turn.
 60. As an engineer, I want `speechComplete` to be the only LLM input, so no code path acts on a partial as a final.
@@ -291,7 +291,7 @@ The cascade reads the exact stored body the managed path reads. It does not get 
   - `input.voice_focus`, `input.voice_focus_threshold` — no Meta equivalent; the browser mic path already owns capture.
   - `input.turn_detection` — the provider owns the boundary; there is no turn-detection object to set.
 - **Unknown keys fail.** A key at the top level, inside `input`, or inside `output` that is in neither the field map nor the ignore set fails the adapter by name. This is the profile-whitelist extension: a smuggled body key cannot become a cascade setting.
-- **LLM override refuses.** A non-empty `llm` array refuses the cascade and routes managed with a recorded reason. `llm: []` is the documented revert and is allowed; it is not an override. This is the explicit consequence of the one-body rule.
+- **LLM override is constructed from the stored body; an unconstructible override fails visibly.** One non-empty `llm` entry is constructed from the stored body, before any vendor socket, and runs the same request/tool/failure contract; it is never refused or routed managed. `llm: []` is the documented revert to the default Meta rung. Ticket 159 replaces ticket 60's refusal.
 - **Eligibility refusals.** A body with no `language_codes` (automatic language detection) is refused: the TTS session's language is fixed at connect and the voice binding requires one Locale. Such an agent routes managed until auto-detect gets its own decision. A body whose voice is not in the binding table is refused by name. A body whose `tools` contain an invalid Meta function name (more than one dot, or characters outside the allowed set) is refused by name, because a silently dropped tool is a product defect.
 - **Fingerprint equality.** The app's check is the full fingerprint of the served body against the minted fingerprint. The service's check is the body hash and the signed envelope. Both must pass. A mismatch is a named refusal, not a warning.
 
@@ -580,8 +580,8 @@ This catalog is normative. A row is either a test, a named refusal, or a named o
 |---|---|
 | An unknown top-level body key | Refuse by name; route managed; record the reason. |
 | An unknown `input` or `output` subkey | Refuse by name; never silently drop. |
-| `llm: []` | Allowed; the documented revert, not an override. |
-| `llm: [ {...} ]` | Refuse the cascade; route managed with a recorded reason. |
+| `llm: []` | Allowed; the documented revert to the default Meta rung. |
+| `llm: [ {...} ]` | Constructed from the stored body; an unconstructible override fails visibly. |
 | `greeting` absent | No greeting; valid for the resume variant. |
 | `greeting` empty string | No greeting; valid; not a TTS request. |
 | A greeting longer than 2,000 characters | Split at sentence boundaries; never one over-cap `Generate`. |
@@ -826,13 +826,13 @@ Every acceptance criterion below is observable and every test can fail. The edge
 - AC5: `Cancel` drops audio until `Cancelled` and reads the new `flush_id`; only documented TTS control frames are sent.
 - Test: an injected socket that echoes a wrong sample rate must fail AC1; a request with a mismatched language must fail AC2.
 
-**M05 — Stored-body adapter.** Editable body in, cascade config out: explicit field map, explicit ignore set, unknown key fails, an LLM override refuses the cascade.
+**M05 — Stored-body adapter.** Editable body in, cascade config out: explicit field map, explicit ignore set, unknown key fails, an LLM override is constructed from the stored body (ticket 159).
 - AC1: every mapped field appears in the config; every ignored field is listed and absent.
 - AC2: adding a body key that appears in neither set fails the adapter by name.
-- AC3: a body with a non-empty `llm` produces a refusal that routes at managed, with a recorded reason; `llm: []` is allowed.
+- AC3: a body with one non-empty `llm` entry constructs the BYO client from the stored body; an unconstructible override fails visibly before any vendor socket; `llm: []` uses the default rung.
 - AC4: the fingerprint of the served body equals the fingerprint the app minted; the service verifies the body hash and the signed envelope.
 - AC5: a body with no fixed Locale, an unbound voice, or an invalid tool name is refused by name.
-- Test: a smuggled key fails; the override refusal fails if the check is deleted.
+- Test: a smuggled key fails; the old override refusal is gone (deleting the construction fails the test).
 
 **M06 — Orchestrator.** Logical-turn state, `speechComplete` as the only LLM input, floor arbitration, final suppression, no speculative commit.
 - AC1: a final classified as backchannel or echo is counted and produces no reply.

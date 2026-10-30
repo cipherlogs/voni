@@ -57,9 +57,11 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from cascade.breaker import LEGS, STATES
@@ -874,6 +876,16 @@ class OperationalEvents:
         self.subject = _require_text("subject", subject)
         self._now = now
 
+    @property
+    def path(self) -> Path | None:
+        """The call's event artifact path, when the stream persists one."""
+        return getattr(self.stream, "path", None)
+
+    @property
+    def error(self) -> str | None:
+        """Why the call's event artifact is unavailable, when it is."""
+        return getattr(self.stream, "unavailable", None)
+
     # -- envelope helpers -------------------------------------------------
 
     def _moment(self, at_ms: float | int | None) -> float | int:
@@ -1193,6 +1205,60 @@ class OperationalEvents:
 
 
 # ---------------------------------------------------------------------------
+# The persisted per-call stream
+# ---------------------------------------------------------------------------
+
+
+class CallEventLog:
+    """One call's operational-event artifact: a single JSONL file.
+
+    The sink is the one write boundary: lines reaching it have already passed
+    :class:`EventStream`'s sanitizer, so the file carries no caller text and no
+    audio. Each call writes under a directory the deployment provides
+    (``VOICE_PIPELINE_EVENTS_DIR``, ``/var/lib/voni/events`` in the image); the
+    file name is the call id reduced to a filesystem-safe stem, so a call id
+    can never escape the directory.
+
+    The artifact is best-effort: a directory that cannot be created or a write
+    the host refuses disables it for this call, records the reason on
+    :attr:`unavailable`, and never fails the call. The end message carries that
+    reason, so a missing artifact is a fact the reader can act on rather than a
+    silent gap.
+    """
+
+    def __init__(self, directory: str | Path, *, call_id: str) -> None:
+        self.call_id = _require_text("callId", call_id)
+        safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", self.call_id).strip("._")
+        self._path = Path(directory) / f"{safe or 'call'}.jsonl"
+        #: Why this call's artifact is unavailable, or ``None`` while it works.
+        self.unavailable: str | None = None
+        try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            self._disable(f"cannot create the events directory {self._path.parent}", exc)
+
+    @property
+    def path(self) -> Path | None:
+        """The artifact path while it is usable, ``None`` once it is disabled."""
+        return self._path if self.unavailable is None else None
+
+    def _disable(self, what: str, error: OSError) -> None:
+        reason = error.strerror or str(error)
+        self.unavailable = f"{what}: {reason}"
+
+    def __call__(self, line: str) -> None:
+        """Append one already-sanitized line; a write failure disables the sink."""
+        if self.unavailable is not None:
+            return
+        try:
+            with self._path.open("a", encoding="utf-8") as handle:
+                handle.write(line if line.endswith("\n") else line + "\n")
+        except OSError as exc:
+            # The artifact is a record of the call, never a precondition for it.
+            self._disable(f"cannot write the events artifact {self._path}", exc)
+
+
+# ---------------------------------------------------------------------------
 # The cascade's one stream writer: sanitize every line before it is written
 # ---------------------------------------------------------------------------
 
@@ -1208,7 +1274,8 @@ class EventStream:
     write path: ``__call__`` is the only thing that touches the sink.
 
     ``emit_fallback(..., sink=stream)`` works because the stream is callable,
-    so a fallback line is sanitized like every other line.
+    so a fallback line is sanitized like every other line. When the sink is a
+    :class:`CallEventLog`, ``path`` names the artifact the end message cites.
     """
 
     def __init__(
@@ -1220,6 +1287,16 @@ class EventStream:
             raise TypeError(f"EventStream needs a write sink, got {sink!r}")
         self.writer = writer
         self._sink = sink
+
+    @property
+    def path(self) -> Path | None:
+        """The artifact path, while a persisting sink still has one."""
+        return getattr(self._sink, "path", None)
+
+    @property
+    def unavailable(self) -> str | None:
+        """Why the sink disabled its artifact, when it did."""
+        return getattr(self._sink, "unavailable", None)
 
     def __call__(self, event: Mapping[str, Any]) -> dict[str, Any]:
         """Sanitize one finished line, then write it; a refusal writes nothing."""

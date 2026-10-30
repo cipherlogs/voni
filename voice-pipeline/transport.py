@@ -37,7 +37,6 @@ socket ends the call with the lifecycle's one end message.
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import os
 import time
@@ -503,78 +502,107 @@ async def handle_browser_call(
     if tool_base_url:
         executor = ToolExecutor.from_verified(verified, base_url=tool_base_url)
 
-    claim_holder: list[Any] = []
-
     async def prepare() -> _PreparedCall:
         # One claim, one live socket per call. The claim is inside the opener so
         # a managed decision never spends the token, and a replay is refused
-        # before any leg is constructed.
+        # before any leg is constructed. A setup failure releases the claim
+        # here; the successful path releases it when the socket ends.
         claim = call_tokens.claim(
             client.call_token,
             call_id=verified.call_id,
             subject=verified.agent_id,
         )
-        claim_holder.append(claim)
-        ledger = TimingLedger(now=clock)
-        budget = ReconnectBudget(ledger=ledger, now=clock)
-        if leg_builder is None:
-            legs = build_cascade_legs(
-                call_id=verified.call_id,
-                ledger=ledger,
-                budget=budget,
-                environ=env,
-            )(body, verified.body)
-        else:
-            legs = leg_builder(body, verified.body)
+        try:
+            ledger = TimingLedger(now=clock)
+            budget = ReconnectBudget(ledger=ledger, now=clock)
+            if leg_builder is None:
+                legs = build_cascade_legs(
+                    call_id=verified.call_id,
+                    ledger=ledger,
+                    budget=budget,
+                    environ=env,
+                )(body, verified.body)
+            else:
+                legs = leg_builder(body, verified.body)
 
-        holder: dict[str, CallLifecycle] = {}
-
-        async def emit_audio(
-            audio: Any, *, kind: str = "reply", flush_id: int | None = None
-        ) -> OutboundAudio:
-            return await holder["lifecycle"].emit_audio(
-                audio, kind=kind, flush_id=flush_id
-            )
-
-        def may_request(leg: str) -> bool:
-            return holder["lifecycle"].may_request(leg)
-
-        stream = CascadeTurnStream(
-            llm=legs.model,
-            tts=legs.voice,
-            tools=body.tools,
-            emit_audio=emit_audio,
-            may_request=may_request,
-            tool_executor=executor,
-            locale_code=body.language_code,
-            ledger=ledger,
-            clock=clock,
-            on_caption=browser.caption,
-            on_interrupted=browser.interrupted,
-        )
-        lifecycle = CallLifecycle(
-            message={"envelope": verified.envelope.to_dict(), "body": verified.body},
-            secret=secret if secret is not None else "",
-            call_id=verified.call_id,
-            transport=browser,
-            open_speech=legs.open_speech,
-            open_voice=legs.open_voice,
-            open_model=legs.open_model,
-            stream=stream,
-            send_audio=browser.send_audio,
-            ledger=ledger,
-            clock=clock,
-            envelope_clock=envelope_clock,
-            drain_bound_ms=drain_bound_ms,
-            bounds=bounds,
-            usage_meter=_usage_meter_for(usage_meter),
-            cost_table=cost_table,
-            operational_events=_events_for(
+            events = _events_for(
                 operational_events, call_id=verified.call_id, subject=verified.agent_id
-            ),
-            reconnect_budget=budget,
-        )
-        holder["lifecycle"] = lifecycle
+            )
+            lifecycle: CallLifecycle | None = None
+
+            def require_lifecycle() -> CallLifecycle:
+                """The call's lifecycle, or a named error before it exists.
+
+                The stream's callbacks are built first because the lifecycle
+                owns the stream; an argument, not an assert, names the broken
+                ordering if one is invoked in that window.
+                """
+                if lifecycle is None:
+                    raise RuntimeError(
+                        "the turn stream called the call lifecycle before it was "
+                        "constructed; setup ordering is broken"
+                    )
+                return lifecycle
+
+            async def emit_audio(
+                audio: Any, *, kind: str = "reply", flush_id: int | None = None
+            ) -> OutboundAudio:
+                return await require_lifecycle().emit_audio(
+                    audio, kind=kind, flush_id=flush_id
+                )
+
+            def may_request(leg: str) -> bool:
+                return require_lifecycle().may_request(leg)
+
+            async def on_turn_billed() -> None:
+                await require_lifecycle().note_billed()
+
+            async def on_end_call() -> None:
+                require_lifecycle().request_end("end_call")
+
+            stream = CascadeTurnStream(
+                llm=legs.model,
+                tts=legs.voice,
+                tools=body.tools,
+                emit_audio=emit_audio,
+                may_request=may_request,
+                tool_executor=executor,
+                locale_code=body.language_code,
+                ledger=ledger,
+                clock=clock,
+                on_caption=browser.caption,
+                on_interrupted=browser.interrupted,
+                on_turn_billed=on_turn_billed,
+                on_end_call=on_end_call,
+            )
+            lifecycle = CallLifecycle(
+                message={
+                    "envelope": verified.envelope.to_dict(),
+                    "body": verified.body,
+                },
+                secret=secret if secret is not None else "",
+                call_id=verified.call_id,
+                transport=browser,
+                open_speech=legs.open_speech,
+                open_voice=legs.open_voice,
+                open_model=legs.open_model,
+                stream=stream,
+                send_audio=browser.send_audio,
+                ledger=ledger,
+                clock=clock,
+                envelope_clock=envelope_clock,
+                drain_bound_ms=drain_bound_ms,
+                bounds=bounds,
+                usage_meter=_usage_meter_for(usage_meter),
+                cost_table=cost_table,
+                daily_counter=counter,
+                operational_events=events,
+                events_path=str(events.path) if events is not None and events.path else None,
+                reconnect_budget=budget,
+            )
+        except BaseException:
+            call_tokens.release(claim)
+            raise
         return _PreparedCall(lifecycle=lifecycle, stream=stream, claim=claim)
 
     if switch is None:
@@ -599,13 +627,9 @@ async def handle_browser_call(
             budget=counter,
         )
     except CallTokenError as exc:
-        for held in claim_holder:
-            call_tokens.release(held)
         await _send(ws, {"type": "error", "message": str(exc)})
         return
     except Exception as exc:  # a real opener failure is visible, never silent
-        for held in claim_holder:
-            call_tokens.release(held)
         await _send(ws, {"type": "error", "message": _call_error("call setup", exc)})
         return
 

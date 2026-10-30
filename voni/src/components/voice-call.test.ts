@@ -321,6 +321,44 @@ test("a hold return reconnects visibly, silently, and speaks exactly once", () =
   assert.match(call, /rejoiningRef\.current = false/);
 });
 
+test("a refused cascade connect routes through the one managed retry", () => {
+  const call = readRepo("components/voice-call.tsx");
+  const handler = call.slice(
+    call.indexOf("onConnectFailure: (failure)"),
+    call.indexOf("onEnd: () => {"),
+  );
+
+  // The session reports every pre-accept cause (draining, managed, unavailable)
+  // through this one handler; the decision owns whether the retry is still
+  // unspent, and the component owns the transport override.
+  assert.match(handler, /decideCascadeFallback\(\{/);
+  assert.match(handler, /failure\.code/, "the session's cause reaches the decision");
+  assert.match(handler, /alreadyFellBack: cascadeFellBackRef\.current/);
+  assert.match(handler, /requestManagedFallback\(decision\.reason\)/);
+  // A second failure surfaces the typed message and ends the call; it never
+  // asks for another start.
+  assert.match(handler, /setError\(\{ message: decision\.error\.message \}\)/);
+  assert.match(handler, /setCallState\("ended"\)/);
+});
+
+test("a post-accept managed or draining refusal never re-routes the call", () => {
+  // The session owns this: only a pre-accept named refusal becomes a connect
+  // failure; once accepted the frame is an ordinary call error.
+  const session = readRepo("lib/voice/cascade-session.ts");
+  const receive = session.slice(
+    session.indexOf('case "error":'),
+    session.indexOf("  /**\n   * Let the goodbye finish playing"),
+  );
+  assert.match(
+    receive,
+    /if \(!this\.accepted && \(event\.code === "draining" \|\| event\.code === "managed"\)\) \{/,
+    "the connect failure is gated on the call not yet being accepted",
+  );
+  assert.match(receive, /this\.failConnect\(event\.code, event\.message\)/);
+  assert.match(receive, /this\.handlers\.onError\?\.\(event\.message\)/);
+  assert.doesNotMatch(receive, /requestManagedFallback|decideCascadeFallback/);
+});
+
 test("the hold clock union survives mute overlap", () => {
   const clock = readRepo("lib/demo/talk-clock.ts");
   assert.match(clock, /setHeld/);

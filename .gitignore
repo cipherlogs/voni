@@ -58,3 +58,5 @@ voni/.voice-references/
 
 # M00 latency-spike working audio (regenerated; only the sidecar is committed)
 voice-pipeline/.spike/
+# Per-call operational-event artifacts (ticket 110): generated working files.
+voice-pipeline/.events/
