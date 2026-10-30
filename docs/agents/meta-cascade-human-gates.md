@@ -67,6 +67,11 @@ level for `jorg` is −24.93 LUFS (`-5.96 dBTP`, volume 100) in
 `voni/public/voices/cascade/jorg.wav` with its row in
 `voni/evidence/cascade-clips/clips.json`.
 
+The cascade path serves `jorg`; the managed Voice Agent API still rejects it
+(`session.error invalid_value`; its valid list names `juergen`). Managed German
+therefore remains open, and `voni/public/voices/jorg.mp3` is an encoded cascade
+clip (`source: cascade-clip`), not a managed render.
+
 Probe candidates against `POST https://tts.us.assemblyai.com/v1/speech` with
 `voice-pipeline/scripts/probe_voices.py` (or `voni/scripts/measure-voice-levels.mts`).
 It defaults to `juergen`/`aai-juergen` (the historical 422 pair), any
