@@ -205,6 +205,16 @@ function assertNoCarriedVerdict(input: RegressionSubjectInput, label: string): v
   }
 }
 
+/** The one status merge: a gate verdict and the regression check, resolved. */
+function rowStatus(
+  verdict: SubjectGateVerdict,
+  regression: { status: GateStatus },
+): RegressionSubjectStatus {
+  if (verdict.status === "BLOCKED") return "BLOCKED";
+  if (verdict.status === "FAIL" || regression.status === "FAIL") return "FAIL";
+  return verdict.status === "INFO" ? "INFO" : "PASS";
+}
+
 /** Derive one row from its own artifact. Missing means missing, never copied. */
 function regressionSubjectRow(
   input: RegressionSubjectInput,
@@ -254,14 +264,7 @@ function regressionSubjectRow(
     probes,
     tag,
   });
-  const status: RegressionSubjectStatus =
-    verdict.status === "BLOCKED"
-      ? "BLOCKED"
-      : verdict.status === "FAIL" || regression.status === "FAIL"
-        ? "FAIL"
-        : verdict.status === "INFO"
-          ? "INFO"
-          : "PASS";
+  const status = rowStatus(verdict, regression);
   const gateDetail =
     verdict.status === "BLOCKED"
       ? `blocked: ${verdict.detail}`
@@ -447,6 +450,22 @@ export type RegressionMatrix = {
 };
 
 /**
+ * One count of the matrix rows, so the gate detail and the console table
+ * cannot disagree about how many subjects are clean, missing or blocked.
+ */
+function matrixCounts(results: readonly RegressionSubjectResult[]): {
+  clean: number;
+  missing: number;
+  blocked: number;
+} {
+  return {
+    clean: results.filter((result) => result.status === "PASS").length,
+    missing: results.filter((result) => result.status === "MISSING").length,
+    blocked: results.filter((result) => result.status === "BLOCKED").length,
+  };
+}
+
+/**
  * Full matrix verdict: one row per subject, each derived from that subject's
  * own artifact. There is deliberately no `gateVoice` or carried `gate` field —
  * there is no value through which the featured voice's verdict could travel.
@@ -477,9 +496,7 @@ export function buildRegressionMatrix(input: {
   }
   // The ordering rule decides what may be judged and in which order (W5, 118).
   const { results, ordering } = applyFeaturedFirst({ results: judged, featured });
-  const clean = results.filter((result) => result.status === "PASS").length;
-  const missing = results.filter((result) => result.status === "MISSING").length;
-  const blocked = results.filter((result) => result.status === "BLOCKED").length;
+  const { clean, missing, blocked } = matrixCounts(results);
   const gates: ScoreboardGate[] = results.map((row) => ({
     name: `subject:${row.key}`,
     // A missing run is never clean: the matrix cannot claim a subject it did
@@ -521,9 +538,7 @@ export function buildRegressionMatrix(input: {
  * subject that was not judged is never silent (W5, ticket 118).
  */
 export function formatMatrixTable(matrix: RegressionMatrix): string {
-  const clean = matrix.results.filter((result) => result.status === "PASS").length;
-  const missing = matrix.results.filter((result) => result.status === "MISSING").length;
-  const blocked = matrix.results.filter((result) => result.status === "BLOCKED").length;
+  const { clean, missing, blocked } = matrixCounts(matrix.results);
   const summary = [`${clean}/${matrix.results.length} clean`];
   if (missing > 0) summary.push(`${missing} missing`);
   if (blocked > 0) summary.push(`${blocked} blocked`);

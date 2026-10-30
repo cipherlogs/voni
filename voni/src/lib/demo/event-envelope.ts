@@ -18,6 +18,7 @@
  */
 import { readFileSync } from "node:fs";
 import { sanitizeEventFields } from "./event-sanitizer";
+import { ShapeError, objectOf, showValue } from "./shape";
 
 /** The one schema version this reader reads. Unknown values are refused. */
 export const EVENT_SCHEMA_VERSION = 1;
@@ -129,40 +130,16 @@ export type OperationalEventEnvelope = {
 export type EventEnvelope = CallScopedEventEnvelope | OperationalEventEnvelope;
 
 /** One refused event, named by the field and the value that failed. */
-export class EventEnvelopeError extends Error {
-  /** The line label or path the event was read from. */
-  readonly source: string;
-  /** The field that failed, e.g. `schemaVersion`, `turn` or `platformCapture`. */
-  readonly field: string;
-  /** Why it failed, with the offending value spelled out. */
-  readonly reason: string;
-
+export class EventEnvelopeError extends ShapeError {
   constructor(source: string, field: string, reason: string) {
-    super(`${source}: ${field}: ${reason}`);
-    this.name = "EventEnvelopeError";
-    this.source = source;
-    this.field = field;
-    this.reason = reason;
-  }
-}
-
-function showValue(value: unknown): string {
-  if (value === undefined) return "missing";
-  if (typeof value === "string") return JSON.stringify(value);
-  if (typeof value === "number" && !Number.isFinite(value)) return String(value);
-  if (value === null) return "null";
-  try {
-    return JSON.stringify(value) ?? String(value);
-  } catch {
-    return String(value);
+    super("EventEnvelopeError", `${source}: ${field}: ${reason}`, source, field, reason);
   }
 }
 
 function asRecord(raw: unknown, source: string): Record<string, unknown> {
-  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
-    throw new EventEnvelopeError(source, "event", `not an event envelope object (${showValue(raw)})`);
-  }
-  return raw as Record<string, unknown>;
+  return objectOf(raw, "not an event envelope object", (reason) => {
+    throw new EventEnvelopeError(source, "event", reason);
+  });
 }
 
 /**
