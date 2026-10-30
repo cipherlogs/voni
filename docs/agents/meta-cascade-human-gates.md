@@ -17,8 +17,8 @@ failure, and `0` means it completed.
 ## 14 — M0 feasibility decision
 
 **Resolved 2026-10-30: FAIL, with a dated owner risk acceptance.** The commands
-below remain for reproducibility; do not record a PASS. See ticket 14 and
-`.scratch/meta-cascade/evidence/2026-10-30-m00-and-german.md`.
+below remain for reproducibility; do not record a PASS. The dated decision is
+this section; there is no separate ticket to read.
 
 **Needs:** `META_API_KEY`, `ASSEMBLYAI_API_KEY`, `AI_GATEWAY_API_KEY`.
 Use the app's funded AssemblyAI key in `voni/.env.local`; a stale key in `.env`
@@ -44,9 +44,9 @@ unmeasured, so an exit `0` is the only run that can be recorded as PASS or a
 complete AT RISK. Do not record a PASS from the offline report, and do not
 record a PASS without all five numbers.
 
-Record in `.scratch/meta-cascade/issues/14-feasibility-decision.md`: PASS /
-AT RISK / FAIL, the five numbers, the date, and stop-or-proceed. An AT RISK
-with a structurally large term needs an explicit decision, not silence.
+Record here, dated: PASS / AT RISK / FAIL, the five numbers, and
+stop-or-proceed. An AT RISK with a structurally large term needs an explicit
+decision, not silence.
 
 ## 130 — German voice probe and re-cast
 
@@ -62,9 +62,8 @@ exactly as `voni/scripts/measure-voice-levels.mts` does. The pre-re-cast
 unbound** row, so naming it is refused by name and it can never become a silent
 fallback or be re-cast to another Locale.
 
-Evidence so far (machine-recorded, not an audition): probe results in
-`.scratch/meta-cascade/evidence/2026-10-30-m00-and-german.md` (`aai-gunther`,
-`aai-jorg`, `aai-magdalena` render German; `juergen`/`aai-juergen` 422); native
+Evidence so far (machine-recorded, not an audition): `aai-gunther`, `aai-jorg`
+and `aai-magdalena` render German; `juergen`/`aai-juergen` 422; native
 level for `jorg` is −24.93 LUFS (`-5.96 dBTP`, volume 100) in
 `voni/evidence/voice-levels/levels.json`; the product clip is
 `voni/public/voices/cascade/jorg.wav` with its row in

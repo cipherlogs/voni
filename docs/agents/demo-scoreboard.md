@@ -220,9 +220,9 @@ from its `--tenants` row. `--tenants` is optional; without it no tenant roster
 is known.
 
 Exit codes: 0 ready, 1 blocked, 2 bad input. The pack itself is evidence for
-the human gate, not the record: the owner records the verdict in
-`.scratch/meta-cascade/issues/152-*.md` per
-`docs/agents/meta-cascade-human-gates.md`. One failed or missing subject blocks
+the human gate, not the record: the owner records the verdict, dated, in the
+readiness section of `docs/agents/meta-cascade-human-gates.md`. One failed or
+missing subject blocks
 all; a dated deferral covers only a subject with no evidence.
 
 ## Live-run rules
