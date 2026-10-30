@@ -4,7 +4,7 @@
 
 **Blocked by:** 133 (The cascade re-audition pack)
 
-**Status:** ready-for-human
+**Status:** wontfix
 
 - [ ] The owner records accept, withdraw or unresolved with date and reasons, separate from the ballots.
 - [ ] Accept means content did not hold up; withdraw means it did. The decision record's meanings are not flipped.
@@ -24,3 +24,13 @@ decides; nothing here fabricates a verdict.
 - Evidence: `cascade-verdict.test.ts` + `adr-section.test.ts` (18 tests: named owner verdict, unflipped meanings, unnamed human/capture, missing reason/date, future date, invalid decision, capture not on disk, incomplete-pack refusal, missing ballot, unresolved-on-complete-pack capture rule, missing/misdescribed pack capture, ADR coexistence + idempotency + later-section replace + prose-mention anchor). Full `npm test` → 2362 tests, 2361 pass, 1 skipped, 0 fail; `npm run typecheck` clean; `npm run lint` 0 errors (2 pre-existing warnings in `scripts/reviewer-pack.mts`).
 - Left for the owner: **no live cascade artifact exists yet** (all 30 runs in `voni/scoreboard-runs/` are managed). Make one live browser cascade call for `lola`/`es`, build its pack (`scoreboard:demo --pipeline cascade --ledger …`), listen to the delivered capture, then run `npm run voice:cascade-verdict`. The ticket stays `ready-for-human`; no verdict was recorded.
 
+
+### 2026-10-30 — closed wontfix (cascade deferred)
+
+The owner chose the managed path; the cascade is not being shipped. A cascade
+audition verdict cannot be recorded for a pipeline that has no and will have no
+live artifact, so this ticket is closed `wontfix` rather than left open or
+resolved with a fabricated verdict. The managed W2 verdict in ADR 0008
+(`lola`/es, accept) stands. The recorder built here (`cascade-verdict.ts`,
+`adr-section.ts`, `scripts/cascade-verdict.mts`) is retained in the archived
+cascade branch; it is generic and does not fabricate a decision.
