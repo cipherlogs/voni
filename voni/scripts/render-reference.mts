@@ -46,7 +46,7 @@ function optionalArg(name: string): string | undefined {
 const apiKey = process.env.ASSEMBLYAI_API_KEY;
 
 async function token(): Promise<string> {
-  if (!apiKey) throw new Error("ASSEMBLYAI_API_KEY missing: run with --env-file=.dev.vars");
+  if (!apiKey) throw new Error("ASSEMBLYAI_API_KEY missing: run with --env-file=.env.local");
   const url = new URL("https://agents.assemblyai.com/v1/token");
   url.searchParams.set("expires_in_seconds", "60");
   url.searchParams.set("max_session_duration_seconds", "60");

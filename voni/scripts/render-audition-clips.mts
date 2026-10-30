@@ -113,7 +113,7 @@ function today(): string {
 async function token(): Promise<string> {
   const apiKey = process.env.ASSEMBLYAI_API_KEY;
   if (!apiKey) {
-    throw new Error("ASSEMBLYAI_API_KEY is not set: run with --env-file-if-exists=.dev.vars");
+    throw new Error("ASSEMBLYAI_API_KEY is not set: run with --env-file-if-exists=.env.local");
   }
   const url = new URL("https://agents.assemblyai.com/v1/token");
   url.searchParams.set("expires_in_seconds", "60");

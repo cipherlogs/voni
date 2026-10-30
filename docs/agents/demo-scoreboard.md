@@ -214,7 +214,7 @@ all; a dated deferral covers only a subject with no evidence.
 - `npm run scoreboard:demo` defaults to the full default suite
   (`SUITE_SCENARIOS`: 10 scenarios, both goodbye-drain paths included); use
   `--scenario <name>` for focused triage. A dry run spawns nothing.
-- Live runs need `voni/.dev.vars` (AssemblyAI + AI Gateway keys) and, for the
+- Live runs need `voni/.env.local` (AssemblyAI + AI Gateway keys) and, for the
   stored path, `DATABASE_URL` (Neon) so the demo agent can be provisioned.
 - Artifacts are gitignored working files. Use `scoreboard:inspect`; do not
   paste raw artifacts or `SILENCE TIMELINE` blobs into a report.

@@ -1,9 +1,11 @@
 # Environment variables
 
-Copy each value into `voni/.dev.vars` for local dev (Cloudflare/OpenNext reads
-`.dev.vars`, not `.env`). Never commit real values — `.dev.vars` and `.env*`
-are gitignored, and this project's permission settings block writing actual
-`.env*` files from an agent session as a safety measure — set these by hand.
+Copy each value into `voni/.env.local` for local dev — that is where values
+live (Next loads it; OpenNext bakes it into the local Worker). `voni/.dev.vars`
+holds only the two Worker overrides described under "Where env vars actually
+live". Never commit real values: `.env*` and `.dev.vars` are gitignored, and
+this project's permission settings block writing actual `.env*` files from an
+agent session as a safety measure — set these by hand.
 
 ## Database (Neon Postgres)
 - `DATABASE_URL` — Neon dashboard → project → Connection Details → "Pooled connection" URI.
@@ -53,7 +55,7 @@ local save and shows a retryable deployment warning on the agent page.
 - `AI_GATEWAY_API_KEY` — Vercel dashboard → AI Gateway → API Keys. Powers live
   Jev probabilities in `/api/voice-judge`; without it the route serves the
   offline heuristic (`source: "heuristic"`), so calls work either way. Set by
-  hand in `.dev.vars` (and prod Worker secrets) — never committed.
+  hand in `.env.local` (and prod Worker secrets) — never committed.
 - `VOICE_JUDGE_MODEL` (optional) — defaults to `typesafe-ai/jev`.
 - `VOICE_JUDGE_GATEWAY_URL` (optional) — defaults to the AI Gateway evaluate
   endpoint (`https://ai-gateway.vercel.sh/v1/evaluate`).
@@ -109,7 +111,7 @@ chain skips providers with no usable account and falls through on rate limits,
 errors, and malformed JSON.
 
 `META_API_KEY` is the one environment-backed LLM credential. Put it in
-`.dev.vars` for local development and configure it as a Worker secret in
+`.env.local` for local development and configure it as a Worker secret in
 production. Do not commit its value.
 
 Free-provider keys are not environment variables. Each free provider supports
@@ -171,35 +173,41 @@ duplicates. It never seeds every organization or chooses one automatically.
 
 ## Where env vars actually live (read this first)
 
-Two files, and they do **not** overlap:
+This follows OpenNext's recommended layout for Next on Cloudflare: values live
+in a Next `.env` file, and `.dev.vars` exists only to tell the adapter which
+mode to use (<https://opennext.js.org/cloudflare/howtos/env-vars>).
 
 | File | Written by | Loaded into | Holds |
 | --- | --- | --- | --- |
-| `.env.local` | the Neon CLI | `process.env`, by Next | `DATABASE_URL` only |
-| `.dev.vars` | us | the Cloudflare context | everything else |
+| `.env.local` | us | `process.env`, by Next, before `next.config.ts` runs; baked into the Worker at build time | **every value** — provider keys, auth secrets, `DATABASE_URL` |
+| `.dev.vars` | us | the Cloudflare context (`initOpenNextCloudflareForDev()`), and `wrangler` as secret bindings | Worker-runtime overrides only: `NEXTJS_ENV=development`, `LANDING_HOST=` |
 | `wrangler.jsonc` `vars` | us, committed | the deployed Worker | non-secret prod config: `LANDING_HOST`, `BETTER_AUTH_URL`, `VONI_API_URL` |
 
+**No value appears twice.** `.dev.vars` has no secrets in it, so the two files
+cannot drift — the earlier setup had a root `.env` and a `.dev.vars` both
+claiming to own `ASSEMBLYAI_API_KEY`, and `.env.local` duplicating
+`DATABASE_URL`, which silently won because Next loads `.env*` before
+`next.config.ts` runs.
+
 Production secrets are Worker secrets (`npx wrangler secret put NAME`), never a
-file: `next build` loads `.env*` files into the build, so a prod `.env` would
-ship with any local deploy. A var can't share a name with a secret; delete the
+file. `next build` bakes `.env*` into the build (`next-env.mjs`), so never keep
+a production `.env` on a machine that builds a deploy — deploys run in CI
+(`.github/workflows/deploy.yml`) with no env file, and the Worker's secrets
+persist across deploys. A var can't share a name with a secret; delete the
 secret before moving a value into `vars`. `.dev.vars` overrides `vars` locally,
 so it keeps `LANDING_HOST=` (empty) to stop `npm run preview` from scoping
-cookies to voni.cc on localhost.
+cookies to voni.cc on localhost. That override has to live there — `wrangler`
+does not read `.env*`.
 
-`.dev.vars` is Cloudflare's convention, and `initOpenNextCloudflareForDev()`
-exposes it through the Cloudflare context — **not** through `process.env`. So a
-plain `process.env.ASSEMBLYAI_API_KEY` read `undefined` under `next dev` and
-every feature that needed it reported itself "not configured", while the
-database kept working and made the environment look healthy. Google sign-in was
-broken this way too.
+`src/lib/env.ts` provides `secret()`: it reads `process.env` first and falls
+back to the Cloudflare context. That covers both sources at the point of use —
+`.env.local` reaches `process.env` (Next dev, and baked into the Worker),
+`.dev.vars` bindings and real Worker secrets reach the context. `src/lib/auth.ts`
+reads its secrets at module scope, which works because Next loads `.env.local`
+before the config file is evaluated.
 
-`next.config.ts` now mirrors `.dev.vars` into `process.env` in development
-(existing values always win, so CI and the deployed Worker are untouched). It
-has to happen there because `src/lib/auth.ts` reads its secrets at module scope.
-`src/lib/env.ts` provides `secret()` as a request-time fallback that also reads
-the Cloudflare context directly.
-
-**Put new secrets in `.dev.vars`.** Nothing needs to be duplicated.
+**Put new secrets in `.env.local`.** `.dev.vars` is not a second env file; it is
+two Worker overrides.
 
 ## Public demo limits
 
@@ -232,7 +240,7 @@ One-time setup:
 
 1. Google Cloud Console, same project as `GOOGLE_CLIENT_ID`: enable the **Gmail API**; under the OAuth consent screen add the `gmail.modify` scope and, while the app is in *Testing*, add `test@voni.cc` as a test user.
 2. On the OAuth client, add `http://localhost:8765` as an authorized redirect URI.
-3. `node --env-file=.dev.vars --import tsx scripts/mint-demo-inbox-token.mts`, sign in as the inbox account, and put the printed line in `.dev.vars` (and `wrangler secret put DEMO_INBOX_REFRESH_TOKEN` for deploys).
+3. `node --env-file=.env.local --import tsx scripts/mint-demo-inbox-token.mts`, sign in as the inbox account, and put the printed line in `.env.local` (and `wrangler secret put DEMO_INBOX_REFRESH_TOKEN` for deploys).
 
 ⚠️ While the consent screen is in *Testing*, Google expires refresh tokens after 7 days: re-run step 3, or publish the app. If the Cloud project belongs to the `voni.cc` Workspace, set the consent screen's user type to *Internal* instead: no test users, no 7-day expiry. Without the token the demo still runs; every inbox check just reads as "not landed yet" (logged as `[demo-inbox] read failed`).
 
@@ -261,7 +269,7 @@ npx wrangler r2 bucket create voni-csv-staging
 
 `JOB_WORKER_SECRET` is the one new secret this system needs: any long random
 string, shared between the worker and the server (same environment, so one
-value). Put it in `.dev.vars` locally and configure it as a Worker secret in
+value). Put it in `.env.local` locally and configure it as a Worker secret in
 production. The queue/scheduled handlers prove it on every internal call
 (`x-voni-worker-secret`); without it the internal consume/sweep routes 403.
 
@@ -282,8 +290,9 @@ while a hand-bundled copy fails to resolve them (seen with
 | `triggers.crons` | `*/5 * * * *` | republish missed messages, recover abandoned leases, delete terminal jobs after 30 days |
 
 Generated binding types: `npx wrangler types` refreshes the `CloudflareEnv`
-declarations after any binding change; `secret()` in `src/lib/env.ts` keeps
-reading `.dev.vars` first so local secrets behave the same.
+declarations after any binding change; `secret()` in `src/lib/env.ts` reads
+`process.env` first and falls back to the Cloudflare context, so a binding and
+a local value behave the same.
 
 ```bash
 npm run preview  # opennext build + local preview (queue/R2 emulated locally)

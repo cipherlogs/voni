@@ -5,7 +5,7 @@
  * prints the refresh token. gmail.modify covers reading now and replying in
  * ticket 04, so the owner consents once.
  *
- *   node --env-file=.dev.vars --import tsx scripts/mint-demo-inbox-token.mts
+ *   node --env-file=.env.local --import tsx scripts/mint-demo-inbox-token.mts
  */
 import { createServer } from "node:http";
 import { DEMO_INBOX_ADDRESS } from "../src/lib/demo/email-test";
@@ -14,7 +14,7 @@ const PORT = 8765;
 const REDIRECT = `http://localhost:${PORT}`;
 const clientId = process.env.GOOGLE_CLIENT_ID;
 const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
-if (!clientId || !clientSecret) throw new Error("GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET missing (run with --env-file=.dev.vars)");
+if (!clientId || !clientSecret) throw new Error("GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET missing (run with --env-file=.env.local)");
 
 const consent = new URL("https://accounts.google.com/o/oauth2/v2/auth");
 consent.search = new URLSearchParams({

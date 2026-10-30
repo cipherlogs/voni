@@ -37,8 +37,8 @@ npm run dev        # http://localhost:3000
 
 Environment (never committed — see `voni/ENVIRONMENT.md` for the full list):
 
-- `voni/.dev.vars` — local Worker-style secrets (LLM keys via Settings UI, `VONI_TOOL_SECRET`, `JOB_WORKER_SECRET`, …)
-- `voni/.env.local` — local-only env for dev/test scripts
+- `voni/.env.local` — every local value: provider keys, auth secrets, `DATABASE_URL`
+- `voni/.dev.vars` — Worker-runtime overrides only: `NEXTJS_ENV`, `LANDING_HOST=`
 
 Database:
 

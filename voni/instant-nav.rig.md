@@ -9,7 +9,7 @@
 - Copy excludes: `.git`, `.next`, `.open-next`, local env files, browser state, existing artifacts. Includes: tracked modifications + relevant untracked source files. Uses lockfile + `npm ci`.
 - Source fingerprint recorded per run (HEAD alone insufficient for dirty baseline).
 - `next start` acceptable as local framework test server only; Cloudflare target validated separately via OpenNext preview.
-- Test-only `next.config.ts` condition (merge, preserve `.dev.vars` + OpenNext dev init):
+- Test-only `next.config.ts` condition (merge, preserve OpenNext dev init):
   ```ts
   experimental: {
     exposeTestingApiInProductionBuild:
@@ -34,7 +34,7 @@
 
 ## Test-only config + deps (Task 4, landed)
 
-- `next.config.ts`: `experimental.exposeTestingApiInProductionBuild` gated on `VONI_INSTANT_TEST_BUILD === "1"` (merged, `.dev.vars` bridge + OpenNext dev init preserved). Ordinary builds leave it unset.
+- `next.config.ts`: `experimental.exposeTestingApiInProductionBuild` gated on `VONI_INSTANT_TEST_BUILD === "1"` (merged, OpenNext dev init preserved). Ordinary builds leave it unset.
 - `devDependencies`: `@next/playwright 16.3.4` (pinned to Next release line), `@playwright/test 1.63.0`. Chromium: `npx playwright install chromium`.
 - `playwright.config.ts`: zero retries, Desktop `1280×800` + mobile `390×844` projects, `baseURL` from `PLAYWRIGHT_BASE_URL` (default `http://localhost:3100`).
 - `scripts/e2e-run.mjs`: temp dir per run, excludes `.git/.next/.open-next`/local env/browser state/artifacts, overlays tracked modifications + allowlisted untracked source + rig files, `npm ci`, fingerprint (`HEAD + status + diffstat → hash`), owns/cleans process group, refuses occupied 3100/3101. Build+serve env = `bootEnv()`: ephemeral test-only `BETTER_AUTH_SECRET` + `BETTER_AUTH_URL` (boot-only, never real secrets); `DATABASE_URL` unset → placeholder fails soft to signed-out for unauthenticated pages. Any `E2E_DATABASE_URL` set aborts (Task 5 allowlist lives in fixture setup, not here).

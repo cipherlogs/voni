@@ -10,7 +10,7 @@
 //   kills whole process groups (SIGTERM -> SIGKILL) and verifies ports free.
 // Pattern follows scripts/e2e-run.mjs: detached groups, waitForPort, teardown.
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import net from "node:net";
@@ -43,35 +43,25 @@ if (!Number.isInteger(appPort) || appPort <= 0) {
   process.exit(2);
 }
 
-function parseDotFile(path) {
-  const out = {};
-  if (!existsSync(path)) return out;
-  for (const line of readFileSync(path, "utf8").split("\n")) {
-    const t = line.trim();
-    if (!t || t.startsWith("#") || !t.includes("=")) continue;
-    const i = t.indexOf("=");
-    const k = t.slice(0, i).trim();
-    let v = t.slice(i + 1).trim().replace(/^['"]|['"]$/g, "");
-    if (k) out[k] = v;
-  }
-  return out;
-}
-const devVars = parseDotFile(resolve(voniDir, ".dev.vars"));
-const envLocal = parseDotFile(resolve(voniDir, ".env.local"));
-const get = (k) => process.env[k] ?? devVars[k] ?? envLocal[k] ?? "";
+// The same file Next loads. Missing is fine (CI, fresh clone) — requireKeys
+// below reports anything that actually matters.
+try {
+  process.loadEnvFile(resolve(voniDir, ".env.local"));
+} catch {}
+const get = (k) => process.env[k] ?? "";
 
 function requireKeys(keys, label) {
   const missing = keys.filter((k) => !get(k));
   if (missing.length > 0) {
     console.error(`[dev-all] REFUSE: missing ${label}: ${missing.join(", ")}`);
-    console.error(`[dev-all] Set them in voni/.dev.vars (see ENVIRONMENT.md).`);
+    console.error(`[dev-all] Set them in voni/.env.local (see ENVIRONMENT.md).`);
     process.exit(2);
   }
 }
 
 // Fail fast before spawning anything.
 if (!get("DATABASE_URL")) {
-  console.error("[dev-all] REFUSE: DATABASE_URL missing (.env.local per ENVIRONMENT.md).");
+  console.error("[dev-all] REFUSE: DATABASE_URL missing (voni/.env.local per ENVIRONMENT.md).");
   process.exit(2);
 }
 requireKeys(["BETTER_AUTH_SECRET", "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"], "app keys");
@@ -170,7 +160,7 @@ for (const [name, port] of targets) {
   }
 }
 
-const childEnv = { ...devVars, ...envLocal, ...process.env };
+const childEnv = { ...process.env };
 launch("app", "npm", ["run", "dev", "--", "--port", String(appPort)], { cwd: voniDir, env: process.env });
 if (wantCascade) {
   launch("cascade", venvPython, ["server.py"], {

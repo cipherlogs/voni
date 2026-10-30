@@ -2,7 +2,7 @@
 
 Starts nothing itself: point it at a running service (see scripts/local_server.sh),
 it sends one mp3 as paced mic frames and prints captions, audio stats, and the
-ledger gaps. Keys come from host env (or ../voni/.dev.vars as a dev fallback),
+ledger gaps. Keys come from host env (or ../voni/.env.local as a dev fallback),
 voice auto-picks an English Cartesia voice when --voice-id is absent.
 
     ../telephony-bot/.venv/bin/python scripts/smoke_call.py [--url ...] [--audio ...]
@@ -26,7 +26,7 @@ REPO = Path(__file__).resolve().parent.parent.parent
 def load_dev_vars(*names: str) -> None:
     wanted = set(names)
     try:
-        text = (REPO / "voni" / ".dev.vars").read_text()
+        text = (REPO / "voni" / ".env.local").read_text()
     except OSError:
         return
     for line in text.splitlines():

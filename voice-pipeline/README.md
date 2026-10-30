@@ -59,7 +59,7 @@ bridge venv (stdlib-only otherwise):
 ## Running the service (P1 talking slice)
 
 ```
-sh scripts/local_server.sh   # dev only: loads ../voni/.dev.vars, serves :8766
+sh scripts/local_server.sh   # dev only: loads ../voni/.env.local, serves :8766
 ```
 
 - `GET /healthz` — liveness, no vendors touched.

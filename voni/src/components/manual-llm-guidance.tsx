@@ -22,7 +22,7 @@ export function ManualLlmGuidance() {
       <p className="text-muted-foreground">
         Meta always runs first, cannot be configured in Settings, and reads{" "}
         <span className="font-mono">META_API_KEY</span> from{" "}
-        <span className="font-mono">.dev.vars</span> locally or a Worker secret
+        <span className="font-mono">.env.local</span> locally or a Worker secret
         in production. Stored keys are always masked.{" "}
         <Link href="/operator" className="cursor-pointer rounded-sm underline underline-offset-4 outline-none focus-visible:ring-2 focus-visible:ring-ring">
           Open platform operator

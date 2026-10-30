@@ -3,20 +3,19 @@ import { getCloudflareContext } from "@opennextjs/cloudflare";
 /**
  * Read a server-side secret, from wherever this runtime actually keeps it.
  *
- * There are two env sources in this project and they do NOT overlap:
+ * Two sources, and the split follows OpenNext's recommended layout:
  *
- *   .env.local  — written by the Neon CLI, loaded by Next into `process.env`.
- *                 Holds DATABASE_URL and nothing else.
- *   .dev.vars   — the Cloudflare convention, loaded by
- *                 `initOpenNextCloudflareForDev()` in next.config.ts into the
- *                 *Cloudflare context*, not into `process.env`.
+ *   .env.local  — every local value. Next loads it into `process.env`, and
+ *                 OpenNext bakes it into the Worker at build time.
+ *   .dev.vars   — Worker-runtime overrides only (`NEXTJS_ENV`, `LANDING_HOST=`).
+ *                 `initOpenNextCloudflareForDev()` exposes these through the
+ *                 *Cloudflare context*, not `process.env`.
  *
- * Everything that matters — the AssemblyAI key, Google OAuth, Better Auth's
- * secret, every LLM provider key — lives in `.dev.vars`. So a plain
- * `process.env.ASSEMBLYAI_API_KEY` reads `undefined` under `next dev` and the
- * feature silently reports itself as "not configured". That is exactly the bug
- * this function exists to stop, and it is easy to lose an hour to because the
- * database works fine and makes the environment look healthy.
+ * So `process.env` alone is enough for anything in `.env.local`, but a binding
+ * that only exists on the Worker (a real secret, a `wrangler.jsonc` var) can be
+ * absent from it. That fallback is cheap insurance, and forgetting it is easy
+ * to lose an hour to — the database works fine and makes the environment look
+ * healthy while the feature reports itself "not configured".
  *
  * Checking `process.env` first keeps ordinary deploys, tests and CI working
  * (and on Workers in production OpenNext populates it), with the Cloudflare
