@@ -16,6 +16,11 @@ adding at the same moment produce one total and one crossing per line:
   next writer sees it already crossed and emits nothing (:class:`Crossing`);
 * the crossing set is per day, so a new day crosses and alerts again.
 
+The optional ``on_crossing`` sink hears each crossing exactly once, from the
+writer that made it durable. Routing reads (``snapshot`` and its properties)
+never alert: a crossing is spend, not a read, and ticket 103's new-call decision
+consumes the day's line without producing a second notification.
+
 Three absences are kept apart, because every one of them has a different answer:
 
 * an **unwritten day** is zero spend — nothing was recorded, so nothing was
@@ -447,9 +452,16 @@ class DailyCounter:
         boundary: str | None = None,
         now: Callable[[], float] = time.time,
         attempts: int = _MAX_ATTEMPTS,
+        on_crossing: Callable[[Crossing], None] | None = None,
     ) -> None:
         registry = thresholds.REGISTRY if registry is None else registry
         self.store = store
+        if on_crossing is not None and not callable(on_crossing):
+            raise ValueError(
+                f"on_crossing must be callable, got {on_crossing!r}; the alert "
+                "sink hears each line exactly once"
+            )
+        self._on_crossing = on_crossing
         self.boundary = _check_boundary(
             _bound(registry, BOUNDARY_BOUND) if boundary is None else boundary
         )
@@ -629,12 +641,30 @@ class DailyCounter:
             )
 
         final, result = await self._write(day, mutate)
+        self._alert(result.crossings)
         return replace(
             result,
             spent=final.spent,
             held=final.held,
             version=final.version,
         )
+
+    def _alert(self, crossings: tuple[Crossing, ...]) -> None:
+        """Tell the alert sink about each line this write crossed.
+
+        The crossing set is stored in the durable day document, so exactly one
+        writer produces each crossing and no instance alerts twice for one day
+        and one line. A sink failure must not un-land a charge that already
+        committed: the crossing is durable, and the charge is what the caller
+        asked for.
+        """
+        if self._on_crossing is None:
+            return
+        for crossing in crossings:
+            try:
+                self._on_crossing(crossing)
+            except Exception:
+                continue
 
     async def _release_on(self, day: str, call_id: str) -> bool:
         def mutate(current: DayBudget) -> tuple[DayBudget, bool]:
