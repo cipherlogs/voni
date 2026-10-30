@@ -79,7 +79,8 @@ from cascade.version import version_document
 from transport import handle_browser_call
 
 #: Where a call's sanitized operational events are written. One JSONL file per
-#: call; the directory is gitignored and a host may point it at a mounted disk.
+#: call; the directory is gitignored locally and the image sets it to the
+#: writable ``/var/lib/voni/events`` (created and chowned in the Dockerfile).
 EVENTS_DIR_ENV = "VOICE_PIPELINE_EVENTS_DIR"
 DEFAULT_EVENTS_DIR = Path(__file__).with_name(".events")
 

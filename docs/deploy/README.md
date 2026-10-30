@@ -130,14 +130,26 @@ is the list and carries no values. The service reads `META_API_KEY`,
 `VONI_TOOL_SECRET`, `VOICE_PIPELINE_ENVELOPE_SECRET` and `DATABASE_URL`. The app
 has its own set on its own app; the two are never shared.
 
-The deployment also carries two **required non-secret host settings**, named in
-`[env]` and in the example: `META_REASONING_EFFORT` is the measured effort
-(M03). Spark has no default, so a default-rung call fails setup while it is
-empty; the host supplies the measured value, never this repository.
-`VOICE_PIPELINE_TOOL_BASE_URL` is the app origin the tool route calls; when it
-is empty no `ToolExecutor` is constructed and every tool call is dropped.
-`python deploy/topology.py` fails by name if either is missing from the service
-config, the example, the compose rehearsal or this record.
+The deployment also carries two **required non-secret host settings**, recorded
+in `deploy/voice-pipeline.env.example` and this record: `META_REASONING_EFFORT`
+is the measured effort (M03). Spark has no default, so a default-rung call fails
+setup while it is unset; the host supplies the measured value with
+`fly secrets set`, never this repository. `VOICE_PIPELINE_TOOL_BASE_URL` is the
+app origin the tool route calls; when it is empty no `ToolExecutor` is
+constructed and every tool call is dropped. Neither required setting is written
+into `[env]` or Compose's `environment` with an empty value: Compose gives that
+block precedence over `env_file`, and a blank entry is the blank runtime value on
+either host, so an empty entry would prevent the real value from being used.
+`python deploy/topology.py` fails by name when a required setting is present but
+empty, and when the example or this record does not name it.
+
+Each call writes one operational-event JSONL artifact under
+`VOICE_PIPELINE_EVENTS_DIR`; the image sets it to `/var/lib/voni/events` and
+creates that directory for uid 10001. The artifact is best-effort: if the
+directory cannot be created or a line cannot be written, the call still runs,
+the sink is disabled, and the end message carries `eventsError` with the reason
+instead of claiming an `eventsPath`. The deployed setting is the same in
+`fly.voice-pipeline.toml`, `docker-compose.yml` and the example.
 
 The repository scan is ticket 141's second guard: `python deploy/topology.py`
 runs it (and `python deploy/secret_scan.py` runs it alone). It reports a

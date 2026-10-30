@@ -530,25 +530,35 @@ async def handle_browser_call(
             )
             lifecycle: CallLifecycle | None = None
 
+            def require_lifecycle() -> CallLifecycle:
+                """The call's lifecycle, or a named error before it exists.
+
+                The stream's callbacks are built first because the lifecycle
+                owns the stream; an argument, not an assert, names the broken
+                ordering if one is invoked in that window.
+                """
+                if lifecycle is None:
+                    raise RuntimeError(
+                        "the turn stream called the call lifecycle before it was "
+                        "constructed; setup ordering is broken"
+                    )
+                return lifecycle
+
             async def emit_audio(
                 audio: Any, *, kind: str = "reply", flush_id: int | None = None
             ) -> OutboundAudio:
-                assert lifecycle is not None
-                return await lifecycle.emit_audio(
+                return await require_lifecycle().emit_audio(
                     audio, kind=kind, flush_id=flush_id
                 )
 
             def may_request(leg: str) -> bool:
-                assert lifecycle is not None
-                return lifecycle.may_request(leg)
+                return require_lifecycle().may_request(leg)
 
             async def on_turn_billed() -> None:
-                assert lifecycle is not None
-                await lifecycle.note_billed()
+                await require_lifecycle().note_billed()
 
             async def on_end_call() -> None:
-                assert lifecycle is not None
-                lifecycle.request_end("end_call")
+                require_lifecycle().request_end("end_call")
 
             stream = CascadeTurnStream(
                 llm=legs.model,

@@ -29,7 +29,7 @@ Three verdicts only: **keep** (stands, possibly extended), **re-scope** (substan
 | 60 | One agent-body builder | **keep** | The cascade reads the same body through one adapter (M05); no second builder is introduced. |
 | 61 | Profile whitelist rejection | **keep, extend** | Gains a cascade row: a body key in neither the field map nor the ignore set must fail. |
 | 62 | One fingerprint over the whole body | **keep, extend** | M05 requires the served fingerprint to equal the minted one, which is a stronger assertion than the current test. |
-| 63 | Override removal path | **keep, extend** | Its consequence becomes explicit: a body carrying an `llm` override refuses the cascade and routes at managed (M05 AC3). |
+| 63 | Override removal path | **keep, extend** | Its consequence becomes explicit: a body carrying an `llm` override is constructed from the stored body and runs cascade (ticket 159 replaces the refusal); `llm: []` is the documented revert to the default rung. |
 | 66 | Persona-neutral quality floor module | **keep** | Unchanged; one module, persona-independent. |
 | 67 | Quality floor on every agent | **keep, extend** | The cascade must splice the same floor through the M05 map, and the floor now also governs the pre-tool hold line. |
 | 68 | Tenant/demo mechanics parity assertion | **keep, extend** | Turn-preset parity is meaningless on the cascade and is replaced there by floor + recognition-policy parity; the assertion gains a cascade row. |
