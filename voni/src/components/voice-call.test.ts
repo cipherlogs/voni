@@ -324,22 +324,57 @@ test("a hold return reconnects visibly, silently, and speaks exactly once", () =
   assert.match(call, /rejoiningRef\.current = false/);
 });
 
-test("a refused cascade connect routes through the one managed retry", () => {
+test("a refused demo connect is unavailable, never a managed retry", () => {
   const call = readRepo("components/voice-call.tsx");
   const handler = call.slice(
     call.indexOf("onConnectFailure: (failure)"),
     call.indexOf("onEnd: () => {"),
   );
 
-  // The session reports every pre-accept cause (draining, managed, unavailable)
-  // through this one handler; the decision owns whether the retry is still
-  // unspent, and the component owns the transport override.
+  // The demo branch ends the call with the visitor copy; only the inline test
+  // call reaches the one managed retry.
+  assert.match(call, /demoUnavailableMessage/);
+  assert.match(
+    handler,
+    /if \(modeKind === "demo"\) \{[\s\S]*?demoUnavailableMessage\(failure\.code\)[\s\S]*?setCallState\("ended"\)[\s\S]*?return;/,
+    "the demo maps the cause, ends the call, and returns before the decision",
+  );
+  assert.ok(
+    handler.indexOf('if (modeKind === "demo")') <
+      handler.indexOf("decideCascadeFallback("),
+    "the demo branch returns before the only fallback decision",
+  );
+  assert.doesNotMatch(
+    handler,
+    /alreadyFellBack: modeKind === "demo"/,
+    "the demo never reaches the decision with a spent retry either",
+  );
+
+  // The managed retry itself refuses to run for the demo, no matter who asks.
+  const fallback = call.slice(
+    call.indexOf("const requestManagedFallback = useCallback"),
+    call.indexOf("// Synchronous pending mirror"),
+  );
+  assert.match(fallback, /if \(modeKind === "demo"\) return;/);
+  assert.doesNotMatch(fallback, /demoToken|authedToken|\/api\/voice-token/);
+});
+
+test("the inline test call keeps its one managed retry", () => {
+  const call = readRepo("components/voice-call.tsx");
+  const handler = call.slice(
+    call.indexOf("onConnectFailure: (failure)"),
+    call.indexOf("onEnd: () => {"),
+  );
+
+  // The session reports every pre-accept cause (draining, managed, unavailable,
+  // protocol) through this one handler; the decision owns whether the retry is
+  // still unspent, and the component owns the transport override.
   assert.match(handler, /decideCascadeFallback\(\{/);
   assert.match(handler, /failure\.code/, "the session's cause reaches the decision");
   assert.match(
     handler,
-    /alreadyFellBack: modeKind === "demo" \? true : cascadeFellBackRef\.current/,
-    "the inline retry is unspent; the demo never retries on managed",
+    /alreadyFellBack: cascadeFellBackRef\.current/,
+    "the inline retry is unspent; the demo never reaches this branch",
   );
   assert.match(handler, /requestManagedFallback\(decision\.reason\)/);
   // A second failure surfaces the typed message and ends the call; it never
@@ -383,7 +418,7 @@ test("the demo start is the cascade client: one mint, no managed session", () =>
 
   // A refused connect is surfaced, never retried on managed; the 429 keeps its
   // countdown instead of collapsing into a generic error.
-  assert.match(call, /alreadyFellBack: modeKind === "demo" \? true : cascadeFellBackRef\.current/);
+  assert.match(call, /alreadyFellBack: cascadeFellBackRef\.current/);
   assert.match(call, /e instanceof RateLimitError/);
   assert.match(call, /setRetryIn\(retryAfter/);
 });
@@ -398,10 +433,10 @@ test("a post-accept managed or draining refusal never re-routes the call", () =>
   );
   assert.match(
     receive,
-    /if \(!this\.accepted && \(event\.code === "draining" \|\| event\.code === "managed"\)\) \{/,
+    /!this\.accepted &&[\s\S]{0,160}?event\.code === "draining"[\s\S]{0,160}?event\.code === "managed"[\s\S]{0,160}?event\.code === "protocol_version"/,
     "the connect failure is gated on the call not yet being accepted",
   );
-  assert.match(receive, /this\.failConnect\(event\.code, event\.message\)/);
+  assert.match(receive, /this\.failConnect\(/);
   assert.match(receive, /this\.handlers\.onError\?\.\(event\.message\)/);
   assert.doesNotMatch(receive, /requestManagedFallback|decideCascadeFallback/);
 });

@@ -50,6 +50,7 @@ import {
 import { CallTimings } from "@/lib/voice/call-timings";
 import { deliveredCaptureRequested } from "@/lib/voice/delivered-capture";
 import { CascadeSession, CASCADE_PROTOCOL_VERSION, decideCascadeFallback } from "@/lib/voice/cascade-session";
+import { demoUnavailableMessage } from "@/lib/voice/cascade-failure-view";
 import { startDemoCall } from "@/lib/voice/demo-start";
 import { FILLER_POOL } from "@/lib/voice/jev-judges";
 import { compileSystemPrompt } from "@/lib/agents/compile";
@@ -577,6 +578,9 @@ export function VoiceCall({
    * spent at the end of that start, so it is never dropped.
    */
   const requestManagedFallback = useCallback((reason: string) => {
+    // The demo has no managed fallback (demo-cascade ticket 11): no managed
+    // token request, no managed socket, whatever asks.
+    if (modeKind === "demo") return;
     if (startingRef.current) {
       pendingFallbackRef.current = reason;
       return;
@@ -585,7 +589,7 @@ export function VoiceCall({
     engineOverrideRef.current = "managed";
     setFallbackReason(reason);
     void startRef.current();
-  }, []);
+  }, [modeKind]);
 
   // Synchronous pending mirror for the host footer: the onPendingChange
   // effect below only runs after paint, so the click handler also notifies
@@ -1271,23 +1275,33 @@ export function VoiceCall({
           setError({ message });
         },
         onConnectFailure: (failure) => {
+          // The demo has no managed fallback (demo-cascade ticket 11): every
+          // pre-accept refusal — draining, routed managed, unavailable, or a
+          // protocol mismatch — ends in the visitor-facing unavailable state.
+          // The copy is vendor-free and distinct per cause; no managed token
+          // request and no managed socket follows.
+          if (modeKind === "demo") {
+            cascadeEnded = true;
+            setError({ message: demoUnavailableMessage(failure.code) });
+            setCallState("ended");
+            return;
+          }
           // Ticket 140 AC5: a refused cascade connect is not a dead end for
           // the inline test call. A draining deploy, a routed-managed verdict
           // (`managed`) and an unavailable service are all pre-accept
           // failures; spend the single managed retry with the reason visible.
           // A second failure is surfaced as a typed DrainingError that no
-          // longer offers a retry.
+          // longer offers a retry. A protocol mismatch is never retried: the
+          // decision surfaces it, because a managed call would hide a
+          // half-deployed pair.
           //
-          // The demo has no managed fallback (demo-cascade spec, ticket 10):
-          // `alreadyFellBack` is always spent there, so the same decision
-          // surfaces the cause and ticket 11 owns the visitor-facing copy.
           // Post-accept managed/draining errors never reach here: the session
           // surfaces those on `onError`, because the call already started.
           cascadeEnded = true;
           const decision = decideCascadeFallback({
             failure: failure.code,
             message: failure.message,
-            alreadyFellBack: modeKind === "demo" ? true : cascadeFellBackRef.current,
+            alreadyFellBack: cascadeFellBackRef.current,
           });
           if (decision.action === "retry-managed") {
             cascadeFellBackRef.current = true;
@@ -1674,6 +1688,7 @@ export function VoiceCall({
   const errorAlert = error && !returning ? (
     <div
       role="alert"
+      data-testid={isDemo ? "demo-unavailable" : undefined}
       className="border-destructive/25 bg-destructive/5 flex w-full gap-2.5 rounded-xl border px-3 py-2.5 text-left"
     >
       <TriangleAlert className="text-destructive mt-px size-4 shrink-0" />
