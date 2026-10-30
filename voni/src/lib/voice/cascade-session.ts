@@ -60,74 +60,83 @@ export type CascadeCallConfig = {
 };
 
 /** Why a cascade connect never opened the call. */
-export type CascadeConnectFailure = "draining" | "unavailable";
+export type CascadeConnectFailure = "draining" | "managed" | "unavailable";
 
 /**
  * A cascade *connect* failure, typed so the app can route the call instead of
- * painting a dead-end error. `retryManaged` is true only while the managed
- * fallback is still possible: the caller spends it once.
+ * painting a dead-end error.
  *
  * `draining` is the service's own refusal during a deploy (ticket 140: a
- * draining instance accepts no new call); `unavailable` is the socket failing
- * or closing before the service accepted the call.
+ * draining instance accepts no new call); `managed` is the service's routing
+ * verdict that this call belongs on the managed engine (routing defaults to
+ * `off`, so it is the common refusal); `unavailable` is the socket failing or
+ * closing before the service accepted the call.
+ *
+ * The retry verdict is deliberately absent here: `retryManaged` is decided by
+ * `decideCascadeFallback` alone (the app knows whether the one managed retry
+ * is still unspent), so a session reports only *why* the connect failed.
  */
 export class DrainingError extends Error {
   constructor(
     readonly code: CascadeConnectFailure,
     message: string,
-    readonly retryManaged: boolean,
+    readonly retryManaged?: boolean,
   ) {
     super(message);
     this.name = "DrainingError";
   }
 }
 
+/** The decision's error: a typed cause plus the retry verdict it owns. */
+export type CascadeFallbackError = DrainingError & { readonly retryManaged: boolean };
+
 export type CascadeFallbackDecision =
-  | { readonly action: "retry-managed"; readonly reason: string; readonly error: DrainingError }
-  | { readonly action: "surface"; readonly error: DrainingError };
+  | { readonly action: "retry-managed"; readonly reason: string; readonly error: CascadeFallbackError }
+  | { readonly action: "surface"; readonly error: CascadeFallbackError };
 
 const FALLBACK_REASONS: Record<CascadeConnectFailure, string> = {
   draining:
     "The voice service is draining for a deploy; continuing this call on the managed path.",
+  managed:
+    "The voice service routes this call to the managed engine; continuing this call on the managed path.",
   unavailable:
     "The voice service is unavailable; continuing this call on the managed path.",
 };
 
 const SURFACE_MESSAGES: Record<CascadeConnectFailure, string> = {
   draining: "The voice service is draining for a deploy and cannot take this call.",
+  managed: "The voice service routes this call to the managed engine and cannot take it.",
   unavailable: "The voice service is unavailable and cannot take this call.",
 };
 
 /**
  * The one fallback decision (ticket 140 AC5), pure and browser-free: a cascade
- * connect that fails to a draining or unavailable service is retried once on
- * the managed path, with a visible reason. The second failure is surfaced as a
- * typed `DrainingError` with `retryManaged: false` — never another retry, so a
- * dead service cannot loop the caller through two transports forever.
+ * connect that fails to a draining, routed-managed or unavailable service is
+ * retried once on the managed path, with a visible reason. The second failure
+ * is surfaced as a typed `DrainingError` with `retryManaged: false` — never
+ * another retry, so a dead service cannot loop the caller through two
+ * transports forever.
+ *
+ * This function is the single source of `retryManaged`: the session reports a
+ * bare cause, and only the decision knows whether the retry was already spent.
  */
 export function decideCascadeFallback(input: {
   failure: CascadeConnectFailure;
   message?: string;
   alreadyFellBack: boolean;
 }): CascadeFallbackDecision {
-  if (input.alreadyFellBack) {
-    return {
-      action: "surface",
-      error: new DrainingError(
-        input.failure,
-        input.message ?? SURFACE_MESSAGES[input.failure],
-        false,
-      ),
-    };
-  }
+  const retryManaged = !input.alreadyFellBack;
+  // Attach the verdict to the typed cause so a caller can inspect either the
+  // decision or the error; the class itself never guesses it.
+  const error: CascadeFallbackError = Object.assign(
+    new DrainingError(input.failure, input.message ?? SURFACE_MESSAGES[input.failure]),
+    { retryManaged },
+  );
+  if (!retryManaged) return { action: "surface", error };
   return {
     action: "retry-managed",
     reason: FALLBACK_REASONS[input.failure],
-    error: new DrainingError(
-      input.failure,
-      input.message ?? SURFACE_MESSAGES[input.failure],
-      true,
-    ),
+    error,
   };
 }
 
@@ -141,8 +150,10 @@ export type CascadeHandlers = {
   /** The playout emitted its first audible sample for this connection (once). */
   onFirstAudible?: () => void;
   /**
-   * The call never opened: the service refused it as draining, or the socket
-   * failed/closed first. Fires once; the session is already torn down.
+   * The call never opened: the service refused it as draining or as a routed-
+   * managed call, or the socket failed/closed first. Fires once with the bare
+   * cause; the app decides the one managed retry. The session is already torn
+   * down (socket closed, microphone released).
    */
   onConnectFailure?: (error: DrainingError) => void;
 };
@@ -521,11 +532,14 @@ export class CascadeSession {
         this.finish(event.turns);
         break;
       case "error":
-        // A draining instance refuses a new call by name (ticket 140). Before
-        // the service accepted the call this is a connect failure the app can
-        // route to managed; once accepted it is an ordinary call error.
-        if (event.code === "draining" && !this.accepted) {
-          this.failConnect("draining", event.message);
+        // A named refusal before the service accepted the call means the call
+        // never opened: `draining` (a deploy) and `managed` (routing sent this
+        // call to the managed engine — routing defaults to `off`, so this is
+        // the common path) are connect failures the app can route. Once
+        // accepted they are ordinary call errors: the call already started, so
+        // a retry would double-dial it. Surface those, never re-route them.
+        if (!this.accepted && (event.code === "draining" || event.code === "managed")) {
+          this.failConnect(event.code, event.message);
           break;
         }
         this.handlers.onError?.(event.message);
@@ -639,12 +653,13 @@ export class CascadeSession {
   /**
    * Report a connect failure once, then tear this attempt down. The app owns
    * the one managed retry (`decideCascadeFallback`); this session only names
-   * the cause and hands over a typed error.
+   * the cause — it never decides `retryManaged`, so a second refusal cannot
+   * inherit a stale verdict from here.
    */
   private failConnect(cause: CascadeConnectFailure, message: string): void {
     if (this.connectFailureReported || this.ended) return;
     this.connectFailureReported = true;
-    const error = new DrainingError(cause, message, true);
+    const error = new DrainingError(cause, message);
     this.abort();
     if (this.handlers.onConnectFailure) this.handlers.onConnectFailure(error);
     else this.handlers.onError?.(error.message);
@@ -652,8 +667,9 @@ export class CascadeSession {
 
   /**
    * Stop without reporting a completed call: used when the service refused the
-   * connect (a protocol-version mismatch or a draining instance). The error
-   * handler already has the named reason; `onEnd` would read as "the call ran".
+   * connect (a protocol-version mismatch, a draining instance, or a routed-
+   * managed verdict). The error handler already has the named reason; `onEnd`
+   * would read as "the call ran".
    */
   private abort(): void {
     if (this.ended) return;

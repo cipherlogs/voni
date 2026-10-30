@@ -454,11 +454,11 @@ export function VoiceCall({
   const sessionRef = useRef<VoiceSession | CascadeSession | null>(null);
   const startingRef = useRef(false);
   /**
-   * Ticket 140 AC5: a cascade connect refused as draining (or unavailable)
-   * continues on the managed path once. `engineOverride` is the transport this
-   * call actually uses; `cascadeFellBack` is the single-retry guard, and
-   * `pendingFallback` carries a failure that arrived while the cascade start
-   * was still awaiting the mic.
+   * Ticket 140 AC5: a refused cascade connect — draining, routed-managed
+   * (`managed`) or unavailable — continues on the managed path once.
+   * `engineOverride` is the transport this call actually uses;
+   * `cascadeFellBack` is the single-retry guard, and `pendingFallback` carries
+   * a failure that arrived while the cascade start was still awaiting the mic.
    */
   const engineOverrideRef = useRef<"managed" | "cascade" | null>(null);
   const cascadeFellBackRef = useRef(false);
@@ -1295,10 +1295,13 @@ export function VoiceCall({
           setError({ message });
         },
         onConnectFailure: (failure) => {
-          // Ticket 140 AC5: a draining (or unavailable) cascade connect is not
-          // a dead end. Spend the single managed retry with the reason visible;
-          // a second failure is surfaced as a typed DrainingError that no
-          // longer offers a retry.
+          // Ticket 140 AC5: a refused cascade connect is not a dead end. A
+          // draining deploy, a routed-managed verdict (`managed`) and an
+          // unavailable service are all pre-accept failures; spend the single
+          // managed retry with the reason visible. A second failure is
+          // surfaced as a typed DrainingError that no longer offers a retry.
+          // Post-accept managed/draining errors never reach here: the session
+          // surfaces those on `onError`, because the call already started.
           const decision = decideCascadeFallback({
             failure: failure.code,
             message: failure.message,

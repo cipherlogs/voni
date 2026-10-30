@@ -670,20 +670,21 @@ test("a matching end message is not reported as a mismatch", async () => {
   assert.deepEqual(ended, { turns: 1 });
 });
 
-// ── Draining connect fallback (ticket 140 AC5) ─────────────────────────────
-// A draining instance receives no new call. The app routes the call to managed
-// once; this session hands over a typed cause and stops, never a dead-end
-// error and never a "completed call".
+// ── Connect fallback (ticket 140 AC5) ──────────────────────────────────────
+// A draining instance, a routed-managed verdict and an unavailable socket all
+// receive no cascade call. The app routes the call to managed once; the session
+// hands over a typed cause and stops, never a dead-end error and never a
+// "completed call".
 
-test("a draining or unavailable connect plans exactly one managed retry", () => {
-  for (const failure of ["draining", "unavailable"] as const) {
+test("a draining, managed or unavailable connect plans exactly one managed retry", () => {
+  for (const failure of ["draining", "managed", "unavailable"] as const) {
     const first = decideCascadeFallback({ failure, alreadyFellBack: false });
     assert.equal(first.action, "retry-managed");
     if (first.action !== "retry-managed") return;
     assert.ok(first.error instanceof DrainingError, "the cause is typed, not a string");
     assert.equal(first.error.code, failure);
     assert.equal(first.error.retryManaged, true, "the one retry is still available");
-    assert.match(first.reason, new RegExp(failure === "draining" ? "draining" : "unavailable"));
+    assert.match(first.reason, new RegExp(failure === "unavailable" ? "unavailable" : failure));
     assert.match(first.reason, /managed path/, "the visible reason names where the call went");
 
     const second = decideCascadeFallback({ failure, alreadyFellBack: true });
@@ -692,6 +693,109 @@ test("a draining or unavailable connect plans exactly one managed retry", () => 
     assert.equal(second.error.code, failure);
     assert.equal(second.error.retryManaged, false, "the retry was already spent");
     assert.equal(second.error.message, first.error.message);
+  }
+});
+
+test("the session reports a bare cause: retryManaged belongs to the decision", async () => {
+  // A session cannot know whether the app already spent the one retry, so it
+  // must not pre-decide the verdict (a second cascade refusal would inherit a
+  // stale `true`). Only `decideCascadeFallback` sets it.
+  const socket = makeSocket();
+  const failures: DrainingError[] = [];
+  const session = new CascadeSession(
+    { onConnectFailure: (error) => failures.push(error) },
+    {
+      socketFactory: () => socket as unknown as WebSocket,
+      startMic: async () => ({ stop: () => {} }),
+      createPlayout: () => ({ play: () => {}, flush: () => {} }),
+    },
+  );
+  await session.start(CONFIG, "test-owner");
+  socket.readyState = socket.OPEN;
+  socket.emit(JSON.stringify({ type: "error", code: "managed", message: "routed managed" }));
+
+  assert.equal(failures.length, 1);
+  assert.equal(failures[0].retryManaged, undefined, "no verdict is hardcoded in the cause");
+});
+
+test("a routed-managed refusal on connect is handed over typed, not shown as a dead end", async () => {
+  const socket = makeSocket();
+  const failures: DrainingError[] = [];
+  let micStops = 0;
+  let errors = 0;
+  let ended = 0;
+  const session = new CascadeSession(
+    {
+      onConnectFailure: (error) => failures.push(error),
+      onError: () => (errors += 1),
+      onEnd: () => (ended += 1),
+    },
+    {
+      socketFactory: () => socket as unknown as WebSocket,
+      startMic: async () => ({ stop: () => (micStops += 1) }),
+      createPlayout: () => ({ play: () => {}, flush: () => {} }),
+    },
+  );
+  await session.start(CONFIG, "test-owner");
+  socket.readyState = socket.OPEN;
+
+  // The service's routing switch defaults to `off`, so this is the common
+  // refusal: a valid call that belongs on the managed engine.
+  socket.emit(
+    JSON.stringify({
+      type: "error",
+      code: "managed",
+      message: "the routing decision routes this call managed",
+    }),
+  );
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(failures.length, 1, "one refusal reports one cause");
+  assert.equal(failures[0].code, "managed");
+  assert.match(failures[0].message, /managed/);
+  assert.equal(errors, 0, "the generic error path is not painted over the fallback");
+  assert.equal(ended, 0, "a refused connect is not a completed call");
+  assert.equal(socket.closed, true, "the cascade attempt is closed before the retry");
+  assert.equal(micStops, 1, "the microphone is released before the retry, never left live");
+
+  // The close the service sends after its refusal is not a second cause.
+  socket.onclose?.();
+  assert.equal(failures.length, 1);
+  assert.equal(ended, 0);
+});
+
+test("a managed or draining refusal after acceptance surfaces and never re-routes", async () => {
+  // The call already started: re-dialing it on managed would double the call.
+  for (const code of ["managed", "draining"] as const) {
+    const socket = makeSocket();
+    const failures: DrainingError[] = [];
+    const messages: string[] = [];
+    let micStops = 0;
+    let ended = 0;
+    const session = new CascadeSession(
+      {
+        onConnectFailure: (error) => failures.push(error),
+        onError: (message) => messages.push(message),
+        onEnd: () => (ended += 1),
+      },
+      {
+        socketFactory: () => socket as unknown as WebSocket,
+        startMic: async () => ({ stop: () => (micStops += 1) }),
+        createPlayout: () => ({ play: () => {}, flush: () => {} }),
+      },
+    );
+    await session.start(CONFIG, "test-owner");
+    socket.readyState = socket.OPEN;
+    socket.emit(JSON.stringify({ type: "caption", role: "agent", text: "Hi.", final: true }));
+
+    socket.emit(JSON.stringify({ type: "error", code, message: `refused: ${code}` }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.equal(failures.length, 0, `a started call is never re-routed (${code})`);
+    assert.deepEqual(messages, [`refused: ${code}`], `the refusal stays visible (${code})`);
+    assert.equal(micStops, 0, `the live call keeps its microphone (${code})`);
+    assert.equal(socket.closed, false, `the live call keeps its socket (${code})`);
+    assert.equal(ended, 0, `the call is not ended by the refusal alone (${code})`);
   }
 });
 
@@ -726,7 +830,6 @@ test("a draining refusal on connect is handed over typed, not shown as a dead en
 
   assert.equal(failures.length, 1);
   assert.equal(failures[0].code, "draining");
-  assert.equal(failures[0].retryManaged, true);
   assert.match(failures[0].message, /draining/);
   assert.equal(errors, 0, "the generic error path is not painted over the fallback");
   assert.equal(ended, 0, "a refused connect is not a completed call");
@@ -755,7 +858,7 @@ test("a socket that fails or closes before acceptance is unavailable, reported o
 
   assert.equal(failures.length, 1, "one failed connection reports one cause");
   assert.equal(failures[0].code, "unavailable");
-  assert.equal(failures[0].retryManaged, true);
+  assert.equal(failures[0].retryManaged, undefined, "the decision owns the retry verdict");
   assert.equal(ended, 0);
   assert.equal(socket.closed, true);
 });
