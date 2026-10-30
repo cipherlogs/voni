@@ -1284,9 +1284,16 @@ export function VoiceCall({
                   // note is only for a line that never put the test up.
                   toolActive: false,
                 });
-                if (action === "show-and-speak") {
+                if (action !== "none") {
+                  // The pipeline's show tool has no browser tool result to
+                  // hang the chip on; Voni's tagged final line is the signal.
+                  // `invited` makes it one-shot, so a duplicate line never
+                  // opens a second invite.
+                  setEmailTest({ ...test, invited: true });
                   const tag = testTagRef.current;
-                  if (tag) speak(inviteNowInstructions(tag), { key: "invite" });
+                  if (action === "show-and-speak" && tag) {
+                    speak(inviteNowInstructions(tag), { key: "invite" });
+                  }
                 }
               } else if (!closingRef.current && caption.text.trim()) {
                 if (isEndCallRequest(caption.text, demoRecognition)) return;

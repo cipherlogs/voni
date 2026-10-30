@@ -484,6 +484,39 @@ test("a cascade hold return re-mints the same call with resume and carried histo
   assert.match(call, /import \{ boundedResumeHistory \} from "@\/lib\/voice\/resume-history"/);
 });
 
+test("the pipeline's tools leave the demo UI working without a browser tool relay", () => {
+  const call = readRepo("components/voice-call.tsx");
+  const cascade = call.slice(
+    call.indexOf("const cascade = new CascadeSession({"),
+    call.indexOf("const session = new VoiceSession({"),
+  );
+
+  // The invite chip comes from Voni's final line (the pipeline ran the tool
+  // server-side); the state flips once, so a duplicate line cannot invite twice.
+  assert.match(cascade, /const action = inviteFallbackAction\(\{/);
+  assert.match(
+    cascade,
+    /if \(action !== "none"\) \{[\s\S]{0,600}?setEmailTest\(\{ \.\.\.test, invited: true \}\)/,
+    "a tagged final agent turn puts the chip up",
+  );
+  assert.match(
+    cascade,
+    /if \(action === "show-and-speak" && tag\) \{?\s*speak\(inviteNowInstructions\(tag\), \{ key: "invite" \}\)/,
+    "only a line without the tag gets the spoken fallback",
+  );
+  assert.doesNotMatch(cascade, /onToolResult/, "the cascade never waits for a browser tool result");
+  assert.doesNotMatch(cascade, /putTestUp|SHOW_TEST_ADDRESS_TOOL|CHECK_CODE_TOOL|SEND_CODE_REPLY_TOOL/);
+
+  // The two call-scoped polls survive unchanged: they are HTTP facts, not a
+  // tool relay. The code readback is Voni's spoken line from the service.
+  assert.match(call, /fetch\(`\/api\/demo\/tools\/\$\{CHECK_EMAIL_TOOL\}`/);
+  assert.match(call, /fetch\(`\/api\/demo\/tools\/\$\{WEBSITE_POLL\}`/);
+  assert.match(call, /Authorization: `Bearer \$\{token\}`/);
+  assert.doesNotMatch(call, /check_code|send_code_reply|show_test_address/);
+  assert.match(call, /speak\(emailArrivedInstructions\(result, \{ fromLastCall: !test\.invited \}\), \{ key: "email" \}\)/);
+  assert.match(call, /speak\(body\.data\.instructions, \{ key: "website" \}\)/);
+});
+
 test("the demo start is the cascade client: one mint, no managed session", () => {
   const call = readRepo("components/voice-call.tsx");
 
