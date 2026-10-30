@@ -6,6 +6,7 @@
     "dev": "next dev",
     "dev:phone": "next dev --experimental-https",
     "dev:all": "node scripts/dev-all.mjs",
+    "dev:cascade": "node scripts/dev-cascade.mjs",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",

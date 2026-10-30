@@ -109,6 +109,52 @@ the addon's DSN with `--database-url` (the app has its own database). The
 routing switch is read through `voice-pipeline/scripts/routing_switch.py`; for
 Postgres runs point `PYTHON` (or `--python`) at an interpreter with `asyncpg`.
 
+### Local cascade: one command
+
+```bash
+cd voni && npm run dev:cascade
+```
+
+Starts, from one command, and reports readiness for each by name and port:
+
+| Process | Port | What it is |
+|---|---|---|
+| `postgres` | 5433 | the pipeline's dedicated Postgres (own data dir, `.dev-postgres/`) |
+| `pipeline` | 8767 | the cascade service, plain and internal only |
+| `pipeline-tls` | 8766 | TLS/WSS front; this is the `https` pipeline base |
+| `app` | 3000 | Next.js, pointed at `https://localhost:8766` |
+
+The app's `VOICE_PIPELINE_URL` and the shared
+`VOICE_PIPELINE_ENVELOPE_SECRET` are set on both sides by the launcher, so the
+landing demo connects to the local pipeline with no code edit. A secret already
+in `.env.local` wins; an absent one is generated for the run and never written
+to a file. `VONI_TOOL_SECRET` follows the same rule. The local routing switch is
+set to `demo` (a local store starts fail-safe `off`), and the launcher prints
+the mode.
+
+The local TLS front needs a certificate, because ticket 08 refuses a non-https
+pipeline base and the browser derives `wss` from it. The launcher reuses
+`VOICE_PIPELINE_TLS_CERT`/`VOICE_PIPELINE_TLS_KEY` when both are set; otherwise
+it generates a self-signed dev cert for `localhost` with `openssl` under
+`voni/.dev-certs/` (gitignored, never committed). There is no http fallback: a
+missing `openssl` or cert is a refusal that names it. The browser must trust the
+dev cert once — open `https://localhost:8766/healthz` and accept it. The app
+process is given `NODE_EXTRA_CA_CERTS` pointing at the same cert, so the app's
+server-side delivery verifies TLS rather than disabling verification.
+
+`META_REASONING_EFFORT` is required like every other real-call value
+(`deploy/northflank/README.md`); the launcher refuses by name when it is
+missing. Any occupied port is refused before a process starts — never attached
+to an unknown server and never routed managed.
+
+Manual acceptance: start a call on the landing demo in one of the five voices,
+hear the greeting, speak and hear the reply, watch the email tool call with its
+test tag, then say goodbye and hear the call end. The trace lands at
+`voice-pipeline/.events/<call id>.jsonl`. Ctrl-C stops every process the
+command started (including the dedicated Postgres) and verifies the ports are
+free. `npm run dev:cascade -- --smoke` additionally runs the key-gated
+`parity:check` delivery against the local service once ready.
+
 
 ## Async TTS (WhatsApp voice-note replies — AssemblyAI has no standalone TTS API, plan Section I)
 - `CARTESIA_API_KEY` — cartesia.ai → sign up → dashboard → API Keys. Free plan
