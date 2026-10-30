@@ -234,6 +234,27 @@ class BrowserCallWiringTests(unittest.TestCase):
         self.assertTrue(callable(seen["operational_events"]))
         self.assertEqual(seen["secret"], SECRET)
 
+    def test_the_operational_event_factory_writes_a_per_call_artifact(self):
+        import os
+        import tempfile
+        from pathlib import Path
+        from unittest import mock
+
+        from server import operational_events_for
+
+        with tempfile.TemporaryDirectory() as directory, mock.patch.dict(
+            os.environ, {"VOICE_PIPELINE_EVENTS_DIR": directory}
+        ):
+            events = operational_events_for("call-artifact-1", AGENT_ID)
+            events.greeting("greeting.start", voice_id="lola")
+            path = Path(events.path)
+
+            self.assertTrue(path.exists(), "the call wrote no event artifact")
+            rows = [json.loads(line) for line in path.read_text().splitlines()]
+
+        self.assertEqual(["greeting.start"], [row["type"] for row in rows])
+        self.assertEqual("call-artifact-1", rows[0]["callId"])
+
 
 if __name__ == "__main__":
     unittest.main()

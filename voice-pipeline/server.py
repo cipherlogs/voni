@@ -49,10 +49,10 @@ and disables uvicorn's default one, which would exit and end a live call.
 
 from __future__ import annotations
 
-import logging
 import os
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket
@@ -63,7 +63,7 @@ from cascade.cost import RATE_TABLE
 from cascade.counter import DailyCounter
 from cascade.drain import DEFAULT_REASON, DrainSupervisor, LiveCalls, drain_then_exit
 from cascade.envelope import EnvelopeError
-from cascade.events import EventStream, EventWriter, OperationalEvents
+from cascade.events import CallEventLog, EventStream, EventWriter, OperationalEvents
 from cascade.health import DrainState, readiness
 from cascade.log_redaction import install_log_redaction
 from cascade.pg_store import PostgresStore
@@ -78,20 +78,24 @@ from cascade.usage import UsageMeter
 from cascade.version import version_document
 from transport import handle_browser_call
 
-_log = logging.getLogger(__name__)
-_event_log = logging.getLogger("voni.voice-pipeline.events")
+#: Where a call's sanitized operational events are written. One JSONL file per
+#: call; the directory is gitignored and a host may point it at a mounted disk.
+EVENTS_DIR_ENV = "VOICE_PIPELINE_EVENTS_DIR"
+DEFAULT_EVENTS_DIR = Path(__file__).with_name(".events")
 
 
-def _event_sink(line: str) -> None:
-    """One sanitized operational event line; the sink never raises."""
-    _event_log.info("%s", line.rstrip("\n"))
+def events_dir() -> Path:
+    """The configured artifact directory, defaulting beside the service."""
+    configured = os.environ.get(EVENTS_DIR_ENV, "").strip()
+    return Path(configured) if configured else DEFAULT_EVENTS_DIR
 
 
 def operational_events_for(call_id: str, subject: str) -> OperationalEvents:
-    """One call's operational events, through the one envelope and stream."""
+    """One call's operational events, through the one envelope and file stream."""
     writer = EventWriter(pipeline="cascade", call_id=call_id)
+    sink = CallEventLog(events_dir(), call_id=call_id)
     return OperationalEvents(
-        EventStream(writer, sink=_event_sink), subject=subject, now=time.time
+        EventStream(writer, sink=sink), subject=subject, now=time.time
     )
 
 

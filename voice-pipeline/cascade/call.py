@@ -53,7 +53,19 @@ table, never an estimate. A breach drains the call, speaks the same localized
 goodbye, records ``budget_stopped`` and allows no new model or voice request
 except that goodbye; the goodbye's own recorded cost cannot re-trigger the
 ceiling. A day with unmeasured units is not read as zero and takes no false
-stop, while a measured floor already at the ceiling is a proved breach.
+stop, while a measured floor already at the ceiling is a proved breach. The
+turn layer reports a reply's usage chunk as soon as it exists, so one expensive
+turn trips the ceiling before the caller's next utterance.
+
+The same recorded units are charged to ticket 102's durable daily counter as
+each record lands: each leg's newly measured spend is its own delta, so a
+reconnect's second session and a fallback's second turn are both counted. A
+``budget.crossing`` from that charge is emitted once per day per line on the
+call's operational stream; routing reads the day for the *next* call only.
+
+``end_call`` (ticket 87) is a call ending like the browser's stop: the turn
+layer speaks the closing line and calls :meth:`CallLifecycle.request_end`; the
+call drains and sends its one end message.
 
 Every frame the call emits has one monotonic ``seq`` that belongs to the call,
 not to the TTS ``flush_id`` and not to the provider session (ticket 98).
@@ -89,7 +101,7 @@ from types import MappingProxyType
 from typing import Any, Protocol
 
 from cascade.body_map import BodyFieldError, CascadeBody, adapt_body
-from cascade.cost import CallCost, RateTable, cost_call
+from cascade.cost import CallCost, LegCost as PricedLeg, RateTable, cost_call
 from cascade.counter import limit_amount
 from cascade.eligibility import EligibilityDecision
 from cascade.envelope import EnvelopeError, verify_envelope
@@ -865,12 +877,17 @@ class CallEnd:
     goodbye: GoodbyeOutcome | None = None
     reconnects: Mapping[str, Any] | None = None
     budget: BudgetStop | None = None
+    #: The per-call operational-event artifact this call wrote, when one is
+    #: wired. The end message names it so a reader can find the decisions.
+    events_path: str | None = None
 
     def __post_init__(self) -> None:
         if self.ended_by not in ENDED_BY:
             raise ValueError(
                 f"unknown call ending {self.ended_by!r}; expected one of {ENDED_BY}"
             )
+        if self.events_path is not None:
+            object.__setattr__(self, "events_path", str(self.events_path))
         if self.budget is not None and self.ended_by != "budget":
             raise ValueError(
                 "a call that carries a budget stop must end on it, got "
@@ -900,6 +917,8 @@ class CallEnd:
             document["greeting"] = self.greeting.to_document()
         if self.goodbye is not None:
             document["goodbye"] = self.goodbye.to_document()
+        if self.events_path is not None:
+            document["eventsPath"] = self.events_path
         if self.error is not None:
             document["error"] = self.error.to_document()
         return document
@@ -1073,6 +1092,9 @@ class CallLifecycle:
         ceiling_usd: Any = None,
         on_budget_stopped: Callable[[BudgetStop], None] | None = None,
         operational_events: OperationalEvents | None = None,
+        daily_counter: Any = None,
+        on_crossing: Callable[[Any], None] | None = None,
+        events_path: str | None = None,
         eligibility: EligibilityDecision | None = None,
         chime: Callable[[], None] | None = None,
         reconnect_budget: ReconnectBudget | None = None,
@@ -1140,6 +1162,22 @@ class CallLifecycle:
         self._deploy_drain_event: dict[str, Any] | None = None
         self._greeting_voice_id = ""
         self._usage_error: str | None = None
+        #: Ticket 102's daily counter, charged from this call's wire usage as
+        #: each record lands. ``None`` means the caller wired no money path.
+        self._daily_counter = daily_counter
+        self._on_crossing = on_crossing
+        #: Each leg's measured spend already charged, so a record is charged
+        #: once and a reconnect's second record is still its own delta.
+        self._charged_by_leg: dict[str, Decimal] = {}
+        #: The turn layer reports a record while the event pump may report the
+        #: same one; one charge at a time keeps the delta honest.
+        self._charge_lock = asyncio.Lock()
+        #: The end message names the call's event artifact, when one exists.
+        self._events_path = events_path
+        #: The call's own end request (``end_call``); set by the turn stream.
+        self._end_requested = False
+        self._end_event: asyncio.Event | None = None
+        self._budget_event: asyncio.Event | None = None
         self._eligibility = eligibility
         #: The call's one reconnect ledger (ticket 94). The adapters are given
         #: this same object, so the call never counts a failure a second time;
@@ -1252,19 +1290,26 @@ class CallLifecycle:
         failure_event = asyncio.Event()
         # A ceiling breach is not a leg failure: it ends the call on its own
         # named outcome, after a drain and the localized goodbye (ticket 105).
-        budget_event = asyncio.Event()
+        # The turn layer's billed-unit sink sets the same event, so a long turn
+        # trips the ceiling before the caller's next utterance.
+        self._budget_event = asyncio.Event()
+        budget_event = self._budget_event
+        # ``end_call`` is call control: the turn layer spoke the closing line
+        # and asks the call to drain and send its one end message (ticket 87).
+        self._end_event = asyncio.Event()
+        end_event = self._end_event
+        if self._end_requested:
+            end_event.set()
 
         async def deliver(event: Any) -> None:
             async with delivery_lock:
                 if streaming:
-                    if self._budget_stop is not None:
-                        # No new turn work after the breach; the goodbye is the
-                        # one request still allowed, and it is made below.
+                    if self._budget_stop is not None or self._end_requested:
+                        # No new turn work after the breach or the end request;
+                        # the goodbye/closing line is made elsewhere.
                         return
                     await self._stream.event(event)
-                    self._record_turn_usage()
-                    if self._check_ceiling() is not None:
-                        budget_event.set()
+                    await self.note_billed()
                 else:
                     buffered_events.append(event)
 
@@ -1328,6 +1373,7 @@ class CallLifecycle:
         barge_task = asyncio.ensure_future(barge.wait())
         failure_task = asyncio.ensure_future(failure_event.wait())
         budget_task = asyncio.ensure_future(budget_event.wait())
+        end_task = asyncio.ensure_future(end_event.wait())
 
         ended_by = "dropped"
         failure: CallFailure | None = None
@@ -1342,6 +1388,7 @@ class CallLifecycle:
                     barge_task,
                     failure_task,
                     budget_task,
+                    end_task,
                 )
                 if task is not None
             ]
@@ -1349,6 +1396,7 @@ class CallLifecycle:
                 barge.is_set()
                 or failure_event.is_set()
                 or budget_event.is_set()
+                or end_event.is_set()
                 or receive_task.done()
                 or (greeting_gate is not None and greeting_gate.done())
                 or (greeting_task is not None and greeting_task.done())
@@ -1405,27 +1453,32 @@ class CallLifecycle:
                     stream_started = True
                     async with delivery_lock:
                         for event in buffered_events:
-                            if self._budget_stop is not None:
+                            if self._budget_stop is not None or self._end_requested:
                                 break
                             await self._stream.event(event)
-                            self._record_turn_usage()
-                            if self._check_ceiling() is not None:
-                                budget_event.set()
-                                break
+                            await self.note_billed()
                         buffered_events.clear()
                         for text in buffered_contexts:
-                            if self._budget_stop is not None:
+                            if self._budget_stop is not None or self._end_requested:
                                 break
                             await self._stream.context(text)
                         buffered_contexts.clear()
                         streaming = True
                     stage = "call"
-                    if not failure_event.is_set() and not budget_event.is_set():
+                    if not (
+                        failure_event.is_set()
+                        or budget_event.is_set()
+                        or end_event.is_set()
+                    ):
                         await asyncio.wait(
-                            (receive_task, failure_task, budget_task),
+                            (receive_task, failure_task, budget_task, end_task),
                             return_when=asyncio.FIRST_COMPLETED,
                         )
-                    if budget_event.is_set():
+                    if end_event.is_set():
+                        # ``end_call`` spoke its closing line and asked the
+                        # call to hang up; the drain below still runs.
+                        ended_by = "stop"
+                    elif budget_event.is_set():
                         # The call's own ceiling ended it; there is no leg
                         # failure and no fallback event to record.
                         ended_by = "budget"
@@ -1446,13 +1499,19 @@ class CallLifecycle:
             failure = _failure(stage, error)
             ended_by = "error"
 
-        for task in (barge_task, greeting_gate, failure_task, budget_task):
+        for task in (barge_task, greeting_gate, failure_task, budget_task, end_task):
             if task is not None:
                 task.cancel()
         await asyncio.gather(
             *[
                 task
-                for task in (barge_task, greeting_gate, failure_task, budget_task)
+                for task in (
+                    barge_task,
+                    greeting_gate,
+                    failure_task,
+                    budget_task,
+                    end_task,
+                )
                 if task is not None
             ],
             return_exceptions=True,
@@ -1557,8 +1616,7 @@ class CallLifecycle:
         )
         self._greeting_voice_id = body.voice_id
         self._emit_operational(
-            "greeting.start",
-            lambda events: events.greeting("greeting.start", voice_id=body.voice_id),
+            lambda events: events.greeting("greeting.start", voice_id=body.voice_id)
         )
         return greeting.start(body)
 
@@ -1567,10 +1625,9 @@ class CallLifecycle:
         self.chime_calls += 1
         self.chime_at = self._clock()
         self._emit_operational(
-            "greeting.first_audio",
             lambda events: events.greeting(
                 "greeting.first_audio", voice_id=self._greeting_voice_id, frames=1
-            ),
+            )
         )
         if self._chime is not None:
             self._chime()
@@ -1964,18 +2021,16 @@ class CallLifecycle:
         return self._budget_stop
 
     def _emit_operational(
-        self,
-        event: str,
-        emit: Callable[[OperationalEvents], dict[str, Any]],
+        self, emit: Callable[[OperationalEvents], dict[str, Any]]
     ) -> dict[str, Any] | None:
         """Write one first-class operational event; a sink failure never ends a call.
 
         Every line goes through :class:`cascade.events.OperationalEvents`, which
         builds it with the one envelope writer and writes it through the one
-        sanitized stream (ticket 110). The caller names the emitter in code, so
-        no event method is reached through a dynamic attribute lookup. The event
-        is a record of a decision that already happened, so a broken sink is
-        logged and the call continues.
+        sanitized stream (ticket 110). The emitter owns its event name (the
+        emitter method builds ``type``), so the call site never restates it.
+        The event is a record of a decision that already happened, so a broken
+        sink is logged and the call continues.
         """
         events = self._operational_events
         if events is None:
@@ -1984,8 +2039,7 @@ class CallLifecycle:
             return emit(events)
         except Exception:
             _log.exception(
-                "the %s operational event could not be written; the call continues",
-                event,
+                "an operational event could not be written; the call continues"
             )
             return None
 
@@ -1999,8 +2053,7 @@ class CallLifecycle:
         if self._deploy_drain_event is not None:
             return self._deploy_drain_event
         self._deploy_drain_event = self._emit_operational(
-            "deploy.drain",
-            lambda events: events.deploy_drain(reason=reason, planned=True),
+            lambda events: events.deploy_drain(reason=reason, planned=True)
         )
         return self._deploy_drain_event
 
@@ -2016,7 +2069,6 @@ class CallLifecycle:
             greeting.spoken or greeting.cancelled or greeting.frames
         ):
             self._emit_operational(
-                "greeting.done",
                 lambda events: events.greeting(
                     "greeting.done",
                     voice_id=self._greeting_voice_id,
@@ -2024,13 +2076,12 @@ class CallLifecycle:
                     sample_rate=greeting.sample_rate,
                     cancelled=greeting.cancelled,
                     cause=greeting.cause,
-                ),
+                )
             )
         reconnects = self.reconnect_budget.events
         for event in reconnects[self._reconnect_events_emitted :]:
             self._emit_operational(
-                "reconnect",
-                lambda events, event=event: events.reconnect(event),
+                lambda events, event=event: events.reconnect(event)
             )
         self._reconnect_events_emitted = len(reconnects)
 
@@ -2039,11 +2090,94 @@ class CallLifecycle:
 
         After a breach only the goodbye may ask for work: no new model or voice
         turn is allowed, while the closing line and the audio already produced
-        still are (ticket 105).
+        still are (ticket 105). After ``end_call`` nothing new may ask: the
+        closing line was already spoken by the turn layer.
         """
+        if self._end_requested:
+            return False
         if self._budget_stop is None:
             return True
         return leg == "goodbye"
+
+    def request_end(self, reason: str = "end_call") -> None:
+        """Ask the call to drain and send its one end message (ticket 87).
+
+        The turn layer calls this after it spoke ``end_call``'s closing line;
+        the run loop stops waiting for browser input and drains the same way a
+        browser ``stop`` does.
+        """
+        if self._end_requested:
+            return
+        self._end_requested = True
+        if self._ledger is not None:
+            self._ledger.count("end_call")
+        if self._end_event is not None:
+            self._end_event.set()
+
+    async def note_billed(self, *, turn: str | None = None) -> "BudgetStop | None":
+        """Record what is new, charge the day, then evaluate the ceiling.
+
+        This is the one billed-unit sink: the turn layer calls it when a reply's
+        usage chunk exists, and the event path calls it after each provider
+        event. A long model turn therefore trips the ceiling as it finishes,
+        before the caller's next utterance, instead of waiting for the next
+        speech event.
+        """
+        self._record_turn_usage()
+        await self._charge_recorded_units()
+        return self._check_ceiling(turn=turn)
+
+    async def _charge_recorded_units(self) -> None:
+        """Charge each leg's newly recorded measured spend to the day.
+
+        Every record is priced by ticket 101's table; the charge is the delta
+        from that leg's last charged amount, so a reconnect's second session or
+        a fallback's second turn is its own record and is never collapsed. A
+        unit the vendor did not report has no price to add (an unmeasured unit
+        is not zero); the end message's cost and the per-call ceiling still
+        name that absence.
+        """
+        if self._daily_counter is None:
+            return
+        if not callable(getattr(self._daily_counter, "charge", None)):
+            # A routing-only budget line cannot be charged; it is not an error.
+            return
+        try:
+            priced = cost_call(self.usage_meter.usage(), table=self._cost_table)
+        except Exception:
+            _log.exception("the day's cost could not be priced; the call continues")
+            return
+        async with self._charge_lock:
+            for priced_leg in priced.legs:
+                if priced_leg.amount is None:
+                    continue
+                charged = self._charged_by_leg.get(priced_leg.leg, Decimal(0))
+                delta = priced_leg.amount - charged
+                if delta <= 0:
+                    continue
+                cost = CallCost(priced.table, (PricedLeg(priced_leg.leg, delta),))
+                if await self._charge(cost):
+                    self._charged_by_leg[priced_leg.leg] = priced_leg.amount
+
+    async def _charge(self, cost: CallCost) -> bool:
+        """Hand one priced unit set to the daily counter and emit its crossings."""
+        if self._daily_counter is None:
+            return False
+        try:
+            charged = await self._daily_counter.charge(cost)
+        except Exception:  # a store outage must not end a live call
+            _log.exception("the daily counter charge failed; the call continues")
+            return False
+        for crossing in getattr(charged, "crossings", ()) or ():
+            self._emit_operational(
+                lambda events, crossing=crossing: events.budget_crossing(crossing)
+            )
+            if self._on_crossing is not None:
+                try:
+                    self._on_crossing(crossing)
+                except Exception:
+                    _log.exception("the budget-crossing sink failed")
+        return True
 
     def _ceiling_guard(self) -> CallCeiling:
         """The one per-call guard; its ceiling is read by name on first use."""
@@ -2072,8 +2206,10 @@ class CallLifecycle:
             return None
         self._budget_stop = stop
         self._ledger.mark(BUDGET_STOP_MARK)
+        if self._budget_event is not None:
+            self._budget_event.set()
         self._emit_operational(
-            "budget.stopped", lambda events: events.budget_stopped(stop)
+            lambda events: events.budget_stopped(stop)
         )
         if self._on_budget_stopped is not None:
             try:
@@ -2167,6 +2303,9 @@ class CallLifecycle:
         """Build the end message, send it, then release the socket."""
         self._flush_operational_events()
         self._record_usage(opened)
+        # The end-of-call session facts are still charged to the day they were
+        # consumed, even though the ceiling can no longer stop the call.
+        await self._charge_recorded_units()
         end = CallEnd(
             call_id=self._call_id,
             metrics=self._ledger.summary(),
@@ -2184,6 +2323,7 @@ class CallLifecycle:
             goodbye=self._goodbye,
             reconnects=self.reconnect_budget.to_document(),
             budget=self._budget_stop,
+            events_path=self._events_path,
         )
         try:
             await self._transport.send(end.to_document())

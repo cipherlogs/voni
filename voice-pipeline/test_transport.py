@@ -16,6 +16,7 @@ import base64
 import json
 import logging
 import unittest
+from decimal import Decimal
 from unittest import mock
 
 from cascade.body_map import adapt_body, body_fingerprint
@@ -168,6 +169,22 @@ class FakeModel:
         record.usage = TurnUsage(prompt_tokens=3, completion_tokens=4)
         record.finished = True
         yield TokenDelta(text=text)
+
+
+class FullyMeasuredModel(FakeModel):
+    """Every token unit is reported, so ticket 101 can price the leg."""
+
+    async def complete(self, *, messages, tools=None, turn=None):
+        async for delta in super().complete(messages=messages, tools=tools, turn=turn):
+            yield delta
+        record = turn if turn is not None else MetaLLMTurn()
+        record.usage = TurnUsage(
+            prompt_tokens=3,
+            completion_tokens=4,
+            cached_tokens=0,
+            reasoning_tokens=0,
+            measured=True,
+        )
 
 
 class FakeLegs:
@@ -584,6 +601,31 @@ class RoutingAdmissionTests(unittest.TestCase):
         self.assertEqual(1, len(errors))
         self.assertEqual(errors[0]["code"], "managed")
         self.assertIn("daily budget cap", errors[0]["message"])
+
+    def test_the_served_call_charges_the_daily_counter_it_was_admitted_against(self):
+        from cascade.counter import DailyCounter
+
+        noon = 1_793_361_600.0
+        counter = DailyCounter(MemoryStore(), now=lambda: noon)
+        legs = FakeLegs(
+            [SpeechStart("t1"), SpeechComplete("hola", turn_id="t1")]
+        )
+        legs.model = FullyMeasuredModel()
+        _ws, _built, instances = run_call(
+            [browser_config(), audio_message(), {"type": "stop"}],
+            [SpeechStart("t1"), SpeechComplete("hola", turn_id="t1")],
+            legs=legs,
+            counter=counter,
+        )
+
+        day = asyncio.run(counter.snapshot(at=noon))
+
+        self.assertEqual(1, len(instances))
+        self.assertGreater(
+            day.spent,
+            Decimal("0"),
+            "the call's wire usage never reached the daily counter",
+        )
 
 
 class CallTokenAtConnectTests(unittest.TestCase):
