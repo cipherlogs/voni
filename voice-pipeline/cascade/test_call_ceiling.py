@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import unittest
+from decimal import Decimal
 
 from cascade.assemblyai_tts import Billing
 from cascade.call import BrowserStop, CallLifecycle, OpenedLeg, goodbye_line
@@ -195,6 +196,10 @@ class CeilingTests(unittest.TestCase):
         self.assertTrue(lifecycle.may_request("goodbye"))
         self.assertEqual(0.25, document["budget"]["ceilingUsd"])
         self.assertAlmostEqual(0.25000125, document["budget"]["spendUsd"], places=12)
+        # Money is a Decimal on the record; the document carries JSON numbers.
+        self.assertIsInstance(end.budget.spend_usd, Decimal)
+        self.assertIsInstance(end.budget.ceiling_usd, Decimal)
+        self.assertIsInstance(document["budget"]["spendUsd"], float)
         self.assertIn("ceiling", document["budget"]["reason"])
         self.assertEqual(
             "budget_stopped",
@@ -257,7 +262,7 @@ class CeilingTests(unittest.TestCase):
 
         self.assertEqual("budget", end.ended_by)
         self.assertEqual(0.25, end.budget.ceiling_usd)
-        self.assertAlmostEqual(0.25, end.budget.spend_usd, places=12)
+        self.assertEqual(Decimal("0.25"), end.budget.spend_usd)
 
     def test_the_ceiling_is_checked_after_each_billable_unit(self):
         # Two model turns: 100,000 tokens is USD 0.125, then 200,000 more
@@ -294,7 +299,7 @@ class CeilingTests(unittest.TestCase):
         end = self.run_call(lifecycle)
 
         self.assertEqual("budget", end.ended_by)
-        self.assertEqual(0.375, end.budget.spend_usd)
+        self.assertEqual(Decimal("0.375"), end.budget.spend_usd)
         # Both turns up to the breach reached the turn layer; nothing after it.
         self.assertEqual(
             ["SpeechStart", "SpeechComplete", "SpeechStart", "SpeechComplete"],
@@ -327,7 +332,7 @@ class CeilingTests(unittest.TestCase):
         # One stop: the goodbye's recorded cost cannot re-trigger the ceiling.
         self.assertEqual(1, len(stops))
         self.assertIs(stops[0], end.budget)
-        self.assertAlmostEqual(0.25000125, end.budget.spend_usd, places=12)
+        self.assertEqual(Decimal("0.25000125"), end.budget.spend_usd)
         tts = end.to_document()["cost"]["legs"]["tts"]
         self.assertEqual(60, tts["units"]["characters"])
         self.assertAlmostEqual(0.0009, tts["amountUsd"], places=12)

@@ -70,6 +70,7 @@ from enum import Enum
 from typing import Any
 from urllib.parse import urlsplit
 
+from cascade import llm_override
 from cascade.body_map import LlmOverride
 from cascade.failures import FailureClass, FailureVerdict, classify
 from cascade.ladders import CallRungs, ProviderAttribution
@@ -231,25 +232,25 @@ def validate_byo_override(override: LlmOverride) -> LlmOverride:
 
     This is the client-side constructibility check: the body adapter already
     validated the served shape, and the constructor re-asserts it so no other
-    entry point can build a client the request builder would fail on later.
+    entry point can build a client the request builder would fail on later. The
+    rules themselves are :mod:`cascade.llm_override`'s one validator; this
+    function only keeps the client's named refusal.
     """
     if not isinstance(override, LlmOverride):
         raise ByoLlmError(
             f"a BYO model needs the body's LlmOverride, got {type(override).__name__}"
         )
-    for name in ("base_url", "model", "api_key"):
-        value = getattr(override, name)
-        if not isinstance(value, str) or not value.strip():
-            raise ByoLlmError(
-                f'the stored body\'s LLM override has no {name}: '
-                "base_url, model and api_key are all required to build a client"
-            )
-    if urlsplit(override.base_url).scheme not in ("http", "https"):
-        raise ByoLlmError(
-            f'the stored body\'s LLM override base_url "{override.base_url}" '
-            "is not an absolute http(s) URL, so no request can be built"
+    try:
+        llm_override.validate_override(
+            base_url=override.base_url,
+            model=override.model,
+            api_key=override.api_key,
+            reasoning_effort=override.reasoning_effort,
         )
-    _byo_reasoning_effort(override.reasoning_effort)
+    except llm_override.LlmOverrideInvalid as error:
+        raise ByoLlmError(
+            f"the stored body's LLM override is invalid: {error.reason}"
+        ) from None
     return override
 
 
@@ -1727,21 +1728,31 @@ class MetaLLM(LLMStream):
             self._reasoning_effort = resolve_reasoning_effort(reasoning_effort)
             self._api_key = api_key or os.environ.get("META_API_KEY")
         else:
-            for name, value in (
-                ("base_url", base_url),
-                ("model", model),
-                ("api_key", api_key),
-            ):
-                if not isinstance(value, str) or not value.strip():
+            # The same validator the body adapter and build_byo_client use: a
+            # tenant model's four fields are normalised in one place.
+            try:
+                override = llm_override.validate_override(
+                    base_url=base_url,
+                    model=model,
+                    api_key=api_key,
+                    reasoning_effort=reasoning_effort,
+                )
+            except llm_override.LlmOverrideInvalid as error:
+                if error.missing:
                     raise ByoLlmError(
-                        f"a tenant model client needs a {name}: base_url, model "
-                        "and api_key are all required, and none is defaulted"
-                    )
-            self._model = model.strip()
-            self._reasoning_effort = _byo_reasoning_effort(reasoning_effort)
+                        f"a tenant model client needs a {error.field}: base_url, "
+                        "model and api_key are all required, and none is defaulted"
+                    ) from None
+                raise ByoLlmError(
+                    f"a tenant model client needs a usable {error.field}: "
+                    f"{error.reason}"
+                ) from None
+            base_url = override.base_url
+            self._model = override.model
+            self._reasoning_effort = override.reasoning_effort
             # A tenant's key comes from the signed body only; the Meta key is
             # never substituted for it.
-            self._api_key = api_key.strip()
+            self._api_key = override.api_key
         self._base_url = base_url.rstrip("/")
         self._system_prompt = system_prompt
         self._session_factory = session_factory or _AiohttpSession

@@ -47,6 +47,7 @@ SUPPLIED_BOUNDS = {
     "reconnect.handshake_ms": ("76", 10_000),
     "probe.model_max_completion_tokens": ("20", 16),
     "envelope.ttl_ms": ("04", 60_000),
+    "call_token.ttl_ms": ("04", 60_000),
     "playout.cushion_ms": ("12", 500),
 }
 

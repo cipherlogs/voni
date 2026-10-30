@@ -22,6 +22,7 @@ from pathlib import Path
 from cascade.testing import FakeClock
 from cascade.thresholds import require_bound
 from cascade.token import (
+    CALL_TOKEN_TTL_BOUND,
     CallAlreadyConnected,
     CallTokenCallMismatch,
     CallTokenClaims,
@@ -45,7 +46,7 @@ SECRET = "test-only-call-token-secret"
 CALL_ID = "call_136"
 SUBJECT = "agent_136"
 NOW_S = 1_000_000.0
-TTL_MS = int(require_bound("envelope.ttl_ms"))
+TTL_MS = int(require_bound("call_token.ttl_ms"))
 
 
 def mint(**overrides) -> str:
@@ -81,6 +82,19 @@ class MintAndVerifyTests(unittest.TestCase):
         self.assertEqual(claims.issued_at_ms, int(NOW_S * 1000))
         # The TTL is the recorded bound, not a literal invented here.
         self.assertEqual(claims.expires_at_ms - claims.issued_at_ms, TTL_MS)
+
+    def test_the_token_ttl_is_its_own_named_bound(self):
+        # The token lifetime is a token fact; borrowing the body envelope's
+        # bound made two unrelated windows move together.
+        self.assertEqual("call_token.ttl_ms", CALL_TOKEN_TTL_BOUND)
+        self.assertEqual(60_000, require_bound("call_token.ttl_ms"))
+
+    def test_a_bad_ttl_names_the_ttl_argument_not_the_expiry_claim(self):
+        with self.assertRaises(MalformedCallToken) as caught:
+            mint(ttl_ms=0)
+
+        self.assertEqual("ttl_ms", caught.exception.field)
+        self.assertIn("ttl_ms", str(caught.exception))
 
     def test_every_mint_is_a_new_token_even_at_the_same_instant(self):
         # A reconnect mints again: the nonce makes the token unique, so a

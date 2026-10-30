@@ -86,6 +86,27 @@ class BelowTheLineTests(unittest.TestCase):
         self.assertEqual("managed", decision.disposition)
         self.assertIn("80.0%", decision.reason)
 
+    def test_a_caller_refusal_and_the_budget_refusal_are_both_kept(self):
+        # The caller's predicate (an adapter refusal) and the day's own reason
+        # are different facts; the decision must not silently drop either.
+        async def scenario():
+            store = MemoryStore()
+            switch = RoutingSwitch(store, now=lambda: NOON)
+            await switch.set_mode("all", actor="test", reason="measure a call")
+            counter = DailyCounter(store, now=lambda: NOON)
+            await counter.charge(measured("20.025"))
+            return await switch.decide(
+                TENANT_SUBJECT,
+                refusal="the body names an unknown voice",
+                budget=counter,
+            )
+
+        decision = run(scenario())
+
+        self.assertEqual("managed", decision.disposition)
+        self.assertIn("the body names an unknown voice", decision.reason)
+        self.assertIn("80.1%", decision.reason)
+
 
 class LiveCallTests(unittest.TestCase):
     def test_a_live_call_is_not_moved_when_the_line_crosses_later(self):

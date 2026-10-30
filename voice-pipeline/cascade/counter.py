@@ -181,7 +181,8 @@ def _money_text(amount: Decimal) -> str:
     return format(amount.normalize(), "f")
 
 
-def _limit(value: Any, field: str) -> Decimal:
+def limit_amount(value: Any, field: str) -> Decimal:
+    """A finite decimal bound, from the registry or an explicit value."""
     if isinstance(value, bool) or not isinstance(value, (int, float, str, Decimal)):
         raise ValueError(f"{field} must be a number, got {value!r}")
     try:
@@ -467,19 +468,19 @@ class DailyCounter:
             _bound(registry, BOUNDARY_BOUND) if boundary is None else boundary
         )
         self.cap = (
-            _limit(_bound(registry, CAP_BOUND), "budget.daily_cap")
+            limit_amount(_bound(registry, CAP_BOUND), "budget.daily_cap")
             if cap is None
-            else _limit(cap, "cap")
+            else limit_amount(cap, "cap")
         )
         self.managed_ratio = (
-            _limit(_bound(registry, MANAGED_BOUND), "budget.route_managed_ratio")
+            limit_amount(_bound(registry, MANAGED_BOUND), "budget.route_managed_ratio")
             if managed_ratio is None
-            else _limit(managed_ratio, "managed_ratio")
+            else limit_amount(managed_ratio, "managed_ratio")
         )
         self.refuse_ratio = (
-            _limit(_bound(registry, REFUSED_BOUND), "budget.refuse_cascade_ratio")
+            limit_amount(_bound(registry, REFUSED_BOUND), "budget.refuse_cascade_ratio")
             if refuse_ratio is None
-            else _limit(refuse_ratio, "refuse_ratio")
+            else limit_amount(refuse_ratio, "refuse_ratio")
         )
         if self.cap <= 0:
             raise ValueError(f"the daily cap must be positive, got {self.cap!r}")
