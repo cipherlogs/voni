@@ -344,8 +344,8 @@ def main() -> None:
         loop="asyncio",
         # The drain already spent the recorded bound waiting for live calls;
         # past it the process stops rather than asking a call to wait longer.
-        # That exit is the deployment policy (Fly's kill_timeout is the same
-        # bound), not the drain terminating a call.
+        # That exit is the deployment policy (the Northflank grace period is the
+        # same 30 s bound), not the drain terminating a call.
         timeout_graceful_shutdown=0,
     )
     server = DrainAwareServer(config)

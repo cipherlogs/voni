@@ -7,8 +7,8 @@
 #
 #   docker build -f voice-pipeline/Dockerfile -t voni-voice-pipeline .
 #
-# The `voni` app is a different image and a different Fly app
-# (deploy/fly.voni.toml); nothing of the app is copied here.
+# The `voni` app is a different image and a separate deploy; nothing of the app
+# is copied here.
 #
 # Python 3.13 is the version the Python CI job installs (`uv venv --python
 # 3.13`), so the image runs the interpreter combination the test suite proved.
@@ -56,6 +56,6 @@ EXPOSE 8766
 # the SIGTERM drain supervisor and disables uvicorn's default handler;
 # ``uvicorn server:app`` would skip the drain and end a live call. uvloop stays
 # pinned off in server.py (the prefetch adoption stall) and is not installed
-# here anyway. A call is one WebSocket on this process for its whole life; the
-# two Fly machines, not two workers in one container, are the two instances.
+# here anyway. A call is one WebSocket on this process for its whole life; one
+# process is the one instance, not several workers in one container.
 CMD ["python", "server.py"]
