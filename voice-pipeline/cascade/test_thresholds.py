@@ -31,23 +31,23 @@ FROZEN_BOUNDS = {
     "barge_in.filler_resume_tail_ms": "fillerResumeTailMs",
 }
 
-# Spec "Open dependencies and thresholds": declared now, supplied by ticket 04.
-OPEN_BOUNDS = {
-    "budget.daily_cap": "103",
-    "budget.per_call_ceiling": "105",
-    "deploy.drain_max_wait_ms": "140",
-    "turn.stall_guard_ms": "69",
-    "tool.loop_cap": "87",
-    "tts.keepalive_interval_ms": "53",
-    "budget.day_boundary": "102",
-    "ci.browser_e2e_budget_s": "149",
-    "turn.reply_task_ms": "76",
-    "tool.timeout_ms": "76",
-    "reconnect.handshake_ms": "76",
-    "probe.model_max_completion_tokens": "20",
-    # Ticket 64 declared the signed body envelope's lifetime; ticket 04 records
-    # the value. The envelope refuses to sign while this stays open.
-    "envelope.ttl_ms": "04",
+# Ticket 04 supplied every bound the spec left open. These are the owner
+# decisions dated 2026-10-30; the registry keeps the provenance.
+SUPPLIED_BOUNDS = {
+    "budget.daily_cap": ("103", 25),
+    "budget.per_call_ceiling": ("105", 0.25),
+    "deploy.drain_max_wait_ms": ("140", 30_000),
+    "turn.stall_guard_ms": ("69", 2_500),
+    "tool.loop_cap": ("87", 3),
+    "tts.keepalive_interval_ms": ("53", 30_000),
+    "budget.day_boundary": ("102", "UTC"),
+    "ci.browser_e2e_budget_s": ("149", 120),
+    "turn.reply_task_ms": ("76", 10_000),
+    "tool.timeout_ms": ("76", 5_000),
+    "reconnect.handshake_ms": ("76", 10_000),
+    "probe.model_max_completion_tokens": ("20", 16),
+    "envelope.ttl_ms": ("04", 60_000),
+    "playout.cushion_ms": ("12", 500),
 }
 
 
@@ -117,36 +117,40 @@ class FrozenBudgetTests(unittest.TestCase):
 
 class UnsetBoundTests(unittest.TestCase):
     def test_an_open_bound_raises_with_its_name_and_owning_ticket(self):
-        for name, ticket in OPEN_BOUNDS.items():
-            with self.subTest(bound=name):
-                with self.assertRaises(thresholds.UnsetBoundError) as caught:
-                    thresholds.require_bound(name)
-                message = str(caught.exception)
-                self.assertIn(name, message)
-                self.assertIn(ticket, message)
-                self.assertEqual(caught.exception.name, name)
-                self.assertEqual(caught.exception.ticket, ticket)
+        entry = {"unit": "ms", "gate": "x.gate", "ticket": "99", "note": "open"}
+        with tempfile.TemporaryDirectory() as tmp:
+            registry = thresholds.load_registry(
+                path=write_registry(tmp, {"x.open": entry})
+            )
+            with self.assertRaises(thresholds.UnsetBoundError) as caught:
+                registry.require("x.open")
+        message = str(caught.exception)
+        self.assertIn("x.open", message)
+        self.assertIn("99", message)
+        self.assertEqual(caught.exception.name, "x.open")
+        self.assertEqual(caught.exception.ticket, "99")
 
     def test_an_unknown_bound_fails_by_name(self):
         with self.assertRaises(thresholds.UnknownBoundError) as caught:
             thresholds.require_bound("floor.take_probability")
         self.assertIn("floor.take_probability", str(caught.exception))
 
-    def test_an_open_bound_is_still_listed_with_its_gate_and_unit(self):
-        for name, ticket in OPEN_BOUNDS.items():
+    def test_a_supplied_bound_carries_value_source_and_date(self):
+        for name, (ticket, expected) in SUPPLIED_BOUNDS.items():
             with self.subTest(bound=name):
                 entry = thresholds.bound(name)
-                self.assertTrue(entry.is_open)
-                self.assertIsNone(entry.value)
+                self.assertFalse(entry.is_open)
+                self.assertEqual(entry.value, expected)
                 self.assertEqual(entry.ticket, ticket)
                 self.assertTrue(entry.unit)
                 self.assertTrue(entry.gate)
-                self.assertEqual(entry.source, "")
-                self.assertEqual(entry.date, "")
+                self.assertTrue(entry.source)
+                self.assertRegex(entry.date, r"^\d{4}-\d{2}-\d{2}$")
+                self.assertEqual(thresholds.require_bound(name), expected)
 
-    def test_open_bounds_are_reported_so_a_blocked_ticket_is_visible(self):
-        names = {entry.name for entry in thresholds.open_bounds()}
-        self.assertEqual(names, set(OPEN_BOUNDS))
+    def test_no_production_bound_is_left_open(self):
+        # Ticket 04 supplied every bound; a new open bound must be declared here.
+        self.assertEqual(thresholds.open_bounds(), ())
 
 
 class ProvenanceRefusalTests(unittest.TestCase):

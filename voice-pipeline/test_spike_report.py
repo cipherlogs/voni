@@ -327,11 +327,18 @@ class RenderTests(unittest.TestCase):
 
         self.assertEqual(result.verdict, report.AT_RISK)
         self.assertEqual(len(result.terms), 5)
-        self.assertEqual(result.unmeasured_names, report.TERM_NAMES)
+        # Ticket 04 supplied the configured cushion; the four live terms remain
+        # unmeasured when no vendor key is present.
+        expected = tuple(
+            name for name in report.TERM_NAMES if name != first_audio.CUSHION_NAME
+        )
+        self.assertEqual(result.unmeasured_names, expected)
+        self.assertNotIn(first_audio.CUSHION_NAME, result.unmeasured_names)
         text = result.render()
         for name in report.TERM_NAMES:
             self.assertIn(name, text)
         self.assertIn("unmeasured", text.lower())
+        self.assertIn("500", text)
 
     def test_the_dict_is_serialisable_and_names_every_missing_term(self):
         payload = report.from_measurements().as_dict()
@@ -340,9 +347,18 @@ class RenderTests(unittest.TestCase):
         self.assertEqual(payload["verdict"], report.AT_RISK)
         self.assertEqual(payload["term_count"], 5)
         self.assertIsNone(payload["sum_ms"])
-        self.assertEqual(payload["unmeasured"], list(report.TERM_NAMES))
+        expected = [
+            name for name in report.TERM_NAMES if name != first_audio.CUSHION_NAME
+        ]
+        self.assertEqual(payload["unmeasured"], expected)
         self.assertEqual(len(payload["terms"]), 5)
         self.assertIn("first_content_token_ms", encoded)
+        cushion = next(
+            term
+            for term in payload["terms"]
+            if term["term"] == first_audio.CUSHION_NAME
+        )
+        self.assertEqual(cushion["ms"], 500)
 
 
 class DeletionTests(unittest.TestCase):

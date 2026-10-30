@@ -112,79 +112,127 @@
       "unit": "tokens",
       "gate": "breaker.probe",
       "ticket": "20",
-      "note": "OPEN — the spec bounds the model probe ('one minimal completion with max_completion_tokens small enough to bound cost') but states no number. A probe without a cap is not a probe, so the probe refuses to run until this is recorded. Synthesis costs nothing here: the voice probe sends an empty Generate (0 characters, inside tts.generate_char_cap)."
+      "note": "SUPPLIED by ticket 04. the spec bounds the model probe ('one minimal completion with max_completion_tokens small enough to bound cost') but states no number. A probe without a cap is not a probe, so the probe refuses to run until this is recorded. Synthesis costs nothing here: the voice probe sends an empty Generate (0 characters, inside tts.generate_char_cap).",
+      "value": 16,
+      "source": "owner decision 2026-10-30 (ticket 04): a breaker probe must cost a negligible number of tokens",
+      "date": "2026-10-30"
     },
     "budget.daily_cap": {
       "unit": "usd",
       "gate": "budget.daily-cap",
       "ticket": "103",
-      "note": "OPEN — spec open dependency 5. The 80%/100% behavior is fixed; this value is not."
+      "note": "SUPPLIED by ticket 04. spec open dependency 5. The 80%/100% behavior is fixed; this value is not.",
+      "value": 25,
+      "source": "owner decision 2026-10-30 (ticket 04): USD/day, roughly 8x a 100-call day at current rates; revisit after a week of volume",
+      "date": "2026-10-30"
     },
     "budget.per_call_ceiling": {
       "unit": "usd",
       "gate": "budget.per-call-ceiling",
       "ticket": "105",
-      "note": "OPEN — spec open dependency 6. The drain behavior is fixed; this value is not."
+      "note": "SUPPLIED by ticket 04. spec open dependency 6. The drain behavior is fixed; this value is not.",
+      "value": 0.25,
+      "source": "owner decision 2026-10-30 (ticket 04): USD/call, well above a 5-minute cascade call at v1 rates",
+      "date": "2026-10-30"
     },
     "deploy.drain_max_wait_ms": {
       "unit": "ms",
       "gate": "deploy.drain",
       "ticket": "140",
-      "note": "OPEN — spec open dependency 7. A live call is never terminated by the drain; this is the operational wait."
+      "note": "SUPPLIED by ticket 04. spec open dependency 7. A live call is never terminated by the drain; this is the operational wait.",
+      "value": 30000,
+      "source": "owner decision 2026-10-30 (ticket 04): a live call is never killed; this is the operational wait",
+      "date": "2026-10-30"
     },
     "turn.stall_guard_ms": {
       "unit": "ms",
       "gate": "turn.reply-ordering",
       "ticket": "69",
-      "note": "OPEN — spec open dependency 8. Closes an abandoned turn with no reply; the later turn is still answered."
+      "note": "SUPPLIED by ticket 04. spec open dependency 8. Closes an abandoned turn with no reply; the later turn is still answered.",
+      "value": 2500,
+      "source": "owner decision 2026-10-30 (ticket 04): the existing p95 reply budget, not a new number",
+      "date": "2026-10-30"
     },
     "tool.loop_cap": {
       "unit": "count",
       "gate": "tool.loop-cap",
       "ticket": "87",
-      "note": "OPEN — spec open dependency 9. Until supplied the loop is bounded by the turn budget and the stall guard."
+      "note": "SUPPLIED by ticket 04. spec open dependency 9. Until supplied the loop is bounded by the turn budget and the stall guard.",
+      "value": 3,
+      "source": "owner decision 2026-10-30 (ticket 04): three tool rounds, then the turn fails visibly",
+      "date": "2026-10-30"
     },
     "tts.keepalive_interval_ms": {
       "unit": "ms",
       "gate": "tts.idle-keepalive",
       "ticket": "53",
-      "note": "OPEN — the spec fixes the behavior (named interval below the idle timeout) but not the interval."
+      "note": "SUPPLIED by ticket 04. the spec fixes the behavior (named interval below the idle timeout) but not the interval.",
+      "value": 30000,
+      "source": "owner decision 2026-10-30 (ticket 04): below the vendor 120 s idle close",
+      "date": "2026-10-30"
     },
     "budget.day_boundary": {
       "unit": "timezone",
       "gate": "budget.daily-counter",
       "ticket": "102",
-      "note": "OPEN — spec open dependency 16. UTC is assumed, not yet confirmed."
+      "note": "SUPPLIED by ticket 04. spec open dependency 16. UTC is assumed, not yet confirmed.",
+      "value": "UTC",
+      "source": "owner decision 2026-10-30 (ticket 04): UTC, confirming the spec assumption",
+      "date": "2026-10-30"
     },
     "ci.browser_e2e_budget_s": {
       "unit": "s",
       "gate": "ci.browser-e2e",
       "ticket": "149",
-      "note": "OPEN — spec open dependency 18. Over budget, the job moves to a required pre-merge job, never nightly-only."
+      "note": "SUPPLIED by ticket 04. spec open dependency 18. Over budget, the job moves to a required pre-merge job, never nightly-only.",
+      "value": 120,
+      "source": "owner decision 2026-10-30 (ticket 04): current run ~8.5 s; 120 s leaves CI headroom",
+      "date": "2026-10-30"
     },
     "turn.reply_task_ms": {
       "unit": "ms",
       "gate": "turn.bounded-await",
       "ticket": "76",
-      "note": "OPEN — the reply task is bounded; the spec does not state the bound."
+      "note": "SUPPLIED by ticket 04. the reply task is bounded; the spec does not state the bound.",
+      "value": 10000,
+      "source": "owner decision 2026-10-30 (ticket 04): a whole reply task is bounded; no hang",
+      "date": "2026-10-30"
     },
     "tool.timeout_ms": {
       "unit": "ms",
       "gate": "tool.execution",
       "ticket": "76",
-      "note": "OPEN — the tool hop is bounded and a timeout becomes a failed tool result."
+      "note": "SUPPLIED by ticket 04. the tool hop is bounded and a timeout becomes a failed tool result.",
+      "value": 5000,
+      "source": "owner decision 2026-10-30 (ticket 04): the tool hop is off the latency-critical path",
+      "date": "2026-10-30"
     },
     "reconnect.handshake_ms": {
       "unit": "ms",
       "gate": "reconnect",
       "ticket": "76",
-      "note": "OPEN — a reconnect handshake is bounded; the STT first-frame ack uses stt.handshake_ms."
+      "note": "SUPPLIED by ticket 04. a reconnect handshake is bounded; the STT first-frame ack uses stt.handshake_ms.",
+      "value": 10000,
+      "source": "spec: Meta STT first-frame ack within 10 s; owner decision 2026-10-30 (ticket 04) for reuse on reconnect",
+      "date": "2026-10-30"
     },
     "envelope.ttl_ms": {
       "unit": "ms",
       "gate": "envelope.expiry",
       "ticket": "04",
-      "note": "OPEN — the spec fixes the behaviour (the signed body envelope is short-lived and an expired one is refused at the service before any vendor socket) but states no number. A body is never signed with an invented TTL: envelope.sign_body refuses until ticket 04 records value + source + date."
+      "note": "SUPPLIED by ticket 04. the spec fixes the behaviour (the signed body envelope is short-lived and an expired one is refused at the service before any vendor socket) but states no number. A body is never signed with an invented TTL: envelope.sign_body refuses until ticket 04 records value + source + date.",
+      "value": 60000,
+      "source": "owner decision 2026-10-30 (ticket 04): short-lived signed body envelope, refused after expiry",
+      "date": "2026-10-30"
+    },
+    "playout.cushion_ms": {
+      "unit": "ms",
+      "gate": "spike.report",
+      "ticket": "12",
+      "value": 500,
+      "source": "voni/public/playout-processor.js TARGET_CUSHION_S = 0.5; recorded by ticket 04 on 2026-10-30",
+      "date": "2026-10-30",
+      "note": "The configured target cushion, included in the perceived reply gap; not measured from a live buffer."
     }
   }
 }
