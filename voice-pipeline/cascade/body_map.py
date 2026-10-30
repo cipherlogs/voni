@@ -54,10 +54,12 @@ name, before any vendor socket opens — a body whose override cannot be built i
 a visible call error, never a managed route.
 
 This adapter refuses what it cannot *represent*: an unbound voice, an unknown
-language code, a missing prompt, a tool name the vendor would reject. What the
-body may still not be *eligible* for — automatic language detection, more
-keyterms than the vendor accepts — is :mod:`cascade.eligibility`'s gate, which
-turns every refusal here into a routing reason (ticket 61).
+language code, a missing prompt, a tool name the vendor would reject, an LLM
+override with no constructible client. What the body may still not be *eligible*
+for — more keyterms than the vendor accepts — is :mod:`cascade.eligibility`'s
+gate, which turns every refusal here into a routing reason (ticket 61). No fixed
+``language_codes`` is not a refusal: it is Meta auto-detect (ticket 160), and
+synthesis still speaks the bound voice's Locale.
 
 The signed body's fingerprint also lives here (ticket 63): :func:`stable_json`,
 :func:`body_fingerprint` and :func:`verify_served_body` hash the *whole* served

@@ -3,8 +3,13 @@
 The credential travels inside the handshake frame (``authorization.accessToken``)
 because the vendor ignores the ``Authorization`` header; the handshake also
 declares the one encoding, model, endpointing mode and partial shape the cascade
-reads. The socket factory is injected, so every test replays recorded frames and
-no test opens a real socket.
+reads. ``languageBias`` is sent only when the body fixes languages; an absent or
+empty list is Meta's auto-detect, so no empty list is invented for it (ticket
+160). The zero-bias fact is recorded on the adapter
+(:attr:`MetaStreamingSTT.auto_detect`) so the call can tell an auto-detect
+subject from a fixed-Locale one; synthesis is unaffected, because its language
+always comes from the bound voice's Locale. The socket factory is injected, so
+every test replays recorded frames and no test opens a real socket.
 
 Session identity is a query parameter built from the call id and a local session
 epoch, never a secret. The acknowledgement is a text frame without a ``type``
@@ -411,6 +416,8 @@ class MetaStreamingSTT(StreamingSTT):
         self._socket_factory = socket_factory or _default_socket_factory
         self._keywords = keywords(keyterms)
         self._language_bias: tuple[str, ...] | None = None
+        #: True when the body fixed no language and the vendor auto-detects.
+        self._auto_detect = False
         self._socket: Any = None
         self._frames: Any = None
         self._epoch = -1
@@ -525,6 +532,16 @@ class MetaStreamingSTT(StreamingSTT):
         return self._acked
 
     @property
+    def auto_detect(self) -> bool:
+        """Whether this call's recognition runs without a language bias.
+
+        A body with no fixed ``language_codes`` is auto-detect (ticket 160).
+        The fact is frozen with the bias on the first session open, so a
+        reconnect cannot silently switch the subject to a fixed Locale.
+        """
+        return self._auto_detect
+
+    @property
     def failure_reason(self) -> str | None:
         """The recorded reason the last session could not be established."""
         return self._failure_reason
@@ -604,6 +621,7 @@ class MetaStreamingSTT(StreamingSTT):
         be delayed by the client. ``language_codes`` and ``keyterms`` are frozen
         on the first session start and reused on a later session (a reconnect is
         the same call, and the body is frozen for it); no method retunes them.
+        An empty list is auto-detect and sends no ``languageBias`` key at all.
         The ack wait is bounded by ``stt.handshake_ms`` (ticket 27).
         """
         if self._socket is not None:
@@ -615,6 +633,9 @@ class MetaStreamingSTT(StreamingSTT):
 
         if self._language_bias is None:
             self._language_bias = language_bias(language_codes)
+            # No fixed list is Meta's auto-detect, not a missing setting: it is
+            # recorded once, with the frozen bias, and never sent as [].
+            self._auto_detect = not self._language_bias
 
         self._epoch += 1
         # The store's epoch is the logical-id half; the adapter decides when it
@@ -632,9 +653,10 @@ class MetaStreamingSTT(StreamingSTT):
             "mode": MODE,
             "partialMode": PARTIAL_MODE,
             "emitAudioProgress": EMIT_AUDIO_PROGRESS,
-            "languageBias": list(self._language_bias),
             "keywords": list(self._keywords),
         }
+        if self._language_bias:
+            frame["languageBias"] = list(self._language_bias)
 
         socket = await self._socket_factory(url, {})
         # The vendor's limit counts from the connection, not from the ack.

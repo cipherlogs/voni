@@ -301,9 +301,11 @@ class LanguageTests(unittest.TestCase):
         self.assertEqual(config.synthesis_language, "Spanish")
 
     def test_automatic_detection_leaves_the_bias_empty(self):
-        # A body with no language_codes routes managed (ticket 61); the adapter
-        # must not invent a bias for it in the meantime.
-        self.assertEqual(adapt_body({**MINIMAL_BODY, "input": {}}).speech_language_bias, ())
+        # A body with no language_codes is Meta auto-detect (ticket 160); the
+        # adapter must not invent a bias for it, and records the fact.
+        config = adapt_body({**MINIMAL_BODY, "input": {}})
+        self.assertEqual(config.speech_language_bias, ())
+        self.assertTrue(config.auto_detect)
 
     def test_an_unknown_language_code_is_refused_by_name(self):
         body = {**MINIMAL_BODY, "input": {"language_codes": ["es", "tlh"]}}

@@ -44,7 +44,6 @@
           "mode": "ENDPOINTING",
           "partialMode": "CUMULATIVE",
           "emitAudioProgress": false,
-          "languageBias": [],
           "keywords": []
         },
         {

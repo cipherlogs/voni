@@ -456,6 +456,8 @@ class CallEligibility:
     disposition: str
     predicates: tuple[str, ...] = ()
     reasons: tuple[str, ...] = ()
+    #: True when the call's recognition ran Meta auto-detect (no fixed Locale).
+    auto_detect: bool = False
 
     def __post_init__(self) -> None:
         if self.disposition not in ("cascade", "refused"):
@@ -470,6 +472,7 @@ class CallEligibility:
             disposition="cascade" if decision.permitted else "refused",
             predicates=decision.predicates,
             reasons=tuple(refusal.reason for refusal in decision.reasons),
+            auto_detect=decision.auto_detect,
         )
 
     def to_document(self) -> dict[str, Any]:
@@ -477,6 +480,7 @@ class CallEligibility:
             "disposition": self.disposition,
             "predicates": list(self.predicates),
             "reasons": list(self.reasons),
+            "autoDetect": self.auto_detect,
         }
 
 
@@ -1690,7 +1694,12 @@ class CallLifecycle:
 
     def _eligibility_document(self) -> CallEligibility:
         if self._eligibility is None:
-            return CallEligibility("cascade")
+            # No gate ran: the verified body's own language split is still the
+            # fact the artifact needs to tell auto-detect from a fixed Locale.
+            return CallEligibility(
+                "cascade",
+                auto_detect=bool(self._verified is not None and self._verified.auto_detect),
+            )
         return CallEligibility.from_decision(self._eligibility)
 
     def _record_usage(self, opened: list[OpenedLeg]) -> None:

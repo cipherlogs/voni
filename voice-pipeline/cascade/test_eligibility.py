@@ -43,19 +43,24 @@ def evaluate(body: dict, *, keyterm_limit: int = KEYTERM_LIMIT) -> EligibilityDe
     return evaluate_body(body, keyterm_limit=keyterm_limit)
 
 
-class FixedLocaleTests(unittest.TestCase):
-    def test_a_body_with_no_language_codes_is_refused_as_automatic_detection(self):
+class AutoDetectTests(unittest.TestCase):
+    def test_a_body_with_no_language_codes_is_eligible_as_auto_detect(self):
         decision = evaluate({**VALID_BODY, "input": {}})
 
-        self.assertEqual(decision.disposition, "managed")
-        self.assertEqual([refusal.predicate for refusal in decision.reasons], ["locale"])
-        self.assertIn("automatic language detection", decision.reason)
+        self.assertEqual(decision.disposition, "cascade")
+        self.assertTrue(decision.auto_detect)
 
-    def test_an_empty_language_list_is_refused(self):
+    def test_an_empty_language_list_is_auto_detect_too(self):
         decision = evaluate({**VALID_BODY, "input": {"language_codes": []}})
 
-        self.assertEqual(decision.disposition, "managed")
-        self.assertIn("locale", [refusal.predicate for refusal in decision.reasons])
+        self.assertEqual(decision.disposition, "cascade")
+        self.assertTrue(decision.auto_detect)
+
+    def test_a_fixed_locale_body_is_not_auto_detect(self):
+        decision = evaluate(VALID_BODY)
+
+        self.assertEqual(decision.disposition, "cascade")
+        self.assertFalse(decision.auto_detect)
 
 
 class BindingRefusalTests(unittest.TestCase):
@@ -170,7 +175,6 @@ class UnsupportedLanguageTests(unittest.TestCase):
 class RoutesManagedTests(unittest.TestCase):
     def test_every_body_refusal_routes_managed_with_its_own_reason(self):
         cases = {
-            "automatic language": ({**VALID_BODY, "input": {}}, KEYTERM_LIMIT),
             "unbound voice": ({**VALID_BODY, "voice": {"voice_id": "juergen"}}, KEYTERM_LIMIT),
             "unknown voice": ({**VALID_BODY, "voice": {"voice_id": "ghost"}}, KEYTERM_LIMIT),
             "missing prompt": (
@@ -183,6 +187,10 @@ class RoutesManagedTests(unittest.TestCase):
             ),
             "unsupported language": (
                 {**VALID_BODY, "input": {"language_codes": ["tlh"]}},
+                KEYTERM_LIMIT,
+            ),
+            "unconstructible model override": (
+                {**VALID_BODY, "llm": [{"model": "gpt-4o-mini"}]},
                 KEYTERM_LIMIT,
             ),
             "too many keyterms": (
@@ -208,7 +216,7 @@ class RoutesManagedTests(unittest.TestCase):
         self.assertEqual(decision.body.voice_id, "lola")
 
     def test_a_refusal_is_recorded_as_an_eligibility_event_not_a_fallback(self):
-        decision = evaluate({**VALID_BODY, "input": {}})
+        decision = evaluate({**VALID_BODY, "voice": {"voice_id": "juergen"}})
 
         events = decision.events()
         self.assertTrue(events)
@@ -262,7 +270,7 @@ class ConjunctionTests(unittest.TestCase):
         self.assertEqual(decision.predicates, ())
         self.assertEqual(decision.body.voice_id, "lola")
         self.assertEqual([rule.name for rule in DEFAULT_RULES],
-                         ["routing", "binding", "locale", "llm", "accepted", "counter"])
+                         ["routing", "binding", "llm", "accepted", "counter"])
 
     def test_routing_off_refuses_the_call(self):
         decision = self.evaluate(mode="off")
@@ -283,11 +291,11 @@ class ConjunctionTests(unittest.TestCase):
         self.assertEqual(decision.disposition, "managed")
         self.assertEqual(decision.predicates, ("binding",))
 
-    def test_no_fixed_locale_refuses_the_call(self):
+    def test_no_fixed_locale_permits_the_call_as_auto_detect(self):
         decision = self.evaluate({**VALID_BODY, "input": {}})
 
-        self.assertEqual(decision.disposition, "managed")
-        self.assertEqual(decision.predicates, ("locale",))
+        self.assertEqual(decision.disposition, "cascade")
+        self.assertTrue(decision.auto_detect)
 
     def test_a_body_the_adapter_rejects_refuses_the_call(self):
         decision = self.evaluate({**VALID_BODY, "prompt": "smuggled"})
@@ -314,12 +322,12 @@ class ConjunctionTests(unittest.TestCase):
 
     def test_every_failing_predicate_records_its_own_reason(self):
         decision = self.evaluate(
-            {**VALID_BODY, "input": {}},
+            {**VALID_BODY, "voice": {"voice_id": "juergen"}},
             mode="off",
             counter=CounterReading(spent_usd=12.0, line_usd=12.0),
         )
 
-        self.assertEqual(decision.predicates, ("routing", "locale", "counter"))
+        self.assertEqual(decision.predicates, ("routing", "binding", "counter"))
         self.assertEqual(len(decision.reasons), 3)
         for refusal in decision.reasons:
             self.assertTrue(refusal.reason)

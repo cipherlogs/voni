@@ -39,7 +39,6 @@
           "mode": "ENDPOINTING",
           "partialMode": "CUMULATIVE",
           "emitAudioProgress": false,
-          "languageBias": [],
           "keywords": []
         },
         {"bytes": 24000, "sha256": "160a2f88b1043e28", "silence": false},
