@@ -5,7 +5,7 @@ the stored body, reads it back, verifies its full fingerprint (ticket 63) and
 then hands the *wire* message to the service over the authenticated service
 channel::
 
-    {"envelope": {version, call_id, agent_id, body_hash,
+    {"envelope": {version, [kind,] call_id, agent_id, body_hash,
                   issued_at_ms, expires_at_ms, signature}, "body": {…}}
 
 Two checks protect that channel, and both must pass before a vendor socket
@@ -20,13 +20,24 @@ opens:
   refuses an expired envelope or one minted for another call. A body whose
   hash does not match the envelope raises :class:`BodyHashMismatch` by name.
 
+**Version 2 names the subject kind (ticket 02).** The claims carry an explicit
+``kind`` (``demo`` or ``tenant``) and the HMAC covers it, so a tampered kind is
+a signature mismatch and never a routing decision. The service exposes the
+verified kind as :attr:`VerifiedBody.subject_kind`; no code infers a kind from
+an id or a ``demo:`` prefix. Version 1 — the committed shape — has no kind
+claim and is read as :data:`LEGACY_SUBJECT_KIND` (``tenant``) for the rollout
+window, so an old app keeps working. A version 2 envelope without a kind is
+refused rather than defaulted; a correctly signed kind outside
+:data:`SUBJECT_KINDS` is refused by name after the HMAC.
+
 The signature covers the body hash and the call identity, so an envelope
 cannot be replayed onto another call (:class:`EnvelopeCallMismatch`) or
 re-pointed at a different body (:class:`BodyHashMismatch`). The signing input
 is ``stable_json`` of the claims — the same canonical form ticket 63 uses, so
 the TypeScript signer and this verifier produce the same bytes. The pinned
-vector in ``envelope_vectors.json`` was produced by Node's crypto and
-cross-checked with ``openssl``; the test fails if either language drifts.
+vectors in ``envelope_vectors.json`` (v1 and the ``v2_demo`` subsection) were
+produced by Node's crypto and cross-checked with ``openssl``; the test fails if
+either language drifts.
 
 **No secret ever leaves a caller's hand.** The HMAC secret and the account
 salt are arguments, never envelope claims, never message fields, and never
@@ -54,14 +65,32 @@ from typing import Any
 from cascade.body_map import stable_json, verify_served_body
 from cascade.thresholds import require_bound
 
-#: The envelope shape this module signs and verifies.
+#: The committed envelope shape. It names no subject kind, so the service reads
+#: it as :data:`LEGACY_SUBJECT_KIND` for the rollout window.
 ENVELOPE_VERSION = 1
+
+#: The version the app sends: the claims add an explicit ``kind`` (the subject
+#: kind), and the HMAC covers it. No code infers a kind from an id or a name.
+ENVELOPE_VERSION_SUBJECT_KIND = 2
+
+#: Every version this verifier understands. An unknown version is refused.
+SUPPORTED_ENVELOPE_VERSIONS = (ENVELOPE_VERSION, ENVELOPE_VERSION_SUBJECT_KIND)
+
+#: The subject kinds the service serves.
+SUBJECT_KINDS = ("demo", "tenant")
+
+#: What a version 1 envelope means: the rollout window keeps old apps working,
+#: and v1 has no kind claim to read.
+LEGACY_SUBJECT_KIND = "tenant"
+
+_SUBJECT_KIND_CLAIM = "kind"
 
 #: The registry bound that supplies the envelope's lifetime. Open until ticket
 #: 04 records a value with a source and a date.
 TOKEN_TTL_BOUND = "envelope.ttl_ms"
 
 #: The signed claims, in the one order the canonical form ignores anyway.
+#: ``_CLAIMS`` is the version 1 set; version 2 adds the kind claim.
 _CLAIMS = (
     "version",
     "call_id",
@@ -70,6 +99,7 @@ _CLAIMS = (
     "issued_at_ms",
     "expires_at_ms",
 )
+_V2_CLAIMS = (*_CLAIMS, _SUBJECT_KIND_CLAIM)
 
 _MESSAGE_FIELDS = frozenset({"envelope", "body"})
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
@@ -112,9 +142,26 @@ class UnknownEnvelopeVersion(EnvelopeError):
 
     def __init__(self, version: Any) -> None:
         self.version = version
+        supported = " and ".join(str(item) for item in SUPPORTED_ENVELOPE_VERSIONS)
         super().__init__(
             f"unknown envelope version {version!r}; this verifier understands "
-            f"{ENVELOPE_VERSION} only"
+            f"{supported} only"
+        )
+
+
+class UnknownSubjectKind(EnvelopeError):
+    """A subject kind this service does not serve. Inferring one is forbidden.
+
+    The kind is a signed claim, so the service checks this name only *after*
+    the HMAC: a tampered kind is a signature mismatch, never this refusal.
+    """
+
+    def __init__(self, kind: Any) -> None:
+        self.kind = kind
+        served = " or ".join(f'"{item}"' for item in SUBJECT_KINDS)
+        super().__init__(
+            f'envelope field "{_SUBJECT_KIND_CLAIM}" must be {served}, got '
+            f"{_describe(kind)}; a call is never routed on a guessed kind"
         )
 
 
@@ -217,13 +264,26 @@ def _identity(field: str, value: Any) -> str:
     return value
 
 
+def _describe(value: Any) -> str:
+    """Describe a refused value without echoing a secret or object state."""
+    if isinstance(value, str):
+        return repr(value)
+    if value is None or isinstance(value, (bool, int, float)):
+        return repr(value)
+    return type(value).__name__
+
+
 def _sign(claims: Mapping[str, Any], key: bytes) -> str:
     return hmac.new(key, stable_json(dict(claims)).encode("utf-8"), hashlib.sha256).hexdigest()
 
 
 @dataclass(frozen=True)
 class Envelope:
-    """The signed claims: body hash, call identity, lifetime and signature."""
+    """The signed claims: body hash, call identity, lifetime and signature.
+
+    ``kind`` is the v2 subject kind. A version 1 envelope carries no kind, so
+    it is ``None`` and the service reads it as :data:`LEGACY_SUBJECT_KIND`.
+    """
 
     version: int
     call_id: str
@@ -232,10 +292,30 @@ class Envelope:
     issued_at_ms: int
     expires_at_ms: int
     signature: str
+    kind: str | None = None
+
+    def __post_init__(self) -> None:
+        # Defense in depth: the parser and the signer keep the claim sets
+        # apart, and a hand-built envelope cannot smuggle a kind into v1.
+        if self.version == ENVELOPE_VERSION_SUBJECT_KIND:
+            if not isinstance(self.kind, str) or not self.kind.strip():
+                raise MalformedEnvelope(
+                    _SUBJECT_KIND_CLAIM,
+                    "is required by a version 2 envelope and is never defaulted",
+                )
+        elif self.kind is not None:
+            raise MalformedEnvelope(
+                _SUBJECT_KIND_CLAIM,
+                "belongs only to a version 2 envelope; a version 1 envelope "
+                "carries no subject kind",
+            )
 
     def claims(self) -> dict[str, Any]:
         """Everything the signature covers, and nothing else."""
-        return {name: getattr(self, name) for name in _CLAIMS}
+        claims = {name: getattr(self, name) for name in _CLAIMS}
+        if self.version == ENVELOPE_VERSION_SUBJECT_KIND:
+            claims[_SUBJECT_KIND_CLAIM] = self.kind
+        return claims
 
     def signing_input(self) -> bytes:
         """The canonical bytes the HMAC is computed over.
@@ -251,12 +331,18 @@ class Envelope:
 
     @classmethod
     def from_dict(cls, raw: Any) -> "Envelope":
-        """Parse one wire envelope, refusing any shape not declared here."""
+        """Parse one wire envelope, refusing any shape not declared here.
+
+        The legal claim set is the version's own: version 1 carries no kind,
+        version 2 requires one, and neither accepts a claim it does not name.
+        """
         if not isinstance(raw, Mapping):
             raise MalformedEnvelope(
                 "envelope", f"expected an object, got {type(raw).__name__}"
             )
-        expected = (*_CLAIMS, "signature")
+        raw_version = raw.get("version")
+        version_two = type(raw_version) is int and raw_version == ENVELOPE_VERSION_SUBJECT_KIND
+        expected = (*_V2_CLAIMS, "signature") if version_two else (*_CLAIMS, "signature")
         missing = [field for field in expected if field not in raw]
         if missing:
             raise MalformedEnvelope(missing[0], "missing from the signed envelope")
@@ -267,8 +353,17 @@ class Envelope:
         version = raw["version"]
         if isinstance(version, bool) or not isinstance(version, int):
             raise MalformedEnvelope("version", f"expected an integer, got {version!r}")
-        if version != ENVELOPE_VERSION:
+        if version not in SUPPORTED_ENVELOPE_VERSIONS:
             raise UnknownEnvelopeVersion(version)
+
+        kind: str | None = None
+        if version == ENVELOPE_VERSION_SUBJECT_KIND:
+            kind = raw[_SUBJECT_KIND_CLAIM]
+            if not isinstance(kind, str) or not kind.strip():
+                raise MalformedEnvelope(
+                    _SUBJECT_KIND_CLAIM,
+                    f"must be a non-empty subject kind string, got {_describe(kind)}",
+                )
 
         call_id = _identity("call_id", raw["call_id"])
         agent_id = _identity("agent_id", raw["agent_id"])
@@ -297,6 +392,7 @@ class Envelope:
             issued_at_ms=issued_at_ms,
             expires_at_ms=expires_at_ms,
             signature=raw["signature"],
+            kind=kind,
         )
 
 
@@ -336,6 +432,17 @@ class VerifiedBody:
         return self.envelope.agent_id
 
     @property
+    def subject_kind(self) -> str:
+        """The verified subject kind: v2's signed claim, v1 read as tenant.
+
+        This is the only kind the rest of the service may route on; it is never
+        inferred from the agent id or a ``demo:`` prefix.
+        """
+        if self.envelope.kind is None:
+            return LEGACY_SUBJECT_KIND
+        return self.envelope.kind
+
+    @property
     def issued_at_ms(self) -> int:
         return self.envelope.issued_at_ms
 
@@ -352,6 +459,7 @@ def sign_body(
     secret: str | bytes,
     call_id: str,
     agent_id: str,
+    kind: str | None = None,
     ttl_ms: int | None = None,
     clock: Callable[[], float] = time.time,
 ) -> SignedBody:
@@ -362,6 +470,11 @@ def sign_body(
     served body that is not the minted one refuses here (ticket 63) and never
     reaches a socket. ``ttl_ms`` defaults to the registry bound and must not be
     a literal in production code; ``clock`` makes expiry deterministic.
+
+    ``kind`` selects the envelope version. Omitted keeps the committed version
+    1 envelope (no kind claim), so the pinned v1 fixture and every existing
+    caller keep working during rollout. A served kind signs version 2, whose
+    claims carry that kind and whose HMAC therefore covers it.
     """
     if not isinstance(body, Mapping):
         raise TypeError(f"a stored agent body must be a mapping, got {type(body).__name__}")
@@ -377,6 +490,15 @@ def sign_body(
     call_id = _identity("call_id", call_id)
     agent_id = _identity("agent_id", agent_id)
 
+    if kind is not None:
+        if not isinstance(kind, str) or not kind.strip():
+            raise MalformedEnvelope(
+                _SUBJECT_KIND_CLAIM,
+                f"must be a non-empty subject kind string, got {_describe(kind)}",
+            )
+        if kind not in SUBJECT_KINDS:
+            raise UnknownSubjectKind(kind)
+
     if ttl_ms is None:
         ttl_ms = require_bound(TOKEN_TTL_BOUND)
     if isinstance(ttl_ms, bool) or not isinstance(ttl_ms, (int, float)):
@@ -391,13 +513,15 @@ def sign_body(
 
     issued_at_ms = _now_ms(clock)
     claims: dict[str, Any] = {
-        "version": ENVELOPE_VERSION,
+        "version": ENVELOPE_VERSION if kind is None else ENVELOPE_VERSION_SUBJECT_KIND,
         "call_id": call_id,
         "agent_id": agent_id,
         "body_hash": body_hash(body),
         "issued_at_ms": issued_at_ms,
         "expires_at_ms": issued_at_ms + ttl,
     }
+    if kind is not None:
+        claims[_SUBJECT_KIND_CLAIM] = kind
     return SignedBody(
         envelope=Envelope(**claims, signature=_sign(claims, key)),
         body=dict(body),
@@ -413,9 +537,12 @@ def verify_envelope(
 ) -> VerifiedBody:
     """Verify one wire message before any vendor socket opens (the service's side).
 
-    Refusals are named and ordered so a caller can act on them: malformed shape,
-    then the HMAC, then expiry, then the call binding, then the body hash. The
-    body is returned only when all of them pass.
+    Refusals are named and ordered so a caller can act on them: malformed shape
+    (including a version 2 kind that is missing or not a string), then the HMAC,
+    then an unknown subject kind (the kind is signed, so it is checked only once
+    the HMAC has passed), then expiry, then the call binding, then the body
+    hash. The body is returned only when all of them pass; version 1 is read as
+    :data:`LEGACY_SUBJECT_KIND`.
     """
     key = _secret_bytes(secret)
 
@@ -440,6 +567,11 @@ def verify_envelope(
 
     if not hmac.compare_digest(_sign(envelope.claims(), key), envelope.signature):
         raise EnvelopeSignatureMismatch(envelope.call_id)
+
+    # The kind is a signed claim, so the vocabulary check comes only after the
+    # HMAC: a tampered kind is a signature mismatch, never a kind refusal.
+    if envelope.kind is not None and envelope.kind not in SUBJECT_KINDS:
+        raise UnknownSubjectKind(envelope.kind)
 
     now_ms = _now_ms(clock)
     if now_ms >= envelope.expires_at_ms:
