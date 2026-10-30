@@ -1,0 +1,16 @@
+{
+  "recordVersion": 1,
+  "recorded": "2026-10-30",
+  "app": {
+    "name": "voni-app",
+    "version": "0.1.0",
+    "source": "voni/package.json#version",
+    "protocolVersion": 1
+  },
+  "service": {
+    "name": "voni-voice-pipeline",
+    "version": "${VOICE_PIPELINE_BUILD_VERSION}",
+    "source": "host env VOICE_PIPELINE_BUILD_VERSION, then FLY_IMAGE_REF; unversioned when neither is set",
+    "protocolVersion": 1
+  }
+}

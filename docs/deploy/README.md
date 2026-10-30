@@ -103,14 +103,40 @@ versions. The client surfaces that named error and tears the socket down, so a
 mismatch fails loudly instead of leaving the UI hanging. The end message also
 reports `protocolVersion`, and the client checks it on a call that did open.
 
+## Versions
+
+The service reports its **build** and its **protocol** version, not only the
+protocol one. `GET /healthz` returns `service`, `buildVersion`, `buildSource`
+and `protocolVersion`; the end message on every call carries `buildVersion` and
+`protocolVersion`. The build comes from the host environment —
+`VOICE_PIPELINE_BUILD_VERSION` if the host names builds, otherwise Fly's
+injected `FLY_IMAGE_REF`. When neither is set the report says `unversioned`
+(`source: "none"`): an honest absence, never a guessed value. The protocol
+number is `cascade.token.PROTOCOL_VERSION`, re-exported by
+`cascade.version` — one copy, ticket 138's.
+
+`deploy/versions.json` is the artifact: it names the app and the service, the
+version each is deployed at (the app's is pinned to `voni/package.json`; the
+service's is the host-supplied build), and the protocol each half speaks.
+`python deploy/topology.py` reads it together with both code copies of the
+protocol number and refuses a mismatch, so a half-deployed pair is a named
+deploy error before a cutover claim, not a surprise mid-call.
+
 ## Secrets
 
 Names only, set on the app with `fly secrets set`; `deploy/voice-pipeline.env.example`
 is the list and carries no values. The service reads `META_API_KEY`,
 `META_IDENTIFIER_SALT`, `ASSEMBLYAI_API_KEY`, `AI_GATEWAY_API_KEY`,
 `VONI_TOOL_SECRET`, `VOICE_PIPELINE_ENVELOPE_SECRET` and `DATABASE_URL`. The app
-has its own set on its own app; the two are never shared. The repository secret
-scan is ticket 141.
+has its own set on its own app; the two are never shared.
+
+The repository scan is ticket 141's second guard: `python deploy/topology.py`
+runs it (and `python deploy/secret_scan.py` runs it alone). It reports a
+key-shaped value, a URL carrying real userinfo, or a long secret assignment in
+any **committed** file as `path:line: kind` — never the value. Test modules and
+fixtures are exempt because a refusal test needs a string that looks like a key;
+production code, config, docs and scripts are not. `deploy/versions.json` and a
+health or end report carry versions only.
 
 Log redaction is ticket 137. `voice-pipeline/cascade/log_redaction.py` is the
 one gate: it is installed by `create_app` and scrubs every record through a log
@@ -126,14 +152,16 @@ socket, sends the handshake and scans every emitted record.
 
 ```sh
 python deploy/topology.py            # exits non-zero and names every violation
-cd voice-pipeline && python -m unittest test_deploy_topology -v
+python deploy/secret_scan.py         # the credential scan alone
+cd voice-pipeline && python -m unittest test_deploy_topology test_deploy_versions -v
 ```
 
 The validator is the same file a reviewer reads: it fails by name when the
 instance count drops to one, when the `/healthz` probe is removed, when the
 deploy stops being rolling, when the drain timeout is shorter than the recorded
-bound, when a secret value appears in a committed file, and when the app and the
-service stop being separate deploys.
+bound, when a secret value appears in a committed file, when the version
+artifact and the code disagree on the protocol, and when the app and the service
+stop being separate deploys.
 
 ## Rehearsal
 

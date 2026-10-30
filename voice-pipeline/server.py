@@ -7,6 +7,8 @@ Run from this directory with the bridge venv:
 Env (host-provided, never committed):
     ASSEMBLYAI_API_KEY, AI_GATEWAY_API_KEY, CARTESIA_API_KEY,
     VOICE_PIPELINE_PORT (default 8766),
+    VOICE_PIPELINE_BUILD_VERSION (the build this image is; Fly's FLY_IMAGE_REF
+    is the fallback, and "unversioned" is reported when neither is set),
     VOICE_PIPELINE_ENVELOPE_SECRET (the signed-body envelope secret; absent
     means the stored-body channel is closed and no call is served),
     DATABASE_URL (the shared durable store; absent means /readyz fails closed
@@ -14,7 +16,9 @@ Env (host-provided, never committed):
 
 Routes:
     GET /healthz            liveness probe, no vendors, store or key touched;
-                            reports the protocol version this service speaks.
+                            reports the build and the protocol version this
+                            service runs (ticket 141), so a half-deployed pair
+                            is visible before a call.
     GET /readyz             readiness: durable store, daily counter and breaker
                             readable, not draining, protocol version; 503 when
                             any of them is unknown. Never probes a vendor.
@@ -64,9 +68,8 @@ from cascade.token import (
     ClientConfigError,
     StoredBodyChannel,
 )
+from cascade.version import version_document
 from transport import handle_browser_call
-
-SERVICE_NAME = "voice-pipeline"
 
 #: The signed-body message's own field names; the app may say nothing else.
 CALL_BODY_FIELDS = ("call_token", "call_id", "signed_body")
@@ -152,12 +155,13 @@ def create_app(
 
     @app.get("/healthz")
     async def healthz() -> dict[str, Any]:
-        """Liveness: the process is up. No store, vendor or key is touched."""
-        return {
-            "status": "ok",
-            "service": SERVICE_NAME,
-            "protocolVersion": PROTOCOL_VERSION,
-        }
+        """Liveness: the process is up, and this is the build it runs.
+
+        No store, vendor or key is touched. The build and protocol versions are
+        reported so a half-deployed pair is visible before a cutover claim
+        (ticket 141), not guessed from a deploy log.
+        """
+        return {"status": "ok", **version_document()}
 
     @app.get("/readyz")
     async def readyz() -> JSONResponse:

@@ -15,8 +15,12 @@ What is checked:
   call, and a SIGTERM waits at least the recorded drain bound;
 * the app and the service are separate Fly apps, separate images and separate
   secret sets;
+* the artifact records both parties' versions and they speak one protocol
+  version (ticket 141): a mismatch is a deploy error;
 * no secret value is committed anywhere, only names, and every name is one the
-  code actually reads;
+  code actually reads; the repository scan (``deploy/secret_scan.py``) is the
+  wider guard, reporting a committed credential by file, line and kind — never
+  its value;
 * the image's pinned runtime dependencies agree with ``requirements-ci.txt`` and
   the exposed port agrees with the proxy and the command.
 
@@ -27,11 +31,17 @@ same files.
 from __future__ import annotations
 
 import json
+import re
 import sys
 import tomllib
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
+
+try:  # imported as ``deploy.topology`` (tests) or run as a script (deploy/topology.py)
+    from . import secret_scan
+except ImportError:  # pragma: no cover - the script path
+    import secret_scan  # type: ignore[no-redef]
 
 #: Two machines minimum: a rolling deploy must never remove the last one while
 #: a live call is pinned to it (spec "Deployment / Topology").
@@ -45,6 +55,9 @@ DOCKERIGNORE = ".dockerignore"
 SECRETS_EXAMPLE = "deploy/voice-pipeline.env.example"
 DEPLOYMENT_RECORD = "docs/deploy/README.md"
 HOST_DECISION = "docs/deploy/meta-cascade-host.md"
+VERSIONS_RECORD = "deploy/versions.json"
+TOKEN_MODULE = "voice-pipeline/cascade/token.py"
+APP_PROTOCOL_CLIENT = "voni/src/lib/voice/cascade-session.ts"
 RUNTIME_REQUIREMENTS = "voice-pipeline/requirements.txt"
 CI_REQUIREMENTS = "requirements-ci.txt"
 
@@ -499,6 +512,126 @@ def validate_dockerignore(text: str) -> list[str]:
     return errors
 
 
+def protocol_versions(repo_root: Path) -> dict[str, int]:
+    """The protocol number each half of the deploy actually speaks.
+
+    Read textually from the two sources that own it — the service's
+    ``PROTOCOL_VERSION`` and the app's ``CASCADE_PROTOCOL_VERSION`` — so this
+    validator does not import the cascade package (it is run from a checkout,
+    not from the container).
+    """
+    root = Path(repo_root)
+    service_text = _read(root, TOKEN_MODULE)
+    app_text = _read(root, APP_PROTOCOL_CLIENT)
+    if service_text is None:
+        raise ValueError(f"cannot read {TOKEN_MODULE}; the service version is unknown")
+    if app_text is None:
+        raise ValueError(
+            f"cannot read {APP_PROTOCOL_CLIENT}; the app version is unknown"
+        )
+    service = re.search(r"^PROTOCOL_VERSION\s*=\s*(\d+)\s*$", service_text, re.M)
+    app = re.search(
+        r"export const CASCADE_PROTOCOL_VERSION\s*=\s*(\d+)\s*;", app_text
+    )
+    if service is None:
+        raise ValueError(f"{TOKEN_MODULE} declares no PROTOCOL_VERSION")
+    if app is None:
+        raise ValueError(
+            f"{APP_PROTOCOL_CLIENT} exports no CASCADE_PROTOCOL_VERSION"
+        )
+    return {"service": int(service.group(1)), "app": int(app.group(1))}
+
+
+def validate_versions(
+    repo_root: Path,
+    *,
+    service_app: str | None = None,
+    app_name: str | None = None,
+) -> list[str]:
+    """The artifact records both versions, and the protocol versions agree.
+
+    A mismatch here is a deploy error: a cutover must not be claimed while the
+    app and the service name different protocols (ticket 141).
+    """
+    root = Path(repo_root)
+    label = VERSIONS_RECORD
+    errors: list[str] = []
+    text = _read(root, label)
+    if text is None:
+        return [f"missing {label}: the app and service versions are unrecorded"]
+    try:
+        record = json.loads(text)
+    except json.JSONDecodeError as exc:
+        return [f"{label}: not valid JSON ({exc})"]
+    if not isinstance(record, dict):
+        return [f"{label}: must be an object"]
+
+    if record.get("recordVersion") != 1:
+        errors.append(
+            f"{label}: recordVersion is {record.get('recordVersion')!r}; this "
+            "reader supports 1"
+        )
+
+    if service_app is None or app_name is None:
+        try:
+            service_doc = load_config(root, SERVICE_CONFIG)
+            app_doc = load_config(root, APP_CONFIG)
+        except (OSError, ValueError):
+            service_doc, app_doc = {}, {}
+        service_app = service_app or str(service_doc.get("app") or "")
+        app_name = app_name or str(app_doc.get("app") or "")
+
+    entries: dict[str, Mapping[str, Any]] = {}
+    for party, expected_name in (("app", app_name), ("service", service_app)):
+        entry = record.get(party)
+        if not isinstance(entry, dict):
+            errors.append(
+                f"{label}: {party} is not recorded; the artifact must name the "
+                f"{party}'s version"
+            )
+            continue
+        entries[party] = entry
+        for field in ("name", "version", "source"):
+            value = entry.get(field)
+            if not isinstance(value, str) or not value.strip():
+                errors.append(f"{label}: {party} does not record its {field}")
+        if expected_name and entry.get("name") != expected_name:
+            errors.append(
+                f"{label}: {party} is {entry.get('name')!r} but the deploy config "
+                f"names {expected_name!r}; the artifact is stale"
+            )
+
+    try:
+        code = protocol_versions(root)
+    except ValueError as exc:
+        errors.append(f"{label}: {exc}")
+        return errors
+
+    parties = {"app": code["app"], "service": code["service"]}
+    recorded: dict[str, Any] = {}
+    for party, entry in entries.items():
+        version = entry.get("protocolVersion")
+        if isinstance(version, bool) or not isinstance(version, int):
+            errors.append(
+                f"{label}: {party} does not record an integer protocolVersion"
+            )
+            continue
+        recorded[party] = version
+        if version != parties[party]:
+            errors.append(
+                f"{label}: {party} records protocol {version} but its code speaks "
+                f"{parties[party]}; a protocol version mismatch is a deploy error, "
+                "not a guessed compatibility"
+            )
+    if len(recorded) == 2 and recorded["app"] != recorded["service"]:
+        errors.append(
+            f"{label}: the app speaks protocol {recorded['app']} and the service "
+            f"speaks protocol {recorded['service']}; do not claim a cutover while "
+            "the two halves disagree"
+        )
+    return errors
+
+
 def drain_max_wait_ms_from_registry(repo_root: Path) -> int:
     """Read the recorded drain bound without importing the cascade package."""
     path = repo_root / "voice-pipeline/cascade/thresholds.json"
@@ -526,6 +659,15 @@ def validate(repo_root: Path, *, drain_max_wait_ms: int | None = None) -> list[s
         errors.extend(validate_service(service_doc, drain_max_wait_ms=drain_max_wait_ms))
     if app_doc is not None and service_doc is not None:
         errors.extend(validate_app(app_doc, service_doc=service_doc))
+    errors.extend(
+        validate_versions(
+            repo_root,
+            service_app=(
+                str(service_doc.get("app") or "") if service_doc is not None else None
+            ),
+            app_name=str(app_doc.get("app") or "") if app_doc is not None else None,
+        )
+    )
 
     port = 0
     if service_doc is not None:
@@ -577,6 +719,10 @@ def validate(repo_root: Path, *, drain_max_wait_ms: int | None = None) -> list[s
         )
     if _read(repo_root, HOST_DECISION) is None:
         errors.append(f"missing {HOST_DECISION}: the host decision record is gone")
+    # Ticket 141: the second guard on secrets. The config checks above name a
+    # value in a deploy file; the scan catches a credential committed anywhere
+    # else in the tree (production code, a doc, a script).
+    errors.extend(secret_scan.scan_repository(repo_root))
     return errors
 
 
