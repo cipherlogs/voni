@@ -72,6 +72,7 @@ from cascade.token import (
     PROTOCOL_VERSION,
     CallTokenRegistry,
     ClientConfigError,
+    DuplicateCallToken,
     StoredBodyChannel,
 )
 from cascade.usage import UsageMeter
@@ -102,6 +103,25 @@ def operational_events_for(call_id: str, subject: str) -> OperationalEvents:
 
 #: The signed-body message's own field names; the app may say nothing else.
 CALL_BODY_FIELDS = ("call_token", "call_id", "signed_body")
+
+#: The machine-readable refusal the app branches on (demo-cascade ticket 07).
+#: Additive: the status code and the ``detail`` body are unchanged, so a client
+#: that ignores this header behaves exactly as it did before.
+CALL_BODY_REFUSAL_HEADER = "X-Cascade-Refusal"
+REFUSAL_DRAINING = "draining"
+REFUSAL_ENVELOPE_SECRET_MISSING = "envelope_secret_missing"
+REFUSAL_MALFORMED_BODY = "malformed_body"
+REFUSAL_ENVELOPE_REFUSED = "envelope_refused"
+REFUSAL_DUPLICATE_CALL_TOKEN = "duplicate_call_token"
+
+
+def call_body_refusal(status_code: int, code: str, detail: str) -> HTTPException:
+    """One refusal shape: the existing status and ``detail``, plus its name."""
+    return HTTPException(
+        status_code=status_code,
+        detail=detail,
+        headers={CALL_BODY_REFUSAL_HEADER: code},
+    )
 
 
 def create_app(
@@ -218,17 +238,19 @@ def create_app(
     async def call_body(request: Request) -> dict[str, Any]:
         # A draining instance finishes live calls; it starts none.
         if drain_state.draining:
-            raise HTTPException(
-                status_code=503,
-                detail=(
+            raise call_body_refusal(
+                503,
+                REFUSAL_DRAINING,
+                (
                     f"the service is draining ({drain_state.reason}) and "
                     "accepts no new call; live calls continue"
                 ),
             )
         if body_channel is None:
-            raise HTTPException(
-                status_code=503,
-                detail=(
+            raise call_body_refusal(
+                503,
+                REFUSAL_ENVELOPE_SECRET_MISSING,
+                (
                     "the signed-body channel is closed: set "
                     "VOICE_PIPELINE_ENVELOPE_SECRET in the service host's "
                     "environment so a delivered body can be verified"
@@ -237,24 +259,29 @@ def create_app(
         try:
             payload = await request.json()
         except Exception:
-            raise HTTPException(status_code=400, detail="call body must be JSON")
+            raise call_body_refusal(
+                400, REFUSAL_MALFORMED_BODY, "call body must be JSON"
+            )
         if not isinstance(payload, dict):
-            raise HTTPException(
-                status_code=400,
-                detail=f"call body must be an object, got {type(payload).__name__}",
+            raise call_body_refusal(
+                400,
+                REFUSAL_MALFORMED_BODY,
+                f"call body must be an object, got {type(payload).__name__}",
             )
 
         unknown = sorted(set(payload) - set(CALL_BODY_FIELDS))
         if unknown:
-            raise HTTPException(
-                status_code=400,
-                detail=f'unknown call body field "{unknown[0]}"',
+            raise call_body_refusal(
+                400,
+                REFUSAL_MALFORMED_BODY,
+                f'unknown call body field "{unknown[0]}"',
             )
         missing = [field for field in CALL_BODY_FIELDS if field not in payload]
         if missing:
-            raise HTTPException(
-                status_code=400,
-                detail=f'call body field "{missing[0]}" is missing',
+            raise call_body_refusal(
+                400,
+                REFUSAL_MALFORMED_BODY,
+                f'call body field "{missing[0]}" is missing',
             )
 
         try:
@@ -263,8 +290,12 @@ def create_app(
                 call_id=payload["call_id"],
                 message=payload["signed_body"],
             )
+        except DuplicateCallToken as exc:
+            raise call_body_refusal(
+                400, REFUSAL_DUPLICATE_CALL_TOKEN, str(exc)
+            )
         except (EnvelopeError, ClientConfigError) as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
+            raise call_body_refusal(400, REFUSAL_ENVELOPE_REFUSED, str(exc))
 
         return {
             "status": "accepted",
