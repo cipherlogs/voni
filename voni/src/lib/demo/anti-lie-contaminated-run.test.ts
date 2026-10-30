@@ -57,7 +57,7 @@ function greenCandidate(overrides: Partial<ScoreboardArtifact> = {}): Scoreboard
     runId: "run-contaminated-1",
     codeFingerprint: CLEAN_CODE,
     subject: {
-      agent: { kind: "demo", voice: "anna", agentId: null },
+      agent: { kind: "demo", voice: DEFAULT_GATE_VOICE, agentId: null },
       locale: "en",
       transport: "browser",
       source: "flag",
@@ -68,7 +68,7 @@ function greenCandidate(overrides: Partial<ScoreboardArtifact> = {}): Scoreboard
     pipeline: "cascade",
     run: {
       runId: base.runId,
-      variant: "cascade-anna-1",
+      variant: "cascade-audrey-1",
       startedAt: "2026-10-29T10:00:00.000Z",
       finishedAt: "2026-10-29T10:00:03.000Z",
     },

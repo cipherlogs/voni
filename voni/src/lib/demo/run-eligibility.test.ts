@@ -47,7 +47,7 @@ function cleanRun(overrides: Partial<ScoreboardArtifact> = {}): ScoreboardArtifa
     runId: "run-clean-1",
     codeFingerprint: CLEAN_CODE,
     subject: {
-      agent: { kind: "demo", voice: "anna", agentId: null },
+      agent: { kind: "demo", voice: DEFAULT_GATE_VOICE, agentId: null },
       locale: "en",
       transport: "browser",
       source: "flag",

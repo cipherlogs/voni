@@ -109,10 +109,10 @@ CALL_BODY_FIELDS = ("call_token", "call_id", "signed_body")
 #: that ignores this header behaves exactly as it did before.
 CALL_BODY_REFUSAL_HEADER = "X-Cascade-Refusal"
 REFUSAL_DRAINING = "draining"
-REFUSAL_ENVELOPE_SECRET_MISSING = "envelope_secret_missing"
+REFUSAL_ENVELOPE_KEY_MISSING = "envelope_secret_missing"
 REFUSAL_MALFORMED_BODY = "malformed_body"
 REFUSAL_ENVELOPE_REFUSED = "envelope_refused"
-REFUSAL_DUPLICATE_CALL_TOKEN = "duplicate_call_token"
+REFUSAL_DUPLICATE_CALL = "duplicate_call_token"
 
 
 def call_body_refusal(status_code: int, code: str, detail: str) -> HTTPException:
@@ -249,7 +249,7 @@ def create_app(
         if body_channel is None:
             raise call_body_refusal(
                 503,
-                REFUSAL_ENVELOPE_SECRET_MISSING,
+                REFUSAL_ENVELOPE_KEY_MISSING,
                 (
                     "the signed-body channel is closed: set "
                     "VOICE_PIPELINE_ENVELOPE_SECRET in the service host's "
@@ -292,7 +292,7 @@ def create_app(
             )
         except DuplicateCallToken as exc:
             raise call_body_refusal(
-                400, REFUSAL_DUPLICATE_CALL_TOKEN, str(exc)
+                400, REFUSAL_DUPLICATE_CALL, str(exc)
             )
         except (EnvelopeError, ClientConfigError) as exc:
             raise call_body_refusal(400, REFUSAL_ENVELOPE_REFUSED, str(exc))
