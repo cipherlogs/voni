@@ -8,11 +8,16 @@ Env (host-provided, never committed):
     ASSEMBLYAI_API_KEY, AI_GATEWAY_API_KEY, CARTESIA_API_KEY,
     VOICE_PIPELINE_PORT (default 8766),
     VOICE_PIPELINE_ENVELOPE_SECRET (the signed-body envelope secret; absent
-    means the stored-body channel is closed and no call is served).
+    means the stored-body channel is closed and no call is served),
+    DATABASE_URL (the shared durable store; absent means /readyz fails closed
+    and no new call is accepted).
 
 Routes:
-    GET /healthz            liveness probe, no vendors touched; reports the
-                            protocol version this service speaks.
+    GET /healthz            liveness probe, no vendors, store or key touched;
+                            reports the protocol version this service speaks.
+    GET /readyz             readiness: durable store, daily counter and breaker
+                            readable, not draining, protocol version; 503 when
+                            any of them is unknown. Never probes a vendor.
     POST /v1/call-body      the app -> service channel (ticket 65): the app
                             delivers the signed stored body for a call token.
                             Ticket 64's envelope and body hash are verified
@@ -39,9 +44,14 @@ from collections.abc import Callable
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket
+from fastapi.responses import JSONResponse
 
+from cascade.breaker import Breaker
+from cascade.counter import DailyCounter
 from cascade.envelope import EnvelopeError
+from cascade.health import DrainState, readiness
 from cascade.log_redaction import install_log_redaction
+from cascade.pg_store import PostgresStore
 from cascade.token import (
     PROTOCOL_VERSION,
     CallTokenRegistry,
@@ -61,6 +71,10 @@ def create_app(
     envelope_secret: str | bytes | None = None,
     clock: Callable[[], float] = time.time,
     call_tokens: CallTokenRegistry | None = None,
+    store: Any = None,
+    counter: Any = None,
+    breaker: Any = None,
+    drain: DrainState | None = None,
 ) -> FastAPI:
     # Ticket 137: every record — uvicorn access, error, crash dump — is
     # scrubbed before a handler can write it. The call token in the socket
@@ -88,16 +102,80 @@ def create_app(
     )
     app.state.call_tokens = token_registry
 
+    # Ticket 139: readiness dependencies. The durable store is the Fly
+    # Postgres attachment (ticket 135); a missing DATABASE_URL or an unset
+    # budget bound is recorded here and fails readiness closed rather than
+    # stopping the process (liveness stays honest and live calls continue).
+    configuration_errors: dict[str, str] = {}
+    if store is None:
+        dsn = os.environ.get("DATABASE_URL", "").strip()
+        if dsn:
+            try:
+                store = PostgresStore(dsn)
+            except ValueError as exc:
+                configuration_errors["store"] = str(exc)
+        else:
+            configuration_errors["store"] = (
+                "no durable store configured; set DATABASE_URL in the service "
+                "host's environment"
+            )
+    if store is not None:
+        if counter is None:
+            try:
+                counter = DailyCounter(store, now=clock)
+            except Exception as exc:
+                configuration_errors["counter"] = (
+                    f"{type(exc).__name__}: {exc}"
+                )
+        if breaker is None:
+            try:
+                breaker = Breaker.from_registry(store, now=clock)
+            except Exception as exc:
+                configuration_errors["breaker"] = (
+                    f"{type(exc).__name__}: {exc}"
+                )
+    drain_state = drain if drain is not None else DrainState()
+    app.state.store = store
+    app.state.counter = counter
+    app.state.breaker = breaker
+    app.state.drain = drain_state
+    app.state.readiness_errors = configuration_errors
+
     @app.get("/healthz")
     async def healthz() -> dict[str, Any]:
+        """Liveness: the process is up. No store, vendor or key is touched."""
         return {
             "status": "ok",
             "service": SERVICE_NAME,
             "protocolVersion": PROTOCOL_VERSION,
         }
 
+    @app.get("/readyz")
+    async def readyz() -> JSONResponse:
+        """Readiness: this instance may take a new call right now."""
+        report = await readiness(
+            drain=drain_state,
+            store=store,
+            counter=counter,
+            breaker=breaker,
+            configuration_errors=configuration_errors,
+        )
+        return JSONResponse(
+            status_code=200 if report.ready else 503,
+            content=report.to_document(),
+        )
+
     @app.post("/v1/call-body", status_code=202)
     async def call_body(request: Request) -> dict[str, Any]:
+        # A draining instance finishes live calls; it starts none.
+        if drain_state.draining:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    f"the service is draining ({drain_state.reason}) and "
+                    "accepts no new call; live calls continue"
+                ),
+            )
         if body_channel is None:
             raise HTTPException(
                 status_code=503,
@@ -149,6 +227,20 @@ def create_app(
     @app.websocket("/v1/browser-call")
     async def browser_call(websocket: WebSocket) -> None:
         await websocket.accept()
+        if drain_state.draining:
+            # Named, so the app shows the truth instead of a dropped socket.
+            await websocket.send_json(
+                {
+                    "type": "error",
+                    "code": "draining",
+                    "message": (
+                        f"the service is draining ({drain_state.reason}) and "
+                        "accepts no new call; live calls continue"
+                    ),
+                }
+            )
+            await websocket.close()
+            return
         await handle_browser_call(
             websocket,
             body_channel=body_channel,

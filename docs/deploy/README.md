@@ -47,6 +47,15 @@ Two machines per app, physically one region (`iad`) to start.
   probe is `GET /healthz` (liveness, no vendor touched). Readiness (`/readyz`,
   ticket 139) is deliberately not the platform probe: a draining machine must
   stay reachable while it finishes live calls.
+- **Liveness vs readiness.** `/healthz` answers only "the process is up" and
+  touches no store, vendor or key, so a store outage never restarts a machine
+  serving live calls. `/readyz` answers "this instance may take a new call" and
+  reports `protocolVersion`, the drain state, and one check each for the
+  durable store, the daily counter and the breaker record. Any unreadable
+  dependency returns 503 and names the reason; a missing breaker record is a
+  fresh deploy, not an outage. Readiness never opens a vendor socket. A
+  draining instance returns 503 on `/readyz` and refuses new calls (the socket
+  gets `{"type":"error","code":"draining"}`), while calls already running finish.
 - **Drain seam.** `kill_signal = "SIGTERM"`, `kill_timeout = 30`, which equals
   the recorded `deploy.drain_max_wait_ms` (30 000 ms) in
   `voice-pipeline/cascade/thresholds.json`. Fly waits for the process, then
@@ -55,8 +64,10 @@ Two machines per app, physically one region (`iad`) to start.
   are shared, and they are read through the store protocol in
   `voice-pipeline/cascade/store.py`. The concrete deployment choice is a **Fly
   Postgres** attachment injecting `DATABASE_URL` into both machines; the
-  single-host `SqliteStore` stays a local/test adapter. The asyncpg adapter and
-  the readiness proof land with ticket 139.
+  single-host `SqliteStore` stays a local/test adapter. The asyncpg adapter is
+  `voice-pipeline/cascade/pg_store.py` (ticket 139) and implements the same
+  `DurableStore` protocol; readiness proves it is readable on every probe
+  without touching a vendor.
 - **One container for the Python service.** `voice-pipeline/Dockerfile` copies
   `voice-pipeline/` and the one bridge module it imports
   (`telephony-bot/voice_judge.py`), installs `voice-pipeline/requirements.txt`,

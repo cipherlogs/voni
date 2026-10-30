@@ -86,5 +86,8 @@ kill_timeout = 30
 # Shared durable state (breaker, routing switch, daily counter) is a Fly
 # Postgres attachment that injects DATABASE_URL into both machines. That is the
 # concrete choice this ticket records; the single-host SqliteStore stays a
-# local/test adapter. The asyncpg adapter and the readiness proof land with
-# ticket 139, not here.
+# local/test adapter. Ticket 139 landed the asyncpg adapter
+# (voice-pipeline/cascade/pg_store.py) and /readyz, which proves the store, the
+# counter and the breaker are readable before a new call is accepted. The
+# platform probe stays on /healthz: readiness is not a Fly check, because a
+# draining machine must keep serving the calls it already has.
