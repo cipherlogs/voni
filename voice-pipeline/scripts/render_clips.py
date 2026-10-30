@@ -18,10 +18,9 @@ by name and writes nothing at all — no manifest, no placeholder, no stale file
 `--check` is the credentialless gate: it audits the committed manifest against
 the committed bytes.
 
-`juergen`/de is an open Locale: the vendor does not serve the voice, so the
-plan keeps it as a named open row with no clip. `--strict` exits non-zero while
-it stays open. Ticket 130 owns the re-cast; the old clip is retired, never kept
-as a silent fallback.
+`jorg`/de is the chosen German voice (ticket 130): its clip renders like every
+other bound voice. The retired `juergen` is refused by the binding table and is
+not a clip subject; its old asset is retired, never kept as a silent fallback.
 """
 
 from __future__ import annotations

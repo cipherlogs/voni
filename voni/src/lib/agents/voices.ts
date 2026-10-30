@@ -94,7 +94,7 @@ export const VOICES: Voice[] = [
   // code-switch naturally between their language and English.
   { id: "giovanni", accent: "IT", presents: "masculine", language: "Italian", languageCode: "it" },
   { id: "lola", accent: "ES", presents: "feminine", language: "Spanish", languageCode: "es" },
-  { id: "juergen", accent: "DE", presents: "masculine", language: "German", languageCode: "de" },
+  { id: "jorg", accent: "DE", presents: "masculine", language: "German", languageCode: "de" },
   { id: "rafael", accent: "PT", presents: "masculine", language: "Portuguese", languageCode: "pt" },
   { id: "estelle", accent: "FR", presents: "feminine", language: "French", languageCode: "fr" },
 ];

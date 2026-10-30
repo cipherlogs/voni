@@ -13,7 +13,8 @@ and binding table, recorded in the same manifest and audited by the same
 the preview side:
 
 - every bound demo voice has exactly one preview URL under `/voices/cascade`;
-- an open Locale (German) has no preview and keeps no asset;
+- the chosen German voice (`jorg`) has its own preview, and the retired
+  `juergen` is not a preview subject;
 - a preview file that is on disk but not in the manifest fails by name;
 - a preview whose bytes were edited is stale against its hash, named;
 - a preview in another Locale fails by name;
@@ -37,6 +38,7 @@ from cascade.assemblyai_tts import MODEL_ID, TTS_BASE_URL
 from cascade.clips import (
     CLIP_ASSET_DIR,
     PREVIEW_URL_PREFIX,
+    ClipError,
     ClipRecord,
     audit_manifest,
     clip_format,
@@ -121,12 +123,18 @@ class PreviewCoverageTests(unittest.TestCase):
             self.assertEqual(preview_url(plan.voice_id), plan.preview)
         self.assertEqual(PREVIEW_URL_PREFIX, "/voices/cascade")
 
-    def test_the_open_locale_has_no_preview(self):
-        plan = clip_plan_for("juergen")
+    def test_the_german_voice_has_its_own_preview(self):
+        plan = clip_plan_for("jorg")
 
-        self.assertFalse(plan.bound)
-        self.assertIsNone(plan.preview)
-        self.assertIsNone(plan.asset)
+        self.assertTrue(plan.bound)
+        self.assertEqual("/voices/cascade/jorg.wav", plan.preview)
+        self.assertEqual("voni/public/voices/cascade/jorg.wav", plan.asset)
+
+    def test_the_retired_german_id_is_not_a_preview_subject(self):
+        with self.assertRaises(ClipError) as raised:
+            clip_plan_for("juergen")
+
+        self.assertIn('"juergen" is not a demo subject', str(raised.exception))
 
     def test_the_cascade_preview_is_not_the_managed_picker_asset(self):
         preview = preview_url("anna")

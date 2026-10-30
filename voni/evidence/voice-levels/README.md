@@ -53,12 +53,12 @@ no voice needs attenuation and none may be boosted: **`volume = 100` for
 every measured voice**. That is the measured decision, not an untouched
 default.
 
-`juergen` is the one offered voice the TTS endpoint does not serve — it
-answers `422 voice_not_found` — so it has no measured reference. It is a
-visible `UNMEASURED_VOICE_LEVELS` row (`measured: false`, null loudness/peak,
-`unmeasuredReason` naming the 422), keeps the named default
-(`UNMEASURED_VOICE_OUTPUT_VOLUME`, 100 = native), and the gate reports it
-unmeasured; an unmeasured voice never passes on a default.
+German was re-cast from `juergen` (the TTS endpoint answered `422
+voice_not_found`) to `jorg`, whose native reference was measured on 2026-10-30
+at −24.93 LUFS (worst true peak −5.96 dBTP). Every offered voice now has a
+measured row, so `UNMEASURED_VOICE_LEVELS` is empty; the visible-unmeasured
+mechanism remains for a future voice the endpoint cannot serve, and an
+unmeasured voice never passes on a default.
 
 ## Registry
 

@@ -38,6 +38,7 @@ EXERCISED = (
     "handshake-ack",
     "handshake-protocol-error",
     "events-turn",
+    "events-live-wire-two-turns",
     "events-unknown-ignored",
     "audio-malformed",
     "audio-pacing-lead",
@@ -104,6 +105,43 @@ class EventFixtureTests(unittest.TestCase):
         self.assertEqual(actual["events"][-1]["text"], "How are you?")
         self.assertEqual(actual["turns"][0]["final_text"], "How are you?")
         self.assertEqual(actual["turns"][0]["partial_text"], "how are you")
+
+    def test_the_live_wire_shape_maps_both_integer_turns(self):
+        actual = assert_parity(load("events-live-wire-two-turns"))
+
+        self.assertIsNone(actual["error"])
+        self.assertEqual(
+            [event["type"] for event in actual["events"]],
+            [
+                "SpeechStart",
+                "SpeechPartial",
+                "SpeechEnd",
+                "SpeechComplete",
+            ]
+            * 2,
+        )
+        self.assertEqual(
+            [event["turn_id"] for event in actual["events"] if "turn_id" in event],
+            ["0", "0", "0", "1", "1", "1"],
+            "speechStart, speechEnd and speechComplete each carry the turn id",
+        )
+        self.assertEqual(
+            [
+                (turn["turn_id"], turn["partial_text"], turn["final_text"])
+                for turn in actual["turns"]
+            ],
+            [
+                (
+                    "0",
+                    "Hi",
+                    "Hi I'm Voni let's try something cool I'll show you what "
+                    "I can do while we talk",
+                ),
+                ("1", "ready?", "ready?"),
+            ],
+            "each partial binds to its own turn, and the final text is "
+            "`transcript`, not an empty `text`",
+        )
 
     def test_unknown_and_additive_events_are_ignored(self):
         actual = assert_parity(load("events-unknown-ignored"))

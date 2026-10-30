@@ -512,8 +512,7 @@ class RoutingSwitch:
         )
         if not written:
             raise RoutingSwitchConflict(
-                f"another operator wrote the routing switch before this {mode!r} flip; "
-                "re-read and retry"
+                f"another operator wrote the routing switch before this {mode!r} flip"
             )
         return record
 

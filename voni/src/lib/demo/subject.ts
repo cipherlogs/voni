@@ -13,9 +13,11 @@
  *   a voice with another Locale is refused by name, never measured as if the
  *   voice could speak it.
  * - **No voice without a binding.** A voice the catalogue offers but the vendor
- *   does not serve (`juergen`/de) is not a cascade subject. Its Locale stays
- *   *open* — not beta, not dropped, not cut over — and the refusal names the
- *   voice, the Locale and the reason.
+ *   does not serve is not a cascade subject. Its Locale stays *open* — not
+ *   beta, not dropped, not cut over — and the refusal names the voice, the
+ *   Locale and the reason. The pre-re-cast German id (`juergen`) is a
+ *   *historical* unbound row: it is no longer offered, but naming it still
+ *   refuses by name with the vendor's 422 rather than falling through.
  * - **No silent default.** A tenant agent has no voice binding to derive its
  *   Locale from, so a tenant subject without a Locale fails by name instead of
  *   borrowing English (or the featured voice's).
@@ -123,19 +125,21 @@ export type CascadeVoiceBinding = {
 };
 
 /**
- * Catalogue voices with no binding: the vendor does not serve them, so no
- * request can be bound to one Locale. `juergen` returns `422 voice_not_found`
- * from the synthesis endpoint; German therefore stays **open** — kept visible,
- * never dropped and never re-cast to another Locale (ticket 130).
+ * Voices with no binding, kept visible so they can never become a silent
+ * fallback. `juergen` is the pre-re-cast German id: the vendor returned `422
+ * voice_not_found`, German is now bound to `jorg` (ticket 130), and the old id
+ * is marked `historical` — no longer offered, still refused by name.
  */
-export const UNBOUND_VOICES: Readonly<Record<string, { readonly locale: string; readonly reason: string }>> =
-  Object.freeze({
-    juergen: Object.freeze({
-      locale: "de",
-      reason:
-        "vendor /v1/speech returned 422 voice_not_found; German stays open until the re-cast (ticket 130)",
-    }),
-  });
+export const UNBOUND_VOICES: Readonly<
+  Record<string, { readonly locale: string; readonly reason: string; readonly historical: boolean }>
+> = Object.freeze({
+  juergen: Object.freeze({
+    locale: "de",
+    reason:
+      "vendor /v1/speech returned 422 voice_not_found; historical id, replaced by jorg (ticket 130)",
+    historical: true,
+  }),
+});
 
 /** A voice that cannot be a cascade subject; the refusal names it. */
 export class VoiceBindingError extends Error {
@@ -160,7 +164,7 @@ export class UnknownVoiceError extends VoiceBindingError {
   }
 }
 
-/** The voice is in the catalogue but carries no binding (e.g. German). */
+/** The voice carries no binding, and the refusal names its Locale and reason. */
 export class UnboundVoiceError extends VoiceBindingError {
   constructor(voiceId: string, locale: string, reason: string) {
     super(
@@ -178,10 +182,13 @@ export class UnboundVoiceError extends VoiceBindingError {
  * Locale stays open rather than being measured through another voice.
  */
 export function bindCascadeVoice(voiceId: string): CascadeVoiceBinding {
-  const known = getVoice(voiceId);
-  if (!known) throw new UnknownVoiceError(voiceId);
+  // The unbound row is checked before the catalogue: a historical id is no
+  // longer offered, and naming it must still refuse by name with its Locale
+  // and 422 reason rather than read as an unknown typo.
   const unbound = UNBOUND_VOICES[voiceId];
   if (unbound !== undefined) throw new UnboundVoiceError(voiceId, unbound.locale, unbound.reason);
+  const known = getVoice(voiceId);
+  if (!known) throw new UnknownVoiceError(voiceId);
   return { voiceId, locale: known.languageCode, language: known.language };
 }
 

@@ -146,14 +146,14 @@ test("a fresh take of the committed clip regenerates within the named tolerances
 test("a take that speaks another Locale fails", (t) => {
   if (!requireEncoder(t)) return;
   withTemp((dir) => {
-    const german = auditionClipFor("juergen");
+    const german = auditionClipFor("jorg");
     const take = readAuditionTake(fileURLToPath(TAKE));
     // The defect the old hand captures recorded: a German voice's clip that
     // greets in English. The bytes are a real render; the identity says "en".
     const record = regenerated(
       {
         ...take,
-        evidence: { ...take.evidence, voice: "juergen", locale: "en", line: VONI_GREETINGS.en },
+        evidence: { ...take.evidence, voice: "jorg", locale: "en", line: VONI_GREETINGS.en },
       },
       german,
       dir,
@@ -161,7 +161,7 @@ test("a take that speaks another Locale fails", (t) => {
     );
     const problems = regenerationProblems(
       german,
-      committedClipFor(manifest(), "juergen", { assetExists }),
+      committedClipFor(manifest(), "jorg", { assetExists }),
       record,
     );
     assert.ok(

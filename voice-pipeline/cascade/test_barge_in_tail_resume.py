@@ -231,7 +231,7 @@ class NewFlushIdTest(unittest.TestCase):
         self.assertFalse(factory.socket.closed)
         self.assertEqual("anna", tts.binding.voice_id)
         self.assertEqual("English", tts.binding.language)
-        self.assertIn("voice_id=anna", factory.connections[0]["url"])
+        self.assertIn("voice_id=aai-anna", factory.connections[0]["url"])
         self.assertIn("language=English", factory.connections[0]["url"])
         self.assertEqual(
             [

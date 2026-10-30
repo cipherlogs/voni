@@ -332,9 +332,10 @@ def _first_content_row(
 def _term_from_first_content(
     row: first_token.FirstContentTerm,
 ) -> Term:
+    source = f"; value from {row.effort.source}" if row.effort.source else ""
     detail = row.unmeasured_reason or (
         f"reasoning_effort={row.effort.label}"
-        f" ({row.effort.reasoning_effort or 'vendor default'}), "
+        f" ({row.effort.reasoning_effort or 'vendor default'}){source}, "
         f"{row.reasoning_deltas} reasoning delta(s) excluded"
     )
     return Term(

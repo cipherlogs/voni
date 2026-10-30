@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "generatedOn": "2026-10-29",
+  "generatedOn": "2026-10-30",
   "command": "cd voni && npm run voice:clips",
-  "source": "silent-greeting Voice Agent session (output.voice only: no output.volume, no gain, no limiter), the same payload the agent speaks through",
+  "source": "silent-greeting Voice Agent session (output.voice only: no output.volume, no gain, no limiter), the same payload the agent speaks through; for a voice the Voice Agent API does not serve, that voice's committed cascade clip supplies the native audio",
   "bitrateKbps": 160,
   "minSurvivingBitrateKbps": 128,
   "secondEncodeKbps": 128,
@@ -360,31 +360,32 @@
       "generatedOn": "2026-10-29"
     },
     {
-      "voice": "juergen",
+      "voice": "jorg",
       "locale": "de",
       "line": "Hallo, hier ist Voni! Probieren wir etwas Cooles: Ich zeige Ihnen, was ich kann, während wir reden. Bereit?",
       "lineSha256": "13c495456ca28f42280a6106a89b48bdfae29906b4c332bc12d5ba66184162a4",
-      "asset": "public/voices/juergen.mp3",
-      "url": "/voices/juergen.mp3",
+      "asset": "public/voices/jorg.mp3",
+      "url": "/voices/jorg.mp3",
       "volume": 100,
       "facts": {
         "sampleRate": 24000,
         "channels": 1,
         "bitrateKbps": 160,
-        "frames": 277,
-        "durationMs": 6648
+        "frames": 342,
+        "durationMs": 8208
       },
       "level": {
-        "sourceIntegratedLufs": -29.44,
-        "assetIntegratedLufs": -29.93,
-        "assetTruePeakDbtp": -12.64,
-        "assetCrestDb": 17,
-        "secondEncodeLufs": -30.36,
-        "secondEncodeTruePeakDbtp": -13.08,
-        "secondEncodeCrestDb": 17.04,
-        "referenceIntegratedLufs": null
+        "sourceIntegratedLufs": -25.93,
+        "assetIntegratedLufs": -26.45,
+        "assetTruePeakDbtp": -5.63,
+        "assetCrestDb": 20.64,
+        "secondEncodeLufs": -26.81,
+        "secondEncodeTruePeakDbtp": -6.08,
+        "secondEncodeCrestDb": 20.67,
+        "referenceIntegratedLufs": -24.93
       },
-      "generatedOn": "2026-10-29"
+      "generatedOn": "2026-10-30",
+      "source": "cascade-clip"
     },
     {
       "voice": "rafael",

@@ -1,0 +1,87 @@
+{
+  "schemaVersion": 1,
+  "generatedOn": "2026-10-30",
+  "command": "cd voice-pipeline && python scripts/render_clips.py",
+  "source": "direct synthesis through the call's own AssemblyAIStreamingTTS and voice binding (cascade.reference_render), native level: no output.volume, gain, limiter or normalisation",
+  "endpoint": {
+    "url": "wss://tts.us.assemblyai.com/v1/ws",
+    "model": "assemblyai-tts-1"
+  },
+  "format": {
+    "transport": "browser",
+    "container": "wav",
+    "sampleRate": 24000,
+    "encoding": "pcm_s16le",
+    "channels": 1,
+    "bitsPerSample": 16,
+    "model": "assemblyai-tts-1"
+  },
+  "previewBase": "/voices/cascade",
+  "gainStage": "none",
+  "clips": [
+    {
+      "voice": "jorg",
+      "locale": "de",
+      "language": "German",
+      "line": "Hallo, hier ist Voni! Probieren wir etwas Cooles: Ich zeige Ihnen, was ich kann, w\u00e4hrend wir reden. Bereit?",
+      "lineSha256": "13c495456ca28f42280a6106a89b48bdfae29906b4c332bc12d5ba66184162a4",
+      "asset": "voni/public/voices/cascade/jorg.wav",
+      "preview": "/voices/cascade/jorg.wav",
+      "sha256": "4a80ac4e191f4213ed4f2c49d8e003d0f4a29540cb420856e4d018a6fab99330",
+      "bytes": 391680,
+      "durationMs": 8160,
+      "format": {
+        "transport": "browser",
+        "container": "wav",
+        "sampleRate": 24000,
+        "encoding": "pcm_s16le",
+        "channels": 1,
+        "bitsPerSample": 16,
+        "model": "assemblyai-tts-1"
+      },
+      "endpoint": {
+        "url": "wss://tts.us.assemblyai.com/v1/ws",
+        "model": "assemblyai-tts-1"
+      },
+      "level": {
+        "samplePeakDbfs": -5.242723,
+        "rmsDbfs": -25.853913
+      },
+      "gainStage": "none",
+      "generatedOn": "2026-10-30"
+    }
+  ],
+  "open": [],
+  "blockers": [
+    {
+      "voice": "anna",
+      "locale": "en",
+      "reason": "not rendered in this run: run the full clips command",
+      "command": "cd voice-pipeline && python scripts/render_clips.py --voice anna"
+    },
+    {
+      "voice": "lola",
+      "locale": "es",
+      "reason": "not rendered in this run: run the full clips command",
+      "command": "cd voice-pipeline && python scripts/render_clips.py --voice lola"
+    },
+    {
+      "voice": "estelle",
+      "locale": "fr",
+      "reason": "not rendered in this run: run the full clips command",
+      "command": "cd voice-pipeline && python scripts/render_clips.py --voice estelle"
+    },
+    {
+      "voice": "giovanni",
+      "locale": "it",
+      "reason": "not rendered in this run: run the full clips command",
+      "command": "cd voice-pipeline && python scripts/render_clips.py --voice giovanni"
+    },
+    {
+      "voice": "rafael",
+      "locale": "pt",
+      "reason": "not rendered in this run: run the full clips command",
+      "command": "cd voice-pipeline && python scripts/render_clips.py --voice rafael"
+    }
+  ]
+}

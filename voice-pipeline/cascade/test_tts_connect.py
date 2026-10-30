@@ -24,7 +24,7 @@ from cascade.assemblyai_tts import (
     UnknownTransportError,
 )
 from cascade.testing.socket_factory import Frame, ScriptedSocketFactory
-from cascade.voice_binding import UnknownVoiceError
+from cascade.voice_binding import UnknownVoiceError, vendor_voice_id
 from config import TRANSPORTS
 
 API_KEY = "test-key"
@@ -48,7 +48,7 @@ def begin(
                 "language": language,
                 "sample_rate": sample_rate,
                 "encoding": encoding,
-                "voice_id": voice_id,
+                "voice_id": vendor_voice_id(voice_id),
                 "model": model,
                 "word_boundaries": True,
                 "limits": {"max_generate_text_length": 2000},
@@ -85,7 +85,7 @@ class BrowserTransportTests(unittest.TestCase):
         self.assertEqual(
             query(url),
             {
-                "voice_id": ["anna"],
+                "voice_id": ["aai-anna"],
                 "language": ["English"],
                 "sample_rate": ["24000"],
                 "encoding": ["pcm_s16le"],
@@ -206,7 +206,7 @@ class OneSocketPerCallTests(unittest.TestCase):
         connect(tts, factory)
 
         self.assertEqual(tts.begin["type"], "Begin")
-        self.assertEqual(tts.begin["configuration"]["voice_id"], "anna")
+        self.assertEqual(tts.begin["configuration"]["voice_id"], "aai-anna")
         self.assertEqual(tts.begin["expires_at"], 1789556741)
 
     def test_a_session_whose_first_frame_is_not_begin_fails_by_name(self):

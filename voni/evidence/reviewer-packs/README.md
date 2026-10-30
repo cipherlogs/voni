@@ -23,7 +23,10 @@ npm run voice:packs -- --verdict ballot.json --voice lola
 
 - **One shared recording.** `public/voices/<voice>.mp3`, the picker's preview
   at native level, identified by `sha256`. Every ballot for a Locale judges the
-  same bytes, so two reviews are comparable.
+  same bytes, so two reviews are comparable. The sheet also names how the
+  native audio was made: `cascade-clip` means the managed Voice Agent API does
+  not serve the voice, so the committed cascade clip supplied it and the
+  managed audition path is a visible gap, not a verdict.
 - **The ballot.** Timbre, accent and language naturalness, each `1–5`, five is
   the bar. Language naturalness is the third axis from ticket 75; the weighted
   result and the report wiring belong to that ticket.

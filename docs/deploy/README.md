@@ -88,6 +88,30 @@ Two machines per app, physically one region (`iad`) to start.
   image builds from the repository root (the context is set in
   `.dockerignore`), runs as a non-root user and holds one uvicorn worker.
 
+## Shared state: the routing switch
+
+The routing switch is shared state too (ticket 24). Read it before flipping, and
+flip it with the operator CLI: this is the **runtime rollback**, not a deploy.
+
+```sh
+cd voice-pipeline
+# 1. Read first: mode, recordVersion, decidedAt and every past change.
+../telephony-bot/.venv/bin/python scripts/routing_switch.py show \
+  --database-url "$DATABASE_URL"
+# 2. Then flip future calls. Empty operator/reason, no-ops and lost
+#    compare-and-set writes are refused by name; the DSN is never printed.
+../telephony-bot/.venv/bin/python scripts/routing_switch.py set --mode off \
+  --operator ops@voni --reason "rollback rehearsal" \
+  --database-url "$DATABASE_URL"
+```
+
+A missing switch reads as `off` (fail-safe), not an error; an unreadable or
+corrupt switch is a named failure. A flip governs new calls only: a live call
+keeps the decision it was admitted with and finishes. The audit trail records
+who, when, from, to and why, which is the dated record tickets 153, 155 and 161
+cite. The store is exactly one of `--sqlite`/`CASCADE_STORE_PATH` or
+`--database-url`/`DATABASE_URL`; there is no hidden default.
+
 ## Protocol version
 
 The app and the service speak exactly one protocol version: `PROTOCOL_VERSION`

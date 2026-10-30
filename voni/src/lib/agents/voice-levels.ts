@@ -24,10 +24,10 @@
  *     exists) and is never attenuated for "matching" another voice: the old
  *     cross-voice gain table was the defect this ticket removes.
  *
- * The measurement is recorded in `evidence/voice-levels/levels.json` with the
- * date, method, requestable command (`npm run voice:levels`) and every take,
- * so the number on the body can be audited without re-running anything. A
- * recapture is a new evidence record, never a silent retune.
+ * The measurement is recorded in `evidence/voice-levels/levels.json` with each
+ * voice's own date, the method, requestable command (`npm run voice:levels`)
+ * and every take, so the number on the body can be audited without re-running
+ * anything. A recapture is a new evidence record, never a silent retune.
  *
  * ── The measured run (2026-10-29) ─────────────────────────────────────────
  * Three vendor renders per voice of that voice's own greeting, measured with
@@ -41,11 +41,13 @@
  * decision is `volume = 100` for every measured voice: unity is the measured
  * decision, not a default that skipped the measurement.
  *
- * `juergen` is the exception the vendor's TTS endpoint does not serve
- * (`422 voice_not_found`), so it has no measured reference. Its registry entry
- * is explicit and `measured: false`, not a silent 100: `voiceOutputVolume`
- * reads the named `UNMEASURED_VOICE_OUTPUT_VOLUME`, and the gate reports it
- * unmeasured — an unmeasured voice never passes on a default (ticket 21).
+ * `juergen` was the exception the vendor's TTS endpoint does not serve
+ * (`422 voice_not_found`); it has no measured reference, so it was a named
+ * `measured: false` row rather than a silent 100. German was re-cast to `jorg`
+ * (ticket 130), whose native reference is measured, so the registry now covers
+ * every offered voice and the retired id no longer has a level row. The
+ * unmeasured mechanism remains: a future voice the endpoint cannot serve is a
+ * visible row, never a default that skipped the measurement (ticket 21).
  */
 
 /**
@@ -60,6 +62,11 @@ export type VoiceLevelMeasurement = {
   voice: string;
   /** The voice's own Locale — a voice speaks exactly one. */
   locale: string;
+  /**
+   * The date this voice's own reference was measured. A later run for another
+   * voice never re-dates an untouched row; null when unmeasured.
+   */
+  measuredOn: string | null;
   /** Median gated integrated loudness across the takes, LUFS; null when unmeasured. */
   integratedLufs: number | null;
   /** Loudest true peak across the takes, dBTP; null when unmeasured. */
@@ -77,45 +84,40 @@ export type VoiceLevelMeasurement = {
 };
 
 /**
- * Measured 2026-10-29, produced by `npm run voice:levels`. Values are the
- * evidence file's, rounded to 2 decimals so the registry and the committed
- * record can be compared exactly; the test in `voices.test.ts` fails if either
- * side moves alone.
+ * Measured per row, produced by `npm run voice:levels`: every voice's own date
+ * travels with its measurements (2026-10-29 for the original run, German's
+ * `jorg` on 2026-10-30), so a one-voice recapture never re-dates the others.
+ * Values are the evidence file's, rounded to 2 decimals so the registry and the
+ * committed record can be compared exactly; the test in `voices.test.ts` fails
+ * if either side moves alone.
  */
 export const MEASURED_VOICE_LEVELS: readonly VoiceLevelMeasurement[] = Object.freeze([
-  { voice: "alba", locale: "en", integratedLufs: -21.78, truePeakDbtp: -5.93, volume: 100 },
-  { voice: "anna", locale: "en", integratedLufs: -20.11, truePeakDbtp: -4.05, volume: 100 },
-  { voice: "charles", locale: "en", integratedLufs: -20.64, truePeakDbtp: -1.88, volume: 100 },
-  { voice: "estelle", locale: "fr", integratedLufs: -25.34, truePeakDbtp: -9.62, volume: 100 },
-  { voice: "eve", locale: "en", integratedLufs: -22.24, truePeakDbtp: -2.65, volume: 100 },
-  { voice: "george", locale: "en", integratedLufs: -22.39, truePeakDbtp: -2.52, volume: 100 },
-  { voice: "giovanni", locale: "it", integratedLufs: -25.56, truePeakDbtp: -2.24, volume: 100 },
-  { voice: "jane", locale: "en", integratedLufs: -20.57, truePeakDbtp: -3.39, volume: 100 },
-  { voice: "jean", locale: "en", integratedLufs: -21.89, truePeakDbtp: -5.2, volume: 100 },
-  { voice: "lola", locale: "es", integratedLufs: -23.75, truePeakDbtp: -6.58, volume: 100 },
-  { voice: "mary", locale: "en", integratedLufs: -21.03, truePeakDbtp: -3.19, volume: 100 },
-  { voice: "michael", locale: "en", integratedLufs: -22.63, truePeakDbtp: -2.77, volume: 100 },
-  { voice: "paul", locale: "en", integratedLufs: -22.04, truePeakDbtp: -1.48, volume: 100 },
-  { voice: "rafael", locale: "pt", integratedLufs: -26.41, truePeakDbtp: -6.58, volume: 100 },
-  { voice: "vera", locale: "en", integratedLufs: -21.21, truePeakDbtp: -3.85, volume: 100 },
+  { voice: "alba", locale: "en", measuredOn: "2026-10-29", integratedLufs: -21.78, truePeakDbtp: -5.93, volume: 100 },
+  { voice: "anna", locale: "en", measuredOn: "2026-10-29", integratedLufs: -20.11, truePeakDbtp: -4.05, volume: 100 },
+  { voice: "charles", locale: "en", measuredOn: "2026-10-29", integratedLufs: -20.64, truePeakDbtp: -1.88, volume: 100 },
+  { voice: "estelle", locale: "fr", measuredOn: "2026-10-29", integratedLufs: -25.34, truePeakDbtp: -9.62, volume: 100 },
+  { voice: "eve", locale: "en", measuredOn: "2026-10-29", integratedLufs: -22.24, truePeakDbtp: -2.65, volume: 100 },
+  { voice: "george", locale: "en", measuredOn: "2026-10-29", integratedLufs: -22.39, truePeakDbtp: -2.52, volume: 100 },
+  { voice: "giovanni", locale: "it", measuredOn: "2026-10-29", integratedLufs: -25.56, truePeakDbtp: -2.24, volume: 100 },
+  { voice: "jane", locale: "en", measuredOn: "2026-10-29", integratedLufs: -20.57, truePeakDbtp: -3.39, volume: 100 },
+  { voice: "jean", locale: "en", measuredOn: "2026-10-29", integratedLufs: -21.89, truePeakDbtp: -5.2, volume: 100 },
+  { voice: "jorg", locale: "de", measuredOn: "2026-10-30", integratedLufs: -24.93, truePeakDbtp: -5.96, volume: 100 },
+  { voice: "lola", locale: "es", measuredOn: "2026-10-29", integratedLufs: -23.75, truePeakDbtp: -6.58, volume: 100 },
+  { voice: "mary", locale: "en", measuredOn: "2026-10-29", integratedLufs: -21.03, truePeakDbtp: -3.19, volume: 100 },
+  { voice: "michael", locale: "en", measuredOn: "2026-10-29", integratedLufs: -22.63, truePeakDbtp: -2.77, volume: 100 },
+  { voice: "paul", locale: "en", measuredOn: "2026-10-29", integratedLufs: -22.04, truePeakDbtp: -1.48, volume: 100 },
+  { voice: "rafael", locale: "pt", measuredOn: "2026-10-29", integratedLufs: -26.41, truePeakDbtp: -6.58, volume: 100 },
+  { voice: "vera", locale: "en", measuredOn: "2026-10-29", integratedLufs: -21.21, truePeakDbtp: -3.85, volume: 100 },
 ].map((row) => Object.freeze({ ...row, measured: true as const, unmeasuredReason: null })));
 
 /**
  * The voices with no measured reference, recorded as first-class rows so the
  * registry and every report say "unmeasured" instead of showing a bare 100.
+ * Empty today: every offered voice, German's `jorg` included, is measured.
  */
-export const UNMEASURED_VOICE_LEVELS: readonly VoiceLevelMeasurement[] = Object.freeze([
-  {
-    voice: "juergen",
-    locale: "de",
-    integratedLufs: null,
-    truePeakDbtp: null,
-    volume: UNMEASURED_VOICE_OUTPUT_VOLUME,
-    measured: false,
-    unmeasuredReason:
-      "vendor /v1/speech did not serve a measurable reference: 422 voice_not_found",
-  },
-].map((row) => Object.freeze(row)));
+export const UNMEASURED_VOICE_LEVELS: readonly VoiceLevelMeasurement[] = Object.freeze<
+  VoiceLevelMeasurement[]
+>([]);
 
 /** Every offered voice's level decision: measured rows first, then the named gaps. */
 export const VOICE_LEVEL_REGISTRY: readonly VoiceLevelMeasurement[] = Object.freeze([
@@ -133,11 +135,24 @@ export function voiceLevelMeasurement(voiceId: string): VoiceLevelMeasurement | 
 }
 
 /**
+ * The `output.volume` a measurement row supports. A measured row's own decision
+ * is honored; an unmeasured row (or no row at all) keeps the named native
+ * default, even if the row somehow carries another number — the row's number is
+ * never evidence when the voice has no measurement.
+ */
+export function voiceOutputVolumeForMeasurement(
+  measurement: VoiceLevelMeasurement | null,
+): number {
+  if (!measurement || !measurement.measured) return UNMEASURED_VOICE_OUTPUT_VOLUME;
+  return measurement.volume;
+}
+
+/**
  * The `output.volume` a stored body carries for this voice. An unmeasured or
  * unknown voice keeps the named native default; it is never given an invented
  * level. `voiceLevelMeasurement(voiceId)?.measured === false` is the visible
  * status that says the number is a default, not a measurement.
  */
 export function voiceOutputVolume(voiceId: string): number {
-  return voiceLevelMeasurement(voiceId)?.volume ?? UNMEASURED_VOICE_OUTPUT_VOLUME;
+  return voiceOutputVolumeForMeasurement(voiceLevelMeasurement(voiceId));
 }

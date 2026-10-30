@@ -1,20 +1,21 @@
 {
   "schemaVersion": 1,
-  "voice": "juergen",
+  "voice": "jorg",
   "locale": "de",
   "recording": {
-    "voice": "juergen",
+    "voice": "jorg",
     "locale": "de",
-    "asset": "public/voices/juergen.mp3",
-    "url": "/voices/juergen.mp3",
-    "sha256": "763d97ffe04cfeb5003eb4c68bf987f79312871e21f1ffdd4463584efab22993",
+    "asset": "public/voices/jorg.mp3",
+    "url": "/voices/jorg.mp3",
+    "sha256": "b1b3df35426bf7540cc472d9d61b894a2e621481259bb2110d6439ebc763406f",
     "line": "Hallo, hier ist Voni! Probieren wir etwas Cooles: Ich zeige Ihnen, was ich kann, während wir reden. Bereit?",
     "lineSha256": "13c495456ca28f42280a6106a89b48bdfae29906b4c332bc12d5ba66184162a4",
-    "durationMs": 6648,
+    "durationMs": 8208,
     "sampleRate": 24000,
     "channels": 1,
     "bitrateKbps": 160,
-    "source": "audition-clip"
+    "source": "audition-clip",
+    "nativeSource": "cascade-clip"
   },
   "ballot": {
     "axes": [
@@ -30,6 +31,6 @@
     "reasonRequiredBelow": 5
   },
   "verdict": null,
-  "generatedOn": "2026-10-29",
+  "generatedOn": "2026-10-30",
   "source": "evidence/audition-clips/clips.json"
 }

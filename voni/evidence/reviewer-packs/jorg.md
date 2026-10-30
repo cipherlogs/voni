@@ -1,4 +1,4 @@
-# Parity proof — reviewer pack: juergen (de)
+# Parity proof — reviewer pack: jorg (de)
 
 Status: **pending — not complete**: the reviewer and the date are still blank. A pack is never a pass without a named native reviewer and the date they judged.
 
@@ -6,12 +6,12 @@ Status: **pending — not complete**: the reviewer and the date are still blank.
 
 Every ballot for this Locale judges these exact bytes, so two independent reviews are comparable.
 
-- Voice: juergen (de)
-- Play: `/voices/juergen.mp3` (committed as `public/voices/juergen.mp3`)
-- sha256: `763d97ffe04cfeb5003eb4c68bf987f79312871e21f1ffdd4463584efab22993`
+- Voice: jorg (de)
+- Play: `/voices/jorg.mp3` (committed as `public/voices/jorg.mp3`)
+- sha256: `b1b3df35426bf7540cc472d9d61b894a2e621481259bb2110d6439ebc763406f`
 - Line: “Hallo, hier ist Voni! Probieren wir etwas Cooles: Ich zeige Ihnen, was ich kann, während wir reden. Bereit?”
-- Format: 6648 ms, 24000 Hz, mono, 160 kbps
-- Provenance: audition-clip (the picker's preview, at native level)
+- Format: 8208 ms, 24000 Hz, mono, 160 kbps
+- Provenance: audition-clip (`cascade-clip`), encoded from the committed cascade clip — the managed Voice Agent API did not serve jorg, so the managed audition path is a named gap, not an audition verdict.
 
 ## The ballot
 
@@ -32,5 +32,5 @@ Both fields are required. A pack without them is pending, not a pass.
 Reviewer (named native reviewer):
 Date:
 
-File the verdict in `evidence/reviewer-packs/juergen.json` (the `verdict` object), then run `cd voni && npm run voice:packs -- --check`.
+File the verdict in `evidence/reviewer-packs/jorg.json` (the `verdict` object), then run `cd voni && npm run voice:packs -- --check`.
 

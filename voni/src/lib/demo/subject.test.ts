@@ -505,9 +505,10 @@ test("score-demo fails by name before writing an artifact for a bad subject", ()
 
 // ── No voice without a binding (ticket 131, W1) ─────────────────────────────
 
-test("a voice that cannot be bound to one Locale is not a cascade subject", () => {
+test("the historical German id cannot be bound, and the product voice can", () => {
   assert.equal(isCascadeSubjectVoice("lola"), true);
-  assert.equal(isCascadeSubjectVoice("juergen"), false, "German has no serving binding today");
+  assert.equal(isCascadeSubjectVoice("jorg"), true, "German is bound to the chosen voice");
+  assert.equal(isCascadeSubjectVoice("juergen"), false, "the old id is not a cascade subject");
   assert.equal(isCascadeSubjectVoice("not-a-voice"), false);
 
   assert.throws(
@@ -517,7 +518,7 @@ test("a voice that cannot be bound to one Locale is not a cascade subject", () =
       error.voiceId === "juergen" &&
       error.locale === "de" &&
       /voice_not_found/.test(error.message) &&
-      /stays open/.test(error.message),
+      /replaced by jorg/.test(error.message),
     "the refusal names the voice, its Locale and why it is unbound",
   );
   assert.throws(
@@ -527,29 +528,28 @@ test("a voice that cannot be bound to one Locale is not a cascade subject", () =
       error.voiceId === "not-a-voice" &&
       /not in the voice binding table/.test(error.message),
   );
-  assert.deepEqual(bindCascadeVoice("lola"), {
-    voiceId: "lola",
-    locale: "es",
-    language: "Spanish",
+  assert.deepEqual(bindCascadeVoice("jorg"), {
+    voiceId: "jorg",
+    locale: "de",
+    language: "German",
   });
 
   assert.throws(
     () => resolveCascadeSubject({ voice: "juergen", explicit: true }),
     (error: unknown) =>
-      error instanceof UnboundVoiceError &&
-      error.voiceId === "juergen" &&
-      error.locale === "de",
-    "a run cannot measure a cascade subject it cannot bind",
+      error instanceof SubjectError &&
+      error.field === "agent" &&
+      /unknown gate voice "juergen"/.test(error.message),
+    "the old id is not a demo subject; a run cannot measure it",
   );
 });
 
-test("the German Locale stays open: not beta, not dropped, not cut over", () => {
+test("the German Locale is bound to jorg, not left open and not re-cast", () => {
   const german = localeSubjectStatus("de");
   assert.equal(german.locale, "de");
-  assert.equal(german.status, "open");
-  assert.deepEqual(german.voices, [], "no voice is silently substituted for German");
-  assert.match(german.openReason ?? "", /voice_not_found/);
-  assert.match(german.openReason ?? "", /stays open/);
+  assert.equal(german.status, "bound");
+  assert.deepEqual(german.voices, ["jorg"], "the product voice is the only German subject");
+  assert.equal(german.openReason, null);
 
   assert.deepEqual(
     LOCALE_SUBJECT_STATUSES,
@@ -557,14 +557,16 @@ test("the German Locale stays open: not beta, not dropped, not cut over", () => 
     "the vocabulary has no beta, dropped or cut-over state to hide behind",
   );
 
-  // The refusal is a routing fact, not a mutation: German is still listed after
-  // a run is refused, in the same state it was in before.
+  // The historical id is a routing fact, not a mutation: naming it is refused
+  // and German stays bound to the chosen voice.
   const before = cascadeSubjectList();
-  assert.throws(() => resolveCascadeSubject({ voice: "juergen" }), UnboundVoiceError);
+  assert.throws(() => resolveCascadeSubject({ voice: "juergen" }), SubjectError);
   assert.deepEqual(cascadeSubjectList(), before, "a refused voice never quietly drops its Locale");
 
-  // The managed subject axis still knows the voice: it is open work, not deleted.
-  assert.equal(resolveSubject({ voice: "juergen" }).locale, "de");
+  // The historical id is no longer a catalogue voice, so it cannot be offered
+  // as a managed subject either.
+  assert.equal(getVoice("juergen"), undefined);
+  assert.equal(getVoice("jorg")?.languageCode, "de");
 });
 
 test("the subject list names each Locale's status explicitly", () => {
@@ -588,25 +590,25 @@ test("the subject list names each Locale's status explicitly", () => {
     en: ["anna"],
     es: ["lola"],
     fr: ["estelle"],
+    de: ["jorg"],
     it: ["giovanni"],
     pt: ["rafael"],
   });
-  assert.equal(localeSubjectStatus("de").status, "open", "German is open, and says so");
+  assert.equal(localeSubjectStatus("de").status, "bound", "German is bound to jorg, and says so");
 });
 
-test("the unbound table mirrors the registry and the measured evidence", () => {
+test("the unbound table names historical ids, and every offered voice is measured", () => {
   for (const [voiceId, unbound] of Object.entries(UNBOUND_VOICES)) {
-    const voice = getVoice(voiceId);
-    assert.ok(voice, `${voiceId} stays in the registry so its Locale is visible`);
-    assert.equal(voice.languageCode, unbound.locale, `${voiceId}'s unbound Locale is its declared one`);
+    assert.equal(unbound.historical, true, `${voiceId} is a historical row, not an offered voice`);
+    assert.equal(getVoice(voiceId), undefined, `${voiceId} is no longer in the catalogue`);
+    assert.equal(unbound.locale, "de", `${voiceId} keeps its Locale recorded`);
+    assert.match(unbound.reason, /422 voice_not_found/);
   }
-  for (const row of UNMEASURED_VOICE_LEVELS) {
-    assert.ok(
-      UNBOUND_VOICES[row.voice],
-      `${row.voice} has no measured reference, so it cannot be bound`,
-    );
-    assert.match(row.unmeasuredReason ?? "", /voice_not_found/);
-  }
+  assert.deepEqual(
+    UNMEASURED_VOICE_LEVELS,
+    [],
+    "every offered voice, German included, has a measured native reference",
+  );
 });
 
 test("a cascade subject carries its pipeline axis, so the A/B cannot merge", () => {

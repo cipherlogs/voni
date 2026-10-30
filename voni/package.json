@@ -32,6 +32,7 @@
     "voice:compare": "node --import tsx scripts/compare-audio.mts",
     "voice:vendor-floor": "node --env-file-if-exists=.env.local --import tsx scripts/capture-vendor-floor.mts",
     "voice:levels": "node --env-file-if-exists=.env.local --import tsx scripts/measure-voice-levels.mts",
+    "voice:catalogue": "node --import tsx scripts/export-voice-catalogue.mts",
     "voice:clips": "node --env-file-if-exists=.env.local --import tsx scripts/render-audition-clips.mts",
     "voice:packs": "node --import tsx scripts/reviewer-pack.mts",
     "qa:voice-session": "node --env-file-if-exists=.env.local --import tsx scripts/qa-voice-session.mts",
@@ -49,7 +50,8 @@
     "scoreboard:kill": "node --env-file-if-exists=.env.local --import tsx scripts/score-kill.mts",
     "scoreboard:streak": "node --env-file-if-exists=.env.local --import tsx scripts/score-streak.mts",
     "typecheck": "next typegen && tsc --noEmit",
-    "scoreboard:inspect": "node --import tsx scripts/scoreboard-inspect.mts"
+    "scoreboard:inspect": "node --import tsx scripts/scoreboard-inspect.mts",
+    "readiness:pack": "node --import tsx scripts/readiness-pack.mts"
   },
   "dependencies": {
     "@ai-sdk/openai": "^4.0.60",

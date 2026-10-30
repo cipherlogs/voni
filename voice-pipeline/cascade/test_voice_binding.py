@@ -26,6 +26,7 @@ from cascade.voice_binding import (
     bind_voice,
     build_bindings,
     is_cascade_subject,
+    vendor_voice_id,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -33,7 +34,11 @@ VOICES_TS = REPO_ROOT / "voni/src/lib/agents/voices.ts"
 LEVELS_JSON = REPO_ROOT / "voni/evidence/voice-levels/levels.json"
 
 # The six demo subjects, in the catalogue's demo order.
-DEMO_VOICES = ("anna", "lola", "estelle", "juergen", "giovanni", "rafael")
+DEMO_VOICES = ("anna", "lola", "estelle", "jorg", "giovanni", "rafael")
+
+# The German voice the catalogue and demo used before the re-cast (ticket 130).
+# It stays a named unbound row so it can never become a silent fallback.
+HISTORICAL_GERMAN = "juergen"
 
 
 def _catalogue() -> dict[str, tuple[str, str]]:
@@ -60,6 +65,7 @@ class DemoSubjectTests(unittest.TestCase):
             "anna": Locale("en", "English"),
             "lola": Locale("es", "Spanish"),
             "estelle": Locale("fr", "French"),
+            "jorg": Locale("de", "German"),
             "giovanni": Locale("it", "Italian"),
             "rafael": Locale("pt", "Portuguese"),
         }
@@ -70,25 +76,27 @@ class DemoSubjectTests(unittest.TestCase):
                 self.assertEqual(binding.language, locale.language)
 
         self.assertNotIn(
-            "juergen",
+            HISTORICAL_GERMAN,
             BINDINGS,
-            "German is unbound: juergen returns 422 voice_not_found (ticket 130)",
+            "the old German id stays unbound: it returns 422 voice_not_found (ticket 130)",
         )
-        self.assertIn("juergen", UNBOUND_VOICES)
+        self.assertIn(HISTORICAL_GERMAN, UNBOUND_VOICES)
+        self.assertTrue(UNBOUND_VOICES[HISTORICAL_GERMAN].historical)
 
-    def test_german_is_unbound_by_name_not_absent(self):
+    def test_the_historical_german_voice_is_unbound_by_name_not_absent(self):
         with self.assertRaises(UnboundVoiceError) as caught:
-            bind_voice("juergen")
+            bind_voice(HISTORICAL_GERMAN)
         message = str(caught.exception)
-        self.assertIn('"juergen"', message)
+        self.assertIn(f'"{HISTORICAL_GERMAN}"', message)
         self.assertIn("422", message)
-        self.assertFalse(is_cascade_subject("juergen"))
+        self.assertIn("jorg", message)
+        self.assertFalse(is_cascade_subject(HISTORICAL_GERMAN))
 
-    def test_the_six_subjects_name_five_cascade_subjects(self):
+    def test_the_six_subjects_name_six_cascade_subjects(self):
         subjects = [voice for voice in DEMO_VOICES if is_cascade_subject(voice)]
         self.assertEqual(
             subjects,
-            ["anna", "lola", "estelle", "giovanni", "rafael"],
+            ["anna", "lola", "estelle", "jorg", "giovanni", "rafael"],
         )
 
 
@@ -135,6 +143,14 @@ class ConflictTests(unittest.TestCase):
         self.assertEqual(sorted(table), ["estelle", "lola"])
 
 
+class VendorIdTests(unittest.TestCase):
+    def test_the_vendor_id_is_the_catalogue_id_prefixed_once(self):
+        self.assertEqual(bind_voice("jorg").vendor_voice_id, "aai-jorg")
+        self.assertEqual(bind_voice("anna").vendor_voice_id, "aai-anna")
+        self.assertEqual(vendor_voice_id("aai-jorg"), "aai-jorg")
+        self.assertEqual(bind_voice("jorg").voice_id, "jorg", "the catalogue id stays bare")
+
+
 class LanguageOverrideTests(unittest.TestCase):
     def test_a_request_language_cannot_override_the_binding(self):
         with self.assertRaises(LanguageOverrideError) as caught:
@@ -151,7 +167,7 @@ class LanguageOverrideTests(unittest.TestCase):
 
     def test_an_unbound_voice_is_refused_before_its_request_language_is_read(self):
         with self.assertRaises(UnboundVoiceError):
-            bind_voice("juergen", requested_language="German")
+            bind_voice(HISTORICAL_GERMAN, requested_language="German")
 
 
 class LocaleTests(unittest.TestCase):
@@ -169,13 +185,26 @@ class CatalogueDriftTests(unittest.TestCase):
             voice_id: (binding.language, binding.locale.code)
             for voice_id, binding in BINDINGS.items()
         }
-        unbound = set(UNBOUND_VOICES)
+        historical = {
+            voice_id for voice_id, row in UNBOUND_VOICES.items() if row.historical
+        }
+        serving_unbound = set(UNBOUND_VOICES) - historical
         self.assertEqual(
-            sorted(set(catalogue) - set(bound) - unbound),
+            sorted(set(catalogue) - set(bound) - serving_unbound),
             [],
             "a serving catalogue voice has no binding",
         )
-        self.assertEqual(sorted(set(bound) | unbound), sorted(catalogue))
+        self.assertEqual(sorted(set(bound) | serving_unbound), sorted(catalogue))
+        self.assertEqual(
+            sorted(historical & set(catalogue)),
+            [],
+            "a historical unbound id is not a catalogue voice: it cannot be offered again",
+        )
+        for voice_id in historical:
+            with self.subTest(historical=voice_id):
+                self.assertNotIn(voice_id, BINDINGS)
+                self.assertTrue(UNBOUND_VOICES[voice_id].reason.strip())
+                self.assertIn("422", UNBOUND_VOICES[voice_id].reason)
 
         for voice_id, (language, code) in bound.items():
             with self.subTest(voice=voice_id):
@@ -183,15 +212,27 @@ class CatalogueDriftTests(unittest.TestCase):
 
     def test_bindings_match_the_measured_locale_evidence(self):
         measured = _measured_locales()
-        rows = {**BINDINGS, **UNBOUND_VOICES}
+        historical = {
+            voice_id for voice_id, row in UNBOUND_VOICES.items() if row.historical
+        }
+        rows = {
+            voice_id: row
+            for voice_id, row in {**BINDINGS, **UNBOUND_VOICES}.items()
+            if voice_id not in historical
+        }
         for voice_id, row in rows.items():
             with self.subTest(voice=voice_id):
                 self.assertIn(voice_id, measured)
                 self.assertEqual(row.locale.code, measured[voice_id])
         self.assertEqual(
-            UNBOUND_VOICES["juergen"].locale,
+            BINDINGS["jorg"].locale,
             Locale("de", "German"),
-            "German stays open with its Locale recorded, not silently dropped",
+            "German is bound to the chosen product voice jorg",
+        )
+        self.assertEqual(
+            UNBOUND_VOICES[HISTORICAL_GERMAN].locale,
+            Locale("de", "German"),
+            "the historical German id keeps its Locale recorded, not silently dropped",
         )
 
 

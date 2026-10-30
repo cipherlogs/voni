@@ -142,6 +142,12 @@ class PostgresStore:
         except Exception as exc:
             raise StoreUnavailable("store ping failed") from exc
 
+    async def close(self) -> None:
+        """Release the shared pool; safe when no connection was ever opened."""
+        pool, self._pool = self._pool, None
+        if pool is not None:
+            await pool.close()
+
     def __repr__(self) -> str:
         # Never the DSN: a database URL is a credential.
         return f"PostgresStore(table={self.table!r})"

@@ -93,6 +93,12 @@ export type CascadeReauditionRequest = {
   /** What part of the delivered capture is the line (the W0 marker). */
   line: TwoCaptureLine | null;
   ballots: readonly CascadeBallot[];
+  /**
+   * Readiness (ticket 152) assembles tenant subjects eligible under
+   * `routing=all` too. The W2 pack stays demo-only by default; a tenant has no
+   * demo voice binding to check, so the caller opts in explicitly.
+   */
+  allowTenantSubject?: boolean;
   /** Clock seam; tests pin the date. */
   now?: () => Date;
 };
@@ -217,7 +223,7 @@ export type CascadeReauditionRoster = {
   /** True only when every one of the six subjects has a complete pack. */
   ready: boolean;
   blockers: string[];
-  /** Locales with no bound cascade voice; German is open, never dropped. */
+  /** Locales with no bound cascade voice; empty while all six are bound. */
   openLocales: string[];
 };
 
@@ -479,14 +485,16 @@ export function assembleCascadeReauditionPack(
   const blockers: string[] = [];
   const subject = input.subject;
 
-  // The subject must be a cascade browser subject with a binding. German stays
-  // open: it is not a cascade subject, and it is never measured through another
-  // voice or dropped from the roster.
+  // The subject must be a cascade browser subject with a binding. German is
+  // bound to jorg and measured like every other voice; the retired id is
+  // refused by name and never measured through another voice.
   const demoVoice = subject.agent.kind === "demo" ? subject.agent.voice : null;
   try {
     const binding = demoVoice === null ? null : bindCascadeVoice(demoVoice);
     if (binding === null) {
-      blockers.push("subject is not a demo voice; the W2 pack is for a demo cascade subject");
+      if (!(input.allowTenantSubject === true && subject.agent.kind === "tenant")) {
+        blockers.push("subject is not a demo voice; the W2 pack is for a demo cascade subject");
+      }
     } else {
       if (binding.locale !== subject.locale) {
         blockers.push(
@@ -732,9 +740,10 @@ export function assembleCascadeReauditionPack(
 }
 
 /**
- * The six-subject roster. German is listed as open with the vendor's refusal,
- * never hidden and never replaced by a fabricated clip. A subject with no pack
- * is `missing`, not omitted; one failed subject keeps the roster from ready.
+ * The six-subject roster. German is the bound `jorg`, listed like every other
+ * subject, never hidden and never replaced by a fabricated clip. A subject with
+ * no pack is `missing`, not omitted; one failed subject keeps the roster from
+ * ready.
  */
 export function cascadeReauditionRoster(
   packs: readonly CascadeReauditionPack[],
