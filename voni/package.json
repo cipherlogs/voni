@@ -36,6 +36,7 @@
     "voice:packs": "node --import tsx scripts/reviewer-pack.mts",
     "qa:voice-session": "node --env-file-if-exists=.env.local --import tsx scripts/qa-voice-session.mts",
     "voice:reaudition": "node --env-file-if-exists=.env.local --import tsx scripts/reaudition.mts",
+    "voice:cascade-verdict": "node --env-file-if-exists=.env.local --import tsx scripts/cascade-verdict.mts",
     "operator:credential": "node --env-file-if-exists=.env.local --import tsx scripts/rotate-platform-credential.mts",
     "test:e2e:instant": "node scripts/e2e-run.mjs instant",
     "test:e2e:behavior": "node scripts/e2e-run.mjs behavior",

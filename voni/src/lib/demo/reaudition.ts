@@ -24,6 +24,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileS
 import { join, relative, resolve } from "node:path";
 
 import { CAPTURE_ROLES, type CaptureRole } from "../audio/comparison";
+import { replaceAdrSection } from "./adr-section";
 import { decodeAudioFile } from "../audio/format-facts";
 import {
   countEnglishLeak,
@@ -783,16 +784,8 @@ export function formatDecisionRecordSection(pack: ReauditionPack): string {
  * record `proposed` — the gate is not resolved by a mechanism.
  */
 export function applyReauditionToAdr(markdown: string, pack: ReauditionPack): string {
-  const markerAt = markdown.indexOf(REAUDITION_GATE_MARKER);
-  let withoutSection = markdown;
-  if (markerAt >= 0) {
-    const after = markdown.slice(markerAt + REAUDITION_GATE_MARKER.length);
-    const nextSection = after.search(/^## /m);
-    withoutSection = `${markdown.slice(0, markerAt)}${nextSection >= 0 ? after.slice(nextSection) : ""}`;
-  }
-
   const section = formatDecisionRecordSection(pack);
-  let next = `${withoutSection.trimEnd()}\n\n${section}`;
+  let next = replaceAdrSection(markdown, REAUDITION_GATE_MARKER, section);
   if (pack.verdict.decision === "accept") {
     next = next.replace("**Status: proposed.**", "**Status: accepted.**");
   } else if (pack.verdict.decision === "withdraw") {

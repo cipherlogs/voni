@@ -47,6 +47,13 @@ Record **accept / withdraw / unresolved**, with date and reasons, separate from
 the two ballots. Accept means the content did not hold up; withdraw means it
 did. An unresolved pack blocks the Locale and is not a pass.
 
+The recorder is `npm run voice:cascade-verdict` (`src/lib/demo/cascade-verdict.ts`).
+It hashes the `--capture` you name, so it must be the pack's delivered
+recording, and it refuses an unnamed reviewer, a missing reason and
+accept/withdraw on an incomplete pack or a missing ballot. `--adr` appends the
+`## W2 cascade re-audition (owner verdict)` section beside the managed W2
+section and leaves the document status alone.
+
 ## 152 — All-subject readiness pack
 
 **Needs:** live clean runs and two ballots per subject.

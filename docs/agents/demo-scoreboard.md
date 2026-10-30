@@ -172,6 +172,24 @@ locale-rendering decision record (ADR 0008); an unresolved pack leaves it
 `proposed`. `src/lib/demo/reaudition.test.ts` covers assembly, the verdict
 rules, named missing-capture errors and the pending path with synthetic WAVs.
 
+## Cascade owner verdict (W2, tickets 133–134)
+
+The cascade pack (`src/lib/demo/cascade-reaudition.ts`) collects the inputs and
+always stays `unresolved`; it never decides. The owner's statement is recorded
+separately:
+
+`npm run voice:cascade-verdict -- --pack reaudition-runs/lola-es-cascade/pack/pack.json --decision accept --reviewer "<name>" --capture .captures/delivered-<stamp>.wav --reason "<why>" --adr`
+
+The recorder (`src/lib/demo/cascade-verdict.ts`) hashes the named `--capture`
+and refuses a WAV that is not the pack's delivered recording, an unnamed human,
+a missing date or reason, and `accept`/`withdraw` on an incomplete pack or a
+missing ballot — by name. `accept` and `withdraw` keep ADR 0008's meanings and
+are derived, never supplied. `unresolved` is always recordable and blocks the
+Locale; it is not a pass. The section is written beside the managed
+`## Re-audition (W2 gate)` section and changes no ADR status.
+`src/lib/demo/cascade-verdict.test.ts` covers the meanings, the unnamed
+shortcuts, the incomplete-pack refusal and the ADR write.
+
 ## Live-run rules
 
 - Run live timing scenarios **one at a time**; `score-demo` takes
