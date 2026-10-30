@@ -156,6 +156,7 @@ test("inspect reads a cascade artifact through the one reader and prints the sam
         runId: "run-cascade-inspect",
       }),
       pipeline: "cascade",
+      bodySource: "cascade",
       subject: {
         agent: { kind: "demo", voice: "anna", agentId: null },
         locale: "en",
