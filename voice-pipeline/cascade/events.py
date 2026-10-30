@@ -118,6 +118,14 @@ BREAKER_EVENT_TYPE = "breaker.transition"
 #: :class:`OperationalEvents` below, through this writer and the one stream.
 BUDGET_CROSSING_EVENT_TYPE = "budget.crossing"
 BUDGET_STOPPED_EVENT_TYPE = "budget.stopped"
+#: The one priced row a completed session leaves in the call's artifact (ticket
+#: 18). A hold return resumes the same call id, so its row appends to the same
+#: file rather than creating a second record store.
+COST_PRICED_EVENT_TYPE = "cost.priced"
+
+#: The producer named on every cost row: the one pricing path, ``cost_call``.
+#: A reader can tell a measured price from anything else by this name.
+COST_PRODUCER = "cascade.cost.cost_call"
 DEPLOY_DRAIN_EVENT_TYPE = "deploy.drain"
 RECONNECT_EVENT_TYPE = "reconnect"
 PROTOCOL_ERROR_EVENT_TYPE = "protocol.error"
@@ -871,6 +879,57 @@ def _leg_field(value: Any, field: str = "leg") -> str:
     return value
 
 
+def _cost_legs(value: Any) -> dict[str, Any]:
+    """One cost summary's priced legs, validated, never a reinvented shape.
+
+    Each leg keeps the fields :meth:`cascade.call.CostSummary.to_document`
+    produced: the unit, the reported quantity, whether it was measured, the
+    source of the measurement and the priced amount. A leg claiming to be
+    measured without an amount is refused, because that is a zero in disguise.
+    """
+    if not isinstance(value, Mapping) or not value:
+        raise EventEnvelopeError(
+            "legs", f"a cost row must name the legs it priced, got {value!r}"
+        )
+    legs: dict[str, Any] = {}
+    for name, raw in value.items():
+        leg = _leg_field(name)
+        if not isinstance(raw, Mapping):
+            raise EventEnvelopeError(
+                "legs", f"leg {leg!r} must be an object, got {raw!r}"
+            )
+        measured = _bool_field("measured", raw.get("measured"))
+        quantity = raw.get("quantity")
+        if quantity is not None:
+            quantity = _number_field("quantity", quantity)
+        amount = raw.get("amountUsd")
+        if amount is not None:
+            amount = _number_field("amountUsd", amount)
+        if measured and amount is None:
+            raise EventEnvelopeError(
+                "amountUsd",
+                f"a measured {leg} leg must carry its priced amount; an "
+                "unmeasured leg must say so instead",
+            )
+        units = raw.get("units")
+        if not isinstance(units, Mapping):
+            raise EventEnvelopeError(
+                "units", f"leg {leg!r} must carry the units it was measured in"
+            )
+        legs[leg] = {
+            "unit": _text_field("unit", raw.get("unit")),
+            "quantity": quantity,
+            "measured": measured,
+            "source": _text_field("source", raw.get("source")),
+            "amountUsd": amount,
+            "units": {
+                _text_field("units", key): _number_field("units", entry)
+                for key, entry in units.items()
+            },
+        }
+    return legs
+
+
 class OperationalEvents:
     """One call's operational decisions, through the one envelope and stream.
 
@@ -1016,6 +1075,55 @@ class OperationalEvents:
             fields,
             turn=_require_turn(document.get("turn")),
             phase="drain",
+            at_ms=at_ms,
+        )
+
+    def cost_priced(
+        self, cost: Any, *, at_ms: float | int | None = None
+    ) -> dict[str, Any]:
+        """The completed session's priced row, or the reason it has no price.
+
+        A measured row cites the rate table and its version, the engine that
+        produced it (the envelope's ``pipeline``), and every leg's measured
+        unit and quantity. An unmeasured row keeps ``measured: false`` and
+        ``totalUsd: null`` with ``unmeasuredReason``: a call that cannot be
+        priced is visible here, never absent and never a zero.
+        """
+        document = _document_of(cost, "cost")
+        measured = _bool_field("measured", document.get("measured"))
+        version = document.get("rateTableVersion")
+        if version is not None:
+            version = _text_field("rateTableVersion", version)
+        if measured and version is None:
+            raise EventEnvelopeError(
+                "rateTableVersion",
+                "a measured cost row must cite the rate table that priced it",
+            )
+        total = document.get("totalUsd")
+        if measured:
+            total = _number_field("totalUsd", total)
+        elif total is not None:
+            raise EventEnvelopeError(
+                "totalUsd",
+                "an unmeasured cost row has no total; a zero would claim a "
+                "price the table never gave",
+            )
+        fields: dict[str, Any] = {
+            "producer": COST_PRODUCER,
+            "rateTableVersion": version,
+            "measured": measured,
+            "totalUsd": total,
+            "legs": _cost_legs(document.get("legs")),
+        }
+        if not measured:
+            fields["unmeasuredReason"] = _text_field(
+                "unmeasuredReason", document.get("unmeasuredReason")
+            )
+        return self._call(
+            COST_PRICED_EVENT_TYPE,
+            fields,
+            turn=None,
+            phase="end",
             at_ms=at_ms,
         )
 
