@@ -36,6 +36,7 @@ DRAIN_MAX_WAIT_MS = int(require_bound("deploy.drain_max_wait_ms"))
 TOPOLOGY_FILES = (
     topology.SERVICE_CONFIG,
     topology.APP_CONFIG,
+    topology.VERSIONS_RECORD,
     topology.COMPOSE_CONFIG,
     topology.DOCKERFILE,
     topology.DOCKERIGNORE,
@@ -44,6 +45,8 @@ TOPOLOGY_FILES = (
     topology.HOST_DECISION,
     topology.RUNTIME_REQUIREMENTS,
     topology.CI_REQUIREMENTS,
+    topology.TOKEN_MODULE,
+    topology.APP_PROTOCOL_CLIENT,
     "voice-pipeline/cascade/thresholds.json",
 )
 

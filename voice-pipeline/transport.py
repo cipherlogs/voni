@@ -47,6 +47,7 @@ from cascade.token import (
     StoredBodyChannel,
     parse_browser_config,
 )
+from cascade.version import build_version
 from config import PipelineConfig
 from orchestrator import TurnOrchestrator
 
@@ -420,6 +421,9 @@ async def handle_browser_call(
             # The service reports the protocol it speaks (M17): a half-deployed
             # pair is visible in the call record, not only in the logs.
             "protocolVersion": PROTOCOL_VERSION,
+            # And the build that served it (ticket 141): the app's call record
+            # can name both halves of the pair.
+            "buildVersion": build_version(),
         }
         if run_error is not None:
             end_message["error"] = run_error
