@@ -1,5 +1,9 @@
 # Cascade deployment record (M17)
 
+> **Superseded 2026-10-30:** the host is **Northflank Sandbox**. Setup lives in
+> [`deploy/northflank/README.md`](../../deploy/northflank/README.md). The
+> Fly.io material below is history and the Fly app is not deployed.
+
 The record for the container host and the two-instance topology. The host
 decision itself is in [`meta-cascade-host.md`](meta-cascade-host.md) (ticket
 04); this file records what the committed config implements and how to check

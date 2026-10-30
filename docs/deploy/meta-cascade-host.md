@@ -1,5 +1,13 @@
 # Container host decision (ticket 04)
 
+> **Superseded 2026-10-30 (owner): Northflank Sandbox.** The cascade service
+> deploys as one combined service from `voice-pipeline/Dockerfile` on
+> Northflank's free Sandbox: always-on, no card, WebSockets on its HTTP/2
+> public port, one Postgres addon for the durable store. The Fly.io decision
+> below is kept as history, not as the current host. Setup steps live in
+> [`deploy/northflank/README.md`](../../deploy/northflank/README.md).
+> Oracle Always Free is the named fallback if the Sandbox changes.
+
 **Decision (2026-10-30, owner):** deploy the cascade service and the app on
 **Fly.io**, two instances per service, rolling deploys. Physically one region
 to start (`iad`), with the browser and the service in the same region.
