@@ -114,10 +114,24 @@ export async function bumpRateBucket(
   return { ok: count <= limit, count };
 }
 
+/**
+ * The store and the setting reader, injectable so the mint's route test can
+ * exercise both ceilings without a database.
+ */
+export type LimitDeps = {
+  bump: (bucket: string, limit: number, windowSeconds: number) => Promise<{ ok: boolean; count: number }>;
+  envInt: (name: string, fallback: number) => Promise<number>;
+};
+
 /** Check both ceilings. Called once per demo token request. */
-export async function checkDemoLimits(headers: Headers): Promise<LimitDecision> {
-  const perIp = await envInt("DEMO_MAX_PER_IP_PER_HOUR", DEFAULTS.perIpPerHour);
-  const perDay = await envInt("DEMO_MAX_PER_DAY", DEFAULTS.perDayGlobal);
+export async function checkDemoLimits(
+  headers: Headers,
+  deps: Partial<LimitDeps> = {},
+): Promise<LimitDecision> {
+  const readEnvInt = deps.envInt ?? envInt;
+  const bump = deps.bump ?? bumpRateBucket;
+  const perIp = await readEnvInt("DEMO_MAX_PER_IP_PER_HOUR", DEFAULTS.perIpPerHour);
+  const perDay = await readEnvInt("DEMO_MAX_PER_DAY", DEFAULTS.perDayGlobal);
 
   // A zero limit is a deliberate kill switch for the public demo.
   if (perIp === 0 || perDay === 0) {
@@ -133,7 +147,7 @@ export async function checkDemoLimits(headers: Headers): Promise<LimitDecision> 
 
   // Global first: if the day's budget is gone, don't spend a write on the
   // per-IP bucket, and don't let one person's quota depend on ordering.
-  const global = await bumpRateBucket(`demo:global:${day}`, perDay, 24 * 3600);
+  const global = await bump(`demo:global:${day}`, perDay, 24 * 3600);
   if (!global.ok) {
     return {
       allowed: false,
@@ -143,7 +157,7 @@ export async function checkDemoLimits(headers: Headers): Promise<LimitDecision> 
   }
 
   const key = await ipKey(clientIp(headers));
-  const ip = await bumpRateBucket(`demo:ip:${key}:${hour}`, perIp, 3600);
+  const ip = await bump(`demo:ip:${key}:${hour}`, perIp, 3600);
   if (!ip.ok) {
     return {
       allowed: false,

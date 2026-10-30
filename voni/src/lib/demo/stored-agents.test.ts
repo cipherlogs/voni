@@ -418,13 +418,18 @@ test("provisioning plans the variant as its own row, leaving production untouche
   );
 });
 
-test("the visitor token route can only reach the variant by environment", () => {
-  const route = readFileSync(
-    new URL("../../app/api/demo/token/route.ts", import.meta.url),
-    "utf8",
-  );
-  assert.match(route, /getOrCreateDemoAgent\(voiceId, \{ resume \}\)/);
-  assert.doesNotMatch(route, /body\.variant|variant:\s*body/, "no request field selects the experiment");
+test("the visitor mint no longer provisions a stored agent or selects a variant", () => {
+  // demo-cascade ticket 09: the live path assembles the body locally
+  // (lib/demo/cascade-body.ts); it never refreshes a remote stored agent, so
+  // no request field can choose an agent or its experiment.
+  for (const path of [
+    "../../app/api/demo/token/route.ts",
+    "../../lib/demo/mint.ts",
+  ]) {
+    const source = readFileSync(new URL(path, import.meta.url), "utf8");
+    assert.doesNotMatch(source, /getOrCreateDemoAgent/, `no provisioning in ${path}`);
+    assert.doesNotMatch(source, /body\.variant|variant:\s*body/, `no request-selected variant in ${path}`);
+  }
 });
 
 test("the turn preset stays meaning-based on the intro and the resume agent", () => {
@@ -606,16 +611,16 @@ test("the LLM override comes from the gateway key, with the fast model by defaul
 });
 
 test("the browser never receives the write-only LLM key", () => {
-  // getOrCreateDemoAgent's result carries agentId/fingerprint/model, all safe
-  // to log; the route returns only the client fields, and the key exists
-  // nowhere but the agent body (write-only on the platform too).
-  const route = readFileSync(
-    new URL("../../app/api/demo/token/route.ts", import.meta.url),
+  // The app assembles the body and delivers it itself (demo-cascade ticket 09);
+  // the response is the browser identity only, and the key exists nowhere but
+  // the agent body (write-only on the platform too).
+  const mint = readFileSync(
+    new URL("../../lib/demo/mint.ts", import.meta.url),
     "utf8",
   );
-  assert.doesNotMatch(route, /api_key/, "the token response never names the key");
-  assert.doesNotMatch(route, /\bllm\b/, "the token route never forwards the override");
-  assert.match(route, /agentId: agent\.agentId/);
+  assert.doesNotMatch(mint, /api_key/, "the token response never names the key");
+  assert.doesNotMatch(mint, /\bllm\b/, "the token route never forwards the override");
+  assert.match(mint, /agentId: cascade\.agentId/);
 });
 
 test("ladder and time-up instructions describe hanging up without naming the tool", async () => {

@@ -5,7 +5,7 @@ import { TAG_TTL_S } from "./test-tag";
 
 /**
  * The call-scoped credential for a public demo call's server routes (tools,
- * judge). `/api/demo/token` mints one alongside each AssemblyAI token:
+ * judge). `/api/demo/token` mints one alongside each cascade call token:
  * `<callId>.<expSeconds>.<hmac>`. It names one call and expires just after
  * that call's wall cap (plus the socket-open window), so a token lifted from
  * the network tab cannot drive these routes beyond that one call's lifetime.
