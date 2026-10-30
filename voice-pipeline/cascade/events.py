@@ -57,9 +57,11 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from cascade.breaker import LEGS, STATES
@@ -874,6 +876,11 @@ class OperationalEvents:
         self.subject = _require_text("subject", subject)
         self._now = now
 
+    @property
+    def path(self) -> Path | None:
+        """The call's event artifact path, when the stream persists one."""
+        return getattr(self.stream, "path", None)
+
     # -- envelope helpers -------------------------------------------------
 
     def _moment(self, at_ms: float | int | None) -> float | int:
@@ -1193,6 +1200,33 @@ class OperationalEvents:
 
 
 # ---------------------------------------------------------------------------
+# The persisted per-call stream
+# ---------------------------------------------------------------------------
+
+
+class CallEventLog:
+    """One call's operational-event artifact: a single JSONL file.
+
+    The sink is the one write boundary: lines reaching it have already passed
+    :class:`EventStream`'s sanitizer, so the file carries no caller text and no
+    audio. Each call writes under a directory the deployment keeps out of git
+    (``voice-pipeline/.events/``); the file name is the call id reduced to a
+    filesystem-safe stem, so a call id can never escape the directory.
+    """
+
+    def __init__(self, directory: str | Path, *, call_id: str) -> None:
+        self.call_id = _require_text("callId", call_id)
+        safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", self.call_id).strip("._")
+        self.path = Path(directory) / f"{safe or 'call'}.jsonl"
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+
+    def __call__(self, line: str) -> None:
+        """Append one already-sanitized line; the file is the call's artifact."""
+        with self.path.open("a", encoding="utf-8") as handle:
+            handle.write(line if line.endswith("\n") else line + "\n")
+
+
+# ---------------------------------------------------------------------------
 # The cascade's one stream writer: sanitize every line before it is written
 # ---------------------------------------------------------------------------
 
@@ -1208,7 +1242,8 @@ class EventStream:
     write path: ``__call__`` is the only thing that touches the sink.
 
     ``emit_fallback(..., sink=stream)`` works because the stream is callable,
-    so a fallback line is sanitized like every other line.
+    so a fallback line is sanitized like every other line. When the sink is a
+    :class:`CallEventLog`, ``path`` names the artifact the end message cites.
     """
 
     def __init__(
@@ -1220,6 +1255,8 @@ class EventStream:
             raise TypeError(f"EventStream needs a write sink, got {sink!r}")
         self.writer = writer
         self._sink = sink
+        #: The artifact path, when the sink persists lines to one file.
+        self.path = getattr(sink, "path", None)
 
     def __call__(self, event: Mapping[str, Any]) -> dict[str, Any]:
         """Sanitize one finished line, then write it; a refusal writes nothing."""
