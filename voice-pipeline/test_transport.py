@@ -247,6 +247,7 @@ def signed_message(
     *,
     call_id: str = CALL_ID,
     agent_id: str = AGENT_ID,
+    kind: str | None = None,
 ) -> dict:
     served = BODY if body is None else body
     signed = sign_body(
@@ -256,6 +257,7 @@ def signed_message(
         secret=SECRET,
         call_id=call_id,
         agent_id=agent_id,
+        kind=kind,
         ttl_ms=60_000,
         clock=CLOCK,
     )
@@ -263,9 +265,19 @@ def signed_message(
     return json.loads(json.dumps(signed.message()))
 
 
-def delivered_channel(body=None, *, token: str = TOKEN) -> StoredBodyChannel:
+def delivered_channel(
+    body=None,
+    *,
+    token: str = TOKEN,
+    agent_id: str = AGENT_ID,
+    kind: str | None = None,
+) -> StoredBodyChannel:
     channel = StoredBodyChannel(secret=SECRET, clock=CLOCK)
-    channel.deliver(call_token=token, call_id=CALL_ID, message=signed_message(body))
+    channel.deliver(
+        call_token=token,
+        call_id=CALL_ID,
+        message=signed_message(body, agent_id=agent_id, kind=kind),
+    )
     return channel
 
 
@@ -277,14 +289,45 @@ def token_registry(clock: float = 1_000_001.0) -> CallTokenRegistry:
     return CallTokenRegistry(secret=SECRET, clock=FakeClock(clock))
 
 
-async def open_switch() -> RoutingSwitch:
-    """A durable switch pinned to ``all`` so a test call is admitted."""
+async def switch_in_mode(mode: str) -> RoutingSwitch:
+    """A durable switch seeded to ``mode`` so a test call is decided by it."""
     store = MemoryStore()
-    record = RoutingRecord.seeded("all", actor="transport-test", at=CLOCK())
+    record = RoutingRecord.seeded(mode, actor="transport-test", at=CLOCK())
     await store.compare_and_set(
         ROUTING_KEY, None, StoredDocument(version=1, document=record.to_document())
     )
     return RoutingSwitch(store, now=CLOCK)
+
+
+async def open_switch() -> RoutingSwitch:
+    """A durable switch pinned to ``all`` so a test call is admitted."""
+    return await switch_in_mode("all")
+
+
+def seeded_switch(mode: str, *, recording: bool = False) -> RoutingSwitch:
+    """A seeded switch built outside the event loop, for tests that read it."""
+    store = MemoryStore()
+    record = RoutingRecord.seeded(mode, actor="transport-test", at=CLOCK())
+    asyncio.run(
+        store.compare_and_set(
+            ROUTING_KEY, None, StoredDocument(version=1, document=record.to_document())
+        )
+    )
+    chooser = RecordingSwitch if recording else RoutingSwitch
+    return chooser(store, now=CLOCK)
+
+
+class RecordingSwitch(RoutingSwitch):
+    """The real switch, with every frozen decision it produced kept."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.decisions = []
+
+    async def decide(self, subject, *, refusal="", budget=None):
+        decision = await super().decide(subject, refusal=refusal, budget=budget)
+        self.decisions.append(decision)
+        return decision
 
 
 class RecordingLifecycle(CallLifecycle):
@@ -310,6 +353,7 @@ def run_call(
     legs=None,
     leg_builder=None,
     switch=None,
+    mode=None,
     counter=None,
     call_tokens=None,
     token: str = TOKEN,
@@ -326,6 +370,10 @@ def run_call(
 
         chosen = leg_builder if leg_builder is not None else default_leg_builder
 
+        chosen_switch = switch
+        if chosen_switch is None:
+            chosen_switch = await (open_switch() if mode is None else switch_in_mode(mode))
+
         with mock.patch("transport.CallLifecycle", RecordingLifecycle):
             await handle_browser_call(
                 ws,
@@ -340,7 +388,7 @@ def run_call(
                 call_tokens=(
                     call_tokens if call_tokens is not None else token_registry()
                 ),
-                switch=switch if switch is not None else await open_switch(),
+                switch=chosen_switch,
                 counter=counter,
                 secret=SECRET,
                 envelope_clock=envelope_clock,
@@ -626,6 +674,163 @@ class RoutingAdmissionTests(unittest.TestCase):
             Decimal("0"),
             "the call's wire usage never reached the daily counter",
         )
+
+
+def run_subject_call(*, kind, agent_id, mode=None, switch=None):
+    """One browser call whose signed envelope declares ``kind``.
+
+    The token subject, the envelope's agent id and the browser's agent id are
+    the same string, exactly as the transport requires.
+    """
+    token = mint_call_token(
+        secret=SECRET,
+        call_id=CALL_ID,
+        subject=agent_id,
+        clock=CLOCK,
+        nonce=f"subject-kind-{kind}-{mode}-{agent_id}",
+    )
+    inbound = [browser_config(agentId=agent_id, callToken=token), {"type": "stop"}]
+    channel = delivered_channel(token=token, agent_id=agent_id, kind=kind)
+    return run_call(
+        inbound,
+        [],
+        channel=channel,
+        token=token,
+        switch=switch,
+        mode=mode,
+    )
+
+
+class SubjectKindRoutingTests(unittest.TestCase):
+    """Ticket 03: the routing subject's kind is the signed envelope's claim.
+
+    The kind is never read from the id: a tenant envelope whose agent id starts
+    with ``demo:`` is still a tenant call. Every refusal opens zero vendor
+    sessions, and a permitted call opens exactly one cascade connection.
+    """
+
+    def test_a_v2_demo_envelope_under_demo_opens_exactly_one_cascade_connection(self):
+        switch = seeded_switch("demo", recording=True)
+        ws, built, instances = run_subject_call(
+            kind="demo", agent_id="demo:audrey", switch=switch
+        )
+
+        self.assertEqual(1, len(built), "the demo envelope reached the leg builder")
+        self.assertEqual(1, len(instances), "one call, one cascade connection")
+        self.assertTrue(instances[0].ran)
+        self.assertFalse(any(m["type"] == "error" for m in ws.sent))
+        self.assertEqual(1, len(switch.decisions), "one frozen decision per call")
+        self.assertEqual(
+            {"id": "demo:audrey", "kind": "demo"},
+            switch.decisions[0].subject.to_document(),
+            "the decision carries the envelope's agent id and declared kind",
+        )
+        self.assertEqual("cascade", switch.decisions[0].disposition)
+
+    def test_a_v2_tenant_envelope_under_demo_opens_zero_vendor_sessions(self):
+        ws, built, instances = run_subject_call(
+            kind="tenant", agent_id=AGENT_ID, mode="demo"
+        )
+
+        self.assertEqual([], built, "no vendor session may open for a tenant call")
+        self.assertEqual([], instances, "no cascade connection for a tenant call")
+        errors = [m for m in ws.sent if m["type"] == "error"]
+        self.assertEqual(len(errors), 1)
+        self.assertEqual(errors[0]["code"], "managed")
+        self.assertIn(f'"{AGENT_ID}" is a tenant call', errors[0]["message"])
+        self.assertIn("demo only makes stored demo subjects eligible", errors[0]["message"])
+
+    def test_routing_off_refuses_both_kinds_with_zero_vendor_sessions(self):
+        for kind, agent_id in (("demo", "demo:audrey"), ("tenant", AGENT_ID)):
+            with self.subTest(kind=kind):
+                ws, built, instances = run_subject_call(
+                    kind=kind, agent_id=agent_id, mode="off"
+                )
+
+                self.assertEqual([], built, "no vendor session may open when routing is off")
+                self.assertEqual([], instances, "no cascade connection when routing is off")
+                errors = [m for m in ws.sent if m["type"] == "error"]
+                self.assertEqual(len(errors), 1)
+                self.assertEqual(errors[0]["code"], "managed")
+                self.assertEqual(
+                    "routing is off; every new call routes managed",
+                    errors[0]["message"],
+                )
+
+    def test_a_v1_envelope_is_tenant_under_every_mode(self):
+        for mode, expected in (("off", "managed"), ("demo", "managed"), ("all", "cascade")):
+            with self.subTest(mode=mode):
+                switch = seeded_switch(mode, recording=True)
+                ws, built, instances = run_subject_call(
+                    kind=None, agent_id=AGENT_ID, switch=switch
+                )
+
+                self.assertEqual(1, len(switch.decisions))
+                self.assertEqual(
+                    {"id": AGENT_ID, "kind": "tenant"},
+                    switch.decisions[0].subject.to_document(),
+                    "version 1 has no kind claim, so it is read as tenant",
+                )
+                if expected == "cascade":
+                    self.assertEqual(1, len(built))
+                    self.assertEqual(1, len(instances))
+                    self.assertFalse(any(m["type"] == "error" for m in ws.sent))
+                    continue
+                self.assertEqual([], built)
+                self.assertEqual([], instances)
+                errors = [m for m in ws.sent if m["type"] == "error"]
+                self.assertEqual(len(errors), 1)
+                self.assertEqual(errors[0]["code"], "managed")
+                if mode == "demo":
+                    self.assertIn(f'"{AGENT_ID}" is a tenant call', errors[0]["message"])
+
+    def test_a_tenant_envelope_with_a_demo_prefix_is_still_refused(self):
+        """The prefix proves nothing: a signed tenant kind wins over the id."""
+        ws, built, instances = run_subject_call(
+            kind="tenant", agent_id="demo:audrey", mode="demo"
+        )
+
+        self.assertEqual([], built, "a demo: prefix may never open a vendor session")
+        self.assertEqual([], instances)
+        errors = [m for m in ws.sent if m["type"] == "error"]
+        self.assertEqual(len(errors), 1)
+        self.assertEqual(errors[0]["code"], "managed")
+        self.assertIn('"demo:audrey" is a tenant call', errors[0]["message"])
+
+    def test_a_v2_demo_envelope_under_all_opens(self):
+        ws, built, instances = run_subject_call(
+            kind="demo", agent_id="demo:audrey", mode="all"
+        )
+
+        self.assertEqual(1, len(built))
+        self.assertEqual(1, len(instances))
+        self.assertTrue(instances[0].ran)
+        self.assertFalse(any(m["type"] == "error" for m in ws.sent))
+
+    def test_a_store_outage_still_routes_managed(self):
+        store = MemoryStore()
+        record = RoutingRecord.seeded("demo", actor="transport-test", at=CLOCK())
+        asyncio.run(
+            store.compare_and_set(
+                ROUTING_KEY, None, StoredDocument(version=1, document=record.to_document())
+            )
+        )
+        store.fail_reads = True
+        switch = RecordingSwitch(store, now=CLOCK)
+
+        ws, built, instances = run_subject_call(
+            kind="demo", agent_id="demo:audrey", switch=switch
+        )
+
+        self.assertEqual([], built, "an unreadable switch may open no vendor session")
+        self.assertEqual([], instances)
+        self.assertEqual(1, len(switch.decisions))
+        self.assertIsNone(switch.decisions[0].mode)
+        self.assertEqual("managed", switch.decisions[0].disposition)
+        errors = [m for m in ws.sent if m["type"] == "error"]
+        self.assertEqual(len(errors), 1)
+        self.assertEqual(errors[0]["code"], "managed")
+        self.assertIn("routing switch is unreadable", errors[0]["message"])
 
 
 class CallTokenAtConnectTests(unittest.TestCase):
