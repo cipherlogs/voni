@@ -2,8 +2,15 @@
 
 Eligibility is a conjunction, not a guess. A new call goes cascade only when
 routing permits it, the body adapter accepts the body, the voice has a cascade
-binding, the Locale is fixed, and the daily counter is below its routing line.
-Every refusal records its own reason and routes the call managed.
+binding, any model override is constructible, and the daily counter is below
+its routing line. Every refusal records its own reason and routes the call
+managed.
+
+A body with no fixed ``language_codes`` is not refused (ticket 160): speech
+recognition runs Meta auto-detect, while synthesis still speaks the bound
+voice's one Locale. The decision records ``auto_detect`` as a fact, so the
+artifact can tell an auto-detect subject from a fixed-Locale one. An unbound
+voice is still refused by name.
 
 Refusal is a routing fact, never a provider fallback event: the reasons travel
 as eligibility facts on the decision, and nothing here can emit a
@@ -26,7 +33,12 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from cascade.body_map import BodyFieldError, CascadeBody, adapt_body
+from cascade.body_map import (
+    BodyFieldError,
+    CascadeBody,
+    adapt_body,
+    read_llm_override,
+)
 from cascade.routing import CallSubject, Disposition, RoutingDecision
 from cascade.voice_binding import VoiceBindingError
 
@@ -102,6 +114,9 @@ class EligibilityDecision:
     disposition: Disposition
     reasons: tuple[Refusal, ...]
     body: CascadeBody | None
+    #: True when the body fixed no language and recognition auto-detects.
+    #: Recorded on refusals too, so the fact never depends on the verdict.
+    auto_detect: bool = False
     subject: CallSubject | None = None
     routing: RoutingDecision | None = None
     counter: CounterReading | None = None
@@ -141,32 +156,22 @@ class EligibilityDecision:
         )
 
 
-def _language_codes(body: Mapping[str, Any]) -> tuple[str, ...]:
-    """The body's fixed-language list, for the locale predicate only.
+def _auto_detect(body: Mapping[str, Any]) -> bool:
+    """Whether the body fixes no language, so recognition auto-detects.
 
-    Read from the raw body because the adapter, correctly, leaves an absent
-    list as an empty bias; whether that empty bias is *eligible* is this gate's
-    question, not the adapter's.
+    Read from the raw body because a refused body has no adapted config; the
+    fact is the subject's, not the verdict's. A malformed list is not
+    auto-detect — it has its own named refusal in the adapter.
     """
     section = body.get("input")
     if not isinstance(section, Mapping):
-        return ()
+        return True
     codes = section.get("language_codes")
+    if codes is None:
+        return True
     if not isinstance(codes, (list, tuple)):
-        return ()
-    return tuple(codes)
-
-
-def _locale_reason(facts: EligibilityFacts) -> str:
-    """Automatic language detection is not eligible on this slice."""
-    if _language_codes(facts.body):
-        return ""
-    return (
-        "the body fixes no language (input.language_codes is absent or empty): "
-        "automatic language detection is not eligible, because the TTS "
-        "session's language is fixed at connect and the voice binding needs "
-        "one Locale"
-    )
+        return False
+    return not codes
 
 
 def _routing_reason(facts: EligibilityFacts) -> str:
@@ -203,11 +208,27 @@ def _accepted_reason(facts: EligibilityFacts) -> str:
     return ""
 
 
+def _llm_reason(facts: EligibilityFacts) -> str:
+    """A body's model override is eligible when it is constructible (ticket 159).
+
+    The refusal ticket 60 recorded is gone: a tenant's own provider now runs the
+    cascade. What is still checked is whether the entry can become a client —
+    one entry, with a base URL, a model and a key — by name, before a socket.
+    """
+    try:
+        read_llm_override(facts.body)
+    except BodyFieldError as error:
+        return str(error)
+    return ""
+
+
 #: The body half of the conjunction, in evaluation order. Binding comes before
-#: acceptance so a voice with no binding is named as the binding refusal.
+#: acceptance so a voice with no binding is named as the binding refusal. There
+#: is deliberately no locale refusal: a body with no fixed language is
+#: auto-detect, and its synthesis language still comes from the binding.
 BODY_RULES: tuple[Rule, ...] = (
     Rule("binding", _binding_reason),
-    Rule("locale", _locale_reason),
+    Rule("llm", _llm_reason),
     Rule("accepted", _accepted_reason),
 )
 
@@ -224,8 +245,9 @@ def _counter_reason(facts: EligibilityFacts) -> str:
 
 
 #: The eligibility conjunction: routing permits, the body adapter accepts, the
-#: voice binds, the Locale is fixed and the counter is below its line. Every
-#: rule is injected, so removing one is a test of whether it is read.
+#: voice binds, the override is constructible and the counter is below its
+#: line. Every rule is injected, so removing one is a test of whether it is
+#: read. Language detection is a fact (``auto_detect``), not a predicate.
 DEFAULT_RULES: tuple[Rule, ...] = (
     Rule("routing", _routing_reason),
     *BODY_RULES,
@@ -290,6 +312,7 @@ def evaluate_body(
         disposition="managed" if reasons else "cascade",
         reasons=reasons,
         body=config,
+        auto_detect=_auto_detect(body),
     )
 
 
@@ -334,6 +357,7 @@ def evaluate_eligibility(
         disposition="managed" if reasons else "cascade",
         reasons=reasons,
         body=config,
+        auto_detect=_auto_detect(body),
         subject=subject,
         routing=routing,
         counter=counter,

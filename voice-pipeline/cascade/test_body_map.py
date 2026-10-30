@@ -27,8 +27,10 @@ from cascade.body_map import (
     CascadeBody,
     IgnoredField,
     InvalidToolNameError,
-    LlmOverrideRefusal,
+    LlmOverride,
+    MissingLlmOverrideFieldError,
     MissingSystemPromptError,
+    MultipleLlmOverridesError,
     UnknownBodyKeyError,
     UnknownLanguageCodeError,
     adapt_body,
@@ -65,6 +67,7 @@ class MinimalBodyTests(unittest.TestCase):
                 speech_language_bias=("Spanish",),
                 keyterms=(),
                 tools=(),
+                llm=None,
                 ignored=(),
             ),
         )
@@ -81,6 +84,7 @@ class MinimalBodyTests(unittest.TestCase):
                 "speech_language_bias": ("Spanish",),
                 "keyterms": (),
                 "tools": (),
+                "llm": None,
                 "ignored": (),
             },
         )
@@ -297,9 +301,11 @@ class LanguageTests(unittest.TestCase):
         self.assertEqual(config.synthesis_language, "Spanish")
 
     def test_automatic_detection_leaves_the_bias_empty(self):
-        # A body with no language_codes routes managed (ticket 61); the adapter
-        # must not invent a bias for it in the meantime.
-        self.assertEqual(adapt_body({**MINIMAL_BODY, "input": {}}).speech_language_bias, ())
+        # A body with no language_codes is Meta auto-detect (ticket 160); the
+        # adapter must not invent a bias for it, and records the fact.
+        config = adapt_body({**MINIMAL_BODY, "input": {}})
+        self.assertEqual(config.speech_language_bias, ())
+        self.assertTrue(config.auto_detect)
 
     def test_an_unknown_language_code_is_refused_by_name(self):
         body = {**MINIMAL_BODY, "input": {"language_codes": ["es", "tlh"]}}
@@ -325,7 +331,7 @@ class GreetingTests(unittest.TestCase):
                 self.assertFalse(config.has_greeting)
 
 
-# The spec's field map, verbatim: these six paths and no others.
+# The spec's field map, amended by ticket 159: these seven paths and no others.
 SPEC_PATHS = (
     "system_prompt",
     "greeting",
@@ -333,6 +339,7 @@ SPEC_PATHS = (
     "input.language_codes",
     "input.keyterms",
     "tools",
+    "llm",
 )
 
 
@@ -681,30 +688,25 @@ class BindingReuseTests(unittest.TestCase):
 
 
 class LlmOverrideTests(unittest.TestCase):
-    def test_a_non_empty_model_override_refuses_the_cascade_by_name(self):
-        body = {
-            **MINIMAL_BODY,
-            "llm": [
-                {
-                    "base_url": "https://models.example/v1",
-                    "model": "gpt-4o-mini",
-                    "api_key": "sk-tenant",
-                }
-            ],
-        }
-        with self.assertRaises(LlmOverrideRefusal) as caught:
-            adapt_body(body)
+    ONE_OVERRIDE = {
+        "base_url": "https://models.example/v1",
+        "model": "gpt-4o-mini",
+        "api_key": "sk-tenant",
+    }
 
-        self.assertEqual(caught.exception.path, "llm")
-        self.assertIn("gpt-4o-mini", str(caught.exception))
+    def test_one_model_override_is_read_into_the_body_config(self):
+        config = adapt_body({**MINIMAL_BODY, "llm": [self.ONE_OVERRIDE]})
 
-    def test_an_absent_or_empty_model_array_is_not_an_override(self):
+        self.assertIsInstance(config.llm, LlmOverride)
+        self.assertEqual(config.llm.model, "gpt-4o-mini")
+
+    def test_an_absent_or_empty_model_array_is_the_default_rung(self):
         for llm in (None, []):
             with self.subTest(llm=llm):
                 body = dict(MINIMAL_BODY)
                 if llm is not None:
                     body["llm"] = llm
-                self.assertEqual(adapt_body(body).voice_id, "lola")
+                self.assertIsNone(adapt_body(body).llm)
 
     def test_a_non_list_model_override_is_refused_by_name(self):
         with self.assertRaises(BodyFieldError) as caught:
@@ -712,26 +714,44 @@ class LlmOverrideTests(unittest.TestCase):
 
         self.assertEqual(caught.exception.path, "llm")
 
-    def test_the_refusal_routes_managed_with_the_recorded_reason(self):
+    def test_more_than_one_entry_is_refused_by_name(self):
+        second = {**self.ONE_OVERRIDE, "model": "second-model"}
+
+        with self.assertRaises(MultipleLlmOverridesError) as caught:
+            adapt_body({**MINIMAL_BODY, "llm": [self.ONE_OVERRIDE, second]})
+
+        self.assertEqual(caught.exception.path, "llm")
+        self.assertIn("gpt-4o-mini", str(caught.exception))
+        self.assertIn("second-model", str(caught.exception))
+
+    def test_an_entry_without_a_key_is_refused_by_name(self):
+        entry = {
+            "base_url": "https://models.example/v1",
+            "model": "gpt-4o-mini",
+        }
+
+        with self.assertRaises(MissingLlmOverrideFieldError) as caught:
+            adapt_body({**MINIMAL_BODY, "llm": [entry]})
+
+        self.assertEqual(caught.exception.path, "llm[0].api_key")
+        self.assertNotIn("sk-", str(caught.exception))
+
+    def test_an_entry_with_an_unknown_key_is_refused_by_name(self):
+        entry = {**self.ONE_OVERRIDE, "temperature": 0.2}
+
+        with self.assertRaises(BodyFieldError) as caught:
+            adapt_body({**MINIMAL_BODY, "llm": [entry]})
+
+        self.assertEqual(caught.exception.path, "llm[0].temperature")
+
+    def test_the_override_never_contaminates_a_later_default_run(self):
         subject = CallSubject("acme", "tenant")
-        with self.assertRaises(LlmOverrideRefusal) as caught:
-            adapt_body({**MINIMAL_BODY, "llm": [{"model": "gpt-4o-mini"}]})
-
-        decision = decide("all", subject, refusal=str(caught.exception))
-
-        self.assertEqual(decision.disposition, "managed")
-        self.assertEqual(decision.opens_cascade_connections, 0)
-        self.assertIn("gpt-4o-mini", decision.reason)
-
-    def test_the_refusal_does_not_contaminate_a_later_cascade_run(self):
-        subject = CallSubject("acme", "tenant")
-        with self.assertRaises(LlmOverrideRefusal):
-            adapt_body({**MINIMAL_BODY, "llm": [{"model": "gpt-4o-mini"}]})
-
+        with_override = adapt_body({**MINIMAL_BODY, "llm": [self.ONE_OVERRIDE]})
         later = adapt_body({**MINIMAL_BODY, "llm": []})
         decision = decide("all", subject)
 
-        self.assertEqual(later.voice_id, "lola")
+        self.assertIsNotNone(with_override.llm)
+        self.assertIsNone(later.llm)
         self.assertEqual(decision.disposition, "cascade")
         self.assertEqual(decision.reason, "")
 

@@ -750,8 +750,8 @@ class CallLifecycleTest(unittest.TestCase):
 
     def test_an_eligibility_refusal_names_its_predicates_and_opens_nothing(self):
         body = json.loads(json.dumps(BODY))
-        body["input"]["language_codes"] = []
-        decision = evaluate_body(body, keyterm_limit=10)
+        # The body carries one keyterm; a zero limit refuses it by name.
+        decision = evaluate_body(body, keyterm_limit=0)
         transport = FakeTransport([BrowserStop()])
 
         end = self.run_call(
@@ -763,18 +763,35 @@ class CallLifecycleTest(unittest.TestCase):
         self.assertEqual("eligibility", end.error.stage)
         document = transport.sent[-1]
         self.assertEqual("refused", document["eligibility"]["disposition"])
-        self.assertEqual(["locale"], document["eligibility"]["predicates"])
-        self.assertIn("language", document["eligibility"]["reasons"][0])
+        self.assertEqual(["accepted"], document["eligibility"]["predicates"])
+        self.assertIn("keyterm", document["eligibility"]["reasons"][0])
+
+    def test_the_end_message_records_auto_detect_from_the_served_body(self):
+        auto = json.loads(json.dumps(BODY))
+        auto["input"]["language_codes"] = []
+        fixed = json.loads(json.dumps(BODY))
+
+        for body, expected in ((auto, True), (fixed, False)):
+            with self.subTest(auto_detect=expected):
+                transport = FakeTransport([BrowserStop()])
+                self.run_call(self.make(transport=transport, body=body))
+
+                document = transport.sent[-1]
+                self.assertEqual("cascade", document["eligibility"]["disposition"])
+                self.assertIs(document["eligibility"]["autoDetect"], expected)
 
     def test_a_refused_call_never_starts_the_stream(self):
         body = json.loads(json.dumps(BODY))
+        # The entry is missing base_url and api_key, so no client can be built:
+        # the call fails by name before a socket, and it does not route managed.
         body["llm"] = [{"model": "tenant-model"}]
         transport = FakeTransport([BrowserStop()])
 
         end = self.run_call(self.make(transport=transport, body=body))
 
         self.assertEqual([], self.opens)
-        self.assertEqual("LlmOverrideRefusal", end.error.name)
+        self.assertEqual("MissingLlmOverrideFieldError", end.error.name)
+        self.assertEqual("body", end.error.stage)
         self.assertFalse(self.stream.started)
 
 
