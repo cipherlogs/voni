@@ -622,7 +622,9 @@ async def handle_browser_call(
     try:
         admission = await admit_new_call(
             switch,
-            CallSubject(subject_id=verified.agent_id),
+            # Ticket 03: the kind is the verified envelope's signed claim (v1
+            # reads as tenant); nothing here reads a ``demo:`` prefix or a name.
+            CallSubject(subject_id=verified.agent_id, kind=verified.subject_kind),
             open_cascade=prepare,
             budget=counter,
         )
