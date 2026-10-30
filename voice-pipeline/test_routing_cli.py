@@ -344,6 +344,37 @@ class SetTest(CliCase):
             self.assertEqual(code, 2, missing)
             self.assertIn(missing, err)
 
+    def test_the_documented_show_set_show_off_sequence_leaves_an_audit_trail(self):
+        code, out, err = self.cli("show", "--sqlite", str(self.path))
+        self.assertEqual(code, 0, err)
+        self.assertIn("off (fail-safe; no switch is stored)", out)
+
+        code, out, err = self.cli(
+            "set", "--sqlite", str(self.path), "--mode", "off",
+            "--operator", "ops@voni", "--reason", "rollback rehearsal",
+            now=lambda: 400.0,
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn("unset → off", out)
+        self.assertIn("recordVersion: 1", out)
+        self.assertIn("fail-safe", out)
+
+        code, out, err = self.cli("show", "--sqlite", str(self.path), "--json")
+        self.assertEqual(code, 0, err)
+        document = json.loads(out)
+        self.assertEqual(document["mode"], "off")
+        self.assertEqual(document["recordVersion"], 1)
+        self.assertEqual(
+            document["changes"],
+            [{
+                "at": 400.0,
+                "actor": "ops@voni",
+                "from": "unset",
+                "to": "off",
+                "reason": "rollback rehearsal",
+            }],
+        )
+
     @staticmethod
     def pair_without(missing: str) -> tuple[str, ...]:
         pairs = {
