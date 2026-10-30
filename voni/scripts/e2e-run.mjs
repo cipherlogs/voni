@@ -207,6 +207,12 @@ function bootEnv(baseUrl, options = {}) {
   // on this throwaway candidate — an ordinary `next build` never sets it.
   if (options.capture) env.NEXT_PUBLIC_VONI_E2E_CAPTURE = "1";
   else delete env.NEXT_PUBLIC_VONI_E2E_CAPTURE;
+  // Ticket 08: the app reads its pipeline base at runtime, server-side. The
+  // cascade rig fakes the socket in the browser, so any https host works and
+  // nothing here can reach a real service. Absent for every other mode, where
+  // the hidden cascade page must fail by name instead of guessing localhost.
+  if (options.cascade) env.VOICE_PIPELINE_URL = "https://pipeline.invalid";
+  else delete env.VOICE_PIPELINE_URL;
   return env;
 }
 
@@ -307,7 +313,7 @@ async function modeCascade() {
   rmSync(artifactDir, { recursive: true, force: true });
   mkdirSync(artifactDir, { recursive: true });
   console.log(`[e2e] delivered-capture artifacts: ${artifactDir}`);
-  const server = await serveNext(cand, NEXT_PORT, { capture: true });
+  const server = await serveNext(cand, NEXT_PORT, { capture: true, cascade: true });
   try {
     // One real Chromium (the desktop project): the seam is the client and the
     // worklet, not two viewports of the same call.

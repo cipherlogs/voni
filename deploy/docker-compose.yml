@@ -1,12 +1,16 @@
-# Local rehearsal of the deployed topology (ticket 135).
+# Local rehearsal of the deployed topology (ticket 19).
 #
-#   docker compose -f deploy/docker-compose.yml up --build --scale voice-pipeline=2
+#   docker compose -f deploy/docker-compose.yml up --build
 #
-# Same shape as Fly: two service replicas, each one process, a health check the
-# orchestrator waits on, and SIGTERM with a grace period at least as long as the
-# recorded drain bound. This is how the "a call survives a rolling deploy" claim
-# is rehearsed offline; it is not the production host and it never holds real
-# vendor keys.
+# Same shape as the Northflank descriptor: one service instance, one
+# single-read/write volume, a liveness health check the orchestrator waits on,
+# and SIGTERM with a grace period equal to the recorded 30 s drain bound. This is
+# how the "a deploy drains instead of cutting" claim is rehearsed offline; it is
+# not the production host and it never holds real vendor keys.
+#
+# One instance is a correctness property, not a convenience: the token registry
+# and the delivered-body channel are in-process, so a second replica would break
+# single use and hold return. Do not add one.
 #
 # Secrets are not in this file. Copy deploy/voice-pipeline.env.example to
 # deploy/voice-pipeline.env (gitignored), fill it locally, and compose passes the
@@ -22,15 +26,15 @@ services:
       context: ..
       dockerfile: voice-pipeline/Dockerfile
     environment:
-      # Non-secret host settings, the same ones Fly injects from the config.
+      # Non-secret host settings, the same ones the descriptor names.
       VOICE_PIPELINE_PORT: "8766"
       VOICE_PIPELINE_STT_PROVIDER: "assemblyai"
       VOICE_PIPELINE_STT_MODE: "balanced"
       VOICE_PIPELINE_LLM_MODEL: "muse-spark-1.3"
       VOICE_PIPELINE_TTS_MODEL: "assemblyai-tts-1"
-      # A writable artifact directory the image creates for uid 10001. A call
-      # whose events cannot be written still runs; the end message names the
-      # reason as eventsError.
+      # A writable artifact directory on the mounted volume. A call whose events
+      # cannot be written still runs; the end message names the reason as
+      # eventsError.
       VOICE_PIPELINE_EVENTS_DIR: "/var/lib/voni/events"
       # REQUIRED and host-supplied: the M03 measured effort. Spark has no
       # default, so the default rung refuses setup while this is empty. It is
@@ -45,14 +49,16 @@ services:
       # Optional: a local names file with values, never committed.
       - path: ./voice-pipeline.env
         required: false
-    # Two replicas: no published port (the proxy does the fan-out), so both
-    # containers can listen on the same internal port.
     expose:
       - "8766"
+    volumes:
+      # One single-read/write volume, the same mount as the descriptor.
+      - voice-events:/var/lib/voni
     deploy:
-      replicas: 2
+      replicas: 1
     healthcheck:
-      # Liveness only, the same path Fly probes: /healthz touches no vendor.
+      # Liveness only, the same path the platform probes: /healthz touches no
+      # vendor. Readiness (/readyz) is deliberately not this probe.
       test:
         - CMD
         - python
@@ -70,10 +76,13 @@ services:
     stop_grace_period: 30s
 
   voni:
-    image: registry.fly.io/voni-app:deployment
+    # The app's own image, built and pushed by its own pipeline. This rehearsal
+    # does not build it; point the tag at a local build if one exists.
+    image: voni-app:local
     environment:
       PORT: "3000"
       VOICE_PIPELINE_URL: "http://voice-pipeline:8766"
+      VOICE_PIPELINE_TOOL_BASE_URL: "http://voni:3000"
     ports:
       - "3000:3000"
     depends_on:
@@ -91,6 +100,5 @@ services:
       start_period: 30s
       retries: 3
 
-# No sticky sessions: one call per socket means any service replica can accept
-# any new call, and a live call keeps the replica that accepted it. Compose's
-# round-robin matches Fly's proxy behaviour for this purpose.
+volumes:
+  voice-events:

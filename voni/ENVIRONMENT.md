@@ -65,22 +65,24 @@ local save and shows a retryable deployment warning on the agent page.
   `VONI_TOOL_SECRET` bearer. Sampling is fire-and-forget and off by default
   until the URL resolves.
 
-## Cascade test-call client (dev slice)
+## Cascade pipeline (demo)
 
-`NEXT_PUBLIC_*` because the browser reads them (set in `.env.local` for
-`next dev`; never secrets — the browser must never hold vendor keys):
+One runtime value, read only on the server:
 
-- `NEXT_PUBLIC_VOICE_PIPELINE_URL` — pipeline service WS URL. Default
-  `ws://127.0.0.1:8766/v1/browser-call` (see `voice-pipeline/README.md`).
-- `NEXT_PUBLIC_CASCADE_LLM_MODEL` — gateway model id (default
-  `alibaba/qwen3.5-flash`, verified live).
-- `NEXT_PUBLIC_CASCADE_TTS_MODEL` — Cartesia model (default `sonic-2`).
-- `NEXT_PUBLIC_CASCADE_TTS_VOICE` — Cartesia voice ID from the dashboard
-  (no default — the service errors clearly without it). Distinct from the
-  AssemblyAI `voiceId` on the agent; voice identity does not carry across.
+- `VOICE_PIPELINE_URL` — the pipeline's `https` base
+  (`https://<host>[:port][/prefix]`). Required. The app derives the browser
+  WebSocket URL (`wss://<host>[:port][/prefix]/v1/browser-call`) and the mint
+  delivers it, so a non-default port and a path prefix both survive. A missing
+  value makes the demo unavailable — there is no localhost default — and a
+  non-`https` value is refused when the app reads the configuration. Nothing
+  is baked into the build and the browser never reads a pipeline variable.
 
 The Test dialog has no engine control: a test call always runs the managed
 session. The public demo is the only cascade surface (demo-cascade ticket 04).
+
+The pipeline's own model settings (`VOICE_PIPELINE_LLM_MODEL`,
+`VOICE_PIPELINE_TTS_MODEL`, …) live on the service, not the app: see
+`deploy/northflank/README.md` and `voice-pipeline/README.md`.
 
 ## Async TTS (WhatsApp voice-note replies — AssemblyAI has no standalone TTS API, plan Section I)
 - `CARTESIA_API_KEY` — cartesia.ai → sign up → dashboard → API Keys. Free plan
