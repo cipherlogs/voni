@@ -333,11 +333,32 @@ def validate_dockerfile(text: str, *, internal_port: int, config: str = DOCKERFI
             f"{label}: EXPOSE {internal_port} is missing but the proxy forwards to "
             f"{internal_port}"
         )
-    if "server:app" not in text or "uvicorn" not in lowered:
+    # The image must run the service's ``main()``: that is where the SIGTERM
+    # drain supervisor is installed. ``uvicorn server:app`` skips it, so a
+    # deploy would exit on SIGTERM and end a live call (ticket 140).
+    commands = [
+        line.strip()
+        for line in text.splitlines()
+        if line.strip().upper().startswith("CMD")
+    ]
+    command = " ".join(commands).lower()
+    if not commands:
         errors.append(
-            f"{label}: the command must run uvicorn's server:app; that is the one "
-            "process this container holds"
+            f"{label}: no CMD; the image must run `python server.py` so the "
+            "drain supervisor (ticket 140) is installed"
         )
+    else:
+        if "server.py" not in command:
+            errors.append(
+                f"{label}: the command must run `python server.py` (main()), "
+                "which installs the SIGTERM drain supervisor; without it a "
+                "deploy exits and ends a live call"
+            )
+        if "server:app" in command:
+            errors.append(
+                f"{label}: the command runs uvicorn's server:app; the drain "
+                "supervisor lives in main(), so SIGTERM would end a live call"
+            )
     if "voice-pipeline/requirements.txt" not in text:
         errors.append(
             f"{label}: the image must install voice-pipeline/requirements.txt so the "

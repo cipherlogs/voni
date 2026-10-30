@@ -46,8 +46,10 @@ WORKDIR /srv/voice-pipeline
 
 EXPOSE 8766
 
-# One worker on the asyncio loop. uvloop stays pinned off in server.py (the
-# prefetch adoption stall) and is not installed here anyway. A call is one
-# WebSocket on this process for its whole life; the two Fly machines, not two
-# workers in one container, are the two instances.
-CMD ["python", "-m", "uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8766", "--loop", "asyncio", "--ws", "websockets"]
+# One worker on the asyncio loop. The command runs ``main()``, which installs
+# the SIGTERM drain supervisor and disables uvicorn's default handler;
+# ``uvicorn server:app`` would skip the drain and end a live call. uvloop stays
+# pinned off in server.py (the prefetch adoption stall) and is not installed
+# here anyway. A call is one WebSocket on this process for its whole life; the
+# two Fly machines, not two workers in one container, are the two instances.
+CMD ["python", "server.py"]

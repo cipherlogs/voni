@@ -95,10 +95,8 @@ def run(frame: dict) -> tuple[list[dict], list[object]]:
         await handle_browser_call(
             ws,
             config_message=frame,
-            backend_factory=lambda config: opened.append(config) or (None, None, None),
             body_channel=None,
             call_tokens=None,
-            pipeline_factory=lambda body: (_ for _ in ()).throw(RuntimeError("opened")),
         )
         return ws.sent, opened
 
