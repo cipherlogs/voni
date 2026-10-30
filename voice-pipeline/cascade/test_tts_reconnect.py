@@ -23,7 +23,7 @@ from cascade.assemblyai_tts import (
     SynthesisCallFailure,
 )
 from cascade.reconnect import ReconnectBudget
-from cascade.test_tts_support import (
+from cascade.tts_support import (
     API_KEY,
     audio_ms,
     begin,

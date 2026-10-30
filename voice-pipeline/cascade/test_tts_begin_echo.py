@@ -16,7 +16,7 @@ from cascade.assemblyai_tts import (
     SynthesisConfigurationError,
     SynthesisEchoError,
 )
-from cascade.test_tts_support import (
+from cascade.tts_support import (
     BEGIN_EXPIRES_AT,
     BEGIN_ID,
     VENDOR_LIMITS,

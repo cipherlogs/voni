@@ -27,7 +27,7 @@ from cascade.assemblyai_tts import (
     ResumePoint,
 )
 from cascade.barge_in import BargeInCutPath
-from cascade.test_tts_support import (
+from cascade.tts_support import (
     audio_ms,
     begin,
     flush_done,

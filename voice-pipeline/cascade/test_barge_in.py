@@ -22,7 +22,7 @@ import unittest
 
 from cascade.assemblyai_tts import AssemblyAIStreamingTTS
 from cascade.barge_in import CUT_BUDGET_MS, BargeInCutPath
-from cascade.test_tts_support import (
+from cascade.tts_support import (
     audio_ms,
     begin,
     cancelled,

@@ -26,7 +26,7 @@ from cascade.eligibility import CounterReading, Rule, evaluate_body, evaluate_el
 from cascade.meta_stt import MetaStreamingSTT
 from cascade.routing import CallSubject, decide
 from cascade.testing import FakeClock, ScriptedSocketFactory
-from cascade.test_tts_support import begin, make_session, sent
+from cascade.tts_support import begin, make_session, sent
 from cascade.voice_binding import UnboundVoiceError
 
 ACK = json.dumps({"sessionId": "call-1:0", "status": "ready"})

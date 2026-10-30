@@ -41,7 +41,7 @@ from cascade.test_call import (
     FakeTransport,
     signed_message,
 )
-from cascade.test_tts_support import begin
+from cascade.tts_support import begin
 from cascade.testing import FakeClock, ScriptedSTT
 from cascade.testing.socket_factory import Frame, ScriptedSocketFactory
 from cascade.voice_binding import bind_voice
@@ -294,7 +294,7 @@ class GreetingTextEqualityTest(unittest.TestCase):
 
     def test_the_call_speaks_the_body_line_and_the_clip_line_unchanged(self):
         from cascade.assemblyai_tts import schedule
-        from cascade.test_tts_support import audio_ms, flush_done
+        from cascade.tts_support import audio_ms, flush_done
 
         line = CLIP_LINES["lola"]
         plan = [begin(voice_id="lola", language="Spanish")]

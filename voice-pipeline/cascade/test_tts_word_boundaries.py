@@ -16,7 +16,7 @@ from cascade.assemblyai_tts import (
     WordBoundary,
     schedule,
 )
-from cascade.test_tts_support import (
+from cascade.tts_support import (
     audio_ms,
     begin,
     flush_done,

@@ -29,7 +29,7 @@ from cascade.assemblyai_tts import (
     SynthesisCallFailure,
 )
 from cascade.failures import FailureClass
-from cascade.test_tts_support import (
+from cascade.tts_support import (
     API_KEY,
     BEGIN_EXPIRES_AT,
     VENDOR_LIMITS,

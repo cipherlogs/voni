@@ -18,7 +18,7 @@ from cascade.assemblyai_tts import (
     SynthesisCallFailure,
 )
 from cascade.failures import SESSION_LIMIT, FailureClass
-from cascade.test_tts_support import (
+from cascade.tts_support import (
     audio_ms,
     begin,
     error,

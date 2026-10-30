@@ -10,7 +10,7 @@ without a ``Termination`` records its characters as unmeasured, never zero.
 import asyncio
 import unittest
 
-from cascade.test_tts_support import (
+from cascade.tts_support import (
     audio,
     audio_ms,
     begin,

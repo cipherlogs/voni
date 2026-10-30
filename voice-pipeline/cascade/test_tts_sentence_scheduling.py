@@ -17,7 +17,7 @@ from cascade.assemblyai_tts import (
     ControlFramePacingError,
     schedule,
 )
-from cascade.test_tts_support import (
+from cascade.tts_support import (
     audio,
     audio_ms,
     begin,
