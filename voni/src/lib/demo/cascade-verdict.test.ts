@@ -29,6 +29,7 @@ import {
   CascadeVerdictError,
   formatCascadeVerdictSection,
   recordCascadeOwnerVerdict,
+  type CascadeOwnerDecision,
   type CascadeOwnerVerdictInput,
 } from "./cascade-verdict";
 import { VONI_GREETINGS } from "./voni-agent";
@@ -86,10 +87,17 @@ const TRANSCRIPT: ContentTurn[] = [
   { speaker: "caller", text: "Sí, claro." },
 ];
 
+/**
+ * The delivered capture lives at one stable path: its bytes are deterministic,
+ * so every fixture writes the same recording, and a verdict's named capture can
+ * be checked for existence the way the recorder checks it.
+ */
+const DELIVERED_PATH = join(tmpdir(), "cascade-verdict-delivered.wav");
+
 function fixture(overrides: Partial<CascadeReauditionRequest> = {}) {
   const dir = mkdtempSync(join(tmpdir(), "cascade-verdict-"));
   const referencePath = join(dir, "lola-reference.wav");
-  const deliveredPath = join(dir, "delivered-20261030.wav");
+  const deliveredPath = DELIVERED_PATH;
   const referenceBytes = wavFrom(tone(1, 1_000, 0.4));
   const deliveredBytes = wavFrom(tone(1, 1_000, 0.4));
   writeFileSync(referencePath, referenceBytes);
@@ -167,12 +175,15 @@ function fixture(overrides: Partial<CascadeReauditionRequest> = {}) {
   };
 }
 
-function input(deliveredSha: string, overrides: Partial<CascadeOwnerVerdictInput> = {}): CascadeOwnerVerdictInput {
+function input(
+  deliveredSha: string,
+  overrides: Partial<CascadeOwnerVerdictInput> = {},
+): CascadeOwnerVerdictInput {
   return {
     decision: "accept",
     decidedOn: "2026-10-30",
     reviewer: "Owner Name",
-    capture: { path: "/captures/delivered-20261030.wav", sha256: deliveredSha },
+    capture: { path: DELIVERED_PATH, sha256: deliveredSha },
     reasons: ["The Spanish line stumbles on the second sentence and ends mid-clause."],
     ...overrides,
   };
@@ -346,6 +357,53 @@ test("an unresolved verdict on a complete pack still names the capture", () => {
     packPath,
   );
   assert.equal(named.blocksLocale, true);
+});
+
+test("a verdict cannot name a decision outside the three", () => {
+  const { pack, deliveredSha, packPath } = fixture();
+  assert.throws(
+    () =>
+      recordCascadeOwnerVerdict(
+        pack,
+        input(deliveredSha, { decision: "constructor" as CascadeOwnerDecision }),
+        packPath,
+      ),
+    (error: unknown) =>
+      error instanceof CascadeVerdictError && /not one of accept, withdraw, unresolved/.test(error.message),
+  );
+});
+
+test("a capture that is not on disk is a claim, not a verdict", () => {
+  const { pack, packPath } = fixture();
+  assert.throws(
+    () =>
+      recordCascadeOwnerVerdict(
+        pack,
+        input("a".repeat(64), {
+          capture: { path: "/nonexistent/no-such-capture.wav", sha256: "a".repeat(64) },
+        }),
+        packPath,
+      ),
+    (error: unknown) =>
+      error instanceof CascadeVerdictError && /not on disk/.test(error.message),
+  );
+});
+
+test("a pack whose delivered capture is gone cannot be judged", () => {
+  const { pack, deliveredSha, packPath } = fixture();
+  const gone = {
+    ...pack,
+    captures: {
+      ...pack.captures,
+      delivered: { ...pack.captures.delivered, path: "/nonexistent/pack-delivered.wav" },
+    },
+  };
+
+  assert.throws(
+    () => recordCascadeOwnerVerdict(gone, input(deliveredSha), packPath),
+    (error: unknown) =>
+      error instanceof CascadeVerdictError && /describes audio nobody can play/.test(error.message),
+  );
 });
 
 test("a verdict cannot be dated in the future", () => {

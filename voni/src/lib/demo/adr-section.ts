@@ -7,7 +7,7 @@
  * walk lives here once instead of in each recorder.
  */
 export function replaceAdrSection(markdown: string, marker: string, section: string): string {
-  const markerAt = markdown.indexOf(marker);
+  const markerAt = headingIndex(markdown, marker);
   let withoutSection = markdown;
   if (markerAt >= 0) {
     const after = markdown.slice(markerAt + marker.length);
@@ -17,4 +17,15 @@ export function replaceAdrSection(markdown: string, marker: string, section: str
 
   const trimmed = withoutSection.trimEnd();
   return trimmed === "" ? section : `${trimmed}\n\n${section}`;
+}
+
+/** The marker only counts at the start of a line, never inside prose. */
+function headingIndex(markdown: string, marker: string): number {
+  let from = 0;
+  for (;;) {
+    const at = markdown.indexOf(marker, from);
+    if (at < 0) return -1;
+    if (at === 0 || markdown[at - 1] === "\n") return at;
+    from = at + 1;
+  }
 }

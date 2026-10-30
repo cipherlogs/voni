@@ -122,15 +122,16 @@ export function recordCascadeOwnerVerdict(
   now: () => Date = () => new Date(),
 ): CascadeOwnerVerdict {
   const blockers: string[] = [];
-  const meaning = MEANINGS[input.decision];
-  const decides = input.decision === "accept" || input.decision === "withdraw";
-  const packComplete = pack.status === "complete" && pack.verdict.readyForOwner;
-
-  if (meaning === undefined) {
+  // `in`/hasOwn, not a truthiness check: a prototype key such as "constructor"
+  // must not resolve to a meaning and produce a record with undefined flags.
+  if (!Object.hasOwn(MEANINGS, input.decision)) {
     throw new CascadeVerdictError([
       `decision "${String(input.decision)}" is not one of accept, withdraw, unresolved`,
     ]);
   }
+  const meaning = MEANINGS[input.decision];
+  const decides = input.decision === "accept" || input.decision === "withdraw";
+  const packComplete = pack.status === "complete" && pack.verdict.readyForOwner;
 
   const reviewer = input.reviewer.trim();
   if (reviewer === "") {
@@ -171,14 +172,25 @@ export function recordCascadeOwnerVerdict(
     // The pack is hand-readable JSON; make its own hash agree with the file it
     // names, so a misdescribed pack cannot stand in for the recording.
     const deliveredPath = pack.captures.delivered.path;
-    if (deliveredPath !== null && existsSync(deliveredPath)) {
-      const onDisk = sha256File(deliveredPath);
-      if (onDisk !== deliveredSha) {
+    if (deliveredPath !== null) {
+      if (!existsSync(deliveredPath)) {
         blockers.push(
-          `the pack's delivered capture (${deliveredPath}) hashes to ${onDisk}, not the recorded ${deliveredSha}; the pack is misdescribed`,
+          `the pack's delivered capture (${deliveredPath}) is not on disk; the pack describes audio nobody can play`,
         );
+      } else {
+        const onDisk = sha256File(deliveredPath);
+        if (onDisk !== deliveredSha) {
+          blockers.push(
+            `the pack's delivered capture (${deliveredPath}) hashes to ${onDisk}, not the recorded ${deliveredSha}; the pack is misdescribed`,
+          );
+        }
       }
     }
+  }
+
+  // The capture is named, so it must be playable: a path alone is a claim.
+  if (capturePath !== "" && !existsSync(capturePath)) {
+    blockers.push(`the named capture (${capturePath}) is not on disk`);
   }
 
   if (!isIsoDate(input.decidedOn)) {

@@ -109,6 +109,27 @@ function readPack(path: string): CascadeReauditionPack {
   if (!isRecord(pack.ballots) || !isRecord(pack.verdict)) {
     throw new Error(`--pack ${path} is missing its ballots or its verdict block`);
   }
+
+  // The recorder trusts the pack; this boundary does not. A hand-edited pack
+  // that claims to be complete without two ballots or with blockers is refused
+  // here, so the recorder is never handed an internally inconsistent document.
+  const rawPack = pack as unknown as Record<string, unknown>;
+  const ballots = rawPack.ballots as Record<string, unknown>;
+  const verdict = rawPack.verdict as Record<string, unknown>;
+  const blockers = Array.isArray(rawPack.blockers) ? rawPack.blockers : [];
+  const recorded = Number(ballots.recorded ?? 0);
+  const required = Number(ballots.required ?? 0);
+  const internallyComplete =
+    rawPack.status === "complete" &&
+    verdict.readyForOwner === true &&
+    ballots.complete === true &&
+    recorded >= required &&
+    blockers.length === 0;
+  if (rawPack.status === "complete" && !internallyComplete) {
+    throw new Error(
+      `--pack ${path} claims status "complete" but is inconsistent (${recorded}/${required} ballots, ${blockers.length} blockers, readyForOwner ${String(verdict.readyForOwner)}); rebuild the pack instead of editing it`,
+    );
+  }
   return pack;
 }
 
