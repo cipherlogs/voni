@@ -92,12 +92,20 @@ def events_dir() -> Path:
     return Path(configured) if configured else DEFAULT_EVENTS_DIR
 
 
-def operational_events_for(call_id: str, subject: str) -> OperationalEvents:
-    """One call's operational events, through the one envelope and file stream."""
+def operational_events_for(
+    call_id: str, subject: str, *, kind: str | None = None
+) -> OperationalEvents:
+    """One call's operational events, through the one envelope and file stream.
+
+    ``kind`` is the signed envelope's verified subject kind. A demo call's
+    stream refuses any line whose subject is not ``demo:<voice>``; a tenant
+    call keeps its existing subject behaviour. The file is keyed by ``call_id``
+    (never the subject), so one call — including a hold return — has one trace.
+    """
     writer = EventWriter(pipeline="cascade", call_id=call_id)
     sink = CallEventLog(events_dir(), call_id=call_id)
     return OperationalEvents(
-        EventStream(writer, sink=sink), subject=subject, now=time.time
+        EventStream(writer, sink=sink, subject_kind=kind), subject=subject, now=time.time
     )
 
 
