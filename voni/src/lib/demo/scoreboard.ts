@@ -80,6 +80,10 @@ import {
 } from "../voice/session";
 import { SCOREBOARD_BUDGETS } from "./scoreboard-budgets";
 import {
+  bodySourceForPipeline,
+  type BodySource,
+} from "./body-source";
+import {
   CASCADE_NO_COMMIT_MARK_ABSENCE,
   MANAGED_NO_COMMIT_MARK_ABSENCE,
   MANAGED_NO_PARTIALS_ABSENCE,
@@ -2950,6 +2954,13 @@ export type ScoreboardArtifact = {
    * written before the cascade; readers take that as `managed`.
    */
   pipeline?: ArtifactPipeline;
+  /**
+   * Which body this artifact's claims come from (demo-cascade ticket 24):
+   * `cascade` for a cascade call's own evidence, `managed` for the
+   * platform-served stored-agent body. Absent on artifacts written before the
+   * field; readers derive it from `pipeline` (`bodySourceForPipeline`).
+   */
+  bodySource?: BodySource;
   /**
    * The run block (spec M12): the run's own id (matching `runId`), the A/B
    * variant it belongs to and its window. Absent on artifacts written before
@@ -6465,6 +6476,9 @@ export function buildSkeletonArtifact(input: {
     recordedAt: new Date().toISOString(),
     voice: input.voice,
     subject,
+    // Ticket 24: every artifact names the body its claims come from, derived
+    // from the engine that produced it (an absent engine played a managed run).
+    bodySource: bodySourceForPipeline(input.engine?.pipeline),
     ...engineShape,
     runs: input.runs,
     goldenScript: {

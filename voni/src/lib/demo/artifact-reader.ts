@@ -23,6 +23,7 @@ import {
   type ScoreboardArtifact,
 } from "./scoreboard";
 import { CASCADE_ONLY_EVENT_TYPES, isCascadeOnlyEvent } from "./event-envelope";
+import { BODY_SOURCES, bodySourceForPipeline } from "./body-source";
 import { ShapeError, objectOf, optionalObjectOf, showValue } from "./shape";
 import {
   GATE_CAPTURE_LEGS,
@@ -133,6 +134,7 @@ export function parseScoreboardArtifact(raw: unknown, source: string): Scoreboar
   }
 
   const pipeline = pipelineOfArtifact(record as Pick<ScoreboardArtifact, "pipeline">, source);
+  parseBodySource(record.bodySource, pipeline, source);
   const captures = parseCaptures(record.captures, source);
   parseVendorFloor(record.vendorFloor, source);
   if (pipeline === "cascade" && isPresentCapture(captures?.platform)) {
@@ -224,6 +226,32 @@ export function pipelineOfArtifact(
     );
   }
   return artifact.pipeline;
+}
+
+/**
+ * The body the artifact's claims come from (demo-cascade ticket 24). Absent is
+ * allowed (older artifacts derive it from `pipeline`); an unknown value is
+ * refused by name, and a value that contradicts the engine is refused rather
+ * than read as the other engine's evidence.
+ */
+function parseBodySource(raw: unknown, pipeline: ArtifactPipeline, source: string): void {
+  if (raw === undefined) return;
+  if (typeof raw !== "string" || !(BODY_SOURCES as readonly string[]).includes(raw)) {
+    throw new ArtifactReadError(
+      source,
+      "bodySource",
+      `artifact field "bodySource" is ${showValue(raw)}; expected one of ${BODY_SOURCES.join(", ")}`,
+    );
+  }
+  const expected = bodySourceForPipeline(pipeline);
+  if (raw !== expected) {
+    throw new ArtifactReadError(
+      source,
+      "bodySource",
+      `artifact field "bodySource" is ${showValue(raw)} but the ${pipeline} ` +
+        `engine's claims come from the ${expected} body`,
+    );
+  }
 }
 
 /**

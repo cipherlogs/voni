@@ -33,6 +33,11 @@ import {
   type ScoreboardArtifact,
 } from "./scoreboard";
 import { deriveRunEligibility, pipelineOfArtifact } from "./artifact-reader";
+import {
+  BODY_SOURCE_CLAIMS,
+  bodySourceForPipeline,
+  type BodySource,
+} from "./body-source";
 import type { SubjectRecord } from "./subject";
 import { formatSubject } from "./subject";
 import type { EvalEventSummary } from "./eval-events";
@@ -218,6 +223,12 @@ export type InspectVerdict = RunVerdict & {
 
 export type InspectReport = {
   run: InspectRunIdentity;
+  /**
+   * Which body this report's claims come from (demo-cascade ticket 24): the
+   * cascade call's own evidence or the managed platform-served stored-agent
+   * body. Printed with the run, so a managed-only read is never silent.
+   */
+  body: { source: BodySource; claim: string };
   /** The clean-run verdict over this artifact's own facts (never a number). */
   verdict: InspectVerdict;
   scenarios: InspectScenario[];
@@ -704,11 +715,14 @@ export function buildInspectReport(
     eligible: eligibility.eligible,
     disposition: eligibility.disposition,
   };
+  const pipeline = pipelineOfArtifact(artifact, "artifact");
+  // The artifact's own record wins; older artifacts derive it from the engine.
+  const bodySource = artifact.bodySource ?? bodySourceForPipeline(pipeline);
   return {
     run: {
       voice: artifact.voice,
       subject,
-      pipeline: pipelineOfArtifact(artifact, "artifact"),
+      pipeline,
       runId: artifact.runId,
       recordedAt: artifact.recordedAt,
       schemaVersion: artifact.schemaVersion,
@@ -723,6 +737,7 @@ export function buildInspectReport(
       variantKey: evidence?.variantKey ?? null,
       turnWindows: evidence?.turnWindows ?? null,
     },
+    body: { source: bodySource, claim: BODY_SOURCE_CLAIMS[bodySource] },
     verdict,
     scenarios: evidence?.scenarios ?? [],
     gates,
@@ -1038,6 +1053,7 @@ export function formatInspectReport(report: InspectReport): string {
     `  transport    ${run.transport}`,
     `  subject      ${formatSubject(run.subject)}`,
     `  pipeline     ${run.pipeline}`,
+    `  body         ${report.body.claim}`,
     `  verdict      ${formatVerdict(report.verdict)}`,
     `  agent        ${run.agentId ?? "unknown"}  (llm ${run.llmModel ?? "unknown"})`,
   ];
