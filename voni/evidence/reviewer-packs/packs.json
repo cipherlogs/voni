@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "generatedOn": "2026-10-29",
+  "generatedOn": "2026-10-30",
   "command": "cd voni && npm run voice:packs",
   "source": "evidence/audition-clips/clips.json",
   "counts": {
-    "total": 16,
-    "pending": 16,
+    "total": 15,
+    "pending": 15,
     "complete": 0,
     "incomplete": 0
   },
@@ -152,17 +152,6 @@
       "reviewer": null,
       "reviewedOn": null,
       "pack": "evidence/reviewer-packs/lola.json"
-    },
-    {
-      "voice": "juergen",
-      "locale": "de",
-      "asset": "public/voices/juergen.mp3",
-      "url": "/voices/juergen.mp3",
-      "recordingSha256": "763d97ffe04cfeb5003eb4c68bf987f79312871e21f1ffdd4463584efab22993",
-      "status": "pending",
-      "reviewer": null,
-      "reviewedOn": null,
-      "pack": "evidence/reviewer-packs/juergen.json"
     },
     {
       "voice": "rafael",

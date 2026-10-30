@@ -75,6 +75,7 @@ const BOUND_SUBJECTS: SubjectSpec[] = [
   { subject: "anna", kind: "demo", locale: "en", greeting: "Hi, this is Anna." },
   { subject: "lola", kind: "demo", locale: "es", greeting: "Hola, soy Lola." },
   { subject: "estelle", kind: "demo", locale: "fr", greeting: "Bonjour, je suis Estelle." },
+  { subject: "jorg", kind: "demo", locale: "de", greeting: "Hallo, hier ist Jorg." },
   { subject: "giovanni", kind: "demo", locale: "it", greeting: "Ciao, sono Giovanni." },
   { subject: "rafael", kind: "demo", locale: "pt", greeting: "Olá, sou o Rafael." },
   { subject: "agent_tenant_1", kind: "tenant", locale: "es", greeting: "Hola, soy el agente." },
@@ -269,13 +270,7 @@ function completeManifest(): { manifest: ReadinessManifest; dir: string } {
     dir,
     manifest: {
       subjects: BOUND_SUBJECTS.map((spec) => subjectEntry(spec, dir)),
-      deferrals: [
-        {
-          subject: "juergen",
-          date: "2026-10-29",
-          reason: "German stays open: the vendor returns 422 voice_not_found (ticket 130).",
-        },
-      ],
+      deferrals: [],
     },
   };
 }
@@ -308,14 +303,14 @@ test("a complete manifest of the bound demo voices and one eligible tenant is re
     assert.equal(row.ballots.complete, true);
   }
 
-  const german = bySubject.get("juergen")!;
-  assert.equal(german.status, "deferred");
-  assert.match(german.deferral?.reason ?? "", /voice_not_found/);
-  assert.equal(german.deferral?.date, "2026-10-29");
+  const german = bySubject.get("jorg")!;
+  assert.equal(german.status, "complete", german.blockers.join("; "));
+  assert.equal(german.locale, "de");
+  assert.equal(german.deferral, null, "German is bound: it needs evidence, not a deferral");
 
   const markdown = formatReadinessPack(pack);
   assert.match(markdown, /READY/);
-  assert.match(markdown, /juergen/);
+  assert.match(markdown, /jorg/);
   assert.match(markdown, /agent_tenant_1/);
   assert.match(markdown, /aaaaaaaaaaaa/);
 });

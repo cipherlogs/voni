@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "measuredOn": "2026-10-29",
+  "measuredOn": "2026-10-30",
   "method": "POST https://tts.us.assemblyai.com/v1/speech, stream=false, container=wav, encoding=pcm_s16le, sample_rate=24000, one call per take, each voice's own greeting in its own Locale",
   "measuredWith": "src/lib/audio/level-facts.ts (BS.1770-4 gated integrated loudness, 4x true peak)",
   "reference": {
@@ -170,7 +170,7 @@
     {
       "voice": "lola",
       "locale": "es",
-      "line": "\u00a1Hola, soy Voni! Probemos algo genial: te muestro lo que puedo hacer mientras hablamos. \u00bfListo?",
+      "line": "¡Hola, soy Voni! Probemos algo genial: te muestro lo que puedo hacer mientras hablamos. ¿Listo?",
       "takes": [
         -23.75,
         -23.46,
@@ -181,9 +181,22 @@
       "volume": 100
     },
     {
+      "voice": "jorg",
+      "locale": "de",
+      "line": "Hallo, hier ist Voni! Probieren wir etwas Cooles: Ich zeige Ihnen, was ich kann, während wir reden. Bereit?",
+      "takes": [
+        -23.61,
+        -24.93,
+        -25.57
+      ],
+      "integratedLufs": -24.93,
+      "truePeakDbtp": -5.96,
+      "volume": 100
+    },
+    {
       "voice": "rafael",
       "locale": "pt",
-      "line": "Ol\u00e1, aqui \u00e9 Voni! Vamos testar algo legal: mostro o que sei fazer enquanto conversamos. Pronto?",
+      "line": "Olá, aqui é Voni! Vamos testar algo legal: mostro o que sei fazer enquanto conversamos. Pronto?",
       "takes": [
         -26.41,
         -27.29,
@@ -207,12 +220,5 @@
       "volume": 100
     }
   ],
-  "unmeasured": [
-    {
-      "voice": "juergen",
-      "locale": "de",
-      "volume": 100,
-      "reason": "vendor /v1/speech did not serve a measurable reference: 422 voice_not_found"
-    }
-  ]
+  "unmeasured": []
 }

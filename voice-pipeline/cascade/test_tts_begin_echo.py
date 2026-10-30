@@ -73,7 +73,7 @@ class EchoMismatchTests(unittest.TestCase):
 
     def requested(self, field):
         return {
-            "voice_id": "anna",
+            "voice_id": "aai-anna",
             "language": "English",
             "sample_rate": 24000,
             "encoding": "pcm_s16le",
@@ -81,7 +81,7 @@ class EchoMismatchTests(unittest.TestCase):
         }[field]
 
     def test_a_mismatched_voice_is_named_and_plays_no_audio(self):
-        self.assert_mismatch("voice_id", "lola", voice_id="lola")
+        self.assert_mismatch("voice_id", "aai-lola", voice_id="lola")
 
     def test_a_mismatched_language_is_named(self):
         self.assert_mismatch("language", "spanish", language="spanish")

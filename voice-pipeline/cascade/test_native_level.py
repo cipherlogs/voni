@@ -150,7 +150,7 @@ class SynthesisRequestHasNoLevelStageTests(unittest.TestCase):
         self.assertEqual(level_stage_keys(parameters), ())
         assert_no_level_stage(parameters, where="synthesis request")
         # The request is not empty: it names the voice, language and format.
-        self.assertEqual(parameters["voice_id"], ["anna"])
+        self.assertEqual(parameters["voice_id"], ["aai-anna"])
         self.assertEqual(parameters["language"], ["English"])
         self.assertEqual(parameters["sample_rate"], ["24000"])
         self.assertEqual(parameters["encoding"], ["pcm_s16le"])

@@ -7,10 +7,11 @@ binding, and a request field that disagrees is refused instead of followed, so
 no caller input can mix languages.
 
 A voice that is absent is refused by name. A voice the catalogue offers but the
-vendor does not serve (``juergen``/de, ``422 voice_not_found``) is a named
-*unbound* row: refused by name too, with its Locale recorded, because German
-stays open rather than being dropped or re-cast to another Locale (ticket 130).
-Neither is a cascade subject.
+vendor does not serve (``juergen``/de, ``422 voice_not_found``) is kept as a
+named *unbound historical* row: refused by name too, with its Locale recorded,
+so it can never become a silent fallback. German is bound to the re-cast voice
+``jorg`` (ticket 130); neither the bound nor the historical row is a second
+catalogue.
 
 Catalogue source: ``voni/src/lib/agents/voices.ts`` and the measured evidence in
 ``voni/evidence/voice-levels/levels.json``; the tests compare this table with
@@ -37,6 +38,18 @@ SPEECH_LANGUAGES: Mapping[str, str] = MappingProxyType(
     }
 )
 
+#: The vendor's library id is the catalogue id with this prefix: the app stores
+#: the bare id (`jorg`), and the synthesis endpoint serves `aai-jorg` (the same
+#: mapping `voni/scripts/measure-voice-levels.mts` sends).
+VENDOR_VOICE_ID_PREFIX = "aai-"
+
+
+def vendor_voice_id(voice_id: str) -> str:
+    """The vendor's id for a catalogue voice, prefixed exactly once."""
+    if voice_id.startswith(VENDOR_VOICE_ID_PREFIX):
+        return voice_id
+    return f"{VENDOR_VOICE_ID_PREFIX}{voice_id}"
+
 
 class VoiceBindingError(LookupError):
     """A requested voice cannot be bound, so it is not a cascade subject."""
@@ -53,7 +66,7 @@ class UnknownVoiceError(VoiceBindingError):
 
 
 class UnboundVoiceError(VoiceBindingError):
-    """The voice is in the catalogue but carries no binding (e.g. German)."""
+    """The voice carries no binding; the refusal names its Locale and reason."""
 
     def __init__(self, voice_id: str, locale: Locale | None, reason: str) -> None:
         self.voice_id = voice_id
@@ -122,14 +135,25 @@ class VoiceBinding:
         """The vendor's language name — the value a synthesis request sends."""
         return self.locale.language
 
+    @property
+    def vendor_voice_id(self) -> str:
+        """The vendor's library id for this catalogue voice (`aai-jorg`)."""
+        return vendor_voice_id(self.voice_id)
+
 
 @dataclass(frozen=True)
 class UnboundVoice:
-    """A catalogue voice with no binding; kept visible, never silently dropped."""
+    """A voice with no binding; kept visible, never silently dropped.
+
+    ``historical`` marks an id the catalogue no longer offers (the pre-re-cast
+    German ``juergen``). It is still refused by name with its 422 reason, so a
+    request that names it cannot fall through to another voice or Locale.
+    """
 
     voice_id: str
     locale: Locale
     reason: str
+    historical: bool = False
 
 
 LOCALES: Mapping[str, Locale] = MappingProxyType(
@@ -149,7 +173,8 @@ def build_bindings(declarations: Iterable[VoiceBinding]) -> dict[str, VoiceBindi
 
 
 # The catalogue's offered voices, each bound to the Locale its languageCode
-# declares. Every serving voice is bound here; `juergen` is the named exception.
+# declares. Every serving voice is bound here, German included since the
+# re-cast to `jorg` (ticket 130).
 _CATALOGUE: tuple[VoiceBinding, ...] = (
     VoiceBinding("alba", LOCALES["en"]),
     VoiceBinding("eve", LOCALES["en"]),
@@ -164,6 +189,7 @@ _CATALOGUE: tuple[VoiceBinding, ...] = (
     VoiceBinding("paul", LOCALES["en"]),
     VoiceBinding("giovanni", LOCALES["it"]),
     VoiceBinding("lola", LOCALES["es"]),
+    VoiceBinding("jorg", LOCALES["de"]),
     VoiceBinding("rafael", LOCALES["pt"]),
     VoiceBinding("estelle", LOCALES["fr"]),
 )
@@ -176,9 +202,10 @@ UNBOUND_VOICES: Mapping[str, UnboundVoice] = MappingProxyType(
             voice_id="juergen",
             locale=LOCALES["de"],
             reason=(
-                "vendor /v1/speech returned 422 voice_not_found; "
-                "German stays open until the re-cast (ticket 130)"
+                "vendor /v1/speech returned 422 voice_not_found; historical id, "
+                "replaced by jorg (ticket 130)"
             ),
+            historical=True,
         )
     }
 )

@@ -360,33 +360,6 @@
       "generatedOn": "2026-10-29"
     },
     {
-      "voice": "juergen",
-      "locale": "de",
-      "line": "Hallo, hier ist Voni! Probieren wir etwas Cooles: Ich zeige Ihnen, was ich kann, während wir reden. Bereit?",
-      "lineSha256": "13c495456ca28f42280a6106a89b48bdfae29906b4c332bc12d5ba66184162a4",
-      "asset": "public/voices/juergen.mp3",
-      "url": "/voices/juergen.mp3",
-      "volume": 100,
-      "facts": {
-        "sampleRate": 24000,
-        "channels": 1,
-        "bitrateKbps": 160,
-        "frames": 277,
-        "durationMs": 6648
-      },
-      "level": {
-        "sourceIntegratedLufs": -29.44,
-        "assetIntegratedLufs": -29.93,
-        "assetTruePeakDbtp": -12.64,
-        "assetCrestDb": 17,
-        "secondEncodeLufs": -30.36,
-        "secondEncodeTruePeakDbtp": -13.08,
-        "secondEncodeCrestDb": 17.04,
-        "referenceIntegratedLufs": null
-      },
-      "generatedOn": "2026-10-29"
-    },
-    {
       "voice": "rafael",
       "locale": "pt",
       "line": "Olá, aqui é Voni! Vamos testar algo legal: mostro o que sei fazer enquanto conversamos. Pronto?",
@@ -441,5 +414,12 @@
       "generatedOn": "2026-10-29"
     }
   ],
-  "pending": []
+  "pending": [
+    {
+      "voice": "jorg",
+      "locale": "de",
+      "reason": "German was re-cast from juergen to jorg; the managed audition clip is not rendered yet and the owner audition is pending (ticket 130)",
+      "command": "cd voni && npm run voice:clips -- --voice jorg"
+    }
+  ]
 }

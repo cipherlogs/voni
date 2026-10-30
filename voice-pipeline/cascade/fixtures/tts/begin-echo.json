@@ -11,7 +11,7 @@
       "language": "English",
       "sample_rate": 24000,
       "encoding": "pcm_s16le",
-      "voice_id": "anna",
+      "voice_id": "aai-anna",
       "model": "assemblyai-tts-1",
       "word_boundaries": true,
       "limits": {
@@ -29,7 +29,7 @@
   "frames": [],
   "expect": {
     "url_params": {
-      "voice_id": "anna",
+      "voice_id": "aai-anna",
       "language": "English",
       "sample_rate": "24000",
       "encoding": "pcm_s16le",
@@ -37,7 +37,7 @@
       "word_boundaries": "true"
     },
     "echo": {
-      "voice_id": "anna",
+      "voice_id": "aai-anna",
       "language": "English",
       "sample_rate": 24000,
       "encoding": "pcm_s16le",

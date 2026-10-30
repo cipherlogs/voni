@@ -119,7 +119,7 @@ test("the source session carries the voice and nothing else: no gain, no volume"
 });
 
 test("a clip that speaks the wrong Locale or a stale greeting is detectable", () => {
-  const german = auditionClipFor("juergen");
+  const german = auditionClipFor("jorg");
   const problems = auditionClipProblems(
     german,
     recordFor(german, { locale: "en", line: VONI_GREETINGS.en }),

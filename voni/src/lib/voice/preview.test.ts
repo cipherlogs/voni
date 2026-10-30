@@ -92,7 +92,16 @@ test("every bound cascade voice's preview is its own native clip", () => {
 });
 
 test("a voice with no binding has no preview, never another voice's", () => {
-  assert.equal(cascadePreviewUrl("juergen"), null, "German is open until the re-cast (ticket 130)");
+  assert.equal(
+    cascadePreviewUrl("jorg"),
+    "/voices/cascade/jorg.wav",
+    "the chosen German voice has its own preview",
+  );
+  assert.equal(
+    cascadePreviewUrl("juergen"),
+    null,
+    "the retired German id has no preview and never borrows jorg's",
+  );
   assert.equal(cascadePreviewUrl("morgan-freeman"), null, "a voice outside the catalog has none");
   assert.notEqual(cascadePreviewUrl("anna"), "/voices/anna.mp3", "the managed picker asset is separate");
 });

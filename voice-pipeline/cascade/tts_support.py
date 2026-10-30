@@ -17,6 +17,7 @@ from typing import Any
 
 from cascade.assemblyai_tts import AssemblyAIStreamingTTS
 from cascade.testing.socket_factory import Frame, ScriptedSocketFactory
+from cascade.voice_binding import vendor_voice_id
 
 API_KEY = "test-key"
 
@@ -52,7 +53,7 @@ def begin(
             "language": language,
             "sample_rate": sample_rate,
             "encoding": encoding,
-            "voice_id": voice_id,
+            "voice_id": vendor_voice_id(voice_id),
             "model": model,
             "word_boundaries": True,
             "limits": dict(VENDOR_LIMITS if limits is None else limits),

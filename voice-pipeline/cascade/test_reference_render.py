@@ -151,7 +151,7 @@ class ReferenceRenderTest(unittest.TestCase):
         # The call's own client and binding, on the wire.
         connection = factory.connections[0]
         self.assertIn("wss://tts.us.assemblyai.com/v1/ws?", connection["url"])
-        self.assertIn("voice_id=lola", connection["url"])
+        self.assertIn("voice_id=aai-lola", connection["url"])
         self.assertIn("language=Spanish", connection["url"])
         self.assertIn("sample_rate=24000", connection["url"])
         self.assertIn("encoding=pcm_s16le", connection["url"])

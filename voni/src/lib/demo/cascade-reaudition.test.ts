@@ -342,7 +342,7 @@ test("a transcript line different from the reference is unresolved", () => {
   assert.equal(pack.verdictInputs.inputs.comparisonMeasured, false);
 });
 
-test("the roster lists six subjects and keeps German open, never fabricated", () => {
+test("the roster lists six subjects, German bound to jorg, never fabricated", () => {
   const { request } = fixture();
   const pack = assembleCascadeReauditionPack(request);
   const roster = cascadeReauditionRoster([pack]);
@@ -350,12 +350,12 @@ test("the roster lists six subjects and keeps German open, never fabricated", ()
   assert.equal(roster.subjects.length, 6);
   assert.deepEqual(
     roster.subjects.map((row) => row.voice),
-    ["anna", "lola", "estelle", "juergen", "giovanni", "rafael"],
+    ["anna", "lola", "estelle", "jorg", "giovanni", "rafael"],
   );
-  const german = roster.subjects.find((row) => row.voice === "juergen")!;
+  const german = roster.subjects.find((row) => row.voice === "jorg")!;
   assert.equal(german.locale, "de");
-  assert.equal(german.status, "open");
-  assert.match(german.openReason ?? "", /German stays open|voice_not_found/);
+  assert.equal(german.status, "missing", "no W2 pack is recorded for the re-cast voice yet");
+  assert.match(german.openReason ?? "", /no pack supplied/);
   assert.equal(german.packStatus, null);
   assert.equal(german.ballots, 0);
 
@@ -369,5 +369,5 @@ test("the roster lists six subjects and keeps German open, never fabricated", ()
 
   assert.equal(roster.ready, false);
   assert.match(roster.blockers.join(" "), /anna/);
-  assert.match(roster.blockers.join(" "), /juergen|de/);
+  assert.match(roster.blockers.join(" "), /jorg|de/);
 });

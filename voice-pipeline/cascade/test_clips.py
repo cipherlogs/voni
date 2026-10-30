@@ -39,6 +39,7 @@ from cascade.clips import (
     CLIP_LOCALES,
     CLIP_MANIFEST_PATH,
     CLIP_ASSET_DIR,
+    DEMO_VOICE_IDS,
     ClipError,
     ClipLevel,
     ClipRecord,
@@ -177,8 +178,22 @@ class ClipPlanTest(unittest.TestCase):
             self.assertEqual(greetings()[entry.locale], entry.greeting)
             self.assertEqual(entry.greeting, clip_plan_for(entry.voice_id).greeting)
 
-    def test_the_german_voice_is_an_open_locale_with_a_named_blocker(self):
-        plan = clip_plan_for("juergen")
+    def test_the_german_voice_plans_jorg_in_its_own_locale(self):
+        plan = clip_plan_for("jorg")
+
+        self.assertEqual("de", plan.locale)
+        self.assertEqual("German", plan.language)
+        self.assertEqual("bound", plan.state)
+        self.assertEqual("voni/public/voices/cascade/jorg.wav", plan.asset)
+        self.assertEqual("/voices/cascade/jorg.wav", plan.preview)
+        self.assertIsNone(plan.reason)
+
+    def test_an_unbound_historical_voice_would_be_an_open_row_not_a_clip(self):
+        # The demo has no open Locale today. The open-row mechanism is kept
+        # honest by naming the retired German id as a subject: the binding table
+        # still refuses it, so the plan is a named row with no asset.
+        with patch("cascade.clips.DEMO_VOICE_IDS", (*DEMO_VOICE_IDS, "juergen")):
+            plan = clip_plan_for("juergen")
 
         self.assertEqual("de", plan.locale)
         self.assertEqual("German", plan.language)
@@ -238,7 +253,7 @@ class ClipRenderTest(unittest.TestCase):
         # The call's own endpoint and binding, on the wire.
         connection = factory.connections[0]
         self.assertIn(TTS_BASE_URL, connection["url"])
-        self.assertIn("voice_id=lola", connection["url"])
+        self.assertIn("voice_id=aai-lola", connection["url"])
         self.assertIn("language=Spanish", connection["url"])
         self.assertIn("sample_rate=24000", connection["url"])
         self.assertIn("encoding=pcm_s16le", connection["url"])
@@ -292,10 +307,12 @@ class ClipRenderTest(unittest.TestCase):
     def test_an_open_locale_refuses_to_render_before_a_socket(self):
         factory = ScriptedSocketFactory([], clock=self.clock)
 
+        with patch("cascade.clips.DEMO_VOICE_IDS", (*DEMO_VOICE_IDS, "juergen")):
+            plan = clip_plan_for("juergen")
         with self.assertRaises(ClipError) as raised:
             asyncio.run(
                 render_clip(
-                    clip_plan_for("juergen"),
+                    plan,
                     out_dir=self.root / "references",
                     asset_root=self.root,
                     api_key=API_KEY,
@@ -305,7 +322,7 @@ class ClipRenderTest(unittest.TestCase):
             )
 
         self.assertIn("juergen", str(raised.exception))
-        self.assertIn("open", str(raised.exception))
+        self.assertIn("not bound", str(raised.exception))
         self.assertEqual([], factory.connections)
 
     def test_a_render_without_a_key_is_blocked_before_a_socket_or_a_file(self):
@@ -437,7 +454,7 @@ class ManifestAuditTest(unittest.TestCase):
         self.assertEqual(MODEL_ID, manifest["format"]["model"])
         self.assertEqual(24000, manifest["format"]["sampleRate"])
         self.assertEqual(
-            ["anna", "lola", "estelle", "giovanni", "rafael"],
+            ["anna", "lola", "estelle", "jorg", "giovanni", "rafael"],
             [clip["voice"] for clip in manifest["clips"]],
         )
         for clip, plan in zip(manifest["clips"], [p for p in clip_plan() if p.bound]):
@@ -450,31 +467,19 @@ class ManifestAuditTest(unittest.TestCase):
             self.assertEqual("none", clip["gainStage"])
             self.assertIn("samplePeakDbfs", clip["level"])
 
-    def test_the_manifest_keeps_the_open_german_locale_as_a_named_row(self):
+    def test_the_manifest_has_no_open_locale_because_german_is_bound(self):
         manifest = self.manifest()
-        self.assertEqual(
-            [
-                {
-                    "voice": "juergen",
-                    "locale": "de",
-                    "language": "German",
-                    "line": clip_plan_for("juergen").greeting,
-                    "lineSha256": hashlib.sha256(
-                        clip_plan_for("juergen").greeting.encode()
-                    ).hexdigest(),
-                    "state": "open",
-                    "reason": clip_plan_for("juergen").reason,
-                }
-            ],
-            manifest["open"],
-        )
+        self.assertEqual([], manifest["open"])
+        german = next(clip for clip in manifest["clips"] if clip["voice"] == "jorg")
+        self.assertEqual("de", german["locale"])
+        self.assertEqual("German", german["language"])
 
     def test_a_matching_manifest_and_assets_audit_clean(self):
         audit = audit_manifest(self.manifest(), asset_root=self.root)
 
         self.assertEqual((), audit.problems)
-        self.assertEqual(5, audit.clip_count)
-        self.assertEqual(1, audit.open_count)
+        self.assertEqual(6, audit.clip_count)
+        self.assertEqual(0, audit.open_count)
 
     def test_a_bound_voice_with_no_clip_fails(self):
         audit = audit_manifest(self.manifest(self.clips[1:]), asset_root=self.root)
@@ -497,14 +502,19 @@ class ManifestAuditTest(unittest.TestCase):
         self.assertTrue(any("anna" in problem and "sha256" in problem for problem in audit.problems))
         self.assertTrue(any("anna" in problem and "level" in problem for problem in audit.problems))
 
-    def test_a_clip_for_the_open_german_locale_fails(self):
-        # The lie the gate exists for: German's row is dressed as another voice's clip.
+    def test_a_clip_for_the_retired_german_id_fails(self):
+        # The lie the gate exists for: an id that is no longer a demo subject is
+        # dressed as another voice's clip.
         forged = replace(
             fixture_record(self.root, clip_plan_for("estelle")), voice="juergen", locale="de"
         )
-        audit = audit_manifest(self.manifest([*self.clips, forged]), asset_root=self.root)
+        manifest = self.manifest()
+        manifest["clips"].append(forged.to_document())
+        audit = audit_manifest(manifest, asset_root=self.root)
 
-        self.assertTrue(any("juergen" in problem and "open" in problem for problem in audit.problems))
+        self.assertTrue(
+            any("juergen" in problem and "six demo voices" in problem for problem in audit.problems)
+        )
 
     def test_a_clip_for_a_voice_outside_the_demo_fails(self):
         alien = replace(
@@ -617,13 +627,15 @@ class RenderPlanTest(unittest.TestCase):
             )
         )
 
-        self.assertEqual(["anna", "estelle", "giovanni", "rafael"], [r.voice for r in records])
+        self.assertEqual(
+            ["anna", "estelle", "jorg", "giovanni", "rafael"], [r.voice for r in records]
+        )
         self.assertEqual(["lola"], [b.voice for b in blockers])
         self.assertIn("422", blockers[0].reason)
         self.assertIn("--voice lola", blockers[0].command)
         self.assertFalse(stale.exists(), "a failed voice must not keep a stale clip")
 
-    def test_an_open_locale_has_no_clip_and_its_old_asset_is_retired(self):
+    def test_the_retired_german_ids_old_asset_is_retired(self):
         old = self.root / CLIP_ASSET_DIR / "juergen.wav"
         old.parent.mkdir(parents=True)
         old.write_bytes(b"hand-captured audio that must not survive")
@@ -642,8 +654,9 @@ class RenderPlanTest(unittest.TestCase):
         )
 
         self.assertNotIn("juergen", [r.voice for r in records])
-        self.assertFalse(old.exists(), "an open Locale keeps no clip")
-        self.assertEqual([], blockers, "an open Locale is a plan row, not a render failure")
+        self.assertIn("jorg", [r.voice for r in records])
+        self.assertFalse(old.exists(), "an id outside the demo keeps no clip")
+        self.assertEqual([], blockers, "a retired id is not a demo subject, not a failure")
 
 
 class ClipCliTest(unittest.TestCase):
@@ -693,17 +706,16 @@ class ClipCliTest(unittest.TestCase):
         result = self.run_cli("--check")
 
         self.assertEqual(0, result.returncode, result.stderr)
-        self.assertIn("5 committed", result.stdout)
-        self.assertIn("1 open", result.stdout)
+        self.assertIn("6 committed", result.stdout)
+        self.assertIn("0 open", result.stdout)
 
-    def test_check_strict_fails_while_german_is_open(self):
+    def test_check_strict_passes_when_every_demo_voice_is_bound(self):
         self.complete_manifest()
 
         result = self.run_cli("--check", "--strict")
 
-        self.assertEqual(1, result.returncode)
-        self.assertIn("juergen", result.stderr)
-        self.assertIn("de", result.stderr)
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("6 committed", result.stdout)
 
     def test_check_names_a_clip_that_disagrees_with_its_binding(self):
         manifest = self.complete_manifest()
@@ -717,12 +729,12 @@ class ClipCliTest(unittest.TestCase):
         self.assertIn("lola", result.stderr)
         self.assertIn("Locale", result.stderr)
 
-    def test_rendering_an_open_locale_refuses_by_name(self):
+    def test_rendering_a_retired_german_id_refuses_by_name(self):
         result = self.run_cli("--voice", "juergen")
 
         self.assertEqual(1, result.returncode)
         self.assertIn("juergen", result.stderr)
-        self.assertIn("open", result.stderr)
+        self.assertIn("not a demo subject", result.stderr)
 
     def test_an_unknown_voice_is_a_usage_error(self):
         result = self.run_cli("--voice", "nobody")
