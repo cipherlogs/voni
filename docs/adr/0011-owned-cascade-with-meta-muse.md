@@ -1,5 +1,7 @@
 # An owned cascade: Meta for ear and mind, AssemblyAI for the voice
 
+**Status: accepted. Scope: the tenant path only.** The demo runs only on the cascade, with no managed fallback; that surface split and the reversal of this record's default sentence for the demo are recorded in [ADR-0012](0012-demo-cascade-only.md).
+
 The managed AssemblyAI Voice Agent owns the two things this product needs to own: **when a turn ends** and **which model answers**. That ownership is not a preference we can negotiate — the wire protocol offers no way to commit a turn early, no visibility of the model behind a tenant call, and no lever on the reply gap. And the reply gap is the one budget that fails: `replyGapP50Ms` is frozen at 1500 with `replyGapP95Ms` at 2500, and the managed path measures 1923 p50 against it. Four gateway models, every streaming-STT preset and three turn-window rungs all landed between 1.9 s and 2.3 s. The limiting term is not ours to move while the vendor owns the boundary.
 
 Two facts make owning it cheaper than repairing it. The vendor's own text-to-speech is reachable directly — `POST https://tts.us.assemblyai.com/v1/speech` and `wss://tts.us.assemblyai.com/v1/ws` on `assemblyai-tts-1` — and our own evidence was captured through it: 15 of our 16 voices render, with `pcm_s16le` at 24 kHz native for the browser and `pcm_mulaw` at 8 kHz native for the phone, plus `Cancel` and `Flush` that the Voice Agent API never exposed to us. The app currently asserts this endpoint does not exist (`api/voice-preview/route.ts`), which is a belief we can now drop. And Meta's Muse Voice Transcribe does native endpointing, in 25 languages, with vocabulary biasing, on a model we can call ourselves.
@@ -8,7 +10,7 @@ So we own the orchestration. Speech-to-text defaults to Meta `muse-voice-transcr
 
 One correction to the original premise has to be recorded rather than discovered later. **Meta has no per-turn commit.** Its realtime socket accepts exactly one client text frame after the handshake — `endStream`, which ends the *session*, not a turn — and `PUSH_TO_TALK` is "single-turn and the client delimits the turn by ending the stream". The cascade was scoped to replace turn-based waiting with early commit; that is not shippable against Meta, in any mode. The turn boundary therefore belongs to the provider's endpointing, and our turn gate is demoted to **floor arbitration**: while the agent holds the floor, it decides interruption, backchannel, or wait. The latency win that remains is real but smaller — a pre-opened synthesis session, a sub-sentence first chunk, and speculation against the growing partial.
 
-The managed path stays the routing default until the cascade is proven on the frozen budgets for two consecutive rounds, and it is never a mid-call handover: it is an alternative chosen before the first frame.
+The managed path stays the routing default for the tenant path until the cascade is proven on the frozen budgets for two consecutive rounds, and it is never a mid-call handover: it is an alternative chosen before the first frame. (The demo no longer uses this default; see [ADR-0012](0012-demo-cascade-only.md).)
 
 ## Considered Options
 
