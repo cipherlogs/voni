@@ -58,8 +58,18 @@ or dropped hop is *indeterminate*: the side effect may have happened, so it is
 recorded as such and the turn's memo stops it being retried automatically.
 
 ``end_call`` is not a tool. It is a pure signal (:class:`EndCallSignal`): no
-request is made and nothing speakable follows it. The closing line and the
-hangup are ticket 87's.
+request is made and no ``role: "tool"`` message is produced. The closing line
+is carried on the signal so one place — :class:`CallClosing` — speaks it through
+the voice session the call already opened, then ends the turn and arms the
+one-shot hangup; a barge-in during the goodbye disarms the hangup and the caller
+wins (ticket 87). An ``end_call`` without a closing line is denied and recorded
+instead of half-executing.
+
+The tool loop is bounded by :data:`TOOL_LOOP_CAP_BOUND` (``tool.loop_cap``,
+ticket 87): :class:`ToolLoop` counts the turn's rounds, and
+:func:`continue_after_tool` speaks the Locale's fallback line
+(:data:`LOOP_CAP_LINES`), ends the turn and records the cap rather than asking
+the model again forever.
 """
 
 from __future__ import annotations
@@ -68,11 +78,12 @@ import asyncio
 import inspect
 import json
 import os
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from types import MappingProxyType
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
 from cascade.envelope import VerifiedBody
@@ -87,8 +98,12 @@ from cascade.meta_llm import (
     tool_result_message,
 )
 from cascade.thresholds import require_bound
+from cascade.turn_state import ToolLoopState
 from metrics import TimingLedger
 from providers import SentenceAudio, TokenDelta, ToolCallRequest
+
+if TYPE_CHECKING:
+    from cascade.barge_in import BargeInCut
 
 #: The app's existing tool route. The name is one path segment, never a body
 #: field, because that is the route the managed path already serves.
@@ -103,6 +118,24 @@ TOOL_TIMEOUT_BOUND = "tool.timeout_ms"
 
 #: Call control, never an HTTP tool.
 END_CALL_TOOL = "end_call"
+
+#: The model's argument that carries the line the caller hears before the call
+#: ends. ``end_call`` without one is denied (ticket 87).
+CLOSING_LINE_ARGUMENT = "closing_line"
+
+#: Stable code for an ``end_call`` that named no closing line. It is a denial
+#: the turn records, not a tool result and not an HTTP failure.
+TOOL_CLOSING_LINE_MISSING = "missing_closing_line"
+
+#: Why a turn's logical state closes when the agent ends the call.
+END_CALL_REASON = "end_call"
+
+#: The registry bound that bounds the tool loop's rounds (ticket 87 supplies the
+#: value; this module never restates it).
+TOOL_LOOP_CAP_BOUND = "tool.loop_cap"
+
+#: Why a turn's logical state closes when the loop reaches the cap.
+TOOL_LOOP_CAP_REASON = "tool_loop_cap"
 
 #: Stable failure codes a :class:`ToolFailure` carries (ticket 84). They are
 #: what the model reads and what an artifact can count; the prose stays out.
@@ -148,6 +181,41 @@ def hold_line(locale_code: str) -> str:
     line = HOLD_LINES.get(locale_code)
     if line is None:
         raise UnknownHoldLineError(locale_code)
+    return line
+
+
+#: The line a turn speaks when the tool loop reaches ``tool.loop_cap`` (ticket
+#: 87), one per Locale the catalogue speaks. It is spoken through the same voice
+#: and replaces the request the loop may not make; it is not a tool result.
+LOOP_CAP_LINES: Mapping[str, str] = MappingProxyType(
+    {
+        "en": "Sorry, I couldn't finish that just now. Let's keep going.",
+        "es": "Lo siento, no he podido terminar eso ahora. Sigamos.",
+        "fr": "Désolé, je n'ai pas pu terminer cela. Continuons.",
+        "de": "Entschuldigung, das konnte ich gerade nicht abschließen. Machen wir weiter.",
+        "it": "Mi dispiace, non sono riuscito a finire. Andiamo avanti.",
+        "pt": "Desculpe, não consegui terminar isso agora. Vamos continuar.",
+    }
+)
+
+
+class UnknownLoopCapLineError(LookupError):
+    """No loop-cap line exists for this Locale, so nothing may be spoken."""
+
+    def __init__(self, locale_code: str) -> None:
+        self.locale_code = locale_code
+        known = ", ".join(sorted(LOOP_CAP_LINES))
+        super().__init__(
+            f'no loop-cap line for Locale "{locale_code}": the catalogue has '
+            f"lines for {known}"
+        )
+
+
+def loop_cap_line(locale_code: str) -> str:
+    """The localized fallback line for a capped loop, or a named refusal."""
+    line = LOOP_CAP_LINES.get(locale_code)
+    if line is None:
+        raise UnknownLoopCapLineError(locale_code)
     return line
 
 
@@ -561,16 +629,66 @@ class ToolFailure(ToolResult):
 class EndCallSignal:
     """``end_call`` succeeded as call control: there is nothing left to run.
 
-    It carries no speakable text on purpose (CODING_STANDARDS: the end-call
-    result is a pure signal; the closing line is spoken before the signal).
+    ``closing_line`` is the line the caller hears before the call ends. It is
+    carried here so exactly one place speaks it (:class:`CallClosing`) and the
+    signal itself still produces no tool message and no model request. The
+    hangup is armed only after that line has played; nothing speakable follows
+    the signal (CODING_STANDARDS: the closing line is spoken before the signal).
     """
 
     call_id: str
     tool_call_id: str = ""
+    closing_line: str = ""
 
     @property
     def name(self) -> str:
         return END_CALL_TOOL
+
+
+class EndCallDenied(ToolHopError):
+    """An ``end_call`` that cannot end a call, refused by name.
+
+    It is denied rather than half-executed: no closing line is invented, no
+    audio is spoken and no hangup is armed. The executor records the refusal on
+    the turn (ticket 87).
+    """
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(f"end_call is denied: {reason}")
+
+
+def closing_line_from(arguments: Mapping[str, Any]) -> str | None:
+    """The closing line the model supplied, stripped, or ``None`` for none.
+
+    A missing, blank or non-string ``closing_line`` is not a closing line: the
+    caller would otherwise get a silent hangup.
+    """
+    if not isinstance(arguments, Mapping):
+        return None
+    return _closing_text(arguments.get(CLOSING_LINE_ARGUMENT))
+
+
+def _closing_text(value: Any) -> str | None:
+    """One candidate closing line, stripped, or ``None`` when it is not one."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return value.strip()
+
+
+def denied_end_call(call: ToolCallRequest) -> DeniedCall:
+    """The recorded denial for an ``end_call`` that named no closing line."""
+    return DeniedCall(
+        name=END_CALL_TOOL,
+        denial=ToolDenial(
+            name=END_CALL_TOOL,
+            reason=(
+                "end_call did not carry a non-empty closing_line; the call is "
+                "not ended and the turn closes with a hold line"
+            ),
+            call_id=call.call_id if isinstance(call.call_id, str) else "",
+            code=TOOL_CLOSING_LINE_MISSING,
+        ),
+    )
 
 
 ToolOutcome = ToolResult | EndCallSignal
@@ -600,10 +718,13 @@ class DeniedCall:
         return ToolFailureClass.TERMINAL
 
     def __post_init__(self) -> None:
-        if self.denial.code != TOOL_CALL_ID_MISSING:
+        if self.denial.code not in (
+            TOOL_CALL_ID_MISSING,
+            TOOL_CLOSING_LINE_MISSING,
+        ):
             raise ValueError(
-                f"a denied call carries the missing-call-id denial, got "
-                f"{self.denial.code!r}"
+                f"a denied call carries a denial that closes the turn without a "
+                f"result, got {self.denial.code!r}"
             )
 
 
@@ -788,6 +909,351 @@ def _owes_hold(turn: MetaLLMTurn) -> bool:
     return reply_disposition(turn).hold_line
 
 
+@dataclass(frozen=True)
+class ClosingOutcome:
+    """What the closing line actually did, so the call can record it honestly."""
+
+    spoken: bool
+    reason: str
+    text: str = ""
+    frames: int = 0
+    audio_bytes: int = 0
+    hangup_armed: bool = False
+    disarmed: bool = False
+    turn_ended: bool = False
+    completed_at: float = 0.0
+
+    def to_document(self) -> dict[str, Any]:
+        return {
+            "spoken": self.spoken,
+            "reason": self.reason,
+            "text": self.text,
+            "frames": self.frames,
+            "audioBytes": self.audio_bytes,
+            "hangupArmed": self.hangup_armed,
+            "disarmed": self.disarmed,
+            "turnEnded": self.turn_ended,
+        }
+
+
+class CallClosing:
+    """Speak the closing line, end the turn, then arm the one-shot hangup.
+
+    ``end_call`` is call control, not a tool: the line the model supplied is
+    spoken by the voice session the call already opened — the same
+    ``speak(text)`` path every reply uses — and nothing else is synthesized. The
+    hangup is armed only after the last frame played, so the goodbye is never
+    chopped by the hangup; ``take_hangup`` consumes it once.
+
+    A barge-in during the goodbye disarms the hangup and stops the line: the
+    caller won the floor, so no frame may play over them and the call must not
+    hang up. With a :class:`~cascade.barge_in.BargeInCutPath` injected the cut
+    also goes through ``Cancel`` with cause ``goodbye``; without one the disarm
+    is still recorded.
+
+    One closing line per call: a second ``end_call`` is refused by name rather
+    than speaking over the goodbye or arming a second hangup.
+    """
+
+    def __init__(
+        self,
+        *,
+        voice: Any,
+        on_audio: Callable[[SentenceAudio], Awaitable[None] | None],
+        clock: Any = None,
+        cut_path: Any = None,
+        ledger: TimingLedger | None = None,
+    ) -> None:
+        self._voice = voice
+        self._on_audio = on_audio
+        self._clock = clock if clock is not None else time.monotonic
+        self._cut_path = cut_path
+        self._ledger = ledger
+        self._speaking = False
+        self._disarmed = False
+        self._armed = False
+        self._spoke = False
+        self._line = ""
+
+    @property
+    def armed(self) -> bool:
+        """Whether the hangup is waiting to be taken (one shot, after the line)."""
+        return self._armed
+
+    @property
+    def disarmed(self) -> bool:
+        """Whether the caller took the floor back during the goodbye."""
+        return self._disarmed
+
+    @property
+    def line(self) -> str:
+        """The closing line this call spoke, or empty before it spoke."""
+        return self._line
+
+    def take_hangup(self) -> bool:
+        """Consume an armed hangup; a disarmed or unspoken goodbye returns False."""
+        armed, self._armed = self._armed, False
+        return armed
+
+    async def speak(
+        self,
+        signal: EndCallSignal,
+        *,
+        turns: Any = None,
+        turn: Any = None,
+    ) -> ClosingOutcome:
+        """Speak the line through the call's voice, end the turn, arm the hangup.
+
+        ``turns``/``turn`` are the logical turn store and key: the turn is closed
+        with reason ``end_call`` only after the line finished, because a
+        barge-in means the turn continues with the caller's next words.
+        """
+        line = self._require_line(signal)
+        self._line = line
+        self._spoke = True
+        self._speaking = True
+        frames = 0
+        audio_bytes = 0
+        try:
+            async for audio in self._voice.speak(line):
+                if self._disarmed:
+                    return self._interrupted(frames, audio_bytes)
+                frames += 1
+                audio_bytes += len(audio.pcm)
+                await _invoke(self._on_audio, audio)
+                if self._disarmed:
+                    return self._interrupted(frames, audio_bytes)
+        finally:
+            self._speaking = False
+        if frames == 0:
+            return ClosingOutcome(
+                spoken=False,
+                reason=(
+                    "the closing synthesis produced no audio; nothing was armed"
+                ),
+                text=line,
+                completed_at=self._clock(),
+            )
+        turn_ended = self._end_turn(turns, turn)
+        self._armed = True
+        if self._ledger is not None:
+            self._ledger.count("end_call")
+        return ClosingOutcome(
+            spoken=True,
+            reason="spoken",
+            text=line,
+            frames=frames,
+            audio_bytes=audio_bytes,
+            hangup_armed=True,
+            turn_ended=turn_ended,
+            completed_at=self._clock(),
+        )
+
+    async def barge_in(
+        self,
+        *,
+        speech_started_at: float | None = None,
+        played_ms: float | None = None,
+    ) -> "BargeInCut | None":
+        """The caller took the floor: disarm the hangup and stop the goodbye.
+
+        Returns the :class:`~cascade.barge_in.BargeInCut` when a cut path is wired
+        and the closing producer was actually running, otherwise ``None``. The
+        disarm happens either way, including after the line finished but before
+        the call drained.
+        """
+        was_speaking = self._speaking
+        self._disarmed = True
+        self._armed = False
+        if self._cut_path is None or not was_speaking:
+            return None
+        return await self._cut_path.cut(
+            "goodbye",
+            speech_started_at=speech_started_at,
+            played_ms=played_ms,
+        )
+
+    # -- internals --------------------------------------------------------
+
+    def _require_line(self, signal: EndCallSignal) -> str:
+        if not isinstance(signal, EndCallSignal):
+            raise TypeError(
+                "the closing line is spoken from an EndCallSignal, got "
+                f"{type(signal).__name__}"
+            )
+        if self._spoke:
+            raise EndCallDenied(
+                "this call already said its closing line; one closing line per call"
+            )
+        line = _closing_text(signal.closing_line)
+        if line is None:
+            raise EndCallDenied(
+                "the signal carries no closing_line; the caller would hear a "
+                "silent hangup"
+            )
+        return line
+
+    def _interrupted(self, frames: int, audio_bytes: int) -> ClosingOutcome:
+        return ClosingOutcome(
+            spoken=frames > 0,
+            reason="the caller took the floor during the closing line",
+            text=self._line,
+            frames=frames,
+            audio_bytes=audio_bytes,
+            disarmed=True,
+            completed_at=self._clock(),
+        )
+
+    def _end_turn(self, turns: Any, turn: Any) -> bool:
+        if turns is None or turn is None:
+            return False
+        closed = turns.close(turn=turn, reason=END_CALL_REASON)
+        return closed is not None
+
+
+async def _invoke(callback: Callable[[Any], Awaitable[None] | None], value: Any) -> None:
+    """Call one sink and await it when it is awaitable."""
+    result = callback(value)
+    if inspect.isawaitable(result):
+        await result
+
+
+class ToolLoopCapError(ToolHopError):
+    """The tool loop reached ``tool.loop_cap``; the turn ends, it does not retry.
+
+    A turn failure rather than a tool result: the model gets no further request,
+    the caller hears the localized fallback line, and the cap is recorded on the
+    outcome the caller closes the turn with.
+    """
+
+    def __init__(self, outcome: "LoopCapOutcome") -> None:
+        self.outcome = outcome
+        super().__init__(
+            f"the tool loop reached {outcome.cap} rounds ({outcome.bound}); the "
+            "turn ends with the localized fallback line"
+        )
+
+
+@dataclass(frozen=True)
+class LoopCapOutcome:
+    """The recorded cap: how many rounds ran, the bound, and the line spoken."""
+
+    rounds: int
+    cap: int
+    line: str
+    locale_code: str
+    bound: str = TOOL_LOOP_CAP_BOUND
+    reason: str = TOOL_LOOP_CAP_REASON
+    turn_ended: bool = False
+
+    def to_document(self) -> dict[str, Any]:
+        return {
+            "rounds": self.rounds,
+            "cap": self.cap,
+            "bound": self.bound,
+            "locale": self.locale_code,
+            "line": self.line,
+            "turnEnded": self.turn_ended,
+        }
+
+
+class ToolLoop:
+    """The per-logical-turn round budget, read from ``tool.loop_cap``.
+
+    One round is one model request that handed the turn to tools. The cap is the
+    registry's value, resolved at construction so an unset bound raises
+    :class:`~cascade.thresholds.UnsetBoundError` by name instead of defaulting;
+    the Locale's fallback line is resolved here too, so an unbound Locale
+    refuses before a caller can speak the wrong language.
+
+    ``on_cap`` is the caller's hook that ends the turn; it runs once, when the
+    cap outcome is first built, and marks the record ``turn_ended``. Nothing here
+    invents a number, a line or a retry.
+    """
+
+    def __init__(
+        self,
+        *,
+        state: ToolLoopState | None = None,
+        cap: int | None = None,
+        locale_code: str = "en",
+        on_cap: Callable[[LoopCapOutcome], None] | None = None,
+    ) -> None:
+        self._state = state if state is not None else ToolLoopState()
+        self._cap = _loop_cap(cap)
+        self._locale_code = locale_code
+        self._line = loop_cap_line(locale_code)
+        self._on_cap = on_cap
+        self._capped: LoopCapOutcome | None = None
+
+    @property
+    def cap(self) -> int:
+        return self._cap
+
+    @property
+    def rounds(self) -> int:
+        """How many tool rounds this turn has run."""
+        return self._state.rounds
+
+    @property
+    def locale_code(self) -> str:
+        return self._locale_code
+
+    @property
+    def line(self) -> str:
+        """The localized line this turn speaks when it is capped."""
+        return self._line
+
+    @property
+    def exhausted(self) -> bool:
+        """Whether the turn has used every round the cap allows."""
+        return self._state.rounds >= self._cap
+
+    @property
+    def capped(self) -> LoopCapOutcome | None:
+        """The cap record once it fired, else ``None``."""
+        return self._capped
+
+    def take_round(self) -> int:
+        """Record one tool round, or fail the turn by name at the cap."""
+        if self.exhausted:
+            raise ToolLoopCapError(self.cap_outcome())
+        self._state.rounds += 1
+        return self._state.rounds
+
+    def cap_outcome(self) -> LoopCapOutcome:
+        """The recorded cap, ending the turn through ``on_cap`` exactly once."""
+        if self._capped is not None:
+            return self._capped
+        outcome = LoopCapOutcome(
+            rounds=self._state.rounds,
+            cap=self._cap,
+            line=self._line,
+            locale_code=self._locale_code,
+        )
+        if self._on_cap is not None:
+            self._on_cap(outcome)
+            outcome = replace(outcome, turn_ended=True)
+        self._capped = outcome
+        return outcome
+
+
+def _loop_cap(cap: int | None) -> int:
+    """The cap: the injected value, or the registry's integer count."""
+    value: Any = require_bound(TOOL_LOOP_CAP_BOUND) if cap is None else cap
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ToolHopError(
+            f"bound {TOOL_LOOP_CAP_BOUND!r} must be an integer count of rounds, "
+            f"got {value!r}"
+        )
+    if value <= 0:
+        raise ToolHopError(
+            f"bound {TOOL_LOOP_CAP_BOUND!r} must be positive, got {value!r}; a "
+            "cap of zero is not a loop"
+        )
+    return value
+
+
 class ToolExecutor:
     """Executes one model tool call against the app's existing route.
 
@@ -879,15 +1345,22 @@ class ToolExecutor:
         """Begin the hop and return at once; nothing here awaits the network.
 
         Call control first: ``end_call`` is a signal, not a tool, so it has no
-        identity requirement. Every other call must carry a vendor-valid id
-        (ticket 82): a missing or blank id returns a denied outcome without a
-        request, and an overlength id fails the turn here, before any request.
+        identity requirement. It must carry the closing line the caller hears;
+        without one it is denied and recorded instead of half-executing (ticket
+        87). Every other call must carry a vendor-valid id (ticket 82): a
+        missing or blank id returns a denied outcome without a request, and an
+        overlength id fails the turn here, before any request.
         """
         if call.name == END_CALL_TOOL:
+            line = closing_line_from(call.arguments)
+            if line is None:
+                return ToolHop(task=None, outcome=denied_end_call(call))
             return ToolHop(
                 task=None,
                 outcome=EndCallSignal(
-                    call_id=self._call_id, tool_call_id=call.call_id
+                    call_id=self._call_id,
+                    tool_call_id=call.call_id,
+                    closing_line=line,
                 ),
             )
         try:
@@ -1116,6 +1589,10 @@ async def execute_turn_calls(
         outcomes.append(outcome)
         if isinstance(outcome, EndCallSignal):
             break
+        if isinstance(outcome, DeniedCall) and outcome.name == END_CALL_TOOL:
+            # A refused end_call still means the model asked to say goodbye:
+            # nothing after it runs, and the turn closes with a hold line.
+            break
     return outcomes
 
 
@@ -1163,6 +1640,7 @@ async def continue_after_tool(
     tools: list[dict[str, Any]] | None = None,
     record: MetaLLMTurn | None = None,
     ledger: TimingLedger | None = None,
+    loop: ToolLoop | None = None,
 ) -> AsyncIterator[TokenDelta | ToolCallRequest]:
     """Continue the same logical turn with a new model request, or nothing.
 
@@ -1176,6 +1654,12 @@ async def continue_after_tool(
     answer a call the vendor never identified. An :class:`EndCallSignal` yields
     no event at all: results that ran before it are recorded (the spec keeps
     them unspoken), and nothing after it runs or is spoken.
+
+    ``loop`` bounds the turn's tool rounds (ticket 87). When it is exhausted the
+    request is not made: the Locale's fallback line is yielded as speech, the
+    turn is ended through the loop's ``on_cap`` hook, and the cap is recorded.
+    The cap is checked after the signals and denials, so an ``end_call`` still
+    ends the call at the cap instead of speaking a fallback over the goodbye.
     """
     outcomes = _outcomes(outcome)
     denials = [item for item in outcomes if isinstance(item, DeniedCall)]
@@ -1203,6 +1687,12 @@ async def continue_after_tool(
         return
     if not results:
         return
+    if loop is not None:
+        if loop.exhausted:
+            cap = loop.cap_outcome()
+            yield TokenDelta(text=cap.line)
+            return
+        loop.take_round()
     kwargs: dict[str, Any] = {}
     if record is not None:
         kwargs["turn"] = record

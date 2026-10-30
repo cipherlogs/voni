@@ -355,12 +355,19 @@ class EndCallSignalTests(unittest.TestCase):
         executor = make_executor(factory)
 
         outcome = asyncio.run(
-            executor.execute(a_call(name=END_CALL_TOOL, arguments={}, call_id="call_end"))
+            executor.execute(
+                a_call(
+                    name=END_CALL_TOOL,
+                    arguments={"closing_line": "Thanks. Goodbye!"},
+                    call_id="call_end",
+                )
+            )
         )
 
         self.assertIsInstance(outcome, EndCallSignal)
         self.assertEqual(outcome.call_id, CALL_ID)
         self.assertEqual(outcome.tool_call_id, "call_end")
+        self.assertEqual(outcome.closing_line, "Thanks. Goodbye!")
         self.assertEqual(factory.posts, [])
 
     def test_end_call_speaks_nothing_and_requests_no_continuation(self):

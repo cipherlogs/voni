@@ -296,7 +296,11 @@ class EndCallInBatchTests(unittest.TestCase):
         turn.close()
         calls = [
             call_one(),
-            ToolCallRequest(name=END_CALL_TOOL, arguments={}, call_id="call_end"),
+            ToolCallRequest(
+                name=END_CALL_TOOL,
+                arguments={"closing_line": "Thanks. Goodbye!"},
+                call_id="call_end",
+            ),
             ToolCallRequest(
                 name="book_viewing", arguments={"reference": "MAR-1"}, call_id="call_3"
             ),
