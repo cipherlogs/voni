@@ -24,6 +24,7 @@ from pathlib import Path
 from unittest import mock
 
 from cascade import thresholds
+from cascade.assemblyai_tts import Billing
 from cascade.call import (
     BOUNDED_WAITS,
     AudioFrame,
@@ -39,6 +40,7 @@ from cascade.call import (
 from cascade.eligibility import evaluate_body
 from cascade.envelope import sign_body
 from cascade.body_map import body_fingerprint
+from cascade.meta_llm import TurnUsage
 from cascade.meta_stt import SpeechComplete, SpeechStart
 from cascade.testing import FakeClock, ScriptedSTT
 from cascade.voice_binding import bind_voice
@@ -134,6 +136,17 @@ class HangingDrainStream(FakeStream):
         await asyncio.Event().wait()
 
 
+class MeteringStream(FakeStream):
+    """A turn layer that reports the model usage chunks it received."""
+
+    def __init__(self, usage, log: list[str] | None = None) -> None:
+        super().__init__(log)
+        self.usage = usage
+
+    def turn_usage(self):
+        return self.usage
+
+
 class FakeVoice:
     """The opened synthesis session: a bound voice and its greeting path."""
 
@@ -172,6 +185,14 @@ class RecordingAudioSink:
 class HangingCloseVoice(FakeVoice):
     async def close(self) -> None:
         await asyncio.Event().wait()
+
+
+class MeteringVoice(FakeVoice):
+    """A synthesis session that closed with the vendor's ``Termination`` facts."""
+
+    def __init__(self, billing: Billing) -> None:
+        super().__init__()
+        self.billing = billing
 
 
 class HangingGreetingVoice(FakeVoice):
@@ -518,13 +539,115 @@ class CallLifecycleTest(unittest.TestCase):
         document = transport.sent[-1]
         self.assertFalse(document["cost"]["measured"])
         self.assertIsNone(document["cost"]["totalUsd"])
-        self.assertIsNone(document["cost"]["rateTableVersion"])
+        # The table version is cited because it is the table the call would
+        # have priced with; the units were never reported, so no amount exists.
+        self.assertEqual("cascade-vendor-rates v1", document["cost"]["rateTableVersion"])
         for leg in ("stt", "llm", "tts"):
             self.assertFalse(document["cost"]["legs"][leg]["measured"])
             self.assertIsNone(document["cost"]["legs"][leg]["quantity"])
+            self.assertIsNone(document["cost"]["legs"][leg]["amountUsd"])
+            self.assertEqual({}, document["cost"]["legs"][leg]["units"])
         self.assertEqual(
             {"stt", "llm", "tts"}, set(document["providers"])
         )
+
+    def test_a_call_meters_the_vendor_units_and_carries_their_priced_cost(self):
+        # Rates come from cascade/rates/v1.json (never invented here):
+        #   stt.audio_seconds 0.00005, llm.prompt 0.00000125, llm.cached
+        #   0.00000015, llm.completion/reasoning 0.00000425, tts.characters
+        #   0.000015, tts audio/session seconds a sourced 0.
+        speech = ScriptedSTT(
+            [SpeechStart("t1"), SpeechComplete("book a demo", turn_id="t1")],
+            clock=self.clock,
+        )
+        # The vendor bills speech in whole seconds: 3.7 s is 3 billed seconds.
+        speech.usage = {"audio_duration_seconds": 3.7}
+        voice = MeteringVoice(
+            Billing(
+                characters=40,
+                measured=True,
+                source="billed_characters",
+                audio_duration_seconds=2.5,
+                session_duration_seconds=4,
+            )
+        )
+        stream = MeteringStream(
+            {
+                "t1": TurnUsage(
+                    prompt_tokens=1000,
+                    completion_tokens=100,
+                    cached_tokens=200,
+                    reasoning_tokens=0,
+                    measured=True,
+                )
+            }
+        )
+        transport = FakeTransport([AudioFrame(b"\x00\x01"), BrowserStop()])
+
+        end = self.run_call(
+            self.make(transport=transport, speech=speech, voice=voice, stream=stream)
+        )
+
+        document = transport.sent[-1]["cost"]
+        self.assertTrue(document["measured"])
+        self.assertEqual("cascade-vendor-rates v1", document["rateTableVersion"])
+        self.assertAlmostEqual(0.002205, document["totalUsd"], places=12)
+        self.assertEqual(3, document["legs"]["stt"]["units"]["audio_seconds"])
+        self.assertEqual(
+            {
+                "prompt_tokens": 1000,
+                "completion_tokens": 100,
+                "cached_tokens": 200,
+                "reasoning_tokens": 0,
+            },
+            document["legs"]["llm"]["units"],
+        )
+        self.assertEqual(
+            {"characters": 40, "audio_seconds": 2.5, "session_seconds": 4},
+            document["legs"]["tts"]["units"],
+        )
+        self.assertAlmostEqual(0.00015, document["legs"]["stt"]["amountUsd"], places=12)
+        self.assertAlmostEqual(0.001455, document["legs"]["llm"]["amountUsd"], places=12)
+        self.assertAlmostEqual(0.0006, document["legs"]["tts"]["amountUsd"], places=12)
+        # The call's own meter is what priced the end message.
+        self.assertTrue(end.cost.measured)
+
+    def test_a_leg_that_did_not_report_keeps_the_total_unmeasured(self):
+        speech = ScriptedSTT(
+            [SpeechStart("t1"), SpeechComplete("book a demo", turn_id="t1")],
+            clock=self.clock,
+        )
+        speech.usage = {"audio_duration_seconds": 3.0}
+        # The voice reported its billed characters but no audio or session
+        # seconds: the leg stays unmeasured, so the total cannot be a number.
+        voice = MeteringVoice(
+            Billing(characters=40, measured=True, source="billed_characters")
+        )
+        stream = MeteringStream(
+            {
+                "t1": TurnUsage(
+                    prompt_tokens=1000,
+                    completion_tokens=100,
+                    cached_tokens=0,
+                    reasoning_tokens=0,
+                    measured=True,
+                )
+            }
+        )
+        transport = FakeTransport([BrowserStop()])
+
+        end = self.run_call(
+            self.make(transport=transport, speech=speech, voice=voice, stream=stream)
+        )
+
+        document = transport.sent[-1]["cost"]
+        self.assertFalse(document["measured"])
+        self.assertIsNone(document["totalUsd"])
+        self.assertTrue(document["legs"]["stt"]["measured"])
+        self.assertTrue(document["legs"]["llm"]["measured"])
+        self.assertFalse(document["legs"]["tts"]["measured"])
+        self.assertIsNone(document["legs"]["tts"]["amountUsd"])
+        self.assertIn("session_seconds", document["unmeasuredReason"])
 
     def test_a_hanging_drain_is_bounded_and_the_call_still_ends(self):
         transport = FakeTransport([BrowserStop()])

@@ -103,11 +103,6 @@ export class SubjectError extends Error {
   }
 }
 
-/** Whether the registry has a voice with this exact id (no folding, no trim). */
-function registryVoice(voice: string): ReturnType<typeof getVoice> {
-  return getVoice(voice);
-}
-
 /** The demo voices are the voices with a stored demo agent (ticket 02). */
 function isDemoVoice(voice: string): boolean {
   return (DEMO_VOICE_IDS as readonly string[]).includes(voice);
@@ -183,7 +178,7 @@ export class UnboundVoiceError extends VoiceBindingError {
  * Locale stays open rather than being measured through another voice.
  */
 export function bindCascadeVoice(voiceId: string): CascadeVoiceBinding {
-  const known = registryVoice(voiceId);
+  const known = getVoice(voiceId);
   if (!known) throw new UnknownVoiceError(voiceId);
   const unbound = UNBOUND_VOICES[voiceId];
   if (unbound !== undefined) throw new UnboundVoiceError(voiceId, unbound.locale, unbound.reason);
@@ -192,7 +187,7 @@ export function bindCascadeVoice(voiceId: string): CascadeVoiceBinding {
 
 /** Whether the voice has a binding, i.e. may be a cascade subject at all. */
 export function isCascadeSubjectVoice(voiceId: string): boolean {
-  return registryVoice(voiceId) !== undefined && UNBOUND_VOICES[voiceId] === undefined;
+  return getVoice(voiceId) !== undefined && UNBOUND_VOICES[voiceId] === undefined;
 }
 
 /**
@@ -221,7 +216,7 @@ export type LocaleSubject = {
 export function cascadeSubjectList(): LocaleSubject[] {
   return CONVERSATION_LANGUAGES.map((locale) => {
     const demoVoices = DEMO_VOICE_IDS.filter(
-      (voice) => registryVoice(voice)?.languageCode === locale,
+      (voice) => getVoice(voice)?.languageCode === locale,
     );
     const voices = demoVoices.filter(isCascadeSubjectVoice);
     if (voices.length > 0) {
@@ -272,7 +267,7 @@ function resolveTransport(raw: string | undefined): SubjectTransport {
  * Locale the agent's voice cannot speak is not a subject worth measuring.
  */
 function assertVoiceSpeaks(voice: string, locale: string): void {
-  const known = registryVoice(voice);
+  const known = getVoice(voice);
   if (!known) {
     throw new SubjectError(
       "agent",
@@ -354,7 +349,7 @@ export function resolveSubject(request: SubjectRequest = {}): SubjectRecord {
       `unknown gate voice "${voice}": a demo subject is one of ${DEMO_VOICE_IDS.join(", ")} (or pass --agent <id> for a tenant agent)`,
     );
   }
-  const known = registryVoice(voice);
+  const known = getVoice(voice);
   const requestedLocale = (request.locale ?? "").trim();
   if (requestedLocale !== "" && !isConversationLocale(requestedLocale)) {
     throw new SubjectError(
@@ -417,7 +412,7 @@ export function subjectOrLegacy(input: {
   voice: string;
 }): SubjectRecord {
   if (input.subject) return input.subject;
-  const known = registryVoice(input.voice);
+  const known = getVoice(input.voice);
   return {
     agent: { kind: "demo", voice: input.voice, agentId: null },
     locale: known?.languageCode ?? "unknown",

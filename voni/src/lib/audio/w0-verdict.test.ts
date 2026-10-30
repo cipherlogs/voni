@@ -24,10 +24,11 @@ import {
   W0_LAYERS,
   decideW0Verdict,
   type W0Check,
+  type W0CheckName,
   type W0LayerFinding,
-  type W0Metric,
   type W0Verdict,
 } from "./w0-verdict";
+import type { ReferenceFloorFinding } from "./reference-floor";
 
 const SAMPLE_RATE = 24_000;
 const FULL_SCALE = 32_767;
@@ -122,6 +123,7 @@ function verdictFor(
     transcript?: string;
     intent?: { voice?: string; language?: string };
     delivered?: { voice?: string; language?: string };
+    referenceFloor?: ReferenceFloorFinding;
   } = {},
 ): W0Verdict {
   return decideW0Verdict({
@@ -129,8 +131,19 @@ function verdictFor(
     transcript: extra.transcript,
     intent: extra.intent,
     delivered: extra.delivered,
+    referenceFloor: extra.referenceFloor,
   });
 }
+
+/**
+ * The matching facts a fully measured call carries. Supplying them is how a
+ * test says "this call's voice and language were measured"; omitting them is
+ * how a test says nobody did.
+ */
+const MEASURED_FACTS = {
+  intent: { voice: "lola", language: "en" },
+  delivered: { voice: "lola", language: "en" },
+} as const;
 
 function layer(verdict: W0Verdict, name: (typeof W0_LAYERS)[number]): W0LayerFinding {
   const found = verdict.layers.find((candidate) => candidate.layer === name);
@@ -138,7 +151,7 @@ function layer(verdict: W0Verdict, name: (typeof W0_LAYERS)[number]): W0LayerFin
   return found;
 }
 
-function check(verdict: W0Verdict, metric: W0Metric, subject: W0Check["subject"] = "delivered"): W0Check {
+function check(verdict: W0Verdict, metric: W0CheckName, subject: W0Check["subject"] = "delivered"): W0Check {
   const found = verdict.checks.find(
     (candidate) => candidate.metric === metric && candidate.subject === subject,
   );
@@ -150,7 +163,10 @@ const MATCHING_TRANSCRIPT = GREETING.text;
 
 test("the four layers are reported in causal order", () => {
   const line = wavFrom(tone(1, 500, 0.4));
-  const verdict = verdictFor(line, line, { transcript: MATCHING_TRANSCRIPT });
+  const verdict = verdictFor(line, line, {
+    transcript: MATCHING_TRANSCRIPT,
+    ...MEASURED_FACTS,
+  });
 
   assert.deepEqual(
     verdict.layers.map((entry) => entry.layer),
@@ -161,6 +177,88 @@ test("the four layers are reported in causal order", () => {
   for (const entry of verdict.layers) {
     assert.equal(entry.status, "PASS", `${entry.layer}: ${entry.reason}`);
   }
+});
+
+test("a voice that nobody measured is UNMEASURED and blocks the pass", () => {
+  const line = wavFrom(tone(1, 500, 0.4));
+  // The call ended without a voice fact on either side: nobody measured it, so
+  // it is an unmeasured axis, never a check the rule chose to skip.
+  const verdict = verdictFor(line, line, { transcript: MATCHING_TRANSCRIPT });
+
+  assert.equal(verdict.status, "unresolved");
+  assert.match(verdict.blockers.join("; "), /no voice fact was measured/);
+  assert.equal(layer(verdict, "our pipeline").status, "UNMEASURED");
+  assert.equal(check(verdict, "voice").status, "UNMEASURED");
+});
+
+test("a language that nobody measured is UNMEASURED and blocks the pass", () => {
+  const line = wavFrom(tone(1, 500, 0.4));
+  // The voice was measured on both sides and matched; the language was not.
+  const verdict = verdictFor(line, line, {
+    transcript: MATCHING_TRANSCRIPT,
+    intent: { voice: "lola" },
+    delivered: { voice: "lola" },
+  });
+
+  assert.equal(verdict.status, "unresolved");
+  assert.match(verdict.blockers.join("; "), /no language fact was measured/);
+  assert.equal(check(verdict, "voice").status, "PASS");
+  assert.equal(check(verdict, "language").status, "UNMEASURED");
+});
+
+test("one measured side without the other is UNMEASURED, not a pass", () => {
+  const line = wavFrom(tone(1, 500, 0.4));
+  const verdict = verdictFor(line, line, {
+    transcript: MATCHING_TRANSCRIPT,
+    intent: { voice: "lola", language: "en" },
+  });
+
+  assert.equal(verdict.status, "unresolved");
+  assert.match(verdict.blockers.join("; "), /no delivered voice fact/);
+  assert.equal(check(verdict, "voice").status, "UNMEASURED");
+});
+
+test("a rule that explicitly skips a check does not block the pass", () => {
+  const line = wavFrom(tone(1, 500, 0.4));
+  const verdict = verdictFor(line, line, {
+    transcript: MATCHING_TRANSCRIPT,
+    ...MEASURED_FACTS,
+    referenceFloor: {
+      status: "no-floor",
+      regression: false,
+      baseline: "own-reference",
+      voice: "lola",
+      locale: "en",
+      floorPath: null,
+      referencePath: "/captures/reference.wav",
+      axes: [],
+      sentence: "lola/en has no committed floor, so it is its own baseline",
+    },
+  });
+
+  assert.equal(verdict.status, "none");
+  assert.equal(check(verdict, "floor", "reference").status, "SKIPPED");
+});
+
+test("a pass reports only the thresholds its checks actually enforced", () => {
+  const line = wavFrom(tone(1, 500, 0.4));
+  const verdict = verdictFor(line, line, {
+    transcript: MATCHING_TRANSCRIPT,
+    ...MEASURED_FACTS,
+  });
+  const enforced = new Set(
+    verdict.checks
+      .filter((entry) => entry.bar !== null && entry.status !== "SKIPPED")
+      .map((entry) => entry.bar!.key),
+  );
+
+  assert.deepEqual(
+    [...new Set(verdict.thresholds.map((entry) => entry.key))].sort(),
+    [...enforced].sort(),
+  );
+  // No check in this module applies the onset tolerance, so a pass must not
+  // claim to have enforced it.
+  assert.ok(!verdict.thresholds.some((entry) => entry.key === "comparisonOnsetToleranceS"));
 });
 
 test("a level step names our pipeline, and a hole in the same capture cannot steal the blame", () => {
@@ -278,6 +376,7 @@ test("chunk-rate modulation names the client", () => {
   );
   const verdict = verdictFor(wavFrom(steady), wavFrom(modulated), {
     transcript: MATCHING_TRANSCRIPT,
+    ...MEASURED_FACTS,
   });
 
   assert.equal(verdict.status, "divergence");
@@ -291,6 +390,7 @@ test("an inserted silence names the client, not a pipeline residual", () => {
   const continuous = tone(1.7, 180, 0.35);
   const verdict = verdictFor(wavFrom(continuous), wavFrom(toneWithHole()), {
     transcript: MATCHING_TRANSCRIPT,
+    ...MEASURED_FACTS,
   });
 
   assert.equal(verdict.status, "divergence", verdict.blockers.join("; "));
@@ -308,6 +408,7 @@ test("a device-rate alias names the client", () => {
   const folded = tone(1, 5_000, 0.4);
   const verdict = verdictFor(wavFrom(high), wavFrom(folded), {
     transcript: MATCHING_TRANSCRIPT,
+    ...MEASURED_FACTS,
   });
 
   assert.equal(verdict.status, "divergence", verdict.blockers.join("; "));
@@ -320,6 +421,7 @@ test("a boundary fade names the client", () => {
   const steady = tone(1, 1_000, 0.4);
   const verdict = verdictFor(wavFrom(steady), wavFrom(faded(steady)), {
     transcript: MATCHING_TRANSCRIPT,
+    ...MEASURED_FACTS,
   });
 
   assert.equal(verdict.status, "divergence", verdict.blockers.join("; "));

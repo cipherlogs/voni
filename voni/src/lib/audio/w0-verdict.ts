@@ -64,6 +64,13 @@ export type W0Fact = "capture" | "onset" | "format" | "line" | "text" | "voice" 
 
 export type W0CheckName = W0Metric | W0Fact;
 
+/**
+ * A check's outcome. `UNMEASURED` blocks a pass: an input nobody measured is
+ * never a pass (ticket 123). `SKIPPED` exists only for a check a rule
+ * explicitly does not run (a voice with no committed floor is its own
+ * baseline); a fact that was simply never measured is `UNMEASURED`, not
+ * `SKIPPED`, so absence cannot read as "not required".
+ */
 export type W0CheckStatus = "PASS" | "FAIL" | "UNMEASURED" | "SKIPPED";
 
 export type W0Threshold = { key: BudgetKey; value: number; unit: BudgetUnit };
@@ -587,9 +594,17 @@ function voiceAndLanguageChecks(input: W0VerdictInput): W0Check[] {
   ];
   return pairs.map(({ metric, expected, heard }) => {
     if (expected === undefined && heard === undefined) {
+      // Nobody measured the fact: absence is an unmeasured axis, never a
+      // check the rule chose to skip. A skip would let a call pass without
+      // ever comparing the voice it spoke in (ticket 123).
       return check(
         { layer: "our pipeline", metric, subject: "delivered", producer },
-        { status: "SKIPPED", value: null, bar: null, reason: `no ${metric} fact was measured on the delivered capture` },
+        {
+          status: "UNMEASURED",
+          value: null,
+          bar: null,
+          reason: `no ${metric} fact was measured, so the ${metric} cannot be cleared`,
+        },
       );
     }
     if (expected === undefined || heard === undefined) {
@@ -710,6 +725,23 @@ function summarize(layer: W0Layer, checks: readonly W0Check[]): W0LayerFinding {
 
 function notComparable(layer: W0Layer, reason: string): W0LayerFinding {
   return { layer, status: "NOT-COMPARABLE", checks: [], reason };
+}
+
+/**
+ * The bars a passing verdict actually enforced: one per budget, in the order
+ * the checks ran. A check the rule skipped enforced nothing, and a budget no
+ * check attached to a value on this comparison was never applied, so neither
+ * is reported as a threshold (the pass claim must not borrow evidence).
+ */
+function enforcedThresholds(checks: readonly W0Check[]): W0Threshold[] {
+  const seen = new Set<BudgetKey>();
+  const enforced: W0Threshold[] = [];
+  for (const entry of checks) {
+    if (entry.bar === null || entry.status === "SKIPPED" || seen.has(entry.bar.key)) continue;
+    seen.add(entry.bar.key);
+    enforced.push(entry.bar);
+  }
+  return enforced;
 }
 
 function divergenceSentence(
@@ -884,16 +916,6 @@ export function decideW0Verdict(input: W0VerdictInput): W0Verdict {
     "No divergence: the delivered capture matches the reference on every measured axis, the transcript is the intended line, and no client signature is present.",
     [reference, text, pipeline, client],
     [],
-    [
-      bar("comparisonLevelLu"),
-      bar("comparisonBandDeltaDb"),
-      bar("comparisonDistortionDb"),
-      bar("comparisonBreakupCount"),
-      bar("comparisonModulationDepth"),
-      bar("comparisonOnsetToleranceS"),
-      bar("comparisonReferenceClipDbtp"),
-      bar("timbreMeasuredTruePeakDbtp"),
-      bar("timbreMeasuredCrestMin"),
-    ],
+    enforcedThresholds(checks),
   );
 }

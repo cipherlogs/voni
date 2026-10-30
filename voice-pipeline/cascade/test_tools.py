@@ -27,6 +27,7 @@ import asyncio
 import json
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from cascade import thresholds
 from cascade.envelope import sign_body, verify_envelope
@@ -226,25 +227,37 @@ class HangingRoute:
 
 class HopBoundTests(unittest.TestCase):
     def test_an_unset_tool_timeout_is_named_and_never_invented(self):
+        # The registry's tool bound is OPEN until ticket 04 supplies a value.
+        # The honest behaviour is a named refusal, not an invented number; the
+        # bound is forced open so this proof holds after it is supplied too.
         bound = thresholds.bound(TOOL_TIMEOUT_BOUND)
-        if not bound.is_open:
-            self.skipTest("ticket 76 has supplied the tool timeout bound")
         factory = ScriptedSessionFactory([])
         executor = make_executor(factory, timeout_ms=None)
 
-        with self.assertRaises(UnsetBoundError) as raised:
-            asyncio.run(executor.execute(a_call()))
+        with mock.patch(
+            "cascade.tools.require_bound",
+            side_effect=UnsetBoundError(bound),
+        ):
+            with self.assertRaises(UnsetBoundError) as raised:
+                asyncio.run(executor.execute(a_call()))
 
+        self.assertEqual(TOOL_TIMEOUT_BOUND, raised.exception.name)
         self.assertIn(TOOL_TIMEOUT_BOUND, str(raised.exception))
         self.assertEqual(factory.posts, [])
 
     def test_the_registry_bound_is_the_hop_timeout_the_route_sees(self):
         bound = thresholds.bound(TOOL_TIMEOUT_BOUND)
-        if bound.is_open:
-            self.skipTest("ticket 76 has supplied the tool timeout bound")
         factory = ScriptedSessionFactory([Response(body=b'{"ok": true}')])
         executor = make_executor(factory, timeout_ms=None)
-
+        if bound.is_open:
+            # Pre-04: no value is declared, so the hop refuses by name before it
+            # posts; a default here would be a number invented in code.
+            with self.assertRaises(UnsetBoundError) as raised:
+                asyncio.run(executor.execute(a_call()))
+            self.assertEqual(TOOL_TIMEOUT_BOUND, raised.exception.name)
+            self.assertIn(TOOL_TIMEOUT_BOUND, str(raised.exception))
+            self.assertEqual(factory.posts, [])
+            return
         asyncio.run(executor.execute(a_call()))
 
         self.assertEqual(factory.sessions[0]["timeout_s"], float(bound.value) / 1000.0)

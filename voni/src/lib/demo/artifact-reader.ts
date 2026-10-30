@@ -23,6 +23,7 @@ import {
   type ScoreboardArtifact,
 } from "./scoreboard";
 import { CASCADE_ONLY_EVENT_TYPES, isCascadeOnlyEvent } from "./event-envelope";
+import { ShapeError, objectOf, optionalObjectOf, showValue } from "./shape";
 import {
   GATE_CAPTURE_LEGS,
   malformedCaptureReason,
@@ -71,28 +72,17 @@ export function isArtifactCaptureLeg(value: unknown): value is ArtifactCaptureLe
  */
 
 /** One refused artifact, named by the field and the value that failed. */
-export class ArtifactReadError extends Error {
-  /** The label or path the artifact was read from. */
-  readonly source: string;
-  /** The field that failed, e.g. `schemaVersion` or `captures.platform`. */
-  readonly field: string;
-  /** Why it failed, with the offending value spelled out. */
-  readonly reason: string;
-
+export class ArtifactReadError extends ShapeError {
   constructor(source: string, field: string, reason: string) {
-    super(`${source}: ${reason}`);
-    this.name = "ArtifactReadError";
-    this.source = source;
-    this.field = field;
-    this.reason = reason;
+    super("ArtifactReadError", `${source}: ${reason}`, source, field, reason);
   }
 }
 
-function showValue(value: unknown): string {
-  if (value === undefined) return "missing";
-  if (typeof value === "string") return JSON.stringify(value);
-  if (value === null) return "null";
-  return JSON.stringify(value);
+/** The refusal callback every section guard uses: name the field and why. */
+function refuse(source: string, field: string): (reason: string) => never {
+  return (reason: string) => {
+    throw new ArtifactReadError(source, field, reason);
+  };
 }
 
 /** A named N/A is a non-empty reason; an empty one explains nothing. */
@@ -118,10 +108,7 @@ function assertNamedAbsence(
  * from the one shared gate validator.
  */
 export function parseScoreboardArtifact(raw: unknown, source: string): ScoreboardArtifact {
-  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
-    throw new ArtifactReadError(source, "artifact", `not a scoreboard artifact object (${showValue(raw)})`);
-  }
-  const record = raw as Record<string, unknown>;
+  const record = objectOf(raw, "not a scoreboard artifact object", refuse(source, "artifact"));
 
   // Never guessed, never coerced: `"4"` is not 4 and 99 is not "close enough".
   if (record.schemaVersion !== SCOREBOARD_SCHEMA_VERSION) {
@@ -245,11 +232,8 @@ export function pipelineOfArtifact(
  * absence (`{absent}`) or, on a legacy artifact, a bare `null`.
  */
 function parseCaptures(raw: unknown, source: string): ArtifactCaptures | undefined {
-  if (raw === undefined) return undefined;
-  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
-    throw new ArtifactReadError(source, "captures", `captures is not an object (${showValue(raw)})`);
-  }
-  const record = raw as Record<string, unknown>;
+  const record = optionalObjectOf(raw, "captures is not an object", refuse(source, "captures"));
+  if (record === undefined) return undefined;
   for (const [leg, capture] of Object.entries(record)) {
     if (!isArtifactCaptureLeg(leg)) {
       throw new ArtifactReadError(
@@ -410,11 +394,8 @@ function parseArtifactEventTypes(raw: unknown, source: string): string[] {
  * copied or stitched artifact is visible instead of plausible.
  */
 function parseRun(raw: unknown, source: string, artifactRunId: string): ArtifactRun | undefined {
-  if (raw === undefined) return undefined;
-  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
-    throw new ArtifactReadError(source, "run", `run is not an object (${showValue(raw)})`);
-  }
-  const record = raw as Record<string, unknown>;
+  const record = optionalObjectOf(raw, "run is not an object", refuse(source, "run"));
+  if (record === undefined) return undefined;
   for (const field of ["runId", "variant", "startedAt", "finishedAt"] as const) {
     if (typeof record[field] !== "string" || (record[field] as string).trim() === "") {
       throw new ArtifactReadError(source, `run.${field}`, `run.${field} is missing or empty`);
@@ -444,11 +425,8 @@ function parseRun(raw: unknown, source: string, artifactRunId: string): Artifact
  * N/A a managed leg records. No leg is silently absent and no leg is invented.
  */
 function parseProviders(raw: unknown, source: string): ArtifactProviders | undefined {
-  if (raw === undefined) return undefined;
-  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
-    throw new ArtifactReadError(source, "providers", `providers is not an object (${showValue(raw)})`);
-  }
-  const record = raw as Record<string, unknown>;
+  const record = optionalObjectOf(raw, "providers is not an object", refuse(source, "providers"));
+  if (record === undefined) return undefined;
   for (const [leg, provider] of Object.entries(record)) {
     if (!(ARTIFACT_PROVIDER_LEGS as readonly string[]).includes(leg)) {
       throw new ArtifactReadError(
@@ -618,17 +596,12 @@ function assertCascadeLatencyFromLedger(
 
 /** The ledger summary a cascade artifact may carry, with finite mark values. */
 function parseLedger(raw: unknown, source: string): { marks: Record<string, number>; counts?: Record<string, number> } | undefined {
-  if (raw === undefined) return undefined;
-  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
-    throw new ArtifactReadError(source, "ledger", `ledger is not an object (${showValue(raw)})`);
-  }
-  const record = raw as Record<string, unknown>;
+  const record = optionalObjectOf(raw, "ledger is not an object", refuse(source, "ledger"));
+  if (record === undefined) return undefined;
   const table = (value: unknown, field: string): Record<string, number> => {
-    if (value === null || typeof value !== "object" || Array.isArray(value)) {
-      throw new ArtifactReadError(source, field, `${field} is not an object of finite numbers`);
-    }
+    const entries = objectOf(value, `${field} is not an object of finite numbers`, refuse(source, field));
     const numbers: Record<string, number> = {};
-    for (const [name, entry] of Object.entries(value)) {
+    for (const [name, entry] of Object.entries(entries)) {
       if (typeof entry !== "number" || !Number.isFinite(entry)) {
         throw new ArtifactReadError(
           source,
@@ -655,11 +628,8 @@ function parseLatency(
   pipeline: ArtifactPipeline,
   source: string,
 ): ArtifactLatency | undefined {
-  if (raw === undefined) return undefined;
-  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
-    throw new ArtifactReadError(source, "latency", `latency is not an object (${showValue(raw)})`);
-  }
-  const record = raw as Record<string, unknown>;
+  const record = optionalObjectOf(raw, "latency is not an object", refuse(source, "latency"));
+  if (record === undefined) return undefined;
   for (const [gap, value] of Object.entries(record)) {
     if (!(ARTIFACT_LATENCY_GAPS as readonly string[]).includes(gap)) {
       throw new ArtifactReadError(
@@ -727,19 +697,13 @@ function parseCost(raw: unknown, source: string): ArtifactCost | undefined {
     assertNamedAbsence(raw, "cost", source);
     return raw;
   }
-  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
-    throw new ArtifactReadError(source, "cost", `cost is not an object (${showValue(raw)})`);
-  }
-  const record = raw as Record<string, unknown>;
+  const record = objectOf(raw, "cost is not an object", refuse(source, "cost"));
   for (const field of ["currency", "rateTableVersion"] as const) {
     if (typeof record[field] !== "string" || (record[field] as string).trim() === "") {
       throw new ArtifactReadError(source, `cost.${field}`, `cost.${field} is missing or empty`);
     }
   }
-  if (record.legs === null || typeof record.legs !== "object" || Array.isArray(record.legs)) {
-    throw new ArtifactReadError(source, "cost.legs", `cost.legs is not an object (${showValue(record.legs)})`);
-  }
-  const legs = record.legs as Record<string, unknown>;
+  const legs = objectOf(record.legs, "cost.legs is not an object", refuse(source, "cost.legs"));
   for (const [leg, amount] of Object.entries(legs)) {
     if (!(ARTIFACT_COST_LEGS as readonly string[]).includes(leg)) {
       throw new ArtifactReadError(
@@ -806,15 +770,12 @@ export function artifactCostTotal(
  * reason and an eligible one carries none, so neither state is a silent flag.
  */
 function parseEligibility(raw: unknown, source: string): ArtifactEligibility | undefined {
-  if (raw === undefined) return undefined;
-  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
-    throw new ArtifactReadError(
-      source,
-      "eligibility",
-      `eligibility is not an object (${showValue(raw)})`,
-    );
-  }
-  const record = raw as Record<string, unknown>;
+  const record = optionalObjectOf(
+    raw,
+    "eligibility is not an object",
+    refuse(source, "eligibility"),
+  );
+  if (record === undefined) return undefined;
   if (typeof record.eligible !== "boolean") {
     throw new ArtifactReadError(
       source,
