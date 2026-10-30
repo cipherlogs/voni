@@ -124,6 +124,7 @@ function greenCascade(captures: Record<string, unknown>): ScoreboardArtifact {
   return {
     ...base,
     pipeline: "cascade",
+    bodySource: "cascade",
     run: {
       runId: base.runId,
       variant: "cascade-audrey-1",

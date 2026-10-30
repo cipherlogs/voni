@@ -13,7 +13,34 @@ npm run scoreboard:demo
     scripts/call-trace.mts          merges one session's events into HEARD/VONI/CUT/gap rows
   src/lib/demo/scoreboard.ts        pure gates, artifact build, diff, streak, matrix
   voni/scoreboard-runs/*.json       gitignored artifacts (one per run)
+
+npm run scoreboard:demo -- --pipeline cascade --ledger <end-message.json> \
+  --reference <ref.wav> --delivered <delivered.wav>
+  scripts/score-demo.mts            builds the cascade artifact from the call's own ledger
+npm run readiness:pack -- --manifest <path>
+  scripts/readiness-pack.mts        assembles the all-subject pack from cascade artifacts
 ```
+
+## Body source (demo-cascade ticket 24)
+
+Every claim below belongs to one body, and the report says which. The two
+claims are exported by `src/lib/demo/body-source.ts` and quoted verbatim here,
+so they cannot lose their source label silently:
+
+- cascade: claims come from the cascade call's own evidence; the body was the app-signed demo body delivered to the pipeline, never a platform stored-agent read
+- managed: claims come from the platform-served stored-agent body; this is a managed-only read and never describes a cascade run
+
+`scoreboard:demo` without `--pipeline cascade` (and `scoreboard:inspect` on
+such an artifact) reads the platform stored agent through
+`readServedAgentBodyForRun` — that is the **managed** body, and its `body:`
+row says so. The cascade artifact carries the call's ledger and never reads a
+stored agent, so its `body:` row is the **cascade** claim; its body-dependent
+gates stay INFO (unmeasured) rather than borrowing the managed body. The
+readiness pack accepts **cascade artifacts only**: a managed artifact is a
+named blocker (`… is managed, not cascade; a readiness row needs the cascade
+engine (a managed artifact's body source is the platform-served stored agent,
+and a managed verdict does not carry over)`), and the pack's `Evidence body:`
+line states that its claims come from the cascade.
 
 - `score-demo` is the only command that writes a scoreboard artifact.
 - `scoreboard:matrix` replays per-voice regression from artifacts; it never
@@ -38,6 +65,7 @@ npm run scoreboard:demo
 | `voni/scripts/eval-demo-agent.mts` | live client scenarios, fake playout/timeline, `EVAL SUMMARY`, optional `--events` JSONL |
 | `voni/scripts/call-trace.mts` | Call trace rows, `gap Nms`, `CUT at`, `HEARD`, barge-in verdict |
 | `voni/src/lib/demo/scoreboard.ts` | gate functions, artifact shape, format/diff/streak/matrix, budget wiring |
+| `voni/src/lib/demo/body-source.ts` | which body a claim comes from (cascade vs managed) and the printed claim labels |
 | `voni/src/lib/demo/scoreboard-budgets.ts` | frozen budget table; the single source for gate thresholds |
 | `voni/src/lib/voice/session.ts` | live session: adaptive end-of-turn, barge-in, end-call drain |
 | `voni/src/lib/demo/stored-agents.ts` | stored demo agent body, fingerprint, LLM override, provision/refresh |
@@ -213,6 +241,11 @@ reference+delivered pair and W0 `line`, transcript, the owner's recorded
 verified against the history and a clean/ineligible run after or between it
 blocks.
 
+The pack's evidence body is fixed to the cascade
+(`READINESS_EVIDENCE_BODY_SOURCE`): a managed artifact is a named blocker, and
+the rendered pack prints `Evidence body:` with the cascade claim. A managed
+verdict never carries over, so the pack never implies it covers the cascade.
+
 Extra refusals beyond the ticket's minimum, kept because they close a hole:
 a duplicate/undated/unexplained deferral, a deferral for a subject with
 evidence or outside `routing=all`, and a tenant whose Locale/transport differs
@@ -236,8 +269,10 @@ all; a dated deferral covers only a subject with no evidence.
   stored path, `DATABASE_URL` (Neon) so the demo agent can be provisioned.
 - Artifacts are gitignored working files. Use `scoreboard:inspect`; do not
   paste raw artifacts or `SILENCE TIMELINE` blobs into a report.
-- `--transport stored` is the landing-demo path. `--transport inline` is for
-  debugging the inline body only; do not measure the demo on it.
+- `--transport stored` is the managed landing-demo body, judged on the
+  platform-served stored agent; do not measure the demo on `--transport inline`.
+  The shipping demo call is the cascade: measure it with
+  `--pipeline cascade --ledger <end-message.json>` (body source: cascade).
 - Every measurement run records the live decision timeline
   (`turn.user_final`, `turn.reply_start`, first audio with the one
   `anchor: true` clock mark, `reply.create`, cut, tool, drain, aside,

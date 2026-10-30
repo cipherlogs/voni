@@ -67,6 +67,7 @@ function cascadeArtifact(overrides: Record<string, unknown> = {}): Record<string
   return {
     ...(serialized(base) as Record<string, unknown>),
     pipeline: "cascade",
+    bodySource: "cascade",
     subject: {
       agent: { kind: "demo", voice: "anna", agentId: null },
       locale: "en",

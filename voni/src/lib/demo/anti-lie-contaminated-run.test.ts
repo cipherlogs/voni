@@ -66,6 +66,7 @@ function greenCandidate(overrides: Partial<ScoreboardArtifact> = {}): Scoreboard
   return {
     ...base,
     pipeline: "cascade",
+    bodySource: "cascade",
     run: {
       runId: base.runId,
       variant: "cascade-audrey-1",

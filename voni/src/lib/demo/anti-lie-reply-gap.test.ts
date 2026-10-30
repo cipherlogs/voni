@@ -56,6 +56,7 @@ function cascadeArtifact(overrides: Record<string, unknown> = {}): Record<string
   return {
     ...(JSON.parse(JSON.stringify(base)) as Record<string, unknown>),
     pipeline: "cascade",
+    bodySource: "cascade",
     subject: {
       agent: { kind: "demo", voice: DEFAULT_GATE_VOICE, agentId: null },
       locale: "en",
