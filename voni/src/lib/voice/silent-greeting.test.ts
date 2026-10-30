@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   collectSilentGreeting,
+  GreetingSessionError,
   silentGreetingSession,
   type GreetingSocket,
 } from "./silent-greeting";
@@ -40,6 +41,36 @@ test("a silent-greeting session speaks the line as its greeting at the voice's n
       output: { voice: "lola" },
     },
   });
+});
+
+test("a session.error is refused by name instead of timing out", async () => {
+  const socket = new FakeSocket();
+  const greeting = collectSilentGreeting({
+    voiceId: "jorg",
+    text: "Hallo.",
+    token: "tok",
+    socketFactory: () => socket,
+  });
+
+  socket.emit("open");
+  socket.emit(
+    "message",
+    JSON.stringify({
+      type: "session.error",
+      code: "invalid_value",
+      message: "Invalid voice 'jorg'. Must be one of: alba, anna, …",
+      param: "output.voice",
+    }),
+  );
+
+  await assert.rejects(greeting, (error: unknown) => {
+    assert.ok(error instanceof GreetingSessionError);
+    assert.equal(error.code, "invalid_value");
+    assert.equal(error.param, "output.voice");
+    assert.match(error.message, /Invalid voice 'jorg'/);
+    return true;
+  });
+  assert.equal(socket.closed, true);
 });
 
 test("the greeting's reply.audio frames come back as one unmodified PCM buffer", async () => {

@@ -80,19 +80,10 @@ test("every offered voice's preview is its own Locale, line and native level", (
   );
   assert.deepEqual(
     gate.failures.map((failure) => failure.voiceId),
-    ["jorg"],
-    `the only unpreviewed managed voice is the pending German re-cast: ${gate.failures
+    [],
+    `previews that do not match their voice: ${gate.failures
       .map((failure) => failure.problems.join(" | "))
       .join(" ;; ")}`,
-  );
-  const german = gate.failures[0]!;
-  assert.ok(
-    german.problems.some((problem) => /voice "jorg" \(de\): no committed clip for jorg: pending/.test(problem)),
-    `the pending managed clip is named: ${german.problems.join(" | ")}`,
-  );
-  assert.ok(
-    german.problems.some((problem) => /voice:clips -- --voice jorg/.test(problem)),
-    "the pending entry names the exact command that finishes it",
   );
 
   for (const check of gate.checks) {
@@ -110,10 +101,9 @@ test("every offered voice's preview is its own Locale, line and native level", (
   }
 });
 
-test("every committed managed preview's bytes are its recorded format and surviving bitrate", () => {
-  for (const record of manifest().clips) {
-    const voice = getVoice(record.voice);
-    assert.ok(voice, `${record.voice} is a catalog voice`);
+test("every committed preview's bytes are its recorded format and surviving bitrate", () => {
+  for (const voice of VOICES) {
+    const record = recordFor(voice.id);
     const bytes = readAsset(record.asset);
     assert.ok(bytes, `${voice.id}: ${record.asset} is committed`);
 
@@ -133,8 +123,8 @@ test("a wrong-Locale preview and a wrong-level preview fail by name", () => {
   const patched: AuditionManifest = {
     ...base,
     clips: base.clips.map((record) => {
-      if (record.voice === "estelle") {
-        // The old hand-capture defect: a French voice greeting in English.
+      if (record.voice === "jorg") {
+        // The old hand capture: a German voice greeting in English.
         return {
           ...record,
           locale: "en",
@@ -160,19 +150,19 @@ test("a wrong-Locale preview and a wrong-level preview fail by name", () => {
   const gate = previewGate({ manifest: patched, readAsset, measurement: PURE_MP3 });
   assert.deepEqual(
     gate.failures.map((failure) => failure.voiceId).sort(),
-    ["estelle", "jorg", "lola"],
-    `the two defective previews and the pending German clip fail: ${gate.failures
+    ["jorg", "lola"],
+    `only the two defective previews fail: ${gate.failures
       .map((failure) => failure.problems.join(" | "))
       .join(" ;; ")}`,
   );
 
-  const french = gate.failures.find((failure) => failure.voiceId === "estelle");
-  assert.ok(french, "estelle is named as a failure");
+  const german = gate.failures.find((failure) => failure.voiceId === "jorg");
+  assert.ok(german, "jorg is named as a failure");
   assert.ok(
-    french.problems.some((problem) =>
-      /voice "estelle" \(fr\): speaks English, not its own Locale fr/.test(problem),
+    german.problems.some((problem) =>
+      /voice "jorg" \(de\): speaks English, not its own Locale de/.test(problem),
     ),
-    `the wrong Locale fails by name: ${french.problems.join(" | ")}`,
+    `the wrong Locale fails by name: ${german.problems.join(" | ")}`,
   );
 
   const spanish = gate.failures.find((failure) => failure.voiceId === "lola");
@@ -206,11 +196,11 @@ test("a preview whose bytes measure to another level fails by name", () => {
   });
 
   assert.deepEqual(
-    gate.failures.map((failure) => failure.voiceId).sort(),
-    ["jorg", "lola"],
-    "only the swapped preview (and the pending German clip) fails; an honest measurement is not flagged",
+    gate.failures.map((failure) => failure.voiceId),
+    ["lola"],
+    "only the swapped preview fails; an honest measurement is not flagged",
   );
-  const spanish = gate.failures.find((failure) => failure.voiceId === "lola")!;
+  const spanish = gate.failures[0];
   assert.ok(
     spanish.problems.some((problem) =>
       /voice "lola" \(es\): the committed bytes decode to .* LUFS, .*the evidence records/.test(
@@ -245,15 +235,13 @@ test("every committed preview decodes to the level its evidence records", (t) =>
   try {
     const gate = previewGate({ manifest: manifest(), readAsset, measurement: decodedMeasurement(dir) });
     assert.deepEqual(
-      gate.failures.map((failure) => failure.voiceId),
-      ["jorg"],
-      "only the pending managed German clip is unproven; every committed preview decodes as measured",
+      gate.failures.map((failure) => failure.problems.join(" | ")),
+      [],
+      "the committed bytes are the audio each evidence record measured",
     );
     assert.ok(
-      gate.checks
-        .filter((check) => check.voiceId !== "jorg")
-        .every((check) => check.measurement === "decoded"),
-      "the decoded leg ran for every committed managed preview",
+      gate.checks.every((check) => check.measurement === "decoded"),
+      "the decoded leg ran for every offered voice",
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -274,18 +262,17 @@ test("a preview swapped for another voice's audio fails by name", (t) => {
   try {
     const gate = previewGate({ manifest: manifest(), readAsset: readSwapped, measurement: decodedMeasurement(dir) });
     assert.deepEqual(
-      gate.failures.map((failure) => failure.voiceId).sort(),
-      ["anna", "jorg"],
-      `only the swapped preview (and the pending German clip) fails: ${gate.failures
+      gate.failures.map((failure) => failure.voiceId),
+      ["anna"],
+      `only the swapped preview fails: ${gate.failures
         .map((failure) => failure.problems.join(" | "))
         .join(" ;; ")}`,
     );
-    const swapped = gate.failures.find((failure) => failure.voiceId === "anna")!;
     assert.ok(
-      swapped.problems.some((problem) =>
+      gate.failures[0].problems.some((problem) =>
         /voice "anna" \(en\): the committed bytes decode to .*the evidence records/.test(problem),
       ),
-      `the swapped preview is named: ${swapped.problems.join(" | ")}`,
+      `the swapped preview is named: ${gate.failures[0].problems.join(" | ")}`,
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });

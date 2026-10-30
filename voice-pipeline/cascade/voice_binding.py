@@ -38,9 +38,10 @@ SPEECH_LANGUAGES: Mapping[str, str] = MappingProxyType(
     }
 )
 
-#: The vendor's library id is the catalogue id with this prefix: the app stores
-#: the bare id (`jorg`), and the synthesis endpoint serves `aai-jorg` (the same
-#: mapping `voni/scripts/measure-voice-levels.mts` sends).
+#: The vendor's library id is the catalogue id with this prefix — **cascade
+#: synthesis only**. The app stores the bare id (`jorg`); the TTS websocket
+#: serves `aai-jorg`, while the managed Voice Agent session (`output.voice`)
+#: keeps the bare id.
 VENDOR_VOICE_ID_PREFIX = "aai-"
 
 

@@ -33,6 +33,10 @@ the same drift, so a greeting change cannot quietly leave a stale preview.
   as its only output configuration. The session's own confirmation shows
   `output.volume: null`; there is no gain, limiter or normalisation anywhere in
   the path. The native PCM render is written under `.voice-clips/` (gitignored).
+  A voice the Voice Agent API does not serve (the new TTS generation, e.g.
+  `jorg`) is refused with `session.error invalid_value`; that voice's committed
+  cascade clip supplies the same native audio, and its evidence row records
+  `source: "cascade-clip"`.
 - **Native level.** The encoder only changes format. The committed MP3's
   measured level is checked against the native render it came from; the deleted
   client gain table moved voices by up to 12 dB, so a baked-in copy cannot pass.
@@ -94,14 +98,14 @@ name — `voice "estelle" (fr): speaks English, not its own Locale fr`.
 
 A voice the generator cannot render gets **no audio** — no placeholder, no
 stale file, no silence. `clips.json` lists it under `pending` with the reason
-and the exact command to finish it:
+and the exact command to finish it. No voice is pending today; the shape is:
 
 ```json
 {
-  "voice": "jorg",
-  "locale": "de",
-  "reason": "German re-cast from juergen; the owner audition is pending (ticket 130).",
-  "command": "cd voni && npm run voice:clips -- --voice jorg"
+  "voice": "<voice>",
+  "locale": "<locale>",
+  "reason": "…",
+  "command": "cd voni && npm run voice:clips -- --voice <voice>"
 }
 ```
 

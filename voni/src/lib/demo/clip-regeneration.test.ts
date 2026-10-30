@@ -146,26 +146,26 @@ test("a fresh take of the committed clip regenerates within the named tolerances
 test("a take that speaks another Locale fails", (t) => {
   if (!requireEncoder(t)) return;
   withTemp((dir) => {
-    const spanish = auditionClipFor("lola");
+    const german = auditionClipFor("jorg");
     const take = readAuditionTake(fileURLToPath(TAKE));
-    // The defect the old hand captures recorded: a voice's clip that greets in
-    // English. The bytes are a real render; the identity says "en".
+    // The defect the old hand captures recorded: a German voice's clip that
+    // greets in English. The bytes are a real render; the identity says "en".
     const record = regenerated(
       {
         ...take,
-        evidence: { ...take.evidence, voice: "lola", locale: "en", line: VONI_GREETINGS.en },
+        evidence: { ...take.evidence, voice: "jorg", locale: "en", line: VONI_GREETINGS.en },
       },
-      spanish,
+      german,
       dir,
       { suffix: "wrong-locale" },
     );
     const problems = regenerationProblems(
-      spanish,
-      committedClipFor(manifest(), "lola", { assetExists }),
+      german,
+      committedClipFor(manifest(), "jorg", { assetExists }),
       record,
     );
     assert.ok(
-      problems.some((problem) => /speaks English, not its own Locale es/.test(problem)),
+      problems.some((problem) => /speaks English, not its own Locale de/.test(problem)),
       `a clip in the wrong Locale is named: ${problems.join(" | ")}`,
     );
   });

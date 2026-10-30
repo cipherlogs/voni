@@ -171,6 +171,13 @@ export type AuditionClipRecord = {
   facts: AuditionClipFacts;
   level: AuditionClipLevel;
   generatedOn: string;
+  /**
+   * Where the native render came from. Absent means the silent-greeting Voice
+   * Agent session (the default); `cascade-clip` means the vendor's agent API
+   * does not serve the voice, so the committed cascade clip of that same voice
+   * and line supplied the native audio.
+   */
+  source?: "agent-session" | "cascade-clip";
 };
 
 export type AuditionManifest = {

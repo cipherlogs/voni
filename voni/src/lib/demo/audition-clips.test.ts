@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { VOICES, getVoice } from "@/lib/agents/voices";
-import { VONI_GREETINGS, voniConfig } from "./voni-agent";
+import { VONI_GREETINGS, voniConfig, DEMO_VOICE_IDS } from "./voni-agent";
 import { defaultReferenceText } from "./reference-render";
 import { mp3Facts } from "./mp3-facts";
 import { silentGreetingSession } from "@/lib/voice/silent-greeting";
@@ -202,6 +202,18 @@ test("a correct record has no problems", () => {
   for (const clip of auditionClipPlan()) {
     const problems = auditionClipProblems(clip, recordFor(clip));
     assert.deepEqual(problems, [], `${clip.voiceId}: ${problems.join(" | ")}`);
+  }
+});
+
+test("every demo voice has a committed public preview and an audition-clip row", () => {
+  const committed = manifest();
+  for (const voiceId of DEMO_VOICE_IDS) {
+    const asset = `public/voices/${voiceId}.mp3`;
+    assert.equal(assetExists(asset), true, `${voiceId}: ${asset} is committed`);
+    const record = committed.clips.find((candidate) => candidate.voice === voiceId);
+    assert.ok(record, `${voiceId}: the audition evidence has its row, not a pending entry`);
+    assert.equal(record.asset, asset);
+    assert.equal(record.locale, getVoice(voiceId)?.languageCode, `${voiceId}: its own Locale`);
   }
 });
 

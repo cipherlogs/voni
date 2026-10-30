@@ -4,8 +4,8 @@
   "command": "cd voni && npm run voice:packs",
   "source": "evidence/audition-clips/clips.json",
   "counts": {
-    "total": 15,
-    "pending": 15,
+    "total": 16,
+    "pending": 16,
     "complete": 0,
     "incomplete": 0
   },
@@ -152,6 +152,17 @@
       "reviewer": null,
       "reviewedOn": null,
       "pack": "evidence/reviewer-packs/lola.json"
+    },
+    {
+      "voice": "jorg",
+      "locale": "de",
+      "asset": "public/voices/jorg.mp3",
+      "url": "/voices/jorg.mp3",
+      "recordingSha256": "b1b3df35426bf7540cc472d9d61b894a2e621481259bb2110d6439ebc763406f",
+      "status": "pending",
+      "reviewer": null,
+      "reviewedOn": null,
+      "pack": "evidence/reviewer-packs/jorg.json"
     },
     {
       "voice": "rafael",

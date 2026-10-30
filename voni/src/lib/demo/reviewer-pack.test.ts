@@ -39,9 +39,6 @@ const packMarkdown = (voice: string) => new URL(`${REVIEWER_PACK_DIR}/${voice}.m
 const manifest = (): AuditionManifest =>
   JSON.parse(readFileSync(new URL(AUDITION_MANIFEST_PATH, root), "utf8")) as AuditionManifest;
 
-/** The offered voices with a committed managed audition clip. `jorg` is pending. */
-const managedClips = (): AuditionClipRecord[] => manifest().clips;
-
 const readPack = (voice: string): ReviewerPack =>
   JSON.parse(readFileSync(packFile(voice), "utf8")) as ReviewerPack;
 
@@ -94,21 +91,12 @@ function verdictFixture(patch: Partial<ReviewerVerdict> = {}): ReviewerVerdict {
 
 // ── "Each Locale has one shared recording for rating." ───────────────────────
 
-test("every offered voice is a committed managed clip with a pack, or visibly pending", () => {
-  const clips = managedClips();
-  const pending = manifest().pending;
-  assert.equal(clips.length + pending.length, VOICES.length, "every offered voice is accounted for");
-  assert.deepEqual(
-    pending.map((entry) => entry.voice),
-    ["jorg"],
-    "the German re-cast is the one voice without a managed audition clip",
-  );
-  assert.equal(existsSync(packFile("jorg")), false, "a voice with no recording has no hand-off pack");
+test("every offered voice has a pack bound to its own Locale's one committed recording", () => {
+  const clips = manifest().clips;
+  assert.equal(clips.length, VOICES.length, "the evidence must carry every offered voice");
 
-  for (const clip of clips) {
-    const voice = VOICES.find((candidate) => candidate.id === clip.voice);
-    assert.ok(voice, `${clip.voice} is an offered voice`);
-    const pack = readPack(clip.voice);
+  for (const voice of VOICES) {
+    const pack = readPack(voice.id);
     assert.equal(pack.voice, voice.id);
     assert.equal(pack.locale, voice.languageCode, `${voice.id} must be judged in its own Locale`);
 
@@ -123,7 +111,7 @@ test("every offered voice is a committed managed clip with a pack, or visibly pe
 });
 
 test("one shared recording per voice and Locale, and no pack for a voice that has none", () => {
-  const clips = managedClips();
+  const clips = manifest().clips;
   const packHashes = clips.map((clip) => {
     const pack = readPack(clip.voice);
     assert.equal(pack.recording?.asset, clip.asset);
@@ -135,8 +123,7 @@ test("one shared recording per voice and Locale, and no pack for a voice that ha
   const index = JSON.parse(readFileSync(new URL(REVIEWER_PACK_INDEX_PATH, root), "utf8")) as {
     packs: Array<{ voice: string; recordingSha256: string; status: string }>;
   };
-  assert.equal(index.packs.length, clips.length);
-  assert.equal(index.packs.some((entry) => entry.voice === "jorg"), false);
+  assert.equal(index.packs.length, VOICES.length);
   for (const entry of index.packs) {
     assert.equal(entry.recordingSha256, readPack(entry.voice).recording?.sha256);
   }
@@ -147,8 +134,8 @@ test("one shared recording per voice and Locale, and no pack for a voice that ha
 test("the ballot carries timbre, accent and language naturalness", () => {
   assert.deepEqual([...BALLOT_AXES], ["timbre", "accent", "languageNaturalness"]);
 
-  for (const clip of managedClips()) {
-    const pack = readPack(clip.voice);
+  for (const voice of VOICES) {
+    const pack = readPack(voice.id);
     assert.deepEqual(pack.ballot.axes, [...BALLOT_AXES]);
     assert.equal(pack.ballot.scale.min, 1);
     assert.equal(pack.ballot.scale.max, 5);
@@ -222,9 +209,9 @@ test("a reason is required for every axis below five, not only the first", () =>
 // ── "The named reviewer and date are required fields." ───────────────────────
 
 test("a pack with no reviewer and no date is visibly pending, never passing", () => {
-  for (const clip of managedClips()) {
-    const pack = readPack(clip.voice);
-    assert.equal(pack.verdict, null, `${clip.voice}: no reviewer exists yet, so no verdict is invented`);
+  for (const voice of VOICES) {
+    const pack = readPack(voice.id);
+    assert.equal(pack.verdict, null, `${voice.id}: no reviewer exists yet, so no verdict is invented`);
     assert.equal(packStatus(pack), "pending");
     assert.deepEqual(packMissing(pack), ["reviewer", "reviewedOn"]);
     assert.equal(pack.verdict, null);
@@ -327,10 +314,9 @@ test("a verdict that names a different Locale than the recording is refused", ()
 // ── "The pack can be handed to a reviewer without further assembly." ─────────
 
 test("every pack has a self-contained hand-off sheet with a ballot and a signature block", () => {
-  for (const clip of managedClips()) {
-    assert.ok(existsSync(packMarkdown(clip.voice)), `${clip.voice}: no hand-off sheet`);
-    const sheet = readFileSync(packMarkdown(clip.voice), "utf8");
-    const voice = VOICES.find((candidate) => candidate.id === clip.voice)!;
+  for (const voice of VOICES) {
+    assert.ok(existsSync(packMarkdown(voice.id)), `${voice.id}: no hand-off sheet`);
+    const sheet = readFileSync(packMarkdown(voice.id), "utf8");
     assert.match(sheet, new RegExp(`# Parity proof — reviewer pack: ${voice.id} \\(${voice.languageCode}\\)`));
     for (const axis of BALLOT_AXES) {
       assert.match(sheet, new RegExp(`\\| ${BALLOT_AXIS_LABELS[axis]} \\|`), `${voice.id}: no ${axis} row`);
@@ -459,8 +445,7 @@ test("the pack index lists every voice with its status and no invented reviewer"
   };
   assert.equal(index.schemaVersion, 1);
   assert.equal(index.command, "cd voni && npm run voice:packs");
-  assert.equal(index.counts.total, managedClips().length);
-  assert.equal(index.counts.total, index.packs.length);
+  assert.equal(index.counts.total, VOICES.length);
   assert.equal(index.counts.pending + index.counts.complete + index.counts.incomplete, index.counts.total);
   assert.equal(index.counts.pending, index.packs.filter((entry) => entry.status === "pending").length);
 

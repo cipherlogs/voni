@@ -85,11 +85,12 @@ The script records the HTTP result per candidate and saves any rendered WAV for
 audition; it prints a suggested binding but never edits `voice_binding.py`.
 
 The remaining human work on 130 is **the owner's audition** of
-`/voices/cascade/jorg.wav` (and the managed audition clip, still `pending` in
-`voni/evidence/audition-clips/clips.json`), plus reviewer and date. Do not
-record an audition, verdict or signature on the owner's behalf. If the owner
-rejects `jorg`, German returns to an open Locale — not beta, not dropped, not
-re-cast to another Locale.
+`/voices/cascade/jorg.wav` and the managed preview `/voices/jorg.mp3` (rendered
+from jorg's committed cascade clip, because the Voice Agent API does not serve
+`jorg`; its evidence row records `source: "cascade-clip"`), plus reviewer and
+date. Do not record an audition, verdict or signature on the owner's behalf. If
+the owner rejects `jorg`, German returns to an open Locale — not beta, not
+dropped, not re-cast to another Locale.
 
 ## 134 — Cascade audition verdict
 
