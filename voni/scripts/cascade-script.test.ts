@@ -12,26 +12,38 @@ import {
 
 /**
  * The browser E2E's service half is a committed script (ticket 149, extended by
- * ticket 150). These checks run in the PR unit gate, so a broken or empty
- * fixture fails before the slower browser job ever starts. The script must
- * carry the behaviours the browser seam asserts: numbered audio, a barge-in,
- * a replayed frame and a goodbye.
+ * ticket 150, pointed at the landing demo by ticket 16). These checks run in
+ * the PR unit gate, so a broken or empty fixture fails before the slower
+ * browser job ever starts. The script must carry the behaviours the browser
+ * seam asserts: a greeting caption, numbered audio, a barge-in, the pipeline's
+ * tagged invite line, a replayed frame and a goodbye.
  */
 
-test("the scripted service is a full cascade call: captions, audio, barge-in, end_call", () => {
+test("the scripted service is a full demo call: greeting, barge-in, invite, end_call", () => {
   const document = loadScriptedService();
   assert.equal(document.schemaVersion, 1);
   assert.equal(document.sampleRate, FAKE_SAMPLE_RATE);
+  assert.ok(document.testTag, "the fixture names the call's Test tag");
   const frames = recordedCall();
   const types = frames.map((entry) => entry.frame.type);
-  assert.equal(types.filter((type) => type === "caption").length, 2);
+  const captions = frames.filter((entry) => entry.frame.type === "caption");
+  assert.equal(captions.length, 4, "greeting, barge-in, next reply and the invite line");
   assert.ok(types.includes("audio"), "the capture has agent audio to deliver");
   assert.equal(types.filter((type) => type === "interrupted").length, 1, "one barge-in");
   assert.ok(document.interruptAfterMs > 0, "the barge-in lands after audio has been queued");
   assert.equal(types.at(-1), "end_call", "the call ends with the goodbye drain");
   assert.ok(
-    frames.some((entry) => entry.frame.type === "caption" && entry.frame.final === true),
+    captions.every((entry) => entry.frame.final === true),
     "the transcript settles on a final",
+  );
+  const greeting = captions.find((entry) => entry.frame.role === "agent");
+  assert.ok(greeting, "the call opens with Voni's greeting caption");
+  const invite = frames.find((entry) => entry.tool === "show_test_address");
+  assert.ok(invite, "the pipeline's server-side invite is in the script");
+  assert.equal(invite!.frame.role, "agent");
+  assert.ok(
+    String(invite!.frame.text).includes(document.testTag!),
+    "the invite line carries the call's Test tag",
   );
 });
 
@@ -55,10 +67,10 @@ test("every audio frame stamps the rate and the call-level seq the client needs"
 });
 
 test("the script is two differently-pitched replies, so the capture can tell them apart", () => {
-  const first = replyToneHz("first");
+  const greeting = replyToneHz("greeting");
   const second = replyToneHz("second");
-  assert.notEqual(first, second, "one tone could not prove which reply was cut");
-  assert.ok(replyAudioSeconds("first") > 1, "the interrupted reply is long enough to cut");
+  assert.notEqual(greeting, second, "one tone could not prove which reply was cut");
+  assert.ok(replyAudioSeconds("greeting") > 1, "the interrupted greeting is long enough to cut");
   assert.ok(replyAudioSeconds("second") > 0.5, "the goodbye drains through the worklet");
 });
 
