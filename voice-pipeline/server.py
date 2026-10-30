@@ -34,6 +34,11 @@ Every log record is scrubbed before it is written (ticket 137): the call token,
 the vendor keys, the tool secret, the signing secret and the database URL never
 reach an access log, an error log or a crash dump, and a vendor handshake body
 is replaced whole rather than kept.
+
+SIGTERM starts the drain (ticket 140): the supervisor flips the drain state the
+routes read, refuses new calls, lets the calls already accepted finish, and
+exits after at most ``deploy.drain_max_wait_ms``. ``main`` installs the handler
+and disables uvicorn's default one, which would exit and end a live call.
 """
 
 from __future__ import annotations
@@ -48,6 +53,7 @@ from fastapi.responses import JSONResponse
 
 from cascade.breaker import Breaker
 from cascade.counter import DailyCounter
+from cascade.drain import DEFAULT_REASON, DrainSupervisor, LiveCalls, drain_then_exit
 from cascade.envelope import EnvelopeError
 from cascade.health import DrainState, readiness
 from cascade.log_redaction import install_log_redaction
@@ -75,6 +81,7 @@ def create_app(
     counter: Any = None,
     breaker: Any = None,
     drain: DrainState | None = None,
+    live_calls: LiveCalls | None = None,
 ) -> FastAPI:
     # Ticket 137: every record — uvicorn access, error, crash dump — is
     # scrubbed before a handler can write it. The call token in the socket
@@ -135,10 +142,12 @@ def create_app(
                     f"{type(exc).__name__}: {exc}"
                 )
     drain_state = drain if drain is not None else DrainState()
+    live = live_calls if live_calls is not None else LiveCalls()
     app.state.store = store
     app.state.counter = counter
     app.state.breaker = breaker
     app.state.drain = drain_state
+    app.state.live_calls = live
     app.state.readiness_errors = configuration_errors
 
     @app.get("/healthz")
@@ -241,11 +250,18 @@ def create_app(
             )
             await websocket.close()
             return
-        await handle_browser_call(
-            websocket,
-            body_channel=body_channel,
-            call_tokens=token_registry,
-        )
+        # Ticket 140: a call this process accepted is a live call the drain
+        # waits for. A refused one never reaches this counter, so it cannot
+        # hold the drain open.
+        live.started()
+        try:
+            await handle_browser_call(
+                websocket,
+                body_channel=body_channel,
+                call_tokens=token_registry,
+            )
+        finally:
+            live.finished()
 
     return app
 
@@ -254,17 +270,62 @@ app = create_app()
 
 
 def main() -> None:
+    import asyncio
+    import signal
+
     import uvicorn
 
-    # NOTE: uvloop is installed in the service venv but the asyncio loop is
-    # pinned until the hung-second-request fault under uvloop is root-caused
-    # (see smoke investigation: prefetch adoption stalls on uvloop only).
-    uvicorn.run(
-        app,
+    # The drain owns the lifecycle of a deploy (ticket 140): the supervisor
+    # flips the state the routes read, then waits for the calls this process
+    # accepted to finish, bounded by deploy.drain_max_wait_ms.
+    drain = DrainState()
+    live = LiveCalls()
+    supervisor = DrainSupervisor(drain=drain, live_calls=live)
+    application = create_app(drain=drain, live_calls=live)
+
+    class DrainAwareServer(uvicorn.Server):
+        def install_signal_handlers(self) -> None:
+            # uvicorn's default SIGTERM handler exits at once, which would end
+            # a live call. The drain handler below replaces it.
+            pass
+
+    config = uvicorn.Config(
+        application,
         host="0.0.0.0",
         port=int(os.environ.get("VOICE_PIPELINE_PORT", "8766")),
         loop="asyncio",
+        # The drain already spent the recorded bound waiting for live calls;
+        # past it the process stops rather than asking a call to wait longer.
+        # That exit is the deployment policy (Fly's kill_timeout is the same
+        # bound), not the drain terminating a call.
+        timeout_graceful_shutdown=0,
     )
+    server = DrainAwareServer(config)
+
+    async def serve() -> None:
+        loop = asyncio.get_running_loop()
+        draining: list[asyncio.Task] = []
+
+        def on_signal() -> None:
+            if supervisor.started:
+                return
+            # Synchronously, so /readyz fails before the next probe: no new
+            # call is admitted once the deploy has started.
+            supervisor.start(DEFAULT_REASON)
+            draining.append(
+                loop.create_task(
+                    drain_then_exit(
+                        supervisor,
+                        request_exit=lambda: setattr(server, "should_exit", True),
+                    )
+                )
+            )
+
+        for name in (signal.SIGTERM, signal.SIGINT):
+            loop.add_signal_handler(name, on_signal)
+        await server.serve()
+
+    asyncio.run(serve())
 
 
 if __name__ == "__main__":

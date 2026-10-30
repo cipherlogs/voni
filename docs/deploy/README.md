@@ -58,8 +58,17 @@ Two machines per app, physically one region (`iad`) to start.
   gets `{"type":"error","code":"draining"}`), while calls already running finish.
 - **Drain seam.** `kill_signal = "SIGTERM"`, `kill_timeout = 30`, which equals
   the recorded `deploy.drain_max_wait_ms` (30 000 ms) in
-  `voice-pipeline/cascade/thresholds.json`. Fly waits for the process, then
-  removes the machine; the drain supervisor itself is ticket 140.
+  `voice-pipeline/cascade/thresholds.json`. On SIGTERM the drain supervisor
+  (`voice-pipeline/cascade/drain.py`, ticket 140) flips the `DrainState` the
+  routes read — `/readyz` 503, new sockets refused with
+  `{"type":"error","code":"draining"}`, the call-body route 503 — then waits
+  for the calls this process accepted, bounded by that recorded value, and only
+  then asks uvicorn to exit. It never cancels a call task: reaching the bound is
+  logged as an operational-policy event (`deploy.drain_max_wait_ms reached; N
+  live call(s) still running`) and the process exits; the platform's
+  `kill_timeout` is the same bound. A call held open across a rolling deploy
+  completes because the old machine keeps serving it while the proxy sends new
+  calls to the healthy machine.
 - **Shared state.** Only the durable breaker, routing switch and daily counter
   are shared, and they are read through the store protocol in
   `voice-pipeline/cascade/store.py`. The concrete deployment choice is a **Fly
