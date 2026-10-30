@@ -544,6 +544,37 @@ class BrowserCallTests(unittest.TestCase):
         self.assertEqual(len(errors), 1)
         self.assertIn("smuggled", errors[0]["message"])
 
+    def test_an_unbound_voice_is_refused_by_name_with_its_locale_before_a_socket(self):
+        body = json.loads(json.dumps(BODY))
+        body["voice"]["voice_id"] = "juergen"
+        ws, built, instances = run_call(
+            [browser_config(), {"type": "stop"}],
+            [],
+            channel=delivered_channel(body),
+        )
+
+        self.assertEqual(built, [], "no vendor socket before the voice binding is read")
+        self.assertEqual(instances, [], "no lifecycle is built for an unbound voice")
+        errors = [m for m in ws.sent if m["type"] == "error"]
+        self.assertEqual(len(errors), 1)
+        self.assertIn("juergen", errors[0]["message"])
+        self.assertIn("de (German)", errors[0]["message"])
+        self.assertIn("422", errors[0]["message"])
+
+    def test_an_unknown_voice_is_refused_by_name_before_a_socket(self):
+        body = json.loads(json.dumps(BODY))
+        body["voice"]["voice_id"] = "ghost"
+        ws, built, _instances = run_call(
+            [browser_config(), {"type": "stop"}],
+            [],
+            channel=delivered_channel(body),
+        )
+
+        self.assertEqual(built, [], "no vendor socket before the voice binding is read")
+        errors = [m for m in ws.sent if m["type"] == "error"]
+        self.assertEqual(len(errors), 1)
+        self.assertIn('unknown voice "ghost"', errors[0]["message"])
+
     def test_first_message_must_be_config(self):
         ws, _built, _instances = run_call([audio_message()], [])
         errors = [m for m in ws.sent if m["type"] == "error"]

@@ -601,7 +601,7 @@ test("the subject list names each Locale's status explicitly", () => {
   assert.equal(localeSubjectStatus("de").status, "bound", "German is bound to jorg, and says so");
 });
 
-test("the unbound table names historical ids, and every offered voice is measured", () => {
+test("the unbound table names historical ids, and the unmeasured gaps are named", () => {
   for (const [voiceId, unbound] of Object.entries(UNBOUND_VOICES)) {
     assert.equal(unbound.historical, true, `${voiceId} is a historical row, not an offered voice`);
     assert.equal(getVoice(voiceId), undefined, `${voiceId} is no longer in the catalogue`);
@@ -609,9 +609,9 @@ test("the unbound table names historical ids, and every offered voice is measure
     assert.match(unbound.reason, /422 voice_not_found/);
   }
   assert.deepEqual(
-    UNMEASURED_VOICE_LEVELS,
-    [],
-    "every offered voice, German included, has a measured native reference",
+    UNMEASURED_VOICE_LEVELS.map((row) => row.voice).sort(),
+    ["audrey", "benicio", "donatien", "malvina"],
+    "the demo voices added after the measured run are named gaps, not silent 100s",
   );
 });
 

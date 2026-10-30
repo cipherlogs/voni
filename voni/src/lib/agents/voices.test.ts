@@ -167,9 +167,9 @@ test("an unmeasured voice would be a visible registry row, never a silent 100", 
     "the registry's named gaps are the evidence's named gaps",
   );
   assert.deepEqual(
-    UNMEASURED_VOICE_LEVELS,
-    [],
-    "every offered voice, German's jorg included, has a measured reference",
+    UNMEASURED_VOICE_LEVELS.map((row) => row.voice).sort(),
+    ["audrey", "benicio", "donatien", "malvina"],
+    "the four demo voices added after the 2026-10-29 run are named gaps, not silent 100s",
   );
   assert.equal(
     UNMEASURED_VOICE_OUTPUT_VOLUME,

@@ -33,8 +33,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 VOICES_TS = REPO_ROOT / "voni/src/lib/agents/voices.ts"
 LEVELS_JSON = REPO_ROOT / "voni/evidence/voice-levels/levels.json"
 
-# The six demo subjects, in the catalogue's demo order.
-DEMO_VOICES = ("anna", "lola", "estelle", "jorg", "giovanni", "rafael")
+# The five demo subjects, in the app's demo order (demo-cascade ticket 04).
+DEMO_VOICES = ("audrey", "malvina", "donatien", "jorg", "benicio")
 
 # The German voice the catalogue and demo used before the re-cast (ticket 130).
 # It stays a named unbound row so it can never become a silent fallback.
@@ -51,23 +51,27 @@ def _catalogue() -> dict[str, tuple[str, str]]:
     return {m.group(1): (m.group(2), m.group(3)) for m in entries}
 
 
+def _evidence() -> dict:
+    """The committed level evidence, read once per assertion."""
+    return json.loads(LEVELS_JSON.read_text(encoding="utf-8"))
+
+
 def _measured_locales() -> dict[str, str]:
     """`voice_id -> locale` from the committed level evidence, measured + unmeasured."""
-    evidence = json.loads(LEVELS_JSON.read_text(encoding="utf-8"))
+    evidence = _evidence()
     rows = {row["voice"]: row["locale"] for row in evidence["voices"]}
     rows.update({row["voice"]: row["locale"] for row in evidence["unmeasured"]})
     return rows
 
 
 class DemoSubjectTests(unittest.TestCase):
-    def test_the_six_demo_voices_bind_to_their_own_locale(self):
+    def test_the_five_demo_voices_bind_to_their_own_locale(self):
         expected = {
-            "anna": Locale("en", "English"),
-            "lola": Locale("es", "Spanish"),
-            "estelle": Locale("fr", "French"),
+            "audrey": Locale("en", "English"),
+            "malvina": Locale("es", "Spanish"),
+            "donatien": Locale("fr", "French"),
             "jorg": Locale("de", "German"),
-            "giovanni": Locale("it", "Italian"),
-            "rafael": Locale("pt", "Portuguese"),
+            "benicio": Locale("pt", "Portuguese"),
         }
         for voice_id, locale in expected.items():
             with self.subTest(voice=voice_id):
@@ -92,11 +96,11 @@ class DemoSubjectTests(unittest.TestCase):
         self.assertIn("jorg", message)
         self.assertFalse(is_cascade_subject(HISTORICAL_GERMAN))
 
-    def test_the_six_subjects_name_six_cascade_subjects(self):
+    def test_the_five_subjects_name_five_cascade_subjects(self):
         subjects = [voice for voice in DEMO_VOICES if is_cascade_subject(voice)]
         self.assertEqual(
             subjects,
-            ["anna", "lola", "estelle", "jorg", "giovanni", "rafael"],
+            ["audrey", "malvina", "donatien", "jorg", "benicio"],
         )
 
 
@@ -158,6 +162,16 @@ class LanguageOverrideTests(unittest.TestCase):
         message = str(caught.exception)
         self.assertIn('"anna"', message)
         self.assertIn('"Spanish"', message)
+
+    def test_a_new_demo_voice_is_bound_before_its_request_language_is_read(self):
+        # The binding, not the request, decides: donatien is French even when a
+        # caller sends the Spanish language name.
+        with self.assertRaises(LanguageOverrideError) as caught:
+            bind_voice("donatien", requested_language="Spanish")
+        self.assertIn('"donatien"', str(caught.exception))
+        self.assertIn("fr (French)", str(caught.exception))
+        binding = bind_voice("donatien", requested_language="French")
+        self.assertEqual(binding.locale, Locale("fr", "French"))
 
     def test_a_request_language_that_agrees_is_accepted_without_changing_the_table(self):
         binding = bind_voice("lola", requested_language="es")
@@ -234,6 +248,27 @@ class CatalogueDriftTests(unittest.TestCase):
             Locale("de", "German"),
             "the historical German id keeps its Locale recorded, not silently dropped",
         )
+
+    def test_the_new_demo_voices_are_unmeasured_with_a_named_reason_and_source(self):
+        # A voice added after the measured run has no vendor-served level. The
+        # record names the gap; it never invents a number and never drops the row.
+        evidence = _evidence()
+        measured = {row["voice"] for row in evidence["voices"]}
+        unmeasured = {row["voice"]: row for row in evidence["unmeasured"]}
+        for voice_id in ("audrey", "malvina", "donatien", "benicio"):
+            with self.subTest(voice=voice_id):
+                self.assertNotIn(voice_id, measured, "no vendor take exists for this voice")
+                self.assertIn(voice_id, unmeasured)
+                row = unmeasured[voice_id]
+                self.assertEqual(row["locale"], BINDINGS[voice_id].locale.code)
+                self.assertTrue(str(row.get("reason") or "").strip(), "the gap is named")
+                self.assertTrue(str(row.get("source") or "").strip(), "the gap cites its source")
+                for number in ("integratedLufs", "truePeakDbtp", "takes"):
+                    self.assertNotIn(
+                        number,
+                        row,
+                        f"{voice_id} must not carry a fabricated {number}",
+                    )
 
 
 if __name__ == "__main__":
