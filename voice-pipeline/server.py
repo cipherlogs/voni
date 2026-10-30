@@ -38,6 +38,7 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket
 from cascade.envelope import EnvelopeError
 from cascade.token import (
     PROTOCOL_VERSION,
+    CallTokenRegistry,
     ClientConfigError,
     StoredBodyChannel,
 )
@@ -53,6 +54,7 @@ def create_app(
     *,
     envelope_secret: str | bytes | None = None,
     clock: Callable[[], float] = time.time,
+    call_tokens: CallTokenRegistry | None = None,
 ) -> FastAPI:
     app = FastAPI(title="Voni cascade voice pipeline")
 
@@ -65,6 +67,15 @@ def create_app(
     # than ever trusting a body that reached it unverified.
     body_channel = StoredBodyChannel(secret=secret, clock=clock) if secret else None
     app.state.stored_bodies = body_channel
+    # One signing secret, one signature construction (ticket 64), used for the
+    # signed body envelope and for the short-TTL call token (ticket 136); the
+    # token's own ``kind`` claim keeps the two domains apart.
+    token_registry = (
+        call_tokens
+        if call_tokens is not None
+        else (CallTokenRegistry(secret=secret, clock=clock) if secret else None)
+    )
+    app.state.call_tokens = token_registry
 
     @app.get("/healthz")
     async def healthz() -> dict[str, Any]:
@@ -127,7 +138,11 @@ def create_app(
     @app.websocket("/v1/browser-call")
     async def browser_call(websocket: WebSocket) -> None:
         await websocket.accept()
-        await handle_browser_call(websocket, body_channel=body_channel)
+        await handle_browser_call(
+            websocket,
+            body_channel=body_channel,
+            call_tokens=token_registry,
+        )
 
     return app
 
