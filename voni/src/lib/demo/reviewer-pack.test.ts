@@ -16,6 +16,7 @@ import {
   packMissing,
   packStatus,
   recordingBytesProblem,
+  recordingProblems,
   reviewerPackFor,
   reviewerPackProblems,
   type ReviewerPack,
@@ -105,6 +106,14 @@ test("every offered voice has a pack bound to its own Locale's one committed rec
     assert.equal(recording.source, "audition-clip");
     assert.equal(recording.asset, `public/voices/${voice.id}.mp3`);
     assert.equal(recording.url, `/voices/${voice.id}.mp3`);
+    // The pack's provenance is the evidence record's, not a claim made up here.
+    const clip = clips.find((candidate) => candidate.voice === voice.id);
+    assert.ok(clip, `${voice.id}: the evidence has its clip row`);
+    assert.equal(
+      recording.nativeSource,
+      clip.source ?? "agent-session",
+      `${voice.id}: the pack names where the native audio actually came from`,
+    );
     // The hash is the shared cut: one recording, identified by its bytes.
     assert.equal(recording.sha256, sha256(assetBytes(recording.asset)));
   }
@@ -328,6 +337,48 @@ test("every pack has a self-contained hand-off sheet with a ballot and a signatu
     assert.match(sheet, /pending/);
     assert.match(sheet, /reason/i);
   }
+});
+
+test("a cascade-clip recording names the managed-path gap on the hand-off sheet", () => {
+  const pack = reviewerPackFor({ ...clipFixture("jorg"), source: "cascade-clip" }, RECORDING_SHA);
+  assert.equal(pack.recording?.nativeSource, "cascade-clip");
+
+  const sheet = formatReviewerPack(pack);
+  assert.match(
+    sheet,
+    /Provenance: audition-clip \(`cascade-clip`\), encoded from the committed cascade clip/,
+    "the reviewer is told the clip came from the cascade path",
+  );
+  assert.match(
+    sheet,
+    /managed Voice Agent API did not serve/,
+    "the managed-path gap is visible to the reviewer, not hidden as a generic clip",
+  );
+  assert.equal(pack.verdict, null, "naming the provenance is not recording an audition verdict");
+});
+
+test("the committed German pack names its cascade provenance and managed gap", () => {
+  const pack = readPack("jorg");
+  assert.equal(pack.recording?.nativeSource, "cascade-clip");
+  const sheet = readFileSync(packMarkdown("jorg"), "utf8");
+  assert.match(sheet, /cascade-clip/);
+  assert.match(sheet, /managed Voice Agent API did not serve/);
+  assert.equal(pack.verdict, null, "the pack stays pending: no audition verdict is recorded");
+});
+
+test("an unknown native source is refused by name", () => {
+  const pack = packFixture("jorg");
+  const broken: ReviewerPack = {
+    ...pack,
+    recording: pack.recording
+      ? { ...pack.recording, nativeSource: "hand-capture" as never }
+      : null,
+  };
+  const problems = recordingProblems(broken);
+  const source = problems.find((problem) => problem.field === "recording-source");
+  assert.ok(source, "an invented provenance is not silently accepted");
+  assert.match(source.message, /hand-capture/);
+  assert.match(source.message, /agent-session|audition-clip/);
 });
 
 test("a complete pack's sheet records the reviewer, the date and the reasons", () => {

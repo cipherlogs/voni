@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
+import { VOICES } from "@/lib/agents/voices";
 import { bindCascadeVoice } from "@/lib/demo/subject";
 import {
   CASCADE_PREVIEW_PREFIX,
   MAX_PREVIEW_CHARS,
   buildPreviewText,
+  cascadePreviewGap,
   cascadePreviewUrl,
   previewLocale,
   previewRateLimitExceeded,
@@ -89,6 +91,65 @@ test("every bound cascade voice's preview is its own native clip", () => {
     );
   }
   assert.equal(CASCADE_PREVIEW_PREFIX, "/voices/cascade");
+});
+
+test("a cascade preview with no committed asset is reported, never served as a dead URL", () => {
+  const evidence = JSON.parse(
+    readFileSync(new URL("../../../evidence/cascade-clips/clips.json", import.meta.url), "utf8"),
+  ) as {
+    clips: Array<{ voice: string; asset: string }>;
+    blockers: Array<{ voice: string; reason: string; command: string }>;
+  };
+  const committed = evidence.clips.map((clip) => clip.asset.replace(/^voni\//, ""));
+  const gaps = VOICES.map((voice) => cascadePreviewGap(voice.id, committed)).filter(
+    (gap): gap is NonNullable<typeof gap> => gap !== null,
+  );
+  const blocked = new Set(evidence.blockers.map((blocker) => blocker.voice));
+
+  // Every URL that is not backed by a committed asset must be a named blocker.
+  for (const gap of gaps) {
+    assert.equal(
+      blocked.has(gap.voiceId),
+      true,
+      `${gap.message}; it must also be a named blocker with the command that finishes it`,
+    );
+    assert.equal(
+      existsSync(new URL(`../../../public/voices/cascade/${gap.voiceId}.wav`, import.meta.url)),
+      false,
+      `${gap.voiceId}: the asset is genuinely absent, so the gap is not stale`,
+    );
+  }
+  assert.deepEqual(
+    gaps.map((gap) => gap.voiceId).sort(),
+    evidence.blockers.map((blocker) => blocker.voice).sort(),
+    "the uncommitted previews and the manifest's blockers are the same five voices",
+  );
+  for (const blocker of evidence.blockers) {
+    assert.match(blocker.command, /render_clips\.py/, "a blocker names the command that renders it");
+    assert.ok(blocker.reason.trim().length > 0, "a blocker names why");
+  }
+
+  // The one committed cascade preview is playable and unchanged.
+  assert.equal(cascadePreviewGap("jorg", committed), null);
+  const missing = cascadePreviewGap(
+    "jorg",
+    committed.filter((asset) => !asset.endsWith("/jorg.wav")),
+  );
+  assert.ok(missing, "a URL whose asset is absent is reported, not returned as playable");
+  assert.equal(missing.asset, "public/voices/cascade/jorg.wav");
+  assert.match(missing.message, /not committed/);
+  assert.equal(cascadePreviewUrl("jorg"), "/voices/cascade/jorg.wav");
+  assert.equal(
+    existsSync(new URL("../../../public/voices/cascade/jorg.wav", import.meta.url)),
+    true,
+    "the jorg preview's committed asset is the one that exists",
+  );
+  assert.equal(cascadePreviewGap("juergen", committed), null, "a voice with no binding has no URL");
+  assert.equal(
+    cascadePreviewUrl("alba"),
+    null,
+    "a catalog voice outside the demo roster has the managed clip only, not a dead cascade URL",
+  );
 });
 
 test("a voice with no binding has no preview, never another voice's", () => {

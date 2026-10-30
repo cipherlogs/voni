@@ -14,7 +14,8 @@
     "sampleRate": 24000,
     "channels": 1,
     "bitrateKbps": 160,
-    "source": "audition-clip"
+    "source": "audition-clip",
+    "nativeSource": "cascade-clip"
   },
   "ballot": {
     "axes": [

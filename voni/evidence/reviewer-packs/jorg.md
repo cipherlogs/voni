@@ -11,7 +11,7 @@ Every ballot for this Locale judges these exact bytes, so two independent review
 - sha256: `b1b3df35426bf7540cc472d9d61b894a2e621481259bb2110d6439ebc763406f`
 - Line: “Hallo, hier ist Voni! Probieren wir etwas Cooles: Ich zeige Ihnen, was ich kann, während wir reden. Bereit?”
 - Format: 8208 ms, 24000 Hz, mono, 160 kbps
-- Provenance: audition-clip (the picker's preview, at native level)
+- Provenance: audition-clip (`cascade-clip`), encoded from the committed cascade clip — the managed Voice Agent API did not serve jorg, so the managed audition path is a named gap, not an audition verdict.
 
 ## The ballot
 

@@ -1,26 +1,67 @@
 import { z } from "zod";
 import { VOICE_IDS, getVoice } from "@/lib/agents/voices";
 import { isCascadeSubjectVoice } from "@/lib/demo/subject";
+import { DEMO_VOICE_IDS } from "@/lib/demo/voni-agent";
 
 /**
- * Committed native previews, one per bound cascade voice (ticket 132).
+ * Committed native previews, one per demo cascade voice (ticket 132).
  *
  * The preview *is* the clip: the same asset the synthesis endpoint rendered at
  * native level, recorded in `voni/evidence/cascade-clips/clips.json` and checked
- * by the clip test. The managed picker's `/voices/<id>.mp3` is a separate path;
- * a cascade preview is a new native render, never a silent swap.
+ * by the clip test. Only the demo roster has a cascade plan (`clip_plan` in
+ * `voice-pipeline/cascade/clips.py`); a catalog voice outside it has the managed
+ * `/voices/<id>.mp3` only. A cascade preview is a new native render, never a
+ * silent swap.
  */
 export const CASCADE_PREVIEW_PREFIX = "/voices/cascade";
 
 /**
- * The URL the picker plays a bound cascade voice's native preview from, or
- * `null` when the voice has no binding (German stays open) or is not a demo
- * subject. A voice with no committed preview is a named clip-test failure, not
- * a URL that falls back to another voice.
+ * The URL the picker plays a demo cascade voice's native preview from, or
+ * `null` when the voice has no binding, is not on the demo roster, or is a
+ * historical unbound row. A voice with no committed preview is a named
+ * clip-test blocker, not a URL that falls back to another voice.
  */
 export function cascadePreviewUrl(voiceId: string): string | null {
+  if (!(DEMO_VOICE_IDS as readonly string[]).includes(voiceId)) return null;
   if (!isCascadeSubjectVoice(voiceId)) return null;
   return `${CASCADE_PREVIEW_PREFIX}/${voiceId}.wav`;
+}
+
+/** The repo-relative file a cascade preview URL serves from, or null for no URL. */
+export function cascadePreviewAsset(voiceId: string): string | null {
+  const url = cascadePreviewUrl(voiceId);
+  return url === null ? null : `public${url}`;
+}
+
+/** A preview URL whose asset is not committed: a named gap, not a playable URL. */
+export type CascadePreviewGap = {
+  voiceId: string;
+  url: string;
+  asset: string;
+  message: string;
+};
+
+/**
+ * Why a bound cascade voice's preview cannot be served yet, or null when its
+ * committed asset exists. Five cascade clips are still named blockers in
+ * `evidence/cascade-clips/clips.json` (the full render was not run); a caller
+ * that plays a preview should report this gap instead of emitting a URL that
+ * 404s. The caller supplies the committed assets so this module stays pure.
+ */
+export function cascadePreviewGap(
+  voiceId: string,
+  committedAssets: readonly string[],
+): CascadePreviewGap | null {
+  const url = cascadePreviewUrl(voiceId);
+  const asset = cascadePreviewAsset(voiceId);
+  if (url === null || asset === null) return null;
+  if (committedAssets.includes(asset)) return null;
+  return {
+    voiceId,
+    url,
+    asset,
+    message: `${voiceId}: ${url} is not a playable preview: ${asset} is not committed`,
+  };
 }
 
 /** Sample text cap: a greeting-length utterance, never a paragraph. */

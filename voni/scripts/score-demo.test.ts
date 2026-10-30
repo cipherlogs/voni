@@ -3633,6 +3633,7 @@ test("--reviewer-pack loads a reviewer's filed verdict into the ballot with all 
       channels: 1,
       bitrateKbps: 160,
       source: "audition-clip",
+      nativeSource: "agent-session",
     },
     ballot: {
       axes: ["timbre", "accent", "languageNaturalness"],
@@ -3734,6 +3735,7 @@ test("--reviewer-pack is refused when its cut is not the one the run measured", 
         channels: 1,
         bitrateKbps: 160,
         source: "audition-clip",
+        nativeSource: "agent-session",
       },
       ballot: {
         axes: ["timbre", "accent", "languageNaturalness"],
