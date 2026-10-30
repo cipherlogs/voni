@@ -15,8 +15,11 @@ import asyncio
 import base64
 import json
 import logging
+import os
+import tempfile
 import unittest
 from decimal import Decimal
+from pathlib import Path
 from unittest import mock
 
 from cascade.body_map import adapt_body, body_fingerprint
@@ -50,6 +53,10 @@ TOKEN = mint_call_token(
     clock=CLOCK,
     nonce="transport-token-136",
 )
+
+#: The demo call's own id: the randomUUID the app mints, never the subject.
+DEMO_CALL_ID = "5b0f5c9a-4e2a-4a2b-9c3d-1f2e3a4b5c6d"
+DEMO_SUBJECT = "demo:audrey"
 
 BODY = {
     "name": "transport-agent",
@@ -269,14 +276,15 @@ def delivered_channel(
     body=None,
     *,
     token: str = TOKEN,
+    call_id: str = CALL_ID,
     agent_id: str = AGENT_ID,
     kind: str | None = None,
 ) -> StoredBodyChannel:
     channel = StoredBodyChannel(secret=SECRET, clock=CLOCK)
     channel.deliver(
         call_token=token,
-        call_id=CALL_ID,
-        message=signed_message(body, agent_id=agent_id, kind=kind),
+        call_id=call_id,
+        message=signed_message(body, call_id=call_id, agent_id=agent_id, kind=kind),
     )
     return channel
 
@@ -356,6 +364,7 @@ def run_call(
     mode=None,
     counter=None,
     call_tokens=None,
+    operational_events=None,
     token: str = TOKEN,
     envelope_clock=CLOCK,
 ):
@@ -390,6 +399,7 @@ def run_call(
                 ),
                 switch=chosen_switch,
                 counter=counter,
+                operational_events=operational_events,
                 secret=SECRET,
                 envelope_clock=envelope_clock,
                 leg_builder=chosen,
@@ -862,6 +872,83 @@ class SubjectKindRoutingTests(unittest.TestCase):
         self.assertEqual(len(errors), 1)
         self.assertEqual(errors[0]["code"], "managed")
         self.assertIn("routing switch is unreadable", errors[0]["message"])
+
+
+class DemoTraceSubjectTests(unittest.TestCase):
+    """Ticket 17: the connect path passes the verified kind into the trace.
+
+    The demo call's trace is keyed by the demo call id (the app's randomUUID),
+    and every line that names a subject names ``demo:<voice>``. A demo envelope
+    carrying a tenant subject is refused before a leg is built, so a demo trace
+    can never carry a tenant identity.
+    """
+
+    def run_demo(
+        self,
+        *,
+        directory: str,
+        kind: str = "demo",
+        agent_id: str = DEMO_SUBJECT,
+        call_id: str = DEMO_CALL_ID,
+    ):
+        from server import operational_events_for
+
+        token = mint_call_token(
+            secret=SECRET,
+            call_id=call_id,
+            subject=agent_id,
+            clock=CLOCK,
+            nonce=f"demo-trace-{kind}-{agent_id}",
+        )
+        inbound = [browser_config(agentId=agent_id, callToken=token), {"type": "stop"}]
+        with mock.patch.dict(
+            os.environ, {"VOICE_PIPELINE_EVENTS_DIR": directory}
+        ):
+            return run_call(
+                inbound,
+                [],
+                channel=delivered_channel(
+                    token=token, call_id=call_id, agent_id=agent_id, kind=kind
+                ),
+                token=token,
+                switch=seeded_switch("demo"),
+                operational_events=operational_events_for,
+            )
+
+    def test_a_demo_call_writes_one_trace_keyed_by_call_id_with_its_demo_subject(self):
+        with tempfile.TemporaryDirectory() as directory:
+            _ws, _built, instances = self.run_demo(directory=directory)
+            path = Path(directory) / f"{DEMO_CALL_ID}.jsonl"
+
+            self.assertEqual(1, len(instances), "one demo call, one cascade connection")
+            self.assertTrue(path.exists(), "the demo call wrote no trace")
+            self.assertEqual(DEMO_CALL_ID, path.stem)
+            self.assertNotEqual(DEMO_SUBJECT, path.stem, "the subject named the file")
+            rows = [
+                json.loads(line)
+                for line in path.read_text().splitlines()
+                if line
+            ]
+
+        self.assertTrue(rows, "the demo trace is empty")
+        self.assertTrue(all(row["callId"] == DEMO_CALL_ID for row in rows))
+        subjects = [row["subject"] for row in rows if "subject" in row]
+        self.assertTrue(subjects, "no line named a subject")
+        self.assertEqual({DEMO_SUBJECT}, set(subjects))
+
+    def test_a_demo_envelope_with_a_tenant_subject_opens_no_leg_and_writes_no_trace(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ws, built, instances = self.run_demo(
+                directory=directory, agent_id=AGENT_ID
+            )
+            files = list(Path(directory).glob("*.jsonl"))
+
+        self.assertEqual([], built, "a refused trace identity opened a leg")
+        self.assertEqual([], instances, "a refused trace identity opened a call")
+        self.assertEqual([], files, "a refused trace identity wrote an artifact")
+        errors = [message for message in ws.sent if message["type"] == "error"]
+        self.assertEqual(1, len(errors))
+        self.assertIn("subject", errors[0]["message"])
 
 
 class CallTokenAtConnectTests(unittest.TestCase):

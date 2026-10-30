@@ -71,6 +71,17 @@ from cascade.sanitizer import sanitize_fields
 #: The one schema version. A reader must refuse anything else.
 EVENT_SCHEMA_VERSION = 1
 
+#: The subject kind a demo call declares in its signed envelope. A demo
+#: call's trace names ``demo:<voice>`` on every line; it never names a tenant
+#: subject, a managed agent id or a bare voice id, because a trace that names
+#: the wrong subject is evidence of a call that never happened.
+DEMO_SUBJECT_KIND = "demo"
+
+#: The two subject kinds the signed envelope can name.
+SUBJECT_KINDS = ("demo", "tenant")
+
+_DEMO_SUBJECT = re.compile(r"demo:[^\s:]+")
+
 #: The engine that produced the call.
 PIPELINES = ("managed", "cascade")
 
@@ -162,6 +173,22 @@ def _require_text(field: str, value: Any) -> str:
     if not isinstance(value, str) or not value.strip():
         raise EventEnvelopeError(field, f'"{field}" must be a non-empty string, got {value!r}')
     return value
+
+
+def _require_demo_subject(subject: Any) -> str:
+    """A demo call's subject: ``demo:<voice>``, never a tenant identity.
+
+    The refusal names the shape, not a guess: a tenant subject, a managed
+    agent id and a bare voice id all fail the one prefix rule.
+    """
+    text = _require_text("subject", subject)
+    if not _DEMO_SUBJECT.fullmatch(text):
+        raise EventEnvelopeError(
+            "subject",
+            f'a demo call\'s subject must be "demo:<voice>", got {text!r}; a '
+            "tenant subject, a managed agent id or a bare voice id is refused",
+        )
+    return text
 
 
 def _require_phase(phase: Any) -> str:
@@ -873,6 +900,11 @@ class OperationalEvents:
         if not callable(now):
             raise ValueError(f"now must be callable, got {now!r}")
         self.stream = stream
+        # A demo stream's subject is checked when the call is set up, so a
+        # malformed identity refuses the call loudly instead of silently
+        # dropping every line (the lifecycle continues past a failed write).
+        if stream.subject_kind == DEMO_SUBJECT_KIND:
+            _require_demo_subject(subject)
         self.subject = _require_text("subject", subject)
         self._now = now
 
@@ -1276,16 +1308,32 @@ class EventStream:
     ``emit_fallback(..., sink=stream)`` works because the stream is callable,
     so a fallback line is sanitized like every other line. When the sink is a
     :class:`CallEventLog`, ``path`` names the artifact the end message cites.
+
+    ``subject_kind`` is the verified envelope's signed kind (``demo`` or
+    ``tenant``; ``None`` for a stream built without one). A demo stream refuses
+    any line whose subject is not ``demo:<voice>`` at this boundary, so no
+    builder — call-scoped, fallback or attribution — can write a line naming a
+    tenant subject, a managed agent id or a bare voice id.
     """
 
     def __init__(
-        self, writer: EventWriter, *, sink: Callable[[str], None]
+        self,
+        writer: EventWriter,
+        *,
+        sink: Callable[[str], None],
+        subject_kind: str | None = None,
     ) -> None:
         if not isinstance(writer, EventWriter):
             raise TypeError(f"EventStream needs an EventWriter, got {writer!r}")
         if not callable(sink):
             raise TypeError(f"EventStream needs a write sink, got {sink!r}")
+        if subject_kind is not None and subject_kind not in SUBJECT_KINDS:
+            raise ValueError(
+                f"subject_kind must be one of {', '.join(SUBJECT_KINDS)} or None, "
+                f"got {subject_kind!r}"
+            )
         self.writer = writer
+        self.subject_kind = subject_kind
         self._sink = sink
 
     @property
@@ -1303,6 +1351,8 @@ class EventStream:
         sanitized = sanitize_fields(dict(event))
         if sanitized.rejected_keys:
             raise ForbiddenEventKey(sanitized.rejected_keys)
+        if self.subject_kind == DEMO_SUBJECT_KIND and "subject" in sanitized.value:
+            _require_demo_subject(sanitized.value["subject"])
         self._sink(
             json.dumps(sanitized.value, ensure_ascii=False, separators=(",", ":")) + "\n"
         )

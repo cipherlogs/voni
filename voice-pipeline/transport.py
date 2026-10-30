@@ -342,13 +342,13 @@ def _usage_meter_for(factory: Any) -> UsageMeter:
 
 
 def _events_for(
-    factory: Any, *, call_id: str, subject: str
+    factory: Any, *, call_id: str, subject: str, kind: str | None = None
 ) -> OperationalEvents | None:
     if factory is None:
         return None
     if isinstance(factory, OperationalEvents):
         return factory
-    return factory(call_id, subject)
+    return factory(call_id, subject, kind=kind)
 
 
 async def handle_browser_call(
@@ -515,6 +515,16 @@ async def handle_browser_call(
         try:
             ledger = TimingLedger(now=clock)
             budget = ReconnectBudget(ledger=ledger, now=clock)
+            # The trace's identity is taken from the verified envelope and
+            # checked before a vendor-facing leg is built: a demo call whose
+            # envelope names a tenant subject is refused here, not discovered
+            # when its first line is written.
+            events = _events_for(
+                operational_events,
+                call_id=verified.call_id,
+                subject=verified.agent_id,
+                kind=verified.subject_kind,
+            )
             if leg_builder is None:
                 legs = build_cascade_legs(
                     call_id=verified.call_id,
@@ -525,9 +535,6 @@ async def handle_browser_call(
             else:
                 legs = leg_builder(body, verified.body)
 
-            events = _events_for(
-                operational_events, call_id=verified.call_id, subject=verified.agent_id
-            )
             lifecycle: CallLifecycle | None = None
 
             def require_lifecycle() -> CallLifecycle:
