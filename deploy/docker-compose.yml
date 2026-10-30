@@ -28,6 +28,14 @@ services:
       VOICE_PIPELINE_STT_MODE: "balanced"
       VOICE_PIPELINE_LLM_MODEL: "muse-spark-1.3"
       VOICE_PIPELINE_TTS_MODEL: "assemblyai-tts-1"
+      # REQUIRED and host-supplied: the M03 measured effort. Spark has no
+      # default, so the default rung refuses setup while this is empty; fill it
+      # in the local env file rather than inventing a value here.
+      META_REASONING_EFFORT: ""
+      # REQUIRED for tool calls: the app origin the tool route calls. This is
+      # the composed app service, so the local rehearsal exercises the real hop
+      # instead of silently dropping every tool call.
+      VOICE_PIPELINE_TOOL_BASE_URL: "http://voni:3000"
     env_file:
       # Optional: a local names file with values, never committed.
       - path: ./voice-pipeline.env

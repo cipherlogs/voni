@@ -130,6 +130,15 @@ is the list and carries no values. The service reads `META_API_KEY`,
 `VONI_TOOL_SECRET`, `VOICE_PIPELINE_ENVELOPE_SECRET` and `DATABASE_URL`. The app
 has its own set on its own app; the two are never shared.
 
+The deployment also carries two **required non-secret host settings**, named in
+`[env]` and in the example: `META_REASONING_EFFORT` is the measured effort
+(M03). Spark has no default, so a default-rung call fails setup while it is
+empty; the host supplies the measured value, never this repository.
+`VOICE_PIPELINE_TOOL_BASE_URL` is the app origin the tool route calls; when it
+is empty no `ToolExecutor` is constructed and every tool call is dropped.
+`python deploy/topology.py` fails by name if either is missing from the service
+config, the example, the compose rehearsal or this record.
+
 The repository scan is ticket 141's second guard: `python deploy/topology.py`
 runs it (and `python deploy/secret_scan.py` runs it alone). It reports a
 key-shaped value, a URL carrying real userinfo, or a long secret assignment in

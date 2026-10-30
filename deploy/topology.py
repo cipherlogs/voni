@@ -76,6 +76,20 @@ REQUIRED_SECRET_NAMES: tuple[str, ...] = (
     "DATABASE_URL",
 )
 
+#: Non-secret host settings the service requires and may not invent.
+#: META_REASONING_EFFORT is M03's measured value: Spark has no default, so a
+#: default-rung call refuses construction without it. VOICE_PIPELINE_TOOL_BASE_URL
+#: is the app origin the tool route calls; empty silently drops every tool call.
+#: Both are host-supplied: the config names them, the host fills the value.
+REQUIRED_SETTINGS: tuple[str, ...] = (
+    "META_REASONING_EFFORT",
+    "VOICE_PIPELINE_TOOL_BASE_URL",
+)
+
+#: Every name the deployment must carry, secret or not. The example file lists
+#: them; the service config names the non-secret ones; the record explains them.
+REQUIRED_ENV_NAMES: tuple[str, ...] = REQUIRED_SECRET_NAMES + REQUIRED_SETTINGS
+
 #: The one non-secret environment setting the topology itself depends on.
 PORT_ENV = "VOICE_PIPELINE_PORT"
 
@@ -250,6 +264,13 @@ def validate_service(
     if isinstance(port, bool) or not isinstance(port, int) or port <= 0:
         errors.append(f"{label}: http_service.internal_port is {port!r}; expected a port")
     env = _check_env(doc, label=label, errors=errors)
+    for name in REQUIRED_SETTINGS:
+        if name not in env:
+            errors.append(
+                f"{label}: [env] must name {name}; the service needs it at runtime, "
+                "so a missing name is a deploy-time configuration error, not a "
+                "silent default"
+            )
     if port is not None and env.get(PORT_ENV) != str(port):
         errors.append(
             f"{label}: [env] {PORT_ENV} is {env.get(PORT_ENV)!r} but the proxy "
@@ -407,16 +428,16 @@ def _parse_dotenv_names(text: str) -> dict[str, str]:
 
 
 def validate_secrets_example(text: str, config: str = SECRETS_EXAMPLE) -> list[str]:
-    """Names only: every secret the service reads is listed with an empty value."""
+    """Names only: every host env the service reads is listed, secrets blank."""
     errors: list[str] = []
     names = _parse_dotenv_names(text)
-    for required in REQUIRED_SECRET_NAMES:
+    for required in REQUIRED_ENV_NAMES:
         if required not in names:
             errors.append(
                 f"{config}: {required} is not listed; the deployment record must name "
-                "every secret the service reads"
+                "every host environment variable the service reads"
             )
-        elif names[required]:
+        elif required in REQUIRED_SECRET_NAMES and names[required]:
             errors.append(
                 f"{config}: {required} has a value; this file records names only"
             )
@@ -490,6 +511,12 @@ def validate_record(text: str, *, service_app: str, app_name: str) -> list[str]:
     for phrase in ("two machines", "no sticky"):
         if phrase not in lowered:
             errors.append(f"{label}: {phrase!r} is not recorded")
+    for name in REQUIRED_ENV_NAMES:
+        if name not in text:
+            errors.append(
+                f"{label}: does not name the required host variable {name}; the "
+                "record must list every name the deploy reads"
+            )
     return errors
 
 
@@ -508,6 +535,12 @@ def validate_compose(text: str, *, internal_port: int) -> list[str]:
     ):
         if needle not in text:
             errors.append(f"{label}: {needle!r} missing; {reason}")
+    for name in REQUIRED_SETTINGS:
+        if f"{name}:" not in text:
+            errors.append(
+                f"{label}: {name} is not named in the service environment; the "
+                "rehearsal must carry the same required host settings as Fly"
+            )
     for name in secret_values(text):
         errors.append(f"{label}: assigns {name} a value; secrets stay in the host env")
     return errors

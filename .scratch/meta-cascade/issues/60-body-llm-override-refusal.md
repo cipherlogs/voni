@@ -19,4 +19,6 @@ Routing, not fallback: a test feeds the refusal text into `cascade.routing.decid
 No contamination: no module state — after a refused body, a later `llm: []` body adapts and `decide("all", subject)` returns `cascade` with an empty reason.
 Deleting the refusal fails `test_a_non_empty_model_override_refuses_the_cascade_by_name` (red proved first with the import missing; the test also names the model, so a broad `except` cannot fake it).
 
+Superseded by 159: a non-empty `llm` is now constructed from the stored body; an unconstructible override fails visibly instead of routing managed.
+
 _Implemented on `feat/meta-cascade` (ticket commit merged)._ 
