@@ -30,7 +30,7 @@ from cascade.store import StoredDocument, StoreUnavailable
 #: adapter's before any statement is built.
 _TABLE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
-#: A small shared pool: two machines, one worker per container.
+#: A small shared pool: one instance, one worker per container.
 _POOL_MIN_SIZE = 1
 _POOL_MAX_SIZE = 4
 

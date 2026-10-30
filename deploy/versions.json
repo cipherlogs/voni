@@ -8,9 +8,9 @@
     "protocolVersion": 1
   },
   "service": {
-    "name": "voni-voice-pipeline",
+    "name": "voice-pipeline",
     "version": "${VOICE_PIPELINE_BUILD_VERSION}",
-    "source": "host env VOICE_PIPELINE_BUILD_VERSION, then FLY_IMAGE_REF; unversioned when neither is set",
+    "source": "host env VOICE_PIPELINE_BUILD_VERSION; unversioned when unset",
     "protocolVersion": 1
   }
 }

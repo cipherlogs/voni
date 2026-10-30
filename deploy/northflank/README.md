@@ -1,7 +1,8 @@
-# Cascade on Northflank Sandbox (2026-10-30)
+# Cascade on Northflank Sandbox
 
-The host record is [`docs/deploy/meta-cascade-host.md`](../../docs/deploy/meta-cascade-host.md);
-this file is the setup path. The Fly configs in `deploy/` are historical.
+The committed descriptor is [`service.json`](service.json); this file is the
+setup path a human follows to create the resources it names, and
+[`docs/deploy/README.md`](../../docs/deploy/README.md) is the deployment record.
 
 ## Why this host
 
@@ -17,7 +18,7 @@ this file is the setup path. The Fly configs in `deploy/` are historical.
 
 | resource | name | shape |
 |---|---|---|
-| Project | `voni` | one region in the US (`iad`-equivalent) |
+| Project | `voni` | one region in the US (`us-east-1`) |
 | Combined service | `voice-pipeline` | build from GitHub `cipherlogs/voni`, `main` |
 | Postgres addon | `voni-store` | smallest plan, same region |
 | Volume | `voice-events` | 1 GB, single read/write, `/var/lib/voni` |
@@ -52,21 +53,19 @@ platform probe: a draining instance must stay reachable to finish live calls.
 **Volume**
 
 - Mount `/var/lib/voni` (the image already creates it for uid 10001).
-- Single read/write means one instance. That is the MVP shape; two instances
-  and rolling deploys are deferred (ticket 140).
+- Single read/write means one instance. That is the shape, not a temporary
+  compromise: the token registry and the delivered-body channel are in-process,
+  so a second instance would break single use and hold return. A deploy refuses
+  new calls for up to the 30-second drain bound; a live call finishes.
 
 ## Environment
 
-Non-secret, set on the service:
+Non-secret, set on the service (the same names the descriptor carries):
 
 ```
 VOICE_PIPELINE_PORT=8766
-VOICE_PIPELINE_STT_PROVIDER=assemblyai
-VOICE_PIPELINE_STT_MODE=balanced
-VOICE_PIPELINE_LLM_MODEL=muse-spark-1.3
-VOICE_PIPELINE_TTS_MODEL=assemblyai-tts-1
 VOICE_PIPELINE_EVENTS_DIR=/var/lib/voni/events
-VOICE_PIPELINE_TOOL_BASE_URL=https://<your Workers app host>
+VOICE_PIPELINE_TOOL_BASE_URL=https://app.voni.cc
 ```
 
 Secrets, in a secret group linked to the service:
@@ -81,6 +80,11 @@ VONI_TOOL_SECRET
 VOICE_PIPELINE_ENVELOPE_SECRET
 DATABASE_URL            # the addon's connection string
 ```
+
+There is **exactly one envelope secret**, `VOICE_PIPELINE_ENVELOPE_SECRET`:
+the app signs the call body and call token with it and the service verifies
+with it, one value on both sides. The app's own secret set lives on its own
+deploy and is never shared with this service.
 
 `META_REASONING_EFFORT` must be set to the measured value from M03; it has no
 default and the default rung refuses to construct without it.
