@@ -692,6 +692,41 @@ async function waitFor(
   }
 }
 
+/**
+ * Let the agent finish speaking before the next caller turn: wait until no new
+ * audio frame has arrived for a short quiet window. A caller that talks over
+ * the agent would barge in, which is a different test; this check is about two
+ * clean turns. Bounded, so a stuck stream still ends the check by name.
+ */
+async function settleAudio(
+  state: CallState,
+  sleep: (ms: number) => Promise<void>,
+  timeoutMs: number,
+  label: string,
+): Promise<void> {
+  const deadline = Date.now() + Math.min(timeoutMs, 20_000);
+  let seen = state.audioFrames;
+  let quietSince = Date.now();
+  while (Date.now() < deadline) {
+    await sleep(100);
+    if (state.error) {
+      throw new RealLegsError("call-error", `${label}: the service refused the call: ${state.error}`);
+    }
+    if (state.closed && !state.end) {
+      throw new RealLegsError(
+        "call-closed",
+        `${label}: the socket closed while the agent was speaking`,
+      );
+    }
+    if (state.audioFrames !== seen) {
+      seen = state.audioFrames;
+      quietSince = Date.now();
+      continue;
+    }
+    if (Date.now() - quietSince >= 800) return;
+  }
+}
+
 async function sendPaced(
   socket: RealLegsSocket,
   pcm: Uint8Array,
@@ -1056,6 +1091,7 @@ export async function runRealLegs(
       sleep,
       "greeting",
     );
+    await settleAudio(state, sleep, options.timeoutMs, "greeting");
 
     const beforeTurnOne = countAgentFinals(state);
     await sendPaced(socket, audio.pcm, sleep);
@@ -1066,6 +1102,7 @@ export async function runRealLegs(
       sleep,
       "turn 1",
     );
+    await settleAudio(state, sleep, options.timeoutMs, "turn 1");
     const agentFinalsAfterTurnOne = countAgentFinals(state);
 
     await sendPaced(socket, audio.pcm, sleep);
@@ -1076,6 +1113,7 @@ export async function runRealLegs(
       sleep,
       "turn 2",
     );
+    await settleAudio(state, sleep, options.timeoutMs, "turn 2");
 
     socket.send(JSON.stringify({ type: "stop" }));
     await waitFor(state, () => state.end !== null, options.timeoutMs, sleep, "end message");
