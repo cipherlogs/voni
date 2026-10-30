@@ -4,8 +4,14 @@
     cd voice-pipeline
     python scripts/probe_voices.py                       # juergen, aai-juergen
     python scripts/probe_voices.py --voice-id acct-de-1  # add one candidate
-    python scripts/probe_voices.py --catalogue-de        # add Locale=de ids
+    python scripts/probe_voices.py --no-defaults --voice-id acct-de-1
+    python scripts/probe_voices.py --catalogue-de /tmp/voices.json
     python scripts/probe_voices.py --out /tmp/de-probe   # save WAVs + probe.json
+
+``--voice-id`` is additive to the two defaults; ``--no-defaults`` replaces them.
+``--catalogue-de`` reads the JSON export of the app's own catalogue
+(``cd voni && npm run voice:catalogue > /tmp/voices.json``), so this script
+keeps no second parser of ``voices.ts``.
 
 One buffered ``POST /v1/speech`` per candidate, with a short German sentence and
 ``container: "wav"``. The row records the HTTP status, ``X-Request-Id``,
@@ -16,9 +22,12 @@ saves no audio.
 
 This probe never binds a voice: it prints a *suggested* ``VoiceBinding`` line
 for the owner to review, and leaves ``cascade/voice_binding.py`` and ticket 130
-untouched. Without ``ASSEMBLYAI_API_KEY`` it prints ``SKIPPED`` and exits 2
-before any request. Exit 0 when at least one candidate renders, 1 when every
-candidate refuses, 2 for the key gate, an unreadable catalogue, or a bad write.
+untouched. A suggestion is printed only when the response's own
+``X-TTS-Language`` says German; an English voice that renders is recorded but
+not suggested for the German row. Without ``ASSEMBLYAI_API_KEY`` it prints
+``SKIPPED`` and exits 2 before any request. Exit 0 when at least one candidate
+renders, 1 when every candidate refuses, 2 for the key gate, an unreadable
+catalogue, or a bad write.
 """
 
 from __future__ import annotations
@@ -33,7 +42,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from cascade.voice_probe import (  # noqa: E402
     DEFAULT_CANDIDATES,
-    DEFAULT_CATALOGUE_PATH,
     ENDPOINT,
     PROBE_SENTENCE,
     MissingProbeKey,
@@ -106,17 +114,23 @@ def main(
         "--voice-id",
         action="append",
         default=None,
-        help="add a candidate id (repeatable); defaults are juergen and aai-juergen",
+        help=(
+            "add a candidate id (repeatable) to the defaults juergen and "
+            "aai-juergen"
+        ),
+    )
+    parser.add_argument(
+        "--no-defaults",
+        action="store_true",
+        help="probe only the --voice-id/--catalogue-de candidates, not the two defaults",
     )
     parser.add_argument(
         "--catalogue-de",
-        nargs="?",
-        const=str(DEFAULT_CATALOGUE_PATH),
         default=None,
         metavar="PATH",
         help=(
-            "also probe ids the app catalogue declares languageCode de "
-            f"(default {DEFAULT_CATALOGUE_PATH})"
+            "also probe ids the app catalogue declares languageCode de; PATH is "
+            "the JSON from `cd voni && npm run voice:catalogue`"
         ),
     )
     parser.add_argument(
@@ -138,9 +152,10 @@ def main(
         )
         return 2
 
-    # An explicit --voice-id is the candidate list; --catalogue-de adds to it.
-    # Without either, the two ids ticket 130 names are the defaults.
-    candidates = list(args.voice_id) if args.voice_id else list(DEFAULT_CANDIDATES)
+    # --voice-id adds to the two ids ticket 130 names; --no-defaults replaces
+    # them. --catalogue-de adds the exported catalogue's German ids.
+    candidates = [] if args.no_defaults else list(DEFAULT_CANDIDATES)
+    candidates.extend(args.voice_id or [])
     if args.catalogue_de is not None:
         try:
             candidates.extend(

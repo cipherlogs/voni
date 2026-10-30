@@ -23,39 +23,56 @@ KEYS = {"META_API_KEY": "meta-test-key", "ASSEMBLYAI_API_KEY": "aai-test-key"}
 
 
 class KeyGateTests(unittest.TestCase):
-    def test_the_live_run_names_every_missing_key_before_it_locks_or_dials(self):
+    def test_the_live_runner_names_every_missing_key_before_any_factory(self):
         def forbid(*_args, **_kwargs):
-            raise AssertionError("a key-gated refusal must not dial or lock")
+            raise AssertionError("a key-gated refusal must not dial")
 
-        out = io.StringIO()
-        with contextlib.redirect_stdout(out):
-            code = run.main(
-                ["--live"],
+        with self.assertRaises(live.MissingKeysError) as caught:
+            live.run_live(
                 env={},
-                acquire_lock=forbid,
-                live_runner=forbid,
+                stt_factory=forbid,
+                spark_factory=forbid,
+                tts_factory=forbid,
             )
-        text = out.getvalue()
 
-        self.assertEqual(code, 2)
+        text = str(caught.exception)
+        self.assertEqual(caught.exception.missing, live.KEY_ENVS)
         self.assertIn("META_API_KEY", text)
         self.assertIn("ASSEMBLYAI_API_KEY", text)
         self.assertIn("owner-gated", text)
         self.assertNotIn("meta-test-key", text)
 
-    def test_only_the_missing_key_is_named_when_one_is_present(self):
-        out = io.StringIO()
-        with contextlib.redirect_stdout(out):
+    def test_the_cli_catches_the_key_refusal_on_stderr_and_exits_two(self):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             code = run.main(
                 ["--live"],
-                env={"META_API_KEY": "present"},
-                acquire_lock=lambda **_kwargs: None,
-                live_runner=lambda **_kwargs: None,
+                env={},
+                acquire_lock=_FakeLock(),
+                live_runner=live.run_live,
             )
 
         self.assertEqual(code, 2)
-        self.assertIn("ASSEMBLYAI_API_KEY", out.getvalue())
-        self.assertNotIn("missing META_API_KEY", out.getvalue())
+        self.assertEqual(out.getvalue(), "")
+        self.assertIn("META_API_KEY", err.getvalue())
+        self.assertIn("ASSEMBLYAI_API_KEY", err.getvalue())
+        self.assertIn("owner-gated", err.getvalue())
+        self.assertNotIn("meta-test-key", err.getvalue())
+
+    def test_only_the_missing_key_is_named_when_one_is_present(self):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = run.main(
+                ["--live"],
+                env={"META_API_KEY": "present"},
+                acquire_lock=_FakeLock(),
+                live_runner=live.run_live,
+            )
+
+        self.assertEqual(code, 2)
+        self.assertEqual(out.getvalue(), "")
+        self.assertIn("ASSEMBLYAI_API_KEY", err.getvalue())
+        self.assertNotIn("missing META_API_KEY", err.getvalue())
 
 
 class LockHeldTests(unittest.TestCase):
@@ -66,14 +83,15 @@ class LockHeldTests(unittest.TestCase):
         def forbid(**_kwargs):
             raise AssertionError("a held lock must not start the live legs")
 
-        out = io.StringIO()
-        with contextlib.redirect_stdout(out):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             code = run.main(
                 ["--live"], env=KEYS, acquire_lock=held, live_runner=forbid
             )
-        text = out.getvalue()
+        text = err.getvalue()
 
         self.assertEqual(code, 2)
+        self.assertEqual(out.getvalue(), "")
         self.assertIn("timing run holds the lock", text)
         self.assertNotIn("verdict:", text)
 
@@ -139,6 +157,82 @@ class KnownSumTests(unittest.TestCase):
         )
         endpointing_term = _term(measurement, "endpointing_ms")
         self.assertIn("tolerance=200.000ms", endpointing_term.detail)
+        first_content = _term(measurement, "first_content_token_ms")
+        self.assertIn("configured, not probed", first_content.producer)
+        self.assertIn("M03", first_content.producer)
+        self.assertIn("not probed", first_content.detail)
+
+    def test_a_fully_measured_at_risk_run_exits_zero(self):
+        clock = FakeClock(start=1_000.0)
+        measurement = live.run_live(
+            env={**KEYS, "META_REASONING_EFFORT": "low"},
+            stt_factory=lambda _key: ScriptedStt(
+                clock, speech_end_at_s=12.8, complete_at_s=12.95
+            ),
+            spark_factory=lambda _key: ScriptedSpark(clock),
+            tts_factory=lambda _key, _voice: ScriptedTts(clock),
+            clock=clock,
+            wait=clock.advance,
+            wall_clock=lambda: 1_700_000_000.0,
+        )
+
+        self.assertEqual(measurement.report.verdict, report.AT_RISK)
+        self.assertEqual(measurement.report.unmeasured_names, ())
+        self.assertEqual(measurement.exit_code(), 0)
+
+    def test_an_unmeasured_term_outranks_a_fail_verdict(self):
+        clock = FakeClock(start=1_000.0)
+
+        class BrokenTts:
+            def open(self):
+                raise RuntimeError("synthesis begin refused")
+
+            def close(self):
+                pass
+
+        measurement = live.run_live(
+            env={**KEYS, "META_REASONING_EFFORT": "low"},
+            stt_factory=lambda _key: ScriptedStt(
+                clock, speech_end_at_s=15.0, complete_at_s=15.1
+            ),
+            spark_factory=lambda _key: ScriptedSpark(clock),
+            tts_factory=lambda _key, _voice: BrokenTts(),
+            clock=clock,
+            wait=clock.advance,
+        )
+
+        self.assertEqual(measurement.report.verdict, report.FAIL)
+        self.assertIn("synthesis.first_audio_ms", measurement.report.unmeasured_names)
+        self.assertEqual(measurement.exit_code(), 3)
+
+
+class MissingReceiptTests(unittest.TestCase):
+    def test_a_transport_without_the_declared_receipt_is_named_not_silently_none(self):
+        clock = FakeClock(start=1_000.0)
+
+        class NoReceiptStt:
+            def __init__(self, inner):
+                self._inner = inner
+
+            def __getattr__(self, name):
+                if name == "speech_complete_at_s":
+                    raise AttributeError("speech_complete_at_s")
+                return getattr(self._inner, name)
+
+        measurement = live.run_live(
+            env={**KEYS, "META_REASONING_EFFORT": "low"},
+            stt_factory=lambda _key: NoReceiptStt(ScriptedStt(clock)),
+            spark_factory=lambda _key: ScriptedSpark(clock),
+            tts_factory=lambda _key, _voice: ScriptedTts(clock),
+            clock=clock,
+            wait=clock.advance,
+        )
+
+        term = _term(measurement, "first_content_token_ms")
+        self.assertIsNone(term.ms)
+        self.assertIn("speech_complete_at_s", term.detail)
+        self.assertIsNotNone(_term(measurement, "endpointing_ms").ms)
+        self.assertEqual(measurement.exit_code(), 3)
 
 
 class DegradedLegTests(unittest.TestCase):

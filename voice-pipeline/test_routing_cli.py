@@ -34,6 +34,7 @@ import routing_switch  # noqa: E402
 
 from cascade.routing import (  # noqa: E402
     KEY,
+    RoutingRecord,
     RoutingSwitch,
     RoutingSwitchConflict,
 )
@@ -381,7 +382,40 @@ class SetTest(CliCase):
         self.assertEqual(code, 1)
         self.assertEqual(out, "")
         self.assertIn("another operator", err)
-        self.assertIn("re-read", err)
+        self.assertIn("re-read and retry", err)
+
+    def test_the_retry_suffix_comes_from_the_conflict_type_not_the_prose(self):
+        class ConflictingSwitch:
+            async def read(self):
+                raise AssertionError("the CLI must use set_mode")
+
+            async def set_mode(self, mode, *, actor, reason):
+                raise RoutingSwitchConflict(
+                    "another operator wrote the switch; see the re-read runbook"
+                )
+
+        code, _out, err = self.cli(
+            "set", "--sqlite", str(self.path), "--mode", "all",
+            "--operator", "ops@voni", "--reason", "cutover",
+            switch_factory=lambda selection: ConflictingSwitch(),
+        )
+
+        self.assertEqual(code, 1)
+        self.assertEqual(err.count("re-read and retry"), 1)
+
+    def test_other_prose_that_mentions_re_read_gets_no_retry_suffix(self):
+        class ExplodingSwitch:
+            async def set_mode(self, mode, *, actor, reason):
+                raise RuntimeError("do not re-read this message as a conflict")
+
+        code, _out, err = self.cli(
+            "set", "--sqlite", str(self.path), "--mode", "all",
+            "--operator", "ops@voni", "--reason", "cutover",
+            switch_factory=lambda selection: ExplodingSwitch(),
+        )
+
+        self.assertEqual(code, 1)
+        self.assertNotIn("re-read and retry", err)
 
 
 class UnreadableStoreTest(CliCase):
@@ -455,16 +489,86 @@ class UnreadableStoreTest(CliCase):
             self.assertIn("database-url", (out + err).lower())
 
 
-class DocTest(unittest.TestCase):
-    def test_the_deploy_readme_tells_the_operator_show_then_set(self):
-        readme = (Path(__file__).resolve().parents[1] / "docs/deploy/README.md").read_text(
-            encoding="utf-8"
+class StoreCloseTest(CliCase):
+    RECORD = RoutingRecord.seeded("all", actor="ops@voni", at=1.0, reason="seed")
+
+    class Store:
+        def __init__(self, *, asynchronous: bool = False) -> None:
+            self.closed = False
+            self.asynchronous = asynchronous
+
+        def close(self):
+            self.closed = True
+            if self.asynchronous:
+                async def _done():
+                    return None
+
+                return _done()
+
+    def switch(self, store, *, failure=None):
+        record = self.RECORD
+
+        class FakeSwitch:
+            async def read(self):
+                if failure is not None:
+                    raise failure
+                return record
+
+            async def set_mode(self, mode, *, actor, reason):
+                if failure is not None:
+                    raise failure
+                return record
+
+        fake = FakeSwitch()
+        fake.store = store
+        return fake
+
+    def test_the_store_is_closed_after_a_successful_show_and_set(self):
+        for args in (
+            ("show",),
+            ("set", "--mode", "all", "--operator", "ops@voni", "--reason", "cutover"),
+        ):
+            store = self.Store(asynchronous=True)
+            switch = self.switch(store)
+            code, _out, err = self.cli(
+                *args, "--sqlite", str(self.path),
+                switch_factory=lambda selection: switch,
+            )
+
+            self.assertEqual(code, 0, err)
+            self.assertTrue(store.closed, args)
+
+    def test_the_store_is_closed_when_the_command_fails(self):
+        store = self.Store()
+        switch = self.switch(store, failure=RuntimeError("store blew up"))
+        code, _out, err = self.cli(
+            "show", "--sqlite", str(self.path),
+            switch_factory=lambda selection: switch,
         )
 
-        self.assertIn("routing_switch.py show", readme)
-        self.assertIn("routing_switch.py set", readme)
-        self.assertIn("runtime rollback", readme)
-        self.assertIn("not a deploy", readme)
+        self.assertEqual(code, 1)
+        self.assertIn("store blew up", err)
+        self.assertTrue(store.closed)
+
+
+class CliContractTest(unittest.TestCase):
+    def test_help_lists_show_and_set_and_exits_zero(self):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = routing_switch.main(["--help"], environ={}, out=out, err=err)
+
+        self.assertEqual(code, 0)
+        self.assertIn("show", out.getvalue())
+        self.assertIn("set", out.getvalue())
+        self.assertIn("flip", out.getvalue().lower())
+
+    def test_no_subcommand_is_a_usage_error(self):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = routing_switch.main([], environ={}, out=out, err=err)
+
+        self.assertEqual(code, 2)
+        self.assertEqual(out.getvalue(), "")
 
 
 if __name__ == "__main__":

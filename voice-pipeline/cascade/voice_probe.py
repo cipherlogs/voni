@@ -11,11 +11,19 @@ successful candidate yields a *suggested* ``VoiceBinding`` line for the owner to
 review; the old clip and the unbound row stay exactly as they are until a human
 records the gate.
 
-Candidates are the two known German ids and any explicit ``--voice-id``. The
-app catalogue contributes only ids whose own ``languageCode`` is ``"de"`` — a
-UUID is never guessed. Worth stating plainly: a bare id such as ``juergen`` is
-read at the vendor as the slug of one of the account's own voices, so
-``aai-juergen`` is the library slug spelling under test.
+Candidates are the two known German ids and any explicit ``--voice-id``, which
+is additive unless ``--no-defaults`` replaces them. The app catalogue
+contributes only ids whose own ``languageCode`` is ``"de"``, read from the JSON
+export of ``voni/src/lib/agents/voices.ts`` (``npm run voice:catalogue``) — the
+probe keeps no second parser and never guesses a UUID. Worth stating plainly: a
+bare id such as ``juergen`` is read at the vendor as the slug of one of the
+account's own voices, so ``aai-juergen`` is the library slug spelling under
+test.
+
+A suggested ``VoiceBinding`` is emitted only for a rendered candidate whose
+recorded ``X-TTS-Language`` is German (case- and space-insensitive). A 200 from
+an English voice is evidence the voice renders, not evidence that it belongs on
+the German row.
 
 Live requests are key-gated. Without ``ASSEMBLYAI_API_KEY`` the run raises
 :class:`MissingProbeKey` before a socket exists; the CLI reports ``SKIPPED`` and
@@ -41,11 +49,6 @@ PROBE_SENTENCE = "Hallo, hier ist Voni. Ich spreche Deutsch."
 
 #: The two ids this ticket names: the catalogue id and its library-slug spelling.
 DEFAULT_CANDIDATES: tuple[str, ...] = ("juergen", "aai-juergen")
-
-#: The app catalogue, read rather than restated, so no UUID is guessed.
-DEFAULT_CATALOGUE_PATH = (
-    Path(__file__).resolve().parents[2] / "voni" / "src" / "lib" / "agents" / "voices.ts"
-)
 
 #: The manifest the probe writes next to the clips it saves.
 PROBE_MANIFEST_NAME = "probe.json"
@@ -173,8 +176,11 @@ class ProbeRun:
         return 0 if self.rendered else 1
 
     def suggested_bindings(self) -> tuple[str, ...]:
+        """Suggestions only for rendered candidates the endpoint recorded as German."""
         return tuple(
-            binding_suggestion(probe) for probe in self.rendered
+            binding_suggestion(probe)
+            for probe in self.rendered
+            if speaks_german(probe)
         )
 
     def to_document(
@@ -196,6 +202,11 @@ class ProbeRun:
         }
 
 
+def speaks_german(probe: VoiceProbe) -> bool:
+    """Whether the response's own ``X-TTS-Language`` names German."""
+    return re.sub(r"\s+", "", probe.language or "").casefold() == "german"
+
+
 def binding_suggestion(probe: VoiceProbe) -> str:
     """The *suggested* table row; applying it is the owner's act, not the probe's."""
     return f"VoiceBinding({json.dumps(probe.voice_id)}, LOCALES[\"de\"]),"
@@ -211,26 +222,49 @@ def german_candidates(extra: Iterable[str] = ()) -> tuple[str, ...]:
     return tuple(candidates)
 
 
-def catalogue_german_ids(source: str) -> tuple[str, ...]:
-    """Every ``voice id`` whose own catalogue row declares ``languageCode: "de"``."""
-    entries = re.finditer(
-        r'\{\s*id:\s*"([^"]+)"[^}]*?languageCode:\s*"de"', source
-    )
+def catalogue_german_ids(document: object) -> tuple[str, ...]:
+    """Every exported voice whose own row declares ``languageCode: "de"``.
+
+    The document is the app's own JSON export (``npm run voice:catalogue``), so
+    the ids are the catalogue's, not a regex's reading of its TypeScript.
+    """
+    voices = document.get("voices") if isinstance(document, Mapping) else None
+    if not isinstance(voices, list):
+        raise ValueError(
+            "catalogue JSON needs a voices array; run `npm run voice:catalogue` "
+            "and pass its output"
+        )
     ids: list[str] = []
-    for match in entries:
-        voice_id = match.group(1)
-        if voice_id not in ids:
+    for entry in voices:
+        if not isinstance(entry, Mapping):
+            raise ValueError("catalogue voices entries must be objects")
+        voice_id = entry.get("id")
+        language_code = entry.get("languageCode")
+        if not isinstance(voice_id, str) or voice_id.strip() == "":
+            raise ValueError("catalogue voice needs a non-empty id")
+        if (
+            isinstance(language_code, str)
+            and language_code.strip().lower() == "de"
+            and voice_id not in ids
+        ):
             ids.append(voice_id)
     return tuple(ids)
 
 
 def read_catalogue_german_ids(path: Path) -> tuple[str, ...]:
-    """Read the app catalogue's German ids, or refuse by path and reason."""
+    """Read the app catalogue export's German ids, or refuse by path and reason."""
     try:
-        source = path.read_text(encoding="utf-8")
+        text = path.read_text(encoding="utf-8")
     except OSError as error:
         raise ProbeCatalogueError(path, str(error)) from None
-    return catalogue_german_ids(source)
+    try:
+        document = json.loads(text)
+    except json.JSONDecodeError as error:
+        raise ProbeCatalogueError(path, f"not JSON ({error})") from None
+    try:
+        return catalogue_german_ids(document)
+    except ValueError as error:
+        raise ProbeCatalogueError(path, str(error)) from None
 
 
 def safe_voice_filename(voice_id: str) -> str:

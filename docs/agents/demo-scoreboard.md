@@ -166,6 +166,41 @@ locale-rendering decision record (ADR 0008); an unresolved pack leaves it
 `proposed`. `src/lib/demo/reaudition.test.ts` covers assembly, the verdict
 rules, named missing-capture errors and the pending path with synthetic WAVs.
 
+## Readiness pack (ticket 152)
+
+`npm run readiness:pack -- --manifest <path> [--tenants <path>] [--json] [--out <path>]`
+assembles the all-subject cutover pack. It assembles and checks; it never
+decides accept/withdraw, writes audio, binds a voice or marks a human ticket
+resolved.
+
+| File | Owns |
+| --- | --- |
+| `voni/src/lib/demo/readiness-manifest.ts` | manifest/tenant/deferral parsing, named refusals, run-history resolution and the last-two check |
+| `voni/src/lib/demo/readiness-pack.ts` | per-subject assembly through `assembleCascadeReauditionPack`, roll-up, markdown render |
+| `voni/scripts/readiness-pack.mts` | CLI, `--help` contract, exit codes, `--json`/`--out` |
+| `voni/src/lib/demo/readiness-pack.test.ts` | synthetic six-subject fixture and every refusal path |
+
+Manifest contract (full shape in the CLI `--help`): one row per eligible
+subject with `artifacts` (the last two clean cascade runs, oldest first),
+exactly one history source — `runsDir` to scan or a complete `runHistory` — the
+reference+delivered pair and W0 `line`, transcript, the owner's recorded
+`verdict` and two ballots. A manifest without history is blocked as
+`run history not supplied; last-two consecutive unverified`; a supplied pair is
+verified against the history and a clean/ineligible run after or between it
+blocks.
+
+Extra refusals beyond the ticket's minimum, kept because they close a hole:
+a duplicate/undated/unexplained deferral, a deferral for a subject with
+evidence or outside `routing=all`, and a tenant whose Locale/transport differs
+from its `--tenants` row. `--tenants` is optional; without it no tenant roster
+is known.
+
+Exit codes: 0 ready, 1 blocked, 2 bad input. The pack itself is evidence for
+the human gate, not the record: the owner records the verdict in
+`.scratch/meta-cascade/issues/152-*.md` per
+`docs/agents/meta-cascade-human-gates.md`. One failed or missing subject blocks
+all; a dated deferral covers only a subject with no evidence.
+
 ## Live-run rules
 
 - Run live timing scenarios **one at a time**; `score-demo` takes

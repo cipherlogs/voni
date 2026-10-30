@@ -4,9 +4,10 @@
  *   npm run readiness:pack -- --manifest <path> [--tenants <path>] [--json] [--out <path>]
  *
  * Reads one manifest of subject evidence, verifies it through the readiness
- * module (the one artifact reader + `assembleCascadeReauditionPack`) and prints
- * the pack: one row per subject with both artifact paths and code fingerprints,
- * the recorded W2 verdict, the ballots and every named blocker.
+ * modules (the one artifact reader, the run-history check and
+ * `assembleCascadeReauditionPack`) and prints the pack: one row per subject with
+ * both artifact paths and code fingerprints, the recorded W2 verdict, the
+ * ballots and every named blocker.
  *
  * Read-only over evidence. It never writes or fabricates audio, never decides
  * accept/withdraw, and never marks ticket 152 resolved. `--out` writes only the
@@ -32,7 +33,7 @@ const USAGE = `Usage: npm run readiness:pack -- --manifest <path> [options]
   --out <path>        write the rendered report to a file (JSON with --json)
   --help              this text
 
-Manifest contract (exactly these fields; see the module header for detail):
+Manifest contract (exactly these fields; see the module headers for detail):
 
   {
     "subjects": [{
@@ -42,8 +43,16 @@ Manifest contract (exactly these fields; see the module header for detail):
                                     //   required for a tenant
       "transport": "browser",       // optional; defaults to "browser"
       "artifacts": ["run-1.json", "run-2.json"],
-                                    // exactly the last two consecutive clean
-                                    //   cascade artifact paths
+                                    // the last two consecutive clean cascade
+                                    //   artifact paths, oldest first
+      "runsDir": "runs/lola",       // OR a directory of the subject's runs;
+      "runHistory": ["run-1.json", "run-2.json"],
+                                    // OR the complete ordered run history.
+                                    //   Supply exactly one. The pair above must
+                                    //   be the last two entries, in order; a
+                                    //   clean or ineligible run after/between
+                                    //   them blocks. No history = blocked as
+                                    //   "last-two consecutive unverified".
       "reference": "lola-reference.wav",
       "delivered": "delivered-20261029.wav",
       "line": { "kind": "greeting", "text": "Hola, soy Lola." },
@@ -70,8 +79,11 @@ Manifest contract (exactly these fields; see the module header for detail):
   }
 
 The six demo voices are always required. A missing subject is a block, not an
-omission; a dated deferral covers only a subject with no recorded evidence. One
-failed subject blocks all.
+omission; one failed subject blocks all. A dated deferral is refused when it is
+duplicated, undated or unexplained, names a subject with recorded evidence, or
+names a subject outside routing=all. A tenant row must match its --tenants
+roster row on Locale and transport: evidence for another Locale/transport is
+another subject and blocks, even when the artifact itself is clean.
 
 Read-only. Missing/unreadable input exits 2; a blocked pack exits 1.`;
 

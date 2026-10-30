@@ -7,10 +7,16 @@ the verdict is ``AT RISK`` with those terms named — never ``PASS`` and never a
 blank.
 
 ``python -m spike.run --live`` is the owner-gated measurement (spec M0 and
-ticket 151). It refuses by name before a socket when a key is missing, takes the
-shared timing lock for the whole run, and measures terms 1-4 through the live
-transports in :mod:`spike.live`. A failed leg stays unmeasured with its real
-reason; the run never records a gate verdict for the owner.
+ticket 151). The live runner refuses by name before a socket when a key is
+missing; the CLI catches that refusal. It takes the shared timing lock for the
+whole run and measures terms 1-4 through the live transports in
+:mod:`spike.live`. A failed leg stays unmeasured with its real reason; the run
+never records a gate verdict for the owner.
+
+Exit codes for ``--live``: 0 for a fully measured PASS or five-term AT RISK, 1
+for a fully measured FAIL, 2 for a missing key or a held timing lock, and 3 when
+any term is unmeasured, a leg degraded or a blocker was recorded. ``--offline``
+keeps its old contract: 0 for PASS/AT RISK, 1 for FAIL, 2 for usage.
 
 There is no measurement arithmetic in this module: it wires the producers to
 :func:`spike.report.from_measurements`, so a report produced here is the same
@@ -65,8 +71,15 @@ def _parser() -> argparse.ArgumentParser:
         prog="spike.run",
         description=(
             "M00 latency spike: the five terms, their sum and the verdict. "
-            "Offline only; the live run is owner-gated."
+            "--offline is key-free; --live is owner-gated."
         ),
+        epilog=(
+            "--live exit codes: 0 fully measured PASS/AT RISK; 1 fully measured "
+            "FAIL; 2 missing META_API_KEY/ASSEMBLYAI_API_KEY or a held timing "
+            "lock; 3 any unmeasured term, degraded leg or blocker. "
+            "--offline exit codes: 0 PASS/AT RISK, 1 FAIL, 2 usage."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
         "--offline",
@@ -121,22 +134,23 @@ def _live_main(
     acquire_lock: Callable[..., Any] | None = None,
 ) -> int:
     environment = os.environ if env is None else env
-    missing = live.missing_keys(environment)
-    if missing:
-        print(live.MissingKeysError(missing))
-        return 2
 
     acquire = acquire_lock or acquire_timing_lock
     try:
         lock = acquire(scenario="m00-spike")
     except TimingLockHeldError as error:
-        print(f"spike.run --live refused: {error}")
+        print(f"spike.run --live refused: {error}", file=sys.stderr)
         return 2
     try:
         runner = live_runner or live.run_live
-        measurement = runner(env=environment)
+        try:
+            measurement = runner(env=environment)
+        except live.MissingKeysError as error:
+            print(error, file=sys.stderr)
+            return 2
     finally:
-        lock.release()
+        if lock is not None:
+            lock.release()
 
     payload = measurement.as_dict()
     if args.json:

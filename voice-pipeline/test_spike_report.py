@@ -466,13 +466,17 @@ class OfflineRunTests(unittest.TestCase):
         self.assertEqual(payload["term_count"], 5)
 
     def test_the_cli_refuses_live_without_a_key_guard_and_names_why(self):
-        out = io.StringIO()
-        with contextlib.redirect_stdout(out):
-            code = run.main(["--live"])
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = run.main(
+                ["--live"], env={}, acquire_lock=lambda **_kwargs: None
+            )
 
         self.assertEqual(code, 2)
-        self.assertIn("live", out.getvalue().lower())
-        self.assertIn("owner-gated", out.getvalue())
+        self.assertEqual(out.getvalue(), "")
+        self.assertIn("live", err.getvalue().lower())
+        self.assertIn("owner-gated", err.getvalue())
+        self.assertIn("META_API_KEY", err.getvalue())
 
 
 if __name__ == "__main__":

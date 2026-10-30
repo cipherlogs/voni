@@ -6,7 +6,7 @@
 - Before writing or reviewing Voni frontend code, read `docs/agents/nextjs.md`.
 - For cross-agent continuity, read `docs/agents/progress.md`.
 - For voice-copilot work, read `docs/agents/voice.md`.
-- For demo scoreboard, eval, gate, matrix, or live-call work, read `docs/agents/demo-scoreboard.md`.
+- For demo scoreboard, eval, gate, matrix, live-call, or readiness-pack work, read `docs/agents/demo-scoreboard.md`.
 - For the remaining Meta cascade human gates (feasibility, German, audition, readiness, rollback, signatures, decommission), read `docs/agents/meta-cascade-human-gates.md`.
 - For the turn-window latency experiment, read `docs/demo-latency-ladder.md`.
 - For multi-worktree implementation, run `scripts/worktree-setup.sh` in each new worktree.
