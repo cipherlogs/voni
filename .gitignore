@@ -4,6 +4,9 @@
 .dev.vars
 .secrets/
 .mcp.json
+# Local values for the deployment rehearsal; names live in
+# deploy/voice-pipeline.env.example (ticket 135).
+deploy/voice-pipeline.env
 
 # Dependencies & build outputs
 node_modules/
