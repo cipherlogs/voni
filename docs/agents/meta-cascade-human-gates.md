@@ -22,8 +22,15 @@ failure, and `0` means it completed.
 cd voice-pipeline
 ../telephony-bot/.venv/bin/python -m spike.run --offline   # no keys: AT RISK
 ../telephony-bot/.venv/bin/python -m spike.run --live \
-  --json --out /tmp/m00-live.json                          # needs both keys
+  --wav /path/caller-20s.wav --json --out /tmp/m00-live.json  # needs both keys
 ```
+
+`--wav` is required: a real 24 kHz mono 16-bit PCM speech recording. The
+synthetic ticket 09 fixture is a harmonic tone, the live vendor emits no
+`speechEnd` for it, and it is offline-only; without `--wav`, or with a WAV of
+another rate/channel count/width, the run refuses with exit `2` and names the
+reason (it never resamples). The run metadata records the WAV's path, sha256
+and last-sample-above-silence position.
 
 `--offline` names every unmeasured term and its producer. `--live` measures all
 five on the wire and takes the timing lock; it exits `3` if any term is still
