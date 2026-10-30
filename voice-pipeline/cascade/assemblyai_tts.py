@@ -1,4 +1,4 @@
-"""AssemblyAI streaming synthesis: connect and the Begin echo (tickets 47, 48).
+"""AssemblyAI streaming synthesis: connect, the Begin echo, keepalive, expiry.
 
 One synthesis socket per call, opened at call start before the first user
 frame. The connection is built from exactly two authorities and nothing else:
@@ -36,6 +36,16 @@ from the wire; ``terminate`` takes the implicit flush and the billing record;
 and ``handle_close`` turns a close code into a failure reconnect that resumes
 from the first unheard point, a planned reconnect between turns, or a visible
 call failure. There is no second voice vendor.
+
+A caller pause between turns sends no audio, and an idle session closes after
+the registry's idle timeout. ``keepalive_if_idle`` is the idle seam the turn
+loop ticks: it sends one ``KeepAlive`` per interval (never while a reply is in
+flight, never during audio), spends it from the session's own control-frame
+budget, sheds it rather than tripping a pacing close, and reports a missed one
+as the voice failure it is instead of a silent gap. ``Begin.expires_at`` is
+armed as a deadline: a session that reaches it hands over at a sentence
+boundary — the reply in flight drains and the new session opens between turns,
+never mid-sentence.
 """
 
 from __future__ import annotations
@@ -56,7 +66,12 @@ from urllib.parse import urlencode
 
 from providers import SentenceAudio, StreamingTTS
 
-from cascade.failures import FailureClass, FailureVerdict, classify_tts
+from cascade.failures import (
+    SESSION_LIMIT,
+    FailureClass,
+    FailureVerdict,
+    classify_tts,
+)
 from cascade.reconnect import ReconnectAction, ReconnectBudget
 from cascade.thresholds import require_bound
 from cascade.voice_binding import VoiceBinding, bind_voice
@@ -71,6 +86,16 @@ GENERATE_CHAR_CAP = int(require_bound("tts.generate_char_cap"))
 #: a budget: the budget itself is the ``max_control_frames_per_sec`` the
 #: session announced in ``Begin``.
 CONTROL_WINDOW_S = 1.0
+
+#: The idle-keepalive cadence, from the one threshold registry: a ``KeepAlive``
+#: this often keeps a paused session inside the vendor's idle timer, and the
+#: interval sits strictly below that timer. The number is never restated here.
+KEEPALIVE_INTERVAL_S = float(require_bound("tts.keepalive_interval_ms")) / 1000.0
+
+#: The vendor's idle close: a session with no frame in either direction for
+#: this long is gone. A keepalive that misses it is a voice failure, never a
+#: silent gap.
+IDLE_TIMEOUT_S = float(require_bound("tts.idle_timeout_ms")) / 1000.0
 
 #: How far the vendor's reported flush duration may sit from the duration the
 #: received bytes actually are, from the one threshold registry.
@@ -287,6 +312,25 @@ class CloseAction(str, Enum):
     RETRY = "retry"
     PLANNED_RECONNECT = "planned_reconnect"
     FAIL = "fail"
+
+
+class KeepaliveAction(str, Enum):
+    """What one idle tick did, or refused to do.
+
+    ``BUSY`` is a reply in flight: its own frames are traffic, so a keepalive
+    would be both unnecessary and an interleaved control frame. ``SHED`` is a
+    keepalive the session's control-frame budget could not carry; it is retried
+    on the next tick, never sent blindly. ``MISSED`` is an idle past the
+    vendor's close: the one failure reconnect has already been taken. ``EXPIRED``
+    means there is no live session to keep alive — the next turn opens one.
+    """
+
+    SENT = "sent"
+    NOT_DUE = "not_due"
+    BUSY = "busy"
+    SHED = "shed"
+    MISSED = "missed"
+    EXPIRED = "expired"
 
 
 @dataclass(frozen=True)
@@ -599,6 +643,7 @@ class AssemblyAIStreamingTTS(StreamingTTS):
         api_key: str | None = None,
         socket_factory: SocketFactory | None = None,
         clock: Callable[[], float] | None = None,
+        wall_clock: Callable[[], float] | None = None,
         alert: Callable[[FailureVerdict, str], None] | None = None,
         ledger: Any = None,
         budget: ReconnectBudget | None = None,
@@ -608,7 +653,11 @@ class AssemblyAIStreamingTTS(StreamingTTS):
         self.model_id = MODEL_ID
         self._api_key = api_key or os.environ.get("ASSEMBLYAI_API_KEY")
         self._socket_factory = socket_factory or _default_socket_factory
+        # ``clock`` is the session's own (monotonic) time: pacing, intervals and
+        # the expiry deadline. ``wall_clock`` only interprets the vendor's epoch
+        # ``expires_at``, which is not comparable with a monotonic clock.
         self._clock = clock or time.monotonic
+        self._wall_clock = wall_clock or time.time
         self._alert_sink = alert
         self._socket: Any = None
         self._frames: Any = None
@@ -621,6 +670,12 @@ class AssemblyAIStreamingTTS(StreamingTTS):
         self.begin_id: str | None = None
         self.unknown_params: tuple[str, ...] = ()
         self.begin_mismatches: tuple[EchoMismatch, ...] = ()
+        # Idle keepalive and session expiry (ticket 53): the idle timer restarts
+        # on any frame in either direction, and the deadline is the session's
+        # own ``expires_at`` measured from the wall clock at connect.
+        self.last_frame_at: float = self._clock()
+        self.keepalives_sent: int = 0
+        self.expiry_deadline: float | None = None
         # Send-time facts the pacing guard and the call ledger read.
         self.control_frame_times: list[float] = []
         self.control_frames_sent = 0
@@ -727,6 +782,43 @@ class AssemblyAIStreamingTTS(StreamingTTS):
             encoding=self.format.encoding,
             model=self.model_id,
         )
+        self._arm_expiry()
+        self._touch()
+
+    def _arm_expiry(self) -> None:
+        """Turn ``expires_at`` into a deadline on the session's own clock.
+
+        ``expires_at`` is epoch seconds, so it is compared with the wall clock
+        exactly once, at connect, and the remaining lifetime is projected onto
+        the monotonic clock every interval and expiry rule already use. An
+        ``expires_at`` already behind the wall clock cannot be scheduled as a
+        future deadline: the vendor's own close reports it, and inventing an
+        immediate drain would cut a reply the vendor may still be serving.
+        """
+        if self.expires_at is None:
+            self.expiry_deadline = None
+            return
+        remaining = float(self.expires_at) - float(self._wall_clock())
+        self.expiry_deadline = (
+            self._clock() + remaining if remaining > 0 else None
+        )
+
+    def _touch(self) -> None:
+        """Restart the idle timer: the vendor counts frames in either direction."""
+        self.last_frame_at = self._clock()
+
+    @property
+    def idle_seconds(self) -> float:
+        """How long the session has been silent, in either direction."""
+        return max(0.0, self._clock() - self.last_frame_at)
+
+    @property
+    def expired(self) -> bool:
+        """Whether the session has reached the ``expires_at`` it announced."""
+        return (
+            self.expiry_deadline is not None
+            and self._clock() >= self.expiry_deadline
+        )
 
     def _assert_begin(self) -> None:
         if self.unknown_params:
@@ -749,10 +841,13 @@ class AssemblyAIStreamingTTS(StreamingTTS):
         on a new session from the first unheard point, so a sentence the caller
         heard is never spoken twice. ``3008`` is not a failure: the reply
         drains and the new session opens at the next reply, never mid-sentence.
+        Reaching ``Begin.expires_at`` is the same planned handover: it is
+        checked between sentences, so a sentence is never cut in half.
         """
         chunks = schedule(text)
         if not chunks:
             return
+        await self._expire_if_due()
         if self.needs_reconnect:
             # A planned expiry drains the current reply and opens the new
             # session between turns, never mid-sentence.
@@ -813,6 +908,11 @@ class AssemblyAIStreamingTTS(StreamingTTS):
                     self._pending_characters = sum(
                         len(chunk) for chunk in progress.chunks[progress.index + 1 :]
                     )
+                    if await self._expire_if_due():
+                        # This sentence is fully delivered; the handover happens
+                        # before the next one is sent, never inside a sentence.
+                        await self._reopen()
+                        generation = self._cancel_generation
                 elif kind == "Termination":
                     return
         finally:
@@ -876,20 +976,39 @@ class AssemblyAIStreamingTTS(StreamingTTS):
         await self._socket.send(json.dumps(frame))
         self.control_frame_times.append(self._clock())
         self.control_frames_sent += 1
+        self._touch()
 
-    def _check_control_budget(self) -> None:
-        """Refuse to send a frame the session would answer with ``3010``."""
+    def _control_limit(self) -> float | None:
+        """The session's own frame-rate budget, or ``None`` when it named none."""
         limit = self.limits.get("max_control_frames_per_sec")
-        if not isinstance(limit, (int, float)) or limit <= 0:
-            return
+        if isinstance(limit, bool) or not isinstance(limit, (int, float)):
+            return None
+        return float(limit) if limit > 0 else None
+
+    def _prune_control_window(self) -> None:
+        """Keep only the frames that matter: a long call must not grow unbound."""
         now = self._clock()
-        # Keep only the window that matters: a long call must not grow this
-        # list without bound, and the budget is a one-second rate.
         self.control_frame_times = [
             moment
             for moment in self.control_frame_times
             if now - moment < CONTROL_WINDOW_S
         ]
+
+    def _would_exceed_control_budget(self) -> bool:
+        """Whether one more control frame would be the (limit+1)th in the window."""
+        limit = self._control_limit()
+        if limit is None:
+            return False
+        self._prune_control_window()
+        return len(self.control_frame_times) + 1 > limit
+
+    def _check_control_budget(self) -> None:
+        """Refuse to send a frame the session would answer with ``3010``."""
+        limit = self._control_limit()
+        if limit is None:
+            return
+        self._prune_control_window()
+        now = self._clock()
         if len(self.control_frame_times) >= limit:
             failure = ControlFramePacingError(
                 float(limit), len(self.control_frame_times), now
@@ -944,6 +1063,72 @@ class AssemblyAIStreamingTTS(StreamingTTS):
         )
         await self._close_socket()
         raise failure
+
+    async def _expire_if_due(self) -> bool:
+        """Hand the session over at ``Begin.expires_at``, at a safe boundary.
+
+        The expiry is a planned reconnect: the reply in flight drains (no frame
+        is sent after the call site validates the boundary), the old socket is
+        closed, and the next sentence or turn opens a new session. It never
+        spends the failure reconnect and never opens the voice leg's breaker.
+        """
+        if not self.expired or self._socket is None:
+            return False
+        await self.handle_close(SESSION_LIMIT)
+        return True
+
+    async def keepalive_if_idle(self) -> KeepaliveAction:
+        """One idle tick: keep a paused synthesis session open, or say why not.
+
+        The idle seam the turn loop calls between turns. A ``KeepAlive`` goes
+        out only when the session has been silent for the registry's interval,
+        only when no reply is in flight (audio frames are themselves traffic),
+        and only when the session's control-frame budget can carry it. A tick
+        that finds the session idle past the vendor's close reports the missed
+        keepalive through the close policy, so it is a voice failure with the
+        one reconnect, never a silent gap. At ``expires_at`` the session is
+        handed over instead of kept alive.
+        """
+        if self._socket is None:
+            if self.needs_reconnect:
+                return KeepaliveAction.EXPIRED
+            raise RuntimeError("the synthesis session is not open")
+        if self._reply is not None:
+            # A reply in flight is not idle: its own frames restart the idle
+            # timer, and a keepalive would interleave with audio.
+            return KeepaliveAction.BUSY
+        idle = self.idle_seconds
+        if idle >= IDLE_TIMEOUT_S:
+            await self._keepalive_missed(idle)
+            return KeepaliveAction.MISSED
+        if await self._expire_if_due():
+            return KeepaliveAction.EXPIRED
+        if idle < KEEPALIVE_INTERVAL_S:
+            return KeepaliveAction.NOT_DUE
+        if self._would_exceed_control_budget():
+            # A housekeeping frame must not trip the session's 3010 pacing
+            # close: shed it and try again on the next tick.
+            return KeepaliveAction.SHED
+        await self._send_control({"type": "KeepAlive"})
+        self.keepalives_sent += 1
+        return KeepaliveAction.SENT
+
+    async def _keepalive_missed(self, idle: float) -> None:
+        """Report an idle session past the vendor's close as the failure it is.
+
+        The keepalive exists so this cannot happen while the tick runs. If it
+        did (the loop stalled, or every keepalive was shed), the session is
+        gone: go through the close policy with the abnormal close an idle
+        session produces, taking the one failure reconnect, and let a second
+        miss end the call visibly rather than leave a silent gap.
+        """
+        await self.handle_close(
+            1006,
+            reason=(
+                f"keepalive missed: the session was idle {idle:.1f}s, past the "
+                f"{IDLE_TIMEOUT_S:g}s idle close"
+            ),
+        )
 
     async def _recover(self, code: Any, reason: str = "") -> _ReplyProgress | None:
         """Act on a socket that died while synthesis was being spoken.
@@ -1246,6 +1431,7 @@ class AssemblyAIStreamingTTS(StreamingTTS):
         """
         self._require_open()
         await self._socket.send(json.dumps({"type": "Terminate"}))
+        self._touch()
         residual = bytearray()
         flush_done: Mapping[str, Any] | None = None
         final_flush: SynthesisRequest | None = None
@@ -1506,6 +1692,8 @@ class AssemblyAIStreamingTTS(StreamingTTS):
                 raw = await self._frames.__anext__()
             except StopAsyncIteration:
                 raise SynthesisSocketClosed() from None
+            # A frame in either direction restarts the vendor's idle timer.
+            self._touch()
             try:
                 frame = json.loads(raw)
             except (json.JSONDecodeError, TypeError):
