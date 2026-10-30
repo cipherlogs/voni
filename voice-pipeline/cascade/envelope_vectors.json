@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "note": "Cross-language parity vector for the signed body envelope (ticket 64). TEST-ONLY secret and account salt: this file lives in the test suite and must never be copied into a deployment. The body hash and minted fingerprint were computed with Node's crypto (stableJson + sha256, exactly voni/src/lib/agents/fingerprint.ts), and the signature was computed with Node's HMAC-SHA-256 and cross-checked against `openssl dgst -sha256 -hmac`, so the Python verifier and the app's signer cannot drift apart silently. The expiry is a vector value, not the production TTL: that number is the open bound envelope.ttl_ms owned by ticket 04.",
+  "note": "Cross-language parity vector for the signed body envelope (ticket 64; version 2 added by ticket 01). TEST-ONLY secret and account salt: this file lives in the test suite and must never be copied into a deployment. The top-level fields are the committed version 1 vector. The `v2_demo` subsection is the version 2 vector whose claims add `kind: \"demo\"`: {version, kind, call_id, agent_id, body_hash, issued_at_ms, expires_at_ms}, and the HMAC covers all of them. The v2 body hash and minted fingerprint were computed with stable JSON + sha256 (exactly voni/src/lib/agents/fingerprint.ts) and cross-checked with Python's json/hashlib; the v2 signature was computed with HMAC-SHA-256 and cross-checked against `openssl dgst -sha256 -hmac` and Python's hmac. So the Python verifier and the app's signer cannot drift apart silently. The expiry is a vector value, not the production TTL: that number is the open bound envelope.ttl_ms owned by ticket 04.",
   "secret": "test-only-envelope-hmac-secret",
   "account_salt": "acct_test_vector_64",
   "call_id": "call_vector_64",
@@ -28,5 +28,37 @@
   },
   "body_hash": "7657c61465de61de10f63829fd03587fc171a25bd127617b16b166dc84c8027c",
   "minted_fingerprint": "3374dc16b69b6f5a44894df1354b9aa48f37f978e9927f641f47e8658887683e",
-  "signature": "5c6f79490e9ed3f41425cdb26cb5e779687b3938aeb4c4afc8119ca5f88992f1"
+  "signature": "5c6f79490e9ed3f41425cdb26cb5e779687b3938aeb4c4afc8119ca5f88992f1",
+  "v2_demo": {
+    "version": 2,
+    "kind": "demo",
+    "secret": "test-only-envelope-hmac-secret",
+    "account_salt": "acct_test_vector_64",
+    "call_id": "call_v2_demo_64",
+    "agent_id": "demo:audrey",
+    "issued_at_ms": 1761771100000,
+    "expires_at_ms": 1761771160000,
+    "body": {
+      "name": "demo:voni:audrey",
+      "system_prompt": "You are Voni, a careful voice agent.",
+      "greeting": "Hi, this is Voni.",
+      "voice": { "voice_id": "audrey" },
+      "input": {
+        "format": "pcm_24000",
+        "language_codes": ["en"],
+        "transcription_mode": "accurate",
+        "transcription_prompt": "",
+        "keyterms": ["Voni"],
+        "voice_focus": "near-field",
+        "voice_focus_threshold": 0.4,
+        "turn_detection": null
+      },
+      "output": { "voice": "audrey", "format": "pcm_24000", "volume": 0.851 },
+      "tools": [],
+      "llm": []
+    },
+    "body_hash": "ba6d443dbac3c1cde9632ecc2713a76b596d7cc8f0e5e0c00f3e0b8d90af7b0b",
+    "minted_fingerprint": "d949de5682ccc005253ca74d156dd4c55b1dac02602302af8e1be2e2ed71aa73",
+    "signature": "d39edd46eafaf40f60d250a71b7fe9cf4f8ded64cac928ec01daf01e7c80d8bf"
+  }
 }
