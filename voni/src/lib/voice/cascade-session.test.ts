@@ -77,6 +77,43 @@ test("context messages serialize as hidden system events", () => {
   });
 });
 
+test("demo notes reach the context frame and never become a caption", async () => {
+  // Ticket 12: every browser-generated note the managed session used to speak
+  // is hidden context on the cascade. The service applies it to the next
+  // generated turn; it must never arrive as a user or agent caption.
+  const { MUTE_CHECK_IN_INSTRUCTIONS, TIME_UP_INSTRUCTIONS, rungInstructions } =
+    await import("@/lib/demo/voni-agent");
+  const notes = [
+    MUTE_CHECK_IN_INSTRUCTIONS,
+    TIME_UP_INSTRUCTIONS,
+    rungInstructions("nudge", "the live email test"),
+  ];
+  const socket = makeSocket();
+  const captions: string[] = [];
+  const session = new CascadeSession(
+    { onCaption: (caption) => captions.push(caption.text) },
+    {
+      socketFactory: () => socket as unknown as WebSocket,
+      startMic: async () => ({ stop: () => {} }),
+      createPlayout: () => ({ play: () => {}, flush: () => {} }),
+    },
+  );
+  await session.start(CONFIG, "test-owner");
+  socket.readyState = socket.OPEN;
+  socket.onopen?.();
+  socket.sent.length = 0;
+
+  for (const note of notes) session.sendContext(note);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.deepEqual(
+    socket.sent.map((frame) => JSON.parse(frame)),
+    notes.map((content) => ({ type: "context", role: "system", content })),
+    "each note is one hidden context frame, in order",
+  );
+  assert.deepEqual(captions, [], "hidden context is never captioned");
+});
+
 test("server messages parse to typed events", () => {
   assert.deepEqual(parseServerMessage(JSON.stringify({ type: "caption", role: "user", text: "hi", final: false })), {
     kind: "caption",
@@ -585,15 +622,21 @@ test("delivered capture: a cascade tap that never acks is a named failure on the
 // version it speaks in the end message. The client must surface that, not hang
 // with a mic open, and must not report a refused connect as a completed call.
 
-test("a protocol-version refusal is surfaced and the session stops instead of hanging", async () => {
+test("a protocol-version refusal tears down the socket and microphone", async () => {
   const socket = makeSocket();
+  const failures: DrainingError[] = [];
   const errors: string[] = [];
   let ended = 0;
+  let micStops = 0;
   const session = new CascadeSession(
-    { onError: (message) => errors.push(message), onEnd: () => (ended += 1) },
+    {
+      onConnectFailure: (error) => failures.push(error),
+      onError: (message) => errors.push(message),
+      onEnd: () => (ended += 1),
+    },
     {
       socketFactory: () => socket as unknown as WebSocket,
-      startMic: async () => ({ stop: () => {} }),
+      startMic: async () => ({ stop: () => (micStops += 1) }),
       createPlayout: () => ({ play: () => {}, flush: () => {} }),
     },
   );
@@ -605,9 +648,22 @@ test("a protocol-version refusal is surfaced and the session stops instead of ha
   socket.emit(JSON.stringify({ type: "error", code: "protocol_version", message: refusal }));
   await new Promise((resolve) => setTimeout(resolve, 0));
 
-  assert.deepEqual(errors, [refusal]);
+  assert.equal(failures.length, 1, "a pre-accept version refusal is one connect cause");
+  assert.equal(failures[0].code, "protocol");
+  assert.equal(failures[0].message, refusal);
+  assert.deepEqual(errors, [], "the generic error path does not paint over the refusal");
   assert.equal(socket.closed, true, "the socket is torn down instead of left hanging");
+  assert.equal(micStops, 1, "the microphone is released, never left live");
   assert.equal(ended, 0, "a refused connect is not a completed call");
+});
+
+test("a protocol refusal is never retried on managed, even unspent", () => {
+  const decision = decideCascadeFallback({
+    failure: "protocol",
+    alreadyFellBack: false,
+  });
+  assert.equal(decision.action, "surface", "a managed retry would hide a half-deployed pair");
+  assert.equal(decision.error.retryManaged, false);
 });
 
 test("the end message's protocol version is checked against this client's", async () => {

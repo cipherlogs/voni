@@ -1,5 +1,6 @@
 import { VoiceStartError } from "./mic-capture";
 import { RateLimitError } from "./session";
+import type { ResumeMessage } from "./resume-history";
 
 /**
  * The browser's one door to a demo call (demo-cascade ticket 10).
@@ -59,6 +60,8 @@ export type DemoMintOptions = {
   callToken?: string;
   /** The visitor's Test tag, kept a day by the browser. */
   tagToken?: string;
+  /** A hold return's bounded recent turns; the resumed body continues from them. */
+  history?: readonly ResumeMessage[];
 };
 
 export type DemoMintFetcher = (
@@ -116,6 +119,9 @@ export async function demoMint(
       ...(opts.callToken ? { callToken: opts.callToken } : {}),
       // The visitor's Test tag, kept a day by the browser (docs/adr/0004).
       ...(opts.tagToken ? { tagToken: opts.tagToken } : {}),
+      // A hold return carries the recent turns into the signed body, so the
+      // resumed call continues instead of starting blank (ticket 13).
+      ...(opts.history && opts.history.length > 0 ? { history: opts.history } : {}),
     }),
   });
   if (!res.ok) {
