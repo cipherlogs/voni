@@ -142,6 +142,11 @@ def _render_live(measurement: live.LiveMeasurement) -> str:
         f"({caller.speech_end_ms:.3f}ms, silence > "
         f"{caller.silence_threshold_lsb} LSB)"
     )
+    run_meta = measurement.metadata()
+    lines.append(
+        f"  {'synthesis text':<28} {run_meta['synthesis_text']!r} "
+        f"({run_meta['synthesis_text_source']})"
+    )
     lines.append(f"  {'reasoning effort row':<28} {measurement.report.effort_label}")
     for blocker in measurement.blockers:
         lines.append(f"  {'blocked':<28} {blocker}")

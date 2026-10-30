@@ -49,6 +49,13 @@ POST_PROCESSING_PRODUCER = (
     "speechEnd.received_at for the same turnId"
 )
 
+#: A live WAV must be one utterance: the fixture's whole-file last speech
+#: sample can only be anchored to one ``speechEnd``.
+MULTI_UTTERANCE_REASON = (
+    "the WAV contains more than one speech turn; record one utterance with "
+    "trailing silence"
+)
+
 #: The two measurements cannot agree more finely than the chunk that carried the
 #: last speech sample: the wall clock stamps chunk delivery, so the run's pacer
 #: chunk is the timing quantum of the comparison, not a latency budget. The
@@ -229,6 +236,16 @@ def _endpointing_term(
         )
 
     wall_ms = _ms(turn.end_at_s - last_speech_sent_at_s)
+    if wall_ms < 0:
+        return _unmeasured(
+            ENDPOINTING_TERM,
+            ENDPOINTING_PRODUCER,
+            (
+                f"turn {turn.turn_id}: the computed wall term is negative "
+                f"({wall_ms:.3f}ms) because speechEnd arrived before the WAV's "
+                "last speech sample; unmeasured, never a negative number"
+            ),
+        )
     if turn.audio_processed_ms is None:
         return Term(
             name=ENDPOINTING_TERM,
@@ -293,11 +310,34 @@ def _terms(
     tolerance_ms: float = AGREEMENT_TOLERANCE_MS,
 ) -> tuple[TurnTerms, ...]:
     turns = _collect(events)
+    speech_ends = sum(1 for turn in turns.values() if turn.end_at_s is not None)
     caller_turn = next(
         (turn for turn in turns.values() if turn.end_at_s is not None), None
     )
     built = []
     for turn in turns.values():
+        if speech_ends > 1:
+            # The whole file's last speech sample cannot anchor the first
+            # speechEnd when a later turn also ended: the sample may belong to
+            # that later turn. A multi-utterance clip produces no number at all.
+            reason = (
+                f"turn {turn.turn_id}: {MULTI_UTTERANCE_REASON}; "
+                "unmeasured, never a number"
+            )
+            endpointing = _unmeasured(
+                ENDPOINTING_TERM, ENDPOINTING_PRODUCER, reason
+            )
+            post_processing = _unmeasured(
+                POST_PROCESSING_TERM, POST_PROCESSING_PRODUCER, reason
+            )
+            built.append(
+                TurnTerms(
+                    turn_id=turn.turn_id,
+                    endpointing=endpointing,
+                    post_processing=post_processing,
+                )
+            )
+            continue
         endpointing = _endpointing_term(
             turn,
             last_speech_sent_at_s=last_speech_sent_at_s,

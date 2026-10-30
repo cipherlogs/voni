@@ -309,6 +309,10 @@ class KnownSumTests(unittest.TestCase):
         self.assertIn("M03", first_content.producer)
         self.assertIn("not probed", first_content.detail)
 
+        run_meta = measurement.metadata()
+        self.assertEqual(run_meta["synthesis_text_source"], "canned spike line")
+        self.assertEqual(run_meta["synthesis_text"], live.SPIKE_TRANSCRIPT)
+
     def test_a_fully_measured_at_risk_run_exits_zero(self):
         clock = FakeClock(start=1_000.0)
         measurement = live.run_live(
@@ -950,13 +954,71 @@ class RawWireMappingTests(unittest.TestCase):
         )
 
         self.assertEqual([turn.turn_id for turn in turns], ["0", "1"])
-        caller, second = turns
-        self.assertIsNotNone(caller.endpointing.value_ms)
-        self.assertIn("turn 0", caller.endpointing.detail)
-        self.assertEqual(caller.post_processing.value_ms, 0.0)
-        self.assertEqual(second.post_processing.value_ms, 0.0)
+        # Two speech turns: the whole file's last speech sample may belong to
+        # the later turn, so neither term may produce a number.
+        for turn in turns:
+            for term in (turn.endpointing, turn.post_processing):
+                self.assertIsNone(term.value_ms)
+                self.assertIn("more than one speech turn", term.detail)
+                self.assertIn(
+                    "record one utterance with trailing silence", term.detail
+                )
         self.assertEqual(transport.transcript, "ready?")
         self.assertEqual(transport.caller_turn_id, "0")
+
+    def test_the_live_run_reports_a_two_turn_wav_as_unmeasured(self):
+        clock = FakeClock(start=2_000.0)
+        socket = PacedWireSocket(M00_RAW_FRAMES, clock)
+        transport = live.LiveMetaSttTransport(
+            "meta-key",
+            call_id="m00-raw",
+            connect=lambda _url, _headers: socket,
+            clock=clock,
+            handshake_timeout_s=0.5,
+        )
+        measurement = live.run_live(
+            caller=_caller(),
+            env={**KEYS, "META_REASONING_EFFORT": "low"},
+            stt_factory=lambda _key: transport,
+            spark_factory=lambda _key: ScriptedSpark(clock),
+            tts_factory=lambda _key, _voice: ScriptedTts(clock),
+            clock=clock,
+            wait=clock.advance,
+            wall_clock=lambda: 1_700_000_000.0,
+        )
+
+        for name in ("endpointing_ms", "post_processing_ms"):
+            term = _term(measurement, name)
+            self.assertIsNone(term.ms)
+            self.assertIn("more than one speech turn", term.detail)
+        self.assertEqual(measurement.exit_code(), 3)
+
+    def test_a_float_or_object_turnid_is_rejected_not_stringified(self):
+        clock = FakeClock(start=2_000.0)
+        transport = live.LiveMetaSttTransport(
+            "meta-key",
+            call_id="m00-raw",
+            connect=lambda _url, _headers: FakeSocket(
+                [
+                    '{"sessionId":"s"}',
+                    '{"type":"speechStart","turnId":1.0}',
+                    '{"type":"speechStart","turnId":{"nested":1}}',
+                    '{"type":"speechStart","turnId":true}',
+                    '{"type":"speechStart","turnId":2}',
+                ],
+                recv_advance_s=0.01,
+            ),
+            clock=clock,
+            handshake_timeout_s=0.5,
+        )
+        transport.open()
+
+        events = transport.poll()
+
+        self.assertEqual([event.kind for event in events], ["speechStart"] * 4)
+        self.assertEqual(
+            [event.turn_id for event in events], [None, None, None, "2"]
+        )
 
     def test_the_raw_frames_keep_integer_turnid_and_audio_processed_ms(self):
         clock = FakeClock(start=2_000.0)
@@ -1045,7 +1107,24 @@ class CleanEndTests(unittest.TestCase):
             transport.drain()
         self.assertIn("1011", str(caught.exception))
         self.assertIn("internal error", str(caught.exception))
+        self.assertIn("after endStream", str(caught.exception))
         self.assertIs(transport.closed_clean, False)
+
+    def test_a_failure_close_during_drain_without_endstream_is_not_labelled_after_endstream(self):
+        clock = FakeClock(start=2_000.0)
+        socket = CloseAfterEndStreamSocket(
+            ['{"sessionId":"s"}'], ConnectionClosedError(1011, "internal error")
+        )
+        transport = self._transport(socket, clock)
+        transport.open()
+        # The socket is closeable, but the transport has sent no endStream.
+        socket._ended = True
+
+        with self.assertRaises(live.LiveSttError) as caught:
+            transport.drain()
+        text = str(caught.exception)
+        self.assertIn("before endStream was sent", text)
+        self.assertNotIn("after endStream", text)
 
 
 class SynthesisWireTests(unittest.TestCase):
