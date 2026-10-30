@@ -59,6 +59,78 @@ export type CascadeCallConfig = {
   protocolVersion: number;
 };
 
+/** Why a cascade connect never opened the call. */
+export type CascadeConnectFailure = "draining" | "unavailable";
+
+/**
+ * A cascade *connect* failure, typed so the app can route the call instead of
+ * painting a dead-end error. `retryManaged` is true only while the managed
+ * fallback is still possible: the caller spends it once.
+ *
+ * `draining` is the service's own refusal during a deploy (ticket 140: a
+ * draining instance accepts no new call); `unavailable` is the socket failing
+ * or closing before the service accepted the call.
+ */
+export class DrainingError extends Error {
+  constructor(
+    readonly code: CascadeConnectFailure,
+    message: string,
+    readonly retryManaged: boolean,
+  ) {
+    super(message);
+    this.name = "DrainingError";
+  }
+}
+
+export type CascadeFallbackDecision =
+  | { readonly action: "retry-managed"; readonly reason: string; readonly error: DrainingError }
+  | { readonly action: "surface"; readonly error: DrainingError };
+
+const FALLBACK_REASONS: Record<CascadeConnectFailure, string> = {
+  draining:
+    "The voice service is draining for a deploy; continuing this call on the managed path.",
+  unavailable:
+    "The voice service is unavailable; continuing this call on the managed path.",
+};
+
+const SURFACE_MESSAGES: Record<CascadeConnectFailure, string> = {
+  draining: "The voice service is draining for a deploy and cannot take this call.",
+  unavailable: "The voice service is unavailable and cannot take this call.",
+};
+
+/**
+ * The one fallback decision (ticket 140 AC5), pure and browser-free: a cascade
+ * connect that fails to a draining or unavailable service is retried once on
+ * the managed path, with a visible reason. The second failure is surfaced as a
+ * typed `DrainingError` with `retryManaged: false` — never another retry, so a
+ * dead service cannot loop the caller through two transports forever.
+ */
+export function decideCascadeFallback(input: {
+  failure: CascadeConnectFailure;
+  message?: string;
+  alreadyFellBack: boolean;
+}): CascadeFallbackDecision {
+  if (input.alreadyFellBack) {
+    return {
+      action: "surface",
+      error: new DrainingError(
+        input.failure,
+        input.message ?? SURFACE_MESSAGES[input.failure],
+        false,
+      ),
+    };
+  }
+  return {
+    action: "retry-managed",
+    reason: FALLBACK_REASONS[input.failure],
+    error: new DrainingError(
+      input.failure,
+      input.message ?? SURFACE_MESSAGES[input.failure],
+      true,
+    ),
+  };
+}
+
 export type CascadeHandlers = {
   onCaption?: (caption: CascadeCaption) => void;
   onAudio?: (pcm: Uint8Array, sampleRate: number) => void;
@@ -68,6 +140,11 @@ export type CascadeHandlers = {
   onEnd?: (info: { turns: number }) => void;
   /** The playout emitted its first audible sample for this connection (once). */
   onFirstAudible?: () => void;
+  /**
+   * The call never opened: the service refused it as draining, or the socket
+   * failed/closed first. Fires once; the session is already torn down.
+   */
+  onConnectFailure?: (error: DrainingError) => void;
 };
 
 export type ServerEvent =
@@ -249,6 +326,10 @@ export class CascadeSession {
   private ended = false;
   private configSent = false;
   private inputMuted = false;
+  /** The service accepted the call: any valid server frame arrived. */
+  private accepted = false;
+  /** The connect failure was already reported (one report, one fallback). */
+  private connectFailureReported = false;
   /**
    * The highest call-level audio `seq` already played. The receiving contract
    * (`CallPlayout` in voice-pipeline/cascade/call.py) is: a frame whose seq is
@@ -287,6 +368,8 @@ export class CascadeSession {
     this.ended = false;
     this.inputMuted = false;
     this.configSent = false;
+    this.accepted = false;
+    this.connectFailureReported = false;
     this.highestPlayedSeq = 0;
     const socketFactory = this.deps.socketFactory ?? ((url: string) => new WebSocket(url));
     const ws = socketFactory(config.serviceUrl);
@@ -298,9 +381,20 @@ export class CascadeSession {
       this.receive(typeof event.data === "string" ? event.data : "");
     };
     ws.onerror = () => {
+      if (!this.accepted) {
+        this.failConnect("unavailable", "Connection to the voice service failed.");
+        return;
+      }
       this.handlers.onError?.("Connection to the voice service failed.");
     };
     ws.onclose = () => {
+      if (!this.accepted && !this.ended && !this.connectFailureReported) {
+        this.failConnect(
+          "unavailable",
+          "The voice service closed the connection before the call started.",
+        );
+        return;
+      }
       this.finish(0);
     };
     const startMic = this.deps.startMic ?? defaultStartMic;
@@ -309,6 +403,13 @@ export class CascadeSession {
         this.send(encodeAudioFrame(data));
       }
     });
+    // The connect can fail while the mic prompt is open (a draining service
+    // refuses before getUserMedia resolves). The attempt is already torn down;
+    // release this late mic and do not mark a dead attempt started.
+    if (this.ended) {
+      handle.stop();
+      return;
+    }
     this.micStop = handle.stop;
     this.playout = this.deps.createPlayout?.(handle.audioCtx) ?? handle.playout ?? null;
     // Dev delivered capture: the worklet's output, at the device rate. It is
@@ -371,6 +472,7 @@ export class CascadeSession {
     if (!raw) return;
     const audio = decodeAudioMessage(raw);
     if (audio) {
+      this.accepted = true;
       if (audio.seq !== undefined) {
         if (audio.seq <= this.highestPlayedSeq) {
           // The call-level contract: an audio frame that is not newer is never
@@ -389,6 +491,7 @@ export class CascadeSession {
     }
     const event = parseServerMessage(raw);
     if (!event) return;
+    if (event.kind !== "error") this.accepted = true;
     switch (event.kind) {
       case "caption":
         if (event.role === "user") this.endCallArmed = false;
@@ -418,6 +521,13 @@ export class CascadeSession {
         this.finish(event.turns);
         break;
       case "error":
+        // A draining instance refuses a new call by name (ticket 140). Before
+        // the service accepted the call this is a connect failure the app can
+        // route to managed; once accepted it is an ordinary call error.
+        if (event.code === "draining" && !this.accepted) {
+          this.failConnect("draining", event.message);
+          break;
+        }
         this.handlers.onError?.(event.message);
         // A version refusal means the service never opened the call. Tear the
         // socket down so the UI is not left waiting with a live microphone.
@@ -527,9 +637,23 @@ export class CascadeSession {
   }
 
   /**
+   * Report a connect failure once, then tear this attempt down. The app owns
+   * the one managed retry (`decideCascadeFallback`); this session only names
+   * the cause and hands over a typed error.
+   */
+  private failConnect(cause: CascadeConnectFailure, message: string): void {
+    if (this.connectFailureReported || this.ended) return;
+    this.connectFailureReported = true;
+    const error = new DrainingError(cause, message, true);
+    this.abort();
+    if (this.handlers.onConnectFailure) this.handlers.onConnectFailure(error);
+    else this.handlers.onError?.(error.message);
+  }
+
+  /**
    * Stop without reporting a completed call: used when the service refused the
-   * connect (a protocol-version mismatch). The error handler already has the
-   * named reason; `onEnd` would read as "the call ran".
+   * connect (a protocol-version mismatch or a draining instance). The error
+   * handler already has the named reason; `onEnd` would read as "the call ran".
    */
   private abort(): void {
     if (this.ended) return;
