@@ -52,8 +52,13 @@ if (verbose || result.status !== 0) {
 } else {
   // On success print the summary only. A worker's teardown stack is noise that
   // reads like a crash; keep it available with RUN_TESTS_VERBOSE=1.
-  const summary = stdout.trim().split("\n").filter(Boolean).slice(-8).join("\n");
+  const lines = stdout.trim().split("\n").filter(Boolean);
+  const stackLines = lines.filter((line) => /^\s*\d+:\s+0x[0-9a-f]+\s+\[node\]$/i.test(line));
+  const summary = lines.filter((line) => !stackLines.includes(line)).slice(-8).join("\n");
   if (summary) console.log(summary);
+  if (stackLines.length) {
+    console.error(`run-tests: ${stackLines.length} native stack lines suppressed on success (RUN_TESTS_VERBOSE=1 to see them)`);
+  }
   if (stderr.trim()) {
     console.error(`run-tests: ${stderr.trim().split("\n").length} stderr lines suppressed on success (RUN_TESTS_VERBOSE=1 to see them)`);
   }
