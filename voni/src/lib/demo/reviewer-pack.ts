@@ -44,7 +44,11 @@
 import { createHash } from "node:crypto";
 import { getVoice, type Voice } from "@/lib/agents/voices";
 import { CONVERSATION_LANGUAGES } from "@/lib/agents/wizard";
-import type { AuditionClipRecord } from "./audition-clips";
+import {
+  AUDITION_NATIVE_SOURCES,
+  type AuditionClipRecord,
+  type AuditionNativeSource,
+} from "./audition-clips";
 import {
   addHumanRating,
   bindBallotsToSubject,
@@ -103,6 +107,12 @@ export type ReviewRecording = {
   bitrateKbps: number;
   /** Provenance: the committed audition clip, never a capture made for a pack. */
   source: "audition-clip";
+  /**
+   * How that clip's native audio was made: the managed Voice Agent session, or
+   * the committed cascade clip when the managed API does not serve the voice.
+   * Carried into the hand-off sheet so the reviewer sees the managed-path gap.
+   */
+  nativeSource: AuditionNativeSource;
 };
 
 export type BallotScores = Partial<Record<BallotAxis, number>>;
@@ -151,6 +161,7 @@ export type ReviewerPack = {
 export type ReviewerPackField =
   | "recording"
   | "recording-sha256"
+  | "recording-source"
   | "voice"
   | "locale"
   | "reviewer"
@@ -216,6 +227,7 @@ function recordingFor(clip: AuditionClipRecord, sha256: string): ReviewRecording
     channels: clip.facts.channels,
     bitrateKbps: clip.facts.bitrateKbps,
     source: "audition-clip",
+    nativeSource: clip.source ?? "agent-session",
   };
 }
 
@@ -240,6 +252,15 @@ export function recordingProblems(pack: ReviewerPack): ReviewerPackProblem[] {
     problems.push({
       field: "recording-sha256",
       message: `recording sha256 "${recording.sha256}" is not a sha256: the shared cut must be identified by its bytes`,
+    });
+  }
+
+  if (!(AUDITION_NATIVE_SOURCES as readonly string[]).includes(recording.nativeSource)) {
+    problems.push({
+      field: "recording-source",
+      message:
+        `native source "${recording.nativeSource}" is not agent-session or cascade-clip: ` +
+        "the pack must say whether the managed session rendered this audio or a named cascade clip supplied it",
     });
   }
 
@@ -601,7 +622,11 @@ export function formatReviewerPack(pack: ReviewerPack): string {
       `- sha256: \`${recording.sha256}\``,
       `- Line: “${recording.line}”`,
       `- Format: ${recording.durationMs} ms, ${recording.sampleRate} Hz, ${recording.channels === 1 ? "mono" : `${recording.channels} channels`}, ${recording.bitrateKbps} kbps`,
-      `- Provenance: ${recording.source} (the picker's preview, at native level)`,
+      recording.nativeSource === "cascade-clip"
+        ? `- Provenance: ${recording.source} (\`cascade-clip\`), encoded from the committed ` +
+          `cascade clip — the managed Voice Agent API did not serve ${recording.voice}, so the ` +
+          "managed audition path is a named gap, not an audition verdict."
+        : `- Provenance: ${recording.source} (the picker's preview, at native level)`,
     );
   } else {
     lines.push("- **Recording missing.** This pack cannot be judged; regenerate it before handing it out.");

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "measuredOn": "2026-10-30",
+  "latestMeasuredOn": "2026-10-30",
   "method": "POST https://tts.us.assemblyai.com/v1/speech, stream=false, container=wav, encoding=pcm_s16le, sample_rate=24000, one call per take, each voice's own greeting in its own Locale",
   "measuredWith": "src/lib/audio/level-facts.ts (BS.1770-4 gated integrated loudness, 4x true peak)",
   "reference": {
@@ -14,6 +14,7 @@
     {
       "voice": "alba",
       "locale": "en",
+      "measuredOn": "2026-10-29",
       "line": "Hi, I'm Voni! Let's try something cool: I'll show you what I can do while we talk. Ready?",
       "takes": [
         -21.78,
@@ -27,6 +28,7 @@
     {
       "voice": "eve",
       "locale": "en",
+      "measuredOn": "2026-10-29",
       "line": "Hi, I'm Voni! Let's try something cool: I'll show you what I can do while we talk. Ready?",
       "takes": [
         -20.98,
@@ -40,6 +42,7 @@
     {
       "voice": "jane",
       "locale": "en",
+      "measuredOn": "2026-10-29",
       "line": "Hi, I'm Voni! Let's try something cool: I'll show you what I can do while we talk. Ready?",
       "takes": [
         -20.19,
@@ -53,6 +56,7 @@
     {
       "voice": "mary",
       "locale": "en",
+      "measuredOn": "2026-10-29",
       "line": "Hi, I'm Voni! Let's try something cool: I'll show you what I can do while we talk. Ready?",
       "takes": [
         -21.03,
@@ -66,6 +70,7 @@
     {
       "voice": "george",
       "locale": "en",
+      "measuredOn": "2026-10-29",
       "line": "Hi, I'm Voni! Let's try something cool: I'll show you what I can do while we talk. Ready?",
       "takes": [
         -20.73,
@@ -79,6 +84,7 @@
     {
       "voice": "michael",
       "locale": "en",
+      "measuredOn": "2026-10-29",
       "line": "Hi, I'm Voni! Let's try something cool: I'll show you what I can do while we talk. Ready?",
       "takes": [
         -22.63,
@@ -92,6 +98,7 @@
     {
       "voice": "jean",
       "locale": "en",
+      "measuredOn": "2026-10-29",
       "line": "Hi, I'm Voni! Let's try something cool: I'll show you what I can do while we talk. Ready?",
       "takes": [
         -21.89,
@@ -105,6 +112,7 @@
     {
       "voice": "anna",
       "locale": "en",
+      "measuredOn": "2026-10-29",
       "line": "Hi, I'm Voni! Let's try something cool: I'll show you what I can do while we talk. Ready?",
       "takes": [
         -19.99,
@@ -118,6 +126,7 @@
     {
       "voice": "vera",
       "locale": "en",
+      "measuredOn": "2026-10-29",
       "line": "Hi, I'm Voni! Let's try something cool: I'll show you what I can do while we talk. Ready?",
       "takes": [
         -21.21,
@@ -131,6 +140,7 @@
     {
       "voice": "charles",
       "locale": "en",
+      "measuredOn": "2026-10-29",
       "line": "Hi, I'm Voni! Let's try something cool: I'll show you what I can do while we talk. Ready?",
       "takes": [
         -21.01,
@@ -144,6 +154,7 @@
     {
       "voice": "paul",
       "locale": "en",
+      "measuredOn": "2026-10-29",
       "line": "Hi, I'm Voni! Let's try something cool: I'll show you what I can do while we talk. Ready?",
       "takes": [
         -22.82,
@@ -157,6 +168,7 @@
     {
       "voice": "giovanni",
       "locale": "it",
+      "measuredOn": "2026-10-29",
       "line": "Ciao, sono Voni! Proviamo una cosa forte: ti mostro cosa so fare mentre parliamo. Pronti?",
       "takes": [
         -25.29,
@@ -170,6 +182,7 @@
     {
       "voice": "lola",
       "locale": "es",
+      "measuredOn": "2026-10-29",
       "line": "¡Hola, soy Voni! Probemos algo genial: te muestro lo que puedo hacer mientras hablamos. ¿Listo?",
       "takes": [
         -23.75,
@@ -183,6 +196,7 @@
     {
       "voice": "jorg",
       "locale": "de",
+      "measuredOn": "2026-10-30",
       "line": "Hallo, hier ist Voni! Probieren wir etwas Cooles: Ich zeige Ihnen, was ich kann, während wir reden. Bereit?",
       "takes": [
         -23.61,
@@ -196,6 +210,7 @@
     {
       "voice": "rafael",
       "locale": "pt",
+      "measuredOn": "2026-10-29",
       "line": "Olá, aqui é Voni! Vamos testar algo legal: mostro o que sei fazer enquanto conversamos. Pronto?",
       "takes": [
         -26.41,
@@ -209,6 +224,7 @@
     {
       "voice": "estelle",
       "locale": "fr",
+      "measuredOn": "2026-10-29",
       "line": "Bonjour, ici Voni ! On essaie un truc sympa : je vous montre ce que je sais faire pendant qu'on parle. On y va ?",
       "takes": [
         -25.34,

@@ -160,6 +160,10 @@ export type AuditionClipLevel = {
   referenceIntegratedLufs: number | null;
 };
 
+/** The only two ways a committed preview's native audio may have been made. */
+export const AUDITION_NATIVE_SOURCES = ["agent-session", "cascade-clip"] as const;
+export type AuditionNativeSource = (typeof AUDITION_NATIVE_SOURCES)[number];
+
 export type AuditionClipRecord = {
   voice: string;
   locale: string;
@@ -175,9 +179,11 @@ export type AuditionClipRecord = {
    * Where the native render came from. Absent means the silent-greeting Voice
    * Agent session (the default); `cascade-clip` means the vendor's agent API
    * does not serve the voice, so the committed cascade clip of that same voice
-   * and line supplied the native audio.
+   * and line supplied the native audio. This is not a verdict: it names a gap
+   * in the managed path, and it must travel with the record so a reviewer sees
+   * it instead of a generic "audition-clip" claim.
    */
-  source?: "agent-session" | "cascade-clip";
+  source?: AuditionNativeSource;
 };
 
 export type AuditionManifest = {
@@ -268,6 +274,16 @@ export function auditionClipProblems(clip: AuditionClip, record: AuditionClipRec
   }
   if (record.volume !== clip.volume) {
     problems.push(`volume ${record.volume} is not native level ${clip.volume}`);
+  }
+  if (
+    record.source !== undefined &&
+    !(AUDITION_NATIVE_SOURCES as readonly string[]).includes(record.source)
+  ) {
+    problems.push(
+      `source "${record.source}" is not agent-session or cascade-clip: ` +
+        "a preview is either the managed session's native render or the named cascade clip, " +
+        "never an undocumented capture",
+    );
   }
   if (record.facts.sampleRate !== AUDITION_SAMPLE_RATE) {
     problems.push(`rate ${record.facts.sampleRate} Hz is not the session's ${AUDITION_SAMPLE_RATE} Hz`);

@@ -205,6 +205,24 @@ test("a correct record has no problems", () => {
   }
 });
 
+test("an invented clip provenance is refused by name", () => {
+  const clip = auditionClipFor("jorg");
+  const problems = auditionClipProblems(clip, {
+    ...recordFor(clip),
+    source: "hand-capture" as never,
+  });
+  assert.ok(
+    problems.some((problem) => /source "hand-capture"/.test(problem)),
+    `a provenance that is neither the agent session nor a cascade clip is named: ${problems.join(" | ")}`,
+  );
+});
+
+test("a cascade-clip record says which managed voice path supplied its audio", () => {
+  const clip = auditionClipFor("jorg");
+  const cascade = { ...recordFor(clip), source: "cascade-clip" as const };
+  assert.deepEqual(auditionClipProblems(clip, cascade), [], "a named cascade clip is a valid source");
+});
+
 test("every demo voice has a committed public preview and an audition-clip row", () => {
   const committed = manifest();
   for (const voiceId of DEMO_VOICE_IDS) {

@@ -17,6 +17,10 @@
  * An existing record is refused unless `--force` is passed, and the commit
  * message must say why.
  *
+ * A `--voice` run amends one row: every other voice keeps its committed takes
+ * **and its own measured date** (`src/lib/agents/voice-level-evidence.ts`), so a
+ * German-only recapture never re-dates fifteen measurements it did not make.
+ *
  * The voice the endpoint does not serve is recorded as unmeasured with the
  * endpoint's own refusal, not retried into a passing number.
  */
@@ -24,6 +28,11 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { VOICES } from "../src/lib/agents/voices";
+import {
+  mergeOneVoice as mergeEvidence,
+  type VoiceLevelEvidenceDocument,
+  type VoiceLevelEvidenceRow,
+} from "../src/lib/agents/voice-level-evidence";
 import { VONI_GREETINGS } from "../src/lib/demo/voni-agent";
 import { analyseLevel } from "../src/lib/audio/level-facts";
 import { decodeWav } from "../src/lib/audio/format-facts";
@@ -52,19 +61,6 @@ const USAGE = `Usage: npm run voice:levels -- [options]
   --force           replace an existing record (a new evidence record)
 
 Needs ASSEMBLYAI_API_KEY. Writes evidence, never the level registry.`;
-
-type EvidenceRow = { voice: string } & Record<string, unknown>;
-
-type EvidenceDocument = {
-  schemaVersion: number;
-  measuredOn: string;
-  method: string;
-  measuredWith: string;
-  reference: Record<string, unknown>;
-  decision: string;
-  voices: EvidenceRow[];
-  unmeasured: EvidenceRow[];
-};
 
 function arg(name: string): string | undefined {
   const index = process.argv.indexOf(name);
@@ -119,8 +115,8 @@ async function main(): Promise<void> {
   const referenceFloor = analyseLevel(decodeWav(readReferenceFloor()));
   if (!referenceFloor.measured) fail("the committed vendor floor has no measurable level");
 
-  const measured: EvidenceRow[] = [];
-  const unmeasured: EvidenceRow[] = [];
+  const measured: VoiceLevelEvidenceRow[] = [];
+  const unmeasured: VoiceLevelEvidenceRow[] = [];
 
   for (const voice of VOICES) {
     if (only && voice.id !== only) continue;
@@ -131,6 +127,7 @@ async function main(): Promise<void> {
       unmeasured.push({
         voice: voice.id,
         locale,
+        measuredOn: null,
         volume: 100,
         reason: `no greeting or vendor language name for ${locale}`,
       });
@@ -171,6 +168,7 @@ async function main(): Promise<void> {
       unmeasured.push({
         voice: voice.id,
         locale,
+        measuredOn: null,
         volume: 100,
         reason: `vendor /v1/speech did not serve a measurable reference: ${refusal ?? "no takes"}`,
       });
@@ -179,6 +177,7 @@ async function main(): Promise<void> {
     measured.push({
       voice: voice.id,
       locale,
+      measuredOn: today(),
       line,
       takes: lufs.map(round),
       integratedLufs: round(median(lufs)),
@@ -191,9 +190,9 @@ async function main(): Promise<void> {
     );
   }
 
-  const record: EvidenceDocument = {
+  const record: VoiceLevelEvidenceDocument = {
     schemaVersion: 1,
-    measuredOn: today(),
+    latestMeasuredOn: today(),
     method:
       `POST ${VENDOR_HOST}/v1/speech, stream=false, container=wav, encoding=pcm_s16le, ` +
       `sample_rate=${SAMPLE_RATE}, one call per take, each voice's own greeting in its own Locale`,
@@ -224,34 +223,30 @@ async function main(): Promise<void> {
 
 /**
  * A `--voice` run re-measures one catalogue voice; it is not a fresh evidence
- * set. Keep every other catalogue voice's committed row and prune rows for ids
- * the catalogue no longer offers (a retired voice), so a single-voice run
- * cannot silently delete fifteen measured references.
+ * set. The merge itself is pure (`voice-level-evidence.ts`) and is tested
+ * without a vendor call: it keeps every other catalogue voice's committed row
+ * and its own measured date, and prunes rows for ids the catalogue no longer
+ * offers (a retired voice), so a single-voice run cannot silently delete or
+ * re-date fifteen measured references.
  */
-function mergeOneVoice(out: string, only: string, record: EvidenceDocument): EvidenceDocument {
+function mergeOneVoice(
+  out: string,
+  only: string,
+  record: VoiceLevelEvidenceDocument,
+): VoiceLevelEvidenceDocument {
   if (!existsSync(out)) return record;
-  let previous: EvidenceDocument;
+  let previous: VoiceLevelEvidenceDocument;
   try {
-    previous = JSON.parse(readFileSync(out, "utf8")) as EvidenceDocument;
+    previous = JSON.parse(readFileSync(out, "utf8")) as VoiceLevelEvidenceDocument;
   } catch {
     fail(`${out} is not readable evidence; a one-voice run cannot preserve its rows`);
   }
-  const catalogue = VOICES.map((voice) => voice.id);
-  const order = new Map(catalogue.map((voice, index) => [voice, index]));
-  const keep = (rows: EvidenceRow[] | undefined) =>
-    (Array.isArray(rows) ? rows : []).filter(
-      (row) => row.voice !== only && order.has(row.voice),
-    );
-  const byCatalogueOrder = (row: EvidenceRow) => order.get(row.voice) ?? catalogue.length;
-  return {
-    ...record,
-    voices: [...keep(previous.voices), ...record.voices].sort(
-      (left, right) => byCatalogueOrder(left) - byCatalogueOrder(right),
-    ),
-    unmeasured: [...keep(previous.unmeasured), ...record.unmeasured].sort(
-      (left, right) => byCatalogueOrder(left) - byCatalogueOrder(right),
-    ),
-  };
+  return mergeEvidence(
+    previous,
+    only,
+    record,
+    VOICES.map((voice) => voice.id),
+  );
 }
 
 function readReferenceFloor(): Uint8Array {
