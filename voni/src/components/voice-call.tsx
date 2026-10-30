@@ -40,9 +40,9 @@ import { Progress } from "@/components/ui/progress";
 import {
   VoiceSession,
   authedToken,
-  demoToken,
   effectiveInlineLanguages,
   jevBargeInJudge,
+  RateLimitError,
   type Transcript,
   type VoiceError,
   type VoiceState,
@@ -50,13 +50,8 @@ import {
 import { CallTimings } from "@/lib/voice/call-timings";
 import { deliveredCaptureRequested } from "@/lib/voice/delivered-capture";
 import { CascadeSession, CASCADE_PROTOCOL_VERSION, decideCascadeFallback } from "@/lib/voice/cascade-session";
-import {
-  FILLER_POOL,
-  isEndCallRequest,
-  isGoodbyeLine,
-  requestVoiceJudge,
-} from "@/lib/voice/jev-judges";
-import { callRecognition } from "@/lib/voice/recognition";
+import { startDemoCall } from "@/lib/voice/demo-start";
+import { FILLER_POOL } from "@/lib/voice/jev-judges";
 import { compileSystemPrompt } from "@/lib/agents/compile";
 import type { AgentConfig } from "@/lib/agents/config";
 import { DEMO_TRANSCRIPTION_MODE, buildAgentKeyterms, buildAgentTranscriptionPrompt } from "@/lib/voice/transcription";
@@ -74,18 +69,12 @@ import {
 import { ACCENT_FLAG, getVoice, voiceLabel } from "@/lib/agents/voices";
 import {
   DEMO_VOICE_IDS,
-  SILENCE_CHECK_IN_INSTRUCTIONS,
-  SILENCE_CHECK_IN_MS,
   HOLD_TIMEOUT_INSTRUCTIONS,
   LATE_EMAIL_INSTRUCTIONS,
   MUTE_CHECK_IN_INSTRUCTIONS,
   TIME_UP_INSTRUCTIONS,
-  beatGoal,
   checkEmailInstructions,
   emailArrivedInstructions,
-  inviteNowInstructions,
-  rungInstructions,
-  testTagContext,
   voniConfig,
 } from "@/lib/demo/voni-agent";
 import { TalkClock } from "@/lib/demo/talk-clock";
@@ -94,15 +83,12 @@ import {
   EMAIL_TEST_START,
   checkResultFromData,
   emailTestAfterCheck,
-  emailTestAfterCode,
-  inviteFallbackAction,
   loadTagToken,
   saveTagToken,
   talkLimitS,
   type EmailTestState,
 } from "@/lib/demo/email-test";
-import { CHECK_CODE_TOOL, CHECK_EMAIL_TOOL, SEND_CODE_REPLY_TOOL, SHOW_TEST_ADDRESS_TOOL, WEBSITE_POLL } from "@/lib/demo/demo-tools";
-import type { CodeStatus } from "@/lib/demo/code-check";
+import { CHECK_EMAIL_TOOL, WEBSITE_POLL } from "@/lib/demo/demo-tools";
 import {
   buildHoldCarryover,
   clearCallMemory,
@@ -384,10 +370,14 @@ export function VoiceCall({
   chromeless?: boolean;
   /**
    * Voice engine. "managed" is the AssemblyAI session; "cascade" drives the
-   * Python pipeline service (dev slice over WebSocket). Demo mode always
-   * uses managed; all UI states are shared so indicators work unchanged.
+   * Python pipeline service. Demo mode is always cascade (ticket 10); all UI
+   * states are shared so indicators work unchanged.
    */
   engine?: "managed" | "cascade";
+  /**
+   * The inline cascade test call's service URL (ticket 08). Demo calls never
+   * read this: the mint delivers the pipeline URL.
+   */
   cascadeUrl?: string;
   ref?: React.Ref<VoiceCallHandle>;
 }) {
@@ -419,12 +409,6 @@ export function VoiceCall({
   const [toolActive, setToolActive] = useState(false);
   /** For the inbox poll: Voni's own tool call is in flight, so its result speaks. */
   const toolActiveRef = useRef(false);
-  /**
-   * The caller asked to end. If the model answers with a spoken goodbye but
-   * never calls the end tool (measured live), the call still hangs up after
-   * that goodbye drains instead of leaving the line open.
-   */
-  const endRequestedRef = useRef(false);
   const [elapsed, setElapsed] = useState(0);
   /** Jev-gated filler line shown while the reply is being prepared. */
   const [filler, setFiller] = useState<string | null>(null);
@@ -682,18 +666,6 @@ export function VoiceCall({
     return true;
   }, [setReturnPending]);
 
-  /**
-   * Put the email test on screen and have Voni give the invite with the
-   * exact tag: from the show tool's result, or when Voni announced her
-   * screen without calling it. `deliver` sends the invite instructions.
-   */
-  /** The chip goes up: the test is invited (the invite itself is Voni's own line). */
-  const putTestUp = useCallback((): string | null => {
-    const tag = testTagRef.current;
-    if (!tag || closingRef.current) return null;
-    setEmailTest({ ...emailTestRef.current, invited: true });
-    return tag;
-  }, [setEmailTest]);
   /** Ask Voni to close the call, once. */
   const closeCall = useCallback(
     (instructions: string) => {
@@ -1154,9 +1126,9 @@ export function VoiceCall({
     // hold markers survive; only the transport is fresh.
     const preserving = preserveRef.current;
     preserveRef.current = false;
-    // A reload restore: rejoin its server session (once), and start the
-    // talk clock from the saved seconds at this tap.
-    const resumeSessionId = resumeIdRef.current ?? undefined;
+    // A reload restore: continue from the saved call memory, and start the
+    // talk clock from the saved seconds at this tap. The cascade has no server
+    // session id to rejoin; ticket 13 owns the cascade hold return.
     resumeIdRef.current = null;
     if (restoredTalkRef.current !== null) {
       clockRef.current = new TalkClock(Date.now() - restoredTalkRef.current * 1000);
@@ -1227,12 +1199,15 @@ export function VoiceCall({
       new CustomEvent("voni:voice-preempt", { detail: { owner: "voice-call" } }),
     );
 
-    if (activeEngine === "cascade" && modeKind === "inline") {
+    // The demo is cascade-only (demo-cascade ticket 10); the inline test call
+    // keeps its explicit engine toggle. Demo never reaches the managed branch.
+    if (modeKind === "demo" || (activeEngine === "cascade" && modeKind === "inline")) {
       // Cascade slice: Python pipeline service over WebSocket. Same UI
       // states as managed (connecting/listening/speaking/ended) so every
       // indicator, timer, caption, and the countdown below works unchanged.
       // Tools are not executed on the cascade path yet — the agent answers
       // from knowledge, so tool-heavy agents should stay on managed.
+      let cascadeEnded = false;
       const cascade = new CascadeSession({
         onCaption: (caption) => {
           if (caption.final) {
@@ -1292,20 +1267,27 @@ export function VoiceCall({
           console.debug("[voice-call] cascade metrics", { turns, metrics });
         },
         onError: (message) => {
+          cascadeEnded = true;
           setError({ message });
         },
         onConnectFailure: (failure) => {
-          // Ticket 140 AC5: a refused cascade connect is not a dead end. A
-          // draining deploy, a routed-managed verdict (`managed`) and an
-          // unavailable service are all pre-accept failures; spend the single
-          // managed retry with the reason visible. A second failure is
-          // surfaced as a typed DrainingError that no longer offers a retry.
+          // Ticket 140 AC5: a refused cascade connect is not a dead end for
+          // the inline test call. A draining deploy, a routed-managed verdict
+          // (`managed`) and an unavailable service are all pre-accept
+          // failures; spend the single managed retry with the reason visible.
+          // A second failure is surfaced as a typed DrainingError that no
+          // longer offers a retry.
+          //
+          // The demo has no managed fallback (demo-cascade spec, ticket 10):
+          // `alreadyFellBack` is always spent there, so the same decision
+          // surfaces the cause and ticket 11 owns the visitor-facing copy.
           // Post-accept managed/draining errors never reach here: the session
           // surfaces those on `onError`, because the call already started.
+          cascadeEnded = true;
           const decision = decideCascadeFallback({
             failure: failure.code,
             message: failure.message,
-            alreadyFellBack: cascadeFellBackRef.current,
+            alreadyFellBack: modeKind === "demo" ? true : cascadeFellBackRef.current,
           });
           if (decision.action === "retry-managed") {
             cascadeFellBackRef.current = true;
@@ -1316,6 +1298,7 @@ export function VoiceCall({
           setCallState("ended");
         },
         onEnd: () => {
+          cascadeEnded = true;
           speakingRef.current = false;
           overheardRef.current = false;
           setCallState("ended");
@@ -1327,29 +1310,52 @@ export function VoiceCall({
       cascade.setDeliveredCapture(callDebugFlags().deliverCapture);
       setCallState("connecting");
       try {
-        // The URL is server configuration, delivered to this prop (ticket 08):
-        // the browser never reads a pipeline environment variable, and a
-        // missing URL is a refusal, never a localhost guess.
-        if (!cascadeUrl) throw new Error("The call service is not configured.");
-        await cascade.start(
-          {
-            serviceUrl: cascadeUrl,
-            // Identity only (ticket 65): the app assembles the stored body,
-            // fingerprints it and signs the envelope; the browser never sends
-            // a prompt, a tool list or a pipeline. The cascade call token is
-            // minted alongside that body (M17) — until this build has one, the
-            // service refuses the call by name instead of running a
-            // client-assembled body.
-            callToken: callTokenRef.current ?? "",
-            agentId: inlineAgentId ?? "",
-            protocolVersion: CASCADE_PROTOCOL_VERSION,
-          },
-          "voice-call",
-        );
-        setCallState("listening");
+        if (modeKind === "demo") {
+          // One mint through the one door, then the real cascade client. The
+          // minted demo call token is the tool/judge credential; the cascade
+          // config below sends only the minted cascade token.
+          const minted = await startDemoCall(cascade, {
+            voiceId,
+            resume: preserving,
+            callToken: callTokenRef.current ?? undefined,
+            tagToken: loadTagToken(),
+          });
+          callTokenRef.current = minted.demoCallToken;
+          if (minted.tagToken) saveTagToken(minted.tagToken);
+          setTestTag(minted.testTag ?? null);
+          if (!preserving) setTagCarried(minted.tagCarried === true);
+        } else {
+          // The URL is server configuration, delivered to this prop (ticket 08):
+          // the browser never reads a pipeline environment variable, and a
+          // missing URL is a refusal, never a localhost guess.
+          if (!cascadeUrl) throw new Error("The call service is not configured.");
+          await cascade.start(
+            {
+              serviceUrl: cascadeUrl,
+              // Identity only (ticket 65): the app assembles the stored body,
+              // fingerprints it and signs the envelope; the browser never sends
+              // a prompt, a tool list or a pipeline. The cascade call token is
+              // minted alongside that body (M17) — until this build has one, the
+              // service refuses the call by name instead of running a
+              // client-assembled body.
+              callToken: callTokenRef.current ?? "",
+              agentId: inlineAgentId ?? "",
+              protocolVersion: CASCADE_PROTOCOL_VERSION,
+            },
+            "voice-call",
+          );
+        }
+        // A refusal may have landed before the mic resolved: never paint
+        // "listening" over a call that already ended.
+        if (!cascadeEnded) setCallState("listening");
       } catch (e) {
+        // The demo mint's 429 is the countdown; every other refusal keeps its
+        // own line. Either way no managed session is opened.
+        const retryAfter = e instanceof RateLimitError ? e.retryAfterSeconds : undefined;
+        if (retryAfter !== undefined) setRetryIn(retryAfter);
         setError({
           message: e instanceof Error ? e.message : "Could not start the call.",
+          ...(retryAfter !== undefined ? { retryAfterSeconds: retryAfter } : {}),
         });
         setCallState("ended");
       } finally {
@@ -1357,19 +1363,20 @@ export function VoiceCall({
         setStarting(false);
         notifyPending({ ...pendingRef.current, starting: false });
       }
-      // A refusal that arrived before the mic resolved was queued rather than
-      // dropped: spend the one managed retry now that this start is finished.
-      const pendingFallback = pendingFallbackRef.current;
-      if (pendingFallback) {
-        pendingFallbackRef.current = null;
-        requestManagedFallback(pendingFallback);
+      // Inline only: a refusal that arrived before the mic resolved was queued
+      // rather than dropped. The demo never queues a managed retry (ticket 10).
+      if (modeKind !== "demo") {
+        const pendingFallback = pendingFallbackRef.current;
+        if (pendingFallback) {
+          pendingFallbackRef.current = null;
+          requestManagedFallback(pendingFallback);
+        }
       }
       return;
     }
 
-    // The call's own words: the demo's voice pins its Locale, and an inline
-    // agent's language picker is authoritative (automatic → English scaffolding).
-    const recognition = callRecognition(config);
+    // The managed session: the inline agent's language picker is authoritative
+    // (automatic → English scaffolding). The demo never reaches this branch.
     const session = new VoiceSession({
       onStateChange: (next) => {
         speakingRef.current = next === "speaking";
@@ -1428,11 +1435,6 @@ export function VoiceCall({
       onSessionReady: (id) => {
         console.debug("[voice-call] session", id);
         sessionIdRef.current = id;
-        // Demo: Voni knows this call's Test tag before it invites the test
-        // (the invite is spoken with the tool call, before any result).
-        if (modeKind === "demo" && testTagRef.current && sessionRef.current instanceof VoiceSession) {
-          sessionRef.current.sendContext(testTagContext(testTagRef.current));
-        }
         // Post-grace hold restart: whisper the carried context so Voni
         // resumes instead of starting over (no welcome line).
         if (carryoverRef.current && sessionRef.current instanceof VoiceSession) {
@@ -1514,117 +1516,26 @@ export function VoiceCall({
           );
         }
       },
-      // Demo email test: the invite shows the address chip; a found email
-      // is the provisional extension, a passed code check the verified one.
-      onToolResult: (name, result) => {
-        if (modeKind !== "demo" || !result.ok) return;
-        if (name === SHOW_TEST_ADDRESS_TOOL) {
-          // The invite comes from the call, with the exact tag, in place of
-          // the platform's own reply to this result: left to it, the tag was
-          // skipped, garbled, or said twice in ~1 in 3 live runs.
-          putTestUp();
-        } else if (name === CHECK_EMAIL_TOOL) {
-          setEmailTest(emailTestAfterCheck(emailTestRef.current, checkResultFromData(result.data)));
-        } else if (name === SEND_CODE_REPLY_TOOL) {
-          if (result.data.sent) {
-            const website = result.data.website === "reading" || result.data.website === "read" ? result.data.website : "none";
-            setEmailTest({ ...emailTestRef.current, replied: true, website });
-          }
-        } else if (name === CHECK_CODE_TOOL) {
-          // The code read back right: the verified extension (the reveal rides the result).
-          setEmailTest(emailTestAfterCode(emailTestRef.current, result.data.status as CodeStatus));
-        }
-      },
       // Socket dropped while the page is hidden: hold from the drop moment.
       onParked: () => enterHold(Date.now()),
-      // Demo: Voni is saying goodbye on its own (caller asked, or it
-      // decided). Test calls keep their plain session-level hangup.
-      onEndCall: () => {
-        if (modeKind === "demo") markClosing();
-      },
       onAgentTurn: (turn) => {
         lastAgentLineRef.current = turn.text;
-        // The caller asked to end: when Voni answers with a spoken goodbye
-        // but never calls the end tool, hang up once that goodbye drains.
-        // The tool call (or a spoken one) already went through onEndCall, so
-        // this only covers the line the model forgot to close.
-        if (endRequestedRef.current) {
-          endRequestedRef.current = false;
-          const session = sessionRef.current;
-          if (
-            modeKind === "demo" &&
-            !closingRef.current &&
-            isGoodbyeLine(turn.text, recognition) &&
-            session instanceof VoiceSession
-          ) {
-            session.endAfterReply();
-          }
-        }
-        // Voni announced her screen but never called the show tool: put the
-        // test up, and send the invite only when her own line did not already
-        // say the tag. A line that carries the tag IS the invite; speaking the
-        // fallback after it said the same invite twice live.
-        // Never once found (a callback's email already in: no invite, Q15).
-        const test = emailTestRef.current;
-        const action = inviteFallbackAction({
-          text: turn.text,
-          tag: testTagRef.current ?? null,
-          invited: test.invited,
-          found: test.found,
-          // Only when no tool call ran for it (a running one puts the chip up itself).
-          toolActive: toolActiveRef.current,
-        });
-        if (modeKind === "demo" && action !== "none") {
-          const tag = putTestUp();
-          if (action === "show-and-speak" && tag) speak(inviteNowInstructions(tag), { key: "invite" });
-        }
-      },
-      // Demo stakes ladder: Jev scores every visitor turn against the beat's
-      // goal (heuristic fallback when Jev is down); each off-track verdict
-      // climbs nudge → warning → polite end.
-      onUserTurn: (turn) => {
-        if (modeKind !== "demo" || closingRef.current || !turn.text.trim()) return;
-        // Asking to end is never a strike: Voni says goodbye on its own, and
-        // an end rung racing that goodbye repeated it.
-        if (isEndCallRequest(turn.text, recognition)) {
-          endRequestedRef.current = true;
-          return;
-        }
-        const token = callTokenRef.current;
-        void requestVoiceJudge(
-          "off-track",
-          { goal: beatGoal(emailTestRef.current), agentLine: lastAgentLineRef.current, userText: turn.text },
-          { timeoutMs: 2500, headers: token ? { Authorization: `Bearer ${token}` } : undefined },
-        ).then((verdict) => {
-          if (sessionRef.current !== session || closingRef.current) return;
-          const rung = ladderRef.current?.onVerdict(verdict.decision === "off-track");
-          if (!rung) return;
-          console.debug("[voice-call] off-track", rung, verdict.source);
-          const goal = beatGoal(emailTestRef.current);
-          if (rung === "end") closeCall(rungInstructions(rung, goal));
-          // No key: every rung is said, in order.
-          else speak(rungInstructions(rung, goal));
-        });
       },
     }, {
-      // The signed-out demo reaches Jev with its call token.
+      // Inline test calls carry no demo call token, so the barge-in judge is
+      // asked without a credential. (The demo is cascade and has no managed
+      // session, ticket 10.)
       judgeBargeIn: jevBargeInJudge(() =>
         callTokenRef.current ? { Authorization: `Bearer ${callTokenRef.current}` } : undefined,
       ),
     });
     sessionRef.current = session;
-    session.setParkOnDrop(shouldParkOnDrop(modeKind === "demo", hiddenRef.current));
+    // Parking is the demo's hold behaviour (cascade, ticket 13); an inline
+    // managed test call keeps the plain session-level drop handling.
+    session.setParkOnDrop(false);
     const debug = callDebugFlags();
     session.setPopProbe(debug.popProbe);
     session.setDeliveredCapture(debug.deliverCapture);
-    // Demo: one check-in after 15s of silence on a free floor (owner, 2026-09-27).
-    if (modeKind === "demo") {
-      session.setSilenceCheckIn({
-        afterMs: SILENCE_CHECK_IN_MS,
-        instructions: SILENCE_CHECK_IN_INSTRUCTIONS,
-        allowed: () => !mutedRef.current && !holdingRef.current && !closingRef.current && !returnPendingRef.current,
-      });
-    }
     // A preserved mute sticks to the fresh transport (pre-ready mutes are
     // held and sent as context on ready, same as a mid-connect mute press).
     if (preserving && mutedRef.current) session.setInputMuted(true);
@@ -1632,72 +1543,42 @@ export function VoiceCall({
     // Straight from the click handler: getUserMedia and AudioContext startup
     // are gated behind a user gesture in every major browser.
     try {
-      if (modeKind === "demo") {
-        await session.start(
-          // Placeholder id — the token endpoint returns the real one and `start`
-          // prefers it, so the browser cannot choose which agent it reaches.
-          // The voice picked pins the Locale the browser's guardrails hear in.
-          // The conversation Locale rides along too: an explicit code list can
-          // name several languages, and the picker's Locale stays authoritative
-          // for barge-in/filler/goodbye words.
-          {
-            mode: "agent",
-            agentId: "",
-            languageCodes: config.languageCodes,
-            conversationLanguage: config.conversationLanguage,
-          },
-          async () => {
-            // A hold rejoin binds the greeting-less resume agent variant, so
-            // the welcome-back is the single first utterance (see stored-agents).
-            const minted = await demoToken(voiceId, {
-              resume: preserving,
-              callToken: callTokenRef.current ?? undefined,
-              tagToken: loadTagToken(),
-            })();
-            callTokenRef.current = minted.callToken ?? null;
-            if (minted.tagToken) saveTagToken(minted.tagToken);
-            setTestTag(minted.testTag ?? null);
-            if (!preserving) setTagCarried(minted.tagCarried === true);
-            return minted;
-          },
-          { resumeSessionId },
-        );
-      } else {
-        await session.start(
-          {
-            mode: "inline",
-            systemPrompt: compileSystemPrompt(config),
-            greeting: config.greeting,
-            voiceId: config.voiceId,
-            // The agent's own language picker stays authoritative; when it is
-            // left on Automatic (empty), the call follows the agent's Locale,
-            // so testing a Spanish agent tests Spanish. Only an agent with no
-            // Locale at all keeps the documented English fallback.
-            languageCodes: effectiveInlineLanguages(
-              config.languageCodes,
-              config.conversationLanguage,
-            ),
-            // The Locale also keys the browser guardrails' words directly, so a
-            // picker-set Locale never falls back to English filler/goodbye words.
-            conversationLanguage: config.conversationLanguage,
-            // Demo parity with the stored agent: balanced end-of-turn.
-            transcriptionMode: DEMO_TRANSCRIPTION_MODE,
-            // First-utterance STT tuning: scene + vocabulary for the opening
-            // turn, which would otherwise run on generic recognition.
-            transcriptionPrompt: buildAgentTranscriptionPrompt(config),
-            keyterms: buildAgentKeyterms(config),
-            tools: compileVoiceTools(config),
-            testAgentId: inlineAgentId,
-          },
-          authedToken,
-        );
-      }
+      // Inline only: the demo takes the cascade path above and never reaches
+      // this managed session (demo-cascade ticket 10).
+      await session.start(
+        {
+          mode: "inline",
+          systemPrompt: compileSystemPrompt(config),
+          greeting: config.greeting,
+          voiceId: config.voiceId,
+          // The agent's own language picker stays authoritative; when it is
+          // left on Automatic (empty), the call follows the agent's Locale,
+          // so testing a Spanish agent tests Spanish. Only an agent with no
+          // Locale at all keeps the documented English fallback.
+          languageCodes: effectiveInlineLanguages(
+            config.languageCodes,
+            config.conversationLanguage,
+          ),
+          // The Locale also keys the browser guardrails' words directly, so a
+          // picker-set Locale never falls back to English filler/goodbye words.
+          conversationLanguage: config.conversationLanguage,
+          // Demo parity with the stored agent: balanced end-of-turn.
+          transcriptionMode: DEMO_TRANSCRIPTION_MODE,
+          // First-utterance STT tuning: scene + vocabulary for the opening
+          // turn, which would otherwise run on generic recognition.
+          transcriptionPrompt: buildAgentTranscriptionPrompt(config),
+          keyterms: buildAgentKeyterms(config),
+          tools: compileVoiceTools(config),
+          testAgentId: inlineAgentId,
+        },
+        authedToken,
+      );
     } finally {
       startingRef.current = false;
       setStarting(false);
       notifyPending({ ...pendingRef.current, starting: false });
     }
-  }, [modeKind, inlineAgentId, notifyPending, voiceId, config, engine, cascadeUrl, setCallState, closeCall, markClosing, setReturnPending, enterHold, setEmailTest, setTestTag, putTestUp, speak, playConnectedChime, requestManagedFallback]);
+  }, [modeKind, inlineAgentId, notifyPending, voiceId, config, engine, cascadeUrl, setCallState, setReturnPending, enterHold, setEmailTest, setTestTag, playConnectedChime, requestManagedFallback]);
 
   const hangUp = useCallback(async () => {
     if (hangingUp) return;

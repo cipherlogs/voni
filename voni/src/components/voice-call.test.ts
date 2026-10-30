@@ -169,8 +169,9 @@ test("the contact chip has one render site, gated on the invite, the inbox and t
     /emailTest\.invited && active && testTag \? <DemoAddressChip address=\{DEMO_INBOX_ADDRESS\} tag=\{testTag\} \/> : null/,
     "the chip shows once the invite is up, with the call's inbox and tag",
   );
-  const put = call.slice(call.indexOf("const putTestUp"), call.indexOf("/** Ask Voni to close the call"));
-  assert.match(put, /setEmailTest\(\{ \.\.\.emailTestRef\.current, invited: true \}\)/, "the invite flag is idempotent");
+  // The invite signal moved to the cascade tool path (ticket 15); this test
+  // keeps the render contract, which does not change with the transport.
+  assert.doesNotMatch(call, /putTestUp\(/, "the managed-only invite handler is gone");
 });
 
 test("every VoiceCall path exposes mute state and hidden context without reply creation", () => {
@@ -278,9 +279,9 @@ test("a reload or discarded tab continues the same call from sessionStorage", ()
   // Restore on mount; one tap continues (audio needs a gesture on a fresh page).
   assert.match(call, /loadCallMemory\(Date\.now\(\)\)/);
   assert.match(call, /Continue call/);
-  // Inside the grace: the same server session; otherwise the call memory.
+  // Inside the grace: the call memory and its demo call token carry the call;
+  // the cascade has no server session id to rejoin (ticket 13).
   assert.match(call, /resumeIdRef\.current = snap\.sessionId/);
-  assert.match(call, /\{ resumeSessionId \}/);
   // The talk clock restarts from the saved seconds at the tap, not at mount.
   assert.match(call, /new TalkClock\(Date\.now\(\) - restoredTalkRef\.current \* 1000\)/);
   // Forgotten on hang-up and on a finished call; a fresh call clears it.
@@ -306,10 +307,12 @@ test("a hold return reconnects visibly, silently, and speaks exactly once", () =
     "the reconnecting note remains",
   );
   assert.match(call, /error && !returning/);
-  // A hold rejoin binds the greeting-less resume agent variant, so the
-  // welcome-back is the single first utterance — never a re-introduction
-  // stacked on one.
-  assert.match(call, /demoToken\(voiceId, \{\s*resume: preserving,\s*callToken: callTokenRef\.current \?\? undefined,/);
+  // A hold rejoin continues the same demo call: the carried demo call token
+  // and the visitor's tag ride into the fresh cascade mint (ticket 10).
+  assert.match(
+    call,
+    /startDemoCall\(\s*cascade,\s*\{\s*voiceId,\s*resume: preserving,[\s\S]{0,120}?tagToken: loadTagToken\(\)/,
+  );
   assert.match(agents, /demoAgentStorageKey/);
   assert.match(agents, /resume \? `\$\{voiceId\}:resume` : voiceId/);
   assert.match(token, /body\.resume === true/);
@@ -333,12 +336,56 @@ test("a refused cascade connect routes through the one managed retry", () => {
   // unspent, and the component owns the transport override.
   assert.match(handler, /decideCascadeFallback\(\{/);
   assert.match(handler, /failure\.code/, "the session's cause reaches the decision");
-  assert.match(handler, /alreadyFellBack: cascadeFellBackRef\.current/);
+  assert.match(
+    handler,
+    /alreadyFellBack: modeKind === "demo" \? true : cascadeFellBackRef\.current/,
+    "the inline retry is unspent; the demo never retries on managed",
+  );
   assert.match(handler, /requestManagedFallback\(decision\.reason\)/);
   // A second failure surfaces the typed message and ends the call; it never
   // asks for another start.
   assert.match(handler, /setError\(\{ message: decision\.error\.message \}\)/);
   assert.match(handler, /setCallState\("ended"\)/);
+});
+
+test("the demo start is the cascade client: one mint, no managed session", () => {
+  const call = readRepo("components/voice-call.tsx");
+
+  // The demo takes the cascade branch whatever the engine prop says, so the
+  // managed branch below is unreachable for `mode.kind === "demo"`.
+  assert.match(
+    call,
+    /if \(modeKind === "demo" \|\| \(activeEngine === "cascade" && modeKind === "inline"\)\)/,
+    "the demo cannot reach the managed branch",
+  );
+
+  // The managed session exists only in the branch after the cascade slice.
+  const managedMarker = call.indexOf("const session = new VoiceSession({");
+  assert.ok(managedMarker > 0, "the managed branch is still there for inline calls");
+  assert.equal(
+    call.slice(0, managedMarker).includes("new VoiceSession("),
+    false,
+    "no managed session is constructed on the demo or cascade path",
+  );
+  assert.match(call.slice(managedMarker), /new VoiceSession\(/);
+  assert.match(call.slice(0, managedMarker), /new CascadeSession\(/);
+
+  // The demo mints through the one door, then starts the real cascade client
+  // with the minted identity. The demo call token is the tool/judge credential,
+  // never the cascade connect token (that is `minted.callToken`).
+  const demo = call.slice(call.indexOf('if (modeKind === "demo") {'), managedMarker);
+  assert.match(demo, /await startDemoCall\(\s*cascade,/);
+  assert.match(demo, /callTokenRef\.current = minted\.demoCallToken/);
+  assert.doesNotMatch(demo, /minted\.callToken/, "the cascade token never replaces the demo call token");
+  assert.doesNotMatch(demo, /demoToken\(/, "the managed demo mint is gone");
+  assert.doesNotMatch(demo, /compileSystemPrompt|compileVoiceTools|authedToken/);
+  assert.doesNotMatch(call, /\/api\/voice-token/, "the demo never asks for a managed token");
+
+  // A refused connect is surfaced, never retried on managed; the 429 keeps its
+  // countdown instead of collapsing into a generic error.
+  assert.match(call, /alreadyFellBack: modeKind === "demo" \? true : cascadeFellBackRef\.current/);
+  assert.match(call, /e instanceof RateLimitError/);
+  assert.match(call, /setRetryIn\(retryAfter/);
 });
 
 test("a post-accept managed or draining refusal never re-routes the call", () => {

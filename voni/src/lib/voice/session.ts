@@ -282,7 +282,7 @@ export const authedToken: TokenFetcher = async () => {
   return res.json();
 };
 
-/** Thrown by `demoToken` on a 429, so the UI can show a countdown instead of a generic error. */
+/** Thrown by the demo mint (`demo-mint.ts`) on a 429, so the UI can show a countdown instead of a generic error. */
 export class RateLimitError extends Error {
   constructor(
     message: string,
@@ -292,41 +292,6 @@ export class RateLimitError extends Error {
     this.name = "RateLimitError";
   }
 }
-
-/** Public demo: the server picks the prompt (Voni's own), we only name the voice. */
-export const demoToken =
-  (voiceId: string, opts?: { resume?: boolean; callToken?: string; tagToken?: string }): TokenFetcher =>
-  async () => {
-    const res = await fetch("/api/demo/token", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      // A hold rejoin binds the greeting-less resume agent variant, so the
-      // welcome-back is the single first utterance. Omitted otherwise.
-      // The call's token rides along on every re-mint, so the server keeps
-      // the same call (start time, budgets) instead of opening a new one.
-      body: JSON.stringify({
-        voiceId,
-        ...(opts?.resume === true ? { resume: true } : {}),
-        ...(opts?.callToken ? { callToken: opts.callToken } : {}),
-        // The visitor's Test tag, kept a day by the browser (docs/adr/0004).
-        ...(opts?.tagToken ? { tagToken: opts.tagToken } : {}),
-      }),
-    });
-    if (!res.ok) {
-      const { error } = await res.json().catch(() => ({ error: null }));
-      if (res.status === 429) {
-        const retryAfter = Number(res.headers.get("Retry-After"));
-        throw new RateLimitError(
-          error ?? "Too many demo calls right now.",
-          Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : 60,
-        );
-      }
-      const message = error ?? "Could not start the demo call.";
-      if (res.status === 401) throw new VoiceStartError("auth", message);
-      throw new VoiceStartError("network", message);
-    }
-    return res.json();
-  };
 
 export type Transcript = { role: "user" | "agent"; text: string; overheard?: boolean };
 
