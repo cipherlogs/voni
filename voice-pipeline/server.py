@@ -2,7 +2,9 @@
 
 Run from this directory with the bridge venv:
     ../telephony-bot/.venv/bin/python server.py
-    ../telephony-bot/.venv/bin/python -m uvicorn server:app --port 8766
+
+Run ``main()`` (not ``uvicorn server:app``): the drain supervisor is installed
+there, and uvicorn's own SIGTERM handler would end a live call.
 
 Env (host-provided, never committed):
     ASSEMBLYAI_API_KEY, AI_GATEWAY_API_KEY, CARTESIA_API_KEY,
@@ -47,6 +49,7 @@ and disables uvicorn's default one, which would exit and end a live call.
 
 from __future__ import annotations
 
+import logging
 import os
 import time
 from collections.abc import Callable
@@ -56,20 +59,41 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket
 from fastapi.responses import JSONResponse
 
 from cascade.breaker import Breaker
+from cascade.cost import RATE_TABLE
 from cascade.counter import DailyCounter
 from cascade.drain import DEFAULT_REASON, DrainSupervisor, LiveCalls, drain_then_exit
 from cascade.envelope import EnvelopeError
+from cascade.events import EventStream, EventWriter, OperationalEvents
 from cascade.health import DrainState, readiness
 from cascade.log_redaction import install_log_redaction
 from cascade.pg_store import PostgresStore
+from cascade.routing import RoutingSwitch
 from cascade.token import (
     PROTOCOL_VERSION,
     CallTokenRegistry,
     ClientConfigError,
     StoredBodyChannel,
 )
+from cascade.usage import UsageMeter
 from cascade.version import version_document
 from transport import handle_browser_call
+
+_log = logging.getLogger(__name__)
+_event_log = logging.getLogger("voni.voice-pipeline.events")
+
+
+def _event_sink(line: str) -> None:
+    """One sanitized operational event line; the sink never raises."""
+    _event_log.info("%s", line.rstrip("\n"))
+
+
+def operational_events_for(call_id: str, subject: str) -> OperationalEvents:
+    """One call's operational events, through the one envelope and stream."""
+    writer = EventWriter(pipeline="cascade", call_id=call_id)
+    return OperationalEvents(
+        EventStream(writer, sink=_event_sink), subject=subject, now=time.time
+    )
+
 
 #: The signed-body message's own field names; the app may say nothing else.
 CALL_BODY_FIELDS = ("call_token", "call_id", "signed_body")
@@ -83,6 +107,7 @@ def create_app(
     store: Any = None,
     counter: Any = None,
     breaker: Any = None,
+    switch: Any = None,
     drain: DrainState | None = None,
     live_calls: LiveCalls | None = None,
 ) -> FastAPI:
@@ -144,11 +169,17 @@ def create_app(
                 configuration_errors["breaker"] = (
                     f"{type(exc).__name__}: {exc}"
                 )
+        if switch is None:
+            try:
+                switch = RoutingSwitch(store, now=clock)
+            except Exception as exc:
+                configuration_errors["switch"] = f"{type(exc).__name__}: {exc}"
     drain_state = drain if drain is not None else DrainState()
     live = live_calls if live_calls is not None else LiveCalls()
     app.state.store = store
     app.state.counter = counter
     app.state.breaker = breaker
+    app.state.switch = switch
     app.state.drain = drain_state
     app.state.live_calls = live
     app.state.readiness_errors = configuration_errors
@@ -263,6 +294,14 @@ def create_app(
                 websocket,
                 body_channel=body_channel,
                 call_tokens=token_registry,
+                switch=switch,
+                counter=counter,
+                secret=secret,
+                cost_table=RATE_TABLE,
+                usage_meter=UsageMeter,
+                operational_events=operational_events_for,
+                clock=time.monotonic,
+                envelope_clock=clock,
             )
         finally:
             live.finished()

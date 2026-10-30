@@ -248,6 +248,20 @@ def routing_refusal(mode: RoutingMode, subject: CallSubject) -> str:
     return ""
 
 
+def _joined_reasons(*reasons: str) -> str:
+    """Every distinct refusal reason, so a second one is never dropped.
+
+    A caller's predicate refusal and the day's own refusal are different facts
+    about the same new call; the decision names both rather than letting one
+    silently win.
+    """
+    kept: list[str] = []
+    for reason in reasons:
+        if reason and reason not in kept:
+            kept.append(reason)
+    return "; ".join(kept)
+
+
 def decide(
     mode: RoutingMode,
     subject: CallSubject,
@@ -522,7 +536,7 @@ class RoutingSwitch:
         as permission to cascade.
         """
         decided_at = self._now()
-        budget_refusal = await self._budget_refusal(subject, budget)
+        budget_refusal = await self._budget_refusal(budget)
         try:
             record = await self.read()
         except RoutingSwitchMissing:
@@ -552,14 +566,12 @@ class RoutingSwitch:
         return decide(
             record.mode,
             subject,
-            refusal=refusal or budget_refusal,
+            refusal=_joined_reasons(refusal, budget_refusal),
             record_version=record.record_version,
             decided_at=decided_at,
         )
 
-    async def _budget_refusal(
-        self, subject: CallSubject, budget: BudgetLine | None
-    ) -> str:
+    async def _budget_refusal(self, budget: BudgetLine | None) -> str:
         """The day's own reason, or the named reason the day is unknown."""
         if budget is None:
             return ""

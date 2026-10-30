@@ -243,19 +243,19 @@ class GreetingTest(unittest.TestCase):
 
 
 def _begin() -> str:
-    from cascade.test_tts_support import begin
+    from cascade.tts_support import begin
 
     return begin(voice_id="lola", language="Spanish")
 
 
 def _audio(*, flush_id: int) -> str:
-    from cascade.test_tts_support import audio_ms
+    from cascade.tts_support import audio_ms
 
     return audio_ms(1200, flush_id=flush_id)
 
 
 def _flush_done(flush_id: int) -> str:
-    from cascade.test_tts_support import flush_done
+    from cascade.tts_support import flush_done
 
     return flush_done(flush_id=flush_id)
 

@@ -134,12 +134,21 @@ jobs:
 
           assert voice_judge.heuristic_barge_in_score("stop", 3000) == 0.9
           PY
-      # `discover -s <dir>` from the repo root puts the start dir on sys.path,
-      # which is what the bare imports in these modules expect.
-      - name: Bridge suite
-        run: .venv/bin/python -m unittest discover -s telephony-bot -p "test_*.py"
-      - name: Pipeline suite
-        run: .venv/bin/python -m unittest discover -s voice-pipeline -p "test_*.py"
+      # One wrapper for both suites. It also fails on an unexpected skip:
+      # `unittest` exits 0 with "OK (skipped=N)", so a disabled test would
+      # otherwise look green. A skip is an unfinished test, not a pass.
+      - name: Python suites (no unexpected skips)
+        run: PYTHON=.venv/bin/python bash scripts/python-tests.sh
+      # The ticket graph is committed with the spec, so CI can prove it is not
+      # stale: dangling blockers, cycles, a resolved ticket with no answer.
+      - name: Ticket graph
+        run: .venv/bin/python scripts/tickets.py validate --effort meta-cascade
+      # Ticket 135/141: the topology and secret validators exist but were only
+      # run by hand. A validator that is not in CI is a runbook, not a guardrail.
+      - name: Deployment topology and secret scan
+        run: |
+          .venv/bin/python deploy/topology.py
+          .venv/bin/python deploy/secret_scan.py
       # Ticket 142: one suite per provider over recorded frames (STT 34, model
       # stream 45, voice 56), all offline and key-free. They are already inside
       # the discovery above, but naming them here makes a broken recording fail

@@ -222,9 +222,13 @@ class OneEmitterTests(unittest.TestCase):
         source = Path(fallback_audit.__file__).with_name("events.py").read_text(
             encoding="utf8"
         )
+        # The cascade-only mirror names this type too; it is not an emitter.
+        mirror_start = source.index("CASCADE_ONLY_EVENT_TYPES = (")
+        mirror_end = source.index(")", mirror_start) + 1
+        without_mirror = source[:mirror_start] + source[mirror_end:]
 
         self.assertEqual(
-            source.count("FALLBACK_EVENT_TYPE"),
+            without_mirror.count("FALLBACK_EVENT_TYPE"),
             2,
             "one definition and one emission site; a second emitter is a review failure",
         )

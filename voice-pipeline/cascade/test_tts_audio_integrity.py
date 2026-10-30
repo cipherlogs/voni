@@ -20,7 +20,7 @@ from cascade.assemblyai_tts import (
     transport_format,
 )
 from cascade.failures import FailureClass
-from cascade.test_tts_support import (
+from cascade.tts_support import (
     audio,
     audio_ms,
     begin,

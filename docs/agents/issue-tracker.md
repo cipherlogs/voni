@@ -9,6 +9,8 @@ Issues and specs for this repo live as markdown files in `.scratch/`.
 - Implementation issues are one file per ticket at `.scratch/<feature-slug>/issues/<NN>-<slug>.md`, numbered from `01`, never a single combined tickets file
 - Triage state is recorded as a `Status:` line near the top of each issue file (see `triage-labels.md` for the role strings)
 - Comments and conversation history append to the bottom of the file under a `## Comments` heading
+- A ticket that shares a file with another ticket may declare `**Owns:** path, path`. When several tickets own one file, run them as a file-family cluster in one worktree with one commit per ticket; parallel worktrees on one file only create merge conflicts
+- The graph is checked with `python scripts/tickets.py validate --effort <name>`; the frontier is `python scripts/tickets.py frontier --effort <name>`; close with `close NN --answer FILE`
 
 ## When a skill says "publish to the issue tracker"
 

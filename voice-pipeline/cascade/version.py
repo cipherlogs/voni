@@ -49,24 +49,25 @@ def _environment(environ: Mapping[str, str] | None) -> Mapping[str, str]:
     return os.environ if environ is None else environ
 
 
-def build_version(environ: Mapping[str, str] | None = None) -> str:
-    """The build this process runs, or :data:`UNVERSIONED`."""
-    env = _environment(environ)
-    for name in BUILD_SOURCES:
-        value = env.get(name, "")
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    return UNVERSIONED
-
-
-def build_source(environ: Mapping[str, str] | None = None) -> str:
-    """The env name the build version came from, or ``"none"``."""
-    env = _environment(environ)
+def _build_source_name(env: Mapping[str, str]) -> str | None:
+    """The first declared env name that supplies a non-blank build version."""
     for name in BUILD_SOURCES:
         value = env.get(name, "")
         if isinstance(value, str) and value.strip():
             return name
-    return "none"
+    return None
+
+
+def build_version(environ: Mapping[str, str] | None = None) -> str:
+    """The build this process runs, or :data:`UNVERSIONED`."""
+    env = _environment(environ)
+    name = _build_source_name(env)
+    return env[name].strip() if name is not None else UNVERSIONED
+
+
+def build_source(environ: Mapping[str, str] | None = None) -> str:
+    """The env name the build version came from, or ``"none"``."""
+    return _build_source_name(_environment(environ)) or "none"
 
 
 def version_document(environ: Mapping[str, str] | None = None) -> dict[str, Any]:

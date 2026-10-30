@@ -11,7 +11,7 @@ computed, and a ``Generate`` sent right after a cancel is not caught by it.
 import asyncio
 import unittest
 
-from cascade.test_tts_support import (
+from cascade.tts_support import (
     audio,
     audio_ms,
     begin,

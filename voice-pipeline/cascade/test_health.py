@@ -303,7 +303,7 @@ class ServerHealthTests(unittest.TestCase):
         from unittest import mock
 
         with mock.patch(
-            "transport.default_backends",
+            "transport.build_cascade_legs",
             side_effect=AssertionError("readiness opened a vendor backend"),
         ):
             response = self.client(store=store, counter=counter, breaker=breaker).get(

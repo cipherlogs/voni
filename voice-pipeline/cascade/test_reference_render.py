@@ -37,7 +37,7 @@ from cascade.reference_render import (
     render_reference,
 )
 from cascade.testing import FakeClock, ScriptedSocketFactory
-from cascade.test_tts_support import (
+from cascade.tts_support import (
     audio,
     begin,
     flush_done,

@@ -198,5 +198,42 @@ class StoredBodyChannelTests(unittest.TestCase):
         self.assertIn(AGENT_ID, message["message"])
 
 
+class BrowserCallWiringTests(unittest.TestCase):
+    """The service hands the browser call every cascade dependency it owns."""
+
+    def test_create_app_passes_the_cascade_dependencies_to_the_call(self):
+        from unittest import mock
+
+        from fastapi.testclient import TestClient
+
+        from cascade.cost import RATE_TABLE
+        from cascade.counter import DailyCounter
+        from cascade.routing import RoutingSwitch
+        from cascade.store import MemoryStore
+        from cascade.usage import UsageMeter
+
+        seen: dict = {}
+
+        async def fake_call(websocket, **kwargs):
+            seen.update(kwargs)
+            await websocket.send_json({"type": "end", "turns": 0, "metrics": {}})
+
+        app = create_app(
+            envelope_secret=SECRET, clock=CLOCK, store=MemoryStore()
+        )
+        with mock.patch("server.handle_browser_call", fake_call):
+            with TestClient(app) as http:
+                with http.websocket_connect("/v1/browser-call") as ws:
+                    ws.send_json(browser_config())
+                    self.assertEqual(ws.receive_json()["type"], "end")
+
+        self.assertIsInstance(seen["switch"], RoutingSwitch)
+        self.assertIsInstance(seen["counter"], DailyCounter)
+        self.assertIs(seen["cost_table"], RATE_TABLE)
+        self.assertIs(seen["usage_meter"], UsageMeter)
+        self.assertTrue(callable(seen["operational_events"]))
+        self.assertEqual(seen["secret"], SECRET)
+
+
 if __name__ == "__main__":
     unittest.main()

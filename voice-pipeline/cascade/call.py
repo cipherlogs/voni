@@ -84,12 +84,13 @@ import logging
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from types import MappingProxyType
 from typing import Any, Protocol
 
 from cascade.body_map import BodyFieldError, CascadeBody, adapt_body
 from cascade.cost import CallCost, RateTable, cost_call
+from cascade.counter import limit_amount
 from cascade.eligibility import EligibilityDecision
 from cascade.envelope import EnvelopeError, verify_envelope
 from cascade.events import OperationalEvents
@@ -909,29 +910,25 @@ class BudgetStop:
     """One per-call ceiling breach, as the end message and alert reader see it.
 
     ``spend_usd`` is ticket 101's priced amount so far, never an estimate and
-    never a partial sum presented as a complete cost. ``measured`` says whether
-    every leg had reported; when it is false, ``spend_usd`` is a proved lower
-    bound (the measured legs alone are over the ceiling) and the unmeasured
-    remainder is named, not counted as zero.
+    never a partial sum presented as a complete cost. Money is a
+    :class:`~decimal.Decimal` here, as everywhere else in the money path; the
+    document converts to a JSON number at the one boundary. ``measured`` says
+    whether every leg had reported; when it is false, ``spend_usd`` is a proved
+    lower bound (the measured legs alone are over the ceiling) and the
+    unmeasured remainder is named, not counted as zero.
     """
 
-    spend_usd: float
-    ceiling_usd: float
+    spend_usd: Decimal
+    ceiling_usd: Decimal
     measured: bool
     reasons: tuple[str, ...] = ()
     turn: str | None = None
 
     def __post_init__(self) -> None:
-        for name, value in (
-            ("spend_usd", self.spend_usd),
-            ("ceiling_usd", self.ceiling_usd),
-        ):
-            if isinstance(value, bool) or not isinstance(value, (int, float)):
-                raise ValueError(f"{name} must be a number, got {value!r}")
-            if value < 0 or value != value:
-                raise ValueError(
-                    f"{name} must be a finite non-negative amount, got {value!r}"
-                )
+        for name in ("spend_usd", "ceiling_usd"):
+            object.__setattr__(
+                self, name, _money_amount(name, getattr(self, name))
+            )
         if self.ceiling_usd <= 0:
             raise ValueError(
                 f"a per-call ceiling must be positive, got {self.ceiling_usd!r}"
@@ -952,8 +949,8 @@ class BudgetStop:
     def to_document(self) -> dict[str, Any]:
         return {
             "mark": BUDGET_STOP_MARK,
-            "spendUsd": self.spend_usd,
-            "ceilingUsd": self.ceiling_usd,
+            "spendUsd": float(self.spend_usd),
+            "ceilingUsd": float(self.ceiling_usd),
             "measured": self.measured,
             "turn": self.turn,
             "unmeasuredReason": "" if self.measured else "; ".join(self.reasons),
@@ -961,17 +958,25 @@ class BudgetStop:
         }
 
 
-def _ceiling_limit(value: Any) -> Decimal:
-    """A positive USD ceiling, from the registry or an explicit test value."""
-    if isinstance(value, bool):
-        raise ValueError(f"a per-call ceiling cannot be a boolean: {value!r}")
-    try:
-        limit = Decimal(str(value))
-    except (InvalidOperation, ValueError):
+def _money_amount(name: str, value: Any) -> Decimal:
+    """One non-negative money amount on the record, kept as a Decimal."""
+    amount = limit_amount(value, name)
+    if amount < 0:
         raise ValueError(
-            f"a per-call ceiling must be a decimal amount, got {value!r}"
-        ) from None
-    if not limit.is_finite() or limit <= 0:
+            f"{name} must be a finite non-negative amount, got {value!r}"
+        )
+    return amount
+
+
+def _ceiling_limit(value: Any) -> Decimal:
+    """A positive USD ceiling, from the registry or an explicit test value.
+
+    The decimal parsing is :func:`cascade.counter.limit_amount`, the same helper
+    the daily counter uses, so money is parsed one way; only the ceiling's own
+    "strictly positive" rule stays here.
+    """
+    limit = limit_amount(value, "a per-call ceiling")
+    if limit <= 0:
         raise ValueError(
             f"a per-call ceiling must be a finite positive amount, got {value!r}"
         )
@@ -1019,8 +1024,8 @@ class CallCeiling:
             return None
         self._stopped = True
         return BudgetStop(
-            spend_usd=float(spend),
-            ceiling_usd=float(self.ceiling),
+            spend_usd=spend,
+            ceiling_usd=self.ceiling,
             measured=priced.measured,
             reasons=priced.reasons,
             turn=turn,
@@ -1552,7 +1557,8 @@ class CallLifecycle:
         )
         self._greeting_voice_id = body.voice_id
         self._emit_operational(
-            "greeting", "greeting.start", voice_id=body.voice_id
+            "greeting.start",
+            lambda events: events.greeting("greeting.start", voice_id=body.voice_id),
         )
         return greeting.start(body)
 
@@ -1561,10 +1567,10 @@ class CallLifecycle:
         self.chime_calls += 1
         self.chime_at = self._clock()
         self._emit_operational(
-            "greeting",
             "greeting.first_audio",
-            voice_id=self._greeting_voice_id,
-            frames=1,
+            lambda events: events.greeting(
+                "greeting.first_audio", voice_id=self._greeting_voice_id, frames=1
+            ),
         )
         if self._chime is not None:
             self._chime()
@@ -1958,24 +1964,28 @@ class CallLifecycle:
         return self._budget_stop
 
     def _emit_operational(
-        self, name: str, *args: Any, **kwargs: Any
+        self,
+        event: str,
+        emit: Callable[[OperationalEvents], dict[str, Any]],
     ) -> dict[str, Any] | None:
         """Write one first-class operational event; a sink failure never ends a call.
 
         Every line goes through :class:`cascade.events.OperationalEvents`, which
         builds it with the one envelope writer and writes it through the one
-        sanitized stream (ticket 110). The event is a record of a decision that
-        already happened, so a broken sink is logged and the call continues.
+        sanitized stream (ticket 110). The caller names the emitter in code, so
+        no event method is reached through a dynamic attribute lookup. The event
+        is a record of a decision that already happened, so a broken sink is
+        logged and the call continues.
         """
         events = self._operational_events
         if events is None:
             return None
         try:
-            return getattr(events, name)(*args, **kwargs)
+            return emit(events)
         except Exception:
             _log.exception(
                 "the %s operational event could not be written; the call continues",
-                name,
+                event,
             )
             return None
 
@@ -1989,7 +1999,8 @@ class CallLifecycle:
         if self._deploy_drain_event is not None:
             return self._deploy_drain_event
         self._deploy_drain_event = self._emit_operational(
-            "deploy_drain", reason=reason, planned=True
+            "deploy.drain",
+            lambda events: events.deploy_drain(reason=reason, planned=True),
         )
         return self._deploy_drain_event
 
@@ -2005,17 +2016,22 @@ class CallLifecycle:
             greeting.spoken or greeting.cancelled or greeting.frames
         ):
             self._emit_operational(
-                "greeting",
                 "greeting.done",
-                voice_id=self._greeting_voice_id,
-                frames=greeting.frames,
-                sample_rate=greeting.sample_rate,
-                cancelled=greeting.cancelled,
-                cause=greeting.cause,
+                lambda events: events.greeting(
+                    "greeting.done",
+                    voice_id=self._greeting_voice_id,
+                    frames=greeting.frames,
+                    sample_rate=greeting.sample_rate,
+                    cancelled=greeting.cancelled,
+                    cause=greeting.cause,
+                ),
             )
         reconnects = self.reconnect_budget.events
         for event in reconnects[self._reconnect_events_emitted :]:
-            self._emit_operational("reconnect", event)
+            self._emit_operational(
+                "reconnect",
+                lambda events, event=event: events.reconnect(event),
+            )
         self._reconnect_events_emitted = len(reconnects)
 
     def may_request(self, leg: str) -> bool:
@@ -2056,7 +2072,9 @@ class CallLifecycle:
             return None
         self._budget_stop = stop
         self._ledger.mark(BUDGET_STOP_MARK)
-        self._emit_operational("budget_stopped", stop)
+        self._emit_operational(
+            "budget.stopped", lambda events: events.budget_stopped(stop)
+        )
         if self._on_budget_stopped is not None:
             try:
                 self._on_budget_stopped(stop)

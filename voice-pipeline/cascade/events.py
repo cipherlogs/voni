@@ -758,10 +758,15 @@ def emit_attribution(
 # Operational events: money, breaker, reconnect, greeting, deploy (ticket 110)
 # ---------------------------------------------------------------------------
 
-#: Event types only a cascade run can claim, among the operational events this
-#: class emits. The set mirrors the relevant subset of the TS reader's
-#: ``CASCADE_ONLY_EVENT_TYPES``: a managed run has no breaker or cascade budget.
+#: Event types only a cascade run can claim. This tuple is a mirror of the TS
+#: reader's ``CASCADE_ONLY_EVENT_TYPES`` (in the same order), which is what a
+#: managed envelope is refused for carrying. It is a second copy by necessity —
+#: the service does not import TypeScript — and ``test_events.py`` reads the TS
+#: source and fails by name when the two lists drift. ``provider_fallback`` is
+#: emitted by :func:`emit_fallback`, not by :class:`OperationalEvents`; the
+#: operational methods below own the breaker and cascade budget subset.
 CASCADE_ONLY_EVENT_TYPES = (
+    FALLBACK_EVENT_TYPE,
     BREAKER_EVENT_TYPE,
     BUDGET_CROSSING_EVENT_TYPE,
     BUDGET_STOPPED_EVENT_TYPE,

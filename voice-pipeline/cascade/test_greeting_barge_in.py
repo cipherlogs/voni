@@ -164,7 +164,7 @@ class GreetingCutOnTheWireTest(unittest.TestCase):
     """The cut is `Cancel` on the real adapter, and pending text is discarded."""
 
     def test_the_cut_sends_cancel_and_discards_the_pending_sentence(self):
-        from cascade.test_tts_support import audio_ms, begin
+        from cascade.tts_support import audio_ms, begin
 
         first = "Hola, soy Voni. "
         second = "¿En qué puedo ayudarte?"

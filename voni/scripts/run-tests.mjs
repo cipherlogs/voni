@@ -38,9 +38,24 @@ if (files.length === 0) {
 }
 
 console.log(`run-tests: ${files.length} files`);
+const verbose = process.env.RUN_TESTS_VERBOSE === "1";
 const result = spawnSync(
   process.execPath,
   ["--import", "tsx", "--test", ...files],
-  { cwd: root, stdio: "inherit" },
+  { cwd: root, encoding: "utf8" },
 );
+const stdout = result.stdout ?? "";
+const stderr = result.stderr ?? "";
+if (verbose || result.status !== 0) {
+  process.stdout.write(stdout);
+  process.stderr.write(stderr);
+} else {
+  // On success print the summary only. A worker's teardown stack is noise that
+  // reads like a crash; keep it available with RUN_TESTS_VERBOSE=1.
+  const summary = stdout.trim().split("\n").filter(Boolean).slice(-8).join("\n");
+  if (summary) console.log(summary);
+  if (stderr.trim()) {
+    console.error(`run-tests: ${stderr.trim().split("\n").length} stderr lines suppressed on success (RUN_TESTS_VERBOSE=1 to see them)`);
+  }
+}
 process.exit(result.status ?? 1);

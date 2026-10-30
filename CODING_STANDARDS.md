@@ -42,6 +42,8 @@ linter, tests, or CI, not here. Read this with the diff, not during exploration.
 - A test that can pass with the feature deleted is not a test. Prove the red
   case first for gates and failure paths.
 - Prefer a shared validator over a second copy of the same shape check.
+- Test a config mechanism with a fixture registry, not the production registry's
+  openness. Filling an open bound must not break the mechanism's test.
 
 ## Navigation and docs
 

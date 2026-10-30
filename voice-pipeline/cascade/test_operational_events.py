@@ -557,6 +557,30 @@ class LiveCallEmissionTests(unittest.TestCase):
         self.assertEqual(DEPLOY_DRAIN_EVENT_TYPE, line["type"])
         self.assertTrue(line["planned"])
 
+    def test_a_failing_operational_sink_never_ends_the_call(self):
+        class BrokenSink:
+            def __call__(self, event: dict) -> None:
+                raise RuntimeError("the event sink is down")
+
+        ops = OperationalEvents(
+            EventStream(EventWriter(pipeline="cascade", call_id=CALL_ID), sink=BrokenSink()),
+            subject=SUBJECT,
+            now=lambda: 0.0,
+        )
+        lifecycle = self.lifecycle(
+            transport=FakeTransport([BrowserStop()]),
+            stream=FakeStream(),
+            speech=ScriptedSTT([], clock=FakeClock()),
+            voice=FakeVoice(),
+            ops=ops,
+        )
+
+        with self.assertLogs("cascade.call", level="ERROR"):
+            end = asyncio.run(asyncio.wait_for(lifecycle.run(), timeout=5.0))
+            self.assertIsNone(lifecycle.deploy_draining("sink is down"))
+
+        self.assertEqual("stop", end.ended_by)
+
 
 if __name__ == "__main__":
     unittest.main()
