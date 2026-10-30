@@ -51,7 +51,8 @@
     "scoreboard:streak": "node --env-file-if-exists=.env.local --import tsx scripts/score-streak.mts",
     "typecheck": "next typegen && tsc --noEmit",
     "scoreboard:inspect": "node --import tsx scripts/scoreboard-inspect.mts",
-    "readiness:pack": "node --import tsx scripts/readiness-pack.mts"
+    "readiness:pack": "node --import tsx scripts/readiness-pack.mts",
+    "parity:check": "node --env-file-if-exists=.env.local --import tsx scripts/parity-check.mts"
   },
   "dependencies": {
     "@ai-sdk/openai": "^4.0.60",

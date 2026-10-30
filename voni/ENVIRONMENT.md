@@ -84,6 +84,32 @@ The pipeline's own model settings (`VOICE_PIPELINE_LLM_MODEL`,
 `VOICE_PIPELINE_TTS_MODEL`, …) live on the service, not the app: see
 `deploy/northflank/README.md` and `voice-pipeline/README.md`.
 
+### Deploy parity check
+
+`npm run parity:check` proves the app, the service and the routing switch agree
+before a demo and after a deploy. It reads four settings — the app's
+`VOICE_PIPELINE_URL`, the service's public base, the service's
+`VOICE_PIPELINE_TOOL_BASE_URL`, and the app's public origin — signs one
+throwaway v2 demo body with the app's own signer, delivers it to the service
+(and a tampered copy it must refuse), then prints the durable routing mode. It
+opens no vendor session and starts no call, and CI never runs it.
+
+| Input | Flag | Environment |
+|---|---|---|
+| App pipeline base | `--pipeline-url` | `VOICE_PIPELINE_URL` |
+| Service public base | `--service-url` | `VOICE_PIPELINE_SERVICE_URL` |
+| Service tool base | `--tool-base-url` | `VOICE_PIPELINE_TOOL_BASE_URL` |
+| App public origin | `--app-origin` | `VONI_PUBLIC_ORIGIN`, then `BETTER_AUTH_URL`, then `VONI_API_URL` |
+| Routing store | `--sqlite` / `--database-url` | `CASCADE_STORE_PATH` / `DATABASE_URL` |
+| Envelope secret | — (environment only) | `VOICE_PIPELINE_ENVELOPE_SECRET` |
+
+The routing store must be the **service's** store: locally `dev:all` gives the
+service the app's `DATABASE_URL`, so `.env.local` is correct; on Northflank pass
+the addon's DSN with `--database-url` (the app has its own database). The
+routing switch is read through `voice-pipeline/scripts/routing_switch.py`; for
+Postgres runs point `PYTHON` (or `--python`) at an interpreter with `asyncpg`.
+
+
 ## Async TTS (WhatsApp voice-note replies — AssemblyAI has no standalone TTS API, plan Section I)
 - `CARTESIA_API_KEY` — cartesia.ai → sign up → dashboard → API Keys. Free plan
   (20K credits/mo, ~27 min TTS) is fine for dev/testing but explicitly
