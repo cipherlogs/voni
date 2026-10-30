@@ -47,6 +47,15 @@ Two machines per app, physically one region (`iad`) to start.
   probe is `GET /healthz` (liveness, no vendor touched). Readiness (`/readyz`,
   ticket 139) is deliberately not the platform probe: a draining machine must
   stay reachable while it finishes live calls.
+- **Liveness vs readiness.** `/healthz` answers only "the process is up" and
+  touches no store, vendor or key, so a store outage never restarts a machine
+  serving live calls. `/readyz` answers "this instance may take a new call" and
+  reports `protocolVersion`, the drain state, and one check each for the
+  durable store, the daily counter and the breaker record. Any unreadable
+  dependency returns 503 and names the reason; a missing breaker record is a
+  fresh deploy, not an outage. Readiness never opens a vendor socket. A
+  draining instance returns 503 on `/readyz` and refuses new calls (the socket
+  gets `{"type":"error","code":"draining"}`), while calls already running finish.
 - **Drain seam.** `kill_signal = "SIGTERM"`, `kill_timeout = 30`, which equals
   the recorded `deploy.drain_max_wait_ms` (30 000 ms) in
   `voice-pipeline/cascade/thresholds.json`. Fly waits for the process, then
@@ -55,8 +64,10 @@ Two machines per app, physically one region (`iad`) to start.
   are shared, and they are read through the store protocol in
   `voice-pipeline/cascade/store.py`. The concrete deployment choice is a **Fly
   Postgres** attachment injecting `DATABASE_URL` into both machines; the
-  single-host `SqliteStore` stays a local/test adapter. The asyncpg adapter and
-  the readiness proof land with ticket 139.
+  single-host `SqliteStore` stays a local/test adapter. The asyncpg adapter is
+  `voice-pipeline/cascade/pg_store.py` (ticket 139) and implements the same
+  `DurableStore` protocol; readiness proves it is readable on every probe
+  without touching a vendor.
 - **One container for the Python service.** `voice-pipeline/Dockerfile` copies
   `voice-pipeline/` and the one bridge module it imports
   (`telephony-bot/voice_judge.py`), installs `voice-pipeline/requirements.txt`,
@@ -68,14 +79,39 @@ Two machines per app, physically one region (`iad`) to start.
   image builds from the repository root (the context is set in
   `.dockerignore`), runs as a non-root user and holds one uvicorn worker.
 
+## Protocol version
+
+The app and the service speak exactly one protocol version: `PROTOCOL_VERSION`
+in `voice-pipeline/cascade/token.py` and `CASCADE_PROTOCOL_VERSION` in
+`voni/src/lib/voice/cascade-session.ts`. `voice-pipeline/cascade/test_protocol_version.py`
+reads the app's export and fails when the two drift, so a half-deployed pair
+cannot silently run two versions.
+
+The browser's one config frame carries `protocolVersion`. A missing or unknown
+version is refused before the body is claimed or any vendor socket opens, with
+an error frame carrying `code: "protocol_version"` and a message naming both
+versions. The client surfaces that named error and tears the socket down, so a
+mismatch fails loudly instead of leaving the UI hanging. The end message also
+reports `protocolVersion`, and the client checks it on a call that did open.
+
 ## Secrets
 
 Names only, set on the app with `fly secrets set`; `deploy/voice-pipeline.env.example`
 is the list and carries no values. The service reads `META_API_KEY`,
 `META_IDENTIFIER_SALT`, `ASSEMBLYAI_API_KEY`, `AI_GATEWAY_API_KEY`,
 `VONI_TOOL_SECRET`, `VOICE_PIPELINE_ENVELOPE_SECRET` and `DATABASE_URL`. The app
-has its own set on its own app; the two are never shared. Log redaction and the
-repository secret scan are ticket 137 and ticket 141.
+has its own set on its own app; the two are never shared. The repository secret
+scan is ticket 141.
+
+Log redaction is ticket 137. `voice-pipeline/cascade/log_redaction.py` is the
+one gate: it is installed by `create_app` and scrubs every record through a log
+record factory (so handlers configured later, such as uvicorn's, are covered)
+plus a filter on the root and uvicorn loggers. The browser's call token (socket
+query string or config frame), the vendor keys, the tool secret, the signing
+secret and `DATABASE_URL` are replaced before any handler writes; the vendor
+handshake body is replaced whole, because the Meta key travels inside it.
+`cascade/test_log_redaction.py` opens the real Meta backend over a scripted
+socket, sends the handshake and scans every emitted record.
 
 ## Checking the topology
 

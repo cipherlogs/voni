@@ -11,15 +11,21 @@ import unittest
 from cascade.body_map import body_fingerprint
 from cascade.envelope import sign_body
 from cascade.testing import FakeClock
-from cascade.token import PROTOCOL_VERSION
+from cascade.token import PROTOCOL_VERSION, mint_call_token
 from server import create_app
 
 SECRET = "test-only-server-secret"
 ACCOUNT = "acct_test_server_65"
 CALL_ID = "call_server_65"
 AGENT_ID = "agent_server_65"
-TOKEN = "call-token-server-65"
 CLOCK = FakeClock(1_000_000.0)
+TOKEN = mint_call_token(
+    secret=SECRET,
+    call_id=CALL_ID,
+    subject=AGENT_ID,
+    clock=CLOCK,
+    nonce="server-token-136",
+)
 
 BODY = {
     "name": "server-agent",
@@ -152,6 +158,26 @@ class StoredBodyChannelTests(unittest.TestCase):
         response = http.post("/v1/call-body", json=delivery())
         self.assertEqual(response.status_code, 503)
         self.assertIn("VOICE_PIPELINE_ENVELOPE_SECRET", response.json()["detail"])
+
+    def test_an_expired_call_token_is_refused_at_connect_by_name(self):
+        from fastapi.testclient import TestClient
+
+        expired = mint_call_token(
+            secret=SECRET,
+            call_id=CALL_ID,
+            subject=AGENT_ID,
+            clock=FakeClock(1_000_000.0 - 120.0),
+            nonce="server-expired-136",
+        )
+        app = create_app(envelope_secret=SECRET, clock=CLOCK)
+        with TestClient(app) as http:
+            with http.websocket_connect("/v1/browser-call") as ws:
+                ws.send_json(browser_config() | {"callToken": expired})
+                message = ws.receive_json()
+
+        self.assertEqual(message["type"], "error")
+        self.assertIn("expired", message["message"])
+        self.assertNotIn(expired, message["message"])
 
     def test_the_browser_socket_claims_the_body_the_app_delivered(self):
         from fastapi.testclient import TestClient

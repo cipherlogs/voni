@@ -1,0 +1,14 @@
+{
+  "note": "Pinned cross-language call-token vector (ticket 136). Produced by Node's crypto from the canonical claim JSON, the same stable_json form ticket 64 pins for the signed body envelope. Do not edit by hand; regenerate with the same script when the claim set changes.",
+  "secret": "call-token-vector-secret-136",
+  "call_id": "call_vector_136",
+  "subject": "agent_vector_136",
+  "issued_at_ms": 1000000000000,
+  "expires_at_ms": 1000000060000,
+  "nonce": "nonce-vector-136",
+  "now_s": 1000000000,
+  "payload": "{\"call_id\":\"call_vector_136\",\"expires_at_ms\":1000000060000,\"issued_at_ms\":1000000000000,\"kind\":\"call-token\",\"nonce\":\"nonce-vector-136\",\"subject\":\"agent_vector_136\",\"version\":1}",
+  "payload_b64": "eyJjYWxsX2lkIjoiY2FsbF92ZWN0b3JfMTM2IiwiZXhwaXJlc19hdF9tcyI6MTAwMDAwMDA2MDAwMCwiaXNzdWVkX2F0X21zIjoxMDAwMDAwMDAwMDAwLCJraW5kIjoiY2FsbC10b2tlbiIsIm5vbmNlIjoibm9uY2UtdmVjdG9yLTEzNiIsInN1YmplY3QiOiJhZ2VudF92ZWN0b3JfMTM2IiwidmVyc2lvbiI6MX0",
+  "signature": "6c41efa2e554ddee792f6dd9ecf0566d06793887763a0b77a9820d2c5e529c15",
+  "token": "ct1.eyJjYWxsX2lkIjoiY2FsbF92ZWN0b3JfMTM2IiwiZXhwaXJlc19hdF9tcyI6MTAwMDAwMDA2MDAwMCwiaXNzdWVkX2F0X21zIjoxMDAwMDAwMDAwMDAwLCJraW5kIjoiY2FsbC10b2tlbiIsIm5vbmNlIjoibm9uY2UtdmVjdG9yLTEzNiIsInN1YmplY3QiOiJhZ2VudF92ZWN0b3JfMTM2IiwidmVyc2lvbiI6MX0.6c41efa2e554ddee792f6dd9ecf0566d06793887763a0b77a9820d2c5e529c15"
+}

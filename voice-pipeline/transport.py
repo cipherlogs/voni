@@ -39,6 +39,10 @@ from typing import Any, Optional
 from cascade.body_map import BodyFieldError, CascadeBody, adapt_body
 from cascade.token import (
     PROTOCOL_VERSION,
+    CallTokenCallMismatch,
+    CallTokenError,
+    CallTokenRegistry,
+    CallTokenSubjectMismatch,
     ClientConfigError,
     StoredBodyChannel,
     parse_browser_config,
@@ -140,8 +144,16 @@ async def handle_browser_call(
     backend_factory: Any = None,
     body_channel: StoredBodyChannel | None = None,
     pipeline_factory: Callable[[CascadeBody], PipelineConfig] | None = None,
+    call_tokens: CallTokenRegistry | None = None,
 ) -> None:
-    """Serve one browser test call on an open socket. Returns on stop/drop."""
+    """Serve one browser test call on an open socket. Returns on stop/drop.
+
+    The call token is verified at connect (ticket 136) — signature and expiry
+    first, then the call and subject bindings against the signed body — and
+    only then claimed. No backend factory, and therefore no vendor socket, is
+    reached until the token and the body agree. The claim is released when the
+    socket ends, so a reconnect mints a new token and is accepted.
+    """
     if config_message is None:
         try:
             first = await ws.receive_json()
@@ -157,6 +169,30 @@ async def handle_browser_call(
     try:
         client = parse_browser_config(config_message)
     except ClientConfigError as exc:
+        # The code is the machine-readable half: a version mismatch is
+        # ``protocol_version`` so the app can fail loudly instead of hanging.
+        await _send(ws, {"type": "error", "code": exc.code, "message": str(exc)})
+        return
+
+    if call_tokens is None:
+        await _send(
+            ws,
+            {
+                "type": "error",
+                "message": (
+                    "the service has no call-token verifier configured; a call "
+                    "without a verified token is refused at connect"
+                ),
+            },
+        )
+        return
+
+    # Ticket 136: the token is checked before the body is claimed and long
+    # before a vendor socket. Signature and expiry are named refusals; the
+    # call and subject bindings are checked against the signed body below.
+    try:
+        token_claims = call_tokens.verify(client.call_token)
+    except CallTokenError as exc:
         await _send(ws, {"type": "error", "message": str(exc)})
         return
 
@@ -204,6 +240,31 @@ async def handle_browser_call(
         )
         return
 
+    # The token binds the call and the subject; neither may disagree with the
+    # body the app signed, or a token would be replayable onto another call.
+    if token_claims.call_id != verified.call_id:
+        await _send(
+            ws,
+            {
+                "type": "error",
+                "message": str(
+                    CallTokenCallMismatch(verified.call_id, token_claims.call_id)
+                ),
+            },
+        )
+        return
+    if token_claims.subject != verified.agent_id:
+        await _send(
+            ws,
+            {
+                "type": "error",
+                "message": str(
+                    CallTokenSubjectMismatch(verified.agent_id, token_claims.subject)
+                ),
+            },
+        )
+        return
+
     try:
         body = adapt_body(verified.body)
     except BodyFieldError as exc:
@@ -231,10 +292,23 @@ async def handle_browser_call(
         )
         return
 
+    # One claim, one live socket per call: the token is spent here, and a
+    # second concurrent socket is refused until this one closes.
+    try:
+        claim = call_tokens.claim(
+            client.call_token,
+            call_id=verified.call_id,
+            subject=verified.agent_id,
+        )
+    except CallTokenError as exc:
+        await _send(ws, {"type": "error", "message": str(exc)})
+        return
+
     factory = backend_factory or default_backends
     try:
         stt, llm, tts = factory(pipeline)
     except Exception as exc:
+        call_tokens.release(claim)
         await _send(ws, {"type": "error", "message": f"backend setup failed: {exc}"})
         return
 
@@ -318,6 +392,9 @@ async def handle_browser_call(
             elif kind == "stop":
                 break
     finally:
+        # The socket is over: the call no longer holds the one live-socket
+        # slot. The token itself stays spent.
+        call_tokens.release(claim)
         cancelled_by_us = False
         if not run_task.done():
             run_task.cancel()

@@ -17,7 +17,12 @@ import unittest
 from cascade.body_map import body_fingerprint
 from cascade.envelope import sign_body
 from cascade.testing import FakeClock
-from cascade.token import PROTOCOL_VERSION, StoredBodyChannel
+from cascade.token import (
+    PROTOCOL_VERSION,
+    CallTokenRegistry,
+    StoredBodyChannel,
+    mint_call_token,
+)
 from config import PipelineConfig
 from providers import FinalTranscript, PartialTranscript, SentenceAudio, TokenDelta
 from transport import handle_browser_call, pipeline_config_for_body
@@ -26,8 +31,14 @@ SECRET = "test-only-transport-secret"
 ACCOUNT = "acct_test_65"
 CALL_ID = "call_transport_65"
 AGENT_ID = "agent_transport_65"
-TOKEN = "call-token-transport-65"
 CLOCK = FakeClock(1_000_000.0)
+TOKEN = mint_call_token(
+    secret=SECRET,
+    call_id=CALL_ID,
+    subject=AGENT_ID,
+    clock=CLOCK,
+    nonce="transport-token-136",
+)
 
 BODY = {
     "name": "transport-agent",
@@ -189,12 +200,18 @@ def audio_message() -> dict:
     return {"type": "audio", "data": base64.b64encode(b"\x00" * 320).decode()}
 
 
+def token_registry(clock: float = 1_000_001.0) -> CallTokenRegistry:
+    return CallTokenRegistry(secret=SECRET, clock=FakeClock(clock))
+
+
 def run_call(
     inbound,
     stt_events,
     *,
     channel=None,
     pipeline_factory=test_pipeline,
+    call_tokens=None,
+    token: str = TOKEN,
 ):
     async def run():
         ws = FakeWebSocket(inbound)
@@ -212,8 +229,9 @@ def run_call(
             ws,
             config_message=inbound[0] if inbound and inbound[0].get("type") == "config" else None,
             backend_factory=backend_factory,
-            body_channel=channel if channel is not None else delivered_channel(),
+            body_channel=channel if channel is not None else delivered_channel(token=token),
             pipeline_factory=pipeline_factory,
+            call_tokens=call_tokens if call_tokens is not None else token_registry(),
         )
         return ws, pipelines
 
@@ -291,6 +309,7 @@ class BrowserCallTests(unittest.TestCase):
                 config_message=browser_config(),
                 backend_factory=factory,
                 body_channel=delivered_channel(),
+                call_tokens=token_registry(),
                 pipeline_factory=test_pipeline,
             )
             return llm
@@ -413,6 +432,7 @@ class BrowserCallTests(unittest.TestCase):
                 config_message=browser_config(),
                 backend_factory=factory,
                 body_channel=delivered_channel(),
+                call_tokens=token_registry(),
                 pipeline_factory=test_pipeline,
             )
             return ws
@@ -458,6 +478,7 @@ class BrowserCallTests(unittest.TestCase):
                 config_message=browser_config(),
                 backend_factory=factory,
                 body_channel=delivered_channel(),
+                call_tokens=token_registry(),
                 pipeline_factory=test_pipeline,
             )
             return ws, llm
@@ -474,6 +495,157 @@ class BrowserCallTests(unittest.TestCase):
                 for message in ws.sent
             )
         )
+
+
+class CallTokenAtConnectTests(unittest.TestCase):
+    """Ticket 136: the token is verified before a body claim or a vendor socket."""
+
+    def test_a_valid_token_is_claimed_and_released_with_the_socket(self):
+        registry = token_registry()
+        ws, pipelines = run_call(
+            [browser_config(), {"type": "stop"}], [], call_tokens=registry
+        )
+        self.assertEqual(len(pipelines), 1)
+        # The call ended: the live-socket slot is free, the token stays spent.
+        self.assertEqual(registry.live_call_ids(), ())
+
+    def test_an_expired_token_is_refused_by_name_before_any_backend(self):
+        expired = mint_call_token(
+            secret=SECRET,
+            call_id=CALL_ID,
+            subject=AGENT_ID,
+            clock=FakeClock(1_000_000.0 - 120.0),
+            nonce="expired-136",
+        )
+        ws, pipelines = run_call(
+            [browser_config(callToken=expired), {"type": "stop"}],
+            [],
+            channel=delivered_channel(token=expired),
+            token=expired,
+        )
+
+        errors = [m for m in ws.sent if m["type"] == "error"]
+        self.assertEqual(len(errors), 1)
+        self.assertIn("expired", errors[0]["message"])
+        self.assertIn("refused at connect", errors[0]["message"])
+        self.assertNotIn(expired, errors[0]["message"])
+        self.assertEqual(pipelines, [], "no backend may open on an expired token")
+
+    def test_a_token_for_another_call_is_refused_by_name(self):
+        other = mint_call_token(
+            secret=SECRET,
+            call_id="another_call_136",
+            subject=AGENT_ID,
+            clock=CLOCK,
+            nonce="other-call-136",
+        )
+        ws, pipelines = run_call(
+            [browser_config(callToken=other), {"type": "stop"}],
+            [],
+            channel=delivered_channel(token=other),
+            token=other,
+        )
+
+        errors = [m for m in ws.sent if m["type"] == "error"]
+        self.assertEqual(len(errors), 1)
+        self.assertIn("another_call_136", errors[0]["message"])
+        self.assertIn(CALL_ID, errors[0]["message"])
+        self.assertEqual(pipelines, [])
+
+    def test_a_token_for_another_subject_is_refused_by_name(self):
+        other = mint_call_token(
+            secret=SECRET,
+            call_id=CALL_ID,
+            subject="another_subject_136",
+            clock=CLOCK,
+            nonce="other-subject-136",
+        )
+        ws, pipelines = run_call(
+            [browser_config(callToken=other), {"type": "stop"}],
+            [],
+            channel=delivered_channel(token=other),
+            token=other,
+        )
+
+        errors = [m for m in ws.sent if m["type"] == "error"]
+        self.assertEqual(len(errors), 1)
+        self.assertIn("another_subject_136", errors[0]["message"])
+        self.assertEqual(pipelines, [])
+
+    def test_a_replayed_token_is_refused(self):
+        registry = token_registry()
+        registry.claim(TOKEN, call_id=CALL_ID, subject=AGENT_ID)
+
+        ws, pipelines = run_call(
+            [browser_config(), {"type": "stop"}],
+            [],
+            call_tokens=registry,
+        )
+        errors = [m for m in ws.sent if m["type"] == "error"]
+        self.assertEqual(len(errors), 1)
+        self.assertIn("already claimed", errors[0]["message"])
+        self.assertEqual(pipelines, [])
+
+    def test_a_second_concurrent_socket_is_refused_until_the_first_closes(self):
+        registry = token_registry()
+        first = registry.claim(TOKEN, call_id=CALL_ID, subject=AGENT_ID)
+        second = mint_call_token(
+            secret=SECRET,
+            call_id=CALL_ID,
+            subject=AGENT_ID,
+            clock=CLOCK,
+            nonce="second-socket-136",
+        )
+
+        ws, pipelines = run_call(
+            [browser_config(callToken=second), {"type": "stop"}],
+            [],
+            channel=delivered_channel(token=second),
+            token=second,
+            call_tokens=registry,
+        )
+        errors = [m for m in ws.sent if m["type"] == "error"]
+        self.assertEqual(len(errors), 1)
+        self.assertIn("already has a live socket", errors[0]["message"])
+        self.assertEqual(pipelines, [])
+
+        registry.release(first)
+        reconnect = mint_call_token(
+            secret=SECRET,
+            call_id=CALL_ID,
+            subject=AGENT_ID,
+            clock=CLOCK,
+            nonce="reconnect-136",
+        )
+        ws, pipelines = run_call(
+            [browser_config(callToken=reconnect), {"type": "stop"}],
+            [],
+            channel=delivered_channel(token=reconnect),
+            token=reconnect,
+            call_tokens=registry,
+        )
+        self.assertEqual(len(pipelines), 1, "a reconnect with a new token is served")
+        self.assertEqual(registry.live_call_ids(), ())
+
+    def test_a_service_without_a_token_verifier_refuses_the_call(self):
+        async def run():
+            ws = FakeWebSocket([browser_config(), {"type": "stop"}])
+            opened = []
+            await handle_browser_call(
+                ws,
+                config_message=browser_config(),
+                backend_factory=lambda config: opened.append(config) or (None, None, None),
+                body_channel=delivered_channel(),
+                pipeline_factory=test_pipeline,
+                call_tokens=None,
+            )
+            return ws, opened
+
+        ws, opened = asyncio.run(run())
+        errors = [m for m in ws.sent if m["type"] == "error"]
+        self.assertEqual(len(errors), 1)
+        self.assertIn("no call-token verifier", errors[0]["message"])
+        self.assertEqual(opened, [])
 
 
 class PipelineSettingsTests(unittest.TestCase):
