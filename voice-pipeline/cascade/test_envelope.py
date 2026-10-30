@@ -22,14 +22,18 @@ Expected values come from independent sources:
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import unittest
 from pathlib import Path
 
 from cascade import thresholds
-from cascade.body_map import BodyFingerprintMismatch, adapt_body
+from cascade.body_map import BodyFingerprintMismatch, adapt_body, stable_json
 from cascade.envelope import (
     ENVELOPE_VERSION,
+    ENVELOPE_VERSION_SUBJECT_KIND,
+    LEGACY_SUBJECT_KIND,
     TOKEN_TTL_BOUND,
     BodyHashMismatch,
     Envelope,
@@ -40,6 +44,7 @@ from cascade.envelope import (
     EnvelopeSignatureMismatch,
     MalformedEnvelope,
     UnknownEnvelopeVersion,
+    UnknownSubjectKind,
     sign_body,
     verify_envelope,
 )
@@ -60,6 +65,29 @@ AGENT_ID = VECTORS["agent_id"]
 TTL_MS = VECTORS["expires_at_ms"] - VECTORS["issued_at_ms"]
 ISSUED_S = VECTORS["issued_at_ms"] / 1000.0
 
+# The version 2 demo vector ticket 01 pinned: same secret and account salt,
+# different claims (a `kind`) and therefore a different signature.
+V2 = VECTORS["v2_demo"]
+V2_BODY = V2["body"]
+V2_CALL_ID = V2["call_id"]
+V2_AGENT_ID = V2["agent_id"]
+V2_ISSUED_S = V2["issued_at_ms"] / 1000.0
+
+
+def v2_wire(*, kind=V2["kind"], signature=V2["signature"]) -> dict:
+    """The pinned v2 demo message as JSON, with one claim swappable."""
+    envelope = {
+        "version": V2["version"],
+        "kind": kind,
+        "call_id": V2_CALL_ID,
+        "agent_id": V2_AGENT_ID,
+        "body_hash": V2["body_hash"],
+        "issued_at_ms": V2["issued_at_ms"],
+        "expires_at_ms": V2["expires_at_ms"],
+        "signature": signature,
+    }
+    return json.loads(json.dumps({"envelope": envelope, "body": V2_BODY}))
+
 
 def sign(*, ttl_ms: int = TTL_MS, call_id: str = CALL_ID, clock=None, body=None):
     return sign_body(
@@ -77,6 +105,29 @@ def sign(*, ttl_ms: int = TTL_MS, call_id: str = CALL_ID, clock=None, body=None)
 def wire(signed) -> dict:
     """The message as it crosses the service channel: JSON in, JSON out."""
     return json.loads(json.dumps(signed.message()))
+
+
+def sign_version_two(
+    *,
+    kind: str = "tenant",
+    agent_id: str = AGENT_ID,
+    ttl_ms: int = TTL_MS,
+    call_id: str = CALL_ID,
+    clock=None,
+    body=None,
+):
+    """Sign a v2 envelope: the claims add the kind, and the HMAC covers it."""
+    return sign_body(
+        body=BODY if body is None else body,
+        minted_fingerprint=MINTED,
+        account_salt=ACCOUNT,
+        secret=SECRET,
+        call_id=call_id,
+        agent_id=agent_id,
+        kind=kind,
+        ttl_ms=ttl_ms,
+        clock=clock or FakeClock(ISSUED_S),
+    )
 
 
 class SigningTests(unittest.TestCase):
@@ -193,6 +244,60 @@ class SigningTests(unittest.TestCase):
             )
 
 
+class SubjectKindSigningTests(unittest.TestCase):
+    def test_signing_with_a_kind_seals_a_version_two_envelope(self):
+        signed = sign_version_two(kind="demo", agent_id=V2_AGENT_ID)
+
+        self.assertEqual(signed.envelope.version, ENVELOPE_VERSION_SUBJECT_KIND)
+        self.assertEqual(signed.envelope.kind, "demo")
+        self.assertEqual(
+            set(signed.envelope.claims()),
+            {
+                "version",
+                "kind",
+                "call_id",
+                "agent_id",
+                "body_hash",
+                "issued_at_ms",
+                "expires_at_ms",
+            },
+        )
+
+        verified = verify_envelope(
+            wire(signed),
+            secret=SECRET,
+            call_id=CALL_ID,
+            clock=FakeClock(ISSUED_S + 1),
+        )
+        self.assertEqual(verified.subject_kind, "demo")
+        self.assertEqual(verified.agent_id, V2_AGENT_ID)
+
+    def test_the_hmac_covers_the_kind_the_app_signs(self):
+        message = wire(sign_version_two(kind="demo"))
+        message["envelope"]["kind"] = "tenant"
+
+        with self.assertRaises(EnvelopeSignatureMismatch):
+            verify_envelope(
+                message,
+                secret=SECRET,
+                call_id=CALL_ID,
+                clock=FakeClock(ISSUED_S + 1),
+            )
+
+    def test_signing_without_a_kind_keeps_the_pinned_version_one_envelope(self):
+        envelope = sign().envelope
+
+        self.assertEqual(envelope.version, ENVELOPE_VERSION)
+        self.assertIsNone(envelope.kind)
+        self.assertEqual(envelope.signature, VECTORS["signature"])
+
+    def test_signing_refuses_a_kind_the_service_does_not_serve(self):
+        with self.assertRaises(UnknownSubjectKind) as caught:
+            sign_version_two(kind="admin")
+
+        self.assertEqual(caught.exception.kind, "admin")
+
+
 class VerificationTests(unittest.TestCase):
     def test_the_service_verifies_the_envelope_and_the_body_hash(self):
         clock = FakeClock(ISSUED_S + 1)
@@ -293,7 +398,7 @@ class VerificationTests(unittest.TestCase):
 
     def test_an_unknown_envelope_version_is_refused_by_name(self):
         message = wire(sign())
-        message["envelope"]["version"] = ENVELOPE_VERSION + 1
+        message["envelope"]["version"] = ENVELOPE_VERSION_SUBJECT_KIND + 1
 
         with self.assertRaises(UnknownEnvelopeVersion) as caught:
             verify_envelope(
@@ -303,7 +408,7 @@ class VerificationTests(unittest.TestCase):
                 clock=FakeClock(ISSUED_S + 1),
             )
 
-        self.assertEqual(caught.exception.version, ENVELOPE_VERSION + 1)
+        self.assertEqual(caught.exception.version, ENVELOPE_VERSION_SUBJECT_KIND + 1)
 
     def test_a_missing_envelope_claim_is_refused_by_name(self):
         message = wire(sign())
@@ -338,6 +443,134 @@ class VerificationTests(unittest.TestCase):
 
         self.assertEqual(Envelope.from_dict(envelope.to_dict()), envelope)
         self.assertEqual(envelope.signature, sign().envelope.signature)
+
+
+class SubjectKindTests(unittest.TestCase):
+    """Ticket 02: v2 names its subject kind, v1 is read as tenant."""
+
+    def verify(self, message: dict):
+        return verify_envelope(
+            message,
+            secret=SECRET,
+            call_id=V2_CALL_ID,
+            clock=FakeClock(V2_ISSUED_S + 1),
+        )
+
+    def signed_v2(self, *, kind: str) -> dict:
+        """A v2 message signed over an arbitrary kind, computed independently."""
+        claims = {
+            "version": ENVELOPE_VERSION_SUBJECT_KIND,
+            "kind": kind,
+            "call_id": V2_CALL_ID,
+            "agent_id": V2_AGENT_ID,
+            "body_hash": V2["body_hash"],
+            "issued_at_ms": V2["issued_at_ms"],
+            "expires_at_ms": V2["expires_at_ms"],
+        }
+        signature = hmac.new(
+            SECRET.encode("utf-8"), stable_json(claims).encode("utf-8"), hashlib.sha256
+        ).hexdigest()
+        return json.loads(
+            json.dumps({"envelope": {**claims, "signature": signature}, "body": V2_BODY})
+        )
+
+    def test_the_pinned_version_two_demo_vector_verifies_and_reports_demo(self):
+        verified = verify_envelope(
+            v2_wire(),
+            secret=SECRET,
+            call_id=V2_CALL_ID,
+            clock=FakeClock(V2_ISSUED_S + 1),
+        )
+
+        self.assertEqual(verified.envelope.version, ENVELOPE_VERSION_SUBJECT_KIND)
+        self.assertEqual(verified.envelope.kind, "demo")
+        self.assertEqual(verified.subject_kind, "demo")
+        self.assertEqual(verified.agent_id, V2_AGENT_ID)
+        self.assertEqual(verified.body, V2_BODY)
+        self.assertEqual(verified.body_hash, V2["body_hash"])
+
+    def test_the_pinned_version_one_vector_still_verifies_and_reports_tenant(self):
+        # The committed v1 wire message, signature and all: the rollout window
+        # keeps an old app working, and v1 never claims a kind.
+        verified = verify_envelope(
+            wire(sign()),
+            secret=SECRET,
+            call_id=CALL_ID,
+            clock=FakeClock(ISSUED_S + 1),
+        )
+
+        self.assertEqual(verified.envelope.version, ENVELOPE_VERSION)
+        self.assertIsNone(verified.envelope.kind)
+        self.assertEqual(verified.subject_kind, LEGACY_SUBJECT_KIND)
+        self.assertNotIn("kind", verified.envelope.claims())
+
+    def test_a_version_two_envelope_without_a_kind_is_refused_and_never_defaulted(self):
+        message = v2_wire()
+        del message["envelope"]["kind"]
+
+        with self.assertRaises(MalformedEnvelope) as caught:
+            self.verify(message)
+
+        self.assertEqual(caught.exception.field, "kind")
+        self.assertIn("missing", str(caught.exception))
+
+    def test_a_version_two_envelope_with_a_non_string_kind_is_refused_by_name(self):
+        for kind in (None, 2, True, ["demo"], {"value": "demo"}):
+            with self.subTest(kind=kind):
+                with self.assertRaises(MalformedEnvelope) as caught:
+                    self.verify(v2_wire(kind=kind))
+
+                self.assertEqual(caught.exception.field, "kind")
+
+    def test_a_tampered_kind_fails_the_hmac_before_any_semantic_check(self):
+        # The signature covers the kind: swapping it — even to another served
+        # kind — is a signature mismatch, not a kind refusal.
+        for kind in ("tenant", "admin"):
+            with self.subTest(kind=kind):
+                with self.assertRaises(EnvelopeSignatureMismatch):
+                    self.verify(v2_wire(kind=kind))
+
+    def test_a_correctly_signed_unknown_kind_is_refused_by_name_after_the_hmac(self):
+        with self.assertRaises(UnknownSubjectKind) as caught:
+            self.verify(self.signed_v2(kind="admin"))
+
+        self.assertEqual(caught.exception.kind, "admin")
+        self.assertIn('"kind"', str(caught.exception))
+
+    def test_a_version_one_envelope_carrying_a_kind_is_still_refused(self):
+        message = wire(sign())
+        message["envelope"]["kind"] = "tenant"
+
+        with self.assertRaises(MalformedEnvelope) as caught:
+            verify_envelope(
+                message,
+                secret=SECRET,
+                call_id=CALL_ID,
+                clock=FakeClock(ISSUED_S + 1),
+            )
+
+        self.assertEqual(caught.exception.field, "kind")
+        self.assertIn("is not a signed claim", str(caught.exception))
+
+    def test_a_version_two_envelope_carrying_another_unknown_claim_is_refused(self):
+        message = v2_wire()
+        message["envelope"]["subject_kind"] = "demo"
+
+        with self.assertRaises(MalformedEnvelope) as caught:
+            self.verify(message)
+
+        self.assertEqual(caught.exception.field, "subject_kind")
+        self.assertIn("is not a signed claim", str(caught.exception))
+
+    def test_from_dict_accepts_both_pinned_shapes(self):
+        legacy = Envelope.from_dict(wire(sign())["envelope"])
+        current = Envelope.from_dict(v2_wire()["envelope"])
+
+        self.assertEqual(legacy.version, ENVELOPE_VERSION)
+        self.assertIsNone(legacy.kind)
+        self.assertEqual(current.version, ENVELOPE_VERSION_SUBJECT_KIND)
+        self.assertEqual(current.kind, "demo")
+        self.assertEqual(current.to_dict(), v2_wire()["envelope"])
 
 
 class SecrecyTests(unittest.TestCase):
