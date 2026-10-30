@@ -234,6 +234,29 @@ class NegativeWallTests(unittest.TestCase):
         self.assertNotIn("agree", endpointing.detail)
 
 
+class OutOfOrderCompleteTests(unittest.TestCase):
+    """A speechComplete that beats its speechEnd cannot produce a negative gap."""
+
+    def test_a_speech_complete_before_speech_end_is_unmeasured_not_negative(self):
+        script = [
+            Script(0.5, "speechStart", turn_id="t1"),
+            Script(13.0, "transcript", text="how are you"),
+            Script(13.05, "speechComplete", turn_id="t1", text="How are you?"),
+            Script(13.1, "speechEnd", turn_id="t1", audio_processed_ms=13_110.0),
+        ]
+        terms, _, _ = run(script)
+        post = terms[0].post_processing
+
+        self.assertIsNone(post.value_ms)
+        self.assertIn(
+            "speechComplete arrived before speechEnd; out-of-order, "
+            "unmeasured, never a negative gap",
+            post.detail,
+        )
+        # The endpointing term is unaffected: only the gap is out of order.
+        self.assertAlmostEqual(terms[0].endpointing.value_ms, 700.0, places=3)
+
+
 class CrossCheckMissingTests(unittest.TestCase):
     def test_a_speechend_without_audio_processed_ms_still_measures_the_wall_clock(self):
         terms, _, _ = run(caller_timeline(complete_at_s=13.7, audio_processed_ms=None))

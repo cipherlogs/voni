@@ -294,6 +294,15 @@ def _post_processing_term(turn: _Turn) -> Term:
             POST_PROCESSING_PRODUCER,
             f"turn {turn.turn_id} has no {missing}; unmeasured, never zero",
         )
+    if turn.complete_at_s < turn.end_at_s:
+        return _unmeasured(
+            POST_PROCESSING_TERM,
+            POST_PROCESSING_PRODUCER,
+            (
+                f"turn {turn.turn_id}: speechComplete arrived before speechEnd; "
+                "out-of-order, unmeasured, never a negative gap"
+            ),
+        )
     return Term(
         name=POST_PROCESSING_TERM,
         value_ms=_ms(turn.complete_at_s - turn.end_at_s),
