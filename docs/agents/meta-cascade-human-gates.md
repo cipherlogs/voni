@@ -50,6 +50,9 @@ with a structurally large term needs an explicit decision, not silence.
 
 ## 130 — German voice probe and re-cast
 
+**Resolved 2026-10-30: the cascade is bound to `jorg` / `aai-jorg` and the
+owner approved the clip. Managed German remains open; see the caveat below.**
+
 **Needs:** `ASSEMBLYAI_API_KEY` and your ear.
 
 The German slot is **`jorg`** in the app catalogue, the vendor's **`aai-jorg`**.
