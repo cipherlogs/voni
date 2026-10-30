@@ -93,6 +93,12 @@ export type CascadeReauditionRequest = {
   /** What part of the delivered capture is the line (the W0 marker). */
   line: TwoCaptureLine | null;
   ballots: readonly CascadeBallot[];
+  /**
+   * Readiness (ticket 152) assembles tenant subjects eligible under
+   * `routing=all` too. The W2 pack stays demo-only by default; a tenant has no
+   * demo voice binding to check, so the caller opts in explicitly.
+   */
+  allowTenantSubject?: boolean;
   /** Clock seam; tests pin the date. */
   now?: () => Date;
 };
@@ -486,7 +492,9 @@ export function assembleCascadeReauditionPack(
   try {
     const binding = demoVoice === null ? null : bindCascadeVoice(demoVoice);
     if (binding === null) {
-      blockers.push("subject is not a demo voice; the W2 pack is for a demo cascade subject");
+      if (!(input.allowTenantSubject === true && subject.agent.kind === "tenant")) {
+        blockers.push("subject is not a demo voice; the W2 pack is for a demo cascade subject");
+      }
     } else {
       if (binding.locale !== subject.locale) {
         blockers.push(

@@ -46,7 +46,8 @@
     "scoreboard:matrix": "node --env-file-if-exists=.env.local --env-file-if-exists=.dev.vars --import tsx scripts/score-matrix.mts",
     "scoreboard:streak": "node --env-file-if-exists=.env.local --env-file-if-exists=.dev.vars --import tsx scripts/score-streak.mts",
     "typecheck": "next typegen && tsc --noEmit",
-    "scoreboard:inspect": "node --import tsx scripts/scoreboard-inspect.mts"
+    "scoreboard:inspect": "node --import tsx scripts/scoreboard-inspect.mts",
+    "readiness:pack": "node --import tsx scripts/readiness-pack.mts"
   },
   "dependencies": {
     "@ai-sdk/openai": "^4.0.60",
