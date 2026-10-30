@@ -383,6 +383,35 @@ test("Voni putting something on the screen is recognised (the call then puts the
   assert.equal(mentionsScreen("Your customers see the price on the screen when they book."), false, "business talk");
 });
 
+test("the invite chip comes up from the agent's tagged final turn, once", () => {
+  const base = { tag: "Lime 42", invited: false, found: false, toolActive: false };
+  // The pipeline runs show_test_address server-side; the browser sees Voni's
+  // final line, which says the tag. That line is the invite even when it never
+  // says "screen".
+  assert.equal(
+    inviteFallbackAction({
+      ...base,
+      text: "Send me an email from your work address with Lime 42 in the subject, and tell me when it's sent.",
+    }),
+    "show-only",
+    "a tagged final turn puts the chip up and speaks nothing extra",
+  );
+  assert.equal(
+    inviteFallbackAction({
+      ...base,
+      invited: true,
+      text: "Send me an email from your work address with Lime 42 in the subject.",
+    }),
+    "none",
+    "a duplicate tagged turn never puts a second invite up",
+  );
+  assert.equal(
+    inviteFallbackAction({ ...base, found: true, text: "Your code is in the subject Lime 42." }),
+    "none",
+    "after the email is found the test is no longer invited",
+  );
+});
+
 test("the invite fallback never repeats an invite the agent already said", () => {
   const base = { tag: "Lime 42", invited: false, found: false, toolActive: false };
   // Live sess_cd108689aa6e4dcfad809d9aa04e8b25: the model's own line carried

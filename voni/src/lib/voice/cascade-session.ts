@@ -60,7 +60,7 @@ export type CascadeCallConfig = {
 };
 
 /** Why a cascade connect never opened the call. */
-export type CascadeConnectFailure = "draining" | "managed" | "unavailable";
+export type CascadeConnectFailure = "draining" | "managed" | "unavailable" | "protocol";
 
 /**
  * A cascade *connect* failure, typed so the app can route the call instead of
@@ -70,7 +70,8 @@ export type CascadeConnectFailure = "draining" | "managed" | "unavailable";
  * draining instance accepts no new call); `managed` is the service's routing
  * verdict that this call belongs on the managed engine (routing defaults to
  * `off`, so it is the common refusal); `unavailable` is the socket failing or
- * closing before the service accepted the call.
+ * closing before the service accepted the call; `protocol` is the service
+ * refusing an unknown or missing protocol version before any call exists.
  *
  * The retry verdict is deliberately absent here: `retryManaged` is decided by
  * `decideCascadeFallback` alone (the app knows whether the one managed retry
@@ -101,12 +102,15 @@ const FALLBACK_REASONS: Record<CascadeConnectFailure, string> = {
     "The voice service routes this call to the managed engine; continuing this call on the managed path.",
   unavailable:
     "The voice service is unavailable; continuing this call on the managed path.",
+  protocol:
+    "The voice service speaks a different protocol version; this call cannot continue on the managed path.",
 };
 
 const SURFACE_MESSAGES: Record<CascadeConnectFailure, string> = {
   draining: "The voice service is draining for a deploy and cannot take this call.",
   managed: "The voice service routes this call to the managed engine and cannot take it.",
   unavailable: "The voice service is unavailable and cannot take this call.",
+  protocol: "The voice service speaks an incompatible protocol version and cannot take this call.",
 };
 
 /**
@@ -117,6 +121,10 @@ const SURFACE_MESSAGES: Record<CascadeConnectFailure, string> = {
  * another retry, so a dead service cannot loop the caller through two
  * transports forever.
  *
+ * A `protocol` refusal is never retried: a managed retry would hide a
+ * half-deployed pair instead of failing loudly, and the app or the service
+ * must be updated together.
+ *
  * This function is the single source of `retryManaged`: the session reports a
  * bare cause, and only the decision knows whether the retry was already spent.
  */
@@ -125,7 +133,7 @@ export function decideCascadeFallback(input: {
   message?: string;
   alreadyFellBack: boolean;
 }): CascadeFallbackDecision {
-  const retryManaged = !input.alreadyFellBack;
+  const retryManaged = input.failure !== "protocol" && !input.alreadyFellBack;
   // Attach the verdict to the typed cause so a caller can inspect either the
   // decision or the error; the class itself never guesses it.
   const error: CascadeFallbackError = Object.assign(
@@ -533,13 +541,22 @@ export class CascadeSession {
         break;
       case "error":
         // A named refusal before the service accepted the call means the call
-        // never opened: `draining` (a deploy) and `managed` (routing sent this
+        // never opened: `draining` (a deploy), `managed` (routing sent this
         // call to the managed engine — routing defaults to `off`, so this is
-        // the common path) are connect failures the app can route. Once
-        // accepted they are ordinary call errors: the call already started, so
-        // a retry would double-dial it. Surface those, never re-route them.
-        if (!this.accepted && (event.code === "draining" || event.code === "managed")) {
-          this.failConnect(event.code, event.message);
+        // the common path) and `protocol_version` (a half-deployed pair) are
+        // connect failures the app can route or surface. Once accepted they
+        // are ordinary call errors: the call already started, so a retry would
+        // double-dial it. Surface those, never re-route them.
+        if (
+          !this.accepted &&
+          (event.code === "draining" ||
+            event.code === "managed" ||
+            event.code === "protocol_version")
+        ) {
+          this.failConnect(
+            event.code === "protocol_version" ? "protocol" : event.code,
+            event.message,
+          );
           break;
         }
         this.handlers.onError?.(event.message);

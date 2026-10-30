@@ -56,12 +56,14 @@ export const UNAVAILABLE_MESSAGE = "The live demo is not available right now.";
 /** A hold rejoin that names no live call is a new call, not a resumed one. */
 export const CALL_ENDED_MESSAGE = "That call has ended. Please start a new call.";
 
-/** The body sent before this door parses: only these four fields matter. */
+/** The body sent before this door parses: only these five fields matter. */
 export type MintRequestBody = {
   voiceId?: unknown;
   resume?: unknown;
   callToken?: unknown;
   tagToken?: unknown;
+  /** A hold return's bounded recent turns; validated by the body builder. */
+  history?: unknown;
 };
 
 export type MintDeps = {
@@ -168,7 +170,14 @@ async function mint(request: Request, deps: MintDeps): Promise<Response> {
   let cascade: DemoCascadeCall;
   try {
     cascade = await deps.buildBody(
-      { voice: voiceId, callId: demoCall.callId, resume },
+      {
+        voice: voiceId,
+        callId: demoCall.callId,
+        resume,
+        ...(body.history === undefined
+          ? {}
+          : { history: body.history as DemoCascadeBodyInput["history"] }),
+      },
       { now },
     );
   } catch (e) {

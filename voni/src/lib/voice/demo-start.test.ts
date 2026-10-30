@@ -149,6 +149,38 @@ test("the real cascade client opens the minted URL and sends identity only", asy
   await session.stop();
 });
 
+test("a hold return mints a fresh call token for the same call and carries history", async () => {
+  const mints: Array<{ voiceId: string; opts?: unknown }> = [];
+  const session = recordingSession();
+  const history = [
+    { role: "user" as const, content: "We run a bakery." },
+    { role: "assistant" as const, content: "What is your busiest hour?" },
+  ];
+
+  await startDemoCall(
+    session,
+    {
+      voiceId: "audrey",
+      resume: true,
+      callToken: "demo-call-1.1761771700.tag-1.mac",
+      history,
+    },
+    {
+      mint: async (voiceId, opts) => {
+        mints.push({ voiceId, ...(opts === undefined ? {} : { opts }) });
+        return minted(2);
+      },
+    },
+  );
+
+  assert.deepEqual(mints[0].opts, {
+    resume: true,
+    callToken: "demo-call-1.1761771700.tag-1.mac",
+    history,
+  });
+  assert.equal(session.records[0].config.callToken, "ct1.call-2", "the cascade token is fresh");
+});
+
 test("a second start after hang-up is a fresh cascade call", async () => {
   let n = 0;
   const mint = async () => minted(++n);
