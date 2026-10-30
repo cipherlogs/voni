@@ -1,0 +1,68 @@
+# The `voni` app on Fly.io (M17, ticket 135) — a separate Fly app from the
+# cascade voice service.
+#
+# The two deploy separately (spec, operational notes): this file configures
+# only the Next app, and deploy/fly.voice-pipeline.toml configures only the
+# Python service. They share no image, no port and no secret: a protocol
+# version mismatch is a deploy error, made visible by /healthz and /readyz
+# before a call, never a guess.
+#
+# The app's image is built and pushed by the app's own pipeline. Ticket 135
+# owns the topology, not the app's build recipe; its Workers deploy (OpenNext)
+# stays live until the app's own cutover decision, so no Dockerfile is invented
+# here. Replace `image` with the pushed tag, or pass `fly deploy --image`.
+#
+# Cloudflare Workers is the app's current host but not the cascade host; the
+# cascade service is excluded from Workers for the reasons in
+# docs/deploy/meta-cascade-host.md. This file exists so the app and the service
+# are two machines, two health checks, two secret sets — never one deploy.
+#
+# Secrets are not in this file. The app's own set (database URL, OAuth, vendor
+# keys, signing secret) is set with `fly secrets set` on this app only.
+
+app = "voni-app"
+primary_region = "iad"
+
+kill_signal = "SIGTERM"
+kill_timeout = 30
+
+[build]
+  image = "registry.fly.io/voni-app:deployment"
+
+[deploy]
+  strategy = "rolling"
+
+[env]
+  # Non-secret host settings. The service's URL is a deployment fact, not a
+  # credential; each app names the other, and neither reads the other's env.
+  PORT = "3000"
+  VOICE_PIPELINE_URL = "https://voni-voice-pipeline.fly.dev"
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+
+  # Two machines, rolling, never auto-stopped: the app holds a voice socket
+  # open to the browser for the length of a call, the same as the service.
+  min_machines_running = 2
+  auto_stop_machines = false
+  auto_start_machines = true
+
+  [http_service.concurrency]
+    type = "connections"
+    soft_limit = 200
+    hard_limit = 250
+
+  # The app's liveness check is its own; `/` is served today, so the check is
+  # honest rather than naming a route that does not exist. The app's readiness
+  # is its own concern and is not the service's /readyz.
+  [[http_service.checks]]
+    interval = "15s"
+    timeout = "3s"
+    grace_period = "20s"
+    method = "GET"
+    path = "/"
+
+[[vm]]
+  size = "shared-cpu-2x"
+  memory = "1gb"

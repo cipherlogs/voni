@@ -1,0 +1,17 @@
+# Runtime dependencies for the cascade service container
+# (voice-pipeline/Dockerfile, ticket 135).
+#
+# Deliberately not requirements-ci.txt: that file also installs pipecat-ai for
+# telephony-bot's PSTN bridge server, which this image does not run. The pins
+# here are the same versions CI installs, and voice-pipeline/test_deploy_topology.py
+# fails if they drift from requirements-ci.txt: one version, tested once.
+#
+# asyncpg is here for the shared durable store adapter (DATABASE_URL, Fly
+# Postgres): two machines must read the same breaker, routing switch and daily
+# counter, so the single-host SqliteStore is not a deployment adapter. The
+# adapter itself lands with ticket 139's readiness proof.
+aiohttp==3.14.3
+websockets==17.1
+fastapi==0.141.1
+uvicorn==0.52.4
+asyncpg==0.31.0

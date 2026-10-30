@@ -1,0 +1,83 @@
+# Local rehearsal of the deployed topology (ticket 135).
+#
+#   docker compose -f deploy/docker-compose.yml up --build --scale voice-pipeline=2
+#
+# Same shape as Fly: two service replicas, each one process, a health check the
+# orchestrator waits on, and SIGTERM with a grace period at least as long as the
+# recorded drain bound. This is how the "a call survives a rolling deploy" claim
+# is rehearsed offline; it is not the production host and it never holds real
+# vendor keys.
+#
+# Secrets are not in this file. Copy deploy/voice-pipeline.env.example to
+# deploy/voice-pipeline.env (gitignored), fill it locally, and compose passes the
+# names through; a committed value fails `python deploy/topology.py`.
+#
+# The app is a separate deployment: this file only gives it a container and a
+# hostname so a local browser can reach both, and it is not built from the
+# service image.
+
+services:
+  voice-pipeline:
+    build:
+      context: ..
+      dockerfile: voice-pipeline/Dockerfile
+    environment:
+      # Non-secret host settings, the same ones Fly injects from the config.
+      VOICE_PIPELINE_PORT: "8766"
+      VOICE_PIPELINE_STT_PROVIDER: "assemblyai"
+      VOICE_PIPELINE_STT_MODE: "balanced"
+      VOICE_PIPELINE_LLM_MODEL: "muse-spark-1.3"
+      VOICE_PIPELINE_TTS_MODEL: "assemblyai-tts-1"
+    env_file:
+      # Optional: a local names file with values, never committed.
+      - path: ./voice-pipeline.env
+        required: false
+    # Two replicas: no published port (the proxy does the fan-out), so both
+    # containers can listen on the same internal port.
+    expose:
+      - "8766"
+    deploy:
+      replicas: 2
+    healthcheck:
+      # Liveness only, the same path Fly probes: /healthz touches no vendor.
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import sys, urllib.request
+          sys.exit(0 if urllib.request.urlopen("http://127.0.0.1:8766/healthz", timeout=2).status == 200 else 1)
+      interval: 15s
+      timeout: 3s
+      start_period: 20s
+      retries: 3
+    stop_signal: SIGTERM
+    # = deploy.drain_max_wait_ms (30 000 ms): a live call is never killed by a
+    # deploy, and a wait shorter than the recorded bound would kill one.
+    stop_grace_period: 30s
+
+  voni:
+    image: registry.fly.io/voni-app:deployment
+    environment:
+      PORT: "3000"
+      VOICE_PIPELINE_URL: "http://voice-pipeline:8766"
+    ports:
+      - "3000:3000"
+    depends_on:
+      voice-pipeline:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - |
+          fetch("http://127.0.0.1:3000/").then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))
+      interval: 15s
+      timeout: 3s
+      start_period: 30s
+      retries: 3
+
+# No sticky sessions: one call per socket means any service replica can accept
+# any new call, and a live call keeps the replica that accepted it. Compose's
+# round-robin matches Fly's proxy behaviour for this purpose.

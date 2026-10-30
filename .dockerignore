@@ -1,0 +1,45 @@
+# Build context for the cascade service image (ticket 135).
+#
+# The context is the repository root because the service imports
+# telephony-bot/voice_judge.py. Everything the image does not need is excluded,
+# in particular the app (its own image), the repository history and every
+# local env file: a secret reaching the build context is a secret in a layer.
+
+.git
+.github
+.scratch
+graphify-out
+node_modules
+**/node_modules
+
+# The app is a separate image; nothing under voni/ is part of the service —
+# except the frozen budget record, which cascade.thresholds resolves at import.
+# Only that file is let through.
+voni/**
+!voni/src
+!voni/src/lib
+!voni/src/lib/demo
+!voni/src/lib/demo/scoreboard-budgets.json
+
+# Local secrets and local state never enter a build.
+.env*
+**/.env*
+**/.dev.vars
+
+# Virtualenvs, caches and artifacts.
+.venv
+**/.venv
+**/__pycache__
+**/*.pyc
+.pytest_cache
+test-results
+artifacts
+
+# Docs, notes and screenshots are not runtime inputs.
+notes/
+docs/
+landingUI/
+*.md
+!voice-pipeline/README.md
+tail.csv
+copy.md

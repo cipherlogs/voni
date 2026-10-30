@@ -1,0 +1,90 @@
+# The cascade voice service on Fly.io (M17, ticket 135).
+#
+# One container, two machines, rolling deploys, one long-lived WebSocket per
+# call. Host decision and the exclusion of Cloudflare Workers:
+# docs/deploy/meta-cascade-host.md (ticket 04). Deployment record:
+# docs/deploy/README.md.
+#
+# Cloudflare Workers is excluded, not forgotten: its request/response runtime
+# cannot hold a three-minute socket, its CPU and connection limits make a
+# 60-minute STT session unsafe, and it has no persistent process for the drain
+# supervisor. Do not point this service at Workers.
+#
+# Secrets are NOT in this file. Fly injects them as env vars from
+# `fly secrets set NAME=...` per app; the names are recorded in
+# deploy/voice-pipeline.env.example. A committed value fails
+# `python deploy/topology.py` and voice-pipeline/test_deploy_topology.py.
+#
+# The `voni` app is a different Fly app with its own config, image and
+# secrets (deploy/fly.voni.toml); the two deploy separately.
+
+app = "voni-voice-pipeline"
+primary_region = "iad"
+
+# SIGTERM starts the drain (ticket 140): /readyz fails, the app stops sending
+# new calls here, live calls finish, then the process exits. The wait is the
+# recorded bound deploy.drain_max_wait_ms (30 000 ms, ticket 04) in
+# voice-pipeline/cascade/thresholds.json; the topology test fails if this
+# timeout is shorter than it.
+kill_signal = "SIGTERM"
+kill_timeout = 30
+
+[build]
+  # Context is the repository root: the service imports telephony-bot's
+  # voice_judge for judge parity. The image copies voice-pipeline and that one
+  # module, and nothing of the app.
+  dockerfile = "voice-pipeline/Dockerfile"
+
+[deploy]
+  # A new machine must pass its health check before an old one is drained.
+  # Never "immediate": that removes a machine with a live call on it.
+  strategy = "rolling"
+
+[env]
+  # Non-secret host settings only. Model ids are host settings, not browser
+  # input (ticket 60); the mic/playout knobs stay in the stored body.
+  VOICE_PIPELINE_PORT = "8766"
+  VOICE_PIPELINE_STT_PROVIDER = "assemblyai"
+  VOICE_PIPELINE_STT_MODE = "balanced"
+  VOICE_PIPELINE_LLM_MODEL = "muse-spark-1.3"
+  VOICE_PIPELINE_TTS_MODEL = "assemblyai-tts-1"
+
+[http_service]
+  internal_port = 8766
+  force_https = true
+
+  # Two machines minimum. Any machine may accept a new call; a live call stays
+  # on the machine that accepted it until it ends, so a rolling deploy must
+  # always leave at least one serving.
+  min_machines_running = 2
+  auto_stop_machines = false
+  auto_start_machines = true
+
+  # A cascade call is one WebSocket, so connections (not CPU) are the limit.
+  # There are no sticky sessions: one call per socket means any machine can
+  # serve any new call, and the proxy is free to place it anywhere.
+  [http_service.concurrency]
+    type = "connections"
+    soft_limit = 150
+    hard_limit = 200
+
+  # Liveness only: /healthz touches no vendor. Readiness (/readyz, ticket 139)
+  # is deliberately not the platform check: a draining machine must stay
+  # reachable so it can finish live calls instead of being killed for
+  # failing a probe.
+  [[http_service.checks]]
+    interval = "15s"
+    timeout = "3s"
+    grace_period = "20s"
+    method = "GET"
+    path = "/healthz"
+
+[[vm]]
+  size = "shared-cpu-2x"
+  memory = "1gb"
+
+# Shared durable state (breaker, routing switch, daily counter) is a Fly
+# Postgres attachment that injects DATABASE_URL into both machines. That is the
+# concrete choice this ticket records; the single-host SqliteStore stays a
+# local/test adapter. The asyncpg adapter and the readiness proof land with
+# ticket 139, not here.
