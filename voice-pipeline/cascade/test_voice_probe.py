@@ -8,8 +8,9 @@ refusal for audio.
 Independent expected values:
 
 - the WAV hash is recomputed here from the bytes the fake endpoint returned;
-- the German catalogue ids are read from the app's own ``voices.ts``, so a
-  guessed UUID cannot enter the candidate list;
+- the German catalogue ids come from the JSON export of the app's own
+  ``voices.ts``, so no second hand parser and no guessed UUID can enter the
+  candidate list;
 - the binding tables are snapshotted before the probe so a mutation is visible.
 """
 
@@ -19,7 +20,6 @@ import hashlib
 import importlib.util
 import io
 import json
-import re
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -30,16 +30,16 @@ from cascade.voice_probe import (
     DEFAULT_CANDIDATES,
     ENDPOINT,
     MissingProbeKey,
+    ProbeCatalogueError,
     ProbeResponse,
     catalogue_german_ids,
     german_candidates,
     probe_voice,
     probe_voices,
+    read_catalogue_german_ids,
     safe_voice_filename,
 )
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-VOICES_TS = REPO_ROOT / "voni/src/lib/agents/voices.ts"
 API_KEY = "test-key"
 WAV = b"RIFF\x24\x00\x00\x00WAVEfmt \x10\x00\x00\x00" + b"\x01\x00\x01\x00" + b"\x00" * 32
 REFUSAL_422 = json.dumps(
@@ -63,14 +63,14 @@ def response(status: int, *, body: bytes = b"", **headers: str) -> ProbeResponse
     return ProbeResponse(status=status, headers=headers, body=body)
 
 
-def success(voice_id: str = "aai-juergen") -> ProbeResponse:
+def success(voice_id: str = "aai-juergen", language: str = "german") -> ProbeResponse:
     return response(
         200,
         body=WAV,
         **{
             "X-Request-Id": "req-200",
             "X-TTS-Voice-Id": voice_id,
-            "X-TTS-Language": "german",
+            "X-TTS-Language": language,
             "X-TTS-Model": "assemblyai-tts-1",
         },
     )
@@ -126,6 +126,32 @@ class ProbeSuccessTests(unittest.TestCase):
         self.assertEqual("empty_audio", probe.error.error_type)
 
 
+class GermanSuggestionTests(unittest.TestCase):
+    def test_an_english_voice_that_renders_is_not_suggested_for_the_german_row(self):
+        run = probe_voices(
+            ["aai-anna"],
+            api_key=API_KEY,
+            poster=FakePoster(success("aai-anna", language="English")),
+        )
+
+        self.assertEqual(("aai-anna",), tuple(probe.voice_id for probe in run.rendered))
+        self.assertEqual(0, run.exit_code)
+        self.assertEqual((), run.suggested_bindings())
+        self.assertEqual([], run.to_document()["suggestedBinding"])
+
+    def test_the_language_header_is_matched_case_and_space_insensitively(self):
+        run = probe_voices(
+            ["aai-juergen"],
+            api_key=API_KEY,
+            poster=FakePoster(success(language="  GERMAN  ")),
+        )
+
+        self.assertEqual(
+            ('VoiceBinding("aai-juergen", LOCALES["de"]),',),
+            run.suggested_bindings(),
+        )
+
+
 class ProbeRefusalTests(unittest.TestCase):
     def test_a_422_voice_not_found_is_a_named_refusal_with_no_audio(self):
         probe = probe_voice(
@@ -174,29 +200,28 @@ class CandidateTests(unittest.TestCase):
             german_candidates(["aai-juergen", "acct-de-1"]),
         )
 
-    def test_the_app_catalogue_supplies_only_ids_declared_german(self):
-        source = """
-        export const VOICES = [
-          { id: "lola", accent: "ES", presents: "feminine", language: "Spanish", languageCode: "es" },
-          { id: "juergen", accent: "DE", presents: "masculine", language: "German", languageCode: "de" },
-        ];
-        """
+    def test_the_exported_catalogue_supplies_only_ids_declared_german(self):
+        document = {
+            "schemaVersion": 1,
+            "source": "src/lib/agents/voices.ts",
+            "voices": [
+                {"id": "lola", "language": "Spanish", "languageCode": "es"},
+                {"id": "juergen", "language": "German", "languageCode": "de"},
+            ],
+        }
 
-        self.assertEqual(("juergen",), catalogue_german_ids(source))
+        self.assertEqual(("juergen",), catalogue_german_ids(document))
 
-    def test_the_real_catalogue_contains_the_unbound_german_row(self):
-        ids = catalogue_german_ids(VOICES_TS.read_text(encoding="utf-8"))
+    def test_an_unusable_catalogue_export_is_refused_by_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "voices.json"
+            path.write_text('{"voices": "not-a-list"}', encoding="utf-8")
 
-        self.assertIn("juergen", ids)
-        self.assertEqual(
-            ids,
-            tuple(
-                re.findall(
-                    r'\{ id: "([^"]+)"[^}]*languageCode: "de"',
-                    VOICES_TS.read_text(encoding="utf-8"),
-                )
-            ),
-        )
+            with self.assertRaises(ProbeCatalogueError) as caught:
+                read_catalogue_german_ids(path)
+
+        self.assertIn(str(path), str(caught.exception))
+        self.assertIn("voices", str(caught.exception))
 
     def test_a_filename_is_safe_and_never_a_path(self):
         self.assertEqual("aai-juergen.wav", safe_voice_filename("aai-juergen"))
@@ -331,9 +356,10 @@ class CliTests(unittest.TestCase):
         self.assertIn("ASSEMBLYAI_API_KEY", out + err)
 
     def test_a_render_prints_a_table_and_a_suggested_binding_but_never_the_key(self):
+        poster = FakePoster(response(422, body=REFUSAL_422), success())
         code, out, err = self.run_cli(
             ["--voice-id", "aai-juergen", "--out", str(self.out)],
-            poster=FakePoster(success()),
+            poster=poster,
             environ={"ASSEMBLYAI_API_KEY": API_KEY},
         )
 
@@ -343,10 +369,29 @@ class CliTests(unittest.TestCase):
         self.assertIn('VoiceBinding("aai-juergen", LOCALES["de"]),', out)
         self.assertNotIn(API_KEY, out + err)
         self.assertTrue((self.out / "aai-juergen.wav").is_file())
+        # --voice-id is additive: the two defaults are still probed first.
+        self.assertEqual(
+            ["juergen", "aai-juergen"],
+            [body["voice_id"] for _, _, body in poster.calls],
+        )
+
+    def test_no_defaults_replaces_the_two_default_candidates(self):
+        poster = FakePoster(success("aai-juergen"))
+        code, out, err = self.run_cli(
+            ["--no-defaults", "--voice-id", "aai-juergen"],
+            poster=poster,
+            environ={"ASSEMBLYAI_API_KEY": API_KEY},
+        )
+
+        self.assertEqual(0, code, err)
+        self.assertEqual(
+            ["aai-juergen"],
+            [body["voice_id"] for _, _, body in poster.calls],
+        )
 
     def test_every_refusal_exits_one_and_prints_no_binding(self):
         code, out, err = self.run_cli(
-            ["--voice-id", "juergen", "--out", str(self.out)],
+            ["--no-defaults", "--voice-id", "juergen", "--out", str(self.out)],
             poster=FakePoster(response(422, body=REFUSAL_422)),
             environ={"ASSEMBLYAI_API_KEY": API_KEY},
         )
@@ -357,12 +402,17 @@ class CliTests(unittest.TestCase):
         self.assertEqual([], list(self.out.glob("*.wav")))
 
     def test_catalogue_de_adds_its_ids_to_the_candidates(self):
-        catalogue = self.out / "voices.ts"
+        catalogue = self.out / "voices.json"
         catalogue.write_text(
-            'export const VOICES = [\n'
-            '  { id: "juergen", accent: "DE", presents: "masculine", language: "German", languageCode: "de" },\n'
-            '  { id: "de-test", accent: "DE", presents: "feminine", language: "German", languageCode: "de" },\n'
-            "];\n",
+            json.dumps(
+                {
+                    "schemaVersion": 1,
+                    "voices": [
+                        {"id": "juergen", "language": "German", "languageCode": "de"},
+                        {"id": "de-test", "language": "German", "languageCode": "de"},
+                    ],
+                }
+            ),
             encoding="utf-8",
         )
         poster = FakePoster(

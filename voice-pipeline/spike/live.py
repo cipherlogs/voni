@@ -491,12 +491,17 @@ def _caller_turn(
 def _effort(
     env: Mapping[str, str],
 ) -> tuple[first_token.Effort | None, str | None]:
-    """The owner-set effort, or the named blocker; ``"none"`` is never sent."""
+    """The M03-configured effort, or the named blocker; ``"none"`` is never sent.
+
+    The value is the effort M03 fixed for the run, not a live probe of Spark's
+    lowest supported value. The row it fills is labelled ``lowest`` by the
+    report's closed shape, so its source says configured-not-probed.
+    """
     value = str(env.get(REASONING_EFFORT_ENV, "")).strip()
     if not value:
         return (
             None,
-            f"{REASONING_EFFORT_ENV} is not set; the lowest supported "
+            f"{REASONING_EFFORT_ENV} is not set; the configured "
             "reasoning_effort is not guessed",
         )
     if value.lower() == first_token.UNAVAILABLE_EFFORT:
@@ -507,16 +512,25 @@ def _effort(
         )
     return (
         first_token.lowest_effort(
-            value, source=f"{REASONING_EFFORT_ENV} (owner-set for this run)"
+            value,
+            source=(
+                f"{REASONING_EFFORT_ENV} (M03 configured, not probed)"
+            ),
         ),
         None,
     )
 
 
 def _producer_for(effort: first_token.Effort) -> str:
+    note = ""
+    if effort.label == first_token.LOWEST_LABEL and effort.is_resolved:
+        note = (
+            f"; {effort.label} row value from {effort.source}: configured, "
+            "not probed"
+        )
     return (
         f"spike.first_token[{effort.label}] live Spark stream: speechComplete "
-        "receipt -> first content delta (reasoning_content excluded)"
+        f"receipt -> first content delta (reasoning_content excluded){note}"
     )
 
 
@@ -575,12 +589,19 @@ class LiveMeasurement:
     degraded: tuple[str, ...] = ()
 
     def exit_code(self) -> int:
-        """0 for a fully measured PASS/AT RISK, 1 for FAIL, 3 for incomplete."""
-        if self.report.verdict == report.FAIL:
-            return 1
-        if self.blockers or self.degraded:
+        """0 for a fully measured PASS/AT RISK, 1 for FAIL, 3 for incomplete.
+
+        An unmeasured term, a degraded leg or a blocker means the run did not
+        measure all five terms, so it outranks a FAIL computed from the terms
+        that happened to arrive.
+        """
+        if (
+            self.blockers
+            or self.degraded
+            or self.report.unmeasured_names
+        ):
             return 3
-        return 3 if self.report.unmeasured_names else 0
+        return 1 if self.report.verdict == report.FAIL else 0
 
     def metadata(self) -> dict[str, Any]:
         """The run record: timestamp and key *names*, never a key value."""
@@ -656,6 +677,9 @@ def run_live(
         synthesis_error = None
 
     transport = None
+    speech_complete_at_s: float | None = None
+    speech_complete_missing: str | None = None
+    stt_measured = False
     try:
         transport = stt_transport(meta_key)
         turns = endpointing.measure(
@@ -668,16 +692,33 @@ def run_live(
                 "fixture's caller turn was not measured"
             )
         stt_terms = caller
-        speech_complete_at_s = getattr(transport, "speech_complete_at_s", None)
+        stt_measured = True
         transcript = getattr(transport, "transcript", "") or SPIKE_TRANSCRIPT
     except Exception as error:  # noqa: BLE001 - a leg failure is a named term
         stt_terms = endpointing.unmeasured_terms(
             f"live Meta STT leg failed: {error}"
         )
-        speech_complete_at_s = None
         transcript = SPIKE_TRANSCRIPT
         degraded.extend(
             (endpointing.ENDPOINTING_TERM, endpointing.POST_PROCESSING_TERM)
+        )
+
+    if stt_measured and transport is not None:
+        # The receipt is a declared member of the transport protocol (it is
+        # term 3's start), so it is read directly. A transport that does not
+        # carry it leaves term 3 unmeasured by name, never as a silent None.
+        try:
+            speech_complete_at_s = transport.speech_complete_at_s
+        except AttributeError:
+            speech_complete_missing = (
+                "the live Meta STT transport does not expose "
+                "speech_complete_at_s (the speechComplete receipt), so term 3 "
+                "has no start"
+            )
+    else:
+        speech_complete_missing = (
+            "the speechComplete receipt was not recorded because the Meta STT "
+            "leg failed"
         )
 
     effort, effort_blocker = _effort(env)
@@ -689,7 +730,7 @@ def run_live(
             speech_complete_at_s=speech_complete_at_s,
         )
     elif speech_complete_at_s is None:
-        reason = (
+        reason = speech_complete_missing or (
             "the speechComplete receipt was not recorded, so term 3 has no "
             "start"
         )

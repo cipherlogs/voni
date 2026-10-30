@@ -404,9 +404,10 @@ def _ms(seconds: float) -> float:
 def _producer(effort: Effort, transport: StreamingTransport | None) -> str:
     name = getattr(transport, "name", None)
     source = f"trace {name}" if name else "live Spark stream"
+    provenance = f"; value from {effort.source}" if effort.source.strip() else ""
     return (
         f"spike.first_token[{effort.label}] {source}: speechComplete receipt -> "
-        "first content delta (reasoning_content excluded)"
+        f"first content delta (reasoning_content excluded){provenance}"
     )
 
 

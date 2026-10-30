@@ -101,6 +101,11 @@ class MetaSttTransport(Protocol):
     def audio_processed_s(self) -> float:
         """The vendor's processed position in seconds, for the pacer's lead cap."""
 
+    #: The receipt instant of the caller turn's first ``speechComplete``, or
+    #: ``None`` when it never arrived. Term 3 starts here, so a transport that
+    #: cannot report it leaves term 3 unmeasured by name.
+    speech_complete_at_s: float | None
+
     def poll(self) -> tuple[SttEvent, ...]: ...
 
     def end_stream(self) -> None: ...

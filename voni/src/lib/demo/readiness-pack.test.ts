@@ -234,6 +234,7 @@ function subjectEntry(spec: SubjectSpec, dir: string): ReadinessManifestSubject 
     kind: spec.kind,
     locale: spec.locale,
     artifacts: [first, second],
+    runHistory: [first, second],
     reference: referencePath,
     delivered: deliveredPath,
     line: { kind: "greeting", text: spec.greeting },
@@ -640,6 +641,131 @@ test("a missing or malformed line marker blocks the comparison", () => {
     badLine.subjects.find((row) => row.subject === "lola")!.blockers.join(" "),
     /line marker must be/,
   );
+});
+
+function withoutHistory(
+  entry: ReadinessManifestSubject,
+  runsDir?: string,
+): ReadinessManifestSubject {
+  const copy = { ...entry };
+  delete copy.runHistory;
+  if (runsDir !== undefined) copy.runsDir = runsDir;
+  return copy;
+}
+
+function thirdRun(
+  dir: string,
+  spec: SubjectSpec,
+  entry: ReadinessManifestSubject,
+  recordedAt = "2026-10-30T10:00:00.000Z",
+): string {
+  return writeArtifact({
+    dir,
+    spec,
+    runId: `${spec.subject}-run-3`,
+    recordedAt,
+    referencePath: entry.reference,
+    deliveredPath: entry.delivered,
+    referenceSha: sha256(readFileSync(entry.reference)),
+    deliveredSha: sha256(readFileSync(entry.delivered)),
+  });
+}
+
+test("run history must be supplied and must end at the two chosen artifacts", () => {
+  const { manifest, dir } = completeManifest();
+  const anna = entryOf(manifest, "anna");
+  const third = thirdRun(dir, BOUND_SUBJECTS[0]!, anna);
+  const blockersFor = (pack: ReturnType<typeof assembleReadinessPack>) =>
+    pack.subjects.find((row) => row.subject === "anna")!.blockers.join(" ");
+
+  const noHistory = assembleReadinessPack({
+    manifest: withEntry(manifest, "anna", (entry) => withoutHistory(entry)),
+    tenants: TENANTS,
+  });
+  assert.equal(noHistory.status, "blocked");
+  assert.match(
+    blockersFor(noHistory),
+    /run history not supplied; last-two consecutive unverified/,
+  );
+
+  const after = assembleReadinessPack({
+    manifest: withEntry(manifest, "anna", (entry) => ({
+      ...entry,
+      runHistory: [...entry.runHistory!, third],
+    })),
+    tenants: TENANTS,
+  });
+  assert.equal(after.status, "blocked");
+  assert.match(blockersFor(after), /run history has 1 run\(s\) after the supplied pair/);
+
+  const between = assembleReadinessPack({
+    manifest: withEntry(manifest, "anna", (entry) => ({
+      ...entry,
+      artifacts: [entry.artifacts[0]!, third],
+      runHistory: [...entry.runHistory!, third],
+    })),
+    tenants: TENANTS,
+  });
+  assert.equal(between.status, "blocked");
+  assert.match(blockersFor(between), /1 run\(s\) between the supplied artifacts/);
+
+  const reversed = assembleReadinessPack({
+    manifest: withEntry(manifest, "anna", (entry) => ({
+      ...entry,
+      artifacts: [entry.artifacts[1]!, entry.artifacts[0]!],
+    })),
+    tenants: TENANTS,
+  });
+  assert.equal(reversed.status, "blocked");
+  assert.match(blockersFor(reversed), /not in order/);
+});
+
+test("runsDir verifies the pair by scanning the subject's run files", () => {
+  const { manifest, dir } = completeManifest();
+
+  const ready = assembleReadinessPack({
+    manifest: withEntry(manifest, "anna", (entry) => withoutHistory(entry, dir)),
+    tenants: TENANTS,
+  });
+  assert.equal(ready.status, "ready", ready.blockers.join("; "));
+
+  const anna = entryOf(manifest, "anna");
+  thirdRun(dir, BOUND_SUBJECTS[0]!, anna);
+  const blocked = assembleReadinessPack({
+    manifest: withEntry(manifest, "anna", (entry) => withoutHistory(entry, dir)),
+    tenants: TENANTS,
+  });
+  assert.equal(blocked.status, "blocked");
+  assert.match(
+    blocked.subjects.find((row) => row.subject === "anna")!.blockers.join(" "),
+    /after the supplied pair|ineligible run after/,
+  );
+});
+
+test("a history that is not oldest-first, or is doubly supplied, is refused", () => {
+  const { manifest, dir } = completeManifest();
+  const blockersFor = (pack: ReturnType<typeof assembleReadinessPack>) =>
+    pack.subjects.find((row) => row.subject === "anna")!.blockers.join(" ");
+
+  const unordered = assembleReadinessPack({
+    manifest: withEntry(manifest, "anna", (entry) => ({
+      ...entry,
+      runHistory: [entry.artifacts[1]!, entry.artifacts[0]!],
+    })),
+    tenants: TENANTS,
+  });
+  assert.equal(unordered.status, "blocked");
+  assert.match(blockersFor(unordered), /not ordered by recordedAt/);
+
+  const both = assembleReadinessPack({
+    manifest: withEntry(manifest, "anna", (entry) => ({
+      ...entry,
+      runsDir: dir,
+    })),
+    tenants: TENANTS,
+  });
+  assert.equal(both.status, "blocked");
+  assert.match(blockersFor(both), /runHistory or runsDir, not both/);
 });
 
 test("an unusable manifest is bad input, not a blocked pack", () => {  assert.throws(

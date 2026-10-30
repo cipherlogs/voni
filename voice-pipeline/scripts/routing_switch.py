@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import inspect
 import json
 import os
 import re
@@ -74,6 +75,10 @@ class StoreSelectionError(RoutingCliError):
 
 class RoutingUnreadable(RoutingCliError):
     """The switch exists or the store was named, but its value is not knowable."""
+
+
+class RoutingConflictRefusal(RoutingCliError):
+    """Another operator won the compare-and-set; the caller must re-read."""
 
 
 @dataclass(frozen=True)
@@ -137,6 +142,28 @@ def redact(message: str, selection: StoreSelection | None = None) -> str:
     if selection is not None and selection.kind == "postgres":
         message = message.replace(selection.location, "<database-url>")
     return _PASSWORD.sub(r"\1<redacted>\2", message)
+
+
+def close_store(
+    store: Any, err: TextIO, selection: StoreSelection | None
+) -> None:
+    """Release the store's pool when it owns one; a close failure is a warning.
+
+    ``PostgresStore`` opens an asyncpg pool lazily. The CLI is a one-shot
+    process, so leaving it open is a leaked connection, not a shutdown detail.
+    """
+    close = getattr(store, "close", None)
+    if not callable(close):
+        return
+    try:
+        result = close()
+        if inspect.isawaitable(result):
+            asyncio.run(result)
+    except Exception as exc:  # noqa: BLE001 - a close failure is not the result
+        err.write(
+            "routing-switch: warning: store close failed: "
+            f"{redact(str(exc), selection)}\n"
+        )
 
 
 def _number(value: float | None) -> str:
@@ -216,10 +243,7 @@ async def set_view(
     except RoutingSwitchUnchanged as exc:
         raise RoutingCliError(str(exc)) from None
     except RoutingSwitchConflict as exc:
-        message = str(exc)
-        if "re-read" not in message:
-            message = f"{message}; re-read and retry"
-        raise RoutingCliError(message) from None
+        raise RoutingConflictRefusal(str(exc)) from None
     except StoreUnavailable as exc:
         raise RoutingCliError(f"the flip did not land: {exc}") from None
     except (RoutingSwitchError, ValueError) as exc:
@@ -333,6 +357,7 @@ def main(
         err.write(f"routing-switch: {redact(str(exc))}\n")
         return 1
 
+    switch: Any = None
     try:
         switch = (
             switch_factory(selection)
@@ -345,6 +370,13 @@ def main(
             view = asyncio.run(
                 set_view(switch, mode=args.mode, operator=args.operator, reason=args.reason)
             )
+    except RoutingConflictRefusal as exc:
+        # The retry instruction belongs to the operator-facing layer; the
+        # exception type, not its prose, decides that this was a CAS conflict.
+        err.write(
+            f"routing-switch: {redact(str(exc), selection)}; re-read and retry\n"
+        )
+        return 1
     except RoutingCliError as exc:
         err.write(f"routing-switch: {redact(str(exc), selection)}\n")
         return 1
@@ -354,6 +386,8 @@ def main(
             f"{redact(str(exc), selection)}\n"
         )
         return 1
+    finally:
+        close_store(getattr(switch, "store", None), err, selection)
 
     if args.json:
         _emit_json(view, out)
