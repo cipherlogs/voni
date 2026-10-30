@@ -174,6 +174,69 @@ test("the contact chip has one render site, gated on the invite, the inbox and t
   assert.doesNotMatch(call, /putTestUp\(/, "the managed-only invite handler is gone");
 });
 
+test("every demo note is hidden context on the cascade, never a spoken managed line", () => {
+  const call = readRepo("components/voice-call.tsx");
+  const speak = call.slice(
+    call.indexOf("const speak = useCallback"),
+    call.indexOf("/** Page hidden right now (demo)"),
+  );
+
+  // One transport-neutral note path: the managed session keeps its floor
+  // queue, the cascade gets a hidden context frame. Hidden context is applied
+  // to the next generated turn and never becomes a caption or a turn.
+  assert.match(speak, /if \(session instanceof VoiceSession\) \{[\s\S]*?session\.speak\(instructions, opts\);/);
+  assert.match(
+    speak,
+    /if \(session instanceof CascadeSession\) session\.sendContext\(instructions\);/,
+    "the cascade receives the note over the context frame",
+  );
+  assert.doesNotMatch(speak, /setTurns|setLiveCaption/, "a note never enters the transcript");
+
+  // Every live instruction type is routed through speak() (directly, or via
+  // closeCall for the time-up and hold-cap closings).
+  for (const note of [
+    "MUTE_CHECK_IN_INSTRUCTIONS",
+    "checkEmailInstructions(result)",
+    "emailArrivedInstructions(result, { fromLastCall: !test.invited })",
+    "body.data.instructions",
+    "rungInstructions(rung, goal)",
+    "inviteNowInstructions(tag)",
+  ]) {
+    assert.ok(
+      call.includes(`speak(${note}`) || call.includes(`speak(${note},`),
+      `${note} reaches the hidden note path`,
+    );
+  }
+  assert.match(
+    call,
+    /closeCall\(test\.invited && !test\.found && !test\.gated \? LATE_EMAIL_INSTRUCTIONS : TIME_UP_INSTRUCTIONS\)/,
+  );
+  assert.match(call, /closeCall\(HOLD_TIMEOUT_INSTRUCTIONS\)/);
+  // The goodbye/close note is the closing line; the service's end_call ends
+  // the call (CascadeSession drains then stops), not a browser tool relay.
+  assert.match(call, /if \(markClosing\(\)\) speak\(instructions, \{ key: "close" \}\)/);
+});
+
+test("the cascade demo restores the off-track ladder and invite fallback as notes", () => {
+  const call = readRepo("components/voice-call.tsx");
+
+  // A final visitor caption is judged against the current beat, exactly like
+  // the managed demo did; the rung is a hidden note for the next reply.
+  assert.match(call, /requestVoiceJudge\(\s*"off-track"/);
+  assert.match(call, /beatGoal\(emailTestRef\.current\)/);
+  assert.match(
+    call,
+    /ladderRef\.current\?\.onVerdict\(\s*verdict\.decision === "off-track",?\s*\)/,
+  );
+  assert.match(call, /if \(rung === "end"\) closeCall\(rungInstructions\(rung, goal\)\)/);
+  assert.match(call, /else speak\(rungInstructions\(rung, goal\)\)/);
+
+  // Voni mentioned the screen without the invite: the fallback note is hidden
+  // context. The chip itself is ticket 15's job.
+  assert.match(call, /inviteFallbackAction\(\{/);
+  assert.match(call, /speak\(inviteNowInstructions\(tag\), \{ key: "invite" \}\)/);
+});
+
 test("every VoiceCall path exposes mute state and hidden context without reply creation", () => {
   const call = readRepo("components/voice-call.tsx");
   const session = readRepo("lib/voice/session.ts");

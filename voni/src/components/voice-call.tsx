@@ -52,7 +52,8 @@ import { deliveredCaptureRequested } from "@/lib/voice/delivered-capture";
 import { CascadeSession, CASCADE_PROTOCOL_VERSION, decideCascadeFallback } from "@/lib/voice/cascade-session";
 import { demoUnavailableMessage } from "@/lib/voice/cascade-failure-view";
 import { startDemoCall } from "@/lib/voice/demo-start";
-import { FILLER_POOL } from "@/lib/voice/jev-judges";
+import { FILLER_POOL, isEndCallRequest, requestVoiceJudge } from "@/lib/voice/jev-judges";
+import { callRecognition } from "@/lib/voice/recognition";
 import { compileSystemPrompt } from "@/lib/agents/compile";
 import type { AgentConfig } from "@/lib/agents/config";
 import { DEMO_TRANSCRIPTION_MODE, buildAgentKeyterms, buildAgentTranscriptionPrompt } from "@/lib/voice/transcription";
@@ -74,8 +75,11 @@ import {
   LATE_EMAIL_INSTRUCTIONS,
   MUTE_CHECK_IN_INSTRUCTIONS,
   TIME_UP_INSTRUCTIONS,
+  beatGoal,
   checkEmailInstructions,
   emailArrivedInstructions,
+  inviteNowInstructions,
+  rungInstructions,
   voniConfig,
 } from "@/lib/demo/voni-agent";
 import { TalkClock } from "@/lib/demo/talk-clock";
@@ -84,6 +88,7 @@ import {
   EMAIL_TEST_START,
   checkResultFromData,
   emailTestAfterCheck,
+  inviteFallbackAction,
   loadTagToken,
   saveTagToken,
   talkLimitS,
@@ -540,13 +545,20 @@ export function VoiceCall({
     setReturning(value);
   }, []);
   /**
-   * Queue a line for Voni through the session's floor (lib/voice/floor.ts):
-   * it goes out only when nobody holds the floor, so no note ever lands on
-   * a reply, a tool call, or the caller.
+   * Queue a line for Voni. On the managed session it goes through the
+   * session's floor (lib/voice/floor.ts): it goes out only when nobody holds
+   * the floor, so no note ever lands on a reply, a tool call, or the caller.
+   * On the cascade the service owns the turn boundary, so the note is sent as
+   * hidden context: it is applied to the next generated turn and never becomes
+   * a caption or a transcript turn (demo-cascade ticket 12).
    */
   const speak = useCallback((instructions: string, opts?: { key?: string; droppable?: boolean }) => {
     const session = sessionRef.current;
-    if (session instanceof VoiceSession) session.speak(instructions, opts);
+    if (session instanceof VoiceSession) {
+      session.speak(instructions, opts);
+      return;
+    }
+    if (session instanceof CascadeSession) session.sendContext(instructions);
   }, []);
   /** Page hidden right now (demo): a drop then parks instead of resuming. */
   const hiddenRef = useRef(false);
@@ -1212,6 +1224,11 @@ export function VoiceCall({
       // Tools are not executed on the cascade path yet — the agent answers
       // from knowledge, so tool-heavy agents should stay on managed.
       let cascadeEnded = false;
+      // The demo's guardrail words follow the picked voice's Locale (the same
+      // per-Locale recognition layer the managed path uses); hidden notes stay
+      // model-directed English, while the service speaks its Locale's hold and
+      // goodbye lines. An inline test call keeps its own config's Locale.
+      const demoRecognition = callRecognition(config);
       const cascade = new CascadeSession({
         onCaption: (caption) => {
           if (caption.final) {
@@ -1239,6 +1256,55 @@ export function VoiceCall({
             turnsRef.current = [...turnsRef.current, settledTurn];
             setTurns((prev) => [...prev, settledTurn]);
             setLiveCaption(null);
+            // Ticket 12: the browser's live notes are hidden context on the
+            // cascade, not captions. A final visitor turn is still scored by
+            // the demo's stakes ladder; a final agent turn can announce the
+            // screen without the invite, which the fallback note covers.
+            if (modeKind === "demo") {
+              if (caption.role === "agent") {
+                lastAgentLineRef.current = caption.text;
+                const test = emailTestRef.current;
+                const action = inviteFallbackAction({
+                  text: caption.text,
+                  tag: testTagRef.current ?? null,
+                  invited: test.invited,
+                  found: test.found,
+                  // The pipeline runs the tool server-side and the fallback
+                  // note is only for a line that never put the test up.
+                  toolActive: false,
+                });
+                if (action === "show-and-speak") {
+                  const tag = testTagRef.current;
+                  if (tag) speak(inviteNowInstructions(tag), { key: "invite" });
+                }
+              } else if (!closingRef.current && caption.text.trim()) {
+                if (isEndCallRequest(caption.text, demoRecognition)) return;
+                const token = callTokenRef.current;
+                void requestVoiceJudge(
+                  "off-track",
+                  {
+                    goal: beatGoal(emailTestRef.current),
+                    agentLine: lastAgentLineRef.current,
+                    userText: caption.text,
+                  },
+                  {
+                    timeoutMs: 2500,
+                    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+                  },
+                ).then((verdict) => {
+                  if (sessionRef.current !== cascade || closingRef.current) return;
+                  const rung = ladderRef.current?.onVerdict(
+                    verdict.decision === "off-track",
+                  );
+                  if (!rung) return;
+                  console.debug("[voice-call] off-track", rung, verdict.source);
+                  const goal = beatGoal(emailTestRef.current);
+                  if (rung === "end") closeCall(rungInstructions(rung, goal));
+                  // No key: every rung is said, in order.
+                  else speak(rungInstructions(rung, goal));
+                });
+              }
+            }
           } else {
             // Live user caption (the heard-indicator): the running partial
             // renders in the transient subtitle line, marked overheard
@@ -1592,7 +1658,7 @@ export function VoiceCall({
       setStarting(false);
       notifyPending({ ...pendingRef.current, starting: false });
     }
-  }, [modeKind, inlineAgentId, notifyPending, voiceId, config, engine, cascadeUrl, setCallState, setReturnPending, enterHold, setEmailTest, setTestTag, playConnectedChime, requestManagedFallback]);
+  }, [modeKind, inlineAgentId, notifyPending, voiceId, config, engine, cascadeUrl, setCallState, setReturnPending, enterHold, setEmailTest, setTestTag, playConnectedChime, requestManagedFallback, speak, closeCall]);
 
   const hangUp = useCallback(async () => {
     if (hangingUp) return;

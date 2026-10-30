@@ -91,6 +91,38 @@ test("the greeting speaks the voice's Locale and a hold return omits it", async 
   }
 });
 
+test("the call's Locale is pinned by the body and spoken hold/goodbye lines are localized", () => {
+  // Hidden model-directed notes stay English; the spoken lines the service
+  // owns come from the existing per-Locale tables. This pins the two sides
+  // together: every demo voice's body Locale must have a registered hold and
+  // goodbye line, never a fallback to English.
+  const tools = readFileSync(
+    join(here, "../../../../voice-pipeline/cascade/tools.py"),
+    "utf8",
+  );
+  const call = readFileSync(
+    join(here, "../../../../voice-pipeline/cascade/call.py"),
+    "utf8",
+  );
+  const block = (source: string, name: string) => {
+    const start = source.indexOf(`${name}: Mapping[str, str] = MappingProxyType(`);
+    assert.ok(start >= 0, `${name} table exists`);
+    return source.slice(start, source.indexOf(")", start));
+  };
+  const hold = block(tools, "HOLD_LINES");
+  const goodbye = block(call, "GOODBYE_LINES");
+
+  for (const voice of DEMO_VOICE_IDS) {
+    const locale = LOCALE_BY_VOICE[voice];
+    assert.match(hold, new RegExp(`"${locale}":\\s*"[^"]+"`), `hold line for ${locale}`);
+    assert.match(
+      goodbye,
+      new RegExp(`"${locale}":\\s*"[^"]+"`),
+      `goodbye line for ${locale}`,
+    );
+  }
+});
+
 test("the demo body carries no tenant fields", async () => {
   for (const voice of DEMO_VOICE_IDS) {
     const { body } = await buildDemoCascadeBody(

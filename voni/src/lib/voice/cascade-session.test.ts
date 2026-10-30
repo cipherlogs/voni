@@ -77,6 +77,43 @@ test("context messages serialize as hidden system events", () => {
   });
 });
 
+test("demo notes reach the context frame and never become a caption", async () => {
+  // Ticket 12: every browser-generated note the managed session used to speak
+  // is hidden context on the cascade. The service applies it to the next
+  // generated turn; it must never arrive as a user or agent caption.
+  const { MUTE_CHECK_IN_INSTRUCTIONS, TIME_UP_INSTRUCTIONS, rungInstructions } =
+    await import("@/lib/demo/voni-agent");
+  const notes = [
+    MUTE_CHECK_IN_INSTRUCTIONS,
+    TIME_UP_INSTRUCTIONS,
+    rungInstructions("nudge", "the live email test"),
+  ];
+  const socket = makeSocket();
+  const captions: string[] = [];
+  const session = new CascadeSession(
+    { onCaption: (caption) => captions.push(caption.text) },
+    {
+      socketFactory: () => socket as unknown as WebSocket,
+      startMic: async () => ({ stop: () => {} }),
+      createPlayout: () => ({ play: () => {}, flush: () => {} }),
+    },
+  );
+  await session.start(CONFIG, "test-owner");
+  socket.readyState = socket.OPEN;
+  socket.onopen?.();
+  socket.sent.length = 0;
+
+  for (const note of notes) session.sendContext(note);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.deepEqual(
+    socket.sent.map((frame) => JSON.parse(frame)),
+    notes.map((content) => ({ type: "context", role: "system", content })),
+    "each note is one hidden context frame, in order",
+  );
+  assert.deepEqual(captions, [], "hidden context is never captioned");
+});
+
 test("server messages parse to typed events", () => {
   assert.deepEqual(parseServerMessage(JSON.stringify({ type: "caption", role: "user", text: "hi", final: false })), {
     kind: "caption",
