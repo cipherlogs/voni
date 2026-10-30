@@ -1327,12 +1327,13 @@ export function VoiceCall({
       cascade.setDeliveredCapture(callDebugFlags().deliverCapture);
       setCallState("connecting");
       try {
+        // The URL is server configuration, delivered to this prop (ticket 08):
+        // the browser never reads a pipeline environment variable, and a
+        // missing URL is a refusal, never a localhost guess.
+        if (!cascadeUrl) throw new Error("The call service is not configured.");
         await cascade.start(
           {
-            serviceUrl:
-              cascadeUrl ??
-              process.env.NEXT_PUBLIC_VOICE_PIPELINE_URL ??
-              "ws://127.0.0.1:8766/v1/browser-call",
+            serviceUrl: cascadeUrl,
             // Identity only (ticket 65): the app assembles the stored body,
             // fingerprints it and signs the envelope; the browser never sends
             // a prompt, a tool list or a pipeline. The cascade call token is
