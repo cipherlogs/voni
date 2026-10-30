@@ -670,18 +670,14 @@ class CallLifecycleTest(unittest.TestCase):
         self.assertFalse(drain["ok"])
         self.assertEqual("DrainTimedOut", drain["error"]["name"])
 
-    def test_an_unset_drain_bound_is_named_and_never_invented(self):
+    def test_the_drain_bound_is_supplied_by_ticket_04_and_never_invented(self):
+        # The unset-bound refusal itself is pinned in test_thresholds with a
+        # fixture registry. Production carries the owner-recorded 30 s value.
         bound = thresholds.bound("deploy.drain_max_wait_ms")
-        if not bound.is_open:
-            self.skipTest("ticket 140 has supplied the deploy drain bound")
-        transport = FakeTransport([BrowserStop()])
-
-        end = self.run_call(self.make(transport=transport, drain_bound_ms=None))
-
-        self.assertFalse(end.drain.ok)
-        self.assertEqual("UnsetBoundError", end.drain.error.name)
-        self.assertIn("deploy.drain_max_wait_ms", str(end.drain.error))
-        self.assertEqual("end", transport.sent[-1]["type"])
+        self.assertFalse(bound.is_open)
+        self.assertEqual(bound.value, 30_000)
+        self.assertIn("ticket 04", bound.source)
+        self.assertEqual(thresholds.require_bound("deploy.drain_max_wait_ms"), 30_000)
 
     def test_a_hanging_vendor_close_is_bounded_and_the_call_still_ends(self):
         transport = FakeTransport([BrowserStop()])

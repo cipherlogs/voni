@@ -86,7 +86,7 @@ HANDSHAKE_MARKER = re.compile(
 QUERY_SECRET = re.compile(
     r"(?i)(?P<lead>[?&\s,;(]|^)(?P<name>token|callToken|call_token|access_token|"
     r"api_key|apikey|key|secret|signature|sig|password|authorization)="
-    r"[^&#\s\"']+",
+    r"(?!%)[^&#\s\"']+",  # a %s / %(name)s format placeholder is not a credential
     re.ASCII,
 )
 

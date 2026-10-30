@@ -81,6 +81,28 @@ class QueryTokenTests(unittest.TestCase):
                 self.assertIn(REDACTED, logged)
 
 
+class FormatPlaceholderTests(unittest.TestCase):
+    def test_a_lazy_format_placeholder_is_not_mistaken_for_a_credential(self):
+        self.assertEqual(redact_text("api_key=%s"), "api_key=%s")
+        self.assertEqual(redact_text("token=%(token)s"), "token=%(token)s")
+        self.assertEqual(redact_text("api_key=supersecret"), f"api_key={REDACTED}")
+
+    def test_a_lazy_argument_is_redacted_without_breaking_formatting(self):
+        stream = StringIO()
+        handler = logging.StreamHandler(stream)
+        handler.addFilter(RedactingFilter([VENDOR_KEY]))
+        logger = logging.getLogger("test.137.format")
+        logger.handlers = [handler]
+        logger.setLevel(logging.INFO)
+        logger.propagate = False
+
+        logger.info("api_key=%s", VENDOR_KEY)
+
+        written = stream.getvalue()
+        self.assertIn("api_key=", written)
+        self.assertNotIn(VENDOR_KEY, written)
+
+
 class HandshakeTests(unittest.TestCase):
     def handshake(self) -> dict:
         # The frame the Meta backend really sends: the credential is inside it.
