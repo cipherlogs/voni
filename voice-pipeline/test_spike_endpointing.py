@@ -181,9 +181,6 @@ class TurnAttributionTests(unittest.TestCase):
     def test_the_gap_is_keyed_to_the_same_turnid_when_a_later_turn_starts(self):
         script = caller_timeline(complete_at_s=13.7)
         script.append(Script(13.2, "speechStart", turn_id="t2"))
-        script.append(
-            Script(13.9, "speechEnd", turn_id="t2", audio_processed_ms=13_900.0)
-        )
         terms, _, _ = run(script)
         by_turn = {turn.turn_id: turn for turn in terms}
 
@@ -196,6 +193,45 @@ class TurnAttributionTests(unittest.TestCase):
         self.assertAlmostEqual(by_turn["t1"].endpointing.value_ms, 700.0, places=3)
         self.assertIsNone(by_turn["t2"].endpointing.value_ms)
         self.assertIn("t2", by_turn["t2"].endpointing.detail)
+
+
+class MultiUtteranceTests(unittest.TestCase):
+    """A clip with two speech turns cannot anchor the whole file's last sample."""
+
+    def test_two_speech_ends_leave_both_terms_unmeasured_with_the_named_reason(self):
+        script = caller_timeline(complete_at_s=13.7)
+        script.append(Script(13.2, "speechStart", turn_id="t2"))
+        script.append(
+            Script(13.9, "speechEnd", turn_id="t2", audio_processed_ms=13_900.0)
+        )
+        script.append(Script(13.9, "speechComplete", turn_id="t2"))
+
+        terms, _, _ = run(script)
+
+        for turn in terms:
+            for term in (turn.endpointing, turn.post_processing):
+                self.assertIsNone(term.value_ms)
+                self.assertIn("more than one speech turn", term.detail)
+                self.assertIn(
+                    "record one utterance with trailing silence", term.detail
+                )
+
+
+class NegativeWallTests(unittest.TestCase):
+    def test_a_speech_end_before_the_last_speech_sample_is_unmeasured_not_negative(self):
+        terms, _, _ = run(
+            caller_timeline(
+                speech_end_at_s=12.0,
+                audio_processed_ms=12_000.0,
+                complete_at_s=12.2,
+            )
+        )
+        endpointing = terms[0].endpointing
+
+        self.assertIsNone(endpointing.value_ms)
+        self.assertIsNone(endpointing.cross_check)
+        self.assertIn("negative", endpointing.detail)
+        self.assertNotIn("agree", endpointing.detail)
 
 
 class CrossCheckMissingTests(unittest.TestCase):

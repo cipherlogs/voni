@@ -368,12 +368,18 @@ def _turn_id(message: Mapping[str, Any]) -> str | None:
 
     The spike keeps ``TurnTerms.turn_id`` typed ``str`` so both turns stay
     distinct; an integer is normalized with ``str`` rather than dropped, which
-    would make every event unattributable and the whole run unmeasured.
+    would make every event unattributable and the whole run unmeasured. Only a
+    non-bool integer or a non-empty string is a turn id: a float such as
+    ``1.0`` or an object must not be stringified into a fake turn.
     """
     value = message.get("turnId")
-    if value is None or isinstance(value, bool):
+    if isinstance(value, bool):
         return None
-    text = str(value).strip()
+    if isinstance(value, int):
+        return str(value)
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
     return text or None
 
 
@@ -439,6 +445,8 @@ class LiveMetaSttTransport:
         #: Whether the stream ended with the vendor's clean ``1000`` close;
         #: ``None`` until the socket closes.
         self.closed_clean: bool | None = None
+        #: Whether ``endStream`` was actually sent; the close label depends on it.
+        self._end_stream_sent = False
 
     @property
     def url(self) -> str:
@@ -536,7 +544,7 @@ class LiveMetaSttTransport:
         self.closed_clean = closed.clean
         if closed.clean:
             return
-        stage = "after endStream" if after_end_stream else "before the stream ended"
+        stage = "after endStream" if after_end_stream else "before endStream was sent"
         raise LiveSttError(
             f"Meta STT closed {stage} with a failure ({_close_detail(closed)})"
         )
@@ -559,6 +567,7 @@ class LiveMetaSttTransport:
     def end_stream(self) -> None:
         if self._socket is not None:
             self._socket.send(meta_stt.END_STREAM_FRAME)
+            self._end_stream_sent = True
 
     def drain(self) -> tuple[endpointing.SttEvent, ...]:
         if self._socket is None:
@@ -569,7 +578,7 @@ class LiveMetaSttTransport:
             if raw is _TIMEOUT:
                 return tuple(events)
             if isinstance(raw, _Closed):
-                self._note_closed(raw, after_end_stream=True)
+                self._note_closed(raw, after_end_stream=self._end_stream_sent)
                 return tuple(events)
             event = self._event(raw)
             if event is not None:
@@ -898,6 +907,10 @@ class LiveMeasurement:
             "blockers": list(self.blockers),
             "degraded": list(self.degraded),
             "caller_wav": self.caller.metadata(),
+            # The synthesis leg speaks this fixed spike line, never the caller's
+            # transcript, so the report cannot imply it spoke the caller's words.
+            "synthesis_text_source": "canned spike line",
+            "synthesis_text": SPIKE_TRANSCRIPT,
         }
 
     def as_dict(self) -> dict[str, Any]:
