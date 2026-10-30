@@ -242,6 +242,74 @@ class SecretsTest(unittest.TestCase):
         self.assertTrue(any("META_API_KEY" in error for error in errors), errors)
 
 
+class RequiredEnvTest(unittest.TestCase):
+    """Every required host name is deployed, and a missing one is a deploy error.
+
+    ``META_REASONING_EFFORT`` has no default (Spark refuses construction), and
+    an empty ``VOICE_PIPELINE_TOOL_BASE_URL`` silently drops every tool call.
+    Both must be named by the service config, the example and the rehearsal.
+    """
+
+    def test_the_committed_service_config_names_every_required_setting(self) -> None:
+        doc = topology.load_config(REPO_ROOT, topology.SERVICE_CONFIG)
+        for name in topology.REQUIRED_SETTINGS:
+            self.assertIn(name, doc["env"], name)
+
+    def test_a_missing_required_setting_is_refused(self) -> None:
+        doc = topology.load_config(REPO_ROOT, topology.SERVICE_CONFIG)
+        for name in topology.REQUIRED_SETTINGS:
+            with self.subTest(name=name):
+                broken = topology.load_config(REPO_ROOT, topology.SERVICE_CONFIG)
+                del broken["env"][name]
+                errors = topology.validate_service(
+                    broken, drain_max_wait_ms=DRAIN_MAX_WAIT_MS
+                )
+                self.assertTrue(
+                    any(name in error for error in errors), errors
+                )
+        # The unmutated copy is still valid.
+        self.assertEqual(
+            topology.validate_service(doc, drain_max_wait_ms=DRAIN_MAX_WAIT_MS), []
+        )
+
+    def test_the_example_names_every_required_name(self) -> None:
+        text = (REPO_ROOT / topology.SECRETS_EXAMPLE).read_text()
+        self.assertEqual(topology.validate_secrets_example(text), [])
+
+    def test_a_missing_name_in_the_example_is_refused(self) -> None:
+        text = (REPO_ROOT / topology.SECRETS_EXAMPLE).read_text()
+        for name in topology.REQUIRED_SETTINGS:
+            with self.subTest(name=name):
+                broken = "\n".join(
+                    line
+                    for line in text.splitlines()
+                    if not line.startswith(f"{name}=")
+                )
+                errors = topology.validate_secrets_example(broken)
+                self.assertTrue(any(name in error for error in errors), errors)
+
+    def test_the_compose_rehearsal_names_every_required_setting(self) -> None:
+        text = (REPO_ROOT / topology.COMPOSE_CONFIG).read_text()
+        self.assertEqual(topology.validate_compose(text, internal_port=8766), [])
+
+    def test_a_missing_setting_in_compose_is_refused(self) -> None:
+        text = (REPO_ROOT / topology.COMPOSE_CONFIG).read_text()
+        for name in topology.REQUIRED_SETTINGS:
+            with self.subTest(name=name):
+                broken = "\n".join(
+                    line
+                    for line in text.splitlines()
+                    if not line.strip().startswith(f"{name}:")
+                )
+                errors = topology.validate_compose(broken, internal_port=8766)
+                self.assertTrue(any(name in error for error in errors), errors)
+
+    def test_the_record_names_every_required_name(self) -> None:
+        record = (REPO_ROOT / topology.DEPLOYMENT_RECORD).read_text()
+        for name in topology.REQUIRED_ENV_NAMES:
+            self.assertIn(name, record, name)
+
+
 class DrainAwareEntrypointTest(unittest.TestCase):
     """The image must run main(), not uvicorn's server:app (ticket 140).
 

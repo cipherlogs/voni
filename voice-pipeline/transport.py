@@ -37,7 +37,6 @@ socket ends the call with the lifecycle's one end message.
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import os
 import time
@@ -505,6 +504,11 @@ async def handle_browser_call(
 
     claim_holder: list[Any] = []
 
+    def release_claims() -> None:
+        """Release every claim this socket made; a setup failure leaves none."""
+        for held in claim_holder:
+            call_tokens.release(held)
+
     async def prepare() -> _PreparedCall:
         # One claim, one live socket per call. The claim is inside the opener so
         # a managed decision never spends the token, and a replay is refused
@@ -599,13 +603,11 @@ async def handle_browser_call(
             budget=counter,
         )
     except CallTokenError as exc:
-        for held in claim_holder:
-            call_tokens.release(held)
+        release_claims()
         await _send(ws, {"type": "error", "message": str(exc)})
         return
     except Exception as exc:  # a real opener failure is visible, never silent
-        for held in claim_holder:
-            call_tokens.release(held)
+        release_claims()
         await _send(ws, {"type": "error", "message": _call_error("call setup", exc)})
         return
 
