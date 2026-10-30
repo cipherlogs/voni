@@ -356,6 +356,7 @@ import {
   type ArtifactProviders,
 } from "../src/lib/demo/scoreboard";
 import { cascadeLatencyFromMarks, readScoreboardArtifactFile } from "../src/lib/demo/artifact-reader";
+import { bodySourceClaim } from "../src/lib/demo/body-source";
 import { judgeOverlap } from "../src/lib/voice/barge-in";
 import { EN_RECOGNITION } from "../src/lib/voice/recognition";
 import { acquireTimingLock, DEFAULT_TIMING_LOCK_PATH } from "../src/lib/demo/timing-lock";
@@ -1194,6 +1195,7 @@ function runCascadeArtifact(input: {
 
   writeScoreboardArtifactFile(input.out, artifact);
   console.log("pipeline cascade");
+  console.log(`body source: ${bodySourceClaim("cascade")}`);
   for (const gap of ARTIFACT_LATENCY_GAPS) {
     const value = artifact.latency?.[gap];
     const text =
@@ -2168,6 +2170,9 @@ async function main(): Promise<void> {
       ? formatGoldenScript(voice, runBody)
       : `subject: ${formatSubject(subject)} (tenant agent; the demo golden voice rows do not apply)`,
   );
+  // Ticket 24: the managed body read is managed-only, and every claim below
+  // says so instead of implying it covers the cascade.
+  console.log(`body source: ${bodySourceClaim(pipeline)}`);
   console.log(formatBudgetReport());
   console.log(formatGateTable(artifact));
   // Plumbing health first (ticket 06), then what moved since the prior run
