@@ -105,7 +105,7 @@ from cascade.cost import CallCost, LegCost as PricedLeg, RateTable, cost_call
 from cascade.counter import limit_amount
 from cascade.eligibility import EligibilityDecision
 from cascade.envelope import EnvelopeError, verify_envelope
-from cascade.events import OperationalEvents
+from cascade.events import COST_PRICED_EVENT_TYPE, OperationalEvents
 from cascade.greeting import CallGreeting, GreetingOutcome, GreetingPlayback
 from cascade.meta_stt import SpeechPartial, SpeechStart
 from cascade.reconnect import ReconnectBudget
@@ -2326,6 +2326,13 @@ class CallLifecycle:
         # The end-of-call session facts are still charged to the day they were
         # consumed, even though the ceiling can no longer stop the call.
         await self._charge_recorded_units()
+        # Price the call once and use that one answer for both forms: the row
+        # in the trace and the end message's cost. A second pricing path would
+        # let the two disagree.
+        cost = self._cost()
+        self._emit_operational(
+            COST_PRICED_EVENT_TYPE, lambda events: events.cost_priced(cost)
+        )
         # The artifact is live state: a sink disabled during the call has no
         # path, and its reason is named instead of claiming a file that is not
         # there.
@@ -2344,7 +2351,7 @@ class CallLifecycle:
             providers=ProviderTable.from_opened(
                 opened, missing_reason=missing_reason
             ),
-            cost=self._cost(),
+            cost=cost,
             eligibility=eligibility,
             turns=self._turns(),
             ended_by=ended_by,

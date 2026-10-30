@@ -502,13 +502,16 @@ class LiveCallEmissionTests(unittest.TestCase):
 
         self.assertTrue(end.greeting.spoken)
         events = [json.loads(line) for line in lines]
+        greetings = [
+            event for event in events if event["type"].startswith("greeting.")
+        ]
         self.assertEqual(
             ["greeting.start", "greeting.first_audio", "greeting.done"],
-            [event["type"] for event in events],
+            [event["type"] for event in greetings],
         )
-        self.assertEqual(["connect"] * 3, [event["phase"] for event in events])
-        self.assertEqual([None] * 3, [event["turn"] for event in events])
-        self.assertEqual(2, events[-1]["frames"])
+        self.assertEqual(["connect"] * 3, [event["phase"] for event in greetings])
+        self.assertEqual([None] * 3, [event["turn"] for event in greetings])
+        self.assertEqual(2, greetings[-1]["frames"])
 
     def test_a_reconnect_recorded_on_the_budget_is_emitted_on_the_stream(self):
         lines: list[str] = []
