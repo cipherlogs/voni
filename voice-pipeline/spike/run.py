@@ -6,18 +6,24 @@ honest no-key run: with no live transport every vendor term is unmeasured and
 the verdict is ``AT RISK`` with those terms named — never ``PASS`` and never a
 blank.
 
-``python -m spike.run --live`` is the owner-gated measurement (spec M0 and
-ticket 151). The CLI names every missing key before it takes the lock or dials,
-and the live runner refuses by name too; the CLI catches that refusal. It takes
-the shared timing lock for the
-whole run and measures terms 1-4 through the live transports in
-:mod:`spike.live`. A failed leg stays unmeasured with its real reason; the run
-never records a gate verdict for the owner.
+``python -m spike.run --live --wav PATH`` is the owner-gated measurement (spec M0
+and ticket 151). ``--wav`` is required: it must be a real 24 kHz mono 16-bit PCM
+speech recording. The ticket 09 fixture is a synthesized harmonic tone, the live
+vendor emits no ``speechEnd`` for it, and so it is offline-only. A WAV of
+another shape is refused by name, never resampled, and the run records its path,
+sha256 and last-sample-above-silence position.
+
+The CLI names every missing key before it takes the lock or dials, and the live
+runner refuses by name too; the CLI catches that refusal. It takes the shared
+timing lock for the whole run and measures terms 1-4 through the live transports
+in :mod:`spike.live`. A failed leg stays unmeasured with its real reason; the
+run never records a gate verdict for the owner.
 
 Exit codes for ``--live``: 0 for a fully measured PASS or five-term AT RISK, 1
-for a fully measured FAIL, 2 for a missing key or a held timing lock, and 3 when
-any term is unmeasured, a leg degraded or a blocker was recorded. ``--offline``
-keeps its old contract: 0 for PASS/AT RISK, 1 for FAIL, 2 for usage.
+for a fully measured FAIL, 2 for a missing key, a missing or wrong-shaped
+``--wav``, or a held timing lock, and 3 when any term is unmeasured, a leg
+degraded or a blocker was recorded. ``--offline`` keeps its old contract: 0 for
+PASS/AT RISK, 1 for FAIL, 2 for usage.
 
 There is no measurement arithmetic in this module: it wires the producers to
 :func:`spike.report.from_measurements`, so a report produced here is the same
@@ -76,8 +82,9 @@ def _parser() -> argparse.ArgumentParser:
         ),
         epilog=(
             "--live exit codes: 0 fully measured PASS/AT RISK; 1 fully measured "
-            "FAIL; 2 missing META_API_KEY/ASSEMBLYAI_API_KEY or a held timing "
-            "lock; 3 any unmeasured term, degraded leg or blocker. "
+            "FAIL; 2 missing META_API_KEY/ASSEMBLYAI_API_KEY, a missing or "
+            "wrong-shaped --wav, or a held timing lock; 3 any unmeasured term, "
+            "degraded leg or blocker. "
             "--offline exit codes: 0 PASS/AT RISK, 1 FAIL, 2 usage."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -91,8 +98,16 @@ def _parser() -> argparse.ArgumentParser:
         "--live",
         action="store_true",
         help=(
-            "measure the five terms live: owner-gated, needs META_API_KEY and "
-            "ASSEMBLYAI_API_KEY and the shared timing lock"
+            "measure the five terms live: owner-gated, needs META_API_KEY, "
+            "ASSEMBLYAI_API_KEY, --wav and the shared timing lock"
+        ),
+    )
+    parser.add_argument(
+        "--wav",
+        metavar="PATH",
+        help=(
+            "required with --live: a real 24 kHz mono 16-bit PCM speech WAV to "
+            "stream as the caller (not the synthetic ticket 09 tone fixture)"
         ),
     )
     parser.add_argument(
@@ -119,6 +134,14 @@ def _render_live(measurement: live.LiveMeasurement) -> str:
     lines.append(
         f"  {'keys present':<28} {', '.join(measurement.keys_present)}"
     )
+    caller = measurement.caller
+    lines.append(f"  {'caller wav':<28} {caller.path}")
+    lines.append(f"  {'caller sha256':<28} {caller.sha256}")
+    lines.append(
+        f"  {'speech end':<28} sample {caller.speech_end_sample} "
+        f"({caller.speech_end_ms:.3f}ms, silence > "
+        f"{caller.silence_threshold_lsb} LSB)"
+    )
     lines.append(f"  {'reasoning effort row':<28} {measurement.report.effort_label}")
     for blocker in measurement.blockers:
         lines.append(f"  {'blocked':<28} {blocker}")
@@ -143,6 +166,23 @@ def _live_main(
         print(live.MissingKeysError(missing), file=sys.stderr)
         return 2
 
+    if not args.wav:
+        print(
+            "spike.run --live requires --wav PATH: a real speech WAV "
+            "(24 kHz mono 16-bit PCM) to stream as the caller; the synthetic "
+            "ticket 09 tone fixture is offline-only; no live call was made",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        caller = live.load_caller_wav(args.wav)
+    except live.CallerWavError as error:
+        print(
+            f"spike.run --live refused: {error}; no live call was made",
+            file=sys.stderr,
+        )
+        return 2
+
     acquire = acquire_lock or acquire_timing_lock
     try:
         lock = acquire(scenario="m00-spike")
@@ -152,7 +192,7 @@ def _live_main(
     try:
         runner = live_runner or live.run_live
         try:
-            measurement = runner(env=environment)
+            measurement = runner(env=environment, caller=caller)
         except live.MissingKeysError as error:
             print(error, file=sys.stderr)
             return 2
