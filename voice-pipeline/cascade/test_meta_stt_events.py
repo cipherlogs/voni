@@ -143,6 +143,40 @@ class TurnBoundaryMappingTest(unittest.TestCase):
         self.assertEqual(events, [SpeechStart(turn_id="turn-1")])
 
 
+class RecordedWireTurnIdTest(unittest.TestCase):
+    """The live M00 run recorded ``turnId`` as a JSON integer (``0``, ``1``)."""
+
+    def test_a_json_integer_turn_id_opens_the_turn_as_its_decimal_string(self):
+        events, _, _ = collect(
+            [
+                untyped_ack(),
+                event("speechStart", turnId=0),
+                event("speechEnd", turnId=0),
+                event("speechComplete", turnId=0, text="Hi"),
+            ]
+        )
+
+        self.assertEqual(
+            events,
+            [
+                SpeechStart(turn_id="0"),
+                SpeechEnd(turn_id="0"),
+                SpeechComplete(turn_id="0", text="Hi"),
+            ],
+        )
+
+    def test_a_turn_id_that_names_no_turn_is_still_refused_by_name(self):
+        for bad in (None, "", "   ", 1.0, {}, True):
+            with self.subTest(turn_id=bad):
+                with self.assertLogs("cascade.meta_stt", level="WARNING") as logs:
+                    events, _, _ = collect(
+                        [untyped_ack(), event("speechStart", turnId=bad)]
+                    )
+
+                self.assertEqual(events, [])
+                self.assertIn("speechStart without a turnId", logs.output[0])
+
+
 class IgnoredFrameTest(unittest.TestCase):
     def test_unknown_event_types_are_ignored(self):
         events, _, _ = collect(

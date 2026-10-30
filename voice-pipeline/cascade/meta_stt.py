@@ -22,7 +22,10 @@ through the shared speech-leg table so the caller can open the leg.
 Audio is raw s16le mono at 24 kHz only, paced by a 5 s lead budget with PCM
 silence filling the gaps, and never awaits a vendor reply. Events map onto
 distinct start/partial/end/complete types; only ``endStream`` may follow the
-handshake, at a deliberate end that drains and waits for the normal close.
+handshake, at a deliberate end that drains and waits for the normal close. The
+live wire sends ``turnId`` as a JSON integer and the text as ``transcript``;
+the mapper normalises the id to its decimal string and reads the vendor's field,
+so a real turn is neither unnamed nor wordless.
 
 A close on an established session is classified by the shared speech-leg table
 (:mod:`cascade.failures`) and acted on by :meth:`MetaStreamingSTT.handle_close`:
@@ -1132,8 +1135,8 @@ class MetaStreamingSTT(StreamingSTT):
             return SpeechStart(turn_id=turn_id, session_epoch=source_epoch)
 
         if kind == "transcript":
-            text = message.get("text")
-            if not isinstance(text, str) or not text:
+            text = _transcript_text(message)
+            if not text:
                 return None
             # A replayed session starts its cumulative transcript from the
             # beginning of the replayed audio, so it may lag the partial the
@@ -1184,8 +1187,7 @@ class MetaStreamingSTT(StreamingSTT):
                     self._session,
                 )
                 return None
-            text = message.get("text")
-            authored = text if isinstance(text, str) else ""
+            authored = _transcript_text(message) or ""
             before = self._turns.get(turn_id)
             was_finalised = before is not None and before.is_finalised
             replayed = before is not None and bool(before.attribution_history)
@@ -1411,9 +1413,35 @@ def _silence_frames_for(seconds: float) -> int:
     return int(seconds * 1000.0 / SILENCE_FRAME_MS + 1e-9)
 
 
+def _transcript_text(message: dict[str, Any]) -> str | None:
+    """The text an event carries, or ``None`` when it carries none.
+
+    Meta's realtime endpoint names the field ``transcript`` (measured on the
+    live M00 run); ``text`` is also read because the earlier synthetic
+    recordings used it. A non-string value names no text, so an empty or
+    non-string payload can never be invented into a partial.
+    """
+    for field in ("transcript", "text"):
+        value = message.get(field)
+        if isinstance(value, str):
+            return value
+    return None
+
+
 def _turn_id(message: dict[str, Any]) -> str | None:
-    """The vendor turn id, or ``None`` when the event does not name one."""
+    """The vendor turn id as a string, or ``None`` when the event names none.
+
+    Meta's realtime endpoint sends ``turnId`` as a JSON **integer** (``0``,
+    ``1``), measured on the live M00 run; a recorded frame may carry it as a
+    string. Both normalise to the decimal string the logical turn id is keyed
+    on, so ``0`` becomes ``"0"`` instead of dropping a real turn. ``None``,
+    blank text, a float, an object and a boolean name no turn.
+    """
     value = message.get("turnId")
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return str(value)
     if isinstance(value, str) and value.strip():
         return value
     return None
