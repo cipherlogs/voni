@@ -202,7 +202,7 @@ test("an unknown or undetermined Locale is never scanned, so no silent English d
 });
 
 test("the artifact records the count and the promotion decision", () => {
-  const leaked = artifactFor("lola", ES_LEAK, "run-es-leak");
+  const leaked = artifactFor("malvina", ES_LEAK, "run-es-leak");
 
   assert.ok(leaked.englishLeak, "the artifact carries the counter");
   assert.equal(leaked.englishLeak.count, 1);
@@ -212,7 +212,7 @@ test("the artifact records the count and the promotion decision", () => {
   assert.deepEqual(leaked.englishLeak.promotion, ENGLISH_LEAK_PROMOTION);
   assert.equal(leaked.englishLeak.promotion.gating, false);
 
-  const clean = artifactFor("lola", ES_CLEAN, "run-es-clean");
+  const clean = artifactFor("malvina", ES_CLEAN, "run-es-clean");
   assert.equal(clean.englishLeak?.count, 0);
 
   // A stored artifact read back from disk re-derives the same counter.
@@ -224,8 +224,8 @@ test("the artifact records the count and the promotion decision", () => {
 });
 
 test("the counter is report-only: a leaking turn and a clean one have identical gates", () => {
-  const leaked = artifactFor("lola", ES_LEAK, "run-es-leak");
-  const clean = artifactFor("lola", ES_CLEAN, "run-es-clean");
+  const leaked = artifactFor("malvina", ES_LEAK, "run-es-leak");
+  const clean = artifactFor("malvina", ES_CLEAN, "run-es-clean");
 
   assert.deepEqual(leaked.gates, clean.gates);
   assert.deepEqual(leaked.subScores, clean.subScores);
@@ -241,7 +241,7 @@ test("the counter is report-only: a leaking turn and a clean one have identical 
 
 test("the compact report exposes the counter, its rate and the English baseline", () => {
   const spanish = buildInspectReport(
-    artifactFor("lola", ES_LEAK, "run-es-leak"),
+    artifactFor("malvina", ES_LEAK, "run-es-leak"),
   );
   assert.equal(spanish.englishLeak.count, 1);
   assert.equal(spanish.englishLeak.rate, 1 / 3);
@@ -252,7 +252,7 @@ test("the compact report exposes the counter, its rate and the English baseline"
   assert.match(spanishText, /promotion\s+report-only/);
 
   const english = buildInspectReport(
-    artifactFor("anna", EN_BASELINE, "run-en-base"),
+    artifactFor("audrey", EN_BASELINE, "run-en-base"),
   );
   assert.equal(english.englishLeak.status, "not-applicable");
   assert.equal(english.englishLeak.englishBaseline?.scopedFlagged, 0);

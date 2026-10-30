@@ -47,8 +47,8 @@ const CLEAN_CODE: CodeFingerprint = {
   dirtyHash: "0".repeat(64),
 };
 
-const ANNA = resolveCascadeSubject({ voice: DEFAULT_GATE_VOICE });
-const LOLA = resolveCascadeSubject({ voice: "lola" });
+const AUDREY = resolveCascadeSubject({ voice: DEFAULT_GATE_VOICE });
+const MALVINA = resolveCascadeSubject({ voice: "malvina" });
 
 const PASS_GATES: ScoreboardGate[] = STREAK_REQUIRED_GATES.map((name) => ({
   name,
@@ -125,10 +125,10 @@ function measuredRound(
   options: { failGate?: string; contaminate?: 0 | 1 | 2 | 3; noGap?: 0 | 1 | 2 | 3 } = {},
 ): RoundInput {
   const attempts = [
-    { subject: ANNA, gap: gaps[0], slot: 0 as const },
-    { subject: LOLA, gap: gaps[1], slot: 1 as const },
-    { subject: ANNA, gap: gaps[2], slot: 2 as const },
-    { subject: LOLA, gap: gaps[3], slot: 3 as const },
+    { subject: AUDREY, gap: gaps[0], slot: 0 as const },
+    { subject: MALVINA, gap: gaps[1], slot: 1 as const },
+    { subject: AUDREY, gap: gaps[2], slot: 2 as const },
+    { subject: MALVINA, gap: gaps[3], slot: 3 as const },
   ];
   return {
     label,
@@ -221,8 +221,8 @@ test("clean runs separated by a contaminated one are not two consecutive clean r
     label: "round-2",
     artifacts: [
       cleanPair.artifacts[0],
-      cascadeRun(ANNA, 1800, {
-        runId: "round-2-anna-2",
+      cascadeRun(AUDREY, 1800, {
+        runId: "round-2-audrey-2",
         events: [{ type: "provider_fallback", leg: "stt", phase: "turn" }],
       }),
       cleanPair.artifacts[2],
@@ -373,10 +373,10 @@ test("a round needs two subjects, not one subject measured four times", () => {
   const oneSubject: RoundInput = {
     label: "round-1",
     artifacts: [
-      cascadeRun(ANNA, 900, { runId: "anna-1" }),
-      cascadeRun(ANNA, 950, { runId: "anna-2" }),
-      cascadeRun(ANNA, 1000, { runId: "anna-3" }),
-      cascadeRun(ANNA, 1050, { runId: "anna-4" }),
+      cascadeRun(AUDREY, 900, { runId: "audrey-1" }),
+      cascadeRun(AUDREY, 950, { runId: "audrey-2" }),
+      cascadeRun(AUDREY, 1000, { runId: "audrey-3" }),
+      cascadeRun(AUDREY, 1050, { runId: "audrey-4" }),
     ],
   };
   const verdict = evaluateKillCriterion({ rounds: [oneSubject] });

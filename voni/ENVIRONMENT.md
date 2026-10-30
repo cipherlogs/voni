@@ -79,8 +79,8 @@ local save and shows a retryable deployment warning on the agent page.
   (no default — the service errors clearly without it). Distinct from the
   AssemblyAI `voiceId` on the agent; voice identity does not carry across.
 
-The Test dialog's Managed/Cascade toggle switches engines per call;
-managed stays the default and demo calls always use managed.
+The Test dialog has no engine control: a test call always runs the managed
+session. The public demo is the only cascade surface (demo-cascade ticket 04).
 
 ## Async TTS (WhatsApp voice-note replies — AssemblyAI has no standalone TTS API, plan Section I)
 - `CARTESIA_API_KEY` — cartesia.ai → sign up → dashboard → API Keys. Free plan

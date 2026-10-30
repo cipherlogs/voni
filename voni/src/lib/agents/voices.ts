@@ -78,6 +78,7 @@ export type Voice = {
 export const VOICES: Voice[] = [
   // English — 🇺🇸 American
   { id: "alba", accent: "US", presents: "feminine", language: "English", languageCode: "en" },
+  { id: "audrey", accent: "US", presents: "feminine", language: "English", languageCode: "en" },
   { id: "eve", accent: "US", presents: "feminine", language: "English", languageCode: "en" },
   { id: "jane", accent: "US", presents: "feminine", language: "English", languageCode: "en" },
   { id: "mary", accent: "US", presents: "feminine", language: "English", languageCode: "en" },
@@ -94,9 +95,12 @@ export const VOICES: Voice[] = [
   // code-switch naturally between their language and English.
   { id: "giovanni", accent: "IT", presents: "masculine", language: "Italian", languageCode: "it" },
   { id: "lola", accent: "ES", presents: "feminine", language: "Spanish", languageCode: "es" },
+  { id: "malvina", accent: "ES", presents: "feminine", language: "Spanish", languageCode: "es" },
   { id: "jorg", accent: "DE", presents: "masculine", language: "German", languageCode: "de" },
   { id: "rafael", accent: "PT", presents: "masculine", language: "Portuguese", languageCode: "pt" },
+  { id: "benicio", accent: "PT", presents: "masculine", language: "Portuguese", languageCode: "pt" },
   { id: "estelle", accent: "FR", presents: "feminine", language: "French", languageCode: "fr" },
+  { id: "donatien", accent: "FR", presents: "masculine", language: "French", languageCode: "fr" },
 ];
 
 export const VOICE_IDS = VOICES.map((v) => v.id);
@@ -124,13 +128,30 @@ export const ACCENT_FLAG: Record<Voice["accent"], string> = {
   FR: "🇫🇷",
 };
 
+/**
+ * The voices a tenant picker may offer: English only (demo-cascade ticket 04).
+ *
+ * The catalogue keeps every entry so stored agents still resolve; the picker is
+ * where the product narrows what a tenant can newly choose. The agent's current
+ * voice is always included, so a stored Spanish, French, German, Portuguese or
+ * Italian agent opens showing — and keeping — the voice it already has.
+ */
+export function tenantVoices(currentVoiceId?: string): Voice[] {
+  const english = VOICES.filter((v) => v.languageCode === "en");
+  const current = currentVoiceId ? getVoice(currentVoiceId) : undefined;
+  if (!current || english.includes(current)) return english;
+  return [...english, current];
+}
+
 /** Voices grouped by the language they speak, for a grouped picker. */
-export function voicesByLanguage(): { language: string; code: string; voices: Voice[] }[] {
+export function voicesByLanguage(
+  voices: readonly Voice[] = VOICES,
+): { language: string; code: string; voices: Voice[] }[] {
   const order = ["English", "Spanish", "French", "German", "Italian", "Portuguese"];
   return order
     .map((language) => {
-      const voices = VOICES.filter((v) => v.language === language);
-      return { language, code: voices[0]?.languageCode ?? "en", voices };
+      const grouped = voices.filter((v) => v.language === language);
+      return { language, code: grouped[0]?.languageCode ?? "en", voices: grouped };
     })
     .filter((group) => group.voices.length > 0);
 }

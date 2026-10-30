@@ -511,7 +511,7 @@ if (args[0] === "run" && args[1] === "eval:demo-agent") {
     scenarios: [{ name: "stop-over", passed: 1, runs: 1 }],
     traceSessions: ["sess_exp"], playout: [], audioChunks: 40, live: true, clips: [],
     transport: "stored", agentId: "agent_exp", agentFingerprint: "fp-exp",
-    llmModel: "managed", variant: "turn-window", variantKey: "anna:exp",
+    llmModel: "managed", variant: "turn-window", variantKey: "audrey:exp",
     turnWindows: { min_silence: 400, max_silence: 640, interruption_delay: 0 },
   }));
 } else if (args[0] === "run" && args[1] === "call:trace") {
@@ -568,7 +568,7 @@ if (args[0] === "run" && args[1] === "eval:demo-agent") {
     };
   };
   assert.equal(artifact.runnerEvidence.variant, "turn-window");
-  assert.equal(artifact.runnerEvidence.variantKey, "anna:exp");
+  assert.equal(artifact.runnerEvidence.variantKey, "audrey:exp");
   assert.equal(artifact.runnerEvidence.agentId, "agent_exp");
   assert.deepEqual(artifact.runnerEvidence.turnWindows, {
     min_silence: 400,
@@ -582,7 +582,7 @@ if (args[0] === "run" && args[1] === "eval:demo-agent") {
   assert.deepEqual(artifact.endOfTurn, {
     experimental: true,
     variant: "turn-window",
-    variantKey: "anna:exp",
+    variantKey: "audrey:exp",
     turnWindows: { min_silence: 400, max_silence: 640, interruption_delay: 0 },
   });
   assert.equal(
@@ -2411,7 +2411,7 @@ if (args[0] === "run" && args[1] === "eval:demo-agent") {
     audioChunks: 40, live: true, clips: [],
     transport: "stored", agentId: "agent_suite", agentFingerprint: "abc123",
     llmModel: "google/gemini-2.5-flash",
-    variant: "turn-window", variantKey: "anna:exp",
+    variant: "turn-window", variantKey: "audrey:exp",
     turnWindows: { min_silence: 400, max_silence: 640, interruption_delay: 0 },
   }));
   console.log("  · trace session sess_suite");
@@ -2499,7 +2499,7 @@ if (args[0] === "run" && args[1] === "eval:demo-agent") {
   // The suite id/name is merged too, so a rung artifact can prove which
   // stored-agent variant every section bound.
   assert.match(redacted, /"variant":"turn-window"/);
-  assert.match(redacted, /"variantKey":"anna:exp"/);
+  assert.match(redacted, /"variantKey":"audrey:exp"/);
   assert.match(redacted, /"turnWindows":\{"min_silence":400,"max_silence":640,"interruption_delay":0\}/);
   assert.deepEqual(artifact.doubleTalk.overlapMs, [40], "over-talk's own line is merged");
   assert.deepEqual(artifact.deadAir.checkIns.map((c) => c.atSilenceMs), [15_200], "silence-check-in's own timeline is merged");
@@ -3545,7 +3545,7 @@ test("--rate files the third axis: timbre, accent and language naturalness", () 
     [
       "--dry-run",
       "--voice",
-      "lola",
+      "malvina",
       "--out",
       out,
       "--recording",
@@ -3594,7 +3594,7 @@ test("--rate without the third axis is an incomplete ballot for a non-English su
     [
       "--dry-run",
       "--voice",
-      "lola",
+      "malvina",
       "--out",
       out,
       "--recording",
@@ -3618,13 +3618,13 @@ test("--reviewer-pack loads a reviewer's filed verdict into the ballot with all 
   const sharedCut = "e".repeat(64);
   const pack = {
     schemaVersion: 1,
-    voice: "lola",
+    voice: "malvina",
     locale: "es",
     recording: {
-      voice: "lola",
+      voice: "malvina",
       locale: "es",
-      asset: "public/voices/lola.mp3",
-      url: "/voices/lola.mp3",
+      asset: "public/voices/malvina.mp3",
+      url: "/voices/malvina.mp3",
       sha256: sharedCut,
       line: "Hola, soy Voni.",
       lineSha256: sharedCut,
@@ -3650,11 +3650,11 @@ test("--reviewer-pack loads a reviewer's filed verdict into the ballot with all 
     generatedOn: "2026-10-29",
     source: "evidence/audition-clips/clips.json",
   };
-  const packPath = join(dir, "lola-pack.json");
+  const packPath = join(dir, "malvina-pack.json");
   writeFileSync(packPath, JSON.stringify(pack));
 
   const result = run(
-    ["--dry-run", "--voice", "lola", "--out", out, "--reviewer-pack", packPath],
+    ["--dry-run", "--voice", "malvina", "--out", out, "--reviewer-pack", packPath],
     new URL("../", import.meta.url).pathname,
   );
   assert.equal(result.status, 0, result.stderr + result.stdout);
@@ -3689,7 +3689,7 @@ test("--reviewer-pack loads a reviewer's filed verdict into the ballot with all 
     [
       "--dry-run",
       "--voice",
-      "lola",
+      "malvina",
       "--out",
       two,
       "--reviewer-pack",
@@ -3720,13 +3720,13 @@ test("--reviewer-pack is refused when its cut is not the one the run measured", 
     packPath,
     JSON.stringify({
       schemaVersion: 1,
-      voice: "lola",
+      voice: "malvina",
       locale: "es",
       recording: {
-        voice: "lola",
+        voice: "malvina",
         locale: "es",
-        asset: "public/voices/lola.mp3",
-        url: "/voices/lola.mp3",
+        asset: "public/voices/malvina.mp3",
+        url: "/voices/malvina.mp3",
         sha256: "e".repeat(64),
         line: "Hola, soy Voni.",
         lineSha256: "e".repeat(64),
@@ -3757,7 +3757,7 @@ test("--reviewer-pack is refused when its cut is not the one the run measured", 
     [
       "--dry-run",
       "--voice",
-      "lola",
+      "malvina",
       "--out",
       out,
       "--reviewer-pack",

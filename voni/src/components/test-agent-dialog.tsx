@@ -1,7 +1,5 @@
 "use client";
 
-import { Tip } from "@/components/tip";
-
 /**
  * Adapted from Blocks `@blocks-so/ai-05` ("AI Elements Chat", MIT,
  * Ephraim Duncan — see THIRD-PARTY-NOTICES.md).
@@ -21,7 +19,8 @@ import { Tip } from "@/components/tip";
  * `startingRef` single-flight, `voni:voice-preempt` mutual exclusion,
  * unmount `stop()`, `key={config.voiceId}` remount, the 180s cap, the 429
  * countdown vs mic vs drop vs hang-up error taxonomy, and the fixed-height
- * no-jump card. This dialog owns only the chrome: the fixed-height
+ * no-jump card. A test call always runs the managed engine — there is no
+ * engine control (demo-cascade ticket 04). This dialog owns only the chrome: the fixed-height
  * standard Dialog surface (`h-140 sm:max-w-2xl`), its header
  * (title + dirty/saved version line + live presence), the "New call" reset,
  * the not-ready state inside the conversation region, and the composer-slot
@@ -110,10 +109,6 @@ export function TestAgentDialog({
 }) {
   const [open, setOpen] = useState(false);
   const [status, setStatus] = useState<VoiceCallStatus>(IDLE_STATUS);
-  // Voice engine for the test call. Managed is the AssemblyAI session;
-  // cascade drives the Python pipeline service (dev slice). Switching
-  // remounts VoiceCall below, so no stale managed state can leak across.
-  const [engine, setEngine] = useState<"managed" | "cascade">("managed");
   // Call-control state mirrored up from VoiceCall's chromeless presentation
   // so the ai-05 header owns the start/hang-up buttons and the footer owns
   // the countdown. Single-flight still lives in VoiceCall's startingRef;
@@ -218,29 +213,6 @@ export function TestAgentDialog({
             </span>
           </div>
           <div className="flex shrink-0 items-center gap-1">
-            <Tip
-              label={
-                engine === "managed"
-                  ? "Test call runs on the managed voice session. Switch to the cascade pipeline."
-                  : "Test call runs on the cascade pipeline. Switch back to managed."
-              }
-            >
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                className="h-8 gap-1.5 px-2.5 text-xs"
-                onClick={() => {
-                  if (callActive) return;
-                  setEngine((prev) => (prev === "managed" ? "cascade" : "managed"));
-                  setStatus(IDLE_STATUS);
-                  setHangUpError(null);
-                }}
-                disabled={!canTest || callActive}
-              >
-                {engine === "managed" ? "Managed" : "Cascade"}
-              </Button>
-            </Tip>
             <Button
               type="button"
               variant="ghost"
@@ -260,10 +232,10 @@ export function TestAgentDialog({
             <>
               <div className="min-h-0 flex-1">
                 <VoiceCall
-                  key={`${config.voiceId}-${engine}`}
+                  key={config.voiceId}
                   ref={callRef}
                   mode={{ kind: "inline", config, agentId, isDirty }}
-                  engine={engine}
+                  engine="managed"
                   presentation="dialog"
                   chromeless
                   // The dialog is the surface; the embedded card drops its

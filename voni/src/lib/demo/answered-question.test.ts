@@ -258,7 +258,7 @@ test("the false-positive measurement can fail: a mislabelled clarification is a 
 });
 
 test("the artifact records the count and the promotion decision", () => {
-  const repeated = artifactFor("lola", ES_REPEAT, "run-es-repeat");
+  const repeated = artifactFor("malvina", ES_REPEAT, "run-es-repeat");
 
   assert.ok(repeated.answeredQuestion, "the artifact carries the counter");
   assert.equal(repeated.answeredQuestion.count, 1);
@@ -268,7 +268,7 @@ test("the artifact records the count and the promotion decision", () => {
   assert.deepEqual(repeated.answeredQuestion.promotion, ANSWERED_QUESTION_PROMOTION);
   assert.equal(repeated.answeredQuestion.promotion.gating, false);
 
-  const clean = artifactFor("lola", ES_CLEAN, "run-es-clean");
+  const clean = artifactFor("malvina", ES_CLEAN, "run-es-clean");
   assert.equal(clean.answeredQuestion?.count, 0);
   assert.equal(clean.answeredQuestion?.status, "clear");
 
@@ -285,7 +285,7 @@ test("a redacted transcript still counts the answer, and the value stays redacte
   // address is the `[email]` placeholder. The category is still structured
   // evidence, and the value never leaves the transcript's redaction.
   const redacted = buildSkeletonArtifact({
-    voice: "lola",
+    voice: "malvina",
     scenario: "suite",
     runnerStdout: ES_REPEAT.join("\n"),
     exitCode: 0,
@@ -304,8 +304,8 @@ test("a redacted transcript still counts the answer, and the value stays redacte
 });
 
 test("the counter is report-only: a repeating turn and a clean one have identical gates", () => {
-  const repeated = artifactFor("lola", ES_REPEAT, "run-es-repeat");
-  const clean = artifactFor("lola", ES_CLEAN, "run-es-clean");
+  const repeated = artifactFor("malvina", ES_REPEAT, "run-es-repeat");
+  const clean = artifactFor("malvina", ES_CLEAN, "run-es-clean");
 
   assert.deepEqual(repeated.gates, clean.gates);
   assert.deepEqual(repeated.subScores, clean.subScores);
@@ -321,7 +321,7 @@ test("the counter is report-only: a repeating turn and a clean one have identica
 
 test("the compact report exposes the repeated question and the English baseline", () => {
   const spanish = buildInspectReport(
-    artifactFor("lola", ES_REPEAT, "run-es-repeat"),
+    artifactFor("malvina", ES_REPEAT, "run-es-repeat"),
   );
   assert.equal(spanish.answeredQuestion.count, 1);
   assert.equal(spanish.answeredQuestion.rate, 1 / 2);
@@ -335,7 +335,7 @@ test("the compact report exposes the repeated question and the English baseline"
   assert.match(text, /promotion\s+report-only \(never gated\)/);
 
   const english = buildInspectReport(
-    artifactFor("anna", EN_ONCE, "run-en-baseline"),
+    artifactFor("audrey", EN_ONCE, "run-en-baseline"),
   );
   const englishText = formatInspectReport(english);
   assert.match(englishText, /english-fp\s+0\.00 over 17 labelled cases \(0 false positives of 6 flagged, 1 missed\)/);

@@ -75,7 +75,7 @@ function sha256(bytes: Uint8Array): string {
 }
 
 const LOLA: SubjectRecord = {
-  agent: { kind: "demo", voice: "lola", agentId: null },
+  agent: { kind: "demo", voice: "malvina", agentId: null },
   locale: "es",
   transport: "browser",
   source: "flag",
@@ -96,7 +96,7 @@ const DELIVERED_PATH = join(tmpdir(), "cascade-verdict-delivered.wav");
 
 function fixture(overrides: Partial<CascadeReauditionRequest> = {}) {
   const dir = mkdtempSync(join(tmpdir(), "cascade-verdict-"));
-  const referencePath = join(dir, "lola-reference.wav");
+  const referencePath = join(dir, "malvina-reference.wav");
   const deliveredPath = DELIVERED_PATH;
   const referenceBytes = wavFrom(tone(1, 1_000, 0.4));
   const deliveredBytes = wavFrom(tone(1, 1_000, 0.4));
@@ -123,9 +123,9 @@ function fixture(overrides: Partial<CascadeReauditionRequest> = {}) {
     },
   ];
 
-  const runId = "run-lola-1";
+  const runId = "run-malvina-1";
   const artifact = buildSkeletonArtifact({
-    voice: "lola",
+    voice: "malvina",
     scenario: "stop-over",
     runnerStdout: "",
     exitCode: 0,
@@ -138,7 +138,7 @@ function fixture(overrides: Partial<CascadeReauditionRequest> = {}) {
       pipeline: "cascade",
       run: {
         runId,
-        variant: "cascade-lola-1",
+        variant: "cascade-malvina-1",
         startedAt: "2026-10-30T10:00:00.000Z",
         finishedAt: "2026-10-30T10:00:03.000Z",
       },
@@ -198,7 +198,7 @@ test("a complete pack accepts a named owner verdict with date and reasons", () =
   assert.equal(record.reviewer, "Owner Name");
   assert.equal(record.decidedOn, "2026-10-30");
   assert.equal(record.capture.sha256, deliveredSha);
-  assert.equal(record.subject.voice, "lola");
+  assert.equal(record.subject.voice, "malvina");
   assert.equal(record.subject.locale, "es");
   assert.equal(record.pack.readyForOwner, true);
   assert.match(record.artifact.path, /scoreboard\.json$/);
@@ -453,9 +453,9 @@ test("the ADR section is recorded beside the managed W2 gate and changes no stat
     "",
     "## Re-audition (W2 gate)",
     "",
-    "**Verdict: accept** — 2026-10-29. Content did not hold up for lola (es).",
+    "**Verdict: accept** — 2026-10-29. Content did not hold up for malvina (es).",
     "",
-    "- Subject: `lola` (`es`).",
+    "- Subject: `malvina` (`es`).",
     "",
   ].join("\n");
 
