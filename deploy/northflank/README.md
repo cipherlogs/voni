@@ -91,8 +91,10 @@ default and the default rung refuses to construct without it.
    `{"status":"ok","service":"voice-pipeline","protocolVersion":1}`.
 2. Open `/readyz`; it must report the store readable. If it does not, the
    `DATABASE_URL` secret is wrong or the addon is not linked.
-3. Set the app's pipeline URL to `wss://<that host>/v1/browser-call`
-   (`NEXT_PUBLIC_VOICE_PIPELINE_URL` locally and in the Workers environment).
+3. Set the app's pipeline URL to `https://<that host>` as the server-side
+   `VOICE_PIPELINE_URL` (Workers secret/var, or `.env.local` locally). The app
+   derives `wss://<that host>/v1/browser-call` itself; there is no public
+   build-time pipeline variable.
 4. Make one real call and confirm the artifact lands under
    `/var/lib/voni/events` on the volume.
 
