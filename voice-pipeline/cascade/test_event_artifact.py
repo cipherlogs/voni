@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -22,6 +23,7 @@ from unittest import mock
 from cascade.call import CallLifecycle, OpenedLeg
 from cascade.events import (
     CallEventLog,
+    EventEnvelopeError,
     EventStream,
     EventWriter,
     ForbiddenEventKey,
@@ -177,6 +179,127 @@ class EndMessagePathTests(unittest.TestCase):
         self.assertNotIn("eventsPath", document)
         self.assertIn("cannot create the events directory", document["eventsError"])
         self.assertIn("not-a-directory", document["eventsError"])
+
+
+DEMO_CALL_ID = "5b0f5c9a-4e2a-4a2b-9c3d-1f2e3a4b5c6d"
+DEMO_SUBJECT = "demo:audrey"
+
+
+class DemoTraceArtifactTests(unittest.TestCase):
+    """Ticket 17: a demo call's trace is keyed by call id and names its subject.
+
+    The trace belongs to the demo call, not to the subject: the file stem is the
+    call id the demo already has, so one call — including a hold return — has
+    one artifact. Every line that carries a subject names ``demo:<voice>``; the
+    stream refuses a tenant subject, a managed agent id and a bare voice id
+    before anything is written, because a demo trace naming the wrong subject
+    would be evidence of a call that never happened.
+    """
+
+    def setUp(self) -> None:
+        self.directory = tempfile.mkdtemp(prefix="cascade-demo-trace-")
+        patched = mock.patch.dict(
+            os.environ, {"VOICE_PIPELINE_EVENTS_DIR": self.directory}
+        )
+        patched.start()
+        self.addCleanup(patched.stop)
+
+    def demo_events(
+        self, call_id: str = DEMO_CALL_ID, subject: str = DEMO_SUBJECT
+    ) -> OperationalEvents:
+        from server import operational_events_for
+
+        return operational_events_for(call_id, subject, kind="demo")
+
+    def lines(self, path: Path) -> list[dict]:
+        return [json.loads(line) for line in path.read_text().splitlines() if line]
+
+    def test_a_demo_call_writes_one_trace_keyed_by_call_id_and_naming_its_subject(self):
+        events = self.demo_events()
+        events.greeting("greeting.start", voice_id="audrey")
+        events.greeting("greeting.done", voice_id="audrey", frames=1)
+
+        path = Path(events.path)
+        self.assertEqual(DEMO_CALL_ID, path.stem, "the trace is keyed by the call id")
+        self.assertNotEqual(DEMO_SUBJECT, path.stem, "the subject is not the trace key")
+        rows = self.lines(path)
+
+        self.assertEqual(
+            ["greeting.start", "greeting.done"], [row["type"] for row in rows]
+        )
+        self.assertTrue(all(row["callId"] == DEMO_CALL_ID for row in rows))
+        self.assertEqual(
+            [DEMO_SUBJECT, DEMO_SUBJECT], [row["subject"] for row in rows]
+        )
+
+    def test_a_hold_return_with_the_same_call_id_appends_to_the_same_trace(self):
+        self.demo_events().greeting("greeting.start", voice_id="audrey")
+        resumed = self.demo_events()  # the hold return mints again, same call id
+        resumed.greeting("greeting.done", voice_id="audrey", frames=1)
+
+        files = list(Path(self.directory).glob("*.jsonl"))
+        self.assertEqual(1, len(files), "a hold return opened a second artifact")
+        self.assertEqual(DEMO_CALL_ID, files[0].stem)
+        self.assertEqual(
+            ["greeting.start", "greeting.done"],
+            [row["type"] for row in self.lines(files[0])],
+        )
+
+    def test_a_demo_stream_refuses_a_tenant_subject_a_managed_agent_id_or_a_bare_voice_id(self):
+        for refused in ("agent_transport_65", "demo anna (en, browser)", "audrey"):
+            with self.subTest(subject=refused):
+                directory = tempfile.mkdtemp(prefix="cascade-demo-trace-")
+                log = CallEventLog(directory, call_id=DEMO_CALL_ID)
+                stream = EventStream(
+                    EventWriter(pipeline="cascade", call_id=DEMO_CALL_ID),
+                    sink=log,
+                    subject_kind="demo",
+                )
+
+                with self.assertRaises(EventEnvelopeError) as raised:
+                    OperationalEvents(stream, subject=refused, now=lambda: 0.0)
+
+                self.assertEqual("subject", raised.exception.field)
+                self.assertFalse(
+                    Path(log.path).exists(), "a refused subject wrote a line"
+                )
+
+    def test_a_tenant_stream_keeps_its_existing_subject_behaviour(self):
+        log = CallEventLog(self.directory, call_id="call_tenant_17")
+        events = OperationalEvents(
+            EventStream(
+                EventWriter(pipeline="cascade", call_id="call_tenant_17"),
+                sink=log,
+                subject_kind="tenant",
+            ),
+            subject="agent_transport_65",
+            now=lambda: 0.0,
+        )
+        events.greeting("greeting.start", voice_id="lola")
+
+        rows = self.lines(Path(log.path))
+        self.assertEqual("call_tenant_17", Path(log.path).stem)
+        self.assertEqual(["agent_transport_65"], [row["subject"] for row in rows])
+
+    def test_a_demo_line_is_refused_at_the_write_boundary_too(self):
+        log = CallEventLog(self.directory, call_id=DEMO_CALL_ID)
+        stream = EventStream(
+            EventWriter(pipeline="cascade", call_id=DEMO_CALL_ID),
+            sink=log,
+            subject_kind="demo",
+        )
+
+        with self.assertRaises(EventEnvelopeError) as raised:
+            stream(
+                {
+                    "type": "greeting.start",
+                    "callId": DEMO_CALL_ID,
+                    "subject": "agent_transport_65",
+                }
+            )
+
+        self.assertEqual("subject", raised.exception.field)
+        self.assertFalse(Path(log.path).exists(), "a refused line was written")
 
 
 if __name__ == "__main__":
