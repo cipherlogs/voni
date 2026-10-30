@@ -768,13 +768,16 @@ class CallLifecycleTest(unittest.TestCase):
 
     def test_a_refused_call_never_starts_the_stream(self):
         body = json.loads(json.dumps(BODY))
+        # The entry is missing base_url and api_key, so no client can be built:
+        # the call fails by name before a socket, and it does not route managed.
         body["llm"] = [{"model": "tenant-model"}]
         transport = FakeTransport([BrowserStop()])
 
         end = self.run_call(self.make(transport=transport, body=body))
 
         self.assertEqual([], self.opens)
-        self.assertEqual("LlmOverrideRefusal", end.error.name)
+        self.assertEqual("MissingLlmOverrideFieldError", end.error.name)
+        self.assertEqual("body", end.error.stage)
         self.assertFalse(self.stream.started)
 
 

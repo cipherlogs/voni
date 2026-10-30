@@ -262,7 +262,7 @@ class ConjunctionTests(unittest.TestCase):
         self.assertEqual(decision.predicates, ())
         self.assertEqual(decision.body.voice_id, "lola")
         self.assertEqual([rule.name for rule in DEFAULT_RULES],
-                         ["routing", "binding", "locale", "accepted", "counter"])
+                         ["routing", "binding", "locale", "llm", "accepted", "counter"])
 
     def test_routing_off_refuses_the_call(self):
         decision = self.evaluate(mode="off")

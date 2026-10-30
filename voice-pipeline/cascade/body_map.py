@@ -19,6 +19,7 @@ body path              config field                 used for
 ``input.language_codes``  ``speech_language_bias``  STT ``languageBias``
 ``input.keyterms``     ``keyterms``                 STT ``keywords``
 ``tools``              ``tools``                    the model's tool array
+``llm``                ``llm``                      the one model override
 =====================  ===========================  ========================
 
 Two rules keep the map honest about languages and tools:
@@ -44,9 +45,13 @@ the call carries.
 
 The unknown-key refusal (ticket 59) is the whitelist rule over that data: a key
 at the top level, inside ``input``, ``output`` or ``voice`` that neither set
-names fails by name, before any vendor socket opens. The LLM override refusal
-(60) is the one-body rule's consequence: a non-empty ``llm`` array routes the
-call managed, while ``llm: []`` is the documented revert.
+names fails by name, before any vendor socket opens. The LLM override (ticket
+159) is read, not refused: ``llm`` carries at most one provider entry, and that
+entry is the one the call constructs its model client from. ``llm: []`` is the
+documented revert to the default Meta rung. More than one entry, a missing
+``base_url``/``model``/``api_key`` or a field the entry cannot carry fails by
+name, before any vendor socket opens — a body whose override cannot be built is
+a visible call error, never a managed route.
 
 This adapter refuses what it cannot *represent*: an unbound voice, an unknown
 language code, a missing prompt, a tool name the vendor would reject. What the
@@ -67,9 +72,10 @@ import hashlib
 import json
 import re
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any
+from urllib.parse import urlsplit
 
 from cascade.voice_binding import LOCALES, VoiceBinding, bind_voice
 
@@ -112,23 +118,78 @@ class UnknownBodyKeyError(BodyFieldError):
         super().__init__(path, self.reason)
 
 
-class LlmOverrideRefusal(BodyFieldError):
-    """The body carries a bring-your-own-model override.
+class LlmOverrideError(BodyFieldError):
+    """The body's model override cannot produce a constructible client."""
 
-    The cascade runs the managed model; replacing a tenant's model silently
-    would be the one-body rule's worst failure. ``llm: []`` is the documented
-    revert and is not an override, so it never reaches this refusal.
+
+class MultipleLlmOverridesError(LlmOverrideError):
+    """The body carries more than one provider entry.
+
+    ``llm`` is an array with at most one entry: a call runs one model, so a
+    second entry is a body contract violation rather than a choice to guess.
+    ``llm: []`` is the documented revert and never reaches this refusal.
     """
 
     def __init__(self, models: tuple[str, ...]) -> None:
         self.models = models
-        named = ", ".join(f'"{model}"' for model in models) or "an unnamed model"
+        named = ", ".join(f'"{model}"' for model in models) or "unnamed entries"
         super().__init__(
             "llm",
-            f"the body carries a non-empty LLM override ({named}); a tenant's "
-            "bring-your-own model is never silently replaced, so this agent "
-            "routes managed",
+            f"the body carries {len(models)} LLM override entries ({named}); "
+            "the body may carry at most one, because a call runs one model",
         )
+
+
+class MissingLlmOverrideFieldError(LlmOverrideError):
+    """One required provider field is absent or blank.
+
+    The field name is named; its value is never echoed, because one of these
+    fields is a credential.
+    """
+
+    def __init__(self, path: str, field_name: str) -> None:
+        self.field_name = field_name
+        super().__init__(
+            path,
+            f'"{field_name}" is missing or empty; an LLM override needs '
+            "base_url, model and api_key to be constructible",
+        )
+
+
+class UnknownLlmOverrideKeyError(LlmOverrideError):
+    """The provider entry carries a key the client cannot represent."""
+
+    def __init__(self, path: str, key: str) -> None:
+        self.key = key
+        super().__init__(
+            path,
+            f'unknown key "{key}"; an LLM override carries only '
+            "base_url, model, api_key and reasoning_effort",
+        )
+
+
+@dataclass(frozen=True)
+class LlmOverride:
+    """One stored provider entry, server-side only.
+
+    ``api_key`` is a deployment credential: it is excluded from the
+    representation and from :meth:`to_document`, so it can reach the vendor's
+    authorization header and nothing else. The body is signed, so the key is
+    read from the signed body rather than from a browser frame.
+    """
+
+    base_url: str
+    model: str
+    api_key: str = field(repr=False)
+    reasoning_effort: str | None = None
+
+    def to_document(self) -> dict[str, str | None]:
+        """The artifact-safe shape: the key is never part of a document."""
+        return {
+            "base_url": self.base_url,
+            "model": self.model,
+            "reasoning_effort": self.reasoning_effort,
+        }
 
 
 class MissingSystemPromptError(BodyFieldError):
@@ -342,6 +403,79 @@ def _tools(path: str, value: object) -> tuple[dict[str, Any], ...]:
     return tuple(_function_tool(path, index, tool) for index, tool in enumerate(value))
 
 
+#: The keys a stored provider entry may carry (`LlmOverride` in body.ts).
+LLM_OVERRIDE_FIELDS = ("base_url", "model", "api_key", "reasoning_effort")
+
+
+def _llm(path: str, value: object) -> LlmOverride | None:
+    """Read the body's at-most-one provider entry, or ``None`` for the revert.
+
+    ``llm: []`` is the documented revert to the default Meta rung, so it is not
+    an override. A second entry, an unknown key or a missing required field is
+    refused by name; no value is echoed, because one of them is a credential.
+    """
+    if value is _MISSING or value is None:
+        return None
+    if not isinstance(value, (list, tuple)):
+        raise BodyFieldError(
+            path, f"expected a list of model overrides, got {type(value).__name__}"
+        )
+    if not value:
+        return None
+    models = tuple(
+        str(entry.get("model", "")) if isinstance(entry, Mapping) else repr(entry)
+        for entry in value
+    )
+    if len(value) > 1:
+        raise MultipleLlmOverridesError(models)
+    where = f"{path}[0]"
+    entry = value[0]
+    if not isinstance(entry, Mapping):
+        raise BodyFieldError(where, f"expected a model override object, got {type(entry).__name__}")
+    unknown = sorted(set(entry) - set(LLM_OVERRIDE_FIELDS))
+    for key in unknown:
+        raise UnknownLlmOverrideKeyError(f"{where}.{key}", key)
+    required: dict[str, str] = {}
+    for name in ("base_url", "model", "api_key"):
+        raw = entry.get(name, _MISSING)
+        if raw is _MISSING or raw is None or not isinstance(raw, str) or not raw.strip():
+            raise MissingLlmOverrideFieldError(f"{where}.{name}", name)
+        required[name] = raw.strip()
+    if urlsplit(required["base_url"]).scheme not in ("http", "https"):
+        raise LlmOverrideError(
+            f"{where}.base_url",
+            f'the base URL "{required["base_url"]}" is not an absolute http(s) '
+            "URL, so no request can be built from it",
+        )
+    reasoning = entry.get("reasoning_effort", _MISSING)
+    if reasoning is _MISSING or reasoning is None:
+        effort = None
+    elif not isinstance(reasoning, str):
+        raise LlmOverrideError(
+            f"{where}.reasoning_effort",
+            f"expected a string, got {type(reasoning).__name__}",
+        )
+    else:
+        effort = reasoning.strip() or None
+    return LlmOverride(
+        base_url=required["base_url"],
+        model=required["model"],
+        api_key=required["api_key"],
+        reasoning_effort=effort,
+    )
+
+
+def read_llm_override(body: Mapping[str, Any]) -> LlmOverride | None:
+    """The body's validated model override, or ``None`` for the revert.
+
+    One reader for the adapter and for eligibility's constructibility check, so
+    the two cannot disagree about whether a body's override can be built.
+    """
+    if not isinstance(body, Mapping):
+        raise TypeError(f"a stored agent body must be a mapping, got {type(body).__name__}")
+    return _llm("llm", body.get("llm", _MISSING))
+
+
 FIELD_MAP: Mapping[str, MappedField] = MappingProxyType(
     {
         # The prompt's own map: sent unchanged as the system message.
@@ -356,6 +490,8 @@ FIELD_MAP: Mapping[str, MappedField] = MappingProxyType(
         "input.keyterms": MappedField("keyterms", _string_list),
         # Converted to the Chat Completions function shape, never forwarded.
         "tools": MappedField("tools", _tools),
+        # At most one provider entry; [] is the revert to the default rung.
+        "llm": MappedField("llm", _llm),
     }
 )
 
@@ -447,11 +583,8 @@ def _allowed_children() -> Mapping[str, frozenset[str]]:
 
     Derived per call, so extending either set is the whole change: a module
     constant computed at import would go stale the moment a set grows.
-    ``llm`` is the one top-level key that is neither mapped nor ignored: it is
-    a documented refusal (ticket 60), so it must reach the adapter to be
-    refused by name rather than as an unknown key.
     """
-    allowed: dict[str, set[str]] = {"": {"llm"}, "voice": set()}
+    allowed: dict[str, set[str]] = {"voice": set()}
     for path in (*FIELD_MAP, *IGNORE_SET):
         parts = path.split(".")
         for depth, key in enumerate(parts):
@@ -480,25 +613,6 @@ def _reject_unknown_keys(body: Mapping[str, Any]) -> None:
                 raise UnknownBodyKeyError(f"{section}.{key}" if section else str(key))
 
 
-def _reject_llm_override(body: Mapping[str, Any]) -> None:
-    """Refuse a non-empty ``llm`` array; ``[]`` is the documented revert."""
-    value = body.get("llm", _MISSING)
-    if value is _MISSING or value is None:
-        return
-    if not isinstance(value, (list, tuple)):
-        raise BodyFieldError(
-            "llm", f"expected a list of model overrides, got {type(value).__name__}"
-        )
-    if not value:
-        return
-    models = tuple(
-        str(entry.get("model", "")) if isinstance(entry, Mapping) else repr(entry)
-        for entry in value
-    )
-    raise LlmOverrideRefusal(models)
-
-
-
 @dataclass(frozen=True)
 class CascadeBody:
     """What the cascade reads out of a stored body — no more, no less."""
@@ -512,6 +626,8 @@ class CascadeBody:
     keyterms: tuple[str, ...]
     # Chat Completions shape, ready for LLMStream.complete(tools=...).
     tools: tuple[dict[str, Any], ...]
+    # The body's one provider entry, or None for the default Meta rung.
+    llm: LlmOverride | None
     # Every ignored field the served body carried, with its reason. Not a
     # setting: the record exists so an ignored field is visible on the call.
     ignored: tuple[IgnoredField, ...]
@@ -531,6 +647,19 @@ class CascadeBody:
         return self.voice.locale.language
 
     @property
+    def auto_detect(self) -> bool:
+        """Whether speech recognition runs without a language bias.
+
+        An absent or empty ``input.language_codes`` is Meta's auto-detect, not
+        a missing setting: synthesis still speaks the bound voice's Locale.
+        """
+        return not self.speech_language_bias
+
+    @property
+    def has_llm_override(self) -> bool:
+        return self.llm is not None
+
+    @property
     def has_greeting(self) -> bool:
         return bool(self.greeting)
 
@@ -540,7 +669,6 @@ def adapt_body(body: Mapping[str, Any]) -> CascadeBody:
     if not isinstance(body, Mapping):
         raise TypeError(f"a stored agent body must be a mapping, got {type(body).__name__}")
     _reject_unknown_keys(body)
-    _reject_llm_override(body)
     produced = {
         field.attribute: field.parse(path, _read(body, path))
         for path, field in FIELD_MAP.items()

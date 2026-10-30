@@ -26,7 +26,12 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from cascade.body_map import BodyFieldError, CascadeBody, adapt_body
+from cascade.body_map import (
+    BodyFieldError,
+    CascadeBody,
+    adapt_body,
+    read_llm_override,
+)
 from cascade.routing import CallSubject, Disposition, RoutingDecision
 from cascade.voice_binding import VoiceBindingError
 
@@ -203,11 +208,26 @@ def _accepted_reason(facts: EligibilityFacts) -> str:
     return ""
 
 
+def _llm_reason(facts: EligibilityFacts) -> str:
+    """A body's model override is eligible when it is constructible (ticket 159).
+
+    The refusal ticket 60 recorded is gone: a tenant's own provider now runs the
+    cascade. What is still checked is whether the entry can become a client —
+    one entry, with a base URL, a model and a key — by name, before a socket.
+    """
+    try:
+        read_llm_override(facts.body)
+    except BodyFieldError as error:
+        return str(error)
+    return ""
+
+
 #: The body half of the conjunction, in evaluation order. Binding comes before
 #: acceptance so a voice with no binding is named as the binding refusal.
 BODY_RULES: tuple[Rule, ...] = (
     Rule("binding", _binding_reason),
     Rule("locale", _locale_reason),
+    Rule("llm", _llm_reason),
     Rule("accepted", _accepted_reason),
 )
 

@@ -45,6 +45,16 @@ second failure on the leg ends the call (ticket 96).
 The per-turn record is how a caller reads what the stream produced without
 re-parsing it: pass a :class:`MetaLLMTurn` to ``complete()`` (or read
 ``last_turn`` afterwards). A record is never shared between turns.
+
+A stored body may carry its own OpenAI-compatible provider (ticket 159). That
+client is constructed server-side from the body's one entry by
+:func:`construct_byo_model` and reuses this whole contract — the same request
+builder, the same tools, the same stream parsing and the same failure policy.
+Only construction differs: the Standard-only guard belongs to the Meta Spark
+rung, not to a tenant's chosen model, and the body's optional
+``reasoning_effort`` is sent verbatim (``"none"`` is a tenant-model choice, not
+a Spark 400). The key is read from the signed body, reaches the authorization
+header, and is never part of a representation or a document.
 """
 
 from __future__ import annotations
@@ -58,9 +68,11 @@ from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
+from urllib.parse import urlsplit
 
+from cascade.body_map import LlmOverride
 from cascade.failures import FailureClass, FailureVerdict, classify
-from cascade.ladders import CallRungs
+from cascade.ladders import CallRungs, ProviderAttribution
 from cascade.model_guard import resolve_model
 from cascade.reconnect import (
     RECONNECTS_PER_LEG,
@@ -178,6 +190,67 @@ IDENTIFIER_SALT_ENV = "META_IDENTIFIER_SALT"
 
 class MetaLLMConfigError(RuntimeError):
     """A required piece of backend configuration is missing."""
+
+
+class ByoLlmError(MetaLLMConfigError):
+    """The stored body's provider entry cannot construct a client.
+
+    Raised at construction, before any request or vendor socket exists, and by
+    eligibility's constructibility check. The message names the field, never
+    its value: one of these fields is a credential.
+    """
+
+
+def byo_provider(base_url: str, model: str) -> str:
+    """The provider id a BYO turn's attribution names.
+
+    The tenant's provider is identified by the host its base URL points at,
+    plus the model the body chose — never the Standard rung's model id.
+    """
+    host = urlsplit(base_url).netloc
+    return f"{host}/{model}"
+
+
+def _byo_reasoning_effort(value: str | None) -> str | None:
+    """A tenant model's optional effort, verbatim; absent means omitted.
+
+    The Spark-specific refusal (``"none"`` is an HTTP 400) belongs to the
+    Standard rung, not here: a tenant model may explicitly disable thinking.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ByoLlmError(
+            f"reasoning_effort must be a string, got {type(value).__name__}"
+        )
+    return value.strip() or None
+
+
+def validate_byo_override(override: LlmOverride) -> LlmOverride:
+    """Refuse an override that cannot become a request, by name.
+
+    This is the client-side constructibility check: the body adapter already
+    validated the served shape, and the constructor re-asserts it so no other
+    entry point can build a client the request builder would fail on later.
+    """
+    if not isinstance(override, LlmOverride):
+        raise ByoLlmError(
+            f"a BYO model needs the body's LlmOverride, got {type(override).__name__}"
+        )
+    for name in ("base_url", "model", "api_key"):
+        value = getattr(override, name)
+        if not isinstance(value, str) or not value.strip():
+            raise ByoLlmError(
+                f'the stored body\'s LLM override has no {name}: '
+                "base_url, model and api_key are all required to build a client"
+            )
+    if urlsplit(override.base_url).scheme not in ("http", "https"):
+        raise ByoLlmError(
+            f'the stored body\'s LLM override base_url "{override.base_url}" '
+            "is not an absolute http(s) URL, so no request can be built"
+        )
+    _byo_reasoning_effort(override.reasoning_effort)
+    return override
 
 
 class MetaLLMStreamError(RuntimeError):
@@ -581,14 +654,20 @@ def build_chat_request(
     model: str,
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]] | None = None,
-    reasoning_effort: str,
+    reasoning_effort: str | None = None,
     safety_identifier: str | None = None,
+    enforce_standard_model: bool = True,
 ) -> dict[str, Any]:
     """The exact JSON body for ``POST /chat/completions``.
 
     One function owns the shape so a test can compare the whole payload. Any
     key not listed here is intentionally unsupported by Spark; adding one is a
     review decision, not a default.
+
+    ``reasoning_effort`` is optional for a tenant model (ticket 159): an
+    override that declares no effort sends no key, rather than inventing one.
+    On the Standard rung ``enforce_standard_model`` is true, so the value is
+    required and the Spark-specific refusal still runs at the one validator.
 
     ``safety_identifier`` is opt-in and must already be the salted digest from
     :func:`privacy_identifier`; there is deliberately no ``user`` field and no
@@ -600,8 +679,11 @@ def build_chat_request(
         "messages": messages,
         "stream": True,
         "stream_options": {"include_usage": True},
-        "reasoning_effort": resolve_reasoning_effort(reasoning_effort),
     }
+    if enforce_standard_model:
+        payload["reasoning_effort"] = resolve_reasoning_effort(reasoning_effort)
+    elif reasoning_effort is not None:
+        payload["reasoning_effort"] = _byo_reasoning_effort(reasoning_effort)
     if tools:
         payload["tools"] = tools
         payload["tool_choice"] = "auto"
@@ -1634,12 +1716,32 @@ class MetaLLM(LLMStream):
         rungs: CallRungs | None = None,
         on_alert: Callable[[FailureDecision], None] | None = None,
         budget: ReconnectBudget | None = None,
+        enforce_standard_model: bool = True,
     ) -> None:
         # Construction guard first: a Contributor id must fail before any
-        # request field exists to leak into (ticket 35).
-        self._model = resolve_model(model)
-        self._reasoning_effort = resolve_reasoning_effort(reasoning_effort)
-        self._api_key = api_key or os.environ.get("META_API_KEY")
+        # request field exists to leak into (ticket 35). A tenant's own model
+        # (ticket 159) is not a Meta rung, so the guard does not apply to it.
+        self._enforce_standard_model = bool(enforce_standard_model)
+        if self._enforce_standard_model:
+            self._model = resolve_model(model)
+            self._reasoning_effort = resolve_reasoning_effort(reasoning_effort)
+            self._api_key = api_key or os.environ.get("META_API_KEY")
+        else:
+            for name, value in (
+                ("base_url", base_url),
+                ("model", model),
+                ("api_key", api_key),
+            ):
+                if not isinstance(value, str) or not value.strip():
+                    raise ByoLlmError(
+                        f"a tenant model client needs a {name}: base_url, model "
+                        "and api_key are all required, and none is defaulted"
+                    )
+            self._model = model.strip()
+            self._reasoning_effort = _byo_reasoning_effort(reasoning_effort)
+            # A tenant's key comes from the signed body only; the Meta key is
+            # never substituted for it.
+            self._api_key = api_key.strip()
         self._base_url = base_url.rstrip("/")
         self._system_prompt = system_prompt
         self._session_factory = session_factory or _AiohttpSession
@@ -1668,6 +1770,17 @@ class MetaLLM(LLMStream):
     @property
     def model(self) -> str:
         return self._model
+
+    @property
+    def provider(self) -> str:
+        """The provider id this client's attribution names.
+
+        The Standard rung is ``spark``; a tenant's model names its base URL's
+        host plus the model the body chose (ticket 159).
+        """
+        if self._enforce_standard_model:
+            return "spark"
+        return byo_provider(self._base_url, self._model)
 
     @property
     def reasoning_effort(self) -> str:
@@ -1699,10 +1812,16 @@ class MetaLLM(LLMStream):
         turn: MetaLLMTurn | None = None,
     ) -> AsyncIterator[TokenDelta | ToolCallRequest]:
         if not self._api_key:
-            raise MetaLLMConfigError(
-                "META_API_KEY is not configured: the chat completions request "
-                "needs bearer auth, and an unauthenticated request must not be "
-                "sent"
+            if self._enforce_standard_model:
+                raise MetaLLMConfigError(
+                    "META_API_KEY is not configured: the chat completions request "
+                    "needs bearer auth, and an unauthenticated request must not be "
+                    "sent"
+                )
+            raise ByoLlmError(
+                "the stored body's LLM override has no api_key: the request "
+                "needs bearer auth, and the Meta key is never substituted for a "
+                "tenant's"
             )
         payload = build_chat_request(
             model=self._model,
@@ -1714,6 +1833,7 @@ class MetaLLM(LLMStream):
             tools=tools,
             reasoning_effort=self._reasoning_effort,
             safety_identifier=self._safety_identifier,
+            enforce_standard_model=self._enforce_standard_model,
         )
         headers = {
             "authorization": f"Bearer {self._api_key}",
@@ -1870,6 +1990,87 @@ class MetaLLM(LLMStream):
         return None
 
 
+# ---------------------------------------------------------------------------
+# A tenant's own model (ticket 159): the same contract, a different constructor
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class ByoModel:
+    """One constructed tenant client and the attribution its turns carry."""
+
+    client: MetaLLM
+    attribution: ProviderAttribution
+
+    @property
+    def model(self) -> str:
+        return self.client.model
+
+    @property
+    def provider(self) -> str:
+        return self.attribution.provider
+
+
+def byo_attribution(override: LlmOverride) -> ProviderAttribution:
+    """The attribution a BYO turn earns: its provider host and model.
+
+    It is the leg's primary rung because the body's own model is the only one
+    its call may use; there is no Meta rung behind it to fall back to.
+    """
+    validate_byo_override(override)
+    return ProviderAttribution(
+        leg="llm",
+        provider=byo_provider(override.base_url, override.model),
+        rung="primary",
+        reason=(
+            "the stored body's LLM override names this provider and model; the "
+            "default Standard rung does not serve this call"
+        ),
+    )
+
+
+def build_byo_client(
+    override: LlmOverride,
+    *,
+    system_prompt: str = "",
+    session_factory: Any = None,
+    timeout_s: float = 60.0,
+    ledger: Any = None,
+    rungs: CallRungs | None = None,
+    on_alert: Callable[[FailureDecision], None] | None = None,
+    budget: ReconnectBudget | None = None,
+) -> MetaLLM:
+    """Construct the tenant's OpenAI-compatible client, server-side.
+
+    A body whose entry cannot build a client fails here, by name, before any
+    vendor socket exists; it never routes managed. The key is passed to the
+    client's authorization header only.
+    """
+    validate_byo_override(override)
+    return MetaLLM(
+        api_key=override.api_key,
+        model=override.model,
+        base_url=override.base_url,
+        reasoning_effort=override.reasoning_effort,
+        system_prompt=system_prompt,
+        session_factory=session_factory,
+        timeout_s=timeout_s,
+        ledger=ledger,
+        rungs=rungs,
+        on_alert=on_alert,
+        budget=budget,
+        enforce_standard_model=False,
+    )
+
+
+def construct_byo_model(override: LlmOverride, **kwargs: Any) -> ByoModel:
+    """Build the tenant's client together with the attribution it earns."""
+    return ByoModel(
+        client=build_byo_client(override, **kwargs),
+        attribution=byo_attribution(override),
+    )
+
+
 __all__ = [
     "CALL_ID_MAX_LENGTH",
     "CHAT_COMPLETIONS_PATH",
@@ -1892,6 +2093,8 @@ __all__ = [
     "TOOL_FINISH_REASONS",
     "UNAVAILABLE_REASONING_EFFORT",
     "FailureDecision",
+    "ByoLlmError",
+    "ByoModel",
     "MessageAssemblyError",
     "MessageHistory",
     "MetaLLM",
@@ -1914,7 +2117,11 @@ __all__ = [
     "TurnUsage",
     "assistant_reply_message",
     "build_chat_request",
+    "build_byo_client",
     "build_messages",
+    "byo_attribution",
+    "byo_provider",
+    "construct_byo_model",
     "parse_tool_arguments",
     "parse_usage",
     "privacy_identifier",
@@ -1924,5 +2131,6 @@ __all__ = [
     "tool_call_part",
     "tool_result_message",
     "tool_turn_messages",
+    "validate_byo_override",
     "validate_tool_arguments",
 ]
