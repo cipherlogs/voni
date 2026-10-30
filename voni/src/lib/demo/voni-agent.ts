@@ -16,8 +16,13 @@ import type { WebsiteState } from "./website";
 /** Stored in `demo_agents.persona_id`, which predates Voni-as-itself. */
 export const VONI_AGENT_ID = "voni";
 
-/** The picker: one voice per spoken language, English first. */
-export const DEMO_VOICE_IDS = ["anna", "lola", "estelle", "jorg", "giovanni", "rafael"] as const;
+/**
+ * The demo picker: exactly five voices, one per Locale, English first
+ * (demo-cascade ticket 04). Withdrawing a voice is this one line — the picker,
+ * the mint validation and the harness all read it. Italian is intentionally
+ * absent; its renderings stay in the per-Locale layer, unused.
+ */
+export const DEMO_VOICE_IDS = ["audrey", "malvina", "donatien", "jorg", "benicio"] as const;
 
 /**
  * The opening beat, per output language. ⚠️ Written, not machine-translated,

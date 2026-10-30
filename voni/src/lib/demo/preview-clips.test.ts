@@ -63,30 +63,38 @@ const PURE_MP3: PreviewMeasurement = {
   reason: "this leg reads the frame headers and the evidence record; it does not decode",
 };
 
+/** The voices with a committed preview; the rest are the manifest's named gaps. */
+function committedVoices() {
+  const committed = new Set(manifest().clips.map((record) => record.voice));
+  return VOICES.filter((voice) => committed.has(voice.id));
+}
+
+/** The voices the clip generator could not render yet, named in the evidence. */
+const pendingVoiceIds = () => manifest().pending.map((record) => record.voice);
+
 function recordFor(voiceId: string) {
   const record = manifest().clips.find((candidate) => candidate.voice === voiceId);
   assert.ok(record, `${voiceId} has a committed clip to synthesise a defect from`);
   return record;
 }
 
-test("every offered voice's preview is its own Locale, line and native level", () => {
+test("every committed preview is its own Locale, line and native level", () => {
   const gate = previewGate({ manifest: manifest(), readAsset, measurement: PURE_MP3 });
 
-  assert.equal(VOICES.length, 16, "the picker offers sixteen voices, so sixteen previews are covered");
+  assert.equal(VOICES.length, 20, "the catalogue keeps every stored voice and adds the four demo voices");
   assert.deepEqual(
-    gate.checks.map((check) => check.voiceId).sort(),
-    VOICES.map((voice) => voice.id).sort(),
-    "one check per offered voice: the featured voice is not the only one gated",
+    gate.failures.map((failure) => failure.voiceId).sort(),
+    [...pendingVoiceIds()].sort(),
+    "only the voices with no committed preview fail, and each fails by name",
   );
   assert.deepEqual(
-    gate.failures.map((failure) => failure.voiceId),
-    [],
-    `previews that do not match their voice: ${gate.failures
-      .map((failure) => failure.problems.join(" | "))
-      .join(" ;; ")}`,
+    gate.checks.filter((check) => check.problems.length === 0).map((check) => check.voiceId).sort(),
+    committedVoices().map((voice) => voice.id).sort(),
+    "one passing check per committed preview: the featured voice is not the only one gated",
   );
 
   for (const check of gate.checks) {
+    if (check.problems.length > 0) continue;
     const voice = getVoice(check.voiceId);
     assert.ok(voice, `${check.voiceId} is a catalog voice`);
     assert.equal(check.locale, voice.languageCode, `${check.voiceId} speaks exactly its own Locale`);
@@ -101,8 +109,26 @@ test("every offered voice's preview is its own Locale, line and native level", (
   }
 });
 
+test("a voice with no committed preview is a named gap, never a silent pass", () => {
+  const gate = previewGate({ manifest: manifest(), readAsset, measurement: PURE_MP3 });
+
+  // The demo's new voices are newer than the managed Voice Agent API, so the
+  // clip generator names them pending with the pipeline command that finishes
+  // them (demo-cascade ticket 05). A pending row is a failure with a remedy.
+  for (const voiceId of pendingVoiceIds()) {
+    const check = gate.failures.find((failure) => failure.voiceId === voiceId);
+    assert.ok(check, `${voiceId}: the pending preview is named`);
+    assert.ok(
+      check.problems.some(
+        (problem) => new RegExp(`no committed clip for ${voiceId}: pending`).test(problem),
+      ),
+      `${voiceId}: the refusal names the gap: ${check.problems.join(" | ")}`,
+    );
+  }
+});
+
 test("every committed preview's bytes are its recorded format and surviving bitrate", () => {
-  for (const voice of VOICES) {
+  for (const voice of committedVoices()) {
     const record = recordFor(voice.id);
     const bytes = readAsset(record.asset);
     assert.ok(bytes, `${voice.id}: ${record.asset} is committed`);
@@ -147,7 +173,7 @@ test("a wrong-Locale preview and a wrong-level preview fail by name", () => {
     }),
   };
 
-  const gate = previewGate({ manifest: patched, readAsset, measurement: PURE_MP3 });
+  const gate = previewGate({ manifest: patched, readAsset, measurement: PURE_MP3, voices: committedVoices() });
   assert.deepEqual(
     gate.failures.map((failure) => failure.voiceId).sort(),
     ["jorg", "lola"],
@@ -193,6 +219,7 @@ test("a preview whose bytes measure to another level fails by name", () => {
         };
       },
     },
+    voices: committedVoices(),
   });
 
   assert.deepEqual(
@@ -233,7 +260,12 @@ test("every committed preview decodes to the level its evidence records", (t) =>
   if (!requireDecoder(t)) return;
   const dir = mkdtempSync(join(tmpdir(), "preview-clips-"));
   try {
-    const gate = previewGate({ manifest: manifest(), readAsset, measurement: decodedMeasurement(dir) });
+    const gate = previewGate({
+      manifest: manifest(),
+      readAsset,
+      measurement: decodedMeasurement(dir),
+      voices: committedVoices(),
+    });
     assert.deepEqual(
       gate.failures.map((failure) => failure.problems.join(" | ")),
       [],
@@ -260,7 +292,12 @@ test("a preview swapped for another voice's audio fails by name", (t) => {
     return readAsset(voiceId === "anna" ? `public/voices/${donor}.mp3` : asset);
   };
   try {
-    const gate = previewGate({ manifest: manifest(), readAsset: readSwapped, measurement: decodedMeasurement(dir) });
+    const gate = previewGate({
+      manifest: manifest(),
+      readAsset: readSwapped,
+      measurement: decodedMeasurement(dir),
+      voices: committedVoices(),
+    });
     assert.deepEqual(
       gate.failures.map((failure) => failure.voiceId),
       ["anna"],

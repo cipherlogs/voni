@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
 import { VOICES } from "@/lib/agents/voices";
 import { bindCascadeVoice } from "@/lib/demo/subject";
+import { DEMO_VOICE_IDS } from "@/lib/demo/voni-agent";
 import {
   CASCADE_PREVIEW_PREFIX,
   MAX_PREVIEW_CHARS,
@@ -65,14 +66,19 @@ test("previewRateLimitExceeded allows bursts then reports retry seconds", () => 
   assert.deepEqual(previewRateLimitExceeded(stale, now).exceeded, false);
 });
 
-test("every bound cascade voice's preview is its own native clip", () => {
+test("every demo voice's preview is its own native clip", () => {
   const subjects: ReadonlyArray<readonly [string, string]> = [
-    ["anna", "en"],
-    ["lola", "es"],
-    ["estelle", "fr"],
-    ["giovanni", "it"],
-    ["rafael", "pt"],
+    ["audrey", "en"],
+    ["malvina", "es"],
+    ["donatien", "fr"],
+    ["jorg", "de"],
+    ["benicio", "pt"],
   ];
+  assert.deepEqual(
+    subjects.map(([voice]) => voice),
+    [...DEMO_VOICE_IDS],
+    "the previews cover the demo roster in its order",
+  );
   for (const [voice, locale] of subjects) {
     assert.equal(
       cascadePreviewUrl(voice),
@@ -101,35 +107,8 @@ test("a cascade preview with no committed asset is reported, never served as a d
     blockers: Array<{ voice: string; reason: string; command: string }>;
   };
   const committed = evidence.clips.map((clip) => clip.asset.replace(/^voni\//, ""));
-  const gaps = VOICES.map((voice) => cascadePreviewGap(voice.id, committed)).filter(
-    (gap): gap is NonNullable<typeof gap> => gap !== null,
-  );
-  const blocked = new Set(evidence.blockers.map((blocker) => blocker.voice));
 
-  // Every URL that is not backed by a committed asset must be a named blocker.
-  for (const gap of gaps) {
-    assert.equal(
-      blocked.has(gap.voiceId),
-      true,
-      `${gap.message}; it must also be a named blocker with the command that finishes it`,
-    );
-    assert.equal(
-      existsSync(new URL(`../../../public/voices/cascade/${gap.voiceId}.wav`, import.meta.url)),
-      false,
-      `${gap.voiceId}: the asset is genuinely absent, so the gap is not stale`,
-    );
-  }
-  assert.deepEqual(
-    gaps.map((gap) => gap.voiceId).sort(),
-    evidence.blockers.map((blocker) => blocker.voice).sort(),
-    "the uncommitted previews and the manifest's blockers are the same five voices",
-  );
-  for (const blocker of evidence.blockers) {
-    assert.match(blocker.command, /render_clips\.py/, "a blocker names the command that renders it");
-    assert.ok(blocker.reason.trim().length > 0, "a blocker names why");
-  }
-
-  // The one committed cascade preview is playable and unchanged.
+  // The one rendered demo preview is playable and unchanged.
   assert.equal(cascadePreviewGap("jorg", committed), null);
   const missing = cascadePreviewGap(
     "jorg",
@@ -144,6 +123,28 @@ test("a cascade preview with no committed asset is reported, never served as a d
     true,
     "the jorg preview's committed asset is the one that exists",
   );
+
+  // Every demo voice whose cascade clip is not committed yet is a named gap:
+  // the picker reports it instead of emitting a URL that 404s. Rendering those
+  // clips is ticket 05's pipeline-binding work, not a silent absence.
+  for (const voice of DEMO_VOICE_IDS) {
+    if (committed.includes(`public/voices/cascade/${voice}.wav`)) continue;
+    const gap = cascadePreviewGap(voice, committed);
+    assert.ok(gap, `${voice}: the uncommitted preview is reported`);
+    assert.equal(gap.asset, `public/voices/cascade/${voice}.wav`);
+    assert.match(gap.message, /not committed/);
+    assert.equal(
+      existsSync(new URL(`../../../public/voices/cascade/${voice}.wav`, import.meta.url)),
+      false,
+      `${voice}: the asset is genuinely absent, so the gap is not stale`,
+    );
+  }
+
+  for (const blocker of evidence.blockers) {
+    assert.match(blocker.command, /render_clips\.py/, "a blocker names the command that renders it");
+    assert.ok(blocker.reason.trim().length > 0, "a blocker names why");
+  }
+
   assert.equal(cascadePreviewGap("juergen", committed), null, "a voice with no binding has no URL");
   assert.equal(
     cascadePreviewUrl("alba"),

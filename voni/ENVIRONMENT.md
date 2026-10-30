@@ -77,6 +77,9 @@ One runtime value, read only on the server:
   non-`https` value is refused when the app reads the configuration. Nothing
   is baked into the build and the browser never reads a pipeline variable.
 
+The Test dialog has no engine control: a test call always runs the managed
+session. The public demo is the only cascade surface (demo-cascade ticket 04).
+
 The pipeline's own model settings (`VOICE_PIPELINE_LLM_MODEL`,
 `VOICE_PIPELINE_TTS_MODEL`, …) live on the service, not the app: see
 `deploy/northflank/README.md` and `voice-pipeline/README.md`.

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { VOICES } from "@/lib/agents/voices";
+import { DEMO_VOICE_IDS } from "./voni-agent";
 import { AUDITION_MANIFEST_PATH, auditionClipFor, type AuditionClipRecord, type AuditionManifest } from "./audition-clips";
 import {
   BALLOT_AXES,
@@ -39,6 +40,17 @@ const packMarkdown = (voice: string) => new URL(`${REVIEWER_PACK_DIR}/${voice}.m
 
 const manifest = (): AuditionManifest =>
   JSON.parse(readFileSync(new URL(AUDITION_MANIFEST_PATH, root), "utf8")) as AuditionManifest;
+
+/**
+ * Voices with a committed recording. A newer catalogue voice the managed Voice
+ * Agent API does not serve yet is a named pending row in the audition evidence,
+ * not a pack: there is no audio to hand a reviewer (demo-cascade ticket 05
+ * renders the cascade clips that unblock it).
+ */
+const recordedVoices = () => {
+  const recorded = new Set(manifest().clips.map((clip) => clip.voice));
+  return VOICES.filter((voice) => recorded.has(voice.id));
+};
 
 const readPack = (voice: string): ReviewerPack =>
   JSON.parse(readFileSync(packFile(voice), "utf8")) as ReviewerPack;
@@ -94,9 +106,9 @@ function verdictFixture(patch: Partial<ReviewerVerdict> = {}): ReviewerVerdict {
 
 test("every offered voice has a pack bound to its own Locale's one committed recording", () => {
   const clips = manifest().clips;
-  assert.equal(clips.length, VOICES.length, "the evidence must carry every offered voice");
+  assert.equal(clips.length, recordedVoices().length, "each recorded voice has one clip");
 
-  for (const voice of VOICES) {
+  for (const voice of recordedVoices()) {
     const pack = readPack(voice.id);
     assert.equal(pack.voice, voice.id);
     assert.equal(pack.locale, voice.languageCode, `${voice.id} must be judged in its own Locale`);
@@ -132,7 +144,7 @@ test("one shared recording per voice and Locale, and no pack for a voice that ha
   const index = JSON.parse(readFileSync(new URL(REVIEWER_PACK_INDEX_PATH, root), "utf8")) as {
     packs: Array<{ voice: string; recordingSha256: string; status: string }>;
   };
-  assert.equal(index.packs.length, VOICES.length);
+  assert.equal(index.packs.length, recordedVoices().length);
   for (const entry of index.packs) {
     assert.equal(entry.recordingSha256, readPack(entry.voice).recording?.sha256);
   }
@@ -143,7 +155,7 @@ test("one shared recording per voice and Locale, and no pack for a voice that ha
 test("the ballot carries timbre, accent and language naturalness", () => {
   assert.deepEqual([...BALLOT_AXES], ["timbre", "accent", "languageNaturalness"]);
 
-  for (const voice of VOICES) {
+  for (const voice of recordedVoices()) {
     const pack = readPack(voice.id);
     assert.deepEqual(pack.ballot.axes, [...BALLOT_AXES]);
     assert.equal(pack.ballot.scale.min, 1);
@@ -218,7 +230,7 @@ test("a reason is required for every axis below five, not only the first", () =>
 // ── "The named reviewer and date are required fields." ───────────────────────
 
 test("a pack with no reviewer and no date is visibly pending, never passing", () => {
-  for (const voice of VOICES) {
+  for (const voice of recordedVoices()) {
     const pack = readPack(voice.id);
     assert.equal(pack.verdict, null, `${voice.id}: no reviewer exists yet, so no verdict is invented`);
     assert.equal(packStatus(pack), "pending");
@@ -323,7 +335,7 @@ test("a verdict that names a different Locale than the recording is refused", ()
 // ── "The pack can be handed to a reviewer without further assembly." ─────────
 
 test("every pack has a self-contained hand-off sheet with a ballot and a signature block", () => {
-  for (const voice of VOICES) {
+  for (const voice of recordedVoices()) {
     assert.ok(existsSync(packMarkdown(voice.id)), `${voice.id}: no hand-off sheet`);
     const sheet = readFileSync(packMarkdown(voice.id), "utf8");
     assert.match(sheet, new RegExp(`# Parity proof — reviewer pack: ${voice.id} \\(${voice.languageCode}\\)`));
@@ -399,7 +411,7 @@ test("a complete pack's sheet records the reviewer, the date and the reasons", (
 // ── Ticket 75: a filed verdict becomes the weighted ballot's third axis ─────
 
 test("a filed verdict loads into the weighted ballot with language naturalness", () => {
-  const pack = fileVerdict(packFixture("lola"), {
+  const pack = fileVerdict(packFixture("malvina"), {
     reviewer: "a named native reviewer",
     reviewedOn: "2026-10-29",
     locale: "es",
@@ -427,7 +439,7 @@ test("a filed verdict loads into the weighted ballot with language naturalness",
 });
 
 test("a pending pack yields an empty ballot bound to its recording, never an invented score", () => {
-  const human = humanRatingsFromPack(reviewerPackFor(clipFixture("lola"), RECORDING_SHA));
+  const human = humanRatingsFromPack(reviewerPackFor(clipFixture("malvina"), RECORDING_SHA));
   assert.deepEqual(human.ratings, []);
   assert.equal(human.recordingSha256, RECORDING_SHA);
   assert.equal(human.subject?.locale, "es");
@@ -453,10 +465,10 @@ test("the adapter refuses a verdict that drops the third axis instead of loading
 });
 
 test("a pack is one subject's ballot: it never loads against another Locale's subject", () => {
-  const pack = fileVerdict(packFixture("lola"), verdictFixture());
-  const anna = resolveSubject({ voice: "anna" });
+  const pack = fileVerdict(packFixture("malvina"), verdictFixture());
+  const english = resolveSubject({ voice: "audrey" });
   assert.throws(
-    () => humanRatingsFromPack(pack, anna),
+    () => humanRatingsFromPack(pack, english),
     (error: unknown) => {
       assert.ok(error instanceof Error);
       assert.match(error.message, /locale|Spanish|es/);
@@ -464,8 +476,8 @@ test("a pack is one subject's ballot: it never loads against another Locale's su
     },
   );
   // The subject it names loads unchanged.
-  const lola = resolveSubject({ voice: "lola" });
-  const human = humanRatingsFromPack(pack, lola);
+  const spanish = resolveSubject({ voice: "malvina" });
+  const human = humanRatingsFromPack(pack, spanish);
   assert.equal(human.subject?.agent.kind, "demo");
   assert.equal(human.weighted, 5);
 });
@@ -496,7 +508,7 @@ test("the pack index lists every voice with its status and no invented reviewer"
   };
   assert.equal(index.schemaVersion, 1);
   assert.equal(index.command, "cd voni && npm run voice:packs");
-  assert.equal(index.counts.total, VOICES.length);
+  assert.equal(index.counts.total, recordedVoices().length);
   assert.equal(index.counts.pending + index.counts.complete + index.counts.incomplete, index.counts.total);
   assert.equal(index.counts.pending, index.packs.filter((entry) => entry.status === "pending").length);
 
@@ -504,5 +516,33 @@ test("the pack index lists every voice with its status and no invented reviewer"
     assert.equal(entry.status, packStatus(readPack(entry.voice)));
     assert.equal(entry.reviewer, null, "reviewer names are owner input and are never invented");
     assert.equal(entry.reviewedOn, null);
+  }
+});
+
+test("a voice with no committed recording has no pack, only a named pending row", () => {
+  const evidence = manifest();
+  const recorded = new Set(evidence.clips.map((clip) => clip.voice));
+  const pending = evidence.pending;
+
+  assert.deepEqual(
+    pending.map((row) => row.voice).sort(),
+    DEMO_VOICE_IDS.filter((voice) => !recorded.has(voice)).sort(),
+    "the demo voices still missing a recording are exactly the named pending voices",
+  );
+
+  const index = JSON.parse(readFileSync(new URL(REVIEWER_PACK_INDEX_PATH, root), "utf8")) as {
+    packs: Array<{ voice: string }>;
+  };
+  for (const row of pending) {
+    assert.equal(recorded.has(row.voice), false, `${row.voice}: a pending voice has no clip`);
+    assert.equal(existsSync(packFile(row.voice)), false, `${row.voice}: no pack for audio nobody heard`);
+    assert.equal(existsSync(packMarkdown(row.voice)), false, `${row.voice}: no hand-off sheet either`);
+    assert.equal(
+      index.packs.some((entry) => entry.voice === row.voice),
+      false,
+      `${row.voice}: the index lists only recorded voices`,
+    );
+    assert.match(row.command, /voice:clips -- --voice/, `${row.voice}: the remedy names the clip command`);
+    assert.match(row.reason, /does not serve|cascade clip/i, `${row.voice}: the reason names the gap`);
   }
 });

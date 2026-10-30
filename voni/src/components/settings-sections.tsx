@@ -66,6 +66,7 @@ import {
   ACCENT_LABEL,
   INPUT_LANGUAGES,
   inputLanguage,
+  tenantVoices,
   voicesByLanguage,
   voiceLabel,
 } from "@/lib/agents/voices";
@@ -509,7 +510,7 @@ function VoiceCopilotCard({ prefs }: { prefs: CopilotVoicePrefs }) {
             items={{
               ivy: "Ivy (default)",
               ...Object.fromEntries(
-                voicesByLanguage().flatMap((group) =>
+                voicesByLanguage(tenantVoices(voiceId)).flatMap((group) =>
                   group.voices.map((voice) => [
                     voice.id,
                     `${voiceLabel(voice.id)} · ${ACCENT_LABEL[voice.accent]}`,
@@ -527,7 +528,7 @@ function VoiceCopilotCard({ prefs }: { prefs: CopilotVoicePrefs }) {
               <SelectGroup>
                 <SelectItem value="ivy">Ivy (default)</SelectItem>
               </SelectGroup>
-              {voicesByLanguage().map((group) => (
+              {voicesByLanguage(tenantVoices(voiceId)).map((group) => (
                 <SelectGroup key={group.code}>
                   <SelectLabel>{group.language}</SelectLabel>
                   {group.voices

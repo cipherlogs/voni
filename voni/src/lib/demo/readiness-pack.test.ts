@@ -72,12 +72,11 @@ type SubjectSpec = {
 };
 
 const BOUND_SUBJECTS: SubjectSpec[] = [
-  { subject: "anna", kind: "demo", locale: "en", greeting: "Hi, this is Anna." },
-  { subject: "lola", kind: "demo", locale: "es", greeting: "Hola, soy Lola." },
-  { subject: "estelle", kind: "demo", locale: "fr", greeting: "Bonjour, je suis Estelle." },
+  { subject: "audrey", kind: "demo", locale: "en", greeting: "Hi, this is Audrey." },
+  { subject: "malvina", kind: "demo", locale: "es", greeting: "Hola, soy Malvina." },
+  { subject: "donatien", kind: "demo", locale: "fr", greeting: "Bonjour, je suis Donatien." },
   { subject: "jorg", kind: "demo", locale: "de", greeting: "Hallo, hier ist Jorg." },
-  { subject: "giovanni", kind: "demo", locale: "it", greeting: "Ciao, sono Giovanni." },
-  { subject: "rafael", kind: "demo", locale: "pt", greeting: "Olá, sou o Rafael." },
+  { subject: "benicio", kind: "demo", locale: "pt", greeting: "Olá, sou o Benicio." },
   { subject: "agent_tenant_1", kind: "tenant", locale: "es", greeting: "Hola, soy el agente." },
 ];
 
@@ -112,7 +111,7 @@ function writeArtifact(input: {
 }): string {
   const subject = subjectRecord(input.spec);
   const artifact = buildSkeletonArtifact({
-    voice: input.spec.kind === "demo" ? input.spec.subject : "anna",
+    voice: input.spec.kind === "demo" ? input.spec.subject : "audrey",
     scenario: "stop-over",
     runnerStdout: "",
     exitCode: 0,
@@ -343,7 +342,7 @@ test("one failed or missing subject blocks the whole pack", () => {
   const { manifest } = completeManifest();
 
   const failed = assembleReadinessPack({
-    manifest: withEntry(manifest, "anna", (entry) => ({
+    manifest: withEntry(manifest, "audrey", (entry) => ({
       ...entry,
       artifacts: entry.artifacts.slice(0, 1),
     })),
@@ -351,45 +350,45 @@ test("one failed or missing subject blocks the whole pack", () => {
   });
   assert.equal(failed.status, "blocked");
   assert.equal(failed.ready, false);
-  assert.match(failed.blockers.join(" "), /anna:.*exactly two consecutive clean cascade artifact paths/i);
-  assert.equal(failed.subjects.find((row) => row.subject === "anna")!.status, "incomplete");
+  assert.match(failed.blockers.join(" "), /audrey:.*exactly two consecutive clean cascade artifact paths/i);
+  assert.equal(failed.subjects.find((row) => row.subject === "audrey")!.status, "incomplete");
   // One failure does not hide the subjects that are complete.
-  assert.equal(failed.subjects.find((row) => row.subject === "lola")!.status, "complete");
+  assert.equal(failed.subjects.find((row) => row.subject === "malvina")!.status, "complete");
 
   const missing = assembleReadinessPack({
-    manifest: { ...manifest, subjects: manifest.subjects.filter((entry) => entry.subject !== "anna") },
+    manifest: { ...manifest, subjects: manifest.subjects.filter((entry) => entry.subject !== "audrey") },
     tenants: TENANTS,
   });
   assert.equal(missing.status, "blocked");
-  assert.match(missing.blockers.join(" "), /anna: no readiness evidence and no dated deferral/);
-  assert.equal(missing.subjects.find((row) => row.subject === "anna")!.status, "missing");
+  assert.match(missing.blockers.join(" "), /audrey: no readiness evidence and no dated deferral/);
+  assert.equal(missing.subjects.find((row) => row.subject === "audrey")!.status, "missing");
 
   // A deferral cannot waive a subject whose evidence exists and failed.
   const waived = assembleReadinessPack({
     manifest: {
       ...manifest,
       subjects: manifest.subjects.map((entry) =>
-        entry.subject === "anna" ? { ...entry, artifacts: entry.artifacts.slice(0, 1) } : entry,
+        entry.subject === "audrey" ? { ...entry, artifacts: entry.artifacts.slice(0, 1) } : entry,
       ),
       deferrals: [
         ...(manifest.deferrals ?? []),
-        { subject: "anna", date: "2026-10-29", reason: "See if this quiet deferral hides the failure." },
+        { subject: "audrey", date: "2026-10-29", reason: "See if this quiet deferral hides the failure." },
       ],
     },
     tenants: TENANTS,
   });
   assert.equal(waived.status, "blocked");
-  assert.match(waived.blockers.join(" "), /anna: deferral names a subject with recorded evidence/);
+  assert.match(waived.blockers.join(" "), /audrey: deferral names a subject with recorded evidence/);
 });
 
 test("a fallback or a budget stop makes a run ineligible", () => {
   const { manifest } = completeManifest();
-  rewriteArtifact(entryOf(manifest, "anna").artifacts[0]!, (artifact) => ({
+  rewriteArtifact(entryOf(manifest, "audrey").artifacts[0]!, (artifact) => ({
     ...artifact,
     events: [{ type: "provider_fallback", leg: "llm", phase: "turn", turn: "turn-3" }],
     eligibility: { eligible: false, reasons: ["provider_fallback: llm at turn-3"] },
   }));
-  rewriteArtifact(entryOf(manifest, "lola").artifacts[1]!, (artifact) => ({
+  rewriteArtifact(entryOf(manifest, "malvina").artifacts[1]!, (artifact) => ({
     ...artifact,
     events: [{ type: "budget.stopped", phase: "drain" }],
     eligibility: { eligible: false, reasons: ["budget.stopped: daily cap"] },
@@ -397,24 +396,24 @@ test("a fallback or a budget stop makes a run ineligible", () => {
 
   const pack = assembleReadinessPack({ manifest, tenants: TENANTS });
   assert.equal(pack.status, "blocked");
-  const anna = pack.subjects.find((row) => row.subject === "anna")!;
-  assert.match(anna.blockers.join(" "), /fallback/);
-  assert.match(anna.blockers.join(" "), /not a clean run/);
-  const lola = pack.subjects.find((row) => row.subject === "lola")!;
-  assert.match(lola.blockers.join(" "), /budget stop|budget\.stopped|ineligible/i);
-  assert.equal(lola.artifacts[1]!.eligible, false);
+  const audrey = pack.subjects.find((row) => row.subject === "audrey")!;
+  assert.match(audrey.blockers.join(" "), /fallback/);
+  assert.match(audrey.blockers.join(" "), /not a clean run/);
+  const malvina = pack.subjects.find((row) => row.subject === "malvina")!;
+  assert.match(malvina.blockers.join(" "), /budget stop|budget\.stopped|ineligible/i);
+  assert.equal(malvina.artifacts[1]!.eligible, false);
 });
 
 test("missing and duplicate ballots, an unresolved verdict and a missing fingerprint each block", () => {
   const { manifest } = completeManifest();
-  const rafael = entryOf(manifest, "rafael");
-  rewriteArtifact(rafael.artifacts[1]!, (artifact) => ({ ...artifact, codeFingerprint: null }));
+  const jorg = entryOf(manifest, "jorg");
+  rewriteArtifact(jorg.artifacts[1]!, (artifact) => ({ ...artifact, codeFingerprint: null }));
 
   const pack = assembleReadinessPack({
     manifest: withEntry(
       withEntry(
-        withEntry(manifest, "lola", (entry) => ({ ...entry, ballots: entry.ballots.slice(0, 1) })),
-        "estelle",
+        withEntry(manifest, "malvina", (entry) => ({ ...entry, ballots: entry.ballots.slice(0, 1) })),
+        "donatien",
         (entry) => ({
           ...entry,
           ballots: [
@@ -423,7 +422,7 @@ test("missing and duplicate ballots, an unresolved verdict and a missing fingerp
           ],
         }),
       ),
-      "giovanni",
+      "benicio",
       (entry) => ({
         ...entry,
         verdict: { ...entry.verdict, decision: "unresolved" },
@@ -435,11 +434,11 @@ test("missing and duplicate ballots, an unresolved verdict and a missing fingerp
   assert.equal(pack.status, "blocked");
   const blockersFor = (subject: string) =>
     pack.subjects.find((row) => row.subject === subject)!.blockers.join(" ");
-  assert.match(blockersFor("lola"), /two independent ballots/i);
-  assert.match(blockersFor("estelle"), /independent|one per rater/i);
-  assert.match(blockersFor("giovanni"), /unresolved/);
-  assert.match(blockersFor("rafael"), /code fingerprint/i);
-  assert.equal(pack.subjects.find((row) => row.subject === "rafael")!.artifacts[1]!.codeFingerprint, null);
+  assert.match(blockersFor("malvina"), /two independent ballots/i);
+  assert.match(blockersFor("donatien"), /independent|one per rater/i);
+  assert.match(blockersFor("benicio"), /unresolved/);
+  assert.match(blockersFor("jorg"), /code fingerprint/i);
+  assert.equal(pack.subjects.find((row) => row.subject === "jorg")!.artifacts[1]!.codeFingerprint, null);
 });
 
 test("a tenant omission blocks unless it has a dated deferral", () => {
@@ -533,27 +532,27 @@ test("a tenant omission blocks unless it has a dated deferral", () => {
 test("a managed artifact, another subject's artifact or a non-consecutive pair is refused", () => {
   const { manifest, dir } = completeManifest();
 
-  const anna = entryOf(manifest, "anna");
+  const audrey = entryOf(manifest, "audrey");
   const annaManaged = writeManagedArtifact({
     dir,
     spec: BOUND_SUBJECTS[0]!,
-    runId: "anna-managed",
+    runId: "audrey-managed",
     recordedAt: "2026-10-28T09:00:00.000Z",
-    referencePath: anna.reference,
-    deliveredPath: anna.delivered,
+    referencePath: audrey.reference,
+    deliveredPath: audrey.delivered,
   });
-  rewriteArtifact(entryOf(manifest, "lola").artifacts[0]!, (artifact) => ({
+  rewriteArtifact(entryOf(manifest, "malvina").artifacts[0]!, (artifact) => ({
     ...artifact,
-    voice: "giovanni",
+    voice: "benicio",
     subject: {
-      agent: { kind: "demo", voice: "giovanni", agentId: null },
+      agent: { kind: "demo", voice: "benicio", agentId: null },
       locale: "it",
       transport: "browser",
       source: "flag",
       pipeline: "cascade",
     },
   }));
-  rewriteArtifact(entryOf(manifest, "giovanni").artifacts[1]!, (artifact) => ({
+  rewriteArtifact(entryOf(manifest, "benicio").artifacts[1]!, (artifact) => ({
     ...artifact,
     recordedAt: artifact.recordedAt === "2026-10-29T10:00:00.000Z"
       ? "2026-10-28T10:00:00.000Z"
@@ -563,17 +562,17 @@ test("a managed artifact, another subject's artifact or a non-consecutive pair i
   const pack = assembleReadinessPack({
     manifest: withEntry(
       withEntry(
-        withEntry(manifest, "anna", (entry) => ({
+        withEntry(manifest, "audrey", (entry) => ({
           ...entry,
           artifacts: [annaManaged, entry.artifacts[1]!],
         })),
-        "estelle",
+        "donatien",
         (entry) => ({
           ...entry,
           artifacts: [entry.artifacts[0]!, entry.artifacts[0]!],
         }),
       ),
-      "rafael",
+      "jorg",
       (entry) => ({ ...entry, reference: join(dir, "missing-reference.wav") }),
     ),
     tenants: TENANTS,
@@ -582,17 +581,17 @@ test("a managed artifact, another subject's artifact or a non-consecutive pair i
   assert.equal(pack.status, "blocked");
   const blockersFor = (subject: string) =>
     pack.subjects.find((row) => row.subject === subject)!.blockers.join(" ");
-  assert.match(blockersFor("anna"), /managed, not cascade|managed artifact/i);
-  assert.match(blockersFor("lola"), /subject does not match/);
-  assert.match(blockersFor("estelle"), /two run paths are the same file/i);
-  assert.match(blockersFor("giovanni"), /not ordered by recordedAt|consecutive runs need distinct/i);
-  assert.match(blockersFor("rafael"), /reference capture missing/);
+  assert.match(blockersFor("audrey"), /managed, not cascade|managed artifact/i);
+  assert.match(blockersFor("malvina"), /subject does not match/);
+  assert.match(blockersFor("donatien"), /two run paths are the same file/i);
+  assert.match(blockersFor("benicio"), /not ordered by recordedAt|consecutive runs need distinct/i);
+  assert.match(blockersFor("jorg"), /reference capture missing/);
 });
 
 test("a malformed ballot is a named blocker, not a crash", () => {
   const { manifest } = completeManifest();
   const pack = assembleReadinessPack({
-    manifest: withEntry(manifest, "anna", (entry) => ({
+    manifest: withEntry(manifest, "audrey", (entry) => ({
       ...entry,
       ballots: [
         {
@@ -609,7 +608,7 @@ test("a malformed ballot is a named blocker, not a crash", () => {
   });
   assert.equal(pack.status, "blocked");
   assert.match(
-    pack.subjects.find((row) => row.subject === "anna")!.blockers.join(" "),
+    pack.subjects.find((row) => row.subject === "audrey")!.blockers.join(" "),
     /two independent ballots|score must be an int/i,
   );
 });
@@ -617,23 +616,23 @@ test("a malformed ballot is a named blocker, not a crash", () => {
 test("a missing or malformed line marker blocks the comparison", () => {
   const { manifest } = completeManifest();
   const noLine = assembleReadinessPack({
-    manifest: withEntry(manifest, "anna", (entry) => ({ ...entry, line: null })),
+    manifest: withEntry(manifest, "audrey", (entry) => ({ ...entry, line: null })),
     tenants: TENANTS,
   });
   assert.match(
-    noLine.subjects.find((row) => row.subject === "anna")!.blockers.join(" "),
+    noLine.subjects.find((row) => row.subject === "audrey")!.blockers.join(" "),
     /no line marker/,
   );
 
   const badLine = assembleReadinessPack({
-    manifest: withEntry(manifest, "lola", (entry) => ({
+    manifest: withEntry(manifest, "malvina", (entry) => ({
       ...entry,
       line: { kind: "greeting" } as unknown as ReadinessManifestSubject["line"],
     })),
     tenants: TENANTS,
   });
   assert.match(
-    badLine.subjects.find((row) => row.subject === "lola")!.blockers.join(" "),
+    badLine.subjects.find((row) => row.subject === "malvina")!.blockers.join(" "),
     /line marker must be/,
   );
 });
@@ -668,13 +667,13 @@ function thirdRun(
 
 test("run history must be supplied and must end at the two chosen artifacts", () => {
   const { manifest, dir } = completeManifest();
-  const anna = entryOf(manifest, "anna");
-  const third = thirdRun(dir, BOUND_SUBJECTS[0]!, anna);
+  const audrey = entryOf(manifest, "audrey");
+  const third = thirdRun(dir, BOUND_SUBJECTS[0]!, audrey);
   const blockersFor = (pack: ReturnType<typeof assembleReadinessPack>) =>
-    pack.subjects.find((row) => row.subject === "anna")!.blockers.join(" ");
+    pack.subjects.find((row) => row.subject === "audrey")!.blockers.join(" ");
 
   const noHistory = assembleReadinessPack({
-    manifest: withEntry(manifest, "anna", (entry) => withoutHistory(entry)),
+    manifest: withEntry(manifest, "audrey", (entry) => withoutHistory(entry)),
     tenants: TENANTS,
   });
   assert.equal(noHistory.status, "blocked");
@@ -684,7 +683,7 @@ test("run history must be supplied and must end at the two chosen artifacts", ()
   );
 
   const after = assembleReadinessPack({
-    manifest: withEntry(manifest, "anna", (entry) => ({
+    manifest: withEntry(manifest, "audrey", (entry) => ({
       ...entry,
       runHistory: [...entry.runHistory!, third],
     })),
@@ -694,7 +693,7 @@ test("run history must be supplied and must end at the two chosen artifacts", ()
   assert.match(blockersFor(after), /run history has 1 run\(s\) after the supplied pair/);
 
   const between = assembleReadinessPack({
-    manifest: withEntry(manifest, "anna", (entry) => ({
+    manifest: withEntry(manifest, "audrey", (entry) => ({
       ...entry,
       artifacts: [entry.artifacts[0]!, third],
       runHistory: [...entry.runHistory!, third],
@@ -705,7 +704,7 @@ test("run history must be supplied and must end at the two chosen artifacts", ()
   assert.match(blockersFor(between), /1 run\(s\) between the supplied artifacts/);
 
   const reversed = assembleReadinessPack({
-    manifest: withEntry(manifest, "anna", (entry) => ({
+    manifest: withEntry(manifest, "audrey", (entry) => ({
       ...entry,
       artifacts: [entry.artifacts[1]!, entry.artifacts[0]!],
     })),
@@ -719,20 +718,20 @@ test("runsDir verifies the pair by scanning the subject's run files", () => {
   const { manifest, dir } = completeManifest();
 
   const ready = assembleReadinessPack({
-    manifest: withEntry(manifest, "anna", (entry) => withoutHistory(entry, dir)),
+    manifest: withEntry(manifest, "audrey", (entry) => withoutHistory(entry, dir)),
     tenants: TENANTS,
   });
   assert.equal(ready.status, "ready", ready.blockers.join("; "));
 
-  const anna = entryOf(manifest, "anna");
-  thirdRun(dir, BOUND_SUBJECTS[0]!, anna);
+  const audrey = entryOf(manifest, "audrey");
+  thirdRun(dir, BOUND_SUBJECTS[0]!, audrey);
   const blocked = assembleReadinessPack({
-    manifest: withEntry(manifest, "anna", (entry) => withoutHistory(entry, dir)),
+    manifest: withEntry(manifest, "audrey", (entry) => withoutHistory(entry, dir)),
     tenants: TENANTS,
   });
   assert.equal(blocked.status, "blocked");
   assert.match(
-    blocked.subjects.find((row) => row.subject === "anna")!.blockers.join(" "),
+    blocked.subjects.find((row) => row.subject === "audrey")!.blockers.join(" "),
     /after the supplied pair|ineligible run after/,
   );
 });
@@ -740,10 +739,10 @@ test("runsDir verifies the pair by scanning the subject's run files", () => {
 test("a history that is not oldest-first, or is doubly supplied, is refused", () => {
   const { manifest, dir } = completeManifest();
   const blockersFor = (pack: ReturnType<typeof assembleReadinessPack>) =>
-    pack.subjects.find((row) => row.subject === "anna")!.blockers.join(" ");
+    pack.subjects.find((row) => row.subject === "audrey")!.blockers.join(" ");
 
   const unordered = assembleReadinessPack({
-    manifest: withEntry(manifest, "anna", (entry) => ({
+    manifest: withEntry(manifest, "audrey", (entry) => ({
       ...entry,
       runHistory: [entry.artifacts[1]!, entry.artifacts[0]!],
     })),
@@ -753,7 +752,7 @@ test("a history that is not oldest-first, or is doubly supplied, is refused", ()
   assert.match(blockersFor(unordered), /not ordered by recordedAt/);
 
   const both = assembleReadinessPack({
-    manifest: withEntry(manifest, "anna", (entry) => ({
+    manifest: withEntry(manifest, "audrey", (entry) => ({
       ...entry,
       runsDir: dir,
     })),
