@@ -290,7 +290,7 @@ test("a reload or discarded tab continues the same call from sessionStorage", ()
 test("a hold return reconnects visibly, silently, and speaks exactly once", () => {
   const call = readRepo("components/voice-call.tsx");
   const agents = readRepo("lib/demo/stored-agents.ts");
-  const token = readRepo("app/api/demo/token/route.ts");
+  const token = readRepo("lib/demo/mint.ts");
 
   // Pending from hold exit until audio lands: a reconnecting note shows,
   // and no error banner can paint over it in that window. One setter owns
