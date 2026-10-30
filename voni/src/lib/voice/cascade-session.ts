@@ -74,8 +74,8 @@ export type ServerEvent =
   | { kind: "caption"; role: "user" | "agent"; text: string; final: boolean }
   | { kind: "interrupted" }
   | { kind: "end_call" }
-  | { kind: "end"; turns: number; metrics: unknown }
-  | { kind: "error"; message: string };
+  | { kind: "end"; turns: number; metrics: unknown; protocolVersion?: number }
+  | { kind: "error"; message: string; code?: string };
 
 export function buildConfigMessage(config: CascadeCallConfig): string {
   // Identity only, and built explicitly: spreading the caller's object would
@@ -142,11 +142,17 @@ export function parseServerMessage(raw: string): ServerEvent | null {
         kind: "end",
         turns: typeof record.turns === "number" ? record.turns : 0,
         metrics: record.metrics ?? null,
+        // The service reports the version it spoke (ticket 138). Absent on a
+        // service that predates the field; then there is nothing to compare.
+        ...(typeof record.protocolVersion === "number"
+          ? { protocolVersion: record.protocolVersion }
+          : {}),
       };
     case "error":
       return {
         kind: "error",
         message: typeof record.message === "string" ? record.message : "Call failed.",
+        ...(typeof record.code === "string" ? { code: record.code } : {}),
       };
     default:
       return null;
@@ -398,11 +404,24 @@ export class CascadeSession {
         this.drainThenStop();
         break;
       case "end":
+        // The service reports the version it spoke (ticket 138). A half-
+        // deployed pair fails loudly here too, not only at connect.
+        if (
+          event.protocolVersion !== undefined &&
+          event.protocolVersion !== CASCADE_PROTOCOL_VERSION
+        ) {
+          this.handlers.onError?.(
+            `The voice service speaks protocol version ${event.protocolVersion}; this app speaks ${CASCADE_PROTOCOL_VERSION}. Update the app or the service together.`,
+          );
+        }
         this.handlers.onMetrics?.(event.metrics, event.turns);
         this.finish(event.turns);
         break;
       case "error":
         this.handlers.onError?.(event.message);
+        // A version refusal means the service never opened the call. Tear the
+        // socket down so the UI is not left waiting with a live microphone.
+        if (event.code === "protocol_version") this.abort();
         break;
     }
   }
@@ -505,5 +524,17 @@ export class CascadeSession {
     this.started = false;
     this.teardown();
     this.handlers.onEnd?.({ turns });
+  }
+
+  /**
+   * Stop without reporting a completed call: used when the service refused the
+   * connect (a protocol-version mismatch). The error handler already has the
+   * named reason; `onEnd` would read as "the call ran".
+   */
+  private abort(): void {
+    if (this.ended) return;
+    this.ended = true;
+    this.started = false;
+    this.teardown();
   }
 }

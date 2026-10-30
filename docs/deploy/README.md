@@ -68,6 +68,21 @@ Two machines per app, physically one region (`iad`) to start.
   image builds from the repository root (the context is set in
   `.dockerignore`), runs as a non-root user and holds one uvicorn worker.
 
+## Protocol version
+
+The app and the service speak exactly one protocol version: `PROTOCOL_VERSION`
+in `voice-pipeline/cascade/token.py` and `CASCADE_PROTOCOL_VERSION` in
+`voni/src/lib/voice/cascade-session.ts`. `voice-pipeline/cascade/test_protocol_version.py`
+reads the app's export and fails when the two drift, so a half-deployed pair
+cannot silently run two versions.
+
+The browser's one config frame carries `protocolVersion`. A missing or unknown
+version is refused before the body is claimed or any vendor socket opens, with
+an error frame carrying `code: "protocol_version"` and a message naming both
+versions. The client surfaces that named error and tears the socket down, so a
+mismatch fails loudly instead of leaving the UI hanging. The end message also
+reports `protocolVersion`, and the client checks it on a call that did open.
+
 ## Secrets
 
 Names only, set on the app with `fly secrets set`; `deploy/voice-pipeline.env.example`

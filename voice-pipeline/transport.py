@@ -169,7 +169,9 @@ async def handle_browser_call(
     try:
         client = parse_browser_config(config_message)
     except ClientConfigError as exc:
-        await _send(ws, {"type": "error", "message": str(exc)})
+        # The code is the machine-readable half: a version mismatch is
+        # ``protocol_version`` so the app can fail loudly instead of hanging.
+        await _send(ws, {"type": "error", "code": exc.code, "message": str(exc)})
         return
 
     if call_tokens is None:

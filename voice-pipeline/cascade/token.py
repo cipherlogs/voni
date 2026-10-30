@@ -98,11 +98,20 @@ CLIENT_BODY_FIELDS = (
 
 
 class ClientConfigError(ValueError):
-    """A browser config message is not part of the token-only contract."""
+    """A browser config message is not part of the token-only contract.
+
+    ``code`` is the machine-readable half of the refusal: the error frame
+    carries it (ticket 138) so the client can act on a version mismatch rather
+    than parse prose or hang.
+    """
+
+    code = "client_config"
 
 
 class UnknownProtocolVersion(ClientConfigError):
     """The config names no version or one this service does not speak."""
+
+    code = "protocol_version"
 
     def __init__(self, version: Any) -> None:
         self.version = version
@@ -121,6 +130,8 @@ class UnknownProtocolVersion(ClientConfigError):
 class ClientBodyRefusal(ClientConfigError):
     """The frame carries a prompt, a tool list or a pipeline assembled by the client."""
 
+    code = "client_body"
+
     def __init__(self, fields: tuple[str, ...]) -> None:
         self.fields = tuple(fields)
         names = ", ".join(f'"{field}"' for field in self.fields)
@@ -134,6 +145,8 @@ class ClientBodyRefusal(ClientConfigError):
 class UnknownClientField(ClientConfigError):
     """A key outside the token-only contract, refused by name."""
 
+    code = "unknown_client_field"
+
     def __init__(self, field: str) -> None:
         self.field = field
         super().__init__(
@@ -144,6 +157,8 @@ class UnknownClientField(ClientConfigError):
 
 class MalformedClientConfig(ClientConfigError):
     """The message, its type or one identity field is not the declared shape."""
+
+    code = "malformed_client_config"
 
     def __init__(self, field: str, reason: str) -> None:
         self.field = field

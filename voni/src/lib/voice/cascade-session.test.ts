@@ -575,3 +575,93 @@ test("delivered capture: a cascade tap that never acks is a named failure on the
     bytes: 46,
   });
 });
+
+// ── Protocol version (ticket 138) ────────────────────────────────────────
+// The service refuses a missing or unknown version by name and reports the
+// version it speaks in the end message. The client must surface that, not hang
+// with a mic open, and must not report a refused connect as a completed call.
+
+test("a protocol-version refusal is surfaced and the session stops instead of hanging", async () => {
+  const socket = makeSocket();
+  const errors: string[] = [];
+  let ended = 0;
+  const session = new CascadeSession(
+    { onError: (message) => errors.push(message), onEnd: () => (ended += 1) },
+    {
+      socketFactory: () => socket as unknown as WebSocket,
+      startMic: async () => ({ stop: () => {} }),
+      createPlayout: () => ({ play: () => {}, flush: () => {} }),
+    },
+  );
+  await session.start(CONFIG, "test-owner");
+  socket.readyState = socket.OPEN;
+
+  const refusal =
+    "protocol version 2, which is not one this service speaks; this service speaks protocol version 1 only and never guesses — update the app or the service together";
+  socket.emit(JSON.stringify({ type: "error", code: "protocol_version", message: refusal }));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.deepEqual(errors, [refusal]);
+  assert.equal(socket.closed, true, "the socket is torn down instead of left hanging");
+  assert.equal(ended, 0, "a refused connect is not a completed call");
+});
+
+test("the end message's protocol version is checked against this client's", async () => {
+  const socket = makeSocket();
+  const errors: string[] = [];
+  let ended: { turns: number } | null = null;
+  const session = new CascadeSession(
+    { onError: (message) => errors.push(message), onEnd: (info) => (ended = info) },
+    {
+      socketFactory: () => socket as unknown as WebSocket,
+      startMic: async () => ({ stop: () => {} }),
+      createPlayout: () => ({ play: () => {}, flush: () => {} }),
+    },
+  );
+  await session.start(CONFIG, "test-owner");
+  socket.readyState = socket.OPEN;
+
+  socket.emit(
+    JSON.stringify({
+      type: "end",
+      metrics: {},
+      turns: 3,
+      protocolVersion: CASCADE_PROTOCOL_VERSION + 1,
+    }),
+  );
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(errors.length, 1, "a mismatched end is surfaced");
+  assert.match(errors[0], new RegExp(`protocol version ${CASCADE_PROTOCOL_VERSION + 1}`));
+  assert.match(errors[0], new RegExp(`${CASCADE_PROTOCOL_VERSION}`));
+  assert.deepEqual(ended, { turns: 3 });
+});
+
+test("a matching end message is not reported as a mismatch", async () => {
+  const socket = makeSocket();
+  const errors: string[] = [];
+  let ended: { turns: number } | null = null;
+  const session = new CascadeSession(
+    { onError: (message) => errors.push(message), onEnd: (info) => (ended = info) },
+    {
+      socketFactory: () => socket as unknown as WebSocket,
+      startMic: async () => ({ stop: () => {} }),
+      createPlayout: () => ({ play: () => {}, flush: () => {} }),
+    },
+  );
+  await session.start(CONFIG, "test-owner");
+  socket.readyState = socket.OPEN;
+
+  socket.emit(
+    JSON.stringify({
+      type: "end",
+      metrics: {},
+      turns: 1,
+      protocolVersion: CASCADE_PROTOCOL_VERSION,
+    }),
+  );
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.deepEqual(errors, []);
+  assert.deepEqual(ended, { turns: 1 });
+});
