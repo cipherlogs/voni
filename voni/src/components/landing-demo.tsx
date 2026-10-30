@@ -10,10 +10,11 @@ import { DemoCallSkeleton } from "@/components/page-skeletons";
  * Structurely's "leave your number and we'll ring you", which is higher
  * friction and doesn't match our in-browser mechanism.
  *
- * Runs in `demo` mode: the browser sends only a persona id and a voice id, and
- * the prompt lives in a server-owned stored agent. Nothing reachable from here
- * can make the model do anything but the scenario picked — see
- * `src/app/api/demo/token/route.ts` for the four layers behind that.
+ * The demo is cascade-only (demo-cascade ticket 10). The browser sends
+ * identity only: the mint (`src/app/api/demo/token/route.ts`) delivers the
+ * pipeline URL, the demo subject and the single-use call token, and the client
+ * starts the real cascade session on it. No prompt, tool list or pipeline
+ * configuration is assembled in the browser.
  *
  * Ticket 05: the Demo call engine (`voice-call`) is a heavy interactive
  * module, so it loads on demand behind this card. The server still
