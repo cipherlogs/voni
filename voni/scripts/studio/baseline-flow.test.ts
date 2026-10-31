@@ -10,6 +10,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -427,6 +428,19 @@ test("the finish button refuses an empty baseline by name, never pinning it", as
     assert.equal(body.error, "missing-take");
     assert.match(body.message, /not captured/);
   });
+});
+
+test("each call renders its prompt card and the break clears it", async () => {
+  const { BASELINE_CALLS } = await import("./baseline-flow");
+  const call1 = BASELINE_CALLS.find((entry) => entry.call === 1);
+  const call2 = BASELINE_CALLS.find((entry) => entry.call === 2);
+  assert.ok(call1 && call2);
+  assert.ok(call1.card.length >= 10, "call 1 needs enough beats to fill four to six minutes");
+  assert.ok(call2.card.length >= 5);
+  const html = readFileSync(new URL("./baseline.html", import.meta.url), "utf8");
+  assert.match(html, /id="step-card"/);
+  assert.match(html, /call\.card\.map/);
+  assert.match(html, /\$\("step-card"\)\.replaceChildren\(\);/);
 });
 
 test("the baseline page has no text input anywhere, only taps", async () => {
