@@ -13,6 +13,7 @@ import {
   CALL_MARKS_PRODUCTION_REFUSAL,
   CALL_MARKS_SCHEMA_VERSION,
   CallMarks,
+  callIdFromDemoToken,
   callMarksRequested,
   createCallMarks,
   isCallMarksArtifact,
@@ -193,4 +194,33 @@ test("the artifact validator is the one shape check the sink uses", () => {
 test("the production refusal is a named dev-only refusal", () => {
   assert.equal(CALL_MARKS_PRODUCTION_REFUSAL.code, "dev-only");
   assert.match(CALL_MARKS_PRODUCTION_REFUSAL.error, /dev-only/);
+});
+
+test("the mint's call id binds the marks before the artifact is posted", () => {
+  const token = "22222222-2222-4222-8222-222222222222.1893456000.1893456000.nonce.tag.mac";
+  assert.equal(
+    callIdFromDemoToken(token),
+    "22222222-2222-4222-8222-222222222222",
+  );
+  assert.equal(callIdFromDemoToken(""), null);
+  assert.equal(callIdFromDemoToken("../escape.x.y"), null, "a path is never a call id");
+  assert.equal(callIdFromDemoToken("/abs.x.y"), null);
+
+  const marks = new CallMarks({
+    callId: "random-pre-mint",
+    now: () => T0,
+    post: async () => undefined,
+  });
+  assert.equal(marks.callId, "random-pre-mint");
+  assert.equal(marks.adoptCallId("22222222-2222-4222-8222-222222222222"), true);
+  assert.equal(marks.callId, "22222222-2222-4222-8222-222222222222");
+  assert.equal(marks.adoptCallId("../escape"), false, "a path is never a call id");
+  assert.equal(marks.callId, "22222222-2222-4222-8222-222222222222");
+});
+
+test("a finished recorder refuses a late call-id rebind", async () => {
+  const marks = new CallMarks({ callId: "call-05", now: () => T0, post: async () => undefined });
+  await marks.finish();
+  assert.equal(marks.adoptCallId("call-06"), false);
+  assert.equal(marks.callId, "call-05");
 });

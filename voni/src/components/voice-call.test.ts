@@ -177,7 +177,11 @@ test("the browser call marks are gated by the capture flag and wired to the casc
   );
   assert.doesNotMatch(demo, /new CallMarks\(/, "no ungated recorder construction");
   assert.match(demo, /marks\?\.mark\("start_requested"\)/);
-  assert.match(demo, /onMinted: \(\) => marks\?\.mark\("mint_done"\)/);
+  assert.match(
+    demo,
+    /onMinted: \(minted\) => \{\s*marks\?\.mark\("mint_done"\);\s*const callId = callIdFromDemoToken\(minted\.demoCallToken\);\s*if \(callId !== null && marks\?\.adoptCallId\(callId\) === true\) \{\s*cascade\.setDeliveredCapture\(callDebugFlags\(\)\.deliverCapture, callId\);\s*\}\s*\}/,
+    "the mint binds the WAV and marks to the trace's call id before the mic attaches",
+  );
   assert.match(
     demo,
     /setDeliveredCapture\(callDebugFlags\(\)\.deliverCapture, marks\?\.callId\)/,

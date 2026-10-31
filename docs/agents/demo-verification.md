@@ -45,7 +45,7 @@ have is a defect in this map.
 | Defect cards | one card per failed property with turn, excerpt, bar and replay command | `voni/src/lib/demo/verification/cards/` — `build.ts` refuses a card without a session, a turn (for turn-level evidence) or an existing evidence file; `wav.ts` bounds every excerpt inside the named take/WAV; `replay.ts` is the one parser the runner must accept unchanged; `render.ts` is the compact card | 09 |
 | Scenario runtime and caller corpus | parser, trigger rules, hashed takes, corpus manifest | `voni/src/lib/demo/verification/scenarios/` — `types.ts` is the adapter-agnostic record (takes, trigger rules, soundscape, expected property ids, faults); `parse.ts` refuses unknown fields, classes, locales, property ids, takes, triggers and faults by name and enforces the eight held-out names; `triggers.ts` resolves the caller script against the agent timeline deterministically and refuses an unresolved step; `corpus.ts` discovers `<root>/manifest.json` plus one directory per scenario and verifies each take's declared sha256, naming a drifted take. English and Locale corpora not landed | 10, 12–16 |
 | Protocol adapter | diagnosis runs over the existing live-call socket; never certifies | `voni/scripts/lib/protocol-adapter/` — `refusals.ts` names a missing key, corpus, scenario, vendor build or soundscape before any vendor opens, `transport.ts` drives `POST /v1/call-body` + `WS /v1/browser-call` at the browser's 128-sample cadence, `faults.ts` applies the scenario's media faults, `evidence.ts` writes the per-run directory under `voni/.demo-runs/`, `runner.ts` turns one call into one verdict and any provable card; `voni/scripts/protocol-diagnose.mts` accepts a card's replay command unchanged and never returns 0 | 11 |
-| Browser adapter | certifying runs on the real page, synthetic mic, delivered WAV, browser marks | not landed | 17 |
+| Browser adapter | certifying runs on the real page, synthetic mic, delivered WAV, browser marks | `voni/scripts/lib/browser-adapter/` — `refusals.ts` names a fake pipeline, a test build, a missing key, corpus, scenario, vendor build, soundscape or capture sink before Chromium opens; `synthetic-mic.ts` replaces `getUserMedia` from a Playwright init script before app code; `call.ts` builds the one invocation and runs `voni/tests/e2e/browser-adapter.spec.ts`; `evidence.ts` requires the delivered WAV, browser marks, trace and end document to cite one call id and reads cost from the call's own priced row; `runner.ts` judges the bundle, builds the certificate (exit 0/3) or withholds it by name, and records a parity comparison; `voni/scripts/browser-verify.mts` is the command; `voni/src/lib/demo/verification/scenarios/corpus/browser-golden-flow/` is the one golden scenario (a German `jorg` take; ticket 12 replaces/extends the corpus) | 17 |
 | Evaluator families | L1–L11, T1–T10, C1–C10, K1–K8, X1–X10, A1–A8, R1–R8, S1–S6, E1–E4, H1–H7 | H6 landed in `voni/src/lib/demo/verification/verdict/evaluators/human.evaluators.ts` (judge calibration); the other families are not landed | 18–22, 26 |
 | Machine judges and calibration | two transcript-grounded judges, third-judge/panel escalation, vendor independence, weighted-kappa gate | `voni/src/lib/demo/verification/judges/` — `panel.ts` refuses a judge on the agent's vendor (`AGENT_VENDOR = meta`), scores two judges independently and reconciles a disagreement above one point through a third judge to the panel; `kappa.ts` is the linear weighted-kappa arithmetic; `rubric.ts` hashes the rubric; `calibration.ts` verifies every judge/axis at the frozen `dvJudgeKappaMin` bar and refuses a changed rubric hash; a live judge transport is not landed and is key-gated by `AI_GATEWAY_API_KEY` | 26 |
 | Studio | local-only Record, Rate and Corpus surfaces; never in the deployed build | Record landed in `voni/scripts/studio/`: `take-store.ts` writes one immutable hashed take per landing (`voni/.studio/`, gitignored) on the shared digest in `scenarios/digest.ts`; `dialogues.ts` validates authored prompt cards; `http.ts` serves `record.html` on loopback only and refuses a production environment or host by name; no `src/` file imports it. Rate and Corpus not landed | 23, 24 |
@@ -67,6 +67,31 @@ The protocol adapter reads the committed vendor-build record at
 does not exist yet: no engineer has recorded authentic STT/TTS/LLM build ids, so
 a real protocol run refuses by name rather than inventing one. The adapter's
 tests inject a fixture record; a live run stays unrun until the record lands.
+
+### Browser adapter: what a local certificate can and cannot say
+
+- The certifying browser run serves the app in **dev mode**, because the
+  delivered WAV and the browser marks are written by the app's dev-only capture
+  path (ticket 05). A `staging` or `production` target has no such sink, so the
+  adapter refuses it by name (`target-invalid` / `capture-unavailable`) instead
+  of inventing evidence. A local certificate is true for the dev-mode app;
+  production certification needs an evidence sink production does not expose yet.
+- The run refuses at preflight when `voni/evidence/vendor-builds.json` is absent
+  (RR-03). The 2026-10-31 live rehearsal refused there. The call path itself was
+  exercised separately with a test-only record; that run is not a certificate and
+  is not reported as one.
+- A completed run whose `cost.priced` row is unmeasured **withholds** the
+  certificate (`cost-missing`) and keeps the verdict and cards. The 2026-10-31
+  live rehearsal observed the STT `audio_seconds` and the TTS termination summary
+  unmeasured, so its certificate was withheld; this is a pipeline evidence gap,
+  not a browser-adapter pass.
+- 81 of 82 properties have no evaluator (tickets 13–22, 26), so a browser run's
+  verdict is `not-demo-ready`. A diagnose run measures one repetition and fails
+  the 53 timing/behaviour properties' three-repetition plan rather than borrowing
+  a pass.
+- Parity compares deterministic properties only: the 2026-10-31 live rehearsal
+  compared 29 and they agreed; 53 timing/behaviour properties were named as not
+  compared because the protocol adapter may be faster, never more permissive.
 
 An **unresolved** property is a recorded gap with no owning evaluator. Today
 that is K8: the spec states "word error within bar" without a number, so ticket
