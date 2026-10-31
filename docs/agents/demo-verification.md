@@ -211,6 +211,14 @@ never certified.
 - **R8 is a run gate, not a scenario.** Every call's trace is scanned for
   `provider_fallback`; the mandatory proof is a contaminated browser run whose
   verdict is `ineligible` and whose certificate can never pass.
+- **Mic denial has no delivered WAV.** A denied call never acquires the mic, so
+  the playout tap writes no capture and the pipeline writes no trace or end
+  document. The browser runner currently refuses that call by name
+  (`capture-missing`) before verdict assembly; R5's evaluator and the
+  `resilience-mic-denied` scenario prove the named state and socket count in
+  the harness suite, but a certifying run has to grow a refusal-evidence path
+  before R5 can be judged from a certificate run. The refusal is named, never a
+  green.
 
 ### Soundscape and security evidence gaps
 
