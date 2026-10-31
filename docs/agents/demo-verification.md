@@ -42,7 +42,7 @@ have is a defect in this map.
 | Frozen budget record | the single threshold source; the drift test that fails a hand-edited number | `voni/src/lib/demo/scoreboard-budgets.ts` + `.json` (the contract's `dv*` keys; cascade-owned keys still come from `voice-pipeline/cascade/thresholds.json`), `voni/src/lib/demo/verification/contract/bars.ts` + `contract-bars.json`, moved only with `npm run contract:bars -- --write` | 06 |
 | Verdict and statistics | pooling, per-scenario tails, fail-closed unknowns, ineligibility | `voni/src/lib/demo/verification/verdict/` — `statistics.ts` pools, `judge.ts` judges, `evaluators.ts` discovers one `evaluators/*.evaluators.ts` module per family | 07 |
 | Certificate | schema, builder, validator, target binding, residual-risk ids, panel signature | not landed | 08 |
-| Defect cards | one card per failed property with turn, excerpt, bar and replay command | not landed | 09 |
+| Defect cards | one card per failed property with turn, excerpt, bar and replay command | `voni/src/lib/demo/verification/cards/` — `build.ts` refuses a card without a session, a turn (for turn-level evidence) or an existing evidence file; `wav.ts` bounds every excerpt inside the named take/WAV; `replay.ts` is the one parser the runner must accept unchanged; `render.ts` is the compact card | 09 |
 | Scenario runtime and caller corpus | parser, trigger rules, hashed takes, corpus manifest | `voni/src/lib/demo/verification/scenarios/` — `types.ts` is the adapter-agnostic record (takes, trigger rules, soundscape, expected property ids, faults); `parse.ts` refuses unknown fields, classes, locales, property ids, takes, triggers and faults by name and enforces the eight held-out names; `triggers.ts` resolves the caller script against the agent timeline deterministically and refuses an unresolved step; `corpus.ts` discovers `<root>/manifest.json` plus one directory per scenario and verifies each take's declared sha256, naming a drifted take. English and Locale corpora not landed | 10, 12–16 |
 | Protocol adapter | diagnosis runs over the existing live-call socket; never certifies | `voni/scripts/real-legs.mts` (seed, via `voni/scripts/lib/real-legs.ts`) | 11 |
 | Browser adapter | certifying runs on the real page, synthetic mic, delivered WAV, browser marks | not landed | 17 |
@@ -53,6 +53,13 @@ have is a defect in this map.
 | CLI | `demo:verify`, `demo:studio`, `demo:certificate`; exits 0/1/2/3 | not landed | 28 |
 | Streak and cutover | three-clean streak, staging gate, post-flip confirmation, monthly full production | not landed | 29 |
 | CI cadence | fast contract, nightly health, weekly full certification, Locale matrix | not landed | 30 |
+
+The defect-card replay command is the one parser in
+`voni/src/lib/demo/verification/cards/replay.ts`:
+`demo:verify --scenario <name> --target <local|staging|production> --locale <en|es|fr|de|pt> --diagnose`
+(or the repository's `npm run demo:verify -- ...` form). Ticket 11's runner and
+ticket 28's CLI accept it unchanged; an unknown flag, a missing Locale or a
+certification mode is a named refusal (exit 2).
 
 An **unresolved** property is a recorded gap with no owning evaluator. Today
 that is H6 (judge agreement with gold labels): it is wired to the `judge`
