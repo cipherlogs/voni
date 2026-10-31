@@ -20,8 +20,11 @@ test("each call gets its own id", () => {
 
 test("tampered, foreign, or malformed tokens are rejected", () => {
   const token = signDemoCall(KEY, 0);
-  const [id, exp, sig] = token.split(".");
-  assert.equal(verifyDemoCall(KEY, `${id}.${Number(exp) + 9999}.${sig}`, 0), null, "extended expiry");
+  const parts = token.split(".");
+  const withPart = (index: number, value: string) =>
+    parts.map((part, at) => (at === index ? value : part)).join(".");
+  assert.equal(verifyDemoCall(KEY, withPart(1, String(Number(parts[1]) + 9999)), 0), null, "extended expiry");
+  assert.equal(verifyDemoCall(KEY, withPart(2, String(Number(parts[2]) + 9999)), 0), null, "moved start");
   assert.equal(verifyDemoCall("other-key", token, 0), null);
   assert.equal(verifyDemoCall(KEY, "", 0), null);
   assert.equal(verifyDemoCall(KEY, "a.b", 0), null);
@@ -49,6 +52,42 @@ test("a hold return signs a fresh token for the same call id", async () => {
   const call = verifyDemoCall("k", resumed, 2_000_000);
   assert.equal(call?.callId, callId, "the same call continues");
   assert.equal(call?.tagId, "tag-2", "the token carries the tag it was issued with");
+});
+
+test("a hold return keeps the call's original start and window with a fresh token", async () => {
+  const { signDemoCallFor, verifyDemoCall, signDemoCall, CALL_TOKEN_TTL_S } = await import(
+    "./call-token"
+  );
+  const startedAt = 1_000_000;
+  const first = signDemoCall("k", startedAt, "tag-1");
+  const callId = verifyDemoCall("k", first, startedAt)?.callId;
+  assert.ok(callId);
+
+  // The visitor comes back from a hold a little later. The continuation is a
+  // new token, but the call still started at its first start: the inbox
+  // lookback (runCheckEmail's `call.startedAt`) does not move.
+  const returnedAt = startedAt + 30_000;
+  const resumed = signDemoCallFor("k", callId, returnedAt, "tag-1", startedAt);
+  assert.notEqual(resumed, first, "a resumed call never reuses the old token");
+  const call = verifyDemoCall("k", resumed, returnedAt);
+  assert.equal(call?.callId, callId);
+  assert.equal(call?.startedAt, startedAt, "the call's first start survives the hold return");
+  assert.equal(call?.tagId, "tag-1");
+  assert.equal(
+    verifyDemoCall("k", resumed, startedAt + (CALL_TOKEN_TTL_S - 1) * 1_000)?.startedAt,
+    startedAt,
+    "the token stays valid up to the original window",
+  );
+  assert.equal(
+    verifyDemoCall("k", resumed, startedAt + CALL_TOKEN_TTL_S * 1_000),
+    null,
+    "a hold return never extends the call's credential lifetime",
+  );
+  // Two returns at the same instant are still two distinct tokens.
+  assert.notEqual(
+    signDemoCallFor("k", callId, returnedAt, "tag-1", startedAt),
+    signDemoCallFor("k", callId, returnedAt, "tag-1", startedAt),
+  );
 });
 
 test("a call token can name its Test tag; a carry keeps it only for the same tag", async () => {

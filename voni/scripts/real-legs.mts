@@ -1,8 +1,8 @@
 /**
  * `npm run check:real-legs` — the key-gated real-legs command (ticket 22).
  *
- * The pure surface (skip decision, flags, targets, report) and the two-turn
- * flow live in `./lib/real-legs.ts`; this file is the operator join: argv,
+ * The pure surface (skip decision, flags, targets, report) and the call's flow
+ * live in `./lib/real-legs.ts`; this file is the operator join: argv,
  * environment, the shared envelope secret and the printed report.
  *
  * This command is never run by the pull-request workflow. CI runs its unit
