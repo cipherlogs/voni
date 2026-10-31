@@ -304,12 +304,14 @@ async function modeInstant() {
 
 async function modeBehavior() {
   // Unauthenticated behavior regressions only until Task 5 creds exist.
+  // The demo's browser evidence is the cascade rig alone (demo-verification
+  // ticket 01): no managed demo spec runs here.
   const fp = fingerprint();
   behaviorEvidence = { fp, passed: false };
   const cand = buildCandidate(fp);
   const server = await serveNext(cand, NEXT_PORT);
   try {
-    await runPlaywright(cand, `http://localhost:${NEXT_PORT}`, ["tests/e2e/rig-liveness.spec.ts", "tests/e2e/demo-hold.spec.ts"]);
+    await runPlaywright(cand, `http://localhost:${NEXT_PORT}`, ["tests/e2e/rig-liveness.spec.ts"]);
     console.log("[e2e] behavior: authenticated specs deferred — no E2E DB creds (Task 5 blocker recorded in instant-nav.rig.md).");
   } finally {
     await teardown(server, dirname(cand));
