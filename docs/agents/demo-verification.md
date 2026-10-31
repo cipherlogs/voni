@@ -121,6 +121,12 @@ papered over:
   single-call bundle by name. The evaluator and its tests consume the two-call
   evidence, but no runner wires the pair yet; a run over one scenario cannot
   claim isolation.
+- **S2's refused-attempt fields.** The trace records a tool call's name and
+  ids, never its arguments. A model asking for another call or subject is
+  provable only when the app's tool log supplies the `requestedCallId` /
+  `requestedSubject`; S2 scans those fields when present and otherwise judges
+  the rows' own call/subject binding. The tool-log reader that attaches them is
+  not landed.
 
 S4's exact caller-name matching also depends on a runner attaching the
 scenario's private caller values; the generic email, phone, national-id, card
