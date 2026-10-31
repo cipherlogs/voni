@@ -64,6 +64,13 @@ export function defaultCallerClip(): string {
 /** The demo voice whose locale matches the committed caller clip. */
 export const DEFAULT_VOICE = "jorg";
 
+/**
+ * The one pricing path, named on every `cost.priced` row. Source of truth:
+ * `voice-pipeline/cascade/events.py` `COST_PRODUCER`; the report cites it so a
+ * reader can tell a measured price from anything else.
+ */
+export const COST_PRODUCER = "cascade.cost.cost_call";
+
 export const REAL_LEGS_USAGE = `usage: npm run ${REAL_LEGS_COMMAND} -- [options]
 
   --base-url URL      the pipeline's HTTP(S) base (default: VOICE_PIPELINE_URL,
@@ -351,7 +358,7 @@ export function resolveTargets(input: { baseUrl?: string; wsUrl?: string }): Rea
 // The report
 // ---------------------------------------------------------------------------
 
-export type RealLegsCheckStatus = "pass" | "fail" | "skip";
+export type RealLegsCheckStatus = "pass" | "fail" | "skip" | "info";
 
 export type RealLegsCheck = {
   /** The human row label. */
@@ -374,11 +381,19 @@ export function skipped(name: string, code: string, detail: string): RealLegsChe
   return { name, code, status: "skip", detail };
 }
 
+/**
+ * A measured input that is not a verdict: an unmeasured cost row is INFO,
+ * never PASS (CODING_STANDARDS "Gates and measured evidence").
+ */
+export function info(name: string, code: string, detail: string): RealLegsCheck {
+  return { name, code, status: "info", detail };
+}
+
 /** Print every assertion in order, then the one named skip lines and the tally. */
 export function formatRealLegsReport(checks: readonly RealLegsCheck[]): string {
   const lines = ["demo-cascade real legs (ticket 22)", ""];
   for (const entry of checks) {
-    const mark = entry.status === "pass" ? "PASS" : entry.status === "fail" ? "FAIL" : "SKIP";
+    const mark = entry.status.toUpperCase();
     lines.push(`  ${mark.padEnd(6)}${entry.name.padEnd(16)}${entry.detail}`);
   }
   lines.push("");
@@ -387,16 +402,20 @@ export function formatRealLegsReport(checks: readonly RealLegsCheck[]): string {
   }
   const failures = checks.filter((entry) => entry.status === "fail");
   const skips = checks.filter((entry) => entry.status === "skip");
+  const infos = checks.filter((entry) => entry.status === "info");
   if (failures.length > 0) {
     lines.push(
       `${failures.length} of ${checks.length} checks failed: ${failures
         .map((entry) => entry.code)
         .join(", ")}`,
     );
-  } else if (skips.length > 0) {
-    lines.push(
-      `${checks.length} checks: ${checks.length - skips.length} passed, ${skips.length} skipped (named above)`,
-    );
+  } else if (skips.length > 0 || infos.length > 0) {
+    const counts = [
+      `${checks.length - skips.length - infos.length} passed`,
+      ...(infos.length > 0 ? [`${infos.length} info`] : []),
+      ...(skips.length > 0 ? [`${skips.length} skipped (named above)`] : []),
+    ];
+    lines.push(`${checks.length} checks: ${counts.join(", ")}`);
   } else {
     lines.push(`${checks.length} checks, all passed`);
   }
@@ -1039,42 +1058,55 @@ export function assessTrace(input: {
     return checks;
   }
   const measured = priced.measured === true;
+  // The one pricing path names itself on every row (`cascade.cost.cost_call`,
+  // `cascade/events.py` COST_PRODUCER); the rate table that priced it is
+  // always cited, even when a leg is unmeasured.
+  const producer = priced.producer;
   const version = priced.rateTableVersion;
   const total = priced.totalUsd;
+  const problems: string[] = [];
+  if (producer !== COST_PRODUCER) {
+    problems.push(
+      `producer is ${JSON.stringify(producer)}, not "${COST_PRODUCER}"`,
+    );
+  }
+  if (typeof version !== "string" || version.trim() === "") {
+    problems.push(`rateTableVersion is ${JSON.stringify(version)}, not a cited rate table`);
+  }
   if (measured) {
-    if (typeof total !== "number" || typeof version !== "string" || version.trim() === "") {
-      checks.push(
-        failed(
-          "cost row",
-          "cost-invalid",
-          `a measured cost.priced row must carry a numeric totalUsd and its rate table version; got totalUsd=${JSON.stringify(total)}, rateTableVersion=${JSON.stringify(version)}`,
-        ),
-      );
-    } else {
-      checks.push(
-        passed(
-          "cost row",
-          "cost",
-          `cost.priced measured $${total} with ${version}`,
-        ),
-      );
+    if (typeof total !== "number") {
+      problems.push(`a measured row needs a numeric totalUsd, got ${JSON.stringify(total)}`);
     }
+    checks.push(
+      problems.length === 0
+        ? passed("cost row", "cost", `cost.priced measured $${total} with ${String(version)} (producer ${COST_PRODUCER})`)
+        : failed(
+            "cost row",
+            "cost-invalid",
+            `a measured cost.priced row must name its producer and rate table; ${problems.join("; ")}`,
+          ),
+    );
     return checks;
   }
   const reason = priced.unmeasuredReason;
   if (priced.measured !== false || typeof reason !== "string" || reason.trim() === "") {
-    checks.push(
-      failed(
-        "cost row",
-        "cost-invalid",
-        `a cost.priced row must be measured or state an unmeasuredReason; got measured=${JSON.stringify(priced.measured)}, unmeasuredReason=${JSON.stringify(reason)}`,
-      ),
-    );
-  } else {
-    checks.push(
-      passed("cost row", "cost", `cost.priced unmeasured: ${reason}`),
+    problems.push(
+      `a cost row must be measured or state an unmeasuredReason; measured=${JSON.stringify(priced.measured)}, unmeasuredReason=${JSON.stringify(reason)}`,
     );
   }
+  checks.push(
+    problems.length === 0
+      ? info(
+          "cost row",
+          "cost",
+          `cost.priced unmeasured: ${reason} (producer ${COST_PRODUCER}; rate table ${String(version)})`,
+        )
+      : failed(
+          "cost row",
+          "cost-invalid",
+          `an unmeasured cost.priced row must state its reason, producer and rate table; ${problems.join("; ")}`,
+        ),
+  );
   return checks;
 }
 

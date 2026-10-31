@@ -260,6 +260,24 @@ test("a named skip is printed and does not fail the run", () => {
   assert.equal(realLegsExitCode(checks), 0);
 });
 
+test("an INFO row is printed as information and does not fail the run", () => {
+  const checks = [
+    check("delivery", "delivery", "pass", "POST → 202 accepted"),
+    check(
+      "cost row",
+      "cost",
+      "info",
+      "cost.priced unmeasured: cascade.cost.cost_call; rate table cascade-vendor-rates v1; reason: no session audio",
+    ),
+  ];
+  const report = formatRealLegsReport(checks);
+  assert.match(report, /INFO {2}cost row/);
+  assert.match(report, /cascade\.cost\.cost_call/);
+  assert.doesNotMatch(report, /PASS {2}cost row/);
+  assert.match(report, /1 passed, 1 info/);
+  assert.equal(realLegsExitCode(checks), 0);
+});
+
 // --------------------------------------------------------------------------
 // The pull-request path never runs it
 // --------------------------------------------------------------------------
@@ -326,6 +344,7 @@ test("a measured trace row passes the trace and the cost assertions", () => {
     exists: true,
     text: traceLines("call-1", "demo:jorg", {
       measured: true,
+      producer: "cascade.cost.cost_call",
       rateTableVersion: "cascade-vendor-rates v1",
       totalUsd: 0.000123,
       legs: {},
@@ -346,12 +365,13 @@ test("a measured trace row passes the trace and the cost assertions", () => {
   assert.match(checks[1].detail, /\$0\.000123/);
 });
 
-test("an unmeasured cost row is accepted only with its explicit reason", () => {
+test("an unmeasured cost row is INFO with its producer and rate table, never PASS", () => {
   const withReason = assessTrace({
     exists: true,
     text: traceLines("call-1", "demo:jorg", {
       measured: false,
-      rateTableVersion: null,
+      producer: "cascade.cost.cost_call",
+      rateTableVersion: "cascade-vendor-rates v1",
       totalUsd: null,
       unmeasuredReason: "the STT leg reported no session audio",
       legs: {},
@@ -362,14 +382,17 @@ test("an unmeasured cost row is accepted only with its explicit reason", () => {
     eventsDir: "/tmp/events",
     eventsPath: "/tmp/events/call-1.jsonl",
   });
-  assert.equal(withReason[1].status, "pass");
+  assert.equal(withReason[1].status, "info");
+  assert.match(withReason[1].detail, /cascade\.cost\.cost_call/);
+  assert.match(withReason[1].detail, /cascade-vendor-rates v1/);
   assert.match(withReason[1].detail, /unmeasured: the STT leg reported no session audio/);
 
   const withoutReason = assessTrace({
     exists: true,
     text: traceLines("call-1", "demo:jorg", {
       measured: false,
-      rateTableVersion: null,
+      producer: "cascade.cost.cost_call",
+      rateTableVersion: "cascade-vendor-rates v1",
       totalUsd: null,
       legs: {},
     }),
@@ -386,11 +409,58 @@ test("an unmeasured cost row is accepted only with its explicit reason", () => {
   assert.equal(withoutReason[1].code, "cost-invalid");
 });
 
+test("an unmeasured cost row that does not name its producer or rate table is a failure", () => {
+  const assess = (priced: Record<string, unknown>) =>
+    assessTrace({
+      exists: true,
+      text: traceLines("call-1", "demo:jorg", priced),
+      callId: "call-1",
+      voice: "jorg",
+      local: true,
+      eventsDir: "/tmp/events",
+      eventsPath: "/tmp/events/call-1.jsonl",
+    })[1];
+
+  const missingProducer = assess({
+    measured: false,
+    rateTableVersion: "cascade-vendor-rates v1",
+    totalUsd: null,
+    unmeasuredReason: "the STT leg reported no session audio",
+    legs: {},
+  });
+  assert.equal(missingProducer.status, "fail");
+  assert.equal(missingProducer.code, "cost-invalid");
+  assert.match(missingProducer.detail, /producer/);
+
+  const wrongProducer = assess({
+    measured: false,
+    producer: "a second pricing path",
+    rateTableVersion: "cascade-vendor-rates v1",
+    totalUsd: null,
+    unmeasuredReason: "the STT leg reported no session audio",
+    legs: {},
+  });
+  assert.equal(wrongProducer.status, "fail");
+  assert.match(wrongProducer.detail, /cascade\.cost\.cost_call/);
+
+  const missingVersion = assess({
+    measured: false,
+    producer: "cascade.cost.cost_call",
+    rateTableVersion: null,
+    totalUsd: null,
+    unmeasuredReason: "the STT leg reported no session audio",
+    legs: {},
+  });
+  assert.equal(missingVersion.status, "fail");
+  assert.match(missingVersion.detail, /rateTableVersion/);
+});
+
 test("a trace line with the wrong subject fails the trace assertion", () => {
   const checks = assessTrace({
     exists: true,
     text: traceLines("call-1", "demo:audrey", {
       measured: true,
+      producer: "cascade.cost.cost_call",
       rateTableVersion: "cascade-vendor-rates v1",
       totalUsd: 0.1,
       legs: {},
@@ -793,6 +863,7 @@ async function startFakeService(options: {
             state.eventsPath,
             `${traceLines(state.callId, state.subject, {
               measured: true,
+              producer: "cascade.cost.cost_call",
               rateTableVersion: "cascade-vendor-rates v1",
               totalUsd: 0.000123,
               legs: {},
