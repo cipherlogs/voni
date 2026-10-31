@@ -36,6 +36,14 @@ rules live once, in ``voni/src/lib/demo/event-sanitizer.ts`` (ticket 07);
 ``test_sanitizer.py`` parses the TS source and fails by name when the copy
 drifts. There is no second denylist and no unsanitized write path.
 
+A finished call keeps its end document beside its trace
+(demo-verification 03): :meth:`OperationalEvents.end` writes the exact document
+the client received to ``<call-id>.end.json`` and adds one call-level ``end``
+row pointing at it. A hold return rewrites that row and the sidecar, so a call
+has one final end document and never two ``end`` rows. An unwritable evidence
+directory raises :class:`EndEvidenceError` and is named on the end message; it
+is never a silent skip.
+
 Operational decisions are first-class events, not console lines (ticket 110):
 :class:`OperationalEvents` emits ``budget.crossing`` (line, day, spend, cap),
 ``budget.stopped`` (call, spend, ceiling), ``deploy.drain``, ``reconnect`` (leg,
@@ -60,6 +68,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
 import time
 from collections.abc import Callable, Mapping
@@ -135,6 +144,27 @@ RECONNECT_EVENT_TYPE = "reconnect"
 PROTOCOL_ERROR_EVENT_TYPE = "protocol.error"
 TURN_FAILED_EVENT_TYPE = "turn.failed"
 
+#: The one row a finished call adds to its trace (demo-verification 03). The
+#: sidecar beside the trace keeps the raw end document the client received; the
+#: row is the call-level pointer to it. A hold return rewrites the row rather
+#: than appending a second one, so a call has exactly one ``end`` row.
+END_EVENT_TYPE = "end"
+
+#: The sidecar's suffix: ``<call-id>.end.json`` beside ``<call-id>.jsonl``.
+END_DOCUMENT_SUFFIX = ".end.json"
+
+#: The fields every end document carries, whether the call completed or failed.
+END_DOCUMENT_FIELDS = (
+    "metrics",
+    "providers",
+    "cost",
+    "eligibility",
+    "turns",
+    "endedBy",
+    "drain",
+    "bounds",
+)
+
 #: The three greeting marks, in the order a spoken greeting writes them.
 GREETING_EVENT_TYPES = (
     "greeting.start",
@@ -177,6 +207,24 @@ class ForbiddenEventKey(EventEnvelopeError):
             f"forbidden event key {named}; a line carrying caller text or audio "
             "is refused, not written",
         )
+
+
+class EndEvidenceError(RuntimeError):
+    """The call's end evidence could not be persisted; named, never silent.
+
+    The end document and the one ``end`` row are the evidence a failure cites,
+    so an unwritable evidence directory must be reported with the path and the
+    reason rather than skipped. The call still ends: the failure travels on the
+    end message as ``endEvidenceError``.
+    """
+
+    def __init__(self, what: str, path: str | Path, error: OSError | None = None) -> None:
+        reason = "" if error is None else (error.strerror or str(error))
+        detail = f"{what} {path}" + (f": {reason}" if reason else "")
+        super().__init__(detail)
+        self.what = what
+        self.path = str(path)
+        self.reason = reason
 
 
 def _require_text(field: str, value: Any) -> str:
@@ -989,6 +1037,34 @@ class OperationalEvents:
         """Why the call's event artifact is unavailable, when it is."""
         return getattr(self.stream, "unavailable", None)
 
+    @property
+    def directory(self) -> Path | None:
+        """The evidence directory the trace is written under, when one exists."""
+        return getattr(self.stream, "directory", None)
+
+    def end(self, document: Mapping[str, Any]) -> Path | None:
+        """Persist the call's final end document and its one end row.
+
+        The sidecar is the exact document the client received, written beside
+        the trace under the call id (``<call-id>.end.json``). The trace carries
+        one ``end`` row keyed by the same call id; a hold return rewrites that
+        row rather than appending a second one, so the row and the sidecar
+        always describe the same final state. A call wired to a non-persisting
+        sink (a test list) has no evidence directory and writes nothing; a
+        directory the host named but cannot write is a named
+        :class:`EndEvidenceError`.
+        """
+        directory = self.directory
+        if directory is None:
+            return None
+        evidence = EndEvidence(directory, call_id=self.stream.writer.call_id)
+        return evidence.write(
+            document,
+            stream=self.stream,
+            subject=self.subject,
+            at_ms=self._moment(None),
+        )
+
     # -- envelope helpers -------------------------------------------------
 
     def _moment(self, at_ms: float | int | None) -> float | int:
@@ -1381,8 +1457,9 @@ class CallEventLog:
 
     def __init__(self, directory: str | Path, *, call_id: str) -> None:
         self.call_id = _require_text("callId", call_id)
+        self._directory = Path(directory)
         safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", self.call_id).strip("._")
-        self._path = Path(directory) / f"{safe or 'call'}.jsonl"
+        self._path = self._directory / f"{safe or 'call'}.jsonl"
         #: Why this call's artifact is unavailable, or ``None`` while it works.
         self.unavailable: str | None = None
         try:
@@ -1394,6 +1471,16 @@ class CallEventLog:
     def path(self) -> Path | None:
         """The artifact path while it is usable, ``None`` once it is disabled."""
         return self._path if self.unavailable is None else None
+
+    @property
+    def directory(self) -> Path:
+        """The evidence directory the host named, usable or not.
+
+        The end document is written beside the trace, so the directory is read
+        even after this sink disabled itself: an unwritable directory is then a
+        named end-evidence failure, not a silent skip.
+        """
+        return self._directory
 
     def _disable(self, what: str, error: OSError) -> None:
         reason = error.strerror or str(error)
@@ -1468,6 +1555,12 @@ class EventStream:
         """Why the sink disabled its artifact, when it did."""
         return getattr(self._sink, "unavailable", None)
 
+    @property
+    def directory(self) -> Path | None:
+        """The directory a persisting sink writes under, when it has one."""
+        directory = getattr(self._sink, "directory", None)
+        return None if directory is None else Path(directory)
+
     def __call__(self, event: Mapping[str, Any]) -> dict[str, Any]:
         """Sanitize one finished line, then write it; a refusal writes nothing."""
         sanitized = sanitize_fields(dict(event))
@@ -1532,4 +1625,175 @@ class EventStream:
                 subject=subject,
                 fields=fields,
             )
+        )
+
+
+# ---------------------------------------------------------------------------
+# The end document: one sidecar and exactly one trace row (demo-verification 03)
+# ---------------------------------------------------------------------------
+
+
+class EndEvidence:
+    """One call's end document beside its trace, and the one ``end`` row.
+
+    The sidecar is ``<call-id>.end.json`` and is the exact document the client
+    received, written atomically so a partial write never claims a record. The
+    trace is ``<call-id>.jsonl`` and gains one call-level ``end`` row pointing
+    at the sidecar; a hold return replaces that row (never appends a second)
+    and overwrites the sidecar, so both describe the same final state.
+
+    Every failure is named: a document missing a required field, a directory
+    that cannot be created, or a write that fails raises
+    :class:`EndEvidenceError` with the path and the reason. Nothing here
+    swallows an error, because a call with no evidence must not look observed.
+    """
+
+    def __init__(self, directory: str | Path, *, call_id: str) -> None:
+        self.call_id = _require_text("callId", call_id)
+        self._directory = Path(directory)
+        safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", self.call_id).strip("._")
+        self._stem = safe or "call"
+        self.document_path = self._directory / f"{self._stem}{END_DOCUMENT_SUFFIX}"
+        self.trace_path = self._directory / f"{self._stem}.jsonl"
+
+    def write(
+        self,
+        document: Mapping[str, Any],
+        *,
+        stream: EventStream,
+        subject: str,
+        at_ms: float | int,
+    ) -> Path:
+        """Write the sidecar, then the one end row; return the sidecar path."""
+        if not isinstance(document, Mapping):
+            raise EndEvidenceError(
+                "the end evidence is not a document at", self.document_path
+            )
+        self._require_document(document)
+        self._ensure_directory()
+        self._write_document(document)
+        self._write_row(document, stream=stream, subject=subject, at_ms=at_ms)
+        return self.document_path
+
+    def _require_document(self, document: Mapping[str, Any]) -> None:
+        if document.get("type") != "end":
+            raise EndEvidenceError(
+                'the end evidence must be a "type": "end" document at',
+                self.document_path,
+            )
+        if document.get("callId") != self.call_id:
+            raise EndEvidenceError(
+                f"the end evidence names callId {document.get('callId')!r}, not "
+                f"{self.call_id!r}, at",
+                self.document_path,
+            )
+        for field in END_DOCUMENT_FIELDS:
+            if field not in document:
+                raise EndEvidenceError(
+                    f'the end evidence is missing the "{field}" field at',
+                    self.document_path,
+                )
+        ended_by = document.get("endedBy")
+        if not isinstance(ended_by, str) or not ended_by.strip():
+            raise EndEvidenceError(
+                "the end evidence names no endedBy at", self.document_path
+            )
+
+    def _ensure_directory(self) -> None:
+        try:
+            self._directory.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            raise EndEvidenceError(
+                "cannot create the end evidence directory", self._directory, error
+            ) from error
+
+    def _write_document(self, document: Mapping[str, Any]) -> None:
+        temporary = self.document_path.with_name(self.document_path.name + ".tmp")
+        try:
+            temporary.write_text(
+                json.dumps(dict(document), indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            os.replace(temporary, self.document_path)
+        except OSError as error:
+            try:
+                temporary.unlink()
+            except OSError:
+                pass
+            raise EndEvidenceError(
+                "cannot write the end evidence document", self.document_path, error
+            ) from error
+
+    def _write_row(
+        self,
+        document: Mapping[str, Any],
+        *,
+        stream: EventStream,
+        subject: str,
+        at_ms: float | int,
+    ) -> None:
+        captured: list[str] = []
+        # The row is built by the same envelope writer and sanitizer as every
+        # other line, then written by the one trace rewrite below.
+        capture = EventStream(
+            stream.writer, sink=captured.append, subject_kind=stream.subject_kind
+        )
+        cost = document.get("cost")
+        cost = cost if isinstance(cost, Mapping) else {}
+        budget = document.get("budget")
+        turn = budget.get("turn") if isinstance(budget, Mapping) else None
+        capture.call_scoped(
+            END_EVENT_TYPE,
+            subject=subject,
+            turn=_require_turn(turn),
+            at_ms=at_ms,
+            phase="end",
+            fields={
+                "endedBy": document["endedBy"],
+                "turns": document["turns"],
+                "costMeasured": bool(cost.get("measured")),
+                "totalUsd": cost.get("totalUsd"),
+                "endPath": str(self.document_path),
+            },
+        )
+
+        try:
+            existing = (
+                self.trace_path.read_text(encoding="utf-8").splitlines()
+                if self.trace_path.exists()
+                else []
+            )
+        except OSError as error:
+            raise EndEvidenceError(
+                "cannot read the trace for the end row", self.trace_path, error
+            ) from error
+        kept = [
+            line
+            for line in existing
+            if line.strip() and not self._is_end_row(line.strip())
+        ]
+        kept.extend(line.rstrip("\n") for line in captured)
+
+        temporary = self.trace_path.with_name(self.trace_path.name + ".tmp")
+        try:
+            temporary.write_text("\n".join(kept) + "\n", encoding="utf-8")
+            os.replace(temporary, self.trace_path)
+        except OSError as error:
+            try:
+                temporary.unlink()
+            except OSError:
+                pass
+            raise EndEvidenceError(
+                "cannot write the end row to the trace", self.trace_path, error
+            ) from error
+
+    def _is_end_row(self, line: str) -> bool:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            return False
+        return (
+            isinstance(row, Mapping)
+            and row.get("type") == END_EVENT_TYPE
+            and row.get("callId") == self.call_id
         )

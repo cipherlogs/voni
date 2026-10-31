@@ -95,7 +95,7 @@ import inspect
 import logging
 import time
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from types import MappingProxyType
 from typing import Any, Protocol
@@ -105,7 +105,7 @@ from cascade.cost import CallCost, LegCost as PricedLeg, RateTable, cost_call
 from cascade.counter import limit_amount
 from cascade.eligibility import EligibilityDecision
 from cascade.envelope import EnvelopeError, verify_envelope
-from cascade.events import COST_PRICED_EVENT_TYPE, OperationalEvents
+from cascade.events import COST_PRICED_EVENT_TYPE, EndEvidenceError, OperationalEvents
 from cascade.greeting import CallGreeting, GreetingOutcome, GreetingPlayback
 from cascade.meta_stt import SpeechPartial, SpeechStart
 from cascade.reconnect import ReconnectBudget
@@ -884,6 +884,9 @@ class CallEnd:
     #: write it. The call itself still ran: the artifact is a record, not a
     #: precondition.
     events_error: str | None = None
+    #: Why the call's end document could not be written, when it could not.
+    #: Named instead of silently skipped, so a call with no evidence is visible.
+    end_evidence_error: str | None = None
 
     def __post_init__(self) -> None:
         if self.ended_by not in ENDED_BY:
@@ -925,6 +928,8 @@ class CallEnd:
             document["eventsPath"] = self.events_path
         if self.events_error is not None:
             document["eventsError"] = self.events_error
+        if self.end_evidence_error is not None:
+            document["endEvidenceError"] = self.end_evidence_error
         if self.error is not None:
             document["error"] = self.error.to_document()
         return document
@@ -2384,6 +2389,15 @@ class CallLifecycle:
             events_path=events_path,
             events_error=events_error,
         )
+        # The end evidence is written before the message goes out, so the
+        # sidecar and the wire carry the same document. An unwritable
+        # directory is named on that document, never skipped in silence.
+        if events is not None:
+            try:
+                events.end(end.to_document())
+            except EndEvidenceError as failure:
+                _log.error("the end evidence could not be written: %s", failure)
+                end = replace(end, end_evidence_error=str(failure))
         try:
             await self._transport.send(end.to_document())
         except Exception:
