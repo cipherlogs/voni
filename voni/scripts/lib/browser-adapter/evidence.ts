@@ -30,7 +30,7 @@ import {
   type TurnEvidence,
 } from "@/lib/demo/verification/cards";
 import type { LoadedScenario } from "@/lib/demo/verification/scenarios";
-import type { CallEligibilityFact, RunVerdict } from "@/lib/demo/verification/verdict";
+import type { RunVerdict } from "@/lib/demo/verification/verdict";
 import type { ToolLogRow } from "@/lib/demo/tool-log";
 import type { InboxDelivery } from "@/lib/demo/verification/tools/inbox";
 import {
@@ -38,6 +38,14 @@ import {
   type CallMarksArtifact,
 } from "@/lib/voice/call-marks";
 
+import {
+  eligibilityOf,
+  firstRow,
+  parseTrace,
+  turnIds,
+  turnRows,
+  type AdapterErrorFactory,
+} from "../adapter-evidence";
 import { BrowserAdapterError } from "./errors";
 import { requireSafeId, runDirectory, writeJson } from "../protocol-adapter/evidence";
 import type {
@@ -166,87 +174,11 @@ function readJsonFile(file: string, what: string): Record<string, unknown> {
   return parsed as Record<string, unknown>;
 }
 
-function parseTrace(text: string, file: string): Record<string, unknown>[] {
-  const rows: Record<string, unknown>[] = [];
-  for (const [index, line] of text.split("\n").entries()) {
-    const trimmed = line.trim();
-    if (trimmed === "") continue;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(trimmed) as unknown;
-    } catch (error) {
-      throw new BrowserAdapterError(
-        "trace-malformed",
-        `${file} line ${index + 1} is not JSON: ${(error as Error).message}`,
-      );
-    }
-    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-      throw new BrowserAdapterError(
-        "trace-malformed",
-        `${file} line ${index + 1} is not a JSON object`,
-      );
-    }
-    rows.push(parsed as Record<string, unknown>);
-  }
-  return rows;
-}
-
-function turnRows(rows: readonly Record<string, unknown>[]): Record<string, unknown>[] {
-  return rows.filter((row) => typeof row.turn === "string" && row.turn.trim() !== "");
-}
-
-function turnIds(rows: readonly Record<string, unknown>[]): string[] {
-  const seen = new Set<string>();
-  const ids: string[] = [];
-  for (const row of rows) {
-    const turn = row.turn;
-    if (typeof turn === "string" && turn.trim() !== "" && !seen.has(turn)) {
-      seen.add(turn);
-      ids.push(turn);
-    }
-  }
-  return ids;
-}
-
-function firstRow(
-  rows: readonly Record<string, unknown>[],
-  type: string,
-): Record<string, unknown> | null {
-  return rows.find((row) => row.type === type) ?? null;
-}
-
-function eligibilityOf(
-  callId: string,
-  scenario: string,
-  end: Record<string, unknown>,
-  rows: readonly Record<string, unknown>[],
-): CallEligibilityFact {
-  const fallback = firstRow(rows, "provider_fallback");
-  const budgetRow = firstRow(rows, "budget.stopped");
-  const budget = end.budget;
-  const budgetRecord =
-    budget !== null && typeof budget === "object" && !Array.isArray(budget)
-      ? (budget as Record<string, unknown>)
-      : null;
-  const budgetStop =
-    budgetRecord !== null
-      ? String(budgetRecord.reasons ?? budgetRecord.reason ?? "budget ceiling")
-      : budgetRow !== null
-        ? String(budgetRow.reason ?? budgetRow.spend ?? "budget.stopped")
-        : end.endedBy === "budget"
-          ? "budget ceiling"
-          : null;
-  const providerFallback =
-    fallback !== null
-      ? `${String(fallback.leg ?? "vendor")} at ${String(fallback.phase ?? "turn")}`
-      : null;
-  return {
-    callId,
-    scenario,
-    providerFallback,
-    budgetStop,
-  };
-}
+const browserError: AdapterErrorFactory = (code, message) =>
+  new BrowserAdapterError(
+    code as ConstructorParameters<typeof BrowserAdapterError>[0],
+    message,
+  );
 
 function readMarks(file: string, callId: string): CallMarksArtifact {
   if (!existsSync(file)) {
@@ -346,7 +278,7 @@ export async function assembleBrowserEvidence(input: {
         `has no evidence without it: ${(error as Error).message}`,
     );
   }
-  const rows = parseTrace(traceText, traceSource);
+  const rows = parseTrace(traceText, traceSource, browserError);
   if (rows.length === 0) {
     throw new BrowserAdapterError(
       "trace-missing",
@@ -505,7 +437,12 @@ export async function assembleBrowserEvidence(input: {
     },
   };
 
-  const eligibility = eligibilityOf(callId, input.scenario.name, end, rows);
+  const eligibility = eligibilityOf({
+    callId,
+    scenario: input.scenario.name,
+    end,
+    rows,
+  });
 
   const record: BrowserCallRecord = {
     callId,
