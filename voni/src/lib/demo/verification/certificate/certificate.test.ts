@@ -596,7 +596,7 @@ test("the live 82-property contract appears in full, with every fail-closed gap 
   }
   const h6 = certificate.properties.find((property) => property.propertyId === "H6");
   assert.equal(h6?.status, "FAIL");
-  assert.equal(h6?.reason, "unresolved");
+  assert.equal(h6?.reason, "no-evaluator");
   assert.match(h6?.citations[0] ?? "", /^contract:H6$/);
   assert.equal(certificate.verdict, "not-demo-ready");
   assert.equal(certificate.pass, false);
