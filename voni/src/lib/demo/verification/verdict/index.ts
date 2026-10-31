@@ -33,6 +33,18 @@ export {
 export { judgeProperty, judgeRun } from "./judge";
 
 export {
+  LOCALE_UNDERSTANDING_RESIDUAL_RISK,
+  judgeLocaleMatrix,
+  judgeLocaleUnderstanding,
+  type LocaleEvidence,
+  type LocaleMatrixVerdict,
+  type LocaleUnderstandingVerdict,
+  type LocaleVerdict,
+  type LocaleVerdictValue,
+  type NativeReviewerSignoff,
+} from "./locale";
+
+export {
   MEASUREMENT_OUTCOMES,
   RUN_VERDICTS,
   type BarBinding,

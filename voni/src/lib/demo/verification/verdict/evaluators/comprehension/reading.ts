@@ -19,6 +19,12 @@ export type ReadingTurn = {
   readonly id: string;
   readonly speaker: "caller" | "agent";
   readonly text: string;
+  /**
+   * The delivered-audio transcript's offsets, when the source is a WAV. A
+   * Locale leak is cited by the segment it was heard in, not just by a turn id.
+   */
+  readonly startMs?: number;
+  readonly endMs?: number;
 };
 
 export type ReadingTranscript = {
@@ -36,6 +42,8 @@ export type JudgeFinding = {
   readonly propertyId: string;
   readonly passed: boolean;
   readonly citations: readonly string[];
+  /** The Locale the finding judged; a non-English finding must name its own. */
+  readonly locale?: string;
   readonly clarificationCount?: number;
   readonly guessed?: boolean;
   readonly codeSwitched?: boolean;
@@ -82,6 +90,14 @@ function textOf(value: unknown, what: string): string {
   return value;
 }
 
+function optionalOffset(value: unknown, what: string): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    throw new ComprehensionError("malformed-evidence", `${what} must be a non-negative number`);
+  }
+  return value;
+}
+
 /**
  * A transcript is either the evidence's own `turns` or a `transcript` object
  * beside it. The trace, wav and judge sources all use the same shape so one
@@ -109,10 +125,20 @@ export function readTranscript(source: unknown, what: string): ReadingTranscript
         `${what}.turns[${index}] names speaker ${JSON.stringify(speaker)}, not "caller" or "agent"`,
       );
     }
+    const startMs = optionalOffset(turn.startMs, `${what}.turns[${index}].startMs`);
+    const endMs = optionalOffset(turn.endMs, `${what}.turns[${index}].endMs`);
+    if (startMs !== undefined && endMs !== undefined && endMs < startMs) {
+      throw new ComprehensionError(
+        "malformed-evidence",
+        `${what}.turns[${index}] ends at ${endMs}ms before it starts at ${startMs}ms`,
+      );
+    }
     return {
       id: textOf(turn.id, `${what}.turns[${index}].id`),
       speaker: speaker as "caller" | "agent",
       text: textOf(turn.text, `${what}.turns[${index}].text`),
+      ...(startMs === undefined ? {} : { startMs }),
+      ...(endMs === undefined ? {} : { endMs }),
     };
   });
   return { turns };
@@ -168,6 +194,9 @@ export function readFindings(source: unknown, what: string): JudgeFinding[] {
       propertyId,
       passed: finding.passed,
       citations,
+      ...(typeof finding.locale === "string" && finding.locale.trim() !== ""
+        ? { locale: finding.locale.trim() }
+        : {}),
       ...(typeof finding.clarificationCount === "number"
         ? { clarificationCount: finding.clarificationCount }
         : {}),

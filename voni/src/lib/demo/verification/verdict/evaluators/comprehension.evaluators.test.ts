@@ -42,6 +42,8 @@ async function pairFor(
   source: unknown,
   facts: unknown,
   attempts = 1,
+  attemptLocale: string = locale,
+  extraEvidence: Record<string, unknown> = {},
 ): Promise<{ property: Contract["properties"][number]; evidence: PropertyEvidence }> {
   const loaded = await contract();
   const property = loaded.properties.find((entry) => entry.id === id);
@@ -52,16 +54,23 @@ async function pairFor(
     attempts: Array.from({ length: attempts }, (_, index) => ({
       scenario: "comprehension-example",
       repetition: index + 1,
-      locale,
-      evidence: { [property.evidence]: source },
+      locale: attemptLocale,
+      evidence: { [property.evidence]: source, ...extraEvidence },
       facts: facts as never,
     })),
   });
   return { property, evidence: evidence[0] as PropertyEvidence };
 }
 
-async function judged(id: string, source: unknown, facts: unknown, attempts = 1) {
-  const pair = await pairFor(id, source, facts, attempts);
+async function judged(
+  id: string,
+  source: unknown,
+  facts: unknown,
+  attempts = 1,
+  attemptLocale: string = locale,
+  extraEvidence: Record<string, unknown> = {},
+) {
+  const pair = await pairFor(id, source, facts, attempts, attemptLocale, extraEvidence);
   return judgeProperty(pair.property, pair.evidence);
 }
 
@@ -253,6 +262,59 @@ test("K5 fails when the reply leaks the caller's other language", async () => {
   assert.match(verdict.detail, /claro/);
 });
 
+function deliveredWith(agentText: string, startMs = 1_200, endMs = 2_400) {
+  return {
+    transcript: {
+      turns: [
+        { id: "1:caller", speaker: "caller", text: "Hola, necesito ayuda.", startMs: 0, endMs: 900 },
+        {
+          id: "2:reply",
+          speaker: "agent",
+          text: agentText,
+          startMs,
+          endMs,
+        },
+      ],
+    },
+  };
+}
+
+test("K5 in a Locale scans the trace and the delivered audio, and passes only when both are clean", async () => {
+  const verdict = await judged(
+    "K5",
+    traceWith("Claro, puedo comprobarlo."),
+    undefined,
+    1,
+    "es",
+    { wav: deliveredWith("Por supuesto, lo compruebo ahora.") },
+  );
+  assert.equal(verdict.status, "PASS");
+  assert.equal(verdict.sampleCount, 2, "one sample for the trace turn and one for the delivered segment");
+});
+
+test("K5 fails a clean trace when the delivered audio leaks English, and names the segment", async () => {
+  const verdict = await judged(
+    "K5",
+    traceWith("Claro, puedo comprobarlo."),
+    undefined,
+    1,
+    "es",
+    { wav: deliveredWith("Sure, I can check that.") },
+  );
+  assert.equal(verdict.status, "FAIL");
+  assert.equal(verdict.reason, "below-bar");
+  assert.match(verdict.detail, /delivered|wav/i);
+  assert.match(verdict.detail, /1200|1\.2|2:reply/);
+  assert.match(verdict.detail, /sure/);
+});
+
+test("K5 refuses a non-English Locale with no delivered audio rather than passing on the trace alone", async () => {
+  const verdict = await judged("K5", traceWith("Claro, puedo comprobarlo."), undefined, 1, "es");
+  assert.equal(verdict.status, "FAIL");
+  assert.equal(verdict.reason, "unmeasured");
+  assert.match(verdict.detail, /delivered audio|wav/i);
+});
+
 // ── K6 ───────────────────────────────────────────────────────────────────────
 
 test("K6 passes when the judge saw the code-switch understood and the reply in Locale", async () => {
@@ -289,6 +351,46 @@ test("K6 is unmeasured when the judge saw no code-switch to judge", async () => 
   );
   assert.equal(verdict.status, "FAIL");
   assert.equal(verdict.reason, "unmeasured");
+});
+
+test("K6 in a Locale passes only a finding that names that Locale and cites the turns", async () => {
+  const spanished = judgeFinding("K6", {
+    locale: "es",
+    codeSwitched: true,
+    stayedInLocale: true,
+    citations: ["turn:1:caller", "turn:2:reply"],
+    passed: true,
+  });
+  const verdict = await judged("K6", spanished, undefined, 3, "es");
+  assert.equal(verdict.status, "PASS");
+});
+
+test("K6 refuses a finding judged in another Locale", async () => {
+  const french = judgeFinding("K6", {
+    locale: "fr",
+    codeSwitched: true,
+    stayedInLocale: true,
+    citations: ["turn:1:caller", "turn:2:reply"],
+    passed: true,
+  });
+  const verdict = await judged("K6", french, undefined, 3, "es");
+  assert.equal(verdict.status, "FAIL");
+  assert.equal(verdict.reason, "unmeasured");
+  assert.match(verdict.detail, /fr|es/);
+});
+
+test("K6 refuses a non-English finding with no citations", async () => {
+  const uncited = judgeFinding("K6", {
+    locale: "de",
+    codeSwitched: true,
+    stayedInLocale: true,
+    citations: [],
+    passed: true,
+  });
+  const verdict = await judged("K6", uncited, undefined, 3, "de");
+  assert.equal(verdict.status, "FAIL");
+  assert.equal(verdict.reason, "unmeasured");
+  assert.match(verdict.detail, /cit/i);
 });
 
 // ── K7 ───────────────────────────────────────────────────────────────────────

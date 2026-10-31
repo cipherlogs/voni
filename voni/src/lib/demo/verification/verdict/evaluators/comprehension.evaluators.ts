@@ -42,9 +42,13 @@ import {
   type TakeFact,
 } from "./comprehension/reading";
 import {
+  describeLocaleLeak,
+  scanLocaleLeaks,
+  type LocaleLeakSegment,
+} from "./comprehension/locale";
+import {
   canonicalEmails,
   canonicalNumbers,
-  languageLeaks,
   lastCanonicalEmail,
   spokenName,
   wordError,
@@ -331,23 +335,62 @@ const k5: PropertyEvaluator = {
           "the transcript carries no agent turn, so no Locale-appropriate reply can be judged",
         );
       }
-      const leaks = agents.map((turn) => ({
-        turn,
-        tokens: languageLeaks(turn.text, locale),
-      }));
-      const leaked = leaks.filter((entry) => entry.tokens.length > 0);
+      const traceLeaks = scanLocaleLeaks(transcript, locale, "trace");
+      const samples = agents.map(
+        (turn) => scanLocaleLeaks({ turns: [turn] }, locale, "trace").length,
+      );
+
+      // A non-English Locale must be checked on the audio the caller actually
+      // heard, not only on the trace's transcript. RR-02 never turns a missing
+      // delivered-audio read into a pass.
+      let deliveredTurns: number | null = null;
+      let deliveredLeaks: LocaleLeakSegment[] = [];
+      if (locale !== "en") {
+        const delivered = context.evidence.wav;
+        if (delivered === undefined || delivered === null) {
+          throw new ComprehensionError(
+            "missing-evidence",
+            `the attempt is Locale "${locale}" but carries no delivered audio (wav) transcript; ` +
+              "English-leak detection scans both the trace and the delivered audio",
+          );
+        }
+        const audio = readTranscript(delivered, "the delivered audio");
+        const deliveredAgents = agentTurns(audio);
+        if (deliveredAgents.length === 0) {
+          throw new ComprehensionError(
+            "missing-evidence",
+            "the delivered-audio transcript carries no agent turn",
+          );
+        }
+        deliveredTurns = deliveredAgents.length;
+        deliveredLeaks = scanLocaleLeaks(audio, locale, "delivered-audio");
+        samples.push(
+          ...deliveredAgents.map(
+            (turn) => scanLocaleLeaks({ turns: [turn] }, locale, "delivered-audio").length,
+          ),
+        );
+      }
+
+      const leaks = [...traceLeaks, ...deliveredLeaks];
       return {
         kind: "measured",
-        samples: leaks.map((entry) => entry.tokens.length),
-        citations: (leaked.length === 0 ? agents : leaked.map((entry) => entry.turn)).map((turn) =>
-          turnCitation(turn.id),
-        ),
+        samples,
+        citations:
+          leaks.length === 0
+            ? [
+                ...agents.map((turn) => turnCitation(turn.id)),
+                ...(deliveredTurns === null ? [] : ["wav:transcript"]),
+              ]
+            : leaks.map((leak) => leak.citation),
         detail:
-          leaked.length === 0
-            ? `0 non-${locale} markers in ${agents.length} agent turn${agents.length === 1 ? "" : "s"}`
-            : `the ${locale} reply leaked ${leaked
-                .flatMap((entry) => entry.tokens)
-                .join(", ")}`,
+          leaks.length === 0
+            ? `0 non-${locale} markers in ${agents.length} trace agent turn${
+                agents.length === 1 ? "" : "s"
+              }${deliveredTurns === null ? "" : ` and ${deliveredTurns} delivered segment${
+                deliveredTurns === 1 ? "" : "s"
+              }`}`
+            : `the ${locale} reply leaked a marker from another Locale: ` +
+              leaks.map(describeLocaleLeak).join("; "),
       };
     } catch (error) {
       return unmeasured(error);
@@ -363,12 +406,34 @@ const k6: PropertyEvaluator = {
   bars: [],
   evaluate(context) {
     try {
+      const locale = localeOf(context.locale);
       const finding = findingOf(readFindings(context.source, "the judge evidence"), "K6");
       if (finding.codeSwitched === undefined || finding.stayedInLocale === undefined) {
         throw new ComprehensionError(
           "missing-evidence",
           "the K6 finding carries no code-switch flag and no Locale flag",
         );
+      }
+      if (locale !== "en") {
+        if (finding.locale === undefined) {
+          throw new ComprehensionError(
+            "missing-evidence",
+            `the K6 finding names no Locale; a "${locale}" code-switch cannot be judged by a ` +
+              "finding that does not say which Locale it heard",
+          );
+        }
+        if (finding.locale !== locale) {
+          throw new ComprehensionError(
+            "missing-evidence",
+            `the K6 finding judged Locale "${finding.locale}", but this attempt is "${locale}"`,
+          );
+        }
+        if (finding.citations.length === 0) {
+          throw new ComprehensionError(
+            "missing-evidence",
+            "the K6 finding cites no transcript turn; an uncited code-switch judgement is not evidence",
+          );
+        }
       }
       if (!finding.codeSwitched) {
         throw new ComprehensionError(

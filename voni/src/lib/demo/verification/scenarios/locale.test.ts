@@ -13,6 +13,7 @@ import {
   localeCorePlan,
   localeCoreRunCeiling,
   localeCoreScenarioName,
+  type LocaleCoreSlug,
 } from "./index";
 
 /**
@@ -26,7 +27,7 @@ import {
  */
 
 type Expected = {
-  readonly slug: string;
+  readonly slug: LocaleCoreSlug;
   readonly cls: string;
   readonly properties: readonly string[];
   readonly triggers: readonly string[];
@@ -136,6 +137,20 @@ test("the same behaviour keeps its class, triggers, properties, soundscape and f
         expected.fault === undefined ? [] : [expected.fault],
       );
     }
+  }
+});
+
+test("every Locale's code-switch scenario actually code-switches and cites K6", async () => {
+  const loaded = await corpus();
+  const byName = new Map(loaded.scenarios.map((scenario) => [scenario.name, scenario]));
+  for (const locale of LOCALE_CORE_LOCALES) {
+    const scenario = byName.get(localeCoreScenarioName("code-switch", locale));
+    assert.ok(scenario);
+    assert.equal(scenario.expectedProperties.includes("K6"), true);
+    const switchTake = scenario.script[1];
+    assert.ok(switchTake);
+    const text = scenario.takes.find((take) => take.id === switchTake.take)?.text ?? "";
+    assert.match(text, /Can you help me\?/, `${locale} never leaves its own language`);
   }
 });
 

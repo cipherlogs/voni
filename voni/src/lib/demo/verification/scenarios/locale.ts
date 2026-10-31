@@ -19,7 +19,7 @@
 import type { Contract } from "../contract";
 import { preflightRunCeiling, type RunCeilingCheck, type RunKind } from "../economics";
 import { ScenarioError } from "./errors";
-import type { Corpus, LoadedScenario, Locale, ScenarioClass, TriggerType } from "./types";
+import type { Corpus, LoadedScenario, ScenarioClass, TriggerType } from "./types";
 
 /** The four non-English Locales the core certifies. English is the full run. */
 export const LOCALE_CORE_LOCALES = ["es", "fr", "de", "pt"] as const;
