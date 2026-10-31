@@ -43,7 +43,7 @@ have is a defect in this map.
 | Verdict and statistics | pooling, per-scenario tails, fail-closed unknowns, ineligibility | not landed | 07 |
 | Certificate | schema, builder, validator, target binding, residual-risk ids, panel signature | not landed | 08 |
 | Defect cards | one card per failed property with turn, excerpt, bar and replay command | not landed | 09 |
-| Scenario runtime and caller corpus | parser, trigger rules, hashed takes, corpus manifest | not landed | 10, 12–16 |
+| Scenario runtime and caller corpus | parser, trigger rules, hashed takes, corpus manifest | `voni/src/lib/demo/verification/scenarios/` — `types.ts` is the adapter-agnostic record (takes, trigger rules, soundscape, expected property ids, faults); `parse.ts` refuses unknown fields, classes, locales, property ids, takes, triggers and faults by name and enforces the eight held-out names; `triggers.ts` resolves the caller script against the agent timeline deterministically and refuses an unresolved step; `corpus.ts` discovers `<root>/manifest.json` plus one directory per scenario and verifies each take's declared sha256, naming a drifted take. English and Locale corpora not landed | 10, 12–16 |
 | Protocol adapter | diagnosis runs over the existing live-call socket; never certifies | `voni/scripts/real-legs.mts` (seed, via `voni/scripts/lib/real-legs.ts`) | 11 |
 | Browser adapter | certifying runs on the real page, synthetic mic, delivered WAV, browser marks | not landed | 17 |
 | Evaluator families | L1–L11, T1–T10, C1–C10, K1–K8, X1–X10, A1–A8, R1–R8, S1–S6, E1–E4, H1–H7 | not landed | 18–22, 26 |
