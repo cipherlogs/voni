@@ -43,7 +43,8 @@ import { pipelineUrlFromEnv, type PipelineUrlResult } from "@/lib/voice/pipeline
  *
  * There is no managed fallback and no engine choice. A pipeline refusal or a
  * missing pipeline configuration is the visitor's unavailable state; the
- * response never names an engine, a vendor or any part of the signed body.
+ * response never names a vendor, a fallback engine or the served body; the
+ * effective engine is reported as cascade.
  *
  * Every dependency the request touches — the limit store, the tag registry,
  * the call record, the body builder, the delivery client, the pipeline URL and
