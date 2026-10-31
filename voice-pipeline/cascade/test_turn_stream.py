@@ -547,6 +547,82 @@ class LegGateTest(unittest.TestCase):
         self.assertEqual(1, len(stream._llm.requests))
 
 
+class AckTest(unittest.TestCase):
+    """One short spoken line covers a reply that has not started yet."""
+
+    def test_a_slow_reply_is_covered_by_one_ack_that_is_never_captioned(self):
+        gate = asyncio.Event()
+
+        class SlowLLM:
+            async def complete(self, *, messages, tools=None, turn=None):
+                await gate.wait()
+                record = turn if turn is not None else MetaLLMTurn()
+                record.content_text += "Sure."
+                yield TokenDelta(text="Sure.")
+                record.finished = True
+
+        captions: list[tuple[str, str, bool]] = []
+
+        async def on_caption(role, text, final):
+            captions.append((role, text, final))
+
+        stream = CascadeTurnStream(
+            llm=SlowLLM(),
+            tts=FakeTTS(),
+            emit_audio=RecordingAudio(),
+            ledger=RecordingLedger(),
+            clock=FakeClock(),
+            ack_lines=("Mhm.",),
+            ack_delay_ms=5,
+            on_caption=on_caption,
+        )
+
+        async def run():
+            await stream.start()
+            await stream.event(SpeechStart("t1"))
+            await stream.event(SpeechComplete("hi", turn_id="t1"))
+            for _ in range(200):
+                if stream._tts.spoken:
+                    break
+                await asyncio.sleep(0.001)
+            gate.set()
+            await stream.drain()
+
+        asyncio.run(run())
+
+        self.assertEqual(["Mhm.", "Sure."], stream._tts.spoken)
+        self.assertNotIn("Mhm.", [text for _, text, _ in captions], "the ack is not a caption")
+        self.assertIn(("agent", "Sure.", True), captions, "the reply is the final caption")
+
+    def test_a_fast_reply_never_speaks_an_ack(self):
+        class FastLLM:
+            async def complete(self, *, messages, tools=None, turn=None):
+                record = turn if turn is not None else MetaLLMTurn()
+                record.content_text += "Sure."
+                yield TokenDelta(text="Sure.")
+                record.finished = True
+
+        stream = CascadeTurnStream(
+            llm=FastLLM(),
+            tts=FakeTTS(),
+            emit_audio=RecordingAudio(),
+            ledger=RecordingLedger(),
+            clock=FakeClock(),
+            ack_lines=("Mhm.",),
+            ack_delay_ms=50,
+        )
+
+        async def run():
+            await stream.start()
+            await stream.event(SpeechStart("t1"))
+            await stream.event(SpeechComplete("hi", turn_id="t1"))
+            await stream.drain()
+
+        asyncio.run(run())
+
+        self.assertEqual(["Sure."], stream._tts.spoken)
+
+
 class EndCallSignalTest(unittest.TestCase):
     """``end_call`` is spoken, ends the turn and asks the call to hang up."""
 

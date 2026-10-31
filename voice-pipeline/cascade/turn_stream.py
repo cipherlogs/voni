@@ -83,6 +83,9 @@ EndCallSink = Callable[[], Awaitable[None]]
 #: The idle keepalive cadence (ticket 53's bound; never a literal here).
 KEEPALIVE_BOUND = "tts.keepalive_interval_ms"
 
+#: How long a reply may stay silent before one short spoken ack covers it.
+ACK_DELAY_BOUND = "reply.ack_delay_ms"
+
 
 class CascadeTurnStream:
     """The turn layer for one cascade call, on the lifecycle's seams."""
@@ -106,6 +109,8 @@ class CascadeTurnStream:
         on_turn_billed: BilledSink | None = None,
         on_end_call: EndCallSink | None = None,
         history: Sequence[Mapping[str, Any]] = (),
+        ack_lines: Sequence[str] = (),
+        ack_delay_ms: float | None = None,
     ) -> None:
         self._llm = llm
         self._tts = tts
@@ -121,6 +126,16 @@ class CascadeTurnStream:
         self._on_interrupted = on_interrupted
         self._on_turn_billed = on_turn_billed
         self._on_end_call = on_end_call
+        self._ack_lines = tuple(ack_lines)
+        self._ack_delay_s = (
+            (float(require_bound(ACK_DELAY_BOUND)) if ack_delay_ms is None else float(ack_delay_ms))
+            / 1000.0
+        )
+        #: One ack watcher per reply; never spoken as the reply or captioned.
+        self._ack_task: asyncio.Task | None = None
+        self._ack_index = 0
+        #: Serialises the ack and the reply on the one synthesis session.
+        self._voice_lock = asyncio.Lock()
 
         self._turns = TurnStateStore(clock=self._clock, source="meta")
         self._rules = EventRules(
@@ -240,6 +255,8 @@ class CascadeTurnStream:
             self._ledger.mark("floor_take")
         self._reply_task = asyncio.ensure_future(self._reply(state))
         self._reply_task.add_done_callback(self._reply_done)
+        if self._ack_lines:
+            self._ack_task = asyncio.ensure_future(self._ack_if_slow())
 
     def _reply_done(self, task: asyncio.Task) -> None:
         if task.cancelled():
@@ -267,6 +284,11 @@ class CascadeTurnStream:
             cancelled = True
             raise
         finally:
+            ack_task = self._ack_task
+            self._ack_task = None
+            if ack_task is not None and not ack_task.done():
+                ack_task.cancel()
+                await asyncio.gather(ack_task, return_exceptions=True)
             record.close()
             self._records[key] = record
             if key not in self._completed:
@@ -521,15 +543,21 @@ class CascadeTurnStream:
             return
         self._reply_text = f"{self._reply_text} {text}".strip()
         await self._caption("agent", text, False)
-        async for audio in self._tts.speak(text):
-            self._speaking = True
-            await self._emit_audio(
-                audio, kind="reply", flush_id=getattr(self._tts, "flush_id", None)
-            )
+        async with self._voice_lock:
+            async for audio in self._tts.speak(text):
+                self._speaking = True
+                await self._emit_audio(
+                    audio, kind="reply", flush_id=getattr(self._tts, "flush_id", None)
+                )
 
     async def _cancel_reply(self) -> None:
         """Cut the sounding reply with ``Cancel``, then release the floor."""
         state = self._active
+        ack_task = self._ack_task
+        self._ack_task = None
+        if ack_task is not None and not ack_task.done():
+            ack_task.cancel()
+            await asyncio.gather(ack_task, return_exceptions=True)
         task = self._reply_task
         if task is not None and not task.done():
             task.cancel()
@@ -547,6 +575,39 @@ class CascadeTurnStream:
         self._active = None
         if self._on_interrupted is not None:
             await self._on_interrupted()
+
+    async def _ack_if_slow(self) -> None:
+        """Speak one short line if the reply has not started by the bound.
+
+        The ack is not a turn: it writes no reply text, sends no caption and
+        makes no model or tool request. It holds the voice lock only while its
+        own short line plays, so the reply follows it instead of overlapping.
+        """
+        if not self._ack_lines:
+            return
+        try:
+            await self._sleep(self._ack_delay_s)
+        except asyncio.CancelledError:
+            return
+        if self._ending or self._speaking or self._reply_text.strip():
+            return
+        line = self._ack_lines[self._ack_index % len(self._ack_lines)]
+        self._ack_index += 1
+        if self._may_request is not None and not self._may_request("tts"):
+            return
+        async with self._voice_lock:
+            if self._ending or self._speaking or self._reply_text.strip():
+                return
+            try:
+                async for audio in self._tts.speak(line):
+                    await self._emit_audio(
+                        audio, kind="ack", flush_id=getattr(self._tts, "flush_id", None)
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # A failed filler is not the reply: the turn still speaks.
+                return
 
     async def _cancel_voice(self) -> None:
         cancel = getattr(self._tts, "cancel", None)

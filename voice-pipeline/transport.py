@@ -44,6 +44,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from cascade.ack import ack_lines as ack_lines_for
 from cascade.admission import admit_new_call
 from cascade.assemblyai_tts import AssemblyAIStreamingTTS
 from cascade.body_map import BodyFieldError, CascadeBody, adapt_body
@@ -590,6 +591,11 @@ async def handle_browser_call(
                 on_turn_billed=on_turn_billed,
                 on_end_call=on_end_call,
                 history=body.history,
+                ack_lines=(
+                    ack_lines_for(body.language_code)
+                    if verified.subject_kind == "demo"
+                    else ()
+                ),
             )
             lifecycle = CallLifecycle(
                 message={

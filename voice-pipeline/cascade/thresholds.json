@@ -260,6 +260,15 @@
       "source": "owner decision 2026-10-31 for an impressive demo: a fair race (1 ms) instead of a head start; two requests per turn, first stream wins, loser cancelled",
       "date": "2026-10-31",
       "note": "The demo cascade's one bounded hedge. The loser is cancelled; hedge_started and hedge_won are counted so the extra request is visible."
+    },
+    "reply.ack_delay_ms": {
+      "unit": "ms",
+      "gate": "reply.ack",
+      "ticket": "demo-latency",
+      "value": 300,
+      "source": "owner decision 2026-10-31: a short spoken acknowledgement at 300 ms covers the vendor's first-token wait; it is not the reply and is never captioned",
+      "date": "2026-10-31",
+      "note": "Demo-only. One short line through the same voice, skipped when the reply starts speaking first."
     }
   }
 }
