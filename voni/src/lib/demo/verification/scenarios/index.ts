@@ -78,6 +78,23 @@ export {
 } from "./generate";
 
 export {
+  LOCALE_CORE_LOCALES,
+  LOCALE_CORE_SLUGS,
+  LOCALE_CORE_RULES,
+  LOCALE_CORE_REPETITIONS,
+  localeCoreContract,
+  localeCorePlan,
+  localeCorePropertyIds,
+  localeCoreRunCeiling,
+  localeCoreScenarioName,
+  type LocaleCoreLocale,
+  type LocaleCoreSlug,
+  type LocaleCoreRule,
+  type LocaleCorePlan,
+  type LocaleCorePlanEntry,
+} from "./locale";
+
+export {
   FAST_CONTRACT_SCENARIOS,
   FAST_CONTRACT_REPETITIONS,
   FAST_CONTRACT_LOCALE,

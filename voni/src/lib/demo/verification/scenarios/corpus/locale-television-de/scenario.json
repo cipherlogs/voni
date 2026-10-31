@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "name": "locale-television-de",
+  "class": "soundscape",
+  "locale": "de",
+  "heldOut": false,
+  "expectedProperties": [
+    "A3",
+    "A8"
+  ],
+  "soundscape": {
+    "id": "television",
+    "levelDb": -18
+  },
+  "faults": [],
+  "takes": [
+    {
+      "id": "intro",
+      "audio": "takes/intro.wav",
+      "sha256": "12fd166e261f136462e2a1062e14aafddf57afcebf8288d5db2b0c12094ee4a3",
+      "text": "Hallo, hören Sie mich? Der Fernseher läuft."
+    },
+    {
+      "id": "ask",
+      "audio": "takes/ask.wav",
+      "sha256": "40148682007b5c0db8dd4d2161839d368dd06750b84a549ba1b6cf60666c7a2f",
+      "text": "Ja, ich möchte einen Termin für Freitag."
+    }
+  ],
+  "script": [
+    {
+      "take": "intro",
+      "trigger": {
+        "type": "call-open"
+      }
+    },
+    {
+      "take": "ask",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    }
+  ]
+}

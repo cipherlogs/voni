@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "name": "locale-golden-returning-pt",
+  "class": "golden-flow",
+  "locale": "pt",
+  "heldOut": false,
+  "expectedProperties": [
+    "T2",
+    "X10"
+  ],
+  "soundscape": {
+    "id": "quiet-room"
+  },
+  "faults": [],
+  "takes": [
+    {
+      "id": "intro",
+      "audio": "takes/intro.wav",
+      "sha256": "8f19691d453edf00b802dfd2e3ce131435dea8600a0c867f304624dc92ee7b64",
+      "text": "Olá, sou a Marta. Liguei na semana passada sobre o conserto."
+    },
+    {
+      "id": "ask",
+      "audio": "takes/ask.wav",
+      "sha256": "3af91623116b77feb79408381ca7b570c3ca0264435b2d6aedc8252f4657b4b8",
+      "text": "Sim, queria saber se a peça já chegou."
+    }
+  ],
+  "script": [
+    {
+      "take": "intro",
+      "trigger": {
+        "type": "call-open"
+      }
+    },
+    {
+      "take": "ask",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    }
+  ]
+}

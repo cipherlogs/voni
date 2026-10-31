@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "name": "locale-angry-fr",
+  "class": "emotion",
+  "locale": "fr",
+  "heldOut": false,
+  "expectedProperties": [
+    "C4",
+    "K7"
+  ],
+  "soundscape": {
+    "id": "quiet-room"
+  },
+  "faults": [],
+  "takes": [
+    {
+      "id": "intro",
+      "audio": "takes/intro.wav",
+      "sha256": "f10401103d53b6b50ddd3044cf15c861b337e1734729368f8da20160c933565d",
+      "text": "J'en ai assez, j'attends depuis trois jours."
+    },
+    {
+      "id": "angry",
+      "audio": "takes/angry.wav",
+      "sha256": "5b9d158501a98bd6e3b88f0071026689d9240c0d737095bebbf1589d8c1dd25a",
+      "text": "C'est ridicule ! Personne ne me rappelle !"
+    },
+    {
+      "id": "settle",
+      "audio": "takes/settle.wav",
+      "sha256": "7784a89d128adce4aedb8e0a64e4fdc4610685607d5fed14b7be31ccc5516166",
+      "text": "Bon... d'accord, dites-moi ce qui se passe."
+    }
+  ],
+  "script": [
+    {
+      "take": "intro",
+      "trigger": {
+        "type": "call-open"
+      }
+    },
+    {
+      "take": "angry",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    },
+    {
+      "take": "settle",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    }
+  ]
+}

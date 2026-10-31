@@ -17,6 +17,8 @@ export const PROTOCOL_ERROR_CODES = [
   "missing-vendor-build",
   "invalid-vendor-builds",
   "missing-soundscape",
+  "missing-inbox",
+  "inbox-unavailable",
   "missing-target",
   "target-mismatch",
   "target-invalid",

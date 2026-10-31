@@ -48,6 +48,11 @@ export const FAKE_KEYS = {
   META_API_KEY: "test-meta",
   ASSEMBLYAI_API_KEY: "test-assembly",
   VOICE_PIPELINE_ENVELOPE_SECRET: "test-envelope",
+  // The email-path scenarios refuse without these; a fake call never reads the
+  // real inbox, so test values are enough for preflight.
+  GOOGLE_CLIENT_ID: "test-google-client",
+  GOOGLE_CLIENT_SECRET: "test-google-secret",
+  DEMO_INBOX_REFRESH_TOKEN: "test-inbox-refresh",
 } as const;
 
 export type ScenarioSpec = {
@@ -394,6 +399,7 @@ export function fakeCall(input: {
     faultsApplied: [],
     caller: { frames: 225, bytes: 57_600, frameBytes: 256 },
     received: { pcm, sampleRate: 24_000, frames: Math.floor(pcm.length / 256), bytes: pcm.length },
+    captions: [],
     endedBy: input.endedBy ?? "end",
     error: null,
     tracePath: null,

@@ -56,16 +56,16 @@ async function load() {
 }
 
 function namesOf(
-  scenarios: readonly { name: string; class: string }[],
+  scenarios: readonly { name: string; class: string; locale: string }[],
   classId: string,
 ): string[] {
   return scenarios
-    .filter((scenario) => scenario.class === classId)
+    .filter((scenario) => scenario.locale === "en" && scenario.class === classId)
     .map((scenario) => scenario.name)
     .sort();
 }
 
-test("the corpus holds four soundscape, nine connectivity and three meta/security scenarios", async () => {
+test("the English corpus holds four soundscape, nine connectivity and three meta/security scenarios", async () => {
   const corpus = await load();
   assert.deepEqual(namesOf(corpus.scenarios, "soundscape"), [
     "second-voice",

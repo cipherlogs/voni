@@ -14,6 +14,7 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 import { loadCorpus, ScenarioError, type LoadedScenario } from "@/lib/demo/verification/scenarios";
+import { inboxConfig } from "@/lib/demo/verification/tools/inbox";
 
 import { resolveTargets, RealLegsError } from "../real-legs";
 import { ProtocolAdapterError } from "./errors";
@@ -241,6 +242,24 @@ export async function preflight(input: ProtocolPreflightInput): Promise<Protocol
   }
 
   missing.push(...vendorBuildGaps(input.vendorBuilds, input.vendorBuildsPath));
+
+  // X4/X5/X10 judge the real email path. Without the test inbox's credentials
+  // that path cannot run, so the run refuses by name instead of measuring a
+  // smaller contract.
+  const emailProperties = ["X4", "X5", "X10"];
+  const inbox = inboxConfig(input.env);
+  if (
+    scenario !== null &&
+    scenario.expectedProperties.some((id) => emailProperties.includes(id)) &&
+    !inbox.configured
+  ) {
+    missing.push({
+      item: "demo-inbox",
+      detail:
+        `scenario "${scenario.name}" judges the email path, but the test inbox is not ` +
+        `configured: ${inbox.missing.join(", ")}`,
+    });
+  }
 
   if (scenario !== null && scenario.soundscape.id !== QUIET_SOUNDSCAPE) {
     if (input.soundscapes[scenario.soundscape.id] === undefined) {

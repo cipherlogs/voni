@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "name": "locale-barge-clause-pt",
+  "class": "turn-taking",
+  "locale": "pt",
+  "heldOut": false,
+  "expectedProperties": [
+    "T3",
+    "T6",
+    "T7"
+  ],
+  "soundscape": {
+    "id": "quiet-room"
+  },
+  "faults": [],
+  "takes": [
+    {
+      "id": "intro",
+      "audio": "takes/intro.wav",
+      "sha256": "3612a56e074c7a2bc063e865bf8ff50ab338f0f67e8af88fb863273e207e735a",
+      "text": "Olá, preciso de ajuda com a fatura."
+    },
+    {
+      "id": "barge",
+      "audio": "takes/barge.wav",
+      "sha256": "5b57ea2a538f415f6afdb7b640f7d131458b14db6ada030470b001b9289f6604",
+      "text": "Desculpe, espere, antes de continuar."
+    },
+    {
+      "id": "resume",
+      "audio": "takes/resume.wav",
+      "sha256": "6cb36f790d18c87387d92e2a9f4ea27fbcb5213b73f88b33e3d84ed0a633c75f",
+      "text": "Está bem, pode continuar, por favor."
+    }
+  ],
+  "script": [
+    {
+      "take": "intro",
+      "trigger": {
+        "type": "call-open"
+      }
+    },
+    {
+      "take": "barge",
+      "trigger": {
+        "type": "agent-speech-start",
+        "delayMs": 120
+      }
+    },
+    {
+      "take": "resume",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    }
+  ]
+}
