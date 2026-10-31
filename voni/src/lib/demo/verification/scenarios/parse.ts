@@ -10,6 +10,7 @@
 import { ScenarioError } from "./errors";
 import {
   CORPUS_SCHEMA_VERSION,
+  EDGE_CONDITION_KINDS,
   FAULT_KINDS,
   HELD_OUT_SCENARIOS,
   LOCALES,
@@ -17,6 +18,8 @@ import {
   SCENARIO_SCHEMA_VERSION,
   TRIGGER_TYPES,
   type CorpusManifest,
+  type EdgeCondition,
+  type EdgeConditionKind,
   type Fault,
   type Locale,
   type ScenarioClass,
@@ -196,6 +199,26 @@ function parseFault(raw: unknown, what: string): Fault {
     : { kind: kind as Fault["kind"], atMs, durationMs };
 }
 
+function parseEdge(raw: unknown, what: string): EdgeCondition {
+  const record = asRecord(raw, "malformed-scenario", what);
+  refuseUnknownFields(record, ["kind", "atMs", "durationMs"], what);
+  const kind = record.kind;
+  if (typeof kind !== "string" || !(EDGE_CONDITION_KINDS as readonly string[]).includes(kind)) {
+    throw new ScenarioError(
+      "unknown-edge-condition",
+      `${what} names unknown edge condition "${String(kind)}"; known conditions: ${EDGE_CONDITION_KINDS.join(", ")}`,
+    );
+  }
+  if (record.atMs === undefined) {
+    throw new ScenarioError("invalid-edge-condition", `${what} (${kind}) requires atMs`);
+  }
+  const atMs = count(record.atMs, `${what}.atMs`);
+  const durationMs = optionalCount(record.durationMs, `${what}.durationMs`, { positive: true });
+  return durationMs === undefined
+    ? { kind: kind as EdgeConditionKind, atMs }
+    : { kind: kind as EdgeConditionKind, atMs, durationMs };
+}
+
 export type ParseScenarioOptions = {
   /**
    * Every id the contract owns. Required: the check is the point, so a caller
@@ -218,6 +241,7 @@ export function parseScenario(raw: unknown, options: ParseScenarioOptions): Scen
       "expectedProperties",
       "soundscape",
       "faults",
+      "edge",
       "takes",
       "script",
     ],
@@ -350,6 +374,16 @@ export function parseScenario(raw: unknown, options: ParseScenarioOptions): Scen
   }
   faults = record.faults.map((value, index) => parseFault(value, `scenario "${name}" faults[${index}]`));
 
+  let edge: EdgeCondition[] = [];
+  if (record.edge !== undefined) {
+    if (!Array.isArray(record.edge)) {
+      throw new ScenarioError("malformed-scenario", `scenario "${name}" edge must be an array`);
+    }
+    edge = record.edge.map((value, index) =>
+      parseEdge(value, `scenario "${name}" edge[${index}]`),
+    );
+  }
+
   return {
     schemaVersion,
     name,
@@ -359,6 +393,7 @@ export function parseScenario(raw: unknown, options: ParseScenarioOptions): Scen
     expectedProperties,
     soundscape: parseSoundscape(record.soundscape),
     faults,
+    edge,
     takes,
     script,
   };

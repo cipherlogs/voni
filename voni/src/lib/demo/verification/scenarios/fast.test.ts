@@ -194,6 +194,7 @@ function writeCorpus(specs: readonly FixtureSpec[] = SHAPE): string {
       expectedProperties: spec.properties,
       soundscape: { id: "quiet-room" },
       faults: [],
+      edge: [],
       takes,
       script: spec.script,
     };
