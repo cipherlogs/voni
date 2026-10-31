@@ -605,18 +605,29 @@ export async function runBrowserCertification(
     modules: input.modules ?? {},
     repoRoot,
   });
+  // A partial run (some properties have no evaluator yet) still produces the
+  // cards its evidence can support. A failure with no attribution or no module
+  // pointer stays a named gap; it must not suppress the cards that are
+  // provable, or the visitor-facing bug has no triage pointer at all.
+  const attributable = new Set(cardData.attributions.map((item) => item.propertyId));
+  const cardVerdict: RunVerdict = {
+    ...verdict,
+    properties: verdict.properties.filter(
+      (property) => property.status !== "FAIL" || attributable.has(property.propertyId),
+    ),
+  };
   const cardBuild =
-    cardData.gaps.length === 0
-      ? buildCards({
+    cardData.attributions.length === 0
+      ? { cards: [], gaps: [] }
+      : buildCards({
           runId,
-          verdict,
+          verdict: cardVerdict,
           target: input.target,
           calls: cardData.call === null ? [] : [cardData.call],
           attributions: cardData.attributions,
           modules: input.modules ?? {},
           repoRoot,
-        })
-      : { cards: [], gaps: [] };
+        });
   const allCardGaps: BrowserCardGap[] = [...cardData.gaps, ...cardBuild.gaps];
   const cards = cardBuild.cards;
   let cardsFile: string | null = null;

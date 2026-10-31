@@ -65,6 +65,30 @@ const CALL_LEVEL_SOURCES: ReadonlySet<EvidenceSource> = new Set([
   "pytest",
 ]);
 
+/**
+ * Properties whose evidence source is nominally turn-level but whose fact is
+ * measured before any turn exists: the connect, greeting and ending checks.
+ * A greeting-only call may have zero turns, and a connect check always precedes
+ * one; requiring a turn would suppress the card for the exact failures the
+ * lifecycle family exists to report. Every other turn-level property still
+ * needs a turn.
+ */
+export const CALL_LEVEL_PROPERTY_IDS: ReadonlySet<string> = new Set([
+  "L1",
+  "L2",
+  "L3",
+  "L4",
+  "L5",
+  "L6",
+  "L7",
+  "L8",
+  "L9",
+  "L10",
+  "L11",
+  "C1",
+  "C2",
+]);
+
 function refuse(code: DefectCardErrorCode, message: string): never {
   throw new DefectCardError(code, message);
 }
@@ -178,8 +202,9 @@ function selectTurn(
   call: CallEvidence,
   attribution: DefectAttribution,
 ): { turn: TurnEvidence | null; absence: string | null } {
-  const turnLevel = TURN_LEVEL_SOURCES.has(property.evidence);
-  if (!turnLevel && !CALL_LEVEL_SOURCES.has(property.evidence)) {
+  const callLevelProperty = CALL_LEVEL_PROPERTY_IDS.has(property.propertyId);
+  const turnLevel = TURN_LEVEL_SOURCES.has(property.evidence) && !callLevelProperty;
+  if (!turnLevel && !CALL_LEVEL_SOURCES.has(property.evidence) && !callLevelProperty) {
     refuse(
       "unknown-evidence",
       `${property.propertyId}: evidence source "${String(property.evidence)}" is neither turn-level nor call-level; ` +

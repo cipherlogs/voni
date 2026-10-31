@@ -119,9 +119,28 @@ async function main(): Promise<number> {
   const certifiedScenario = scenarioName;
   const contract = await loadContract();
   const evaluators = await loadEvaluators(contract);
+  // Every discovered evaluator names the one module a defect card points at.
+  // The map is derived from the registry, never hand-listed, so a new family
+  // file cannot forget its pointer.
+  const modules = Object.fromEntries(
+    evaluators
+      .filter((evaluator) => typeof evaluator.source === "string" && evaluator.source !== "")
+      .map((evaluator) => {
+        const source = evaluator.source as string;
+        return [
+          evaluator.propertyId,
+          [
+            source.startsWith("verdict/")
+              ? `voni/src/lib/demo/verification/${source}`
+              : `voni/src/lib/demo/verification/verdict/evaluators/${source}`,
+          ],
+        ] as const;
+      }),
+  );
   const shared = {
     contract,
     evaluators,
+    modules,
     env: process.env,
     appUrl: values["app-url"],
     pipelineUrl: values["pipeline-url"],

@@ -186,7 +186,14 @@ function registerCandidates(
 
   for (const candidate of candidates) {
     const evaluator = candidate.evaluator;
-    const source = text(evaluator?.source) || candidate.source;
+    // A discovered evaluator's source is the file it came from: the loader
+    // already names that file, and a card that pointed at the evaluator's own
+    // free-text label could resolve to nothing. An inline evaluator keeps its
+    // own source because no file exists for it.
+    const source =
+      candidate.moduleFamily !== undefined
+        ? candidate.source
+        : text(evaluator?.source) || candidate.source;
     const propertyId = text(evaluator?.propertyId);
     if (propertyId === "") {
       throw new VerdictError(
