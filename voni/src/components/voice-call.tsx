@@ -90,7 +90,7 @@ import {
   DEMO_INBOX_ADDRESS,
   EMAIL_TEST_START,
   checkResultFromData,
-  emailTestAfterCheck,
+  emailTestAfterPoll,
   inviteFallbackAction,
   loadTagToken,
   saveTagToken,
@@ -838,8 +838,15 @@ export function VoiceCall({
   // carried its tag over) the call's Test tag is re-checked here rather than
   // trusting the model to call again. When the email lands, a hidden note has
   // Voni say so; a personal-address sender gets the work-email gate once.
-  // Paused on hold and while closing.
-  const inboxPending = isDemo && connected && !holding && (emailTest.invited || tagCarried) && !emailTest.found;
+  // Paused on hold and while closing. It keeps polling after the email is
+  // found until the code readback is verified: the pipeline runs the code
+  // check server-side, so this poll is the browser's only proof.
+  const inboxPending =
+    isDemo &&
+    connected &&
+    !holding &&
+    (emailTest.invited || tagCarried || emailTest.found) &&
+    !emailTest.verified;
   useEffect(() => {
     if (!inboxPending) return;
     let inFlight = false;
@@ -859,22 +866,24 @@ export function VoiceCall({
         if (!body?.ok || !body.data) return;
         const result = checkResultFromData(body.data);
         const test = emailTestRef.current;
-        if (test.found || closingRef.current || toolActiveRef.current) return;
+        // One transition per response: the email check plus the call's code
+        // readback (`codeVerified`), so a polling update can never undo the
+        // other. The code readback was already spoken by Voni — this only
+        // raises the visible verified state and the talk limit.
+        const next = emailTestAfterPoll(test, body.data);
+        if (next !== test) startPollTransition(() => setEmailTest(next));
+        if (closingRef.current || toolActiveRef.current) return;
+        if (!test.found && next.found && result.status === "found") {
+          // Found before any invite on a carried tag: sent after the last call.
+          speak(emailArrivedInstructions(result, { fromLastCall: !test.invited }), { key: "email" });
+          return;
+        }
+        if (test.found) return;
         if (result.status === "free") {
           if (gatedRef.current === result.address) return;
           gatedRef.current = result.address;
-          startPollTransition(() => {
-            setEmailTest(emailTestAfterCheck(test, result));
-          });
           speak(checkEmailInstructions(result), { key: "email" });
-          return;
         }
-        if (result.status !== "found" || !result.exact) return;
-        startPollTransition(() => {
-          setEmailTest(emailTestAfterCheck(test, result));
-        });
-        // Found before any invite on a carried tag: sent after the last call.
-        speak(emailArrivedInstructions(result, { fromLastCall: !test.invited }), { key: "email" });
       } catch {
         // Offline for a beat: the next tick tries again.
       } finally {

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   EMAIL_TEST_START,
   PROVISIONAL_TALK_S,
+  VERIFIED_TALK_S,
   checkEmail,
   checkTag,
   mentionsScreen,
@@ -10,6 +11,7 @@ import {
   checkResultFromData,
   checkResultToData,
   emailTestAfterCheck,
+  emailTestAfterPoll,
   fallbackMatch,
   isFreeEmailDomain,
   loadTagToken,
@@ -515,3 +517,43 @@ test("a tag minted while storage is blocked still scopes the call (private mode)
   }
 });
 
+
+test("the check_email poll can flip the visible verified state from the call's code readback", () => {
+  // The pipeline runs check_code server-side, so the browser never sees a tool
+  // result. The poll response carries `codeVerified` from demo_calls and this
+  // is the one transition that raises the talk limit.
+  const found = { ...EMAIL_TEST_START, invited: true, found: true };
+  assert.equal(talkLimitS(found), PROVISIONAL_TALK_S);
+
+  const still = emailTestAfterPoll(found, {
+    status: "found",
+    address: "owner@bakery.pt",
+    exact: true,
+    codeVerified: false,
+  });
+  assert.equal(still, found, "no code readback means no change");
+  assert.equal(talkLimitS(still), PROVISIONAL_TALK_S);
+
+  const verified = emailTestAfterPoll(found, {
+    status: "found",
+    address: "owner@bakery.pt",
+    exact: true,
+    codeVerified: true,
+  });
+  assert.equal(verified.verified, true);
+  assert.equal(talkLimitS(verified), VERIFIED_TALK_S, "the verified extension applies");
+});
+
+test("the same poll still applies the found transition before the code readback", () => {
+  const invited = { ...EMAIL_TEST_START, invited: true };
+  const next = emailTestAfterPoll(invited, {
+    status: "found",
+    address: "owner@bakery.pt",
+    name: "Owner",
+    exact: true,
+    codeVerified: true,
+  });
+  assert.equal(next.found, true);
+  assert.equal(next.verified, true);
+  assert.equal(talkLimitS(next), VERIFIED_TALK_S);
+});

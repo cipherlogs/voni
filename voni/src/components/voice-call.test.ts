@@ -536,6 +536,21 @@ test("a post-accept managed or draining refusal never re-routes the call", () =>
   assert.doesNotMatch(receive, /requestManagedFallback|decideCascadeFallback|retry-managed/);
 });
 
+test("the browser poll carries the call's code readback into the verified state", () => {
+  const call = readRepo("components/voice-call.tsx");
+
+  // The pipeline runs check_code server-side, so the poll's `codeVerified`
+  // raises the visible verified state; Voni's spoken line is the readback.
+  assert.match(call, /const next = emailTestAfterPoll\(test, body\.data\)/);
+  assert.match(call, /if \(next !== test\) startPollTransition\(\(\) => setEmailTest\(next\)\)/);
+  assert.match(
+    call,
+    /\(emailTest\.invited \|\| tagCarried \|\| emailTest\.found\) &&\s*!emailTest\.verified/,
+    "the poll continues after found until the code readback is verified",
+  );
+  assert.doesNotMatch(call, /emailTestAfterCheck/, "one transition per response");
+});
+
 test("the demo restores the silence check-in as hidden cascade context", () => {
   const call = readRepo("components/voice-call.tsx");
   const effect = call.slice(

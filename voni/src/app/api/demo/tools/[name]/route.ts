@@ -1,9 +1,9 @@
 import { after } from "next/server";
-import { CHECK_CODE_TOOL, CHECK_EMAIL_TOOL, SEND_CODE_REPLY_TOOL, WEBSITE_POLL, executeDemoTool } from "@/lib/demo/demo-tools";
+import { CHECK_CODE_TOOL, CHECK_EMAIL_TOOL, SEND_CODE_REPLY_TOOL, WEBSITE_POLL, executeDemoTool, withCodeVerified } from "@/lib/demo/demo-tools";
 import { runCheckEmail } from "@/lib/demo/inbox";
 import { runCheckCode, runSendReply } from "@/lib/demo/reply";
 import { loadLiveTestTag } from "@/lib/demo/test-tag-registry";
-import { demoCallById } from "@/lib/demo/tool-call";
+import { demoCallById, demoCallCodeVerified } from "@/lib/demo/tool-call";
 import { resolveDemoToolCall } from "@/lib/demo/tool-credential";
 import { websiteReadyInstructions } from "@/lib/demo/voni-agent";
 import { runWebsiteRead } from "@/lib/demo/website-read";
@@ -34,7 +34,7 @@ export async function POST(
     const data = !site || site.status === "reading" ? { status: site?.status ?? "none" } : { status: site.status, instructions: websiteReadyInstructions(site) };
     return Response.json({ ok: true, data }, { headers: { "Cache-Control": "no-store" } });
   }
-  const result =
+  let result =
     name === CHECK_EMAIL_TOOL
       ? await runCheckEmail(call, args)
       : name === SEND_CODE_REPLY_TOOL
@@ -44,6 +44,11 @@ export async function POST(
           : await executeDemoTool(name, args, {
               testTag: call.tagId ? (await loadLiveTestTag(call.tagId))?.tag : null,
             });
+  // The pipeline owns `check_code`; the browser's poll is how the visible
+  // verified state rises. Only the check_email response carries the fact.
+  if (name === CHECK_EMAIL_TOOL) {
+    result = withCodeVerified(result, await demoCallCodeVerified(call.callId));
+  }
   return Response.json(result, {
     headers: { "Cache-Control": "no-store" },
   });
