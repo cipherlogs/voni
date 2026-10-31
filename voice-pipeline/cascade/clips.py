@@ -34,6 +34,7 @@ from __future__ import annotations
 import hashlib
 import math
 import os
+import re
 import struct
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -63,16 +64,51 @@ from cascade.voice_binding import (
 #: ``GREETINGS``, unused, and it is deliberately absent here.
 CLIP_LOCALES: tuple[str, ...] = ("en", "es", "fr", "de", "pt")
 
-#: The app's demo subjects, in its own order. Restated from
-#: ``voni/src/lib/demo/voni-agent.ts`` (``DEMO_VOICE_IDS``); the test compares
-#: the two so drift is visible.
-DEMO_VOICE_IDS: tuple[str, ...] = (
-    "audrey",
-    "malvina",
-    "donatien",
-    "jorg",
-    "benicio",
+#: The app's demo roster. The app owns it; this service reads it rather than
+#: keeping a second literal, so withdrawing a voice is one app-side change
+#: (ticket 04 AC2). The drift test compares the parsed roster with the app.
+VONI_AGENT_TS = (
+    Path(__file__).resolve().parents[2] / "voni/src/lib/demo/voni-agent.ts"
 )
+
+_DEMO_VOICE_LIST = re.compile(r"DEMO_VOICE_IDS\s*=\s*\[([^\]]*)\]")
+
+
+def demo_voice_ids_from(source: str) -> tuple[str, ...]:
+    """Parse ``DEMO_VOICE_IDS`` out of the app's module source.
+
+    A missing or empty roster is a named refusal: an empty demo would plan no
+    clip, and guessing one would hide the app change that withdrew every voice.
+    """
+    match = _DEMO_VOICE_LIST.search(source)
+    if match is None:
+        raise ClipError(
+            f"DEMO_VOICE_IDS is not in {VONI_AGENT_TS}: the app is the one "
+            "owner of the demo roster"
+        )
+    voices = tuple(re.findall(r'"([^"]+)"', match.group(1)))
+    if not voices:
+        raise ClipError(
+            f"DEMO_VOICE_IDS in {VONI_AGENT_TS} is empty: the demo offers at "
+            "least one voice, and an empty roster is a withdrawal to make "
+            "explicit, not a clip plan to guess"
+        )
+    return voices
+
+
+def _read_demo_voice_ids() -> tuple[str, ...]:
+    try:
+        source = VONI_AGENT_TS.read_text(encoding="utf-8")
+    except OSError as error:
+        raise ClipError(
+            f"cannot read the app's demo roster at {VONI_AGENT_TS}: {error}; "
+            "clips are planned from the app source, never a second literal"
+        ) from None
+    return demo_voice_ids_from(source)
+
+
+#: The app's demo subjects, in its own order, read from the app's source.
+DEMO_VOICE_IDS: tuple[str, ...] = _read_demo_voice_ids()
 
 #: The app's greeting per Locale. Restated from ``VONI_GREETINGS`` in the same
 #: file; the test compares the two, so a greeting change fails the plan rather

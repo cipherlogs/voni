@@ -4,9 +4,11 @@
  * The managed eval stream and the cascade stream are the same stream: every
  * call-scoped line carries `schemaVersion`, `pipeline`, `callId`, `type`,
  * `subject`, `turn` (a logical id or null), `atMs` and `phase`. An operational
- * event (`breaker.transition`) carries `leg` in place of `subject`/`turn`. The
- * only difference between the two engines is the `pipeline` value; a second
- * schema or a second vocabulary is a review failure.
+ * event (`breaker.transition`) carries `leg` in place of `turn`; a demo call's
+ * operational line also carries `subject`, so every line of a demo trace names
+ * `demo:<voice>` (ticket 17). A tenant operational line names only the leg.
+ * The only difference between the two engines is the `pipeline` value; a
+ * second schema or a second vocabulary is a review failure.
  *
  * This module is also where the reader refuses instead of guessing: an unknown
  * schema version, an unknown pipeline or phase, a missing required field, a
@@ -22,6 +24,9 @@ import { ShapeError, objectOf, showValue } from "./shape";
 
 /** The one schema version this reader reads. Unknown values are refused. */
 export const EVENT_SCHEMA_VERSION = 1;
+
+/** A demo call's subject: `demo:<voice>` and nothing else. */
+const DEMO_SUBJECT_PATTERN = /^demo:[^\s:]+$/;
 
 /** The engine that produced the call. Both engines share every other field. */
 export const EVENT_PIPELINES = ["managed", "cascade"] as const;
@@ -51,7 +56,8 @@ export const CALL_SCOPED_EVENT_FIELDS = [
   "phase",
 ] as const;
 
-/** Every field an operational event carries: `leg` replaces subject and turn. */
+/** Every field an operational event carries: `leg` replaces `turn`. A demo
+ * call adds `subject`, so no line of its trace lacks the demo subject. */
 export const OPERATIONAL_EVENT_FIELDS = [
   "schemaVersion",
   "pipeline",
@@ -64,7 +70,7 @@ export const OPERATIONAL_EVENT_FIELDS = [
 
 /**
  * Event types that are operational, not turn events. A breaker transition has
- * no subject and no turn; it names the leg it moved.
+ * no turn; it names the leg it moved, and on a demo call also its subject.
  */
 export const OPERATIONAL_EVENT_TYPES = ["breaker.transition"] as const;
 
@@ -97,12 +103,15 @@ export const MANAGED_ONLY_EVENT_FIELDS = ["platformCapture", "vendorOwned"] as c
 
 /**
  * Envelope-owned names per shape. A call-scoped event owns subject/turn; an
- * operational event owns leg. `leg` is a legitimate payload field on a
- * call-scoped event (`provider_fallback` names the leg it moved), so each
- * shape reserves only its own names.
+ * operational event owns leg (and, on a demo call, subject). `leg` is a
+ * legitimate payload field on a call-scoped event (`provider_fallback` names
+ * the leg it moved), so each shape reserves only its own names.
  */
 const CALL_SCOPED_ENVELOPE_FIELDS: ReadonlySet<string> = new Set(CALL_SCOPED_EVENT_FIELDS);
-const OPERATIONAL_ENVELOPE_FIELDS: ReadonlySet<string> = new Set(OPERATIONAL_EVENT_FIELDS);
+const OPERATIONAL_ENVELOPE_FIELDS: ReadonlySet<string> = new Set([
+  ...OPERATIONAL_EVENT_FIELDS,
+  "subject",
+]);
 
 export type CallScopedEventEnvelope = {
   readonly schemaVersion: typeof EVENT_SCHEMA_VERSION;
@@ -121,8 +130,10 @@ export type OperationalEventEnvelope = {
   readonly pipeline: EventPipeline;
   readonly callId: string;
   readonly type: string;
-  /** The provider leg, in place of subject and turn. */
+  /** The provider leg; every operational line names it. */
   readonly leg: string;
+  /** A demo call's `demo:<voice>`; a tenant operational line has none. */
+  readonly subject?: string;
   readonly atMs: number;
   readonly phase: EventPhase;
 } & Record<string, unknown>;
@@ -249,17 +260,23 @@ function validateEnvelope(record: Record<string, unknown>, source: string): Even
 
   if (isOperationalEventType(type)) {
     if (record.subject !== undefined) {
-      throw new EventEnvelopeError(
-        source,
-        "subject",
-        `operational event "${type}" carries the leg in place of subject and turn`,
-      );
+      // A demo call names `demo:<voice>` on every line; an operational line
+      // keeps its leg and adds the subject. A tenant operational line has no
+      // subject, so any subject present must already be the demo shape.
+      const subject = requireText(record, "subject", source);
+      if (!DEMO_SUBJECT_PATTERN.test(subject)) {
+        throw new EventEnvelopeError(
+          source,
+          "subject",
+          `a demo operational event must name "demo:<voice>", got ${showValue(subject)}; a tenant subject, a managed agent id or a bare voice id is refused`,
+        );
+      }
     }
     if (record.turn !== undefined) {
       throw new EventEnvelopeError(
         source,
         "turn",
-        `operational event "${type}" carries the leg in place of subject and turn`,
+        `operational event "${type}" carries the leg in place of turn`,
       );
     }
     requireText(record, "leg", source);
@@ -344,7 +361,7 @@ export type EventEnvelopeInput = {
   type: string;
   atMs: number;
   phase: EventPhase;
-  /** Call-scoped events name the subject; operational events do not. */
+  /** Call-scoped events and demo operational events name the subject. */
   subject?: string;
   /** A logical turn id, or null when the event has no turn. Required for call events. */
   turn?: string | null;
@@ -382,7 +399,10 @@ export function buildEventEnvelope(input: EventEnvelopeInput): BuiltEventEnvelop
     callId: input.callId,
     type: input.type,
     ...(operational
-      ? { leg: input.leg }
+      ? {
+          ...(input.subject !== undefined ? { subject: input.subject } : {}),
+          leg: input.leg,
+        }
       : { subject: input.subject, turn: input.turn }),
     atMs: input.atMs,
     phase: input.phase,

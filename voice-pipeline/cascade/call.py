@@ -1398,8 +1398,11 @@ class CallLifecycle:
                 )
                 if task is not None
             ]
+            # A silent open (a hold return) has no greeting to finish, so the
+            # turn layer starts at once; any other call waits for its opening.
             while not (
-                barge.is_set()
+                greeting is None
+                or barge.is_set()
                 or failure_event.is_set()
                 or budget_event.is_set()
                 or end_event.is_set()

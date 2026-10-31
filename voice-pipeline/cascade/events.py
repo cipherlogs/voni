@@ -3,8 +3,11 @@
 Every call-scoped event the voice service emits carries ``schemaVersion``,
 ``pipeline``, ``callId``, ``type``, ``subject``, ``turn`` (a logical id or
 ``None``), ``atMs`` and ``phase``. An operational event carries ``leg`` in
-place of ``subject``/``turn``. The managed engine and the cascade engine use the
-same envelope; only the ``pipeline`` value differs.
+place of ``turn``; a demo call's operational event also carries ``subject`` so
+every line of its trace names ``demo:<voice>`` (ticket 17). A tenant call's
+operational event keeps the existing shape: ``leg`` and no subject. The managed
+engine and the cascade engine use the same envelope; only the ``pipeline``
+value differs.
 
 A provider fallback is a call-scoped event (``provider_fallback``) with
 ``leg``, ``from``, ``to`` and ``trigger`` in its payload, plus the optional
@@ -37,9 +40,9 @@ Operational decisions are first-class events, not console lines (ticket 110):
 :class:`OperationalEvents` emits ``budget.crossing`` (line, day, spend, cap),
 ``budget.stopped`` (call, spend, ceiling), ``deploy.drain``, ``reconnect`` (leg,
 reason, planned/failure), the three greeting marks, ``protocol.error``,
-``turn.failed`` and ``breaker.transition``. The breaker is operational (the leg
-in place of subject/turn); a budget crossing or stop is cascade-only and names
-the subject with a null turn. The methods take typed values rather than free
+``turn.failed`` and ``breaker.transition``. The breaker is operational (its
+leg in place of turn; a demo call's line also names ``demo:<voice>``); a budget
+crossing or stop is cascade-only and names the subject with a null turn. The methods take typed values rather than free
 form fields, so caller text or audio cannot be smuggled onto a line, and the
 one sanitizer still runs on every event.
 
@@ -100,7 +103,8 @@ CALL_SCOPED_FIELDS = (
     "phase",
 )
 
-#: Every field an operational event carries: ``leg`` replaces subject and turn.
+#: Every field an operational event carries: ``leg`` replaces turn. A demo
+#: call adds ``subject`` so no line of its trace lacks the demo subject.
 OPERATIONAL_FIELDS = (
     "schemaVersion",
     "pipeline",
@@ -141,11 +145,11 @@ GREETING_EVENT_TYPES = (
 OPERATIONAL_EVENT_TYPES = (BREAKER_EVENT_TYPE,)
 
 #: Names owned by the envelope. A call-scoped event owns subject/turn, an
-#: operational event owns leg; ``leg`` is a legitimate payload field on a
-#: call-scoped event (``provider_fallback`` names the leg it moved), so each
-#: shape reserves only its own names.
+#: operational event owns leg (and, on a demo call, subject); ``leg`` is a
+#: legitimate payload field on a call-scoped event (``provider_fallback`` names
+#: the leg it moved), so each shape reserves only its own names.
 _CALL_SCOPED_RESERVED = frozenset(CALL_SCOPED_FIELDS)
-_OPERATIONAL_RESERVED = frozenset(OPERATIONAL_FIELDS)
+_OPERATIONAL_RESERVED = frozenset((*OPERATIONAL_FIELDS, "subject"))
 
 
 class EventEnvelopeError(ValueError):
@@ -293,9 +297,15 @@ class EventWriter:
         leg: str,
         at_ms: float | int,
         phase: str,
+        subject: str | None = None,
         fields: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """One operational event: the leg, in place of subject and turn."""
+        """One operational event: the leg, and on a demo call its subject.
+
+        A demo call's trace names ``demo:<voice>`` on every line (ticket 17),
+        so its operational lines carry both ``subject`` and ``leg``. A tenant
+        call passes no subject and keeps the existing shape.
+        """
         if type not in OPERATIONAL_EVENT_TYPES:
             raise EventEnvelopeError(
                 "type",
@@ -306,10 +316,12 @@ class EventWriter:
             "pipeline": self.pipeline,
             "callId": self.call_id,
             "type": _require_text("type", type),
-            "leg": _require_text("leg", leg),
-            "atMs": _require_at_ms(at_ms),
-            "phase": _require_phase(phase),
         }
+        if subject is not None:
+            event["subject"] = _require_demo_subject(subject)
+        event["leg"] = _require_text("leg", leg)
+        event["atMs"] = _require_at_ms(at_ms)
+        event["phase"] = _require_phase(phase)
         event.update(self._payload(fields, _OPERATIONAL_RESERVED))
         return event
 
@@ -1022,6 +1034,7 @@ class OperationalEvents:
             leg=leg,
             at_ms=self._moment(at_ms),
             phase=phase,
+            subject=self.subject if self.stream.subject_kind == DEMO_SUBJECT_KIND else None,
             fields=fields,
         )
 
@@ -1240,7 +1253,7 @@ class OperationalEvents:
         manual_pin: bool | None = None,
         at_ms: float | int | None = None,
     ) -> dict[str, Any]:
-        """One breaker move, operational: the leg in place of subject and turn."""
+        """One breaker move, operational: its leg, plus a demo call's subject."""
         self._cascade_only(BREAKER_EVENT_TYPE)
         leg = _leg_field(getattr(transition, "leg", None))
         from_state = getattr(transition, "from_state", None)
@@ -1419,9 +1432,10 @@ class EventStream:
 
     ``subject_kind`` is the verified envelope's signed kind (``demo`` or
     ``tenant``; ``None`` for a stream built without one). A demo stream refuses
-    any line whose subject is not ``demo:<voice>`` at this boundary, so no
-    builder — call-scoped, fallback or attribution — can write a line naming a
-    tenant subject, a managed agent id or a bare voice id.
+    any line without a ``demo:<voice>`` subject at this boundary, so no builder
+    — call-scoped, operational, fallback or attribution — can write a line that
+    names a tenant subject, a managed agent id or a bare voice id, or no
+    subject at all.
     """
 
     def __init__(
@@ -1459,7 +1473,17 @@ class EventStream:
         sanitized = sanitize_fields(dict(event))
         if sanitized.rejected_keys:
             raise ForbiddenEventKey(sanitized.rejected_keys)
-        if self.subject_kind == DEMO_SUBJECT_KIND and "subject" in sanitized.value:
+        if self.subject_kind == DEMO_SUBJECT_KIND:
+            # A demo trace names ``demo:<voice>`` on every line, operational
+            # lines included; a line without one is refused here, at the one
+            # write boundary, before anything reaches the artifact.
+            if "subject" not in sanitized.value:
+                raise EventEnvelopeError(
+                    "subject",
+                    "every line of a demo call's trace must name "
+                    '"demo:<voice>", including an operational line; this line '
+                    "carries no subject",
+                )
             _require_demo_subject(sanitized.value["subject"])
         self._sink(
             json.dumps(sanitized.value, ensure_ascii=False, separators=(",", ":")) + "\n"
@@ -1495,11 +1519,17 @@ class EventStream:
         leg: str,
         at_ms: float | int,
         phase: str,
+        subject: str | None = None,
         fields: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Build and write one operational line."""
         return self(
             self.writer.operational(
-                type, leg=leg, at_ms=at_ms, phase=phase, fields=fields
+                type,
+                leg=leg,
+                at_ms=at_ms,
+                phase=phase,
+                subject=subject,
+                fields=fields,
             )
         )

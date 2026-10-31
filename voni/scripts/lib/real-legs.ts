@@ -25,7 +25,7 @@
  * the printed report; everything testable lives here.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -35,11 +35,18 @@ import {
   buildConfigMessage,
   decodeAudioMessage,
   encodeAudioFrame,
+  encodeContextMessage,
   parseServerMessage,
 } from "../../src/lib/voice/cascade-session";
 import { buildDemoCascadeBody } from "../../src/lib/demo/cascade-body";
 import { deliverCallBody } from "../../src/lib/demo/pipeline-delivery";
 import { getVoice } from "../../src/lib/agents/voices";
+import {
+  OPEN_BEAT_GOAL,
+  VONI_GREETINGS,
+  rungInstructions,
+} from "../../src/lib/demo/voni-agent";
+import BOUNDS from "../../src/lib/voice/cascade-bounds.json";
 
 export const REAL_LEGS_COMMAND = "check:real-legs";
 export const BROWSER_CALL_PATH = "/v1/browser-call";
@@ -64,6 +71,13 @@ export function defaultCallerClip(): string {
 /** The demo voice whose locale matches the committed caller clip. */
 export const DEFAULT_VOICE = "jorg";
 
+/**
+ * The one pricing path, named on every `cost.priced` row. Source of truth:
+ * `voice-pipeline/cascade/events.py` `COST_PRODUCER`; the report cites it so a
+ * reader can tell a measured price from anything else.
+ */
+export const COST_PRODUCER = "cascade.cost.cost_call";
+
 export const REAL_LEGS_USAGE = `usage: npm run ${REAL_LEGS_COMMAND} -- [options]
 
   --base-url URL      the pipeline's HTTP(S) base (default: VOICE_PIPELINE_URL,
@@ -76,6 +90,8 @@ export const REAL_LEGS_USAGE = `usage: npm run ${REAL_LEGS_COMMAND} -- [options]
   --events-dir PATH   the service's trace directory (default:
                       ${EVENTS_DIR_ENV}, then voice-pipeline/.events)
   --timeout-ms N      per-wait bound (default: 120000)
+  --with-resume       also prove the hold return (default)
+  --no-resume         skip the hold-return phase
   --json              print one machine-readable report
   --help, -h          this text
 
@@ -130,6 +146,8 @@ export type RealLegsOptions = {
   audioPath?: string;
   eventsDir?: string;
   timeoutMs: number;
+  /** Prove the hold return after the two turns (default true). */
+  withResume: boolean;
   json: boolean;
   help: boolean;
 };
@@ -149,6 +167,10 @@ export function parseRealLegsArgs(argv: readonly string[]): RealLegsOptions {
   for (let index = 0; index < argv.length; index += 1) {
     const flag = argv[index];
     if (flag === "--json") {
+      flags.set(flag, "");
+      continue;
+    }
+    if (flag === "--with-resume" || flag === "--no-resume") {
       flags.set(flag, "");
       continue;
     }
@@ -185,6 +207,7 @@ export function parseRealLegsArgs(argv: readonly string[]): RealLegsOptions {
     audioPath: flags.get("--audio"),
     eventsDir: flags.get("--events-dir"),
     timeoutMs,
+    withResume: !flags.has("--no-resume"),
     json: flags.has("--json"),
     help: flags.has("--help"),
   };
@@ -351,7 +374,7 @@ export function resolveTargets(input: { baseUrl?: string; wsUrl?: string }): Rea
 // The report
 // ---------------------------------------------------------------------------
 
-export type RealLegsCheckStatus = "pass" | "fail" | "skip";
+export type RealLegsCheckStatus = "pass" | "fail" | "skip" | "info";
 
 export type RealLegsCheck = {
   /** The human row label. */
@@ -374,11 +397,19 @@ export function skipped(name: string, code: string, detail: string): RealLegsChe
   return { name, code, status: "skip", detail };
 }
 
+/**
+ * A measured input that is not a verdict: an unmeasured cost row is INFO,
+ * never PASS (CODING_STANDARDS "Gates and measured evidence").
+ */
+export function info(name: string, code: string, detail: string): RealLegsCheck {
+  return { name, code, status: "info", detail };
+}
+
 /** Print every assertion in order, then the one named skip lines and the tally. */
 export function formatRealLegsReport(checks: readonly RealLegsCheck[]): string {
   const lines = ["demo-cascade real legs (ticket 22)", ""];
   for (const entry of checks) {
-    const mark = entry.status === "pass" ? "PASS" : entry.status === "fail" ? "FAIL" : "SKIP";
+    const mark = entry.status.toUpperCase();
     lines.push(`  ${mark.padEnd(6)}${entry.name.padEnd(16)}${entry.detail}`);
   }
   lines.push("");
@@ -387,16 +418,20 @@ export function formatRealLegsReport(checks: readonly RealLegsCheck[]): string {
   }
   const failures = checks.filter((entry) => entry.status === "fail");
   const skips = checks.filter((entry) => entry.status === "skip");
+  const infos = checks.filter((entry) => entry.status === "info");
   if (failures.length > 0) {
     lines.push(
       `${failures.length} of ${checks.length} checks failed: ${failures
         .map((entry) => entry.code)
         .join(", ")}`,
     );
-  } else if (skips.length > 0) {
-    lines.push(
-      `${checks.length} checks: ${checks.length - skips.length} passed, ${skips.length} skipped (named above)`,
-    );
+  } else if (skips.length > 0 || infos.length > 0) {
+    const counts = [
+      `${checks.length - skips.length - infos.length} passed`,
+      ...(infos.length > 0 ? [`${infos.length} info`] : []),
+      ...(skips.length > 0 ? [`${skips.length} skipped (named above)`] : []),
+    ];
+    lines.push(`${checks.length} checks: ${counts.join(", ")}`);
   } else {
     lines.push(`${checks.length} checks, all passed`);
   }
@@ -773,6 +808,7 @@ export type RealLegsDeps = {
   loadCallerAudio?: (input: LoadCallerAudioInput) => Promise<CallerAudio>;
   readTrace?: (path: string) => string;
   traceExists?: (path: string) => boolean;
+  readdir?: (path: string) => string[];
   sleep?: (ms: number) => Promise<void>;
   /** The ingress pump's monotonic clock; injectable so tests pin the cadence. */
   now?: () => number;
@@ -812,6 +848,10 @@ function defaultConnect(url: string): RealLegsSocket {
 const STATE_POLL_MS = 25;
 /** The greeting's audio arrives with sub-250 ms gaps; this is its end. */
 const GREETING_QUIET_MS = 1_200;
+/** How long a hidden context frame is observed before the call is stopped. */
+const CONTEXT_SETTLE_MS = 1_000;
+/** A resumed call has no greeting; this window proves none was spoken. */
+const RESUME_GREETING_WINDOW_MS = 1_500;
 
 function defaultSleep(ms: number): Promise<void> {
   return new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
@@ -1012,27 +1052,24 @@ export function assessTrace(input: {
   }
 
   const subject = `demo:${input.voice}`;
-  // Operational rows (a breaker transition, a budget crossing) carry `leg`
-  // instead of `subject` by design. Every row must name the call; every row
-  // that names a subject must name the demo subject, and at least one must.
+  // Every line of a demo trace names `demo:<voice>`, operational lines
+  // included (ticket 17). A line without a subject is as wrong as one naming
+  // another identity: the trace is the evidence that this call happened.
   const wrongCall = lines.filter((line) => line.callId !== input.callId);
-  const namedSubjects = lines.filter((line) => typeof line.subject === "string");
-  const wrongSubject = namedSubjects.filter((line) => line.subject !== subject);
+  const wrongSubject = lines.filter((line) => line.subject !== subject);
   const bindingOk =
-    wrongCall.length === 0 && namedSubjects.length > 0 && wrongSubject.length === 0;
+    wrongCall.length === 0 && wrongSubject.length === 0 && lines.length > 0;
   const checks: RealLegsCheck[] = [
     bindingOk
       ? passed(
           "trace",
           "trace",
-          `${input.eventsDir}/${input.callId}.jsonl: ${lines.length} lines, every one callId "${input.callId}" and ${namedSubjects.length} with subject "${subject}"`,
+          `${input.eventsDir}/${input.callId}.jsonl: ${lines.length} lines, every one callId "${input.callId}" and subject "${subject}"`,
         )
       : failed(
           "trace",
           "trace-binding",
-          `${wrongCall.length + wrongSubject.length} of ${lines.length} lines do not bind to callId "${input.callId}" and subject "${subject}"${
-            namedSubjects.length === 0 ? " (no line names a subject at all)" : ""
-          }: ${JSON.stringify(wrongCall[0] ?? wrongSubject[0]).slice(0, 240)}`,
+          `${wrongCall.length + wrongSubject.length} of ${lines.length} lines do not bind to callId "${input.callId}" and subject "${subject}": ${JSON.stringify(wrongCall[0] ?? wrongSubject[0]).slice(0, 240)}`,
         ),
   ];
 
@@ -1042,43 +1079,89 @@ export function assessTrace(input: {
     return checks;
   }
   const measured = priced.measured === true;
+  // The one pricing path names itself on every row (`cascade.cost.cost_call`,
+  // `cascade/events.py` COST_PRODUCER); the rate table that priced it is
+  // always cited, even when a leg is unmeasured.
+  const producer = priced.producer;
   const version = priced.rateTableVersion;
   const total = priced.totalUsd;
+  const problems: string[] = [];
+  if (producer !== COST_PRODUCER) {
+    problems.push(
+      `producer is ${JSON.stringify(producer)}, not "${COST_PRODUCER}"`,
+    );
+  }
+  if (typeof version !== "string" || version.trim() === "") {
+    problems.push(`rateTableVersion is ${JSON.stringify(version)}, not a cited rate table`);
+  }
   if (measured) {
-    if (typeof total !== "number" || typeof version !== "string" || version.trim() === "") {
-      checks.push(
-        failed(
-          "cost row",
-          "cost-invalid",
-          `a measured cost.priced row must carry a numeric totalUsd and its rate table version; got totalUsd=${JSON.stringify(total)}, rateTableVersion=${JSON.stringify(version)}`,
-        ),
-      );
-    } else {
-      checks.push(
-        passed(
-          "cost row",
-          "cost",
-          `cost.priced measured $${total} with ${version}`,
-        ),
-      );
+    if (typeof total !== "number") {
+      problems.push(`a measured row needs a numeric totalUsd, got ${JSON.stringify(total)}`);
     }
+    checks.push(
+      problems.length === 0
+        ? passed("cost row", "cost", `cost.priced measured $${total} with ${String(version)} (producer ${COST_PRODUCER})`)
+        : failed(
+            "cost row",
+            "cost-invalid",
+            `a measured cost.priced row must name its producer and rate table; ${problems.join("; ")}`,
+          ),
+    );
     return checks;
   }
   const reason = priced.unmeasuredReason;
   if (priced.measured !== false || typeof reason !== "string" || reason.trim() === "") {
-    checks.push(
-      failed(
-        "cost row",
-        "cost-invalid",
-        `a cost.priced row must be measured or state an unmeasuredReason; got measured=${JSON.stringify(priced.measured)}, unmeasuredReason=${JSON.stringify(reason)}`,
-      ),
-    );
-  } else {
-    checks.push(
-      passed("cost row", "cost", `cost.priced unmeasured: ${reason}`),
+    problems.push(
+      `a cost row must be measured or state an unmeasuredReason; measured=${JSON.stringify(priced.measured)}, unmeasuredReason=${JSON.stringify(reason)}`,
     );
   }
+  checks.push(
+    problems.length === 0
+      ? info(
+          "cost row",
+          "cost",
+          `cost.priced unmeasured: ${reason} (producer ${COST_PRODUCER}; rate table ${String(version)})`,
+        )
+      : failed(
+          "cost row",
+          "cost-invalid",
+          `an unmeasured cost.priced row must state its reason, producer and rate table; ${problems.join("; ")}`,
+        ),
+  );
   return checks;
+}
+
+/**
+ * The bounded recent-turn history a hold return carries. Only settled turns:
+ * final caller captions and the agent's streamed lines (partials of one reply
+ * collapse to the last, longest text). The newest `maxTurns` messages are
+ * kept, and a leading assistant line is dropped so the resumed history starts
+ * at a caller turn. The builder validates the bound again.
+ */
+export function carriedHistory(
+  captions: readonly { role: "user" | "agent"; text: string; final: boolean }[],
+  maxTurns: number,
+): { role: "user" | "assistant"; content: string }[] {
+  const settled: { role: "user" | "assistant"; content: string }[] = [];
+  for (const caption of captions) {
+    const text = caption.text.trim();
+    if (text === "") continue;
+    if (caption.role === "user" && !caption.final) continue;
+    const previous = settled[settled.length - 1];
+    if (caption.role === "agent" && previous?.role === "assistant") {
+      // The service streams an agent line as growing partials; the longest is
+      // the line the caller heard.
+      if (text.length >= previous.content.length) previous.content = text;
+      continue;
+    }
+    settled.push({
+      role: caption.role === "agent" ? "assistant" : "user",
+      content: text,
+    });
+  }
+  const bounded = settled.slice(Math.max(0, settled.length - maxTurns));
+  while (bounded.length > 0 && bounded[0].role === "assistant") bounded.shift();
+  return bounded;
 }
 
 /**
@@ -1086,7 +1169,9 @@ export function assessTrace(input: {
  *
  * One fatal step (the signed body, the delivery, the caller audio, the socket)
  * returns a single named failure; later checks are not invented. Once the call
- * is running, every assertion is recorded.
+ * is running, every assertion is recorded. With `withResume` (the default) the
+ * call is stopped and the same call id is re-minted with `resume: true` and the
+ * carried history, proving the hold return end to end.
  */
 export async function runRealLegs(
   options: RealLegsOptions,
@@ -1101,8 +1186,119 @@ export async function runRealLegs(
   const loadAudio = deps.loadCallerAudio ?? loadCallerAudio;
   const traceExists = deps.traceExists ?? existsSync;
   const readTrace = deps.readTrace ?? ((path: string) => readFileSync(path, "utf8"));
+  const readDir = deps.readdir ?? ((path: string) => readdirSync(path));
   const callId = deps.callId ?? randomUUID();
   const checks: RealLegsCheck[] = [];
+  const listEvents = (): string[] | null => {
+    try {
+      return readDir(resolveEventsDir(options, env)).sort();
+    } catch {
+      return null;
+    }
+  };
+  // Snapshot the trace directory before the first connect, so the resume phase
+  // can prove the run added exactly one file for this call id.
+  const eventsBefore = listEvents();
+
+  async function connectCall(
+    minted: Awaited<ReturnType<typeof buildDemoCascadeBody>>,
+  ): Promise<{
+    state: CallState;
+    socket: RealLegsSocket;
+    ingress: ReturnType<typeof createIngressPump>;
+  }> {
+    const state: CallState = {
+      captions: [],
+      audioFrames: 0,
+      audioBytes: 0,
+      end: null,
+      error: null,
+      closed: false,
+      configKeys: null,
+    };
+    let socket: RealLegsSocket;
+    try {
+      socket = connect(target.wsUrl);
+    } catch (error) {
+      throw new RealLegsError(
+        "connect-failed",
+        `could not open ${target.wsUrl}: ${(error as Error).message}`,
+      );
+    }
+    const opened = new Promise<void>((resolvePromise) =>
+      socket.onOpen(() => resolvePromise()),
+    );
+    const ingress = createIngressPump({
+      send: (frame) => socket.send(encodeAudioFrame(frame.buffer)),
+      now,
+      sleep,
+    });
+    socket.onMessage((raw) => {
+      ingress.start();
+      const audioFrame = decodeAudioMessage(raw);
+      if (audioFrame) {
+        state.audioFrames += 1;
+        state.audioBytes += audioFrame.pcm.length;
+        return;
+      }
+      const event = parseServerMessage(raw);
+      if (!event) return;
+      switch (event.kind) {
+        case "caption":
+          state.captions.push({ role: event.role, text: event.text, final: event.final });
+          break;
+        case "end":
+          try {
+            state.end = recordFrom(JSON.parse(raw) as unknown);
+          } catch {
+            state.error = "the service's end frame was not readable JSON";
+          }
+          break;
+        case "error":
+          state.error = event.message;
+          break;
+        default:
+          break;
+      }
+    });
+    socket.onError((message) => {
+      state.error = message;
+    });
+    socket.onClose(() => {
+      state.closed = true;
+    });
+
+    let connectTimer: NodeJS.Timeout | undefined;
+    try {
+      await Promise.race([
+        opened,
+        new Promise<never>((_resolve, reject) => {
+          connectTimer = setTimeout(
+            () =>
+              reject(
+                new RealLegsError(
+                  "connect-timeout",
+                  `no WebSocket open on ${target.wsUrl} within ${options.timeoutMs} ms`,
+                ),
+              ),
+            options.timeoutMs,
+          );
+        }),
+      ]);
+    } finally {
+      if (connectTimer !== undefined) clearTimeout(connectTimer);
+    }
+
+    const config = buildConfigMessage({
+      serviceUrl: target.wsUrl,
+      callToken: minted.callToken,
+      agentId: minted.agentId,
+      protocolVersion: CASCADE_PROTOCOL_VERSION,
+    });
+    state.configKeys = Object.keys(JSON.parse(config) as Record<string, unknown>).sort();
+    socket.send(config);
+    return { state, socket, ingress };
+  }
 
   let call: Awaited<ReturnType<typeof buildDemoCascadeBody>>;
   try {
@@ -1196,111 +1392,22 @@ export async function runRealLegs(
     ),
   );
 
-  const state: CallState = {
-    captions: [],
-    audioFrames: 0,
-    audioBytes: 0,
-    end: null,
-    error: null,
-    closed: false,
-    configKeys: null,
-  };
-  let socket: RealLegsSocket;
+  let connection: Awaited<ReturnType<typeof connectCall>>;
   try {
-    socket = connect(target.wsUrl);
+    connection = await connectCall(call);
   } catch (error) {
     checks.push(
       failed(
         "connect",
-        "connect-failed",
-        `could not open ${target.wsUrl}: ${(error as Error).message}`,
+        (error as RealLegsError).code ?? "connect-failed",
+        `${(error as Error).name}: ${(error as Error).message}`,
       ),
     );
     return checks;
   }
-
-  const opened = new Promise<void>((resolvePromise) => socket.onOpen(() => resolvePromise()));
-  // The caller's microphone, without a microphone: silence between the turns,
-  // the queued clip inside them, paced at the browser worklet's cadence. It
-  // starts on the service's first frame, not at config: the service does not
-  // read the socket until its three vendor legs are open, so frames sent during
-  // setup are buffered and then drained in one burst while the service also
-  // fills the same wall-clock gap with silence — a double-count that puts the
-  // vendor's audio timeline >5 s ahead and fails the call at the greeting.
-  // The first server frame proves the receive loop is running; from there the
-  // pump never stops until the call ends.
-  const ingress = createIngressPump({
-    send: (frame) => socket.send(encodeAudioFrame(frame.buffer)),
-    now,
-    sleep,
-  });
-  socket.onMessage((raw) => {
-    ingress.start();
-    const audioFrame = decodeAudioMessage(raw);
-    if (audioFrame) {
-      state.audioFrames += 1;
-      state.audioBytes += audioFrame.pcm.length;
-      return;
-    }
-    const event = parseServerMessage(raw);
-    if (!event) return;
-    switch (event.kind) {
-      case "caption":
-        state.captions.push({ role: event.role, text: event.text, final: event.final });
-        break;
-      case "end":
-        try {
-          state.end = recordFrom(JSON.parse(raw) as unknown);
-        } catch {
-          state.error = "the service's end frame was not readable JSON";
-        }
-        break;
-      case "error":
-        state.error = event.message;
-        break;
-      default:
-        break;
-    }
-  });
-  socket.onError((message) => {
-    state.error = message;
-  });
-  socket.onClose(() => {
-    state.closed = true;
-  });
+  const { state, socket, ingress } = connection;
 
   try {
-    let connectTimer: NodeJS.Timeout | undefined;
-    try {
-      await Promise.race([
-        opened,
-        new Promise<never>((_resolve, reject) => {
-          connectTimer = setTimeout(
-            () =>
-              reject(
-                new RealLegsError(
-                  "connect-timeout",
-                  `no WebSocket open on ${target.wsUrl} within ${options.timeoutMs} ms`,
-                ),
-              ),
-            options.timeoutMs,
-          );
-        }),
-      ]);
-    } finally {
-      if (connectTimer !== undefined) clearTimeout(connectTimer);
-    }
-
-    const config = buildConfigMessage({
-      serviceUrl: target.wsUrl,
-      callToken: call.callToken,
-      agentId: call.agentId,
-      protocolVersion: CASCADE_PROTOCOL_VERSION,
-    });
-    const configRecord = JSON.parse(config) as Record<string, unknown>;
-    state.configKeys = Object.keys(configRecord).sort();
-    socket.send(config);
-
     await waitForGreeting(state, sleep, options.timeoutMs);
 
     const beforeTurnOneUser = countUserFinals(state);
@@ -1345,6 +1452,33 @@ export async function runRealLegs(
       "turn 2 reply",
     );
     await settleAudio(state, sleep, options.timeoutMs, "turn 2", 2_500);
+
+    // Ticket 12 AC3: the demo's off-track note reaches the service over the
+    // hidden context frame and is never captioned. The time-up note uses the
+    // same frame but tells the agent to hang up, so it is not sent mid-check;
+    // the off-track note is the one that leaves the call alive to resume.
+    const contextNote = rungInstructions("nudge", OPEN_BEAT_GOAL);
+    socket.send(encodeContextMessage(contextNote));
+    const captionsBeforeContext = state.captions.length;
+    await sleep(CONTEXT_SETTLE_MS);
+    const leaked = state.captions.filter(
+      (caption) =>
+        caption.text.includes(contextNote) ||
+        caption.text.includes("The caller's last turn was off-track."),
+    );
+    checks.push(
+      leaked.length === 0 && state.end === null && !state.closed && state.error === null
+        ? passed(
+            "hidden context",
+            "context-hidden",
+            `sent the off-track note as a context frame (${contextNote.length} chars); ${state.captions.length} captions (${state.captions.length - captionsBeforeContext} after the note), none contains it; the call stayed alive`,
+          )
+        : failed(
+            "hidden context",
+            "context-leaked",
+            `the hidden context frame must not be captioned and must not end the call; leaked=${JSON.stringify(leaked[0]?.text ?? "").slice(0, 160)}, ended=${state.end !== null}, closed=${state.closed}, error=${JSON.stringify(state.error)}`,
+          ),
+    );
 
     await ingress.stop();
     socket.send(JSON.stringify({ type: "stop" }));
@@ -1428,6 +1562,226 @@ export async function runRealLegs(
         ),
   );
 
+  let resumedEventsPath: string | null = null;
+  if (options.withResume) {
+    try {
+      const history = carriedHistory(state.captions, BOUNDS.resumeHistoryTurns);
+      if (history.length === 0) {
+        throw new RealLegsError(
+          "resume-history",
+          "the two turns left no settled history to carry into the hold return",
+        );
+      }
+      const resumeCallId = callId;
+      const resumed = await buildDemoCascadeBody({
+        voice: options.voice,
+        callId: resumeCallId,
+        resume: true,
+        history,
+      });
+      if (resumed.callId !== resumeCallId) {
+        throw new RealLegsError(
+          "resume-call-id",
+          `the hold return minted call "${resumed.callId}", not the held call "${callId}"`,
+        );
+      }
+      if (resumed.callToken === call.callToken) {
+        throw new RealLegsError(
+          "resume-token-reused",
+          "the hold return reused the previous cascade token; a fresh token is required",
+        );
+      }
+      checks.push(
+        passed(
+          "resume body",
+          "resume-body",
+          `re-minted call "${callId}" with resume: true and ${history.length} carried turns (${history.map((turn) => turn.role).join(", ")}); fresh cascade token`,
+        ),
+      );
+
+      const resumeDelivery = await deliverCallBody(
+        {
+          pipelineBase: target.httpBase,
+          callToken: resumed.callToken,
+          callId: resumed.callId,
+          signedBody: resumed.signedBody,
+        },
+        { fetchImpl },
+      );
+      if (!resumeDelivery.ok) {
+        throw new RealLegsError(
+          resumeDelivery.code,
+          `POST ${target.httpBase}/v1/call-body refused the hold return: ${resumeDelivery.code} — ${resumeDelivery.message}`,
+        );
+      }
+      if (
+        resumeDelivery.callId !== resumeCallId ||
+        resumeDelivery.agentId !== resumed.agentId ||
+        resumeDelivery.bodyHash !== resumed.bodyHash
+      ) {
+        throw new RealLegsError(
+          "resume-delivery-mismatch",
+          `the service accepted call "${resumeDelivery.callId}" for "${resumeDelivery.agentId}" with body hash ${resumeDelivery.bodyHash}; the app sent "${callId}", "${resumed.agentId}", ${resumed.bodyHash}`,
+        );
+      }
+      checks.push(
+        passed(
+          "resume delivery",
+          "resume-delivery",
+          `POST ${target.httpBase}/v1/call-body → 202 accepted; same call "${callId}", fresh body hash ${resumed.bodyHash}`,
+        ),
+      );
+
+      const resumedConnection = await connectCall(resumed);
+      try {
+        await sleep(RESUME_GREETING_WINDOW_MS);
+        if (resumedConnection.state.error) {
+          throw new RealLegsError(
+            "resume-error",
+            `the resumed call was refused: ${resumedConnection.state.error}`,
+          );
+        }
+        const locale = getVoice(options.voice)?.languageCode ?? "en";
+        const greeting = VONI_GREETINGS[locale] ?? VONI_GREETINGS.en;
+        const spokenGreeting = resumedConnection.state.captions.find(
+          (caption) => caption.role === "agent" && caption.text.includes(greeting),
+        );
+        if (resumedConnection.state.audioFrames > 0 || spokenGreeting !== undefined) {
+          throw new RealLegsError(
+            "resume-greeted",
+            `a resumed call must not speak the greeting; got ${resumedConnection.state.audioFrames} audio frames and ${JSON.stringify(spokenGreeting?.text ?? "").slice(0, 120)} within ${RESUME_GREETING_WINDOW_MS} ms`,
+          );
+        }
+        checks.push(
+          passed(
+            "no greeting",
+            "resume-no-greeting",
+            `no audio and no caption in ${RESUME_GREETING_WINDOW_MS} ms after the resumed config; the call waited for the caller`,
+          ),
+        );
+
+        // A resumed call sends nothing until the caller speaks, so the first
+        // server frame cannot start the pump. The socket has been open through
+        // the no-greeting window, so the legs are up; start it explicitly.
+        resumedConnection.ingress.start();
+        const beforeResumeUser = countUserFinals(resumedConnection.state);
+        await resumedConnection.ingress.say(audio.pcm);
+        await waitFor(
+          resumedConnection.state,
+          () => countUserFinals(resumedConnection.state) > beforeResumeUser,
+          options.timeoutMs,
+          sleep,
+          "resumed call",
+        );
+        await waitFor(
+          resumedConnection.state,
+          () => resumedConnection.state.audioFrames > 0,
+          options.timeoutMs,
+          sleep,
+          "resumed reply",
+        );
+        await settleAudio(
+          resumedConnection.state,
+          sleep,
+          options.timeoutMs,
+          "resumed call",
+          2_500,
+        );
+        const continuation = [...resumedConnection.state.captions]
+          .reverse()
+          .find((caption) => caption.role === "agent" && caption.text.trim() !== "");
+        if (continuation === undefined) {
+          throw new RealLegsError(
+            "resume-no-reply",
+            "the resumed call answered the caller clip with no agent caption",
+          );
+        }
+        if (continuation.text.includes(greeting)) {
+          throw new RealLegsError(
+            "resume-greeted",
+            `the resumed reply repeated the greeting: ${JSON.stringify(continuation.text).slice(0, 120)}`,
+          );
+        }
+        checks.push(
+          passed(
+            "continuation",
+            "resume-continuation",
+            `caller clip answered with ${JSON.stringify(continuation.text).slice(0, 140)}; ${history.length} carried turns were in the signed body`,
+          ),
+        );
+
+        await resumedConnection.ingress.stop();
+        resumedConnection.socket.send(JSON.stringify({ type: "stop" }));
+        await waitFor(
+          resumedConnection.state,
+          () => resumedConnection.state.end !== null,
+          options.timeoutMs,
+          sleep,
+          "resumed end message",
+        );
+        const resumedEnd = resumedConnection.state.end ?? {};
+        resumedEventsPath =
+          typeof resumedEnd.eventsPath === "string" ? resumedEnd.eventsPath : null;
+        const resumedTurns = typeof resumedEnd.turns === "number" ? resumedEnd.turns : 0;
+        checks.push(
+          resumedEnd.callId === callId && resumedTurns >= 1
+            ? passed(
+                "resume end",
+                "resume-end-message",
+                `callId "${callId}" ended after ${resumedTurns} resumed turn(s); the call id was re-claimed`,
+              )
+            : failed(
+                "resume end",
+                "resume-end-message",
+                `expected the resumed call to end under "${callId}" after at least one turn; got ${JSON.stringify({
+                  callId: resumedEnd.callId,
+                  turns: resumedEnd.turns,
+                }).slice(0, 200)}`,
+              ),
+        );
+      } finally {
+        await resumedConnection.ingress.stop().catch(() => undefined);
+        resumedConnection.socket.close();
+      }
+    } catch (error) {
+      checks.push(
+        failed(
+          "resume",
+          (error as RealLegsError).code ?? "resume-failed",
+          `${(error as Error).name}: ${(error as Error).message}`,
+        ),
+      );
+    }
+  }
+
+  if (options.withResume) {
+    const added = (() => {
+      const after = listEvents();
+      if (after === null || eventsBefore === null) return null;
+      return after.filter((name) => !eventsBefore.includes(name));
+    })();
+    const expected = `${callId}.jsonl`;
+    checks.push(
+      added === null
+        ? skipped(
+            "resume trace",
+            "resume-trace-remote",
+            `the events directory is not readable here; pass --events-dir to prove one trace file for call "${callId}"`,
+          )
+        : added.length === 1 && added[0] === expected
+          ? passed(
+              "resume trace",
+              "resume-trace",
+              `one trace file "${expected}" for call "${callId}"; the hold return appended to it and opened no second call record`,
+            )
+          : failed(
+              "resume trace",
+              "resume-trace",
+              `expected exactly one new trace file "${expected}" for call "${callId}"; got ${JSON.stringify(added)}`,
+            ),
+    );
+  }
+
   checks.push(
     ...assessTraceAfterCall(
       options,
@@ -1435,7 +1789,7 @@ export async function runRealLegs(
       callId,
       traceExists,
       readTrace,
-      typeof end.eventsPath === "string" ? end.eventsPath : null,
+      resumedEventsPath ?? (typeof end.eventsPath === "string" ? end.eventsPath : null),
       env,
     ),
   );

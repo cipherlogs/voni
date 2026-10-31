@@ -32,6 +32,7 @@ import {
   TURN_TAIL_MS,
   UsageError,
   assessTrace,
+  carriedHistory,
   createIngressPump,
   defaultCallerClip,
   formatRealLegsReport,
@@ -60,7 +61,12 @@ function env(pairs: Record<string, string | undefined>): Record<string, string |
   return pairs;
 }
 
-function check(name: string, code: string, status: "pass" | "fail" | "skip", detail: string): RealLegsCheck {
+function check(
+  name: string,
+  code: string,
+  status: "pass" | "fail" | "skip" | "info",
+  detail: string,
+): RealLegsCheck {
   return { name, code, status, detail };
 }
 
@@ -135,6 +141,12 @@ test("every documented flag is accepted", () => {
   assert.equal(options.eventsDir, "/tmp/events");
   assert.equal(options.timeoutMs, 5000);
   assert.equal(options.json, true);
+  assert.equal(options.withResume, true, "the hold-return phase runs by default");
+});
+
+test("--with-resume is explicit and --no-resume is the named opt-out", () => {
+  assert.equal(parseRealLegsArgs(["--with-resume"]).withResume, true);
+  assert.equal(parseRealLegsArgs(["--no-resume"]).withResume, false);
 });
 
 test("an unknown flag, a missing value and a bad timeout are named usage errors", () => {
@@ -260,6 +272,24 @@ test("a named skip is printed and does not fail the run", () => {
   assert.equal(realLegsExitCode(checks), 0);
 });
 
+test("an INFO row is printed as information and does not fail the run", () => {
+  const checks = [
+    check("delivery", "delivery", "pass", "POST → 202 accepted"),
+    check(
+      "cost row",
+      "cost",
+      "info",
+      "cost.priced unmeasured: cascade.cost.cost_call; rate table cascade-vendor-rates v1; reason: no session audio",
+    ),
+  ];
+  const report = formatRealLegsReport(checks);
+  assert.match(report, /INFO {2}cost row/);
+  assert.match(report, /cascade\.cost\.cost_call/);
+  assert.doesNotMatch(report, /PASS {2}cost row/);
+  assert.match(report, /1 passed, 1 info/);
+  assert.equal(realLegsExitCode(checks), 0);
+});
+
 // --------------------------------------------------------------------------
 // The pull-request path never runs it
 // --------------------------------------------------------------------------
@@ -326,6 +356,7 @@ test("a measured trace row passes the trace and the cost assertions", () => {
     exists: true,
     text: traceLines("call-1", "demo:jorg", {
       measured: true,
+      producer: "cascade.cost.cost_call",
       rateTableVersion: "cascade-vendor-rates v1",
       totalUsd: 0.000123,
       legs: {},
@@ -346,12 +377,13 @@ test("a measured trace row passes the trace and the cost assertions", () => {
   assert.match(checks[1].detail, /\$0\.000123/);
 });
 
-test("an unmeasured cost row is accepted only with its explicit reason", () => {
+test("an unmeasured cost row is INFO with its producer and rate table, never PASS", () => {
   const withReason = assessTrace({
     exists: true,
     text: traceLines("call-1", "demo:jorg", {
       measured: false,
-      rateTableVersion: null,
+      producer: "cascade.cost.cost_call",
+      rateTableVersion: "cascade-vendor-rates v1",
       totalUsd: null,
       unmeasuredReason: "the STT leg reported no session audio",
       legs: {},
@@ -362,14 +394,17 @@ test("an unmeasured cost row is accepted only with its explicit reason", () => {
     eventsDir: "/tmp/events",
     eventsPath: "/tmp/events/call-1.jsonl",
   });
-  assert.equal(withReason[1].status, "pass");
+  assert.equal(withReason[1].status, "info");
+  assert.match(withReason[1].detail, /cascade\.cost\.cost_call/);
+  assert.match(withReason[1].detail, /cascade-vendor-rates v1/);
   assert.match(withReason[1].detail, /unmeasured: the STT leg reported no session audio/);
 
   const withoutReason = assessTrace({
     exists: true,
     text: traceLines("call-1", "demo:jorg", {
       measured: false,
-      rateTableVersion: null,
+      producer: "cascade.cost.cost_call",
+      rateTableVersion: "cascade-vendor-rates v1",
       totalUsd: null,
       legs: {},
     }),
@@ -386,11 +421,58 @@ test("an unmeasured cost row is accepted only with its explicit reason", () => {
   assert.equal(withoutReason[1].code, "cost-invalid");
 });
 
+test("an unmeasured cost row that does not name its producer or rate table is a failure", () => {
+  const assess = (priced: Record<string, unknown>) =>
+    assessTrace({
+      exists: true,
+      text: traceLines("call-1", "demo:jorg", priced),
+      callId: "call-1",
+      voice: "jorg",
+      local: true,
+      eventsDir: "/tmp/events",
+      eventsPath: "/tmp/events/call-1.jsonl",
+    })[1];
+
+  const missingProducer = assess({
+    measured: false,
+    rateTableVersion: "cascade-vendor-rates v1",
+    totalUsd: null,
+    unmeasuredReason: "the STT leg reported no session audio",
+    legs: {},
+  });
+  assert.equal(missingProducer.status, "fail");
+  assert.equal(missingProducer.code, "cost-invalid");
+  assert.match(missingProducer.detail, /producer/);
+
+  const wrongProducer = assess({
+    measured: false,
+    producer: "a second pricing path",
+    rateTableVersion: "cascade-vendor-rates v1",
+    totalUsd: null,
+    unmeasuredReason: "the STT leg reported no session audio",
+    legs: {},
+  });
+  assert.equal(wrongProducer.status, "fail");
+  assert.match(wrongProducer.detail, /cascade\.cost\.cost_call/);
+
+  const missingVersion = assess({
+    measured: false,
+    producer: "cascade.cost.cost_call",
+    rateTableVersion: null,
+    totalUsd: null,
+    unmeasuredReason: "the STT leg reported no session audio",
+    legs: {},
+  });
+  assert.equal(missingVersion.status, "fail");
+  assert.match(missingVersion.detail, /rateTableVersion/);
+});
+
 test("a trace line with the wrong subject fails the trace assertion", () => {
   const checks = assessTrace({
     exists: true,
     text: traceLines("call-1", "demo:audrey", {
       measured: true,
+      producer: "cascade.cost.cost_call",
       rateTableVersion: "cascade-vendor-rates v1",
       totalUsd: 0.1,
       legs: {},
@@ -406,56 +488,49 @@ test("a trace line with the wrong subject fails the trace assertion", () => {
   assert.match(checks[0].detail, /demo:jorg/);
 });
 
-test("a subject-less operational row is allowed once a call-scoped row names the subject", () => {
-  const text = [
-    JSON.stringify({
-      schemaVersion: 1,
-      pipeline: "cascade",
+test("every demo trace line must name the subject, operational rows included", () => {
+  const base = { schemaVersion: 1, pipeline: "cascade", callId: "call-1" };
+  const priced = {
+    measured: false,
+    rateTableVersion: "cascade-vendor-rates v1",
+    totalUsd: null,
+    unmeasuredReason: "the STT leg reported no session audio",
+    legs: {},
+  };
+  const lines = (operationalSubject: string | undefined) =>
+    [
+      { ...base, subject: "demo:jorg", type: "greeting.done", turn: null, phase: "connect", atMs: 1 },
+      {
+        ...base,
+        ...(operationalSubject === undefined ? {} : { subject: operationalSubject }),
+        type: "budget.crossing",
+        leg: "llm",
+        phase: "turn",
+        atMs: 2,
+      },
+      { ...base, subject: "demo:jorg", type: "cost.priced", turn: null, phase: "end", atMs: 3, ...priced },
+    ]
+      .map((line) => JSON.stringify(line))
+      .join("\n");
+  const assess = (text: string) =>
+    assessTrace({
+      exists: true,
+      text,
       callId: "call-1",
-      subject: "demo:jorg",
-      type: "greeting.done",
-      turn: null,
-      phase: "connect",
-      atMs: 1,
-    }),
-    JSON.stringify({
-      schemaVersion: 1,
-      pipeline: "cascade",
-      callId: "call-1",
-      type: "budget.crossing",
-      leg: "llm",
-      phase: "turn",
-      atMs: 2,
-    }),
-    JSON.stringify({
-      schemaVersion: 1,
-      pipeline: "cascade",
-      callId: "call-1",
-      subject: "demo:jorg",
-      type: "cost.priced",
-      turn: null,
-      phase: "end",
-      atMs: 3,
-      measured: false,
-      rateTableVersion: null,
-      totalUsd: null,
-      unmeasuredReason: "the STT leg reported no session audio",
-      legs: {},
-    }),
-  ].join("\n");
-  const checks = assessTrace({
-    exists: true,
-    text,
-    callId: "call-1",
-    voice: "jorg",
-    local: true,
-    eventsDir: "/tmp/events",
-    eventsPath: "/tmp/events/call-1.jsonl",
-  });
-  assert.deepEqual(
-    checks.map((entry) => entry.status),
-    ["pass", "pass"],
-  );
+      voice: "jorg",
+      local: true,
+      eventsDir: "/tmp/events",
+      eventsPath: "/tmp/events/call-1.jsonl",
+    });
+
+  const allNamed = assess(lines("demo:jorg"));
+  assert.equal(allNamed[0].status, "pass");
+  assert.match(allNamed[0].detail, /3 lines, every one .*subject "demo:jorg"/);
+
+  const unnamed = assess(lines(undefined));
+  assert.equal(unnamed[0].status, "fail");
+  assert.equal(unnamed[0].code, "trace-binding");
+  assert.match(unnamed[0].detail, /budget\.crossing/);
 });
 
 test("a missing trace is a failure locally and a named skip remotely", () => {
@@ -625,6 +700,29 @@ test("a queued caller turn is paced frame by frame and resolved after its tail s
   await pump.stop();
 });
 
+test("the carried history keeps settled turns, collapses partials and respects the bound", () => {
+  const captions = [
+    { role: "user" as const, text: "half a que", final: false },
+    { role: "user" as const, text: "hello there", final: true },
+    { role: "agent" as const, text: "Hi", final: false },
+    { role: "agent" as const, text: "Hi, how can I help?", final: false },
+    { role: "user" as const, text: "tell me about the test", final: true },
+    { role: "agent" as const, text: "Sure.", final: false },
+  ];
+  assert.deepEqual(carriedHistory(captions, 12), [
+    { role: "user", content: "hello there" },
+    { role: "assistant", content: "Hi, how can I help?" },
+    { role: "user", content: "tell me about the test" },
+    { role: "assistant", content: "Sure." },
+  ]);
+  // The newest turns survive the bound, and history never starts mid-reply.
+  assert.deepEqual(carriedHistory(captions, 2), [
+    { role: "user", content: "tell me about the test" },
+    { role: "assistant", content: "Sure." },
+  ]);
+  assert.deepEqual(carriedHistory(captions, 1), []);
+});
+
 // --------------------------------------------------------------------------
 // The two-turn flow against a fake service (no keys)
 // --------------------------------------------------------------------------
@@ -646,6 +744,7 @@ type FakeService = {
 async function startFakeService(options: {
   eventsDir: string;
   writeTrace: boolean;
+  greetResume?: boolean;
 }): Promise<FakeService> {
   const delivered: Record<string, unknown>[] = [];
   let config: Record<string, unknown> | null = null;
@@ -727,6 +826,7 @@ async function startFakeService(options: {
     };
     let turn = 0;
     let greeted = false;
+    let resume = false;
     let ingressFrames = 0;
     let speechEndTimer: NodeJS.Timeout | null = null;
 
@@ -777,7 +877,19 @@ async function startFakeService(options: {
       const message = JSON.parse(raw.toString("utf8")) as Record<string, unknown>;
       if (message.type === "config") {
         config = message;
-        greet();
+        // A hold return carries the signed history (and binds the `:resume`
+        // body): it must not be greeted again.
+        const minted = delivered.find((payload) => payload.call_token === message.callToken);
+        const body = (minted?.signed_body as { body?: Record<string, unknown> } | undefined)?.body;
+        resume =
+          Array.isArray(body?.history) ||
+          (typeof body?.name === "string" && body.name.endsWith(":resume"));
+        if (resume) {
+          greeted = true;
+          if (options.greetResume) greet();
+        } else {
+          greet();
+        }
         return;
       }
       if (message.type === "audio") {
@@ -800,6 +912,7 @@ async function startFakeService(options: {
             state.eventsPath,
             `${traceLines(state.callId, state.subject, {
               measured: true,
+              producer: "cascade.cost.cost_call",
               rateTableVersion: "cascade-vendor-rates v1",
               totalUsd: 0.000123,
               legs: {},
@@ -859,9 +972,12 @@ function shortCallerAudio() {
   };
 }
 
-async function runAgainstFake(writeTrace: boolean) {
+async function runAgainstFake(
+  writeTrace: boolean,
+  extra: { greetResume?: boolean } = {},
+) {
   const dir = mkdtempSync(join(tmpdir(), "t22-real-legs-"));
-  const service = await startFakeService({ eventsDir: dir, writeTrace });
+  const service = await startFakeService({ eventsDir: dir, writeTrace, ...extra });
   const target = resolveTargets({ baseUrl: service.httpBase });
   const previous = process.env.VOICE_PIPELINE_ENVELOPE_SECRET;
   process.env.VOICE_PIPELINE_ENVELOPE_SECRET = TEST_SECRET;
@@ -869,6 +985,7 @@ async function runAgainstFake(writeTrace: boolean) {
     const options: RealLegsOptions = {
       voice: "jorg",
       timeoutMs: 15_000,
+      withResume: true,
       json: false,
       help: false,
       eventsDir: dir,
@@ -900,16 +1017,32 @@ test("the two-turn flow passes every assertion against a fake service", async ()
         "signed-body",
         "delivery",
         "caller-audio",
+        "context-hidden",
         "identity-config",
         "captions",
         "audio-frames",
         "end-message",
+        "resume-body",
+        "resume-delivery",
+        "resume-no-greeting",
+        "resume-continuation",
+        "resume-end-message",
+        "resume-trace",
         "trace",
         "cost",
       ],
     );
     assert.equal(realLegsExitCode(checks), 0);
-    assert.equal(service.deliveries().length, 1);
+    assert.equal(service.deliveries().length, 2);
+    const resumedBody = (
+      service.deliveries()[1]?.signed_body as { body?: Record<string, unknown> } | undefined
+    )?.body;
+    assert.ok(Array.isArray(resumedBody?.history) && resumedBody.history.length > 0);
+    assert.match(String(resumedBody?.name), /:resume$/);
+    assert.match(
+      checks.find((entry) => entry.code === "resume-continuation")?.detail ?? "",
+      /carried turns were in the signed body/,
+    );
     assert.ok(
       service.framesBeforeFirstTurn() > 0,
       "the caller pump must already be feeding silence while the greeting renders",
@@ -931,7 +1064,28 @@ test("the two-turn flow passes every assertion against a fake service", async ()
     );
     assert.match(checks.find((entry) => entry.code === "trace")?.detail ?? "", /call-real-legs-test/);
     assert.match(checks.find((entry) => entry.code === "cost")?.detail ?? "", /\$0\.000123/);
-    assert.match(formatRealLegsReport(checks), /9 checks, all passed/);
+    assert.match(formatRealLegsReport(checks), /16 checks, all passed/);
+  } finally {
+    await service.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a resumed call that speaks the greeting fails by name", async () => {
+  const { checks, dir, service } = await runAgainstFake(true, { greetResume: true });
+  try {
+    const failedChecks = checks.filter((entry) => entry.status === "fail");
+    assert.deepEqual(
+      failedChecks.map((entry) => entry.code),
+      ["resume-greeted"],
+      JSON.stringify(checks, null, 2),
+    );
+    assert.equal(realLegsExitCode(checks), 1);
+    assert.doesNotMatch(
+      formatRealLegsReport(checks),
+      /resume-no-greeting/,
+      "a greeted resume must never be reported as no greeting",
+    );
   } finally {
     await service.close();
     rmSync(dir, { recursive: true, force: true });
@@ -944,7 +1098,7 @@ test("a local service that writes no trace fails the trace and the cost row", as
     assert.equal(realLegsExitCode(checks), 1);
     assert.deepEqual(
       checks.filter((entry) => entry.status === "fail").map((entry) => entry.code),
-      ["trace-missing", "cost-missing"],
+      ["resume-trace", "trace-missing", "cost-missing"],
     );
   } finally {
     await service.close();

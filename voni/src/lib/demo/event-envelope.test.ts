@@ -17,6 +17,7 @@ const FIXTURES = JSON.parse(
   managedCallScoped: Record<string, unknown>;
   cascadeCallScoped: Record<string, unknown>;
   cascadeOperational: Record<string, unknown>;
+  cascadeDemoOperational: Record<string, unknown>;
   cascadeFallback: Record<string, unknown>;
 };
 
@@ -46,12 +47,21 @@ test("both engines carry the same envelope and differ only by the pipeline value
   assert.equal(cascade.pipeline, "cascade");
 });
 
-test("an operational event carries the leg in place of subject and turn", () => {
+test("an operational event carries the leg in place of turn", () => {
   const operational = parseEventEnvelope(FIXTURES.cascadeOperational, "breaker.jsonl");
 
   assert.equal(operational.type, "breaker.transition");
   assert.equal(operational.leg, "llm");
   assert.equal("subject" in operational, false);
+  assert.equal("turn" in operational, false);
+});
+
+test("a demo operational event names demo:<voice> and keeps its leg", () => {
+  const operational = parseEventEnvelope(FIXTURES.cascadeDemoOperational, "breaker.jsonl");
+
+  assert.equal(operational.type, "breaker.transition");
+  assert.equal(operational.leg, "llm");
+  assert.equal(operational.subject, "demo:audrey");
   assert.equal("turn" in operational, false);
 });
 
@@ -105,13 +115,19 @@ test("an unknown pipeline or phase is refused by name", () => {
   assert.match(phase.message, /connect, turn, tool, drain, end/);
 });
 
-test("an operational event cannot carry subject or turn", () => {
-  for (const field of ["subject", "turn"] as const) {
+test("an operational event may name a demo subject but never a turn", () => {
+  const turn = refused(() =>
+    parseEventEnvelope({ ...FIXTURES.cascadeOperational, turn: "turn-1" }, "operational.jsonl"),
+  );
+  assert.equal(turn.field, "turn");
+  assert.match(turn.message, /leg in place of turn/);
+
+  for (const subject of ["agent_transport_65", "audrey", "demo anna (en, browser)"]) {
     const error = refused(() =>
-      parseEventEnvelope({ ...FIXTURES.cascadeOperational, [field]: "x" }, "operational.jsonl"),
+      parseEventEnvelope({ ...FIXTURES.cascadeOperational, subject }, "operational.jsonl"),
     );
-    assert.equal(error.field, field);
-    assert.match(error.message, /leg in place of subject and turn/);
+    assert.equal(error.field, "subject");
+    assert.match(error.message, /demo:<voice>/);
   }
 
   const missingLeg = refused(() => {
@@ -195,6 +211,21 @@ test("the writer builds the recorded envelope and runs payload fields through th
     reason: "fallback to wss://[redacted]@cascade.example/ws",
   });
   assert.doesNotMatch(JSON.stringify(event), /caller words|AAAA|tok_secret|supersecret/);
+});
+
+test("the writer builds a demo operational line with its subject and leg", () => {
+  const { event } = buildEventEnvelope({
+    pipeline: "cascade",
+    callId: "call-107",
+    type: "breaker.transition",
+    subject: "demo:audrey",
+    leg: "llm",
+    atMs: 4200,
+    phase: "turn",
+    fields: { reason: "1013 rate limited" },
+  });
+
+  assert.deepEqual(event, { ...FIXTURES.cascadeDemoOperational, reason: "1013 rate limited" });
 });
 
 test("the writer refuses a payload that would overwrite the envelope, and pipeline-invalid shapes", () => {

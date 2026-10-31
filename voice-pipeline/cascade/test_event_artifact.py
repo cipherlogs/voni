@@ -232,6 +232,54 @@ class DemoTraceArtifactTests(unittest.TestCase):
             [DEMO_SUBJECT, DEMO_SUBJECT], [row["subject"] for row in rows]
         )
 
+    def test_every_demo_line_names_the_subject_even_an_operational_one(self):
+        from cascade.breaker import BreakerTransition, BreakerTrigger
+
+        events = self.demo_events()
+        events.greeting("greeting.start", voice_id="audrey")
+        events.breaker_transition(
+            BreakerTransition(
+                leg="llm",
+                from_state="closed",
+                to_state="open",
+                trigger=BreakerTrigger(kind="failure", code=1013, phase="stream", turn=3),
+                reason="closed -> open: abnormal socket close",
+                at=4.0,
+                record_version=2,
+            )
+        )
+        events.deploy_drain(reason="deploy 2026.10.31")
+
+        path = Path(events.path)
+        rows = self.lines(path)
+        self.assertEqual(
+            ["greeting.start", "breaker.transition", "deploy.drain"],
+            [row["type"] for row in rows],
+        )
+        self.assertEqual(
+            [DEMO_SUBJECT, DEMO_SUBJECT, DEMO_SUBJECT],
+            [row["subject"] for row in rows],
+            "every demo line names demo:<voice>, operational lines included",
+        )
+        self.assertEqual("llm", rows[1]["leg"], "an operational line keeps its leg")
+        self.assertNotIn("turn", rows[1])
+
+    def test_a_demo_operational_line_without_a_subject_is_refused_at_the_boundary(self):
+        log = CallEventLog(self.directory, call_id=DEMO_CALL_ID)
+        stream = EventStream(
+            EventWriter(pipeline="cascade", call_id=DEMO_CALL_ID),
+            sink=log,
+            subject_kind="demo",
+        )
+
+        with self.assertRaises(EventEnvelopeError) as raised:
+            stream.operational(
+                "breaker.transition", leg="llm", at_ms=4200, phase="turn"
+            )
+
+        self.assertEqual("subject", raised.exception.field)
+        self.assertFalse(Path(log.path).exists(), "a refused line was written")
+
     def test_a_hold_return_with_the_same_call_id_appends_to_the_same_trace(self):
         self.demo_events().greeting("greeting.start", voice_id="audrey")
         resumed = self.demo_events()  # the hold return mints again, same call id

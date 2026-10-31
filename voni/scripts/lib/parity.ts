@@ -38,6 +38,8 @@ import { signCallToken } from "../../src/lib/voice/cascade-token";
 import { readPipelineUrl } from "../../src/lib/voice/pipeline-url";
 import { buildDemoAgentBody, demoAgentFingerprint } from "../../src/lib/demo/stored-agents";
 import { DEMO_VOICE_IDS } from "../../src/lib/demo/voni-agent";
+import { DELIVERY_REFUSAL_CODES, REFUSAL_HEADER } from "../../src/lib/demo/pipeline-delivery";
+export { REFUSAL_HEADER };
 
 export const PIPELINE_URL_ENV = "VOICE_PIPELINE_URL";
 export const SERVICE_URL_ENV = "VOICE_PIPELINE_SERVICE_URL";
@@ -221,31 +223,21 @@ export function evaluateHostParity(input: {
 }
 
 /**
- * Name the refusal the service returned. The service's 400 detail is its
- * named refusal's message, not the class name, so the check maps the message
- * back to the class it came from and refuses to guess at anything new: an
- * unrecognised detail is a failure, never a pass.
+ * Name the refusal the service returned. The service sets
+ * `X-Cascade-Refusal` on every 400/503 refusal, so the check reads that header
+ * as the machine-readable source and never classifies `detail` prose (which is
+ * kept only as human context by the caller). A missing or unknown header is a
+ * failure, never a pass.
  */
-export function refusalName(status: number, detail: unknown): string | null {
+const SERVICE_REFUSAL_CODES: ReadonlySet<string> = new Set(
+  DELIVERY_REFUSAL_CODES.filter((code) => code !== "transport_failure"),
+);
+
+export function refusalName(status: number, refusal: unknown): string | null {
   if (status === 202) return "Accepted";
-  const text = typeof detail === "string" ? detail : "";
-  if (!text) return null;
-  if (text.includes("does not match the signed envelope's body hash")) {
-    return "BodyHashMismatch";
-  }
-  if (text.includes("is not signed by the service secret")) {
-    return "EnvelopeSignatureMismatch";
-  }
-  if (text.includes("expired at")) return "EnvelopeExpired";
-  if (text.includes("was minted for call")) return "EnvelopeCallMismatch";
-  if (text.includes("unknown envelope version")) return "UnknownEnvelopeVersion";
-  if (text.includes('must be "demo" or "tenant"')) return "UnknownSubjectKind";
-  if (text.includes("signed-body channel is closed")) return "ChannelClosed";
-  if (text.includes("is draining")) return "Draining";
-  if (text.includes("must be a non-empty string")) return "EnvelopeIdentityError";
-  if (text.includes("envelope field")) return "MalformedEnvelope";
-  if (text.toLowerCase().includes("call body")) return "CallBodyMalformed";
-  return null;
+  if (typeof refusal !== "string") return null;
+  const code = refusal.trim().toLowerCase();
+  return code !== "" && SERVICE_REFUSAL_CODES.has(code) ? code : null;
 }
 
 /**

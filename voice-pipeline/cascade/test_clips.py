@@ -77,6 +77,45 @@ def demo_voice_ids() -> list[str]:
     return re.findall(r'"([^"]+)"', match.group(1))
 
 
+class DemoVoiceRosterTest(unittest.TestCase):
+    """Ticket 04 AC2: withdrawing a voice is one app-side roster change.
+
+    The clip plan reads ``DEMO_VOICE_IDS`` from the app's own module, so there
+    is no second literal in the service that a withdrawal would have to match.
+    """
+
+    def test_the_roster_is_parsed_from_the_app_source_not_restated(self):
+        from cascade.clips import demo_voice_ids_from
+
+        source = 'export const DEMO_VOICE_IDS = ["audrey", "malvina"] as const;\n'
+        self.assertEqual(("audrey", "malvina"), demo_voice_ids_from(source))
+
+    def test_a_missing_or_empty_roster_is_refused_by_name(self):
+        from cascade.clips import demo_voice_ids_from
+
+        with self.assertRaises(ClipError) as missing:
+            demo_voice_ids_from("export const SOMETHING_ELSE = 1;\n")
+        self.assertIn("DEMO_VOICE_IDS", str(missing.exception))
+        self.assertIn("voni-agent.ts", str(missing.exception))
+
+        with self.assertRaises(ClipError) as empty:
+            demo_voice_ids_from("export const DEMO_VOICE_IDS = [] as const;\n")
+        self.assertIn("DEMO_VOICE_IDS", str(empty.exception))
+
+    def test_the_service_holds_no_second_roster_literal(self):
+        source = Path(__file__).with_name("clips.py").read_text(encoding="utf-8")
+        self.assertNotRegex(
+            source,
+            r"DEMO_VOICE_IDS:\s*tuple\[str, \.\.\.\]\s*=\s*\(",
+            "clips.py restates the app's roster instead of parsing it",
+        )
+        self.assertEqual(
+            tuple(demo_voice_ids()),
+            DEMO_VOICE_IDS,
+            "the module's roster drifted from voni-agent.ts",
+        )
+
+
 def greetings() -> dict[str, str]:
     """The app's own greeting table, read so drift is visible."""
     source = VONI_AGENT_TS.read_text(encoding="utf-8")

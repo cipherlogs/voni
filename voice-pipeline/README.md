@@ -104,6 +104,12 @@ npm run check:real-legs -- --base-url http://127.0.0.1:8767
 It plays the committed caller clip twice, through the real vendors, and asserts
 the captions, the received audio frames, the trace artifact at
 `VOICE_PIPELINE_EVENTS_DIR`/`voice-pipeline/.events` and the `cost.priced` row.
+After the two turns it sends the demo's off-track note as a hidden context
+frame (asserting it is never captioned) and, by default, proves the hold return
+end to end: the same call id is re-minted with `resume: true` and the carried
+history, no greeting is spoken, a caller clip gets a continuation, and the
+call leaves one trace file. An unmeasured cost row is reported as `INFO`, never
+`PASS`. `--no-resume` skips the hold-return phase.
 It needs `META_API_KEY`, `ASSEMBLYAI_API_KEY` and the shared
 `VOICE_PIPELINE_ENVELOPE_SECRET`; without the two vendor keys it prints
 `skipped: META_API_KEY and ASSEMBLYAI_API_KEY are required for the real legs`
