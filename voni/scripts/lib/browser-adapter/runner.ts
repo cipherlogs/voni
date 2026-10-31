@@ -44,6 +44,7 @@ import {
 } from "@/lib/demo/verification/certificate";
 import {
   DEFAULT_CORPUS_DIR,
+  scenarioFacts,
   type CorpusReference,
   type LoadedScenario,
   type Locale,
@@ -423,27 +424,6 @@ export async function runBrowserCertification(
     });
   }
 
-  if (scenario.faults.length > 0) {
-    const error = new BrowserAdapterError(
-      "corpus-refused",
-      `scenario "${scenario.name}" asks for media faults ` +
-        `(${scenario.faults.map((fault) => fault.kind).join(", ")}); the browser adapter's ` +
-        "media-fault seam is not landed, so the run refuses rather than pretending it applied them",
-    );
-    return refused(runId, runDir, error, {
-      target: input.target,
-      locale,
-      scenarioName: input.scenarioName,
-      corpus: { version: corpus.version, sha256: corpus.fingerprint },
-      scenarioFingerprint: scenario.fingerprint,
-      codeFingerprint,
-      startedAt,
-      call: null,
-      budget,
-      previous: [],
-    });
-  }
-
   const callIdDir = join(runDir, "calls");
   await mkdir(callIdDir, { recursive: true });
 
@@ -560,6 +540,7 @@ export async function runBrowserCertification(
     locale: scenario.locale,
     target: input.target,
     evidence: assembled.bundle,
+    facts: scenarioFacts(scenario),
   };
   const evidence = await evaluateScenarios({
     contract,

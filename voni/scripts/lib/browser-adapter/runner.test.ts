@@ -577,6 +577,45 @@ test("parity disagreement makes the run not-demo-ready and names the property", 
   }
 });
 
+test("a provider fallback on the call makes the run ineligible, never certified", async () => {
+  const root = tempRoot();
+  try {
+    writeCorpus(corpus(root), GOLDEN);
+    const eventsDir = join(root, "events");
+    const capturesDir = join(root, "captures");
+    const result = await runBrowserCertification(
+      input(root, {
+        call: async (callInput) =>
+          fakeBrowserCall({
+            scenario: callInput.scenario,
+            eventsDir,
+            capturesDir,
+            runDir: callInput.runDir,
+            providerFallback: true,
+          }),
+      }),
+    );
+    assert.equal(result.status, "ineligible");
+    assert.equal(result.exitCode, 1, "ineligible is never exit 0");
+    assert.equal(result.verdict?.verdict, "ineligible");
+    assert.equal(result.verdict?.certifiable, false);
+    assert.match(result.verdict?.detail ?? "", /provider fallback/i);
+    const certificate = result.certificateFile
+      ? (JSON.parse(readFileSync(result.certificateFile, "utf8")) as {
+          verdict: string;
+          pass: boolean;
+        })
+      : null;
+    assert.equal(certificate?.verdict, "ineligible", "a contaminated run is never certified");
+    assert.equal(certificate?.pass, false);
+    const run = runJson(result);
+    assert.equal((run.certificate as { verdict: string }).verdict, "ineligible");
+    assert.equal((run.certificate as { pass: boolean }).pass, false);
+  } finally {
+    removeTree(root);
+  }
+});
+
 test("the runner accepts a defect card's replay command unchanged", async () => {
   const root = tempRoot();
   try {
