@@ -54,7 +54,7 @@ import { demoUnavailableMessage } from "@/lib/voice/cascade-failure-view";
 import { createDemoFloor, DEMO_FLOOR_TICK_MS } from "@/lib/voice/demo-floor";
 import type { Floor } from "@/lib/voice/floor";
 import { startDemoCall } from "@/lib/voice/demo-start";
-import { createCallMarks, type CallMarks } from "@/lib/voice/call-marks";
+import { callIdFromDemoToken, createCallMarks, type CallMarks } from "@/lib/voice/call-marks";
 import { boundedResumeHistory } from "@/lib/voice/resume-history";
 import { FILLER_POOL, isEndCallRequest, requestVoiceJudge } from "@/lib/voice/jev-judges";
 import { callRecognition } from "@/lib/voice/recognition";
@@ -1407,8 +1407,17 @@ export function VoiceCall({
           history: preserving ? boundedResumeHistory(turnsRef.current) : undefined,
         }, {
           // Name the mint before the socket and mic events, so the stream
-          // shows the real order rather than a post-hoc guess.
-          onMinted: () => marks?.mark("mint_done"),
+          // shows the real order rather than a post-hoc guess. The mint also
+          // names the call id the pipeline traces: bind the WAV and the marks
+          // to it before the mic attaches the capture, so all four artifacts of
+          // one call cite one id.
+          onMinted: (minted) => {
+            marks?.mark("mint_done");
+            const callId = callIdFromDemoToken(minted.demoCallToken);
+            if (callId !== null && marks?.adoptCallId(callId) === true) {
+              cascade.setDeliveredCapture(callDebugFlags().deliverCapture, callId);
+            }
+          },
         });
         callTokenRef.current = minted.demoCallToken;
         if (minted.tagToken) saveTagToken(minted.tagToken);

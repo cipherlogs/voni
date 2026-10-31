@@ -108,6 +108,8 @@ export type ProtocolRunInput = {
   readonly runId?: string;
   readonly callId?: string;
   readonly timeoutMs?: number;
+  /** Bounded wait for the service's end sidecar; tests shorten it. */
+  readonly endWaitMs?: number;
   readonly transport?: ProtocolCallDeps;
 };
 
@@ -385,6 +387,7 @@ export async function runProtocolDiagnosis(
       target: input.target,
       eventsDir,
       callDir,
+      ...(input.endWaitMs === undefined ? {} : { endWaitMs: input.endWaitMs }),
     }));
   } catch (error) {
     const refusedError =
