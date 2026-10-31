@@ -498,6 +498,8 @@ export async function assembleBrowserEvidence(input: {
         seconds: wav.durationMs / 1000,
       },
       syntheticMic: input.call.syntheticMic,
+      faultsApplied: input.call.faultsApplied,
+      edge: input.call.edge ?? null,
     },
   };
 
@@ -518,6 +520,7 @@ export async function assembleBrowserEvidence(input: {
     triggerPlan: input.call.triggerPlan,
     faultsApplied: input.call.faultsApplied,
     syntheticMic: input.call.syntheticMic,
+    edge: input.call.edge ?? null,
     browser: input.call.browser,
     elapsedMs: input.call.elapsedMs,
     files: {
