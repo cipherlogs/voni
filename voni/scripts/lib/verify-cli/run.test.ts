@@ -21,6 +21,7 @@ import {
   type PanelSignature,
 } from "@/lib/demo/verification/certificate";
 import { loadContract, type Contract } from "@/lib/demo/verification/contract";
+import type { PanelJudgementInput } from "@/lib/demo/verification/panel";
 import {
   DEFAULT_CORPUS_DIR,
   FAST_CONTRACT_SCENARIOS,
@@ -382,6 +383,54 @@ async function fullContract(): Promise<Contract> {
   };
 }
 
+const FULL_HUMAN_IDS = ["L1", "E2", "E3", "H1", "H2", "H3", "H4", "H5", "H7"] as const;
+
+async function fullHumanContract(): Promise<Contract> {
+  const contract = await loadContract();
+  const ids = new Set<string>(FULL_HUMAN_IDS);
+  return {
+    families: contract.families,
+    properties: contract.properties.filter((property) => ids.has(property.id)),
+  };
+}
+
+/** The panel's gold labels: 40 judgments per Locale, so H2's floor is met. */
+function panelInput(signature: PanelSignature): PanelJudgementInput {
+  const labels = LOCALES.flatMap((locale) =>
+    Array.from({ length: 40 }, (_, index) => ({
+      sessionId: signature.sessionId,
+      callId: `call-${locale}-${index + 1}`,
+      itemId: `item-${locale}-${index + 1}`,
+      scenario: `${locale}-one`,
+      locale,
+      axes: {
+        stayOnCall: 5,
+        soundsHuman: 5,
+        turnTaking: 5,
+        understanding: 5,
+        languageNaturalness: 5,
+        warmth: 5,
+        pacing: 5,
+      },
+      humanDetected: index < 20,
+      preference: "baseline" as const,
+      ratedAt: "2026-10-31",
+    })),
+  );
+  return {
+    goldLabels: {
+      sessionId: signature.sessionId,
+      runId: "verify-test-01",
+      reviewer: signature.reviewer,
+      signedAt: signature.signedAt,
+      labels,
+      digest: "d".repeat(64),
+    },
+    signature,
+    certificate: { runId: "verify-test-01", target: "local" },
+  };
+}
+
 function fullCorpus(): Corpus {
   return {
     version: 7,
@@ -424,10 +473,23 @@ async function fullResult(input: {
   readonly failProperty?: string;
   readonly panel?: PanelSignature;
   readonly target?: string;
+  readonly contract?: Contract;
+  readonly panelInput?: PanelJudgementInput;
 } = {}): Promise<VerifyResult> {
-  const contract = await fullContract();
+  const contract = input.contract ?? (await fullContract());
+  // A narrowed contract still judges only the machine families this suite
+  // injects; the human properties stay unmeasured so the panel test is real.
+  const judged =
+    input.contract === undefined
+      ? contract
+      : {
+          families: contract.families,
+          properties: contract.properties.filter((property) =>
+            (FULL_CONTRACT_IDS as readonly string[]).includes(property.id),
+          ),
+        };
   const corpus = fullCorpus();
-  const evaluators = passingEvaluators(contract).map((evaluator) =>
+  const evaluators = passingEvaluators(judged).map((evaluator) =>
     evaluator.propertyId === input.failProperty
       ? {
           ...evaluator,
@@ -446,6 +508,7 @@ async function fullResult(input: {
     loadEvaluators: async () => evaluators,
     plan: () => fullPlan(corpus),
     signature: input.panel ?? null,
+    ...(input.panelInput === undefined ? {} : { panel: input.panelInput }),
   });
 }
 
@@ -466,6 +529,33 @@ test("a signed clean full run is certified and exit 0", async () => {
   assert.equal(result.status, "certified");
   assert.equal(result.certificate?.verdict, "certified");
   assert.equal(result.certificate?.panel?.reviewer, "owner");
+});
+
+test("the panel's H1-H5 merge before the certificate is built, so a signed full run can certify", async () => {
+  const contract = await fullHumanContract();
+  const unsigned = await fullResult({ contract });
+  assert.equal(unsigned.exitCode, 3, "without a panel the human properties are pending-human");
+  assert.equal(unsigned.status, "pending-human");
+  assert.equal(unsigned.certificate?.verdict, "pending-human");
+  assert.equal(unsigned.certificate?.pass, false);
+  const pendingH2 = unsigned.certificate?.properties.find(
+    (property) => property.propertyId === "H2",
+  );
+  assert.equal(pendingH2?.status, "FAIL");
+  assert.equal(pendingH2?.reason, "no-evaluator");
+
+  const signed = await fullResult({
+    contract,
+    panel: FULL_PANEL,
+    panelInput: panelInput(FULL_PANEL),
+  });
+  assert.equal(signed.exitCode, 0);
+  assert.equal(signed.status, "certified");
+  assert.equal(signed.certificate?.verdict, "certified");
+  const h2 = signed.certificate?.properties.find((property) => property.propertyId === "H2");
+  assert.equal(h2?.status, "PASS");
+  assert.equal(h2?.sampleCount, 200);
+  assert.ok(h2?.citations.some((citation) => citation.startsWith("panel:")));
 });
 
 test("a failing full run is not-demo-ready and exit 1; it is never a pass", async () => {

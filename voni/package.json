@@ -60,6 +60,7 @@
     "demo:verify": "node --env-file-if-exists=.env.local --import tsx scripts/demo-verify.mts",
     "demo:studio": "node --import tsx scripts/studio/server.mts",
     "demo:certificate": "node --import tsx scripts/demo-certificate.mts",
+    "demo:cutover": "node --import tsx scripts/demo-cutover.mts",
     "demo:baseline:verify": "node --import tsx scripts/studio/verify-baseline.mts",
     "demo:certify:browser": "node --env-file-if-exists=.env.local --import tsx scripts/browser-verify.mts",
     "demo:diagnose:protocol": "node --env-file-if-exists=.env.local --import tsx scripts/protocol-diagnose.mts",
