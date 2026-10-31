@@ -161,6 +161,36 @@ test("nightly health plans one repetition, and a Locale filter narrows the plan"
     corpus,
   });
   assert.equal(english.calls, ENGLISH_SCENARIOS);
+
+  // A nightly Locale core is still the twelve-behaviour plan.
+  const nightlyGerman = planVerify({
+    request: { mode: "nightly", target: "local", locale: "de", json: false, help: false },
+    corpus,
+  });
+  assert.equal(nightlyGerman.calls, LOCALE_CORE_SCENARIOS);
+  assert.deepEqual(nightlyGerman.gaps, []);
+});
+
+test("a per-Locale full run without a full corpus refuses by name, never a locale-gap certificate", async () => {
+  const corpus = await committedCorpus();
+  for (const locale of ["es", "fr", "de", "pt"] as const) {
+    const error = refusal({
+      request: { mode: "full", target: "local", locale, json: false, help: false },
+      corpus,
+    });
+    assert.equal(error.code, "missing-locale-corpus");
+    assert.match(error.message, new RegExp(`"${locale}"`));
+    assert.match(error.message, new RegExp(`all ${ENGLISH_SCENARIOS} scenarios`));
+    assert.match(error.message, /Locale-core/);
+  }
+
+  // English has the full set, so English --full --locale en still plans.
+  const english = planVerify({
+    request: { mode: "full", target: "local", locale: "en", json: false, help: false },
+    corpus,
+  });
+  assert.equal(english.calls, ENGLISH_SCENARIOS * 3);
+  assert.deepEqual(english.gaps, []);
 });
 
 test("the plan's counts are the cadence's one source, so a hand-edited copy fails", async () => {

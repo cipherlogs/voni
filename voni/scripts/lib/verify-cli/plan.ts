@@ -151,10 +151,38 @@ function fastPlan(request: VerifyRequest, corpus: Corpus): VerifyPlan {
   }
 }
 
+/** The scenarios the corpus holds for one Locale, in plan order. */
+function availableFor(corpus: Corpus, locale: Locale): Corpus["scenarios"] {
+  return corpus.scenarios
+    .filter((scenario) => scenario.locale === locale)
+    .sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0));
+}
+
+/**
+ * A per-Locale full run is the spec's cutover shape: every Locale's full set.
+ * Only English has a full set; the other four hold the twelve-scenario core.
+ * A locale-filtered full run therefore refuses by name instead of issuing a
+ * certificate stamped full whose coverage is a core.
+ */
+function assertPerLocaleFull(request: VerifyRequest, corpus: Corpus): void {
+  if (request.mode !== "full" || request.locale === undefined || request.locale === "en") return;
+  const locale = request.locale;
+  const available = availableFor(corpus, locale).length;
+  refuse(
+    "missing-locale-corpus",
+    `the ${LOCALE_TITLE[locale]} per-Locale full corpus is missing: a full certification of ` +
+      `"${locale}" runs all ${FULL_ENGLISH_SCENARIOS} scenarios in that Locale, and the corpus ` +
+      `holds ${available} Locale-core scenario(s). Refusing rather than issuing a certificate ` +
+      "that carries a Locale coverage gap; run English --full or the nightly Locale core",
+  );
+}
+
 function certificationPlan(request: VerifyRequest, corpus: Corpus): VerifyPlan {
   const repetitions = request.mode === "full" ? 3 : 1;
   const locales: readonly Locale[] =
     request.locale === undefined ? LOCALES : [request.locale];
+
+  assertPerLocaleFull(request, corpus);
 
   const gaps: string[] = [];
   const scenarios: PlannedScenario[] = [];
@@ -162,9 +190,7 @@ function certificationPlan(request: VerifyRequest, corpus: Corpus): VerifyPlan {
 
   for (const locale of locales) {
     const required = requiredFor(locale);
-    const available = corpus.scenarios
-      .filter((scenario) => scenario.locale === locale)
-      .sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0));
+    const available = availableFor(corpus, locale);
     const title = LOCALE_TITLE[locale];
     if (available.length < required) {
       gaps.push(
