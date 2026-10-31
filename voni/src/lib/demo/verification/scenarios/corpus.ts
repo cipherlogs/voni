@@ -11,11 +11,11 @@
  * compare against audio nobody pinned.
  */
 
-import { createHash } from "node:crypto";
 import { readFile, readdir } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { sha256Hex as sha256 } from "./digest";
 import { ScenarioError } from "./errors";
 import { parseCorpusManifest, parseScenario } from "./parse";
 import {
@@ -42,10 +42,6 @@ export type LoadCorpusOptions = {
   /** Defaults to the committed corpus root. Tests and probe corpora pass one. */
   readonly dir?: URL | string;
 };
-
-function sha256(bytes: string | Buffer): string {
-  return createHash("sha256").update(bytes).digest("hex");
-}
 
 /** Code-unit order, not locale order: a fingerprint may not depend on the host. */
 function byCodepoint(left: string, right: string): number {
