@@ -320,7 +320,8 @@ const k4: PropertyEvaluator = {
 
 // ── K5: Locale-appropriate output ───────────────────────────────────────────
 
-const k5: PropertyEvaluator = {
+/** Exported for `locale.evaluators.ts`; one implementation, one owner file. */
+export const k5: PropertyEvaluator = {
   propertyId: "K5",
   source: "verdict/evaluators/comprehension.evaluators.ts",
   bars: [{ key: "dvEnglishLeakMaxCount", statistic: "each", comparison: "at-most" }],
@@ -400,7 +401,8 @@ const k5: PropertyEvaluator = {
 
 // ── K6: code-switch understood, reply stays in Locale ───────────────────────
 
-const k6: PropertyEvaluator = {
+/** Exported for `locale.evaluators.ts`; one implementation, one owner file. */
+export const k6: PropertyEvaluator = {
   propertyId: "K6",
   source: "verdict/evaluators/comprehension.evaluators.ts",
   bars: [],
@@ -560,7 +562,9 @@ const k8: PropertyEvaluator = {
 
 const comprehension: EvaluatorModule = {
   family: "comprehension",
-  evaluators: [k1, k2, k3, k4, k5, k6, k7, k8],
+  // K5 and K6 are the Locale properties; they live in `locale.evaluators.ts`
+  // so the Locale core has one owner without a second implementation.
+  evaluators: [k1, k2, k3, k4, k7, k8],
 };
 
 export default comprehension;

@@ -45,3 +45,6 @@ not fixtures. This file records how it was produced and how it may change.
   with RR-02; it never claims native-certified comprehension from these takes.
   The English translation proxy in the text evaluators is a recorded limitation,
   not a substitute for the reviewer.
+- The four `locale-television-*` scenarios name the `television` bed, the same
+  gap ticket 14 records in `SOUNDSCAPES.md`: until a real bed is committed the
+  adapters refuse that soundscape by name rather than mixing digital silence.

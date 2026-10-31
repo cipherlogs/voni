@@ -11,6 +11,7 @@ import type { PropertyEvidence, RunVerdict } from "../types";
 import { judgeProperty } from "../judge";
 import { evaluateScenarios } from "../evaluators";
 import comprehension from "./comprehension.evaluators";
+import localeEvaluators from "./locale.evaluators";
 
 /**
  * Ticket 13's acceptance, read off the ticket and the spec's "Comprehension
@@ -32,7 +33,9 @@ const contract = () => {
 const locale = "en";
 
 function evaluatorFor(id: string) {
-  const found = comprehension.evaluators.find((entry) => entry.propertyId === id);
+  const found = [...comprehension.evaluators, ...localeEvaluators.evaluators].find(
+    (entry) => entry.propertyId === id,
+  );
   assert.ok(found, `no evaluator for ${id}`);
   return found;
 }

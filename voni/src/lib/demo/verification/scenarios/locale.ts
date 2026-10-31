@@ -320,6 +320,11 @@ export const LOCALE_CORE_REPETITIONS: Readonly<Record<"nightly" | "full", number
  * The pre-run bound: the core's planned calls times the frozen per-call
  * ceiling, checked against the run kind's own ceiling. The economics owner
  * computes both numbers; this module only supplies the plan size.
+ *
+ * The bound is the Locale core's own plan (48 calls nightly, 144 full), never
+ * the combined English + Locale run: ticket 30 composes that plan and must run
+ * the same preflight over its own call count. This module does not claim the
+ * composed run fits.
  */
 export function localeCoreRunCeiling(input: {
   readonly contract: Contract;
