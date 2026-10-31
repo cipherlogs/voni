@@ -39,7 +39,15 @@ export type ScenarioErrorCode =
   | "missing-take"
   | "empty-take"
   | "take-drift"
-  | "unreadable-corpus";
+  | "unreadable-corpus"
+  | "missing-fast-scenario"
+  | "fast-scenario-mismatch"
+  | "fast-coverage-gap"
+  | "fast-ceiling-unset"
+  | "fast-verdict-incomplete"
+  | "fast-run-incomplete"
+  | "invalid-audio"
+  | "tts-failed";
 
 export class ScenarioError extends Error {
   readonly code: ScenarioErrorCode;

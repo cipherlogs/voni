@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "name": "ending-goodbye",
+  "class": "ending",
+  "locale": "en",
+  "heldOut": false,
+  "expectedProperties": [
+    "C7",
+    "C8",
+    "L9",
+    "L11"
+  ],
+  "soundscape": {
+    "id": "quiet-room"
+  },
+  "faults": [],
+  "takes": [
+    {
+      "id": "hello",
+      "audio": "takes/hello.wav",
+      "sha256": "1528ae555de2a34dcdc1bdf807e3af7849166e197e328c8e352fa97eefdaab4d",
+      "text": "Hi, is this Voni?"
+    },
+    {
+      "id": "bye",
+      "audio": "takes/bye.wav",
+      "sha256": "d55816ac8af9415f746fd0e254d4a99990d9667e1e13e448c869ce2e6a82c047",
+      "text": "That's all I needed. Thanks, goodbye."
+    }
+  ],
+  "script": [
+    {
+      "take": "hello",
+      "trigger": {
+        "type": "call-open"
+      }
+    },
+    {
+      "take": "bye",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    }
+  ]
+}

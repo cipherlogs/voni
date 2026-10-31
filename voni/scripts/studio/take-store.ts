@@ -20,6 +20,9 @@ import { sha256Hex } from "../../src/lib/demo/verification/scenarios/digest";
 /** The record shape every `take.json` carries. */
 export const TAKE_SCHEMA_VERSION = 1;
 
+/** The record shape every `retired.json` carries; a retirement is its own file. */
+export const RETIREMENT_SCHEMA_VERSION = 1;
+
 /** How a take arrived: a one-shot line, a dialogue line, or an uploaded file. */
 export const RECORD_MODES = ["one-shot", "dialogue", "upload"] as const;
 
@@ -60,6 +63,55 @@ export type TakeInput = TakeSource & {
   readonly supersedes?: string;
   /** ISO timestamp; defaults to the moment the take lands. */
   readonly recordedAt?: string;
+  /**
+   * Human-baseline capture metadata. A baseline take is blind comparison audio,
+   * never a certification input, so it is never selectable by a scenario.
+   */
+  readonly baseline?: BaselineCapture;
+};
+
+/**
+ * Consent metadata carried with a baseline take. Every field is supplied by the
+ * owner at capture time; there is no consent default and no participant id
+ * inferred from a filename.
+ */
+export type BaselineCapture = {
+  /** A pseudonym or study id; the repository records no participant's name. */
+  readonly participantId: string;
+  /** Where the signed consent is filed (a reference, never the consent text). */
+  readonly consentRef: string;
+  /** The day consent was given, `YYYY-MM-DD`. */
+  readonly consentedAt: string;
+  /** The participant's first or second baseline call; the plan asks for two. */
+  readonly call: 1 | 2;
+};
+
+/** A retirement marks a take; it never deletes it and never edits `take.json`. */
+export type RetirementInput = {
+  /** The reviewer who retired the take; named so the decision is attributable. */
+  readonly reviewer: string;
+  /** Why the take left selection; a blank reason is refused. */
+  readonly reason: string;
+  /** ISO timestamp; defaults to the moment the retirement lands. */
+  readonly retiredAt?: string;
+};
+
+export type RetirementRecord = {
+  readonly schemaVersion: typeof RETIREMENT_SCHEMA_VERSION;
+  readonly takeId: string;
+  /** The exact hashed bytes this retirement marks. */
+  readonly audioSha256: string;
+  readonly reviewer: string;
+  readonly reason: string;
+  readonly retiredAt: string;
+};
+
+/** One Corpus row: a take, its retirement (if any) and whether it may be selected. */
+export type CorpusTake = {
+  readonly record: TakeRecord;
+  readonly retirement: RetirementRecord | null;
+  /** False when retired or when it is human-baseline comparison audio. */
+  readonly selectable: boolean;
 };
 
 /** The landed record, immutable by convention and by write-once storage. */
@@ -75,6 +127,7 @@ export type TakeRecord = {
   readonly source: TakeSource;
   readonly recordedAt: string;
   readonly supersedes?: string;
+  readonly baseline?: BaselineCapture;
 };
 
 export const AUDIO_FORMATS = ["wav", "webm", "ogg", "mp3", "m4a"] as const;
@@ -102,6 +155,16 @@ export type StudioErrorCode =
   | "malformed-take"
   | "malformed-dialogue"
   | "unreadable-dialogue"
+  | "missing-baseline-consent"
+  | "invalid-baseline-consent"
+  | "unknown-baseline-consent-field"
+  | "missing-reviewer"
+  | "missing-reason"
+  | "already-retired"
+  | "malformed-retirement"
+  | "retirement-drift"
+  | "take-retired"
+  | "baseline-take"
   | "studio-not-local"
   | "method-not-allowed"
   | "unknown-route"
@@ -127,6 +190,10 @@ const TAKE_ID = /^take-(\d{6})$/;
 const TAKES_DIR = "takes";
 const BLOBS_DIR = "blobs";
 const RECORD_FILE = "take.json";
+const RETIRED_FILE = "retired.json";
+const CONSENT_DATE = /^\d{4}-\d{2}-\d{2}$/;
+const BASELINE_FIELDS = ["participantId", "consentRef", "consentedAt", "call"] as const;
+const RETIREMENT_FIELDS = ["schemaVersion", "takeId", "audioSha256", "reviewer", "reason", "retiredAt"] as const;
 
 const FORMAT_CONTENT_TYPE: Record<AudioFormat, string> = {
   wav: "audio/wav",
@@ -250,6 +317,111 @@ function parseRecordedAt(value: unknown): string {
   return new Date(value).toISOString();
 }
 
+function consentText(
+  value: unknown,
+  field: (typeof BASELINE_FIELDS)[number],
+  max: number,
+): string {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new StudioError(
+      "missing-baseline-consent",
+      `a baseline take needs "${field}"; consent metadata is supplied at capture time, never defaulted`,
+    );
+  }
+  const trimmed = value.trim();
+  if (trimmed.length > max || /[\u0000-\u001f\u007f]/.test(trimmed)) {
+    throw new StudioError(
+      "invalid-baseline-consent",
+      `a baseline take's "${field}" must be 1–${max} printable characters: ${JSON.stringify(trimmed)}`,
+    );
+  }
+  return trimmed;
+}
+
+/** Parse the consent block carried by a human-baseline take. */
+function parseBaseline(value: unknown): BaselineCapture {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new StudioError("missing-baseline-consent", "baseline metadata must be an object with participantId, consentRef, consentedAt and call");
+  }
+  const baseline = value as Record<string, unknown>;
+  for (const key of Object.keys(baseline)) {
+    if (!(BASELINE_FIELDS as readonly string[]).includes(key)) {
+      throw new StudioError(
+        "unknown-baseline-consent-field",
+        `baseline metadata carries unknown field "${key}"; allowed: ${BASELINE_FIELDS.join(", ")}`,
+      );
+    }
+  }
+  const participantId = consentText(baseline.participantId, "participantId", 120);
+  const consentRef = consentText(baseline.consentRef, "consentRef", 200);
+  const consentedAt = consentText(baseline.consentedAt, "consentedAt", 10);
+  const consentDay = CONSENT_DATE.test(consentedAt) ? new Date(`${consentedAt}T00:00:00Z`) : null;
+  if (
+    !consentDay ||
+    Number.isNaN(consentDay.getTime()) ||
+    consentDay.toISOString().slice(0, 10) !== consentedAt
+  ) {
+    throw new StudioError(
+      "invalid-baseline-consent",
+      `a baseline take's "consentedAt" must be a real date in YYYY-MM-DD form, got ${JSON.stringify(consentedAt)}`,
+    );
+  }
+  if (baseline.call !== 1 && baseline.call !== 2) {
+    throw new StudioError(
+      "invalid-baseline-consent",
+      `a baseline take's "call" must be 1 or 2 (the plan records two calls per participant), got ${JSON.stringify(baseline.call)}`,
+    );
+  }
+  return { participantId, consentRef, consentedAt, call: baseline.call };
+}
+
+function retirementText(value: unknown, field: "reviewer" | "reason", max: number): string {
+  const code = field === "reviewer" ? "missing-reviewer" : "missing-reason";
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new StudioError(code, `a retirement needs a ${field}; the decision is attributable, never anonymous`);
+  }
+  const trimmed = value.trim();
+  if (trimmed.length > max || /[\u0000-\u001f\u007f]/.test(trimmed)) {
+    throw new StudioError(code, `a retirement's ${field} must be 1–${max} printable characters: ${JSON.stringify(trimmed)}`);
+  }
+  return trimmed;
+}
+
+function parseRetirement(raw: unknown, from: string): RetirementRecord {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    throw new StudioError("malformed-retirement", `${from} is not a retirement record`);
+  }
+  const record = raw as Record<string, unknown>;
+  for (const key of Object.keys(record)) {
+    if (!(RETIREMENT_FIELDS as readonly string[]).includes(key)) {
+      throw new StudioError("malformed-retirement", `${from} carries unknown field "${key}"`);
+    }
+  }
+  if (record.schemaVersion !== RETIREMENT_SCHEMA_VERSION) {
+    throw new StudioError("malformed-retirement", `${from} has schema version ${String(record.schemaVersion)}; this store writes ${RETIREMENT_SCHEMA_VERSION}`);
+  }
+  const takeId = record.takeId;
+  if (typeof takeId !== "string" || !TAKE_ID.test(takeId)) {
+    throw new StudioError("malformed-retirement", `${from} has an invalid take id ${JSON.stringify(takeId)}`);
+  }
+  const audioSha256 = record.audioSha256;
+  if (typeof audioSha256 !== "string" || !/^[0-9a-f]{64}$/.test(audioSha256)) {
+    throw new StudioError("malformed-retirement", `${from} has an invalid sha256 ${JSON.stringify(audioSha256)}`);
+  }
+  const retiredAt = record.retiredAt;
+  if (typeof retiredAt !== "string" || Number.isNaN(Date.parse(retiredAt))) {
+    throw new StudioError("malformed-retirement", `${from} has an invalid retiredAt ${JSON.stringify(retiredAt)}`);
+  }
+  return {
+    schemaVersion: RETIREMENT_SCHEMA_VERSION,
+    takeId,
+    audioSha256,
+    reviewer: retirementText(record.reviewer, "reviewer", 120),
+    reason: retirementText(record.reason, "reason", 500),
+    retiredAt: new Date(retiredAt).toISOString(),
+  };
+}
+
 /** Strict reader: a record that carries a field this schema did not write is refused. */
 function parseTakeRecord(raw: unknown, from: string): TakeRecord {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
@@ -292,6 +464,7 @@ function parseTakeRecord(raw: unknown, from: string): TakeRecord {
   if (supersedes !== undefined && (typeof supersedes !== "string" || !TAKE_ID.test(supersedes))) {
     throw new StudioError("malformed-take", `${from} has an invalid supersedes id ${JSON.stringify(supersedes)}`);
   }
+  const baseline = record.baseline === undefined ? undefined : parseBaseline(record.baseline);
   return {
     schemaVersion: TAKE_SCHEMA_VERSION,
     takeId,
@@ -303,6 +476,7 @@ function parseTakeRecord(raw: unknown, from: string): TakeRecord {
     source: parsedSource,
     recordedAt: parseRecordedAt(record.recordedAt),
     ...(supersedes === undefined ? {} : { supersedes }),
+    ...(baseline === undefined ? {} : { baseline }),
   };
 }
 
@@ -347,6 +521,18 @@ export type TakeStore = {
   read(takeId: string): Promise<{ record: TakeRecord; bytes: Buffer }>;
   /** Rehash every take; a changed blob or record is a named refusal. */
   verify(): Promise<{ takes: number; bytes: number }>;
+  /** Mark a take retired; the take, its record and its bytes stay readable. */
+  retire(takeId: string, input: RetirementInput): Promise<RetirementRecord>;
+  /** One take's retirement, or `null`; a retirement never edits the take. */
+  retirement(takeId: string): Promise<RetirementRecord | null>;
+  /** Every take with its retirement and whether a new scenario may select it. */
+  corpus(): Promise<CorpusTake[]>;
+  /** Active human-baseline takes: consent metadata present and not retired. */
+  baselineTakes(): Promise<TakeRecord[]>;
+  /** Takes a new scenario may select: not retired and not baseline audio. */
+  selectable(): Promise<TakeRecord[]>;
+  /** Refuse by name when a take may not be selected by a new scenario. */
+  assertSelectable(takeId: string): Promise<TakeRecord>;
 };
 
 export type OpenTakeStoreOptions = {
@@ -451,6 +637,7 @@ export async function openTakeStore(options: OpenTakeStoreOptions): Promise<Take
       input.mode === "upload" ? input.upload : input.prompt,
       input.mode,
     );
+    const baseline = input.baseline === undefined ? undefined : parseBaseline(input.baseline);
     const recordedAt = parseRecordedAt(input.recordedAt ?? now().toISOString());
     const sha256 = sha256Hex(audio);
 
@@ -485,6 +672,7 @@ export async function openTakeStore(options: OpenTakeStoreOptions): Promise<Take
       source,
       recordedAt,
       ...(input.supersedes === undefined ? {} : { supersedes: input.supersedes }),
+      ...(baseline === undefined ? {} : { baseline }),
     };
 
     const blobPath = join(root, audioPath);
@@ -520,5 +708,126 @@ export async function openTakeStore(options: OpenTakeStoreOptions): Promise<Take
     return { takes: records.length, bytes };
   }
 
-  return { root, land, list, get, read, verify };
+  async function readRetirement(takeId: string, record: TakeRecord): Promise<RetirementRecord | null> {
+    const path = join(takesDir, takeId, RETIRED_FILE);
+    let raw: string;
+    try {
+      raw = await readFile(path, "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw new StudioError("studio-io", `cannot read ${path}: ${errorText(error)}`);
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw) as unknown;
+    } catch (error) {
+      throw new StudioError("malformed-retirement", `${path} is not valid JSON: ${errorText(error)}`);
+    }
+    const retirement = parseRetirement(parsed, path);
+    if (retirement.takeId !== takeId || retirement.audioSha256 !== record.audioSha256) {
+      throw new StudioError(
+        "retirement-drift",
+        `${path} retires ${retirement.takeId} (${retirement.audioSha256}); the take under ${takeId} is ${record.takeId} (${record.audioSha256})`,
+      );
+    }
+    return retirement;
+  }
+
+  async function retirement(takeId: string): Promise<RetirementRecord | null> {
+    const record = await readRecord(takeId);
+    if (!record) return null;
+    return readRetirement(takeId, record);
+  }
+
+  async function retire(takeId: string, input: RetirementInput): Promise<RetirementRecord> {
+    const record = await readRecord(takeId);
+    if (!record) {
+      throw new StudioError("unknown-take", `cannot retire "${takeId}": no such take in the store`);
+    }
+    if (await readRetirement(takeId, record)) {
+      throw new StudioError(
+        "already-retired",
+        `take "${takeId}" is already retired; a retirement is written once and never rewritten`,
+      );
+    }
+    if (typeof input !== "object" || input === null) {
+      throw new StudioError("missing-reviewer", "a retirement needs a reviewer, a reason and the take it retires");
+    }
+    const reviewer = retirementText(input.reviewer, "reviewer", 120);
+    const reason = retirementText(input.reason, "reason", 500);
+    const retiredAt = parseRecordedAt(input.retiredAt ?? now().toISOString());
+    const retirementRecord: RetirementRecord = {
+      schemaVersion: RETIREMENT_SCHEMA_VERSION,
+      takeId,
+      audioSha256: record.audioSha256,
+      reviewer,
+      reason,
+      retiredAt,
+    };
+    await writeNew(join(takesDir, takeId, RETIRED_FILE), `${JSON.stringify(retirementRecord, null, 2)}\n`);
+    return retirementRecord;
+  }
+
+  async function corpus(): Promise<CorpusTake[]> {
+    const rows: CorpusTake[] = [];
+    for (const record of await list()) {
+      const marked = await readRetirement(record.takeId, record);
+      rows.push({
+        record,
+        retirement: marked,
+        selectable: marked === null && record.baseline === undefined,
+      });
+    }
+    return rows;
+  }
+
+  async function baselineTakes(): Promise<TakeRecord[]> {
+    const active: TakeRecord[] = [];
+    for (const record of await list()) {
+      if (record.baseline === undefined) continue;
+      if (await readRetirement(record.takeId, record)) continue;
+      active.push(record);
+    }
+    return active;
+  }
+
+  async function selectable(): Promise<TakeRecord[]> {
+    return (await corpus()).filter((entry) => entry.selectable).map((entry) => entry.record);
+  }
+
+  async function assertSelectable(takeId: string): Promise<TakeRecord> {
+    const record = await readRecord(takeId);
+    if (!record) {
+      throw new StudioError("unknown-take", `cannot select "${takeId}": no such take in the store`);
+    }
+    const marked = await readRetirement(takeId, record);
+    if (marked) {
+      throw new StudioError(
+        "take-retired",
+        `take "${takeId}" was retired by ${marked.reviewer} on ${marked.retiredAt} (${marked.reason}); a retired take is never selected by a new scenario`,
+      );
+    }
+    if (record.baseline) {
+      throw new StudioError(
+        "baseline-take",
+        `take "${takeId}" is human-baseline blind comparison audio for participant ${record.baseline.participantId}; it is never selected by a certification scenario`,
+      );
+    }
+    return record;
+  }
+
+  return {
+    root,
+    land,
+    list,
+    get,
+    read,
+    verify,
+    retire,
+    retirement,
+    corpus,
+    baselineTakes,
+    selectable,
+    assertSelectable,
+  };
 }
