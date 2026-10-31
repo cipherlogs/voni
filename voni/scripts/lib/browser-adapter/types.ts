@@ -233,12 +233,18 @@ export type BrowserEvidenceBundle = {
     readonly rows: readonly Record<string, unknown>[];
     readonly lineCount: number;
     /**
-     * The browser adapter's marks carry no caption text (call-marks.ts keeps
-     * text out of production evidence), so the spoken transcript is absent
-     * here and every caption-reading X property fails closed by name.
+     * The visitor's final lines, joined to the call clock through the client's
+     * own per-turn marks. Absent when the page rendered none or the line count
+     * and the turn marks disagree; the gap then names why, never a guess.
      */
-    readonly transcript: null;
-    readonly transcriptGap: string;
+    readonly transcript: readonly {
+      readonly role: "caller" | "agent";
+      readonly text: string;
+      readonly atMs: number;
+      readonly final: true;
+      readonly turn: null;
+    }[] | null;
+    readonly transcriptGap: string | null;
   };
   /** The worklet's rendered output: the certifying adapter always has it. */
   readonly wav: {

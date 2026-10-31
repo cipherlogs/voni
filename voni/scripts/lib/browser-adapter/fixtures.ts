@@ -135,6 +135,8 @@ export function writeBrowserEvidence(input: {
   readonly traceRows?: readonly Record<string, unknown>[];
   readonly providerFallback?: boolean;
   readonly endOverride?: Record<string, unknown>;
+  /** Per-final-caption turn marks, as the client writes them. */
+  readonly turnMarks?: readonly { readonly atMs: number; readonly role: "caller" | "agent" }[];
 }): { marksPath: string; capturePath: string } {
   mkdirSync(input.eventsDir, { recursive: true });
   mkdirSync(input.capturesDir, { recursive: true });
@@ -190,6 +192,16 @@ export function writeBrowserEvidence(input: {
   }
   const marksCallId = input.marksCallId ?? input.callId;
   const artifact = marksArtifact(marksCallId, captureName, input.marksOverride ?? {});
+  const startedMs = Date.parse(artifact.startedAt);
+  for (const [index, turn] of (input.turnMarks ?? []).entries()) {
+    artifact.marks.push({
+      name: "turn",
+      at: new Date(startedMs + turn.atMs).toISOString(),
+      epochMs: startedMs + turn.atMs,
+      tMs: turn.atMs,
+      detail: { role: turn.role === "caller" ? "user" : "agent", index },
+    });
+  }
   if (input.captureComplete === false) {
     artifact.marks = artifact.marks.map((mark) =>
       mark.name === "delivered_capture"
@@ -226,6 +238,8 @@ export function fakeBrowserCall(input: {
   readonly traceRows?: readonly Record<string, unknown>[];
   readonly providerFallback?: boolean;
   readonly endOverride?: Record<string, unknown>;
+  readonly marksOverride?: Partial<CallMarksArtifact>;
+  readonly turnMarks?: readonly { readonly atMs: number; readonly role: "caller" | "agent" }[];
   readonly edge?: BrowserCallResult["edge"];
   readonly faultsApplied?: BrowserCallResult["faultsApplied"];
 }): BrowserCallResult {
@@ -245,6 +259,8 @@ export function fakeBrowserCall(input: {
     ...(input.traceRows === undefined ? {} : { traceRows: input.traceRows }),
     ...(input.providerFallback === undefined ? {} : { providerFallback: input.providerFallback }),
     ...(input.endOverride === undefined ? {} : { endOverride: input.endOverride }),
+    ...(input.marksOverride === undefined ? {} : { marksOverride: input.marksOverride }),
+    ...(input.turnMarks === undefined ? {} : { turnMarks: input.turnMarks }),
   });
   input.withEvidence?.(paths);
   const timeline = [

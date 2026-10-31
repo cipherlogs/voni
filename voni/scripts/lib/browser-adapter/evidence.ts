@@ -180,6 +180,56 @@ const browserError: AdapterErrorFactory = (code, message) =>
     message,
   );
 
+type BrowserTranscriptEntry = {
+  readonly role: "caller" | "agent";
+  readonly text: string;
+  readonly atMs: number;
+  readonly final: true;
+  readonly turn: null;
+};
+
+/**
+ * Bind the visitor's transcript to the call clock.
+ *
+ * The page renders each final caller/agent line but stamps none of them. The
+ * client's marks already write one `turn` mark per final caption, in the same
+ * order (`voice-call.tsx` marks on `caption.final`). Joining caption i to
+ * turn mark i is the client's own observation of the same event, not an
+ * invented time; if the counts ever disagree the transcript is withheld with a
+ * named gap rather than a guessed timestamp.
+ */
+function browserTranscript(
+  captions: readonly { readonly role: "caller" | "agent"; readonly text: string }[] | undefined,
+  marks: CallMarksArtifact,
+): { transcript: BrowserTranscriptEntry[] | null; gap: string | null } {
+  const missing =
+    "the page rendered no visitor transcript; the spoken words were not captured, so a " +
+    "bridge, a continuation or a spoken leak cannot be judged on this adapter";
+  if (captions === undefined || captions.length === 0) {
+    return { transcript: null, gap: missing };
+  }
+  const turnMarks = marks.marks.filter((mark) => mark.name === "turn");
+  if (turnMarks.length !== captions.length) {
+    return {
+      transcript: null,
+      gap:
+        `the page rendered ${captions.length} transcript line(s) but the call marks record ` +
+        `${turnMarks.length} final turn(s); the transcript cannot be placed on the call clock ` +
+        "without guessing a time",
+    };
+  }
+  return {
+    transcript: captions.map((caption, index) => ({
+      role: caption.role,
+      text: caption.text,
+      atMs: turnMarks[index]!.tMs,
+      final: true,
+      turn: null,
+    })),
+    gap: null,
+  };
+}
+
 function readMarks(file: string, callId: string): CallMarksArtifact {
   if (!existsSync(file)) {
     throw new BrowserAdapterError(
@@ -371,10 +421,8 @@ export async function assembleBrowserEvidence(input: {
     gaps.push("the trace carries no cost.priced row; cost is never recomputed by the runner");
   }
   const turns = turnRows(rows);
-  const transcriptGap =
-    "the browser marks carry no caption text (call-marks.ts keeps text out of production " +
-    "evidence); the spoken words were not captured, so a bridge, a continuation or a spoken " +
-    "leak cannot be judged on this adapter";
+  const speech = browserTranscript(input.call.captions, marks);
+  if (speech.gap !== null) gaps.push(speech.gap);
   if (input.toolEvidence?.gap !== undefined && input.toolEvidence.gap !== null) {
     gaps.push(input.toolEvidence.gap);
   }
@@ -406,8 +454,8 @@ export async function assembleBrowserEvidence(input: {
       file: traceFile,
       rows,
       lineCount: rows.length,
-      transcript: null,
-      transcriptGap,
+      transcript: speech.transcript,
+      transcriptGap: speech.gap,
     },
     wav: {
       file: wavFile,
