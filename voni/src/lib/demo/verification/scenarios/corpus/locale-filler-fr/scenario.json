@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "name": "locale-filler-fr",
+  "class": "turn-taking",
+  "locale": "fr",
+  "heldOut": false,
+  "expectedProperties": [
+    "T4",
+    "T5"
+  ],
+  "soundscape": {
+    "id": "quiet-room"
+  },
+  "faults": [],
+  "takes": [
+    {
+      "id": "intro",
+      "audio": "takes/intro.wav",
+      "sha256": "3c008c3fec7fdd370249173df7e52409a4aebb5018c98386db5aa99608c6dde2",
+      "text": "Bonjour, je voudrais des informations sur le service."
+    },
+    {
+      "id": "filler",
+      "audio": "takes/filler.wav",
+      "sha256": "afa12d4f37aa5ebbcd8aa45b4c5fd9e56f5d06b64b9cd0b95b4c097143d2576a",
+      "text": "Euh... voyons..."
+    },
+    {
+      "id": "ask",
+      "audio": "takes/ask.wav",
+      "sha256": "e0635bf829c2328214d70bea4971ed60433bc88bcf0d59a1c146fc51f542a3cf",
+      "text": "Oui, le prix mensuel, s'il vous plaît."
+    }
+  ],
+  "script": [
+    {
+      "take": "intro",
+      "trigger": {
+        "type": "call-open"
+      }
+    },
+    {
+      "take": "filler",
+      "trigger": {
+        "type": "silence",
+        "silenceMs": 900
+      }
+    },
+    {
+      "take": "ask",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    }
+  ]
+}

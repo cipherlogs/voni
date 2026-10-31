@@ -23,6 +23,8 @@ export type DemoToolCall =
       ok: true;
       credential: DemoToolCredential;
       call: DemoCall;
+      /** The model's tool id: the route's idempotency key and the log's key. */
+      toolCallId: string;
       args: Record<string, unknown>;
     }
   | { ok: false; status: 400 | 401 | 404; error: string };
@@ -60,7 +62,13 @@ export async function resolveDemoToolCall(
     if (!parsed.success) return { ok: false, status: 400, error: "Invalid tool request." };
     const call = await lookup(parsed.data.context.callId);
     if (!call) return { ok: false, status: 404, error: "Call not found." };
-    return { ok: true, credential: "service", call, args: parsed.data.arguments };
+    return {
+      ok: true,
+      credential: "service",
+      call,
+      toolCallId: parsed.data.toolCallId,
+      args: parsed.data.arguments,
+    };
   }
 
   // Unchanged browser path: the bearer is the call token, then the same body.
@@ -68,5 +76,11 @@ export async function resolveDemoToolCall(
   if (!call) return { ok: false, status: 401, error: "Unauthorized." };
   const parsed = browserRequestSchema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) return { ok: false, status: 400, error: "Invalid tool request." };
-  return { ok: true, credential: "browser", call, args: parsed.data.arguments };
+  return {
+    ok: true,
+    credential: "browser",
+    call,
+    toolCallId: parsed.data.toolCallId,
+    args: parsed.data.arguments,
+  };
 }

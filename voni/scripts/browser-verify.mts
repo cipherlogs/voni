@@ -124,18 +124,11 @@ async function main(): Promise<number> {
   // file cannot forget its pointer.
   const modules = Object.fromEntries(
     evaluators
-      .filter((evaluator) => typeof evaluator.source === "string" && evaluator.source !== "")
-      .map((evaluator) => {
-        const source = evaluator.source as string;
-        return [
-          evaluator.propertyId,
-          [
-            source.startsWith("verdict/")
-              ? `voni/src/lib/demo/verification/${source}`
-              : `voni/src/lib/demo/verification/verdict/evaluators/${source}`,
-          ],
-        ] as const;
-      }),
+      .filter((evaluator) => typeof evaluator.modulePath === "string")
+      .map((evaluator) => [
+        evaluator.propertyId,
+        [`voni/src/lib/demo/verification/verdict/evaluators/${evaluator.modulePath}`],
+      ]),
   );
   const shared = {
     contract,

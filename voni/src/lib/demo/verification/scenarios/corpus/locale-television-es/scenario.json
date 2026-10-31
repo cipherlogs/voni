@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "name": "locale-television-es",
+  "class": "soundscape",
+  "locale": "es",
+  "heldOut": false,
+  "expectedProperties": [
+    "A3",
+    "A8"
+  ],
+  "soundscape": {
+    "id": "television",
+    "levelDb": -18
+  },
+  "faults": [],
+  "takes": [
+    {
+      "id": "intro",
+      "audio": "takes/intro.wav",
+      "sha256": "d0736c16f7c757ef030f5d1867afc87b2d2331fbf204fe9e6925dad383c280ce",
+      "text": "Hola, ¿me oyes? Hay la tele puesta."
+    },
+    {
+      "id": "ask",
+      "audio": "takes/ask.wav",
+      "sha256": "36f87653cad48bf3d2e18eb396589d045a8821c249d0437aa4215d30e0400eda",
+      "text": "Sí, quiero pedir una cita para el viernes."
+    }
+  ],
+  "script": [
+    {
+      "take": "intro",
+      "trigger": {
+        "type": "call-open"
+      }
+    },
+    {
+      "take": "ask",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    }
+  ]
+}

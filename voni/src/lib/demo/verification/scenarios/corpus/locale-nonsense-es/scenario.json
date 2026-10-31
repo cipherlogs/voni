@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "name": "locale-nonsense-es",
+  "class": "emotion",
+  "locale": "es",
+  "heldOut": false,
+  "expectedProperties": [
+    "C3",
+    "K7"
+  ],
+  "soundscape": {
+    "id": "quiet-room"
+  },
+  "faults": [],
+  "takes": [
+    {
+      "id": "intro",
+      "audio": "takes/intro.wav",
+      "sha256": "fe2f69126911940da95037d6ef22022824cc85a6b98f99ff65ede7614ec4d035",
+      "text": "Hola, mi cita es de color morado, ¿puedes arreglar la luna?"
+    },
+    {
+      "id": "nonsense",
+      "audio": "takes/nonsense.wav",
+      "sha256": "14ac7003a8b26c4b9c8f303260ca7e0630b6317bee60364752973479fc7ea664",
+      "text": "El flibérflax está debajo del martes, gira el buzón."
+    },
+    {
+      "id": "pivot",
+      "audio": "takes/pivot.wav",
+      "sha256": "b6ff80d307a180d5713fbaedda0cd1e6e823a1547a02d6a3a8bb34dd29eb738f",
+      "text": "Vale. En realidad solo quiero saber el horario."
+    }
+  ],
+  "script": [
+    {
+      "take": "intro",
+      "trigger": {
+        "type": "call-open"
+      }
+    },
+    {
+      "take": "nonsense",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    },
+    {
+      "take": "pivot",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    }
+  ]
+}

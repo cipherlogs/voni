@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "name": "locale-golden-returning-es",
+  "class": "golden-flow",
+  "locale": "es",
+  "heldOut": false,
+  "expectedProperties": [
+    "T2",
+    "X10"
+  ],
+  "soundscape": {
+    "id": "quiet-room"
+  },
+  "faults": [],
+  "takes": [
+    {
+      "id": "intro",
+      "audio": "takes/intro.wav",
+      "sha256": "e46f3c756a6252e8324bc81c6528920fb12b198189fb298fd87306de406281c3",
+      "text": "Hola, soy Marta. Llamé la semana pasada por la reparación."
+    },
+    {
+      "id": "ask",
+      "audio": "takes/ask.wav",
+      "sha256": "e87b78a1a101ec18d1e62a7576a4f228b72f00c47d059e14b97433c240f6ef08",
+      "text": "Sí, quería saber si ya tenéis la pieza."
+    }
+  ],
+  "script": [
+    {
+      "take": "intro",
+      "trigger": {
+        "type": "call-open"
+      }
+    },
+    {
+      "take": "ask",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    }
+  ]
+}

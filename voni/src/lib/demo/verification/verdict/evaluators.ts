@@ -186,14 +186,7 @@ function registerCandidates(
 
   for (const candidate of candidates) {
     const evaluator = candidate.evaluator;
-    // A discovered evaluator's source is the file it came from: the loader
-    // already names that file, and a card that pointed at the evaluator's own
-    // free-text label could resolve to nothing. An inline evaluator keeps its
-    // own source because no file exists for it.
-    const source =
-      candidate.moduleFamily !== undefined
-        ? candidate.source
-        : text(evaluator?.source) || candidate.source;
+    const source = text(evaluator?.source) || candidate.source;
     const propertyId = text(evaluator?.propertyId);
     if (propertyId === "") {
       throw new VerdictError(
@@ -232,7 +225,17 @@ function registerCandidates(
     }
     validateBars(property, evaluator, source);
     seen.set(propertyId, source);
-    registered.set(propertyId, { ...evaluator, propertyId, source });
+    registered.set(propertyId, {
+      ...evaluator,
+      propertyId,
+      source,
+      // The discovered module file is the one pointer a card can resolve. An
+      // evaluator's own `source` is a human label (and sometimes a path that
+      // does not exist), so it is never used as the card pointer.
+      ...(candidate.moduleFamily === undefined
+        ? {}
+        : { modulePath: candidate.source }),
+    });
   }
 
   return contract.properties.flatMap((property) => {

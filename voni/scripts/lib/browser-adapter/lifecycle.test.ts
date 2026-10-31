@@ -248,14 +248,10 @@ function input(input: {
     evaluators: input.evaluators,
     modules: Object.fromEntries(
       input.evaluators
-        .filter((evaluator) => typeof evaluator.source === "string")
+        .filter((evaluator) => typeof evaluator.modulePath === "string")
         .map((evaluator) => [
           evaluator.propertyId,
-          [
-            evaluator.source!.startsWith("verdict/")
-              ? `voni/src/lib/demo/verification/${evaluator.source}`
-              : `voni/src/lib/demo/verification/verdict/evaluators/${evaluator.source}`,
-          ],
+          [`voni/src/lib/demo/verification/verdict/evaluators/${evaluator.modulePath}`],
         ]),
     ),
     env: FAKE_KEYS,

@@ -46,6 +46,12 @@ export type ScenarioErrorCode =
   | "fast-ceiling-unset"
   | "fast-verdict-incomplete"
   | "fast-run-incomplete"
+  | "missing-locale-scenario"
+  | "locale-scenario-mismatch"
+  | "locale-coverage-gap"
+  | "locale-ceiling-unset"
+  | "locale-evidence-missing"
+  | "locale-residual-risk"
   | "invalid-audio"
   | "tts-failed";
 

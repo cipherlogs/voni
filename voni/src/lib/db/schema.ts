@@ -630,6 +630,51 @@ export const demoCalls = pgTable("demo_calls", {
 });
 
 /**
+ * One model-requested demo tool call, as evidence for the demo contract's
+ * X properties (`tool-log.ts` owns the redacted fact shape).
+ *
+ * The cascade trace says a tool was called and whether it succeeded; it never
+ * carries a payload. This row adds only what the X properties need and never
+ * the caller's address, name or a tool's prose: the email status, a returning
+ * flag, whether a reply went out, success, a closed code, latency and the
+ * attempt count. `attempts` rises when the same tool id is replayed, so a
+ * retry is visible without a second side-effect row.
+ *
+ * Only the pipeline's service credential writes here: a browser poll of
+ * `check_email` is not a model tool decision and would flood the evidence.
+ */
+export const demoToolCalls = pgTable(
+  "demo_tool_calls",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    callId: text("call_id")
+      .notNull()
+      .references(() => demoCalls.callId),
+    /** The model's tool id; the route's idempotency key. */
+    toolCallId: text("tool_call_id").notNull(),
+    toolName: text("tool_name").notNull(),
+    /** Which credential answered: `service` is the model; `browser` is a poll. */
+    credential: text("credential").notNull(),
+    /** check_email's outcome: found | free | not_arrived | invalid. */
+    status: text("status"),
+    returning: boolean("returning").notNull().default(false),
+    sent: boolean("sent").notNull().default(false),
+    ok: boolean("ok").notNull(),
+    code: text("code"),
+    latencyMs: integer("latency_ms"),
+    attempts: integer("attempts").notNull().default(1),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("demo_tool_calls_call_tool_uidx").on(
+      table.callId,
+      table.toolCallId,
+    ),
+    index("demo_tool_calls_call_idx").on(table.callId),
+  ],
+);
+
+/**
  * Counter buckets for rate limiting, keyed by an opaque bucket string
  * (e.g. "demo:ip:<hash>:2026-09-05T14" or "demo:global:2026-09-05").
  *
