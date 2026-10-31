@@ -49,7 +49,7 @@ from cascade.meta_llm import MessageHistory, MetaLLMTurn, last_complete_sentence
 from cascade.meta_stt import SpeechComplete, SpeechStart
 from cascade.thresholds import require_bound
 from cascade.tools import (
-    END_CALL_TOOL,
+    CALL_CONTROL_TOOLS,
     EndCallSignal,
     ToolLoop,
     closing_line_from,
@@ -289,7 +289,7 @@ class CascadeTurnStream:
             async for item in self._complete(record):
                 if isinstance(item, ToolCallRequest):
                     calls.append(item)
-                    if item.name == END_CALL_TOOL and closing_line_from(
+                    if item.name in CALL_CONTROL_TOOLS and closing_line_from(
                         item.arguments
                     ) is not None:
                         # The model has already decided to end the call: the
@@ -357,7 +357,12 @@ class CascadeTurnStream:
         """
         self._stop_speech()
         line = (signal.closing_line or "").strip()
-        if line:
+        # The model often streams its goodbye as content and then calls the
+        # tool with the same line as `closing_line` (Gemini does; Spark does
+        # not). The caller must hear one goodbye: speak the argument only when
+        # the turn spoke nothing, and treat the spoken text as the closing.
+        spoken = self._reply_text.strip()
+        if line and not spoken:
             await self._speak(line, force=True)
         self._turns.close(turn=state.id, reason="end_call")
         # Armed only after the line played: a barge-in before this point

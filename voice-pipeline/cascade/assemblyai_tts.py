@@ -1043,6 +1043,11 @@ class AssemblyAIStreamingTTS(StreamingTTS):
         if verdict.failure_class is FailureClass.DO_NOT_OPEN:
             await self._close_socket()
             if code == 1000:
+                # A clean close ends the session, not the call: the next
+                # speak must open a new one. Without this a barge-in during
+                # the greeting left the reply path with no socket and the
+                # call died with "the synthesis session is not open".
+                self.needs_reconnect = True
                 return CloseDecision(verdict=verdict, action=CloseAction.CLEAN)
             raise self._fail(verdict, f"{where}: {verdict.reason}")
         # Capture where the reply got to before the old session is replaced.

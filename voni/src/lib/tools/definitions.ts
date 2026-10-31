@@ -16,6 +16,14 @@ export const SENSITIVE_CAPTURE_TOOL = "prepare_sensitive_capture";
  */
 export const END_CALL_TOOL = "end_call";
 
+/**
+ * The demo body's call-control name, a signal rather than a webhook tool.
+ * Spark calls a tool named after the action the caller asked for ("hang up")
+ * and ignored an identically shaped `end_call` (measured against the real demo
+ * prompt). The cascade pipeline treats both names as call control.
+ */
+export const HANG_UP_TOOL = "hang_up";
+
 export const endCallSchema = z
   .object({
     closing_line: z.string().trim().min(1).max(300),
@@ -402,7 +410,7 @@ export function compileVoiceTools(config: AgentConfig): VoiceTool[] {
 export function validateToolArguments(name: string, value: unknown) {
   // Built-in call control lives outside the registry (never picked, always
   // compiled), so it validates against its own schema here.
-  if (name === END_CALL_TOOL) {
+  if (name === END_CALL_TOOL || name === HANG_UP_TOOL) {
     const parsed = endCallSchema.safeParse(value);
     if (!parsed.success) {
       return {

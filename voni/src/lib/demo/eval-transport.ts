@@ -1,6 +1,6 @@
 import type { SessionConfig, TokenFetcher } from "@/lib/voice/session";
 import type { ToolResponse } from "@/lib/tools/execute";
-import { END_CALL_TOOL } from "@/lib/tools/definitions";
+import { END_CALL_TOOL, HANG_UP_TOOL } from "@/lib/tools/definitions";
 import {
   DEMO_AGENT_VARIANTS,
   demoAgentStorageKey,
@@ -318,7 +318,11 @@ export function evalToolExecutor(deps: {
         retryable: false,
       };
     }
-    if (call.name === END_CALL_TOOL || call.name === SHOW_TEST_ADDRESS_TOOL) {
+    if (
+      call.name === END_CALL_TOOL ||
+      call.name === HANG_UP_TOOL ||
+      call.name === SHOW_TEST_ADDRESS_TOOL
+    ) {
       return executeDemoTool(call.name, call.arguments, { testTag: deps.testTag });
     }
     throw new Error(`Unhandled demo tool in the eval: ${call.name}`);

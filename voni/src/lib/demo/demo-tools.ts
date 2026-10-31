@@ -2,6 +2,7 @@ import {
   buildEndCallSuccess,
   END_CALL_TOOL,
   END_CALL_VOICE_TOOL,
+  HANG_UP_TOOL,
   validateToolArguments,
   type VoiceTool,
 } from "@/lib/tools/definitions";
@@ -16,6 +17,14 @@ import { inviteNowInstructions } from "./voni-agent";
  * the voice session imports it, so the inbox check, the reply and the code
  * check (server-only) are dispatched by the route, not here.
  */
+
+/**
+ * The demo's call control. Same schema, description and hold window as the
+ * shared `end_call`, under the name the model actually calls: against the real
+ * demo prompt, Spark said goodbye and called nothing when the tool was
+ * `end_call`, but called `hang_up` immediately with the identical schema.
+ */
+export const HANG_UP_VOICE_TOOL: VoiceTool = { ...END_CALL_VOICE_TOOL, name: HANG_UP_TOOL };
 
 export const SHOW_TEST_ADDRESS_TOOL = "show_test_address";
 export const CHECK_EMAIL_TOOL = "check_email";
@@ -112,7 +121,7 @@ export const CHECK_CODE_VOICE_TOOL: VoiceTool = {
 
 /** Every tool the demo agent carries, in stored-body order. */
 export const DEMO_VOICE_TOOLS: VoiceTool[] = [
-  END_CALL_VOICE_TOOL,
+  HANG_UP_VOICE_TOOL,
   SHOW_TEST_ADDRESS_VOICE_TOOL,
   CHECK_EMAIL_VOICE_TOOL,
   SEND_CODE_REPLY_VOICE_TOOL,
@@ -147,7 +156,7 @@ export async function executeDemoTool(
       },
     };
   }
-  if (name !== END_CALL_TOOL) {
+  if (name !== END_CALL_TOOL && name !== HANG_UP_TOOL) {
     return { ok: false, error: "Unknown tool.", retryable: false };
   }
   const parsed = validateToolArguments(name, rawArguments);

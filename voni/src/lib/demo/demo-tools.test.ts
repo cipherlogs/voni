@@ -32,7 +32,7 @@ test("show_test_address puts the inbox and the call's tag on screen; its result 
 
 test("demo tools outlast a long invite reply, and the address is optional", async () => {
   const { DEMO_VOICE_TOOLS } = await import("./demo-tools");
-  for (const tool of DEMO_VOICE_TOOLS.filter((t) => t.name !== "end_call")) {
+  for (const tool of DEMO_VOICE_TOOLS.filter((t) => t.name !== "hang_up")) {
     assert.ok(tool.timeout_seconds >= 30, `${tool.name}: ${tool.timeout_seconds}s`);
   }
   const check = DEMO_VOICE_TOOLS.find((t) => t.name === "check_email");

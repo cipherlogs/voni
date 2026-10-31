@@ -1,6 +1,6 @@
 {
   "name": "close-1000",
-  "description": "A normal close ends the session cleanly: no failure is recorded, nothing alerts and the leg's breaker is untouched.",
+  "description": "A normal close ends the session cleanly: no failure is recorded, nothing alerts and the leg's breaker is untouched. The next speak opens a new session (a barge-in during the greeting used to leave the reply path with no socket).",
   "kind": "close",
   "transport": "browser",
   "voice_id": "anna",
@@ -33,7 +33,7 @@
     "action": "clean",
     "failure_class": "do_not_open",
     "retried": false,
-    "needs_reconnect": false,
+    "needs_reconnect": true,
     "reconnects": 0,
     "breaker_opens": 0,
     "alerts": 0,

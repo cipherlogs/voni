@@ -154,6 +154,7 @@ class PlannedReconnectTests(unittest.TestCase):
         decision = asyncio.run(tts.handle_close(1000))
 
         self.assertIs(decision.action, CloseAction.CLEAN)
+        self.assertTrue(tts.needs_reconnect, "the next speak opens a new session")
         self.assertEqual(tts.failures, [])
         self.assertEqual(tts.breaker_opens, [])
 

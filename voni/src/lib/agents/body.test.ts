@@ -110,12 +110,16 @@ const PRE_67_BYTES = {
     "6248ce46d206ff1ba3f6cc3a4f59dbf2991e9836492c86f991cedb5ec77a48f7",
 };
 
+// Re-pinned once for the demo latency/tools fix: the demo call control is now
+// `hang_up` (Spark ignores an identically shaped `end_call`) and the signed
+// body carries the gateway LLM override the provisioning path already used.
+// Tenant bodies did not move.
 const PUBLISHED_BYTES = {
-  demoAnna: "62c9763bbe7ad4135594b0ae38328853186b25e22a7fe787fb6a4387ebb9bc73",
-  demoResume: "d2b33aab67b0dce2aea5e0cea9c2568105642a69840c9d1fe2e7488b3e712b74",
-  demoModel: "377ad20e19cae861806c31497e40bd6bdd1ff13ccba69dd4dcb3fc58ee972a1f",
-  demoExperiment: "cf70d68304c393506071cf2a71d17f60843d707fd55fa013ca7c2f7f3cec1edf",
-  demoLola: "56fcdea9e670856d068bcfb314c902728fca54115ceed670b471d763023110a6",
+  demoAnna: "83391991b5192fa56ac06b83e7fa32b95dd142bdcf5df0adac9c8d59ec3e7f73",
+  demoResume: "b0b0b42d0c1e7d0ca30300731552eba38a6bfe1268cb13b5d38fb5e1e95fbc20",
+  demoModel: "f50f4017f55f7163ded809cd397917c4147777fc6f5fa6abd2f8ec706b5b1fce",
+  demoExperiment: "25283ee710de0e1784f7e9c29ded5aaa945daa5ecc9aa91a60a342f88d308551",
+  demoLola: "765812117397e69379c335f63e0c1239662cc5b786c4085f6edbea840d7bc825",
   tenant: "2aa59ba5ab270412f7ecde7c0a68545eb1c13e90883a71c3e61ef7fd007ebeb0",
   tenantLanguages:
     "61c8e9154d0755ce5b8266958bbed487551f050b0c56b006ba64c95910d1aff6",
@@ -169,7 +173,7 @@ test("the unified builder leaves every published body byte-identical", () => {
 test("the demo refresh fingerprint is unchanged by the unification", () => {
   assert.equal(
     demoAgentFingerprint(buildDemoAgentBody("anna"), "key"),
-    "90527ed5ed034cac1900f3f170511fff8e179a39af76e452dcb04be841b98af6",
+    "7880fdfe7d201a103a9071bc1f95c2a282cbaa1cdcf9964d80cbba974aacafc3",
   );
   assert.notEqual(
     demoAgentFingerprint(buildDemoAgentBody("anna"), "key"),

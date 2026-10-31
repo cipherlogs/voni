@@ -319,6 +319,35 @@ class EndCallLLM:
         record.finished = True
 
 
+class SpokenGoodbyeLLM(EndCallLLM):
+    """Streams the goodbye as content, then calls ``end_call`` (Gemini's shape)."""
+
+    async def complete(self, *, messages, tools=None, turn=None):
+        self.requests.append(messages)
+        record = turn if turn is not None else MetaLLMTurn()
+        record.content_text += self.closing_line
+        yield TokenDelta(text=self.closing_line)
+        from cascade.meta_llm import MetaToolCall
+        from cascade.tools import END_CALL_TOOL
+
+        record.tool_calls.append(
+            MetaToolCall(
+                0,
+                "call_end",
+                END_CALL_TOOL,
+                '{"closing_line": "%s"}' % self.closing_line,
+            )
+        )
+        yield ToolCallRequest(
+            name=END_CALL_TOOL,
+            arguments={"closing_line": self.closing_line},
+            call_id="call_end",
+        )
+        record.finish_reason = "tool_calls"
+        record.usage = TurnUsage(prompt_tokens=4, completion_tokens=5)
+        record.finished = True
+
+
 class EndCallExecutor:
     async def execute(self, call):
         from cascade.tools import EndCallSignal
@@ -553,6 +582,35 @@ class EndCallSignalTest(unittest.TestCase):
         self.assertEqual([closing], stream._tts.spoken)
         self.assertEqual(["end"], ended)
         self.assertEqual(1, len(stream._llm.requests))
+
+    def test_a_goodbye_streamed_before_the_tool_is_spoken_only_once(self):
+        closing = "Okay, bye!"
+        ended: list[str] = []
+
+        async def on_end_call() -> None:
+            ended.append("end")
+
+        audio = RecordingAudio()
+        stream = CascadeTurnStream(
+            llm=SpokenGoodbyeLLM(closing),
+            tts=FakeTTS(),
+            emit_audio=audio,
+            tool_executor=EndCallExecutor(),
+            ledger=RecordingLedger(),
+            clock=FakeClock(),
+            on_end_call=on_end_call,
+        )
+
+        async def run():
+            await stream.start()
+            await stream.event(SpeechStart("t1"))
+            await stream.event(SpeechComplete("that's all", turn_id="t1"))
+            await stream.drain()
+
+        asyncio.run(run())
+
+        self.assertEqual([closing], stream._tts.spoken)
+        self.assertEqual(["end"], ended)
 
     def test_a_barge_in_during_the_goodbye_keeps_listening_and_never_hangs_up(self):
         closing = "Thanks for calling. Goodbye!"

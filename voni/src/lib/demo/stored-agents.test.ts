@@ -25,7 +25,6 @@ import {
   servedAgentOutputVolume,
   validateResumeHistory,
 } from "./stored-agents";
-import { END_CALL_TOOL } from "@/lib/tools/definitions";
 import { VONI_GREETINGS, DEMO_VOICE_IDS } from "./voni-agent";
 import { voiceOutputVolume } from "@/lib/agents/voice-levels";
 
@@ -450,7 +449,7 @@ test("demo body carries call control, tuning, and per-agent vocabulary", () => {
   const body = buildDemoAgentBody("anna");
   assert.deepEqual(
     body.tools.map((tool) => tool.name),
-    [END_CALL_TOOL, "show_test_address", "check_email", "send_code_reply", "check_code"],
+    ["hang_up", "show_test_address", "check_email", "send_code_reply", "check_code"],
   );
   assert.equal(body.input.transcription_mode, "balanced");
   assert.equal(body.input.turn_detection, null, "adaptive defaults; clears any stored object");

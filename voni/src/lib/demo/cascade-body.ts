@@ -5,7 +5,12 @@ import {
   signEnvelope,
   type EnvelopeClaimsV2,
 } from "@/lib/voice/envelope";
-import { buildDemoAgentBody, demoAgentFingerprint, type DemoAgentBody } from "@/lib/demo/stored-agents";
+import {
+  buildDemoAgentBody,
+  demoAgentFingerprint,
+  demoLlmOverride,
+  type DemoAgentBody,
+} from "@/lib/demo/stored-agents";
 import { DEMO_VOICE_IDS } from "@/lib/demo/voni-agent";
 import { secret } from "@/lib/env";
 import type { ResumeMessage } from "@/lib/voice/resume-history";
@@ -148,8 +153,16 @@ export async function buildDemoCascadeBody(
   // (stored-agents.ts): nothing is amended after it returns. The history is
   // inside the signed body, so the service cannot read a resumed conversation
   // the app did not sign.
+  // The demo runs the fast model when the gateway key is configured, exactly
+  // like the provisioning path does. Without it the cascade would ride the
+  // Standard rung (Spark): measured first-token time 0.7-3.5 s, and Spark does
+  // not call the `end_call`-shaped tool at all (it calls `hang_up`), so the
+  // hang-up tool never fires. The key rides the signed body; it never reaches
+  // the browser.
+  const llm = await demoLlmOverride();
   const body = buildDemoAgentBody(voice, {
     resume,
+    ...(llm ? { llm } : {}),
     ...(input.history === undefined ? {} : { history: input.history }),
   });
   const agentId = `demo:${voice}`;
