@@ -45,6 +45,7 @@ function document(overrides: Record<string, unknown> = {}): ScenarioDocument {
     expectedProperties: ["L4"],
     soundscape: { id: "quiet-room" },
     faults: [],
+    edge: [],
     takes: [
       {
         id: "hello",
@@ -250,6 +251,7 @@ test("a take path may not escape its scenario directory, even at generation time
           expectedProperties: ["L4"],
           soundscape: { id: "quiet-room" },
           faults: [],
+          edge: [],
           takes: [{ id: "hello", audio: "../outside.wav", sha256: UNHASHED_TAKE_SHA256 }],
           script: [{ take: "hello", trigger: { type: "call-open" } }],
         },

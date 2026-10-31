@@ -62,6 +62,11 @@ export type ScenarioSpec = {
     atMs: number;
     durationMs?: number;
   }[];
+  readonly edge?: readonly {
+    kind: "page-freeze" | "page-hidden" | "mic-denied" | "device-switch" | "deploy-drain";
+    atMs: number;
+    durationMs?: number;
+  }[];
   readonly text?: string;
 };
 
@@ -119,6 +124,7 @@ export function writeScenario(
     expectedProperties: spec.expectedProperties ?? ["G1", "E1"],
     soundscape: spec.soundscape ?? { id: "quiet-room" },
     faults: spec.faults ?? [],
+    ...(spec.edge === undefined ? {} : { edge: spec.edge }),
     takes: [
       {
         id: "opening",

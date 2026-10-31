@@ -313,6 +313,26 @@ export async function runProtocolDiagnosis(
     });
   }
 
+  if (scenario.edge.length > 0) {
+    const error = new ProtocolAdapterError(
+      "corpus-refused",
+      `scenario "${scenario.name}" asks for browser-edge conditions ` +
+        `(${scenario.edge.map((condition) => condition.kind).join(", ")}); the protocol ` +
+        "adapter has no page, microphone or deploy to change, so it refuses rather than " +
+        "pretending the condition ran",
+    );
+    return refused(runId, runDir, error, {
+      target: input.target,
+      locale,
+      scenarioName: input.scenarioName,
+      corpus: { version: corpus.version, sha256: corpus.fingerprint },
+      scenarioFingerprint: scenario.fingerprint,
+      codeFingerprint,
+      startedAt,
+      call: null,
+    });
+  }
+
   if (!target.local && input.eventsDir === undefined) {
     const error = new ProtocolAdapterError(
       "evidence-unreachable",

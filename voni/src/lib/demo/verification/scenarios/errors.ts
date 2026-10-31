@@ -29,6 +29,8 @@ export type ScenarioErrorCode =
   | "unsafe-take-path"
   | "unknown-fault"
   | "invalid-fault"
+  | "unknown-edge-condition"
+  | "invalid-edge-condition"
   | "held-out-mismatch"
   | "duplicate-scenario"
   | "empty-scenario"

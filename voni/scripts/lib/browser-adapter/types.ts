@@ -80,6 +80,58 @@ export type BrowserTarget = {
   readonly local: boolean;
 };
 
+/**
+ * What the browser harness observed at the edge: the page, the microphone, the
+ * device, the transport and the deploy. These are the visitor's own machine
+ * changing under the call, not a fake pipeline inside it.
+ */
+export type EdgeObservation = {
+  readonly conditions: readonly {
+    readonly kind: string;
+    readonly atMs: number;
+    readonly durationMs?: number;
+    readonly applied: boolean;
+    readonly observed: string;
+  }[];
+  /** A freeze/hide hold: the stop and the return, with the clock read on each side. */
+  readonly hold: {
+    readonly enteredAtMs: number;
+    readonly returnedAtMs: number | null;
+    readonly holdingObserved: boolean;
+    readonly talkClockAtEnterS: number;
+    readonly talkClockAtReturnS: number | null;
+    readonly stateAtEnter: string;
+    readonly stateAtReturn: string | null;
+    /** True when the return painted "connecting" (the ringback's trigger). */
+    readonly ringbackObserved: boolean;
+    readonly greetingCountAtEnter: number;
+    readonly greetingCountAtReturn: number | null;
+  } | null;
+  /** A denied microphone: the named state and the sockets left behind. */
+  readonly micDenied: {
+    readonly namedState: string;
+    readonly errorText: string;
+    readonly socketOpenAfterMs: number;
+    readonly openSockets: number;
+    readonly teardownObserved: boolean;
+  } | null;
+  /** A mid-call input device change: recovered, honestly ended, or neither. */
+  readonly deviceSwitch: {
+    readonly atMs: number;
+    readonly reacquired: boolean;
+    readonly state: string;
+    readonly endedHonestly: boolean;
+  } | null;
+  /** The deploy drain trial: one live call finishing, one new call refused. */
+  readonly drain: {
+    readonly liveCallFinished: boolean;
+    readonly newCallAttempted: boolean;
+    readonly newCallRefused: boolean;
+    readonly refusalCode: string | null;
+    readonly refusalText: string | null;
+  } | null;
+};
+
 /** What the browser harness actually did to the microphone. */
 export type SyntheticMicReport = {
   /** Always `getUserMedia`: the harness owns the mic at the browser API. */
@@ -112,6 +164,8 @@ export type BrowserCallResult = {
   readonly triggerPlan: TriggerPlan;
   readonly faultsApplied: readonly AppliedFault[];
   readonly syntheticMic: SyntheticMicReport;
+  /** The browser-edge conditions this call produced; null when none ran. */
+  readonly edge?: EdgeObservation | null;
   /** The real sockets and pages this call opened, recorded for the refusal check. */
   readonly browser: {
     readonly appUrl: string;
@@ -198,6 +252,10 @@ export type BrowserEvidenceBundle = {
       readonly seconds: number;
     };
     readonly syntheticMic: SyntheticMicReport;
+    /** The scenario's applied media faults, with what each actually did. */
+    readonly faultsApplied: readonly AppliedFault[];
+    /** The browser-edge observations R2–R7 are judged from. */
+    readonly edge: EdgeObservation | null;
   };
 };
 
@@ -224,6 +282,7 @@ export type BrowserCallRecord = {
   readonly triggerPlan: TriggerPlan;
   readonly faultsApplied: readonly AppliedFault[];
   readonly syntheticMic: SyntheticMicReport;
+  readonly edge: EdgeObservation | null;
   readonly browser: BrowserCallResult["browser"];
   readonly elapsedMs: number;
   readonly files: {
