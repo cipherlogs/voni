@@ -273,7 +273,7 @@ export function emailTestAfterCheck(state: EmailTestState, result: CheckEmailRes
   if (state.found) return state;
   // A near miss (spoken fallback) waits for the spelled-out address.
   if (result.status === "found" && result.exact) return { ...state, found: true };
-  if (result.status === "free") return { ...state, gated: true };
+  if (result.status === "free") return state.gated ? state : { ...state, gated: true };
   return state;
 }
 
@@ -284,6 +284,22 @@ export function emailTestAfterCheck(state: EmailTestState, result: CheckEmailRes
  */
 export function emailTestAfterCode(state: EmailTestState, status: CodeStatus): EmailTestState {
   return status === "correct" || status === "used" ? { ...state, verified: true } : state;
+}
+
+/**
+ * One `check_email` poll response as the browser reads it: the found/gate
+ * transition the check already owned, plus the call's code readback. The
+ * pipeline runs `check_code` server-side (ticket 15), so this boolean is the
+ * only way the visible verified state can rise on the cascade.
+ */
+export function emailTestAfterPoll(
+  state: EmailTestState,
+  data: Record<string, unknown>,
+): EmailTestState {
+  const next = emailTestAfterCheck(state, checkResultFromData(data));
+  return data.codeVerified === true && !next.verified
+    ? emailTestAfterCode(next, "correct")
+    : next;
 }
 
 /** Only an arrived business email earns the provisional extension (never a spoken claim). */

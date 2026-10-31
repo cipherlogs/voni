@@ -2,6 +2,7 @@ import { getVoice } from "@/lib/agents/voices";
 import {
   carryDemoCall,
   demoCallKey,
+  signDemoCallFor,
   signTagToken,
   verifyDemoCall,
   verifyTagToken,
@@ -22,7 +23,7 @@ import {
   type DeliveryResult,
 } from "./pipeline-delivery";
 import { WALL_CAP_S } from "./talk-clock";
-import { issueTestTag, loadLiveTestTag, tagForMint, type TestTagRow } from "./test-tag-registry";
+import { issueTestTag, loadLiveTestTag, tagForMint } from "./test-tag-registry";
 import { DEMO_VOICE_IDS } from "./voni-agent";
 import { pipelineUrlFromEnv, type PipelineUrlResult } from "@/lib/voice/pipeline-url";
 
@@ -42,7 +43,8 @@ import { pipelineUrlFromEnv, type PipelineUrlResult } from "@/lib/voice/pipeline
  *
  * There is no managed fallback and no engine choice. A pipeline refusal or a
  * missing pipeline configuration is the visitor's unavailable state; the
- * response never names an engine, a vendor or any part of the signed body.
+ * response never names a vendor, a fallback engine or the served body; the
+ * effective engine is reported as cascade.
  *
  * Every dependency the request touches — the limit store, the tag registry,
  * the call record, the body builder, the delivery client, the pipeline URL and
@@ -155,8 +157,13 @@ async function mint(request: Request, deps: MintDeps): Promise<Response> {
     deps.tags,
   );
 
-  // The demo call's existing identity: same call id on a rejoin, one row.
-  const demoCallToken = carryDemoCall(callKey, body.callToken, now, tag.id);
+  // The demo call's existing identity: a hold return always continues the
+  // held call id with a fresh token (a changed tag must never start a second
+  // call); every other mint carries the token while it is valid.
+  const demoCallToken =
+    resume && previous
+      ? signDemoCallFor(callKey, previous.callId, now, tag.id)
+      : carryDemoCall(callKey, body.callToken, now, tag.id);
   const demoCall = verifyDemoCall(callKey, demoCallToken, now);
   if (!demoCall) return unavailable();
   // The call's language, for Voni's reply. A rejoin keeps its row. Never

@@ -7,7 +7,6 @@ import {
   buildConfigMessage,
   CASCADE_PROTOCOL_VERSION,
   CascadeSession,
-  decideCascadeFallback,
   decodeAudioMessage,
   DrainingError,
   encodeAudioFrame,
@@ -657,15 +656,6 @@ test("a protocol-version refusal tears down the socket and microphone", async ()
   assert.equal(ended, 0, "a refused connect is not a completed call");
 });
 
-test("a protocol refusal is never retried on managed, even unspent", () => {
-  const decision = decideCascadeFallback({
-    failure: "protocol",
-    alreadyFellBack: false,
-  });
-  assert.equal(decision.action, "surface", "a managed retry would hide a half-deployed pair");
-  assert.equal(decision.error.retryManaged, false);
-});
-
 test("the end message's protocol version is checked against this client's", async () => {
   const socket = makeSocket();
   const errors: string[] = [];
@@ -726,36 +716,7 @@ test("a matching end message is not reported as a mismatch", async () => {
   assert.deepEqual(ended, { turns: 1 });
 });
 
-// ── Connect fallback (ticket 140 AC5) ──────────────────────────────────────
-// A draining instance, a routed-managed verdict and an unavailable socket all
-// receive no cascade call. The app routes the call to managed once; the session
-// hands over a typed cause and stops, never a dead-end error and never a
-// "completed call".
-
-test("a draining, managed or unavailable connect plans exactly one managed retry", () => {
-  for (const failure of ["draining", "managed", "unavailable"] as const) {
-    const first = decideCascadeFallback({ failure, alreadyFellBack: false });
-    assert.equal(first.action, "retry-managed");
-    if (first.action !== "retry-managed") return;
-    assert.ok(first.error instanceof DrainingError, "the cause is typed, not a string");
-    assert.equal(first.error.code, failure);
-    assert.equal(first.error.retryManaged, true, "the one retry is still available");
-    assert.match(first.reason, new RegExp(failure === "unavailable" ? "unavailable" : failure));
-    assert.match(first.reason, /managed path/, "the visible reason names where the call went");
-
-    const second = decideCascadeFallback({ failure, alreadyFellBack: true });
-    assert.equal(second.action, "surface", "a second failure is not retried");
-    if (second.action !== "surface") return;
-    assert.equal(second.error.code, failure);
-    assert.equal(second.error.retryManaged, false, "the retry was already spent");
-    assert.equal(second.error.message, first.error.message);
-  }
-});
-
-test("the session reports a bare cause: retryManaged belongs to the decision", async () => {
-  // A session cannot know whether the app already spent the one retry, so it
-  // must not pre-decide the verdict (a second cascade refusal would inherit a
-  // stale `true`). Only `decideCascadeFallback` sets it.
+test("a connect refusal reports only its named cause", async () => {
   const socket = makeSocket();
   const failures: DrainingError[] = [];
   const session = new CascadeSession(
@@ -771,7 +732,8 @@ test("the session reports a bare cause: retryManaged belongs to the decision", a
   socket.emit(JSON.stringify({ type: "error", code: "managed", message: "routed managed" }));
 
   assert.equal(failures.length, 1);
-  assert.equal(failures[0].retryManaged, undefined, "no verdict is hardcoded in the cause");
+  assert.equal(failures[0].code, "managed");
+  assert.equal(failures[0].message, "routed managed");
 });
 
 test("a routed-managed refusal on connect is handed over typed, not shown as a dead end", async () => {
@@ -914,7 +876,6 @@ test("a socket that fails or closes before acceptance is unavailable, reported o
 
   assert.equal(failures.length, 1, "one failed connection reports one cause");
   assert.equal(failures[0].code, "unavailable");
-  assert.equal(failures[0].retryManaged, undefined, "the decision owns the retry verdict");
   assert.equal(ended, 0);
   assert.equal(socket.closed, true);
 });

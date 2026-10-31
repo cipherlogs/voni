@@ -48,3 +48,17 @@ test("the reply and the code check are route tools, never answered in the browse
   assert.equal((await executeDemoTool("send_code_reply", { warm_line: "hi" })).ok, false);
   assert.equal((await executeDemoTool("check_code", { code: "1234" })).ok, false);
 });
+
+test("a check_email response can carry the call's code-readback fact without losing its shape", async () => {
+  const { withCodeVerified } = await import("./demo-tools");
+  const result = await executeDemoTool("show_test_address", {}, { testTag: "Lime 42" });
+  assert.equal(result.ok, true);
+  const withFact = withCodeVerified(result, true);
+  assert.equal(withFact.ok, true);
+  assert.equal(withFact.ok && withFact.data.codeVerified, true);
+  assert.equal(withFact.ok && withFact.data.testTag, "Lime 42", "the existing data survives");
+  assert.equal(withFact.ok && withFact.data.instructions, result.ok && result.data.instructions);
+
+  const failed = { ok: false as const, error: "No test tag on this call.", retryable: false };
+  assert.deepEqual(withCodeVerified(failed, true), failed, "a failed check keeps its shape");
+});

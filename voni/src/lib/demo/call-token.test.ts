@@ -38,6 +38,19 @@ test("a re-mint in the same call keeps its token (start, budgets); a dead one ge
   assert.notEqual(carryDemoCall("k", undefined, 1_000_000), undefined);
 });
 
+test("a hold return signs a fresh token for the same call id", async () => {
+  const { signDemoCallFor, verifyDemoCall, signDemoCall } = await import("./call-token");
+  const first = signDemoCall("k", 1_000_000, "tag-1");
+  const callId = verifyDemoCall("k", first, 1_000_000)?.callId;
+  assert.ok(callId);
+
+  const resumed = signDemoCallFor("k", callId, 2_000_000, "tag-2");
+  assert.notEqual(resumed, first, "the previous token is never reused");
+  const call = verifyDemoCall("k", resumed, 2_000_000);
+  assert.equal(call?.callId, callId, "the same call continues");
+  assert.equal(call?.tagId, "tag-2", "the token carries the tag it was issued with");
+});
+
 test("a call token can name its Test tag; a carry keeps it only for the same tag", async () => {
   const { carryDemoCall, signDemoCall, verifyDemoCall } = await import("./call-token");
   const tagged = signDemoCall("k", 1_000_000, "tag-1");

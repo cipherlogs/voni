@@ -5,9 +5,8 @@ import {
   signEnvelope,
   type EnvelopeClaimsV2,
 } from "@/lib/voice/envelope";
-import { buildDemoAgentBody, demoAgentFingerprint } from "@/lib/demo/stored-agents";
+import { buildDemoAgentBody, demoAgentFingerprint, type DemoAgentBody } from "@/lib/demo/stored-agents";
 import { DEMO_VOICE_IDS } from "@/lib/demo/voni-agent";
-import type { StoredAgentBody } from "@/lib/agents/body";
 import { secret } from "@/lib/env";
 import type { ResumeMessage } from "@/lib/voice/resume-history";
 
@@ -52,7 +51,7 @@ export type DemoCascadeCall = {
   voice: string;
   callId: string;
   /** The body built by the one builder (never forked, never amended here). */
-  body: StoredAgentBody & { history?: ResumeMessage[] };
+  body: DemoAgentBody;
   /** The signed v2 `kind: "demo"` envelope plus the body it covers. */
   signedBody: {
     envelope: EnvelopeClaimsV2 & { signature: string };
@@ -130,39 +129,6 @@ function requireCallId(callId: unknown): string {
   return callId;
 }
 
-/**
- * The hold return's history is a signed part of the body, so it is validated
- * here before anything is hashed: settled user/assistant turns only, no blank
- * lines, and never more than the registry's bound.
- */
-function requireResumeHistory(history: unknown): ResumeMessage[] {
-  if (!Array.isArray(history)) {
-    throw new DemoCascadeBodyError('demo call field "history" must be an array of turns');
-  }
-  if (history.length > BOUNDS.resumeHistoryTurns) {
-    throw new DemoCascadeBodyError(
-      `demo call field "history" carries ${history.length} turns; the bound is ${BOUNDS.resumeHistoryTurns}`,
-    );
-  }
-  return history.map((message, index) => {
-    if (typeof message !== "object" || message === null) {
-      throw new DemoCascadeBodyError(`demo call history[${index}] must be an object`);
-    }
-    const { role, content } = message as { role?: unknown; content?: unknown };
-    if (role !== "user" && role !== "assistant") {
-      throw new DemoCascadeBodyError(
-        `demo call history[${index}].role must be "user" or "assistant", got ${JSON.stringify(role)}`,
-      );
-    }
-    if (typeof content !== "string" || content.trim() === "") {
-      throw new DemoCascadeBodyError(
-        `demo call history[${index}].content must be a non-empty string`,
-      );
-    }
-    return { role, content };
-  });
-}
-
 /** Build the demo stored body, name the subject `demo:<voice>`, sign it and mint the token. */
 export async function buildDemoCascadeBody(
   input: DemoCascadeBodyInput,
@@ -171,12 +137,6 @@ export async function buildDemoCascadeBody(
   const voice = requireKnownVoice(input.voice);
   const callId = requireCallId(input.callId);
   const resume = input.resume === true;
-  if (input.history !== undefined && !resume) {
-    throw new DemoCascadeBodyError(
-      'demo call field "history" belongs to a hold return; a fresh call starts blank',
-    );
-  }
-  const history = input.history === undefined ? undefined : requireResumeHistory(input.history);
 
   const envelopeSecret = await secret("VOICE_PIPELINE_ENVELOPE_SECRET");
   if (envelopeSecret === undefined || envelopeSecret === "") {
@@ -184,11 +144,14 @@ export async function buildDemoCascadeBody(
   }
 
   const { envelopeTtlMs, callTokenTtlMs } = signingWindows();
-  const baseBody = buildDemoAgentBody(voice, { resume });
-  // The history rides inside the same signed body, so the service cannot read
-  // a resumed conversation the app did not sign.
-  const body: DemoCascadeCall["body"] =
-    history === undefined ? baseBody : { ...baseBody, history };
+  // The one builder owns the body, including a hold return's bounded history
+  // (stored-agents.ts): nothing is amended after it returns. The history is
+  // inside the signed body, so the service cannot read a resumed conversation
+  // the app did not sign.
+  const body = buildDemoAgentBody(voice, {
+    resume,
+    ...(input.history === undefined ? {} : { history: input.history }),
+  });
   const agentId = `demo:${voice}`;
   const fingerprint = demoAgentFingerprint(body, DEMO_ACCOUNT_SALT);
 

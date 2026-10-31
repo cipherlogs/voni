@@ -119,6 +119,17 @@ export const DEMO_VOICE_TOOLS: VoiceTool[] = [
   CHECK_CODE_VOICE_TOOL,
 ];
 
+/**
+ * Merge the call's code-readback fact into a `check_email` poll response.
+ * The pipeline runs `check_code` server-side, so the route adds this boolean
+ * from `demo_calls.codeVerifiedAt`; every existing field keeps its shape and
+ * a failed check is returned untouched.
+ */
+export function withCodeVerified(response: ToolResponse, codeVerified: boolean): ToolResponse {
+  if (!response.ok) return response;
+  return { ...response, data: { ...response.data, codeVerified } };
+}
+
 export async function executeDemoTool(
   name: string,
   rawArguments: unknown,

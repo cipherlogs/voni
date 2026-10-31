@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -387,63 +387,25 @@ test("a hold return reconnects visibly, silently, and speaks exactly once", () =
   assert.match(call, /rejoiningRef\.current = false/);
 });
 
-test("a refused demo connect is unavailable, never a managed retry", () => {
+test("a refused cascade connect is unavailable, never a managed retry", () => {
   const call = readRepo("components/voice-call.tsx");
   const handler = call.slice(
     call.indexOf("onConnectFailure: (failure)"),
     call.indexOf("onEnd: () => {"),
   );
 
-  // The demo branch ends the call with the visitor copy; only the inline test
-  // call reaches the one managed retry.
+  // The demo is the cascade's only client: every pre-accept refusal ends the
+  // call with the visitor copy, and nothing decides a managed retry.
   assert.match(call, /demoUnavailableMessage/);
   assert.match(
     handler,
-    /if \(modeKind === "demo"\) \{[\s\S]*?demoUnavailableMessage\(failure\.code\)[\s\S]*?setCallState\("ended"\)[\s\S]*?return;/,
-    "the demo maps the cause, ends the call, and returns before the decision",
+    /cascadeEnded = true;[\s\S]*?setError\(\{ message: demoUnavailableMessage\(failure\.code\) \}\)[\s\S]*?setCallState\("ended"\)/,
+    "the refusal maps the cause and ends the call",
   );
-  assert.ok(
-    handler.indexOf('if (modeKind === "demo")') <
-      handler.indexOf("decideCascadeFallback("),
-    "the demo branch returns before the only fallback decision",
-  );
-  assert.doesNotMatch(
-    handler,
-    /alreadyFellBack: modeKind === "demo"/,
-    "the demo never reaches the decision with a spent retry either",
-  );
-
-  // The managed retry itself refuses to run for the demo, no matter who asks.
-  const fallback = call.slice(
-    call.indexOf("const requestManagedFallback = useCallback"),
-    call.indexOf("// Synchronous pending mirror"),
-  );
-  assert.match(fallback, /if \(modeKind === "demo"\) return;/);
-  assert.doesNotMatch(fallback, /demoToken|authedToken|\/api\/voice-token/);
-});
-
-test("the inline test call keeps its one managed retry", () => {
-  const call = readRepo("components/voice-call.tsx");
-  const handler = call.slice(
-    call.indexOf("onConnectFailure: (failure)"),
-    call.indexOf("onEnd: () => {"),
-  );
-
-  // The session reports every pre-accept cause (draining, managed, unavailable,
-  // protocol) through this one handler; the decision owns whether the retry is
-  // still unspent, and the component owns the transport override.
-  assert.match(handler, /decideCascadeFallback\(\{/);
-  assert.match(handler, /failure\.code/, "the session's cause reaches the decision");
-  assert.match(
-    handler,
-    /alreadyFellBack: cascadeFellBackRef\.current/,
-    "the inline retry is unspent; the demo never reaches this branch",
-  );
-  assert.match(handler, /requestManagedFallback\(decision\.reason\)/);
-  // A second failure surfaces the typed message and ends the call; it never
-  // asks for another start.
-  assert.match(handler, /setError\(\{ message: decision\.error\.message \}\)/);
-  assert.match(handler, /setCallState\("ended"\)/);
+  assert.doesNotMatch(call, /decideCascadeFallback|FALLBACK_REASONS/);
+  assert.doesNotMatch(call, /requestManagedFallback/);
+  assert.doesNotMatch(call, /engineOverrideRef|cascadeFellBackRef|pendingFallbackRef|fallbackStartRef/);
+  assert.doesNotMatch(call, /fallbackReason/, "no visible fallback reason survives");
 });
 
 test("a cascade hold return re-mints the same call with resume and carried history", () => {
@@ -520,13 +482,12 @@ test("the pipeline's tools leave the demo UI working without a browser tool rela
 test("the demo start is the cascade client: one mint, no managed session", () => {
   const call = readRepo("components/voice-call.tsx");
 
-  // The demo takes the cascade branch whatever the engine prop says, so the
-  // managed branch below is unreachable for `mode.kind === "demo"`.
-  assert.match(
-    call,
-    /if \(modeKind === "demo" \|\| \(activeEngine === "cascade" && modeKind === "inline"\)\)/,
-    "the demo cannot reach the managed branch",
-  );
+  // The demo is the cascade's only client, so the cascade branch is demo-only
+  // and the managed branch below is unreachable for `mode.kind === "demo"`.
+  assert.match(call, /if \(modeKind === "demo"\) \{/, "the cascade branch is demo-only");
+  assert.doesNotMatch(call, /activeEngine/);
+  assert.doesNotMatch(call, /cascadeUrl/, "the mint delivers the pipeline URL");
+  assert.doesNotMatch(call, /engine\?:/, "the call has no engine prop");
 
   // The managed session exists only in the branch after the cascade slice.
   const managedMarker = call.indexOf("const session = new VoiceSession({");
@@ -552,7 +513,7 @@ test("the demo start is the cascade client: one mint, no managed session", () =>
 
   // A refused connect is surfaced, never retried on managed; the 429 keeps its
   // countdown instead of collapsing into a generic error.
-  assert.match(call, /alreadyFellBack: cascadeFellBackRef\.current/);
+  assert.doesNotMatch(call, /alreadyFellBack/);
   assert.match(call, /e instanceof RateLimitError/);
   assert.match(call, /setRetryIn\(retryAfter/);
 });
@@ -572,7 +533,71 @@ test("a post-accept managed or draining refusal never re-routes the call", () =>
   );
   assert.match(receive, /this\.failConnect\(/);
   assert.match(receive, /this\.handlers\.onError\?\.\(event\.message\)/);
-  assert.doesNotMatch(receive, /requestManagedFallback|decideCascadeFallback/);
+  assert.doesNotMatch(receive, /requestManagedFallback|decideCascadeFallback|retry-managed/);
+});
+
+test("the browser poll carries the call's code readback into the verified state", () => {
+  const call = readRepo("components/voice-call.tsx");
+
+  // The pipeline runs check_code server-side, so the poll's `codeVerified`
+  // raises the visible verified state; Voni's spoken line is the readback.
+  assert.match(call, /const next = emailTestAfterPoll\(test, body\.data\)/);
+  assert.match(call, /if \(next !== test\) startPollTransition\(\(\) => setEmailTest\(next\)\)/);
+  assert.match(
+    call,
+    /\(emailTest\.invited \|\| tagCarried \|\| emailTest\.found\) &&\s*!emailTest\.verified/,
+    "the poll continues after found until the code readback is verified",
+  );
+  assert.doesNotMatch(call, /emailTestAfterCheck/, "one transition per response");
+});
+
+test("the demo restores the silence check-in as hidden cascade context", () => {
+  const call = readRepo("components/voice-call.tsx");
+  const effect = call.slice(
+    call.indexOf("const floor = createDemoFloor({"),
+    call.indexOf("cascadeFloorRef.current = floor"),
+  );
+
+  // The check-in is the configured note, sent through speak() (hidden context
+  // on the cascade) and never appended to the transcript.
+  assert.match(
+    effect,
+    /speak: \(instructions\) => speak\(instructions, \{ key: "silence", droppable: true \}\)/,
+  );
+  assert.match(
+    effect,
+    /settled: \(\) =>\s*!speakingRef\.current &&\s*!mutedRef\.current &&\s*!holdingRef\.current &&\s*!closingRef\.current &&\s*!returnPendingRef\.current/,
+    "never over the agent, while muted, on hold, closing or waiting on a return",
+  );
+  assert.match(
+    effect,
+    /allowed: \(\) =>\s*!mutedRef\.current && !holdingRef\.current && !closingRef\.current && !returnPendingRef\.current/,
+  );
+  assert.match(call, /setInterval\(\(\) => floor\.tick\(\), DEMO_FLOOR_TICK_MS\)/);
+
+  // The cascade feeds the same floor events the managed session does.
+  assert.match(call, /cascadeFloorRef\.current\?\.callerWords\(\)/);
+  assert.match(call, /cascadeFloorRef\.current\?\.callerSpeechStarted\(\)/);
+  assert.match(call, /cascadeFloorRef\.current\?\.callerTurnDone\(\)/);
+  assert.match(call, /cascadeFloorRef\.current\?\.replyStarted\(\)/);
+  assert.match(call, /cascadeFloorRef\.current\?\.replyDone\(false\)/);
+  assert.match(call, /cascadeFloorRef\.current\?\.replyDone\(true\)/);
+  assert.doesNotMatch(call, /setTurns\([^)]*SILENCE_CHECK_IN/);
+});
+
+test("no inline cascade surface remains: the demo is the cascade's only client", () => {
+  const call = readRepo("components/voice-call.tsx");
+  const dialog = readRepo("components/test-agent-dialog.tsx");
+  const landing = readRepo("components/landing-demo.tsx");
+
+  assert.equal(
+    existsSync(join(here, "../app/e2e/cascade/page.tsx")),
+    false,
+    "the hidden inline cascade page is deleted, not merely unlinked",
+  );
+  assert.doesNotMatch(call, /engine="cascade"|engine=\{|cascadeUrl/);
+  assert.doesNotMatch(dialog, /engine=/);
+  assert.match(landing, /<VoiceCall mode=\{\{ kind: "demo" \}\} \/>/);
 });
 
 test("the hold clock union survives mute overlap", () => {

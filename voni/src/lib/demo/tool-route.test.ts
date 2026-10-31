@@ -29,6 +29,15 @@ test("both credentials run the same handlers: one dispatch, no per-credential br
   assert.doesNotMatch(routeSource, /credential ===/, "no handler is chosen by credential kind");
 });
 
+test("the check_email poll reports the call's code readback", () => {
+  // The pipeline runs check_code server-side, so the browser's only view of a
+  // verified code is the poll it already makes. The route reads the call row
+  // and merges the boolean; every other tool keeps its response shape.
+  assert.match(routeSource, /withCodeVerified\(result, await demoCallCodeVerified\(call\.callId\)\)/);
+  assert.match(routeSource, /name === CHECK_EMAIL_TOOL/);
+  assert.match(lookupSource, /codeVerifiedAt: demoCalls\.codeVerifiedAt/);
+});
+
 test("end_call stays an in-process signal, never an HTTP hop", () => {
   assert.doesNotMatch(routeSource, /end_call/);
   assert.doesNotMatch(routeSource, /fetch\(/);
