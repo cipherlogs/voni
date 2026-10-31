@@ -17,18 +17,22 @@ import { assertLocalOnly, startStudio } from "./http";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const VONI_ROOT = resolve(HERE, "../..");
 
-const USAGE = `Usage: npm run demo:studio -- [--port <n>] [--host <loopback>] [--root <dir>] [--dialogues <dir>]
+const USAGE = `Usage: npm run demo:studio -- [--port <n>] [--host <loopback>] [--root <dir>] [--dialogues <dir>] [--evidence-root <dir>] [--rating-root <dir>]
 
-  --port      loopback port; default 4317, 0 asks the OS for a free one
-  --host      loopback host only; default 127.0.0.1
-  --root      take store root; default voni/.studio
-  --dialogues authored dialogue scripts; default scripts/studio/dialogues`;
+  --port           loopback port; default 4317, 0 asks the OS for a free one
+  --host           loopback host only; default 127.0.0.1
+  --root           take store root; default voni/.studio
+  --dialogues      authored dialogue scripts; default scripts/studio/dialogues
+  --evidence-root  run evidence the Rate surface may read; default voni/evidence
+  --rating-root    rating session root; default <root>/rating`;
 
 type Args = {
   port: number;
   host: string;
   root: string;
   dialogues?: string;
+  evidenceRoot?: string;
+  ratingRoot?: string;
 };
 
 function fail(message: string): never {
@@ -41,6 +45,8 @@ function parseArgs(argv: string[]): Args {
   let host = "127.0.0.1";
   let root = resolve(VONI_ROOT, ".studio");
   let dialogues: string | undefined;
+  let evidenceRoot: string | undefined;
+  let ratingRoot: string | undefined;
   for (let index = 0; index < argv.length; index += 1) {
     const flag = argv[index];
     const value = argv[index + 1];
@@ -63,11 +69,22 @@ function parseArgs(argv: string[]): Args {
       root = resolve(value);
     } else if (flag === "--dialogues") {
       dialogues = resolve(value);
+    } else if (flag === "--evidence-root") {
+      evidenceRoot = resolve(value);
+    } else if (flag === "--rating-root") {
+      ratingRoot = resolve(value);
     } else {
       fail(`unknown flag ${flag}\n${USAGE}`);
     }
   }
-  return { port, host, root, ...(dialogues ? { dialogues } : {}) };
+  return {
+    port,
+    host,
+    root,
+    ...(dialogues ? { dialogues } : {}),
+    ...(evidenceRoot ? { evidenceRoot } : {}),
+    ...(ratingRoot ? { ratingRoot } : {}),
+  };
 }
 
 async function main(): Promise<void> {

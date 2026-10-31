@@ -19,12 +19,20 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { loadDialogues } from "./dialogues";
+import { RATING_AXES, RatingError, type RatingSubmission } from "./rate";
+import {
+  RATING_ROOT_DIR,
+  RatingStoreError,
+  openRatingStore,
+  type RatingStore,
+} from "./rating-store";
 import {
   RECORD_MODES,
   StudioError,
   contentTypeFor,
   openTakeStore,
   type RecordMode,
+  type RetirementInput,
   type TakeInput,
   type PromptCard,
   type TakeLabels,
@@ -37,7 +45,15 @@ export const STUDIO_NOT_LOCAL = "studio-not-local";
 const LOOPBACK_NAMES = new Set(["localhost", "127.0.0.1", "::1"]);
 const BODY_LIMIT = 40 * 1024 * 1024;
 const TAKE_AUDIO_ROUTE = /^\/api\/takes\/(take-\d{6})\/audio$/;
-const BODY_FIELDS = ["mode", "audioBase64", "labels", "prompt", "upload", "supersedes", "recordedAt"] as const;
+const TAKE_RETIRE_ROUTE = /^\/api\/takes\/(take-\d{6})\/retire$/;
+const RATE_SESSION_ROUTE = /^\/api\/rate\/sessions\/(rating-[0-9a-f]{64})$/;
+const RATE_ITEM_AUDIO_ROUTE = /^\/api\/rate\/sessions\/(rating-[0-9a-f]{64})\/items\/(item-\d{3})\/(call|ab\/a|ab\/b)$/;
+const RATE_RATINGS_ROUTE = /^\/api\/rate\/sessions\/(rating-[0-9a-f]{64})\/ratings$/;
+const RATE_EXPORT_ROUTE = /^\/api\/rate\/sessions\/(rating-[0-9a-f]{64})\/export$/;
+const BODY_FIELDS = ["mode", "audioBase64", "labels", "prompt", "upload", "supersedes", "recordedAt", "baseline"] as const;
+const RETIRE_BODY_FIELDS = ["reviewer", "reason", "retiredAt"] as const;
+const RATE_SESSION_BODY_FIELDS = ["reviewer", "certificate", "calls", "seed", "cleanPerLocale"] as const;
+const RATING_BODY_FIELDS = ["itemId", "axes", "freeText", "defectTags", "humanSide", "preferredSide"] as const;
 
 /**
  * Refuse a production environment by name. The Studio is an owner's local
@@ -102,21 +118,38 @@ async function readBody(request: IncomingMessage): Promise<Buffer> {
   return Buffer.concat(chunks);
 }
 
+async function readJsonBody(request: IncomingMessage): Promise<unknown> {
+  const body = await readBody(request);
+  try {
+    return JSON.parse(body.toString("utf8")) as unknown;
+  } catch (error) {
+    throw new StudioError("invalid-body", `the request body is not valid JSON: ${errorText(error)}`);
+  }
+}
+
+function asObject(value: unknown, what: string): Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new StudioError("invalid-body", `${what} must be a JSON object`);
+  }
+  return value as Record<string, unknown>;
+}
+
+function refuseUnknownFields(body: Record<string, unknown>, allowed: readonly string[], what: string): void {
+  for (const key of Object.keys(body)) {
+    if (!allowed.includes(key)) {
+      throw new StudioError("invalid-body", `${what} carries unknown field "${key}"; allowed: ${allowed.join(", ")}`);
+    }
+  }
+}
+
 function isBase64(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && value.length % 4 === 0 && /^[A-Za-z0-9+/]+={0,2}$/.test(value);
 }
 
 /** Decode the Record surface's POST body. Unknown fields are refused, never ignored. */
 function parseTakeBody(raw: unknown): TakeInput {
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
-    throw new StudioError("invalid-body", "a take body must be a JSON object");
-  }
-  const body = raw as Record<string, unknown>;
-  for (const key of Object.keys(body)) {
-    if (!(BODY_FIELDS as readonly string[]).includes(key)) {
-      throw new StudioError("invalid-body", `a take body carries unknown field "${key}"; allowed: ${BODY_FIELDS.join(", ")}`);
-    }
-  }
+  const body = asObject(raw, "a take body");
+  refuseUnknownFields(body, BODY_FIELDS, "a take body");
   const mode = body.mode;
   if (typeof mode !== "string" || !(RECORD_MODES as readonly string[]).includes(mode)) {
     throw new StudioError("invalid-body", `a take's mode must be one of ${RECORD_MODES.join(", ")}, got ${JSON.stringify(mode)}`);
@@ -133,6 +166,7 @@ function parseTakeBody(raw: unknown): TakeInput {
     labels: body.labels as TakeLabels,
     ...(typeof body.supersedes === "string" ? { supersedes: body.supersedes } : {}),
     ...(typeof body.recordedAt === "string" ? { recordedAt: body.recordedAt } : {}),
+    ...(body.baseline === undefined ? {} : { baseline: body.baseline as TakeInput["baseline"] }),
   };
   if (mode === "upload") {
     return { ...common, mode: "upload", upload: body.upload as { filename: string; contentType?: string } };
@@ -143,23 +177,110 @@ function parseTakeBody(raw: unknown): TakeInput {
   return { ...common, mode: "one-shot", prompt: body.prompt as PromptCard };
 }
 
+function parseRetireBody(raw: unknown): RetirementInput {
+  const body = asObject(raw, "a retirement body");
+  refuseUnknownFields(body, RETIRE_BODY_FIELDS, "a retirement body");
+  if (body.retiredAt !== undefined && typeof body.retiredAt !== "string") {
+    throw new StudioError("invalid-body", "a retirement's retiredAt must be an ISO timestamp string");
+  }
+  return {
+    reviewer: body.reviewer as string,
+    reason: body.reason as string,
+    ...(typeof body.retiredAt === "string" ? { retiredAt: body.retiredAt } : {}),
+  };
+}
+
+function parseRateSessionBody(raw: unknown): {
+  reviewer: string;
+  certificate: Parameters<RatingStore["create"]>[0]["certificate"];
+  calls: Parameters<RatingStore["create"]>[0]["calls"];
+  seed?: number;
+  cleanPerLocale?: number;
+} {
+  const body = asObject(raw, "a rating session body");
+  refuseUnknownFields(body, RATE_SESSION_BODY_FIELDS, "a rating session body");
+  if (body.certificate === undefined) {
+    throw new StudioError("invalid-body", "a rating session needs the certificate it samples");
+  }
+  if (!Array.isArray(body.calls)) {
+    throw new StudioError("invalid-body", "a rating session needs a calls array");
+  }
+  if (body.seed !== undefined && typeof body.seed !== "number") {
+    throw new StudioError("invalid-body", "a rating session's seed must be a number");
+  }
+  if (body.cleanPerLocale !== undefined && typeof body.cleanPerLocale !== "number") {
+    throw new StudioError("invalid-body", "a rating session's cleanPerLocale must be a number");
+  }
+  return {
+    reviewer: body.reviewer as string,
+    certificate: body.certificate as Parameters<RatingStore["create"]>[0]["certificate"],
+    calls: body.calls as Parameters<RatingStore["create"]>[0]["calls"],
+    ...(typeof body.seed === "number" ? { seed: body.seed } : {}),
+    ...(typeof body.cleanPerLocale === "number" ? { cleanPerLocale: body.cleanPerLocale } : {}),
+  };
+}
+
+function parseRatingBody(raw: unknown): RatingSubmission {
+  const body = asObject(raw, "a rating body");
+  refuseUnknownFields(body, RATING_BODY_FIELDS, "a rating body");
+  if (body.freeText !== undefined && typeof body.freeText !== "string") {
+    throw new StudioError("invalid-body", "a rating's freeText must be a string");
+  }
+  if (body.defectTags !== undefined && !Array.isArray(body.defectTags)) {
+    throw new StudioError("invalid-body", "a rating's defectTags must be an array of tags");
+  }
+  return {
+    itemId: body.itemId as string,
+    axes: body.axes as RatingSubmission["axes"],
+    ...(typeof body.freeText === "string" ? { freeText: body.freeText } : {}),
+    ...(Array.isArray(body.defectTags) ? { defectTags: body.defectTags as string[] } : {}),
+    ...(body.humanSide !== undefined ? { humanSide: body.humanSide as RatingSubmission["humanSide"] } : {}),
+    ...(body.preferredSide !== undefined ? { preferredSide: body.preferredSide as RatingSubmission["preferredSide"] } : {}),
+  };
+}
+
 function statusFor(error: StudioError, fallback: number): number {
-  if (error.code === "unknown-route") return 404;
+  if (error.code === "unknown-route" || error.code === "unknown-take") return 404;
   if (error.code === "method-not-allowed") return 405;
+  if (error.code === "already-retired") return 409;
   if (error.code === "studio-not-local") return 403;
   if (error.code === "surface-missing" || error.code === "malformed-dialogue" || error.code === "unreadable-dialogue") return 500;
   return fallback;
 }
 
+function ratingStatusFor(error: RatingError | RatingStoreError): number {
+  if (error instanceof RatingError) {
+    return error.code === "unknown-item" ? 404 : 400;
+  }
+  if (error.code === "unknown-session") return 404;
+  if (error.code === "session-exists" || error.code === "rating-already-filed") return 409;
+  if (error.code === "malformed-session" || error.code === "session-io") return 500;
+  return 400;
+}
+
 export type StudioHandlerOptions = {
   readonly store: TakeStore;
+  readonly ratingStore: RatingStore;
   readonly dialoguesDir: string;
   readonly surfacePath: string;
+  readonly rateSurfacePath: string;
+  readonly corpusSurfacePath: string;
 };
 
 /** The route table, exported for the server entry and the tests. */
 export function createStudioHandler(options: StudioHandlerOptions): (request: IncomingMessage, response: ServerResponse) => void {
-  const { store, dialoguesDir, surfacePath } = options;
+  const { store, ratingStore, dialoguesDir, surfacePath, rateSurfacePath, corpusSurfacePath } = options;
+
+  async function serveSurface(response: ServerResponse, path: string, label: string): Promise<void> {
+    let html: string;
+    try {
+      html = await readFile(path, "utf8");
+    } catch (error) {
+      throw new StudioError("surface-missing", `cannot read the ${label} page ${path}: ${errorText(error)}`);
+    }
+    response.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+    response.end(html);
+  }
 
   async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const host = request.headers.host;
@@ -188,14 +309,25 @@ export function createStudioHandler(options: StudioHandlerOptions): (request: In
         sendJson(response, 405, { error: "method-not-allowed", message: `${method} / is not a route; the record page is a GET` });
         return;
       }
-      let html: string;
-      try {
-        html = await readFile(surfacePath, "utf8");
-      } catch (error) {
-        throw new StudioError("surface-missing", `cannot read the record page ${surfacePath}: ${errorText(error)}`);
+      await serveSurface(response, surfacePath, "record");
+      return;
+    }
+
+    if (path === "/rate") {
+      if (method !== "GET") {
+        sendJson(response, 405, { error: "method-not-allowed", message: `${method} /rate is not a route; the rate page is a GET` });
+        return;
       }
-      response.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
-      response.end(html);
+      await serveSurface(response, rateSurfacePath, "rate");
+      return;
+    }
+
+    if (path === "/corpus") {
+      if (method !== "GET") {
+        sendJson(response, 405, { error: "method-not-allowed", message: `${method} /corpus is not a route; the corpus page is a GET` });
+        return;
+      }
+      await serveSurface(response, corpusSurfacePath, "corpus");
       return;
     }
 
@@ -204,7 +336,12 @@ export function createStudioHandler(options: StudioHandlerOptions): (request: In
         sendJson(response, 405, { error: "method-not-allowed", message: `${method} /api/health is not a route` });
         return;
       }
-      sendJson(response, 200, { ok: true, localOnly: true, takes: (await store.list()).length });
+      sendJson(response, 200, {
+        ok: true,
+        localOnly: true,
+        takes: (await store.list()).length,
+        ratingSessions: (await ratingStore.list()).length,
+      });
       return;
     }
 
@@ -214,14 +351,7 @@ export function createStudioHandler(options: StudioHandlerOptions): (request: In
         return;
       }
       if (method === "POST") {
-        const body = await readBody(request);
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(body.toString("utf8")) as unknown;
-        } catch (error) {
-          throw new StudioError("invalid-body", `the take body is not valid JSON: ${errorText(error)}`);
-        }
-        const take = await store.land(parseTakeBody(parsed));
+        const take = await store.land(parseTakeBody(await readJsonBody(request)));
         sendJson(response, 201, { take });
         return;
       }
@@ -246,6 +376,102 @@ export function createStudioHandler(options: StudioHandlerOptions): (request: In
       return;
     }
 
+    const retireMatch = TAKE_RETIRE_ROUTE.exec(path);
+    if (retireMatch) {
+      if (method !== "POST") {
+        sendJson(response, 405, { error: "method-not-allowed", message: `${method} is not a route; retiring a take is a POST` });
+        return;
+      }
+      const retirement = await store.retire(retireMatch[1], parseRetireBody(await readJsonBody(request)));
+      sendJson(response, 201, { retirement });
+      return;
+    }
+
+    if (path === "/api/corpus") {
+      if (method !== "GET") {
+        sendJson(response, 405, { error: "method-not-allowed", message: `${method} /api/corpus is not a route; the corpus is a GET` });
+        return;
+      }
+      sendJson(response, 200, { takes: await store.corpus() });
+      return;
+    }
+
+    if (path === "/api/rate/axes") {
+      if (method !== "GET") {
+        sendJson(response, 405, { error: "method-not-allowed", message: `${method} /api/rate/axes is not a route` });
+        return;
+      }
+      sendJson(response, 200, { axes: RATING_AXES });
+      return;
+    }
+
+    if (path === "/api/rate/sessions") {
+      if (method === "GET") {
+        sendJson(response, 200, { sessions: await ratingStore.list() });
+        return;
+      }
+      if (method === "POST") {
+        const created = await ratingStore.create(parseRateSessionBody(await readJsonBody(request)));
+        sendJson(response, 201, { session: created.blind });
+        return;
+      }
+      sendJson(response, 405, { error: "method-not-allowed", message: `${method} /api/rate/sessions is not a route; use GET or POST` });
+      return;
+    }
+
+    const rateSessionMatch = RATE_SESSION_ROUTE.exec(path);
+    if (rateSessionMatch) {
+      if (method !== "GET") {
+        sendJson(response, 405, { error: "method-not-allowed", message: `${method} is not a route; a blind session is a GET` });
+        return;
+      }
+      sendJson(response, 200, { session: await ratingStore.blind(rateSessionMatch[1]) });
+      return;
+    }
+
+    const rateAudioMatch = RATE_ITEM_AUDIO_ROUTE.exec(path);
+    if (rateAudioMatch) {
+      if (method !== "GET") {
+        sendJson(response, 405, { error: "method-not-allowed", message: `${method} is not a route; rate audio is a GET` });
+        return;
+      }
+      const rawSide = rateAudioMatch[3];
+      const side = rawSide === "call" ? "call" : rawSide === "ab/a" ? "A" : "B";
+      const audio = await ratingStore.audio(rateAudioMatch[1], rateAudioMatch[2], side);
+      response.writeHead(200, {
+        "content-type": audio.contentType,
+        "content-length": audio.bytes.byteLength,
+        "cache-control": "no-store",
+      });
+      response.end(audio.bytes);
+      return;
+    }
+
+    const rateRatingsMatch = RATE_RATINGS_ROUTE.exec(path);
+    if (rateRatingsMatch) {
+      if (method === "GET") {
+        sendJson(response, 200, { ratings: await ratingStore.ratings(rateRatingsMatch[1]) });
+        return;
+      }
+      if (method === "POST") {
+        const rating = await ratingStore.fileRating(rateRatingsMatch[1], parseRatingBody(await readJsonBody(request)));
+        sendJson(response, 201, { rating });
+        return;
+      }
+      sendJson(response, 405, { error: "method-not-allowed", message: `${method} is not a route; ratings are GET or POST` });
+      return;
+    }
+
+    const rateExportMatch = RATE_EXPORT_ROUTE.exec(path);
+    if (rateExportMatch) {
+      if (method !== "GET") {
+        sendJson(response, 405, { error: "method-not-allowed", message: `${method} is not a route; gold labels are a GET` });
+        return;
+      }
+      sendJson(response, 200, await ratingStore.goldLabels(rateExportMatch[1]));
+      return;
+    }
+
     if (path === "/api/dialogues") {
       if (method !== "GET") {
         sendJson(response, 405, { error: "method-not-allowed", message: `${method} /api/dialogues is not a route; scripts are authored as files` });
@@ -260,6 +486,14 @@ export function createStudioHandler(options: StudioHandlerOptions): (request: In
 
   return (request, response) => {
     void handle(request, response).catch((error: unknown) => {
+      if (error instanceof RatingError) {
+        sendJson(response, ratingStatusFor(error), { error: error.code, message: error.message });
+        return;
+      }
+      if (error instanceof RatingStoreError) {
+        sendJson(response, ratingStatusFor(error), { error: error.code, message: error.message });
+        return;
+      }
       if (error instanceof StudioError) {
         sendJson(response, statusFor(error, 400), { error: error.code, message: error.message });
         return;
@@ -287,6 +521,14 @@ export type StudioOptions = {
   readonly dialoguesDir?: string;
   /** The record page; defaults to `./record.html` beside this module. */
   readonly surfacePath?: string;
+  /** The rate page; defaults to `./rate.html` beside this module. */
+  readonly rateSurfacePath?: string;
+  /** The corpus page; defaults to `./corpus.html` beside this module. */
+  readonly corpusSurfacePath?: string;
+  /** Audio evidence root; a call path outside it is refused. Defaults to `voni/evidence`. */
+  readonly evidenceRoot?: string;
+  /** Rating session root; defaults to `<root>/rating`. */
+  readonly ratingRoot?: string;
   readonly env?: StudioEnv;
   readonly now?: () => Date;
 };
@@ -314,10 +556,18 @@ export async function startStudio(options: StudioOptions): Promise<RunningStudio
     );
   }
   const store = await openTakeStore({ root: options.root, ...(options.now ? { now: options.now } : {}) });
+  const ratingStore = await openRatingStore({
+    root: options.ratingRoot ?? join(options.root, RATING_ROOT_DIR),
+    evidenceRoot: options.evidenceRoot ?? join(HERE, "../../evidence"),
+    ...(options.now ? { now: options.now } : {}),
+  });
   const handler = createStudioHandler({
     store,
+    ratingStore,
     dialoguesDir: options.dialoguesDir ?? join(HERE, "dialogues"),
     surfacePath: options.surfacePath ?? join(HERE, "record.html"),
+    rateSurfacePath: options.rateSurfacePath ?? join(HERE, "rate.html"),
+    corpusSurfacePath: options.corpusSurfacePath ?? join(HERE, "corpus.html"),
   });
   const server = createServer(handler);
   await new Promise<void>((resolve, reject) => {

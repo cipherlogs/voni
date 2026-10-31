@@ -75,7 +75,17 @@ test("the Studio entry is a scripts command, not a Next route or build input", a
   assert.ok((await stat(entry)).isFile());
   assert.ok(!relative(VONI, entry).startsWith(`src${"/"}`), "the entry lives outside src/app and outside Next's module graph");
 
-  for (const name of ["server.mts", "http.ts", "take-store.ts", "dialogues.ts", "record.html"]) {
+  for (const name of [
+    "server.mts",
+    "http.ts",
+    "take-store.ts",
+    "dialogues.ts",
+    "record.html",
+    "rate.ts",
+    "rating-store.ts",
+    "rate.html",
+    "corpus.html",
+  ]) {
     const path = join(HERE, name);
     assert.ok((await stat(path)).isFile(), `${name} is a Studio file`);
     assert.ok(relative(VONI, path).startsWith(`scripts${"/"}`), `${name} lives under scripts/, never under src/`);
