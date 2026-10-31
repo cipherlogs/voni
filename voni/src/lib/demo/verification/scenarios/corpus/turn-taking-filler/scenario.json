@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "name": "turn-taking-filler",
+  "class": "turn-taking",
+  "locale": "en",
+  "heldOut": false,
+  "expectedProperties": [
+    "T4",
+    "T5"
+  ],
+  "soundscape": {
+    "id": "quiet-room"
+  },
+  "faults": [],
+  "takes": [
+    {
+      "id": "hello",
+      "audio": "takes/hello.wav",
+      "sha256": "70a11fa144d732e4e4be17cce823934384284b7edfb31b756a36e3d94058fbf5",
+      "text": "Hi, is this Voni?"
+    },
+    {
+      "id": "filler",
+      "audio": "takes/filler.wav",
+      "sha256": "e7a12c0db5966d4315d8be1aa9059e029a0e3ff98680ccd85d2c47ebf7360ff0",
+      "text": "Mm-hmm."
+    },
+    {
+      "id": "resume",
+      "audio": "takes/resume.wav",
+      "sha256": "e4338a389f594d023679da2c207a301674c333cffb7953dd182e2a914f955705",
+      "text": "Sorry, go on."
+    }
+  ],
+  "script": [
+    {
+      "take": "hello",
+      "trigger": {
+        "type": "call-open"
+      }
+    },
+    {
+      "take": "filler",
+      "trigger": {
+        "type": "silence",
+        "silenceMs": 800
+      }
+    },
+    {
+      "take": "resume",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    }
+  ]
+}
