@@ -30,6 +30,7 @@ import {
   renderCertificate,
   serializeCertificate,
 } from "../../src/lib/demo/verification/certificate";
+import { loadContract } from "../../src/lib/demo/verification/contract";
 import { PanelError } from "../../src/lib/demo/verification/panel";
 import { openRatingStore } from "../studio/rating-store";
 import {
@@ -119,7 +120,8 @@ async function sign(argv: readonly string[]): Promise<number> {
     ...(arg(argv, "--date") === undefined ? {} : { signedAt: arg(argv, "--date")! }),
   });
   const labels = exportGoldLabels({ session, ratings });
-  const completed = completeCertificateSignature(certificate, signature, labels);
+  const contract = await loadContract();
+  const completed = completeCertificateSignature(certificate, signature, labels, contract);
   verifyPanelSignature({ certificate: completed, session, ratings });
   writeCertificate(absolute, serializeCertificate(completed));
 

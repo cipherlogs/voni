@@ -22,6 +22,8 @@ import {
   deriveCertificateVerdict,
 } from "../../../src/lib/demo/verification/certificate/derive";
 import { validateCertificate } from "../../../src/lib/demo/verification/certificate/validate";
+import type { Contract } from "../../../src/lib/demo/verification/contract";
+import { judgePanel } from "../../../src/lib/demo/verification/panel/verdict";
 import { PanelError } from "../../../src/lib/demo/verification/panel/errors";
 import {
   PANEL_SIGNATURE_PREFIX,
@@ -225,14 +227,16 @@ export function verifyPanelSignature(input: VerifyPanelInput): { verified: true;
 }
 
 /**
- * Complete an unsigned certificate with the owner's signature. H7 is the one
- * property the signature changes; every other verdict is untouched, and the
- * completed document is passed through the shared validator.
+ * Complete an unsigned certificate with the owner's signature. H7 is always
+ * completed; when the contract is supplied, the panel's H1-H5 verdicts are
+ * merged first (a property that already passed is not overwritten by a smaller
+ * session). The completed document is passed through the shared validator.
  */
 export function completeCertificateSignature(
   certificate: Certificate,
   signature: PanelSignature,
   labels: PanelGoldLabelSet,
+  contract?: Contract,
 ): Certificate {
   if (certificate.panel !== null) {
     refuse(
@@ -274,16 +278,45 @@ export function completeCertificateSignature(
       `certificate "${certificate.runId}" carries no H7 property`,
     );
   }
-  const signedH7: CertificateProperty = {
-    ...h7,
-    status: "PASS",
-    reason: "pass",
-    sampleCount: 1,
-    citations: [`panel:signature:${signature.sessionId}`],
-  };
-  const properties = certificate.properties.map((property) =>
-    property.propertyId === "H7" ? signedH7 : property,
-  );
+  // Merge the panel's H1-H5 verdicts before re-deriving: a run that recorded
+  // them as pending (no evaluator) can become certified on their real labels.
+  // A property that already passed is left alone, so accumulated H2 judgments
+  // are not overwritten by this one session.
+  const panelVerdicts =
+    contract === undefined
+      ? []
+      : judgePanel(contract, {
+          goldLabels: labels,
+          signature,
+          certificate: { runId: certificate.runId, target: certificate.target },
+        });
+  const byId = new Map(panelVerdicts.map((property) => [property.propertyId, property]));
+  const properties = certificate.properties.map((property): CertificateProperty => {
+    const panel = byId.get(property.propertyId);
+    if (panel === undefined) {
+      if (property.propertyId !== "H7") return property;
+      return {
+        ...property,
+        status: "PASS",
+        reason: "pass",
+        sampleCount: 1,
+        citations: [`panel:signature:${signature.sessionId}`],
+      };
+    }
+    if (property.propertyId !== "H7" && property.status === "PASS") return property;
+    const citations =
+      panel.citations.length > 0 ? panel.citations : [`contract:${property.propertyId}`];
+    return {
+      propertyId: property.propertyId,
+      family: panel.family,
+      status: panel.status,
+      reason: panel.reason,
+      sampleCount: panel.sampleCount,
+      citations: [...citations],
+      gaps: [...panel.gaps],
+      scenarios: [],
+    };
+  });
   const verdict = deriveCertificateVerdict({
     eligibility: certificate.eligibility,
     properties,

@@ -117,8 +117,8 @@ test("the run kinds are the spec's three, each bound to its frozen ceiling", asy
     e3?.thresholds.map((threshold) => [threshold.key, threshold.value]),
     [
       ["dvCostFastRunMaxUsd", 2],
-      ["dvCostNightlyRunMaxUsd", 10],
-      ["dvCostFullRunMaxUsd", 30],
+      ["dvCostNightlyRunMaxUsd", 15],
+      ["dvCostFullRunMaxUsd", 45],
     ],
   );
   assert.equal(RUN_CEILING_KEYS.nightly, "dvCostNightlyRunMaxUsd");
@@ -133,13 +133,15 @@ test("a planned run is checked before it starts, against its own ceiling", async
   assert.equal(fast.passed, true);
   close(fast.usd, 1.5);
 
-  const nightly = preflightRunCeiling({ kind: "nightly", contract, plannedCalls: 52 });
+  const nightly = preflightRunCeiling({ kind: "nightly", contract, plannedCalls: 88 });
   assert.equal(nightly.passed, true);
-  close(nightly.usd, 7.8);
+  close(nightly.usd, 13.2);
+  assert.ok(nightly.usd !== null && nightly.usd <= 15);
 
-  const full = preflightRunCeiling({ kind: "full", contract, plannedCalls: 156 });
+  const full = preflightRunCeiling({ kind: "full", contract, plannedCalls: 264 });
   assert.equal(full.passed, true);
-  close(full.usd, 23.4);
+  close(full.usd, 39.6);
+  assert.ok(full.usd !== null && full.usd <= 45);
 });
 
 test("a plan that cannot fit its ceiling is refused before any call", async () => {

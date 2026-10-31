@@ -138,6 +138,14 @@ test("nightly health plans one repetition, and a Locale filter narrows the plan"
   assert.equal(nightly.calls, 40 + 12 * 4);
   assert.equal(nightly.repetitions, 1);
 
+  const full = planVerify({
+    request: { mode: "full", target: "local", json: false, help: false },
+    corpus,
+  });
+  assert.equal(full.calls, (40 + 12 * 4) * 3, "weekly full is the nightly plan at three repetitions");
+  assert.equal(full.calls, 264);
+  assert.equal(full.repetitions, 3);
+
   const german = planVerify({
     request: { mode: "full", target: "local", locale: "de", json: false, help: false },
     corpus,

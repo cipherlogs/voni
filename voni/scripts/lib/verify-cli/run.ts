@@ -49,6 +49,11 @@ import {
   type RunCostRow,
 } from "@/lib/demo/verification/economics";
 import {
+  applyPanelVerdict,
+  judgePanel,
+  type PanelJudgementInput,
+} from "@/lib/demo/verification/panel";
+import {
   DEFAULT_CORPUS_DIR,
   ScenarioError,
   judgeFastRun,
@@ -118,6 +123,11 @@ export type ScenarioCallOutcome = {
  * `signature` is the owner's panel signature, when `demo:certificate` has
  * already signed this run. A run never invents one; it is injectable so the
  * exit contract (3 while pending, 0 when signed) is testable.
+ *
+ * `panel` is the panel's gold-label set plus its signature, when the panel has
+ * run. It is merged into H1-H5/H7 before the certificate is built, so a signed
+ * full run can reach `certified`; without it those properties stay
+ * pending-human and the run exits 3, never 0.
  */
 export type VerifyDeps = {
   readonly env: Readonly<Record<string, string | undefined>>;
@@ -142,6 +152,8 @@ export type VerifyDeps = {
     readonly corpus: Corpus;
   }) => VerifyPlan;
   readonly signature?: PanelSignature | null;
+  /** The panel's gold labels and signature, when the panel has run. */
+  readonly panel?: PanelJudgementInput | null;
 };
 
 export type VerifyStatus =
@@ -555,7 +567,14 @@ async function certificationRun(
     evidence: scoped.evidence,
     calls: [...collected.eligibility],
   });
-
+  // The panel owns H1-H5/H7. Merge its gold-label verdicts before the
+  // certificate is built, so the signed run can be certified; without a panel
+  // those properties stay pending-human and the exit is 3, never 0.
+  const panelInput = deps.panel ?? null;
+  const judged =
+    panelInput === null
+      ? verdict
+      : applyPanelVerdict(verdict, judgePanel(contract, panelInput));
   if (request.mode === "nightly") {
     const status: VerifyStatus =
       verdict.verdict === "ineligible"
@@ -582,13 +601,13 @@ async function certificationRun(
   }
   const certificate = certificateFor({
     contract: scoped.contract,
-    run: verdict,
+    run: judged,
     plan,
     corpus,
     builds,
     collected,
     fingerprint,
-    panel: deps.signature ?? null,
+    panel: panelInput?.signature ?? deps.signature ?? null,
   });
   const exitCode = exitForCertificate(certificate, {
     target: plan.target,

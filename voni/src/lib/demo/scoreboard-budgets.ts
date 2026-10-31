@@ -784,16 +784,20 @@ const BUDGETS = {
     source: "demo-verification spec E3: fast-contract run ceiling <= $2",
   },
   dvCostNightlyRunMaxUsd: {
-    value: 10,
+    value: 15,
     unit: "usd",
     gate: "contract/E3",
-    source: "demo-verification spec E3: nightly-health run ceiling <= $10",
+    source:
+      "demo-verification owner amendment 2026-10-31: nightly-health run ceiling <= $15 " +
+      "(88 calls x $0.15 = $13.20)",
   },
   dvCostFullRunMaxUsd: {
-    value: 30,
+    value: 45,
     unit: "usd",
     gate: "contract/E3",
-    source: "demo-verification spec E3: full-certification run ceiling <= $30",
+    source:
+      "demo-verification owner amendment 2026-10-31: full-certification run ceiling <= $45 " +
+      "(264 calls x $0.15 = $39.60)",
   },
   dvBudgetStopMaxCount: {
     value: 0,

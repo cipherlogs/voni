@@ -53,8 +53,59 @@ have is a defect in this map.
 | Human baseline | three to five consented, hashed reference calls, blind comparison only | prepared, **not captured** (human gate): session plan and owner runbook in `docs/demo-human-baseline.md`; `voni/scripts/studio/baseline.ts` verifies consent references, the 4–6 minute band, rehashed takes, a pinned hash list and non-use as certification input, exposed as `npm run demo:baseline:verify`; `take-store.ts` lists active baseline takes with `baselineTakes()` | 25 |
 | Panel and gold labels | blind sample, seven axes, blind A/B, signature, exit 3 | `voni/src/lib/demo/verification/panel/` — `types.ts` fixes the twelve-call sample (two per Locale plus the two worst remaining failing calls, every failing call mandatory) and the gold-label/signature vocabulary; `verdict.ts` computes H1–H5 and H7 from the panel's gold labels against the contract's frozen bars; `run.ts` merges those verdicts into the run. The local-only orchestration is `voni/scripts/studio/panel/` — `session.ts` builds the blind session (every failing call mandatory), `gold-labels.ts` exports attributable labels and their digest, `signature.ts` signs/verifies and completes H7. `voni/scripts/lib/demo-certificate.ts` is `demo:certificate`; an unsigned certificate is `pending-human` and exits 3 | 27 |
 | CLI | `demo:verify`, `demo:studio`, `demo:certificate`; exits 0/1/2/3 | `voni/scripts/demo-verify.mts` is the command; the testable contract is `voni/scripts/lib/verify-cli/` — `args.ts` accepts the three spec forms and a defect card's replay command unchanged, `plan.ts` owns the target/mode/Locale matrix (fast ten ×1; nightly English 40 + Locale core 12 ×1; full the same ×3), and `run.ts` preflights keys, corpus and vendor builds as one named exit 2, takes the machine-wide timing lock (a held lock is a named exit 2, never a wait), dispatches diagnose through the protocol adapter and certification through the browser adapter, and issues at most one certificate from a full run. Diagnose never writes a certificate and the protocol adapter's exit 0 is refused. `staging` and `production` refuse by name (no evidence sink); nightly/full refuse by name until the 40-scenario English and four Locale core corpora land. A fast or nightly scoped-clean report is exit 1, never a certificate | 28 |
-| Streak and cutover | three-clean streak, staging gate, post-flip confirmation, monthly full production | not landed | 29 |
-| CI cadence | fast contract, nightly health, weekly full certification, Locale matrix | not landed | 30 |
+| Streak and cutover | three-clean streak, staging gate, post-flip confirmation, monthly full production | `voni/src/lib/demo/verification/release/` — `streak.ts` judges the latest three committed certificates; `gate.ts` binds a clean staging certificate to the image; `confirmation.ts` bounds the post-flip record to ten calls; `rollback.ts` holds the one value and its zero-session proof; `monthly.ts` owns the cron and the recorded monthly production proof. `voni/scripts/demo-cutover.mts` (`npm run demo:cutover`) is the reader; records live in `voni/evidence/cutover/` | 29 |
+| CI cadence | fast contract, nightly health, weekly full certification, Locale matrix | `voni/src/lib/demo/verification/cadence.ts` is the one count source (fast 10, nightly 88, full 264) and the cron constants; `voni/scripts/demo-gate-report.mjs` turns a `demo:verify --json` report into a merge gate (a clean scoped-pass and a clean nightly health still exit 1, so status is what the gate reads); `voni/scripts/demo-cadence-wiring.test.ts` parses `.github/workflows/{ci,nightly,demo-weekly,demo-monthly}.yml` and forbids vendor keys, path filters and timeout-less jobs. The fast job runs on every PR; nightly is English 40 × 1 + Locale core 12 × 1 × 4 = 88 calls; weekly full is the same plan × 3 = 264 with a panel signature still a human act | 30 |
+
+### Release and cutover (ticket 29)
+
+**A streak is three consecutive clean certifications.** The latest three
+committed certificates, in run-id order, must all be `certified`, on a clean
+tree, with no coverage gap, no run failure, full plan, the same code
+fingerprint and one target. A dirty tree, a coverage gap, a different target, a
+different fingerprint or a non-certified run in the window breaks it by name.
+A single clean certification is nightly health; only the three-clean streak
+supports a release or cutover claim.
+
+**The staging gate.** `npm run demo:cutover -- --gate --image <sha256:...>`
+opens only on a clean staging certificate for that image, plus the three-clean
+staging streak on the same code. It refuses with exit 2 and names the missing
+evidence when no staging certificate exists for the image; exit 3 when the
+certificate is `pending-human` (the owner's panel and the baseline are human
+gates); exit 1 when the evidence is present but red. It never runs a call and
+never flips anything. The production flip remains the operator's
+`cutover:check --set` action.
+
+**Production never inherits staging.** `assertProductionCertificate` reads a
+certificate only under the production expectation, so a staging certificate
+cannot stand in for a production one. The gate's own
+`production-inheritance` check states the same rule.
+
+**Post-flip confirmation.** After the flip, `voni/evidence/cutover/post-flip-<run-id>.json`
+records at most ten calls (the fast contract's core), the image, the staging
+certificate it followed, the calls and the evidence directory. It is not a
+certificate and never becomes one; a longer record is refused by name. The
+monthly full production certification is the claim's backstop (RR-05).
+
+**Rollback is one value.** `off` on the durable routing switch, proven by
+`cutover:check -- --prove-off`: the refused call carries `code: "managed"` and
+opens zero new vendor sessions. `npm run demo:cutover -- --rollback [--proof <record>]`
+prints the one value and refuses an absent proof or a non-zero session count.
+It never deploys.
+
+**Monthly full production.** The schedule is one constant,
+`0 4 1 * *` UTC (`MONTHLY_PRODUCTION_CRON`); the scheduled workflow must carry
+exactly that cron and the workflow-as-code test compares them. The record is
+`voni/evidence/cutover/monthly-production.json`: one entry per month, pointing
+at a committed production certificate. An empty or certificate-less record is
+`pending-human` (exit 3), never green; a stale month is exit 1; a cron drift,
+image mismatch or wrong target/plan is exit 2.
+
+**Ticket 25 exception.** The human baseline is prepared but not captured while
+ticket 25 stays `ready-for-human`. Any gate that needs the baseline or the
+panel therefore refuses by name and exits 3; it does not fake a staging or
+production green. There is no staging or production evidence sink in this
+repository, so no staging/production run is claimed here — only local tests and
+the named refusals. This exception is recorded in both ticket answers.
 
 ### The fast contract
 
@@ -83,9 +134,14 @@ Locale's version of a behaviour must keep the same class, trigger sequence,
 property set, soundscape and fault; a translation changes words, never the
 measured conduct. A nightly Locale run is 48 calls at one repetition and fits
 E3's `dvCostNightlyRunMaxUsd`; a full Locale run is 144 calls at three and fits
-`dvCostFullRunMaxUsd` (both preflighted by the economics owner). Those bounds
-are the core's own plan, not the combined English + Locale plan: ticket 30
-composes that plan and must preflight its own call count. The matrix
+`dvCostFullRunMaxUsd` (both preflighted by the economics owner). The amended
+ceilings are **fast ≤ $2, nightly ≤ $15, full ≤ $45**. The composed plan ticket
+30 runs is nightly English 40 × 1 plus Locale core 12 × 1 on each of four
+Locales = 88 calls × the frozen $0.15 per-call cap = **$13.20**, inside $15;
+weekly full is the same 88 × 3 = 264 calls = **$39.60**, inside $45. Those
+bounds are one source: `scoreboard-budgets.ts` + `.json` (and the contract bar
+record moved by `npm run contract:bars -- --write`), never a number in the
+workflow. The matrix
 judges each Locale from its own twelve calls only: a borrowed measurement, a
 missing call or a scenario from another Locale is `ineligible`. Conduct and
 timing may pass on machine evidence; understanding cannot be claimed without a
@@ -110,6 +166,60 @@ The protocol adapter reads the committed vendor-build record at
 does not exist yet: no engineer has recorded authentic STT/TTS/LLM build ids, so
 a real protocol run refuses by name rather than inventing one. The adapter's
 tests inject a fixture record; a live run stays unrun until the record lands.
+
+### CI cadence (ticket 30)
+
+The cadence is code and the workflows are parsed as code. One source,
+`voni/src/lib/demo/verification/cadence.ts`, owns the counts and the two
+scheduled crons; `voni/scripts/demo-cadence-wiring.test.ts` compares the
+workflow YAML to it and fails by name when a job, wrapper, timeout, schedule or
+artifact disappears.
+
+- **Fast contract — merge gate.** `.github/workflows/ci.yml` runs
+  `demo:verify --fast` on every pull request and push, with no `paths:` filter
+  (running on every change is the superset of every call-path change). A clean
+  scoped-pass exits 1 by contract, so `voni/scripts/demo-gate-report.mjs fast`
+  reads the JSON and requires `status: "scoped-pass"` and ten calls; anything
+  else fails. The required wrapper `required-demo-fast-contract` fails a
+  skipped, cancelled, failed or artifact-less job. Branch protection must
+  require the wrapper, not the job.
+- **Nightly health.** `.github/workflows/nightly.yml` adds
+  `demo-nightly-health`: English 40 × 1 plus Locale core 12 × 1 on es, fr, de
+  and pt = 88 calls. E3's `dvCostNightlyRunMaxUsd` ($15) is preflighted; at the
+  frozen $0.15 cap the plan is $13.20. A clean report is `health-clean` and
+  still exit 1, so the gate reads that status; it is a report, not a pass.
+  `required-demo-nightly-health` fails an absent key as a named skip
+  (`SKIPPED: demo nightly health made no call …`) and never lets a quiet night
+  read green.
+- **Weekly full.** `.github/workflows/demo-weekly.yml` runs the same plan at
+  three repetitions = 264 calls, inside E3's `dvCostFullRunMaxUsd` ($45;
+  $39.60 at the cap), on Mondays. It uploads the certificate and the run
+  artifacts. A certificate is `pending-human` until the owner rates the panel
+  and signs it; the gate accepts `certified` or `pending-human` **only with a
+  certificate**, prints PENDING-HUMAN and is not a pass. The panel is still a
+  human act.
+- **Monthly full production.** `.github/workflows/demo-monthly.yml` carries
+  `MONTHLY_PRODUCTION_CRON` (`0 4 1 * *`). It tries the full production target
+  and records the month; both refuse by name today (no production evidence
+  sink, no credentials), and the required wrapper fails. The empty
+  `voni/evidence/cutover/monthly-production.json` is `pending-human` (exit 3),
+  never a green month.
+- **Artifacts.** Audio, traces, delivered WAVs, browser marks and per-run
+  directories stay in `voni/.demo-runs/` and are uploaded as CI artifacts only.
+  Only the certificate under `voni/evidence/certificates/` is committed. The
+  workflow test asserts the `.gitignore` patterns and that no workflow stages
+  or uploads the evidence directories as commits.
+- **Named gaps.** The committed English corpus holds 37 of the 40 scenarios a
+  nightly/full run is defined over (the four Locale cores are complete at
+  twelve each). `planVerify` reports that as a named corpus gap and
+  `demo:verify` refuses (exit 2) rather than running a smaller 85-call plan with
+  a green. The three missing English scenarios are a recorded gap until they
+  land with real takes; until then the jobs fail by name, never green. The
+  fast contract's ten scenarios are all present.
+- **Ticket 25 exception.** The panel/baseline are human gates; a missing
+  signature or an unpinned baseline is `pending-human` (exit 3) and is not
+  papered over by a merged certificate. No staging or production run is
+  claimed in this repository.
 
 ### Browser adapter: what a local certificate can and cannot say
 
